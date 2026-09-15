@@ -1,46 +1,40 @@
-import {
-  createMcpHandler,
-  getOAuthProtectedResourceMetadataUrl,
-  requireBearerAuth,
-  type AuthInfo
-} from '@modelcontextprotocol/server';
-import { protectedResourceMetadata, requiredScope, verifyAccessToken } from './auth.js';
+import { createMcpHandler } from '@modelcontextprotocol/server';
 import { parseConnectionCatalog } from './config.js';
 import { buildMcpServer } from './mcp.js';
-import { tryPortalOriginAuth } from './portal-auth.js';
+import { authenticateDatabasePortal } from './portal-auth.js';
 import type { Env } from './types.js';
+
+function authError(status: number, code: string, message: string): Response {
+  return Response.json(
+    { error: code, message },
+    {
+      status,
+      headers: {
+        'Cache-Control': 'no-store',
+        ...(status === 401 ? { 'WWW-Authenticate': 'Bearer' } : {})
+      }
+    }
+  );
+}
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    const metadata = protectedResourceMetadata(request, env);
-    if (metadata) return metadata;
-
     const url = new URL(request.url);
     if (url.pathname !== '/mcp') return new Response('Not found', { status: 404 });
 
-    const catalog = parseConnectionCatalog(env.CONNECTIONS_JSON);
-    const portalAuth = tryPortalOriginAuth(request, env);
-
-    let mcpRequest = request;
-    let auth: AuthInfo;
-
-    if (portalAuth) {
-      mcpRequest = portalAuth.request;
-      auth = portalAuth.authInfo;
-    } else {
-      // Expand phase: preserve the existing client-facing OAuth resource-server path.
-      const resourceMetadataUrl = getOAuthProtectedResourceMetadataUrl(new URL('/mcp', url.origin));
-      const gate = requireBearerAuth({
-        verifier: { verifyAccessToken: token => verifyAccessToken(token, env) },
-        requiredScopes: [requiredScope(env)],
-        resourceMetadataUrl
-      });
-      const legacyAuth = await gate(request);
-      if (legacyAuth instanceof Response) return legacyAuth;
-      auth = legacyAuth;
+    const portalAuth = await authenticateDatabasePortal(request, env);
+    if (!portalAuth.ok) {
+      if (portalAuth.reason === 'misconfigured') {
+        return authError(503, 'portal_auth_not_configured', 'MCP Portal authentication is not configured.');
+      }
+      if (portalAuth.reason === 'invalid_origin') {
+        return authError(403, 'invalid_origin', 'Request Origin is not allowed.');
+      }
+      return authError(401, 'unauthorized', 'Valid MCP Portal authentication is required.');
     }
 
+    const catalog = parseConnectionCatalog(env.CONNECTIONS_JSON);
     const handler = createMcpHandler(() => buildMcpServer(env, catalog), { legacy: 'stateless' });
-    return handler.fetch(mcpRequest, { authInfo: auth });
+    return handler.fetch(portalAuth.request, { authInfo: portalAuth.authInfo });
   }
 };
