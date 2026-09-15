@@ -2,54 +2,46 @@
 
 A small, policy-enforcing OpenList REST → MCP adapter for Cloudflare Workers.
 
-## V1 scope
-
-The Worker exposes a bounded core tool set: capability discovery, file listing/info/search, mkdir/rename/copy/move/remove, direct download URL lookup, small base64 uploads, and basic OpenList task management. It intentionally does not implement recursive smart tools, large-file proxying, shares, offline download, torrent, admin APIs, D1, Durable Objects, R2, or custom OAuth state.
-
-## Architecture
-
-The monorepo target is Portal-only client ingress:
+## Current architecture
 
 ```text
 MCP client
   -> Cloudflare MCP Portal
   -> Authorization: Bearer <MCP_ACCESS_TOKEN>
-  -> OpenList MCP Worker /mcp
+  -> https://openlist-mcp-worker.<workers-subdomain>.workers.dev/mcp
   -> OPENLIST_TOKEN
   -> OpenList API
 ```
 
-`MCP_ACCESS_TOKEN` is this Worker's dedicated Portal-to-Worker machine credential. The Worker consumes that `Authorization` header before MCP/domain handling. `OPENLIST_TOKEN` remains a separate raw/non-Bearer Worker-to-OpenList business credential and must never be reused as the Portal credential.
+The Worker is stateless. `MCP_ACCESS_TOKEN` is the dedicated Portal-to-Worker credential and is consumed before MCP/domain handling. `OPENLIST_TOKEN` is a separate raw/non-Bearer Worker-to-OpenList credential and must never be reused as the Portal credential.
 
-The retired Worker-side Cloudflare Access JWT path (`Cf-Access-Jwt-Assertion`, `CF_ACCESS_TEAM_DOMAIN`, `CF_ACCESS_AUD`) is not a supported client authentication path.
+`wrangler.jsonc` follows the monorepo ingress policy:
 
-## Required configuration
+- `workers_dev: true`
+- `preview_urls: false`
+- no custom domain or zone route is required for the target Worker ingress
 
-Set non-secret vars in Cloudflare/Wrangler:
+Cloudflare Access JWT handling, `Cf-Access-Jwt-Assertion`, `CF_ACCESS_TEAM_DOMAIN`, and `CF_ACCESS_AUD` are retired Worker client-auth paths.
 
-- `OPENLIST_URL` — HTTPS URL of the OpenList server
-- `OPENLIST_ALLOWED_PATHS` — comma-separated roots, e.g. `/documents,/media`
+## Capability scope
 
-Set independent secrets:
+The Worker exposes a bounded OpenList tool set for capability discovery, file listing/info/search, mkdir/rename/copy/move/remove, direct download URL lookup, small base64 uploads, and basic OpenList task management. It intentionally does not implement recursive smart tools, large-file proxying, shares, offline download, torrent, admin APIs, D1, Durable Objects, R2, or custom OAuth state.
 
-```sh
-pnpm exec wrangler secret put OPENLIST_TOKEN
-pnpm exec wrangler secret put MCP_ACCESS_TOKEN
-```
+Configuration:
 
-Never reuse either secret for the other purpose, and do not share `MCP_ACCESS_TOKEN` with another Worker.
+- `OPENLIST_URL` — HTTPS OpenList server URL
+- `OPENLIST_ALLOWED_PATHS` — comma-separated allowed roots
+- `OPENLIST_READONLY` — defaults to `true`; mutation tools are omitted when enabled
+- `OPENLIST_UPLOAD_MAX_BYTES` — defaults to 5 MiB
+- `OPENLIST_TIMEOUT_MS` — defaults to 15 seconds
+- `OPENLIST_TOKEN` — Worker secret for OpenList business authentication
+- `MCP_ACCESS_TOKEN` — independent Worker secret for Portal ingress
 
-Optional vars:
+## Safety model
 
-- `OPENLIST_READONLY` — defaults to `true`; set `false` to register write tools
-- `OPENLIST_UPLOAD_MAX_BYTES` — defaults to `5242880` (5 MiB)
-- `OPENLIST_TIMEOUT_MS` — defaults to `15000`
+Portal authentication, the low-privilege OpenList account/token, and the path allowlist are separate controls. Copy/move validate both source and destination. Destructive remove/cancel/delete operations require `confirm=true`, but confirmation is an accidental-operation guard rather than an authorization boundary. Download bodies do not transit the Worker.
 
-`wrangler.jsonc` intentionally sets `workers_dev=false`; keep the existing intended Worker routing for any deployment of this app. Portal clients connect to the Portal URL rather than treating the raw Worker as a second client-auth surface.
-
-See `docs/deployment.md` for the deployment and acceptance contract.
-
-## Development
+## Development and verification
 
 ```sh
 pnpm install --frozen-lockfile
@@ -57,28 +49,14 @@ pnpm --filter openlist-mcp-worker check
 pnpm --filter openlist-mcp-worker dev
 ```
 
-The production OpenList URL is required to use HTTPS. For local integration testing, use a reachable HTTPS OpenList test instance.
+Repository CI is owned by the monorepo root workflow; this app does not maintain a nested GitHub Actions pipeline.
 
-## MCP endpoint
+See `docs/deployment.md` for deployment/acceptance details and `CONTEXT.md` for durable domain invariants.
 
-```text
-POST /mcp
-```
+## Production cutover boundary
 
-Health check:
-
-```text
-GET /health
-```
-
-The health route does not contact OpenList or reveal backend details.
-
-## Safety model
-
-Portal authentication, the low-privilege OpenList account/token, and the path allowlist are separate controls. Portal authentication is not a replacement for OpenList authorization or path policy. `confirm=true` on destructive operations is an additional accidental-operation guard, not an authorization boundary.
-
-In read-only mode, mutation tools are omitted from tool discovery entirely.
+The repository target is the Worker above, but repository cleanup does **not** itself replace the separately operating OpenList Tunnel/local-service production topology. Any production Portal upstream switch is a distinct final cutover action that must be validated separately.
 
 ## Attribution
 
-Behavior and endpoint semantics were informed by the MIT-licensed `hbestm/openlist-mcp-server` project and the OpenList v4 API documentation. This implementation is a new TypeScript Worker runtime rather than a direct runtime port.
+Behavior and endpoint semantics were informed by the OpenList API and the source history recorded in `SOURCE.md`. No license is invented for a source snapshot that did not declare one.
