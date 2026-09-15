@@ -1,0 +1,29 @@
+{
+  "name": "weread-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "bash scripts/selftest.sh",
+    "lint": "eslint .",
+    "check": "npm run typecheck && npm test && npm run test:mcp && npm run lint",
+    "test:mcp": "vitest run test/mcp.test.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.0.0",
+    "agents": "0.23.0",
+    "zod": "^4.1.5"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260911.1",
+    "@eslint/js": "^9.35.0",
+    "eslint": "^9.35.0",
+    "typescript": "^5.9.2",
+    "typescript-eslint": "^8.43.0",
+    "vitest": "^3.2.4",
+    "wrangler": "^4.34.0"
+  }
+}
