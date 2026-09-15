@@ -56,7 +56,7 @@ const constantTimeEqual = async (actual: string, expected: string) => {
   const expectedBytes = new Uint8Array(expectedHash);
   let difference = 0;
   for (let index = 0; index < actualBytes.length; index += 1) {
-    difference |= actualBytes[index] ^ expectedBytes[index];
+    difference |= actualBytes[index]! ^ expectedBytes[index]!;
   }
   return difference === 0;
 };

@@ -1,5 +1,5 @@
 {
-  "name": "ima-cloudflare-mcp",
+  "name": "ima-mcp-worker",
   "version": "0.5.0",
   "description": "Cloudflare Workers-native Model Context Protocol (MCP) server for Tencent IMA notes and knowledge bases",
   "license": "MIT",
@@ -8,8 +8,10 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "deploy:dry-run": "wrangler deploy --dry-run",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test \"test/**/*.test.ts\""
+    "test": "node --experimental-strip-types --test \"test/**/*.test.ts\"",
+    "check": "pnpm run typecheck && pnpm test && pnpm run deploy:dry-run"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0",

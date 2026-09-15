@@ -1,15 +1,16 @@
 {
-  "name": "weread-mcp",
+  "name": "weread-mcp-worker",
   "version": "1.0.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "deploy:dry-run": "wrangler deploy --dry-run",
     "typecheck": "tsc --noEmit",
     "test": "bash scripts/selftest.sh",
     "lint": "eslint .",
-    "check": "npm run typecheck && npm test && npm run test:mcp && npm run lint",
+    "check": "pnpm run typecheck && pnpm test && pnpm run test:mcp && pnpm run lint && pnpm run deploy:dry-run",
     "test:mcp": "vitest run test/mcp.test.ts"
   },
   "dependencies": {
