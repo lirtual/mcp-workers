@@ -183,7 +183,6 @@ export interface CheckRepeatedNamesResponse {
 
 export interface ExportFileResult {
   download_url: string;
-  download_expires_at: number;
   file_name: string;
   file_size?: number;
   content_type?: string;
