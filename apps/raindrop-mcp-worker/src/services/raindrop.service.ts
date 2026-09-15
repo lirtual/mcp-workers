@@ -139,11 +139,18 @@ export default class RaindropService {
       : undefined;
   }
 
+  private async withWriteRateLimit<T>(fn: () => Promise<T>): Promise<T> {
+    return this.withRateLimit(fn, "write");
+  }
+
   private async withRateLimit<T>(
     fn: () => Promise<T>,
+    retryMode: "read" | "write" = "read",
     retryCount = 0,
+    startedAtMs = Date.now(),
   ): Promise<T> {
     const maxRetries = this.maxRateLimitRetries;
+    const readRetryBudgetMs = 15_000;
     try {
       if (this.rateLimiter) {
         await this.rateLimiter.consume("global");
@@ -155,17 +162,23 @@ export default class RaindropService {
         throw err;
       }
 
-      // Handle rate limiter rejection (msBeforeNext is set by rate-limiter-flexible)
+      // Local limiter rejection happens before the upstream call, so it is safe
+      // to wait and retry even for writes: no mutation has been submitted yet.
       if (err?.msBeforeNext !== undefined) {
         const retryMs = Math.max(0, Number(err.msBeforeNext));
-        const waitTimeMs = Math.min(retryMs + 500, 5000); // Add buffer, cap at 5s
+        const waitTimeMs = Math.min(retryMs + 500, 5000);
 
         if (retryCount < maxRetries) {
           this.logger.warn(
             `Rate limited, retrying in ${Math.ceil(waitTimeMs / 1000)}s (attempt ${retryCount + 1}/${maxRetries})`,
           );
           await new Promise((resolve) => setTimeout(resolve, waitTimeMs));
-          return this.withRateLimit(fn, retryCount + 1);
+          return this.withRateLimit(
+            fn,
+            retryMode,
+            retryCount + 1,
+            startedAtMs,
+          );
         }
 
         throw new RateLimitError(
@@ -174,36 +187,71 @@ export default class RaindropService {
         );
       }
 
-      // Handle upstream 429 responses from Raindrop API
+      // Once a write has reached the upstream request, never resubmit it
+      // automatically: the remote mutation may already have succeeded.
       if (err instanceof RateLimitError) {
+        if (retryMode === "write") {
+          throw err;
+        }
+
         const retryAfterMs = this.getUpstreamRetryAfterMs(err);
         const backoffMs =
           retryAfterMs !== undefined
-            ? Math.min(retryAfterMs + 250, 15000)
+            ? retryAfterMs + 250
             : Math.min(750 * Math.pow(2, retryCount), 10000);
+        const elapsedMs = Date.now() - startedAtMs;
+        const remainingBudgetMs = Math.max(0, readRetryBudgetMs - elapsedMs);
 
-        if (retryCount < maxRetries) {
-          this.logger.warn(
-            `Upstream rate limited, retrying in ${Math.ceil(backoffMs / 1000)}s (attempt ${retryCount + 1}/${maxRetries})`,
+        if (retryCount >= maxRetries) {
+          throw new RateLimitError(
+            `Upstream rate limit exceeded after ${maxRetries} retries`,
+            err,
           );
-          await new Promise((resolve) => setTimeout(resolve, backoffMs));
-          return this.withRateLimit(fn, retryCount + 1);
         }
 
-        throw new RateLimitError(
-          `Upstream rate limit exceeded after ${maxRetries} retries`,
-          err,
+        if (backoffMs > remainingBudgetMs) {
+          throw new RateLimitError(
+            `Upstream retry delay ${Math.ceil(backoffMs / 1000)}s exceeds remaining read retry budget ${Math.ceil(remainingBudgetMs / 1000)}s`,
+            err,
+          );
+        }
+
+        this.logger.warn(
+          `Upstream rate limited, retrying in ${Math.ceil(backoffMs / 1000)}s (attempt ${retryCount + 1}/${maxRetries})`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, backoffMs));
+        return this.withRateLimit(
+          fn,
+          retryMode,
+          retryCount + 1,
+          startedAtMs,
         );
       }
 
-      // Retry transient upstream errors with exponential backoff
-      if (err instanceof UpstreamError && retryCount < maxRetries) {
-        const backoffMs = Math.min(500 * Math.pow(2, retryCount), 5000); // 500ms, 1s, 2s, capped at 5s
+      // Retry transient upstream errors only for read operations. Writes are
+      // intentionally at-most-once from this client once submitted upstream.
+      if (
+        err instanceof UpstreamError &&
+        retryMode === "read" &&
+        retryCount < maxRetries
+      ) {
+        const backoffMs = Math.min(500 * Math.pow(2, retryCount), 5000);
+        const elapsedMs = Date.now() - startedAtMs;
+        const remainingBudgetMs = Math.max(0, readRetryBudgetMs - elapsedMs);
+        if (backoffMs > remainingBudgetMs) {
+          throw err;
+        }
+
         this.logger.warn(
           `Transient error, retrying in ${Math.ceil(backoffMs / 1000)}s (attempt ${retryCount + 1}/${maxRetries}): ${err.message}`,
         );
         await new Promise((resolve) => setTimeout(resolve, backoffMs));
-        return this.withRateLimit(fn, retryCount + 1);
+        return this.withRateLimit(
+          fn,
+          retryMode,
+          retryCount + 1,
+          startedAtMs,
+        );
       }
 
       throw err instanceof Error
@@ -329,7 +377,7 @@ export default class RaindropService {
    * Raindrop.io API: POST /collection
    */
   async createCollection(title: string, isPublic = false): Promise<Collection> {
-    const collection = await this.withRateLimit(async () => {
+    const collection = await this.withWriteRateLimit(async () => {
       if (!title?.trim())
         throw new ValidationError("Collection title is required");
       const { data } = await this.client.POST("/collection", {
@@ -352,7 +400,7 @@ export default class RaindropService {
     id: number,
     updates: Partial<Collection>,
   ): Promise<Collection> {
-    const collection = await this.withRateLimit(async () => {
+    const collection = await this.withWriteRateLimit(async () => {
       const { data } = await this.client.PUT("/collection/{id}", {
         params: { path: { id } },
         body: updates,
@@ -371,7 +419,7 @@ export default class RaindropService {
    * Raindrop.io API: DELETE /collection/{id}
    */
   async deleteCollection(id: number): Promise<void> {
-    await this.withRateLimit(async () => {
+    await this.withWriteRateLimit(async () => {
       await this.client.DELETE("/collection/{id}", {
         params: { path: { id } },
       });
@@ -390,7 +438,7 @@ export default class RaindropService {
     level: string,
     emails?: string[],
   ): Promise<{ link: string; access: any[] }> {
-    return this.withRateLimit(async () => {
+    return this.withWriteRateLimit(async () => {
       const body: any = { level };
       if (emails) body.emails = emails;
       const { data } = await this.client.PUT("/collection/{id}/sharing", {
@@ -566,7 +614,7 @@ export default class RaindropService {
       important?: boolean;
     },
   ): Promise<Bookmark> {
-    const newBookmark = await this.withRateLimit(async () => {
+    const newBookmark = await this.withWriteRateLimit(async () => {
       if (!bookmark.link)
         throw new ValidationError("Bookmark link is required");
       const { data } = await this.client.POST("/raindrop", {
@@ -597,7 +645,7 @@ export default class RaindropService {
     id: number,
     updates: Partial<Bookmark>,
   ): Promise<Bookmark> {
-    const updated = await this.withRateLimit(async () => {
+    const updated = await this.withWriteRateLimit(async () => {
       const { data } = await this.client.PUT("/raindrop/{id}", {
         params: { path: { id } },
         body: updates,
@@ -617,7 +665,7 @@ export default class RaindropService {
    * Raindrop.io API: DELETE /raindrop/{id}
    */
   async deleteBookmark(id: number): Promise<void> {
-    await this.withRateLimit(async () => {
+    await this.withWriteRateLimit(async () => {
       await this.client.DELETE("/raindrop/{id}", {
         params: { path: { id } },
       });
@@ -641,7 +689,7 @@ export default class RaindropService {
       broken?: boolean;
     },
   ): Promise<boolean> {
-    return this.withRateLimit(async () => {
+    return this.withWriteRateLimit(async () => {
       const body: any = { ids };
       if (updates.tags) body.tags = updates.tags;
       if (updates.collection) body.collection = { $id: updates.collection };
@@ -672,7 +720,7 @@ export default class RaindropService {
       broken?: boolean;
     },
   ): Promise<boolean> {
-    return this.withRateLimit(async () => {
+    return this.withWriteRateLimit(async () => {
       const { data } = await this.client.PUT("/raindrops/{collectionId}", {
         params: { path: { id: collectionId } as any },
         body: updates,
@@ -698,7 +746,7 @@ export default class RaindropService {
     collectionId: number,
     ids?: number[],
   ): Promise<boolean> {
-    return this.withRateLimit(async () => {
+    return this.withWriteRateLimit(async () => {
       const { data } = await this.client.DELETE("/raindrops/{collectionId}", {
         params: { path: { id: collectionId } as any },
         body: ids ? { ids } : undefined,
@@ -731,7 +779,7 @@ export default class RaindropService {
    * Raindrop.io API: PUT /collections/clean
    */
   async removeEmptyCollections(): Promise<boolean> {
-    return this.withRateLimit(async () => {
+    return this.withWriteRateLimit(async () => {
       const { data } = await this.client.PUT("/collections/clean");
 
       // Invalidate collections cache
@@ -776,7 +824,7 @@ export default class RaindropService {
     collectionId: number | undefined,
     tags: string[],
   ): Promise<boolean> {
-    return this.withRateLimit(async () => {
+    return this.withWriteRateLimit(async () => {
       const endpoint = collectionId ? "/tags/{collectionId}" : "/tags/0";
       const options = {
         ...(collectionId && { params: { path: { id: collectionId } } }),
@@ -801,7 +849,7 @@ export default class RaindropService {
     oldName: string,
     newName: string,
   ): Promise<boolean> {
-    return this.withRateLimit(async () => {
+    return this.withWriteRateLimit(async () => {
       const endpoint = collectionId ? "/tags/{collectionId}" : "/tags/0";
       const options = {
         ...(collectionId && { params: { path: { id: collectionId } } }),
@@ -826,7 +874,7 @@ export default class RaindropService {
     tags: string[],
     newName: string,
   ): Promise<boolean> {
-    return this.withRateLimit(async () => {
+    return this.withWriteRateLimit(async () => {
       const endpoint = collectionId ? "/tags/{collectionId}" : "/tags/0";
       const options = {
         ...(collectionId && { params: { path: { id: collectionId } } }),
@@ -926,7 +974,7 @@ export default class RaindropService {
       color?: HighlightColor;
     },
   ): Promise<Highlight> {
-    return this.withRateLimit(async () => {
+    return this.withWriteRateLimit(async () => {
       const { data } = await this.client.POST("/highlights", {
         body: {
           ...highlight,
@@ -955,7 +1003,7 @@ export default class RaindropService {
       color?: HighlightColor;
     },
   ): Promise<Highlight> {
-    return this.withRateLimit(async () => {
+    return this.withWriteRateLimit(async () => {
       const { data } = await this.client.PUT("/highlights/{id}", {
         params: { path: { id } },
         body: updates,
@@ -975,7 +1023,7 @@ export default class RaindropService {
    * Raindrop.io API: DELETE /highlights/{id}
    */
   async deleteHighlight(id: number): Promise<void> {
-    await this.withRateLimit(async () => {
+    await this.withWriteRateLimit(async () => {
       await this.client.DELETE("/highlights/{id}", {
         params: { path: { id } },
       });
