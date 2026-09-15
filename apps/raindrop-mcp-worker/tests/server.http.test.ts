@@ -9,7 +9,7 @@ describe("HTTP server", () => {
     expect(response.status).toBe(200);
     expect(response.body).toMatchObject({
       status: "healthy",
-      service: "raindrop-mcp",
+      service: "raindrop-mcp-worker",
       protocolTarget: "2026-07-28",
       httpMode: "per-request",
     });
