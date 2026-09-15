@@ -18,6 +18,7 @@ jobs:
     outputs:
       apps: ${{ steps.scope.outputs.apps }}
       database_changed: ${{ steps.scope.outputs.database_changed }}
+      portal_auth_changed: ${{ steps.scope.outputs.portal_auth_changed }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -57,11 +58,14 @@ jobs:
           )
 
           check_all=false
+          portal_auth_changed=false
           for file in "${changed_files[@]}"; do
+            if [[ "$file" == packages/portal-auth/* ]]; then
+              portal_auth_changed=true
+            fi
             case "$file" in
               package.json|pnpm-lock.yaml|pnpm-workspace.yaml|.npmrc|packages/*|.github/workflows/ci.yml)
                 check_all=true
-                break
                 ;;
             esac
           done
@@ -82,6 +86,7 @@ jobs:
 
           selected_text="${selected[*]-}"
           echo "apps=$selected_text" >> "$GITHUB_OUTPUT"
+          echo "portal_auth_changed=$portal_auth_changed" >> "$GITHUB_OUTPUT"
 
           database_changed=false
           for app in "${selected[@]}"; do
@@ -97,6 +102,7 @@ jobs:
           else
             echo "Selected applications: $selected_text"
           fi
+          echo "Portal auth package changed: $portal_auth_changed"
 
   app-checks:
     name: Application checks
@@ -125,6 +131,10 @@ jobs:
       - name: Install workspace
         if: needs.changes.outputs.apps != ''
         run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Check shared portal-auth package
+        if: needs.changes.outputs.portal_auth_changed == 'true'
+        run: pnpm --filter @mcp-workers/portal-auth check
 
       - name: Run affected application checks
         if: needs.changes.outputs.apps != ''

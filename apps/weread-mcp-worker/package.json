@@ -14,6 +14,7 @@
     "test:mcp": "vitest run test/mcp.test.ts"
   },
   "dependencies": {
+    "@mcp-workers/portal-auth": "workspace:*",
     "@modelcontextprotocol/server": "2.0.0",
     "agents": "0.23.0",
     "zod": "^4.1.5"

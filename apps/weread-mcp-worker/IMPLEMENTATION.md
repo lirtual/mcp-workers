@@ -14,22 +14,23 @@
 - no retry for 429/auth/validation/upgrade errors
 - stable MCP-facing error vocabulary
 - no persistence or caching
-- private-worker deployment configuration (`workers_dev=false`, no routes)
-- Service Binding deployment guidance
+- Portal-only Worker ingress using independent `MCP_ACCESS_TOKEN`
+- shared `@mcp-workers/portal-auth` boundary that strips the inbound bearer before MCP handling
+- separate `WEREAD_API_KEY` for Tencent upstream authentication
+- browser Origin rejected by default; Origin-less service-to-service requests allowed
 - domain context and ADRs
 
-## Verification completed in this environment
+## Verification
 
-The container cannot resolve `registry.npmjs.org`, so third-party dependencies could not be installed here. Therefore a full SDK-aware `npm run typecheck`, ESLint run, Wrangler bundle, and MCP SDK smoke test could not be executed.
+The monorepo validation uses Node 24 and pnpm 10.17.1. Current checks cover:
 
-Verification that *was* executed successfully:
+1. `@mcp-workers/portal-auth` strict TypeScript typecheck and request-boundary tests.
+2. WeRead TypeScript typecheck, dependency-free core protocol tests and MCP tests.
+3. ESLint.
+4. Wrangler dry-run through the workspace dependency and package exports.
+5. frozen `pnpm-lock.yaml` installation without lockfile mutation.
 
-1. TypeScript compilation of dependency-free core modules (`errors`, `weread-client`, `normalize`) with strict mode.
-2. Node core protocol test suite: 10/10 passing.
-3. TypeScript syntax/transpile check over every `src/*.ts` file.
-4. Manual spec/security review against the frozen design.
-
-The core tests cover:
+The core WeRead tests cover:
 
 - flat request body and skill version
 - API/skill-version override resistance
@@ -42,15 +43,13 @@ The core tests cover:
 - personal notes = highlights + thoughts without fabricated bookmarks
 - public-review `reviewsHasMore` + `maxIdx` + `synckey`
 
-## Required verification after dependency installation
+The Portal-auth tests cover:
 
-Run:
+- missing configuration fails closed
+- missing or incorrect bearer is rejected
+- invalid browser Origin is rejected
+- Origin-less server requests are allowed
+- inbound `Authorization` is removed after authentication
+- MCP protocol headers and the request body are preserved
 
-```bash
-npm install
-npm run check
-npm run test:mcp
-npx wrangler deploy --dry-run
-```
-
-Then deploy only after configuring `WEREAD_API_KEY` as a Cloudflare secret.
+Production deployment remains a separate Cloudflare Builds/Portal step. Before switching a live Worker, configure matching `MCP_ACCESS_TOKEN` values on the Worker and Portal, keep `WEREAD_API_KEY` separate, and validate Portal discovery plus one explicitly chosen read-only tool call.
