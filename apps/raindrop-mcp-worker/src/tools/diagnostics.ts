@@ -29,7 +29,7 @@ export const createDiagnosticsTool = (
   defineTool({
     name: "diagnostics",
     description:
-      "Worker-safe server diagnostics, tool metadata, and Raindrop library health.",
+      "Diagnostics for the Worker server, tool metadata, and Raindrop library health.",
     inputSchema: DiagnosticsInputSchema,
     outputSchema: DiagnosticsOutputSchema,
     handler: async (
