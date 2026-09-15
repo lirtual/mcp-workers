@@ -1,4 +1,3 @@
-import { createHmac } from "node:crypto";
 import type { Env } from "./types.ts";
 
 export const DEFAULT_DOWNLOAD_TTL_SECONDS = 60 * 60;
@@ -8,10 +7,6 @@ export type DownloadSignatureResult =
   | { ok: true }
   | { ok: false; reason: "misconfigured" | "invalid" | "expired" };
 
-/**
- * Sanitizes a filename to prevent directory traversal and illegal characters
- * in R2 keys and Content-Disposition headers.
- */
 export function sanitizeFileName(rawName?: string | null, fallbackExt?: string): string {
   let name = (rawName || "").trim();
   name = name.replace(/[\x00-\x1f\x7f]/g, "");
@@ -57,10 +52,6 @@ export function getExportRetentionPolicy(env: Env): { downloadTtlSeconds: number
   return { downloadTtlSeconds, retentionSeconds };
 }
 
-/**
- * Each export gets a unique server-generated id so a later export cannot
- * overwrite the object referenced by an older signed URL.
- */
 export function buildR2Key(
   prefix: "media" | "notes",
   id: string,
@@ -77,29 +68,56 @@ function canonicalDownloadRequest(key: string, expires: number): string {
   return `v1\nGET\n${key}\n${expires}`;
 }
 
-function signDownload(secret: string, key: string, expires: number): string {
-  return createHmac("sha256", secret)
-    .update(canonicalDownloadRequest(key, expires), "utf8")
-    .digest("base64url");
+function base64UrlEncode(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
-/**
- * Builds a Worker-served, object-bound, expiring download URL. Public R2
- * custom-domain URLs are intentionally not supported for protected exports.
- */
-export function buildDownloadUrl(
+function base64UrlDecode(value: string): Uint8Array | null {
+  if (!/^[A-Za-z0-9_-]+$/.test(value)) return null;
+  const padded = value.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - value.length % 4) % 4);
+  try {
+    const binary = atob(padded);
+    return Uint8Array.from(binary, char => char.charCodeAt(0));
+  } catch {
+    return null;
+  }
+}
+
+async function importSigningKey(secret: string): Promise<CryptoKey> {
+  return crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign", "verify"],
+  );
+}
+
+async function signDownload(secret: string, key: string, expires: number): Promise<string> {
+  const signingKey = await importSigningKey(secret);
+  const signature = await crypto.subtle.sign(
+    "HMAC",
+    signingKey,
+    new TextEncoder().encode(canonicalDownloadRequest(key, expires)),
+  );
+  return base64UrlEncode(new Uint8Array(signature));
+}
+
+export async function buildDownloadUrl(
   env: Env,
   key: string,
   fallbackOrigin?: string,
   nowSeconds = Math.floor(Date.now() / 1000),
-): string {
+): Promise<string> {
   const secret = env.IMA_DOWNLOAD_SIGNING_KEY?.trim();
   if (!secret) throw new Error("IMA_DOWNLOAD_SIGNING_KEY is not configured");
   if (!key.startsWith("exports/")) throw new Error("Only exported objects can receive signed download URLs");
 
   const { downloadTtlSeconds } = getExportRetentionPolicy(env);
   const expiresAt = nowSeconds + downloadTtlSeconds;
-  const signature = signDownload(secret, key, expiresAt);
+  const signature = await signDownload(secret, key, expiresAt);
   const base = (env.PUBLIC_BASE_URL || fallbackOrigin || "").replace(/\/+$/, "");
   const path = `/download/${encodeURIComponent(key)}`;
   const query = `expires=${expiresAt}&sig=${encodeURIComponent(signature)}`;
@@ -122,21 +140,19 @@ export async function verifySignedDownload(
   if (!Number.isSafeInteger(expiresAt) || expiresAt <= 0) return { ok: false, reason: "invalid" };
   if (expiresAt <= nowSeconds) return { ok: false, reason: "expired" };
 
-  const expected = signDownload(secret, key, expiresAt);
-  if (expected.length !== signatureRaw.length) return { ok: false, reason: "invalid" };
+  const signature = base64UrlDecode(signatureRaw);
+  if (!signature) return { ok: false, reason: "invalid" };
 
-  const left = new TextEncoder().encode(expected);
-  const right = new TextEncoder().encode(signatureRaw);
-  let difference = 0;
-  for (let index = 0; index < left.length; index += 1) {
-    difference |= left[index]! ^ right[index]!;
-  }
-  return difference === 0 ? { ok: true } : { ok: false, reason: "invalid" };
+  const signingKey = await importSigningKey(secret);
+  const valid = await crypto.subtle.verify(
+    "HMAC",
+    signingKey,
+    signature,
+    new TextEncoder().encode(canonicalDownloadRequest(key, expiresAt)),
+  );
+  return valid ? { ok: true } : { ok: false, reason: "invalid" };
 }
 
-/**
- * Formats a Content-Disposition header with RFC 5987 UTF-8 encoded filename support.
- */
 export function buildContentDisposition(fileName: string): string {
   const safeAscii = fileName.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "");
   const encodedUtf8 = encodeURIComponent(fileName);
