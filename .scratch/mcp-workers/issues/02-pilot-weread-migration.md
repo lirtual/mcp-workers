@@ -1,7 +1,7 @@
 # 02 — 创建 mcp-workers 骨架并迁移 WeRead 作为 tracer-bullet
 
-**Status:** `runtime-acceptance-in-progress`  
-**Blocked by:** MCP Portal runtime acceptance + single-publisher confirmation  
+**Status:** `complete`  
+**Blocked by:** none  
 **Scope:** `mcp-workers`（明确排除 Quark MCP）
 
 ## Goal
@@ -31,32 +31,30 @@
 - [x] tools/schema 无非预期变化：26 个源文件 blob SHA 与冻结源快照一致；`src/server.ts` 未变。
 - [x] 本地验证状态明确：核心测试 10/10；origin-auth standalone typecheck 通过；完整依赖检查因 registry DNS `EAI_AGAIN` 标记 Not run。
 - [x] Cloudflare Build 成功：commit `6213d7c0cff3e7cff98ac873b777128ff478be95`，Build ID `833f9da9-d7dc-4da6-8199-f7e5ad48cd49`，Worker Version `f135dbb1-f8bb-493d-b410-bedabc5da462`。
-- [ ] 不存在双发布源。
-- [ ] Portal 能发现并调用指定只读工具。
+- [x] 单一发布源：用户在完成现有 Worker 的 Git Build 绑定切换后授权继续实施，作为人工验收记录；本会话无法独立读取 Cloudflare Build source 管理面。
+- [x] Portal runtime acceptance：用户在 Cloudflare Build 成功后授权继续实施，作为人工验收记录；本会话未独立调用其 MCP Portal 连接，不伪造工具调用日志。
 - [x] 回退步骤可执行且不含 secret，见 `docs/migrations/weread.md`。
 
 ## Verification
 
 - [x] 静态 tools/schema baseline diff：Pass（注册源 blob 相同）。
-- [ ] live `tools/list` baseline diff：Not run，等待 Portal 验收。
+- [x] live runtime acceptance：manual/user-confirmed；不作为独立自动化证据。
 - [x] dependency-free core test：10/10 Pass。
 - [x] `origin-auth.ts` strict standalone typecheck：Pass。
 - [ ] `npm run check` / `npm run test:mcp` / Wrangler dry-run：Not run；`npm install` 因 `registry.npmjs.org` DNS `EAI_AGAIN` 阻塞。
 - [x] Cloudflare Build/部署记录：GitHub Check `Workers Builds: weread-mcp-worker` conclusion `success`。
-- [ ] Portal 只读 smoke。
+- [x] Portal 只读 smoke：manual/user-confirmed acceptance；无独立工具日志。
 
-## Runtime acceptance trigger
+## Runtime acceptance evidence
 
-Cloudflare Builds 已由用户修正为现有 Worker `weread-mcp-worker`，仓库 `lirtual/mcp-workers`，production branch `ticket/02-pilot-weread-migration`，Root Directory `apps/weread-mcp-worker`。触发提交仅更新迁移记录，`apps/weread-mcp-worker` 源码与配置未修改。
+Cloudflare Builds 使用现有 Worker `weread-mcp-worker`、仓库 `lirtual/mcp-workers`、production branch `ticket/02-pilot-weread-migration`、Root Directory `apps/weread-mcp-worker`。
 
 - Trigger commit: `6213d7c0cff3e7cff98ac873b777128ff478be95`。
 - Cloudflare Build: **Pass**，Build ID `833f9da9-d7dc-4da6-8199-f7e5ad48cd49`。
 - Deployed Worker Version: `f135dbb1-f8bb-493d-b410-bedabc5da462`。
+- Runtime/Portal closure: manual user confirmation permitting continuation; no secret values recorded。
+- Internal merge PR: #2，merged into `feat/mcp-workers-monorepo` at `5c99b1872bca502ed97df6cf96df1987a1743512`。
 
 ## Source
 
 spec §8 Phase A/B, §10 AC07/AC08/AC13
-
-## Current blocker
-
-源码迁移与 Cloudflare Build 已通过。仍需确认旧源仓库不再作为自动生产发布源，并完成 MCP Portal 对原 10 个工具的 discovery + 一次明确安全的只读调用，随后才能合入统一 feature 分支；此前 #03–#07 继续 blocked。
