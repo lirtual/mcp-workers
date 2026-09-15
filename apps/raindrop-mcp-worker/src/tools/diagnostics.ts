@@ -7,14 +7,17 @@ export const DiagnosticsInputSchema = z.object({
   includeEnvironment: z
     .boolean()
     .optional()
-    .describe("Include environment info"),
+    .describe(
+      "Deprecated compatibility flag. Worker diagnostics never expose environment variables or credentials.",
+    ),
 });
 
 export const DiagnosticsOutputSchema = z.object({
   version: z.string(),
   mcpProtocolVersion: z.string(),
   sdkVersion: z.string(),
-  nodeVersion: z.string(),
+  runtime: z.literal("cloudflare-workers"),
+  httpMode: z.literal("per-request"),
   enabledTools: z.array(z.string()),
   libraryHealth: z.record(z.string(), z.number()).optional(),
 });
@@ -25,19 +28,19 @@ export const createDiagnosticsTool = (
 ) =>
   defineTool({
     name: "diagnostics",
-    description: "Diagnostics resource and runtime metadata.",
+    description:
+      "Diagnostics for the Worker server, tool metadata, and Raindrop library health.",
     inputSchema: DiagnosticsInputSchema,
     outputSchema: DiagnosticsOutputSchema,
     handler: async (
-      args?: z.infer<typeof DiagnosticsInputSchema>,
+      _args?: z.infer<typeof DiagnosticsInputSchema>,
       context?: ToolHandlerContext,
     ) => {
       const stats = context?.raindropService
         ? await context.raindropService.getUserStats()
         : null;
 
-      // Fetch health metrics if service is available
-      let healthDetails = {};
+      let healthDetails: Record<string, number> = {};
       if (context?.raindropService) {
         const [broken, duplicates, untagged] = await Promise.all([
           context.raindropService.getBookmarks({ broken: true, perPage: 1 }),
@@ -58,11 +61,8 @@ export const createDiagnosticsTool = (
         version: serverVersion,
         mcpProtocolVersion: "2026-07-28",
         sdkVersion: pkg.dependencies["@modelcontextprotocol/server"],
-        nodeVersion: process.version,
-        bunVersion: typeof Bun !== "undefined" ? Bun.version : undefined,
-        os: process.platform,
-        uptime: process.uptime(),
-        startTime: new Date(Date.now() - process.uptime() * 1000).toISOString(),
+        runtime: "cloudflare-workers" as const,
+        httpMode: "per-request" as const,
         libraryHealth: stats
           ? {
               totalBookmarks: stats.bookmarks,
@@ -72,17 +72,10 @@ export const createDiagnosticsTool = (
               ...healthDetails,
             }
           : undefined,
-        env: {
-          NODE_ENV: process.env.NODE_ENV,
-          MCP_DEBUG: process.env.MCP_DEBUG,
-          MCP_TRANSPORT: process.env.MCP_TRANSPORT,
-          RAINDROP_ACCESS_TOKEN: process.env.RAINDROP_ACCESS_TOKEN
-            ? "set"
-            : "unset",
-        },
         enabledTools: getEnabledToolNames(),
-        memory: process.memoryUsage(),
       };
+
+      const structuredContent = DiagnosticsOutputSchema.parse(diagnosticsData);
 
       return {
         content: [
@@ -91,11 +84,11 @@ export const createDiagnosticsTool = (
             resource: {
               uri: "diagnostics://server",
               mimeType: "application/json",
-              text: JSON.stringify(diagnosticsData, null, 2),
+              text: JSON.stringify(structuredContent, null, 2),
             },
           },
         ],
-        structuredContent: DiagnosticsOutputSchema.parse(diagnosticsData),
+        structuredContent,
       };
     },
   });
