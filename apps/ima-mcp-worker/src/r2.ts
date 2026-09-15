@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import type { Env } from "./types.ts";
 
 export const DEFAULT_DOWNLOAD_TTL_SECONDS = 60 * 60;
@@ -76,67 +77,33 @@ function canonicalDownloadRequest(key: string, expires: number): string {
   return `v1\nGET\n${key}\n${expires}`;
 }
 
-function base64UrlEncode(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-}
-
-function base64UrlDecode(value: string): Uint8Array | null {
-  if (!/^[A-Za-z0-9_-]+$/.test(value)) return null;
-  const padded = value.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - value.length % 4) % 4);
-  try {
-    const binary = atob(padded);
-    return Uint8Array.from(binary, char => char.charCodeAt(0));
-  } catch {
-    return null;
-  }
-}
-
-async function importSigningKey(secret: string): Promise<CryptoKey> {
-  return crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign", "verify"],
-  );
-}
-
-async function signDownload(secret: string, key: string, expires: number): Promise<string> {
-  const signingKey = await importSigningKey(secret);
-  const signature = await crypto.subtle.sign(
-    "HMAC",
-    signingKey,
-    new TextEncoder().encode(canonicalDownloadRequest(key, expires)),
-  );
-  return base64UrlEncode(new Uint8Array(signature));
+function signDownload(secret: string, key: string, expires: number): string {
+  return createHmac("sha256", secret)
+    .update(canonicalDownloadRequest(key, expires), "utf8")
+    .digest("base64url");
 }
 
 /**
  * Builds a Worker-served, object-bound, expiring download URL. Public R2
  * custom-domain URLs are intentionally not supported for protected exports.
  */
-export async function buildSignedDownloadUrl(
+export function buildDownloadUrl(
   env: Env,
   key: string,
   fallbackOrigin?: string,
   nowSeconds = Math.floor(Date.now() / 1000),
-): Promise<{ downloadUrl: string; expiresAt: number }> {
+): string {
   const secret = env.IMA_DOWNLOAD_SIGNING_KEY?.trim();
   if (!secret) throw new Error("IMA_DOWNLOAD_SIGNING_KEY is not configured");
   if (!key.startsWith("exports/")) throw new Error("Only exported objects can receive signed download URLs");
 
   const { downloadTtlSeconds } = getExportRetentionPolicy(env);
   const expiresAt = nowSeconds + downloadTtlSeconds;
-  const signature = await signDownload(secret, key, expiresAt);
+  const signature = signDownload(secret, key, expiresAt);
   const base = (env.PUBLIC_BASE_URL || fallbackOrigin || "").replace(/\/+$/, "");
   const path = `/download/${encodeURIComponent(key)}`;
   const query = `expires=${expiresAt}&sig=${encodeURIComponent(signature)}`;
-  return {
-    downloadUrl: base ? `${base}${path}?${query}` : `${path}?${query}`,
-    expiresAt,
-  };
+  return base ? `${base}${path}?${query}` : `${path}?${query}`;
 }
 
 export async function verifySignedDownload(
@@ -155,17 +122,16 @@ export async function verifySignedDownload(
   if (!Number.isSafeInteger(expiresAt) || expiresAt <= 0) return { ok: false, reason: "invalid" };
   if (expiresAt <= nowSeconds) return { ok: false, reason: "expired" };
 
-  const signature = base64UrlDecode(signatureRaw);
-  if (!signature) return { ok: false, reason: "invalid" };
+  const expected = signDownload(secret, key, expiresAt);
+  if (expected.length !== signatureRaw.length) return { ok: false, reason: "invalid" };
 
-  const signingKey = await importSigningKey(secret);
-  const valid = await crypto.subtle.verify(
-    "HMAC",
-    signingKey,
-    signature,
-    new TextEncoder().encode(canonicalDownloadRequest(key, expiresAt)),
-  );
-  return valid ? { ok: true } : { ok: false, reason: "invalid" };
+  const left = new TextEncoder().encode(expected);
+  const right = new TextEncoder().encode(signatureRaw);
+  let difference = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    difference |= left[index]! ^ right[index]!;
+  }
+  return difference === 0 ? { ok: true } : { ok: false, reason: "invalid" };
 }
 
 /**
