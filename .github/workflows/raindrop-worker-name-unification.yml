@@ -1,0 +1,80 @@
+name: Raindrop worker name unification
+
+on:
+  push:
+    branches:
+      - ticket/24-raindrop-worker-name-unification
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ticket/24-raindrop-worker-name-unification
+      - name: Apply exact naming changes
+        shell: python
+        run: |
+          from pathlib import Path
+
+          replacements = {
+              "apps/raindrop-mcp-worker/wrangler.jsonc": [
+                  ('"name": "raindrop-mcp"', '"name": "raindrop-mcp-worker"'),
+              ],
+              "apps/raindrop-mcp-worker/src/worker.ts": [
+                  ('service: "raindrop-mcp"', 'service: "raindrop-mcp-worker"'),
+              ],
+              "apps/raindrop-mcp-worker/src/services/raindropmcp.service.ts": [
+                  ('name: "raindrop-mcp",', 'name: "raindrop-mcp-worker",'),
+                  ('name: "raindrop-mcp-server",', 'name: "raindrop-mcp-worker",'),
+              ],
+              "apps/raindrop-mcp-worker/tests/worker.security.test.ts": [
+                  ('const workerUrl = "https://raindrop-mcp.example.test";', 'const workerUrl = "https://raindrop-mcp-worker.example.test";'),
+                  ('expect(body).toContain(\'"status":"healthy"\');', 'expect(body).toContain(\'"status":"healthy"\');\n    expect(body).toContain(\'"service":"raindrop-mcp-worker"\');'),
+              ],
+              "apps/raindrop-mcp-worker/tests/mcp.service.test.ts": [
+                  ('expect(typeof info.name).toBe("string");', 'expect(typeof info.name).toBe("string");\n    expect(info.name).toBe("raindrop-mcp-worker");'),
+              ],
+              "apps/raindrop-mcp-worker/docs/cloudflare-mcp-portal.md": [
+                  ('-> raindrop-mcp Worker /mcp', '-> raindrop-mcp-worker Worker /mcp'),
+                  ('Worker identity `raindrop-mcp`', 'Worker identity `raindrop-mcp-worker`'),
+                  ('Register the existing production Worker `/mcp` URL', 'Register the `raindrop-mcp-worker` production Worker `/mcp` URL'),
+              ],
+              "apps/raindrop-mcp-worker/docs/mcp-portal-acceptance-checklist.md": [
+                  ('-> raindrop-mcp Worker /mcp', '-> raindrop-mcp-worker Worker /mcp'),
+              ],
+          }
+
+          for filename, pairs in replacements.items():
+              path = Path(filename)
+              text = path.read_text()
+              for old, new in pairs:
+                  count = text.count(old)
+                  if count == 0:
+                      raise SystemExit(f"expected anchor missing in {filename}: {old}")
+                  text = text.replace(old, new)
+              path.write_text(text)
+
+          # Current app-owned runtime/deployment identity must no longer use the old Worker name.
+          guard_files = [
+              Path("apps/raindrop-mcp-worker/wrangler.jsonc"),
+              Path("apps/raindrop-mcp-worker/src/worker.ts"),
+              Path("apps/raindrop-mcp-worker/src/services/raindropmcp.service.ts"),
+              Path("apps/raindrop-mcp-worker/docs/cloudflare-mcp-portal.md"),
+          ]
+          for path in guard_files:
+              text = path.read_text()
+              if '"raindrop-mcp"' in text or '`raindrop-mcp`' in text or 'raindrop-mcp Worker' in text:
+                  raise SystemExit(f"old Worker identity remains in {path}")
+
+      - name: Commit naming change
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apps/raindrop-mcp-worker
+          git commit -m "refactor(raindrop): unify worker identity" || exit 0
+          git push origin HEAD:ticket/24-raindrop-worker-name-unification
