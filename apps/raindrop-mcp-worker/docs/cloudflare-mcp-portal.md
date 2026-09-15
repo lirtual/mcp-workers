@@ -8,7 +8,7 @@ This deployment keeps client-facing authentication at Cloudflare MCP Portal and 
 MCP client
   -> Cloudflare MCP Portal
   -> Authorization: Bearer <MCP_ACCESS_TOKEN>
-  -> raindrop-mcp Worker /mcp
+  -> raindrop-mcp-worker Worker /mcp
   -> RAINDROP_ACCESS_TOKEN
   -> Raindrop.io API
 ```
@@ -35,7 +35,7 @@ MCP Portal sends the Worker credential as:
 Authorization: Bearer <MCP_ACCESS_TOKEN>
 ```
 
-The production Wrangler configuration keeps the existing Worker identity `raindrop-mcp`, disables `workers.dev` and Preview URLs, and preserves the current custom-domain production ingress.
+The production Wrangler configuration keeps the existing Worker identity `raindrop-mcp-worker`, disables `workers.dev` and Preview URLs, and preserves the current custom-domain production ingress.
 
 ## 2. Worker ingress contract
 
@@ -55,7 +55,7 @@ After successful Portal authentication, the shared `@mcp-workers/portal-auth` bo
 
 ## 3. Add the Worker as an MCP server in Portal
 
-Register the existing production Worker `/mcp` URL as the upstream MCP server. Configure upstream authentication as Bearer and set its credential to the same value stored in this Worker's `MCP_ACCESS_TOKEN` secret.
+Register the `raindrop-mcp-worker` production Worker `/mcp` URL as the upstream MCP server. Configure upstream authentication as Bearer and set its credential to the same value stored in this Worker's `MCP_ACCESS_TOKEN` secret.
 
 Do not place `RAINDROP_ACCESS_TOKEN` in Portal. ChatGPT or another MCP client connects to the Portal URL, not to the raw Worker endpoint as a separate client-auth surface.
 

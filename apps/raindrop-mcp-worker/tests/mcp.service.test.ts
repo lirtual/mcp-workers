@@ -114,6 +114,7 @@ describe("RaindropMCPService", () => {
     expect(info).toHaveProperty("version");
     expect(info).toHaveProperty("description");
     expect(typeof info.name).toBe("string");
+    expect(info.name).toBe("raindrop-mcp-worker");
     expect(typeof info.version).toBe("string");
     expect(typeof info.description).toBe("string");
   });

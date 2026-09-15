@@ -65,7 +65,7 @@ export default {
     if (url.pathname === "/health" && request.method === "GET") {
       return Response.json({
         status: "healthy",
-        service: "raindrop-mcp",
+        service: "raindrop-mcp-worker",
         version: pkg.version,
         runtime: "cloudflare-workers",
         protocolTarget: "2026-07-28",

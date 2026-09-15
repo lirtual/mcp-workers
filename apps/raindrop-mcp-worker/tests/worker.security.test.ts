@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import worker from "../src/worker.js";
 
-const workerUrl = "https://raindrop-mcp.example.test";
+const workerUrl = "https://raindrop-mcp-worker.example.test";
 const portalToken = "portal-secret-for-tests";
 const raindropToken = "raindrop-secret-for-tests";
 const portalAuth = { Authorization: `Bearer ${portalToken}` };
@@ -52,6 +52,7 @@ describe("Cloudflare Worker Portal authentication", () => {
     expect(response.headers.get("Access-Control-Allow-Origin")).toBeNull();
     const body = await response.text();
     expect(body).toContain('"status":"healthy"');
+    expect(body).toContain('"service":"raindrop-mcp-worker"');
     expect(body).not.toContain(portalToken);
     expect(body).not.toContain(raindropToken);
   });

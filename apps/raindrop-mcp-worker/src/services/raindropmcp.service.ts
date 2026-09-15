@@ -96,7 +96,7 @@ export class RaindropMCPService {
    */
   public async getManifest(): Promise<unknown> {
     return {
-      name: "raindrop-mcp",
+      name: "raindrop-mcp-worker",
       version: SERVER_VERSION,
       description:
         "MCP Server for Raindrop.io with advanced interactive capabilities",
@@ -119,7 +119,7 @@ export class RaindropMCPService {
       this.raindropService = new RaindropService(config);
       this.server = new McpServer(
         {
-          name: "raindrop-mcp",
+          name: "raindrop-mcp-worker",
           version: SERVER_VERSION,
           description:
             "MCP Server for Raindrop.io with advanced interactive capabilities",
@@ -456,7 +456,7 @@ export class RaindropMCPService {
    */
   public getInfo(): { name: string; version: string; description: string } {
     return {
-      name: "raindrop-mcp-server",
+      name: "raindrop-mcp-worker",
       version: SERVER_VERSION,
       description:
         "MCP Server for Raindrop.io with advanced interactive capabilities",
