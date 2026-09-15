@@ -65,6 +65,10 @@ export function isBlockedHost(host: string): boolean {
       a >= 224
     );
   }
+
+  // IPv6 prefix rules only apply to IPv6 host literals. Applying them to
+  // ordinary DNS names incorrectly blocks public domains such as fc-example.com.
+  if (!h.includes(":")) return false;
   return (
     h === "::1" ||
     h.startsWith("fc") ||

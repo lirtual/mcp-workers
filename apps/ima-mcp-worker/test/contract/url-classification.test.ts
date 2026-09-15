@@ -16,12 +16,25 @@ test("isBlockedHost correctly identifies private, loopback, and internal hosts",
   assert.strictEqual(isBlockedHost("172.31.255.255"), true);
   assert.strictEqual(isBlockedHost("169.254.1.1"), true);
   assert.strictEqual(isBlockedHost("::1"), true);
+  assert.strictEqual(isBlockedHost("fc00::1"), true);
+  assert.strictEqual(isBlockedHost("fd12:3456::1"), true);
+  assert.strictEqual(isBlockedHost("fe80::1"), true);
 
-  // Safe public hosts
+  // Safe public hosts, including DNS names that merely begin with IPv6-like prefixes.
   assert.strictEqual(isBlockedHost("ima.qq.com"), false);
   assert.strictEqual(isBlockedHost("mp.weixin.qq.com"), false);
   assert.strictEqual(isBlockedHost("arxiv.org"), false);
   assert.strictEqual(isBlockedHost("8.8.8.8"), false);
+  assert.strictEqual(isBlockedHost("fc-example.com"), false);
+  assert.strictEqual(isBlockedHost("fd.example.com"), false);
+  assert.strictEqual(isBlockedHost("fe80-public.example"), false);
+});
+
+test("classifyUrl does not apply IPv6 prefix rules to ordinary DNS names", () => {
+  const result = classifyUrl("https://fc-example.com/article");
+  assert.strictEqual(result.isSafeHttps, true);
+  assert.strictEqual(result.type, "web");
+  assert.strictEqual(result.suggestedAction, "import_urls");
 });
 
 test("classifyUrl rejects non-HTTPS schemes", () => {
