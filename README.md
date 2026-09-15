@@ -1,8 +1,29 @@
 # mcp-workers
 
-Private source monorepo for independently deployed Cloudflare MCP Worker apps.
+Private source monorepo for six independently maintained MCP applications. Each app keeps its own Cloudflare Worker/runtime boundary, credentials, bindings, deployment history, rollback path, and domain behavior; the monorepo only centralizes source maintenance, dependency resolution, ordinary CI, and the narrow shared Portal-auth mechanism.
 
-Implementation is tracked on `feat/mcp-workers-monorepo`.
+## Applications
+
+| Application | Source directory |
+| --- | --- |
+| IMA | `apps/ima-mcp-worker` |
+| OpenList | `apps/openlist-mcp-worker` |
+| WeRead | `apps/weread-mcp-worker` |
+| Database | `apps/database-mcp-worker` |
+| Raindrop | `apps/raindrop-mcp-worker` |
+| Instapaper | `apps/instapaper-mcp-worker` |
+
+Architecture and implementation decisions are documented in [`docs/mcp-workers-spec.md`](docs/mcp-workers-spec.md). Migration source baselines are in [`docs/migration-baseline.md`](docs/migration-baseline.md). Current production/cutover and old-repository retirement evidence is tracked in [`docs/final-acceptance.md`](docs/final-acceptance.md).
+
+## Development
+
+The repository uses Node 24 and pnpm 10. Each app owns its local `dev`, `deploy`, `typecheck`, `test`, and `check` behavior. Production deployment remains app-specific; there is no default deploy-all command.
+
+Run an individual app gate with its workspace package name, for example:
+
+```bash
+pnpm --filter ima-mcp-worker check
+```
 
 ## MCP smoke runner
 
