@@ -22,7 +22,7 @@ Static contract result: **Pass**.
 - `package.json` remains `19aeb79f97195053310a3ca3c55ba7f744a8c127`.
 - `wrangler.jsonc` remains `fdac63f718e9dd8b836efe386d70e0b616d31793`.
 
-Live MCP `tools/list`: **Not run** until the target Worker can be built/deployed and Portal tested.
+Live MCP `tools/list`: **Not run** until Portal acceptance is completed.
 
 ## Local verification
 
@@ -43,18 +43,22 @@ Blocked by execution environment:
 
 ## Cloudflare / Portal acceptance
 
-Status: **Blocked — management surface unavailable in this session**.
+Cloudflare Build: **Pass**.
+
+- Repository: `lirtual/mcp-workers`
+- Production branch: `ticket/02-pilot-weread-migration`
+- Root Directory: `apps/weread-mcp-worker`
+- Trigger commit: `6213d7c0cff3e7cff98ac873b777128ff478be95`
+- Build ID: `833f9da9-d7dc-4da6-8199-f7e5ad48cd49`
+- Worker Version: `f135dbb1-f8bb-493d-b410-bedabc5da462`
+- GitHub Check: `Workers Builds: weread-mcp-worker` → `success`
 
 Still required before ticket completion:
 
-1. Configure the existing `weread-mcp-worker` Cloudflare Build to use repository `lirtual/mcp-workers` and Root Directory `apps/weread-mcp-worker`.
-2. Ensure the old repository is no longer an active automatic production publishing source before enabling the new source, so there is never a dual publisher.
-3. Preserve the current Worker name, route/custom hostname, secrets, compatibility date, and existing Portal/Gateway auth semantics.
-4. Confirm Cloudflare Build succeeds.
-5. Confirm direct MCP authentication behavior still matches the baseline.
-6. Confirm Portal discovers the same 10 tools.
-7. Run one explicitly safe read-only Portal call, preferably `weread_get_bookshelf`.
-8. Review logs for credential leakage.
+1. Confirm the old repository is no longer an active automatic production publishing source, so there is no dual publisher.
+2. Confirm Portal discovers the same 10 tools.
+3. Run one explicitly safe read-only Portal call, preferably `weread_get_bookshelf`.
+4. Review logs/responses for credential leakage.
 
 ## Rollback
 
