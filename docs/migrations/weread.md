@@ -1,5 +1,7 @@
 # WeRead tracer-bullet migration record
 
+> Historical Ticket #02 evidence. Later tickets intentionally changed authentication, repository/build configuration, and runtime behavior. Do not use the deployment branch or "still required" items below as the current acceptance state; see [`../final-acceptance.md`](../final-acceptance.md) for the final gate and current blockers.
+
 Ticket: `#02`  
 Source repository: `lirtual/weread-mcp-worker`  
 Frozen source commit: `8ab71db46b0298f3776a03fe48ffd49000477db4`  
