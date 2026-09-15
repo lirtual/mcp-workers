@@ -11,6 +11,7 @@ function baseEnv(overrides: Partial<Env> = {}): Env {
     CLIENT_ID: "client-id",
     API_KEY: "api-key",
     R2_BUCKET: {} as R2Bucket,
+    IMA_DOWNLOAD_SIGNING_KEY: "test-download-signing-secret",
     ...overrides,
   } as Env;
 }
@@ -37,16 +38,29 @@ test("/ready succeeds with required single-user secrets and R2 binding", async (
 test("/ready reports missing capabilities without secret values", async () => {
   const response = await worker.fetch(
     new Request("https://worker.example/ready"),
-    baseEnv({ MCP_ACCESS_TOKEN: undefined, CLIENT_ID: undefined, API_KEY: undefined, R2_BUCKET: undefined }),
+    baseEnv({
+      MCP_ACCESS_TOKEN: undefined,
+      CLIENT_ID: undefined,
+      API_KEY: undefined,
+      R2_BUCKET: undefined,
+      IMA_DOWNLOAD_SIGNING_KEY: undefined,
+    }),
     ctx,
   );
   assert.equal(response.status, 503);
   const body = await json(response);
   assert.equal(body.ready, false);
-  assert.deepEqual(body.missing, ["MCP_ACCESS_TOKEN", "CLIENT_ID", "API_KEY", "R2_BUCKET"]);
+  assert.deepEqual(body.missing, [
+    "MCP_ACCESS_TOKEN",
+    "CLIENT_ID",
+    "API_KEY",
+    "R2_BUCKET",
+    "IMA_DOWNLOAD_SIGNING_KEY",
+  ]);
   assert.equal(JSON.stringify(body).includes("portal-secret"), false);
   assert.equal(JSON.stringify(body).includes("client-id"), false);
   assert.equal(JSON.stringify(body).includes("api-key"), false);
+  assert.equal(JSON.stringify(body).includes("test-download-signing-secret"), false);
 });
 
 test("/mcp fails closed when MCP_ACCESS_TOKEN is not configured", async () => {
@@ -101,6 +115,7 @@ test("retired IMA secret names do not satisfy the runtime contract", async () =>
     IMA_OPENAPI_CLIENTID: "legacy-client",
     IMA_OPENAPI_APIKEY: "legacy-key",
     R2_BUCKET: {} as R2Bucket,
+    IMA_DOWNLOAD_SIGNING_KEY: "test-download-signing-secret",
   } as unknown as Env;
   const response = await worker.fetch(
     new Request("https://worker.example/mcp", {
