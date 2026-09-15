@@ -142,12 +142,14 @@ export async function verifySignedDownload(
 
   const signature = base64UrlDecode(signatureRaw);
   if (!signature) return { ok: false, reason: "invalid" };
+  const signatureBuffer = new Uint8Array(signature.byteLength);
+  signatureBuffer.set(signature);
 
   const signingKey = await importSigningKey(secret);
   const valid = await crypto.subtle.verify(
     "HMAC",
     signingKey,
-    signature,
+    signatureBuffer.buffer,
     new TextEncoder().encode(canonicalDownloadRequest(key, expiresAt)),
   );
   return valid ? { ok: true } : { ok: false, reason: "invalid" };
