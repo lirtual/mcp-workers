@@ -1,0 +1,19 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "raindrop-mcp",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-09-12",
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "invocation_logs": false
+    }
+  },
+  "vars": {
+    "RAINDROP_RATE_LIMIT_POINTS": "30",
+    "RAINDROP_RATE_LIMIT_DURATION_SECONDS": "60",
+    "RAINDROP_RATE_LIMIT_MAX_RETRIES": "3"
+  }
+}

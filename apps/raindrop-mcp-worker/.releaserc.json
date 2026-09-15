@@ -1,0 +1,44 @@
+{
+  "branches": ["master"],
+  "plugins": [
+    "@semantic-release/commit-analyzer",
+    "@semantic-release/release-notes-generator",
+    [
+      "@semantic-release/exec",
+      {
+        "prepareCmd": "jq \".version = \\\"${nextRelease.version}\\\"\" package.json > package.json.tmp && mv package.json.tmp package.json && jq \".version = \\\"${nextRelease.version}\\\"\" manifest.json > manifest.json.tmp && mv manifest.json.tmp manifest.json && jq \".version = \\\"${nextRelease.version}\\\"\" mcp.json > mcp.json.tmp && mv mcp.json.tmp mcp.json && jq \".version = \\\"${nextRelease.version}\\\"\" gemini-extension.json > gemini-extension.json.tmp && mv gemini-extension.json.tmp gemini-extension.json && bun run mcpb:pack"
+      }
+    ],
+    [
+      "@semantic-release/changelog",
+      {
+        "changelogFile": "CHANGELOG.md"
+      }
+    ],
+    [
+      "@semantic-release/git",
+      {
+        "assets": [
+          "package.json",
+          "manifest.json",
+          "mcp.json",
+          "gemini-extension.json",
+          "CHANGELOG.md"
+        ],
+        "message": "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
+      }
+    ],
+    "@semantic-release/npm",
+    [
+      "@semantic-release/github",
+      {
+        "assets": [
+          {
+            "path": "raindrop-mcp.mcpb",
+            "label": "Raindrop.io MCP Bundle"
+          }
+        ]
+      }
+    ]
+  ]
+}

@@ -1,0 +1,3 @@
+[mcp_servers.mq-mcp]
+command = "mq"
+args = ["mcp"]

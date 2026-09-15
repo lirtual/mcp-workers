@@ -1,0 +1,175 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Start HTTP Server (Development)",
+      "type": "shell",
+      "command": "bun",
+      "args": ["--watch", "src/server.ts"],
+      "group": "test",
+      "isBackground": true,
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "envFile": "${workspaceFolder}/.env"
+      },
+      "presentation": {
+        "clear": false,
+        "echo": true,
+        "focus": false,
+        "panel": "shared",
+        "reveal": "always",
+        "showReuseMessage": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Start STDIO Server (Development)",
+      "type": "shell",
+      "command": "bun",
+      "args": ["--watch", "src/index.ts"],
+      "group": "test",
+      "isBackground": true,
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "envFile": "${workspaceFolder}/.env"
+      },
+      "presentation": {
+        "clear": false,
+        "echo": true,
+        "focus": false,
+        "panel": "shared",
+        "reveal": "always",
+        "showReuseMessage": true
+      },
+      "problemMatcher": []
+    },
+    // Test Tasks
+    {
+      "label": "Run All Tests",
+      "type": "shell",
+      "command": "bun",
+      "args": ["test"],
+      "group": "test",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "envFile": "${workspaceFolder}/.env"
+      }
+    },
+
+    // MCP Inspector Tasks
+
+    {
+      "label": "Debug HTTP Server with Inspector",
+      "type": "shell",
+      "command": "npx",
+      "args": [
+        "@modelcontextprotocol/inspector",
+        "bun",
+        "run",
+        "src/server.ts"
+      ],
+      "group": "test",
+      "isBackground": true,
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "clear": false,
+        "echo": true,
+        "focus": false,
+        "panel": "shared",
+        "reveal": "always",
+        "showReuseMessage": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Launch STDIO Server with Inspector",
+      "type": "shell",
+      "command": "npx",
+      "args": ["@modelcontextprotocol/inspector", "bun", "run", "src/index.ts"],
+      "group": "test",
+      "isBackground": true,
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "clear": false,
+        "echo": true,
+        "focus": false,
+        "panel": "shared",
+        "reveal": "always",
+        "showReuseMessage": true
+      },
+      "problemMatcher": []
+    },
+    // Build Tasks
+    {
+      "label": "tsc typecheck",
+      "type": "typescript",
+      "tsconfig": "tsconfig.json",
+      "problemMatcher": ["$tsc"],
+      "group": {
+        "kind": "build",
+        "isDefault": false
+      }
+    },
+    {
+      "label": "Bun Build",
+      "type": "shell",
+      "command": "bun",
+      "args": ["run", "build"],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": ["$tsc"]
+    },
+    {
+      "label": "Build DXT",
+      "type": "shell",
+      "command": "bun",
+      "args": ["run", "dxt:pack"],
+      "group": "build",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": ["$tsc"]
+    },
+    {
+      "label": "Bun Type Check",
+      "type": "shell",
+      "command": "bun",
+      "args": ["run", "type-check"],
+      "group": "build",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": ["$tsc"]
+    },
+    // Utility Tasks
+    {
+      "label": "Clean Build",
+      "type": "shell",
+      "command": "bun",
+      "args": ["run", "clean"],
+      "group": "build",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      }
+    },
+    {
+      "label": "Push Version and Tag",
+      "type": "shell",
+      "command": "bun pm version patch && git add package.json && git commit -m 'chore: bump version' && git tag v$(jq -r .version package.json) && git push origin master && git push origin v$(jq -r .version package.json)",
+      "group": "build",
+      "presentation": {
+        "reveal": "always"
+      },
+      "problemMatcher": []
+    }
+  ]
+}

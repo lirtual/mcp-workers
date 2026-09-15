@@ -1,0 +1,713 @@
+openapi: 3.1.0
+info:
+  title: Raindrop.io API
+  description: Fully documented API for managing bookmarks, collections, tags, files, and filters in Raindrop.io.
+  version: 2.3.9
+servers:
+  - url: https://api.raindrop.io/rest/v1
+    description: Raindrop.io REST API
+paths:
+  /user:
+    get:
+      operationId: getUserProfile
+      summary: Get user profile
+      description: Retrieves the authenticated user's profile.
+  /raindrops/0:
+    get:
+      operationId: getAllBookmarks
+      summary: Get all bookmarks
+      description: Retrieves all bookmarks from all collections.
+  /raindrops/{collectionId}:
+    get:
+      operationId: getBookmarksByCollection
+      summary: Get bookmarks from a collection
+      description: Retrieves bookmarks from a specific collection with filtering options.
+      parameters:
+        - name: collectionId
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: search
+          in: query
+          schema:
+            type: string
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum:
+              - +created
+              - -created
+              - +title
+              - -title
+        - name: tag
+          in: query
+          schema:
+            type: string
+        - name: important
+          in: query
+          schema:
+            type: boolean
+        - name: duplicates
+          in: query
+          schema:
+            type: boolean
+        - name: broken
+          in: query
+          schema:
+            type: boolean
+        - name: highlight
+          in: query
+          schema:
+            type: boolean
+        - name: domain
+          in: query
+          schema:
+            type: string
+        - name: perpage
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+  /raindrops/single:
+    get:
+      operationId: getSingleBookmark
+      summary: Get detailed information about a single bookmark
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema:
+            type: integer
+  /raindrops/multiple:
+    get:
+      operationId: getMultipleBookmarks
+      summary: Get multiple bookmarks
+      parameters:
+        - name: ids
+          in: query
+          required: true
+          schema:
+            type: string
+  /raindrops/suggest:
+    get:
+      operationId: suggestTagsCollectionsCovers
+      summary: Suggest tags, collections, and covers based on URL
+      parameters:
+        - name: url
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uri
+  /filters:
+    get:
+      operationId: getAvailableFilters
+      summary: Get available filters for bookmarks
+      description: Returns available filters such as tags, domains, and highlights to refine searches.
+      responses:
+        "200":
+          description: List of available filters.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tags:
+                    type: array
+                    items:
+                      type: string
+                  domains:
+                    type: array
+                    items:
+                      type: string
+                  highlights:
+                    type: array
+                    items:
+                      type: string
+  /raindrop:
+    post:
+      operationId: createBookmark
+      summary: Add a new bookmark
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                link:
+                  type: string
+                title:
+                  type: string
+                collectionId:
+                  type: integer
+                tags:
+                  type: array
+                  items:
+                    type: string
+  /raindrop/{id}:
+    put:
+      operationId: updateBookmark
+      summary: Update a bookmark
+    delete:
+      operationId: deleteBookmark
+      summary: Delete a bookmark
+  /raindrops:
+    put:
+      operationId: batchUpdateBookmarks
+      summary: Update multiple bookmarks
+  /raindrops/move:
+    put:
+      operationId: bulkMoveBookmarks
+      summary: Move multiple bookmarks
+  /raindrops/tags:
+    put:
+      operationId: batchTagBookmarks
+      summary: Add or remove tags
+  /raindrops/delete:
+    delete:
+      operationId: batchDeleteBookmarks
+      summary: Delete multiple bookmarks
+  /collections:
+    get:
+      operationId: getAllCollections
+      summary: Get all collections
+  /collection:
+    post:
+      operationId: createCollection
+      summary: Create a new collection
+  /collection/{id}:
+    put:
+      operationId: updateCollection
+      summary: Update a collection
+    delete:
+      operationId: deleteCollection
+      summary: Delete a collection
+  /file:
+    post:
+      operationId: uploadFile
+      summary: Upload a file
+  /file/{id}:
+    get:
+      operationId: getFile
+      summary: Retrieve a file
+    delete:
+      operationId: deleteFile
+      summary: Delete a file
+  /export/{format}:
+    get:
+      operationId: exportBookmarks
+      summary: Export bookmarks
+      parameters:
+        - name: format
+          in: path
+          required: true
+          schema:
+            type: string
+            enum:
+              - html
+              - json
+              - csv
+  /highlights/{raindropId}:
+    get:
+      operationId: getHighlightsForBookmark
+      summary: Get highlights for a specific bookmark
+      description: Retrieves all text highlights for a given bookmark.
+      parameters:
+        - name: raindropId
+          in: path
+          required: true
+          description: The ID of the bookmark to retrieve highlights from.
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: A list of highlights for the bookmark.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: boolean
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Highlight"
+
+  /highlights:
+    get:
+      operationId: getAllHighlights
+      summary: Get all highlights
+      description: Retrieves all highlights from a user's bookmarks
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+        - name: perpage
+          in: query
+          schema:
+            type: integer
+            default: 25
+            maximum: 50
+            description: How many highlights per page. 50 max.
+      responses:
+        "200":
+          description: A list of all highlights
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: boolean
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Highlight"
+
+    post:
+      operationId: addHighlightToBookmark
+      summary: Add a new highlight to a bookmark
+      description: Creates a new highlight for a bookmark by updating the raindrop.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                raindropId:
+                  type: integer
+                  description: ID of the bookmark to highlight
+                text:
+                  type: string
+                  description: The highlighted text
+                color:
+                  type: string
+                  description: Optional highlight color (hex code)
+      responses:
+        "201":
+          description: Highlight created successfully.
+  /highlights/{id}:
+    put:
+      operationId: updateHighlight
+      summary: Update a highlight
+      description: Modifies an existing highlight.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                text:
+                  type: string
+                  description: Updated highlight text
+                color:
+                  type: string
+                  description: Updated highlight color (hex code)
+      responses:
+        "200":
+          description: Highlight updated successfully.
+    delete:
+      operationId: deleteHighlight
+      summary: Delete a highlight
+      description: Removes a highlight from a bookmark.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Highlight deleted successfully.
+  /tags:
+    get:
+      operationId: getAllTags
+      summary: Get all tags used in bookmarks
+      description: Retrieves all unique tags used in the user's bookmarks.
+      responses:
+        "200":
+          description: A list of all tags.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: boolean
+                  items:
+                    type: array
+                    items:
+                      type: string
+                      description: Tag name
+
+  /tags/{tag}:
+    put:
+      operationId: renameTag
+      summary: Rename a tag
+      description: Changes the name of an existing tag.
+      parameters:
+        - name: tag
+          in: path
+          required: true
+          description: The current tag name to be renamed.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                newName:
+                  type: string
+                  description: The new tag name.
+      responses:
+        "200":
+          description: Tag renamed successfully.
+
+    delete:
+      operationId: deleteTag
+      summary: Delete a tag
+      description: Removes a tag from all bookmarks.
+      parameters:
+        - name: tag
+          in: path
+          required: true
+          description: The tag to be deleted.
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Tag deleted successfully.
+  /highlights/{collectionId}:
+    get:
+      operationId: getHighlightsByCollection
+      summary: Get all highlights in a collection
+      description: Retrieves highlights from a specific collection
+      parameters:
+        - name: collectionId
+          in: path
+          required: true
+          schema:
+            type: integer
+            description: Collection ID
+        - name: page
+          in: query
+          schema:
+            type: integer
+        - name: perpage
+          in: query
+          schema:
+            type: integer
+            default: 25
+            maximum: 50
+            description: How many highlights per page. 50 max.
+      responses:
+        "200":
+          description: A list of highlights in the collection
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: boolean
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Highlight"
+
+  /raindrop/{id}/highlights:
+    put:
+      operationId: manageHighlights
+      summary: Add, update or remove highlights
+      description: Creates, updates, or removes highlights for a bookmark
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            description: Existing raindrop/bookmark ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                highlights:
+                  type: array
+                  description: Array of highlight objects to add/update/remove
+                  items:
+                    type: object
+                    properties:
+                      _id:
+                        type: string
+                        description: Required for update/remove operations. Leave empty for new highlights.
+                      text:
+                        type: string
+                        description: Highlight text. Required for new highlights. Empty string to remove.
+                      note:
+                        type: string
+                        description: Optional note for the highlight
+                      color:
+                        type: string
+                        description: Color of highlight. Can be blue, brown, cyan, gray, green, indigo, orange, pink, purple, red, teal, yellow
+      responses:
+        "200":
+          description: Highlights managed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: boolean
+                  item:
+                    type: object
+                    properties:
+                      _id:
+                        type: integer
+                      highlights:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Highlight"
+  /import:
+    post:
+      operationId: importBookmarks
+      summary: Import bookmarks from external services
+      description: Allows importing bookmarks from external services or files
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                html:
+                  type: string
+                  description: HTML file content with bookmarks in Netscape format
+                parse:
+                  type: boolean
+                  description: Parse imported bookmarks (extract title, description, etc.)
+                  default: true
+                folder:
+                  type: string
+                  description: Optional folder name to import into
+                collection:
+                  type: object
+                  description: Collection details to import into
+                  properties:
+                    $id:
+                      type: integer
+                      description: Collection ID to import into
+                    title:
+                      type: string
+                      description: Collection title (if creating a new one)
+      responses:
+        "200":
+          description: Import completed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: boolean
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        _id:
+                          type: integer
+                        link:
+                          type: string
+
+  /import/url:
+    post:
+      operationId: importFromUrl
+      summary: Import bookmarks from URL
+      description: Import bookmarks from a remote URL hosting a bookmarks file
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                url:
+                  type: string
+                  format: uri
+                  description: URL of bookmarks file to import
+                parse:
+                  type: boolean
+                  description: Parse imported bookmarks (extract title, description, etc.)
+                  default: true
+                collection:
+                  type: object
+                  description: Collection details to import into
+      responses:
+        "200":
+          description: Import initiated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: boolean
+                  item:
+                    type: object
+                    properties:
+                      _id:
+                        type: string
+                        description: Import job ID
+
+  /backups:
+    get:
+      operationId: getBackups
+      summary: Get list of backups
+      description: Returns a list of available backups
+      responses:
+        "200":
+          description: List of backups
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: boolean
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        _id:
+                          type: string
+                        created:
+                          type: string
+                          format: date-time
+                        size:
+                          type: integer
+                          description: Size in bytes
+
+    post:
+      operationId: createBackup
+      summary: Create a new backup
+      description: Creates a new backup of all user's bookmarks
+      responses:
+        "200":
+          description: Backup created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: boolean
+                  item:
+                    type: object
+                    properties:
+                      _id:
+                        type: string
+                      created:
+                        type: string
+                        format: date-time
+
+  /backup/{id}:
+    get:
+      operationId: downloadBackup
+      summary: Download a backup
+      description: Downloads a specific backup file
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            description: Backup ID
+      responses:
+        "200":
+          description: Backup file
+          content:
+            application/json:
+              schema:
+                type: string
+                format: binary
+
+    delete:
+      operationId: deleteBackup
+      summary: Delete a backup
+      description: Deletes a specific backup
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            description: Backup ID
+      responses:
+        "204":
+          description: Backup deleted successfully
+components:
+  schemas:
+    Highlight:
+      type: object
+      properties:
+        _id:
+          type: string
+          description: Unique id of highlight
+        text:
+          type: string
+          description: Text of highlight (required)
+        title:
+          type: string
+          description: Title of bookmark
+        color:
+          type: string
+          description: Color of highlight. Can be blue, brown, cyan, gray, green, indigo, orange, pink, purple, red, teal, yellow
+          default: yellow
+        note:
+          type: string
+          description: Optional note for highlight
+        created:
+          type: string
+          format: date-time
+          description: Creation date of highlight
+        lastUpdate:
+          type: string
+          format: date-time
+          description: Last update date of highlight
+        tags:
+          type: array
+          items:
+            type: string
+          description: Tags list
+        link:
+          type: string
+          description: Highlighted page URL
+        raindropRef:
+          type: integer
+          description: Reference to the parent raindrop/bookmark ID
