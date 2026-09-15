@@ -14,6 +14,7 @@
     "setup:instapaper": "tsx scripts/setup-instapaper.ts"
   },
   "dependencies": {
+    "@mcp-workers/portal-auth": "workspace:*",
     "@modelcontextprotocol/server": "2.0.0",
     "agents": "^0.20.0",
     "oauth-1.0a": "^2.2.6",

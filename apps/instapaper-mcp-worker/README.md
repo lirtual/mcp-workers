@@ -6,21 +6,22 @@ A focused **Cloudflare Worker-only** MCP server for Instapaper.
 
 - MCP SDK v2 (`@modelcontextprotocol/server`)
 - Stateless Streamable HTTP at `/mcp`
-- Cloudflare MCP Portal + Managed OAuth / Access as the client-facing ingress
-- Dedicated `MCP_ORIGIN_TOKEN` bearer authentication from Portal to Worker
+- Cloudflare MCP Portal as the client-facing ingress
+- Dedicated per-Worker `MCP_ACCESS_TOKEN` for Portal-to-Worker authentication
+- Shared `@mcp-workers/portal-auth` ingress validation
 - Instapaper Full API via OAuth 1.0a / HMAC-SHA1
 - Instapaper credentials stay inside the Worker
 
 ```text
 MCP client
-  -> Cloudflare MCP Portal + Managed OAuth / Access
-  -> Authorization: Bearer <MCP_ORIGIN_TOKEN>
+  -> Cloudflare MCP Portal
+  -> Authorization: Bearer <MCP_ACCESS_TOKEN>
   -> instapaper-mcp-worker /mcp
   -> Instapaper OAuth 1.0a credentials
   -> Instapaper API
 ```
 
-The Worker validates and removes the origin `Authorization` header before the request reaches the MCP SDK or Instapaper domain code.
+The Worker validates the Portal credential and removes the inbound `Authorization` header before the request reaches the MCP SDK or Instapaper domain code. Requests without an `Origin` header are allowed for server-to-server use. Because this Worker has no direct browser use case, requests that contain an `Origin` header are rejected.
 
 ## Tools
 
@@ -39,22 +40,24 @@ The Worker validates and removes the origin `Authorization` header before the re
 ## Prerequisites
 
 - Node.js 24+
-- Cloudflare Workers and MCP Portal / Zero Trust
+- Cloudflare Workers and MCP Portal
 - Instapaper Full API consumer key/secret
 - Wrangler authenticated with Cloudflare
 
 ## Install
 
+From the monorepo root:
+
 ```bash
-npm install
+pnpm install --frozen-lockfile
 ```
 
 ## Bootstrap Instapaper OAuth tokens
 
-Run:
+Run from this app directory or through the workspace filter:
 
 ```bash
-npm run setup:instapaper
+pnpm run setup:instapaper
 ```
 
 The helper performs Instapaper xAuth, verifies the returned token, and writes these Worker secrets with Wrangler:
@@ -64,62 +67,53 @@ The helper performs Instapaper xAuth, verifies the returned token, and writes th
 - `INSTAPAPER_OAUTH_TOKEN`
 - `INSTAPAPER_OAUTH_TOKEN_SECRET`
 
-The Instapaper username/password are used only during bootstrap and are not persisted.
+The Instapaper username/password are used only during bootstrap and are not persisted. These OAuth credentials are upstream business credentials and are intentionally separate from MCP ingress authentication.
 
 ## Configure Portal-to-Worker authentication
 
-Create a dedicated origin secret:
+Create this Worker's dedicated Portal access secret:
 
 ```bash
-npx wrangler secret put MCP_ORIGIN_TOKEN
+pnpm exec wrangler secret put MCP_ACCESS_TOKEN
 ```
 
-Cloudflare MCP Portal should send:
+Configure the Instapaper server in MCP Portal to send the same value as its upstream bearer credential:
 
 ```text
-Authorization: Bearer <MCP_ORIGIN_TOKEN>
+Authorization: Bearer <MCP_ACCESS_TOKEN>
 ```
 
-Do not reuse an Instapaper credential for this value.
+Do not reuse any Instapaper OAuth credential for this value, and do not reuse this Worker's access token for another Worker.
 
 ## Deploy
 
-`wrangler.jsonc` disables `workers.dev` and preview URLs. Configure a production custom hostname reachable by MCP Portal, then run:
+`wrangler.jsonc` disables preview URLs and keeps the existing production ingress contract. Deploy this app through its configured Cloudflare production build path.
+
+The upstream MCP endpoint remains `/mcp`. ChatGPT or another MCP client connects through the **Portal URL**, not by treating the raw Worker endpoint as a separate client-auth surface.
+
+## Development and verification
 
 ```bash
-npm run deploy
-```
-
-The upstream MCP endpoint is:
-
-```text
-https://<worker-custom-domain>/mcp
-```
-
-Register that upstream in Cloudflare MCP Portal and configure its upstream Bearer credential to the same `MCP_ORIGIN_TOKEN` value. ChatGPT or another MCP client should connect to the **Portal URL**, not the raw Worker URL.
-
-## Development
-
-```bash
-npm run typecheck
-npm test
-npm run build
-npm run deploy:dry-run
+pnpm run typecheck
+pnpm test
+pnpm run deploy:dry-run
+pnpm run check
 ```
 
 ## Security model
 
-- Cloudflare MCP Portal owns client-facing OAuth / Access.
-- `MCP_ORIGIN_TOKEN` authenticates only Portal-to-Worker traffic.
+- Cloudflare MCP Portal owns client-facing authentication.
+- `MCP_ACCESS_TOKEN` authenticates only Portal-to-Worker traffic.
 - Instapaper OAuth credentials authenticate only Worker-to-Instapaper traffic.
-- The origin bearer is removed before MCP/domain processing.
+- The Portal bearer is removed before MCP/domain processing.
+- Browser-origin requests are rejected because no direct browser client is supported.
 - Instapaper username/password are bootstrap-only.
 - Secrets and local environment files are ignored by Git.
 - `delete_bookmark` is marked destructive; read tools are marked read-only.
 
 ## Notes
 
-This repository is a cleaned Worker-only derivative of the previous `Instapaper-MCP` codebase. Local stdio transport, npm CLI packaging, and committed build artifacts were intentionally removed.
+This app is a cleaned Worker-only derivative of the previous `Instapaper-MCP` codebase. Local stdio transport, npm CLI packaging, and committed build artifacts were intentionally removed.
 
 ## License
 

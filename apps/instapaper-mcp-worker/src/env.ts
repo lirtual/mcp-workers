@@ -3,7 +3,7 @@ export interface Env {
   INSTAPAPER_CONSUMER_SECRET: string;
   INSTAPAPER_OAUTH_TOKEN: string;
   INSTAPAPER_OAUTH_TOKEN_SECRET: string;
-  MCP_ORIGIN_TOKEN: string;
+  MCP_ACCESS_TOKEN: string;
 }
 
 export function instapaperCredentialsFromEnv(env: Pick<Env,

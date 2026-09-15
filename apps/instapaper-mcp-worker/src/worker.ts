@@ -1,5 +1,5 @@
+import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
 import { createMcpHandler } from "agents/mcp/server";
-import { authenticateOrigin } from "./auth/origin-auth.js";
 import { instapaperCredentialsFromEnv, type Env } from "./env.js";
 import { createServer } from "./mcp/server.js";
 
@@ -27,19 +27,25 @@ export async function handleRequest(
     return new Response("Not found", { status: 404 });
   }
 
-  const originAuth = authenticateOrigin(request, env.MCP_ORIGIN_TOKEN);
-  if (!originAuth.ok) {
-    if (originAuth.reason === "misconfigured") {
-      return jsonError(503, "origin_auth_not_configured", "MCP origin authentication is not configured.");
+  const portalAuth = await authenticatePortalRequest(request, {
+    expectedToken: env.MCP_ACCESS_TOKEN,
+    allowedOrigins: [],
+  });
+  if (!portalAuth.ok) {
+    if (portalAuth.reason === "misconfigured") {
+      return jsonError(503, "portal_auth_not_configured", "MCP Portal authentication is not configured.");
     }
-    return jsonError(401, "unauthorized", "Valid MCP Portal origin authentication is required.");
+    if (portalAuth.reason === "invalid_origin") {
+      return jsonError(403, "invalid_origin", "Request Origin is not allowed.");
+    }
+    return jsonError(401, "unauthorized", "Valid MCP Portal authentication is required.");
   }
 
   const handler = createMcpHandler(() => createServer(instapaperCredentialsFromEnv(env)), {
     route: "/mcp",
   });
 
-  return handler(originAuth.request, env, ctx);
+  return handler(portalAuth.request, env, ctx);
 }
 
 export default {
