@@ -1,7 +1,7 @@
 # 02 — 创建 mcp-workers 骨架并迁移 WeRead 作为 tracer-bullet
 
 **Status:** `runtime-acceptance-in-progress`  
-**Blocked by:** Cloudflare Build + MCP Portal runtime acceptance  
+**Blocked by:** MCP Portal runtime acceptance + single-publisher confirmation  
 **Scope:** `mcp-workers`（明确排除 Quark MCP）
 
 ## Goal
@@ -30,7 +30,7 @@
 - [x] 源码可追溯到 #01 commit：`8ab71db46b0298f3776a03fe48ffd49000477db4`。
 - [x] tools/schema 无非预期变化：26 个源文件 blob SHA 与冻结源快照一致；`src/server.ts` 未变。
 - [x] 本地验证状态明确：核心测试 10/10；origin-auth standalone typecheck 通过；完整依赖检查因 registry DNS `EAI_AGAIN` 标记 Not run。
-- [ ] Cloudflare Build 成功。
+- [x] Cloudflare Build 成功：commit `6213d7c0cff3e7cff98ac873b777128ff478be95`，Build ID `833f9da9-d7dc-4da6-8199-f7e5ad48cd49`，Worker Version `f135dbb1-f8bb-493d-b410-bedabc5da462`。
 - [ ] 不存在双发布源。
 - [ ] Portal 能发现并调用指定只读工具。
 - [x] 回退步骤可执行且不含 secret，见 `docs/migrations/weread.md`。
@@ -38,19 +38,20 @@
 ## Verification
 
 - [x] 静态 tools/schema baseline diff：Pass（注册源 blob 相同）。
-- [ ] live `tools/list` baseline diff：Not run，等待目标 Worker/Portal。
+- [ ] live `tools/list` baseline diff：Not run，等待 Portal 验收。
 - [x] dependency-free core test：10/10 Pass。
 - [x] `origin-auth.ts` strict standalone typecheck：Pass。
 - [ ] `npm run check` / `npm run test:mcp` / Wrangler dry-run：Not run；`npm install` 因 `registry.npmjs.org` DNS `EAI_AGAIN` 阻塞。
-- [ ] Cloudflare Build/部署记录。
+- [x] Cloudflare Build/部署记录：GitHub Check `Workers Builds: weread-mcp-worker` conclusion `success`。
 - [ ] Portal 只读 smoke。
 
 ## Runtime acceptance trigger
 
-Cloudflare Builds 已由用户修正为现有 Worker `weread-mcp-worker`，仓库 `lirtual/mcp-workers`，production branch `ticket/02-pilot-weread-migration`，Root Directory `apps/weread-mcp-worker`。本提交仅更新迁移记录，用于触发一次新的 Cloudflare build；`apps/weread-mcp-worker` 源码与配置未修改。
+Cloudflare Builds 已由用户修正为现有 Worker `weread-mcp-worker`，仓库 `lirtual/mcp-workers`，production branch `ticket/02-pilot-weread-migration`，Root Directory `apps/weread-mcp-worker`。触发提交仅更新迁移记录，`apps/weread-mcp-worker` 源码与配置未修改。
 
-- Trigger commit requested after correcting the Worker/branch/root binding on 2026-09-15.
-- Trigger commit pushed after the user confirmed the binding correction; no Worker source/config files changed.
+- Trigger commit: `6213d7c0cff3e7cff98ac873b777128ff478be95`。
+- Cloudflare Build: **Pass**，Build ID `833f9da9-d7dc-4da6-8199-f7e5ad48cd49`。
+- Deployed Worker Version: `f135dbb1-f8bb-493d-b410-bedabc5da462`。
 
 ## Source
 
@@ -58,4 +59,4 @@ spec §8 Phase A/B, §10 AC07/AC08/AC13
 
 ## Current blocker
 
-源码迁移部分已提交在 `ticket/02-pilot-weread-migration`。等待本次 Cloudflare build、单一发布源确认、Portal discovery 与安全只读调用完成后才能合入统一 feature 分支；此前 #03–#07 继续 blocked。
+源码迁移与 Cloudflare Build 已通过。仍需确认旧源仓库不再作为自动生产发布源，并完成 MCP Portal 对原 10 个工具的 discovery + 一次明确安全的只读调用，随后才能合入统一 feature 分支；此前 #03–#07 继续 blocked。
