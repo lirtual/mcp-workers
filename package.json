@@ -5,5 +5,12 @@
   "packageManager": "pnpm@10.17.1",
   "engines": {
     "node": ">=24 <25"
+  },
+  "scripts": {
+    "smoke:mcp": "node scripts/mcp-smoke.mjs",
+    "test:smoke-runner": "node --test scripts/mcp-smoke.test.mjs"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "2.0.0"
   }
 }
