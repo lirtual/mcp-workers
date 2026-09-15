@@ -15,13 +15,7 @@ export interface RateLimitBinding {
 
 export interface Env {
   CONNECTIONS_JSON: string;
-  /** Expand-phase fixed credential used only from Cloudflare MCP Portal to this Worker. */
-  MCP_ORIGIN_TOKEN?: string;
-  /** Legacy client-facing OAuth resource-server configuration retained until contract cutover. */
-  OAUTH_ISSUER: string;
-  OAUTH_AUDIENCE: string;
-  OAUTH_JWKS_URL: string;
-  OAUTH_REQUIRED_SCOPE?: string;
+  MCP_ACCESS_TOKEN?: string;
   MAX_ROWS?: string;
   MAX_RESULT_BYTES?: string;
   MAX_SCHEMA_BYTES?: string;
