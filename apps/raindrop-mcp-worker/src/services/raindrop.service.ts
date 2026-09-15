@@ -1,7 +1,5 @@
 // Simple, clean openapi-fetch REST client
-import Keyv from "keyv";
 import createClient from "openapi-fetch";
-import { RateLimiterMemory } from "rate-limiter-flexible";
 import {
   AuthError,
   NotFoundError,
@@ -17,48 +15,47 @@ type Collection = components["schemas"]["Collection"];
 type Highlight = components["schemas"]["Highlight"];
 type HighlightColor = NonNullable<Highlight["color"]>;
 
+export interface RaindropServiceConfig {
+  accessToken?: string;
+  maxReadRetries?: number;
+  debugHttp?: boolean;
+}
+
 export default class RaindropService {
   private client;
-  private rateLimiter?: RateLimiterMemory;
   private logger = createLogger("raindrop-service");
 
-  // Caches for different data types
-  private cacheCollections: Keyv;
-  private cacheBookmarks: Keyv;
-  private cacheSearch: Keyv;
+  // These caches are intentionally request/service-instance scoped. The Worker
+  // creates a fresh service for each stateless MCP request, so TTL-based cache
+  // semantics would falsely imply cross-request persistence.
+  private cacheCollections = new Map<string, unknown>();
+  private cacheBookmarks = new Map<string, unknown>();
+  private cacheSearch = new Map<string, unknown>();
   private readonly maxRateLimitRetries: number;
 
-  constructor(token?: string) {
+  constructor(config: string | RaindropServiceConfig = {}) {
+    const normalized: RaindropServiceConfig =
+      typeof config === "string" ? { accessToken: config } : config;
+    const maxReadRetries = normalized.maxReadRetries;
+    this.maxRateLimitRetries =
+      maxReadRetries !== undefined &&
+      Number.isInteger(maxReadRetries) &&
+      maxReadRetries >= 0
+        ? maxReadRetries
+        : 3;
+    const accessToken = normalized.accessToken ?? "";
+    const debugHttp = normalized.debugHttp ?? false;
+
     this.client = createClient<paths>({
       baseUrl: "https://api.raindrop.io/rest/v1",
       headers: {
-        Authorization: `Bearer ${token || process.env.RAINDROP_ACCESS_TOKEN}`,
+        Authorization: `Bearer ${accessToken}`,
       },
     });
 
-    // Initialize caches
-    this.cacheCollections = new Keyv();
-    this.cacheBookmarks = new Keyv();
-    this.cacheSearch = new Keyv();
-
-    // Conservative rate limiting: 30 points per 60 seconds (2 requests/second max)
-    // Provides buffer for Raindrop.io's rate limits and reduces spikes
-    const points = Number(process.env.RAINDROP_RATE_LIMIT_POINTS || 30);
-    const duration = Number(
-      process.env.RAINDROP_RATE_LIMIT_DURATION_SECONDS || 60,
-    );
-    this.rateLimiter = new RateLimiterMemory({
-      points,
-      duration,
-      keyPrefix: "raindrop",
-    });
-    this.maxRateLimitRetries = Number(
-      process.env.RAINDROP_RATE_LIMIT_MAX_RETRIES || 3,
-    );
-
     this.client.use({
       onRequest({ request }) {
-        if (process.env.NODE_ENV === "development") {
+        if (debugHttp) {
           // Use project logger instead of console to avoid polluting STDIO
           const logger = createLogger("raindrop-service");
           logger.debug(`${request.method} ${request.url}`);
@@ -152,39 +149,11 @@ export default class RaindropService {
     const maxRetries = this.maxRateLimitRetries;
     const readRetryBudgetMs = 15_000;
     try {
-      if (this.rateLimiter) {
-        await this.rateLimiter.consume("global");
-      }
       return await fn();
     } catch (err: any) {
       // Non-retryable errors: auth, not found, validation
       if (err instanceof AuthError || err instanceof NotFoundError) {
         throw err;
-      }
-
-      // Local limiter rejection happens before the upstream call, so it is safe
-      // to wait and retry even for writes: no mutation has been submitted yet.
-      if (err?.msBeforeNext !== undefined) {
-        const retryMs = Math.max(0, Number(err.msBeforeNext));
-        const waitTimeMs = Math.min(retryMs + 500, 5000);
-
-        if (retryCount < maxRetries) {
-          this.logger.warn(
-            `Rate limited, retrying in ${Math.ceil(waitTimeMs / 1000)}s (attempt ${retryCount + 1}/${maxRetries})`,
-          );
-          await new Promise((resolve) => setTimeout(resolve, waitTimeMs));
-          return this.withRateLimit(
-            fn,
-            retryMode,
-            retryCount + 1,
-            startedAtMs,
-          );
-        }
-
-        throw new RateLimitError(
-          `Rate limit exceeded after ${maxRetries} retries. Retry after ${Math.ceil(retryMs / 1000)}s`,
-          err,
-        );
       }
 
       // Once a write has reached the upstream request, never resubmit it
@@ -279,7 +248,7 @@ export default class RaindropService {
       return [...((data?.items as Collection[]) || [])];
     });
 
-    await this.cacheCollections.set("all", collections, 3600000); // 1 hour TTL
+    this.cacheCollections.set("all", collections);
     return collections;
   }
 
@@ -304,7 +273,7 @@ export default class RaindropService {
       return data.item as Collection;
     });
 
-    await this.cacheCollections.set(`id:${id}`, collection, 3600000);
+    this.cacheCollections.set(`id:${id}`, collection);
     return collection;
   }
 
@@ -334,11 +303,7 @@ export default class RaindropService {
       return [...((data?.items as Collection[]) || [])];
     });
 
-    await this.cacheCollections.set(
-      `children:${parentId}`,
-      collections,
-      3600000,
-    );
+    this.cacheCollections.set(`children:${parentId}`, collections);
     return collections;
   }
 
@@ -549,7 +514,7 @@ export default class RaindropService {
       };
     });
 
-    await this.cacheSearch.set(cacheKey, result, 300000); // 5 minute TTL
+    this.cacheSearch.set(cacheKey, result);
     return result;
   }
 
@@ -574,7 +539,7 @@ export default class RaindropService {
       return data.item as any as Bookmark;
     });
 
-    await this.cacheBookmarks.set(`id:${id}`, bookmark, 900000); // 15 minute TTL
+    this.cacheBookmarks.set(`id:${id}`, bookmark);
     return bookmark;
   }
 

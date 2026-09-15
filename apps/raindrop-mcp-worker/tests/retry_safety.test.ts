@@ -1,19 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import RaindropService from "../src/services/raindrop.service.js";
 
 describe("RaindropService retry safety", () => {
-  beforeEach(() => {
-    process.env.RAINDROP_RATE_LIMIT_MAX_RETRIES = "1";
-    process.env.RAINDROP_RATE_LIMIT_POINTS = "1000";
-    process.env.RAINDROP_RATE_LIMIT_DURATION_SECONDS = "1";
-  });
-
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
-    delete process.env.RAINDROP_RATE_LIMIT_MAX_RETRIES;
-    delete process.env.RAINDROP_RATE_LIMIT_POINTS;
-    delete process.env.RAINDROP_RATE_LIMIT_DURATION_SECONDS;
   });
 
   it("does not retry an upstream failure after submitting a write", async () => {
@@ -25,7 +16,7 @@ describe("RaindropService retry safety", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    const service = new RaindropService("test-token");
+    const service = new RaindropService({ accessToken: "test-token", maxReadRetries: 1 });
     (service as any).rateLimiter = undefined;
 
     await expect(service.createCollection("one-shot")).rejects.toThrow(
@@ -52,7 +43,7 @@ describe("RaindropService retry safety", () => {
       );
     vi.stubGlobal("fetch", fetchMock);
 
-    const service = new RaindropService("test-token");
+    const service = new RaindropService({ accessToken: "test-token", maxReadRetries: 1 });
     (service as any).rateLimiter = undefined;
 
     const resultPromise = service.getCollections(true);
@@ -71,7 +62,7 @@ describe("RaindropService retry safety", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    const service = new RaindropService("test-token");
+    const service = new RaindropService({ accessToken: "test-token", maxReadRetries: 1 });
     (service as any).rateLimiter = undefined;
 
     await expect(service.getCollections(true)).rejects.toThrow(
@@ -89,7 +80,7 @@ describe("RaindropService retry safety", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    const service = new RaindropService("test-token");
+    const service = new RaindropService({ accessToken: "test-token", maxReadRetries: 1 });
     (service as any).rateLimiter = undefined;
 
     await expect(service.createCollection("one-shot")).rejects.toThrow(

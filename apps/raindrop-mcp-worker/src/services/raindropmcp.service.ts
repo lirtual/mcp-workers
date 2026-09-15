@@ -7,7 +7,7 @@ import {
   UpstreamError,
   ValidationError,
 } from "../types/mcpErrors.js";
-import RaindropService from "./raindrop.service.js";
+import RaindropService, { type RaindropServiceConfig } from "./raindrop.service.js";
 
 const SERVER_VERSION = pkg.version;
 
@@ -27,7 +27,6 @@ export class RaindropMCPService {
   private server: McpServer;
   public raindropService: RaindropService;
   private resources: Record<string, any> = {};
-  private resourceSubscriptions: Set<string> = new Set(); // Track resource subscriptions
   private prompts: Array<
     Prompt & {
       messages?: Array<{ role: "user" | "assistant"; content: string }>;
@@ -92,28 +91,32 @@ export class RaindropMCPService {
   }
 
   /**
-   * Returns the MCP manifest and server capabilities for host integration and debugging.
-   * Uses the SDK's getManifest() method if available, otherwise builds a manifest from registered tools/resources.
+   * Returns app-owned metadata for host integration and debugging without
+   * reaching into MCP SDK private fields.
    */
   public async getManifest(): Promise<unknown> {
-    if (typeof (this.server as any).getManifest === "function") {
-      return (this.server as any).getManifest();
-    }
-    // Fallback: build manifest manually
     return {
       name: "raindrop-mcp",
       version: SERVER_VERSION,
       description:
         "MCP Server for Raindrop.io with advanced interactive capabilities",
-      capabilities: (this.server as any).capabilities,
+      capabilities: {
+        resources: { subscribe: false, listChanged: false },
+        prompts: { listChanged: false },
+        tools: { listChanged: false },
+      },
       tools: await this.listTools(),
-      // Optionally add resources, schemas, etc.
+      resources: this.listResources(),
+      prompts: this.prompts.map(({ name, description }) => ({
+        name,
+        description,
+      })),
     };
   }
 
-  constructor() {
+  constructor(config: RaindropServiceConfig = {}) {
     try {
-      this.raindropService = new RaindropService();
+      this.raindropService = new RaindropService(config);
       this.server = new McpServer(
         {
           name: "raindrop-mcp",
@@ -123,9 +126,9 @@ export class RaindropMCPService {
         },
         {
           capabilities: {
-            resources: { subscribe: true, listChanged: true },
-            prompts: { listChanged: true },
-            tools: { listChanged: true },
+            resources: { subscribe: false, listChanged: false },
+            prompts: { listChanged: false },
+            tools: { listChanged: false },
             experimental: {
               elicitation: {
                 supported: true,
@@ -233,24 +236,6 @@ export class RaindropMCPService {
       }),
     );
 
-    // Add resource subscription handlers for protocol 2025-11-25
-    this.server.server.setRequestHandler(
-      "resources/subscribe",
-      this.asyncHandler(async (request: any) => {
-        const { uri } = request.params;
-        this.resourceSubscriptions.add(uri);
-        return {}; // Empty object indicates successful subscription
-      }),
-    );
-
-    this.server.server.setRequestHandler(
-      "resources/unsubscribe",
-      this.asyncHandler(async (request: any) => {
-        const { uri } = request.params;
-        this.resourceSubscriptions.delete(uri);
-        return {}; // Empty object indicates successful unsubscription
-      }),
-    );
   }
 
   private registerPromptHandlers() {
@@ -290,31 +275,13 @@ export class RaindropMCPService {
       outputSchema: unknown;
     }>
   > {
-    const registeredTools = (this.server as any)._registeredTools || {};
-    const tools = Object.entries(registeredTools).map(
-      ([name, tool]: [string, any]) => ({
-        id: name,
-        name: name,
-        description: tool.description || "",
-        inputSchema: tool.inputSchema || {},
-        outputSchema: tool.outputSchema || {},
-      }),
-    );
-
-    // Also include tools from our toolConfigs if the server's tools is empty
-    if (tools.length === 0) {
-      return toolConfigs.map((config) => ({
-        id: config.name,
-        name: config.name
-          .replace(/_/g, " ")
-          .replace(/\b\w/g, (l) => l.toUpperCase()),
-        description: config.description,
-        inputSchema: config.inputSchema,
-        outputSchema: config.outputSchema || {},
-      }));
-    }
-
-    return tools.filter((tool: any) => tool.description);
+    return toolConfigs.map((config) => ({
+      id: config.name,
+      name: config.name,
+      description: config.description,
+      inputSchema: config.inputSchema,
+      outputSchema: config.outputSchema || {},
+    }));
   }
 
   /**
@@ -324,13 +291,14 @@ export class RaindropMCPService {
    * @returns Tool response
    */
   public async callTool(toolId: string, input: any): Promise<any> {
-    const registeredTools = (this.server as any)._registeredTools || {};
-    const tool = registeredTools[toolId];
-    if (!tool || typeof tool.handler !== "function") {
-      throw new Error(`Tool with id "${toolId}" not found or has no handler.`);
+    const config = toolConfigs.find((tool) => tool.name === toolId);
+    if (!config) {
+      throw new Error(`Tool with id "${toolId}" not found.`);
     }
-    // Defensive: ensure input is always an object
-    return await tool.handler(input ?? {}, {});
+    return await config.handler(input ?? {}, {
+      raindropService: this.raindropService,
+      mcpServer: this.server.server,
+    });
   }
 
   /**
@@ -440,17 +408,6 @@ export class RaindropMCPService {
     description?: string;
     mimeType?: string;
   }> {
-    const serverResources = ((this.server as any)._resources || []).map(
-      (r: any) => ({
-        id: r.id || r.uri,
-        name: r.name || r.title || r.id || r.uri,
-        uri: r.uri,
-        title: r.title,
-        description: r.description,
-        mimeType: r.mimeType,
-      }),
-    );
-
     // Include our static resources and dynamic resource patterns
     const staticResources = Object.keys(this.resources).map((uri) => ({
       id: uri,
@@ -483,8 +440,7 @@ export class RaindropMCPService {
       },
     ];
 
-    // Combine all resources: server resources, static resources, and dynamic patterns
-    return [...serverResources, ...staticResources, ...dynamicResourcePatterns];
+    return [...staticResources, ...dynamicResourcePatterns];
   }
 
   /**

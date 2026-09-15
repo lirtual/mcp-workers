@@ -111,6 +111,8 @@ The monorepo production path is Portal-only: Cloudflare MCP Portal is the client
 
 The Worker does not expose CORS for `/mcp`; browser-origin requests are rejected. Server-to-server requests without an `Origin` header are allowed only after the normal Portal bearer check.
 
+The Worker is stateless per MCP request. Collection/bookmark/search reuse is limited to one service instance and does not claim cross-request caching. Upstream write requests are never automatically resubmitted after reaching Raindrop.io; bounded automatic retries apply only to reads. `RAINDROP_RATE_LIMIT_MAX_RETRIES` controls that read retry ceiling (default `3`).
+
 See [docs/cloudflare-mcp-portal.md](docs/cloudflare-mcp-portal.md) for the deployment and acceptance flow.
 
 ## Requirements

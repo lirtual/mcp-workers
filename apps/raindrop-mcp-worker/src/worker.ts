@@ -8,21 +8,30 @@ import { createLogger } from "./utils/logger.js";
 interface Env {
   RAINDROP_ACCESS_TOKEN: string;
   MCP_ACCESS_TOKEN: string;
-  RAINDROP_RATE_LIMIT_POINTS?: string;
-  RAINDROP_RATE_LIMIT_DURATION_SECONDS?: string;
   RAINDROP_RATE_LIMIT_MAX_RETRIES?: string;
 }
 
 const logger = createLogger("worker");
 
-const mcpHandler = createMcpHandler(
-  () => new RaindropMCPService().getServer(),
-  {
-    legacy: "stateless",
-    responseMode: "auto",
-    onerror: (error) => logger.error("MCP handler error", error),
-  },
-);
+const parseMaxReadRetries = (value: string | undefined): number => {
+  const parsed = Number(value ?? "3");
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : 3;
+};
+
+const createHandler = (env: Env) =>
+  createMcpHandler(
+    () =>
+      new RaindropMCPService({
+        accessToken: env.RAINDROP_ACCESS_TOKEN,
+        maxReadRetries: parseMaxReadRetries(env.RAINDROP_RATE_LIMIT_MAX_RETRIES),
+        debugHttp: false,
+      }).getServer(),
+    {
+      legacy: "stateless",
+      responseMode: "auto",
+      onerror: (error) => logger.error("MCP handler error", error),
+    },
+  );
 
 function jsonError(status: number, code: string, message: string): Response {
   return Response.json(
@@ -118,6 +127,6 @@ export default {
 
     // The shared Portal auth boundary removes the ingress Authorization header
     // before the request reaches the MCP SDK or any Raindrop tool/service code.
-    return mcpHandler.fetch(portalAuth.request);
+    return createHandler(env).fetch(portalAuth.request);
   },
 };

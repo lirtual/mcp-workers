@@ -43,8 +43,20 @@ const oauthClient = new AuthorizationCode({
   },
 });
 
+const maxReadRetries = Number(
+  process.env.RAINDROP_RATE_LIMIT_MAX_RETRIES ?? "3",
+);
+const serviceConfig = {
+  accessToken: process.env.RAINDROP_ACCESS_TOKEN ?? "",
+  maxReadRetries:
+    Number.isInteger(maxReadRetries) && maxReadRetries >= 0
+      ? maxReadRetries
+      : 3,
+  debugHttp: process.env.NODE_ENV === "development",
+};
+
 const mcpHandler = createMcpHandler(
-  () => new RaindropMCPService().getServer(),
+  () => new RaindropMCPService(serviceConfig).getServer(),
   {
     legacy: "stateless",
     responseMode: "auto",

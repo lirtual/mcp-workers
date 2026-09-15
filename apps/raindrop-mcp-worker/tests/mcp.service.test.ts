@@ -36,7 +36,7 @@ describe("RaindropMCPService", () => {
     if (mcpService && typeof mcpService.cleanup === "function") {
       await mcpService.cleanup();
     }
-    mcpService = new RaindropMCPService();
+    mcpService = new RaindropMCPService({ accessToken: process.env.RAINDROP_ACCESS_TOKEN ?? "" });
   });
 
   afterEach(async () => {
@@ -138,7 +138,7 @@ describeLive("RaindropMCPService live API checks", () => {
     if (mcpService && typeof mcpService.cleanup === "function") {
       await mcpService.cleanup();
     }
-    mcpService = new RaindropMCPService();
+    mcpService = new RaindropMCPService({ accessToken: process.env.RAINDROP_ACCESS_TOKEN ?? "" });
   });
 
   afterEach(async () => {
