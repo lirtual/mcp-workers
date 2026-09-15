@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: testdb
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d testdb"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: testdb
+        ports:
+          - 53306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -proot"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      TEST_POSTGRES_ADMIN_URL: postgres://postgres:postgres@127.0.0.1:55432/testdb
+      TEST_POSTGRES_READ_URL: postgres://mcp_reader:reader@127.0.0.1:55432/testdb
+      TEST_MYSQL_ADMIN_URL: mysql://root:root@127.0.0.1:53306/testdb
+      TEST_MYSQL_READ_URL: mysql://mcp_reader:reader@127.0.0.1:53306/testdb
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Use npm 11.6.0
+        run: npm install --global npm@11.6.0
+      - run: npm install
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run test
+      - run: node scripts/setup-integration.mjs
+      - run: npm run test:integration

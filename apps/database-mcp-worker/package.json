@@ -1,0 +1,39 @@
+{
+  "name": "database-mcp-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Cloudflare-native read-only MCP server for MySQL and PostgreSQL through Hyperdrive",
+  "license": "MIT",
+  "engines": {"node": ">=20"},
+  "packageManager": "npm@11.6.0",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "cf-types": "wrangler types",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration",
+    "test:all": "vitest run",
+    "lint": "eslint .",
+    "check": "npm run typecheck && npm run lint && npm run test:all"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.0.0",
+    "jose": "^6.0.0",
+    "mysql2": "^3.13.0",
+    "pg": "^8.16.3",
+    "zod": "^4.2.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "@types/node": "^22.0.0",
+    "@types/pg": "^8.15.0",
+    "eslint": "^9.0.0",
+    "typescript": "^5.9.0",
+    "typescript-eslint": "^8.0.0",
+    "vitest": "^4.0.0",
+    "wrangler": "^4.36.0",
+    "@cloudflare/workers-types": "^5.0.0"
+  }
+}
