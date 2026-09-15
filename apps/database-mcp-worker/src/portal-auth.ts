@@ -11,7 +11,7 @@ export async function authenticateDatabasePortal(
   env: Env
 ): Promise<DatabasePortalAuthResult> {
   const result = await authenticatePortalRequest(request, {
-    expectedToken: env.MCP_ACCESS_TOKEN,
+    ...(env.MCP_ACCESS_TOKEN ? { expectedToken: env.MCP_ACCESS_TOKEN } : {}),
     allowedOrigins: []
   });
   if (!result.ok) return result;
