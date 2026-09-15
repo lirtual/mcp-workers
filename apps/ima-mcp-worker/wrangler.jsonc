@@ -4,6 +4,7 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-09-11",
   "workers_dev": true,
+  "preview_urls": false,
   "observability": { "enabled": true },
   "vars": {
     "IMA_DOWNLOAD_TTL_SECONDS": "3600",

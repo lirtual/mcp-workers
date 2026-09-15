@@ -3,7 +3,7 @@
   "name": "raindrop-mcp-worker",
   "main": "src/worker.ts",
   "compatibility_date": "2026-09-12",
-  "workers_dev": false,
+  "workers_dev": true,
   "preview_urls": false,
   "observability": {
     "enabled": true,

@@ -7,26 +7,28 @@ This checklist is the reusable acceptance contract for Portal-first remote MCP d
 A Portal-first deployment has three distinct credential boundaries:
 
 1. **Client identity** — handled by Cloudflare MCP Portal / Managed OAuth / Access.
-2. **Origin identity** — a dedicated credential used only from Portal to the MCP Worker, normally `Authorization: Bearer <MCP_ORIGIN_TOKEN>`.
+2. **Worker origin identity** — a dedicated per-Worker `MCP_ACCESS_TOKEN` used only from Portal to the MCP Worker.
 3. **Business API identity** — the credential the MCP Worker uses with its real upstream service.
 
-Never reuse one credential across these boundaries. In particular, never forward the client OAuth bearer token to the business API and never store the business API credential in MCP Portal as the origin credential.
+Never reuse one credential across these boundaries. In particular, never forward the client OAuth bearer token to the business API and never store the business API credential in MCP Portal as the Worker origin credential.
 
 ## Pre-cutover checks
 
-- [ ] The MCP Worker exposes a standards-based `/mcp` endpoint reachable by Cloudflare MCP Portal.
-- [ ] Production `workers.dev` and Preview URL exposure are disabled where a custom Worker hostname is used.
-- [ ] `/mcp` fails closed when the origin credential is missing or invalid.
-- [ ] A valid origin credential reaches the MCP transport.
-- [ ] The origin credential is removed or isolated before domain tools/business logic can observe it.
-- [ ] The business API credential is configured independently from the origin credential.
+- [ ] The MCP Worker exposes a standards-based `/mcp` endpoint reachable on its `workers.dev` hostname.
+- [ ] `workers_dev` is enabled.
+- [ ] Preview URLs are disabled.
+- [ ] No custom domain or zone route is required for MCP ingress.
+- [ ] `/mcp` fails closed when `MCP_ACCESS_TOKEN` is missing or invalid.
+- [ ] A valid `MCP_ACCESS_TOKEN` reaches the MCP transport.
+- [ ] The Portal bearer is removed or isolated before domain tools/business logic can observe it.
+- [ ] The business API credential is configured independently from `MCP_ACCESS_TOKEN`.
 - [ ] Domain authorization, read-only mode, path allowlists, destructive-operation guards, and other service-specific safety controls remain enforced by the MCP Worker/upstream service.
-- [ ] Logs and error responses do not expose client OAuth tokens, origin credentials, or business API credentials.
+- [ ] Logs and error responses do not expose client OAuth tokens, `MCP_ACCESS_TOKEN`, or business API credentials.
 
 ## Portal checks
 
-- [ ] The upstream MCP server is registered in Cloudflare MCP Portal using the Worker `/mcp` URL.
-- [ ] Portal upstream authentication uses the dedicated origin credential, not the business API credential.
+- [ ] The upstream MCP server is registered in Cloudflare MCP Portal using the Worker's `workers.dev` `/mcp` URL.
+- [ ] Portal upstream authentication uses the Worker's dedicated `MCP_ACCESS_TOKEN`, not the business API credential.
 - [ ] Managed OAuth / Access policy permits only the intended user or account.
 - [ ] The MCP client is configured with the **Portal URL**, not the raw Worker origin URL.
 - [ ] Portal discovers the server successfully.
@@ -47,15 +49,15 @@ Run these in order and stop on the first failure:
 
 ## Evidence requirement
 
-Treat the checklist above as an operational gate, not as documentation-only acceptance. Record the date, deployed origin, Portal name, representative read/write tools, and secret-redaction result in the migration ticket before declaring a service cut over. Code and CI can prove fail-closed behavior and credential separation, but they do not substitute for live Portal discovery and tool execution.
+Treat the checklist above as an operational gate, not as documentation-only acceptance. Record the date, deployed `workers.dev` origin, Portal name, representative read/write tools, and secret-redaction result in the migration ticket before declaring a service cut over. Code and CI can prove fail-closed behavior and credential separation, but they do not substitute for live Portal discovery and tool execution.
 
 ## Rollback requirement
 
-Before production cutover, document how to restore the previous ingress without changing business-service state or rotating unrelated business credentials. Rollback should affect only the ingress/authentication layer unless a service-specific incident requires otherwise.
+Before production cutover, document how to restore the previous publisher without changing business-service state or rotating unrelated business credentials. Rollback should affect only the ingress/authentication layer unless a service-specific incident requires otherwise.
 
 ## Gateway exception rule
 
-`cloudflare_gateway` is not part of the normal Portal-first path. Insert it only when a concrete Cloudflare MCP Portal capability gap has been demonstrated, such as a required path rewrite or body/response transformation that Portal cannot express. The exception must document the exact missing capability and must not collapse client, origin, and business credentials into one token.
+`cloudflare_gateway` is not part of the normal Portal-first path. Insert it only when a concrete Cloudflare MCP Portal capability gap has been demonstrated, such as a required path rewrite or body/response transformation that Portal cannot express. The exception must document the exact missing capability and must not collapse client, Worker-origin, and business credentials into one token.
 
 ## Raindrop reference result
 
@@ -64,8 +66,8 @@ Raindrop's expected reference path is:
 ```text
 MCP client
   -> Cloudflare MCP Portal + Managed OAuth
-  -> Authorization: Bearer <MCP_ORIGIN_TOKEN>
-  -> raindrop-mcp-worker Worker /mcp
+  -> Authorization: Bearer <MCP_ACCESS_TOKEN>
+  -> https://raindrop-mcp-worker.aiyaya.workers.dev/mcp
   -> RAINDROP_ACCESS_TOKEN
   -> Raindrop.io API
 ```
