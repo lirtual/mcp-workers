@@ -8,7 +8,8 @@ This deployment keeps client-facing authentication at Cloudflare MCP Portal and 
 MCP client
   -> Cloudflare MCP Portal
   -> Authorization: Bearer <MCP_ACCESS_TOKEN>
-  -> raindrop-mcp-worker Worker /mcp
+  -> https://raindrop-mcp-worker.aiyaya.workers.dev/mcp
+  -> raindrop-mcp-worker Worker
   -> RAINDROP_ACCESS_TOKEN
   -> Raindrop.io API
 ```
@@ -35,7 +36,13 @@ MCP Portal sends the Worker credential as:
 Authorization: Bearer <MCP_ACCESS_TOKEN>
 ```
 
-The production target is Worker `raindrop-mcp-worker`, served through the existing hostname `https://raindrop-mcp.lirtual.dpdns.org`, with `workers.dev` and Preview URLs disabled. The controlled cutover must move that production route and Portal upstream to the unified Worker before the previous publisher is retired.
+The production ingress is the Worker-owned `workers.dev` endpoint. `workers_dev` is enabled and Preview URLs are disabled. Do not configure a custom domain or zone route for this Worker.
+
+Production MCP origin:
+
+```text
+https://raindrop-mcp-worker.aiyaya.workers.dev/mcp
+```
 
 ## 2. Worker ingress contract
 
@@ -55,7 +62,7 @@ After successful Portal authentication, the shared `@mcp-workers/portal-auth` bo
 
 ## 3. Add the Worker as an MCP server in Portal
 
-Register `https://raindrop-mcp.lirtual.dpdns.org/mcp` as the upstream MCP server. Configure upstream authentication as Bearer and set its credential to the same value stored in this Worker's `MCP_ACCESS_TOKEN` secret.
+Register `https://raindrop-mcp-worker.aiyaya.workers.dev/mcp` as the upstream MCP server. Configure upstream authentication as Bearer and set its credential to the same value stored in this Worker's `MCP_ACCESS_TOKEN` secret.
 
 Do not place `RAINDROP_ACCESS_TOKEN` in Portal. ChatGPT or another MCP client connects to the Portal URL, not to the raw Worker endpoint as a separate client-auth surface.
 
@@ -63,7 +70,7 @@ Do not place `RAINDROP_ACCESS_TOKEN` in Portal. ChatGPT or another MCP client co
 
 Validate in this order:
 
-1. `GET /health` returns 200 and no secret material.
+1. `GET https://raindrop-mcp-worker.aiyaya.workers.dev/health` returns 200 and no secret material.
 2. Direct `/mcp` without a bearer returns 401.
 3. `/mcp` with a browser `Origin` returns 403 and no CORS headers.
 4. Direct `/mcp` with the correct `MCP_ACCESS_TOKEN` reaches MCP transport.
