@@ -14,9 +14,9 @@
     "check": "pnpm run typecheck && pnpm test && pnpm run deploy:dry-run"
   },
   "dependencies": {
+    "@mcp-workers/portal-auth": "workspace:*",
     "@modelcontextprotocol/server": "2.0.0",
     "agents": "0.23.0",
-    "jose": "6.2.12",
     "zod": "4.6.2"
   },
   "devDependencies": {

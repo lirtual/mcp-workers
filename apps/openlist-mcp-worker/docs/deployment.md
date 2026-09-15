@@ -1,62 +1,68 @@
 # Deployment
 
-OpenList is migrating to Cloudflare MCP Portal with an expand/contract rollout. During the expand phase, the Worker accepts either the new Portal origin bearer or the existing Cloudflare Access assertion path. Do not remove the Access path until Portal acceptance checks pass.
+OpenList uses Cloudflare MCP Portal as the supported client-facing ingress for this Worker. Worker-side Cloudflare Access JWT client authentication has been retired.
 
 ## 1. Prepare OpenList
 
 1. Deploy or identify an HTTPS-accessible OpenList v4 instance.
 2. Create a dedicated low-privilege OpenList user/token with only the required Base Path and permissions.
-3. Configure Worker vars: `OPENLIST_URL`, `OPENLIST_ALLOWED_PATHS`, `CF_ACCESS_TEAM_DOMAIN`, `CF_ACCESS_AUD`.
-4. Store the business credential only in the Worker:
+3. Configure non-secret Worker vars `OPENLIST_URL` and `OPENLIST_ALLOWED_PATHS` plus any optional read-only/upload/timeout settings.
+4. Store the OpenList business credential only in the Worker:
 
 ```sh
-npx wrangler secret put OPENLIST_TOKEN
+pnpm exec wrangler secret put OPENLIST_TOKEN
 ```
 
-`OPENLIST_TOKEN` remains the raw/non-Bearer Worker-to-OpenList credential. Never reuse it as the Portal origin credential.
+`OPENLIST_TOKEN` remains the raw/non-Bearer Worker-to-OpenList credential.
 
-## 2. Add Portal origin authentication
+## 2. Configure Portal-to-Worker authentication
 
-Generate a separate high-entropy origin credential and store it in the Worker:
+Generate a separate high-entropy credential for this Worker and store it as:
 
 ```sh
-npx wrangler secret put MCP_ORIGIN_TOKEN
+pnpm exec wrangler secret put MCP_ACCESS_TOKEN
 ```
 
-Deploy the Worker to the intended custom hostname. Keep `workers_dev=false` and Preview URLs disabled for production.
+Do not reuse this value for another Worker or as the OpenList token.
 
-Register the full Worker MCP URL in Cloudflare MCP Portal:
+Keep the existing Worker identity and routing. `workers_dev=false` remains intentional for this app unless its separately managed production routing is explicitly changed.
 
-```text
-https://<openlist-worker-custom-domain>/mcp
-```
+Register the full Worker MCP URL in Cloudflare MCP Portal and configure upstream authentication as Bearer using the same value stored in this Worker's `MCP_ACCESS_TOKEN` secret.
 
-Configure Portal upstream authentication as Bearer with the same value stored in `MCP_ORIGIN_TOKEN`.
+ChatGPT or another MCP client connects to the **Portal URL**, not to the raw Worker as a second client-auth surface.
 
-Attach the upstream server to a Portal with Managed OAuth / Access restricted to the intended identity. Configure ChatGPT or another MCP client with the **Portal URL**, not the raw Worker URL.
+## 3. Worker ingress contract
 
-## 3. Preserve the legacy Access path during expand
+For `/mcp`:
 
-Keep the current Cloudflare Access application and `CF_ACCESS_TEAM_DOMAIN` / `CF_ACCESS_AUD` configuration until Portal cutover is verified. Requests with no Portal bearer continue through `Cf-Access-Jwt-Assertion` verification.
+- missing or invalid Portal bearer -> `401`
+- missing `MCP_ACCESS_TOKEN` configuration -> `503`
+- request with an `Origin` header -> `403` because this Worker has no direct browser-client requirement
+- valid Portal bearer -> the inbound `Authorization` header is removed before MCP/domain handling
+- retired `Cf-Access-Jwt-Assertion` alone does not authorize the request
 
-A request that explicitly presents an incorrect bearer credential is rejected and does not fall through to Access JWT verification.
+`CF_ACCESS_TEAM_DOMAIN` and `CF_ACCESS_AUD` are no longer Worker runtime requirements.
+
+The path allowlist, read-only switch, destructive-operation guards, upload bounds, timeouts, and `OPENLIST_TOKEN` business authentication remain unchanged.
 
 ## 4. Acceptance checks
 
 Run in this order:
 
-1. Direct `/mcp` without either accepted authentication path is rejected.
-2. Direct `/mcp` with the correct `MCP_ORIGIN_TOKEN` reaches the MCP transport.
-3. Existing Access JWT ingress still works during the expand phase.
-4. Portal discovers the existing OpenList tool set.
-5. With `OPENLIST_READONLY=true`, mutation tools remain absent from discovery.
-6. Verify path allowlists with both an allowed and a denied path.
-7. Execute one representative read tool through Portal.
-8. Only after read-only verification, enable writes if needed and execute one bounded operation that already exists in the tool surface.
-9. Inspect Worker logs/responses and confirm no client OAuth token, Access assertion, `MCP_ORIGIN_TOKEN`, or `OPENLIST_TOKEN` value is exposed.
-
-## 5. Contract phase
-
-Only after the checks above pass should the follow-up contract ticket remove Worker-side client Access JWT validation and its configuration. The path allowlist, read-only switch, destructive-operation guards, upload bounds, timeouts, and OpenList business authentication stay in the Worker.
+1. `GET /health` succeeds without calling OpenList.
+2. Direct `/mcp` without a bearer returns `401`.
+3. Direct `/mcp` with a browser `Origin` returns `403`.
+4. Correct `MCP_ACCESS_TOKEN` reaches the MCP transport and the entry credential is not forwarded into OpenList handling.
+5. A legacy Access assertion without the Portal bearer is rejected.
+6. Portal discovers the existing OpenList tool set.
+7. With `OPENLIST_READONLY=true`, mutation tools remain absent from discovery.
+8. Verify path allowlists with both an allowed and a denied path.
+9. Execute one representative read tool through Portal.
+10. Only after read-only verification, enable writes if needed and execute one bounded operation already present in the tool surface.
+11. Inspect Worker logs/responses and confirm no Portal bearer or `OPENLIST_TOKEN` value is exposed.
 
 Start with read-only mode. Set `OPENLIST_READONLY=false` only after read operations work and path restrictions have been verified.
+
+## Production-topology note
+
+The monorepo migration does not by itself authorize replacing any separately operating OpenList Tunnel/service topology. A Worker deployment/cutover is a distinct operational action and must preserve the actually used Portal upstream until explicitly validated.

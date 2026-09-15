@@ -8,25 +8,20 @@ The Worker exposes a bounded core tool set: capability discovery, file listing/i
 
 ## Architecture
 
-OpenList is in the **expand** phase of the Portal-first migration:
+The monorepo target is Portal-only client ingress:
 
 ```text
 MCP client
-  -> Cloudflare MCP Portal + Managed OAuth / Access
-  -> Authorization: Bearer <MCP_ORIGIN_TOKEN>
+  -> Cloudflare MCP Portal
+  -> Authorization: Bearer <MCP_ACCESS_TOKEN>
   -> OpenList MCP Worker /mcp
   -> OPENLIST_TOKEN
   -> OpenList API
 ```
 
-During the expand phase, the existing Cloudflare Access assertion path remains available for rollback. The Worker therefore accepts either:
+`MCP_ACCESS_TOKEN` is this Worker's dedicated Portal-to-Worker machine credential. The Worker consumes that `Authorization` header before MCP/domain handling. `OPENLIST_TOKEN` remains a separate raw/non-Bearer Worker-to-OpenList business credential and must never be reused as the Portal credential.
 
-- a valid dedicated Portal origin bearer (`MCP_ORIGIN_TOKEN`); or
-- the existing `Cf-Access-Jwt-Assertion` path.
-
-A supplied but invalid bearer is rejected and never falls through to Access authentication.
-
-The Worker strips a valid Portal `Authorization` header before MCP/domain handling. `OPENLIST_TOKEN` remains a separate raw/non-Bearer Worker-to-OpenList business credential.
+The retired Worker-side Cloudflare Access JWT path (`Cf-Access-Jwt-Assertion`, `CF_ACCESS_TEAM_DOMAIN`, `CF_ACCESS_AUD`) is not a supported client authentication path.
 
 ## Required configuration
 
@@ -34,17 +29,15 @@ Set non-secret vars in Cloudflare/Wrangler:
 
 - `OPENLIST_URL` — HTTPS URL of the OpenList server
 - `OPENLIST_ALLOWED_PATHS` — comma-separated roots, e.g. `/documents,/media`
-- `CF_ACCESS_TEAM_DOMAIN` — legacy expand-phase Access team domain
-- `CF_ACCESS_AUD` — legacy expand-phase Access application audience tag
 
 Set independent secrets:
 
 ```sh
-npx wrangler secret put OPENLIST_TOKEN
-npx wrangler secret put MCP_ORIGIN_TOKEN
+pnpm exec wrangler secret put OPENLIST_TOKEN
+pnpm exec wrangler secret put MCP_ACCESS_TOKEN
 ```
 
-Never reuse either secret for the other purpose.
+Never reuse either secret for the other purpose, and do not share `MCP_ACCESS_TOKEN` with another Worker.
 
 Optional vars:
 
@@ -52,24 +45,16 @@ Optional vars:
 - `OPENLIST_UPLOAD_MAX_BYTES` — defaults to `5242880` (5 MiB)
 - `OPENLIST_TIMEOUT_MS` — defaults to `15000`
 
-`wrangler.jsonc` intentionally sets `workers_dev=false`; production should use the intended custom hostname. Portal clients connect to the Portal URL rather than the raw Worker hostname.
+`wrangler.jsonc` intentionally sets `workers_dev=false`; keep the existing intended Worker routing for any deployment of this app. Portal clients connect to the Portal URL rather than treating the raw Worker as a second client-auth surface.
 
-## Migration and Cloudflare Access
-
-Keep the existing Access application and Worker JWT verification during the expand phase. Add the Worker `/mcp` custom-domain URL to Cloudflare MCP Portal with Bearer upstream authentication using `MCP_ORIGIN_TOKEN`.
-
-After Portal discovery, read-only behavior, path restrictions, and representative operations are verified, the follow-up contract ticket can remove the Worker-side Access JWT path. Domain security controls remain regardless of ingress.
-
-See `docs/deployment.md` for the rollout and acceptance sequence.
+See `docs/deployment.md` for the deployment and acceptance contract.
 
 ## Development
 
 ```sh
-npm install
-npm run typecheck
-npm test
-npm run build
-npx wrangler dev
+pnpm install --frozen-lockfile
+pnpm --filter openlist-mcp-worker check
+pnpm --filter openlist-mcp-worker dev
 ```
 
 The production OpenList URL is required to use HTTPS. For local integration testing, use a reachable HTTPS OpenList test instance.
@@ -90,7 +75,7 @@ The health route does not contact OpenList or reveal backend details.
 
 ## Safety model
 
-Ingress authentication, the low-privilege OpenList account/token, and the path allowlist are separate controls. Portal authentication is not a replacement for OpenList authorization or path policy. `confirm=true` on destructive operations is an additional accidental-operation guard, not an authorization boundary.
+Portal authentication, the low-privilege OpenList account/token, and the path allowlist are separate controls. Portal authentication is not a replacement for OpenList authorization or path policy. `confirm=true` on destructive operations is an additional accidental-operation guard, not an authorization boundary.
 
 In read-only mode, mutation tools are omitted from tool discovery entirely.
 

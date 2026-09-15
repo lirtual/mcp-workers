@@ -1,36 +1,88 @@
 import { describe, expect, it } from "vitest";
-import { verifyPortalOrigin } from "../src/auth/origin-verifier";
+import worker from "../src/index";
+import type { Env } from "../src/types";
 
-describe("Portal origin authentication", () => {
-  it("returns not-present so the legacy Access JWT path can run", () => {
-    expect(verifyPortalOrigin(new Request("https://openlist.example/mcp"), "origin-secret")).toEqual({
-      ok: false,
-      reason: "not-present",
+const ctx = {} as ExecutionContext;
+
+function baseEnv(overrides: Partial<Env> = {}): Env {
+  return {
+    OPENLIST_URL: "https://openlist.example",
+    OPENLIST_TOKEN: "openlist-token",
+    OPENLIST_ALLOWED_PATHS: "/documents",
+    OPENLIST_READONLY: "true",
+    MCP_ACCESS_TOKEN: "portal-secret",
+    ...overrides,
+  };
+}
+
+describe("Portal-only authentication", () => {
+  it("fails closed when MCP_ACCESS_TOKEN is not configured", async () => {
+    const response = await worker.fetch(
+      new Request("https://worker.example/mcp", { method: "POST" }),
+      baseEnv({ MCP_ACCESS_TOKEN: undefined }),
+      ctx,
+    );
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error: "portal_auth_not_configured",
+      message: "MCP Portal authentication is not configured.",
     });
   });
 
-  it("rejects a malformed or incorrect bearer instead of falling through", () => {
-    const request = new Request("https://openlist.example/mcp", {
-      headers: { Authorization: "Bearer wrong" },
-    });
-    expect(verifyPortalOrigin(request, "origin-secret")).toEqual({
-      ok: false,
-      reason: "unauthorized",
+  it("rejects missing or incorrect Portal bearer", async () => {
+    for (const authorization of [undefined, "Bearer wrong-token"]) {
+      const headers = new Headers();
+      if (authorization) headers.set("authorization", authorization);
+      const response = await worker.fetch(
+        new Request("https://worker.example/mcp", { method: "POST", headers }),
+        baseEnv(),
+        ctx,
+      );
+      expect(response.status).toBe(401);
+      expect(response.headers.get("www-authenticate")).toBe("Bearer");
+    }
+  });
+
+  it("does not accept the retired Cloudflare Access assertion path", async () => {
+    const response = await worker.fetch(
+      new Request("https://worker.example/mcp", {
+        method: "POST",
+        headers: { "Cf-Access-Jwt-Assertion": "legacy-access-assertion" },
+      }),
+      baseEnv(),
+      ctx,
+    );
+    expect(response.status).toBe(401);
+  });
+
+  it("rejects browser Origin because no direct browser client is supported", async () => {
+    const response = await worker.fetch(
+      new Request("https://worker.example/mcp", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer portal-secret",
+          origin: "https://client.example",
+        },
+      }),
+      baseEnv(),
+      ctx,
+    );
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({
+      error: "invalid_origin",
+      message: "Request Origin is not allowed.",
     });
   });
 
-  it("accepts Portal bearer and strips Authorization before MCP/domain handling", () => {
-    const request = new Request("https://openlist.example/mcp", {
-      method: "POST",
-      headers: {
-        Authorization: "Bearer origin-secret",
-        "MCP-Protocol-Version": "2025-11-25",
-      },
-    });
-    const result = verifyPortalOrigin(request, "origin-secret");
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.request.headers.has("authorization")).toBe(false);
-    expect(result.request.headers.get("mcp-protocol-version")).toBe("2025-11-25");
+  it("valid Portal auth still fails closed when OpenList business config is missing", async () => {
+    const response = await worker.fetch(
+      new Request("https://worker.example/mcp", {
+        method: "POST",
+        headers: { authorization: "Bearer portal-secret" },
+      }),
+      baseEnv({ OPENLIST_TOKEN: "" }),
+      ctx,
+    );
+    expect(response.status).toBe(503);
   });
 });

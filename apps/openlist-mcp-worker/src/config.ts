@@ -11,9 +11,6 @@ export function loadConfig(env: Env): AppConfig {
   if (!env.OPENLIST_URL || !env.OPENLIST_TOKEN || !env.OPENLIST_ALLOWED_PATHS) {
     throw new Error("OPENLIST_URL, OPENLIST_TOKEN and OPENLIST_ALLOWED_PATHS are required");
   }
-  if (!env.CF_ACCESS_TEAM_DOMAIN || !env.CF_ACCESS_AUD) {
-    throw new Error("CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD are required");
-  }
 
   const openListUrl = new URL(env.OPENLIST_URL);
   if (openListUrl.protocol !== "https:") throw new Error("OPENLIST_URL must use HTTPS in production");
@@ -27,7 +24,5 @@ export function loadConfig(env: Env): AppConfig {
     readonly: (env.OPENLIST_READONLY ?? "true").toLowerCase() !== "false",
     uploadMaxBytes: parsePositiveInt(env.OPENLIST_UPLOAD_MAX_BYTES, 5 * 1024 * 1024),
     timeoutMs: parsePositiveInt(env.OPENLIST_TIMEOUT_MS, 15_000),
-    accessTeamDomain: env.CF_ACCESS_TEAM_DOMAIN.replace(/^https?:\/\//, "").replace(/\/$/, ""),
-    accessAudience: env.CF_ACCESS_AUD,
   };
 }

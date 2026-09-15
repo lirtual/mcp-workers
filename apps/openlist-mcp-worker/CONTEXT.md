@@ -1,10 +1,10 @@
 # Domain Context
 
 ## MCP Identity
-The human identity authenticated by Cloudflare Access before the client can invoke `/mcp`.
+The client identity is handled by Cloudflare MCP Portal. The Worker trusts only its dedicated Portal-to-Worker `MCP_ACCESS_TOKEN` machine credential on `/mcp`; that inbound credential is consumed before MCP/domain handling.
 
 ## OpenList Identity
-The single dedicated OpenList account represented by `OPENLIST_TOKEN`. It is intentionally separate from MCP identity.
+The single dedicated OpenList account represented by `OPENLIST_TOKEN`. It is intentionally separate from the Portal credential and is sent upstream in OpenList's existing raw/non-Bearer format.
 
 ## Allowed Path
 A normalized OpenList path root. Every path-bearing tool validates against `OPENLIST_ALLOWED_PATHS`; copy/move validate both source and destination.
@@ -23,7 +23,8 @@ An async task owned by OpenList itself. This is not the MCP Tasks protocol featu
 
 ## Invariants
 - Worker remains stateless for MCP transport.
+- Worker-side Cloudflare Access JWT client authentication is retired; `/mcp` uses only the dedicated `MCP_ACCESS_TOKEN` boundary.
 - No arbitrary user-supplied upstream origin is fetched.
 - Download bodies never transit the Worker.
 - No recursive filesystem aggregation in V1.
-- Sensitive tokens, Access assertions, upload contents and raw download URLs must not be logged.
+- Sensitive tokens, upload contents and raw download URLs must not be logged.

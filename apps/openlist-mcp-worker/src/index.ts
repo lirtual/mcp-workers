@@ -1,16 +1,18 @@
+import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
 import { createMcpHandler } from "agents/mcp/server";
-import { verifyAccessRequest } from "./auth/access-verifier";
-import { verifyPortalOrigin } from "./auth/origin-verifier";
 import { loadConfig } from "./config";
 import { createServer } from "./mcp/server";
 import type { Env } from "./types";
 
-function portalUnauthorized() {
+function authError(status: number, code: string, message: string): Response {
   return Response.json(
-    { error: "unauthorized", message: "Invalid MCP Portal origin credential." },
+    { error: code, message },
     {
-      status: 401,
-      headers: { "Cache-Control": "no-store", "WWW-Authenticate": "Bearer" },
+      status,
+      headers: {
+        "Cache-Control": "no-store",
+        ...(status === 401 ? { "WWW-Authenticate": "Bearer" } : {}),
+      },
     },
   );
 }
@@ -25,26 +27,39 @@ export default {
 
     if (url.pathname !== "/mcp") return new Response("Not Found", { status: 404 });
 
+    const portalAuth = await authenticatePortalRequest(request, {
+      expectedToken: env.MCP_ACCESS_TOKEN,
+      allowedOrigins: [],
+    });
+    if (!portalAuth.ok) {
+      if (portalAuth.reason === "misconfigured") {
+        return authError(
+          503,
+          "portal_auth_not_configured",
+          "MCP Portal authentication is not configured.",
+        );
+      }
+      if (portalAuth.reason === "invalid_origin") {
+        return authError(403, "invalid_origin", "Request Origin is not allowed.");
+      }
+      return authError(
+        401,
+        "unauthorized",
+        "Valid MCP Portal authentication is required.",
+      );
+    }
+
     let config;
-    let mcpRequest = request;
     try {
       config = loadConfig(env);
-      const portalAuth = verifyPortalOrigin(request, env.MCP_ORIGIN_TOKEN);
-      if (portalAuth.ok) {
-        mcpRequest = portalAuth.request;
-      } else if (portalAuth.reason === "unauthorized") {
-        return portalUnauthorized();
-      } else {
-        // Expand phase: preserve the existing Cloudflare Access JWT path.
-        await verifyAccessRequest(request, config);
-      }
     } catch (error) {
-      if (error instanceof Response) return error;
-      console.error("MCP request rejected", { message: error instanceof Error ? error.message : "configuration error" });
+      console.error("MCP request rejected", {
+        message: error instanceof Error ? error.message : "configuration error",
+      });
       return new Response("Service misconfigured", { status: 503 });
     }
 
     const handler = createMcpHandler(() => createServer(config, env.OPENLIST_TOKEN));
-    return handler(mcpRequest, env, ctx);
+    return handler(portalAuth.request, env, ctx);
   },
 } satisfies ExportedHandler<Env>;

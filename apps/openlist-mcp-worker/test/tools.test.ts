@@ -26,8 +26,6 @@ function config(readonly: boolean): AppConfig {
     readonly,
     uploadMaxBytes: 5 * 1024 * 1024,
     timeoutMs: 15000,
-    accessTeamDomain: "team.cloudflareaccess.com",
-    accessAudience: "aud",
   };
 }
 
