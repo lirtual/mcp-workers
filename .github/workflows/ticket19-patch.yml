@@ -1,0 +1,211 @@
+name: ticket19-patch
+
+on:
+  push:
+    branches:
+      - ticket/19-raindrop-nonidempotent-retry
+    paths:
+      - .github/workflows/ticket19-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ticket/19-raindrop-nonidempotent-retry
+          fetch-depth: 0
+      - name: Apply retry-safety patch
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          service_path = Path('apps/raindrop-mcp-worker/src/services/raindrop.service.ts')
+          text = service_path.read_text()
+
+          replacement = '''  private async withWriteRateLimit<T>(fn: () => Promise<T>): Promise<T> {
+    return this.withRateLimit(fn, "write");
+  }
+
+  private async withRateLimit<T>(
+    fn: () => Promise<T>,
+    retryMode: "read" | "write" = "read",
+    retryCount = 0,
+    startedAtMs = Date.now(),
+  ): Promise<T> {
+    const maxRetries = this.maxRateLimitRetries;
+    const readRetryBudgetMs = 15_000;
+    try {
+      if (this.rateLimiter) {
+        await this.rateLimiter.consume("global");
+      }
+      return await fn();
+    } catch (err: any) {
+      // Non-retryable errors: auth, not found, validation
+      if (err instanceof AuthError || err instanceof NotFoundError) {
+        throw err;
+      }
+
+      // Local limiter rejection happens before the upstream call, so it is safe
+      // to wait and retry even for writes: no mutation has been submitted yet.
+      if (err?.msBeforeNext !== undefined) {
+        const retryMs = Math.max(0, Number(err.msBeforeNext));
+        const waitTimeMs = Math.min(retryMs + 500, 5000);
+
+        if (retryCount < maxRetries) {
+          this.logger.warn(
+            `Rate limited, retrying in ${Math.ceil(waitTimeMs / 1000)}s (attempt ${retryCount + 1}/${maxRetries})`,
+          );
+          await new Promise((resolve) => setTimeout(resolve, waitTimeMs));
+          return this.withRateLimit(
+            fn,
+            retryMode,
+            retryCount + 1,
+            startedAtMs,
+          );
+        }
+
+        throw new RateLimitError(
+          `Rate limit exceeded after ${maxRetries} retries. Retry after ${Math.ceil(retryMs / 1000)}s`,
+          err,
+        );
+      }
+
+      // Once a write has reached the upstream request, never resubmit it
+      // automatically: the remote mutation may already have succeeded.
+      if (err instanceof RateLimitError) {
+        if (retryMode === "write") {
+          throw err;
+        }
+
+        const retryAfterMs = this.getUpstreamRetryAfterMs(err);
+        const backoffMs =
+          retryAfterMs !== undefined
+            ? retryAfterMs + 250
+            : Math.min(750 * Math.pow(2, retryCount), 10000);
+        const elapsedMs = Date.now() - startedAtMs;
+        const remainingBudgetMs = Math.max(0, readRetryBudgetMs - elapsedMs);
+
+        if (retryCount >= maxRetries) {
+          throw new RateLimitError(
+            `Upstream rate limit exceeded after ${maxRetries} retries`,
+            err,
+          );
+        }
+
+        if (backoffMs > remainingBudgetMs) {
+          throw new RateLimitError(
+            `Upstream retry delay ${Math.ceil(backoffMs / 1000)}s exceeds remaining read retry budget ${Math.ceil(remainingBudgetMs / 1000)}s`,
+            err,
+          );
+        }
+
+        this.logger.warn(
+          `Upstream rate limited, retrying in ${Math.ceil(backoffMs / 1000)}s (attempt ${retryCount + 1}/${maxRetries})`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, backoffMs));
+        return this.withRateLimit(
+          fn,
+          retryMode,
+          retryCount + 1,
+          startedAtMs,
+        );
+      }
+
+      // Retry transient upstream errors only for read operations. Writes are
+      // intentionally at-most-once from this client once submitted upstream.
+      if (
+        err instanceof UpstreamError &&
+        retryMode === "read" &&
+        retryCount < maxRetries
+      ) {
+        const backoffMs = Math.min(500 * Math.pow(2, retryCount), 5000);
+        const elapsedMs = Date.now() - startedAtMs;
+        const remainingBudgetMs = Math.max(0, readRetryBudgetMs - elapsedMs);
+        if (backoffMs > remainingBudgetMs) {
+          throw err;
+        }
+
+        this.logger.warn(
+          `Transient error, retrying in ${Math.ceil(backoffMs / 1000)}s (attempt ${retryCount + 1}/${maxRetries}): ${err.message}`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, backoffMs));
+        return this.withRateLimit(
+          fn,
+          retryMode,
+          retryCount + 1,
+          startedAtMs,
+        );
+      }
+
+      throw err instanceof Error
+        ? err
+        : new UpstreamError("Unknown upstream error", err);
+    }
+  }
+'''
+
+          pattern = re.compile(
+              r'  private async withRateLimit<T>\(.*?\n  \}\n\n(?=  /\*\*\n   \* Fetch all collections)',
+              re.S,
+          )
+          text, count = pattern.subn(replacement + '\n', text, count=1)
+          if count != 1:
+              raise SystemExit(f'withRateLimit replacement count={count}')
+
+          write_methods = [
+              'createCollection',
+              'updateCollection',
+              'deleteCollection',
+              'shareCollection',
+              'createBookmark',
+              'updateBookmark',
+              'deleteBookmark',
+              'batchUpdateBookmarks',
+              'batchUpdateBookmarksInCollection',
+              'batchDeleteBookmarksInCollection',
+              'removeEmptyCollections',
+              'deleteTags',
+              'renameTag',
+              'mergeTags',
+              'createHighlight',
+              'updateHighlight',
+              'deleteHighlight',
+          ]
+          for method in write_methods:
+              method_pattern = re.compile(
+                  rf'(async {method}\b.*?)(this\.withRateLimit\()', re.S
+              )
+              text, n = method_pattern.subn(
+                  r'\1this.withWriteRateLimit(', text, count=1
+              )
+              if n != 1:
+                  raise SystemExit(f'{method} replacement count={n}')
+
+          service_path.write_text(text)
+
+          package_path = Path('apps/raindrop-mcp-worker/package.json')
+          package_text = package_path.read_text()
+          old = 'tests/caching.test.ts tests/suggest_tags.test.ts'
+          new = 'tests/caching.test.ts tests/retry_safety.test.ts tests/suggest_tags.test.ts'
+          if package_text.count(old) != 1:
+              raise SystemExit('package test:local anchor mismatch')
+          package_path.write_text(package_text.replace(old, new, 1))
+
+          test_path = Path('apps/raindrop-mcp-worker/tests/retry_safety.test.ts')
+          test_path.write_text('''import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";\nimport RaindropService from "../src/services/raindrop.service.js";\n\ndescribe("RaindropService retry safety", () => {\n  beforeEach(() => {\n    process.env.RAINDROP_RATE_LIMIT_MAX_RETRIES = "1";\n    process.env.RAINDROP_RATE_LIMIT_POINTS = "1000";\n    process.env.RAINDROP_RATE_LIMIT_DURATION_SECONDS = "1";\n  });\n\n  afterEach(() => {\n    vi.useRealTimers();\n    vi.unstubAllGlobals();\n    delete process.env.RAINDROP_RATE_LIMIT_MAX_RETRIES;\n    delete process.env.RAINDROP_RATE_LIMIT_POINTS;\n    delete process.env.RAINDROP_RATE_LIMIT_DURATION_SECONDS;\n  });\n\n  it("does not retry an upstream failure after submitting a write", async () => {\n    const fetchMock = vi.fn(async () =>\n      new Response("upstream failure", {\n        status: 500,\n        statusText: "Internal Server Error",\n      }),\n    );\n    vi.stubGlobal("fetch", fetchMock);\n\n    const service = new RaindropService("test-token");\n    (service as any).rateLimiter = undefined;\n\n    await expect(service.createCollection("one-shot")).rejects.toThrow(\n      "API Error: 500 Internal Server Error",\n    );\n    expect(fetchMock).toHaveBeenCalledTimes(1);\n  });\n\n  it("keeps bounded transient retries for reads", async () => {\n    vi.useFakeTimers();\n    const fetchMock = vi\n      .fn()\n      .mockResolvedValueOnce(\n        new Response("upstream failure", {\n          status: 500,\n          statusText: "Internal Server Error",\n        }),\n      )\n      .mockResolvedValueOnce(\n        new Response(JSON.stringify({ items: [] }), {\n          status: 200,\n          headers: { "content-type": "application/json" },\n        }),\n      );\n    vi.stubGlobal("fetch", fetchMock);\n\n    const service = new RaindropService("test-token");\n    (service as any).rateLimiter = undefined;\n\n    const resultPromise = service.getCollections(true);\n    await vi.runAllTimersAsync();\n\n    await expect(resultPromise).resolves.toEqual([]);\n    expect(fetchMock).toHaveBeenCalledTimes(2);\n  });\n\n  it("does not retry a read before a Retry-After that exceeds its budget", async () => {\n    const fetchMock = vi.fn(async () =>\n      new Response("rate limited", {\n        status: 429,\n        headers: { "retry-after": "60" },\n      }),\n    );\n    vi.stubGlobal("fetch", fetchMock);\n\n    const service = new RaindropService("test-token");\n    (service as any).rateLimiter = undefined;\n\n    await expect(service.getCollections(true)).rejects.toThrow(\n      /exceeds remaining read retry budget/,\n    );\n    expect(fetchMock).toHaveBeenCalledTimes(1);\n  });\n\n  it("does not retry an upstream 429 after submitting a write", async () => {\n    const fetchMock = vi.fn(async () =>\n      new Response("rate limited", {\n        status: 429,\n        headers: { "retry-after": "1" },\n      }),\n    );\n    vi.stubGlobal("fetch", fetchMock);\n\n    const service = new RaindropService("test-token");\n    (service as any).rateLimiter = undefined;\n\n    await expect(service.createCollection("one-shot")).rejects.toThrow(\n      /Rate limited by Raindrop.io/,\n    );\n    expect(fetchMock).toHaveBeenCalledTimes(1);\n  });\n});\n''')
+          PY
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apps/raindrop-mcp-worker/src/services/raindrop.service.ts \
+                  apps/raindrop-mcp-worker/tests/retry_safety.test.ts \
+                  apps/raindrop-mcp-worker/package.json
+          git diff --cached --check
+          git commit -m "fix(raindrop): prevent unsafe write retries"
+          git push origin HEAD:ticket/19-raindrop-nonidempotent-retry
