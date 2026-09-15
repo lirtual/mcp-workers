@@ -1,67 +1,67 @@
-# Cloudflare MCP Portal migration
+# Database MCP Portal authentication
 
-This repository uses an expand/contract migration. During **expand**, Cloudflare MCP Portal can authenticate to `/mcp` with a dedicated origin bearer while the existing JWT OAuth resource-server path remains available for rollback.
+Database MCP uses Cloudflare MCP Portal as the supported client-facing ingress. The previous direct JWT OAuth resource-server compatibility path has been retired.
 
-## Expand architecture
+## Architecture
 
 ```text
 MCP client
-  -> Cloudflare MCP Portal + Managed OAuth / Access
-  -> Authorization: Bearer <MCP_ORIGIN_TOKEN>
+  -> Cloudflare MCP Portal
+  -> Authorization: Bearer <MCP_ACCESS_TOKEN>
   -> database MCP Worker /mcp
   -> Hyperdrive READ binding
   -> dedicated read-only database credential
   -> database-native GRANT / RLS / views / routine policy
 ```
 
-The legacy direct OAuth resource-server path remains usable until the contract ticket is approved:
+`MCP_ACCESS_TOKEN` authenticates only Portal -> Worker. Hyperdrive/database credentials authenticate only Worker -> database. Never reuse either credential for the other purpose.
 
-```text
-MCP client -> JWT bearer -> database MCP Worker /mcp
-```
-
-## Credential boundaries
-
-Keep these identities independent:
-
-1. Client identity is enforced by MCP Portal / Access.
-2. `MCP_ORIGIN_TOKEN` authenticates only Portal -> Worker.
-3. Hyperdrive/database credentials authenticate only Worker -> database.
-
-Store the origin credential as a Worker secret:
+Store the Portal credential as this Worker's own secret:
 
 ```bash
-npx wrangler secret put MCP_ORIGIN_TOKEN
+pnpm exec wrangler secret put MCP_ACCESS_TOKEN
 ```
 
-Never put a database password in MCP Portal and never reuse the Portal origin bearer as a database credential.
+The Worker consumes the inbound Portal `Authorization` header before MCP/tool handling. Tools receive only a non-secret logical principal (`cloudflare-mcp-portal`) with the logical `db:read` scope, preserving the existing audit/rate-limit context without forwarding the real Portal credential.
 
-## Portal principal and rate limiting
+## Retired client OAuth surface
 
-The existing tool layer requires an authenticated `clientId` for audit hashing and rate limiting. The legacy JWT path keeps its existing per-token subject. The Portal fixed-origin path supplies the stable synthetic principal `cloudflare-mcp-portal` and the configured read scope without exposing the origin secret in `authInfo`.
+The Worker no longer owns a direct client OAuth resource-server path. These runtime requirements are retired:
 
-This preserves the rate-limit and audit seams during expand. If a future multi-user deployment requires per-user rate limiting inside the Worker, that must use a verified Portal identity propagation mechanism rather than forwarding the client OAuth bearer as a business credential.
+- protected-resource metadata endpoint
+- JWT/JWKS access-token verification
+- `OAUTH_ISSUER`
+- `OAUTH_AUDIENCE`
+- `OAUTH_JWKS_URL`
+- `OAUTH_REQUIRED_SCOPE`
+- `MCP_ORIGIN_TOKEN`
 
-## Origin hardening
+The original `docs/spec.md` describes the earlier v0.1 OAuth resource-server design and remains useful as historical/database-security design evidence; this document supersedes its client-authentication sections for the current monorepo target.
 
-The production Worker example disables `workers.dev` and Preview URLs. Configure a production custom hostname reachable by Cloudflare MCP Portal and register its full `/mcp` URL as the upstream server.
+## Security boundaries retained
 
-Configure Portal upstream authentication as Bearer using `MCP_ORIGIN_TOKEN`. Configure ChatGPT or another MCP client with the **Portal URL**, not the raw Worker hostname.
+Portal-only ingress does **not** weaken database authorization:
+
+1. The MCP tool surface remains read-only.
+2. Each logical connection maps only to its READ Hyperdrive binding.
+3. Hyperdrive uses a dedicated least-privilege database identity.
+4. Database-native GRANTs, PostgreSQL RLS, restricted views, and routine/function permissions remain the authoritative data boundary.
+5. SQL guardrails, result/row/time limits, rate limiting and sanitized logs remain application-local.
 
 ## Acceptance checks
 
-Run these before any contract-phase deletion:
+1. `/mcp` without a bearer or with the retired direct OAuth bearer is rejected with `401`.
+2. Missing `MCP_ACCESS_TOKEN` configuration fails closed with `503`.
+3. A request carrying a browser `Origin` is rejected because the Worker has no direct browser-client requirement.
+4. Correct Portal bearer reaches the MCP transport and the inbound Authorization value is absent from tool/domain handling.
+5. Portal discovers the existing five read-only tools.
+6. `list_connections` and `inspect_schema` work through Portal.
+7. PostgreSQL and MySQL integration tests continue to use dedicated read-only credentials.
+8. Unsafe/write SQL remains rejected by Worker guardrails and independently by database permissions.
+9. PostgreSQL RLS/restricted views and MySQL least-privilege behavior remain unchanged.
+10. Rate limiting still applies using the stable logical Portal principal.
+11. Logs contain no Portal credential, Hyperdrive connection secret, SQL parameter value, or database password.
 
-1. A request using `MCP_ORIGIN_TOKEN` reaches the MCP transport and the incoming Authorization header is not exposed to tools.
-2. The existing JWT bearer resource-server path still works.
-3. Portal discovers the five existing read-only tools.
-4. `list_connections` and `inspect_schema` succeed through Portal.
-5. Representative PostgreSQL and MySQL reads remain bounded and use dedicated read-only credentials.
-6. Unsafe/write SQL remains rejected by Worker guardrails and, independently, by database permissions.
-7. PostgreSQL RLS / restricted views and MySQL least-privilege behavior remain unchanged.
-8. Rate limiting still applies to Portal traffic using the stable Portal principal.
-9. Logs contain no client token, `MCP_ORIGIN_TOKEN`, Hyperdrive connection secret, SQL parameter values, or database password.
+## Deployment boundary
 
-## Contract phase
-
-Only after the checks above succeed should the follow-up contract ticket remove Worker-owned protected-resource metadata, JWKS verification, and client OAuth issuer/audience configuration. Hyperdrive routing, rate limiting, SQL guardrails, result bounds, read-only credentials, and database-native authorization are explicitly retained.
+Production deployment remains Cloudflare Builds only. Preserve the actual Worker name, Hyperdrive resource IDs, bindings and reachable route during cutover. Do not create a second production publisher. If no current production instance exists, this ticket only establishes the target code/config contract; deployment is handled by the later acceptance/cutover work.
