@@ -99,7 +99,7 @@ const server = http.createServer(async (req, res) => {
     res.end(
       JSON.stringify({
         status: "healthy",
-        service: "raindrop-mcp",
+        service: "raindrop-mcp-worker",
         version: pkg.version,
         protocolTarget: "2026-07-28",
         httpMode: "per-request",

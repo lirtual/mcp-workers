@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "raindrop-mcp",
+  "name": "raindrop-mcp-worker",
   "main": "src/worker.ts",
   "compatibility_date": "2026-09-12",
   "workers_dev": false,

@@ -65,7 +65,7 @@ Raindrop's expected reference path is:
 MCP client
   -> Cloudflare MCP Portal + Managed OAuth
   -> Authorization: Bearer <MCP_ORIGIN_TOKEN>
-  -> raindrop-mcp Worker /mcp
+  -> raindrop-mcp-worker Worker /mcp
   -> RAINDROP_ACCESS_TOKEN
   -> Raindrop.io API
 ```
