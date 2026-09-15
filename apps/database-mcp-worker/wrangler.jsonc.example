@@ -9,10 +9,6 @@
   "observability": { "enabled": true },
   "vars": {
     "CONNECTIONS_JSON": "[{\"id\":\"prod_pg\",\"displayName\":\"Production PostgreSQL\",\"dialect\":\"postgres\",\"binding\":\"PROD_PG_READ\",\"enabled\":true,\"defaultSchema\":\"public\"},{\"id\":\"prod_mysql\",\"displayName\":\"Production MySQL\",\"dialect\":\"mysql\",\"binding\":\"PROD_MYSQL_READ\",\"enabled\":true}]",
-    "OAUTH_ISSUER": "https://auth.example.com",
-    "OAUTH_AUDIENCE": "https://database-mcp.example.com/mcp",
-    "OAUTH_JWKS_URL": "https://auth.example.com/.well-known/jwks.json",
-    "OAUTH_REQUIRED_SCOPE": "db:read",
     "MAX_ROWS": "500",
     "MAX_RESULT_BYTES": "1048576",
     "MAX_SCHEMA_BYTES": "524288",
