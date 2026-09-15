@@ -5,6 +5,7 @@ import type { Env, ImaCredentials } from "./types.ts";
 import { ImaClient, ImaKnowledge, ImaNotes } from "./ima.ts";
 import { registerTools } from "./tools.ts";
 import { IMA_SERVER_INSTRUCTIONS } from "./instructions.ts";
+import { verifySignedDownload } from "./r2.ts";
 
 const VERSION = "0.5.0";
 
@@ -14,6 +15,7 @@ function missingRuntimeConfig(env: Env): string[] {
   if (!env.CLIENT_ID) missing.push("CLIENT_ID");
   if (!env.API_KEY) missing.push("API_KEY");
   if (!env.R2_BUCKET) missing.push("R2_BUCKET");
+  if (!env.IMA_DOWNLOAD_SIGNING_KEY) missing.push("IMA_DOWNLOAD_SIGNING_KEY");
   return missing;
 }
 
@@ -34,6 +36,16 @@ function authError(status: number, code: string, message: string): Response {
   );
 }
 
+function downloadError(status: number, message: string): Response {
+  return new Response(message, {
+    status,
+    headers: {
+      "cache-control": "no-store",
+      "content-type": "text/plain; charset=utf-8",
+    },
+  });
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -50,14 +62,39 @@ export default {
     }
 
     if (url.pathname.startsWith("/download/")) {
-      const key = decodeURIComponent(url.pathname.slice("/download/".length));
-      if (!env.R2_BUCKET) return new Response("R2 bucket not configured", { status: 503 });
+      if (!env.R2_BUCKET) return downloadError(503, "R2 bucket not configured");
+
+      let key: string;
+      try {
+        key = decodeURIComponent(url.pathname.slice("/download/".length));
+      } catch {
+        return downloadError(403, "Invalid download link");
+      }
+
+      const authorization = await verifySignedDownload(
+        env,
+        key,
+        url.searchParams.get("expires"),
+        url.searchParams.get("sig"),
+      );
+      if (!authorization.ok) {
+        if (authorization.reason === "misconfigured") {
+          return downloadError(503, "Download signing is not configured");
+        }
+        if (authorization.reason === "expired") {
+          return downloadError(410, "Download link expired");
+        }
+        return downloadError(403, "Invalid download link");
+      }
+
       const object = await env.R2_BUCKET.get(key);
-      if (!object) return new Response("File not found", { status: 404 });
+      if (!object) return downloadError(404, "File not found");
+
       const headers = new Headers();
       object.writeHttpMetadata(headers);
       headers.set("etag", object.httpEtag);
-      headers.set("cache-control", "public, max-age=86400");
+      headers.set("cache-control", "private, no-store");
+      headers.set("x-content-type-options", "nosniff");
       return new Response(object.body, { headers });
     }
 
@@ -95,14 +132,15 @@ export default {
       clientId: env.CLIENT_ID!,
       apiKey: env.API_KEY!,
     };
+    const runtimeEnv: Env = env.PUBLIC_BASE_URL ? env : { ...env, PUBLIC_BASE_URL: url.origin };
 
     const handler = createMcpHandler(() => {
-      const api = new ImaClient(env, credentials);
+      const api = new ImaClient(runtimeEnv, credentials);
       const server = new McpServer(
         { name: "ima", version: VERSION },
         { instructions: IMA_SERVER_INSTRUCTIONS },
       );
-      registerTools(server, new ImaNotes(api), new ImaKnowledge(env, api), true);
+      registerTools(server, new ImaNotes(api), new ImaKnowledge(runtimeEnv, api), true);
       return server;
     }, {
       route: "/mcp",

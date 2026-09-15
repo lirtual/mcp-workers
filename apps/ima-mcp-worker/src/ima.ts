@@ -176,7 +176,7 @@ export class ImaNotes {
       },
     });
 
-    const download_url = buildDownloadUrl(this.api.env, key);
+    const download_url = await buildDownloadUrl(this.api.env, key);
     return {
       download_url,
       file_name: fileName,
@@ -413,7 +413,7 @@ export class ImaKnowledge {
       },
     });
 
-    const download_url = buildDownloadUrl(this.env, key);
+    const download_url = await buildDownloadUrl(this.env, key);
     return {
       download_url,
       file_name: fileName,
