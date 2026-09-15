@@ -1,7 +1,7 @@
 # 02 — 创建 mcp-workers 骨架并迁移 WeRead 作为 tracer-bullet
 
-**Status:** `blocked-runtime-acceptance`  
-**Blocked by:** Cloudflare Build / MCP Portal management surface unavailable in this session  
+**Status:** `runtime-acceptance-in-progress`  
+**Blocked by:** Cloudflare Build + MCP Portal runtime acceptance  
 **Scope:** `mcp-workers`（明确排除 Quark MCP）
 
 ## Goal
@@ -45,10 +45,14 @@
 - [ ] Cloudflare Build/部署记录。
 - [ ] Portal 只读 smoke。
 
+## Runtime acceptance trigger
+
+Cloudflare Builds 已由用户修正为现有 Worker `weread-mcp-worker`，仓库 `lirtual/mcp-workers`，production branch `ticket/02-pilot-weread-migration`，Root Directory `apps/weread-mcp-worker`。本提交仅更新迁移记录，用于触发一次新的 Cloudflare build；`apps/weread-mcp-worker` 源码与配置未修改。
+
 ## Source
 
 spec §8 Phase A/B, §10 AC07/AC08/AC13
 
 ## Current blocker
 
-源码迁移部分已提交在 `ticket/02-pilot-weread-migration`，但按 implement-spec 在 Cloudflare/Portal 验收完成前**不得合入**统一 feature 分支，因此 #03–#07 仍保持 blocked。
+源码迁移部分已提交在 `ticket/02-pilot-weread-migration`。等待本次 Cloudflare build、单一发布源确认、Portal discovery 与安全只读调用完成后才能合入统一 feature 分支；此前 #03–#07 继续 blocked。
