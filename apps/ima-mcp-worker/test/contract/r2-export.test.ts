@@ -120,10 +120,10 @@ test("temporary download policy defaults to one hour and seven days and rejects 
   );
 });
 
-test("buildDownloadUrl returns an object-bound expiring Worker URL and never a public R2 direct URL", () => {
+test("buildDownloadUrl returns an object-bound expiring Worker URL and never a public R2 direct URL", async () => {
   const now = 1_800_000_000;
   const key = "exports/media/123/export-1/file.pdf";
-  const url = new URL(buildDownloadUrl(downloadEnv(), key, undefined, now));
+  const url = new URL(await buildDownloadUrl(downloadEnv(), key, undefined, now));
   assert.strictEqual(url.origin, "https://ima.example.com");
   assert.strictEqual(decodeURIComponent(url.pathname.slice("/download/".length)), key);
   assert.strictEqual(url.searchParams.get("expires"), String(now + 3600));
@@ -341,7 +341,7 @@ test("Worker signed download route accepts valid links and rejects unsigned, tam
 
   const envWithR2: Env = downloadEnv({ R2_BUCKET: mockR2 as any });
   const now = Math.floor(Date.now() / 1000);
-  const signedUrl = buildDownloadUrl(envWithR2, key, undefined, now);
+  const signedUrl = await buildDownloadUrl(envWithR2, key, undefined, now);
 
   const success = await worker.fetch(new Request(signedUrl), envWithR2, {} as any);
   assert.strictEqual(success.status, 200);
@@ -368,13 +368,13 @@ test("Worker signed download route accepts valid links and rejects unsigned, tam
   const tamperedExpiryResponse = await worker.fetch(new Request(tamperedExpiry), envWithR2, {} as any);
   assert.strictEqual(tamperedExpiryResponse.status, 403);
 
-  const expiredUrl = buildDownloadUrl(envWithR2, key, undefined, now - 7200);
+  const expiredUrl = await buildDownloadUrl(envWithR2, key, undefined, now - 7200);
   const expired = await worker.fetch(new Request(expiredUrl), envWithR2, {} as any);
   assert.strictEqual(expired.status, 410);
 
   const missingKey = "exports/media/1/export-1/missing.txt";
   const notFound = await worker.fetch(
-    new Request(buildDownloadUrl(envWithR2, missingKey, undefined, now)),
+    new Request(await buildDownloadUrl(envWithR2, missingKey, undefined, now)),
     envWithR2,
     {} as any,
   );
