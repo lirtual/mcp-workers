@@ -1,0 +1,10 @@
+# Local development only. Copy to .dev.vars; never commit secrets.
+CLIENT_ID=
+API_KEY=
+MCP_ACCESS_TOKEN=
+
+# Optional: public base URL override for generated download links.
+PUBLIC_BASE_URL=http://localhost:8787
+
+# Optional: custom domain for R2 download URLs (e.g. cdn.example.com or https://cdn.example.com)
+# R2_CUSTOM_DOMAIN=

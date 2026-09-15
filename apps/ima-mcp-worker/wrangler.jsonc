@@ -1,0 +1,14 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "ima-mcp-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-11",
+  "workers_dev": true,
+  "observability": { "enabled": true },
+  "r2_buckets": [
+    {
+      "binding": "R2_BUCKET",
+      "bucket_name": "ima-mcp-worker"
+    }
+  ]
+}
