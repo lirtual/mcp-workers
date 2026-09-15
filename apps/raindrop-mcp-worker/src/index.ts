@@ -42,9 +42,23 @@ if (!process.env.RAINDROP_ACCESS_TOKEN) {
  * @see RaindropMCPService
  */
 export async function main(): Promise<void> {
-  const handle = serveStdio(() => new RaindropMCPService().getServer(), {
-    onerror: (error) => logger.error("STDIO transport error", error),
-  });
+  const maxReadRetries = Number(
+    process.env.RAINDROP_RATE_LIMIT_MAX_RETRIES ?? "3",
+  );
+  const serviceConfig = {
+    accessToken: process.env.RAINDROP_ACCESS_TOKEN,
+    maxReadRetries:
+      Number.isInteger(maxReadRetries) && maxReadRetries >= 0
+        ? maxReadRetries
+        : 3,
+    debugHttp: process.env.NODE_ENV === "development",
+  };
+  const handle = serveStdio(
+    () => new RaindropMCPService(serviceConfig).getServer(),
+    {
+      onerror: (error) => logger.error("STDIO transport error", error),
+    },
+  );
   logger.info("MCP server connected via STDIO transport");
 
   // Handle graceful shutdown on SIGINT

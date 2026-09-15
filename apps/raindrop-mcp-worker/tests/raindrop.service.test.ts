@@ -18,7 +18,7 @@ describeLive("RaindropService Read-Only API Integration", () => {
   let service: RaindropService;
 
   beforeEach(() => {
-    service = new RaindropService();
+    service = new RaindropService(process.env.RAINDROP_ACCESS_TOKEN ?? "");
   });
 
   it("fetches user info", async () => {
