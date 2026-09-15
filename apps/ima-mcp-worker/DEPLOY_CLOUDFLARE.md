@@ -1,19 +1,21 @@
 # Cloudflare deployment
 
-This project uses one production architecture: Cloudflare MCP Portal in front of the `ima-mcp-worker` Worker, a static origin bearer, Worker Secrets for IMA credentials, and R2 for exports. D1 and Worker-owned OAuth are not used.
+This project uses one production architecture: Cloudflare MCP Portal in front of the `ima-mcp-worker` Worker, a static per-Worker bearer credential, Worker Secrets for IMA credentials, and R2 for exports. D1 and Worker-owned OAuth are not used.
 
 ## 1. Requirements
 
 - Cloudflare account
-- Node.js + npm
-- Wrangler login (`npx wrangler login`) or equivalent Cloudflare Dashboard access
+- Node.js 24 + pnpm 10
+- Wrangler login or equivalent Cloudflare Dashboard access
 - IMA OpenAPI Client ID and API Key
 - Cloudflare MCP Portal
 
 ## 2. Install dependencies
 
+From the monorepo root:
+
 ```bash
-npm install
+pnpm install --frozen-lockfile
 ```
 
 ## 3. Create the R2 bucket
@@ -21,7 +23,7 @@ npm install
 The production bucket name is `ima-mcp-worker` and the Worker binding is `R2_BUCKET`.
 
 ```bash
-npx wrangler r2 bucket create ima-mcp-worker
+pnpm --filter ima-mcp-worker exec wrangler r2 bucket create ima-mcp-worker
 ```
 
 `wrangler.jsonc` already declares:
@@ -40,9 +42,9 @@ If the bucket already exists, do not recreate it. The old `ima-exports` bucket i
 Required secrets:
 
 ```bash
-npx wrangler secret put CLIENT_ID
-npx wrangler secret put API_KEY
-npx wrangler secret put MCP_ACCESS_TOKEN
+pnpm --filter ima-mcp-worker exec wrangler secret put CLIENT_ID
+pnpm --filter ima-mcp-worker exec wrangler secret put API_KEY
+pnpm --filter ima-mcp-worker exec wrangler secret put MCP_ACCESS_TOKEN
 ```
 
 The same values can be entered in Cloudflare Dashboard under the Worker's Variables and Secrets settings.
@@ -51,9 +53,9 @@ Credential roles are intentionally separate:
 
 - `CLIENT_ID`: IMA OpenAPI Client ID.
 - `API_KEY`: IMA OpenAPI API Key.
-- `MCP_ACCESS_TOKEN`: independent Portal-to-Worker bearer token.
+- `MCP_ACCESS_TOKEN`: independent Portal-to-Worker bearer token for this Worker.
 
-Do not reuse the IMA API key as `MCP_ACCESS_TOKEN`.
+Do not reuse the IMA API key as `MCP_ACCESS_TOKEN`, and do not reuse this Worker's access token for another Worker.
 
 Retired names are not supported: `IMA_OPENAPI_CLIENTID`, `IMA_OPENAPI_APIKEY`, `CLIENTID`, and `APIKEY`.
 
@@ -62,24 +64,25 @@ Retired names are not supported: `IMA_OPENAPI_CLIENTID`, `IMA_OPENAPI_APIKEY`, `
 - `IMA_BASE_URL`: overrides the default `https://ima.qq.com` endpoint.
 - `PUBLIC_BASE_URL`: overrides the Worker origin used for generated download links.
 - `R2_CUSTOM_DOMAIN`: direct-download domain for R2 objects.
-- `MCP_ALLOWED_ORIGIN_HOSTNAMES`: optional browser-origin hostname allowlist.
 - `FILE_DOWNLOAD_TIMEOUT_MS`, `FILE_DOWNLOAD_MAX_REDIRECTS`, `FILE_DOWNLOAD_MAX_BUFFER_BYTES`, `IMA_RESPONSE_MAX_BYTES`: existing transfer limits.
 
-No `AUTH_MODE`, `OAUTH_MASTER_KEY`, OAuth redirect allowlist, or D1 database variables are required.
+There is no browser-origin allowlist because the Worker does not support a direct browser MCP client. No `AUTH_MODE`, `OAUTH_MASTER_KEY`, OAuth redirect allowlist, or D1 database variables are required.
 
 ## 6. Deploy
 
+Production deployment is performed by the configured Cloudflare Build for this app. For a local dry run:
+
 ```bash
-npx wrangler deploy
+pnpm --filter ima-mcp-worker run deploy:dry-run
 ```
 
-The Worker service is:
+The Worker service remains:
 
 ```text
 ima-mcp-worker
 ```
 
-Typical endpoint:
+Current Worker endpoint shape:
 
 ```text
 https://ima-mcp-worker.<workers-subdomain>.workers.dev/mcp
@@ -98,7 +101,7 @@ curl https://ima-mcp-worker.<workers-subdomain>.workers.dev/health
 curl https://ima-mcp-worker.<workers-subdomain>.workers.dev/ready
 ```
 
-`/health` is public liveness and does not access D1.
+`/health` is public liveness and does not access IMA.
 
 A correctly configured `/ready` response is:
 
@@ -108,9 +111,9 @@ A correctly configured `/ready` response is:
 
 If required configuration is missing, `/ready` returns HTTP 503 and only the missing capability names, never secret values.
 
-## 8. Verify origin authentication
+## 8. Verify Portal authentication
 
-A direct `/mcp` request without the origin bearer must be rejected:
+A direct `/mcp` request without the bearer must be rejected:
 
 ```bash
 curl -i -X POST https://ima-mcp-worker.<workers-subdomain>.workers.dev/mcp
@@ -118,26 +121,24 @@ curl -i -X POST https://ima-mcp-worker.<workers-subdomain>.workers.dev/mcp
 
 Expected when `MCP_ACCESS_TOKEN` is configured: HTTP 401 with `WWW-Authenticate: Bearer`.
 
-If `MCP_ACCESS_TOKEN` itself is missing from the Worker, `/mcp` fails closed with HTTP 503 instead of becoming public.
+If `MCP_ACCESS_TOKEN` itself is missing from the Worker, `/mcp` fails closed with HTTP 503 instead of becoming public. A request carrying an `Origin` header is rejected with HTTP 403.
 
 ## 9. Configure Cloudflare MCP Portal
-
-In Zero Trust > Access controls > MCP Portals:
 
 1. Add the Worker MCP endpoint as an MCP server.
 2. Set upstream authentication type to **Bearer**.
 3. Use the exact `MCP_ACCESS_TOKEN` value as the bearer credential.
 4. Do not configure Worker-owned OAuth, Dynamic Client Registration, PKCE, or per-user IMA BYOK.
-5. Add the server to the desired Portal and protect the Portal with the appropriate Access policy.
+5. Add the server to the desired Portal.
 6. Sync capabilities and verify that the expected IMA tools are visible.
 
-Cloudflare Portal sends a raw bearer credential as:
+Cloudflare Portal sends:
 
 ```text
 Authorization: Bearer <MCP_ACCESS_TOKEN>
 ```
 
-Portal/client authentication and this origin bearer are separate security layers.
+The shared Portal auth boundary consumes this header before MCP/domain handling. Client-facing authentication at Portal and this Worker access bearer are separate security layers.
 
 ## 10. R2 custom domain (optional)
 
@@ -147,23 +148,22 @@ In Cloudflare Dashboard -> R2 -> `ima-mcp-worker` -> Settings -> Custom Domains,
 R2_CUSTOM_DOMAIN=https://download.example.com
 ```
 
-Exports then return direct links beneath the existing `exports/...` object key structure.
+Exports then return direct links beneath the existing `exports/...` object key structure. This existing download behavior is unchanged in the Portal ingress migration; signed/expiring download hardening is handled separately.
 
 ## 11. Local development
 
 ```bash
-cp .dev.vars.example .dev.vars
-npm install
-npm run dev
+cp apps/ima-mcp-worker/.dev.vars.example apps/ima-mcp-worker/.dev.vars
+pnpm --filter ima-mcp-worker run dev
 ```
 
-Populate `CLIENT_ID`, `API_KEY`, and `MCP_ACCESS_TOKEN` in `.dev.vars` before testing authenticated MCP requests.
+Populate `CLIENT_ID`, `API_KEY`, and `MCP_ACCESS_TOKEN` before testing authenticated MCP requests.
 
 No local D1 migration is required.
 
 ## 12. Naming
 
-The GitHub repository, Cloudflare Worker service, and production R2 bucket all use `ima-mcp-worker`.
+The GitHub app directory, Cloudflare Worker service, and production R2 bucket all use `ima-mcp-worker`.
 
 ## Large-file behavior
 

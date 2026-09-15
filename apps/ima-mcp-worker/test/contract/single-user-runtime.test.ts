@@ -7,7 +7,7 @@ const ctx = {} as ExecutionContext;
 
 function baseEnv(overrides: Partial<Env> = {}): Env {
   return {
-    MCP_ACCESS_TOKEN: "origin-secret",
+    MCP_ACCESS_TOKEN: "portal-secret",
     CLIENT_ID: "client-id",
     API_KEY: "api-key",
     R2_BUCKET: {} as R2Bucket,
@@ -44,7 +44,7 @@ test("/ready reports missing capabilities without secret values", async () => {
   const body = await json(response);
   assert.equal(body.ready, false);
   assert.deepEqual(body.missing, ["MCP_ACCESS_TOKEN", "CLIENT_ID", "API_KEY", "R2_BUCKET"]);
-  assert.equal(JSON.stringify(body).includes("origin-secret"), false);
+  assert.equal(JSON.stringify(body).includes("portal-secret"), false);
   assert.equal(JSON.stringify(body).includes("client-id"), false);
   assert.equal(JSON.stringify(body).includes("api-key"), false);
 });
@@ -57,12 +57,12 @@ test("/mcp fails closed when MCP_ACCESS_TOKEN is not configured", async () => {
   );
   assert.equal(response.status, 503);
   assert.deepEqual(await json(response), {
-    error: "server_misconfigured",
-    missing: ["MCP_ACCESS_TOKEN"],
+    error: "portal_auth_not_configured",
+    message: "MCP Portal authentication is not configured.",
   });
 });
 
-test("/mcp rejects missing or incorrect origin bearer", async () => {
+test("/mcp rejects missing or incorrect Portal bearer", async () => {
   for (const authorization of [undefined, "Bearer wrong-token"]) {
     const headers = new Headers();
     if (authorization) headers.set("authorization", authorization);
@@ -76,9 +76,28 @@ test("/mcp rejects missing or incorrect origin bearer", async () => {
   }
 });
 
+test("/mcp rejects browser Origin because no browser client is supported", async () => {
+  const response = await worker.fetch(
+    new Request("https://worker.example/mcp", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer portal-secret",
+        origin: "https://client.example",
+      },
+    }),
+    baseEnv(),
+    ctx,
+  );
+  assert.equal(response.status, 403);
+  assert.deepEqual(await json(response), {
+    error: "invalid_origin",
+    message: "Request Origin is not allowed.",
+  });
+});
+
 test("retired IMA secret names do not satisfy the runtime contract", async () => {
   const env = {
-    MCP_ACCESS_TOKEN: "origin-secret",
+    MCP_ACCESS_TOKEN: "portal-secret",
     IMA_OPENAPI_CLIENTID: "legacy-client",
     IMA_OPENAPI_APIKEY: "legacy-key",
     R2_BUCKET: {} as R2Bucket,
@@ -86,7 +105,7 @@ test("retired IMA secret names do not satisfy the runtime contract", async () =>
   const response = await worker.fetch(
     new Request("https://worker.example/mcp", {
       method: "POST",
-      headers: { authorization: "Bearer origin-secret" },
+      headers: { authorization: "Bearer portal-secret" },
     }),
     env,
     ctx,

@@ -7,7 +7,7 @@ Cloudflare-native MCP server for Tencent IMA notes and knowledge bases.
 ```text
 ChatGPT / MCP client
        ↓
-Cloudflare MCP Portal + Access
+Cloudflare MCP Portal
        ↓ Authorization: Bearer <MCP_ACCESS_TOKEN>
 Cloudflare Worker: ima-mcp-worker
        ↓ Worker Secrets: CLIENT_ID + API_KEY
@@ -20,13 +20,15 @@ R2 bucket: ima-mcp-worker
 
 This deployment is intentionally **single-user**. The Worker is stateless for authentication and does not use D1 or host its own OAuth provider.
 
-The three credential boundaries are independent:
+The credential boundaries are independent:
 
-- Portal/client authentication: Cloudflare MCP Portal + Access.
-- Portal-to-Worker origin credential: `MCP_ACCESS_TOKEN`.
-- IMA business credentials: `CLIENT_ID` and `API_KEY`.
+- Client-facing authentication is owned by Cloudflare MCP Portal.
+- Portal-to-Worker authentication uses this Worker's dedicated `MCP_ACCESS_TOKEN` through the shared `@mcp-workers/portal-auth` boundary.
+- IMA business authentication uses `CLIENT_ID` and `API_KEY`.
 
-Do not reuse one credential for another layer.
+Do not reuse one credential for another layer or reuse this Worker's access token for another Worker. The Portal bearer is removed before the MCP SDK or IMA tool code receives the request.
+
+IMA has no direct browser-client requirement. Server-to-server requests without an `Origin` header are accepted after bearer validation; requests that contain an `Origin` header are rejected.
 
 ## Features
 

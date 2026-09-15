@@ -1,3 +1,4 @@
+import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
 import { createMcpHandler } from "agents/mcp/server";
 import { McpServer } from "@modelcontextprotocol/server";
 import type { Env, ImaCredentials } from "./types.ts";
@@ -6,27 +7,6 @@ import { registerTools } from "./tools.ts";
 import { IMA_SERVER_INSTRUCTIONS } from "./instructions.ts";
 
 const VERSION = "0.5.0";
-
-const csv = (s?: string) => (s || "").split(",").map(x => x.trim().toLowerCase()).filter(Boolean);
-
-export function originAllowed(request: Request, env: Env) {
-  const origin = request.headers.get("origin");
-  if (!origin) return true;
-  try {
-    const hostname = new URL(origin).hostname.toLowerCase();
-    const configured = csv(env.MCP_ALLOWED_ORIGIN_HOSTNAMES);
-    if (configured.length === 0 || configured.includes("*")) return true;
-    return configured.includes(hostname);
-  } catch {
-    return false;
-  }
-}
-
-function bearer(request: Request): string {
-  const authorization = request.headers.get("authorization") || "";
-  const match = /^Bearer\s+(.+)$/i.exec(authorization.trim());
-  return match?.[1] ?? "";
-}
 
 function missingRuntimeConfig(env: Env): string[] {
   const missing: string[] = [];
@@ -39,6 +19,19 @@ function missingRuntimeConfig(env: Env): string[] {
 
 function configurationError(missing: string[]): Response {
   return Response.json({ error: "server_misconfigured", missing }, { status: 503 });
+}
+
+function authError(status: number, code: string, message: string): Response {
+  return Response.json(
+    { error: code, message },
+    {
+      status,
+      headers: {
+        "cache-control": "no-store",
+        ...(status === 401 ? { "www-authenticate": "Bearer" } : {}),
+      },
+    },
+  );
 }
 
 export default {
@@ -69,13 +62,26 @@ export default {
     }
 
     if (url.pathname !== "/mcp") return new Response("Not found", { status: 404 });
-    if (!originAllowed(request, env)) return Response.json({ error: "forbidden_origin" }, { status: 403 });
 
-    if (!env.MCP_ACCESS_TOKEN) return configurationError(["MCP_ACCESS_TOKEN"]);
-    if (bearer(request) !== env.MCP_ACCESS_TOKEN) {
-      return Response.json(
-        { error: "unauthorized" },
-        { status: 401, headers: { "www-authenticate": "Bearer" } },
+    const portalAuth = await authenticatePortalRequest(request, {
+      expectedToken: env.MCP_ACCESS_TOKEN,
+      allowedOrigins: [],
+    });
+    if (!portalAuth.ok) {
+      if (portalAuth.reason === "misconfigured") {
+        return authError(
+          503,
+          "portal_auth_not_configured",
+          "MCP Portal authentication is not configured.",
+        );
+      }
+      if (portalAuth.reason === "invalid_origin") {
+        return authError(403, "invalid_origin", "Request Origin is not allowed.");
+      }
+      return authError(
+        401,
+        "unauthorized",
+        "Valid MCP Portal authentication is required.",
       );
     }
 
@@ -101,10 +107,9 @@ export default {
     }, {
       route: "/mcp",
       allowedHostnames: [url.hostname],
-      allowedOriginHostnames: "*",
       legacy: "stateless",
     });
 
-    return handler(request, env, ctx);
+    return handler(portalAuth.request, env, ctx);
   },
 } satisfies ExportedHandler<Env>;

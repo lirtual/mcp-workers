@@ -5,7 +5,6 @@ export interface Env {
   CLIENT_ID?: string;
   API_KEY?: string;
   MCP_ACCESS_TOKEN?: string;
-  MCP_ALLOWED_ORIGIN_HOSTNAMES?: string;
   PUBLIC_BASE_URL?: string;
   FILE_DOWNLOAD_TIMEOUT_MS?: string;
   FILE_DOWNLOAD_MAX_REDIRECTS?: string;
