@@ -87,9 +87,13 @@ Do not reuse any Instapaper OAuth credential for this value, and do not reuse th
 
 ## Deploy
 
-`wrangler.jsonc` disables preview URLs and keeps the existing production ingress contract. Deploy this app through its configured Cloudflare production build path.
+The monorepo ingress policy is authoritative: `wrangler.jsonc` enables the stable `workers.dev` origin and disables preview URLs. The Worker origin is therefore shaped as:
 
-The upstream MCP endpoint remains `/mcp`. ChatGPT or another MCP client connects through the **Portal URL**, not by treating the raw Worker endpoint as a separate client-auth surface.
+```text
+https://instapaper-mcp-worker.<workers-subdomain>.workers.dev
+```
+
+Configure MCP Portal with the Worker's `/mcp` endpoint. ChatGPT or another MCP client connects through the **Portal URL**, not by treating the raw Worker endpoint as a separate client-auth surface.
 
 ## Development and verification
 
@@ -99,6 +103,8 @@ pnpm test
 pnpm run deploy:dry-run
 pnpm run check
 ```
+
+Repository CI is owned by the monorepo root workflow; this app does not maintain a separate nested GitHub Actions pipeline.
 
 ## Security model
 
@@ -113,7 +119,7 @@ pnpm run check
 
 ## Notes
 
-This app is a cleaned Worker-only derivative of the previous `Instapaper-MCP` codebase. Local stdio transport, npm CLI packaging, and committed build artifacts were intentionally removed.
+This app is a cleaned Worker-only derivative of the previous Instapaper MCP codebase. Local stdio transport, npm CLI packaging, committed build artifacts, and standalone-repository CI are intentionally not maintained here.
 
 ## License
 
