@@ -6,7 +6,7 @@
   "description": "Cloudflare-native read-only MCP server for MySQL and PostgreSQL through Hyperdrive",
   "license": "MIT",
   "engines": {"node": ">=20"},
-  "packageManager": "npm@11.6.0",
+  "packageManager": "pnpm@10.17.1",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
