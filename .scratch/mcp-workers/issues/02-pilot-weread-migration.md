@@ -49,6 +49,8 @@
 
 Cloudflare Builds 已由用户修正为现有 Worker `weread-mcp-worker`，仓库 `lirtual/mcp-workers`，production branch `ticket/02-pilot-weread-migration`，Root Directory `apps/weread-mcp-worker`。本提交仅更新迁移记录，用于触发一次新的 Cloudflare build；`apps/weread-mcp-worker` 源码与配置未修改。
 
+- Trigger commit requested after correcting the Worker/branch/root binding on 2026-09-15.
+
 ## Source
 
 spec §8 Phase A/B, §10 AC07/AC08/AC13
