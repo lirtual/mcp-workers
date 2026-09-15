@@ -1,11 +1,13 @@
 export interface Env {
   R2_BUCKET?: R2Bucket;
-  R2_CUSTOM_DOMAIN?: string;
   IMA_BASE_URL?: string;
   CLIENT_ID?: string;
   API_KEY?: string;
   MCP_ACCESS_TOKEN?: string;
   PUBLIC_BASE_URL?: string;
+  IMA_DOWNLOAD_SIGNING_KEY?: string;
+  IMA_DOWNLOAD_TTL_SECONDS?: string;
+  IMA_EXPORT_RETENTION_SECONDS?: string;
   FILE_DOWNLOAD_TIMEOUT_MS?: string;
   FILE_DOWNLOAD_MAX_REDIRECTS?: string;
   FILE_DOWNLOAD_MAX_BUFFER_BYTES?: string;
@@ -181,6 +183,7 @@ export interface CheckRepeatedNamesResponse {
 
 export interface ExportFileResult {
   download_url: string;
+  download_expires_at: number;
   file_name: string;
   file_size?: number;
   content_type?: string;
