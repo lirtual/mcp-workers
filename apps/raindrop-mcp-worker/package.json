@@ -21,9 +21,9 @@
     "test:coverage": "vitest run --coverage",
     "test:e2e": "vitest run tests/mcp.integration.test.ts",
     "auth:check": "node scripts/auth-check.mjs",
-    "check": "pnpm run typecheck && pnpm run lint && pnpm test && pnpm run deploy:dry-run",
-    "generate:schema": "npx openapi-typescript ./raindrop-complete.yaml -o ./src/types/raindrop.schema.d.ts --tsconfig ./tsconfig.json --export-type --useUnionTypes --immutable",
-    "generate:client": "npx @openapitools/openapi-generator-cli generate -i ./raindrop-complete.yaml -g typescript-axios -o src/services/raindrop-client"
+    "generate:schema": "openapi-typescript ./raindrop-complete.yaml -o ./src/types/raindrop.schema.d.ts --tsconfig ./tsconfig.json --export-type --useUnionTypes --immutable",
+    "check:schema": "pnpm run generate:schema && git diff --exit-code -- src/types/raindrop.schema.d.ts",
+    "check": "pnpm run typecheck && pnpm run lint && pnpm test && pnpm run check:schema && pnpm run deploy:dry-run"
   },
   "license": "MIT",
   "dependencies": {
@@ -40,7 +40,6 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@openapitools/openapi-generator-cli": "^2.40.0",
     "@types/bun": "^1.3.14",
     "@types/node": "^26.1.1",
     "@typescript-eslint/eslint-plugin": "^8.65.0",

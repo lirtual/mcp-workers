@@ -70,6 +70,18 @@ Optional Worker variable:
 
 Do not commit secret values to the repository.
 
+## OpenAPI type generation
+
+`raindrop-complete.yaml` is the single canonical OpenAPI source retained by this application. Runtime code imports the generated `src/types/raindrop.schema.d.ts` types through `openapi-fetch`.
+
+Regenerate the schema types from the monorepo root with:
+
+```bash
+pnpm --filter raindrop-mcp-worker generate:schema
+```
+
+`pnpm --filter raindrop-mcp-worker check` also runs a determinism check and fails if regeneration changes the committed type file. The former duplicate spec and Axios client-generator path are not part of the maintained Worker architecture.
+
 ## Development and verification
 
 From the monorepo root:
@@ -79,7 +91,7 @@ pnpm install --frozen-lockfile
 pnpm --filter raindrop-mcp-worker check
 ```
 
-The application `check` runs TypeScript validation, lint, the local regression suite including the exact 17-tool contract, and Wrangler dry-run deployment validation.
+The application `check` runs TypeScript validation, lint, the local regression suite including the exact 17-tool contract, deterministic OpenAPI type regeneration, and Wrangler dry-run deployment validation.
 
 Optional tests that require a real `RAINDROP_ACCESS_TOKEN` remain outside the default CI-safe test set.
 
