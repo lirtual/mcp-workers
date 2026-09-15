@@ -4,6 +4,12 @@ Private source monorepo for independently deployed Cloudflare MCP Worker apps.
 
 Implementation is tracked on `feat/mcp-workers-monorepo`.
 
+## Migration completion rule
+
+A frozen source snapshot is migration evidence, not the final repository shape. A migrated app is not considered complete until it runs from the monorepo, its active files have a current runtime/verification/build-deploy/documentation/legal/provenance responsibility, obsolete standalone-repository artifacts have been pruned, current documentation is internally consistent, and the applicable monorepo checks pass. Historical material remains recoverable from Git history and the frozen source commit rather than being kept indefinitely in the active tree.
+
+Source-repository retirement and production cutover remain separate final actions after source/CI acceptance.
+
 ## Ingress policy
 
 All MCP Worker apps use their Cloudflare `workers.dev` origin as the production Worker endpoint:
