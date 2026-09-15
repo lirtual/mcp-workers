@@ -20,8 +20,8 @@
     "check": "pnpm run typecheck && pnpm run lint && pnpm test && pnpm run deploy:dry-run"
   },
   "dependencies": {
+    "@mcp-workers/portal-auth": "workspace:*",
     "@modelcontextprotocol/server": "^2.0.0",
-    "jose": "^6.0.0",
     "mysql2": "^3.13.0",
     "pg": "^8.16.3",
     "zod": "^4.2.0"
