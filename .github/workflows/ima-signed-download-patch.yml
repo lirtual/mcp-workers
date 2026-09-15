@@ -1,0 +1,63 @@
+name: IMA signed-download async patch
+
+on:
+  push:
+    branches:
+      - ticket/18-ima-signed-downloads
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ticket/18-ima-signed-downloads
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply exact async signing replacements
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          ima = Path('apps/ima-mcp-worker/src/ima.ts')
+          text = ima.read_text()
+          replacements = {
+              'const download_url = buildDownloadUrl(this.api.env, key);': 'const download_url = await buildDownloadUrl(this.api.env, key);',
+              'const download_url = buildDownloadUrl(this.env, key);': 'const download_url = await buildDownloadUrl(this.env, key);',
+          }
+          for old, new in replacements.items():
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected exactly one occurrence in ima.ts: {old!r}, found {count}')
+              text = text.replace(old, new)
+          ima.write_text(text)
+
+          test_file = Path('apps/ima-mcp-worker/test/contract/r2-export.test.ts')
+          text = test_file.read_text()
+          replacements = {
+              'test("buildDownloadUrl returns an object-bound expiring Worker URL and never a public R2 direct URL", () => {': 'test("buildDownloadUrl returns an object-bound expiring Worker URL and never a public R2 direct URL", async () => {',
+              'const url = new URL(buildDownloadUrl(downloadEnv(), key, undefined, now));': 'const url = new URL(await buildDownloadUrl(downloadEnv(), key, undefined, now));',
+              'const signedUrl = buildDownloadUrl(envWithR2, key, undefined, now);': 'const signedUrl = await buildDownloadUrl(envWithR2, key, undefined, now);',
+              'const expiredUrl = buildDownloadUrl(envWithR2, key, undefined, now - 7200);': 'const expiredUrl = await buildDownloadUrl(envWithR2, key, undefined, now - 7200);',
+              'new Request(buildDownloadUrl(envWithR2, missingKey, undefined, now)),': 'new Request(await buildDownloadUrl(envWithR2, missingKey, undefined, now)),',
+          }
+          for old, new in replacements.items():
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected exactly one occurrence in r2-export.test.ts: {old!r}, found {count}')
+              text = text.replace(old, new)
+          test_file.write_text(text)
+          PY
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apps/ima-mcp-worker/src/ima.ts apps/ima-mcp-worker/test/contract/r2-export.test.ts
+          git diff --cached --check
+          git commit -m "fix(ima): await signed download URL generation"
+          git push origin HEAD:ticket/18-ima-signed-downloads
