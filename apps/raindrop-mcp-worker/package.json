@@ -88,6 +88,7 @@
   },
   "homepage": "https://github.com/adeze/raindrop-mcp#readme",
   "dependencies": {
+    "@mcp-workers/portal-auth": "workspace:*",
     "@modelcontextprotocol/client": "^2.0.0-beta.5",
     "@modelcontextprotocol/node": "^2.0.0-beta.5",
     "@modelcontextprotocol/sdk": "^1.29.0",

@@ -107,9 +107,11 @@ Add this to your MCP client configuration:
 
 ### Cloudflare Worker + MCP Portal
 
-For an authenticated remote deployment, use Cloudflare MCP Portal / Managed OAuth as the client-facing entry point and keep the Worker origin protected with an independent `MCP_ORIGIN_TOKEN` bearer secret. Do not reuse the Raindrop API token as the origin credential.
+The monorepo production path is Portal-only: Cloudflare MCP Portal is the client-facing entry point and the Worker origin is protected with this Worker's independent `MCP_ACCESS_TOKEN`. `RAINDROP_ACCESS_TOKEN` remains a separate upstream Raindrop credential.
 
-See [docs/cloudflare-mcp-portal.md](docs/cloudflare-mcp-portal.md) for the complete deployment and acceptance flow.
+The Worker does not expose CORS for `/mcp`; browser-origin requests are rejected. Server-to-server requests without an `Origin` header are allowed only after the normal Portal bearer check.
+
+See [docs/cloudflare-mcp-portal.md](docs/cloudflare-mcp-portal.md) for the deployment and acceptance flow.
 
 ## Requirements
 
