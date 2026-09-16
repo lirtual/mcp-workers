@@ -1,46 +1,61 @@
-import { beforeEach, describe, expect, it } from "vitest";
-import { RaindropMCPService } from "../src/services/raindropmcp.service.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanupTools } from "../src/tools/cleanup.js";
 
 describe("Destructive Cleanup Tools Confirmation", () => {
-  let mcpService: RaindropMCPService;
+  const emptyTrash = cleanupTools.find((tool) => tool.name === "empty_trash")!;
+  const cleanupCollections = cleanupTools.find(
+    (tool) => tool.name === "cleanup_collections",
+  )!;
+
+  let mockService: {
+    getUserStats: ReturnType<typeof vi.fn>;
+    emptyTrash: ReturnType<typeof vi.fn>;
+    removeEmptyCollections: ReturnType<typeof vi.fn>;
+  };
 
   beforeEach(() => {
-    mcpService = new RaindropMCPService();
+    mockService = {
+      getUserStats: vi.fn().mockResolvedValue({ trash: 7, collections: 12 }),
+      emptyTrash: vi.fn(),
+      removeEmptyCollections: vi.fn(),
+    };
   });
 
   describe("empty_trash", () => {
-    it("should request confirmation when confirm is false", async () => {
-      const result = await mcpService.callTool("empty_trash", {
-        confirm: false,
-      });
-      expect(result.content[0].text).toContain(
-        "To permanently empty it, call this tool again with 'confirm: true'",
-      );
-    });
+    it.each([{ confirm: false }, {}])(
+      "previews trash without deleting for %o",
+      async (args) => {
+        const result = await emptyTrash.handler(args, {
+          raindropService: mockService,
+        } as any);
 
-    it("should request confirmation when confirm is omitted", async () => {
-      const result = await mcpService.callTool("empty_trash", {});
-      expect(result.content[0].text).toContain(
-        "To permanently empty it, call this tool again with 'confirm: true'",
-      );
-    });
+        expect(result.content[0].text).toContain("Trash contains 7 items");
+        expect(result.content[0].text).toContain(
+          "To permanently empty it, call this tool again with 'confirm: true'",
+        );
+        expect(mockService.getUserStats).toHaveBeenCalledTimes(1);
+        expect(mockService.emptyTrash).not.toHaveBeenCalled();
+      },
+    );
   });
 
   describe("cleanup_collections", () => {
-    it("should request confirmation when confirm is false", async () => {
-      const result = await mcpService.callTool("cleanup_collections", {
-        confirm: false,
-      });
-      expect(result.content[0].text).toContain(
-        "Call this tool again with 'confirm: true' to proceed",
-      );
-    });
+    it.each([{ confirm: false }, {}])(
+      "previews collection count without removing collections for %o",
+      async (args) => {
+        const result = await cleanupCollections.handler(args, {
+          raindropService: mockService,
+        } as any);
 
-    it("should request confirmation when confirm is omitted", async () => {
-      const result = await mcpService.callTool("cleanup_collections", {});
-      expect(result.content[0].text).toContain(
-        "Call this tool again with 'confirm: true' to proceed",
-      );
-    });
+        expect(result.content[0].text).toContain(
+          "You currently have 12 total collections",
+        );
+        expect(result.content[0].text).toContain(
+          "Call this tool again with 'confirm: true' to proceed",
+        );
+        expect(mockService.getUserStats).toHaveBeenCalledTimes(1);
+        expect(mockService.removeEmptyCollections).not.toHaveBeenCalled();
+      },
+    );
   });
 });
