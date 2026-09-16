@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  getMaxWriteAffectedRows,
   getRuntimeLimits,
   parseConnectionCatalog,
   parseDirectDatabaseUrl,
   resolveConnection,
-  resolveConnectionDialect
+  resolveConnectionDialect,
+  resolveWriteConnection
 } from '../../src/config.js';
 import { PublicError } from '../../src/errors.js';
 import type { Env } from '../../src/types.js';
@@ -14,8 +16,12 @@ function env(): Env {
     CONNECTIONS_JSON: '[]',
     RATE_LIMITER: { async limit() { return { success: true }; } },
     LEGACY_MYSQL_DATABASE_URL: 'mysql://reader:secret@db.example.com:3306/app',
+    LEGACY_MYSQL_WRITE_URL: 'mysql://writer:secret@db.example.com:3306/app',
     PG_READ: {
       connectionString: 'postgres://x', host: 'h', user: 'u', password: 'p', database: 'd', port: 5432
+    },
+    PG_WRITE: {
+      connectionString: 'postgres://write', host: 'wh', user: 'wu', password: 'wp', database: 'd', port: 5432
     }
   };
 }
@@ -48,6 +54,41 @@ describe('connection catalog', () => {
     expect(resolveConnectionDialect(env(), catalog[1]!)).toBe('mysql');
   });
 
+  it('parses optional write transports without changing read-only connections', () => {
+    const catalog = parseConnectionCatalog(JSON.stringify([
+      {
+        id: 'legacy_mysql',
+        displayName: 'Legacy',
+        transport: 'direct',
+        urlSecret: 'LEGACY_MYSQL_DATABASE_URL',
+        write: { transport: 'direct', urlSecret: 'LEGACY_MYSQL_WRITE_URL', maxAffectedRows: 10 }
+      },
+      {
+        id: 'prod_pg',
+        displayName: 'Prod',
+        transport: 'hyperdrive',
+        dialect: 'postgres',
+        binding: 'PG_READ',
+        write: { transport: 'hyperdrive', binding: 'PG_WRITE' }
+      },
+      {
+        id: 'read_only',
+        displayName: 'Read only',
+        transport: 'hyperdrive',
+        dialect: 'postgres',
+        binding: 'PG_READ'
+      }
+    ]));
+
+    expect(catalog[0]?.write).toEqual({
+      transport: 'direct',
+      urlSecret: 'LEGACY_MYSQL_WRITE_URL',
+      maxAffectedRows: 10
+    });
+    expect(catalog[1]?.write).toEqual({ transport: 'hyperdrive', binding: 'PG_WRITE' });
+    expect(catalog[2]?.write).toBeUndefined();
+  });
+
   it('rejects missing transport, duplicate ids, and conflicting transport fields', () => {
     expect(() => parseConnectionCatalog(JSON.stringify([
       { id: 'db', displayName: 'A', dialect: 'postgres', binding: 'PG_READ' }
@@ -76,6 +117,40 @@ describe('connection catalog', () => {
         dialect: 'postgres',
         binding: 'PG_READ',
         urlSecret: 'DATABASE_URL'
+      }
+    ]))).toThrow(PublicError);
+  });
+
+  it('rejects conflicting or unsupported write configuration', () => {
+    expect(() => parseConnectionCatalog(JSON.stringify([
+      {
+        id: 'db',
+        displayName: 'A',
+        transport: 'direct',
+        urlSecret: 'LEGACY_MYSQL_DATABASE_URL',
+        write: { transport: 'direct', urlSecret: 'LEGACY_MYSQL_WRITE_URL', binding: 'PG_WRITE' }
+      }
+    ]))).toThrow(PublicError);
+
+    expect(() => parseConnectionCatalog(JSON.stringify([
+      {
+        id: 'db',
+        displayName: 'A',
+        transport: 'hyperdrive',
+        dialect: 'postgres',
+        binding: 'PG_READ',
+        write: { transport: 'hyperdrive', binding: 'PG_WRITE', dialect: 'postgres' }
+      }
+    ]))).toThrow(PublicError);
+
+    expect(() => parseConnectionCatalog(JSON.stringify([
+      {
+        id: 'db',
+        displayName: 'A',
+        transport: 'hyperdrive',
+        dialect: 'postgres',
+        binding: 'PG_READ',
+        write: { transport: 'direct', urlSecret: 'PG_WRITE_URL', password: 'nope' }
       }
     ]))).toThrow(PublicError);
   });
@@ -160,9 +235,77 @@ describe('connection catalog', () => {
     }
   });
 
-  it('clamps per-connection limits to deployment maxima', () => {
+  it('resolves write credentials independently and never falls back to read credentials', () => {
+    const target = env();
+    const catalog = parseConnectionCatalog(JSON.stringify([
+      {
+        id: 'legacy_mysql',
+        displayName: 'Legacy',
+        transport: 'direct',
+        urlSecret: 'LEGACY_MYSQL_DATABASE_URL',
+        write: { transport: 'direct', urlSecret: 'LEGACY_MYSQL_WRITE_URL', maxAffectedRows: 15 }
+      },
+      {
+        id: 'prod_pg',
+        displayName: 'Prod',
+        transport: 'hyperdrive',
+        dialect: 'postgres',
+        binding: 'PG_READ',
+        write: { transport: 'hyperdrive', binding: 'PG_WRITE' }
+      }
+    ]));
+
+    expect(resolveWriteConnection(target, catalog, 'legacy_mysql')).toMatchObject({
+      transport: 'direct',
+      dialect: 'mysql',
+      user: 'writer',
+      maxAffectedRows: 15
+    });
+    expect(resolveWriteConnection(target, catalog, 'prod_pg')).toMatchObject({
+      transport: 'hyperdrive',
+      dialect: 'postgres',
+      user: 'wu',
+      maxAffectedRows: 20
+    });
+
+    delete target.PG_WRITE;
+    expect(() => resolveWriteConnection(target, catalog, 'prod_pg')).toThrow(PublicError);
+  });
+
+  it('fails closed for missing write configuration and direct writer dialect mismatch', () => {
+    const target = env();
+    target.PG_WRITE_URL = 'postgres://writer:secret@db.example.com/app';
+    const catalog = parseConnectionCatalog(JSON.stringify([
+      {
+        id: 'read_only',
+        displayName: 'Read only',
+        transport: 'hyperdrive',
+        dialect: 'postgres',
+        binding: 'PG_READ'
+      },
+      {
+        id: 'mismatch',
+        displayName: 'Mismatch',
+        transport: 'direct',
+        urlSecret: 'LEGACY_MYSQL_DATABASE_URL',
+        write: { transport: 'direct', urlSecret: 'PG_WRITE_URL' }
+      }
+    ]));
+
+    try {
+      resolveWriteConnection(target, catalog, 'read_only');
+      throw new Error('expected write configuration to be required');
+    } catch (error) {
+      expect(error).toMatchObject({ code: 'WRITE_NOT_CONFIGURED' });
+    }
+
+    expect(() => resolveWriteConnection(target, catalog, 'mismatch')).toThrow(PublicError);
+  });
+
+  it('clamps read and write limits to deployment maxima', () => {
     const target = env();
     target.MAX_ROWS = '100';
+    target.MAX_WRITE_AFFECTED_ROWS = '12';
     const catalog = parseConnectionCatalog(JSON.stringify([
       {
         id: 'db',
@@ -170,10 +313,12 @@ describe('connection catalog', () => {
         transport: 'hyperdrive',
         dialect: 'postgres',
         binding: 'PG_READ',
-        maxRows: 500
+        maxRows: 500,
+        write: { transport: 'hyperdrive', binding: 'PG_WRITE', maxAffectedRows: 50 }
       }
     ]));
     expect(resolveConnection(target, catalog, 'db').limits.maxRows).toBe(100);
+    expect(resolveWriteConnection(target, catalog, 'db').maxAffectedRows).toBe(12);
   });
 
   it('uses safe defaults', () => {
@@ -183,5 +328,6 @@ describe('connection catalog', () => {
       maxSchemaBytes: 524_288,
       queryTimeoutMs: 15_000
     });
+    expect(getMaxWriteAffectedRows(env())).toBe(20);
   });
 });
