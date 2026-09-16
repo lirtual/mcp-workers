@@ -18,7 +18,7 @@ jobs:
         run: |
           set -euo pipefail
           echo '=== candidate dependency references (outside package/lock) ==='
-          for dep in '@modelcontextprotocol/sdk' 'axios' 'openai' 'zod-to-json-schema'; do
+          for dep in '@modelcontextprotocol/sdk' 'axios' 'openai' 'zod-to-json-schema' '@typescript/native' 'vitest-mock-extended'; do
             echo "--- $dep"
             grep -RInF --exclude='package.json' --exclude='pnpm-lock.yaml' --exclude='SOURCE.md' \
               "$dep" apps/raindrop-mcp-worker || true
@@ -29,7 +29,7 @@ jobs:
             apps/raindrop-mcp-worker || true
 
           echo '=== ingress / custom-domain references ==='
-          grep -RInE 'raindrop-mcp\.lirtual\.dpdns\.org|custom domain|custom-domain|workers_dev.*false|preview_urls.*true' \
+          grep -RInE 'raindrop-mcp\.lirtual\.dpdns\.org|custom domain|custom-domain|workers_dev.*false|preview_urls.*true|MCP_ORIGIN_TOKEN|CF_ACCESS_|Access assertion' \
             README.md docs apps || true
 
           echo '=== production write-smoke references ==='
