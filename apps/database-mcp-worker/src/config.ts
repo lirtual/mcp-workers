@@ -4,11 +4,15 @@ import type {
   DatabaseTransport,
   Dialect,
   DirectConnectionConfig,
+  DirectWriteConnectionConfig,
   EffectiveConnection,
+  EffectiveWriteConnection,
   Env,
   HyperdriveBinding,
   HyperdriveConnectionConfig,
-  RuntimeLimits
+  HyperdriveWriteConnectionConfig,
+  RuntimeLimits,
+  WriteConnectionConfig
 } from './types.js';
 
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
@@ -25,6 +29,8 @@ const HARD_MAX = {
   maxSchemaBytes: 4 * 1024 * 1024,
   queryTimeoutMs: 60_000
 } as const;
+const DEFAULT_MAX_WRITE_AFFECTED_ROWS = 20;
+const HARD_MAX_WRITE_AFFECTED_ROWS = 100;
 
 interface ParsedDirectUrl {
   dialect: Dialect;
@@ -166,16 +172,70 @@ export function getRuntimeLimits(env: Env): RuntimeLimits {
   };
 }
 
+export function getMaxWriteAffectedRows(env: Env): number {
+  return (
+    positiveInt(env.MAX_WRITE_AFFECTED_ROWS, 'MAX_WRITE_AFFECTED_ROWS', HARD_MAX_WRITE_AFFECTED_ROWS) ??
+    DEFAULT_MAX_WRITE_AFFECTED_ROWS
+  );
+}
+
+function parseWriteConnectionConfig(value: unknown, index: number, id: string): WriteConnectionConfig | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new PublicError('INVALID_INPUT', `Connection '${id}' has an invalid write configuration.`);
+  }
+
+  const item = value as Record<string, unknown>;
+  const allowedFields = new Set(['transport', 'urlSecret', 'binding', 'maxAffectedRows']);
+  for (const key of Object.keys(item)) {
+    if (!allowedFields.has(key)) {
+      throw new PublicError('INVALID_INPUT', `Connection '${id}' has unsupported write configuration.`);
+    }
+  }
+
+  const transport = parseTransport(item.transport);
+  const maxAffectedRows = positiveInt(
+    item.maxAffectedRows,
+    `connection[${index}].write.maxAffectedRows`,
+    HARD_MAX_WRITE_AFFECTED_ROWS
+  );
+  const optionalLimit = maxAffectedRows === undefined ? {} : { maxAffectedRows };
+
+  if (transport === 'direct') {
+    if (item.binding !== undefined) {
+      throw new PublicError('INVALID_INPUT', `Connection '${id}' cannot declare a write binding for direct transport.`);
+    }
+    const urlSecret = requiredString(item.urlSecret, `connection[${index}].write.urlSecret`, 128);
+    if (!ENV_NAME_RE.test(urlSecret)) {
+      throw new PublicError('INVALID_INPUT', `Connection '${id}' has an invalid write URL secret name.`);
+    }
+    const config: DirectWriteConnectionConfig = { transport: 'direct', urlSecret, ...optionalLimit };
+    return config;
+  }
+
+  if (item.urlSecret !== undefined) {
+    throw new PublicError('INVALID_INPUT', `Connection '${id}' cannot declare a write urlSecret for Hyperdrive.`);
+  }
+  const binding = requiredString(item.binding, `connection[${index}].write.binding`, 128);
+  if (!ENV_NAME_RE.test(binding)) {
+    throw new PublicError('INVALID_INPUT', `Connection '${id}' has an invalid write binding name.`);
+  }
+  const config: HyperdriveWriteConnectionConfig = { transport: 'hyperdrive', binding, ...optionalLimit };
+  return config;
+}
+
 function commonConnectionFields(item: Record<string, unknown>, index: number, id: string) {
   const enabled = item.enabled === undefined ? true : item.enabled;
   if (typeof enabled !== 'boolean') {
     throw new PublicError('INVALID_INPUT', `Connection '${id}' has an invalid enabled flag.`);
   }
 
+  const write = parseWriteConnectionConfig(item.write, index, id);
   const common = {
     id,
     displayName: requiredString(item.displayName, `connection[${index}].displayName`, 128),
-    enabled
+    enabled,
+    ...(write === undefined ? {} : { write })
   } as const;
 
   const optional: {
@@ -294,16 +354,21 @@ function isHyperdriveBinding(value: unknown): value is HyperdriveBinding {
   );
 }
 
-function directUrlFromEnv(env: Env, config: DirectConnectionConfig): ParsedDirectUrl {
-  const candidate = env[config.urlSecret];
+function directUrlFromSecret(env: Env, urlSecret: string, connectionId: string, capability: 'read' | 'write'): ParsedDirectUrl {
+  const candidate = env[urlSecret];
   if (typeof candidate !== 'string' || candidate.length === 0) {
-    throw new PublicError('CONNECTION_UNAVAILABLE', 'The configured direct database URL Secret is unavailable.');
+    throw new PublicError(
+      'CONNECTION_UNAVAILABLE',
+      `The configured direct database URL Secret for ${capability} access is unavailable.`
+    );
   }
-  return parseDirectDatabaseUrl(candidate, config.id);
+  return parseDirectDatabaseUrl(candidate, connectionId);
 }
 
 export function resolveConnectionDialect(env: Env, config: ConnectionConfig): Dialect {
-  return config.transport === 'hyperdrive' ? config.dialect : directUrlFromEnv(env, config).dialect;
+  return config.transport === 'hyperdrive'
+    ? config.dialect
+    : directUrlFromSecret(env, config.urlSecret, config.id, 'read').dialect;
 }
 
 function effectiveLimits(env: Env, config: ConnectionConfig): RuntimeLimits {
@@ -316,15 +381,27 @@ function effectiveLimits(env: Env, config: ConnectionConfig): RuntimeLimits {
   };
 }
 
-export function resolveConnection(env: Env, catalog: ConnectionConfig[], id: string): EffectiveConnection {
+function requireLogicalConnection(catalog: ConnectionConfig[], id: string): ConnectionConfig {
   const config = catalog.find(item => item.id === id);
   if (!config) throw new PublicError('CONNECTION_NOT_FOUND', 'The requested logical connection does not exist.');
   if (!config.enabled) throw new PublicError('CONNECTION_DISABLED', 'The requested logical connection is disabled.');
+  return config;
+}
 
+function resolveHyperdrive(env: Env, binding: string): HyperdriveBinding {
+  const candidate = env[binding];
+  if (!isHyperdriveBinding(candidate)) {
+    throw new PublicError('CONNECTION_UNAVAILABLE', 'The configured Hyperdrive binding is unavailable.');
+  }
+  return candidate;
+}
+
+export function resolveConnection(env: Env, catalog: ConnectionConfig[], id: string): EffectiveConnection {
+  const config = requireLogicalConnection(catalog, id);
   const limits = effectiveLimits(env, config);
 
   if (config.transport === 'direct') {
-    const direct = directUrlFromEnv(env, config);
+    const direct = directUrlFromSecret(env, config.urlSecret, config.id, 'read');
     return {
       config,
       transport: 'direct',
@@ -333,11 +410,7 @@ export function resolveConnection(env: Env, catalog: ConnectionConfig[], id: str
     };
   }
 
-  const candidate = env[config.binding];
-  if (!isHyperdriveBinding(candidate)) {
-    throw new PublicError('CONNECTION_UNAVAILABLE', 'The configured Hyperdrive binding is unavailable.');
-  }
-
+  const candidate = resolveHyperdrive(env, config.binding);
   return {
     config,
     transport: 'hyperdrive',
@@ -349,5 +422,47 @@ export function resolveConnection(env: Env, catalog: ConnectionConfig[], id: str
     database: candidate.database,
     port: candidate.port,
     limits
+  };
+}
+
+export function resolveWriteConnection(env: Env, catalog: ConnectionConfig[], id: string): EffectiveWriteConnection {
+  const config = requireLogicalConnection(catalog, id);
+  const write = config.write;
+  if (write === undefined) {
+    throw new PublicError('WRITE_NOT_CONFIGURED', 'The requested logical connection does not have write access configured.');
+  }
+
+  const dialect = resolveConnectionDialect(env, config);
+  const limits = effectiveLimits(env, config);
+  const deploymentMax = getMaxWriteAffectedRows(env);
+  const maxAffectedRows = Math.min(write.maxAffectedRows ?? deploymentMax, deploymentMax);
+
+  if (write.transport === 'direct') {
+    const direct = directUrlFromSecret(env, write.urlSecret, config.id, 'write');
+    if (direct.dialect !== dialect) {
+      throw new PublicError('INVALID_INPUT', `Connection '${config.id}' has mismatched read and write database dialects.`);
+    }
+    return {
+      config,
+      transport: 'direct',
+      ...direct,
+      limits,
+      maxAffectedRows
+    };
+  }
+
+  const candidate = resolveHyperdrive(env, write.binding);
+  return {
+    config,
+    transport: 'hyperdrive',
+    dialect,
+    connectionString: candidate.connectionString,
+    host: candidate.host,
+    user: candidate.user,
+    password: candidate.password,
+    database: candidate.database,
+    port: candidate.port,
+    limits,
+    maxAffectedRows
   };
 }
