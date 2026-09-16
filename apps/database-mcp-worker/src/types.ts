@@ -21,9 +21,27 @@ export interface Env {
   MAX_RESULT_BYTES?: string;
   MAX_SCHEMA_BYTES?: string;
   QUERY_TIMEOUT_MS?: string;
+  MAX_WRITE_AFFECTED_ROWS?: string;
   RATE_LIMITER: RateLimitBinding;
   [key: string]: unknown;
 }
+
+interface WriteConnectionBase {
+  transport: DatabaseTransport;
+  maxAffectedRows?: number;
+}
+
+export interface DirectWriteConnectionConfig extends WriteConnectionBase {
+  transport: 'direct';
+  urlSecret: string;
+}
+
+export interface HyperdriveWriteConnectionConfig extends WriteConnectionBase {
+  transport: 'hyperdrive';
+  binding: string;
+}
+
+export type WriteConnectionConfig = DirectWriteConnectionConfig | HyperdriveWriteConnectionConfig;
 
 interface BaseConnectionConfig {
   id: string;
@@ -34,6 +52,7 @@ interface BaseConnectionConfig {
   maxResultBytes?: number;
   maxSchemaBytes?: number;
   queryTimeoutMs?: number;
+  write?: WriteConnectionConfig;
 }
 
 export interface DirectConnectionConfig extends BaseConnectionConfig {
@@ -56,7 +75,7 @@ export interface RuntimeLimits {
   queryTimeoutMs: number;
 }
 
-export interface EffectiveConnection {
+interface EffectiveDatabaseConnectionBase {
   config: ConnectionConfig;
   transport: DatabaseTransport;
   dialect: Dialect;
@@ -67,6 +86,12 @@ export interface EffectiveConnection {
   database: string;
   port: number;
   limits: RuntimeLimits;
+}
+
+export type EffectiveConnection = EffectiveDatabaseConnectionBase;
+
+export interface EffectiveWriteConnection extends EffectiveDatabaseConnectionBase {
+  maxAffectedRows: number;
 }
 
 export interface QueryColumn {
@@ -81,6 +106,21 @@ export interface QueryResult {
   truncated: boolean;
   truncationReason?: 'row_limit' | 'result_size';
 }
+
+export interface WriteResult {
+  affectedRows: number;
+  insertId?: number | string;
+}
+
+export type WritePredicate =
+  | string
+  | number
+  | boolean
+  | { eq: unknown }
+  | { in: unknown[] }
+  | { isNull: boolean };
+
+export type WriteWhere = Record<string, WritePredicate>;
 
 export interface SchemaInspection {
   dialect: Dialect;
