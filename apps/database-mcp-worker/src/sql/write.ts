@@ -5,7 +5,6 @@ export const MAX_WRITE_PAYLOAD_BYTES = 256 * 1024;
 const MAX_COLUMNS = 100;
 const MAX_PREDICATE_COLUMNS = 20;
 const MAX_IN_VALUES = 100;
-const CONTROL_CHARACTER_RE = /[\u0000-\u001F\u007F]/;
 
 export interface BuiltWriteStatement {
   sql: string;
@@ -16,12 +15,20 @@ function invalid(message: string): never {
   throw new PublicError('INVALID_INPUT', message);
 }
 
+function hasControlCharacter(value: string): boolean {
+  for (const char of value) {
+    const code = char.charCodeAt(0);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
+
 export function quoteIdentifier(identifier: string, dialect: Dialect): string {
   if (
     typeof identifier !== 'string' ||
     identifier.length === 0 ||
     identifier.length > 128 ||
-    CONTROL_CHARACTER_RE.test(identifier)
+    hasControlCharacter(identifier)
   ) {
     invalid('SQL identifiers must contain 1 to 128 non-control characters.');
   }
