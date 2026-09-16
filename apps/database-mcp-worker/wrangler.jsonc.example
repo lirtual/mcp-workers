@@ -6,7 +6,16 @@
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
   "preview_urls": false,
-  "observability": { "enabled": true },
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "invocation_logs": true,
+      "head_sampling_rate": 1
+    }
+  },
+  "secrets": {
+    "required": ["MCP_ACCESS_TOKEN"]
+  },
   "vars": {
     "CONNECTIONS_JSON": "[{\"id\":\"prod_pg\",\"displayName\":\"Production PostgreSQL\",\"dialect\":\"postgres\",\"binding\":\"PROD_PG_READ\",\"enabled\":true,\"defaultSchema\":\"public\"},{\"id\":\"prod_mysql\",\"displayName\":\"Production MySQL\",\"dialect\":\"mysql\",\"binding\":\"PROD_MYSQL_READ\",\"enabled\":true}]",
     "MAX_ROWS": "500",
