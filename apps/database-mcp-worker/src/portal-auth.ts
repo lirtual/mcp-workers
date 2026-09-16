@@ -21,10 +21,10 @@ export async function authenticateDatabasePortal(
     request: result.request,
     authInfo: {
       // The real Portal credential is consumed at the Worker boundary. Tools
-      // receive only a stable logical principal and the database read scope.
+      // receive only a stable logical principal and capability metadata.
       token: 'portal-access',
       clientId: 'cloudflare-mcp-portal',
-      scopes: ['db:read']
+      scopes: ['db:read', 'db:write']
     }
   };
 }

@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
-import { resolveConnection, resolveConnectionDialect } from './config.js';
-import { explainRead, healthCheck, inspectSchema, queryRead } from './db/index.js';
+import { resolveConnection, resolveConnectionDialect, resolveWriteConnection } from './config.js';
+import { deleteRows, explainRead, healthCheck, insertRows, inspectSchema, queryRead, updateRows } from './db/index.js';
 import { PublicError, toPublicError } from './errors.js';
 import { emitLog, principalLogId, sqlLogFields } from './logging.js';
 import { clampRequestedLimit, jsonSafe } from './result.js';
@@ -101,23 +101,26 @@ async function runTool<T>(options: ToolRunOptions<T>): Promise<ToolResult> {
 }
 
 const connectionIdSchema = z.string().min(1).max(64).regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);
+const identifierSchema = z.string().min(1).max(128).refine(value => !value.includes('\0'));
 const sqlSchema = z.string().min(1).max(100_000);
 const paramsSchema = z.array(z.unknown()).max(100).default([]);
+const rowObjectSchema = z.record(identifierSchema, z.unknown());
+const whereSchema = z.record(identifierSchema, z.unknown());
 
 export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer {
   const server = new McpServer(
-    { name: 'database-mcp-worker', version: '0.1.0' },
+    { name: 'database-mcp-worker', version: '0.2.0' },
     {
       capabilities: { tools: {} },
       instructions:
-        'Read-only database access. Use inspect_schema before unfamiliar queries. query_read cannot write and results are bounded.'
+        'Database access with read-only SQL plus opt-in structured row writes. Use inspect_schema before unfamiliar operations. Never use query_read for writes; use insert_rows, update_rows, or delete_rows only when the connection reports writeEnabled.'
     }
   );
 
   server.registerTool(
     'list_connections',
     {
-      description: 'List statically configured logical database connections without exposing credentials or binding names.',
+      description: 'List statically configured logical database connections and non-secret read/write capabilities.',
       inputSchema: z.object({}),
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false }
     },
@@ -133,6 +136,8 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
             dialect: resolveConnectionDialect(env, connection),
             transport: connection.transport,
             enabled: connection.enabled,
+            writeEnabled: connection.write !== undefined,
+            ...(connection.write ? { writeTransport: connection.write.transport } : {}),
             ...(connection.defaultSchema ? { defaultSchema: connection.defaultSchema } : {})
           }))
         }),
@@ -147,8 +152,8 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
         'Inspect schemas, tables/views, or one table\'s columns, keys, foreign keys, and indexes. No routine source code is returned.',
       inputSchema: z.object({
         connection: connectionIdSchema,
-        schema: z.string().min(1).max(128).optional(),
-        table: z.string().min(1).max(128).optional()
+        schema: identifierSchema.optional(),
+        table: identifierSchema.optional()
       }),
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false }
     },
@@ -169,7 +174,7 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
     'query_read',
     {
       description:
-        'Execute exactly one bounded read query using a dedicated read-only database credential. Writes, locking reads, multi-statements, and dangerous MySQL read side effects are rejected.',
+        'Execute exactly one bounded read query using a dedicated read-only database credential. Writes, locking reads, multi-statements, and dangerous read side effects are rejected.',
       inputSchema: z.object({
         connection: connectionIdSchema,
         sql: sqlSchema,
@@ -226,7 +231,7 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
   server.registerTool(
     'health_check',
     {
-      description: 'Check whether one logical connection can establish a usable read path without exposing network details.',
+      description: 'Check whether one logical read connection can establish a usable path without exposing network details.',
       inputSchema: z.object({ connection: connectionIdSchema }),
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false }
     },
@@ -242,6 +247,78 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
           return { connection, dialect: resolved.dialect, transport: resolved.transport, ...health };
         },
         summarize: value => ({ latencyMs: value.latencyMs })
+      })
+  );
+
+  server.registerTool(
+    'insert_rows',
+    {
+      description: 'Insert 1 to 100 rows into one table using the connection\'s separate writer credential.',
+      inputSchema: z.object({
+        connection: connectionIdSchema,
+        schema: identifierSchema.optional(),
+        table: identifierSchema,
+        rows: z.array(rowObjectSchema).min(1).max(100)
+      }),
+      annotations: { readOnlyHint: false, idempotentHint: false, destructiveHint: false, openWorldHint: false }
+    },
+    async ({ connection, schema, table, rows }, ctx) =>
+      runTool({
+        env,
+        ctx,
+        tool: 'insert_rows',
+        connectionId: connection,
+        run: async () => insertRows(resolveWriteConnection(env, catalog, connection), schema, table, rows),
+        summarize: value => ({ affectedRows: value.affectedRows })
+      })
+  );
+
+  server.registerTool(
+    'update_rows',
+    {
+      description:
+        'Update targeted rows using structured AND predicates only. The operation is rolled back when affected rows exceed the configured safety limit.',
+      inputSchema: z.object({
+        connection: connectionIdSchema,
+        schema: identifierSchema.optional(),
+        table: identifierSchema,
+        set: rowObjectSchema,
+        where: whereSchema
+      }),
+      annotations: { readOnlyHint: false, idempotentHint: false, destructiveHint: true, openWorldHint: false }
+    },
+    async ({ connection, schema, table, set, where }, ctx) =>
+      runTool({
+        env,
+        ctx,
+        tool: 'update_rows',
+        connectionId: connection,
+        run: async () => updateRows(resolveWriteConnection(env, catalog, connection), schema, table, set, where),
+        summarize: value => ({ affectedRows: value.affectedRows })
+      })
+  );
+
+  server.registerTool(
+    'delete_rows',
+    {
+      description:
+        'Delete targeted rows using structured AND predicates only. The operation is rolled back when affected rows exceed the configured safety limit.',
+      inputSchema: z.object({
+        connection: connectionIdSchema,
+        schema: identifierSchema.optional(),
+        table: identifierSchema,
+        where: whereSchema
+      }),
+      annotations: { readOnlyHint: false, idempotentHint: false, destructiveHint: true, openWorldHint: false }
+    },
+    async ({ connection, schema, table, where }, ctx) =>
+      runTool({
+        env,
+        ctx,
+        tool: 'delete_rows',
+        connectionId: connection,
+        run: async () => deleteRows(resolveWriteConnection(env, catalog, connection), schema, table, where),
+        summarize: value => ({ affectedRows: value.affectedRows })
       })
   );
 
