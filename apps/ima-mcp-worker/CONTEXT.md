@@ -32,19 +32,25 @@ _Avoid_: IMA API key, OAuth access token
 _Avoid_: Portal credential, per-user BYOK database
 
 **R2 Runtime Binding**:
-应用只依赖 `R2_BUCKET` binding；生产 bucket 为 `ima-mcp-worker`。对象 key、下载语义与已有导出契约保持不变。
+应用依赖 `R2_BUCKET` binding；生产 bucket 为 `ima-mcp-worker`。导出对象使用 `exports/` 前缀和每次导出的 UUID key。
 _Avoid_: 在业务代码里按 bucket 名分支
+
+**R2 Public Download Origin**:
+导出下载不经过 Worker。`R2_PUBLIC_BASE_URL` 指向直接挂载到 `ima-mcp-worker` bucket 的 HTTPS 自定义域名；生产值为 `https://ima-files.lirtual.dpdns.org`。Worker 只负责写 R2 并拼接对象 URL，不维护下载签名、过期 token 或 `/download/*` 代理路由。
+_Avoid_: IMA_DOWNLOAD_SIGNING_KEY, signed Worker download URL, Worker download proxy
 
 ## Authentication invariant
 
-Portal/client 身份、`MCP_ACCESS_TOKEN`、`CLIENT_ID` / `API_KEY` 是三个独立安全边界，不得复用。Worker 不维护 OAuth client/code/token 状态，不使用 D1 保存 IMA 凭据。
+Portal/client 身份、`MCP_ACCESS_TOKEN`、`CLIENT_ID` / `API_KEY` 是三个独立安全边界，不得复用。Worker 不维护 OAuth client/code/token 状态，不使用 D1 保存 IMA 凭据。R2 自定义域名是公开对象访问，不属于 MCP 鉴权边界。
 
 ## Runtime invariant
 
 - Cloudflare Worker service name: `ima-mcp-worker`.
-- GitHub repository name: `ima-mcp-worker`.
+- GitHub app directory: `apps/ima-mcp-worker`.
 - R2 bucket: `ima-mcp-worker`, binding `R2_BUCKET`.
+- R2 public origin: `https://ima-files.lirtual.dpdns.org`.
 - `/health` is stateless liveness.
-- `/ready` validates required secrets/bindings without D1.
+- `/ready` validates required secrets/bindings and `R2_PUBLIC_BASE_URL` without D1.
+- `/download/*` is intentionally not served by the Worker.
 - Existing domain safety checks remain authoritative for write-capable tools.
 - Durable Objects, when used by image refresh, are execution shards rather than authentication or credential persistence.
