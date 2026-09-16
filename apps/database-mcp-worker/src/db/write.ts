@@ -154,7 +154,7 @@ async function mysqlInsert(
   statement: BuiltWriteStatement
 ): Promise<WriteResult> {
   return withMysqlClient(connection, async client => {
-    const [result] = await mysqlTimed(client, connection, client.query(statement.sql, statement.params));
+    const [result] = await mysqlTimed(client, connection, client.execute(statement.sql, statement.params));
     return { affectedRows: mysqlAffectedRows(result) };
   });
 }
@@ -168,7 +168,7 @@ async function mysqlGuardedMutation(
     try {
       await mysqlTimed(client, connection, client.beginTransaction());
       transactionOpen = true;
-      const [result] = await mysqlTimed(client, connection, client.query(statement.sql, statement.params));
+      const [result] = await mysqlTimed(client, connection, client.execute(statement.sql, statement.params));
       const affectedRows = mysqlAffectedRows(result);
       if (affectedRows > connection.maxAffectedRows) {
         await mysqlTimed(client, connection, client.rollback());
