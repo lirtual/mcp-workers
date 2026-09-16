@@ -20,20 +20,20 @@ jobs:
           echo '=== candidate dependency references (outside package/lock) ==='
           for dep in '@modelcontextprotocol/sdk' 'axios' 'openai' 'zod-to-json-schema'; do
             echo "--- $dep"
-            rg -n --fixed-strings "$dep" apps/raindrop-mcp-worker \
-              -g '!package.json' -g '!pnpm-lock.yaml' -g '!SOURCE.md' || true
+            grep -RInF --exclude='package.json' --exclude='pnpm-lock.yaml' --exclude='SOURCE.md' \
+              "$dep" apps/raindrop-mcp-worker || true
           done
 
           echo '=== retired runtime / release references ==='
-          rg -n 'nightwatch|auth:check|scripts/auth-check|MCPB|\.mcpb|\.dxt|Smithery|semantic-release|Bun|STDIO|process\.(env|stderr|version|platform|uptime|memoryUsage)' \
+          grep -RInE 'nightwatch|auth:check|scripts/auth-check|MCPB|\.mcpb|\.dxt|Smithery|semantic-release|Bun|STDIO|process\.(env|stderr|version|platform|uptime|memoryUsage)' \
             apps/raindrop-mcp-worker || true
 
           echo '=== ingress / custom-domain references ==='
-          rg -n 'raindrop-mcp\.lirtual\.dpdns\.org|custom domain|custom-domain|workers_dev[^\n]*false|preview_urls[^\n]*true' \
+          grep -RInE 'raindrop-mcp\.lirtual\.dpdns\.org|custom domain|custom-domain|workers_dev.*false|preview_urls.*true' \
             README.md docs apps || true
 
           echo '=== production write-smoke references ==='
-          rg -n 'reversible write|write smoke|write operation|production write|destructive\.live|cleanup_destructive' \
+          grep -RInE 'reversible write|write smoke|write operation|production write|destructive\.live|cleanup_destructive' \
             apps/raindrop-mcp-worker docs || true
 
           echo '=== nested CI / scratch-like app directories ==='
