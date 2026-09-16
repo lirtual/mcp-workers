@@ -181,8 +181,10 @@ jobs:
     env:
       TEST_POSTGRES_ADMIN_URL: postgres://postgres:postgres@127.0.0.1:55432/testdb
       TEST_POSTGRES_READ_URL: postgres://mcp_reader:reader@127.0.0.1:55432/testdb
+      TEST_POSTGRES_WRITE_URL: postgres://mcp_writer:writer@127.0.0.1:55432/testdb
       TEST_MYSQL_ADMIN_URL: mysql://root:root@127.0.0.1:53306/testdb
       TEST_MYSQL_READ_URL: mysql://mcp_reader:reader@127.0.0.1:53306/testdb
+      TEST_MYSQL_WRITE_URL: mysql://mcp_writer:writer@127.0.0.1:53306/testdb
     steps:
       - uses: actions/checkout@v4
 
