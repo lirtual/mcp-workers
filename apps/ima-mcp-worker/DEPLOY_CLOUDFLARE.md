@@ -1,6 +1,6 @@
 # Cloudflare deployment
 
-This project uses one production architecture: Cloudflare MCP Portal in front of the `ima-mcp-worker` Worker, a static per-Worker bearer credential, Worker Secrets for IMA credentials, an independent download-signing secret, and R2 for temporary exports. D1 and Worker-owned OAuth are not used.
+This project uses one production architecture: Cloudflare MCP Portal in front of the `ima-mcp-worker` Worker, a static per-Worker bearer credential, Worker Secrets for IMA credentials, and R2 for exported files. Export downloads use the R2 bucket's public custom domain directly; D1, Worker-owned OAuth, download signing, and a Worker download proxy are not used.
 
 ## 1. Requirements
 
@@ -9,6 +9,7 @@ This project uses one production architecture: Cloudflare MCP Portal in front of
 - Wrangler login or equivalent Cloudflare Dashboard access
 - IMA OpenAPI Client ID and API Key
 - Cloudflare MCP Portal
+- A Cloudflare-managed DNS zone for the R2 custom domain
 
 ## 2. Install dependencies
 
@@ -18,7 +19,7 @@ From the monorepo root:
 pnpm install --frozen-lockfile
 ```
 
-## 3. Create the R2 bucket
+## 3. Create or reuse the R2 bucket
 
 The production bucket name is `ima-mcp-worker` and the Worker binding is `R2_BUCKET`.
 
@@ -35,19 +36,33 @@ pnpm --filter ima-mcp-worker exec wrangler r2 bucket create ima-mcp-worker
 }
 ```
 
-If the bucket already exists, do not recreate it. The old `ima-exports` bucket is not deleted automatically; keep it until historical objects are no longer needed.
+If the bucket already exists, do not recreate it.
 
-Protected temporary exports use the `exports/` prefix. Configure an R2 Object Lifecycle Rule on the `ima-mcp-worker` bucket to delete `exports/` objects after 7 days (or the configured retention period). Object lifecycle is bucket-level Cloudflare configuration rather than a Worker binding field.
+Exports use the `exports/` prefix and a generated UUID per export. If automatic cleanup is desired, configure an R2 Object Lifecycle Rule for the `exports/` prefix. No Cron or Queue cleanup worker is required.
 
-After configuration, verify the rule:
+## 4. Connect the R2 custom domain
 
-```bash
-pnpm --filter ima-mcp-worker exec wrangler r2 bucket lifecycle list ima-mcp-worker
+Production download origin:
+
+```text
+https://ima-files.lirtual.dpdns.org
 ```
 
-Do not expose protected `exports/` objects through an R2 public/custom-domain route. Downloads are served only through the Worker signature-verification route.
+In Cloudflare Dashboard:
 
-## 4. Configure Worker Secrets
+1. Open **R2 Object Storage**.
+2. Select bucket **`ima-mcp-worker`**.
+3. Open **Settings → Custom Domains**.
+4. Select **Add / Connect Domain**.
+5. Enter **`ima-files.lirtual.dpdns.org`**.
+6. Review the DNS record Cloudflare will create and confirm the connection.
+7. Wait until ownership and SSL status are active.
+
+The domain must belong to a Cloudflare zone in the same account as the R2 bucket.
+
+For production, disable the bucket's public `r2.dev` development URL so there is only one intended public download origin.
+
+## 5. Configure Worker Secrets
 
 Required secrets:
 
@@ -55,7 +70,6 @@ Required secrets:
 pnpm --filter ima-mcp-worker exec wrangler secret put CLIENT_ID
 pnpm --filter ima-mcp-worker exec wrangler secret put API_KEY
 pnpm --filter ima-mcp-worker exec wrangler secret put MCP_ACCESS_TOKEN
-pnpm --filter ima-mcp-worker exec wrangler secret put IMA_DOWNLOAD_SIGNING_KEY
 ```
 
 The same values can be entered in Cloudflare Dashboard under the Worker's Variables and Secrets settings.
@@ -65,25 +79,28 @@ Credential roles are intentionally separate:
 - `CLIENT_ID`: IMA OpenAPI Client ID.
 - `API_KEY`: IMA OpenAPI API Key.
 - `MCP_ACCESS_TOKEN`: independent Portal-to-Worker bearer token for this Worker.
-- `IMA_DOWNLOAD_SIGNING_KEY`: independent high-entropy HMAC key used only for temporary export URLs.
 
-Do not reuse any one credential for another role, and do not reuse this Worker's access token for another Worker. In particular, `MCP_ACCESS_TOKEN` must never be embedded in a download URL.
+Do not reuse any one credential for another role, and do not reuse this Worker's access token for another Worker.
 
-Retired names are not supported: `IMA_OPENAPI_CLIENTID`, `IMA_OPENAPI_APIKEY`, `CLIENTID`, and `APIKEY`.
+Retired names are not supported: `IMA_OPENAPI_CLIENTID`, `IMA_OPENAPI_APIKEY`, `CLIENTID`, `APIKEY`, and `IMA_DOWNLOAD_SIGNING_KEY`.
 
-## 5. Optional/non-secret variables
+## 6. Non-secret variables
 
-- `IMA_BASE_URL`: overrides the default `https://ima.qq.com` endpoint.
-- `PUBLIC_BASE_URL`: optional canonical Worker/custom-host origin used for generated download links. During MCP requests, the current Worker origin is used when this is omitted.
-- `IMA_DOWNLOAD_TTL_SECONDS`: temporary-link lifetime; default `3600` seconds.
-- `IMA_EXPORT_RETENTION_SECONDS`: intended R2 object retention; default `604800` seconds and must be at least the link TTL. The R2 lifecycle rule must match this operational setting.
-- `FILE_DOWNLOAD_TIMEOUT_MS`, `FILE_DOWNLOAD_MAX_REDIRECTS`, `FILE_DOWNLOAD_MAX_BUFFER_BYTES`, `IMA_RESPONSE_MAX_BYTES`: existing transfer limits.
+`wrangler.jsonc` defines:
 
-`R2_CUSTOM_DOMAIN` is no longer a supported export path because a public object URL would bypass Worker signature verification.
+```json
+{
+  "R2_PUBLIC_BASE_URL": "https://ima-files.lirtual.dpdns.org"
+}
+```
 
-There is no browser-origin allowlist because the Worker does not support a direct browser MCP client. No `AUTH_MODE`, `OAUTH_MASTER_KEY`, OAuth redirect allowlist, or D1 database variables are required.
+`R2_PUBLIC_BASE_URL` must be an HTTPS origin with no path, query, fragment, or embedded credentials.
 
-## 6. Deploy
+Other optional variables include `IMA_BASE_URL`, `FILE_DOWNLOAD_TIMEOUT_MS`, `FILE_DOWNLOAD_MAX_REDIRECTS`, `FILE_DOWNLOAD_MAX_BUFFER_BYTES`, and `IMA_RESPONSE_MAX_BYTES`.
+
+There is no browser-origin allowlist because the Worker does not support a direct browser MCP client. No `AUTH_MODE`, `OAUTH_MASTER_KEY`, OAuth redirect allowlist, D1 variables, `PUBLIC_BASE_URL`, `IMA_DOWNLOAD_TTL_SECONDS`, or `IMA_EXPORT_RETENTION_SECONDS` are required.
+
+## 7. Deploy
 
 Production deployment is performed by the configured Cloudflare Build for this app. For a local dry run:
 
@@ -97,7 +114,7 @@ The Worker service remains:
 ima-mcp-worker
 ```
 
-Current Worker endpoint shape:
+Current MCP endpoint shape:
 
 ```text
 https://ima-mcp-worker.<workers-subdomain>.workers.dev/mcp
@@ -105,13 +122,14 @@ https://ima-mcp-worker.<workers-subdomain>.workers.dev/mcp
 
 After every deployment, verify the deployed Worker still has:
 
-- Secrets `CLIENT_ID`, `API_KEY`, `MCP_ACCESS_TOKEN`, `IMA_DOWNLOAD_SIGNING_KEY`.
+- Secrets `CLIENT_ID`, `API_KEY`, and `MCP_ACCESS_TOKEN`.
 - R2 binding `R2_BUCKET` -> bucket `ima-mcp-worker`.
-- An R2 lifecycle rule that removes `exports/` objects after the intended retention period.
-- No public/custom-domain path that exposes protected export objects without Worker verification.
+- `R2_PUBLIC_BASE_URL=https://ima-files.lirtual.dpdns.org`.
+- Active R2 custom domain `ima-files.lirtual.dpdns.org`.
+- Public `r2.dev` development URL disabled for production.
 - Any separately required Durable Object binding for the image-refresh feature, if that feature is present.
 
-## 7. Verify health and readiness
+## 8. Verify health and readiness
 
 ```bash
 curl https://ima-mcp-worker.<workers-subdomain>.workers.dev/health
@@ -126,9 +144,9 @@ A correctly configured `/ready` response is:
 {"ready":true}
 ```
 
-If required configuration is missing, `/ready` returns HTTP 503 and only the missing capability names, never secret values. `IMA_DOWNLOAD_SIGNING_KEY` is part of readiness because export links must fail closed when signing is unavailable.
+If required configuration is missing, `/ready` returns HTTP 503 and only the missing capability names, never secret values. `R2_PUBLIC_BASE_URL` is part of readiness because exported files must resolve to the configured R2 custom domain.
 
-## 8. Verify Portal authentication
+## 9. Verify Portal authentication
 
 A direct `/mcp` request without the bearer must be rejected:
 
@@ -140,7 +158,7 @@ Expected when `MCP_ACCESS_TOKEN` is configured: HTTP 401 with `WWW-Authenticate:
 
 If `MCP_ACCESS_TOKEN` itself is missing from the Worker, `/mcp` fails closed with HTTP 503 instead of becoming public. A request carrying an `Origin` header is rejected with HTTP 403.
 
-## 9. Configure Cloudflare MCP Portal
+## 10. Configure Cloudflare MCP Portal
 
 1. Add the Worker MCP endpoint as an MCP server.
 2. Set upstream authentication type to **Bearer**.
@@ -157,40 +175,42 @@ Authorization: Bearer <MCP_ACCESS_TOKEN>
 
 The shared Portal auth boundary consumes this header before MCP/domain handling. Client-facing authentication at Portal and this Worker access bearer are separate security layers.
 
-## 10. Verify temporary downloads
+## 11. Verify direct R2 downloads
 
-Generate an export through the normal authenticated MCP path. The returned URL should use the Worker route and contain `expires` and `sig` query parameters:
+Generate an export through the normal authenticated MCP path. The returned URL should point directly at R2:
 
 ```text
-https://ima-mcp-worker.<workers-subdomain>.workers.dev/download/<encoded-object-key>?expires=...&sig=...
+https://ima-files.lirtual.dpdns.org/exports/<type>/<id>/<export-uuid>/<filename>
 ```
 
 Acceptance checks:
 
-1. The unmodified URL downloads the expected object without requiring MCP authentication.
-2. Removing `sig`, changing the object key, or changing `expires` returns HTTP 403.
-3. An expired correctly signed URL returns HTTP 410.
-4. A valid link whose R2 object has already been deleted returns HTTP 404.
-5. Successful download responses use `Cache-Control: private, no-store`.
-6. Re-exporting the same note/media creates a different R2 key because each export includes a generated UUID.
-7. The returned URL never contains `MCP_ACCESS_TOKEN`, IMA API credentials, or the signing key.
+1. The returned URL downloads the expected object without going through `ima-mcp-worker`.
+2. The URL has no `sig`, `expires`, `MCP_ACCESS_TOKEN`, IMA API credential, or other secret query parameter.
+3. The Worker returns `404` for `/download/*`; no download relay exists.
+4. Re-exporting the same note/media creates a different R2 key because each export includes a generated UUID.
+5. Unicode and reserved filename characters are percent-encoded in the URL path while the underlying R2 object key is preserved.
+6. If a lifecycle rule deletes the object, the public URL naturally returns not found from R2.
 
-The download-signing key is not an alternative MCP ingress token and is never accepted by `/mcp`.
+The R2 custom domain is public object access. The random UUID makes object URLs difficult to guess but is not an authorization mechanism.
 
-## 11. Local development
+## 12. Local development
 
 ```bash
 cp apps/ima-mcp-worker/.dev.vars.example apps/ima-mcp-worker/.dev.vars
 pnpm --filter ima-mcp-worker run dev
 ```
 
-Populate `CLIENT_ID`, `API_KEY`, `MCP_ACCESS_TOKEN`, and `IMA_DOWNLOAD_SIGNING_KEY` before testing the complete runtime contract.
+Populate `CLIENT_ID`, `API_KEY`, and `MCP_ACCESS_TOKEN`. `R2_PUBLIC_BASE_URL` is defined as a non-secret Wrangler variable.
 
 No local D1 migration is required.
 
-## 12. Naming
+## 13. Naming
 
-The GitHub app directory, Cloudflare Worker service, and production R2 bucket all use `ima-mcp-worker`.
+- GitHub app directory: `apps/ima-mcp-worker`
+- Cloudflare Worker service: `ima-mcp-worker`
+- R2 bucket: `ima-mcp-worker`
+- R2 custom domain: `ima-files.lirtual.dpdns.org`
 
 ## Large-file behavior
 
