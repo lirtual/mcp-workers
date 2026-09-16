@@ -93,7 +93,7 @@ pnpm --filter raindrop-mcp-worker check
 
 The application `check` runs TypeScript validation, lint, the local regression suite including the exact 17-tool contract, deterministic OpenAPI type regeneration, and Wrangler dry-run deployment validation.
 
-Optional tests that require a real `RAINDROP_ACCESS_TOKEN` remain outside the default CI-safe test set.
+Optional tests that require a real `RAINDROP_ACCESS_TOKEN` remain outside the default CI-safe test set. `test:env` includes explicitly gated live checks, including a destructive lifecycle test; run those only with disposable/non-production test data and the documented opt-in flags, never as routine production cutover smoke.
 
 ## Deployment and Portal
 

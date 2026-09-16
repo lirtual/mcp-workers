@@ -56,7 +56,7 @@ export default class RaindropService {
     this.client.use({
       onRequest({ request }) {
         if (debugHttp) {
-          // Use project logger instead of console to avoid polluting STDIO
+          // Use the application logger so request diagnostics follow the same redaction path.
           const logger = createLogger("raindrop-service");
           logger.debug(`${request.method} ${request.url}`);
         }
