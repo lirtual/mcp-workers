@@ -42,7 +42,7 @@ The Worker validates the Portal credential and removes the inbound `Authorizatio
 - Node.js 24+
 - Cloudflare Workers and MCP Portal
 - Instapaper Full API consumer key/secret
-- Wrangler authenticated with Cloudflare
+- Wrangler authenticated with Cloudflare when using automatic secret setup
 
 ## Install
 
@@ -54,18 +54,37 @@ pnpm install --frozen-lockfile
 
 ## Bootstrap Instapaper OAuth tokens
 
-Run from this app directory or through the workspace filter:
+Run from this app directory or through the workspace filter.
+
+### Automatic Cloudflare setup
+
+Authenticate Wrangler, then run:
 
 ```bash
+npx wrangler login
 pnpm run setup:instapaper
 ```
 
-The helper performs Instapaper xAuth, verifies the returned token, and writes these Worker secrets with Wrangler:
+The helper checks Cloudflare authentication before requesting Instapaper credentials. It performs Instapaper xAuth, verifies the returned token, and writes these Worker secrets with Wrangler:
 
 - `INSTAPAPER_CONSUMER_KEY`
 - `INSTAPAPER_CONSUMER_SECRET`
 - `INSTAPAPER_OAUTH_TOKEN`
 - `INSTAPAPER_OAUTH_TOKEN_SECRET`
+
+### Manual Cloudflare Dashboard setup
+
+For a headless environment or manual Dashboard configuration, run:
+
+```bash
+pnpm run setup:instapaper -- --manual
+```
+
+After xAuth and credential verification, the helper creates a private system temporary directory (`0700`) and writes the four values to `secrets.txt` with `0600` permissions. The script prints the exact absolute path.
+
+Each section in the file has a Secret name in brackets and its raw value on the following line. Copy only the raw value into **Workers & Pages → instapaper-mcp-worker → Settings → Variables and Secrets** as a Secret. Do not include the brackets or Secret name.
+
+After copying the values, run the exact `rm -rf` command printed by the helper to remove the temporary directory.
 
 The Instapaper username/password are used only during bootstrap and are not persisted. These OAuth credentials are upstream business credentials and are intentionally separate from MCP ingress authentication.
 
@@ -75,6 +94,12 @@ Create this Worker's dedicated Portal access secret:
 
 ```bash
 pnpm exec wrangler secret put MCP_ACCESS_TOKEN
+```
+
+Alternatively, generate a value locally and add it manually in the Cloudflare Dashboard:
+
+```bash
+openssl rand -hex 32
 ```
 
 Configure the Instapaper server in MCP Portal to send the same value as its upstream bearer credential:
