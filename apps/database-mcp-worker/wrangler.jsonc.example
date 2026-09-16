@@ -15,18 +15,17 @@
     }
   },
   "secrets": {
-    "required": ["MCP_ACCESS_TOKEN"]
+    "required": ["MCP_ACCESS_TOKEN", "LEGACY_MYSQL_DATABASE_URL"]
   },
   "vars": {
-    "CONNECTIONS_JSON": "[{\"id\":\"prod_pg\",\"displayName\":\"Production PostgreSQL\",\"dialect\":\"postgres\",\"binding\":\"PROD_PG_READ\",\"enabled\":true,\"defaultSchema\":\"public\"},{\"id\":\"prod_mysql\",\"displayName\":\"Production MySQL\",\"dialect\":\"mysql\",\"binding\":\"PROD_MYSQL_READ\",\"enabled\":true}]",
+    "CONNECTIONS_JSON": "[{\"id\":\"legacy_mysql\",\"displayName\":\"Legacy MySQL\",\"transport\":\"direct\",\"urlSecret\":\"LEGACY_MYSQL_DATABASE_URL\",\"enabled\":true},{\"id\":\"prod_pg\",\"displayName\":\"Production PostgreSQL\",\"transport\":\"hyperdrive\",\"dialect\":\"postgres\",\"binding\":\"PROD_PG_READ\",\"enabled\":true,\"defaultSchema\":\"public\"}]",
     "MAX_ROWS": "500",
     "MAX_RESULT_BYTES": "1048576",
     "MAX_SCHEMA_BYTES": "524288",
     "QUERY_TIMEOUT_MS": "15000"
   },
   "hyperdrive": [
-    { "binding": "PROD_PG_READ", "id": "<CACHE_DISABLED_HYPERDRIVE_ID>" },
-    { "binding": "PROD_MYSQL_READ", "id": "<CACHE_DISABLED_HYPERDRIVE_ID>" }
+    { "binding": "PROD_PG_READ", "id": "<CACHE_DISABLED_HYPERDRIVE_ID>" }
   ],
   "ratelimits": [{"name":"RATE_LIMITER","namespace_id":"1001","simple":{"limit":120,"period":60}}]
 }

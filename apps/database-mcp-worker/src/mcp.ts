@@ -1,6 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
-import { resolveConnection } from './config.js';
+import { resolveConnection, resolveConnectionDialect } from './config.js';
 import { explainRead, healthCheck, inspectSchema, queryRead } from './db/index.js';
 import { PublicError, toPublicError } from './errors.js';
 import { emitLog, principalLogId, sqlLogFields } from './logging.js';
@@ -130,7 +130,8 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
           connections: catalog.map(connection => ({
             id: connection.id,
             displayName: connection.displayName,
-            dialect: connection.dialect,
+            dialect: resolveConnectionDialect(env, connection),
+            transport: connection.transport,
             enabled: connection.enabled,
             ...(connection.defaultSchema ? { defaultSchema: connection.defaultSchema } : {})
           }))
@@ -238,7 +239,7 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
         run: async () => {
           const resolved = resolveConnection(env, catalog, connection);
           const health = await healthCheck(resolved);
-          return { connection, dialect: resolved.config.dialect, ...health };
+          return { connection, dialect: resolved.dialect, transport: resolved.transport, ...health };
         },
         summarize: value => ({ latencyMs: value.latencyMs })
       })
