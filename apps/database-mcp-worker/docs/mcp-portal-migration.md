@@ -36,7 +36,7 @@ The Worker no longer owns a direct client OAuth resource-server path. These runt
 - `OAUTH_REQUIRED_SCOPE`
 - `MCP_ORIGIN_TOKEN`
 
-The original `docs/spec.md` describes the earlier v0.1 OAuth resource-server design and remains useful as historical/database-security design evidence; this document supersedes its client-authentication sections for the current monorepo target.
+The earlier v0.1 OAuth resource-server design has been removed from the active documentation tree; Git history preserves it when historical investigation is needed. This document is the current client-authentication contract for the monorepo target.
 
 ## Security boundaries retained
 
@@ -64,4 +64,4 @@ Portal-only ingress does **not** weaken database authorization:
 
 ## Deployment boundary
 
-Production deployment remains Cloudflare Builds only. Preserve the actual Worker name, Hyperdrive resource IDs, bindings and reachable route during cutover. Do not create a second production publisher. If no current production instance exists, this ticket only establishes the target code/config contract; deployment is handled by the later acceptance/cutover work.
+Production deployment remains Cloudflare Builds only. The target ingress policy is the Worker's `workers.dev` endpoint with `workers_dev:true`, `preview_urls:false`, and no custom domain or zone route. Preserve Hyperdrive resource IDs, bindings, and read-only database identities during cutover, and do not create a second production publisher. If no current production instance exists, this document only establishes the target code/config contract; deployment is handled by later acceptance/cutover work.

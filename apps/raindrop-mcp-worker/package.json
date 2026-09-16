@@ -1,146 +1,51 @@
 {
   "name": "raindrop-mcp-worker",
   "version": "2.4.5",
-  "description": "MCP Server for Raindrop.io bookmark management",
-  "main": "build/index.js",
-  "module": "build/index.js",
+  "description": "Private Cloudflare Worker MCP server for Raindrop.io bookmark management",
   "type": "module",
-  "bin": {
-    "raindrop-mcp": "build/index.js"
-  },
-  "files": [
-    "build"
-  ],
-  "private": false,
+  "private": true,
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "deploy:dry-run": "wrangler deploy --dry-run",
-    "dev:http": "bun run build && bun --watch src/server.ts",
-    "dev:worker": "pnpm run dev",
-    "deploy:worker": "pnpm run deploy",
     "tail:worker": "wrangler tail",
-    "inspector": "bunx @modelcontextprotocol/inspector node --env-file=.env build/index.js",
-    "inspector:http-server": "bunx @modelcontextprotocol/inspector node --env-file=.env build/server.js",
-    "typecheck": "tsc --noEmit",
-    "type-check": "pnpm run typecheck",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "pnpm run test:local",
-    "test:local": "vitest run tests/http-server-security.test.ts tests/mcp.service.test.ts tests/remove_duplicates.test.ts tests/worker.security.test.ts tests/caching.test.ts tests/retry_safety.test.ts tests/suggest_tags.test.ts tests/schemaEmission.test.ts tests/bookmark_search_filters.test.ts tests/raindrop_service_search.test.ts tests/server.http.test.ts",
+    "test:local": "vitest run tests/mcp.service.test.ts tests/tool_contract.test.ts tests/logger.test.ts tests/diagnostics_contract.test.ts tests/cleanup_destructive.test.ts tests/remove_duplicates.test.ts tests/worker.security.test.ts tests/caching.test.ts tests/retry_safety.test.ts tests/suggest_tags.test.ts tests/schemaEmission.test.ts tests/bookmark_search_filters.test.ts tests/raindrop_service_search.test.ts",
     "test:all": "vitest run",
-    "test:env": "vitest run tests/getAllHighlights.test.ts tests/index.test.ts tests/cleanup_destructive.test.ts tests/diagnostics_health.test.ts tests/library_audit.test.ts tests/mcp.integration.test.ts tests/raindrop.service.test.ts tests/destructive.live.test.ts",
-    "test:inspector": "vitest run tests/inspector.test.ts",
+    "test:env": "vitest run tests/getAllHighlights.test.ts tests/diagnostics_health.test.ts tests/library_audit.test.ts tests/mcp.integration.test.ts tests/raindrop.service.test.ts tests/destructive.live.test.ts",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "vitest run tests/mcp.integration.test.ts",
-    "auth:check": "node scripts/auth-check.mjs",
-    "check": "pnpm run typecheck && pnpm run lint && pnpm test && pnpm run deploy:dry-run",
-    "run": "bun run build/index.js",
-    "build": "bun build --target=node --format=esm --bundle --sourcemap --outdir=build ./src/index.ts ./src/server.ts",
-    "start:prod": "bun run build/index.js",
-    "start:http": "bun run src/server.ts",
-    "clean": "rm -rf build",
-    "bun:update": "bun update",
-    "update:deps": "bun update --latest && bun add --dev @typescript/native@npm:typescript@^7 typescript@^6",
-    "update:deps:interactive": "bun update --interactive --latest && bun add --dev @typescript/native@npm:typescript@^7 typescript@^6",
-    "mcpb:pack": "jq \".version = \\\"$(jq -r .version package.json)\\\"\" manifest.json > manifest.json.tmp && mv manifest.json.tmp manifest.json && bun run build && npx @anthropic-ai/mcpb@latest pack . raindrop-mcp.mcpb && npx @anthropic-ai/mcpb@latest clean raindrop-mcp.mcpb",
-    "generate:schema": "npx openapi-typescript ./raindrop-complete.yaml -o ./src/types/raindrop.schema.d.ts --tsconfig ./tsconfig.json --export-type --useUnionTypes --immutable",
-    "generate:client": "npx @openapitools/openapi-generator-cli generate -i ./raindrop-complete.yaml -g typescript-axios -o src/services/raindrop-client",
-    "release": "semantic-release",
-    "docs": "typedoc",
-    "prepare": "husky",
-    "lint-staged": "lint-staged"
+    "generate:schema": "openapi-typescript ./raindrop-complete.yaml -o ./src/types/raindrop.schema.d.ts --tsconfig ./tsconfig.json --export-type --useUnionTypes --immutable",
+    "check:schema": "pnpm run generate:schema && git diff --exit-code -- src/types/raindrop.schema.d.ts",
+    "check": "pnpm run typecheck && pnpm run lint && pnpm test && pnpm run check:schema && pnpm run deploy:dry-run"
   },
-  "lint-staged": {
-    "*.{js,ts}": [
-      "eslint --fix",
-      "prettier --write"
-    ],
-    "*.{json,md,yml,yaml}": [
-      "prettier --write"
-    ]
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/adeze/raindrop-mcp.git"
-  },
-  "publishConfig": {
-    "access": "public",
-    "registry": "https://registry.npmjs.org/"
-  },
-  "keywords": [
-    "mcp",
-    "raindrop.io",
-    "modelcontextprotocol",
-    "mcp-server",
-    "raindrop",
-    "bookmarks",
-    "ai-assistant",
-    "llm-tools",
-    "typescript"
-  ],
-  "author": "Adam E",
   "license": "MIT",
-  "bugs": {
-    "url": "https://github.com/adeze/raindrop-mcp/issues"
-  },
-  "homepage": "https://github.com/adeze/raindrop-mcp#readme",
   "dependencies": {
     "@mcp-workers/portal-auth": "workspace:*",
-    "@modelcontextprotocol/client": "^2.0.0-beta.5",
-    "@modelcontextprotocol/node": "^2.0.0-beta.5",
-    "@modelcontextprotocol/sdk": "^1.29.0",
     "@modelcontextprotocol/server": "^2.0.0-beta.5",
-    "axios": "^1.18.1",
-    "dotenv": "^17.4.2",
-    "esm": "^3.2.25",
-    "express": "^5.2.1",
-    "openai": "^6.48.0",
     "openapi-fetch": "^0.17.0",
-    "simple-oauth2": "^5.1.0",
-    "zod": "^4.4.3",
-    "zod-to-json-schema": "^3.25.2"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@anthropic-ai/dxt": "^0.2.6",
     "@eslint/js": "^10.0.1",
-    "@modelcontextprotocol/inspector": "^1.0.0",
-    "@openapitools/openapi-generator-cli": "^2.40.0",
-    "@semantic-release/changelog": "^7.0.0",
-    "@semantic-release/commit-analyzer": "^13.0.1",
-    "@semantic-release/exec": "^7.1.0",
-    "@semantic-release/git": "^11.0.0",
-    "@semantic-release/github": "^12.0.9",
-    "@semantic-release/npm": "^13.1.5",
-    "@semantic-release/release-notes-generator": "^14.1.1",
-    "@types/bun": "^1.3.14",
-    "@types/express": "^5.0.6",
+    "@modelcontextprotocol/client": "^2.0.0-beta.5",
     "@types/node": "^26.1.1",
-    "@types/supertest": "^7.2.1",
     "@typescript-eslint/eslint-plugin": "^8.65.0",
     "@typescript-eslint/parser": "^8.65.0",
     "@vitest/coverage-v8": "^4.1.10",
-    "bun-types": "1.3.14",
+    "dotenv": "^17.4.2",
     "eslint": "^10.7.0",
     "eslint-config-prettier": "^10.1.8",
-    "husky": "^9.1.7",
-    "lint-staged": "^17.1.1",
     "openapi-typescript": "^7.13.0",
     "prettier": "^3.9.6",
-    "semantic-release": "^25.0.8",
-    "supertest": "^7.2.2",
-    "typedoc": "^0.28.20",
-    "@typescript/native": "npm:typescript@^7.0.2",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.65.0",
     "vitest": "^4.1.10",
-    "vitest-mock-extended": "^5.1.0",
     "wrangler": "4.130.0"
-  },
-  "engines": {
-    "node": ">=20.0.0",
-    "bun": ">=1.0.0"
   }
 }

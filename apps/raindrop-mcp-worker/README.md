@@ -1,237 +1,117 @@
-# Raindrop.io MCP Server
+# Raindrop MCP Worker
 
-[![smithery badge](https://smithery.ai/badge/@adeze/raindrop-mcp)](https://smithery.ai/server/@adeze/raindrop-mcp)
-[![npm version](https://badge.fury.io/js/%40adeze%2Fraindrop-mcp.svg)](https://www.npmjs.com/package/@adeze/raindrop-mcp)
-[![Claude Desktop MCPB](https://img.shields.io/badge/Claude%20Desktop-MCPB-5B61FF?logo=claude&logoColor=white)](https://github.com/adeze/raindrop-mcp/releases)
+Private Cloudflare Worker MCP server for Raindrop.io in the `mcp-workers` monorepo.
 
-Connect Raindrop.io to your AI assistant with a simple MCP server. Use it to organize, search, and manage bookmarks with natural language.
+This application supports one production shape only:
 
-> Raindrop.io now also offers a hosted Streamable HTTP MCP endpoint (`https://api.raindrop.io/rest/v2/ai/mcp`) in beta for Pro users. Use that when its hosted toolset is sufficient; use this package for local stdio, self-hosted HTTP, and its additional library-management tools.
+```text
+MCP client
+  -> Cloudflare MCP Portal
+  -> Bearer MCP_ACCESS_TOKEN
+  -> https://raindrop-mcp-worker.aiyaya.workers.dev/mcp
+  -> raindrop-mcp-worker
+  -> RAINDROP_ACCESS_TOKEN
+  -> Raindrop.io API
+```
 
-## What it can do
+It is not published as an npm package and does not support standalone STDIO, standalone Node HTTP, MCPB/DXT, Smithery, Gemini extension, or public registry distribution from this monorepo.
 
-- Create, update, and delete collections and bookmarks
-- Search bookmarks by tags, domain, type, date, and more
-- Manage tags (list, rename, merge, delete)
-- Read highlights from bookmarks
-- Bulk edit bookmarks in a collection
-- Audit broken links and duplicates, and manage trash
+## Runtime contract
 
-## Tools
+- Worker name: `raindrop-mcp-worker`
+- Public origin: `https://raindrop-mcp-worker.aiyaya.workers.dev`
+- MCP endpoint: `/mcp`
+- `workers_dev`: enabled
+- preview URLs: disabled
+- client ingress: Cloudflare MCP Portal only
+- Portal credential: `MCP_ACCESS_TOKEN`
+- upstream Raindrop credential: `RAINDROP_ACCESS_TOKEN`
+- MCP handling: stateless per request
+- automatic retry: bounded reads only; writes are never automatically replayed after reaching Raindrop.io
 
-- **diagnostics** - Server diagnostic information and library health metrics
-- **collection_list** - List all collections as a flat list
-- **get_collection_tree** - Hierarchical view of collections with full breadcrumb paths
-- **collection_manage** - Create, update, or delete collections
-- **bookmark_search** - Advanced search with filters, tags, and pagination
-- **bookmark_manage** - Create, update, or delete bookmarks
-- **get_raindrop** - Fetch a single bookmark by ID
-- **list_raindrops** - List bookmarks for a collection with pagination
-- **get_suggestions** - AI-powered organization advice (tags/collections) for a URL or bookmark
-- **suggest_tags** - Suggest relevant tags from bookmark metadata using AI-assisted analysis
-- **bulk_edit_raindrops** - Bulk update, move, or remove bookmarks in a specific collection
-- **tag_manage** - Rename, merge, or delete tags
-- **highlight_manage** - Create, update, or delete highlights
-- **library_audit** - Scan library for broken links, duplicates, and untagged items
-- **empty_trash** - Permanently empty the trash (requires confirmation)
-- **cleanup_collections** - Remove empty collections (requires confirmation)
-- **remove_duplicates** - Find and remove duplicate bookmarks with safe confirmation flow
+`MCP_ACCESS_TOKEN` and `RAINDROP_ACCESS_TOKEN` are separate credentials and must never be reused for each other.
 
-## Install
+## MCP tools
 
-### Quick Start (One-Liners)
+The exact supported tool-name contract is regression-tested and currently contains 17 tools:
 
-| Tool               | One-Liner Command                                                  |
-| :----------------- | :----------------------------------------------------------------- |
-| **Gemini CLI**     | `gemini extensions install https://github.com/adeze/raindrop-mcp`  |
-| **Codex CLI**      | `codex mcp add raindrop -- npx -y @adeze/raindrop-mcp`             |
-| **Claude Code**    | `claude mcp add raindrop -- npx -y @adeze/raindrop-mcp`            |
-| **GitHub Copilot** | `gh copilot config mcp add raindrop -- npx -y @adeze/raindrop-mcp` |
-| **Vercel Skills**  | `npx skills add adeze/raindrop-mcp`                                |
+- `diagnostics`
+- `collection_list`
+- `get_collection_tree`
+- `collection_manage`
+- `bookmark_search`
+- `bookmark_manage`
+- `get_raindrop`
+- `list_raindrops`
+- `get_suggestions`
+- `suggest_tags`
+- `bulk_edit_raindrops`
+- `tag_manage`
+- `highlight_manage`
+- `library_audit`
+- `empty_trash`
+- `cleanup_collections`
+- `remove_duplicates`
 
-> **Note**: For tools adding an MCP server via `npx`, you must have the `RAINDROP_ACCESS_TOKEN` environment variable set in your shell or the tool's environment config.
+Destructive tools keep their explicit confirmation requirements. Tests and acceptance checks must not mutate a real Raindrop library unless a task explicitly authorizes that action.
 
-### Vercel Skills (npx skills)
+## Configuration
 
-This project is compatible with the [Vercel Skills](https://github.com/vercel/skills) system. All necessary manifests are present:
-
-- `manifest.json`: Standard MCP manifest for server definition.
-- `SKILL.md`: Standardized skill description for agent discovery.
-- `mcp.json`: Root configuration for MCP clients and registries.
-
-To add this server to your local skill directory:
+Worker secrets:
 
 ```bash
-npx skills add adeze/raindrop-mcp --global
+pnpm --filter raindrop-mcp-worker exec wrangler secret put MCP_ACCESS_TOKEN
+pnpm --filter raindrop-mcp-worker exec wrangler secret put RAINDROP_ACCESS_TOKEN
 ```
 
-To contribute this to the [Vercel Skills Registry](https://github.com/vercel/skills/tree/main/registry), submit a Pull Request adding this repository URL to the registry.
+Optional Worker variable:
 
-### Claude Desktop (MCPB)
+- `RAINDROP_RATE_LIMIT_MAX_RETRIES` — bounded retry count for safe read requests; default `3`.
 
-Download the latest raindrop-mcp.mcpb from the GitHub Release and add it to Claude Desktop:
+Do not commit secret values to the repository.
 
-- Releases: https://github.com/adeze/raindrop-mcp/releases
+## OpenAPI type generation
 
-In Claude Desktop, add the bundle and set this environment variable:
+`raindrop-complete.yaml` is the single canonical OpenAPI source retained by this application. Runtime code imports the generated `src/types/raindrop.schema.d.ts` types through `openapi-fetch`.
 
-- RAINDROP_ACCESS_TOKEN (from your Raindrop.io integrations settings)
-
-### NPX (CLI)
-
-Set your API token as an environment variable and run:
+Regenerate the schema types from the monorepo root with:
 
 ```bash
-export RAINDROP_ACCESS_TOKEN=YOUR_RAINDROP_ACCESS_TOKEN
-npx @adeze/raindrop-mcp
+pnpm --filter raindrop-mcp-worker generate:schema
 ```
 
-### Manual MCP config (mcp.json)
+`pnpm --filter raindrop-mcp-worker check` also runs a determinism check and fails if regeneration changes the committed type file. The former duplicate spec and Axios client-generator path are not part of the maintained Worker architecture.
 
-Add this to your MCP client configuration:
+## Development and verification
 
-```json
-{
-  "servers": {
-    "raindrop": {
-      "type": "stdio",
-      "command": "npx",
-      "args": ["@adeze/raindrop-mcp@latest"],
-      "env": {
-        "RAINDROP_ACCESS_TOKEN": "YOUR_RAINDROP_ACCESS_TOKEN"
-      }
-    }
-  }
-}
-```
-
-### Cloudflare Worker + MCP Portal
-
-The monorepo production path is Portal-only: Cloudflare MCP Portal is the client-facing entry point and the Worker origin is protected with this Worker's independent `MCP_ACCESS_TOKEN`. `RAINDROP_ACCESS_TOKEN` remains a separate upstream Raindrop credential.
-
-The Worker does not expose CORS for `/mcp`; browser-origin requests are rejected. Server-to-server requests without an `Origin` header are allowed only after the normal Portal bearer check.
-
-The Worker is stateless per MCP request. Collection/bookmark/search reuse is limited to one service instance and does not claim cross-request caching. Upstream write requests are never automatically resubmitted after reaching Raindrop.io; bounded automatic retries apply only to reads. `RAINDROP_RATE_LIMIT_MAX_RETRIES` controls that read retry ceiling (default `3`).
-
-See [docs/cloudflare-mcp-portal.md](docs/cloudflare-mcp-portal.md) for the deployment and acceptance flow.
-
-## Requirements
-
-- A Raindrop.io account
-- A Raindrop.io API Access Token: https://app.raindrop.io/settings/integrations
-
-## Support
-
-- Issues: https://github.com/adeze/raindrop-mcp/issues
-
-## Release
-
-This repository uses `semantic-release` as the only supported release flow.
-
-### How publishing works
-
-- Releases run from pushes to `master` via `.github/workflows/ci.yml`.
-- `semantic-release` analyzes Conventional Commit messages, computes the next version, updates `CHANGELOG.md`, tags/releases on GitHub, and publishes npm.
-- During release preparation, `.releaserc.json` syncs `manifest.json`, `mcp.json`, and `gemini-extension.json`, then builds `raindrop-mcp.mcpb` so the GitHub Release includes the bundle.
-
-### Pre-release dry-run
-
-- Run `.github/workflows/release-dry-run.yml` with **Run workflow** before cutting a public release.
-- This validates semantic version calculation, registry auth, and release pipeline behavior without publishing.
-
-### Required secrets
-
-- `GITHUB_TOKEN` is provided by GitHub Actions for release automation.
-
-### npm trusted publishing
-
-- npm publishing is configured via GitHub Actions OIDC trusted publishing.
-- `NPM_TOKEN` is not required for the standard CI release path.
-
-### Local validation before merge
+From the monorepo root:
 
 ```bash
-bun run lint
-bun run type-check
-bun run test
-bun run build
+pnpm install --frozen-lockfile
+pnpm --filter raindrop-mcp-worker check
 ```
 
-### Commit message examples
+The application `check` runs TypeScript validation, lint, the local regression suite including the exact 17-tool contract, deterministic OpenAPI type regeneration, and Wrangler dry-run deployment validation.
 
-- `fix: handle empty tag merge payload`
-- `feat: add collection path filter`
-- `feat!: remove deprecated search parameter`
+Optional tests that require a real `RAINDROP_ACCESS_TOKEN` remain outside the default CI-safe test set. `test:env` includes explicitly gated live checks, including a destructive lifecycle test; run those only with disposable/non-production test data and the documented opt-in flags, never as routine production cutover smoke.
 
-Do not manually bump versions, push release tags, or run manual npm publish commands for normal releases.
+## Deployment and Portal
 
-## 📋 Recent Enhancements (v2.4.x)
+The source configuration is in `wrangler.jsonc`. Production publishing is expected to use the monorepo as the single Cloudflare Workers Builds source.
 
-### Smart Organization & Hierarchy
+Portal upstream target:
 
-- **AI Suggestions**: New `get_suggestions` tool provides organizational advice using Raindrop's API and MCP Sampling.
-- **Collection Tree**: `get_collection_tree` tool provides a hierarchical view with full breadcrumb paths.
-- **Bulk Move**: Added `move` operation to `bulk_edit_raindrops` for efficient library organization.
-- **Pagination Support**: Standardized `list_raindrops` and `bookmark_search` with pagination for large libraries.
+```text
+https://raindrop-mcp-worker.aiyaya.workers.dev/mcp
+```
 
-### Safety & Quality
+See:
 
-- **Confirmation Logic**: Destructive tools (`empty_trash`, `cleanup_collections`) now require explicit confirmation.
-- **Standardized Naming**: All tools now use consistent snake_case naming conventions.
-- **CI/CD Pipeline**: Enhanced GitHub Actions with automated linting, type-checking, and cross-transport tests.
-- **Code Quality**: Established ESLint and Prettier configurations for maintainable development.
+- `docs/cloudflare-mcp-portal.md` for deployment/Portal configuration.
+- `docs/mcp-portal-acceptance-checklist.md` for the live acceptance sequence.
 
-## 📋 Previous Enhancements (v2.3.3)
+Account-level Cloudflare deployment, publisher cutover, Portal upstream changes, and production secret management are intentionally separate from source-only refactoring work.
 
-### Advanced Cleanup & Library Audit
+## Source attribution
 
-## 📋 Previous Enhancements (v2.3.2)
-
-### MCP Resource Links Implementation
-
-- Modern `resource` content following current MCP SDK best practices
-- Efficient data access: tools return lightweight links instead of full payloads
-- Better performance: clients fetch full bookmark/collection data only when needed
-- Seamless integration with dynamic resource system (`mcp://raindrop/{id}`)
-
-### SDK & API Updates
-
-- Updated to the latest supported MCP SDK in this repository
-- Modern tool registration with improved descriptions
-- Fixed API endpoints and path parameters
-- All core tools fully functional
-
-### Tool Optimization
-
-- Resource-efficient responses for bookmark/collection lists
-- Dynamic resource access via `mcp://collection/{id}` and `mcp://raindrop/{id}`
-- Better client UX with lighter list payloads
-- Full MCP compliance with official SDK patterns
-
-### Service Layer Improvements
-
-- Reduced code through extracted common helpers
-- Consistent error handling and response processing
-- Enhanced type safety with generic handlers
-- Centralized endpoint building
-
-### Testing Improvements
-
-- Stronger end-to-end coverage for MCP tool execution
-- Expanded integration tests for real-world client flows
-
-### MCP 2.0 Preparation (Bulk Ops)
-
-- Laying groundwork for MCP 2.0 bulk-operation workflows and tooling
-
-### OAuth (Coming Soon)
-
-- OAuth-based auth flow to simplify setup without manual tokens
-
-### Note
-
-Apologies to anyone affected by the last couple of builds. Thank you for the patience and reports.
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This Worker was migrated and adapted from an MIT-licensed Raindrop MCP implementation. The immutable source repository, frozen commit, and license provenance are recorded in `SOURCE.md`; the preserved license is in `LICENSE`.
