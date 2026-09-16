@@ -3,4 +3,5 @@ CLIENT_ID=
 API_KEY=
 MCP_ACCESS_TOKEN=
 
-# R2_PUBLIC_BASE_URL is non-secret and is defined in wrangler.jsonc.
+# R2_PUBLIC_BASE_URL is a non-secret Worker runtime variable.
+# Configure its production value in Cloudflare Dashboard; it is intentionally not committed here.
