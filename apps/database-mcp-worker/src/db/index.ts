@@ -1,6 +1,21 @@
-import type { EffectiveConnection, HealthResult, QueryResult, SchemaInspection } from '../types.js';
+import { PublicError } from '../errors.js';
+import {
+  assertWritePayloadWithinLimit,
+  buildDeleteStatement,
+  buildInsertStatement,
+  buildUpdateStatement
+} from '../sql/write.js';
+import type {
+  EffectiveConnection,
+  EffectiveWriteConnection,
+  HealthResult,
+  QueryResult,
+  SchemaInspection,
+  WriteResult
+} from '../types.js';
 import { mysqlExplain, mysqlHealthCheck, mysqlInspectSchema, mysqlQueryRead } from './mysql.js';
 import { postgresExplain, postgresHealthCheck, postgresInspectSchema, postgresQueryRead } from './postgres.js';
+import { executeGuardedWrite, executeInsertWrite } from './write.js';
 
 export async function queryRead(
   connection: EffectiveConnection,
@@ -33,4 +48,52 @@ export async function inspectSchema(
   return connection.dialect === 'postgres'
     ? postgresInspectSchema(connection, schema, table)
     : mysqlInspectSchema(connection, schema, table);
+}
+
+function resolveWriteSchema(connection: EffectiveWriteConnection, requested: string | undefined): string {
+  if (connection.dialect === 'postgres') {
+    return requested ?? connection.config.defaultSchema ?? 'public';
+  }
+
+  if (requested !== undefined && requested !== connection.database) {
+    throw new PublicError('ACCESS_DENIED', 'MySQL writes are restricted to the configured database.');
+  }
+  return connection.database;
+}
+
+export async function insertRows(
+  connection: EffectiveWriteConnection,
+  schema: string | undefined,
+  table: string,
+  rows: unknown
+): Promise<WriteResult> {
+  const selectedSchema = resolveWriteSchema(connection, schema);
+  assertWritePayloadWithinLimit({ schema: selectedSchema, table, rows });
+  const statement = buildInsertStatement(connection.dialect, selectedSchema, table, rows);
+  return executeInsertWrite(connection, statement);
+}
+
+export async function updateRows(
+  connection: EffectiveWriteConnection,
+  schema: string | undefined,
+  table: string,
+  set: unknown,
+  where: unknown
+): Promise<WriteResult> {
+  const selectedSchema = resolveWriteSchema(connection, schema);
+  assertWritePayloadWithinLimit({ schema: selectedSchema, table, set, where });
+  const statement = buildUpdateStatement(connection.dialect, selectedSchema, table, set, where);
+  return executeGuardedWrite(connection, statement);
+}
+
+export async function deleteRows(
+  connection: EffectiveWriteConnection,
+  schema: string | undefined,
+  table: string,
+  where: unknown
+): Promise<WriteResult> {
+  const selectedSchema = resolveWriteSchema(connection, schema);
+  assertWritePayloadWithinLimit({ schema: selectedSchema, table, where });
+  const statement = buildDeleteStatement(connection.dialect, selectedSchema, table, where);
+  return executeGuardedWrite(connection, statement);
 }
