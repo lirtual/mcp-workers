@@ -5,5 +5,15 @@
   "compatibility_date": "2026-09-13",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
-  "preview_urls": false
+  "preview_urls": false,
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "invocation_logs": true,
+      "head_sampling_rate": 1
+    }
+  },
+  "secrets": {
+    "required": ["MCP_ACCESS_TOKEN", "WEREAD_API_KEY"]
+  }
 }
