@@ -8,15 +8,15 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
 }
 
 export function loadConfig(env: Env): AppConfig {
-  if (!env.OPENLIST_URL || !env.OPENLIST_TOKEN || !env.OPENLIST_ALLOWED_PATHS) {
-    throw new Error("OPENLIST_URL, OPENLIST_TOKEN and OPENLIST_ALLOWED_PATHS are required");
+  if (!env.OPENLIST_URL || !env.OPENLIST_TOKEN) {
+    throw new Error("OPENLIST_URL and OPENLIST_TOKEN are required");
   }
 
   const openListUrl = new URL(env.OPENLIST_URL);
   if (openListUrl.protocol !== "https:") throw new Error("OPENLIST_URL must use HTTPS in production");
 
-  const allowedPaths = env.OPENLIST_ALLOWED_PATHS.split(",").map((v) => v.trim()).filter(Boolean);
-  if (allowedPaths.length === 0) throw new Error("OPENLIST_ALLOWED_PATHS must contain at least one path");
+  const allowedPathsValue = env.OPENLIST_ALLOWED_PATHS?.trim() || "/";
+  const allowedPaths = allowedPathsValue.split(",").map((v) => v.trim()).filter(Boolean);
 
   return {
     openListUrl,

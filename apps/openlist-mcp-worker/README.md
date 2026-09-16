@@ -29,17 +29,19 @@ The Worker exposes a bounded OpenList tool set for capability discovery, file li
 
 Configuration:
 
-- `OPENLIST_URL` — HTTPS OpenList server URL
-- `OPENLIST_ALLOWED_PATHS` — comma-separated allowed roots
+- `OPENLIST_URL` — required HTTPS OpenList server URL
+- `OPENLIST_ALLOWED_PATHS` — optional comma-separated allowed roots; defaults to `/`, meaning all paths visible to the configured OpenList account
 - `OPENLIST_READONLY` — defaults to `true`; mutation tools are omitted when enabled
 - `OPENLIST_UPLOAD_MAX_BYTES` — defaults to 5 MiB
 - `OPENLIST_TIMEOUT_MS` — defaults to 15 seconds
-- `OPENLIST_TOKEN` — Worker secret for OpenList business authentication
+- `OPENLIST_TOKEN` — required Worker secret for OpenList business authentication
 - `MCP_ACCESS_TOKEN` — independent Worker secret for Portal ingress
+
+For personal deployments where the OpenList token already belongs to a dedicated low-privilege account, `OPENLIST_ALLOWED_PATHS` can be omitted. Configure it only when an additional Worker-side path restriction is desired.
 
 ## Safety model
 
-Portal authentication, the low-privilege OpenList account/token, and the path allowlist are separate controls. Copy/move validate both source and destination. Destructive remove/cancel/delete operations require `confirm=true`, but confirmation is an accidental-operation guard rather than an authorization boundary. Download bodies do not transit the Worker.
+Portal authentication, the low-privilege OpenList account/token, and the optional path allowlist are separate controls. When `OPENLIST_ALLOWED_PATHS` is omitted, the Worker defaults to `/` and relies on the OpenList account's own permissions for path scope. Copy/move validate both source and destination. Destructive remove/cancel/delete operations require `confirm=true`, but confirmation is an accidental-operation guard rather than an authorization boundary. Download bodies do not transit the Worker.
 
 ## Development and verification
 
