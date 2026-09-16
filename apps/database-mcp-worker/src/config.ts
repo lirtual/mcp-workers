@@ -1,8 +1,18 @@
 import { PublicError } from './errors.js';
-import type { ConnectionConfig, Dialect, EffectiveConnection, Env, HyperdriveBinding, RuntimeLimits } from './types.js';
+import type {
+  ConnectionConfig,
+  DatabaseTransport,
+  Dialect,
+  DirectConnectionConfig,
+  EffectiveConnection,
+  Env,
+  HyperdriveBinding,
+  HyperdriveConnectionConfig,
+  RuntimeLimits
+} from './types.js';
 
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
-const BINDING_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const DEFAULT_LIMITS: RuntimeLimits = {
   maxRows: 500,
   maxResultBytes: 1_048_576,
@@ -15,6 +25,16 @@ const HARD_MAX = {
   maxSchemaBytes: 4 * 1024 * 1024,
   queryTimeoutMs: 60_000
 } as const;
+
+interface ParsedDirectUrl {
+  dialect: Dialect;
+  connectionString: string;
+  host: string;
+  user: string;
+  password: string;
+  database: string;
+  port: number;
+}
 
 function positiveInt(value: unknown, field: string, max: number): number | undefined {
   if (value === undefined) return undefined;
@@ -42,6 +62,98 @@ function parseDialect(value: unknown): Dialect {
   throw new PublicError('INVALID_INPUT', 'Connection dialect must be mysql or postgres.');
 }
 
+function parseTransport(value: unknown): DatabaseTransport {
+  if (value === 'direct' || value === 'hyperdrive') return value;
+  throw new PublicError('INVALID_INPUT', 'Connection transport must be direct or hyperdrive.');
+}
+
+function decodeUrlPart(value: string, connectionId: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    throw new PublicError('INVALID_INPUT', `Connection '${connectionId}' has an invalid direct database URL.`);
+  }
+}
+
+function directUrlRequestsTls(url: URL): boolean {
+  for (const [rawKey, rawValue] of url.searchParams) {
+    const key = rawKey.toLowerCase();
+    const value = rawValue.trim().toLowerCase();
+
+    if (key === 'sslmode' || key === 'ssl-mode') {
+      if (value === 'disable' || value === 'disabled') continue;
+      return true;
+    }
+
+    if (key === 'ssl' || key === 'tls') {
+      if (value === 'false' || value === '0' || value === 'disable' || value === 'disabled') continue;
+      return true;
+    }
+
+    if (
+      key.startsWith('ssl') ||
+      key.startsWith('tls') ||
+      key === 'rejectunauthorized' ||
+      key === 'reject-unauthorized'
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function parseDirectDatabaseUrl(raw: string, connectionId: string): ParsedDirectUrl {
+  if (raw.length === 0 || raw.length > 8_192) {
+    throw new PublicError('INVALID_INPUT', `Connection '${connectionId}' has an invalid direct database URL.`);
+  }
+
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new PublicError('INVALID_INPUT', `Connection '${connectionId}' has an invalid direct database URL.`);
+  }
+
+  let dialect: Dialect;
+  let defaultPort: number;
+  if (url.protocol === 'postgres:' || url.protocol === 'postgresql:') {
+    dialect = 'postgres';
+    defaultPort = 5432;
+  } else if (url.protocol === 'mysql:') {
+    dialect = 'mysql';
+    defaultPort = 3306;
+  } else {
+    throw new PublicError('INVALID_INPUT', `Connection '${connectionId}' uses an unsupported direct database URL scheme.`);
+  }
+
+  if (directUrlRequestsTls(url)) {
+    throw new PublicError(
+      'INVALID_INPUT',
+      `Connection '${connectionId}' requests TLS in direct mode; use Hyperdrive for TLS-capable databases.`
+    );
+  }
+
+  const database = decodeUrlPart(url.pathname.replace(/^\/+/, ''), connectionId);
+  if (url.hostname.length === 0 || url.username.length === 0 || database.length === 0 || url.hash.length > 0) {
+    throw new PublicError('INVALID_INPUT', `Connection '${connectionId}' has an invalid direct database URL.`);
+  }
+
+  const port = url.port === '' ? defaultPort : Number(url.port);
+  if (!Number.isInteger(port) || port <= 0 || port > 65_535) {
+    throw new PublicError('INVALID_INPUT', `Connection '${connectionId}' has an invalid direct database port.`);
+  }
+
+  return {
+    dialect,
+    connectionString: raw,
+    host: url.hostname,
+    user: decodeUrlPart(url.username, connectionId),
+    password: decodeUrlPart(url.password, connectionId),
+    database,
+    port
+  };
+}
+
 export function getRuntimeLimits(env: Env): RuntimeLimits {
   return {
     maxRows: positiveInt(env.MAX_ROWS, 'MAX_ROWS', HARD_MAX.maxRows) ?? DEFAULT_LIMITS.maxRows,
@@ -52,6 +164,52 @@ export function getRuntimeLimits(env: Env): RuntimeLimits {
     queryTimeoutMs:
       positiveInt(env.QUERY_TIMEOUT_MS, 'QUERY_TIMEOUT_MS', HARD_MAX.queryTimeoutMs) ?? DEFAULT_LIMITS.queryTimeoutMs
   };
+}
+
+function commonConnectionFields(item: Record<string, unknown>, index: number, id: string) {
+  const enabled = item.enabled === undefined ? true : item.enabled;
+  if (typeof enabled !== 'boolean') {
+    throw new PublicError('INVALID_INPUT', `Connection '${id}' has an invalid enabled flag.`);
+  }
+
+  const common = {
+    id,
+    displayName: requiredString(item.displayName, `connection[${index}].displayName`, 128),
+    enabled
+  } as const;
+
+  const optional: {
+    defaultSchema?: string;
+    maxRows?: number;
+    maxResultBytes?: number;
+    maxSchemaBytes?: number;
+    queryTimeoutMs?: number;
+  } = {};
+
+  const defaultSchema = optionalString(item.defaultSchema, `connection[${index}].defaultSchema`);
+  if (defaultSchema !== undefined) optional.defaultSchema = defaultSchema;
+  const maxRows = positiveInt(item.maxRows, `connection[${index}].maxRows`, HARD_MAX.maxRows);
+  if (maxRows !== undefined) optional.maxRows = maxRows;
+  const maxResultBytes = positiveInt(
+    item.maxResultBytes,
+    `connection[${index}].maxResultBytes`,
+    HARD_MAX.maxResultBytes
+  );
+  if (maxResultBytes !== undefined) optional.maxResultBytes = maxResultBytes;
+  const maxSchemaBytes = positiveInt(
+    item.maxSchemaBytes,
+    `connection[${index}].maxSchemaBytes`,
+    HARD_MAX.maxSchemaBytes
+  );
+  if (maxSchemaBytes !== undefined) optional.maxSchemaBytes = maxSchemaBytes;
+  const queryTimeoutMs = positiveInt(
+    item.queryTimeoutMs,
+    `connection[${index}].queryTimeoutMs`,
+    HARD_MAX.queryTimeoutMs
+  );
+  if (queryTimeoutMs !== undefined) optional.queryTimeoutMs = queryTimeoutMs;
+
+  return { ...common, ...optional };
 }
 
 export function parseConnectionCatalog(raw: string): ConnectionConfig[] {
@@ -66,59 +224,61 @@ export function parseConnectionCatalog(raw: string): ConnectionConfig[] {
   }
 
   const ids = new Set<string>();
-  const result: ConnectionConfig[] = parsed.map((entry, index) => {
+  return parsed.map((entry, index) => {
     if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
       throw new PublicError('INVALID_INPUT', `Connection ${index} is invalid.`);
     }
+
     const item = entry as Record<string, unknown>;
     const id = requiredString(item.id, `connection[${index}].id`, 64);
     if (!ID_RE.test(id) || ids.has(id)) {
       throw new PublicError('INVALID_INPUT', `Connection id '${id}' is invalid or duplicated.`);
     }
     ids.add(id);
+
+    const transport = parseTransport(item.transport);
+    const common = commonConnectionFields(item, index, id);
+
+    if (transport === 'direct') {
+      if (item.binding !== undefined || item.dialect !== undefined) {
+        throw new PublicError(
+          'INVALID_INPUT',
+          `Connection '${id}' cannot declare binding or dialect when transport is direct.`
+        );
+      }
+
+      for (const field of ['host', 'port', 'user', 'username', 'password', 'database', 'tls', 'ssl']) {
+        if (item[field] !== undefined) {
+          throw new PublicError('INVALID_INPUT', `Connection '${id}' uses unsupported split direct configuration.`);
+        }
+      }
+
+      const urlSecret = requiredString(item.urlSecret, `connection[${index}].urlSecret`, 128);
+      if (!ENV_NAME_RE.test(urlSecret)) {
+        throw new PublicError('INVALID_INPUT', `Connection '${id}' has an invalid URL secret name.`);
+      }
+
+      const config: DirectConnectionConfig = { ...common, transport: 'direct', urlSecret };
+      return config;
+    }
+
+    if (item.urlSecret !== undefined) {
+      throw new PublicError('INVALID_INPUT', `Connection '${id}' cannot declare urlSecret when transport is hyperdrive.`);
+    }
+
     const binding = requiredString(item.binding, `connection[${index}].binding`, 128);
-    if (!BINDING_RE.test(binding)) {
+    if (!ENV_NAME_RE.test(binding)) {
       throw new PublicError('INVALID_INPUT', `Connection '${id}' has an invalid binding name.`);
     }
 
-    const enabled = item.enabled === undefined ? true : item.enabled;
-    if (typeof enabled !== 'boolean') {
-      throw new PublicError('INVALID_INPUT', `Connection '${id}' has an invalid enabled flag.`);
-    }
-
-    const config: ConnectionConfig = {
-      id,
-      displayName: requiredString(item.displayName, `connection[${index}].displayName`, 128),
+    const config: HyperdriveConnectionConfig = {
+      ...common,
+      transport: 'hyperdrive',
       dialect: parseDialect(item.dialect),
-      binding,
-      enabled
+      binding
     };
-    const defaultSchema = optionalString(item.defaultSchema, `connection[${index}].defaultSchema`);
-    if (defaultSchema !== undefined) config.defaultSchema = defaultSchema;
-    const maxRows = positiveInt(item.maxRows, `connection[${index}].maxRows`, HARD_MAX.maxRows);
-    if (maxRows !== undefined) config.maxRows = maxRows;
-    const maxResultBytes = positiveInt(
-      item.maxResultBytes,
-      `connection[${index}].maxResultBytes`,
-      HARD_MAX.maxResultBytes
-    );
-    if (maxResultBytes !== undefined) config.maxResultBytes = maxResultBytes;
-    const maxSchemaBytes = positiveInt(
-      item.maxSchemaBytes,
-      `connection[${index}].maxSchemaBytes`,
-      HARD_MAX.maxSchemaBytes
-    );
-    if (maxSchemaBytes !== undefined) config.maxSchemaBytes = maxSchemaBytes;
-    const queryTimeoutMs = positiveInt(
-      item.queryTimeoutMs,
-      `connection[${index}].queryTimeoutMs`,
-      HARD_MAX.queryTimeoutMs
-    );
-    if (queryTimeoutMs !== undefined) config.queryTimeoutMs = queryTimeoutMs;
     return config;
   });
-
-  return result;
 }
 
 function isHyperdriveBinding(value: unknown): value is HyperdriveBinding {
@@ -134,24 +294,60 @@ function isHyperdriveBinding(value: unknown): value is HyperdriveBinding {
   );
 }
 
+function directUrlFromEnv(env: Env, config: DirectConnectionConfig): ParsedDirectUrl {
+  const candidate = env[config.urlSecret];
+  if (typeof candidate !== 'string' || candidate.length === 0) {
+    throw new PublicError('CONNECTION_UNAVAILABLE', 'The configured direct database URL Secret is unavailable.');
+  }
+  return parseDirectDatabaseUrl(candidate, config.id);
+}
+
+export function resolveConnectionDialect(env: Env, config: ConnectionConfig): Dialect {
+  return config.transport === 'hyperdrive' ? config.dialect : directUrlFromEnv(env, config).dialect;
+}
+
+function effectiveLimits(env: Env, config: ConnectionConfig): RuntimeLimits {
+  const global = getRuntimeLimits(env);
+  return {
+    maxRows: Math.min(config.maxRows ?? global.maxRows, global.maxRows),
+    maxResultBytes: Math.min(config.maxResultBytes ?? global.maxResultBytes, global.maxResultBytes),
+    maxSchemaBytes: Math.min(config.maxSchemaBytes ?? global.maxSchemaBytes, global.maxSchemaBytes),
+    queryTimeoutMs: Math.min(config.queryTimeoutMs ?? global.queryTimeoutMs, global.queryTimeoutMs)
+  };
+}
+
 export function resolveConnection(env: Env, catalog: ConnectionConfig[], id: string): EffectiveConnection {
   const config = catalog.find(item => item.id === id);
   if (!config) throw new PublicError('CONNECTION_NOT_FOUND', 'The requested logical connection does not exist.');
   if (!config.enabled) throw new PublicError('CONNECTION_DISABLED', 'The requested logical connection is disabled.');
 
+  const limits = effectiveLimits(env, config);
+
+  if (config.transport === 'direct') {
+    const direct = directUrlFromEnv(env, config);
+    return {
+      config,
+      transport: 'direct',
+      ...direct,
+      limits
+    };
+  }
+
   const candidate = env[config.binding];
   if (!isHyperdriveBinding(candidate)) {
     throw new PublicError('CONNECTION_UNAVAILABLE', 'The configured Hyperdrive binding is unavailable.');
   }
-  const global = getRuntimeLimits(env);
+
   return {
     config,
-    binding: candidate,
-    limits: {
-      maxRows: Math.min(config.maxRows ?? global.maxRows, global.maxRows),
-      maxResultBytes: Math.min(config.maxResultBytes ?? global.maxResultBytes, global.maxResultBytes),
-      maxSchemaBytes: Math.min(config.maxSchemaBytes ?? global.maxSchemaBytes, global.maxSchemaBytes),
-      queryTimeoutMs: Math.min(config.queryTimeoutMs ?? global.queryTimeoutMs, global.queryTimeoutMs)
-    }
+    transport: 'hyperdrive',
+    dialect: config.dialect,
+    connectionString: candidate.connectionString,
+    host: candidate.host,
+    user: candidate.user,
+    password: candidate.password,
+    database: candidate.database,
+    port: candidate.port,
+    limits
   };
 }

@@ -1,4 +1,5 @@
 export type Dialect = 'mysql' | 'postgres';
+export type DatabaseTransport = 'direct' | 'hyperdrive';
 
 export interface HyperdriveBinding {
   connectionString: string;
@@ -24,11 +25,9 @@ export interface Env {
   [key: string]: unknown;
 }
 
-export interface ConnectionConfig {
+interface BaseConnectionConfig {
   id: string;
   displayName: string;
-  dialect: Dialect;
-  binding: string;
   enabled: boolean;
   defaultSchema?: string;
   maxRows?: number;
@@ -36,6 +35,19 @@ export interface ConnectionConfig {
   maxSchemaBytes?: number;
   queryTimeoutMs?: number;
 }
+
+export interface DirectConnectionConfig extends BaseConnectionConfig {
+  transport: 'direct';
+  urlSecret: string;
+}
+
+export interface HyperdriveConnectionConfig extends BaseConnectionConfig {
+  transport: 'hyperdrive';
+  dialect: Dialect;
+  binding: string;
+}
+
+export type ConnectionConfig = DirectConnectionConfig | HyperdriveConnectionConfig;
 
 export interface RuntimeLimits {
   maxRows: number;
@@ -46,7 +58,14 @@ export interface RuntimeLimits {
 
 export interface EffectiveConnection {
   config: ConnectionConfig;
-  binding: HyperdriveBinding;
+  transport: DatabaseTransport;
+  dialect: Dialect;
+  connectionString: string;
+  host: string;
+  user: string;
+  password: string;
+  database: string;
+  port: number;
   limits: RuntimeLimits;
 }
 

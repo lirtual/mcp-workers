@@ -2,25 +2,28 @@ import { Client as PgClient } from 'pg';
 import { createConnection } from 'mysql2/promise';
 import { describe, expect, it } from 'vitest';
 import { explainRead, inspectSchema, queryRead } from '../../src/db/index.js';
-import type { EffectiveConnection, HyperdriveBinding } from '../../src/types.js';
+import type { Dialect, EffectiveConnection } from '../../src/types.js';
 
-function bindingFromUrl(raw: string): HyperdriveBinding {
+function directConnection(id: string, dialect: Dialect, raw: string): EffectiveConnection {
   const url = new URL(raw);
+  const database = decodeURIComponent(url.pathname.slice(1));
   return {
+    config: {
+      id,
+      displayName: id,
+      transport: 'direct',
+      urlSecret: 'TEST_DATABASE_URL',
+      enabled: true,
+      defaultSchema: dialect === 'postgres' ? 'public' : database
+    },
+    transport: 'direct',
+    dialect,
     connectionString: raw,
     host: url.hostname,
-    port: Number(url.port || (url.protocol.startsWith('postgres') ? 5432 : 3306)),
+    port: Number(url.port || (dialect === 'postgres' ? 5432 : 3306)),
     user: decodeURIComponent(url.username),
     password: decodeURIComponent(url.password),
-    database: url.pathname.slice(1)
-  };
-}
-
-function connection(id: string, dialect: 'postgres' | 'mysql', raw: string): EffectiveConnection {
-  const binding = bindingFromUrl(raw);
-  return {
-    config: { id, displayName: id, dialect, binding: 'TEST', enabled: true, defaultSchema: dialect === 'postgres' ? 'public' : binding.database },
-    binding,
+    database,
     limits: { maxRows: 50, maxResultBytes: 256_000, maxSchemaBytes: 256_000, queryTimeoutMs: 2_000 }
   };
 }
@@ -30,23 +33,23 @@ const mysqlReadUrl = process.env.TEST_MYSQL_READ_URL;
 const describeIntegration = pgReadUrl && mysqlReadUrl ? describe : describe.skip;
 
 describeIntegration('real database read-only integration', () => {
-  const pg = connection('pg', 'postgres', pgReadUrl!);
-  const mysql = connection('mysql', 'mysql', mysqlReadUrl!);
+  const pg = directConnection('pg', 'postgres', pgReadUrl!);
+  const mysql = directConnection('mysql', 'mysql', mysqlReadUrl!);
 
-  it('queries PostgreSQL through the read adapter and preserves RLS', async () => {
+  it('queries PostgreSQL through the direct read adapter and preserves RLS', async () => {
     const result = await queryRead(pg, 'SELECT id, tenant_id, email FROM public.users ORDER BY id', [], 10);
     expect(result.rowCount).toBe(1);
     expect(result.rows[0]?.[0]).toBe(1);
   });
 
-  it('queries MySQL through the read adapter', async () => {
+  it('queries MySQL through the direct read adapter', async () => {
     const result = await queryRead(mysql, 'SELECT id, email FROM users ORDER BY id', [], 10);
     expect(result.rowCount).toBe(2);
   });
 
   it('inspects table metadata in both dialects', async () => {
     const pgSchema = await inspectSchema(pg, 'public', 'users');
-    const mySchema = await inspectSchema(mysql, mysql.binding.database, 'users');
+    const mySchema = await inspectSchema(mysql, mysql.database, 'users');
     expect(pgSchema.columns?.some(column => column.name === 'email')).toBe(true);
     expect(mySchema.columns?.some(column => column.name === 'email')).toBe(true);
   });
@@ -57,7 +60,7 @@ describeIntegration('real database read-only integration', () => {
   });
 
   it('database-native PostgreSQL permissions reject writes and side-effecting function execution', async () => {
-    const client = new PgClient({ connectionString: pgReadUrl! });
+    const client = new PgClient({ connectionString: pgReadUrl!, ssl: false });
     await client.connect();
     try {
       await expect(client.query("UPDATE public.users SET email = 'changed' WHERE id = 1")).rejects.toBeTruthy();
@@ -74,7 +77,7 @@ describeIntegration('real database read-only integration', () => {
       port: Number(url.port || 3306),
       user: decodeURIComponent(url.username),
       password: decodeURIComponent(url.password),
-      database: url.pathname.slice(1),
+      database: decodeURIComponent(url.pathname.slice(1)),
       disableEval: true
     });
     try {

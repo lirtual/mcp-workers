@@ -13,11 +13,11 @@ import { withTimeout } from './timeout.js';
 
 async function createMysqlConnection(connection: EffectiveConnection): Promise<Connection> {
   return createConnection({
-    host: connection.binding.host,
-    user: connection.binding.user,
-    password: connection.binding.password,
-    database: connection.binding.database,
-    port: connection.binding.port,
+    host: connection.host,
+    user: connection.user,
+    password: connection.password,
+    database: connection.database,
+    port: connection.port,
     disableEval: true,
     rowsAsArray: true,
     supportBigNumbers: true,
@@ -145,7 +145,7 @@ interface MySqlIndexRow extends Array<unknown> {
 }
 
 function ensureMysqlSchema(connection: EffectiveConnection, requested: string | undefined): string {
-  const current = connection.binding.database;
+  const current = connection.database;
   if (requested !== undefined && requested !== current) {
     throw new PublicError('ACCESS_DENIED', 'MySQL schema inspection is restricted to the configured database.');
   }

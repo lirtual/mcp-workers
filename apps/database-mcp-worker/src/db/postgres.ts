@@ -13,7 +13,8 @@ import { withTimeout } from './timeout.js';
 
 function createClient(connection: EffectiveConnection): Client {
   return new Client({
-    connectionString: connection.binding.connectionString,
+    connectionString: connection.connectionString,
+    ...(connection.transport === 'direct' ? { ssl: false } : {}),
     statement_timeout: connection.limits.queryTimeoutMs,
     query_timeout: connection.limits.queryTimeoutMs,
     connectionTimeoutMillis: Math.min(connection.limits.queryTimeoutMs, 5_000),

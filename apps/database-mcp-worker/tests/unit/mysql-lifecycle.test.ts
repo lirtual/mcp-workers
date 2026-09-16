@@ -17,18 +17,19 @@ const connection: EffectiveConnection = {
   config: {
     id: 'test-mysql',
     displayName: 'Test MySQL',
+    transport: 'hyperdrive',
     dialect: 'mysql',
     binding: 'READ_DB',
     enabled: true
   },
-  binding: {
-    connectionString: 'mysql://redacted',
-    host: '127.0.0.1',
-    user: 'reader',
-    password: 'redacted',
-    database: 'test',
-    port: 3306
-  },
+  transport: 'hyperdrive',
+  dialect: 'mysql',
+  connectionString: 'mysql://redacted',
+  host: '127.0.0.1',
+  user: 'reader',
+  password: 'redacted',
+  database: 'test',
+  port: 3306,
   limits: {
     maxRows: 100,
     maxResultBytes: 1024,
