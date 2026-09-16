@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
-import { resolveConnection, resolveConnectionDialect } from './config.js';
-import { explainRead, healthCheck, inspectSchema, queryRead } from './db/index.js';
+import { resolveConnection, resolveConnectionDialect, resolveWriteConnection } from './config.js';
+import { deleteRows, explainRead, healthCheck, insertRows, inspectSchema, queryRead, updateRows } from './db/index.js';
 import { PublicError, toPublicError } from './errors.js';
 import { emitLog, principalLogId, sqlLogFields } from './logging.js';
 import { clampRequestedLimit, jsonSafe } from './result.js';
@@ -103,21 +103,39 @@ async function runTool<T>(options: ToolRunOptions<T>): Promise<ToolResult> {
 const connectionIdSchema = z.string().min(1).max(64).regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);
 const sqlSchema = z.string().min(1).max(100_000);
 const paramsSchema = z.array(z.unknown()).max(100).default([]);
+const databaseIdentifierSchema = z.string().min(1).max(128);
+const predicateScalarSchema = z.union([z.string(), z.number().finite(), z.boolean()]);
+const predicateSchema = z.union([
+  predicateScalarSchema,
+  z.object({ eq: predicateScalarSchema }).strict(),
+  z.object({ in: z.array(predicateScalarSchema).min(1).max(100) }).strict(),
+  z.object({ isNull: z.boolean() }).strict()
+]);
+const writeRecordSchema = z
+  .record(databaseIdentifierSchema, z.unknown())
+  .refine(value => Object.keys(value).length >= 1 && Object.keys(value).length <= 100, {
+    message: 'Write objects must contain 1 to 100 columns.'
+  });
+const whereSchema = z
+  .record(databaseIdentifierSchema, predicateSchema)
+  .refine(value => Object.keys(value).length >= 1 && Object.keys(value).length <= 20, {
+    message: 'where must contain 1 to 20 predicate columns.'
+  });
 
 export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer {
   const server = new McpServer(
-    { name: 'database-mcp-worker', version: '0.1.0' },
+    { name: 'database-mcp-worker', version: '0.2.0' },
     {
       capabilities: { tools: {} },
       instructions:
-        'Read-only database access. Use inspect_schema before unfamiliar queries. query_read cannot write and results are bounded.'
+        'Database access with bounded reads and optional structured Safe Write. Use inspect_schema before unfamiliar queries. query_read never writes; insert_rows, update_rows, and delete_rows use separately configured writer credentials and never accept raw write SQL.'
     }
   );
 
   server.registerTool(
     'list_connections',
     {
-      description: 'List statically configured logical database connections without exposing credentials or binding names.',
+      description: 'List statically configured logical database connections and non-secret read/write capabilities.',
       inputSchema: z.object({}),
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false }
     },
@@ -133,6 +151,8 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
             dialect: resolveConnectionDialect(env, connection),
             transport: connection.transport,
             enabled: connection.enabled,
+            writeEnabled: connection.write !== undefined,
+            ...(connection.write ? { writeTransport: connection.write.transport } : {}),
             ...(connection.defaultSchema ? { defaultSchema: connection.defaultSchema } : {})
           }))
         }),
@@ -242,6 +262,88 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
           return { connection, dialect: resolved.dialect, transport: resolved.transport, ...health };
         },
         summarize: value => ({ latencyMs: value.latencyMs })
+      })
+  );
+
+  server.registerTool(
+    'insert_rows',
+    {
+      description:
+        'Insert 1 to 100 rows into one table using a separately configured writer credential and internally parameterized SQL. Raw SQL, UPSERT, and client-supplied RETURNING expressions are not accepted.',
+      inputSchema: z.object({
+        connection: connectionIdSchema,
+        schema: databaseIdentifierSchema.optional(),
+        table: databaseIdentifierSchema,
+        rows: z.array(writeRecordSchema).min(1).max(100)
+      }),
+      annotations: { readOnlyHint: false, idempotentHint: false, destructiveHint: false, openWorldHint: false }
+    },
+    async ({ connection, schema, table, rows }, ctx) =>
+      runTool({
+        env,
+        ctx,
+        tool: 'insert_rows',
+        connectionId: connection,
+        run: async () => {
+          const resolved = resolveWriteConnection(env, catalog, connection);
+          return insertRows(resolved, schema, table, rows);
+        },
+        summarize: value => ({ affectedRows: value.affectedRows })
+      })
+  );
+
+  server.registerTool(
+    'update_rows',
+    {
+      description:
+        'Update targeted rows through structured AND-only eq/in/isNull predicates. The mutation is rolled back when its affected-row count exceeds the configured safety limit.',
+      inputSchema: z.object({
+        connection: connectionIdSchema,
+        schema: databaseIdentifierSchema.optional(),
+        table: databaseIdentifierSchema,
+        set: writeRecordSchema,
+        where: whereSchema
+      }),
+      annotations: { readOnlyHint: false, idempotentHint: false, destructiveHint: true, openWorldHint: false }
+    },
+    async ({ connection, schema, table, set, where }, ctx) =>
+      runTool({
+        env,
+        ctx,
+        tool: 'update_rows',
+        connectionId: connection,
+        run: async () => {
+          const resolved = resolveWriteConnection(env, catalog, connection);
+          return updateRows(resolved, schema, table, set, where);
+        },
+        summarize: value => ({ affectedRows: value.affectedRows })
+      })
+  );
+
+  server.registerTool(
+    'delete_rows',
+    {
+      description:
+        'Delete targeted rows through structured AND-only eq/in/isNull predicates. The mutation is rolled back when its affected-row count exceeds the configured safety limit.',
+      inputSchema: z.object({
+        connection: connectionIdSchema,
+        schema: databaseIdentifierSchema.optional(),
+        table: databaseIdentifierSchema,
+        where: whereSchema
+      }),
+      annotations: { readOnlyHint: false, idempotentHint: false, destructiveHint: true, openWorldHint: false }
+    },
+    async ({ connection, schema, table, where }, ctx) =>
+      runTool({
+        env,
+        ctx,
+        tool: 'delete_rows',
+        connectionId: connection,
+        run: async () => {
+          const resolved = resolveWriteConnection(env, catalog, connection);
+          return deleteRows(resolved, schema, table, where);
+        },
+        summarize: value => ({ affectedRows: value.affectedRows })
       })
   );
 
