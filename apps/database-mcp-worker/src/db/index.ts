@@ -2,6 +2,8 @@ import type { EffectiveConnection, HealthResult, QueryResult, SchemaInspection }
 import { mysqlExplain, mysqlHealthCheck, mysqlInspectSchema, mysqlQueryRead } from './mysql.js';
 import { postgresExplain, postgresHealthCheck, postgresInspectSchema, postgresQueryRead } from './postgres.js';
 
+export { deleteRows, insertRows, updateRows } from './write.js';
+
 export async function queryRead(
   connection: EffectiveConnection,
   sql: string,
