@@ -1,0 +1,28 @@
+{
+  "name": "openlist-mcp-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "deploy:dry-run": "wrangler deploy --dry-run",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "tsc --noEmit",
+    "build": "wrangler deploy --dry-run",
+    "check": "pnpm run typecheck && pnpm test && pnpm run deploy:dry-run"
+  },
+  "dependencies": {
+    "@mcp-workers/portal-auth": "workspace:*",
+    "@modelcontextprotocol/server": "2.0.0",
+    "agents": "0.23.0",
+    "zod": "4.6.2"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260911.1",
+    "typescript": "5.8.3",
+    "vitest": "5.0.0",
+    "wrangler": "4.130.0"
+  }
+}

@@ -1,0 +1,207 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CI: "true"
+  HUSKY: "0"
+
+jobs:
+  changes:
+    name: Determine check scope
+    runs-on: ubuntu-latest
+    outputs:
+      apps: ${{ steps.scope.outputs.apps }}
+      database_changed: ${{ steps.scope.outputs.database_changed }}
+      portal_auth_changed: ${{ steps.scope.outputs.portal_auth_changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: scope
+        name: Select affected applications
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base_sha="$PR_BASE_SHA"
+          else
+            base_sha="$BEFORE_SHA"
+          fi
+
+          if [[ -z "$base_sha" || "$base_sha" =~ ^0+$ ]]; then
+            base_sha="$(git rev-parse HEAD^)"
+          fi
+
+          mapfile -t changed_files < <(git diff --name-only "$base_sha" "$GITHUB_SHA")
+          printf 'Changed files:\n'
+          printf '  %s\n' "${changed_files[@]}"
+
+          apps=(
+            database-mcp-worker
+            ima-mcp-worker
+            instapaper-mcp-worker
+            openlist-mcp-worker
+            raindrop-mcp-worker
+            weread-mcp-worker
+          )
+
+          check_all=false
+          portal_auth_changed=false
+          for file in "${changed_files[@]}"; do
+            if [[ "$file" == packages/portal-auth/* ]]; then
+              portal_auth_changed=true
+            fi
+            case "$file" in
+              package.json|pnpm-lock.yaml|pnpm-workspace.yaml|.npmrc|packages/*|.github/workflows/ci.yml)
+                check_all=true
+                ;;
+            esac
+          done
+
+          selected=()
+          if [[ "$check_all" == "true" ]]; then
+            selected=("${apps[@]}")
+          else
+            for app in "${apps[@]}"; do
+              for file in "${changed_files[@]}"; do
+                if [[ "$file" == "apps/$app/"* ]]; then
+                  selected+=("$app")
+                  break
+                fi
+              done
+            done
+          fi
+
+          selected_text="${selected[*]-}"
+          echo "apps=$selected_text" >> "$GITHUB_OUTPUT"
+          echo "portal_auth_changed=$portal_auth_changed" >> "$GITHUB_OUTPUT"
+
+          database_changed=false
+          for app in "${selected[@]}"; do
+            if [[ "$app" == "database-mcp-worker" ]]; then
+              database_changed=true
+              break
+            fi
+          done
+          echo "database_changed=$database_changed" >> "$GITHUB_OUTPUT"
+
+          if [[ ${#selected[@]} -eq 0 ]]; then
+            echo "No application checks are required for this change set."
+          else
+            echo "Selected applications: $selected_text"
+          fi
+          echo "Portal auth package changed: $portal_auth_changed"
+
+  app-checks:
+    name: Application checks
+    needs: changes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: No application checks required
+        if: needs.changes.outputs.apps == ''
+        run: echo "No application checks are required for this change set."
+
+      - uses: actions/setup-node@v4
+        if: needs.changes.outputs.apps != ''
+        with:
+          node-version: 24
+
+      - name: Activate pinned pnpm
+        if: needs.changes.outputs.apps != ''
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.17.1 --activate
+          node --version
+          pnpm --version
+
+      - name: Install workspace
+        if: needs.changes.outputs.apps != ''
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Check shared portal-auth package
+        if: needs.changes.outputs.portal_auth_changed == 'true'
+        run: pnpm --filter @mcp-workers/portal-auth check
+
+      - name: Run affected application checks
+        if: needs.changes.outputs.apps != ''
+        env:
+          APPS: ${{ needs.changes.outputs.apps }}
+        run: |
+          set -euo pipefail
+          for app in $APPS; do
+            echo "::group::$app check"
+            pnpm --filter "$app" check
+            echo "::endgroup::"
+          done
+
+  database-integration:
+    name: Database integration
+    needs: changes
+    if: needs.changes.outputs.database_changed == 'true'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: testdb
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d testdb"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: testdb
+        ports:
+          - 53306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -proot"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_POSTGRES_ADMIN_URL: postgres://postgres:postgres@127.0.0.1:55432/testdb
+      TEST_POSTGRES_READ_URL: postgres://mcp_reader:reader@127.0.0.1:55432/testdb
+      TEST_MYSQL_ADMIN_URL: mysql://root:root@127.0.0.1:53306/testdb
+      TEST_MYSQL_READ_URL: mysql://mcp_reader:reader@127.0.0.1:53306/testdb
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Activate pinned pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.17.1 --activate
+          node --version
+          pnpm --version
+
+      - name: Install workspace
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Prepare integration databases
+        run: pnpm --filter database-mcp-worker exec node scripts/setup-integration.mjs
+
+      - name: Run database integration tests
+        run: pnpm --filter database-mcp-worker run test:integration

@@ -1,0 +1,36 @@
+node_modules/
+build/
+coverage/
+*.lcov
+
+# Logs and temporary output
+logs/
+*.log
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+tmp/
+temp/
+.cache/
+.eslintcache
+*.tsbuildinfo
+
+# Local environment / credentials
+.env
+.env.development.local
+.env.test.local
+.env.production.local
+.env.local
+.local/
+*.local
+
+# Editor / OS metadata
+.idea/
+.DS_Store
+Thumbs.db
+
+# Package-manager local cache
+.npm/
+
+# Private local tooling
+mcp-inspector.config.json
+**/CLAUDE.local.md
+**/*.backup
