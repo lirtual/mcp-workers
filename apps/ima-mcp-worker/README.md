@@ -17,7 +17,7 @@ ima-mcp-worker Worker
        ↓ R2 binding: R2_BUCKET
 R2 bucket: ima-mcp-worker
        ↓ public custom domain
-https://ima-files.lirtual.dpdns.org/exports/...
+<R2_PUBLIC_BASE_URL>/exports/...
 ```
 
 This deployment is intentionally **single-user**. The Worker is stateless for authentication and does not use D1 or host its own OAuth provider.
@@ -68,11 +68,15 @@ R2:
 - binding: `R2_BUCKET`
 - production bucket: `ima-mcp-worker`
 - export object prefix: `exports/`
-- production public custom domain: `ima-files.lirtual.dpdns.org`
+- public custom domain: configured on the R2 bucket
 
-Non-secret variable:
+Non-secret Worker runtime variable:
 
-- `R2_PUBLIC_BASE_URL=https://ima-files.lirtual.dpdns.org`
+- `R2_PUBLIC_BASE_URL` — HTTPS origin for the R2 custom domain. Configure this in Cloudflare Dashboard. It is intentionally not hard-coded in `wrangler.jsonc`.
+
+For the current deployment, use `https://temp.lirtual.dpdns.org`.
+
+`wrangler.jsonc` sets `keep_vars: true` so Dashboard-managed ordinary variables are preserved by `wrangler deploy`.
 
 Other optional variables include `IMA_BASE_URL` and the existing transfer size/timeout limits.
 
@@ -81,7 +85,7 @@ Other optional variables include `IMA_BASE_URL` and the existing transfer size/t
 `export_file` and R2-backed reads return a direct object URL shaped like:
 
 ```text
-https://ima-files.lirtual.dpdns.org/exports/<type>/<id>/<export-uuid>/<filename>
+<R2_PUBLIC_BASE_URL>/exports/<type>/<id>/<export-uuid>/<filename>
 ```
 
 The Worker writes the object to R2 and returns the corresponding custom-domain URL. `/download/*` is not implemented by the Worker and no HMAC signing secret, expiry query parameter, or Worker download relay is used.
@@ -101,4 +105,4 @@ For MCP Portal configuration, see [docs/mcp-portal.md](./docs/mcp-portal.md).
 - GitHub app directory: `apps/ima-mcp-worker`
 - Cloudflare Worker service: `ima-mcp-worker`
 - R2 bucket: `ima-mcp-worker`
-- R2 public custom domain: `ima-files.lirtual.dpdns.org`
+- R2 public custom domain: runtime-configured through `R2_PUBLIC_BASE_URL`
