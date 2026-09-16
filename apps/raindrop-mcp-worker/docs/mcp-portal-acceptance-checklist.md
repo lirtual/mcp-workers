@@ -42,14 +42,14 @@ Run these in order and stop on the first failure:
 2. Confirm an authenticated direct `/mcp` request reaches the MCP transport.
 3. Confirm Portal discovery succeeds.
 4. Confirm the MCP client can enumerate tools through Portal.
-5. Execute one representative read-only tool and verify the upstream result.
-6. If the service has write tools, execute one bounded, reversible write operation only after the read path is proven.
+5. Execute one representative **read-only** tool and verify the upstream result.
+6. Do **not** exercise write/destructive tools against production user data as part of routine cutover smoke. Write-path behavior is verified by contract/safety tests; if a separate write verification is explicitly authorized, use disposable non-production data/resources and record cleanup.
 7. Confirm destructive/read-only annotations and runtime safety controls still match the service contract.
 8. Inspect application logs and confirm no secret values were emitted.
 
 ## Evidence requirement
 
-Treat the checklist above as an operational gate, not as documentation-only acceptance. Record the date, deployed `workers.dev` origin, Portal name, representative read/write tools, and secret-redaction result in the migration ticket before declaring a service cut over. Code and CI can prove fail-closed behavior and credential separation, but they do not substitute for live Portal discovery and tool execution.
+Treat the checklist above as an operational gate, not as documentation-only acceptance. Record the date, deployed `workers.dev` origin, Portal name, representative read-only tool, and secret-redaction result in the migration ticket before declaring a service cut over. Code and CI can prove fail-closed behavior and credential separation, but they do not substitute for live Portal discovery and a safe read-only tool execution.
 
 ## Rollback requirement
 
