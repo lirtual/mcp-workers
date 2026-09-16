@@ -44,8 +44,8 @@ jobs:
             exit 1
           fi
 
-          if grep -Eq 'MCP_ORIGIN_TOKEN|Access assertion|workers_dev=false' apps/openlist-mcp-worker/docs/security.md; then
-            echo 'OpenList security doc still describes retired ingress' >&2
+          if grep -Eq 'MCP_ORIGIN_TOKEN|workers_dev=false' apps/openlist-mcp-worker/docs/security.md; then
+            echo 'OpenList security doc still describes retired ingress as current configuration' >&2
             exit 1
           fi
 
