@@ -21,6 +21,10 @@ All MCP Worker apps use their Cloudflare `workers.dev` origin as the production 
 
 Worker names remain app-specific (`<app>-mcp-worker`) and each Worker keeps its own `MCP_ACCESS_TOKEN`.
 
+## Runtime configuration
+
+The six Workers share one source-controlled contract for required runtime secret names and Workers Observability while keeping actual secret values in Cloudflare Runtime Secrets. See [`docs/runtime-configuration.md`](docs/runtime-configuration.md) for the required-secret matrix, build-time versus runtime configuration rules, logging baseline, and deployment verification steps.
+
 ## MCP smoke runner
 
 Use the root smoke runner to verify one explicitly selected safe/read-only MCP tool over Streamable HTTP. The bearer token is read only from an environment variable, and tool result bodies are not printed.

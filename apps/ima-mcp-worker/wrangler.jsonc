@@ -5,7 +5,21 @@
   "compatibility_date": "2026-09-11",
   "workers_dev": true,
   "preview_urls": false,
-  "observability": { "enabled": true },
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "invocation_logs": true,
+      "head_sampling_rate": 1
+    }
+  },
+  "secrets": {
+    "required": [
+      "MCP_ACCESS_TOKEN",
+      "API_KEY",
+      "CLIENT_ID",
+      "IMA_DOWNLOAD_SIGNING_KEY"
+    ]
+  },
   "vars": {
     "IMA_DOWNLOAD_TTL_SECONDS": "3600",
     "IMA_EXPORT_RETENTION_SECONDS": "604800"

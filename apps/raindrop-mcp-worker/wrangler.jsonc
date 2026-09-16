@@ -8,8 +8,12 @@
   "observability": {
     "enabled": true,
     "logs": {
-      "invocation_logs": false
+      "invocation_logs": true,
+      "head_sampling_rate": 1
     }
+  },
+  "secrets": {
+    "required": ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN"]
   },
   "vars": {
     "RAINDROP_RATE_LIMIT_MAX_RETRIES": "3"
