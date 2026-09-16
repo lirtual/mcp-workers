@@ -2,11 +2,7 @@
 CLIENT_ID=
 API_KEY=
 MCP_ACCESS_TOKEN=
-IMA_DOWNLOAD_SIGNING_KEY=
 
-# Optional: canonical Worker origin for generated signed download links.
-# During MCP requests, the request origin is used when this is omitted.
-PUBLIC_BASE_URL=http://localhost:8787
-
-# Protected exports must not use a public R2 custom-domain bypass.
-# Configure R2 object lifecycle separately for the exports/ prefix.
+# Public HTTPS origin attached directly to the R2 bucket.
+# Production uses https://ima-files.lirtual.dpdns.org
+R2_PUBLIC_BASE_URL=https://ima-files.lirtual.dpdns.org
