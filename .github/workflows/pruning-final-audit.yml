@@ -1,0 +1,40 @@
+name: Pruning final audit
+
+on:
+  push:
+    branches:
+      - ticket/pruning-14-final-acceptance
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Audit Raindrop residuals
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '=== candidate dependency references (outside package/lock) ==='
+          for dep in '@modelcontextprotocol/sdk' 'axios' 'openai' 'zod-to-json-schema'; do
+            echo "--- $dep"
+            rg -n --fixed-strings "$dep" apps/raindrop-mcp-worker \
+              -g '!package.json' -g '!pnpm-lock.yaml' -g '!SOURCE.md' || true
+          done
+
+          echo '=== retired runtime / release references ==='
+          rg -n 'nightwatch|auth:check|scripts/auth-check|MCPB|\.mcpb|\.dxt|Smithery|semantic-release|Bun|STDIO|process\.(env|stderr|version|platform|uptime|memoryUsage)' \
+            apps/raindrop-mcp-worker || true
+
+          echo '=== ingress / custom-domain references ==='
+          rg -n 'raindrop-mcp\.lirtual\.dpdns\.org|custom domain|custom-domain|workers_dev[^\n]*false|preview_urls[^\n]*true' \
+            README.md docs apps || true
+
+          echo '=== production write-smoke references ==='
+          rg -n 'reversible write|write smoke|write operation|production write|destructive\.live|cleanup_destructive' \
+            apps/raindrop-mcp-worker docs || true
+
+          echo '=== nested CI / scratch-like app directories ==='
+          find apps -type d \( -name .github -o -name .scratch -o -name .claude -o -name .codex -o -name conductor \) -print
