@@ -36,9 +36,9 @@ function putSecret(name: string, value: string) {
 
 function writeManualSecrets(secrets: Record<string, string>) {
   const outputDirectory = mkdtempSync(join(tmpdir(), "instapaper-mcp-"));
-  const outputPath = join(outputDirectory, "secrets.env");
+  const outputPath = join(outputDirectory, "secrets.txt");
   const contents = Object.entries(secrets)
-    .map(([name, value]) => `${name}=${JSON.stringify(value)}`)
+    .map(([name, value]) => `[${name}]\n${value}`)
     .join("\n");
 
   chmodSync(outputDirectory, 0o700);
@@ -88,7 +88,7 @@ async function main() {
   if (manual) {
     const { outputDirectory, outputPath } = writeManualSecrets(secrets);
     output.write(`Credentials written to temporary file ${outputPath}.\n`);
-    output.write(`Copy them into Cloudflare Worker Secrets, then delete them with: rm -rf ${outputDirectory}\n`);
+    output.write(`Copy the raw value below each name into Cloudflare Worker Secrets, then delete the file with: rm -rf ${outputDirectory}\n`);
     output.write("Username/password were not persisted.\n");
     return;
   }
