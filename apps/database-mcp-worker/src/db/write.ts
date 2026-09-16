@@ -5,6 +5,8 @@ import type { BuiltWriteStatement } from '../sql/write.js';
 import type { EffectiveWriteConnection, WriteResult } from '../types.js';
 import { withTimeout } from './timeout.js';
 
+type MysqlPreparedValue = string | number | boolean | null;
+
 function createPostgresClient(connection: EffectiveWriteConnection): PgClient {
   return new PgClient({
     connectionString: connection.connectionString,
@@ -85,6 +87,23 @@ function mysqlTimed<T>(client: Connection, connection: EffectiveWriteConnection,
   return withTimeout(query, connection.limits.queryTimeoutMs, () => client.destroy());
 }
 
+function mysqlPreparedValues(params: unknown[]): MysqlPreparedValue[] {
+  return params.map(value => {
+    if (
+      value === null ||
+      typeof value === 'string' ||
+      typeof value === 'boolean' ||
+      (typeof value === 'number' && Number.isFinite(value))
+    ) {
+      return value;
+    }
+    throw new PublicError(
+      'INVALID_INPUT',
+      'MySQL Safe Write values must be string, number, boolean, or null; serialize structured JSON values explicitly.'
+    );
+  });
+}
+
 function mysqlAffectedRows(result: unknown): number {
   if (typeof result !== 'object' || result === null || Array.isArray(result)) {
     throw new PublicError('DATABASE_ERROR', 'The database returned an unexpected write result.');
@@ -154,7 +173,11 @@ async function mysqlInsert(
   statement: BuiltWriteStatement
 ): Promise<WriteResult> {
   return withMysqlClient(connection, async client => {
-    const [result] = await mysqlTimed(client, connection, client.execute(statement.sql, statement.params));
+    const [result] = await mysqlTimed(
+      client,
+      connection,
+      client.execute(statement.sql, mysqlPreparedValues(statement.params))
+    );
     return { affectedRows: mysqlAffectedRows(result) };
   });
 }
@@ -168,7 +191,11 @@ async function mysqlGuardedMutation(
     try {
       await mysqlTimed(client, connection, client.beginTransaction());
       transactionOpen = true;
-      const [result] = await mysqlTimed(client, connection, client.execute(statement.sql, statement.params));
+      const [result] = await mysqlTimed(
+        client,
+        connection,
+        client.execute(statement.sql, mysqlPreparedValues(statement.params))
+      );
       const affectedRows = mysqlAffectedRows(result);
       if (affectedRows > connection.maxAffectedRows) {
         await mysqlTimed(client, connection, client.rollback());
