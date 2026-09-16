@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { chmodSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
-import { fileURLToPath } from "node:url";
 import { exchangeXAuth } from "../src/instapaper/oauth.js";
 import { InstapaperClient } from "../src/instapaper/client.js";
 
 const rl = createInterface({ input, output });
-const manualOutputPath = fileURLToPath(new URL("../.dev.vars.instapaper", import.meta.url));
 
 function requireWranglerAuthentication() {
   const result = spawnSync("npx", ["wrangler", "whoami"], {
@@ -35,15 +35,20 @@ function putSecret(name: string, value: string) {
 }
 
 function writeManualSecrets(secrets: Record<string, string>) {
+  const outputDirectory = mkdtempSync(join(tmpdir(), "instapaper-mcp-"));
+  const outputPath = join(outputDirectory, "secrets.env");
   const contents = Object.entries(secrets)
     .map(([name, value]) => `${name}=${JSON.stringify(value)}`)
     .join("\n");
 
-  writeFileSync(manualOutputPath, `${contents}\n`, {
+  chmodSync(outputDirectory, 0o700);
+  writeFileSync(outputPath, `${contents}\n`, {
     encoding: "utf8",
     mode: 0o600,
   });
-  chmodSync(manualOutputPath, 0o600);
+  chmodSync(outputPath, 0o600);
+
+  return { outputDirectory, outputPath };
 }
 
 async function main() {
@@ -81,9 +86,10 @@ async function main() {
   };
 
   if (manual) {
-    writeManualSecrets(secrets);
-    output.write(`Credentials written to ${manualOutputPath}.\n`);
-    output.write("Copy them into Cloudflare Worker Secrets, then delete the local file. Username/password were not persisted.\n");
+    const { outputDirectory, outputPath } = writeManualSecrets(secrets);
+    output.write(`Credentials written to temporary file ${outputPath}.\n`);
+    output.write(`Copy them into Cloudflare Worker Secrets, then delete them with: rm -rf ${outputDirectory}\n`);
+    output.write("Username/password were not persisted.\n");
     return;
   }
 
