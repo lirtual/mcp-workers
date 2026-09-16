@@ -46,7 +46,7 @@ describe('Database Portal authentication', () => {
     expect(result.authInfo).toMatchObject({
       token: 'portal-access',
       clientId: 'cloudflare-mcp-portal',
-      scopes: ['db:read']
+      scopes: ['db:read', 'db:write']
     });
     expect(JSON.stringify(result.authInfo)).not.toContain('portal-secret');
   });
