@@ -36,8 +36,8 @@ _Avoid_: Portal credential, per-user BYOK database
 _Avoid_: 在业务代码里按 bucket 名分支
 
 **R2 Public Download Origin**:
-导出下载不经过 Worker。`R2_PUBLIC_BASE_URL` 指向直接挂载到 `ima-mcp-worker` bucket 的 HTTPS 自定义域名；生产值为 `https://ima-files.lirtual.dpdns.org`。Worker 只负责写 R2 并拼接对象 URL，不维护下载签名、过期 token 或 `/download/*` 代理路由。
-_Avoid_: IMA_DOWNLOAD_SIGNING_KEY, signed Worker download URL, Worker download proxy
+导出下载不经过 Worker。`R2_PUBLIC_BASE_URL` 是 Cloudflare Worker 的普通运行时变量，指向直接挂载到 `ima-mcp-worker` bucket 的 HTTPS 自定义域名。代码与 `wrangler.jsonc` 不固定具体域名；当前部署可配置为 `https://temp.lirtual.dpdns.org`。Worker 只负责写 R2 并拼接对象 URL，不维护下载签名、过期 token 或 `/download/*` 代理路由。
+_Avoid_: hard-coded R2 domain, IMA_DOWNLOAD_SIGNING_KEY, signed Worker download URL, Worker download proxy
 
 ## Authentication invariant
 
@@ -48,7 +48,8 @@ Portal/client 身份、`MCP_ACCESS_TOKEN`、`CLIENT_ID` / `API_KEY` 是三个独
 - Cloudflare Worker service name: `ima-mcp-worker`.
 - GitHub app directory: `apps/ima-mcp-worker`.
 - R2 bucket: `ima-mcp-worker`, binding `R2_BUCKET`.
-- R2 public origin: `https://ima-files.lirtual.dpdns.org`.
+- R2 public origin comes only from runtime variable `R2_PUBLIC_BASE_URL`.
+- `wrangler.jsonc` uses `keep_vars: true` and does not commit the public origin value.
 - `/health` is stateless liveness.
 - `/ready` validates required secrets/bindings and `R2_PUBLIC_BASE_URL` without D1.
 - `/download/*` is intentionally not served by the Worker.
