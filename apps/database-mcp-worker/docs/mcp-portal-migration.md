@@ -1,6 +1,6 @@
 # Database MCP Portal authentication
 
-Database MCP uses Cloudflare MCP Portal as the supported client-facing ingress. The previous direct JWT OAuth resource-server compatibility path has been retired.
+Database MCP uses Cloudflare MCP Portal as the supported client-facing ingress. The Worker keeps one Portal-to-Worker bearer credential while database READ and optional WRITE credentials remain separate runtime concerns.
 
 ## Architecture
 
@@ -8,27 +8,46 @@ Database MCP uses Cloudflare MCP Portal as the supported client-facing ingress. 
 MCP client
   -> Cloudflare MCP Portal
   -> Authorization: Bearer <MCP_ACCESS_TOKEN>
-  -> database MCP Worker /mcp
+  -> database-mcp-worker /mcp
   -> static logical connection
-       -> Hyperdrive READ binding
-       -> direct SQL URL Worker Secret
-  -> dedicated read-only database credential
+       -> READ transport  -> read-only database credential
+       -> optional WRITE transport -> limited writer credential
   -> database-native GRANT / RLS / views / routine policy
 ```
 
-`MCP_ACCESS_TOKEN` authenticates only Portal -> Worker. Database credentials authenticate only Worker -> database. Never reuse either credential for the other purpose.
+`MCP_ACCESS_TOKEN` authenticates only Portal -> Worker. Database credentials authenticate only Worker -> database. Never reuse one credential for another role.
 
-Store the Portal credential as this Worker's own secret:
+Store the Portal credential as this Worker's own Secret:
 
 ```bash
 pnpm --filter database-mcp-worker exec wrangler secret put MCP_ACCESS_TOKEN
 ```
 
-The Worker consumes the inbound Portal `Authorization` header before MCP/tool handling. Tools receive only a non-secret logical principal (`cloudflare-mcp-portal`) with the logical `db:read` scope, preserving the existing audit/rate-limit context without forwarding the real Portal credential.
+The Worker consumes the inbound `Authorization` header before MCP/tool handling. Tools receive only a stable logical principal. The logical AuthInfo advertises `db:read` and `db:write`; these scopes are capability metadata, not the final database authorization boundary.
+
+## Supported MCP surface
+
+Portal should discover eight tools:
+
+Read:
+
+- `list_connections`
+- `inspect_schema`
+- `query_read`
+- `explain`
+- `health_check`
+
+Safe Write:
+
+- `insert_rows`
+- `update_rows`
+- `delete_rows`
+
+Write tools never accept raw write SQL. A logical connection is writable only when its static catalog entry contains an explicit `write` configuration.
 
 ## Retired client OAuth surface
 
-The Worker no longer owns a direct client OAuth resource-server path. These runtime requirements are retired:
+The Worker does not own a direct client OAuth resource-server path. These runtime requirements remain retired:
 
 - protected-resource metadata endpoint
 - JWT/JWKS access-token verification
@@ -40,41 +59,49 @@ The Worker no longer owns a direct client OAuth resource-server path. These runt
 
 Git history preserves the earlier OAuth design when historical investigation is needed.
 
-## Security boundaries retained
+## Security boundaries
 
-Portal-only ingress does **not** weaken database authorization:
+Portal-only ingress does not replace database authorization:
 
-1. The MCP tool surface remains read-only.
-2. Each logical connection selects exactly one explicit `direct` or `hyperdrive` transport.
-3. Hyperdrive connections use a dedicated least-privilege database identity behind a cache-disabled Hyperdrive binding.
-4. Direct connections read exactly one SQL URL from a named Worker Secret and are plaintext-only in v0.1.
-5. Database-native GRANTs, PostgreSQL RLS, restricted views, and routine/function permissions remain the authoritative data boundary.
-6. SQL guardrails, result/row/time limits, rate limiting and sanitized logs remain application-local.
-7. No transport automatically falls back to the other.
+1. READ tools resolve only the configured READ transport and credential.
+2. WRITE tools resolve only the optional WRITE transport and credential.
+3. Missing writer configuration fails with `WRITE_NOT_CONFIGURED`; missing writer runtime resources fail closed and never fall back to READ.
+4. Direct READ/WRITE URLs remain Worker Secrets and follow the plaintext legacy compatibility contract.
+5. Hyperdrive READ/WRITE bindings are separately configured and should use separate database identities.
+6. Structured writes generate parameterized SQL internally; raw write SQL, DDL and routine execution are outside the MCP surface.
+7. UPDATE/DELETE use explicit transactions and roll back when affected rows exceed the configured safety limit.
+8. PostgreSQL RLS and database-native GRANTs/routine permissions remain authoritative for writer identities.
+9. SQL guardrails, result/write limits, rate limiting and sanitized logs remain application-local safety layers.
 
 ## Acceptance checks
 
-1. `/mcp` without a bearer or with the retired direct OAuth bearer is rejected with `401`.
-2. Missing `MCP_ACCESS_TOKEN` configuration fails closed with `503`.
-3. A request carrying a browser `Origin` is rejected because the Worker has no direct browser-client requirement.
-4. Correct Portal bearer reaches the MCP transport and the inbound Authorization value is absent from tool/domain handling.
-5. Portal discovers the existing five read-only tools.
-6. `list_connections` reports non-secret logical metadata including resolved dialect and transport.
-7. `inspect_schema`, `query_read`, `explain`, and `health_check` work for every advertised transport/dialect path.
-8. Direct SQL URLs never appear in MCP responses or logs.
-9. Hyperdrive binding internals and database credentials never appear in MCP responses or logs.
-10. Unsafe/write SQL remains rejected by Worker guardrails and independently by database permissions.
-11. PostgreSQL RLS/restricted views and MySQL least-privilege behavior remain unchanged.
-12. Rate limiting still applies using the stable logical Portal principal.
-13. Hyperdrive failures do not fall back to direct.
-14. Direct URLs that request TLS are rejected during connection resolution.
+1. `/mcp` without a bearer or with an incorrect bearer returns `401`.
+2. Missing `MCP_ACCESS_TOKEN` fails closed with `503`.
+3. A browser `Origin` is rejected because the Worker has no direct browser-client requirement.
+4. Correct Portal bearer reaches MCP handling and the real bearer value is absent from tool/domain handling.
+5. Portal discovers all eight expected tools.
+6. `list_connections` exposes `writeEnabled`/`writeTransport` only as non-secret capability metadata.
+7. Existing read tools continue using the read credential and still reject raw write SQL through `query_read`.
+8. A read-only logical connection rejects write tools with `WRITE_NOT_CONFIGURED`.
+9. `insert_rows` performs parameterized row inserts only through the writer credential.
+10. `update_rows` and `delete_rows` reject empty/unsupported predicates and roll back when the affected-row limit is exceeded.
+11. Direct SQL URLs, Hyperdrive binding internals, usernames/passwords, row values and predicate values are absent from MCP responses and logs.
+12. PostgreSQL writer RLS is enforced.
+13. Reader credentials cannot write; writer credentials cannot perform DDL/admin/routine operations beyond their database grants.
+14. PostgreSQL and MySQL real-database integration remains green.
+15. Rate limiting still uses the stable logical Portal principal and logical connection id.
 
 ## Deployment boundary
 
-Production deployment remains Cloudflare Builds only. The target ingress policy is the Worker's `workers.dev` endpoint with `workers_dev:true`, `preview_urls:false`, and no custom domain or zone route.
+Production deployment remains Cloudflare Builds. The target ingress is the Worker's `workers.dev` endpoint with `workers_dev:true`, `preview_urls:false`, and no second production publisher.
 
-Preserve each configured Hyperdrive resource ID/binding and every direct database URL Secret during deployment. `keep_vars:true` preserves Dashboard-managed plain-text variables, but Secrets and bindings are still environment-owned runtime configuration.
+For each writable logical connection, preserve both credential paths independently:
 
-Direct mode is only for publicly reachable legacy databases where plaintext transport is explicitly acceptable. Private-network routing through Workers VPC or Cloudflare Tunnel is not part of the v0.1 direct contract.
+- Direct: separate READ and WRITE SQL URL Secrets.
+- Hyperdrive: separate READ and WRITE bindings backed by least-privilege database identities.
 
-If no current production instance exists, this document only establishes the target code/config contract; deployment is handled by later acceptance/cutover work.
+`keep_vars:true` preserves Dashboard-managed plain-text variables, but Secrets and bindings remain environment-owned runtime configuration.
+
+Direct Safe Write is intended only for publicly reachable legacy databases where plaintext transport is explicitly acceptable. MySQL rollback protection requires transactional tables such as InnoDB. Private-network VPC/Tunnel work remains outside v0.2.
+
+Before production enablement, smoke-test the deployed READ and WRITE paths against a non-production or tightly scoped dataset. CI verifies direct PostgreSQL/MySQL Safe Write behavior; real Hyperdrive writer bindings still require Cloudflare staging verification.

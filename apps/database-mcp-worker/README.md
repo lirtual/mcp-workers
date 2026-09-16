@@ -1,8 +1,8 @@
 # Cloudflare Database MCP Worker
 
-A Cloudflare-native, read-only MCP server for inspecting and querying existing PostgreSQL and MySQL databases through either Cloudflare Hyperdrive or a deliberately narrow direct plaintext compatibility path.
+A Cloudflare-native MCP server for safe PostgreSQL and MySQL access through explicit `direct` or `hyperdrive` transports. v0.2 keeps the existing read-only SQL surface and adds opt-in structured row writes through separate writer credentials.
 
-## Current architecture
+## Architecture
 
 ```text
 MCP client
@@ -10,85 +10,84 @@ MCP client
   -> Authorization: Bearer <MCP_ACCESS_TOKEN>
   -> database-mcp-worker /mcp
   -> static logical connection catalog
-       -> transport=hyperdrive -> READ Hyperdrive binding -> TLS-capable database
-       -> transport=direct     -> SQL URL Worker Secret -> plaintext legacy database
-  -> dedicated least-privilege database credential
+       -> READ transport  -> dedicated read-only credential
+       -> optional WRITE transport -> dedicated writer credential
   -> PostgreSQL / MySQL
 ```
 
-Transport is selected explicitly per logical connection. The Worker never auto-detects transport, never auto-downgrades TLS, and never falls back from Hyperdrive to direct.
-
-The Worker never accepts a database password or connection string from an MCP caller. `MCP_ACCESS_TOKEN` is only the Portal-to-Worker credential; it is consumed before MCP/tool handling and is never reused for database access.
+Each logical connection chooses its READ transport and may independently opt into a WRITE transport. The Worker never accepts database credentials from MCP callers, never automatically falls back between transports, and never reuses a READ credential for writes.
 
 ## MCP tools
 
-- `list_connections` — non-secret logical connection metadata, including resolved dialect and transport
+Read tools:
+
+- `list_connections` — non-secret logical connection and capability metadata
 - `inspect_schema` — bounded schema/table/column/index/foreign-key discovery
-- `query_read` — one bounded read query through a READ credential
+- `query_read` — one bounded read query through the READ credential
 - `explain` — non-`ANALYZE` read query plan
 - `health_check` — health of one logical READ path
 
-All tools are read-only by product contract. Tool annotations are UX hints; database-native privileges are the hard authorization boundary.
+Safe Write tools:
+
+- `insert_rows` — parameterized insert of 1–100 rows into one table
+- `update_rows` — structured targeted update with affected-row rollback protection
+- `delete_rows` — structured targeted delete with affected-row rollback protection
+
+`query_read` remains read-only and still rejects write SQL. v0.2 does not expose arbitrary write SQL, DDL, stored-procedure execution, batch SQL, or long-lived sessions.
 
 ## Security model
 
 1. Portal ingress validates this Worker's dedicated `MCP_ACCESS_TOKEN`.
-2. The MCP surface exposes read capabilities only.
-3. A logical connection resolves only to one statically configured `direct` or `hyperdrive` transport.
-4. The selected transport uses a dedicated least-privilege database credential.
-5. Database-native GRANTs, PostgreSQL RLS, restricted views, and routine/function permissions remain authoritative.
-
-Worker SQL validation rejects obvious writes, multi-statements, locking reads, unsafe explain modes, and other unsupported shapes, but it is intentionally not the final authorization mechanism.
+2. READ tools use only the existing dedicated read credential.
+3. WRITE tools are available only when the logical connection has an explicit `write` configuration and use only its separate writer credential.
+4. Structured writes generate parameterized SQL internally; MCP callers cannot supply raw write SQL or SQL expressions.
+5. UPDATE and DELETE execute inside an explicit transaction and roll back when affected rows exceed the configured limit.
+6. Database-native GRANTs, PostgreSQL RLS, restricted views, and routine/function permissions remain the authoritative authorization boundary.
+7. Credentials, row values, predicate values, generated parameter arrays, and raw driver errors are not returned or written to write-operation logs.
 
 ### PostgreSQL
 
-Use a non-owner, non-superuser role with no `BYPASSRLS`, only required `CONNECT`/`USAGE`/`SELECT`, and carefully reviewed function execution privileges. A hardening template is in `deploy/sql/postgres-readonly.sql`.
+Use a non-owner, non-superuser reader role with no `BYPASSRLS` and only required read privileges. Use a separate writer role with only the required `SELECT`/`INSERT`/`UPDATE`/`DELETE` grants and reviewed RLS policies. Do not grant `BYPASSRLS`, broad function execution, DDL, role administration, or schema ownership.
+
+Templates:
+
+- `deploy/sql/postgres-readonly.sql`
+- `deploy/sql/postgres-writer.sql`
 
 ### MySQL
 
-Grant only required `SELECT`; do not grant write/DDL/admin privileges, `FILE`, `EXECUTE`, `LOCK TABLES`, or `GRANT OPTION`. A hardening template is in `deploy/sql/mysql-readonly.sql`.
+Keep reader and writer users separate. The writer should receive only the table-level `SELECT`/`INSERT`/`UPDATE`/`DELETE` privileges it needs. Do not grant DDL/admin privileges, `FILE`, `EXECUTE`, `LOCK TABLES`, `PROCESS`, or `GRANT OPTION`.
+
+Safe Write rollback protection requires transactional tables such as InnoDB. Non-transactional table engines are outside the v0.2 safety guarantee.
+
+Templates:
+
+- `deploy/sql/mysql-readonly.sql`
+- `deploy/sql/mysql-writer.sql`
 
 ## Connection configuration
 
-`CONNECTIONS_JSON` defines the static public logical connection catalog. Every connection must explicitly declare `transport`.
+`CONNECTIONS_JSON` remains a static catalog. Existing top-level transport fields describe the READ path. An optional `write` object enables Safe Write.
 
-### Direct transport
-
-Direct mode exists only for legacy databases that cannot enable TLS. It is plaintext-only in v0.1 and should not be treated as a feature-equivalent replacement for Hyperdrive.
-
-Configure one Worker Secret containing the complete SQL URL:
-
-```bash
-pnpm --filter database-mcp-worker exec wrangler secret put LEGACY_MYSQL_DATABASE_URL
-```
-
-Example secret value:
-
-```text
-mysql://mcp_reader:password@db.example.com:3306/app
-```
-
-PostgreSQL URLs support `postgres://` and `postgresql://`; MySQL uses `mysql://`. The dialect is derived from the URL scheme and must not be duplicated in `CONNECTIONS_JSON`.
-
-Catalog example:
+### Direct read + direct write
 
 ```json
 {
   "id": "legacy_mysql",
   "displayName": "Legacy MySQL",
   "transport": "direct",
-  "urlSecret": "LEGACY_MYSQL_DATABASE_URL",
+  "urlSecret": "LEGACY_MYSQL_READ_URL",
+  "write": {
+    "transport": "direct",
+    "urlSecret": "LEGACY_MYSQL_WRITE_URL"
+  },
   "enabled": true
 }
 ```
 
-Direct mode does **not** support split variables such as `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `DB_DIALECT`, or `DATABASE_TLS`. A direct URL that requests TLS is rejected. Plaintext directives such as PostgreSQL `sslmode=disable` are accepted but are unnecessary.
+Direct credentials use complete SQL URL Worker Secrets only. Split host/user/password variables are not supported. Direct remains the plaintext legacy compatibility path; URLs that request TLS are rejected. A direct writer URL must resolve to the same database dialect as the logical READ connection.
 
-Because direct mode is plaintext, the database endpoint should only be used when that risk is explicitly acceptable. Private-network routing through Workers VPC/Tunnel is not part of this v0.1 path.
-
-### Hyperdrive transport
-
-Hyperdrive remains the preferred path for databases that support TLS. Create a cache-disabled Hyperdrive configuration using the dedicated read-only database credential, then declare the binding and dialect:
+### Hyperdrive read + Hyperdrive write
 
 ```json
 {
@@ -97,62 +96,86 @@ Hyperdrive remains the preferred path for databases that support TLS. Create a c
   "transport": "hyperdrive",
   "dialect": "postgres",
   "binding": "PROD_PG_READ",
+  "write": {
+    "transport": "hyperdrive",
+    "binding": "PROD_PG_WRITE"
+  },
   "enabled": true,
   "defaultSchema": "public"
 }
 ```
 
-A Hyperdrive failure remains a Hyperdrive failure; the Worker never falls back to direct.
+READ and WRITE bindings must be independent and backed by different database identities. Hyperdrive READ configurations should keep query caching disabled when strict read-after-write consistency is required. Hyperdrive write compatibility must be verified in Cloudflare staging with the real bindings before production cutover.
 
-### Mixed deployment
+READ and WRITE transports may differ for one logical connection. No global write transport or automatic fallback exists.
 
-One Worker may contain both transports:
+## Structured write contract
 
-```json
-[
-  {
-    "id": "legacy_mysql",
-    "displayName": "Legacy MySQL",
-    "transport": "direct",
-    "urlSecret": "LEGACY_MYSQL_DATABASE_URL",
-    "enabled": true
-  },
-  {
-    "id": "prod_pg",
-    "displayName": "Production PostgreSQL",
-    "transport": "hyperdrive",
-    "dialect": "postgres",
-    "binding": "PROD_PG_READ",
-    "enabled": true,
-    "defaultSchema": "public"
-  }
-]
-```
+### Insert
 
-The MCP caller cannot create connections, provide arbitrary bindings or URLs, or override credentials.
+`insert_rows` accepts one table and 1–100 row objects. Every row must have the same column set. The Worker emits one multi-row parameterized INSERT. The request payload is capped at 256 KiB.
 
-## Runtime limits
+The result contains `affectedRows`. A single-row MySQL insert may also return a meaningful `insertId`. Generic PostgreSQL `RETURNING *`, upsert, and client-supplied returning expressions are not included.
 
-Default deployment bounds include:
+### Update and delete
+
+`update_rows` and `delete_rows` require a non-empty structured `where` mapping. Multiple predicates are combined with AND only.
+
+Supported predicates:
+
+- scalar string/number/boolean shorthand → equality
+- `{ "eq": value }`
+- `{ "in": [value, ...] }` with 1–100 values
+- `{ "isNull": true }` / `{ "isNull": false }`
+
+Direct `null` shorthand is rejected. OR, ranges, LIKE, regex, joins, subqueries, functions, raw expressions, nested predicate trees, and arbitrary SQL are not supported.
+
+UPDATE and DELETE run in one transaction. The database reports the affected-row count before commit. If it exceeds the effective limit, the Worker rolls back and returns `WRITE_LIMIT_EXCEEDED`.
+
+## Write limits
+
+- `MAX_WRITE_AFFECTED_ROWS`: default `20`, hard maximum `100`
+- insert rows: maximum `100`
+- write payload: maximum `256 KiB`
+- predicate columns: maximum `20`
+- values in one `IN` predicate: maximum `100`
+- set/insert columns: maximum `100`
+
+A connection may set a stricter `write.maxAffectedRows`; it cannot raise the deployment maximum.
+
+Existing read defaults remain:
 
 - `MAX_ROWS=500`
 - `MAX_RESULT_BYTES=1048576`
 - `MAX_SCHEMA_BYTES=524288`
 - `QUERY_TIMEOUT_MS=15000`
 
-Per-connection limits may be stricter but must not raise deployment maxima.
+## Capability discovery
+
+`list_connections` exposes only non-secret metadata, including:
+
+- logical id/display name
+- dialect
+- READ transport
+- enabled/default schema metadata
+- `writeEnabled`
+- `writeTransport` when configured
+
+It never exposes Secret names, binding names, SQL URLs, hosts, users, or passwords.
+
+A write invocation against a connection without a writer returns `WRITE_NOT_CONFIGURED`. Missing writer Secrets/bindings fail closed as `CONNECTION_UNAVAILABLE`; the Worker never falls back to READ credentials.
 
 ## Portal authentication
 
-Store a dedicated Worker secret:
+Store the Worker ingress secret:
 
 ```bash
 pnpm --filter database-mcp-worker exec wrangler secret put MCP_ACCESS_TOKEN
 ```
 
-Configure Cloudflare MCP Portal to send the same value as upstream Bearer authentication. Worker-owned OAuth/JWKS/resource-server validation is not part of the current architecture.
+Configure Cloudflare MCP Portal to send the same value as upstream Bearer authentication. The Worker consumes it before MCP handling. The logical AuthInfo advertises `db:read` and `db:write`; actual write authorization still depends on per-connection writer configuration and database-native privileges.
 
-See `docs/mcp-portal-migration.md` for the current Portal contract and acceptance checks.
+See `docs/mcp-portal-migration.md` for the Portal contract.
 
 ## Development and verification
 
@@ -161,26 +184,36 @@ pnpm install --frozen-lockfile
 pnpm --filter database-mcp-worker check
 ```
 
-Root monorepo CI owns ordinary application checks and real PostgreSQL 17 / MySQL 8.4 integration coverage. The integration suite uses disposable databases plus separate admin/read credentials, prepares fixtures through `scripts/setup-integration.mjs`, and verifies direct PostgreSQL/MySQL reads while independently proving that the READ credentials cannot mutate data.
+Root CI also runs real PostgreSQL 17 and MySQL 8.4 integration tests. The integration environment creates separate reader and writer identities and verifies:
 
-Hyperdrive compatibility still requires Cloudflare staging verification with real cache-disabled Hyperdrive bindings. Direct support should only be advertised after the corresponding Workers runtime staging path succeeds.
+- existing read behavior and PostgreSQL reader RLS
+- reader identities cannot mutate data or execute side-effecting routines
+- structured INSERT/UPDATE/DELETE succeed through writer identities
+- PostgreSQL writer RLS remains enforced
+- UPDATE and DELETE roll back when the affected-row limit is exceeded
+- writer identities cannot perform DDL or execute the protected routine
+- MySQL write fixtures use InnoDB
 
-## Deployment state
+## Deployment
 
-This source tree is deployable as `database-mcp-worker`, but source/CI acceptance does not imply a production Worker/Portal instance or reachable direct database exists. Live Cloudflare binding/Secret configuration and staging smoke tests remain operational deployment actions.
+`wrangler.jsonc.example` shows a mixed direct/Hyperdrive deployment with separate READ and WRITE runtime credentials. Preserve Dashboard-managed Secrets and real Hyperdrive IDs when using the checked-in template; the file contains placeholders only.
 
-## Scope intentionally deferred
+The source/CI contract does not by itself prove a production database is reachable. Direct and Hyperdrive paths should be smoke-tested from the deployed Worker before enabling Safe Write on production data.
 
-Not in v0.1:
+## Out of scope for v0.2
 
-- automatic transport fallback or TLS discovery
-- direct TLS configuration
-- split direct database variables
-- Workers VPC / Cloudflare Tunnel integration for private databases
-- PgBouncer / ProxySQL compatibility layers
-- D1 connection registry or runtime onboarding
-- ORM or custom connection pooling
-- raw write SQL, migrations, schema diffs, or web administration UI
+- arbitrary/raw write SQL
+- DDL or schema migration tools
+- stored procedure/function execution
+- UPSERT / `ON CONFLICT` / `ON DUPLICATE KEY`
+- batch SQL and multi-statement execution
+- session pinning or long-lived transactions
+- table allowlists duplicated in Worker configuration
+- per-user RBAC or a second MCP token
+- dynamic connection onboarding, D1 registry, or web admin UI
+- ORM/general SQL AST/expression framework
+- custom connection-pool subsystem
+- VPC/Tunnel transport work
 
 ## License and provenance
 
