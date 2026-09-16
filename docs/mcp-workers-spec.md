@@ -1,8 +1,8 @@
 # MCP Workers 最小维护架构实施规格
 
-状态：ready-for-agent（规格已整理；未开始实现或部署）  
-日期：2026-09-15  
-目标仓库：私有 `lirtual/mcp-workers`，实施前确认是否已存在。  
+状态：source-ci-accepted（源码实现、统一 CI 与最终 pruning 已完成；生产 cutover 与 Portal live 验收未执行）  
+日期：2026-09-15（实施状态更新：2026-09-16）  
+目标仓库：私有 `lirtual/mcp-workers`（已建立并完成六应用源码集中）  
 依据：本会话已确认 Q1–Q6、最终精简审查，以及 `mcp-workers-architecture-review-handoff.md` 的源码证据。
 
 ## 1. 目标与规格边界
@@ -258,7 +258,7 @@ IMA 完成临时下载保护。相关应用处理下表中的实际验收阻塞�
 
 证据记录只需源 commit、目标 commit、Worker 版本、关键检查结果与回退路径，复用现有 CI/Builds 日志，不建新系统。
 
-尚无本项目已配置的 tracker 目标，本文使用文件交付，`ready-for-agent` 是文档状态而非声称已写入远程标签。需要接入任务跟踪时运行 `/setup-engineering-workflows` 指定目标，再发布规格/拆票；这不是阅读或使用本文的前置条件。
+本文最初以 `ready-for-agent` 状态交付；当前文首 `source-ci-accepted` 表示源码实现、统一 CI 和最终 pruning 已验收，不代表生产部署、Portal live 调用、publisher 切换或旧仓库归档已经完成。需要接入任务跟踪时运行 `/setup-engineering-workflows` 指定目标，再发布规格/拆票；这不是阅读或使用本文的前置条件。
 
 实现前的必查项为实际 HEAD、入口/绑定、Cloudflare 安装行为与 GitHub gate 可用性。已完成的历史静态审查无需重做，除非代码或外部约束发生变化。
 
