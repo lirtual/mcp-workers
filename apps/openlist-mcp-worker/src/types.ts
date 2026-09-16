@@ -1,7 +1,7 @@
 export interface Env {
   OPENLIST_URL: string;
   OPENLIST_TOKEN: string;
-  OPENLIST_ALLOWED_PATHS: string;
+  OPENLIST_ALLOWED_PATHS?: string;
   OPENLIST_READONLY?: string;
   OPENLIST_UPLOAD_MAX_BYTES?: string;
   OPENLIST_TIMEOUT_MS?: string;
