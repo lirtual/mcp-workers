@@ -1,31 +1,27 @@
 import { Client as PgClient } from 'pg';
 import { createConnection } from 'mysql2/promise';
 import { describe, expect, it } from 'vitest';
+import { parseConnectionCatalog, resolveConnection } from '../../src/config.js';
 import { explainRead, inspectSchema, queryRead } from '../../src/db/index.js';
-import type { Dialect, EffectiveConnection } from '../../src/types.js';
+import type { EffectiveConnection, Env } from '../../src/types.js';
 
-function directConnection(id: string, dialect: Dialect, raw: string): EffectiveConnection {
-  const url = new URL(raw);
-  const database = decodeURIComponent(url.pathname.slice(1));
-  return {
-    config: {
+function directConnection(id: string, raw: string): EffectiveConnection {
+  const secretName = 'TEST_DATABASE_URL';
+  const env: Env = {
+    CONNECTIONS_JSON: '[]',
+    RATE_LIMITER: { async limit() { return { success: true }; } },
+    [secretName]: raw
+  };
+  const catalog = parseConnectionCatalog(JSON.stringify([
+    {
       id,
       displayName: id,
       transport: 'direct',
-      urlSecret: 'TEST_DATABASE_URL',
-      enabled: true,
-      defaultSchema: dialect === 'postgres' ? 'public' : database
-    },
-    transport: 'direct',
-    dialect,
-    connectionString: raw,
-    host: url.hostname,
-    port: Number(url.port || (dialect === 'postgres' ? 5432 : 3306)),
-    user: decodeURIComponent(url.username),
-    password: decodeURIComponent(url.password),
-    database,
-    limits: { maxRows: 50, maxResultBytes: 256_000, maxSchemaBytes: 256_000, queryTimeoutMs: 2_000 }
-  };
+      urlSecret: secretName,
+      enabled: true
+    }
+  ]));
+  return resolveConnection(env, catalog, id);
 }
 
 const pgReadUrl = process.env.TEST_POSTGRES_READ_URL;
@@ -33,8 +29,13 @@ const mysqlReadUrl = process.env.TEST_MYSQL_READ_URL;
 const describeIntegration = pgReadUrl && mysqlReadUrl ? describe : describe.skip;
 
 describeIntegration('real database read-only integration', () => {
-  const pg = directConnection('pg', 'postgres', pgReadUrl!);
-  const mysql = directConnection('mysql', 'mysql', mysqlReadUrl!);
+  const pg = directConnection('pg', pgReadUrl!);
+  const mysql = directConnection('mysql', mysqlReadUrl!);
+
+  it('resolves SQL URL Secrets into the expected direct dialects', () => {
+    expect(pg).toMatchObject({ transport: 'direct', dialect: 'postgres' });
+    expect(mysql).toMatchObject({ transport: 'direct', dialect: 'mysql' });
+  });
 
   it('queries PostgreSQL through the direct read adapter and preserves RLS', async () => {
     const result = await queryRead(pg, 'SELECT id, tenant_id, email FROM public.users ORDER BY id', [], 10);
