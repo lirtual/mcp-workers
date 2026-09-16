@@ -42,10 +42,10 @@ Exports use the `exports/` prefix and a generated UUID per export. If automatic 
 
 ## 4. Connect the R2 custom domain
 
-Production download origin:
+For the current deployment, connect:
 
 ```text
-https://ima-files.lirtual.dpdns.org
+temp.lirtual.dpdns.org
 ```
 
 In Cloudflare Dashboard:
@@ -54,7 +54,7 @@ In Cloudflare Dashboard:
 2. Select bucket **`ima-mcp-worker`**.
 3. Open **Settings → Custom Domains**.
 4. Select **Add / Connect Domain**.
-5. Enter **`ima-files.lirtual.dpdns.org`**.
+5. Enter **`temp.lirtual.dpdns.org`**.
 6. Review the DNS record Cloudflare will create and confirm the connection.
 7. Wait until ownership and SSL status are active.
 
@@ -84,17 +84,27 @@ Do not reuse any one credential for another role, and do not reuse this Worker's
 
 Retired names are not supported: `IMA_OPENAPI_CLIENTID`, `IMA_OPENAPI_APIKEY`, `CLIENTID`, `APIKEY`, and `IMA_DOWNLOAD_SIGNING_KEY`.
 
-## 6. Non-secret variables
+## 6. Configure the non-secret R2 public origin
 
-`wrangler.jsonc` defines:
+`R2_PUBLIC_BASE_URL` is a normal Worker runtime variable, not a secret and not a hard-coded repository value.
+
+In **Workers & Pages → ima-mcp-worker → Settings → Variables and Secrets**, add a normal variable:
+
+```text
+R2_PUBLIC_BASE_URL=https://temp.lirtual.dpdns.org
+```
+
+The value must be an HTTPS origin with no path, query, fragment, or embedded credentials.
+
+`wrangler.jsonc` intentionally does not contain the value. It sets:
 
 ```json
 {
-  "R2_PUBLIC_BASE_URL": "https://ima-files.lirtual.dpdns.org"
+  "keep_vars": true
 }
 ```
 
-`R2_PUBLIC_BASE_URL` must be an HTTPS origin with no path, query, fragment, or embedded credentials.
+so Dashboard-managed normal variables are preserved on future `wrangler deploy` operations.
 
 Other optional variables include `IMA_BASE_URL`, `FILE_DOWNLOAD_TIMEOUT_MS`, `FILE_DOWNLOAD_MAX_REDIRECTS`, `FILE_DOWNLOAD_MAX_BUFFER_BYTES`, and `IMA_RESPONSE_MAX_BYTES`.
 
@@ -124,8 +134,8 @@ After every deployment, verify the deployed Worker still has:
 
 - Secrets `CLIENT_ID`, `API_KEY`, and `MCP_ACCESS_TOKEN`.
 - R2 binding `R2_BUCKET` -> bucket `ima-mcp-worker`.
-- `R2_PUBLIC_BASE_URL=https://ima-files.lirtual.dpdns.org`.
-- Active R2 custom domain `ima-files.lirtual.dpdns.org`.
+- Runtime variable `R2_PUBLIC_BASE_URL` set to the active R2 custom-domain origin.
+- Active R2 custom domain `temp.lirtual.dpdns.org` for the current deployment.
 - Public `r2.dev` development URL disabled for production.
 - Any separately required Durable Object binding for the image-refresh feature, if that feature is present.
 
@@ -177,10 +187,16 @@ The shared Portal auth boundary consumes this header before MCP/domain handling.
 
 ## 11. Verify direct R2 downloads
 
-Generate an export through the normal authenticated MCP path. The returned URL should point directly at R2:
+Generate an export through the normal authenticated MCP path. The returned URL should point directly at the configured R2 public origin:
 
 ```text
-https://ima-files.lirtual.dpdns.org/exports/<type>/<id>/<export-uuid>/<filename>
+<R2_PUBLIC_BASE_URL>/exports/<type>/<id>/<export-uuid>/<filename>
+```
+
+For the current deployment that resolves to:
+
+```text
+https://temp.lirtual.dpdns.org/exports/<type>/<id>/<export-uuid>/<filename>
 ```
 
 Acceptance checks:
@@ -201,7 +217,7 @@ cp apps/ima-mcp-worker/.dev.vars.example apps/ima-mcp-worker/.dev.vars
 pnpm --filter ima-mcp-worker run dev
 ```
 
-Populate `CLIENT_ID`, `API_KEY`, and `MCP_ACCESS_TOKEN`. `R2_PUBLIC_BASE_URL` is defined as a non-secret Wrangler variable.
+Populate `CLIENT_ID`, `API_KEY`, and `MCP_ACCESS_TOKEN` for local authentication. Configure `R2_PUBLIC_BASE_URL` separately when testing export URL generation.
 
 No local D1 migration is required.
 
@@ -210,7 +226,7 @@ No local D1 migration is required.
 - GitHub app directory: `apps/ima-mcp-worker`
 - Cloudflare Worker service: `ima-mcp-worker`
 - R2 bucket: `ima-mcp-worker`
-- R2 custom domain: `ima-files.lirtual.dpdns.org`
+- R2 custom-domain origin: runtime-configured through `R2_PUBLIC_BASE_URL`
 
 ## Large-file behavior
 
