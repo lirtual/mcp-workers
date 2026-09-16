@@ -2,7 +2,7 @@
 
 Private source monorepo for independently deployed Cloudflare MCP Worker apps.
 
-Implementation is tracked on `feat/mcp-workers-monorepo`.
+Source consolidation, workspace migration, Portal-auth convergence, and post-migration pruning are complete in this repository. Production deployment, MCP Portal cutover/discovery, publisher retirement, and old source-repository archival remain separate operational acceptance steps and must not be inferred from source/CI status alone.
 
 ## Migration completion rule
 
