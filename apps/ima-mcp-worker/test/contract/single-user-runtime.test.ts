@@ -11,7 +11,7 @@ function baseEnv(overrides: Partial<Env> = {}): Env {
     CLIENT_ID: "client-id",
     API_KEY: "api-key",
     R2_BUCKET: {} as R2Bucket,
-    IMA_DOWNLOAD_SIGNING_KEY: "test-download-signing-secret",
+    R2_PUBLIC_BASE_URL: "https://ima-files.example.com",
     ...overrides,
   } as Env;
 }
@@ -29,7 +29,7 @@ test("/health reports single-user liveness without OAuth mode", async () => {
   assert.equal("auth_mode" in body, false);
 });
 
-test("/ready succeeds with required single-user secrets and R2 binding", async () => {
+test("/ready succeeds with required single-user secrets, R2 binding, and R2 public origin", async () => {
   const response = await worker.fetch(new Request("https://worker.example/ready"), baseEnv(), ctx);
   assert.equal(response.status, 200);
   assert.deepEqual(await json(response), { ready: true });
@@ -43,7 +43,7 @@ test("/ready reports missing capabilities without secret values", async () => {
       CLIENT_ID: undefined,
       API_KEY: undefined,
       R2_BUCKET: undefined,
-      IMA_DOWNLOAD_SIGNING_KEY: undefined,
+      R2_PUBLIC_BASE_URL: undefined,
     }),
     ctx,
   );
@@ -55,12 +55,11 @@ test("/ready reports missing capabilities without secret values", async () => {
     "CLIENT_ID",
     "API_KEY",
     "R2_BUCKET",
-    "IMA_DOWNLOAD_SIGNING_KEY",
+    "R2_PUBLIC_BASE_URL",
   ]);
   assert.equal(JSON.stringify(body).includes("portal-secret"), false);
   assert.equal(JSON.stringify(body).includes("client-id"), false);
   assert.equal(JSON.stringify(body).includes("api-key"), false);
-  assert.equal(JSON.stringify(body).includes("test-download-signing-secret"), false);
 });
 
 test("/mcp fails closed when MCP_ACCESS_TOKEN is not configured", async () => {
@@ -115,7 +114,7 @@ test("retired IMA secret names do not satisfy the runtime contract", async () =>
     IMA_OPENAPI_CLIENTID: "legacy-client",
     IMA_OPENAPI_APIKEY: "legacy-key",
     R2_BUCKET: {} as R2Bucket,
-    IMA_DOWNLOAD_SIGNING_KEY: "test-download-signing-secret",
+    R2_PUBLIC_BASE_URL: "https://ima-files.example.com",
   } as unknown as Env;
   const response = await worker.fetch(
     new Request("https://worker.example/mcp", {
@@ -132,7 +131,7 @@ test("retired IMA secret names do not satisfy the runtime contract", async () =>
   });
 });
 
-test("retired Worker-owned OAuth routes return normal not-found behavior", async () => {
+test("retired Worker-owned OAuth and download proxy routes return normal not-found behavior", async () => {
   for (const path of [
     "/.well-known/oauth-protected-resource",
     "/.well-known/oauth-authorization-server",
@@ -141,6 +140,7 @@ test("retired Worker-owned OAuth routes return normal not-found behavior", async
     "/oauth/token",
     "/oauth/revoke",
     "/oauth/disconnect",
+    "/download/exports%2Fmedia%2F1%2Ffile.pdf",
   ]) {
     const response = await worker.fetch(new Request(`https://worker.example${path}`), baseEnv(), ctx);
     assert.equal(response.status, 404, path);
