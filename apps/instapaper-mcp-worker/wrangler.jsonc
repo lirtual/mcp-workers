@@ -8,6 +8,18 @@
   "preview_urls": false,
   "observability": {
     "enabled": true,
-    "head_sampling_rate": 1
+    "logs": {
+      "invocation_logs": true,
+      "head_sampling_rate": 1
+    }
+  },
+  "secrets": {
+    "required": [
+      "MCP_ACCESS_TOKEN",
+      "INSTAPAPER_CONSUMER_KEY",
+      "INSTAPAPER_CONSUMER_SECRET",
+      "INSTAPAPER_OAUTH_TOKEN",
+      "INSTAPAPER_OAUTH_TOKEN_SECRET"
+    ]
   }
 }
