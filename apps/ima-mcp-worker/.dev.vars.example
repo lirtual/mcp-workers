@@ -3,6 +3,4 @@ CLIENT_ID=
 API_KEY=
 MCP_ACCESS_TOKEN=
 
-# Public HTTPS origin attached directly to the R2 bucket.
-# Production uses https://ima-files.lirtual.dpdns.org
-R2_PUBLIC_BASE_URL=https://ima-files.lirtual.dpdns.org
+# R2_PUBLIC_BASE_URL is non-secret and is defined in wrangler.jsonc.
