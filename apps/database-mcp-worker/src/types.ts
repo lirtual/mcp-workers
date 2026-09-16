@@ -21,9 +21,26 @@ export interface Env {
   MAX_RESULT_BYTES?: string;
   MAX_SCHEMA_BYTES?: string;
   QUERY_TIMEOUT_MS?: string;
+  MAX_WRITE_AFFECTED_ROWS?: string;
   RATE_LIMITER: RateLimitBinding;
   [key: string]: unknown;
 }
+
+interface BaseWriteConnectionConfig {
+  maxAffectedRows?: number;
+}
+
+export interface DirectWriteConnectionConfig extends BaseWriteConnectionConfig {
+  transport: 'direct';
+  urlSecret: string;
+}
+
+export interface HyperdriveWriteConnectionConfig extends BaseWriteConnectionConfig {
+  transport: 'hyperdrive';
+  binding: string;
+}
+
+export type WriteConnectionConfig = DirectWriteConnectionConfig | HyperdriveWriteConnectionConfig;
 
 interface BaseConnectionConfig {
   id: string;
@@ -34,6 +51,7 @@ interface BaseConnectionConfig {
   maxResultBytes?: number;
   maxSchemaBytes?: number;
   queryTimeoutMs?: number;
+  write?: WriteConnectionConfig;
 }
 
 export interface DirectConnectionConfig extends BaseConnectionConfig {
@@ -67,6 +85,15 @@ export interface EffectiveConnection {
   database: string;
   port: number;
   limits: RuntimeLimits;
+}
+
+export interface EffectiveWriteConnection extends EffectiveConnection {
+  maxAffectedRows: number;
+}
+
+export interface WriteResult {
+  affectedRows: number;
+  insertId?: number | string;
 }
 
 export interface QueryColumn {
