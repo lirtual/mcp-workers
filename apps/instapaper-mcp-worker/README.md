@@ -80,17 +80,11 @@ For a headless environment or manual Dashboard configuration, run:
 pnpm run setup:instapaper -- --manual
 ```
 
-After xAuth and credential verification, the helper writes the four values to:
+After xAuth and credential verification, the helper creates a private system temporary directory (`0700`) and writes the four values to `secrets.txt` with `0600` permissions. The script prints the exact absolute path.
 
-```text
-.dev.vars.instapaper
-```
+Each section in the file has a Secret name in brackets and its raw value on the following line. Copy only the raw value into **Workers & Pages → instapaper-mcp-worker → Settings → Variables and Secrets** as a Secret. Do not include the brackets or Secret name.
 
-The file is created with `0600` permissions and is covered by this app's `.gitignore`. Copy each value into **Workers & Pages → instapaper-mcp-worker → Settings → Variables and Secrets** as a Secret, then delete the local file:
-
-```bash
-rm .dev.vars.instapaper
-```
+After copying the values, run the exact `rm -rf` command printed by the helper to remove the temporary directory.
 
 The Instapaper username/password are used only during bootstrap and are not persisted. These OAuth credentials are upstream business credentials and are intentionally separate from MCP ingress authentication.
 
