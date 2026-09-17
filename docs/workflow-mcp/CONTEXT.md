@@ -22,6 +22,12 @@ A normalized occurrence produced by a Trigger Definition. A Trigger Event is imm
 ### Event Key
 A stable identity for a Trigger Event used to decide whether the same occurrence has already been accepted.
 
+### Run Admission
+The decision that an eligible start request is allowed to create or resolve to one Workflow Run. Repeated delivery of the same event may resolve to an existing admitted run rather than create another run.
+
+### Admission Key
+A stable identity used to correlate equivalent start requests for run admission. It is distinct from execution idempotency for downstream side effects.
+
 ### Manual Start
 An explicit request by a caller to create a Workflow Run with supplied Workflow Input.
 
@@ -31,8 +37,20 @@ A Workflow Run start caused by an authenticated event arriving from outside the 
 ### Scheduled Start
 A Workflow Run start caused by a declared schedule.
 
+### Schedule Occurrence
+One intended firing of a schedule at a particular logical scheduled time.
+
+### Schedule Misfire
+A Schedule Occurrence that became due while the scheduler was unable to admit it at its intended time.
+
 ### Workflow Run
 One concrete execution of a Workflow Definition, created from explicit input or a Trigger Event.
+
+### Concurrency Policy
+A rule controlling whether multiple Workflow Runs that belong to the same concurrency scope may execute simultaneously or must wait for capacity.
+
+### Cancellation Request
+A durable request to stop a Workflow Run. Cancellation prevents new work from starting and asks active work to stop, but it does not imply reversal of already completed side effects.
 
 ### Step
 A named unit of work inside a Workflow Definition. A Step receives resolved input and produces a result that later steps may reference.
@@ -94,6 +112,9 @@ A named, administratively approved relationship to an external service or capabi
 ### Connection Reference
 A symbolic reference to a Connection. Workflow Definitions select approved Connections by reference rather than supplying arbitrary destinations or credentials inline.
 
+### Connection Credential
+Sensitive authentication material owned by a Connection. Workflow Definitions never contain Connection Credential values.
+
 ### Privileged Code Capability
 An explicit Capability for executing user-supplied code in an execution environment. It is distinct from ordinary declarative workflow steps and carries a stronger trust boundary.
 
@@ -103,10 +124,17 @@ A symbolic reference to a secret value. Workflow definitions may contain Secret 
 ### Credential Lease
 A short-lived, narrowly scoped authorization granted to an Executor for one execution purpose. A Credential Lease is not the underlying long-lived business credential.
 
+### Canonical Workflow Representation
+A deterministic, normalized representation of a Workflow Definition used for validation, comparison, and version identity. Authoring syntax is not itself the canonical representation.
+
+### Workflow Expression
+A restricted declarative expression that reads workflow data and computes conditions or values without ambient access to code execution, network, files, or other undeclared capabilities.
+
 ## Invariants
 
 - Trigger, Workflow, Capability, and Executor are distinct concepts and must not be conflated.
 - Trigger Events are normalized before workflow logic consumes them.
+- Repeated delivery of one event can resolve to one admitted Workflow Run without implying exactly-once downstream side effects.
 - Workflow meaning must not depend on which Executor performs a Step.
 - Existing MCP application domains remain external capabilities; Workflow Automation does not absorb their business models.
 - A Workflow Run has a durable identity independent of any individual Step Run, Step Attempt, or Executor invocation.
@@ -115,7 +143,10 @@ A short-lived, narrowly scoped authorization granted to an Executor for one exec
 - A Step Run preserves one logical identity across all of its Step Attempts.
 - Retries of one logical side effect reuse the same Operation ID.
 - Failure of one DAG branch does not erase the outcome of independent branches.
+- Cancellation does not imply compensation or rollback of completed side effects.
 - Artifact identity is independent of executor-native temporary storage.
-- Workflow definitions contain Secret References and Connection References, never secret values.
+- Workflow definitions contain Secret References and Connection References, never secret or Connection Credential values.
 - Arbitrary user-supplied code is a privileged capability rather than the default Step model.
 - External protocol adapters, including MCP adapters, expose Capabilities and do not become Executors merely because they perform remote calls.
+- Authoring format and Canonical Workflow Representation are distinct; version identity is derived from the canonical representation.
+- Workflow Expressions are declarative and cannot escape into arbitrary code execution or undeclared I/O.
