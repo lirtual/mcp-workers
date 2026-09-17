@@ -2,9 +2,12 @@ import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
 import { createMcpHandler } from "agents/mcp/server";
 import { McpServer } from "@modelcontextprotocol/server";
 import type { Env, ImaCredentials } from "./types.ts";
-import { ImaClient, ImaKnowledge, ImaNotes } from "./ima.ts";
+import { ImaClient, ImaKnowledge } from "./ima.ts";
+import { RefreshingImaNotes } from "./exporting-notes.ts";
 import { registerTools } from "./tools.ts";
 import { IMA_SERVER_INSTRUCTIONS } from "./instructions.ts";
+
+export { ImaImageRefreshShard } from "./image-refresh-shard.ts";
 
 const VERSION = "0.5.0";
 
@@ -92,11 +95,12 @@ export default {
 
     const handler = createMcpHandler(() => {
       const api = new ImaClient(runtimeEnv, credentials);
+      const notes = new RefreshingImaNotes(api);
       const server = new McpServer(
         { name: "ima", version: VERSION },
         { instructions: IMA_SERVER_INSTRUCTIONS },
       );
-      registerTools(server, new ImaNotes(api), new ImaKnowledge(runtimeEnv, api), true);
+      registerTools(server, notes, new ImaKnowledge(runtimeEnv, api), true);
       return server;
     }, {
       route: "/mcp",
