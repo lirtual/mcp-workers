@@ -262,14 +262,14 @@ export async function mysqlInspectSchema(
            FROM information_schema.tables
            WHERE table_schema = ?
            ORDER BY table_type, table_name`,
-          [selectedSchema]
+          [schema]
         ),
         connection.limits.queryTimeoutMs,
         () => client.destroy()
       );
       const inspection: SchemaInspection = {
         dialect: 'mysql',
-        schema: selectedSchema,
+        schema,
         tables: (rows as unknown[][]).map(row => ({
           schema: String(row[0]),
           name: String(row[1]),
