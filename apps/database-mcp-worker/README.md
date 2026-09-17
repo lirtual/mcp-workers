@@ -1,6 +1,6 @@
 # Cloudflare Database MCP Worker
 
-A Cloudflare-native MCP server for bounded PostgreSQL/MySQL reads plus optional structured Safe Write. It supports direct database URLs for legacy plaintext connections and Cloudflare Hyperdrive for TLS-capable databases.
+A Cloudflare-native MCP server for bounded PostgreSQL/MySQL reads, optional structured Safe Write, and optional structured Safe Admin/DDL. READ, WRITE, and ADMIN credentials are configured independently. Direct database URLs remain a legacy plaintext compatibility path; Cloudflare Hyperdrive is supported for TLS-capable database paths.
 
 ## Minimal deployment
 
@@ -41,12 +41,12 @@ For a server-level MySQL connection:
 - `inspect_schema` with no `schema` lists databases visible to the MySQL account.
 - `inspect_schema` with `schema` inspects that database.
 - `query_read` / `explain` should use fully qualified names such as `app.users` when the SQL needs a table.
-- Safe Write requires an explicit `schema` unless `defaultSchema` is configured.
+- Safe Write and Safe Admin require an explicit `schema` unless `defaultSchema` is configured.
 - The effective database access boundary is the MySQL account's grants.
 
 PostgreSQL direct URLs still require a database name.
 
-### Read + Safe Write
+### Read + Safe Write + Safe Admin
 
 ```json
 {
@@ -54,23 +54,30 @@ PostgreSQL direct URLs still require a database name.
     "displayName": "Main Database",
     "read": "mysql://mcp_reader:password@db.example.com:3306/app",
     "write": "mysql://mcp_writer:password@db.example.com:3306/app",
+    "admin": "mysql://mcp_admin:password@db.example.com:3306/app",
     "maxAffectedRows": 20
   }
 }
 ```
 
-`write` is optional. When it is absent, write tools return `WRITE_NOT_CONFIGURED`; the Worker never falls back to the read credential for writes.
+`write` and `admin` are optional and independent:
 
-Use separate least-privilege reader/writer database identities. Deployment templates are provided under `deploy/sql/`:
+- missing `write` -> Safe Write tools fail closed with `WRITE_NOT_CONFIGURED`;
+- missing `admin` -> Safe Admin tools fail closed with `ADMIN_NOT_CONFIGURED`;
+- READ never falls back to WRITE/ADMIN;
+- WRITE never falls back to READ/ADMIN;
+- ADMIN never falls back to READ/WRITE.
+
+Deployment templates are provided under `deploy/sql/`:
 
 - `postgres-readonly.sql`
 - `postgres-writer.sql`
+- `postgres-admin.sql`
 - `mysql-readonly.sql`
 - `mysql-writer.sql`
+- `mysql-admin.sql`
 
-The writer templates intentionally grant `SELECT`, `INSERT`, `UPDATE`, and `DELETE` only on explicitly approved tables. Repeat the table grant for each table Safe Write may mutate rather than granting broad database/schema write access by default. PostgreSQL writer roles remain non-superuser/non-owner and must not receive `BYPASSRLS`; MySQL writers must not receive DDL, routine, file, grant-option, or administrative privileges. If PostgreSQL inserts require a sequence, grant only the specific sequence needed.
-
-These deployment templates mirror the least-privilege writer model used by the real PostgreSQL/MySQL integration fixtures, so production setup and CI exercise the same READ/WRITE separation assumptions.
+Reader and writer templates remain least-privilege. PostgreSQL Safe Admin is ownership-based, so the recommended pattern is a dedicated schema owned by the non-superuser `mcp_admin` role or explicit ownership only for approved managed objects. MySQL Safe Admin is scoped to an approved database; MySQL 8.4 requires `CREATE` and `INSERT` in addition to `ALTER` for `ALTER TABLE`, and table rename also requires `ALTER`/`DROP` on the old table plus `CREATE`/`INSERT` on the new table. The MCP Admin surface still exposes only structured DDL, never arbitrary DML/admin SQL.
 
 ### Multiple databases
 
@@ -102,12 +109,15 @@ Hyperdrive references stay explicit because the binding itself is configured in 
     "write": {
       "hyperdrive": "PROD_WRITE"
     },
+    "admin": {
+      "hyperdrive": "PROD_ADMIN"
+    },
     "maxAffectedRows": 20
   }
 }
 ```
 
-Read and write transports may differ. There is no automatic transport fallback.
+Read, write, and admin transports may differ. There is no automatic transport fallback. Safe Admin integration verifies direct PostgreSQL/MySQL behavior; Hyperdrive should be used for ADMIN only after the target DDL operations are verified for that deployment/database combination.
 
 ## Direct mode
 
@@ -132,6 +142,8 @@ Each connection can additionally set:
 - `maxSchemaBytes`
 - `queryTimeoutMs`
 - `maxAffectedRows` (only when `write` is configured)
+- `write`
+- `admin`
 
 Global deployment limits remain controlled by Wrangler vars:
 
@@ -159,7 +171,15 @@ Safe Write tools:
 - `update_rows`
 - `delete_rows`
 
-`query_read` remains read-only. Safe Write tools never accept raw write SQL; they generate parameterized statements internally.
+Safe Admin/DDL tools:
+
+- `create_table`
+- `alter_table` — add column, drop column, rename column, rename table
+- `create_index`
+- `drop_index`
+- `drop_table`
+
+`query_read` remains read-only. Safe Write tools never accept raw write SQL. Safe Admin tools never accept raw DDL or arbitrary type/default expressions.
 
 ## Safe Write guarantees
 
@@ -169,6 +189,29 @@ Safe Write tools:
 - If affected rows exceed the configured maximum, the transaction is rolled back with `WRITE_LIMIT_EXCEEDED`.
 - PostgreSQL RLS and database-native permissions remain authoritative.
 - MySQL rollback guarantees require transactional engines such as InnoDB.
+
+## Safe Admin guarantees
+
+- ADMIN credentials are separate from READ and WRITE credentials.
+- `create_table` accepts only a bounded scalar type subset and literal defaults.
+- `alter_table` supports only add/drop/rename column and rename table in v0.3.
+- `create_index` supports ordinary column indexes only; expression/partial/fulltext/spatial/vendor-specific advanced indexes are excluded.
+- `drop_table`, `drop_index`, and `alter_table` drop-column require explicit `confirm=true` before execution.
+- destructive Admin operations are not automatically retried after an ambiguous result.
+- no `execute_sql`, raw DDL, GRANT/REVOKE, user/role management, routine, trigger, replication, backup, or server-configuration tool is exposed.
+- database-native privileges remain the final boundary even when the MCP input is structurally valid.
+
+Supported column types in the initial v0.3 subset:
+
+- integer / bigint
+- numeric / decimal
+- varchar / text
+- boolean
+- date
+- timestamp / datetime
+- json
+
+Supported column options are limited to bounded varchar length, numeric precision/scale, nullability, literal defaults, primary key, and unique.
 
 ## Portal authentication
 
@@ -189,14 +232,14 @@ pnpm install --frozen-lockfile
 pnpm --filter database-mcp-worker check
 ```
 
-Monorepo CI runs unit checks plus real PostgreSQL 17 / MySQL 8.4 integration tests with separate admin, reader, and writer identities. The integration writer permissions follow the same least-privilege model documented by the deployment templates: approved-table `SELECT`/`INSERT`/`UPDATE`/`DELETE`, no DDL/admin privileges, PostgreSQL RLS preserved, and MySQL transactional tables for rollback safety.
+Monorepo CI runs unit checks plus real PostgreSQL 17 / MySQL 8.4 integration tests with separate reader, writer, bounded admin, and fixture-owner identities. Integration proves READ cannot write/DDL, WRITE cannot DDL, ADMIN can perform only the supported schema lifecycle, PostgreSQL ADMIN is not a superuser/role administrator, and MySQL ADMIN cannot create users.
 
 ## Security notes
 
 - Keep `DATABASE_CONFIG` as a Cloudflare Runtime Secret; never commit its real value.
-- Do not log `DATABASE_CONFIG`, SQL URLs, database passwords, MCP bearer tokens, write values, or write predicates.
-- `list_connections` exposes only non-secret metadata.
-- Direct read/write credentials are never returned in MCP responses.
+- Do not log `DATABASE_CONFIG`, SQL URLs, database passwords, MCP bearer tokens, write values, write predicates, or generated admin SQL.
+- `list_connections` exposes only non-secret capability metadata (`writeEnabled` / `adminEnabled` and transport names).
+- Direct READ/WRITE/ADMIN credentials are never returned in MCP responses.
 - Hyperdrive binding internals are never returned in MCP responses.
 
 ## License and provenance
