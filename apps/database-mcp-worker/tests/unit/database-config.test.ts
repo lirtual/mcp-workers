@@ -39,6 +39,30 @@ describe('DATABASE_CONFIG', () => {
     });
   });
 
+  it('supports MySQL server-level URLs while PostgreSQL still requires a database name', () => {
+    const catalog = parseDatabaseConfig(JSON.stringify({
+      mysql_server: {
+        read: 'mysql://reader:secret@db.example.com:3306',
+        write: 'mysql://writer:secret@db.example.com:3306'
+      }
+    }));
+
+    expect(resolveConnection(env(), catalog, 'mysql_server')).toMatchObject({
+      dialect: 'mysql',
+      database: '',
+      port: 3306
+    });
+    expect(resolveWriteConnection(env(), catalog, 'mysql_server')).toMatchObject({
+      dialect: 'mysql',
+      database: '',
+      port: 3306
+    });
+
+    expect(() => parseDatabaseConfig(JSON.stringify({
+      pg_server: { read: 'postgresql://reader:secret@db.example.com:5432' }
+    }))).toThrow(PublicError);
+  });
+
   it('enables Safe Write only when write is explicitly configured', () => {
     const readOnly = parseDatabaseConfig(JSON.stringify({
       main: { read: 'mysql://reader:secret@db.example.com/app' }
