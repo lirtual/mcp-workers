@@ -15,6 +15,9 @@ V1 uses snapshot mode by default. Vision mode is disabled. Keep the official def
 ## Persistence
 V1 adds no R2, KV, D1, cookie-profile store, or custom browser-session persistence. Durable Object state exists only as required by the official Playwright MCP/McpAgent runtime.
 
+## Free-plan Runtime Budget
+The design targets Workers Free. Browser Run currently provides 10 browser minutes per day, up to 3 concurrent Browser Sessions, and a 60-second browser timeout on the Free plan. SQLite-backed Durable Objects are supported on Workers Free. V1 should therefore favor short, bounded browser actions and avoid CI/background browser use.
+
 ## Version Policy
 Pin `@cloudflare/playwright-mcp` to an exact installable official npm version; do not use a caret range. Cloudflare documentation and npm metadata currently disagree on the displayed version, so implementation must verify the registry before changing the pin. As of the architecture review on 2026-09-17, npm publishes `0.0.5` while Cloudflare documentation labels the current Playwright MCP as `v1.1.1`.
 
