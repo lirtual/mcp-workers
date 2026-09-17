@@ -21,11 +21,12 @@ export async function authenticateDatabasePortal(
     request: result.request,
     authInfo: {
       // The real Portal credential is consumed at the Worker boundary. Tools
-      // receive only a stable logical principal and capability metadata; actual
-      // writes still require per-connection writer configuration and database privileges.
+      // receive only stable logical capability metadata; actual WRITE/ADMIN
+      // authorization still requires the corresponding per-connection credential
+      // plus database-native privileges.
       token: 'portal-access',
       clientId: 'cloudflare-mcp-portal',
-      scopes: ['db:read', 'db:write']
+      scopes: ['db:read', 'db:write', 'db:admin']
     }
   };
 }
