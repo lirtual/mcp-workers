@@ -15,7 +15,7 @@ export interface RateLimitBinding {
 }
 
 export interface Env {
-  CONNECTIONS_JSON: string;
+  DATABASE_CONFIG?: string;
   MCP_ACCESS_TOKEN?: string;
   MAX_ROWS?: string;
   MAX_RESULT_BYTES?: string;
@@ -32,7 +32,8 @@ interface BaseWriteConnectionConfig {
 
 export interface DirectWriteConnectionConfig extends BaseWriteConnectionConfig {
   transport: 'direct';
-  urlSecret: string;
+  url?: string;
+  urlSecret?: string;
 }
 
 export interface HyperdriveWriteConnectionConfig extends BaseWriteConnectionConfig {
@@ -56,7 +57,8 @@ interface BaseConnectionConfig {
 
 export interface DirectConnectionConfig extends BaseConnectionConfig {
   transport: 'direct';
-  urlSecret: string;
+  url?: string;
+  urlSecret?: string;
 }
 
 export interface HyperdriveConnectionConfig extends BaseConnectionConfig {

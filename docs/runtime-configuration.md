@@ -15,7 +15,7 @@ Cloudflare Builds variables/secrets are a different scope: they are available wh
 | Wrangler `vars` | Worker runtime | Non-sensitive runtime settings |
 | Wrangler bindings | Worker runtime | R2, Hyperdrive, Rate Limit, and other Cloudflare bindings |
 | Wrangler `secrets.required` | Worker runtime contract | Names of mandatory secrets only |
-| Cloudflare Runtime Secrets | Worker runtime | Actual tokens, API keys, OAuth credentials, passwords |
+| Cloudflare Runtime Secrets | Worker runtime | Actual tokens, API keys, OAuth credentials, passwords, secret JSON configuration |
 | Cloudflare Build variables/secrets | Build/deploy process | Only values genuinely required during build/deploy |
 
 ## Required secrets
@@ -27,11 +27,11 @@ Every production Worker configuration declares its mandatory runtime secret name
 | `ima-mcp-worker` | `MCP_ACCESS_TOKEN`, `API_KEY`, `CLIENT_ID`, `IMA_DOWNLOAD_SIGNING_KEY` |
 | `openlist-mcp-worker` | `MCP_ACCESS_TOKEN`, `OPENLIST_TOKEN` |
 | `weread-mcp-worker` | `MCP_ACCESS_TOKEN`, `WEREAD_API_KEY` |
-| `database-mcp-worker` | `MCP_ACCESS_TOKEN` |
+| `database-mcp-worker` | `MCP_ACCESS_TOKEN`, `DATABASE_CONFIG` |
 | `raindrop-mcp-worker` | `MCP_ACCESS_TOKEN`, `RAINDROP_ACCESS_TOKEN` |
 | `instapaper-mcp-worker` | `MCP_ACCESS_TOKEN`, `INSTAPAPER_CONSUMER_KEY`, `INSTAPAPER_CONSUMER_SECRET`, `INSTAPAPER_OAUTH_TOKEN`, `INSTAPAPER_OAUTH_TOKEN_SECRET` |
 
-The Database app currently keeps its production binding template in `wrangler.jsonc.example` until real Hyperdrive IDs are supplied. The template still declares the same runtime-secret and observability contract; do not commit placeholder Hyperdrive IDs as a production configuration.
+`database-mcp-worker` stores its complete logical database catalog in the single `DATABASE_CONFIG` Secret. Direct SQL URLs therefore remain secret without requiring separate `DATABASE_URL` / `DATABASE_WRITE_URL` variables. Hyperdrive entries still refer to Wrangler bindings by name.
 
 For local development, use uncommitted `.dev.vars` or `.env` files with keys matching `secrets.required`.
 
@@ -51,7 +51,7 @@ All six Workers use the same Cloudflare Workers Logs baseline:
 
 This intentionally captures 100% of invocation logs for the current low-volume deployment. Tracing is not part of the common baseline; enable it only for a specific investigation with an explicit sampling rate.
 
-Do not deliberately log `Authorization` values, `MCP_ACCESS_TOKEN`, upstream API/OAuth credentials, credential-bearing request objects, or full private upstream responses. Prefer structured metadata such as operation/tool name, request ID when available, upstream status, and error category.
+Do not deliberately log `Authorization` values, `MCP_ACCESS_TOKEN`, `DATABASE_CONFIG`, upstream API/OAuth credentials, credential-bearing request objects, or full private upstream responses. Prefer structured metadata such as operation/tool name, request ID when available, upstream status, and error category.
 
 ## Deployment behavior
 
