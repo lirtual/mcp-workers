@@ -153,31 +153,33 @@ export async function getSchemaContext(
       ? `SELECT selected.table_name, selected.table_type, selected.total_tables,
                 c.column_name, c.data_type, c.is_nullable, c.ordinal_position
          FROM (
-           SELECT table_name, table_type, COUNT(*) OVER() AS total_tables
+           SELECT table_name, table_type,
+                  ROW_NUMBER() OVER (ORDER BY table_name) AS table_rank,
+                  COUNT(*) OVER() AS total_tables
            FROM information_schema.tables
            WHERE table_schema = $1
-           ORDER BY table_name
-           LIMIT $2
          ) AS selected
          JOIN information_schema.columns c
            ON c.table_schema = $1 AND c.table_name = selected.table_name
+         WHERE selected.table_rank <= $2
          ORDER BY selected.table_name, c.ordinal_position`
       : `SELECT selected.table_name, selected.table_type, selected.total_tables,
                 c.column_name, c.column_type, c.is_nullable, c.ordinal_position
          FROM (
-           SELECT table_name, table_type, COUNT(*) OVER() AS total_tables
+           SELECT table_name, table_type,
+                  ROW_NUMBER() OVER (ORDER BY table_name) AS table_rank,
+                  COUNT(*) OVER() AS total_tables
            FROM information_schema.tables
            WHERE table_schema = ?
-           ORDER BY table_name
-           LIMIT ?
          ) AS selected
          JOIN information_schema.columns c
            ON c.table_schema = ? AND c.table_name = selected.table_name
+         WHERE selected.table_rank <= ?
          ORDER BY selected.table_name, c.ordinal_position`;
   const columnsParams =
     connection.dialect === 'postgres'
       ? [selectedSchema, tableLimit]
-      : [selectedSchema, tableLimit, selectedSchema];
+      : [selectedSchema, selectedSchema, tableLimit];
 
   const constraintsSql =
     connection.dialect === 'postgres'
@@ -188,11 +190,9 @@ export async function getSchemaContext(
                 kcu.ordinal_position
          FROM information_schema.table_constraints tc
          JOIN (
-           SELECT table_name
+           SELECT table_name, ROW_NUMBER() OVER (ORDER BY table_name) AS table_rank
            FROM information_schema.tables
            WHERE table_schema = $1
-           ORDER BY table_name
-           LIMIT $2
          ) AS selected ON selected.table_name = tc.table_name
          JOIN information_schema.key_column_usage kcu
            ON tc.constraint_name = kcu.constraint_name
@@ -207,6 +207,7 @@ export async function getSchemaContext(
           AND rc.unique_constraint_schema = ref_kcu.constraint_schema
           AND kcu.position_in_unique_constraint = ref_kcu.ordinal_position
          WHERE tc.table_schema = $1
+           AND selected.table_rank <= $2
            AND tc.constraint_type IN ('PRIMARY KEY', 'FOREIGN KEY')
          ORDER BY tc.table_name, tc.constraint_name, kcu.ordinal_position`
       : `SELECT tc.table_name, tc.constraint_type, kcu.column_name,
@@ -214,11 +215,9 @@ export async function getSchemaContext(
                 kcu.referenced_column_name, kcu.ordinal_position
          FROM information_schema.table_constraints tc
          JOIN (
-           SELECT table_name
+           SELECT table_name, ROW_NUMBER() OVER (ORDER BY table_name) AS table_rank
            FROM information_schema.tables
            WHERE table_schema = ?
-           ORDER BY table_name
-           LIMIT ?
          ) AS selected ON selected.table_name = tc.table_name
          JOIN information_schema.key_column_usage kcu
            ON tc.constraint_schema = kcu.constraint_schema
@@ -226,12 +225,13 @@ export async function getSchemaContext(
           AND tc.table_name = kcu.table_name
           AND tc.constraint_name = kcu.constraint_name
          WHERE tc.table_schema = ?
+           AND selected.table_rank <= ?
            AND tc.constraint_type IN ('PRIMARY KEY', 'FOREIGN KEY')
          ORDER BY tc.table_name, tc.constraint_name, kcu.ordinal_position`;
   const constraintsParams =
     connection.dialect === 'postgres'
       ? [selectedSchema, tableLimit]
-      : [selectedSchema, tableLimit, selectedSchema];
+      : [selectedSchema, selectedSchema, tableLimit];
 
   const columnsResult = await readMetadata(connection, columnsSql, columnsParams, rowLimit);
   const constraintsResult = await readMetadata(connection, constraintsSql, constraintsParams, rowLimit);
