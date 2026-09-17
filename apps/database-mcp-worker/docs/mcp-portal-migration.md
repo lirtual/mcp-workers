@@ -13,12 +13,12 @@ MCP client
        -> logical connection
             -> READ  -> direct SQL URL or Hyperdrive binding
             -> WRITE -> optional separate direct SQL URL or Hyperdrive binding
-            -> ADMIN -> optional separate direct SQL URL or Hyperdrive binding
+            -> ADMIN -> optional separate direct SQL URL (v0.3 execution)
   -> separate least-privilege database identities
   -> database-native privileges / RLS / ownership / policy
 ```
 
-`MCP_ACCESS_TOKEN` authenticates only Portal -> Worker. Database credentials live only inside the `DATABASE_CONFIG` Runtime Secret for direct mode, or inside Cloudflare Hyperdrive for Hyperdrive mode. Never reuse the Portal token as a database credential.
+`MCP_ACCESS_TOKEN` authenticates only Portal -> Worker. Database credentials live only inside the `DATABASE_CONFIG` Runtime Secret for direct mode, or inside Cloudflare Hyperdrive for supported Hyperdrive paths. Never reuse the Portal token as a database credential.
 
 Store the Portal credential and database catalog as Worker Runtime Secrets:
 
@@ -30,6 +30,8 @@ pnpm --filter database-mcp-worker exec wrangler secret put DATABASE_CONFIG
 The Worker consumes the inbound Portal `Authorization` header before MCP/tool handling. Tools receive only a non-secret logical principal (`cloudflare-mcp-portal`) with logical `db:read` / `db:write` / `db:admin` capability metadata. The real Portal credential is never forwarded to database code.
 
 The scope metadata is not the database authorization boundary. A write succeeds only when the logical connection has explicit `write` configuration plus a separately resolved writer identity with the required native privileges. An Admin/DDL operation additionally requires explicit `admin` configuration plus a separately resolved ADMIN identity with the required database-native DDL/ownership privileges.
+
+Safe Admin execution is direct-only in v0.3. A Hyperdrive ADMIN reference can be represented in configuration but execution fails closed with `ADMIN_OPERATION_NOT_SUPPORTED` until representative DDL compatibility is verified. There is no automatic transport fallback.
 
 ## Retired client OAuth surface
 
@@ -53,14 +55,15 @@ Portal-only ingress does **not** weaken database authorization:
 2. Safe Write tools resolve only an explicitly configured WRITE credential.
 3. Safe Admin/DDL tools resolve only an explicitly configured ADMIN credential.
 4. No READ / WRITE / ADMIN credential or transport fallback occurs.
-5. Hyperdrive bindings should use separate least-privilege database identities for each configured capability.
-6. Direct credentials remain inside the `DATABASE_CONFIG` Runtime Secret; they are never exposed through ordinary text vars or MCP results.
-7. Database-native privileges, PostgreSQL RLS/ownership, restricted views, and routine/function permissions remain authoritative.
-8. `query_read` stays read-only; Safe Write accepts structured data/predicates instead of raw write SQL.
-9. Safe Admin accepts structured DDL inputs only; arbitrary DDL/admin SQL is not exposed.
-10. `drop_table`, `drop_index`, and drop-column operations require explicit confirmation before execution and are not automatically retried after ambiguous execution.
-11. UPDATE/DELETE retain the affected-row rollback guard in addition to database query timeouts.
-12. Rate limiting and sanitized observability remain application-local.
+5. Hyperdrive READ/WRITE bindings should use separate least-privilege database identities.
+6. Unverified Hyperdrive ADMIN execution fails closed in v0.3.
+7. Direct credentials remain inside the `DATABASE_CONFIG` Runtime Secret; they are never exposed through ordinary text vars or MCP results.
+8. Database-native privileges, PostgreSQL RLS/ownership, restricted views, and routine/function permissions remain authoritative.
+9. `query_read` stays read-only; Safe Write accepts structured data/predicates instead of raw write SQL.
+10. Safe Admin accepts structured DDL inputs only; arbitrary DDL/admin SQL is not exposed.
+11. `drop_table`, `drop_index`, and drop-column operations require explicit confirmation before execution and are not automatically retried after ambiguous execution.
+12. UPDATE/DELETE retain the affected-row rollback guard in addition to database query timeouts.
+13. Rate limiting and sanitized observability remain application-local.
 
 ## Acceptance checks
 
@@ -74,19 +77,20 @@ Portal-only ingress does **not** weaken database authorization:
 8. Connections without `write` return `WRITE_NOT_CONFIGURED` from write tools.
 9. Connections without `admin` return `ADMIN_NOT_CONFIGURED` from Admin tools.
 10. READ / WRITE / ADMIN resolution never falls back to another credential or transport.
-11. Direct SQL URLs never appear in MCP responses or logs.
-12. Hyperdrive binding internals and database credentials never appear in MCP responses or logs.
-13. Write row values, predicates, and generated parameter arrays are not logged.
-14. Generated Admin DDL and credentials are not logged.
-15. `query_read` still rejects write SQL.
-16. UPDATE/DELETE above the configured affected-row maximum are rolled back with `WRITE_LIMIT_EXCEEDED`.
-17. PostgreSQL writer RLS and reader RLS remain effective.
-18. Reader identities cannot write or perform DDL; writer identities cannot perform DDL/admin operations or dangerous routines.
-19. Bounded ADMIN identities can perform the supported schema lifecycle but cannot perform out-of-scope user/role/server administration.
-20. `drop_table`, `drop_index`, and drop-column reject execution without explicit confirmation.
-21. MySQL Safe Write uses transactional table engines when rollback guarantees are required.
-22. Rate limiting continues to use the stable logical Portal principal.
-23. Direct URLs requesting TLS are rejected during configuration parsing.
+11. Hyperdrive ADMIN configuration fails closed with `ADMIN_OPERATION_NOT_SUPPORTED` in v0.3.
+12. Direct SQL URLs never appear in MCP responses or logs.
+13. Hyperdrive binding internals and database credentials never appear in MCP responses or logs.
+14. Write row values, predicates, and generated parameter arrays are not logged.
+15. Generated Admin DDL and credentials are not logged.
+16. `query_read` still rejects write SQL.
+17. UPDATE/DELETE above the configured affected-row maximum are rolled back with `WRITE_LIMIT_EXCEEDED`.
+18. PostgreSQL writer RLS and reader RLS remain effective.
+19. Reader identities cannot write or perform DDL; writer identities cannot perform DDL/admin operations or dangerous routines.
+20. Bounded direct ADMIN identities can perform the supported schema lifecycle but cannot perform out-of-scope user/role/server administration.
+21. `drop_table`, `drop_index`, and drop-column reject execution without explicit confirmation.
+22. MySQL Safe Write uses transactional table engines when rollback guarantees are required.
+23. Rate limiting continues to use the stable logical Portal principal.
+24. Direct URLs requesting TLS are rejected during configuration parsing.
 
 ## Deployment boundary
 
