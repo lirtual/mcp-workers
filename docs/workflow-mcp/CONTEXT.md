@@ -97,6 +97,12 @@ A replaceable execution backend capable of performing a Step. Executor choice mu
 ### Candidate Job
 A physical executor job started for a Step Attempt. Dispatch uncertainty may create more than one Candidate Job for an Attempt; only the Job holding the Attempt Claim is authorized to perform business work.
 
+### Dispatch Generation
+One physical dispatch request for a remote Step Attempt. Multiple Dispatch Generations may exist for one Attempt when dispatch outcome is uncertain; they do not create new logical Attempts.
+
+### Physical Run Binding
+The immutable association created when a Candidate Job successfully claims an Attempt and its concrete executor identity (such as GitHub run ID and run attempt) is recorded as the only authorized physical run for that Attempt.
+
 ### Execution Request
 The normalized request sent from workflow orchestration to an Executor.
 
@@ -108,6 +114,9 @@ The normalized terminal or intermediate result returned by an Executor for an Ex
 
 ### Callback Inbox
 Durable storage for authenticated executor callback facts before orchestration is notified. Callback Inbox records can be retried/reconciled when notification fails and do not independently decide workflow progression.
+
+### Attempt Event Channel
+A Workflow event type unique to one Step Attempt, used only to wake orchestration for result or cancellation reconciliation. The event is a signal; durable D1 facts remain authoritative.
 
 ### Artifact
 A named output too large, binary, or otherwise unsuitable to carry inline through ordinary workflow values.
@@ -144,6 +153,9 @@ An operation a workflow may invoke. A Capability describes what work is requeste
 
 ### Capability Descriptor
 The declared contract for a Capability, including its input and output shapes, side-effect and retry characteristics, and which Executors are allowed to perform it.
+
+### Effective Operation Policy
+The operation-specific side-effect and retry rule resolved for a concrete dynamic invocation such as `mcp.call(connection, tool)`. It refines the generic Capability Descriptor without creating a separate Capability for every remote tool.
 
 ### Capability Adapter
 A boundary that exposes an external protocol or service as one or more workflow Capabilities without turning that external protocol into an Executor.
@@ -193,6 +205,7 @@ A restricted declarative expression that reads workflow data and computes condit
 - A Step Run preserves one logical identity across all of its Step Attempts.
 - Retries of one logical business operation reuse the same Operation ID.
 - Multiple Candidate Jobs may exist for one remote Attempt, but at most one may hold the Attempt Claim and perform business work.
+- A successful Attempt Claim immutably binds the authorized physical executor run; later Candidate Jobs cannot rebind it.
 - Claim Deadline expiry never transfers an Attempt Claim automatically.
 - A valid executor identity token does not authorize arbitrary work; authorization must bind to a server-registered Attempt and expected executor identity.
 - An Indeterminate Outcome is not automatically retryable.
@@ -209,6 +222,8 @@ A restricted declarative expression that reads workflow data and computes condit
 - Executors receive only credentials/references selected by server-side Capability and Connection configuration; they cannot request arbitrary secret names.
 - Arbitrary user-supplied code is not the default Step model and generic user-code execution is deferred from v0.1.
 - External protocol adapters, including MCP adapters, expose Capabilities and do not become Executors merely because they perform remote calls.
+- Dynamic operations such as MCP tool calls resolve an Effective Operation Policy; unknown policy is conservative and is not automatically retry-safe.
+- Attempt Event Channels are Attempt-specific wake-up signals and never replace durable callback/cancellation facts.
 - Dependency fingerprint change alone does not prove incompatibility; the actual selected operation contract must be validated.
 - Authoring format and Canonical Workflow Representation are distinct; version identity is derived from the canonical representation.
 - Workflow Expressions are declarative and cannot escape into arbitrary code execution or undeclared I/O.
