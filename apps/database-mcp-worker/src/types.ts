@@ -43,6 +43,19 @@ export interface HyperdriveWriteConnectionConfig extends BaseWriteConnectionConf
 
 export type WriteConnectionConfig = DirectWriteConnectionConfig | HyperdriveWriteConnectionConfig;
 
+export interface DirectAdminConnectionConfig {
+  transport: 'direct';
+  url?: string;
+  urlSecret?: string;
+}
+
+export interface HyperdriveAdminConnectionConfig {
+  transport: 'hyperdrive';
+  binding: string;
+}
+
+export type AdminConnectionConfig = DirectAdminConnectionConfig | HyperdriveAdminConnectionConfig;
+
 interface BaseConnectionConfig {
   id: string;
   displayName: string;
@@ -53,6 +66,7 @@ interface BaseConnectionConfig {
   maxSchemaBytes?: number;
   queryTimeoutMs?: number;
   write?: WriteConnectionConfig;
+  admin?: AdminConnectionConfig;
 }
 
 export interface DirectConnectionConfig extends BaseConnectionConfig {
@@ -93,9 +107,16 @@ export interface EffectiveWriteConnection extends EffectiveConnection {
   maxAffectedRows: number;
 }
 
+export type EffectiveAdminConnection = EffectiveConnection;
+
 export interface WriteResult {
   affectedRows: number;
   insertId?: number | string;
+}
+
+export interface AdminResult {
+  ok: true;
+  operation: string;
 }
 
 export interface QueryColumn {
