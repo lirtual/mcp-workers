@@ -10,7 +10,7 @@
     "deploy": "wrangler deploy",
     "deploy:dry-run": "wrangler deploy --dry-run",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test \"test/**/*.test.ts\"",
+    "test": "node --experimental-strip-types --experimental-loader ./test/helpers/cloudflare-workers-loader.mjs --test \"test/**/*.test.ts\"",
     "check": "pnpm run typecheck && pnpm test && pnpm run deploy:dry-run"
   },
   "dependencies": {

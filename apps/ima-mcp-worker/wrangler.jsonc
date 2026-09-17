@@ -13,6 +13,20 @@
       "head_sampling_rate": 1
     }
   },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "IMA_IMAGE_REFRESH_SHARD",
+        "class_name": "ImaImageRefreshShard"
+      }
+    ]
+  },
+  "exports": {
+    "ImaImageRefreshShard": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
+  },
   "secrets": {
     "required": [
       "MCP_ACCESS_TOKEN",
