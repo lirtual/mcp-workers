@@ -1,5 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
+import { adminConfirmation } from './admin-confirmation.js';
 import { resolveAdminConnection } from './admin-config.js';
 import { resolveConnection, resolveConnectionDialect, resolveWriteConnection } from './config.js';
 import {
@@ -165,20 +166,15 @@ const adminColumnSchema = z
   .strict();
 const alterOperationSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('add_column'), column: adminColumnSchema }).strict(),
-  z.object({ action: z.literal('drop_column'), column: databaseIdentifierSchema, confirm: z.boolean().optional() }).strict(),
+  z.object({ action: z.literal('drop_column'), column: databaseIdentifierSchema }).strict(),
   z
     .object({ action: z.literal('rename_column'), column: databaseIdentifierSchema, newName: databaseIdentifierSchema })
     .strict(),
   z.object({ action: z.literal('rename_table'), newName: databaseIdentifierSchema }).strict()
 ]);
 
-function requireAdminConfirmation(confirm: boolean | undefined): void {
-  if (confirm !== true) {
-    throw new PublicError(
-      'ADMIN_CONFIRMATION_REQUIRED',
-      'This destructive schema operation requires explicit confirm=true.'
-    );
-  }
+function confirmationFailure(message: string): ToolResult {
+  return failure(new PublicError('ADMIN_CONFIRMATION_REQUIRED', message));
 }
 
 export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer {
@@ -187,7 +183,7 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
     {
       capabilities: { tools: {} },
       instructions:
-        'Database access with bounded reads, optional structured Safe Write, and optional structured Safe Admin/DDL. READ, WRITE, and ADMIN credentials are separate. No tool accepts arbitrary write/admin SQL. Destructive DDL requires explicit confirmation.'
+        'Database access with bounded reads, optional structured Safe Write, and optional structured Safe Admin/DDL. READ, WRITE, and ADMIN credentials are separate. No tool accepts arbitrary write/admin SQL. Destructive DDL requires MCP protocol-level user confirmation.'
     }
   );
 
@@ -416,7 +412,7 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
     'alter_table',
     {
       description:
-        'Perform one structured table alteration with the ADMIN credential: add/drop/rename a column or rename the table. Dropping a column requires confirm=true.',
+        'Perform one structured table alteration with the ADMIN credential: add/drop/rename a column or rename the table. Dropping a column requires MCP protocol-level user confirmation.',
       inputSchema: z.object({
         connection: connectionIdSchema,
         schema: databaseIdentifierSchema.optional(),
@@ -425,19 +421,24 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
       }),
       annotations: { readOnlyHint: false, idempotentHint: false, destructiveHint: true, openWorldHint: false }
     },
-    async ({ connection, schema, table, operation }, ctx) =>
-      runTool({
+    async ({ connection, schema, table, operation }, ctx) => {
+      if (operation.action === 'drop_column') {
+        const decision = adminConfirmation(
+          ctx.mcpReq.inputResponses,
+          `Drop column ${operation.column} from ${schema ? `${schema}.` : ''}${table}? This can permanently destroy data.`
+        );
+        if (decision.kind === 'input_required') return decision.result;
+        if (decision.kind === 'denied') return confirmationFailure(decision.message);
+      }
+      return runTool({
         env,
         ctx,
         tool: 'alter_table',
         connectionId: connection,
-        run: async () => {
-          if (operation.action === 'drop_column') requireAdminConfirmation(operation.confirm);
-          const { confirm: _confirm, ...safeOperation } = operation.action === 'drop_column' ? operation : { ...operation, confirm: undefined };
-          return alterTable(resolveAdminConnection(env, catalog, connection), schema, table, safeOperation);
-        },
+        run: async () => alterTable(resolveAdminConnection(env, catalog, connection), schema, table, operation),
         summarize: value => ({ adminOperation: value.operation })
-      })
+      });
+    }
   );
 
   server.registerTool(
@@ -469,54 +470,62 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
   server.registerTool(
     'drop_index',
     {
-      description: 'Drop one explicitly named index using the ADMIN credential. Requires confirm=true and is never automatically retried.',
+      description:
+        'Drop one explicitly named index using the ADMIN credential. Requires MCP protocol-level user confirmation and is never automatically retried.',
       inputSchema: z.object({
         connection: connectionIdSchema,
         schema: databaseIdentifierSchema.optional(),
         table: databaseIdentifierSchema,
-        name: databaseIdentifierSchema,
-        confirm: z.boolean().optional()
+        name: databaseIdentifierSchema
       }),
       annotations: { readOnlyHint: false, idempotentHint: false, destructiveHint: true, openWorldHint: false }
     },
-    async ({ connection, schema, table, name, confirm }, ctx) =>
-      runTool({
+    async ({ connection, schema, table, name }, ctx) => {
+      const decision = adminConfirmation(
+        ctx.mcpReq.inputResponses,
+        `Drop index ${name} from ${schema ? `${schema}.` : ''}${table}? This schema change cannot be automatically undone.`
+      );
+      if (decision.kind === 'input_required') return decision.result;
+      if (decision.kind === 'denied') return confirmationFailure(decision.message);
+      return runTool({
         env,
         ctx,
         tool: 'drop_index',
         connectionId: connection,
-        run: async () => {
-          requireAdminConfirmation(confirm);
-          return dropIndex(resolveAdminConnection(env, catalog, connection), schema, table, name);
-        },
+        run: async () => dropIndex(resolveAdminConnection(env, catalog, connection), schema, table, name),
         summarize: value => ({ adminOperation: value.operation })
-      })
+      });
+    }
   );
 
   server.registerTool(
     'drop_table',
     {
-      description: 'Drop one explicitly named table using the ADMIN credential. Requires confirm=true and is never automatically retried.',
+      description:
+        'Drop one explicitly named table using the ADMIN credential. Requires MCP protocol-level user confirmation and is never automatically retried.',
       inputSchema: z.object({
         connection: connectionIdSchema,
         schema: databaseIdentifierSchema.optional(),
-        table: databaseIdentifierSchema,
-        confirm: z.boolean().optional()
+        table: databaseIdentifierSchema
       }),
       annotations: { readOnlyHint: false, idempotentHint: false, destructiveHint: true, openWorldHint: false }
     },
-    async ({ connection, schema, table, confirm }, ctx) =>
-      runTool({
+    async ({ connection, schema, table }, ctx) => {
+      const decision = adminConfirmation(
+        ctx.mcpReq.inputResponses,
+        `Drop table ${schema ? `${schema}.` : ''}${table}? This permanently deletes the table and its data.`
+      );
+      if (decision.kind === 'input_required') return decision.result;
+      if (decision.kind === 'denied') return confirmationFailure(decision.message);
+      return runTool({
         env,
         ctx,
         tool: 'drop_table',
         connectionId: connection,
-        run: async () => {
-          requireAdminConfirmation(confirm);
-          return dropTable(resolveAdminConnection(env, catalog, connection), schema, table);
-        },
+        run: async () => dropTable(resolveAdminConnection(env, catalog, connection), schema, table),
         summarize: value => ({ adminOperation: value.operation })
-      })
+      });
+    }
   );
 
   return server;
