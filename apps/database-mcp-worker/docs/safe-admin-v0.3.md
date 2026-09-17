@@ -34,6 +34,12 @@ Each logical connection may independently configure:
 
 Missing `admin` fails closed with `ADMIN_NOT_CONFIGURED`. No credential or transport fallback occurs between READ, WRITE, and ADMIN.
 
+## Admin transport in v0.3
+
+Safe Admin execution is **direct-only in v0.3**. The real PostgreSQL 17 and MySQL 8.4 integration suite verifies the supported DDL lifecycle over dedicated direct ADMIN credentials.
+
+A Hyperdrive ADMIN reference is recognized by configuration parsing so the configuration model does not need another migration later, but execution currently fails closed with `ADMIN_OPERATION_NOT_SUPPORTED`. Hyperdrive Admin must not be enabled until representative DDL behavior is verified against the deployed Hyperdrive/database combination. There is no automatic fallback from Hyperdrive to direct.
+
 ## Database privilege guidance
 
 Use the templates in `deploy/sql/` as a starting point:
