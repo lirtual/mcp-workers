@@ -1,4 +1,5 @@
 export interface Env {
+  IMA_IMAGE_REFRESH_SHARD?: DurableObjectNamespace<import("./image-refresh-shard.ts").ImaImageRefreshShard>;
   R2_BUCKET?: R2Bucket;
   R2_PUBLIC_BASE_URL?: string;
   IMA_BASE_URL?: string;
