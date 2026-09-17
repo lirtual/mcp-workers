@@ -61,7 +61,14 @@ PostgreSQL direct URLs still require a database name.
 
 `write` is optional. When it is absent, write tools return `WRITE_NOT_CONFIGURED`; the Worker never falls back to the read credential for writes.
 
-Use separate least-privilege reader/writer database identities when possible. Writer accounts should receive only the required `SELECT`, `INSERT`, `UPDATE`, and `DELETE` privileges, not DDL/admin permissions.
+Use separate least-privilege reader/writer database identities. Deployment templates are provided under `deploy/sql/`:
+
+- `postgres-readonly.sql`
+- `postgres-writer.sql`
+- `mysql-readonly.sql`
+- `mysql-writer.sql`
+
+The writer templates intentionally grant `SELECT`, `INSERT`, `UPDATE`, and `DELETE` only on explicitly approved tables. Repeat the table grant for each table Safe Write may mutate rather than granting broad database/schema write access by default. PostgreSQL writer roles remain non-superuser/non-owner and must not receive `BYPASSRLS`; MySQL writers must not receive DDL, routine, file, grant-option, or administrative privileges. If PostgreSQL inserts require a sequence, grant only the specific sequence needed.
 
 ### Multiple databases
 
@@ -180,7 +187,7 @@ pnpm install --frozen-lockfile
 pnpm --filter database-mcp-worker check
 ```
 
-Monorepo CI runs unit checks plus real PostgreSQL 17 / MySQL 8.4 integration tests with separate admin, reader, and writer identities.
+Monorepo CI runs unit checks plus real PostgreSQL 17 / MySQL 8.4 integration tests with separate admin, reader, and writer identities. The integration writer permissions follow the same least-privilege model documented by the deployment templates: approved-table `SELECT`/`INSERT`/`UPDATE`/`DELETE`, no DDL/admin privileges, PostgreSQL RLS preserved, and MySQL transactional tables for rollback safety.
 
 ## Security notes
 
