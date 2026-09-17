@@ -1,5 +1,5 @@
 import { createMcpHandler } from '@modelcontextprotocol/server';
-import { parseDatabaseConfig } from './config.js';
+import { parseDatabaseConfigWithAdmin } from './admin-config.js';
 import { buildMcpServer } from './mcp.js';
 import { authenticateDatabasePortal } from './portal-auth.js';
 import type { Env } from './types.js';
@@ -37,7 +37,7 @@ export default {
       return authError(503, 'database_config_not_configured', 'Database configuration is not configured.');
     }
 
-    const catalog = parseDatabaseConfig(env.DATABASE_CONFIG);
+    const catalog = parseDatabaseConfigWithAdmin(env.DATABASE_CONFIG);
     const handler = createMcpHandler(() => buildMcpServer(env, catalog), { legacy: 'stateless' });
     return handler.fetch(portalAuth.request, { authInfo: portalAuth.authInfo });
   }

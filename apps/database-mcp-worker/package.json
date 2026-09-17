@@ -1,9 +1,9 @@
 {
   "name": "database-mcp-worker",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
-  "description": "Cloudflare-native MCP server for bounded PostgreSQL/MySQL reads and structured Safe Write through direct or Hyperdrive transports",
+  "description": "Cloudflare-native MCP server for bounded PostgreSQL/MySQL reads, structured Safe Write, and structured Safe Admin/DDL through direct or Hyperdrive transports",
   "license": "MIT",
   "engines": {"node": ">=20"},
   "packageManager": "pnpm@10.17.1",

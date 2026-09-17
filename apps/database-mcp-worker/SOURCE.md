@@ -5,4 +5,4 @@
 - License: MIT (`LICENSE` preserved from the source snapshot)
 - Migration method: frozen source snapshot copied into the monorepo.
 
-The application has subsequently been adapted to the monorepo. Current Portal authentication, read-only runtime behavior, Worker ingress, and deployment state are defined by the active application configuration and documentation rather than this provenance record.
+The application has subsequently been adapted to the monorepo. Current Portal authentication, database runtime behavior (READ, optional Safe Write, and optional Safe Admin/DDL), Worker ingress, and deployment state are defined by the active application configuration and documentation rather than this provenance record.

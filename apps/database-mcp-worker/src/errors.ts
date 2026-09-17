@@ -12,6 +12,9 @@ export type PublicErrorCode =
   | 'RESULT_LIMIT_EXCEEDED'
   | 'WRITE_NOT_CONFIGURED'
   | 'WRITE_LIMIT_EXCEEDED'
+  | 'ADMIN_NOT_CONFIGURED'
+  | 'ADMIN_OPERATION_NOT_SUPPORTED'
+  | 'ADMIN_CONFIRMATION_REQUIRED'
   | 'RATE_LIMITED'
   | 'DATABASE_ERROR'
   | 'INTERNAL_ERROR';
@@ -60,7 +63,8 @@ export function mapDatabaseError(error: unknown): PublicError {
     'ER_DBACCESS_DENIED_ERROR',
     'ER_TABLEACCESS_DENIED_ERROR',
     'ER_COLUMNACCESS_DENIED_ERROR',
-    'ER_PROCACCESS_DENIED_ERROR'
+    'ER_PROCACCESS_DENIED_ERROR',
+    'ER_SPECIFIC_ACCESS_DENIED_ERROR'
   ]);
 
   if (code && timeoutCodes.has(code)) return new PublicError('QUERY_TIMEOUT', 'The database query timed out.');
