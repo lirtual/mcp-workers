@@ -1,6 +1,10 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
-import { adminConfirmation } from './admin-confirmation.js';
+import {
+  adminConfirmation,
+  createAdminConfirmationCodec,
+  type AdminConfirmationState
+} from './admin-confirmation.js';
 import { resolveAdminConnection } from './admin-config.js';
 import { resolveConnection, resolveConnectionDialect, resolveWriteConnection } from './config.js';
 import {
@@ -178,12 +182,17 @@ function confirmationFailure(message: string): ToolResult {
 }
 
 export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer {
+  if (typeof env.MCP_ACCESS_TOKEN !== 'string' || env.MCP_ACCESS_TOKEN.length === 0) {
+    throw new PublicError('AUTH_REQUIRED', 'MCP Portal authentication is required to initialize Admin confirmation state.');
+  }
+  const confirmationCodec = createAdminConfirmationCodec(env.MCP_ACCESS_TOKEN);
   const server = new McpServer(
     { name: 'database-mcp-worker', version: '0.3.0' },
     {
       capabilities: { tools: {} },
+      requestState: { verify: confirmationCodec.verify },
       instructions:
-        'Database access with bounded reads, optional structured Safe Write, and optional structured Safe Admin/DDL. READ, WRITE, and ADMIN credentials are separate. No tool accepts arbitrary write/admin SQL. Destructive DDL requires MCP protocol-level user confirmation.'
+        'Database access with bounded reads, optional structured Safe Write, and optional structured Safe Admin/DDL. READ, WRITE, and ADMIN credentials are separate. No tool accepts arbitrary write/admin SQL. Destructive DDL requires MCP protocol-level user confirmation bound to signed request state.'
     }
   );
 
@@ -423,8 +432,15 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
     },
     async ({ connection, schema, table, operation }, ctx) => {
       if (operation.action === 'drop_column') {
-        const decision = adminConfirmation(
+        const expected: AdminConfirmationState = {
+          operation: 'drop_column',
+          target: `${connection}:${schema ?? ''}:${table}:${operation.column}`
+        };
+        const decision = await adminConfirmation(
+          confirmationCodec,
           ctx.mcpReq.inputResponses,
+          ctx.mcpReq.requestState<AdminConfirmationState>(),
+          expected,
           `Drop column ${operation.column} from ${schema ? `${schema}.` : ''}${table}? This can permanently destroy data.`
         );
         if (decision.kind === 'input_required') return decision.result;
@@ -481,8 +497,15 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
       annotations: { readOnlyHint: false, idempotentHint: false, destructiveHint: true, openWorldHint: false }
     },
     async ({ connection, schema, table, name }, ctx) => {
-      const decision = adminConfirmation(
+      const expected: AdminConfirmationState = {
+        operation: 'drop_index',
+        target: `${connection}:${schema ?? ''}:${table}:${name}`
+      };
+      const decision = await adminConfirmation(
+        confirmationCodec,
         ctx.mcpReq.inputResponses,
+        ctx.mcpReq.requestState<AdminConfirmationState>(),
+        expected,
         `Drop index ${name} from ${schema ? `${schema}.` : ''}${table}? This schema change cannot be automatically undone.`
       );
       if (decision.kind === 'input_required') return decision.result;
@@ -511,8 +534,15 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
       annotations: { readOnlyHint: false, idempotentHint: false, destructiveHint: true, openWorldHint: false }
     },
     async ({ connection, schema, table }, ctx) => {
-      const decision = adminConfirmation(
+      const expected: AdminConfirmationState = {
+        operation: 'drop_table',
+        target: `${connection}:${schema ?? ''}:${table}`
+      };
+      const decision = await adminConfirmation(
+        confirmationCodec,
         ctx.mcpReq.inputResponses,
+        ctx.mcpReq.requestState<AdminConfirmationState>(),
+        expected,
         `Drop table ${schema ? `${schema}.` : ''}${table}? This permanently deletes the table and its data.`
       );
       if (decision.kind === 'input_required') return decision.result;
