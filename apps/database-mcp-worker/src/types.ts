@@ -15,7 +15,7 @@ export interface RateLimitBinding {
 }
 
 export interface Env {
-  DATABASE_CONFIG: string;
+  DATABASE_CONFIG?: string;
   MCP_ACCESS_TOKEN?: string;
   MAX_ROWS?: string;
   MAX_RESULT_BYTES?: string;
