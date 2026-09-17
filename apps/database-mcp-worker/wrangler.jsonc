@@ -1,0 +1,37 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "database-mcp-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-12",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "keep_vars": true,
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "invocation_logs": true,
+      "head_sampling_rate": 1
+    }
+  },
+  "secrets": {
+    "required": ["MCP_ACCESS_TOKEN"]
+  },
+  "vars": {
+    "MAX_ROWS": "500",
+    "MAX_RESULT_BYTES": "1048576",
+    "MAX_SCHEMA_BYTES": "524288",
+    "QUERY_TIMEOUT_MS": "15000",
+    "MAX_WRITE_AFFECTED_ROWS": "20"
+  },
+  "ratelimits": [
+    {
+      "name": "RATE_LIMITER",
+      "namespace_id": "1001",
+      "simple": {
+        "limit": 120,
+        "period": 60
+      }
+    }
+  ]
+}
