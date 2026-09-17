@@ -6,6 +6,7 @@ import {
 } from '../../src/admin-confirmation.js';
 
 type Responses = Parameters<typeof adminConfirmation>[1];
+type VerifyContext = Parameters<ReturnType<typeof createAdminConfirmationCodec>['verify']>[1];
 
 function responses(value: unknown): Responses {
   return value as Responses;
@@ -16,6 +17,7 @@ const dropUsers: AdminConfirmationState = {
   operation: 'drop_table',
   target: 'main:public:users'
 };
+const verifyContext = {} as VerifyContext;
 
 describe('Safe Admin protocol confirmation', () => {
   it('requests MCP input and binds it to signed request state', async () => {
@@ -35,7 +37,7 @@ describe('Safe Admin protocol confirmation', () => {
       }
     });
     expect(typeof decision.result.requestState).toBe('string');
-    await expect(codec.verify(decision.result.requestState!)).resolves.toEqual(dropUsers);
+    await expect(codec.verify(decision.result.requestState!, verifyContext)).resolves.toEqual(dropUsers);
   });
 
   it('continues only after the signed target state and operator confirmation both match', async () => {
