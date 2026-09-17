@@ -21,6 +21,7 @@ import {
   queryRead,
   updateRows
 } from './db/index.js';
+import { getSchemaContext } from './db/schema-context.js';
 import { PublicError, toPublicError } from './errors.js';
 import { emitLog, principalLogId, sqlLogFields } from './logging.js';
 import { clampRequestedLimit, jsonSafe } from './result.js';
@@ -248,6 +249,33 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
           const resolved = resolveConnection(env, catalog, connection);
           return inspectSchema(resolved, schema, table);
         }
+      })
+  );
+
+  server.registerTool(
+    'get_schema_context',
+    {
+      description:
+        'Return compact, token-efficient schema context for up to 100 tables: columns, primary keys, and foreign-key relationships. Use inspect_schema for detailed indexes and defaults.',
+      inputSchema: z.object({
+        connection: connectionIdSchema,
+        schema: databaseIdentifierSchema.optional(),
+        tableLimit: z.number().int().min(1).max(100).default(50)
+      }),
+      annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false }
+    },
+    async ({ connection, schema, tableLimit }, ctx) =>
+      runTool({
+        env,
+        ctx,
+        tool: 'get_schema_context',
+        connectionId: connection,
+        run: async () => getSchemaContext(resolveConnection(env, catalog, connection), schema, tableLimit),
+        summarize: value => ({
+          tableCount: value.tableCount,
+          totalTables: value.totalTables,
+          truncated: value.truncated
+        })
       })
   );
 

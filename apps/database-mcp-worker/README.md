@@ -40,6 +40,7 @@ For a server-level MySQL connection:
 - `health_check` works without a default database.
 - `inspect_schema` with no `schema` lists databases visible to the MySQL account.
 - `inspect_schema` with `schema` inspects that database.
+- `get_schema_context` requires `schema` unless `defaultSchema` is configured.
 - `query_read` / `explain` should use fully qualified names such as `app.users` when the SQL needs a table.
 - Safe Write and Safe Admin require an explicit `schema` unless `defaultSchema` is configured.
 - The effective database access boundary is the MySQL account's grants.
@@ -160,9 +161,12 @@ Read tools:
 
 - `list_connections`
 - `inspect_schema`
+- `get_schema_context`
 - `query_read`
 - `explain`
 - `health_check`
+
+`get_schema_context` is optimized for Agent/LLM planning rather than exhaustive metadata. It returns a compact text representation of up to 50 tables by default (`tableLimit` accepts 1-100), including columns, nullability, primary keys, and foreign-key relationships. It reports `tableCount`, `totalTables`, and `truncated` so callers know when the context is incomplete. Use `inspect_schema` when detailed defaults or indexes are needed.
 
 Safe Write tools:
 
@@ -232,7 +236,7 @@ pnpm install --frozen-lockfile
 pnpm --filter database-mcp-worker check
 ```
 
-Monorepo CI runs unit checks plus real PostgreSQL 17 / MySQL 8.4 integration tests with separate reader, writer, bounded admin, and fixture-owner identities. Integration proves READ cannot write/DDL, WRITE cannot DDL, ADMIN can perform the supported schema lifecycle, PostgreSQL ADMIN is not a superuser/role administrator, and MySQL ADMIN cannot create users. Unit coverage verifies the destructive `input_required` confirmation flow.
+Monorepo CI runs unit checks plus real PostgreSQL 17 / MySQL 8.4 integration tests with separate reader, writer, bounded admin, and fixture-owner identities. Integration proves READ cannot write/DDL, WRITE cannot DDL, ADMIN can perform the supported schema lifecycle, PostgreSQL ADMIN is not a superuser/role administrator, and MySQL ADMIN cannot create users. Unit coverage verifies the destructive `input_required` confirmation flow and compact schema-context formatting.
 
 ## Security notes
 
