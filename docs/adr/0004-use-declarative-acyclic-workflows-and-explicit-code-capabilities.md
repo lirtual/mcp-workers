@@ -1,6 +1,8 @@
 # ADR 0004: Use declarative acyclic workflows and explicit code capabilities
 
-- Status: Accepted
+- Original status: Accepted
+- v0.1 disposition: SIMPLIFY
+- v0.1 authority: `docs/workflow-mcp/v0.1-architecture-reduction.md`
 - Date: 2026-09-17
 
 ## Context
