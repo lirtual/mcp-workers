@@ -12,7 +12,6 @@ import type {
   EffectiveAdminConnection,
   Env,
   HyperdriveAdminConnectionConfig,
-  HyperdriveBinding,
   RuntimeLimits
 } from './types.js';
 
@@ -60,7 +59,8 @@ export function parseDatabaseConfigWithAdmin(raw: string): ConnectionConfig[] {
     const item = value as Record<string, unknown>;
     const admin = parseAdmin(item.admin, id);
     if (admin !== undefined) admins.set(id, admin);
-    const { admin: _ignored, ...withoutAdmin } = item;
+    const withoutAdmin = { ...item };
+    delete withoutAdmin.admin;
     stripped[id] = withoutAdmin;
   }
 
@@ -70,19 +70,6 @@ export function parseDatabaseConfigWithAdmin(raw: string): ConnectionConfig[] {
     if (admin !== undefined) config.admin = admin;
   }
   return catalog;
-}
-
-function isHyperdriveBinding(value: unknown): value is HyperdriveBinding {
-  if (typeof value !== 'object' || value === null) return false;
-  const candidate = value as Partial<HyperdriveBinding>;
-  return (
-    typeof candidate.connectionString === 'string' &&
-    typeof candidate.host === 'string' &&
-    typeof candidate.user === 'string' &&
-    typeof candidate.password === 'string' &&
-    typeof candidate.database === 'string' &&
-    typeof candidate.port === 'number'
-  );
 }
 
 function limitsFor(env: Env, config: ConnectionConfig): RuntimeLimits {
@@ -111,31 +98,19 @@ export function resolveAdminConnection(
   const dialect = resolveConnectionDialect(env, config);
   const limits = limitsFor(env, config);
 
-  if (admin.transport === 'direct') {
-    if (typeof admin.url !== 'string' || admin.url.length === 0) {
-      throw new PublicError('CONNECTION_UNAVAILABLE', 'The configured direct database URL for admin access is unavailable.');
-    }
-    const direct = parseDirectDatabaseUrl(admin.url, config.id);
-    if (direct.dialect !== dialect) {
-      throw new PublicError('INVALID_INPUT', `Connection '${config.id}' has mismatched read and admin database dialects.`);
-    }
-    return { config, transport: 'direct', ...direct, limits };
+  if (admin.transport === 'hyperdrive') {
+    throw new PublicError(
+      'ADMIN_OPERATION_NOT_SUPPORTED',
+      'Safe Admin over Hyperdrive is not enabled in v0.3 because DDL compatibility has not been verified for this transport; configure an explicit direct ADMIN connection instead.'
+    );
   }
 
-  const candidate = env[admin.binding];
-  if (!isHyperdriveBinding(candidate)) {
-    throw new PublicError('CONNECTION_UNAVAILABLE', 'The configured admin Hyperdrive binding is unavailable.');
+  if (typeof admin.url !== 'string' || admin.url.length === 0) {
+    throw new PublicError('CONNECTION_UNAVAILABLE', 'The configured direct database URL for admin access is unavailable.');
   }
-  return {
-    config,
-    transport: 'hyperdrive',
-    dialect,
-    connectionString: candidate.connectionString,
-    host: candidate.host,
-    user: candidate.user,
-    password: candidate.password,
-    database: candidate.database,
-    port: candidate.port,
-    limits
-  };
+  const direct = parseDirectDatabaseUrl(admin.url, config.id);
+  if (direct.dialect !== dialect) {
+    throw new PublicError('INVALID_INPUT', `Connection '${config.id}' has mismatched read and admin database dialects.`);
+  }
+  return { config, transport: 'direct', ...direct, limits };
 }
