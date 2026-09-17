@@ -1,6 +1,8 @@
 # ADR 0016: Manage connections as runtime encrypted resources
 
-- Status: Accepted
+- Original status: Accepted
+- v0.1 disposition: SUPERSEDE
+- v0.1 authority: `docs/workflow-mcp/v0.1-architecture-reduction.md`
 - Date: 2026-09-17
 
 ## Context
