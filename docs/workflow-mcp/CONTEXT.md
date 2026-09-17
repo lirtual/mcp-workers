@@ -13,6 +13,9 @@ An immutable revision of a Workflow Definition identified by the canonical conte
 ### Definition Provenance
 Metadata describing where a Workflow Definition Version came from, such as an authoring source or revision reference. Provenance explains origin but is not the identity of the definition version.
 
+### Workflow Registry
+The set of Workflow Definitions currently available for discovery and new-run admission. Registry membership is distinct from historical Workflow Definition Versions already referenced by existing runs.
+
 ### Trigger Definition
 A reusable rule describing when a workflow should start and what event data it emits when activated.
 
@@ -45,6 +48,12 @@ A Schedule Occurrence that became due while the scheduler was unable to admit it
 
 ### Workflow Run
 One concrete execution of a Workflow Definition, created from explicit input or a Trigger Event.
+
+### Runtime Provenance
+Metadata identifying the implementation/build context that interpreted or executed a Workflow Run or Step Attempt. Runtime Provenance explains execution context but does not change Workflow Definition Version identity.
+
+### Dependency Snapshot
+A recorded description of the effective external contract used by a Step Attempt, including dependency identity and a stable contract/schema fingerprint when available. A Dependency Snapshot is runtime evidence, not part of Workflow Definition Version identity.
 
 ### Concurrency Policy
 A rule controlling whether multiple Workflow Runs that belong to the same concurrency scope may execute simultaneously or must wait for capacity.
@@ -88,6 +97,9 @@ A named output too large, binary, or otherwise unsuitable to carry inline throug
 ### Artifact Reference
 A stable workflow-level reference to an Artifact. It is independent of any executor-native temporary storage location.
 
+### Artifact Upload Allocation
+A short-lived authorization and destination allocated for an Executor to upload one Artifact directly into canonical storage. It does not grant general storage credentials.
+
 ### Workflow Input
 Values supplied when a Workflow Run starts.
 
@@ -127,6 +139,9 @@ A symbolic reference to a Connection. Workflow Definitions select approved Conne
 ### Connection Credential
 Sensitive authentication material owned by a Connection. Workflow Definitions never contain Connection Credential values.
 
+### Platform Credential
+A privileged credential required by the workflow platform itself to operate an infrastructure integration. Platform Credentials are distinct from workflow business secrets and are never delegated through ordinary workflow data.
+
 ### Privileged Code Capability
 An explicit Capability for executing user-supplied code in an execution environment. It is distinct from ordinary declarative workflow steps and carries a stronger trust boundary.
 
@@ -155,14 +170,16 @@ A restricted declarative expression that reads workflow data and computes condit
 - Existing MCP application domains remain external capabilities; Workflow Automation does not absorb their business models.
 - A Workflow Run has a durable identity independent of any individual Step Run, Step Attempt, or Executor invocation.
 - A Workflow Run is bound to one immutable Workflow Definition Version.
-- Definition Provenance does not define version identity.
+- Definition Provenance, Runtime Provenance, and Dependency Snapshots do not define Workflow Definition Version identity.
 - A Step Run preserves one logical identity across all of its Step Attempts.
 - Retries of one logical side effect reuse the same Operation ID.
 - Failure of one DAG branch does not erase the outcome of independent branches.
 - Cancellation does not imply compensation or rollback of completed side effects.
 - Artifact identity is independent of executor-native temporary storage.
+- Artifact Upload Allocations grant temporary object-scoped authority rather than durable storage credentials.
 - Event Timeline entries define user-facing execution history; Raw Execution Logs do not define workflow state.
 - Workflow definitions contain Secret References and Connection References, never secret or Connection Credential values.
+- Platform Credentials are infrastructure authority and never become workflow inputs, outputs, or executor business credentials.
 - Arbitrary user-supplied code is a privileged capability rather than the default Step model.
 - External protocol adapters, including MCP adapters, expose Capabilities and do not become Executors merely because they perform remote calls.
 - Authoring format and Canonical Workflow Representation are distinct; version identity is derived from the canonical representation.
