@@ -16,11 +16,13 @@ No arbitrary SQL or raw DDL is accepted. The Worker validates identifiers, colum
 
 ## Destructive confirmation
 
-The following operations require explicit `confirm=true` in the MCP request before database execution:
+The following operations require MCP protocol-level user confirmation before database execution:
 
 - `drop_table`
 - `drop_index`
 - `alter_table` with `drop_column`
+
+On the first call the tool returns a 2026-era `input_required` result containing a form-mode elicitation request that names the exact target. The client must obtain an accepted response with the confirmation checkbox selected and retry the same tool call with `inputResponses`. Decline, cancel, an unchecked response, or a client that cannot complete the input-required flow never reaches database execution.
 
 The Worker does not automatically retry destructive schema operations after an ambiguous execution result.
 
