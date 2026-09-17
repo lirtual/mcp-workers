@@ -35,7 +35,7 @@ describe('DATABASE_CONFIG admin extension', () => {
     );
   });
 
-  it('supports an independent Hyperdrive admin binding', () => {
+  it('parses Hyperdrive admin explicitly but fails closed until DDL compatibility is verified', () => {
     const target = env({
       PG_READ: {
         connectionString: 'postgres://reader@host/db',
@@ -53,9 +53,10 @@ describe('DATABASE_CONFIG admin extension', () => {
       }
     }));
 
-    expect(resolveAdminConnection(target, catalog, 'prod')).toMatchObject({
-      transport: 'hyperdrive', dialect: 'postgres', user: 'admin'
-    });
+    expect(catalog[0]?.admin).toMatchObject({ transport: 'hyperdrive', binding: 'PG_ADMIN' });
+    expect(() => resolveAdminConnection(target, catalog, 'prod')).toThrowError(
+      expect.objectContaining({ code: 'ADMIN_OPERATION_NOT_SUPPORTED' })
+    );
   });
 
   it('rejects invalid admin shapes and read/admin dialect mismatches', () => {
