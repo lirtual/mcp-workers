@@ -67,22 +67,14 @@ function boundedScale(value: unknown): number | undefined {
 
 function renderType(dialect: Dialect, column: AdminColumnDefinition): string {
   switch (column.type) {
-    case 'integer':
-      return 'INTEGER';
-    case 'bigint':
-      return 'BIGINT';
-    case 'text':
-      return 'TEXT';
-    case 'boolean':
-      return 'BOOLEAN';
-    case 'date':
-      return 'DATE';
-    case 'timestamp':
-      return 'TIMESTAMP';
-    case 'datetime':
-      return dialect === 'postgres' ? 'TIMESTAMP' : 'DATETIME';
-    case 'json':
-      return dialect === 'postgres' ? 'JSONB' : 'JSON';
+    case 'integer': return 'INTEGER';
+    case 'bigint': return 'BIGINT';
+    case 'text': return 'TEXT';
+    case 'boolean': return 'BOOLEAN';
+    case 'date': return 'DATE';
+    case 'timestamp': return 'TIMESTAMP';
+    case 'datetime': return dialect === 'postgres' ? 'TIMESTAMP' : 'DATETIME';
+    case 'json': return dialect === 'postgres' ? 'JSONB' : 'JSON';
     case 'varchar': {
       const length = positiveBoundedInteger(column.length, 'varchar length', 65_535);
       if (length === undefined) throw new PublicError('INVALID_INPUT', 'varchar requires length.');
@@ -109,7 +101,7 @@ function quoteString(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
 }
 
-function renderDefault(dialect: Dialect, value: string | number | boolean | null): string {
+function renderDefault(value: string | number | boolean | null): string {
   if (value === null) return 'NULL';
   if (typeof value === 'string') return quoteString(value);
   if (typeof value === 'number') {
@@ -130,7 +122,7 @@ function renderColumn(dialect: Dialect, column: AdminColumnDefinition): string {
   }
   const parts = [quoteIdentifier(dialect, column.name), renderType(dialect, column)];
   if (column.nullable === false || column.primaryKey === true) parts.push('NOT NULL');
-  if (column.default !== undefined) parts.push(`DEFAULT ${renderDefault(dialect, column.default)}`);
+  if (column.default !== undefined) parts.push(`DEFAULT ${renderDefault(column.default)}`);
   if (column.primaryKey === true) parts.push('PRIMARY KEY');
   if (column.unique === true) parts.push('UNIQUE');
   return parts.join(' ');
@@ -150,12 +142,7 @@ function requireColumns(columns: AdminColumnDefinition[]): AdminColumnDefinition
   return columns;
 }
 
-export function buildCreateTableStatement(
-  dialect: Dialect,
-  schema: string,
-  table: string,
-  columns: AdminColumnDefinition[]
-): BuiltAdminStatement {
+export function buildCreateTableStatement(dialect: Dialect, schema: string, table: string, columns: AdminColumnDefinition[]): BuiltAdminStatement {
   requireColumns(columns);
   return {
     operation: 'create_table',
@@ -169,36 +156,19 @@ export type AlterTableOperation =
   | { action: 'rename_column'; column: string; newName: string }
   | { action: 'rename_table'; newName: string };
 
-export function buildAlterTableStatement(
-  dialect: Dialect,
-  schema: string,
-  table: string,
-  operation: AlterTableOperation
-): BuiltAdminStatement {
+export function buildAlterTableStatement(dialect: Dialect, schema: string, table: string, operation: AlterTableOperation): BuiltAdminStatement {
   const target = qualified(dialect, schema, table);
   switch (operation.action) {
     case 'add_column':
       return { operation: 'alter_table_add_column', sql: `ALTER TABLE ${target} ADD COLUMN ${renderColumn(dialect, operation.column)}` };
     case 'drop_column':
-      return {
-        operation: 'alter_table_drop_column',
-        sql: `ALTER TABLE ${target} DROP COLUMN ${quoteIdentifier(dialect, operation.column)}`
-      };
+      return { operation: 'alter_table_drop_column', sql: `ALTER TABLE ${target} DROP COLUMN ${quoteIdentifier(dialect, operation.column)}` };
     case 'rename_column':
-      return {
-        operation: 'alter_table_rename_column',
-        sql: `ALTER TABLE ${target} RENAME COLUMN ${quoteIdentifier(dialect, operation.column)} TO ${quoteIdentifier(dialect, operation.newName)}`
-      };
+      return { operation: 'alter_table_rename_column', sql: `ALTER TABLE ${target} RENAME COLUMN ${quoteIdentifier(dialect, operation.column)} TO ${quoteIdentifier(dialect, operation.newName)}` };
     case 'rename_table':
       return dialect === 'postgres'
-        ? {
-            operation: 'alter_table_rename_table',
-            sql: `ALTER TABLE ${target} RENAME TO ${quoteIdentifier(dialect, operation.newName)}`
-          }
-        : {
-            operation: 'alter_table_rename_table',
-            sql: `RENAME TABLE ${target} TO ${qualified(dialect, schema, operation.newName)}`
-          };
+        ? { operation: 'alter_table_rename_table', sql: `ALTER TABLE ${target} RENAME TO ${quoteIdentifier(dialect, operation.newName)}` }
+        : { operation: 'alter_table_rename_table', sql: `RENAME TABLE ${target} TO ${qualified(dialect, schema, operation.newName)}` };
   }
 }
 
@@ -207,14 +177,7 @@ function generatedIndexName(table: string, columns: string[], unique: boolean): 
   return raw.slice(0, 60) || 'mcp_index';
 }
 
-export function buildCreateIndexStatement(
-  dialect: Dialect,
-  schema: string,
-  table: string,
-  columns: string[],
-  unique = false,
-  name?: string
-): BuiltAdminStatement {
+export function buildCreateIndexStatement(dialect: Dialect, schema: string, table: string, columns: string[], unique = false, name?: string): BuiltAdminStatement {
   if (!Array.isArray(columns) || columns.length < 1 || columns.length > 16) {
     throw new PublicError('INVALID_INPUT', 'index columns must contain 1 to 16 columns.');
   }
@@ -227,19 +190,13 @@ export function buildCreateIndexStatement(
   };
 }
 
-export function buildDropIndexStatement(
-  dialect: Dialect,
-  schema: string,
-  table: string,
-  name: string
-): BuiltAdminStatement {
+export function buildDropIndexStatement(dialect: Dialect, schema: string, table: string, name: string): BuiltAdminStatement {
   identifier(name, 'index name');
   return {
     operation: 'drop_index',
-    sql:
-      dialect === 'postgres'
-        ? `DROP INDEX ${quoteIdentifier(dialect, schema)}.${quoteIdentifier(dialect, name)}`
-        : `DROP INDEX ${quoteIdentifier(dialect, name)} ON ${qualified(dialect, schema, table)}`
+    sql: dialect === 'postgres'
+      ? `DROP INDEX ${quoteIdentifier(dialect, schema)}.${quoteIdentifier(dialect, name)}`
+      : `DROP INDEX ${quoteIdentifier(dialect, name)} ON ${qualified(dialect, schema, table)}`
   };
 }
 
