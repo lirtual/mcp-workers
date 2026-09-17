@@ -16,7 +16,7 @@ async function createMysqlConnection(connection: EffectiveConnection): Promise<C
     host: connection.host,
     user: connection.user,
     password: connection.password,
-    database: connection.database,
+    ...(connection.database.length === 0 ? {} : { database: connection.database }),
     port: connection.port,
     disableEval: true,
     rowsAsArray: true,
@@ -144,12 +144,12 @@ interface MySqlIndexRow extends Array<unknown> {
   4: string;
 }
 
-function ensureMysqlSchema(connection: EffectiveConnection, requested: string | undefined): string {
-  const current = connection.database;
-  if (requested !== undefined && requested !== current) {
+function ensureMysqlSchema(connection: EffectiveConnection, requested: string | undefined): string | undefined {
+  const configured = connection.database.length === 0 ? undefined : connection.database;
+  if (configured !== undefined && requested !== undefined && requested !== configured) {
     throw new PublicError('ACCESS_DENIED', 'MySQL schema inspection is restricted to the configured database.');
   }
-  return current;
+  return requested ?? configured;
 }
 
 export async function mysqlInspectSchema(
@@ -160,6 +160,12 @@ export async function mysqlInspectSchema(
   const selectedSchema = ensureMysqlSchema(connection, schema);
   return withConnection(connection, async client => {
     if (table !== undefined) {
+      if (selectedSchema === undefined) {
+        throw new PublicError(
+          'INVALID_INPUT',
+          'schema is required for MySQL table inspection when the connection URL has no default database.'
+        );
+      }
       const [columnRows] = await withTimeout(
         client.query(
           `SELECT /*+ MAX_EXECUTION_TIME(${connection.limits.queryTimeoutMs}) */
@@ -256,14 +262,14 @@ export async function mysqlInspectSchema(
            FROM information_schema.tables
            WHERE table_schema = ?
            ORDER BY table_type, table_name`,
-          [selectedSchema]
+          [schema]
         ),
         connection.limits.queryTimeoutMs,
         () => client.destroy()
       );
       const inspection: SchemaInspection = {
         dialect: 'mysql',
-        schema: selectedSchema,
+        schema,
         tables: (rows as unknown[][]).map(row => ({
           schema: String(row[0]),
           name: String(row[1]),
@@ -274,7 +280,25 @@ export async function mysqlInspectSchema(
       return inspection;
     }
 
-    const inspection: SchemaInspection = { dialect: 'mysql', schemas: [selectedSchema] };
+    if (selectedSchema !== undefined) {
+      const inspection: SchemaInspection = { dialect: 'mysql', schemas: [selectedSchema] };
+      assertJsonWithinBytes(inspection, connection.limits.maxSchemaBytes);
+      return inspection;
+    }
+
+    const [rows] = await withTimeout(
+      client.query(
+        `SELECT /*+ MAX_EXECUTION_TIME(${connection.limits.queryTimeoutMs}) */ schema_name
+         FROM information_schema.schemata
+         ORDER BY schema_name`
+      ),
+      connection.limits.queryTimeoutMs,
+      () => client.destroy()
+    );
+    const inspection: SchemaInspection = {
+      dialect: 'mysql',
+      schemas: (rows as unknown[][]).map(row => String(row[0]))
+    };
     assertJsonWithinBytes(inspection, connection.limits.maxSchemaBytes);
     return inspection;
   });
