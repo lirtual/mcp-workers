@@ -50,7 +50,7 @@ async function createMysqlClient(connection: EffectiveWriteConnection): Promise<
     host: connection.host,
     user: connection.user,
     password: connection.password,
-    database: connection.database,
+    ...(connection.database.length === 0 ? {} : { database: connection.database }),
     port: connection.port,
     disableEval: true,
     supportBigNumbers: true,
