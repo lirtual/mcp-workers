@@ -22,13 +22,13 @@ export type AdminColumnType =
 export interface AdminColumnDefinition {
   name: string;
   type: AdminColumnType;
-  length?: number;
-  precision?: number;
-  scale?: number;
-  nullable?: boolean;
-  default?: string | number | boolean | null;
-  primaryKey?: boolean;
-  unique?: boolean;
+  length?: number | undefined;
+  precision?: number | undefined;
+  scale?: number | undefined;
+  nullable?: boolean | undefined;
+  default?: string | number | boolean | null | undefined;
+  primaryKey?: boolean | undefined;
+  unique?: boolean | undefined;
 }
 
 const IDENTIFIER_RE = /^[^\0]+$/;
@@ -57,6 +57,14 @@ function positiveBoundedInteger(value: unknown, field: string, max: number): num
   return value;
 }
 
+function boundedScale(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > 30) {
+    throw new PublicError('INVALID_INPUT', 'Invalid numeric scale.');
+  }
+  return value;
+}
+
 function renderType(dialect: Dialect, column: AdminColumnDefinition): string {
   switch (column.type) {
     case 'integer':
@@ -66,7 +74,7 @@ function renderType(dialect: Dialect, column: AdminColumnDefinition): string {
     case 'text':
       return 'TEXT';
     case 'boolean':
-      return dialect === 'postgres' ? 'BOOLEAN' : 'BOOLEAN';
+      return 'BOOLEAN';
     case 'date':
       return 'DATE';
     case 'timestamp':
@@ -83,7 +91,7 @@ function renderType(dialect: Dialect, column: AdminColumnDefinition): string {
     case 'numeric':
     case 'decimal': {
       const precision = positiveBoundedInteger(column.precision, 'numeric precision', 65);
-      const scale = column.scale === undefined ? undefined : positiveBoundedInteger(column.scale + 1, 'numeric scale', 31)! - 1;
+      const scale = boundedScale(column.scale);
       if (precision === undefined && scale !== undefined) {
         throw new PublicError('INVALID_INPUT', 'numeric scale requires precision.');
       }
@@ -108,7 +116,7 @@ function renderDefault(dialect: Dialect, value: string | number | boolean | null
     if (!Number.isFinite(value)) throw new PublicError('INVALID_INPUT', 'Column default number must be finite.');
     return String(value);
   }
-  if (typeof value === 'boolean') return dialect === 'postgres' ? (value ? 'TRUE' : 'FALSE') : value ? 'TRUE' : 'FALSE';
+  if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE';
   throw new PublicError('INVALID_INPUT', 'Unsupported column default value.');
 }
 
