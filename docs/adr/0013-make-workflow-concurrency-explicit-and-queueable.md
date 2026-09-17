@@ -1,6 +1,8 @@
 # ADR 0013: Make workflow concurrency explicit and queueable
 
-- Status: Accepted
+- Original status: Accepted
+- v0.1 disposition: DEFER
+- v0.1 authority: `docs/workflow-mcp/v0.1-architecture-reduction.md`
 - Date: 2026-09-17
 
 ## Context
