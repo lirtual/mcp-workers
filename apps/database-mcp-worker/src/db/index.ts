@@ -55,10 +55,22 @@ function resolveWriteSchema(connection: EffectiveWriteConnection, requested: str
     return requested ?? connection.config.defaultSchema ?? 'public';
   }
 
-  if (requested !== undefined && requested !== connection.database) {
-    throw new PublicError('ACCESS_DENIED', 'MySQL writes are restricted to the configured database.');
+  const configured = connection.database.length === 0 ? undefined : connection.database;
+  if (configured !== undefined) {
+    if (requested !== undefined && requested !== configured) {
+      throw new PublicError('ACCESS_DENIED', 'MySQL writes are restricted to the configured database.');
+    }
+    return configured;
   }
-  return connection.database;
+
+  const selected = requested ?? connection.config.defaultSchema;
+  if (selected === undefined) {
+    throw new PublicError(
+      'INVALID_INPUT',
+      'schema is required for MySQL writes when the write connection URL has no default database.'
+    );
+  }
+  return selected;
 }
 
 export async function insertRows(
