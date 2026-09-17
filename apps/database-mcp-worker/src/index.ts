@@ -1,5 +1,5 @@
 import { createMcpHandler } from '@modelcontextprotocol/server';
-import { parseConnectionCatalog } from './config.js';
+import { parseDatabaseConfig } from './config.js';
 import { buildMcpServer } from './mcp.js';
 import { authenticateDatabasePortal } from './portal-auth.js';
 import type { Env } from './types.js';
@@ -33,7 +33,7 @@ export default {
       return authError(401, 'unauthorized', 'Valid MCP Portal authentication is required.');
     }
 
-    const catalog = parseConnectionCatalog(env.CONNECTIONS_JSON);
+    const catalog = parseDatabaseConfig(env.DATABASE_CONFIG);
     const handler = createMcpHandler(() => buildMcpServer(env, catalog), { legacy: 'stateless' });
     return handler.fetch(portalAuth.request, { authInfo: portalAuth.authInfo });
   }
