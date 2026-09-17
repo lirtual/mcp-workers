@@ -23,6 +23,29 @@ Do not put either value in Cloudflare Build variables/secrets. Store both under 
 
 The object key is the MCP connection id, so no duplicate `id` field is needed. `displayName` defaults to the same value and `enabled` defaults to `true`.
 
+### MySQL server-level connection
+
+MySQL may omit the database name when one account needs to access multiple databases on the same server:
+
+```json
+{
+  "mysql_server": {
+    "read": "mysql://reader:password@db.example.com:3306"
+  }
+}
+```
+
+For a server-level MySQL connection:
+
+- `health_check` works without a default database.
+- `inspect_schema` with no `schema` lists databases visible to the MySQL account.
+- `inspect_schema` with `schema` inspects that database.
+- `query_read` / `explain` should use fully qualified names such as `app.users` when the SQL needs a table.
+- Safe Write requires an explicit `schema` unless `defaultSchema` is configured.
+- The effective database access boundary is the MySQL account's grants.
+
+PostgreSQL direct URLs still require a database name.
+
 ### Read + Safe Write
 
 ```json
@@ -81,8 +104,8 @@ Read and write transports may differ. There is no automatic transport fallback.
 
 Direct mode accepts complete SQL URLs:
 
-- PostgreSQL: `postgres://` or `postgresql://`
-- MySQL: `mysql://`
+- PostgreSQL: `postgres://` or `postgresql://` (database name required)
+- MySQL: `mysql://` (database name optional)
 
 Dialect is derived from the URL automatically. Direct URLs requesting TLS are rejected; use Hyperdrive for TLS-capable databases.
 
