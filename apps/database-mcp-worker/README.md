@@ -1,6 +1,6 @@
 # Cloudflare Database MCP Worker
 
-A Cloudflare-native MCP server for bounded PostgreSQL/MySQL reads, optional structured Safe Write, and optional structured Safe Admin/DDL. READ, WRITE, and ADMIN credentials are configured independently. Direct database URLs remain a legacy plaintext compatibility path; Cloudflare Hyperdrive is supported for TLS-capable database paths.
+A Cloudflare-native MCP server for bounded PostgreSQL/MySQL reads, optional structured Safe Write, and optional structured Safe Admin/DDL. READ, WRITE, and ADMIN credentials are configured independently. Direct database URLs remain a legacy plaintext compatibility path; Cloudflare Hyperdrive is supported for READ/WRITE TLS-capable database paths.
 
 ## Minimal deployment
 
@@ -109,15 +109,14 @@ Hyperdrive references stay explicit because the binding itself is configured in 
     "write": {
       "hyperdrive": "PROD_WRITE"
     },
-    "admin": {
-      "hyperdrive": "PROD_ADMIN"
-    },
     "maxAffectedRows": 20
   }
 }
 ```
 
-Read, write, and admin transports may differ. There is no automatic transport fallback. Safe Admin integration verifies direct PostgreSQL/MySQL behavior; Hyperdrive should be used for ADMIN only after the target DDL operations are verified for that deployment/database combination.
+Read and write transports may differ. There is no automatic transport fallback.
+
+Safe Admin execution is **direct-only in v0.3** because the repository's real PostgreSQL/MySQL integration verifies DDL only through direct ADMIN credentials. An `admin: { "hyperdrive": "..." }` reference is recognized by the configuration model but execution fails closed with `ADMIN_OPERATION_NOT_SUPPORTED` until representative Hyperdrive DDL behavior is verified. It never falls back to direct.
 
 ## Direct mode
 
@@ -126,7 +125,7 @@ Direct mode accepts complete SQL URLs:
 - PostgreSQL: `postgres://` or `postgresql://` (database name required)
 - MySQL: `mysql://` (database name optional)
 
-Dialect is derived from the URL automatically. Direct URLs requesting TLS are rejected; use Hyperdrive for TLS-capable databases.
+Dialect is derived from the URL automatically. Direct URLs requesting TLS are rejected; use Hyperdrive for TLS-capable READ/WRITE database paths.
 
 Direct mode is intentionally a compatibility path for publicly reachable legacy databases where plaintext transport is explicitly acceptable. Workers VPC / Cloudflare Tunnel transport is outside the current contract.
 
@@ -198,6 +197,7 @@ Safe Admin/DDL tools:
 - `create_index` supports ordinary column indexes only; expression/partial/fulltext/spatial/vendor-specific advanced indexes are excluded.
 - `drop_table`, `drop_index`, and `alter_table` drop-column require explicit `confirm=true` before execution.
 - destructive Admin operations are not automatically retried after an ambiguous result.
+- v0.3 Safe Admin is direct-only; unverified Hyperdrive Admin fails closed.
 - no `execute_sql`, raw DDL, GRANT/REVOKE, user/role management, routine, trigger, replication, backup, or server-configuration tool is exposed.
 - database-native privileges remain the final boundary even when the MCP input is structurally valid.
 
@@ -232,7 +232,7 @@ pnpm install --frozen-lockfile
 pnpm --filter database-mcp-worker check
 ```
 
-Monorepo CI runs unit checks plus real PostgreSQL 17 / MySQL 8.4 integration tests with separate reader, writer, bounded admin, and fixture-owner identities. Integration proves READ cannot write/DDL, WRITE cannot DDL, ADMIN can perform only the supported schema lifecycle, PostgreSQL ADMIN is not a superuser/role administrator, and MySQL ADMIN cannot create users.
+Monorepo CI runs unit checks plus real PostgreSQL 17 / MySQL 8.4 integration tests with separate reader, writer, bounded admin, and fixture-owner identities. Integration proves READ cannot write/DDL, WRITE cannot DDL, ADMIN can perform the supported schema lifecycle, PostgreSQL ADMIN is not a superuser/role administrator, and MySQL ADMIN cannot create users.
 
 ## Security notes
 
