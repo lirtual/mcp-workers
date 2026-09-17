@@ -90,6 +90,7 @@ try {
   await mysql.query(`REVOKE ALL PRIVILEGES, GRANT OPTION FROM 'mcp_admin'@'%'`);
   await mysql.query(`DROP PROCEDURE IF EXISTS dangerous_bump`);
   await mysql.query(`DROP TABLE IF EXISTS admin_items`);
+  await mysql.query(`DROP TABLE IF EXISTS admin_items_renamed`);
   await mysql.query(`DROP TABLE IF EXISTS counter`);
   await mysql.query(`DROP TABLE IF EXISTS write_items`);
   await mysql.query(`DROP TABLE IF EXISTS users`);
@@ -103,7 +104,7 @@ try {
   await mysql.query(`GRANT SELECT ON testdb.write_items TO 'mcp_reader'@'%'`);
   await mysql.query(`GRANT SELECT, INSERT, UPDATE, DELETE ON testdb.users TO 'mcp_writer'@'%'`);
   await mysql.query(`GRANT SELECT, INSERT, UPDATE, DELETE ON testdb.write_items TO 'mcp_writer'@'%'`);
-  await mysql.query(`GRANT CREATE, ALTER, DROP, INDEX ON testdb.* TO 'mcp_admin'@'%'`);
+  await mysql.query(`GRANT CREATE, ALTER, DROP, INDEX, INSERT ON testdb.* TO 'mcp_admin'@'%'`);
   await mysql.query(`FLUSH PRIVILEGES`);
 } finally {
   await mysql.end();
