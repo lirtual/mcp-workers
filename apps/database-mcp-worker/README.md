@@ -70,6 +70,8 @@ Use separate least-privilege reader/writer database identities. Deployment templ
 
 The writer templates intentionally grant `SELECT`, `INSERT`, `UPDATE`, and `DELETE` only on explicitly approved tables. Repeat the table grant for each table Safe Write may mutate rather than granting broad database/schema write access by default. PostgreSQL writer roles remain non-superuser/non-owner and must not receive `BYPASSRLS`; MySQL writers must not receive DDL, routine, file, grant-option, or administrative privileges. If PostgreSQL inserts require a sequence, grant only the specific sequence needed.
 
+These deployment templates mirror the least-privilege writer model used by the real PostgreSQL/MySQL integration fixtures, so production setup and CI exercise the same READ/WRITE separation assumptions.
+
 ### Multiple databases
 
 ```json
