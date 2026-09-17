@@ -140,8 +140,11 @@ export function parseDirectDatabaseUrl(raw: string, connectionId: string): Parse
   }
 
   const database = decodeUrlPart(url.pathname.replace(/^\/+/, ''), connectionId);
-  if (url.hostname.length === 0 || url.username.length === 0 || database.length === 0 || url.hash.length > 0) {
+  if (url.hostname.length === 0 || url.username.length === 0 || url.hash.length > 0) {
     throw new PublicError('INVALID_INPUT', `Connection '${connectionId}' has an invalid direct database URL.`);
+  }
+  if (dialect === 'postgres' && database.length === 0) {
+    throw new PublicError('INVALID_INPUT', `Connection '${connectionId}' PostgreSQL URL must include a database name.`);
   }
 
   const port = url.port === '' ? defaultPort : Number(url.port);
