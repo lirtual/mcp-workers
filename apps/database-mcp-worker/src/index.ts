@@ -33,6 +33,10 @@ export default {
       return authError(401, 'unauthorized', 'Valid MCP Portal authentication is required.');
     }
 
+    if (typeof env.DATABASE_CONFIG !== 'string' || env.DATABASE_CONFIG.length === 0) {
+      return authError(503, 'database_config_not_configured', 'Database configuration is not configured.');
+    }
+
     const catalog = parseDatabaseConfig(env.DATABASE_CONFIG);
     const handler = createMcpHandler(() => buildMcpServer(env, catalog), { legacy: 'stateless' });
     return handler.fetch(portalAuth.request, { authInfo: portalAuth.authInfo });
