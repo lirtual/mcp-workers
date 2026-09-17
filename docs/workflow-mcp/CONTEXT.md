@@ -76,6 +76,9 @@ A replaceable execution backend capable of performing a Step. Executor choice mu
 ### Execution Request
 The normalized request sent from workflow orchestration to an Executor.
 
+### Execution Manifest
+The complete execution contract for one authorized Step Attempt, including resolved non-secret input, capability identity, scoped references, limits, and correlation identifiers required by the Executor.
+
 ### Execution Result
 The normalized terminal or intermediate result returned by an Executor for an Execution Request.
 
@@ -97,11 +100,20 @@ Values produced by a Step Run and addressable by later workflow logic.
 ### Run State
 The lifecycle state of a Workflow Run, including queued, running, waiting, succeeded, failed, cancelled, and timed out states.
 
+### Event Timeline
+The ordered structured history of domain-significant lifecycle events for a Workflow Run. It is authoritative for user-facing execution history and distinct from implementation debug output.
+
+### Raw Execution Log
+Verbose executor or adapter diagnostic output that may help investigate failures but does not define workflow state.
+
 ### Deduplication
 The rule that prevents the same Trigger Event from starting duplicate Workflow Runs when the workflow is configured for at-most-once event acceptance.
 
 ### Capability
 An operation a workflow may invoke. A Capability describes what work is requested independently of which Executor performs it.
+
+### Capability Descriptor
+The declared contract for a Capability, including its input and output shapes, side-effect and retry characteristics, and which Executors are allowed to perform it.
 
 ### Capability Adapter
 A boundary that exposes an external protocol or service as one or more workflow Capabilities without turning that external protocol into an Executor.
@@ -124,6 +136,9 @@ A symbolic reference to a secret value. Workflow definitions may contain Secret 
 ### Credential Lease
 A short-lived, narrowly scoped authorization granted to an Executor for one execution purpose. A Credential Lease is not the underlying long-lived business credential.
 
+### Trust Surface
+A separately authenticated interface whose authority is intentionally limited to one class of actors and operations. Authority from one Trust Surface does not imply authority on another.
+
 ### Canonical Workflow Representation
 A deterministic, normalized representation of a Workflow Definition used for validation, comparison, and version identity. Authoring syntax is not itself the canonical representation.
 
@@ -136,6 +151,7 @@ A restricted declarative expression that reads workflow data and computes condit
 - Trigger Events are normalized before workflow logic consumes them.
 - Repeated delivery of one event can resolve to one admitted Workflow Run without implying exactly-once downstream side effects.
 - Workflow meaning must not depend on which Executor performs a Step.
+- Capability-to-Executor routing is deterministic for one Workflow Definition Version.
 - Existing MCP application domains remain external capabilities; Workflow Automation does not absorb their business models.
 - A Workflow Run has a durable identity independent of any individual Step Run, Step Attempt, or Executor invocation.
 - A Workflow Run is bound to one immutable Workflow Definition Version.
@@ -145,8 +161,10 @@ A restricted declarative expression that reads workflow data and computes condit
 - Failure of one DAG branch does not erase the outcome of independent branches.
 - Cancellation does not imply compensation or rollback of completed side effects.
 - Artifact identity is independent of executor-native temporary storage.
+- Event Timeline entries define user-facing execution history; Raw Execution Logs do not define workflow state.
 - Workflow definitions contain Secret References and Connection References, never secret or Connection Credential values.
 - Arbitrary user-supplied code is a privileged capability rather than the default Step model.
 - External protocol adapters, including MCP adapters, expose Capabilities and do not become Executors merely because they perform remote calls.
 - Authoring format and Canonical Workflow Representation are distinct; version identity is derived from the canonical representation.
 - Workflow Expressions are declarative and cannot escape into arbitrary code execution or undeclared I/O.
+- Credentials and authority do not cross Trust Surfaces unless an explicit delegation protocol grants a narrower temporary authority.
