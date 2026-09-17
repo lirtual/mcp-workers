@@ -15,7 +15,7 @@
     }
   },
   "secrets": {
-    "required": ["MCP_ACCESS_TOKEN"]
+    "required": ["MCP_ACCESS_TOKEN", "DATABASE_CONFIG"]
   },
   "vars": {
     "MAX_ROWS": "500",
