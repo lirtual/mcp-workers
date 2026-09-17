@@ -195,7 +195,7 @@ Safe Admin/DDL tools:
 - `create_table` accepts only a bounded scalar type subset and literal defaults.
 - `alter_table` supports only add/drop/rename column and rename table in v0.3.
 - `create_index` supports ordinary column indexes only; expression/partial/fulltext/spatial/vendor-specific advanced indexes are excluded.
-- `drop_table`, `drop_index`, and `alter_table` drop-column require explicit `confirm=true` before execution.
+- `drop_table`, `drop_index`, and `alter_table` drop-column use MCP 2026-era `input_required` form elicitation. The destructive DDL runs only after the client returns an accepted user confirmation with the checkbox selected; decline/cancel/unconfirmed or unsupported confirmation flows fail closed.
 - destructive Admin operations are not automatically retried after an ambiguous result.
 - v0.3 Safe Admin is direct-only; unverified Hyperdrive Admin fails closed.
 - no `execute_sql`, raw DDL, GRANT/REVOKE, user/role management, routine, trigger, replication, backup, or server-configuration tool is exposed.
@@ -232,7 +232,7 @@ pnpm install --frozen-lockfile
 pnpm --filter database-mcp-worker check
 ```
 
-Monorepo CI runs unit checks plus real PostgreSQL 17 / MySQL 8.4 integration tests with separate reader, writer, bounded admin, and fixture-owner identities. Integration proves READ cannot write/DDL, WRITE cannot DDL, ADMIN can perform the supported schema lifecycle, PostgreSQL ADMIN is not a superuser/role administrator, and MySQL ADMIN cannot create users.
+Monorepo CI runs unit checks plus real PostgreSQL 17 / MySQL 8.4 integration tests with separate reader, writer, bounded admin, and fixture-owner identities. Integration proves READ cannot write/DDL, WRITE cannot DDL, ADMIN can perform the supported schema lifecycle, PostgreSQL ADMIN is not a superuser/role administrator, and MySQL ADMIN cannot create users. Unit coverage verifies the destructive `input_required` confirmation flow.
 
 ## Security notes
 
