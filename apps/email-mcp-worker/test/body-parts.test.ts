@@ -3,6 +3,7 @@ import type { MessageStructureObject } from "imapflow";
 import {
   normalizeFetchedBodyParts,
   parseReferencesHeader,
+  readableBodyPartFetchKeys,
   selectReadableBodyParts,
 } from "../src/imap-smtp-provider.js";
 
@@ -55,6 +56,33 @@ describe("email_get body-part selection", () => {
     ]);
   });
 
+
+  it("uses TEXT for a single-part root message", () => {
+    const single: MessageStructureObject = {
+      part: "1",
+      type: "text/plain",
+      encoding: "base64",
+      size: 32,
+      parameters: { charset: "utf-8" },
+    };
+    expect(selectReadableBodyParts(single)).toEqual([
+      {
+        part: "text",
+        mediaType: "text/plain",
+        charset: "utf-8",
+        encoding: "base64",
+        size: 32,
+      },
+    ]);
+  });
+
+  it("requests complete bounded parts instead of partial byte ranges", () => {
+    expect(readableBodyPartFetchKeys(selectReadableBodyParts(structure()))).toEqual([
+      "1",
+      "2",
+    ]);
+  });
+
   it("skips oversized text parts instead of requesting unbounded content", () => {
     const oversized: MessageStructureObject = {
       type: "multipart/alternative",
@@ -80,6 +108,18 @@ describe("email_get body-part selection", () => {
     const normalized = await normalizeFetchedBodyParts(parts, fetched);
     expect(normalized.body.text).toBe("Hello 世界");
     expect(normalized.body.html?.trim()).toBe("<p>Hello HTML</p>");
+    const singleParts = selectReadableBodyParts({
+      part: "1",
+      type: "text/plain",
+      encoding: "base64",
+      size: 32,
+      parameters: { charset: "utf-8" },
+    });
+    const single = await normalizeFetchedBodyParts(
+      singleParts,
+      new Map([["TEXT", new TextEncoder().encode("SGVsbG8=")]]),
+    );
+    expect(single.body.text).toBe("Hello");
     expect(normalized.body).toMatchObject({
       truncated: false,
       untrusted_external_content: true,
