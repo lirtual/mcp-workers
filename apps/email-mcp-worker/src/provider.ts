@@ -98,10 +98,32 @@ export interface EmailMessageDetail {
   attachments: EmailAttachmentMetadata[];
 }
 
+export type EmailModifyAction =
+  | "mark_read"
+  | "mark_unread"
+  | "flag"
+  | "unflag"
+  | "move"
+  | "trash";
+
+export interface ModifyMessagesOptions {
+  folderId: string;
+  messageIds: string[];
+  action: EmailModifyAction;
+  targetFolderId?: string;
+}
+
+export interface ModifyMessagesResult {
+  action: EmailModifyAction;
+  modified_count: number;
+  target_folder_id?: string;
+}
+
 export interface EmailProvider {
   listFolders(options: ListFoldersOptions): Promise<EmailFolder[]>;
   searchMessages(options: SearchMessagesOptions): Promise<SearchMessagesResult>;
   getMessage(options: GetMessageOptions): Promise<EmailMessageDetail>;
+  modifyMessages(options: ModifyMessagesOptions): Promise<ModifyMessagesResult>;
 }
 
 export type EmailProviderFactory = (

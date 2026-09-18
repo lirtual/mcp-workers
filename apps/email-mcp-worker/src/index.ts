@@ -89,10 +89,15 @@ export async function handleRequest(
 
   const handler = createMcpHandler(
     () =>
-      buildEmailServer(catalog, {
-        allowModify: featureEnabled(env.EMAIL_ALLOW_MODIFY),
-        allowSend: featureEnabled(env.EMAIL_ALLOW_SEND),
-      }),
+      buildEmailServer(
+        catalog,
+        {
+          allowModify: featureEnabled(env.EMAIL_ALLOW_MODIFY),
+          allowSend: featureEnabled(env.EMAIL_ALLOW_SEND),
+        },
+        undefined,
+        env.MCP_ACCESS_TOKEN,
+      ),
     { legacy: "stateless" },
   );
 

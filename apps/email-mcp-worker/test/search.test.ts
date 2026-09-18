@@ -81,6 +81,7 @@ describe("email_search tracer", () => {
       async getMessage() {
         throw new Error("not used in this test");
       },
+      async modifyMessages() { throw new Error("not used"); },
     });
 
     await expect(
