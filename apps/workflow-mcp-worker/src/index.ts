@@ -1,6 +1,8 @@
 import { createMcpHandler } from '@modelcontextprotocol/server';
 import { buildWorkflowMcpServer } from './mcp.js';
 import { authenticateWorkflowPortal } from './portal-auth.js';
+import { runSchedulerTick } from './scheduler.js';
+import { handleWebhookTrigger } from './triggers.js';
 import type { Env } from './types.js';
 
 export { WorkflowRuntime } from './workflow.js';
@@ -26,6 +28,11 @@ export default {
       return Response.json({ status: 'ok' });
     }
 
+    const webhookMatch = url.pathname.match(/^\/hooks\/([A-Za-z0-9_-]+)\/([A-Za-z0-9_-]+)$/);
+    if (webhookMatch) {
+      return handleWebhookTrigger(request, env, webhookMatch[1]!, webhookMatch[2]!);
+    }
+
     if (url.pathname !== '/mcp') return new Response('Not found', { status: 404 });
 
     const portalAuth = await authenticateWorkflowPortal(request, env);
@@ -41,5 +48,12 @@ export default {
 
     const handler = createMcpHandler(() => buildWorkflowMcpServer(env), { legacy: 'stateless' });
     return handler.fetch(portalAuth.request, { authInfo: portalAuth.authInfo });
+  },
+
+  async scheduled(controller: ScheduledController, env: Env): Promise<void> {
+    const result = await runSchedulerTick(env, controller.scheduledTime);
+    if (result.errors > 0) {
+      throw new Error(`Scheduler tick completed with ${result.errors} schedule error(s).`);
+    }
   }
 } satisfies ExportedHandler<Env>;
