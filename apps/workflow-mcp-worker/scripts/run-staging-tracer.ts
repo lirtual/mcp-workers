@@ -165,7 +165,12 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<Re
   return asObject(JSON.parse(String(textItem.text)));
 }
 
-function parseEnvelope(text: string, contentType: string | null): Record<string, any> {
+interface RpcEnvelope {
+  result?: unknown;
+  error?: unknown;
+}
+
+function parseEnvelope(text: string, contentType: string | null): RpcEnvelope {
   if (contentType?.includes('text/event-stream')) {
     for (const event of text.split(/\r?\n\r?\n/)) {
       const data = event
@@ -173,26 +178,26 @@ function parseEnvelope(text: string, contentType: string | null): Record<string,
         .filter(line => line.startsWith('data:'))
         .map(line => line.slice(5).trimStart())
         .join('\n');
-      if (data) return asObject(JSON.parse(data));
+      if (data) return asObject(JSON.parse(data)) as RpcEnvelope;
     }
     throw new Error('MCP SSE response contained no JSON-RPC envelope.');
   }
-  return asObject(JSON.parse(text));
+  return asObject(JSON.parse(text)) as RpcEnvelope;
 }
 
-function asObject(value: unknown): Record<string, any> {
+function asObject(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('Expected object in staging tracer.');
   }
-  return value as Record<string, any>;
+  return value as Record<string, unknown>;
 }
 
-function asArray(value: unknown): any[] {
+function asArray(value: unknown): unknown[] {
   if (!Array.isArray(value)) throw new Error('Expected array in staging tracer.');
   return value;
 }
 
-function stringField(value: Record<string, any>, key: string): string {
+function stringField(value: Record<string, unknown>, key: string): string {
   const field = value[key];
   if (typeof field !== 'string' || field.length === 0) {
     throw new Error(`Expected non-empty string field "${key}".`);
