@@ -1,3 +1,4 @@
+import { appendFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 
 const baseUrl = required('WORKFLOW_MCP_STAGING_URL').replace(/\/+$/, '');
@@ -213,5 +214,5 @@ function appendGitHubOutput(key: string, value: string): void {
   const path = process.env.GITHUB_OUTPUT;
   if (!path) return;
   const line = `${key}=${value}\n`;
-  require('node:fs').appendFileSync(path, line, 'utf8');
+  appendFileSync(path, line, 'utf8');
 }
