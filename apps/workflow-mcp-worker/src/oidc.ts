@@ -20,6 +20,8 @@ interface JwtHeader {
   typ?: string;
 }
 
+type SigningJwk = JsonWebKey & { kid?: string; alg?: string; use?: string };
+
 interface JwtClaims {
   iss?: string;
   aud?: string | string[];
@@ -51,7 +53,7 @@ export async function verifyGitHubOidcToken(
     headers: { Accept: 'application/json' }
   });
   if (!jwksResponse.ok) throw new Error(`OIDC JWKS request failed with status ${jwksResponse.status}.`);
-  const jwks = (await jwksResponse.json()) as { keys?: JsonWebKey[] };
+  const jwks = (await jwksResponse.json()) as { keys?: SigningJwk[] };
   const jwk = jwks.keys?.find(key => key.kid === header.kid);
   if (!jwk) throw new Error('OIDC signing key was not found in JWKS.');
 
@@ -93,10 +95,14 @@ function parseJsonPart<T>(part: string): T {
   return JSON.parse(new TextDecoder().decode(bytes)) as T;
 }
 
-function base64UrlDecode(value: string): Uint8Array {
+function base64UrlDecode(value: string): Uint8Array<ArrayBuffer> {
   const padded = value.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (value.length % 4)) % 4);
   const binary = atob(padded);
-  return Uint8Array.from(binary, char => char.charCodeAt(0));
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
 }
 
 function requiredString(value: unknown, name: string): string {
