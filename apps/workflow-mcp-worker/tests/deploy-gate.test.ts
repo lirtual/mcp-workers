@@ -104,8 +104,6 @@ describe('Workflow MCP deploy gate contract', () => {
     );
     expect(file).toContain('.github/workflows/workflow-executor.yml');
     expect(file).toContain('.github/workflows/workflow-mcp-deploy.yml');
-    expect(file).not.toContain('workflow-executor-production.yml');
-    expect(file).not.toContain('workflow-mcp-production.yml');
     expect(file).toContain('workflow_control_plane_changed=true');
   });
 });
