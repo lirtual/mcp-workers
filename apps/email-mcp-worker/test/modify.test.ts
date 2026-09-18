@@ -61,6 +61,7 @@ describe("email_modify tracer", () => {
       async listFolders() { return []; },
       async searchMessages() { return { messages: [] }; },
       async getMessage() { throw new Error("not used"); },
+      async sendMessage() { throw new Error("not used"); },
       async modifyMessages(options) {
         calls.push(options);
         return {
