@@ -138,19 +138,24 @@ export function selectReadableBodyParts(
   const visit = (
     node: MessageStructureObject,
     ancestorAttachment: boolean,
+    isRoot: boolean,
   ): void => {
     const attachment = ancestorAttachment || nodeIsAttachment(node);
     const mediaType = node.type?.toLowerCase();
+    const requestPart =
+      isRoot && (node.childNodes?.length ?? 0) === 0
+        ? "text"
+        : node.part;
 
     if (
       !attachment &&
       (mediaType === "text/plain" || mediaType === "text/html") &&
-      node.part &&
+      requestPart &&
       !selected.has(mediaType) &&
       (node.size == null || node.size <= maxBytes)
     ) {
       selected.set(mediaType, {
-        part: node.part,
+        part: requestPart,
         mediaType,
         ...(node.parameters?.charset
           ? { charset: node.parameters.charset }
@@ -161,11 +166,11 @@ export function selectReadableBodyParts(
     }
 
     for (const child of node.childNodes ?? []) {
-      visit(child, attachment);
+      visit(child, attachment, false);
     }
   };
 
-  visit(root, false);
+  visit(root, false, true);
 
   return ["text/plain", "text/html"].flatMap((mediaType) => {
     const part = selected.get(mediaType as "text/plain" | "text/html");
@@ -197,6 +202,25 @@ function hasOversizedReadableBodyPart(
   return visit(root, false);
 }
 
+export function readableBodyPartFetchKeys(
+  parts: ReadableBodyPart[],
+): string[] {
+  return parts.map((part) => part.part);
+}
+
+function findFetchedBodyPart(
+  bodyParts: Map<string, Uint8Array>,
+  key: string,
+): Uint8Array | undefined {
+  const direct = bodyParts.get(key);
+  if (direct) return direct;
+  const normalized = key.toLowerCase();
+  for (const [candidate, value] of bodyParts) {
+    if (candidate.toLowerCase() === normalized) return value;
+  }
+  return undefined;
+}
+
 export async function normalizeFetchedBodyParts(
   parts: ReadableBodyPart[],
   bodyParts: Map<string, Uint8Array>,
@@ -206,7 +230,7 @@ export async function normalizeFetchedBodyParts(
   let truncated = false;
 
   for (const part of parts) {
-    const raw = bodyParts.get(part.part);
+    const raw = findFetchedBodyPart(bodyParts, part.part);
     if (!raw || raw.byteLength > MAX_SOURCE_BYTES) continue;
 
     const charset = part.charset
@@ -699,11 +723,7 @@ export class ImapSmtpProvider implements EmailProvider {
         const bodyMessage = await client.fetchOne(
           reference.uid,
           {
-            bodyParts: readableParts.map((part) => ({
-              key: part.part,
-              start: 0,
-              maxLength: MAX_SOURCE_BYTES + 1,
-            })),
+            bodyParts: readableBodyPartFetchKeys(readableParts),
           },
           { uid: true },
         );
