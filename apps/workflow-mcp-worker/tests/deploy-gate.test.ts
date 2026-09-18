@@ -11,9 +11,9 @@ async function workflow(name: string): Promise<Record<string, unknown>> {
   return parse(file) as Record<string, unknown>;
 }
 
-describe('Workflow MCP production release gate contract', () => {
-  it('keeps the production gate manual-only and release-oriented', async () => {
-    const value = await workflow('workflow-mcp-production.yml');
+describe('Workflow MCP deploy gate contract', () => {
+  it('keeps the deploy gate manual-only and release-oriented', async () => {
+    const value = await workflow('workflow-mcp-deploy.yml');
     const triggers = value.on as Record<string, unknown>;
     expect(Object.keys(triggers).sort()).toEqual(['push', 'workflow_dispatch']);
     expect(triggers).not.toHaveProperty('pull_request');
@@ -23,8 +23,7 @@ describe('Workflow MCP production release gate contract', () => {
       paths: [
         'apps/workflow-mcp-worker/**',
         '.github/workflows/workflow-executor.yml',
-        '.github/workflows/workflow-executor-production.yml',
-        '.github/workflows/workflow-mcp-production.yml'
+        '.github/workflows/workflow-mcp-deploy.yml'
       ]
     });
     expect(value.permissions).toEqual({
@@ -33,24 +32,24 @@ describe('Workflow MCP production release gate contract', () => {
     });
 
     const jobs = value.jobs as Record<string, unknown>;
-    const production = jobs.production as Record<string, unknown>;
-    expect(production.environment).toBe('workflow-mcp-production');
-    const steps = production.steps as Array<Record<string, unknown>>;
+    const deploy = jobs.deploy as Record<string, unknown>;
+    expect(deploy.environment).toBe('workflow-mcp-worker');
+    const steps = deploy.steps as Array<Record<string, unknown>>;
     const names = steps.map(step => step.name).filter(Boolean);
-    expect(names).toContain('Generate ephemeral production credentials');
+    expect(names).toContain('Generate ephemeral runtime credentials');
     expect(names).toContain('Run application release checks');
     expect(names).toContain('Check nonterminal runtime compatibility');
-    expect(names).toContain('Apply production D1 migrations');
-    expect(names.indexOf('Apply production D1 migrations')).toBeLessThan(
+    expect(names).toContain('Apply D1 migrations');
+    expect(names.indexOf('Apply deploy D1 migrations')).toBeLessThan(
       names.indexOf('Check nonterminal runtime compatibility')
     );
-    expect(names).toContain('Deploy isolated production Worker');
-    expect(names).not.toContain('Install production Worker secrets');
+    expect(names).toContain('Deploy Workflow MCP Worker');
+    expect(names).not.toContain('Install Workflow MCP Worker secrets');
     expect(names).toContain('Run MCP heavy and connection tracers');
     expect(names).toContain('Verify GitHub executor terminal evidence');
 
     const workflowText = await readFile(
-      path.resolve(process.cwd(), '../../.github/workflows/workflow-mcp-production.yml'),
+      path.resolve(process.cwd(), '../../.github/workflows/workflow-mcp-deploy.yml'),
       'utf8'
     );
     expect(workflowText).toContain(
@@ -63,10 +62,10 @@ describe('Workflow MCP production release gate contract', () => {
     );
     expect(workflowText).toContain('--secrets-file "$secret_file"');
     expect(workflowText).not.toContain(
-      'WORKFLOW_MCP_PRODUCTION_R2_ACCESS_KEY_ID'
+      'WORKFLOW_MCP_R2_ACCESS_KEY_ID'
     );
     expect(workflowText).not.toContain(
-      'WORKFLOW_MCP_PRODUCTION_R2_SECRET_ACCESS_KEY'
+      'WORKFLOW_MCP_R2_SECRET_ACCESS_KEY'
     );
     expect(workflowText).toContain(
       'WORKFLOW_MCP_GITHUB_ACTIONS_TOKEN: ${{ github.token }}'
@@ -79,8 +78,8 @@ describe('Workflow MCP production release gate contract', () => {
     );
   });
 
-  it('keeps the production executor dispatch-only with the same two identity inputs', async () => {
-    const value = await workflow('workflow-executor-production.yml');
+  it('keeps the executor dispatch-only with the same two identity inputs', async () => {
+    const value = await workflow('workflow-executor.yml');
     const trigger = (value.on as Record<string, unknown>).workflow_dispatch as Record<string, unknown>;
     const inputs = trigger.inputs as Record<string, unknown>;
     expect(Object.keys(inputs).sort()).toEqual(['attempt_id', 'claim_nonce']);
@@ -91,10 +90,10 @@ describe('Workflow MCP production release gate contract', () => {
 
     const jobs = value.jobs as Record<string, unknown>;
     const execute = jobs.execute as Record<string, unknown>;
-    expect(execute.environment).toBe('workflow-mcp-production');
+    expect(execute.environment).toBe('workflow-mcp-worker');
     expect(execute.env).toMatchObject({
       WORKFLOW_MCP_URL:
-        "${{ vars.WORKFLOW_MCP_PRODUCTION_URL || 'https://workflow-mcp-worker.aiyaya.workers.dev' }}"
+        "${{ vars.WORKFLOW_MCP_URL || 'https://workflow-mcp-worker.aiyaya.workers.dev' }}"
     });
   });
 
@@ -104,8 +103,7 @@ describe('Workflow MCP production release gate contract', () => {
       'utf8'
     );
     expect(file).toContain('.github/workflows/workflow-executor.yml');
-    expect(file).toContain('.github/workflows/workflow-executor-production.yml');
-    expect(file).toContain('.github/workflows/workflow-mcp-production.yml');
+    expect(file).toContain('.github/workflows/workflow-mcp-deploy.yml');
     expect(file).toContain('workflow_control_plane_changed=true');
   });
 });

@@ -2,7 +2,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-const evidencePath = required('PRODUCTION_EVIDENCE_PATH');
+const evidencePath = required('WORKFLOW_MCP_EVIDENCE_PATH');
 const config = required('WORKFLOW_MCP_WRANGLER_CONFIG');
 const repository = required('GITHUB_REPOSITORY');
 const token = required('GITHUB_TOKEN');
@@ -48,7 +48,7 @@ const response = await fetch(
       Accept: 'application/vnd.github+json',
       Authorization: `Bearer ${token}`,
       'X-GitHub-Api-Version': '2026-03-10',
-      'User-Agent': 'workflow-mcp-production-gate'
+      'User-Agent': 'workflow-mcp-deploy-gate'
     }
   }
 );

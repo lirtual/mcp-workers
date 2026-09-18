@@ -1,14 +1,14 @@
 import { appendFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 
-const baseUrl = required('WORKFLOW_MCP_PRODUCTION_URL').replace(/\/+$/, '');
-const accessToken = required('WORKFLOW_MCP_PRODUCTION_ACCESS_TOKEN');
-const sourceUrl = process.env.WORKFLOW_MCP_PRODUCTION_SOURCE_URL || 'https://example.com/';
-const evidencePath = process.env.PRODUCTION_EVIDENCE_PATH || 'production-evidence.json';
-const timeoutMs = Number(process.env.PRODUCTION_TIMEOUT_MS || 15 * 60 * 1000);
-const pollMs = Number(process.env.PRODUCTION_POLL_MS || 5000);
+const baseUrl = required('WORKFLOW_MCP_URL').replace(/\/+$/, '');
+const accessToken = required('WORKFLOW_MCP_ACCESS_TOKEN');
+const sourceUrl = process.env.WORKFLOW_MCP_SOURCE_URL || 'https://example.com/';
+const evidencePath = process.env.WORKFLOW_MCP_EVIDENCE_PATH || 'workflow-mcp-evidence.json';
+const timeoutMs = Number(process.env.WORKFLOW_MCP_TIMEOUT_MS || 15 * 60 * 1000);
+const pollMs = Number(process.env.WORKFLOW_MCP_POLL_MS || 5000);
 const authRetryTimeoutMs = Number(
-  process.env.PRODUCTION_AUTH_RETRY_TIMEOUT_MS || 60_000
+  process.env.WORKFLOW_MCP_AUTH_RETRY_TIMEOUT_MS || 60_000
 );
 
 const evidence: Record<string, unknown> = {
@@ -22,26 +22,26 @@ const listed = await waitForAuthenticatedMcp();
 const workflowIds = asArray(listed.workflows).map(item => stringField(asObject(item), 'id'));
 for (const requiredWorkflow of ['web-archive-smoke', 'mcp-connection-smoke']) {
   if (!workflowIds.includes(requiredWorkflow)) {
-    throw new Error(`Production workflow_list is missing "${requiredWorkflow}".`);
+    throw new Error(`Workflow MCP workflow_list is missing "${requiredWorkflow}".`);
   }
 }
 
 const heavyAdmission = await callTool('workflow_run', {
   workflow: 'web-archive-smoke',
   input: { url: sourceUrl },
-  idempotencyKey: `production-heavy-${process.env.GITHUB_RUN_ID || Date.now()}`
+  idempotencyKey: `workflow-heavy-${process.env.GITHUB_RUN_ID || Date.now()}`
 });
 const heavyRunId = stringField(heavyAdmission, 'runId');
 const heavyStatus = await waitForTerminal(heavyRunId, 'heavy');
 if (heavyStatus.state !== 'succeeded') {
-  throw new Error(`Heavy production run ended as ${String(heavyStatus.state)}: ${JSON.stringify(heavyStatus)}`);
+  throw new Error(`Heavy workflow run ended as ${String(heavyStatus.state)}: ${JSON.stringify(heavyStatus)}`);
 }
 const heavyResult = await callTool('workflow_result', { runId: heavyRunId });
 if (heavyResult.ready !== true || heavyResult.state !== 'succeeded') {
   throw new Error(`Heavy workflow_result was not succeeded/ready: ${JSON.stringify(heavyResult)}`);
 }
 const artifacts = asArray(heavyResult.artifacts);
-if (artifacts.length < 1) throw new Error('Heavy production run produced no canonical Artifact reference.');
+if (artifacts.length < 1) throw new Error('Heavy workflow run produced no canonical Artifact reference.');
 const artifact = asObject(artifacts[0]);
 const readUrl = stringField(artifact, 'readUrl');
 const artifactResponse = await fetch(readUrl);
@@ -55,12 +55,12 @@ const heavyLogs = await callTool('workflow_logs', { runId: heavyRunId, cursor: 0
 const mcpAdmission = await callTool('workflow_run', {
   workflow: 'mcp-connection-smoke',
   input: {},
-  idempotencyKey: `production-mcp-${process.env.GITHUB_RUN_ID || Date.now()}`
+  idempotencyKey: `workflow-mcp-${process.env.GITHUB_RUN_ID || Date.now()}`
 });
 const mcpRunId = stringField(mcpAdmission, 'runId');
 const mcpStatus = await waitForTerminal(mcpRunId, 'mcp');
 if (mcpStatus.state !== 'succeeded') {
-  throw new Error(`MCP production run ended as ${String(mcpStatus.state)}: ${JSON.stringify(mcpStatus)}`);
+  throw new Error(`MCP workflow run ended as ${String(mcpStatus.state)}: ${JSON.stringify(mcpStatus)}`);
 }
 const mcpResult = await callTool('workflow_result', { runId: mcpRunId });
 const mcpOutputs = asObject(mcpResult.outputs);
@@ -101,9 +101,9 @@ console.log(JSON.stringify(evidence, null, 2));
 
 async function assertHealth(): Promise<void> {
   const response = await fetch(`${baseUrl}/health`);
-  if (!response.ok) throw new Error(`Production health failed with status ${response.status}.`);
+  if (!response.ok) throw new Error(`Workflow MCP health failed with status ${response.status}.`);
   const body = asObject(await response.json());
-  if (body.status !== 'ok') throw new Error('Production health payload is invalid.');
+  if (body.status !== 'ok') throw new Error('Workflow MCP health payload is invalid.');
 }
 
 async function waitForAuthenticatedMcp(): Promise<Record<string, unknown>> {
@@ -150,7 +150,7 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<Re
           _meta: {
             'io.modelcontextprotocol/protocolVersion': '2026-07-28',
             'io.modelcontextprotocol/clientInfo': {
-              name: 'workflow-mcp-production-tracer',
+              name: 'workflow-mcp-deploy-tracer',
               version: '0.1.0'
             },
             'io.modelcontextprotocol/clientCapabilities': {}
@@ -210,13 +210,13 @@ function parseEnvelope(text: string, contentType: string | null): RpcEnvelope {
 
 function asObject(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('Expected object in production tracer.');
+    throw new Error('Expected object in deploy tracer.');
   }
   return value as Record<string, unknown>;
 }
 
 function asArray(value: unknown): unknown[] {
-  if (!Array.isArray(value)) throw new Error('Expected array in production tracer.');
+  if (!Array.isArray(value)) throw new Error('Expected array in deploy tracer.');
   return value;
 }
 
