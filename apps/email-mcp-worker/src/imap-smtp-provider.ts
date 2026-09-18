@@ -689,7 +689,6 @@ export class ImapSmtpProvider implements EmailProvider {
           flags: true,
           size: true,
           bodyStructure: true,
-          headers: ["references"],
         },
         { uid: true },
       );
@@ -721,23 +720,39 @@ export class ImapSmtpProvider implements EmailProvider {
           reply_to: [],
         };
       } else {
-        const bodyMessage = await client.fetchOne(
-          reference.uid,
-          {
-            bodyParts: readableBodyPartFetchKeys(readableParts),
-          },
-          { uid: true },
-        );
+        const fetchedBodyParts = new Map<string, Uint8Array>();
+        for (const part of readableParts) {
+          const bodyMessage = await client.fetchOne(
+            reference.uid,
+            {
+              bodyParts: [part.part],
+            },
+            { uid: true },
+          );
+          for (const [key, value] of bodyMessage?.bodyParts ?? []) {
+            fetchedBodyParts.set(key, value);
+          }
+        }
 
         normalized = await normalizeFetchedBodyParts(
           readableParts,
-          bodyMessage && bodyMessage.bodyParts
-            ? bodyMessage.bodyParts
-            : new Map<string, Uint8Array>(),
+          fetchedBodyParts,
         );
       }
 
-      const references = parseReferencesHeader(metadata.headers);
+      let references: string | undefined;
+      try {
+        const headerMessage = await client.fetchOne(
+          reference.uid,
+          { headers: ["references"] },
+          { uid: true },
+        );
+        references = parseReferencesHeader(headerMessage?.headers);
+      } catch {
+        // References are optional for a read. Some IMAP servers reject
+        // HEADER.FIELDS after a body fetch; do not fail email_get for that.
+      }
+
       return {
         message_id: options.messageId,
         folder_id: options.folderId,
