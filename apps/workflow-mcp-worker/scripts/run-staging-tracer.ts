@@ -7,6 +7,9 @@ const sourceUrl = process.env.WORKFLOW_MCP_STAGING_SOURCE_URL || 'https://exampl
 const evidencePath = process.env.STAGING_EVIDENCE_PATH || 'staging-evidence.json';
 const timeoutMs = Number(process.env.STAGING_TIMEOUT_MS || 15 * 60 * 1000);
 const pollMs = Number(process.env.STAGING_POLL_MS || 5000);
+const authReadyTimeoutMs = Number(
+  process.env.STAGING_AUTH_READY_TIMEOUT_MS || 60_000
+);
 
 const evidence: Record<string, unknown> = {
   startedAt: new Date().toISOString(),
@@ -15,7 +18,7 @@ const evidence: Record<string, unknown> = {
 };
 
 await assertHealth();
-const listed = await callTool('workflow_list', {});
+const listed = await waitForAuthenticatedMcp();
 const workflowIds = asArray(listed.workflows).map(item => stringField(asObject(item), 'id'));
 for (const requiredWorkflow of ['web-archive-smoke', 'mcp-connection-smoke']) {
   if (!workflowIds.includes(requiredWorkflow)) {
@@ -101,6 +104,30 @@ async function assertHealth(): Promise<void> {
   if (!response.ok) throw new Error(`Staging health failed with status ${response.status}.`);
   const body = asObject(await response.json());
   if (body.status !== 'ok') throw new Error('Staging health payload is invalid.');
+}
+
+async function waitForAuthenticatedMcp(): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + authReadyTimeoutMs;
+  let lastError: unknown;
+
+  while (Date.now() < deadline) {
+    try {
+      const result = await callTool('workflow_list', {});
+      console.log('Authenticated MCP endpoint is ready.');
+      return result;
+    } catch (error) {
+      lastError = error;
+      const message = error instanceof Error ? error.message : String(error);
+      console.log(`MCP authentication not ready yet: ${message.slice(0, 300)}`);
+      await sleep(Math.min(pollMs, 5_000));
+    }
+  }
+
+  const message =
+    lastError instanceof Error ? lastError.message : String(lastError ?? 'unknown error');
+  throw new Error(
+    `Timed out waiting for authenticated MCP readiness: ${message.slice(0, 500)}`
+  );
 }
 
 async function waitForTerminal(runId: string, label: string): Promise<Record<string, unknown>> {
