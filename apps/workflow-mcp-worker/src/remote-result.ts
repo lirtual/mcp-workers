@@ -30,6 +30,8 @@ export function parseRemoteExecutorResult(
     if (
       !output ||
       !artifact ||
+      typeof artifact.artifactId !== 'string' ||
+      !/^artifact_[A-Za-z0-9-]+$/.test(artifact.artifactId) ||
       artifact.name !== 'archive.md' ||
       artifact.mediaType !== 'text/markdown' ||
       typeof artifact.size !== 'number' ||
@@ -45,6 +47,7 @@ export function parseRemoteExecutorResult(
       state: 'succeeded',
       output: {
         artifact: {
+          artifactId: artifact.artifactId,
           name: 'archive.md',
           mediaType: 'text/markdown',
           size: artifact.size,
