@@ -80,6 +80,9 @@ describe("email_folders tracer", () => {
           },
         ];
       },
+      async searchMessages() {
+        return { messages: [] };
+      },
     });
 
     await expect(
@@ -110,7 +113,10 @@ describe("email_folders tracer", () => {
     let created = false;
     const factory: EmailProviderFactory = () => {
       created = true;
-      return { async listFolders() { return []; } };
+      return {
+        async listFolders() { return []; },
+        async searchMessages() { return { messages: [] }; },
+      };
     };
 
     await expect(
