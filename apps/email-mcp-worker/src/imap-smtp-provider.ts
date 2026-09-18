@@ -19,7 +19,6 @@ import {
 import {
   MAX_SOURCE_BYTES,
   normalizeMimeMessage,
-  oversizedMessageFallback,
   type NormalizedMessagePayload,
   structureAttachmentMetadata,
   unavailableMessageBody,
@@ -108,6 +107,168 @@ function normalizeAddresses(
         }]
       : [],
   );
+}
+
+
+export interface ReadableBodyPart {
+  part: string;
+  mediaType: "text/plain" | "text/html";
+  charset?: string;
+  encoding?: string;
+  size?: number;
+}
+
+function nodeIsAttachment(node: MessageStructureObject): boolean {
+  const disposition = node.disposition?.toLowerCase();
+  return (
+    disposition === "attachment" ||
+    typeof node.dispositionParameters?.filename === "string" ||
+    typeof node.parameters?.name === "string"
+  );
+}
+
+export function selectReadableBodyParts(
+  root: MessageStructureObject | undefined,
+  maxBytes = MAX_SOURCE_BYTES,
+): ReadableBodyPart[] {
+  if (!root) return [];
+
+  const selected = new Map<"text/plain" | "text/html", ReadableBodyPart>();
+
+  const visit = (
+    node: MessageStructureObject,
+    ancestorAttachment: boolean,
+  ): void => {
+    const attachment = ancestorAttachment || nodeIsAttachment(node);
+    const mediaType = node.type?.toLowerCase();
+
+    if (
+      !attachment &&
+      (mediaType === "text/plain" || mediaType === "text/html") &&
+      node.part &&
+      !selected.has(mediaType) &&
+      (node.size == null || node.size <= maxBytes)
+    ) {
+      selected.set(mediaType, {
+        part: node.part,
+        mediaType,
+        ...(node.parameters?.charset
+          ? { charset: node.parameters.charset }
+          : {}),
+        ...(node.encoding ? { encoding: node.encoding } : {}),
+        ...(node.size != null ? { size: node.size } : {}),
+      });
+    }
+
+    for (const child of node.childNodes ?? []) {
+      visit(child, attachment);
+    }
+  };
+
+  visit(root, false);
+
+  return ["text/plain", "text/html"].flatMap((mediaType) => {
+    const part = selected.get(mediaType as "text/plain" | "text/html");
+    return part ? [part] : [];
+  });
+}
+
+function hasOversizedReadableBodyPart(
+  root: MessageStructureObject | undefined,
+  maxBytes = MAX_SOURCE_BYTES,
+): boolean {
+  if (!root) return false;
+  const visit = (
+    node: MessageStructureObject,
+    ancestorAttachment: boolean,
+  ): boolean => {
+    const attachment = ancestorAttachment || nodeIsAttachment(node);
+    const mediaType = node.type?.toLowerCase();
+    if (
+      !attachment &&
+      (mediaType === "text/plain" || mediaType === "text/html") &&
+      node.size != null &&
+      node.size > maxBytes
+    ) {
+      return true;
+    }
+    return (node.childNodes ?? []).some((child) => visit(child, attachment));
+  };
+  return visit(root, false);
+}
+
+export async function normalizeFetchedBodyParts(
+  parts: ReadableBodyPart[],
+  bodyParts: Map<string, Uint8Array>,
+): Promise<NormalizedMessagePayload> {
+  let text: string | undefined;
+  let html: string | undefined;
+  let truncated = false;
+
+  for (const part of parts) {
+    const raw = bodyParts.get(part.part);
+    if (!raw || raw.byteLength > MAX_SOURCE_BYTES) continue;
+
+    const charset = part.charset
+      ? '; charset="' + part.charset.replace(/"/g, "") + '"'
+      : "";
+    const transferEncoding = part.encoding
+      ? "\r\nContent-Transfer-Encoding: " + part.encoding
+      : "";
+    const header = new TextEncoder().encode(
+      "MIME-Version: 1.0\r\nContent-Type: " +
+        part.mediaType +
+        charset +
+        transferEncoding +
+        "\r\n\r\n",
+    );
+    const synthetic = new Uint8Array(header.byteLength + raw.byteLength);
+    synthetic.set(header, 0);
+    synthetic.set(raw, header.byteLength);
+
+    const normalized = await normalizeMimeMessage(synthetic);
+    truncated = truncated || normalized.body.truncated;
+
+    if (part.mediaType === "text/plain" && normalized.body.text) {
+      text = normalized.body.text;
+    }
+    if (part.mediaType === "text/html" && normalized.body.html) {
+      html = normalized.body.html;
+    }
+  }
+
+  if (!text && !html) {
+    return {
+      body: unavailableMessageBody("body_not_found"),
+      attachments: [],
+      reply_to: [],
+    };
+  }
+
+  const warning = unavailableMessageBody("body_not_found").warning;
+  return {
+    body: {
+      ...(text ? { text } : {}),
+      ...(html ? { html } : {}),
+      truncated,
+      untrusted_external_content: true,
+      warning,
+    },
+    attachments: [],
+    reply_to: [],
+  };
+}
+
+export function parseReferencesHeader(
+  headers: Uint8Array | undefined,
+): string | undefined {
+  if (!headers) return undefined;
+  const unfolded = new TextDecoder()
+    .decode(headers)
+    .replace(/\r?\n[\t ]+/g, " ");
+  const match = unfolded.match(/^references:\s*(.+)$/im);
+  const value = match?.[1]?.trim();
+  return value || undefined;
 }
 
 function structureHasAttachment(
@@ -503,6 +664,7 @@ export class ImapSmtpProvider implements EmailProvider {
           flags: true,
           size: true,
           bodyStructure: true,
+          headers: ["references"],
         },
         { uid: true },
       );
@@ -519,35 +681,42 @@ export class ImapSmtpProvider implements EmailProvider {
       const date = envelope?.date
         ? new Date(envelope.date).toISOString()
         : undefined;
+      const attachments = structureAttachmentMetadata(metadata.bodyStructure);
+      const readableParts = selectReadableBodyParts(metadata.bodyStructure);
 
       let normalized: NormalizedMessagePayload;
-
-      if ((metadata.size ?? 0) > MAX_SOURCE_BYTES) {
-        normalized = oversizedMessageFallback(metadata.bodyStructure);
+      if (readableParts.length === 0) {
+        normalized = {
+          body: unavailableMessageBody(
+            hasOversizedReadableBodyPart(metadata.bodyStructure)
+              ? "message_body_too_large"
+              : "body_not_found",
+          ),
+          attachments: [],
+          reply_to: [],
+        };
       } else {
-        const sourceMessage = await client.fetchOne(
+        const bodyMessage = await client.fetchOne(
           reference.uid,
-          metadata.size == null
-            ? { source: { maxLength: MAX_SOURCE_BYTES + 1 } }
-            : { source: true },
+          {
+            bodyParts: readableParts.map((part) => ({
+              key: part.part,
+              start: 0,
+              maxLength: MAX_SOURCE_BYTES + 1,
+            })),
+          },
           { uid: true },
         );
-        const source = sourceMessage ? sourceMessage.source : undefined;
 
-        if (!source) {
-          normalized = {
-            body: unavailableMessageBody("message_source_unavailable"),
-            attachments: structureAttachmentMetadata(metadata.bodyStructure),
-            reply_to: normalizeAddresses(envelope?.replyTo),
-          };
-        } else if (source.byteLength > MAX_SOURCE_BYTES) {
-          normalized = oversizedMessageFallback(metadata.bodyStructure);
-        } else {
-          normalized = await normalizeMimeMessage(source);
-        }
+        normalized = await normalizeFetchedBodyParts(
+          readableParts,
+          bodyMessage && bodyMessage.bodyParts
+            ? bodyMessage.bodyParts
+            : new Map<string, Uint8Array>(),
+        );
       }
 
-      const attachments = normalized.attachments;
+      const references = parseReferencesHeader(metadata.headers);
       return {
         message_id: options.messageId,
         folder_id: options.folderId,
@@ -555,34 +724,24 @@ export class ImapSmtpProvider implements EmailProvider {
         from: normalizeAddresses(envelope?.from),
         to: normalizeAddresses(envelope?.to),
         cc: normalizeAddresses(envelope?.cc),
-        reply_to:
-          normalized.reply_to.length > 0
-            ? normalized.reply_to
-            : normalizeAddresses(envelope?.replyTo),
+        reply_to: normalizeAddresses(envelope?.replyTo),
         ...(date ? { date } : {}),
         unread: !flags.has("\\Seen"),
         flagged: flags.has("\\Flagged"),
         has_attachments: attachments.length > 0,
         ...(metadata.size != null ? { size_bytes: metadata.size } : {}),
-        ...(normalized.internet_message_id
-          ? { internet_message_id: normalized.internet_message_id }
-          : envelope?.messageId
-            ? { internet_message_id: envelope.messageId }
-            : {}),
-        ...(normalized.in_reply_to
-          ? { in_reply_to: normalized.in_reply_to }
-          : envelope?.inReplyTo
-            ? { in_reply_to: envelope.inReplyTo }
-            : {}),
-        ...("references" in normalized && normalized.references
-          ? { references: normalized.references }
+        ...(envelope?.messageId
+          ? { internet_message_id: envelope.messageId }
           : {}),
+        ...(envelope?.inReplyTo
+          ? { in_reply_to: envelope.inReplyTo }
+          : {}),
+        ...(references ? { references } : {}),
         body: normalized.body,
         attachments,
       };
     });
   }
-
 
   async modifyMessages(
     options: ModifyMessagesOptions,
