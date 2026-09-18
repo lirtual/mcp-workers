@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { cancelGitHubRun, decideDispatchSequence, dispatchGitHubExecutor, getGitHubRunFact, githubExecutorTrust } from '../src/github-executor.js';
+import { cancelGitHubRun, classifyCancellationRunFacts, decideDispatchSequence, dispatchGitHubExecutor, getGitHubRunFact, githubExecutorTrust } from '../src/github-executor.js';
 import type { Env } from '../src/types.js';
 
 const env = {
@@ -136,6 +136,31 @@ describe('GitHub executor dispatch', () => {
     await expect(
       cancelGitHubRun(env, '9001', fetchImpl as typeof fetch)
     ).resolves.toMatchObject({ runId: '9001', outcome: 'unknown' });
+  });
+
+  it('classifies cancellation reconciliation facts conservatively', () => {
+    expect(
+      classifyCancellationRunFacts([
+        { runId: '1', status: 'completed', conclusion: 'cancelled' },
+        { runId: '2', status: 'completed', conclusion: 'failure' }
+      ])
+    ).toBe('stopped');
+
+    expect(
+      classifyCancellationRunFacts([
+        { runId: '1', status: 'completed', conclusion: 'success' },
+        { runId: '2', status: 'completed', conclusion: 'cancelled' }
+      ])
+    ).toBe('success_without_callback');
+
+    expect(
+      classifyCancellationRunFacts([
+        { runId: '1', status: 'in_progress' },
+        { runId: '2', status: 'completed', conclusion: 'cancelled' }
+      ])
+    ).toBe('unresolved');
+
+    expect(classifyCancellationRunFacts([])).toBe('unresolved');
   });
 
   it('derives the OIDC trust policy from server configuration', () => {
