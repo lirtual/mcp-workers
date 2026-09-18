@@ -29,7 +29,7 @@ describe('Workflow MCP staging release gate contract', () => {
     });
     expect(value.permissions).toEqual({
       contents: 'read',
-      actions: 'write'
+      actions: 'read'
     });
 
     const jobs = value.jobs as Record<string, unknown>;
@@ -67,6 +67,12 @@ describe('Workflow MCP staging release gate contract', () => {
     );
     expect(workflowText).not.toContain(
       'WORKFLOW_MCP_STAGING_R2_SECRET_ACCESS_KEY'
+    );
+    expect(workflowText).toContain(
+      'WORKFLOW_MCP_GITHUB_ACTIONS_TOKEN: ${{ secrets.WORKFLOW_MCP_GITHUB_ACTIONS_TOKEN }}'
+    );
+    expect(workflowText).toContain(
+      'GITHUB_ACTIONS_TOKEN: ${{ secrets.WORKFLOW_MCP_GITHUB_ACTIONS_TOKEN }}'
     );
   });
 
