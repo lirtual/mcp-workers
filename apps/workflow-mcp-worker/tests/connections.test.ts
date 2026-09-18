@@ -47,8 +47,26 @@ describe('MCP connection auth formatting', () => {
       protocolVersion: '2025-11-25',
       trustAnnotations: false,
       tools: {
-        workflow_list: { effect: 'read' }
+        health_check: { effect: 'read' }
       },
+      auth: {
+        header: 'Authorization',
+        format: 'bearer',
+        secret: 'SMOKE_READONLY_MCP_TOKEN'
+      }
+    });
+  });
+
+  it('resolves the modern staging self-connection with Bearer auth and read-only policy', () => {
+    const resolved = resolveConnection(
+      { SMOKE_MODERN_MCP_ENDPOINT: 'https://staging.example.test/mcp' },
+      'smoke-modern'
+    );
+    expect(resolved).toMatchObject({
+      endpoint: 'https://staging.example.test/mcp',
+      protocolVersion: '2026-07-28',
+      trustAnnotations: false,
+      tools: { workflow_list: { effect: 'read' } },
       auth: {
         header: 'Authorization',
         format: 'bearer',
