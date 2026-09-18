@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
 import { admitManualWorkflow, PublicWorkflowError } from './admission.js';
 import { artifactReadReferences } from './artifacts.js';
+import { requestWorkflowCancellation } from './cancellation.js';
 import { findWorkflow, getWorkflowRegistry } from './registry.js';
 import { D1WorkflowStore } from './storage.js';
 import type { Env } from './types.js';
@@ -188,6 +189,22 @@ export function registerWorkflowTools(server: ToolRegistrar, env?: Env): void {
           ...(ready ? { outputs: run.output ?? {}, artifacts } : {}),
           ...(run.errorCode ? { errorCode: run.errorCode, errorSummary: run.errorSummary } : {})
         });
+      })
+  );
+
+  server.registerTool(
+    'workflow_cancel',
+    {
+      description: 'Cooperatively request cancellation of one workflow run.',
+      inputSchema: z.object({ runId: runIdSchema }).strict(),
+      annotations: { readOnlyHint: false, idempotentHint: true, openWorldHint: false }
+    },
+    async rawArgs =>
+      runSafely(async () => {
+        const { runId } = z.object({ runId: runIdSchema }).parse(rawArgs);
+        const result = await requestWorkflowCancellation(requiredEnv(env), runId);
+        if (!result) return failure('RUN_NOT_FOUND', 'Workflow run was not found.');
+        return success(result);
       })
   );
 
