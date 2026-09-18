@@ -86,6 +86,7 @@ describe("email_folders tracer", () => {
       async getMessage() {
         throw new Error("not used in this test");
       },
+      async modifyMessages() { throw new Error("not used"); },
     });
 
     await expect(
@@ -120,6 +121,7 @@ describe("email_folders tracer", () => {
         async listFolders() { return []; },
         async searchMessages() { return { messages: [] }; },
       async getMessage() { throw new Error("not used in this test"); },
+        async modifyMessages() { throw new Error("not used"); },
       };
     };
 
