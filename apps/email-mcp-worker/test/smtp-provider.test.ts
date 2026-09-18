@@ -28,6 +28,8 @@ describe("SMTP provider mapping", () => {
       connectionTimeout: 15_000,
       greetingTimeout: 15_000,
       socketTimeout: 15_000,
+      disableFileAccess: true,
+      disableUrlAccess: true,
     });
 
     const icloud = parseEmailAccountsConfig(JSON.stringify({
