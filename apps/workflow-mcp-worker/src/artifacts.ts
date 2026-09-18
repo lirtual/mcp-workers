@@ -167,7 +167,8 @@ export async function finalizeCallbackArtifactsForManifest(
     throw new Error('Artifact callback metadata does not match the server allocation.');
   }
 
-  const object = await env.ARTIFACTS.head(artifact.objectKey);
+  const bucket = requireArtifactBucket(env);
+  const object = await bucket.head(artifact.objectKey);
   if (!object) throw new Error('Allocated R2 Artifact object does not exist.');
   if (object.size !== size) throw new Error('R2 Artifact size does not match the allocation.');
   if (object.httpMetadata?.contentType !== mediaType) {
@@ -252,6 +253,11 @@ function validateArtifactAllocationForManifest(
   if (!/^[a-f0-9]{64}$/.test(request.sha256)) {
     throw new Error('Artifact sha256 must be a lowercase 64-character hex digest.');
   }
+}
+
+function requireArtifactBucket(env: Env): R2Bucket {
+  if (!env.ARTIFACTS) throw new Error('ARTIFACTS R2 binding is not configured.');
+  return env.ARTIFACTS;
 }
 
 function artifactReference(artifact: ArtifactRecord): ArtifactReference {
