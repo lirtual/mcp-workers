@@ -8,7 +8,7 @@ steps:
   call:
     uses: mcp.call
     with:
-      connection: smoke-readonly
+      connection: smoke-modern
       tool: workflow_list
       arguments: {}
 outputs:
