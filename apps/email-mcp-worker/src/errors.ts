@@ -7,7 +7,8 @@ export type EmailErrorCode =
   | "FOLDER_NOT_FOUND"
   | "MESSAGE_NOT_FOUND"
   | "MESSAGE_REFERENCE_STALE"
-  | "CURSOR_INVALID";
+  | "CURSOR_INVALID"
+  | "MESSAGE_TOO_LARGE";
 
 export class EmailToolError extends Error {
   constructor(
