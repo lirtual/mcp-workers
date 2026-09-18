@@ -5,7 +5,7 @@ const issuer = 'https://token.actions.example.test';
 const audience = 'workflow-mcp-worker';
 const jwksUrl = 'https://token.actions.example.test/.well-known/jwks';
 let privateKey: CryptoKey;
-let publicJwk: JsonWebKey;
+let publicJwk: JsonWebKey & { kid?: string; alg?: string; use?: string };
 
 beforeAll(async () => {
   const pair = (await crypto.subtle.generateKey(
@@ -19,7 +19,7 @@ beforeAll(async () => {
     ['sign', 'verify']
   )) as CryptoKeyPair;
   privateKey = pair.privateKey;
-  publicJwk = await crypto.subtle.exportKey('jwk', pair.publicKey);
+  publicJwk = (await crypto.subtle.exportKey('jwk', pair.publicKey)) as JsonWebKey & { kid?: string; alg?: string; use?: string };
   publicJwk.kid = 'test-key';
   publicJwk.alg = 'RS256';
   publicJwk.use = 'sig';
