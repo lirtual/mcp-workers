@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseEmailAccountsConfig } from "../src/config.js";
 import { EmailToolError } from "../src/errors.js";
+import { validateMutationReferences } from "../src/imap-smtp-provider.js";
 import { modifyEmail } from "../src/server.js";
 import { encodeMessageReference } from "../src/message-reference.js";
 import type { EmailProviderFactory } from "../src/provider.js";
@@ -100,5 +101,27 @@ describe("email_modify tracer", () => {
         targetFolderId: "Archive",
       },
     ]);
+  });
+});
+
+
+describe("IMAP mutation reference validation", () => {
+  it("extracts UIDs only when account, folder, and UIDVALIDITY all match", () => {
+    expect(
+      validateMutationReferences(
+        "qq",
+        "INBOX",
+        [reference(1), reference(2)],
+        123n,
+      ),
+    ).toEqual([1, 2]);
+
+    expect(() =>
+      validateMutationReferences("qq", "INBOX", [reference(1)], 999n),
+    ).toThrowError(
+      expect.objectContaining<Partial<EmailToolError>>({
+        code: "MESSAGE_REFERENCE_STALE",
+      }),
+    );
   });
 });
