@@ -537,7 +537,8 @@ export class ImapSmtpProvider implements EmailProvider {
       disableAutoIdle: true,
       connectionTimeout: 15_000,
       greetingTimeout: 15_000,
-      socketTimeout: 15_000,
+      // QQ Mail body-part reads can legitimately exceed 15 seconds from Workers.
+      socketTimeout: 45_000,
       clientInfo: { name: "email-mcp-worker" },
     });
   }
