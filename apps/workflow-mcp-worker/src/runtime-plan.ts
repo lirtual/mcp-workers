@@ -78,7 +78,7 @@ function evaluateExpression(
   if (expression.kind === 'call') {
     if (expression.name === 'success') return true;
     if (expression.name === 'failure') return false;
-    if (expression.name === 'always') return true;
+    return true;
   }
   if (expression.kind === 'ref') {
     if (expression.path[0] === 'input') {
