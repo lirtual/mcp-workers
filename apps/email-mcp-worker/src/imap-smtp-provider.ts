@@ -456,34 +456,9 @@ export function normalizeSmtpSendError(
       "Email provider request timed out.",
     );
   }
-  const cleanDetail = (value: unknown): string | undefined => {
-    if (typeof value !== "string") return undefined;
-    const cleaned = value
-      .toUpperCase()
-      .replace(/[^A-Z0-9_. -]/g, "")
-      .trim()
-      .slice(0, 64);
-    return cleaned || undefined;
-  };
-  const diagnostic = {
-    ...(cleanDetail(details.code)
-      ? { provider_code: cleanDetail(details.code) }
-      : {}),
-    ...(cleanDetail(details.responseStatus)
-      ? { response_status: cleanDetail(details.responseStatus) }
-      : {}),
-    ...(cleanDetail(details.responseCode)
-      ? { response_code: cleanDetail(details.responseCode) }
-      : {}),
-    ...("command" in details && cleanDetail((details as { command?: unknown }).command)
-      ? { command: cleanDetail((details as { command?: unknown }).command) }
-      : {}),
-  };
-
   return new EmailToolError(
     "UPSTREAM_UNAVAILABLE",
     "Email provider is unavailable.",
-    Object.keys(diagnostic).length > 0 ? diagnostic : undefined,
   );
 }
 
@@ -495,6 +470,7 @@ export function normalizeImapError(error: unknown): EmailToolError {
           code?: unknown;
           responseStatus?: unknown;
           responseCode?: unknown;
+          command?: unknown;
           authenticationFailed?: unknown;
         })
       : {};
@@ -540,9 +516,30 @@ export function normalizeImapError(error: unknown): EmailToolError {
     );
   }
 
+  const cleanDetail = (value: unknown): string | undefined => {
+    if (typeof value !== "string") return undefined;
+    const cleaned = value
+      .toUpperCase()
+      .replace(/[^A-Z0-9_. -]/g, "")
+      .trim()
+      .slice(0, 64);
+    return cleaned || undefined;
+  };
+  const providerCode = cleanDetail(details.code);
+  const safeStatus = cleanDetail(details.responseStatus);
+  const safeResponseCode = cleanDetail(details.responseCode);
+  const safeCommand = cleanDetail(details.command);
+  const diagnostic = {
+    ...(providerCode ? { provider_code: providerCode } : {}),
+    ...(safeStatus ? { response_status: safeStatus } : {}),
+    ...(safeResponseCode ? { response_code: safeResponseCode } : {}),
+    ...(safeCommand ? { command: safeCommand } : {}),
+  };
+
   return new EmailToolError(
     "UPSTREAM_UNAVAILABLE",
     "Email provider is unavailable.",
+    Object.keys(diagnostic).length > 0 ? diagnostic : undefined,
   );
 }
 
@@ -754,8 +751,10 @@ export class ImapSmtpProvider implements EmailProvider {
             },
             { uid: true },
           );
-          for (const [key, value] of bodyMessage?.bodyParts ?? []) {
-            fetchedBodyParts.set(key, value);
+          if (bodyMessage && bodyMessage.bodyParts) {
+            for (const [key, value] of bodyMessage.bodyParts) {
+              fetchedBodyParts.set(key, value);
+            }
           }
         }
 
@@ -772,7 +771,9 @@ export class ImapSmtpProvider implements EmailProvider {
           { headers: ["references"] },
           { uid: true },
         );
-        references = parseReferencesHeader(headerMessage?.headers);
+        references = parseReferencesHeader(
+          headerMessage ? headerMessage.headers : undefined,
+        );
       } catch {
         // References are optional for a read. Some IMAP servers reject
         // HEADER.FIELDS after a body fetch; do not fail email_get for that.
