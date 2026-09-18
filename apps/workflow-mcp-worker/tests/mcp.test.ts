@@ -30,6 +30,7 @@ describe('workflow discovery tools', () => {
     expect(data.workflows.map(workflow => workflow.id)).toEqual([
       'local-http-smoke',
       'mcp-connection-smoke',
+      'trigger-http-smoke',
       'web-archive-smoke'
     ]);
     for (const workflow of data.workflows) {
