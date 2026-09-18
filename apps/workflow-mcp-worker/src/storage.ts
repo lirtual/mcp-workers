@@ -189,6 +189,54 @@ export interface CallbackInboxRecord {
   ignoredReason?: string;
 }
 
+export interface ArtifactAllocationInput {
+  artifactId: string;
+  runId: string;
+  stepRunId: string;
+  attemptId: string;
+  objectKey: string;
+  name: string;
+  mediaType: string;
+  expectedSize: number;
+  expectedSha256: string;
+}
+
+export interface ArtifactRecord {
+  artifactId: string;
+  runId: string;
+  stepRunId: string;
+  attemptId: string;
+  objectKey: string;
+  name: string;
+  mediaType: string;
+  expectedSize: number;
+  expectedSha256: string;
+  state: 'allocated' | 'ready';
+  size?: number;
+  sha256?: string;
+  createdAt: string;
+  finalizedAt?: string;
+}
+
+function mapArtifact(row: Record<string, string | number | null>): ArtifactRecord {
+  return {
+    artifactId: String(row.artifact_id),
+    runId: String(row.run_id),
+    stepRunId: String(row.step_run_id),
+    attemptId: String(row.attempt_id),
+    objectKey: String(row.object_key),
+    name: String(row.name),
+    mediaType: String(row.media_type),
+    expectedSize: Number(row.expected_size),
+    expectedSha256: String(row.expected_sha256),
+    state: String(row.state) as ArtifactRecord['state'],
+    ...(row.size === null ? {} : { size: Number(row.size) }),
+    ...(row.sha256 ? { sha256: String(row.sha256) } : {}),
+    createdAt: String(row.created_at),
+    ...(row.finalized_at ? { finalizedAt: String(row.finalized_at) } : {})
+  };
+}
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -899,6 +947,107 @@ export class D1WorkflowStore {
       )
       .bind(nextNotificationAt, callbackId)
       .run();
+  }
+
+  async getOrCreateArtifactAllocation(input: ArtifactAllocationInput): Promise<ArtifactRecord> {
+    await this.db
+      .prepare(
+        `INSERT OR IGNORE INTO artifacts
+         (artifact_id, run_id, step_run_id, attempt_id, object_key, name, media_type,
+          expected_size, expected_sha256, state, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'allocated', ?)`
+      )
+      .bind(
+        input.artifactId,
+        input.runId,
+        input.stepRunId,
+        input.attemptId,
+        input.objectKey,
+        input.name,
+        input.mediaType,
+        input.expectedSize,
+        input.expectedSha256,
+        nowIso()
+      )
+      .run();
+
+    const artifact = await this.getArtifactByAttemptName(input.attemptId, input.name);
+    if (!artifact) throw new Error('Artifact allocation could not be created.');
+    if (
+      artifact.runId !== input.runId ||
+      artifact.stepRunId !== input.stepRunId ||
+      artifact.mediaType !== input.mediaType ||
+      artifact.expectedSize !== input.expectedSize ||
+      artifact.expectedSha256 !== input.expectedSha256
+    ) {
+      throw new Error('Existing Artifact allocation does not match the requested metadata.');
+    }
+    return artifact;
+  }
+
+  async getArtifact(artifactId: string): Promise<ArtifactRecord | null> {
+    const row = await this.db
+      .prepare(
+        `SELECT artifact_id, run_id, step_run_id, attempt_id, object_key, name, media_type,
+                expected_size, expected_sha256, state, size, sha256, created_at, finalized_at
+         FROM artifacts WHERE artifact_id = ?`
+      )
+      .bind(artifactId)
+      .first<Record<string, string | number | null>>();
+    return row ? mapArtifact(row) : null;
+  }
+
+  async getArtifactByAttemptName(
+    attemptId: string,
+    name: string
+  ): Promise<ArtifactRecord | null> {
+    const row = await this.db
+      .prepare(
+        `SELECT artifact_id, run_id, step_run_id, attempt_id, object_key, name, media_type,
+                expected_size, expected_sha256, state, size, sha256, created_at, finalized_at
+         FROM artifacts WHERE attempt_id = ? AND name = ?`
+      )
+      .bind(attemptId, name)
+      .first<Record<string, string | number | null>>();
+    return row ? mapArtifact(row) : null;
+  }
+
+  async finalizeArtifact(
+    artifactId: string,
+    size: number,
+    sha256: string
+  ): Promise<ArtifactRecord> {
+    await this.db
+      .prepare(
+        `UPDATE artifacts
+         SET state = 'ready', size = ?, sha256 = ?, finalized_at = COALESCE(finalized_at, ?)
+         WHERE artifact_id = ?
+           AND state IN ('allocated', 'ready')
+           AND expected_size = ?
+           AND expected_sha256 = ?`
+      )
+      .bind(size, sha256, nowIso(), artifactId, size, sha256)
+      .run();
+
+    const artifact = await this.getArtifact(artifactId);
+    if (!artifact || artifact.state !== 'ready') {
+      throw new Error('Artifact could not be finalized against its allocation.');
+    }
+    return artifact;
+  }
+
+  async listArtifacts(runId: string): Promise<ArtifactRecord[]> {
+    const result = await this.db
+      .prepare(
+        `SELECT artifact_id, run_id, step_run_id, attempt_id, object_key, name, media_type,
+                expected_size, expected_sha256, state, size, sha256, created_at, finalized_at
+         FROM artifacts
+         WHERE run_id = ? AND state = 'ready'
+         ORDER BY created_at ASC, artifact_id ASC`
+      )
+      .bind(runId)
+      .all<Record<string, string | number | null>>();
+    return result.results.map(mapArtifact);
   }
 
   async getSchedulerState(scheduleKey: string): Promise<SchedulerState | null> {
