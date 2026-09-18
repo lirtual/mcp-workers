@@ -13,6 +13,7 @@ import {
 } from './execute-capability.js';
 import type { EffectiveOperationPolicy } from './effective-policy.js';
 import {
+  decideDispatchSequence,
   dispatchGitHubExecutor,
   getGitHubRunFact,
   githubExecutorTrust,
@@ -385,15 +386,15 @@ async function runRemoteAttempt(input: {
       ...(dispatch.errorSummary ? { errorSummary: dispatch.errorSummary } : {})
     });
 
-    if (dispatch.outcome === 'accepted') break;
-    if (dispatch.outcome === 'failed' && !dispatches.some(item => item.outcome === 'unknown')) {
+    const decision = decideDispatchSequence(dispatches, 2);
+    if (decision === 'redispatch') continue;
+    if (decision === 'failed') {
       return finishRemoteAttemptResult(input, attemptId, {
         state: 'failed',
         errorCode: 'GITHUB_DISPATCH_FAILED',
         errorSummary: dispatch.errorSummary ?? 'GitHub executor dispatch was explicitly rejected.'
       });
     }
-    if (dispatch.outcome === 'unknown' && generation < 2) continue;
     break;
   }
 
