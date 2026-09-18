@@ -56,9 +56,52 @@ export interface SearchMessagesResult {
   next_cursor?: string;
 }
 
+export interface EmailAttachmentMetadata {
+  filename?: string;
+  media_type: string;
+  disposition?: string;
+  content_id?: string;
+  size_bytes?: number;
+}
+
+export interface EmailBody {
+  text?: string;
+  html?: string;
+  truncated: boolean;
+  untrusted_external_content: true;
+  warning: string;
+  body_unavailable_reason?: string;
+}
+
+export interface GetMessageOptions {
+  folderId: string;
+  messageId: string;
+}
+
+export interface EmailMessageDetail {
+  message_id: string;
+  folder_id: string;
+  subject?: string;
+  from: EmailAddress[];
+  to: EmailAddress[];
+  cc: EmailAddress[];
+  reply_to: EmailAddress[];
+  date?: string;
+  unread: boolean;
+  flagged: boolean;
+  has_attachments: boolean;
+  size_bytes?: number;
+  internet_message_id?: string;
+  in_reply_to?: string;
+  references?: string;
+  body: EmailBody;
+  attachments: EmailAttachmentMetadata[];
+}
+
 export interface EmailProvider {
   listFolders(options: ListFoldersOptions): Promise<EmailFolder[]>;
   searchMessages(options: SearchMessagesOptions): Promise<SearchMessagesResult>;
+  getMessage(options: GetMessageOptions): Promise<EmailMessageDetail>;
 }
 
 export type EmailProviderFactory = (
