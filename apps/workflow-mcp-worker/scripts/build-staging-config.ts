@@ -6,7 +6,18 @@ const sourcePath = fileURLToPath(new URL('../wrangler.jsonc', import.meta.url));
 const outputPath = process.argv[2];
 if (!outputPath) throw new Error('Usage: build-staging-config.ts <output-path>');
 
-const config = JSON.parse(await readFile(sourcePath, 'utf8')) as Record<string, any>;
+interface WranglerConfig {
+  name?: string;
+  workers_dev?: boolean;
+  preview_urls?: boolean;
+  d1_databases?: unknown[];
+  workflows?: unknown[];
+  triggers?: Record<string, unknown>;
+  r2_buckets?: unknown[];
+  vars?: Record<string, unknown>;
+}
+
+const config = JSON.parse(await readFile(sourcePath, 'utf8')) as WranglerConfig;
 const workerName = required('WORKFLOW_MCP_STAGING_WORKER_NAME');
 const d1Name = required('WORKFLOW_MCP_STAGING_D1_DATABASE_NAME');
 const d1Id = required('WORKFLOW_MCP_STAGING_D1_DATABASE_ID');
