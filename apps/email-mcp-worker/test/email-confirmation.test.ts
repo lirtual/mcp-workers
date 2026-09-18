@@ -57,6 +57,27 @@ describe("Email MCP destructive confirmation", () => {
     ).resolves.toEqual(expected);
   });
 
+  it("does not validate request state minted with a different portal secret", async () => {
+    const expected: EmailConfirmationState = {
+      operation: "trash",
+      targetHash: "bound-target",
+    };
+    const first = await emailConfirmation(
+      codec,
+      undefined,
+      undefined,
+      expected,
+      "Trash?",
+    );
+    if (first.kind !== "input_required") throw new Error("expected input_required");
+    const other = createEmailConfirmationCodec(
+      "different-unit-test-portal-token-with-stable-entropy",
+    );
+    await expect(
+      other.verify(first.result.requestState!, verifyContext),
+    ).rejects.toBeDefined();
+  });
+
   it("continues only for an accepted checked confirmation on the same target", async () => {
     const expected: EmailConfirmationState = {
       operation: "trash",
