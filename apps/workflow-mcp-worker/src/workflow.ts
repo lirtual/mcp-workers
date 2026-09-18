@@ -12,7 +12,13 @@ import {
   type CapabilityExecutionResult
 } from './execute-capability.js';
 import type { EffectiveOperationPolicy } from './effective-policy.js';
+import { dispatchGitHubExecutor, githubExecutorTrust } from './github-executor.js';
 import { makeAttemptId, makeStepIdentity } from './identities.js';
+import {
+  prepareRemoteAttempt,
+  type PreparedRemoteAttempt
+} from './executor-protocol.js';
+import { parseRemoteExecutorResult } from './remote-result.js';
 import { asRuntimePlan, resolveRuntimeValue, type RuntimePlan, type RuntimeStep } from './runtime-plan.js';
 import { resolveStepExecutionPolicy } from './step-policy.js';
 import { D1WorkflowStore, type StepSummary } from './storage.js';
@@ -177,30 +183,6 @@ async function executeReadyStep(input: {
     return { stepId: input.stepId, state };
   }
 
-  if (definition.executor !== 'cloudflare') {
-    await input.store.ensureStepRun({
-      runId: input.runId,
-      stepId: input.stepId,
-      stepRunId: identity.stepRunId,
-      operationId: identity.operationId,
-      effectivePolicy: {
-        effect: 'unknown',
-        source: 'conservative_default',
-        maxAutomaticAttempts: 1,
-        defaultAutomaticAttempts: 1
-      }
-    });
-    await input.store.finishStep({
-      runId: input.runId,
-      stepRunId: identity.stepRunId,
-      stepId: input.stepId,
-      state: 'failed',
-      errorCode: 'EXECUTOR_NOT_IMPLEMENTED',
-      errorSummary: `Executor "${definition.executor}" is not implemented yet.`
-    });
-    return { stepId: input.stepId, state: 'failed' };
-  }
-
   const resolved = resolveRuntimeValue(definition.with, {
     input: input.input,
     stepOutputs: input.stepOutputs,
@@ -259,6 +241,34 @@ async function executeReadyStep(input: {
     return { stepId: input.stepId, state: 'failed' };
   }
 
+  if (definition.executor === 'github') {
+    return runRemoteAttempt({
+      env: input.env,
+      store: input.store,
+      durableStep: input.durableStep,
+      runId: input.runId,
+      stepId: input.stepId,
+      definition,
+      stepRunId: identity.stepRunId,
+      operationId: identity.operationId,
+      maxAttempts: policyResolution.maxAttempts,
+      effectivePolicy: policyResolution.policy,
+      capabilityInput
+    });
+  }
+
+  if (definition.executor !== 'cloudflare') {
+    await input.store.finishStep({
+      runId: input.runId,
+      stepRunId: identity.stepRunId,
+      stepId: input.stepId,
+      state: 'failed',
+      errorCode: 'EXECUTOR_NOT_IMPLEMENTED',
+      errorSummary: `Executor "${definition.executor}" is not implemented yet.`
+    });
+    return { stepId: input.stepId, state: 'failed' };
+  }
+
   return runAttempts({
     env: input.env,
     store: input.store,
@@ -275,6 +285,226 @@ async function executeReadyStep(input: {
       : {}),
     capabilityInput
   });
+}
+
+async function runRemoteAttempt(input: {
+  env: Env;
+  store: D1WorkflowStore;
+  durableStep: WorkflowStep;
+  runId: string;
+  stepId: string;
+  definition: RuntimeStep;
+  stepRunId: string;
+  operationId: string;
+  maxAttempts: number;
+  effectivePolicy: EffectiveOperationPolicy;
+  capabilityInput: Readonly<Record<string, unknown>>;
+}): Promise<{ stepId: string; state: StepTerminalState; output?: Record<string, unknown> }> {
+  if (input.maxAttempts !== 1) {
+    await input.store.finishStep({
+      runId: input.runId,
+      stepRunId: input.stepRunId,
+      stepId: input.stepId,
+      state: 'failed',
+      errorCode: 'REMOTE_RETRY_NOT_IMPLEMENTED',
+      errorSummary: 'v0.1 GitHub executor currently requires one automatic attempt.'
+    });
+    return { stepId: input.stepId, state: 'failed' };
+  }
+
+  const attemptNumber = 1;
+  const attemptId = await makeAttemptId(input.stepRunId, attemptNumber);
+  let prepared: PreparedRemoteAttempt;
+
+  try {
+    const serialized = await input.durableStep.do(
+      `remote:${input.stepId}:attempt:${attemptNumber}:prepare`,
+      { retries: { limit: 0, delay: '1 second', backoff: 'constant' }, timeout: '1 minute' },
+      async () =>
+        JSON.stringify(
+          await prepareRemoteAttempt(input.store, {
+            runId: input.runId,
+            stepRunId: input.stepRunId,
+            stepId: input.stepId,
+            attemptId,
+            attemptNumber,
+            trust: githubExecutorTrust(input.env),
+            manifest: {
+              version: 1,
+              runId: input.runId,
+              stepRunId: input.stepRunId,
+              attemptId,
+              operationId: input.operationId,
+              capability: input.definition.uses,
+              input: { ...input.capabilityInput },
+              ...(input.definition.timeoutMs ? { timeoutMs: input.definition.timeoutMs } : {})
+            }
+          })
+        )
+    );
+    if (typeof serialized !== 'string') throw new Error('Remote Attempt preparation was not serializable.');
+    prepared = JSON.parse(serialized) as PreparedRemoteAttempt;
+  } catch (error) {
+    await input.store.finishStep({
+      runId: input.runId,
+      stepRunId: input.stepRunId,
+      stepId: input.stepId,
+      state: 'failed',
+      errorCode: 'REMOTE_ATTEMPT_PREPARE_FAILED',
+      errorSummary: safeErrorMessage(error)
+    });
+    return { stepId: input.stepId, state: 'failed' };
+  }
+
+  const dispatchSerialized = await input.durableStep.do(
+    `remote:${input.stepId}:attempt:${attemptNumber}:dispatch`,
+    { retries: { limit: 0, delay: '1 second', backoff: 'constant' }, timeout: '1 minute' },
+    async () => {
+      const dispatch = await dispatchGitHubExecutor(
+        input.env,
+        prepared.attemptId,
+        prepared.claimNonce,
+        { generation: 1 }
+      );
+      await input.store.recordExecutorDispatch({
+        attemptId: prepared.attemptId,
+        generation: dispatch.generation,
+        outcome: dispatch.outcome,
+        ...(dispatch.workflowRunId ? { returnedGitHubRunId: dispatch.workflowRunId } : {}),
+        ...(dispatch.errorSummary ? { errorSummary: dispatch.errorSummary } : {})
+      });
+      return JSON.stringify(dispatch);
+    }
+  );
+  if (typeof dispatchSerialized !== 'string') {
+    throw new Error('GitHub dispatch result was not serializable.');
+  }
+  const dispatch = JSON.parse(dispatchSerialized) as {
+    outcome: 'accepted' | 'unknown' | 'failed';
+    errorSummary?: string;
+  };
+
+  if (dispatch.outcome !== 'accepted') {
+    const state = dispatch.outcome === 'unknown' ? 'indeterminate' : 'failed';
+    const code = dispatch.outcome === 'unknown' ? 'GITHUB_DISPATCH_UNKNOWN' : 'GITHUB_DISPATCH_FAILED';
+    const summary = dispatch.errorSummary ?? 'GitHub executor did not start.';
+    await input.store.recordAttemptResult({
+      runId: input.runId,
+      stepRunId: input.stepRunId,
+      stepId: input.stepId,
+      attemptId,
+      state,
+      errorCode: code,
+      errorSummary: summary
+    });
+    await input.store.finishStep({
+      runId: input.runId,
+      stepRunId: input.stepRunId,
+      stepId: input.stepId,
+      state,
+      errorCode: code,
+      errorSummary: summary
+    });
+    return { stepId: input.stepId, state };
+  }
+
+  let callbackId: string;
+  try {
+    const wake = await input.durableStep.waitForEvent<{
+      kind: string;
+      callbackId: string;
+    }>(
+      `remote:${input.stepId}:attempt:${attemptNumber}:wait`,
+      {
+        type: prepared.eventType,
+        timeout: input.definition.timeoutMs ?? 30 * 60 * 1000
+      }
+    );
+    callbackId = wake.payload.callbackId;
+    if (wake.payload.kind !== 'result' || !callbackId) {
+      throw new Error('Remote Attempt wake-up did not contain a result callback ID.');
+    }
+  } catch (error) {
+    const summary = safeErrorMessage(error);
+    await input.store.recordAttemptResult({
+      runId: input.runId,
+      stepRunId: input.stepRunId,
+      stepId: input.stepId,
+      attemptId,
+      state: 'indeterminate',
+      errorCode: 'REMOTE_RESULT_TIMEOUT',
+      errorSummary: summary
+    });
+    await input.store.finishStep({
+      runId: input.runId,
+      stepRunId: input.stepRunId,
+      stepId: input.stepId,
+      state: 'indeterminate',
+      errorCode: 'REMOTE_RESULT_TIMEOUT',
+      errorSummary: summary
+    });
+    return { stepId: input.stepId, state: 'indeterminate' };
+  }
+
+  const callback = await input.store.getCallbackInbox(callbackId);
+  if (
+    !callback ||
+    callback.attemptId !== attemptId ||
+    callback.callbackKind !== 'result'
+  ) {
+    await input.store.recordAttemptResult({
+      runId: input.runId,
+      stepRunId: input.stepRunId,
+      stepId: input.stepId,
+      attemptId,
+      state: 'failed',
+      errorCode: 'INVALID_REMOTE_CALLBACK',
+      errorSummary: 'Wake-up callback did not match the active Attempt.'
+    });
+    await input.store.finishStep({
+      runId: input.runId,
+      stepRunId: input.stepRunId,
+      stepId: input.stepId,
+      state: 'failed',
+      errorCode: 'INVALID_REMOTE_CALLBACK',
+      errorSummary: 'Wake-up callback did not match the active Attempt.'
+    });
+    return { stepId: input.stepId, state: 'failed' };
+  }
+
+  const result = parseRemoteExecutorResult(input.definition.uses, callback.result);
+  await input.store.recordAttemptResult({
+    runId: input.runId,
+    stepRunId: input.stepRunId,
+    stepId: input.stepId,
+    attemptId,
+    state: result.state,
+    ...(result.state === 'succeeded' ? { output: result.output } : {}),
+    ...(result.state === 'succeeded'
+      ? {}
+      : { errorCode: result.errorCode, errorSummary: result.errorSummary })
+  });
+
+  if (result.state === 'succeeded') {
+    await input.store.finishStep({
+      runId: input.runId,
+      stepRunId: input.stepRunId,
+      stepId: input.stepId,
+      state: 'succeeded',
+      output: result.output
+    });
+    return { stepId: input.stepId, state: 'succeeded', output: result.output };
+  }
+
+  await input.store.finishStep({
+    runId: input.runId,
+    stepRunId: input.stepRunId,
+    stepId: input.stepId,
+    state: result.state,
+    errorCode: result.errorCode,
+    errorSummary: result.errorSummary
+  });
+  return { stepId: input.stepId, state: result.state };
 }
 
 async function runAttempts(input: {
