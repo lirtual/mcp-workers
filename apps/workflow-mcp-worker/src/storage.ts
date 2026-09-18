@@ -152,6 +152,7 @@ export interface CallbackInboxInput {
   githubRunAttempt: number;
   callbackKind: string;
   result: Record<string, unknown>;
+  ignoredReason?: string;
 }
 
 export interface CallbackInboxInsertResult {
@@ -166,6 +167,14 @@ export interface ExecutorDispatchRecordInput {
   errorSummary?: string;
 }
 
+export interface ExecutorDispatchFact {
+  generation: number;
+  outcome: 'accepted' | 'unknown' | 'failed';
+  returnedGitHubRunId?: string;
+  dispatchedAt: string;
+  errorSummary?: string;
+}
+
 export interface CallbackInboxRecord {
   callbackId: string;
   attemptId: string;
@@ -174,6 +183,10 @@ export interface CallbackInboxRecord {
   callbackKind: string;
   result: Record<string, unknown>;
   receivedAt: string;
+  notificationAttemptCount?: number;
+  nextNotificationAt?: string;
+  notifiedAt?: string;
+  ignoredReason?: string;
 }
 
 function nowIso(): string {
@@ -707,12 +720,11 @@ export class D1WorkflowStore {
       .prepare(
         `INSERT OR IGNORE INTO callback_inbox
          (callback_id, attempt_id, github_run_id, github_run_attempt,
-          callback_kind, result_json, received_at)
-         SELECT ?, ?, ?, ?, ?, ?, ?
+          callback_kind, result_json, received_at, ignored_reason)
+         SELECT ?, ?, ?, ?, ?, ?, ?, ?
          WHERE EXISTS (
            SELECT 1 FROM step_attempts
            WHERE attempt_id = ?
-             AND state IN ('claimed', 'running', 'cancel_requested')
              AND github_run_id = ?
              AND github_run_attempt = ?
          )`
@@ -725,6 +737,7 @@ export class D1WorkflowStore {
         input.callbackKind,
         JSON.stringify(input.result),
         nowIso(),
+        input.ignoredReason ?? null,
         input.attemptId,
         input.githubRunId,
         input.githubRunAttempt
@@ -767,7 +780,8 @@ export class D1WorkflowStore {
     const row = await this.db
       .prepare(
         `SELECT callback_id, attempt_id, github_run_id, github_run_attempt,
-                callback_kind, result_json, received_at
+                callback_kind, result_json, received_at, notification_attempt_count,
+                next_notification_at, notified_at, ignored_reason
          FROM callback_inbox WHERE callback_id = ?`
       )
       .bind(callbackId)
@@ -781,8 +795,83 @@ export class D1WorkflowStore {
       githubRunAttempt: Number(row.github_run_attempt),
       callbackKind: String(row.callback_kind),
       result: parseObject(row.result_json === null ? null : String(row.result_json)),
-      receivedAt: String(row.received_at)
+      receivedAt: String(row.received_at),
+      notificationAttemptCount: Number(row.notification_attempt_count ?? 0),
+      ...(row.next_notification_at ? { nextNotificationAt: String(row.next_notification_at) } : {}),
+      ...(row.notified_at ? { notifiedAt: String(row.notified_at) } : {}),
+      ...(row.ignored_reason ? { ignoredReason: String(row.ignored_reason) } : {})
     };
+  }
+
+  async listExecutorDispatches(attemptId: string): Promise<ExecutorDispatchFact[]> {
+    const result = await this.db
+      .prepare(
+        `SELECT generation, outcome, returned_github_run_id, dispatched_at, error_summary
+         FROM executor_dispatches
+         WHERE attempt_id = ?
+         ORDER BY generation ASC`
+      )
+      .bind(attemptId)
+      .all<Record<string, string | number | null>>();
+
+    return result.results.map(row => ({
+      generation: Number(row.generation),
+      outcome: String(row.outcome) as ExecutorDispatchFact['outcome'],
+      ...(row.returned_github_run_id
+        ? { returnedGitHubRunId: String(row.returned_github_run_id) }
+        : {}),
+      dispatchedAt: String(row.dispatched_at),
+      ...(row.error_summary ? { errorSummary: String(row.error_summary) } : {})
+    }));
+  }
+
+  async getLatestCallbackForAttempt(attemptId: string): Promise<CallbackInboxRecord | null> {
+    const row = await this.db
+      .prepare(
+        `SELECT callback_id FROM callback_inbox
+         WHERE attempt_id = ? AND callback_kind = 'result'
+         ORDER BY received_at DESC LIMIT 1`
+      )
+      .bind(attemptId)
+      .first<{ callback_id: string }>();
+    return row ? this.getCallbackInbox(row.callback_id) : null;
+  }
+
+  async listDueCallbackNotifications(
+    now: string,
+    limit: number,
+    maxAttempts: number
+  ): Promise<CallbackInboxRecord[]> {
+    const result = await this.db
+      .prepare(
+        `SELECT callback_id FROM callback_inbox
+         WHERE notified_at IS NULL
+           AND ignored_reason IS NULL
+           AND notification_attempt_count < ?
+           AND (next_notification_at IS NULL OR next_notification_at <= ?)
+         ORDER BY received_at ASC
+         LIMIT ?`
+      )
+      .bind(maxAttempts, now, limit)
+      .all<{ callback_id: string }>();
+
+    const rows: CallbackInboxRecord[] = [];
+    for (const row of result.results) {
+      const callback = await this.getCallbackInbox(row.callback_id);
+      if (callback) rows.push(callback);
+    }
+    return rows;
+  }
+
+  async markCallbackIgnored(callbackId: string, reason: string): Promise<void> {
+    await this.db
+      .prepare(
+        `UPDATE callback_inbox
+         SET ignored_reason = ?, next_notification_at = NULL
+         WHERE callback_id = ? AND notified_at IS NULL`
+      )
+      .bind(reason.slice(0, 200), callbackId)
+      .run();
   }
 
   async markCallbackNotified(callbackId: string): Promise<void> {
