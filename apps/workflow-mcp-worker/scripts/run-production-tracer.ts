@@ -22,7 +22,7 @@ const listed = await waitForAuthenticatedMcp();
 const workflowIds = asArray(listed.workflows).map(item => stringField(asObject(item), 'id'));
 for (const requiredWorkflow of ['web-archive-smoke', 'mcp-connection-smoke']) {
   if (!workflowIds.includes(requiredWorkflow)) {
-    throw new Error(`Staging workflow_list is missing "${requiredWorkflow}".`);
+    throw new Error(`Production workflow_list is missing "${requiredWorkflow}".`);
   }
 }
 
@@ -101,9 +101,9 @@ console.log(JSON.stringify(evidence, null, 2));
 
 async function assertHealth(): Promise<void> {
   const response = await fetch(`${baseUrl}/health`);
-  if (!response.ok) throw new Error(`Staging health failed with status ${response.status}.`);
+  if (!response.ok) throw new Error(`Production health failed with status ${response.status}.`);
   const body = asObject(await response.json());
-  if (body.status !== 'ok') throw new Error('Staging health payload is invalid.');
+  if (body.status !== 'ok') throw new Error('Production health payload is invalid.');
 }
 
 async function waitForAuthenticatedMcp(): Promise<Record<string, unknown>> {
