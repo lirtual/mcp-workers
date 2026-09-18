@@ -9,10 +9,9 @@ import type { McpToolAnnotations } from './effective-policy.js';
 import type { Env } from './types.js';
 
 const MODERN_PROTOCOL = '2026-07-28';
-const LEGACY_PROTOCOL = '2025-11-25';
 const CLIENT_INFO = { name: 'workflow-mcp-worker', version: '0.1.0' };
 
-interface McpTool {
+export interface McpTool {
   name: string;
   description?: string;
   inputSchema: Record<string, unknown>;
@@ -32,7 +31,7 @@ interface McpSession {
   serverInfo?: ServerInfo;
 }
 
-interface ToolInspection {
+export interface ToolInspection {
   connection: McpConnection;
   tool: McpTool;
   session: McpSession;
