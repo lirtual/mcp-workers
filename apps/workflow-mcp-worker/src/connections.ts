@@ -55,6 +55,30 @@ export function getConnection(id: string): McpConnection | undefined {
   return connections[id as keyof typeof connections];
 }
 
+export function resolveConnection(
+  env: object,
+  id: string
+): McpConnection | undefined {
+  const connection = getConnection(id);
+  if (!connection) return undefined;
+  const record = env as Record<string, unknown>;
+  const overrideKey =
+    id === 'smoke-readonly'
+      ? 'SMOKE_READONLY_MCP_ENDPOINT'
+      : id === 'smoke-modern'
+        ? 'SMOKE_MODERN_MCP_ENDPOINT'
+        : undefined;
+  if (!overrideKey) return connection;
+
+  const endpoint = record[overrideKey];
+  if (typeof endpoint !== 'string' || endpoint.length === 0) return connection;
+  const parsed = new URL(endpoint);
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw new Error(`MCP connection "${id}" endpoint override must use HTTP(S).`);
+  }
+  return { ...connection, endpoint: parsed.toString() };
+}
+
 export function hasConnection(id: string): boolean {
   return getConnection(id) !== undefined;
 }
