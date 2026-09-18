@@ -1,0 +1,51 @@
+import { readFile, writeFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+
+const appRoot = fileURLToPath(new URL('..', import.meta.url));
+const sourcePath = fileURLToPath(new URL('../wrangler.jsonc', import.meta.url));
+const outputPath = process.argv[2];
+if (!outputPath) throw new Error('Usage: build-staging-config.ts <output-path>');
+
+const config = JSON.parse(await readFile(sourcePath, 'utf8')) as Record<string, any>;
+const workerName = required('WORKFLOW_MCP_STAGING_WORKER_NAME');
+const d1Name = required('WORKFLOW_MCP_STAGING_D1_DATABASE_NAME');
+const d1Id = required('WORKFLOW_MCP_STAGING_D1_DATABASE_ID');
+const r2Bucket = required('WORKFLOW_MCP_STAGING_R2_BUCKET');
+const baseUrl = required('WORKFLOW_MCP_STAGING_URL').replace(/\/+$/, '');
+
+config.name = workerName;
+config.workers_dev = true;
+config.preview_urls = false;
+config.d1_databases = [
+  {
+    binding: 'DB',
+    database_name: d1Name,
+    database_id: d1Id,
+    migrations_dir: 'migrations'
+  }
+];
+config.workflows = [
+  {
+    name: `${workerName}-runtime`,
+    binding: 'WORKFLOW',
+    class_name: 'WorkflowRuntime'
+  }
+];
+config.triggers = { crons: [] };
+config.r2_buckets = [{ binding: 'ARTIFACTS', bucket_name: r2Bucket }];
+config.vars = {
+  ...(config.vars ?? {}),
+  GITHUB_EXECUTOR_REF: 'main',
+  GITHUB_EXECUTOR_WORKFLOW: 'workflow-executor-staging.yml',
+  R2_BUCKET_NAME: r2Bucket,
+  SMOKE_MODERN_MCP_ENDPOINT: `${baseUrl}/mcp`
+};
+
+await writeFile(outputPath, JSON.stringify(config, null, 2) + '\n', 'utf8');
+console.log(`Wrote staging Wrangler config for ${workerName} from ${appRoot}.`);
+
+function required(name: string): string {
+  const value = process.env[name];
+  if (!value) throw new Error(`${name} is required.`);
+  return value;
+}
