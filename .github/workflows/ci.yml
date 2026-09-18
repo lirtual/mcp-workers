@@ -18,13 +18,11 @@ env:
   HUSKY: "0"
 
 jobs:
-  changes:
-    name: Determine check scope
+  checks:
+    name: Affected checks
     runs-on: ubuntu-latest
     outputs:
-      apps: ${{ steps.scope.outputs.apps }}
       database_changed: ${{ steps.scope.outputs.database_changed }}
-      portal_auth_changed: ${{ steps.scope.outputs.portal_auth_changed }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -110,42 +108,41 @@ jobs:
           fi
           echo "Portal auth package changed: $portal_auth_changed"
 
-  app-checks:
-    name: Application checks
-    needs: changes
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
       - name: No application checks required
-        if: needs.changes.outputs.apps == ''
+        if: steps.scope.outputs.apps == ''
         run: echo "No application checks are required for this change set."
 
+      - uses: pnpm/action-setup@v4
+        if: steps.scope.outputs.apps != ''
+        with:
+          version: 10.17.1
+          run_install: false
+
       - uses: actions/setup-node@v4
-        if: needs.changes.outputs.apps != ''
+        if: steps.scope.outputs.apps != ''
         with:
           node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
 
-      - name: Activate pinned pnpm
-        if: needs.changes.outputs.apps != ''
+      - name: Verify toolchain
+        if: steps.scope.outputs.apps != ''
         run: |
-          corepack enable
-          corepack prepare pnpm@10.17.1 --activate
           node --version
           pnpm --version
 
       - name: Install workspace
-        if: needs.changes.outputs.apps != ''
+        if: steps.scope.outputs.apps != ''
         run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Check shared portal-auth package
-        if: needs.changes.outputs.portal_auth_changed == 'true'
+        if: steps.scope.outputs.portal_auth_changed == 'true'
         run: pnpm --filter @mcp-workers/portal-auth check
 
       - name: Run affected application checks
-        if: needs.changes.outputs.apps != ''
+        if: steps.scope.outputs.apps != ''
         env:
-          APPS: ${{ needs.changes.outputs.apps }}
+          APPS: ${{ steps.scope.outputs.apps }}
         run: |
           set -euo pipefail
           for app in $APPS; do
@@ -156,8 +153,8 @@ jobs:
 
   database-integration:
     name: Database integration
-    needs: changes
-    if: needs.changes.outputs.database_changed == 'true'
+    needs: checks
+    if: needs.checks.outputs.database_changed == 'true'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -194,14 +191,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
 
-      - name: Activate pinned pnpm
+      - name: Verify toolchain
         run: |
-          corepack enable
-          corepack prepare pnpm@10.17.1 --activate
           node --version
           pnpm --version
 
