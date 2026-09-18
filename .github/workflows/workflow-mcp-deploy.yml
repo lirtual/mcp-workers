@@ -7,7 +7,6 @@ on:
     paths:
       - apps/workflow-mcp-worker/**
       - .github/workflows/workflow-executor.yml
-      - .github/workflows/workflow-executor.yml
       - .github/workflows/workflow-mcp-deploy.yml
   workflow_dispatch:
     inputs:
@@ -17,7 +16,7 @@ on:
         default: https://example.com/
         type: string
       bootstrap:
-        description: Skip pre-deploy compatibility query for a brand-new empty production D1
+        description: Skip pre-deploy compatibility query for a brand-new empty D1
         required: false
         default: false
         type: boolean
@@ -69,7 +68,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]]; then
-            echo "::error::Missing production environment value: CLOUDFLARE_API_TOKEN"
+            echo "::error::Missing Workflow MCP environment value: CLOUDFLARE_API_TOKEN"
             exit 1
           fi
 
@@ -136,7 +135,7 @@ jobs:
           )
           for name in "${required[@]}"; do
             if [[ -z "${!name:-}" ]]; then
-              echo "::error::Missing production environment value: $name"
+              echo "::error::Missing Workflow MCP environment value: $name"
               exit 1
             fi
           done
@@ -200,7 +199,7 @@ jobs:
             fi
             sleep 2
           done
-          echo "::error::Production Worker did not become healthy."
+          echo "::error::Workflow MCP Worker did not become healthy."
           exit 1
 
       - name: Run MCP heavy and connection tracers
