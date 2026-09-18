@@ -119,11 +119,32 @@ export interface ModifyMessagesResult {
   target_folder_id?: string;
 }
 
+export interface SendRecipient {
+  address: string;
+}
+
+export interface SendMessageOptions {
+  from: string;
+  to: SendRecipient[];
+  cc: SendRecipient[];
+  bcc: SendRecipient[];
+  subject: string;
+  bodyText: string;
+}
+
+export interface SendMessageResult {
+  message_id?: string;
+  accepted: string[];
+  rejected: string[];
+  partial: boolean;
+}
+
 export interface EmailProvider {
   listFolders(options: ListFoldersOptions): Promise<EmailFolder[]>;
   searchMessages(options: SearchMessagesOptions): Promise<SearchMessagesResult>;
   getMessage(options: GetMessageOptions): Promise<EmailMessageDetail>;
   modifyMessages(options: ModifyMessagesOptions): Promise<ModifyMessagesResult>;
+  sendMessage(options: SendMessageOptions): Promise<SendMessageResult>;
 }
 
 export type EmailProviderFactory = (
