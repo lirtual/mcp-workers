@@ -24,7 +24,7 @@ on:
 
 permissions:
   contents: read
-  actions: read
+  actions: write
 
 concurrency:
   group: workflow-mcp-staging
@@ -44,7 +44,7 @@ jobs:
       WORKFLOW_MCP_STAGING_R2_BUCKET: ${{ vars.WORKFLOW_MCP_STAGING_R2_BUCKET || 'workflow-mcp-artifacts-staging' }}
       WORKFLOW_MCP_STAGING_URL: ${{ vars.WORKFLOW_MCP_STAGING_URL || 'https://workflow-mcp-worker-staging.aiyaya.workers.dev' }}
       WORKFLOW_MCP_STAGING_SOURCE_URL: ${{ inputs.source_url }}
-      WORKFLOW_MCP_GITHUB_ACTIONS_TOKEN: ${{ secrets.WORKFLOW_MCP_GITHUB_ACTIONS_TOKEN }}
+      WORKFLOW_MCP_GITHUB_ACTIONS_TOKEN: ${{ github.token }}
       STAGING_EVIDENCE_PATH: ${{ github.workspace }}/workflow-mcp-staging-evidence.json
     steps:
       - uses: actions/checkout@v4
@@ -166,7 +166,7 @@ jobs:
         shell: bash
         working-directory: apps/workflow-mcp-worker
         env:
-          GITHUB_ACTIONS_TOKEN: ${{ secrets.WORKFLOW_MCP_GITHUB_ACTIONS_TOKEN }}
+          GITHUB_ACTIONS_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           secret_file="$RUNNER_TEMP/workflow-mcp-staging-secrets.json"
