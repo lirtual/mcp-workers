@@ -53,6 +53,15 @@ export async function allocateArtifactUpload(
   options: { store?: ArtifactStore; now?: Date } = {}
 ): Promise<ArtifactUploadAllocation> {
   const manifest = await getExecutionManifest(env, lease);
+  return allocateArtifactUploadForManifest(env, manifest, request, options);
+}
+
+export async function allocateArtifactUploadForManifest(
+  env: Env,
+  manifest: ExecutionManifest,
+  request: ArtifactUploadAllocationRequest,
+  options: { store?: ArtifactStore; now?: Date } = {}
+): Promise<ArtifactUploadAllocation> {
   validateArtifactAllocationForManifest(manifest, request);
 
   const store = options.store ?? new D1WorkflowStore(env.DB);
@@ -114,9 +123,17 @@ export async function finalizeCallbackArtifacts(
   result: Record<string, unknown>,
   options: { store?: ArtifactStore } = {}
 ): Promise<Record<string, unknown>> {
-  if (result.state !== 'succeeded') return result;
-
   const manifest = await getExecutionManifest(env, lease);
+  return finalizeCallbackArtifactsForManifest(env, manifest, result, options);
+}
+
+export async function finalizeCallbackArtifactsForManifest(
+  env: Env,
+  manifest: ExecutionManifest,
+  result: Record<string, unknown>,
+  options: { store?: ArtifactStore } = {}
+): Promise<Record<string, unknown>> {
+  if (result.state !== 'succeeded') return result;
   if (manifest.capability !== 'github.archive_markdown') return result;
 
   const output = objectField(result, 'output');
