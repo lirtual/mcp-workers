@@ -509,7 +509,7 @@ export function buildEmailServer(
           ctx.mcpReq.inputResponses,
           ctx.mcpReq.requestState<EmailConfirmationState>(),
           expected,
-          \`Move \${input.message_ids.length} selected email message(s) to Trash? This is recoverable from the provider Trash folder, but changes mailbox state.\`,
+          `Move ${input.message_ids.length} selected email message(s) to Trash? This is recoverable from the provider Trash folder, but changes mailbox state.`,
         );
         if (decision.kind === "input_required") return decision.result;
         if (decision.kind === "denied") {
