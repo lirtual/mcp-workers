@@ -307,17 +307,23 @@ async function executeDurableAttempt(
   capabilityInput: Readonly<Record<string, unknown>>
 ): Promise<AttemptResult> {
   try {
-    return await durableStep.do(
+    const serialized = await durableStep.do(
       `step:${stepId}:attempt:${attemptNumber}`,
       {
         retries: { limit: 0, delay: '1 second', backoff: 'constant' },
         timeout: definition.timeoutMs ?? 300_000
       },
       async () =>
-        executeCloudflareCapability(definition.uses, capabilityInput, {
-          ...(definition.timeoutMs ? { timeoutMs: definition.timeoutMs } : {})
-        })
+        JSON.stringify(
+          await executeCloudflareCapability(definition.uses, capabilityInput, {
+            ...(definition.timeoutMs ? { timeoutMs: definition.timeoutMs } : {})
+          })
+        )
     );
+    if (typeof serialized !== 'string') {
+      throw new Error('Durable step returned a non-serializable attempt result.');
+    }
+    return JSON.parse(serialized) as AttemptResult;
   } catch (error) {
     const summary = safeErrorMessage(error);
     if (/time(?:d)?\s*out|timeout/i.test(summary)) {
