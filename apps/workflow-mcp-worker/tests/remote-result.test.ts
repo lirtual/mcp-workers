@@ -9,6 +9,7 @@ describe('remote capability output contract', () => {
         state: 'succeeded',
         output: {
           artifact: {
+            artifactId: 'artifact_123',
             name: 'archive.md',
             mediaType: 'text/markdown',
             size: 12,
@@ -21,6 +22,7 @@ describe('remote capability output contract', () => {
       state: 'succeeded',
       output: {
         artifact: {
+          artifactId: 'artifact_123',
           name: 'archive.md',
           mediaType: 'text/markdown',
           size: 12,
