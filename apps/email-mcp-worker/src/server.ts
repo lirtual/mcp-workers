@@ -406,12 +406,13 @@ export async function sendEmail(
 function sendConfirmationPreview(prepared: PreparedSendEmail): string {
   const to = prepared.to.map((value) => value.address).join(", ");
   const cc = prepared.cc.map((value) => value.address).join(", ") || "(none)";
+  const bcc = prepared.bcc.map((value) => value.address).join(", ") || "(none)";
   return [
     "Send this email?",
     `From: ${prepared.from}`,
     `To: ${to}`,
     `Cc: ${cc}`,
-    `Bcc recipients: ${prepared.bcc.length}`,
+    `Bcc: ${bcc}`,
     `Subject: ${prepared.subject}`,
     "",
     prepared.body_text,

@@ -28,16 +28,19 @@ Every production Worker configuration declares its mandatory runtime secret name
 | `openlist-mcp-worker` | `MCP_ACCESS_TOKEN`, `OPENLIST_TOKEN` |
 | `weread-mcp-worker` | `MCP_ACCESS_TOKEN`, `WEREAD_API_KEY` |
 | `database-mcp-worker` | `MCP_ACCESS_TOKEN`, `DATABASE_CONFIG` |
+| `email-mcp-worker` | `MCP_ACCESS_TOKEN`, `EMAIL_ACCOUNTS_CONFIG` |
 | `raindrop-mcp-worker` | `MCP_ACCESS_TOKEN`, `RAINDROP_ACCESS_TOKEN` |
 | `instapaper-mcp-worker` | `MCP_ACCESS_TOKEN`, `INSTAPAPER_CONSUMER_KEY`, `INSTAPAPER_CONSUMER_SECRET`, `INSTAPAPER_OAUTH_TOKEN`, `INSTAPAPER_OAUTH_TOKEN_SECRET` |
 
 `database-mcp-worker` stores its complete logical database catalog in the single `DATABASE_CONFIG` Secret. Direct SQL URLs therefore remain secret without requiring separate `DATABASE_URL` / `DATABASE_WRITE_URL` variables. Hyperdrive entries still refer to Wrangler bindings by name.
 
+For `email-mcp-worker`, `EMAIL_ACCOUNTS_CONFIG` is the single secret JSON catalog for account/provider credentials. `EMAIL_ALLOW_MODIFY` and `EMAIL_ALLOW_SEND` are non-secret gates and default to `false`; keep them disabled unless a deployment explicitly needs mailbox mutation or SMTP send.
+
 For local development, use uncommitted `.dev.vars` or `.env` files with keys matching `secrets.required`.
 
 ## Workers Observability baseline
 
-All six Workers use the same Cloudflare Workers Logs baseline:
+All seven Workers use the same Cloudflare Workers Logs baseline:
 
 ```jsonc
 "observability": {
