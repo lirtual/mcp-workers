@@ -145,10 +145,6 @@ jobs:
         run: pnpm --filter workflow-mcp-worker run release:compatibility
 
       - name: Deploy isolated staging Worker
-        working-directory: apps/workflow-mcp-worker
-        run: pnpm exec wrangler deploy --config "$WORKFLOW_MCP_WRANGLER_CONFIG"
-
-      - name: Install staging Worker secrets
         shell: bash
         working-directory: apps/workflow-mcp-worker
         env:
@@ -156,6 +152,7 @@ jobs:
         run: |
           set -euo pipefail
           secret_file="$RUNNER_TEMP/workflow-mcp-staging-secrets.json"
+          trap 'rm -f "$secret_file"' EXIT
           SECRET_FILE="$secret_file" node <<'NODE'
           const fs = require('node:fs');
           const values = {
@@ -173,8 +170,7 @@ jobs:
           }
           fs.writeFileSync(process.env.SECRET_FILE, JSON.stringify(values));
           NODE
-          pnpm exec wrangler secret bulk "$secret_file" --config "$WORKFLOW_MCP_WRANGLER_CONFIG"
-          rm -f "$secret_file"
+          pnpm exec wrangler deploy             --config "$WORKFLOW_MCP_WRANGLER_CONFIG"             --secrets-file "$secret_file"
 
       - name: Wait for staging health
         shell: bash
