@@ -62,5 +62,8 @@
       "binding": "ARTIFACTS",
       "bucket_name": "workflow-mcp-artifacts"
     }
-  ]
+  ],
+  "version_metadata": {
+    "binding": "CF_VERSION_METADATA"
+  }
 }

@@ -3,6 +3,11 @@ export interface WorkflowRunParams {
 }
 
 export interface Env {
+  CF_VERSION_METADATA?: {
+    id: string;
+    tag?: string;
+    timestamp?: string;
+  };
   MCP_ACCESS_TOKEN?: string;
   EXECUTOR_LEASE_SECRET?: string;
   GITHUB_OIDC_ISSUER?: string;

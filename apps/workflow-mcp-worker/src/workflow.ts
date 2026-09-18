@@ -28,7 +28,8 @@ import {
   type PreparedRemoteAttempt
 } from './executor-protocol.js';
 import { parseRemoteExecutorResult } from './remote-result.js';
-import { asRuntimePlan, resolveRuntimeValue, type RuntimePlan, type RuntimeStep } from './runtime-plan.js';
+import { loadPinnedRuntimePlan } from './provenance.js';
+import { resolveRuntimeValue, type RuntimePlan, type RuntimeStep } from './runtime-plan.js';
 import { resolveStepExecutionPolicy } from './step-policy.js';
 import { D1WorkflowStore, type StepSummary } from './storage.js';
 import type { Env, WorkflowRunParams } from './types.js';
@@ -58,10 +59,19 @@ export async function executeDagRun(
   const run = await store.getRun(runId);
   if (!run) return { ok: false, runId, errorCode: 'RUN_NOT_FOUND' };
 
-  const definition = await store.getDefinition(run.definitionDigest);
-  if (!definition) return { ok: false, runId, errorCode: 'PINNED_DEFINITION_NOT_FOUND' };
-
-  const plan = asRuntimePlan(definition.plan);
+  let plan: RuntimePlan;
+  try {
+    ({ plan } = await loadPinnedRuntimePlan(store, run));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Pinned definition is incompatible.';
+    return {
+      ok: false,
+      runId,
+      errorCode: message.includes('not found')
+        ? 'PINNED_DEFINITION_NOT_FOUND'
+        : 'PINNED_DEFINITION_INCOMPATIBLE'
+    };
+  }
   if (cancellationBlocksNewStep(run.state)) {
     await store.finishRun({ runId, state: 'cancelled', output: {} });
     return { ok: false, runId, errorCode: 'WORKFLOW_CANCELLED' };

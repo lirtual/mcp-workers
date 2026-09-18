@@ -47,6 +47,8 @@ export interface StoredRun {
   startedAt?: string;
   endedAt?: string;
   cancelRequestedAt?: string;
+  engineVersion?: string;
+  cfWorkflowVersionId?: string;
 }
 
 export interface StoredDefinition {
@@ -66,6 +68,7 @@ export interface AdmissionRequest {
   trigger: Record<string, unknown>;
   sourceType: string;
   sourceKey?: string;
+  engineVersion: string;
 }
 
 export interface AdmissionResult {
@@ -110,6 +113,7 @@ export interface RemoteAttemptRegistration {
   expectedWorkflowRef: string;
   expectedRef: string;
   expectedWorkflowSha?: string;
+  executorVersion: string;
   executionManifest: Record<string, unknown>;
 }
 
@@ -126,6 +130,8 @@ export interface RemoteAttemptRecord {
   githubRunId?: string;
   githubRunAttempt?: number;
   githubWorkflowSha?: string;
+  executorVersion?: string;
+  executorRevision?: string;
   expectedRepositoryId: string;
   expectedWorkflowRef: string;
   expectedRef: string;
@@ -141,6 +147,7 @@ export interface RemoteClaimInput {
   githubRunId: string;
   githubRunAttempt: number;
   githubWorkflowSha: string;
+  executorRevision: string;
   expectedRepositoryId: string;
   expectedWorkflowRef: string;
   expectedRef: string;
@@ -299,8 +306,8 @@ export class D1WorkflowStore {
         .prepare(
           `INSERT OR IGNORE INTO workflow_runs
            (run_id, workflow_id, definition_digest, input_json, trigger_json, state,
-            cf_workflow_instance_id, created_at)
-           SELECT ?, ?, ?, ?, ?, 'queued', ?, ?
+            engine_version, cf_workflow_instance_id, created_at)
+           SELECT ?, ?, ?, ?, ?, 'queued', ?, ?, ?
            WHERE EXISTS (
              SELECT 1 FROM run_admissions
              WHERE admission_key = ? AND run_id = ?
@@ -312,6 +319,7 @@ export class D1WorkflowStore {
           input.definitionDigest,
           JSON.stringify(input.input),
           JSON.stringify(input.trigger),
+          input.engineVersion,
           input.proposedRunId,
           createdAt,
           input.admissionKey,
@@ -342,7 +350,7 @@ export class D1WorkflowStore {
       .prepare(
         `SELECT run_id, workflow_id, definition_digest, input_json, trigger_json, state,
                 output_json, error_code, error_summary, created_at, started_at, ended_at,
-                cancel_requested_at
+                cancel_requested_at, engine_version, cf_workflow_version_id
          FROM workflow_runs WHERE run_id = ?`
       )
       .bind(runId)
@@ -362,7 +370,9 @@ export class D1WorkflowStore {
       createdAt: String(row.created_at),
       ...(row.started_at ? { startedAt: row.started_at } : {}),
       ...(row.ended_at ? { endedAt: row.ended_at } : {}),
-      ...(row.cancel_requested_at ? { cancelRequestedAt: row.cancel_requested_at } : {})
+      ...(row.cancel_requested_at ? { cancelRequestedAt: row.cancel_requested_at } : {}),
+      ...(row.engine_version ? { engineVersion: row.engine_version } : {}),
+      ...(row.cf_workflow_version_id ? { cfWorkflowVersionId: row.cf_workflow_version_id } : {})
     };
   }
 
@@ -742,8 +752,8 @@ export class D1WorkflowStore {
           `INSERT OR IGNORE INTO step_attempts
            (attempt_id, step_run_id, attempt_number, executor_type, state,
             claim_nonce_hash, expected_repository_id, expected_workflow_ref,
-            expected_ref, expected_workflow_sha, execution_manifest_json, created_at)
-           SELECT ?, ?, ?, 'github', 'queued', ?, ?, ?, ?, ?, ?, ?
+            expected_ref, expected_workflow_sha, executor_version, execution_manifest_json, created_at)
+           SELECT ?, ?, ?, 'github', 'queued', ?, ?, ?, ?, ?, ?, ?, ?
            WHERE EXISTS (
              SELECT 1
              FROM step_runs sr
@@ -762,6 +772,7 @@ export class D1WorkflowStore {
           input.expectedWorkflowRef,
           input.expectedRef,
           input.expectedWorkflowSha ?? null,
+          input.executorVersion,
           JSON.stringify(input.executionManifest),
           createdAt,
           input.stepRunId,
@@ -786,6 +797,7 @@ export class D1WorkflowStore {
         `SELECT
            sa.attempt_id, sa.step_run_id, sa.state, sa.claim_nonce_hash, sa.claim_owner,
            sa.github_run_id, sa.github_run_attempt, sa.github_workflow_sha,
+           sa.executor_version, sa.executor_revision,
            sa.expected_repository_id, sa.expected_workflow_ref, sa.expected_ref,
            sa.expected_workflow_sha, sa.execution_manifest_json,
            sr.run_id, sr.step_id, sr.operation_id,
@@ -812,6 +824,8 @@ export class D1WorkflowStore {
       ...(row.github_run_id ? { githubRunId: String(row.github_run_id) } : {}),
       ...(row.github_run_attempt === null ? {} : { githubRunAttempt: Number(row.github_run_attempt) }),
       ...(row.github_workflow_sha ? { githubWorkflowSha: String(row.github_workflow_sha) } : {}),
+      ...(row.executor_version ? { executorVersion: String(row.executor_version) } : {}),
+      ...(row.executor_revision ? { executorRevision: String(row.executor_revision) } : {}),
       expectedRepositoryId: String(row.expected_repository_id),
       expectedWorkflowRef: String(row.expected_workflow_ref),
       expectedRef: String(row.expected_ref),
@@ -833,7 +847,8 @@ export class D1WorkflowStore {
              claim_deadline = ?,
              github_run_id = ?,
              github_run_attempt = ?,
-             github_workflow_sha = ?
+             github_workflow_sha = ?,
+             executor_revision = ?
          WHERE attempt_id = ?
            AND executor_type = 'github'
            AND state = 'queued'
@@ -859,6 +874,7 @@ export class D1WorkflowStore {
         input.githubRunId,
         input.githubRunAttempt,
         input.githubWorkflowSha,
+        input.executorRevision,
         input.attemptId,
         input.claimNonceHash,
         input.expectedRepositoryId,
@@ -1156,6 +1172,74 @@ export class D1WorkflowStore {
       .bind(runId)
       .all<Record<string, string | number | null>>();
     return result.results.map(mapArtifact);
+  }
+
+  async listNonterminalCompatibilityRecords(): Promise<Array<{
+    runId: string;
+    definitionDigest: string;
+    dslVersion: number;
+    manifestVersions: number[];
+    hasInvalidManifest: boolean;
+  }>> {
+    const result = await this.db
+      .prepare(
+        `SELECT wr.run_id, wr.definition_digest, wdv.dsl_version, sa.execution_manifest_json
+         FROM workflow_runs wr
+         JOIN workflow_definition_versions wdv
+           ON wdv.definition_digest = wr.definition_digest
+         LEFT JOIN step_runs sr ON sr.run_id = wr.run_id
+         LEFT JOIN step_attempts sa
+           ON sa.step_run_id = sr.step_run_id
+          AND sa.execution_manifest_json IS NOT NULL
+         WHERE wr.state IN ('queued', 'running', 'waiting', 'cancel_requested')
+         ORDER BY wr.run_id ASC`
+      )
+      .all<Record<string, string | number | null>>();
+
+    const byRun = new Map<string, {
+      runId: string;
+      definitionDigest: string;
+      dslVersion: number;
+      manifestVersions: number[];
+      hasInvalidManifest: boolean;
+    }>();
+
+    for (const row of result.results) {
+      const runId = String(row.run_id);
+      let record = byRun.get(runId);
+      if (!record) {
+        record = {
+          runId,
+          definitionDigest: String(row.definition_digest),
+          dslVersion: Number(row.dsl_version),
+          manifestVersions: [],
+          hasInvalidManifest: false
+        };
+        byRun.set(runId, record);
+      }
+
+      if (row.execution_manifest_json) {
+        try {
+          const parsed: unknown = JSON.parse(String(row.execution_manifest_json));
+          if (
+            parsed &&
+            typeof parsed === 'object' &&
+            !Array.isArray(parsed) &&
+            typeof (parsed as Record<string, unknown>).version === 'number'
+          ) {
+            record.manifestVersions.push(
+              Number((parsed as Record<string, unknown>).version)
+            );
+          } else {
+            record.hasInvalidManifest = true;
+          }
+        } catch {
+          record.hasInvalidManifest = true;
+        }
+      }
+    }
+
+    return [...byRun.values()];
   }
 
   async getSchedulerState(scheduleKey: string): Promise<SchedulerState | null> {
