@@ -133,10 +133,97 @@ function safeMessage(error: unknown): string {
 }
 
 
+export type GitHubCancelOutcome =
+  | 'accepted'
+  | 'already_terminal'
+  | 'unknown'
+  | 'failed';
+
+export interface GitHubCancelResult {
+  runId: string;
+  outcome: GitHubCancelOutcome;
+  errorSummary?: string;
+}
+
+export async function cancelGitHubRun(
+  env: Env,
+  runId: string,
+  fetchImpl: typeof fetch = fetch
+): Promise<GitHubCancelResult> {
+  const repository = required(env.GITHUB_REPOSITORY, 'GITHUB_REPOSITORY');
+  const token = required(env.GITHUB_ACTIONS_TOKEN, 'GITHUB_ACTIONS_TOKEN');
+  const endpoint =
+    `https://api.github.com/repos/${repository}/actions/runs/${encodeURIComponent(runId)}/cancel`;
+
+  let response: Response;
+  try {
+    response = await fetchImpl(endpoint, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/vnd.github+json',
+        Authorization: `Bearer ${token}`,
+        'X-GitHub-Api-Version': '2026-03-10',
+        'User-Agent': 'workflow-mcp-worker'
+      }
+    });
+  } catch (error) {
+    return {
+      runId,
+      outcome: 'unknown',
+      errorSummary: safeMessage(error)
+    };
+  }
+
+  if (response.status === 202) {
+    return { runId, outcome: 'accepted' };
+  }
+
+  if (response.status === 409) {
+    try {
+      const fact = await getGitHubRunFact(env, runId, fetchImpl);
+      if (fact.status === 'completed') {
+        return { runId, outcome: 'already_terminal' };
+      }
+    } catch (error) {
+      return {
+        runId,
+        outcome: 'unknown',
+        errorSummary: safeMessage(error)
+      };
+    }
+  }
+
+  return {
+    runId,
+    outcome: 'failed',
+    errorSummary: `GitHub workflow cancellation failed with status ${response.status}.`
+  };
+}
+
 export interface GitHubRunFact {
   runId: string;
   status: 'queued' | 'in_progress' | 'completed' | 'unknown';
   conclusion?: string;
+}
+
+export type CancellationFactDecision =
+  | 'stopped'
+  | 'success_without_callback'
+  | 'unresolved';
+
+export function classifyCancellationRunFacts(
+  facts: readonly GitHubRunFact[]
+): CancellationFactDecision {
+  if (facts.some(fact => fact.status === 'completed' && fact.conclusion === 'success')) {
+    return 'success_without_callback';
+  }
+  if (
+    facts.length > 0 &&
+    facts.every(fact => fact.status === 'completed' && fact.conclusion !== 'success')
+  ) {
+    return 'stopped';
+  }
+  return 'unresolved';
 }
 
 export async function getGitHubRunFact(
