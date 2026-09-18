@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { dispatchGitHubExecutor, getGitHubRunFact, githubExecutorTrust } from '../src/github-executor.js';
+import { decideDispatchSequence, dispatchGitHubExecutor, getGitHubRunFact, githubExecutorTrust } from '../src/github-executor.js';
 import type { Env } from '../src/types.js';
 
 const env = {
@@ -64,6 +64,20 @@ describe('GitHub executor dispatch', () => {
     await expect(
       dispatchGitHubExecutor(env, 'att_1', 'nonce', { fetchImpl: ambiguous as typeof fetch })
     ).resolves.toMatchObject({ outcome: 'unknown' });
+  });
+
+  it('redispatches only after ambiguity and preserves an earlier unknown Candidate', () => {
+    expect(decideDispatchSequence([{ outcome: 'unknown' }], 2)).toBe('redispatch');
+    expect(
+      decideDispatchSequence([{ outcome: 'unknown' }, { outcome: 'accepted' }], 2)
+    ).toBe('wait');
+    expect(
+      decideDispatchSequence([{ outcome: 'unknown' }, { outcome: 'failed' }], 2)
+    ).toBe('wait');
+    expect(decideDispatchSequence([{ outcome: 'failed' }], 2)).toBe('failed');
+    expect(
+      decideDispatchSequence([{ outcome: 'unknown' }, { outcome: 'unknown' }], 2)
+    ).toBe('wait');
   });
 
   it('retrieves the bound GitHub run fact for timeout reconciliation', async () => {
