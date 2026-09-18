@@ -32,6 +32,8 @@ import type {
   EmailSearchMessage,
   GetMessageOptions,
   ListFoldersOptions,
+  ModifyMessagesOptions,
+  ModifyMessagesResult,
   SearchMessagesOptions,
   SearchMessagesResult,
 } from "./provider.js";
@@ -164,6 +166,35 @@ function cursorScope(
     folderId: options.folderId,
     ...options.filters,
   };
+}
+
+
+export function validateMutationReferences(
+  accountId: string,
+  folderId: string,
+  messageIds: string[],
+  uidValidity: bigint,
+): number[] {
+  return messageIds.map((messageId) => {
+    const reference = decodeMessageReference(messageId);
+    if (
+      reference.accountId !== accountId ||
+      reference.folderId !== folderId ||
+      reference.uidValidity !== String(uidValidity)
+    ) {
+      throw new EmailToolError(
+        "MESSAGE_REFERENCE_STALE",
+        "One or more message references are stale for the selected mailbox.",
+      );
+    }
+    return reference.uid;
+  });
+}
+
+function trashPath(folders: ListResponse[]): string | undefined {
+  return folders.find(
+    (folder) => folder.specialUse?.toLowerCase() === "\\trash",
+  )?.path;
 }
 
 export function normalizeImapError(error: unknown): EmailToolError {
@@ -468,6 +499,109 @@ export class ImapSmtpProvider implements EmailProvider {
           : {}),
         body: normalized.body,
         attachments,
+      };
+    });
+  }
+
+
+  async modifyMessages(
+    options: ModifyMessagesOptions,
+  ): Promise<ModifyMessagesResult> {
+    return this.withImap(async (client) => {
+      const mailbox = await client.mailboxOpen(options.folderId, {
+        readOnly: false,
+      });
+      const uids = validateMutationReferences(
+        this.account.id,
+        options.folderId,
+        options.messageIds,
+        mailbox.uidValidity,
+      );
+
+      let destination: string | undefined;
+      if (options.action === "move") {
+        if (!options.targetFolderId) {
+          throw new EmailToolError(
+            "FOLDER_NOT_FOUND",
+            "A target folder is required for move.",
+          );
+        }
+        const folders = await client.list();
+        const target = folders.find(
+          (folder) =>
+            folder.path === options.targetFolderId &&
+            !folder.flags.has("\\Noselect"),
+        );
+        if (!target) {
+          throw new EmailToolError(
+            "FOLDER_NOT_FOUND",
+            "The target email folder was not found.",
+          );
+        }
+        destination = target.path;
+      } else if (options.action === "trash") {
+        const folders = await client.list();
+        destination = trashPath(folders);
+        if (!destination) {
+          throw new EmailToolError(
+            "TRASH_NOT_AVAILABLE",
+            "The email provider does not expose a recoverable Trash folder.",
+          );
+        }
+      }
+
+      let sideEffectMayHaveStarted = false;
+      try {
+        switch (options.action) {
+          case "mark_read":
+            sideEffectMayHaveStarted = true;
+            await client.messageFlagsAdd(uids, ["\\Seen"], {
+              uid: true,
+              silent: true,
+            });
+            break;
+          case "mark_unread":
+            sideEffectMayHaveStarted = true;
+            await client.messageFlagsRemove(uids, ["\\Seen"], {
+              uid: true,
+              silent: true,
+            });
+            break;
+          case "flag":
+            sideEffectMayHaveStarted = true;
+            await client.messageFlagsAdd(uids, ["\\Flagged"], {
+              uid: true,
+              silent: true,
+            });
+            break;
+          case "unflag":
+            sideEffectMayHaveStarted = true;
+            await client.messageFlagsRemove(uids, ["\\Flagged"], {
+              uid: true,
+              silent: true,
+            });
+            break;
+          case "move":
+          case "trash":
+            sideEffectMayHaveStarted = true;
+            await client.messageMove(uids, destination!, { uid: true });
+            break;
+        }
+      } catch (error) {
+        if (error instanceof EmailToolError) throw error;
+        if (sideEffectMayHaveStarted) {
+          throw new EmailToolError(
+            "MODIFY_OUTCOME_UNKNOWN",
+            "The mailbox connection failed after the mutation may have been accepted. The operation was not retried.",
+          );
+        }
+        throw error;
+      }
+
+      return {
+        action: options.action,
+        modified_count: uids.length,
+        ...(destination ? { target_folder_id: destination } : {}),
       };
     });
   }
