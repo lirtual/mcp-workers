@@ -22,7 +22,7 @@ function registered(): FakeServer {
 }
 
 describe('workflow discovery tools', () => {
-  it('lists both compiled tracer workflows without secret configuration', async () => {
+  it('lists all compiled workflows, including definition-only extensions, without secret configuration', async () => {
     const server = registered();
     const result = await server.tools.get('workflow_list')!({});
     const data = result.structuredContent as { workflows: Array<{ id: string; definitionDigest: string }> };
@@ -30,6 +30,7 @@ describe('workflow discovery tools', () => {
     expect(data.workflows.map(workflow => workflow.id)).toEqual([
       'local-http-smoke',
       'mcp-connection-smoke',
+      'sequential-http-smoke',
       'trigger-http-smoke',
       'web-archive-smoke'
     ]);
@@ -41,15 +42,15 @@ describe('workflow discovery tools', () => {
 
   it('returns safe metadata for a known workflow', async () => {
     const server = registered();
-    const result = await server.tools.get('workflow_get')!({ workflow: 'web-archive-smoke' });
+    const result = await server.tools.get('workflow_get')!({ workflow: 'sequential-http-smoke' });
     const data = result.structuredContent as {
       workflow: { id: string; stepCapabilities: string[] };
       sourcePath: string;
     };
 
-    expect(data.workflow.id).toBe('web-archive-smoke');
-    expect(data.workflow.stepCapabilities).toEqual(['http.read', 'github.archive_markdown']);
-    expect(data.sourcePath).toBe('workflows/web-archive-smoke.yaml');
+    expect(data.workflow.id).toBe('sequential-http-smoke');
+    expect(data.workflow.stepCapabilities).toEqual(['http.read']);
+    expect(data.sourcePath).toBe('workflows/sequential-http-smoke.yaml');
   });
 
   it('returns a bounded error for an unknown workflow', async () => {
