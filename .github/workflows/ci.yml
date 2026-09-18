@@ -54,6 +54,7 @@ jobs:
 
           apps=(
             database-mcp-worker
+            email-mcp-worker
             ima-mcp-worker
             instapaper-mcp-worker
             openlist-mcp-worker
