@@ -189,9 +189,7 @@ function validateWorkflowInput(
 }
 
 function assertRunnablePlan(plan: RuntimePlan): void {
-  const unsupported = Object.values(plan.steps).find(
-    step => step.executor !== 'cloudflare' || step.uses !== 'http.read'
-  );
+  const unsupported = Object.values(plan.steps).find(step => step.executor !== 'cloudflare');
   if (unsupported) {
     throw new PublicWorkflowError(
       'WORKFLOW_NOT_IMPLEMENTED',
