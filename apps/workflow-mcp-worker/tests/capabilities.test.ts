@@ -8,10 +8,11 @@ describe('capability retry policy', () => {
     expect(() => getAutomaticAttemptLimit('http.read', 4)).toThrow(/at most 3/);
   });
 
-  it('does not permit unsafe or unknown capability policies to elevate retries', () => {
-    expect(getCapabilityDescriptor('mcp.call')?.effect).toBe('unknown');
-    expect(getAutomaticAttemptLimit('mcp.call', 1)).toBe(1);
-    expect(() => getAutomaticAttemptLimit('mcp.call', 2)).toThrow(/at most 1/);
+  it('keeps static unsafe capabilities bounded while mcp.call delegates safety to per-tool policy', () => {
+    expect(getCapabilityDescriptor('mcp.call')).toMatchObject({
+      effect: 'unknown',
+      maxAutomaticAttempts: 3
+    });
 
     expect(getCapabilityDescriptor('github.archive_markdown')?.effect).toBe('unsafe_write');
     expect(() => getAutomaticAttemptLimit('github.archive_markdown', 2)).toThrow(/at most 1/);
