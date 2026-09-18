@@ -19,7 +19,7 @@ env:
 
 jobs:
   checks:
-    name: Affected checks
+    name: Application checks
     runs-on: ubuntu-latest
     outputs:
       database_changed: ${{ steps.scope.outputs.database_changed }}
