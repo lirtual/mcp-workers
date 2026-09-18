@@ -708,6 +708,8 @@ export class ImapSmtpProvider implements EmailProvider {
           bcc: options.bcc.map((value) => value.address),
           subject: options.subject,
           text: options.bodyText,
+          ...(options.inReplyTo ? { inReplyTo: options.inReplyTo } : {}),
+          ...(options.references ? { references: options.references } : {}),
           disableFileAccess: true,
           disableUrlAccess: true,
         });
