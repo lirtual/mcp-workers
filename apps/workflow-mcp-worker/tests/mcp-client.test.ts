@@ -132,7 +132,7 @@ describe('MCP Streamable HTTP client', () => {
     expect(requests).toHaveLength(1);
     expect(requests[0]!.headers.get('MCP-Protocol-Version')).toBe('2026-07-28');
     expect(requests[0]!.headers.get('Mcp-Method')).toBe('tools/list');
-    expect(requests[0]!.headers.get('X-Smoke-Auth')).toBe('secret');
+    expect(requests[0]!.headers.get('Authorization')).toBe('Bearer secret');
     expect(requests[0]!.headers.get('Mcp-Session-Id')).toBeNull();
   });
 

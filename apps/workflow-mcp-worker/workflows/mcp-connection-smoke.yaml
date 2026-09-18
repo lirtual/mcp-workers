@@ -8,8 +8,8 @@ steps:
   call:
     uses: mcp.call
     with:
-      connection: smoke-readonly
-      tool: health_check
+      connection: smoke-modern
+      tool: workflow_list
       arguments: {}
 outputs:
   result: "${{ steps.call.outputs.result }}"

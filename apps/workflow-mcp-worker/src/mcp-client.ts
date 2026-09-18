@@ -1,8 +1,8 @@
 import * as z from 'zod/v4';
 import {
   buildConnectionAuthHeader,
-  getConnection,
   readConnectionSecret,
+  resolveConnection,
   type McpConnection
 } from './connections.js';
 import type { McpToolAnnotations } from './effective-policy.js';
@@ -81,7 +81,7 @@ export async function inspectMcpTool(
   toolName: string,
   fetchImpl: typeof fetch = fetch
 ): Promise<ToolInspection> {
-  const connection = getConnection(connectionId);
+  const connection = resolveConnection(env, connectionId);
   if (!connection) throw new Error(`MCP connection "${connectionId}" is not configured.`);
 
   const secret = readConnectionSecret(env, connection);
