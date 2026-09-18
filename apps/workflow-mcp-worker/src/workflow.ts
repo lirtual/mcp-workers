@@ -773,6 +773,32 @@ async function finishRemoteFailure(
   return { stepId: input.stepId, state };
 }
 
+async function finishCancelledRun(
+  store: D1WorkflowStore,
+  runId: string,
+  states: Readonly<Record<string, StepState>>
+): Promise<ExecutionOutcome> {
+  const unresolved = Object.values(states).some(state => state === 'indeterminate');
+  if (unresolved) {
+    await store.finishRun({
+      runId,
+      state: 'indeterminate',
+      output: {},
+      errorCode: 'CANCELLATION_UNRESOLVED',
+      errorSummary:
+        'Cancellation was requested but at least one active operation could not be safely resolved.'
+    });
+    return { ok: false, runId, errorCode: 'CANCELLATION_UNRESOLVED' };
+  }
+
+  await store.finishRun({
+    runId,
+    state: 'cancelled',
+    output: {}
+  });
+  return { ok: false, runId, errorCode: 'WORKFLOW_CANCELLED' };
+}
+
 async function runAttempts(input: {
   env: Env;
   store: D1WorkflowStore;
