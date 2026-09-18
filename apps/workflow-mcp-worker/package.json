@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "description": "Cloudflare-native deterministic workflow runtime with MCP control surface",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "packageManager": "pnpm@10.17.1",
   "scripts": {
     "dev": "wrangler dev",
@@ -15,7 +17,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "lint": "eslint .",
-    "check": "pnpm run registry:validate && pnpm run typecheck && pnpm run lint && pnpm test && pnpm run deploy:dry-run"
+    "check": "pnpm run registry:check && pnpm run typecheck && pnpm run lint && pnpm test && pnpm run deploy:dry-run",
+    "registry:check": "pnpm run registry:generate && git diff --exit-code -- src/generated/workflow-registry.ts"
   },
   "dependencies": {
     "@mcp-workers/portal-auth": "workspace:*",
