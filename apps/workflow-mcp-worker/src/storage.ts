@@ -568,7 +568,7 @@ export class D1WorkflowStore {
     runId: string;
     stepRunId: string;
     stepId: string;
-    state: 'succeeded' | 'failed' | 'timed_out' | 'indeterminate';
+    state: 'succeeded' | 'failed' | 'cancelled' | 'timed_out' | 'indeterminate';
     output?: Record<string, unknown>;
     errorCode?: string;
     errorSummary?: string;
@@ -604,7 +604,7 @@ export class D1WorkflowStore {
 
   async finishRun(input: {
     runId: string;
-    state: 'succeeded' | 'failed' | 'timed_out' | 'indeterminate';
+    state: 'succeeded' | 'failed' | 'cancelled' | 'timed_out' | 'indeterminate';
     output: Record<string, unknown>;
     errorCode?: string;
     errorSummary?: string;
