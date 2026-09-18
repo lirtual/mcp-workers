@@ -41,6 +41,9 @@ describe('Workflow MCP staging release gate contract', () => {
     expect(names).toContain('Run application release checks');
     expect(names).toContain('Check nonterminal runtime compatibility');
     expect(names).toContain('Apply staging D1 migrations');
+    expect(names.indexOf('Apply staging D1 migrations')).toBeLessThan(
+      names.indexOf('Check nonterminal runtime compatibility')
+    );
     expect(names).toContain('Deploy isolated staging Worker');
     expect(names).toContain('Run MCP heavy and connection tracers');
     expect(names).toContain('Verify GitHub executor terminal evidence');
@@ -60,7 +63,8 @@ describe('Workflow MCP staging release gate contract', () => {
     const execute = jobs.execute as Record<string, unknown>;
     expect(execute.environment).toBe('workflow-mcp-staging');
     expect(execute.env).toMatchObject({
-      WORKFLOW_MCP_URL: '${{ vars.WORKFLOW_MCP_STAGING_URL }}'
+      WORKFLOW_MCP_URL:
+        "${{ vars.WORKFLOW_MCP_STAGING_URL || 'https://workflow-mcp-worker-staging.aiyaya.workers.dev' }}"
     });
   });
 
