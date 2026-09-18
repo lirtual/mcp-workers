@@ -15,6 +15,7 @@ import {
 import type { EffectiveOperationPolicy } from './effective-policy.js';
 import {
   cancelGitHubRun,
+  classifyCancellationRunFacts,
   decideDispatchSequence,
   dispatchGitHubExecutor,
   getGitHubRunFact,
@@ -539,7 +540,8 @@ async function cancelAndReconcileRemoteAttempt(
         runIds.map(runId => getGitHubRunFact(input.env, runId))
       );
 
-      if (facts.some(fact => fact.status === 'completed' && fact.conclusion === 'success')) {
+      const decision = classifyCancellationRunFacts(facts);
+      if (decision === 'success_without_callback') {
         return finishRemoteAttemptResult(input, attemptId, {
           state: 'indeterminate',
           errorCode: 'CANCEL_AFTER_REMOTE_SUCCESS_UNKNOWN',
@@ -547,14 +549,7 @@ async function cancelAndReconcileRemoteAttempt(
             'GitHub execution completed successfully during cancellation but no authoritative result callback is available.'
         });
       }
-
-      if (
-        facts.every(
-          fact =>
-            fact.status === 'completed' &&
-            fact.conclusion !== 'success'
-        )
-      ) {
+      if (decision === 'stopped') {
         return finishRemoteCancelled(input, attemptId);
       }
     } catch {
