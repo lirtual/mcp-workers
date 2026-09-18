@@ -5,7 +5,7 @@ const issuer = 'https://token.actions.example.test';
 const audience = 'workflow-mcp-worker';
 const jwksUrl = 'https://token.actions.example.test/.well-known/jwks';
 let privateKey: CryptoKey;
-let publicJwk: JsonWebKey;
+let publicJwk: JsonWebKey & { kid?: string; alg?: string; use?: string };
 
 beforeAll(async () => {
   const pair = (await crypto.subtle.generateKey(
