@@ -29,7 +29,7 @@ describe('Workflow MCP staging release gate contract', () => {
     });
     expect(value.permissions).toEqual({
       contents: 'read',
-      actions: 'read'
+      actions: 'write'
     });
 
     const jobs = value.jobs as Record<string, unknown>;
@@ -37,6 +37,7 @@ describe('Workflow MCP staging release gate contract', () => {
     expect(staging.environment).toBe('workflow-mcp-staging');
     const steps = staging.steps as Array<Record<string, unknown>>;
     const names = steps.map(step => step.name).filter(Boolean);
+    expect(names).toContain('Generate ephemeral staging credentials');
     expect(names).toContain('Run application release checks');
     expect(names).toContain('Check nonterminal runtime compatibility');
     expect(names).toContain('Apply staging D1 migrations');
