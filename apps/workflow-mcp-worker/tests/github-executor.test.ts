@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { dispatchGitHubExecutor, githubExecutorTrust } from '../src/github-executor.js';
+import { dispatchGitHubExecutor, getGitHubRunFact, githubExecutorTrust } from '../src/github-executor.js';
 import type { Env } from '../src/types.js';
 
 const env = {
@@ -64,6 +64,24 @@ describe('GitHub executor dispatch', () => {
     await expect(
       dispatchGitHubExecutor(env, 'att_1', 'nonce', { fetchImpl: ambiguous as typeof fetch })
     ).resolves.toMatchObject({ outcome: 'unknown' });
+  });
+
+  it('retrieves the bound GitHub run fact for timeout reconciliation', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toBe(
+        'https://api.github.com/repos/lirtual/mcp-workers/actions/runs/9001'
+      );
+      expect(new Headers(init?.headers).get('Authorization')).toBe('Bearer gh-token');
+      return Response.json({ status: 'completed', conclusion: 'failure' });
+    });
+
+    await expect(
+      getGitHubRunFact(env, '9001', fetchImpl as typeof fetch)
+    ).resolves.toEqual({
+      runId: '9001',
+      status: 'completed',
+      conclusion: 'failure'
+    });
   });
 
   it('derives the OIDC trust policy from server configuration', () => {
