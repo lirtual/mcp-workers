@@ -431,10 +431,11 @@ async function runRemoteAttempt(input: {
   }
 
   let callbackId: string | undefined;
+  let wakeKind: string | undefined;
   try {
     const wake = await input.durableStep.waitForEvent<{
-      kind: string;
-      callbackId: string;
+      kind: 'result' | 'cancel_requested';
+      callbackId?: string;
     }>(
       `remote:${input.stepId}:attempt:${attemptNumber}:wait`,
       {
@@ -442,15 +443,162 @@ async function runRemoteAttempt(input: {
         timeout: input.definition.timeoutMs ?? 30 * 60 * 1000
       }
     );
+    wakeKind = wake.payload.kind;
     if (wake.payload.kind === 'result' && wake.payload.callbackId) {
       callbackId = wake.payload.callbackId;
     }
   } catch {
-    // wait timeout is only a reconciliation trigger; D1/GitHub facts decide the outcome below.
+    // Timeout only triggers durable reconciliation below.
+  }
+
+  const latestRun = await input.store.getRun(input.runId);
+  if (wakeKind === 'cancel_requested' || latestRun?.state === 'cancel_requested') {
+    return cancelAndReconcileRemoteAttempt(input, attemptId, callbackId);
   }
 
   const result = await reconcileRemoteAttempt(input, attemptId, callbackId);
   return finishRemoteAttemptResult(input, attemptId, result);
+}
+
+async function cancelAndReconcileRemoteAttempt(
+  input: {
+    env: Env;
+    store: D1WorkflowStore;
+    durableStep: WorkflowStep;
+    runId: string;
+    stepRunId: string;
+    stepId: string;
+    definition: RuntimeStep;
+  },
+  attemptId: string,
+  callbackId?: string
+): Promise<{ stepId: string; state: StepTerminalState; output?: Record<string, unknown> }> {
+  await input.store.markRemoteAttemptCancelRequested(attemptId);
+
+  const initialCallback = callbackId
+    ? await input.store.getCallbackInbox(callbackId)
+    : await input.store.getLatestCallbackForAttempt(attemptId);
+  if (
+    initialCallback &&
+    initialCallback.attemptId === attemptId &&
+    initialCallback.callbackKind === 'result' &&
+    !initialCallback.ignoredReason
+  ) {
+    return finishRemoteAttemptResult(
+      input,
+      attemptId,
+      parseRemoteExecutorResult(input.definition.uses, initialCallback.result)
+    );
+  }
+
+  const attempt = await input.store.getRemoteAttempt(attemptId);
+  if (!attempt) {
+    return finishRemoteCancelled(input, attemptId);
+  }
+
+  const dispatchFacts = await input.store.listExecutorDispatches(attemptId);
+  const knownRunIds = new Set<string>();
+  if (attempt.githubRunId) knownRunIds.add(attempt.githubRunId);
+  for (const fact of dispatchFacts) {
+    if (fact.outcome === 'accepted' && fact.returnedGitHubRunId) {
+      knownRunIds.add(fact.returnedGitHubRunId);
+    }
+  }
+
+  if (knownRunIds.size === 0) {
+    // Any ambiguous unclaimed Candidate is now denied by the durable Run cancellation gate.
+    return finishRemoteCancelled(input, attemptId);
+  }
+
+  for (const runId of knownRunIds) {
+    try {
+      await input.durableStep.do(
+        `remote:${input.stepId}:attempt:cancel:${runId}`,
+        { retries: { limit: 0, delay: '1 second', backoff: 'constant' }, timeout: '1 minute' },
+        async () => JSON.stringify(await cancelGitHubRun(input.env, runId))
+      );
+    } catch {
+      // Reconciliation below, not the cancel HTTP response, determines truth.
+    }
+  }
+
+  const runIds = [...knownRunIds];
+  for (let poll = 0; poll < 3; poll += 1) {
+    const callback = await input.store.getLatestCallbackForAttempt(attemptId);
+    if (callback && !callback.ignoredReason && callback.callbackKind === 'result') {
+      return finishRemoteAttemptResult(
+        input,
+        attemptId,
+        parseRemoteExecutorResult(input.definition.uses, callback.result)
+      );
+    }
+
+    try {
+      const facts = await Promise.all(
+        runIds.map(runId => getGitHubRunFact(input.env, runId))
+      );
+
+      if (facts.some(fact => fact.status === 'completed' && fact.conclusion === 'success')) {
+        return finishRemoteAttemptResult(input, attemptId, {
+          state: 'indeterminate',
+          errorCode: 'CANCEL_AFTER_REMOTE_SUCCESS_UNKNOWN',
+          errorSummary:
+            'GitHub execution completed successfully during cancellation but no authoritative result callback is available.'
+        });
+      }
+
+      if (
+        facts.every(
+          fact =>
+            fact.status === 'completed' &&
+            fact.conclusion !== 'success'
+        )
+      ) {
+        return finishRemoteCancelled(input, attemptId);
+      }
+    } catch {
+      // A transient reconciliation failure is retried by the bounded loop.
+    }
+
+    if (poll < 2) {
+      await input.durableStep.sleep(
+        `remote:${input.stepId}:attempt:cancel-reconcile:${poll + 1}`,
+        5_000
+      );
+    }
+  }
+
+  return finishRemoteAttemptResult(input, attemptId, {
+    state: 'indeterminate',
+    errorCode: 'CANCELLATION_UNRESOLVED',
+    errorSummary:
+      'Remote execution could not be confirmed stopped or safely resolved within the cancellation reconciliation window.'
+  });
+}
+
+async function finishRemoteCancelled(
+  input: {
+    store: D1WorkflowStore;
+    runId: string;
+    stepRunId: string;
+    stepId: string;
+  },
+  attemptId: string
+): Promise<{ stepId: string; state: StepTerminalState }> {
+  await input.store.recordAttemptResult({
+    runId: input.runId,
+    stepRunId: input.stepRunId,
+    stepId: input.stepId,
+    attemptId,
+    state: 'cancelled'
+  });
+  await input.store.finishStep({
+    runId: input.runId,
+    stepRunId: input.stepRunId,
+    stepId: input.stepId,
+    state: 'cancelled'
+  });
+  return { stepId: input.stepId, state: 'cancelled' };
 }
 
 async function reconcileRemoteAttempt(
