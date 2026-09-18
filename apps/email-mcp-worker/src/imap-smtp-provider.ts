@@ -19,7 +19,6 @@ import {
 import {
   MAX_SOURCE_BYTES,
   normalizeMimeMessage,
-  oversizedMessageFallback,
   type NormalizedMessagePayload,
   structureAttachmentMetadata,
   unavailableMessageBody,
