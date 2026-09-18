@@ -1,6 +1,14 @@
 name: Workflow MCP Staging Gate
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - apps/workflow-mcp-worker/**
+      - .github/workflows/workflow-executor.yml
+      - .github/workflows/workflow-executor-staging.yml
+      - .github/workflows/workflow-mcp-staging.yml
   workflow_dispatch:
     inputs:
       source_url:
