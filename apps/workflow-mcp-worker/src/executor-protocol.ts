@@ -120,6 +120,17 @@ export async function claimRemoteAttempt(
   const store = options.store ?? new D1WorkflowStore(env.DB);
   const registered = await store.getRemoteAttempt(input.attemptId);
   if (!registered) throw new ExecutorProtocolError(404, 'ATTEMPT_NOT_FOUND', 'Registered Attempt was not found.');
+  if (
+    registered.runState !== 'queued' &&
+    registered.runState !== 'running' &&
+    registered.runState !== 'waiting'
+  ) {
+    throw new ExecutorProtocolError(
+      409,
+      'RUN_NOT_CLAIMABLE',
+      'Workflow Run is cancelling or already terminal.'
+    );
+  }
 
   assertCandidateMatchesRegistration(identity, registered);
   const claimNonceHash = await sha256Hex(input.claimNonce);
@@ -206,6 +217,10 @@ export async function acceptExecutorCallback(
   });
 
   const eventType = attemptEventType(claims.attemptId);
+  if (!inserted.inserted) {
+    return { inserted: false, notified: false, eventType };
+  }
+
   try {
     const instance = await env.WORKFLOW.get(claims.runId);
     await instance.sendEvent({
@@ -213,7 +228,7 @@ export async function acceptExecutorCallback(
       payload: { kind: input.kind, callbackId: input.callbackId }
     });
     await store.markCallbackNotified(input.callbackId);
-    return { inserted: inserted.inserted, notified: true, eventType };
+    return { inserted: true, notified: true, eventType };
   } catch {
     await store.recordCallbackNotificationFailure(
       input.callbackId,

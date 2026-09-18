@@ -162,7 +162,7 @@ describe('remote executor protocol', () => {
         },
         { store, fetchImpl: jwksFetch() as typeof fetch, nowMs: 1_800_000_000_000 }
       )
-    ).rejects.toMatchObject({ code: 'ATTEMPT_CLAIM_REJECTED' });
+    ).rejects.toMatchObject({ code: 'RUN_NOT_CLAIMABLE' });
   });
 
   it('serves only the server-registered manifest under the scoped Lease', async () => {
@@ -235,10 +235,10 @@ describe('remote executor protocol', () => {
     );
 
     expect(first).toMatchObject({ inserted: true, notified: true });
-    expect(duplicate).toMatchObject({ inserted: false, notified: true });
+    expect(duplicate).toMatchObject({ inserted: false, notified: false });
     expect(store.callbackCount()).toBe(1);
     expect((await store.getRemoteAttempt(prepared.attemptId))?.state).toBe('claimed');
-    expect(events).toHaveLength(2);
+    expect(events).toHaveLength(1);
     expect(events[0]?.type).toBe(attemptEventType(prepared.attemptId));
   });
 
