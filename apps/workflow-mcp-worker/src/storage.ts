@@ -158,6 +158,24 @@ export interface CallbackInboxInsertResult {
   inserted: boolean;
 }
 
+export interface ExecutorDispatchRecordInput {
+  attemptId: string;
+  generation: number;
+  outcome: 'accepted' | 'unknown' | 'failed';
+  returnedGitHubRunId?: string;
+  errorSummary?: string;
+}
+
+export interface CallbackInboxRecord {
+  callbackId: string;
+  attemptId: string;
+  githubRunId: string;
+  githubRunAttempt: number;
+  callbackKind: string;
+  result: Record<string, unknown>;
+  receivedAt: string;
+}
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -436,7 +454,7 @@ export class D1WorkflowStore {
         `UPDATE step_attempts
          SET state = ?, terminal_result_json = ?, error_code = ?, error_summary = ?,
              dependency_snapshot_json = ?, ended_at = ?
-         WHERE attempt_id = ? AND state = 'running'`
+         WHERE attempt_id = ? AND state IN ('queued', 'claimed', 'running')`
       )
       .bind(
         input.state,
@@ -713,6 +731,58 @@ export class D1WorkflowStore {
       )
       .run();
     return { inserted: (result.meta.changes ?? 0) === 1 };
+  }
+
+  async recordExecutorDispatch(input: ExecutorDispatchRecordInput): Promise<void> {
+    const dispatchedAt = nowIso();
+    await this.db.batch([
+      this.db
+        .prepare(
+          `UPDATE step_attempts
+           SET dispatch_generation = CASE
+             WHEN dispatch_generation < ? THEN ?
+             ELSE dispatch_generation
+           END
+           WHERE attempt_id = ? AND executor_type = 'github'`
+        )
+        .bind(input.generation, input.generation, input.attemptId),
+      this.db
+        .prepare(
+          `INSERT OR IGNORE INTO executor_dispatches
+           (attempt_id, generation, dispatched_at, outcome, returned_github_run_id, error_summary)
+           VALUES (?, ?, ?, ?, ?, ?)`
+        )
+        .bind(
+          input.attemptId,
+          input.generation,
+          dispatchedAt,
+          input.outcome,
+          input.returnedGitHubRunId ?? null,
+          input.errorSummary ?? null
+        )
+    ]);
+  }
+
+  async getCallbackInbox(callbackId: string): Promise<CallbackInboxRecord | null> {
+    const row = await this.db
+      .prepare(
+        `SELECT callback_id, attempt_id, github_run_id, github_run_attempt,
+                callback_kind, result_json, received_at
+         FROM callback_inbox WHERE callback_id = ?`
+      )
+      .bind(callbackId)
+      .first<Record<string, string | number | null>>();
+    if (!row) return null;
+
+    return {
+      callbackId: String(row.callback_id),
+      attemptId: String(row.attempt_id),
+      githubRunId: String(row.github_run_id),
+      githubRunAttempt: Number(row.github_run_attempt),
+      callbackKind: String(row.callback_kind),
+      result: parseObject(row.result_json === null ? null : String(row.result_json)),
+      receivedAt: String(row.received_at)
+    };
   }
 
   async markCallbackNotified(callbackId: string): Promise<void> {
