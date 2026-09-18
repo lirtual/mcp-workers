@@ -1,5 +1,4 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
-import { getCapabilityDescriptor } from './capabilities.js';
 import {
   decideStep,
   deriveRunTerminalState,
@@ -10,7 +9,6 @@ import {
 } from './dag.js';
 import {
   executeCloudflareCapability,
-  prepareCloudflareCapability,
   type CapabilityExecutionResult
 } from './execute-capability.js';
 import type { EffectiveOperationPolicy } from './effective-policy.js';
@@ -72,7 +70,6 @@ export async function executeDagRun(
     const completed = await Promise.all(
       ready.map(stepId =>
         executeReadyStep({
-          env,
           env,
           store,
           durableStep,
@@ -290,7 +287,7 @@ async function runAttempts(input: {
   stepRunId: string;
   operationId: string;
   maxAttempts: number;
-  effectivePolicy: import('./effective-policy.js').EffectiveOperationPolicy;
+  effectivePolicy: EffectiveOperationPolicy;
   dependencySnapshot?: Record<string, unknown>;
   capabilityInput: Readonly<Record<string, unknown>>;
 }): Promise<{ stepId: string; state: StepTerminalState; output?: Record<string, unknown> }> {
@@ -380,7 +377,7 @@ async function executeDurableAttempt(
   attemptNumber: number,
   definition: RuntimeStep,
   operationId: string,
-  effectivePolicy: import('./effective-policy.js').EffectiveOperationPolicy,
+  effectivePolicy: EffectiveOperationPolicy,
   dependencySnapshot: Record<string, unknown> | undefined,
   capabilityInput: Readonly<Record<string, unknown>>
 ): Promise<AttemptResult> {
