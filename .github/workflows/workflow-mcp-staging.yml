@@ -37,12 +37,12 @@ jobs:
     timeout-minutes: 45
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      WORKFLOW_MCP_STAGING_D1_DATABASE_ID: ${{ secrets.WORKFLOW_MCP_STAGING_D1_DATABASE_ID }}
+      CLOUDFLARE_ACCOUNT_ID: 8bb496011403552e785ea1b834daffdf
+      WORKFLOW_MCP_STAGING_D1_DATABASE_ID: 8e0763e4-e6a6-4559-9928-709652404a1e
       WORKFLOW_MCP_STAGING_D1_DATABASE_NAME: ${{ vars.WORKFLOW_MCP_STAGING_D1_DATABASE_NAME || 'workflow-mcp-staging' }}
       WORKFLOW_MCP_STAGING_WORKER_NAME: ${{ vars.WORKFLOW_MCP_STAGING_WORKER_NAME || 'workflow-mcp-worker-staging' }}
       WORKFLOW_MCP_STAGING_R2_BUCKET: ${{ vars.WORKFLOW_MCP_STAGING_R2_BUCKET || 'workflow-mcp-artifacts-staging' }}
-      WORKFLOW_MCP_STAGING_URL: ${{ vars.WORKFLOW_MCP_STAGING_URL }}
+      WORKFLOW_MCP_STAGING_URL: ${{ vars.WORKFLOW_MCP_STAGING_URL || 'https://workflow-mcp-worker-staging.aiyaya.workers.dev' }}
       WORKFLOW_MCP_STAGING_SOURCE_URL: ${{ inputs.source_url }}
       STAGING_EVIDENCE_PATH: ${{ github.workspace }}/workflow-mcp-staging-evidence.json
     steps:
