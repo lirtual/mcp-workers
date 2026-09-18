@@ -75,8 +75,16 @@ jobs:
           access_token="$(openssl rand -hex 32)"
           lease_secret="$(openssl rand -hex 32)"
           trigger_token="$(openssl rand -hex 32)"
-          token_json="$(curl --fail --silent --show-error             "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/tokens/verify"             -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN")"
-          r2_access_key_id="$(node -e "const x=JSON.parse(process.argv[1]); if(!x.success||!x.result?.id) process.exit(1); process.stdout.write(x.result.id)" "$token_json")"
+          account_verify_url="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/tokens/verify"
+          user_verify_url="https://api.cloudflare.com/client/v4/user/tokens/verify"
+          if token_json="$(curl --fail --silent --show-error "$account_verify_url" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" 2>/dev/null)"; then
+            token_owner="account"
+          else
+            token_json="$(curl --fail --silent --show-error "$user_verify_url" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN")"
+            token_owner="user"
+          fi
+          r2_access_key_id="$(node -e "const x=JSON.parse(process.argv[1]); if(!x.success||!x.result?.id||x.result.status!=='active') process.exit(1); process.stdout.write(x.result.id)" "$token_json")"
+          echo "Cloudflare token verified as $token_owner-owned."
           r2_secret_access_key="$(printf '%s' "$CLOUDFLARE_API_TOKEN" | sha256sum | awk '{print $1}')"
 
           echo "::add-mask::$access_token"
