@@ -11,6 +11,7 @@ import {
 import type {
   CallbackInboxInput,
   CallbackInboxInsertResult,
+  ExecutorDispatchFact,
   RemoteAttemptRecord,
   RemoteAttemptRegistration,
   RemoteClaimInput
@@ -165,6 +166,102 @@ describe('remote executor protocol', () => {
     ).rejects.toMatchObject({ code: 'RUN_NOT_CLAIMABLE' });
   });
 
+  it('requires the known accepted physical run when no dispatch generation is unknown', async () => {
+    const store = new MemoryExecutorStore();
+    const prepared = await prepare(store);
+    store.setDispatches(prepared.attemptId, [
+      {
+        generation: 1,
+        outcome: 'accepted',
+        returnedGitHubRunId: '9100',
+        dispatchedAt: new Date().toISOString()
+      }
+    ]);
+
+    await expect(
+      claimRemoteAttempt(
+        executorEnv(),
+        {
+          attemptId: prepared.attemptId,
+          claimNonce: prepared.claimNonce,
+          oidcToken: await oidcToken({ run_id: '9999', run_attempt: '1' })
+        },
+        { store, fetchImpl: jwksFetch() as typeof fetch, nowMs: 1_800_000_000_000 }
+      )
+    ).rejects.toMatchObject({ code: 'EXECUTOR_RUN_MISMATCH' });
+
+    await expect(
+      claimRemoteAttempt(
+        executorEnv(),
+        {
+          attemptId: prepared.attemptId,
+          claimNonce: prepared.claimNonce,
+          oidcToken: await oidcToken({ run_id: '9100', run_attempt: '1' })
+        },
+        { store, fetchImpl: jwksFetch() as typeof fetch, nowMs: 1_800_000_000_000 }
+      )
+    ).resolves.toMatchObject({ expiresInSeconds: 300 });
+  });
+
+  it('allows an earlier valid Candidate when any dispatch generation is unknown', async () => {
+    const store = new MemoryExecutorStore();
+    const prepared = await prepare(store);
+    store.setDispatches(prepared.attemptId, [
+      {
+        generation: 1,
+        outcome: 'unknown',
+        dispatchedAt: new Date().toISOString()
+      },
+      {
+        generation: 2,
+        outcome: 'accepted',
+        returnedGitHubRunId: '9200',
+        dispatchedAt: new Date().toISOString()
+      }
+    ]);
+
+    await expect(
+      claimRemoteAttempt(
+        executorEnv(),
+        {
+          attemptId: prepared.attemptId,
+          claimNonce: prepared.claimNonce,
+          oidcToken: await oidcToken({ run_id: '9199', run_attempt: '1' })
+        },
+        { store, fetchImpl: jwksFetch() as typeof fetch, nowMs: 1_800_000_000_000 }
+      )
+    ).resolves.toMatchObject({ expiresInSeconds: 300 });
+  });
+
+  it('never transfers a claimed Attempt merely because its claim deadline would have expired', async () => {
+    const store = new MemoryExecutorStore();
+    const prepared = await prepare(store);
+    const env = executorEnv();
+    await claimRemoteAttempt(
+      env,
+      {
+        attemptId: prepared.attemptId,
+        claimNonce: prepared.claimNonce,
+        oidcToken: await oidcToken({ run_id: '9300', run_attempt: '1' })
+      },
+      { store, fetchImpl: jwksFetch() as typeof fetch, nowMs: 1_800_000_000_000 }
+    );
+
+    await expect(
+      claimRemoteAttempt(
+        env,
+        {
+          attemptId: prepared.attemptId,
+          claimNonce: prepared.claimNonce,
+          oidcToken: await oidcToken({ run_id: '9301', run_attempt: '1' })
+        },
+        { store, fetchImpl: jwksFetch() as typeof fetch, nowMs: 1_800_100_000_000 }
+      )
+    ).rejects.toMatchObject({ code: 'ATTEMPT_CLAIM_REJECTED' });
+
+    expect((await store.getRemoteAttempt(prepared.attemptId))?.githubRunId).toBe('9300');
+  });
+
   it('serves only the server-registered manifest under the scoped Lease', async () => {
     const store = new MemoryExecutorStore();
     const prepared = await prepare(store);
@@ -284,6 +381,7 @@ describe('remote executor protocol', () => {
 class MemoryExecutorStore implements ExecutorProtocolStore {
   private readonly attempts = new Map<string, RemoteAttemptRecord>();
   private readonly callbacks = new Set<string>();
+  private readonly dispatches = new Map<string, ExecutorDispatchFact[]>();
   notificationFailures = 0;
 
   async registerRemoteAttempt(input: RemoteAttemptRegistration): Promise<void> {
@@ -308,6 +406,14 @@ class MemoryExecutorStore implements ExecutorProtocolStore {
   async getRemoteAttempt(attemptId: string): Promise<RemoteAttemptRecord | null> {
     const attempt = this.attempts.get(attemptId);
     return attempt ? { ...attempt, executionManifest: { ...attempt.executionManifest } } : null;
+  }
+
+  async listExecutorDispatches(attemptId: string): Promise<ExecutorDispatchFact[]> {
+    return [...(this.dispatches.get(attemptId) ?? [])];
+  }
+
+  setDispatches(attemptId: string, facts: ExecutorDispatchFact[]): void {
+    this.dispatches.set(attemptId, [...facts]);
   }
 
   async claimRemoteAttempt(input: RemoteClaimInput): Promise<boolean> {
