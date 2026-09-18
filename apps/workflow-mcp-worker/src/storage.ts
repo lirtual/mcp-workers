@@ -130,7 +130,11 @@ export class D1WorkflowStore {
           `INSERT OR IGNORE INTO workflow_runs
            (run_id, workflow_id, definition_digest, input_json, trigger_json, state,
             cf_workflow_instance_id, created_at)
-           VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)`
+           SELECT ?, ?, ?, ?, ?, 'queued', ?, ?
+           WHERE EXISTS (
+             SELECT 1 FROM run_admissions
+             WHERE admission_key = ? AND run_id = ?
+           )`
         )
         .bind(
           input.proposedRunId,
@@ -139,7 +143,9 @@ export class D1WorkflowStore {
           JSON.stringify(input.input),
           JSON.stringify(input.trigger),
           input.proposedRunId,
-          createdAt
+          createdAt,
+          input.admissionKey,
+          input.proposedRunId
         )
     ]);
 
