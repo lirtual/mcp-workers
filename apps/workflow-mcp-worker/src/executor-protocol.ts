@@ -1,8 +1,7 @@
 import { issueExecutorLease, verifyExecutorLease, type ExecutorLeaseClaims } from './lease.js';
 import {
   assertExecutionManifestCompatible,
-  RUNNER_VERSION,
-  SUPPORTED_EXECUTION_MANIFEST_VERSION
+  RUNNER_VERSION
 } from './provenance.js';
 import {
   verifyGitHubOidcToken,
@@ -34,7 +33,7 @@ export interface ExecutorProtocolStore {
 }
 
 export interface ExecutionManifest {
-  version: typeof SUPPORTED_EXECUTION_MANIFEST_VERSION;
+  version: 1;
   runId: string;
   stepRunId: string;
   attemptId: string;
