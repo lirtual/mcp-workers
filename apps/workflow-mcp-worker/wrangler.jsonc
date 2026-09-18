@@ -43,14 +43,24 @@
     "GITHUB_REPOSITORY": "lirtual/mcp-workers",
     "GITHUB_REPOSITORY_ID": "1371085786",
     "GITHUB_EXECUTOR_REF": "main",
-    "GITHUB_EXECUTOR_WORKFLOW": "workflow-executor.yml"
+    "GITHUB_EXECUTOR_WORKFLOW": "workflow-executor.yml",
+    "R2_BUCKET_NAME": "workflow-mcp-artifacts"
   },
   "secrets": {
     "required": [
       "MCP_ACCESS_TOKEN",
       "TRIGGER_SMOKE_WEBHOOK_TOKEN",
       "EXECUTOR_LEASE_SECRET",
-      "GITHUB_ACTIONS_TOKEN"
+      "GITHUB_ACTIONS_TOKEN",
+      "R2_ACCOUNT_ID",
+      "R2_ACCESS_KEY_ID",
+      "R2_SECRET_ACCESS_KEY"
     ]
-  }
+  },
+  "r2_buckets": [
+    {
+      "binding": "ARTIFACTS",
+      "bucket_name": "workflow-mcp-artifacts"
+    }
+  ]
 }
