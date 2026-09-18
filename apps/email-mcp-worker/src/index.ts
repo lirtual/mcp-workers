@@ -36,6 +36,7 @@ export async function handleRequest(
   env: Env,
   _ctx: ExecutionContext,
 ): Promise<Response> {
+  void _ctx;
   const url = new URL(request.url);
 
   if (url.pathname === "/health" && request.method === "GET") {
