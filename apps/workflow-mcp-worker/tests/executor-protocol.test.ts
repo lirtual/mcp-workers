@@ -339,6 +339,40 @@ describe('remote executor protocol', () => {
     expect(events[0]?.type).toBe(attemptEventType(prepared.attemptId));
   });
 
+  it('stores a late callback for a terminal Attempt but does not wake the Workflow', async () => {
+    const events: Array<{ type: string; payload: unknown }> = [];
+    const store = new MemoryExecutorStore();
+    const prepared = await prepare(store);
+    const env = executorEnv(async event => {
+      events.push(event);
+    });
+    const claimed = await claimRemoteAttempt(
+      env,
+      {
+        attemptId: prepared.attemptId,
+        claimNonce: prepared.claimNonce,
+        oidcToken: await oidcToken({ run_id: '9045', run_attempt: '1' })
+      },
+      { store, fetchImpl: jwksFetch() as typeof fetch, nowMs: 1_800_000_000_000 }
+    );
+    store.setAttemptState(prepared.attemptId, 'failed');
+
+    const late = await acceptExecutorCallback(
+      env,
+      claimed.lease,
+      {
+        callbackId: 'callback-late',
+        kind: 'result',
+        result: { state: 'succeeded', output: { ok: true } }
+      },
+      { store, nowMs: 1_800_000_012_000 }
+    );
+
+    expect(late).toMatchObject({ inserted: true, notified: false });
+    expect(store.callbackCount()).toBe(1);
+    expect(events).toHaveLength(0);
+  });
+
   it('keeps the inbox row pending when Workflow notification fails', async () => {
     const store = new MemoryExecutorStore();
     const prepared = await prepare(store);
@@ -462,6 +496,11 @@ class MemoryExecutorStore implements ExecutorProtocolStore {
     _nextNotificationAt: string
   ): Promise<void> {
     this.notificationFailures += 1;
+  }
+
+  setAttemptState(attemptId: string, state: RemoteAttemptRecord['state']): void {
+    const attempt = this.attempts.get(attemptId);
+    if (attempt) attempt.state = state;
   }
 
   setRunState(attemptId: string, state: RemoteAttemptRecord['runState']): void {
