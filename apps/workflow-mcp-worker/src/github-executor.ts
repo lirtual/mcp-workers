@@ -206,6 +206,26 @@ export interface GitHubRunFact {
   conclusion?: string;
 }
 
+export type CancellationFactDecision =
+  | 'stopped'
+  | 'success_without_callback'
+  | 'unresolved';
+
+export function classifyCancellationRunFacts(
+  facts: readonly GitHubRunFact[]
+): CancellationFactDecision {
+  if (facts.some(fact => fact.status === 'completed' && fact.conclusion === 'success')) {
+    return 'success_without_callback';
+  }
+  if (
+    facts.length > 0 &&
+    facts.every(fact => fact.status === 'completed' && fact.conclusion !== 'success')
+  ) {
+    return 'stopped';
+  }
+  return 'unresolved';
+}
+
 export async function getGitHubRunFact(
   env: Env,
   runId: string,
