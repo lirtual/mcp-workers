@@ -91,7 +91,7 @@ function evaluateExpression(
     }
     return undefined;
   }
-  if (expression.kind === 'unary') return !Boolean(evaluateExpression(expression.expr, context));
+  if (expression.kind === 'unary') return !evaluateExpression(expression.expr, context);
 
   const left = evaluateExpression(expression.left, context);
   const right = evaluateExpression(expression.right, context);
