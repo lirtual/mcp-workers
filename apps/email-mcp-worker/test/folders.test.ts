@@ -13,7 +13,7 @@ describe("IMAP folder normalization", () => {
         delimiter: "/",
         flags: new Set(["\\HasNoChildren"]),
         specialUse: "\\Trash",
-        status: { messages: 12, unseen: 3 },
+        status: { path: "Deleted Messages", messages: 12, unseen: 3 },
       },
       true,
     );
