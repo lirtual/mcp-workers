@@ -1,0 +1,25 @@
+version: 1
+id: sequential-http-smoke
+name: Sequential HTTP smoke
+description: Fetch two public HTTP(S) resources in sequence using only the existing http.read capability.
+inputs:
+  first_url:
+    type: string
+  second_url:
+    type: string
+triggers:
+  - type: manual
+steps:
+  first:
+    uses: http.read
+    with:
+      url: "${{ input.first_url }}"
+  second:
+    uses: http.read
+    needs:
+      - first
+    with:
+      url: "${{ input.second_url }}"
+outputs:
+  first_body: "${{ steps.first.outputs.body }}"
+  second_body: "${{ steps.second.outputs.body }}"

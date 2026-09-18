@@ -125,6 +125,113 @@ export const workflowRegistry = [
     }
   },
   {
+    "sourcePath": "workflows/sequential-http-smoke.yaml",
+    "definitionDigest": "320d63de02a8296fea0eb9e5ca59b3388ca8f6d8f98115e40e0840fa4da6d31f",
+    "metadata": {
+      "id": "sequential-http-smoke",
+      "name": "Sequential HTTP smoke",
+      "description": "Fetch two public HTTP(S) resources in sequence using only the existing http.read capability.",
+      "definitionDigest": "320d63de02a8296fea0eb9e5ca59b3388ca8f6d8f98115e40e0840fa4da6d31f",
+      "triggerTypes": [
+        "manual"
+      ],
+      "inputs": {
+        "first_url": {
+          "type": "string",
+          "required": true
+        },
+        "second_url": {
+          "type": "string",
+          "required": true
+        }
+      },
+      "stepCapabilities": [
+        "http.read"
+      ]
+    },
+    "plan": {
+      "dslVersion": 1,
+      "id": "sequential-http-smoke",
+      "name": "Sequential HTTP smoke",
+      "description": "Fetch two public HTTP(S) resources in sequence using only the existing http.read capability.",
+      "inputs": {
+        "first_url": {
+          "type": "string",
+          "required": true
+        },
+        "second_url": {
+          "type": "string",
+          "required": true
+        }
+      },
+      "triggers": [
+        {
+          "type": "manual"
+        }
+      ],
+      "steps": {
+        "first": {
+          "uses": "http.read",
+          "executor": "cloudflare",
+          "needs": [],
+          "with": {
+            "url": {
+              "$expr": {
+                "kind": "ref",
+                "path": [
+                  "input",
+                  "first_url"
+                ]
+              }
+            }
+          }
+        },
+        "second": {
+          "uses": "http.read",
+          "executor": "cloudflare",
+          "needs": [
+            "first"
+          ],
+          "with": {
+            "url": {
+              "$expr": {
+                "kind": "ref",
+                "path": [
+                  "input",
+                  "second_url"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "outputs": {
+        "first_body": {
+          "$expr": {
+            "kind": "ref",
+            "path": [
+              "steps",
+              "first",
+              "outputs",
+              "body"
+            ]
+          }
+        },
+        "second_body": {
+          "$expr": {
+            "kind": "ref",
+            "path": [
+              "steps",
+              "second",
+              "outputs",
+              "body"
+            ]
+          }
+        }
+      }
+    }
+  },
+  {
     "sourcePath": "workflows/trigger-http-smoke.yaml",
     "definitionDigest": "3fa645f75b39ef7c67109a6c91d7fff0ec672e6062e6265cf7874cc4498bb533",
     "metadata": {
