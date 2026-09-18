@@ -7,8 +7,8 @@ const sourceUrl = process.env.WORKFLOW_MCP_STAGING_SOURCE_URL || 'https://exampl
 const evidencePath = process.env.STAGING_EVIDENCE_PATH || 'staging-evidence.json';
 const timeoutMs = Number(process.env.STAGING_TIMEOUT_MS || 15 * 60 * 1000);
 const pollMs = Number(process.env.STAGING_POLL_MS || 5000);
-const authReadyTimeoutMs = Number(
-  process.env.STAGING_AUTH_READY_TIMEOUT_MS || 60_000
+const authRetryTimeoutMs = Number(
+  process.env.STAGING_AUTH_RETRY_TIMEOUT_MS || 60_000
 );
 
 const evidence: Record<string, unknown> = {
@@ -107,27 +107,9 @@ async function assertHealth(): Promise<void> {
 }
 
 async function waitForAuthenticatedMcp(): Promise<Record<string, unknown>> {
-  const deadline = Date.now() + authReadyTimeoutMs;
-  let lastError: unknown;
-
-  while (Date.now() < deadline) {
-    try {
-      const result = await callTool('workflow_list', {});
-      console.log('Authenticated MCP endpoint is ready.');
-      return result;
-    } catch (error) {
-      lastError = error;
-      const message = error instanceof Error ? error.message : String(error);
-      console.log(`MCP authentication not ready yet: ${message.slice(0, 300)}`);
-      await sleep(Math.min(pollMs, 5_000));
-    }
-  }
-
-  const message =
-    lastError instanceof Error ? lastError.message : String(lastError ?? 'unknown error');
-  throw new Error(
-    `Timed out waiting for authenticated MCP readiness: ${message.slice(0, 500)}`
-  );
+  const result = await callTool('workflow_list', {});
+  console.log('Authenticated MCP endpoint is ready.');
+  return result;
 }
 
 async function waitForTerminal(runId: string, label: string): Promise<Record<string, unknown>> {
@@ -144,52 +126,66 @@ async function waitForTerminal(runId: string, label: string): Promise<Record<str
 }
 
 async function callTool(name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const requestId = crypto.randomUUID();
-  const response = await fetch(`${baseUrl}/mcp`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json',
-      Accept: 'application/json, text/event-stream',
-      'MCP-Protocol-Version': '2026-07-28',
-      'Mcp-Method': 'tools/call',
-      'Mcp-Name': name
-    },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: requestId,
-      method: 'tools/call',
-      params: {
-        name,
-        arguments: args,
-        _meta: {
-          'io.modelcontextprotocol/protocolVersion': '2026-07-28',
-          'io.modelcontextprotocol/clientInfo': {
-            name: 'workflow-mcp-staging-tracer',
-            version: '0.1.0'
-          },
-          'io.modelcontextprotocol/clientCapabilities': {}
-        }
-      }
-    })
-  });
-  if (!response.ok) {
-    throw new Error(`MCP ${name} HTTP ${response.status}: ${(await response.text()).slice(0, 500)}`);
-  }
+  const deadline = Date.now() + authRetryTimeoutMs;
 
-  const envelope = parseEnvelope(await response.text(), response.headers.get('content-type'));
-  if (envelope.error) throw new Error(`MCP ${name} RPC error: ${JSON.stringify(envelope.error)}`);
-  const result = asObject(envelope.result);
-  if (result.isError === true) {
-    throw new Error(`MCP ${name} tool error: ${JSON.stringify(result.structuredContent ?? result.content)}`);
+  while (true) {
+    const requestId = crypto.randomUUID();
+    const response = await fetch(`${baseUrl}/mcp`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+        'MCP-Protocol-Version': '2026-07-28',
+        'Mcp-Method': 'tools/call',
+        'Mcp-Name': name
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: requestId,
+        method: 'tools/call',
+        params: {
+          name,
+          arguments: args,
+          _meta: {
+            'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+            'io.modelcontextprotocol/clientInfo': {
+              name: 'workflow-mcp-staging-tracer',
+              version: '0.1.0'
+            },
+            'io.modelcontextprotocol/clientCapabilities': {}
+          }
+        }
+      })
+    });
+
+    if (response.status === 401 && Date.now() < deadline) {
+      await response.text();
+      console.log(`MCP ${name} hit a stale Worker auth version; retrying.`);
+      await sleep(Math.min(pollMs, 2_000));
+      continue;
+    }
+
+    if (!response.ok) {
+      throw new Error(
+        `MCP ${name} HTTP ${response.status}: ${(await response.text()).slice(0, 500)}`
+      );
+    }
+
+    const envelope = parseEnvelope(await response.text(), response.headers.get('content-type'));
+    if (envelope.error) throw new Error(`MCP ${name} RPC error: ${JSON.stringify(envelope.error)}`);
+    const result = asObject(envelope.result);
+    if (result.isError === true) {
+      throw new Error(`MCP ${name} tool error: ${JSON.stringify(result.structuredContent ?? result.content)}`);
+    }
+    if (result.structuredContent && typeof result.structuredContent === 'object') {
+      return asObject(result.structuredContent);
+    }
+    const content = asArray(result.content);
+    const textItem = content.map(asObject).find(item => item.type === 'text' && typeof item.text === 'string');
+    if (!textItem) throw new Error(`MCP ${name} returned no structuredContent/text result.`);
+    return asObject(JSON.parse(String(textItem.text)));
   }
-  if (result.structuredContent && typeof result.structuredContent === 'object') {
-    return asObject(result.structuredContent);
-  }
-  const content = asArray(result.content);
-  const textItem = content.map(asObject).find(item => item.type === 'text' && typeof item.text === 'string');
-  if (!textItem) throw new Error(`MCP ${name} returned no structuredContent/text result.`);
-  return asObject(JSON.parse(String(textItem.text)));
 }
 
 interface RpcEnvelope {
