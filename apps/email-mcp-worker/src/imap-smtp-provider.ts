@@ -19,6 +19,7 @@ import {
   MAX_SOURCE_BYTES,
   normalizeMimeMessage,
   oversizedMessageFallback,
+  type NormalizedMessagePayload,
   structureAttachmentMetadata,
   unavailableMessageBody,
 } from "./message-normalizer.js";
@@ -408,9 +409,7 @@ export class ImapSmtpProvider implements EmailProvider {
         ? new Date(envelope.date).toISOString()
         : undefined;
 
-      let normalized:
-        | Awaited<ReturnType<typeof normalizeMimeMessage>>
-        | ReturnType<typeof oversizedMessageFallback>;
+      let normalized: NormalizedMessagePayload;
 
       if ((metadata.size ?? 0) > MAX_SOURCE_BYTES) {
         normalized = oversizedMessageFallback(metadata.bodyStructure);
@@ -422,7 +421,7 @@ export class ImapSmtpProvider implements EmailProvider {
             : { source: true },
           { uid: true },
         );
-        const source = sourceMessage?.source;
+        const source = sourceMessage ? sourceMessage.source : undefined;
 
         if (!source) {
           normalized = {
