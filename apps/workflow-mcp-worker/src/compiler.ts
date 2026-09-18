@@ -2,7 +2,9 @@ import { createHash } from 'node:crypto';
 import { parse as parseYaml } from 'yaml';
 import * as z from 'zod/v4';
 import { getCapabilityDescriptor } from './capabilities.js';
+import { hasConnection } from './connections.js';
 import { parseCronExpression, validateTimeZone } from './cron.js';
+import { compileTimeMcpRetryLimit } from './effective-policy.js';
 
 const IDENTIFIER = /^[A-Za-z][A-Za-z0-9_-]{0,127}$/;
 const CAPABILITY_NAME = /^[A-Za-z][A-Za-z0-9_.-]{0,127}$/;
@@ -78,8 +80,6 @@ interface Token {
   type: 'identifier' | 'number' | 'string' | 'op' | 'lparen' | 'rparen' | 'dot' | 'eof';
   value: string;
 }
-
-const staticConnections = new Set(['smoke-readonly']);
 
 export interface CompiledWorkflowEntry {
   sourcePath: string;
@@ -420,16 +420,22 @@ function normalizeWorkflow(raw: RawWorkflowDefinition): unknown {
       }
     }
 
+    let operationMaxAttempts = contract.maxAutomaticAttempts;
     if (step.uses === 'mcp.call') {
       const connection = withValue.connection;
-      if (typeof connection !== 'string' || !staticConnections.has(connection)) {
+      const tool = withValue.tool;
+      if (typeof connection !== 'string' || !hasConnection(connection)) {
         fail(`Step "${stepId}" must reference a configured static MCP connection.`);
       }
+      if (typeof tool !== 'string' || tool.length === 0) {
+        fail(`Step "${stepId}" must reference a literal MCP tool name.`);
+      }
+      operationMaxAttempts = compileTimeMcpRetryLimit(connection, tool);
     }
 
     const retryMaxAttempts = step.retry?.maxAttempts;
-    if (retryMaxAttempts !== undefined && retryMaxAttempts > contract.maxAutomaticAttempts) {
-      fail(`Step "${stepId}" requests ${retryMaxAttempts} attempts but capability "${step.uses}" permits at most ${contract.maxAutomaticAttempts}.`);
+    if (retryMaxAttempts !== undefined && retryMaxAttempts > operationMaxAttempts) {
+      fail(`Step "${stepId}" requests ${retryMaxAttempts} attempts but operation "${step.uses}" permits at most ${operationMaxAttempts}.`);
     }
 
     const expressionContext = { inputNames, stepNames };
