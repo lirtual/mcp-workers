@@ -1,4 +1,8 @@
 import {
+  allocateArtifactUpload,
+  finalizeCallbackArtifacts
+} from './artifacts.js';
+import {
   acceptExecutorCallback,
   claimRemoteAttempt,
   ExecutorProtocolError,
@@ -25,6 +29,18 @@ export async function handleExecutorRoute(request: Request, env: Env): Promise<R
       return json({ manifest }, 200);
     }
 
+    if (request.method === 'POST' && url.pathname === '/executor/artifacts/allocate') {
+      const lease = bearer(request);
+      const body = await jsonObject(request);
+      const allocation = await allocateArtifactUpload(env, lease, {
+        name: stringField(body, 'name'),
+        mediaType: stringField(body, 'mediaType'),
+        size: integerField(body, 'size'),
+        sha256: stringField(body, 'sha256')
+      });
+      return json(allocation, 200);
+    }
+
     if (request.method === 'POST' && url.pathname === '/executor/callback') {
       const lease = bearer(request);
       const body = await jsonObject(request);
@@ -34,10 +50,15 @@ export async function handleExecutorRoute(request: Request, env: Env): Promise<R
       if (kind !== 'result' || !result || typeof result !== 'object' || Array.isArray(result)) {
         throw new ExecutorProtocolError(400, 'INVALID_CALLBACK', 'Callback kind/result is invalid.');
       }
+      const normalizedResult = await finalizeCallbackArtifacts(
+        env,
+        lease,
+        result as Record<string, unknown>
+      );
       const accepted = await acceptExecutorCallback(env, lease, {
         callbackId,
         kind,
-        result: result as Record<string, unknown>
+        result: normalizedResult
       });
       return json(accepted, 202);
     }
@@ -79,6 +100,14 @@ function stringField(value: Record<string, unknown>, key: string): string {
   const field = value[key];
   if (typeof field !== 'string' || field.length === 0 || field.length > 500) {
     throw new ExecutorProtocolError(400, 'INVALID_REQUEST', `Field "${key}" must be a non-empty string.`);
+  }
+  return field;
+}
+
+function integerField(value: Record<string, unknown>, key: string): number {
+  const field = value[key];
+  if (typeof field !== 'number' || !Number.isInteger(field)) {
+    throw new ExecutorProtocolError(400, 'INVALID_REQUEST', `Field "${key}" must be an integer.`);
   }
   return field;
 }
