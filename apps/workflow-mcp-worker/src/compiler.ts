@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { parse as parseYaml } from 'yaml';
 import * as z from 'zod/v4';
 import { getCapabilityDescriptor } from './capabilities.js';
+import { parseCronExpression, validateTimeZone } from './cron.js';
 
 const IDENTIFIER = /^[A-Za-z][A-Za-z0-9_-]{0,127}$/;
 const CAPABILITY_NAME = /^[A-Za-z][A-Za-z0-9_.-]{0,127}$/;
@@ -19,7 +20,8 @@ const manualTriggerSchema = z.object({ type: z.literal('manual') }).strict();
 const webhookTriggerSchema = z
   .object({
     type: z.literal('webhook'),
-    id: z.string().regex(IDENTIFIER)
+    id: z.string().regex(IDENTIFIER),
+    secret: z.string().regex(/^[A-Z][A-Z0-9_]{0,127}$/)
   })
   .strict();
 const scheduleTriggerSchema = z
@@ -459,6 +461,12 @@ function normalizeWorkflow(raw: RawWorkflowDefinition): unknown {
     normalizedOutputs[name] = normalizeValue(output, { inputNames, stepNames });
   }
 
+  for (const trigger of raw.triggers) {
+    if (trigger.type !== 'schedule') continue;
+    parseCronExpression(trigger.cron);
+    validateTimeZone(trigger.timezone ?? 'UTC');
+  }
+
   const normalizedInputs = Object.fromEntries(
     Object.entries(raw.inputs ?? {}).map(([name, input]) => [
       name,
@@ -478,7 +486,9 @@ function normalizeWorkflow(raw: RawWorkflowDefinition): unknown {
     inputs: normalizedInputs,
     triggers: raw.triggers.map(trigger => ({
       ...trigger,
-      ...(trigger.type === 'schedule' ? { misfire: trigger.misfire ?? 'latest' } : {})
+      ...(trigger.type === 'schedule'
+        ? { timezone: trigger.timezone ?? 'UTC', misfire: trigger.misfire ?? 'latest' }
+        : {})
     })),
     steps: normalizedSteps,
     outputs: normalizedOutputs
