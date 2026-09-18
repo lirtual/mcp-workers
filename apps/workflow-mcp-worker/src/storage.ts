@@ -98,6 +98,66 @@ export interface StepSummary {
   errorSummary?: string;
 }
 
+export interface RemoteAttemptRegistration {
+  runId: string;
+  stepRunId: string;
+  stepId: string;
+  attemptId: string;
+  attemptNumber: number;
+  claimNonceHash: string;
+  expectedRepositoryId: string;
+  expectedWorkflowRef: string;
+  expectedRef: string;
+  expectedWorkflowSha?: string;
+  executionManifest: Record<string, unknown>;
+}
+
+export interface RemoteAttemptRecord {
+  attemptId: string;
+  stepRunId: string;
+  runId: string;
+  stepId: string;
+  operationId: string;
+  state: AttemptState;
+  runState: RunState;
+  claimNonceHash?: string;
+  claimOwner?: string;
+  githubRunId?: string;
+  githubRunAttempt?: number;
+  githubWorkflowSha?: string;
+  expectedRepositoryId: string;
+  expectedWorkflowRef: string;
+  expectedRef: string;
+  expectedWorkflowSha?: string;
+  executionManifest: Record<string, unknown>;
+}
+
+export interface RemoteClaimInput {
+  attemptId: string;
+  claimNonceHash: string;
+  claimOwner: string;
+  claimDeadline: string;
+  githubRunId: string;
+  githubRunAttempt: number;
+  githubWorkflowSha: string;
+  expectedRepositoryId: string;
+  expectedWorkflowRef: string;
+  expectedRef: string;
+}
+
+export interface CallbackInboxInput {
+  callbackId: string;
+  attemptId: string;
+  githubRunId: string;
+  githubRunAttempt: number;
+  callbackKind: string;
+  result: Record<string, unknown>;
+}
+
+export interface CallbackInboxInsertResult {
+  inserted: boolean;
+}
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -479,6 +539,207 @@ export class D1WorkflowStore {
       .first<{ effective_policy_json: string | null }>();
     if (!row?.effective_policy_json) return null;
     return parseObject(row.effective_policy_json);
+  }
+
+  async registerRemoteAttempt(input: RemoteAttemptRegistration): Promise<void> {
+    const createdAt = nowIso();
+    const results = await this.db.batch([
+      this.db
+        .prepare(
+          `UPDATE step_runs
+           SET state = 'running', started_at = COALESCE(started_at, ?)
+           WHERE step_run_id = ? AND run_id = ? AND state IN ('pending', 'running')`
+        )
+        .bind(createdAt, input.stepRunId, input.runId),
+      this.db
+        .prepare(
+          `INSERT OR IGNORE INTO step_attempts
+           (attempt_id, step_run_id, attempt_number, executor_type, state,
+            claim_nonce_hash, expected_repository_id, expected_workflow_ref,
+            expected_ref, expected_workflow_sha, execution_manifest_json, created_at)
+           SELECT ?, ?, ?, 'github', 'queued', ?, ?, ?, ?, ?, ?, ?
+           WHERE EXISTS (
+             SELECT 1
+             FROM step_runs sr
+             JOIN workflow_runs wr ON wr.run_id = sr.run_id
+             WHERE sr.step_run_id = ? AND sr.run_id = ?
+               AND wr.state IN ('queued', 'running', 'waiting')
+           )`
+        )
+        .bind(
+          input.attemptId,
+          input.stepRunId,
+          input.attemptNumber,
+          input.claimNonceHash,
+          input.expectedRepositoryId,
+          input.expectedWorkflowRef,
+          input.expectedRef,
+          input.expectedWorkflowSha ?? null,
+          JSON.stringify(input.executionManifest),
+          createdAt,
+          input.stepRunId,
+          input.runId
+        )
+    ]);
+
+    if ((results[1]?.meta.changes ?? 0) === 1) {
+      await this.appendEvent(
+        input.runId,
+        'attempt.queued',
+        { stepId: input.stepId, attemptNumber: input.attemptNumber, executor: 'github' },
+        input.stepRunId,
+        input.attemptId
+      );
+    }
+  }
+
+  async getRemoteAttempt(attemptId: string): Promise<RemoteAttemptRecord | null> {
+    const row = await this.db
+      .prepare(
+        `SELECT
+           sa.attempt_id, sa.step_run_id, sa.state, sa.claim_nonce_hash, sa.claim_owner,
+           sa.github_run_id, sa.github_run_attempt, sa.github_workflow_sha,
+           sa.expected_repository_id, sa.expected_workflow_ref, sa.expected_ref,
+           sa.expected_workflow_sha, sa.execution_manifest_json,
+           sr.run_id, sr.step_id, sr.operation_id,
+           wr.state AS run_state
+         FROM step_attempts sa
+         JOIN step_runs sr ON sr.step_run_id = sa.step_run_id
+         JOIN workflow_runs wr ON wr.run_id = sr.run_id
+         WHERE sa.attempt_id = ? AND sa.executor_type = 'github'`
+      )
+      .bind(attemptId)
+      .first<Record<string, string | number | null>>();
+    if (!row) return null;
+
+    return {
+      attemptId: String(row.attempt_id),
+      stepRunId: String(row.step_run_id),
+      runId: String(row.run_id),
+      stepId: String(row.step_id),
+      operationId: String(row.operation_id),
+      state: String(row.state) as AttemptState,
+      runState: String(row.run_state) as RunState,
+      ...(row.claim_nonce_hash ? { claimNonceHash: String(row.claim_nonce_hash) } : {}),
+      ...(row.claim_owner ? { claimOwner: String(row.claim_owner) } : {}),
+      ...(row.github_run_id ? { githubRunId: String(row.github_run_id) } : {}),
+      ...(row.github_run_attempt === null ? {} : { githubRunAttempt: Number(row.github_run_attempt) }),
+      ...(row.github_workflow_sha ? { githubWorkflowSha: String(row.github_workflow_sha) } : {}),
+      expectedRepositoryId: String(row.expected_repository_id),
+      expectedWorkflowRef: String(row.expected_workflow_ref),
+      expectedRef: String(row.expected_ref),
+      ...(row.expected_workflow_sha ? { expectedWorkflowSha: String(row.expected_workflow_sha) } : {}),
+      executionManifest: parseObject(
+        row.execution_manifest_json === null ? null : String(row.execution_manifest_json)
+      )
+    };
+  }
+
+  async claimRemoteAttempt(input: RemoteClaimInput): Promise<boolean> {
+    const claimedAt = nowIso();
+    const result = await this.db
+      .prepare(
+        `UPDATE step_attempts
+         SET state = 'claimed',
+             claim_owner = ?,
+             claimed_at = ?,
+             claim_deadline = ?,
+             github_run_id = ?,
+             github_run_attempt = ?,
+             github_workflow_sha = ?
+         WHERE attempt_id = ?
+           AND executor_type = 'github'
+           AND state = 'queued'
+           AND claim_nonce_hash = ?
+           AND github_run_id IS NULL
+           AND expected_repository_id = ?
+           AND expected_workflow_ref = ?
+           AND expected_ref = ?
+           AND (expected_workflow_sha IS NULL OR expected_workflow_sha = ?)
+           AND EXISTS (
+             SELECT 1
+             FROM step_runs sr
+             JOIN workflow_runs wr ON wr.run_id = sr.run_id
+             WHERE sr.step_run_id = step_attempts.step_run_id
+               AND wr.state IN ('queued', 'running', 'waiting')
+               AND wr.cancel_requested_at IS NULL
+           )`
+      )
+      .bind(
+        input.claimOwner,
+        claimedAt,
+        input.claimDeadline,
+        input.githubRunId,
+        input.githubRunAttempt,
+        input.githubWorkflowSha,
+        input.attemptId,
+        input.claimNonceHash,
+        input.expectedRepositoryId,
+        input.expectedWorkflowRef,
+        input.expectedRef,
+        input.githubWorkflowSha
+      )
+      .run();
+
+    return (result.meta.changes ?? 0) === 1;
+  }
+
+  async insertCallbackInbox(input: CallbackInboxInput): Promise<CallbackInboxInsertResult> {
+    const result = await this.db
+      .prepare(
+        `INSERT OR IGNORE INTO callback_inbox
+         (callback_id, attempt_id, github_run_id, github_run_attempt,
+          callback_kind, result_json, received_at)
+         SELECT ?, ?, ?, ?, ?, ?, ?
+         WHERE EXISTS (
+           SELECT 1 FROM step_attempts
+           WHERE attempt_id = ?
+             AND state IN ('claimed', 'running', 'cancel_requested')
+             AND github_run_id = ?
+             AND github_run_attempt = ?
+         )`
+      )
+      .bind(
+        input.callbackId,
+        input.attemptId,
+        input.githubRunId,
+        input.githubRunAttempt,
+        input.callbackKind,
+        JSON.stringify(input.result),
+        nowIso(),
+        input.attemptId,
+        input.githubRunId,
+        input.githubRunAttempt
+      )
+      .run();
+    return { inserted: (result.meta.changes ?? 0) === 1 };
+  }
+
+  async markCallbackNotified(callbackId: string): Promise<void> {
+    await this.db
+      .prepare(
+        `UPDATE callback_inbox
+         SET notified_at = ?, notification_attempt_count = notification_attempt_count + 1,
+             next_notification_at = NULL
+         WHERE callback_id = ?`
+      )
+      .bind(nowIso(), callbackId)
+      .run();
+  }
+
+  async recordCallbackNotificationFailure(
+    callbackId: string,
+    nextNotificationAt: string
+  ): Promise<void> {
+    await this.db
+      .prepare(
+        `UPDATE callback_inbox
+         SET notification_attempt_count = notification_attempt_count + 1,
+             next_notification_at = ?
+         WHERE callback_id = ? AND notified_at IS NULL`
+      )
+      .bind(nextNotificationAt, callbackId)
+      .run();
   }
 
   async getSchedulerState(scheduleKey: string): Promise<SchedulerState | null> {
