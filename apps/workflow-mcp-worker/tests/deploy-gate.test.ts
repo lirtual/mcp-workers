@@ -23,7 +23,6 @@ describe('Workflow MCP deploy gate contract', () => {
       paths: [
         'apps/workflow-mcp-worker/**',
         '.github/workflows/workflow-executor.yml',
-        '.github/workflows/workflow-executor.yml',
         '.github/workflows/workflow-mcp-deploy.yml'
       ]
     });
@@ -37,15 +36,15 @@ describe('Workflow MCP deploy gate contract', () => {
     expect(deploy.environment).toBe('workflow-mcp-worker');
     const steps = deploy.steps as Array<Record<string, unknown>>;
     const names = steps.map(step => step.name).filter(Boolean);
-    expect(names).toContain('Generate ephemeral deploy credentials');
+    expect(names).toContain('Generate ephemeral runtime credentials');
     expect(names).toContain('Run application release checks');
     expect(names).toContain('Check nonterminal runtime compatibility');
-    expect(names).toContain('Apply deploy D1 migrations');
+    expect(names).toContain('Apply D1 migrations');
     expect(names.indexOf('Apply deploy D1 migrations')).toBeLessThan(
       names.indexOf('Check nonterminal runtime compatibility')
     );
-    expect(names).toContain('Deploy isolated deploy Worker');
-    expect(names).not.toContain('Install deploy Worker secrets');
+    expect(names).toContain('Deploy Workflow MCP Worker');
+    expect(names).not.toContain('Install Workflow MCP Worker secrets');
     expect(names).toContain('Run MCP heavy and connection tracers');
     expect(names).toContain('Verify GitHub executor terminal evidence');
 
@@ -104,8 +103,9 @@ describe('Workflow MCP deploy gate contract', () => {
       'utf8'
     );
     expect(file).toContain('.github/workflows/workflow-executor.yml');
-    expect(file).toContain('.github/workflows/workflow-executor.yml');
     expect(file).toContain('.github/workflows/workflow-mcp-deploy.yml');
+    expect(file).not.toContain('workflow-executor-production.yml');
+    expect(file).not.toContain('workflow-mcp-production.yml');
     expect(file).toContain('workflow_control_plane_changed=true');
   });
 });
