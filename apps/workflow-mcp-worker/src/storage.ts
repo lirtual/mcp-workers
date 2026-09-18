@@ -403,21 +403,37 @@ export class D1WorkflowStore {
     attemptId: string;
     attemptNumber: number;
     executorType: string;
-  }): Promise<void> {
+  }): Promise<boolean> {
     const startedAt = nowIso();
     const results = await this.db.batch([
       this.db
         .prepare(
           `UPDATE step_runs
            SET state = 'running', started_at = COALESCE(started_at, ?)
-           WHERE step_run_id = ? AND state = 'pending'`
+           WHERE step_run_id = ?
+             AND state = 'pending'
+             AND EXISTS (
+               SELECT 1 FROM workflow_runs wr
+               WHERE wr.run_id = step_runs.run_id
+                 AND wr.state IN ('queued', 'running', 'waiting')
+                 AND wr.cancel_requested_at IS NULL
+             )`
         )
         .bind(startedAt, input.stepRunId),
       this.db
         .prepare(
           `INSERT OR IGNORE INTO step_attempts
            (attempt_id, step_run_id, attempt_number, executor_type, state, created_at, started_at)
-           VALUES (?, ?, ?, ?, 'running', ?, ?)`
+           SELECT ?, ?, ?, ?, 'running', ?, ?
+           WHERE EXISTS (
+             SELECT 1
+             FROM step_runs sr
+             JOIN workflow_runs wr ON wr.run_id = sr.run_id
+             WHERE sr.step_run_id = ?
+               AND sr.run_id = ?
+               AND wr.state IN ('queued', 'running', 'waiting')
+               AND wr.cancel_requested_at IS NULL
+           )`
         )
         .bind(
           input.attemptId,
@@ -425,10 +441,13 @@ export class D1WorkflowStore {
           input.attemptNumber,
           input.executorType,
           startedAt,
-          startedAt
+          startedAt,
+          input.stepRunId,
+          input.runId
         )
     ]);
-    if ((results[1]?.meta.changes ?? 0) === 1) {
+    const authorized = (results[1]?.meta.changes ?? 0) === 1;
+    if (authorized) {
       await this.appendEvent(
         input.runId,
         'attempt.started',
@@ -437,6 +456,7 @@ export class D1WorkflowStore {
         input.attemptId
       );
     }
+    return authorized;
   }
 
   async recordAttemptDependencySnapshot(
@@ -682,6 +702,7 @@ export class D1WorkflowStore {
              JOIN workflow_runs wr ON wr.run_id = sr.run_id
              WHERE sr.step_run_id = ? AND sr.run_id = ?
                AND wr.state IN ('queued', 'running', 'waiting')
+               AND wr.cancel_requested_at IS NULL
            )`
         )
         .bind(
