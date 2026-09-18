@@ -1,3 +1,4 @@
+import { currentEngineVersion } from './provenance.js';
 import { findWorkflow } from './registry.js';
 import type { RuntimeInputDefinition, RuntimePlan } from './runtime-plan.js';
 import { asRuntimePlan } from './runtime-plan.js';
@@ -127,7 +128,8 @@ async function persistAndStart(
     input,
     trigger: source.trigger,
     sourceType: source.sourceType,
-    sourceKey: source.sourceKey
+    sourceKey: source.sourceKey,
+    engineVersion: currentEngineVersion(env)
   });
 
   // createBatch is deliberately used for one instance: Cloudflare documents it
