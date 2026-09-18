@@ -3,6 +3,7 @@ import { runReleaseCompatibilityGate } from '../src/provenance.js';
 
 const appRoot = new URL('..', import.meta.url);
 const mode = process.argv.includes('--local') ? '--local' : '--remote';
+const wranglerConfig = process.env.WORKFLOW_MCP_WRANGLER_CONFIG;
 
 const query = `
 SELECT wr.run_id, wr.definition_digest, wdv.dsl_version, sa.execution_manifest_json
@@ -19,7 +20,18 @@ ORDER BY wr.run_id ASC;
 
 const result = spawnSync(
   'pnpm',
-  ['exec', 'wrangler', 'd1', 'execute', 'workflow-mcp', mode, '--json', '--command', query],
+  [
+    'exec',
+    'wrangler',
+    'd1',
+    'execute',
+    'DB',
+    mode,
+    '--json',
+    '--command',
+    query,
+    ...(wranglerConfig ? ['--config', wranglerConfig] : [])
+  ],
   {
     cwd: appRoot,
     encoding: 'utf8',
