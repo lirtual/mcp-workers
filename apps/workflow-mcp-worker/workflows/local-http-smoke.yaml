@@ -1,0 +1,16 @@
+version: 1
+id: local-http-smoke
+name: Local HTTP smoke
+description: Fetch one small public HTTP(S) resource using the Cloudflare executor.
+inputs:
+  url:
+    type: string
+triggers:
+  - type: manual
+steps:
+  fetch:
+    uses: http.read
+    with:
+      url: "${{ input.url }}"
+outputs:
+  body: "${{ steps.fetch.outputs.body }}"
