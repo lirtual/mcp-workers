@@ -1,4 +1,3 @@
-import { Readable } from "node:stream";
 import { describe, expect, it } from "vitest";
 import type { ImapFlow } from "imapflow";
 import {
@@ -32,10 +31,12 @@ describe("bounded body-part download", () => {
         calls.push({ range, part, options });
         return {
           meta: { contentType: "text/plain", charset: "utf-8" },
-          content: Readable.from([
-            Buffer.from("hello "),
-            Buffer.from("from qq"),
-          ]),
+          content: {
+            async *[Symbol.asyncIterator]() {
+              yield new TextEncoder().encode("hello ");
+              yield new TextEncoder().encode("from qq");
+            },
+          },
         };
       },
     } as unknown as Pick<ImapFlow, "download">;
