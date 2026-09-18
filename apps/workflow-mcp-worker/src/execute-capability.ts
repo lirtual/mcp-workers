@@ -10,6 +10,7 @@ export interface CapabilityExecutionContext {
   env: Env;
   operationId: string;
   effectivePolicy: EffectiveOperationPolicy;
+  dependencySnapshot?: Record<string, unknown>;
   timeoutMs?: number;
 }
 
@@ -138,20 +139,29 @@ async function executeMcpCall(
           state: 'indeterminate',
           errorCode: 'EXTERNAL_RESULT_UNKNOWN',
           errorSummary:
-            'MCP transport failed after the tool call may have been transmitted; the operation will not be retried automatically.'
+            'MCP transport failed after the tool call may have been transmitted; the operation will not be retried automatically.',
+          ...(context.dependencySnapshot
+            ? { dependencySnapshot: context.dependencySnapshot }
+            : {})
         };
       }
       return {
         state: 'failed',
         errorCode: 'MCP_TRANSPORT_FAILED',
-        errorSummary: safeErrorMessage(error)
+        errorSummary: safeErrorMessage(error),
+        ...(context.dependencySnapshot
+          ? { dependencySnapshot: context.dependencySnapshot }
+          : {})
       };
     }
 
     return {
       state: 'failed',
       errorCode: 'MCP_CALL_FAILED',
-      errorSummary: safeErrorMessage(error)
+      errorSummary: safeErrorMessage(error),
+      ...(context.dependencySnapshot
+        ? { dependencySnapshot: context.dependencySnapshot }
+        : {})
     };
   }
 }
