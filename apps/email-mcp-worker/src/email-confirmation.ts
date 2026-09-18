@@ -18,7 +18,7 @@ export interface EmailConfirmationState {
 
 export function createEmailConfirmationCodec(secret: string) {
   return createRequestStateCodec<EmailConfirmationState>({
-    key: \`email-mcp-worker-v0.1-confirmation:\${secret}\`,
+    key: `email-mcp-worker-v0.1-confirmation:${secret}`,
     ttlSeconds: 300,
   });
 }
@@ -29,7 +29,7 @@ export type EmailConfirmationCodec = ReturnType<
 
 export type EmailConfirmationDecision =
   | { kind: "confirmed" }
-  | { kind: "denied"; message: string }
+  | { kind: "denied"; code: "CONFIRMATION_DECLINED" | "CONFIRMATION_UNAVAILABLE"; message: string }
   | { kind: "input_required"; result: InputRequiredResult };
 
 function base64Url(bytes: Uint8Array): string {
@@ -76,12 +76,14 @@ export async function emailConfirmation(
   if (view.kind !== "elicit") {
     return {
       kind: "denied",
+      code: "CONFIRMATION_UNAVAILABLE",
       message: "The email action confirmation response is missing.",
     };
   }
   if (view.action !== "accept") {
     return {
       kind: "denied",
+      code: "CONFIRMATION_DECLINED",
       message: "The user declined or cancelled the email action.",
     };
   }
@@ -94,6 +96,7 @@ export async function emailConfirmation(
   if (confirmed?.confirm !== true) {
     return {
       kind: "denied",
+      code: "CONFIRMATION_DECLINED",
       message: "The user did not confirm the email action.",
     };
   }
