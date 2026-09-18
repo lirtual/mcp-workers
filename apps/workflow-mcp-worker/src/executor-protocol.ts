@@ -90,6 +90,11 @@ export async function prepareRemoteAttempt(
     executionManifest: { ...input.manifest }
   });
 
+  const registered = await store.getRemoteAttempt(input.attemptId);
+  if (!registered) {
+    throw new Error('Remote Attempt registration was denied by the durable Run gate.');
+  }
+
   return {
     attemptId: input.attemptId,
     claimNonce,
