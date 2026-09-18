@@ -12,6 +12,21 @@ export interface GitHubDispatchResult {
   errorSummary?: string;
 }
 
+export type DispatchSequenceDecision = 'redispatch' | 'wait' | 'failed';
+
+export function decideDispatchSequence(
+  dispatches: readonly Pick<GitHubDispatchResult, 'outcome'>[],
+  maxGenerations = 2
+): DispatchSequenceDecision {
+  const last = dispatches.at(-1);
+  if (!last) return 'failed';
+  if (last.outcome === 'accepted') return 'wait';
+  if (last.outcome === 'failed') {
+    return dispatches.some(item => item.outcome === 'unknown') ? 'wait' : 'failed';
+  }
+  return dispatches.length < maxGenerations ? 'redispatch' : 'wait';
+}
+
 export async function dispatchGitHubExecutor(
   env: Env,
   attemptId: string,
