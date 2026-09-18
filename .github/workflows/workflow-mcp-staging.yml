@@ -118,13 +118,13 @@ jobs:
           echo "path=$config" >> "$GITHUB_OUTPUT"
           echo "WORKFLOW_MCP_WRANGLER_CONFIG=$config" >> "$GITHUB_ENV"
 
-      - name: Check nonterminal runtime compatibility
-        if: inputs.bootstrap != true
-        run: pnpm --filter workflow-mcp-worker run release:compatibility
-
       - name: Apply staging D1 migrations
         working-directory: apps/workflow-mcp-worker
         run: pnpm exec wrangler d1 migrations apply DB --remote --config "$WORKFLOW_MCP_WRANGLER_CONFIG"
+
+      - name: Check nonterminal runtime compatibility
+        if: inputs.bootstrap != true
+        run: pnpm --filter workflow-mcp-worker run release:compatibility
 
       - name: Deploy isolated staging Worker
         working-directory: apps/workflow-mcp-worker
