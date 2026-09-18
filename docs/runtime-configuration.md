@@ -34,7 +34,9 @@ Every production Worker configuration declares its mandatory runtime secret name
 
 `database-mcp-worker` stores its complete logical database catalog in the single `DATABASE_CONFIG` Secret. Direct SQL URLs therefore remain secret without requiring separate `DATABASE_URL` / `DATABASE_WRITE_URL` variables. Hyperdrive entries still refer to Wrangler bindings by name.
 
-For `email-mcp-worker`, `EMAIL_ACCOUNTS_CONFIG` is the single secret JSON catalog for account/provider credentials. `EMAIL_ALLOW_MODIFY` and `EMAIL_ALLOW_SEND` are non-secret gates and default to `false`; keep them disabled unless a deployment explicitly needs mailbox mutation or SMTP send.\n\nFor local development, use uncommitted `.dev.vars` or `.env` files with keys matching `secrets.required`.
+For `email-mcp-worker`, `EMAIL_ACCOUNTS_CONFIG` is the single secret JSON catalog for account/provider credentials. `EMAIL_ALLOW_MODIFY` and `EMAIL_ALLOW_SEND` are non-secret gates and default to `false`; keep them disabled unless a deployment explicitly needs mailbox mutation or SMTP send.
+
+For local development, use uncommitted `.dev.vars` or `.env` files with keys matching `secrets.required`.
 
 ## Workers Observability baseline
 
