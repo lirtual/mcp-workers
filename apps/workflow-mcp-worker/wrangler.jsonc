@@ -14,6 +14,21 @@
       "head_sampling_rate": 1
     }
   },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "workflow-mcp",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "workflows": [
+    {
+      "name": "workflow-mcp-runtime",
+      "binding": "WORKFLOW",
+      "class_name": "WorkflowRuntime"
+    }
+  ],
   "secrets": {
     "required": ["MCP_ACCESS_TOKEN"]
   }
