@@ -11,7 +11,7 @@ interface ExecutionOutcome {
 }
 
 export class WorkflowRuntime extends WorkflowEntrypoint<Env, WorkflowRunParams> {
-  async run(event: WorkflowEvent<WorkflowRunParams>, step: WorkflowStep): Promise<ExecutionOutcome> {
+  override async run(event: WorkflowEvent<WorkflowRunParams>, step: WorkflowStep): Promise<ExecutionOutcome> {
     return step.do(
       'execute-local-workflow',
       {
@@ -62,7 +62,13 @@ export async function executeSingleLocalRun(env: Env, runId: string): Promise<Ex
     const url = (resolved as Record<string, unknown>).url;
     if (typeof url !== 'string') throw new Error('Resolved http.read URL must be a string.');
 
-    const output = await httpRead(url);
+    const httpOutput = await httpRead(url);
+    const output: Record<string, unknown> = {
+      url: httpOutput.url,
+      status: httpOutput.status,
+      contentType: httpOutput.contentType,
+      body: httpOutput.body
+    };
     const stepOutputs = { [stepId]: output };
     const workflowOutput = Object.fromEntries(
       Object.entries(plan.outputs).map(([name, value]) => [
