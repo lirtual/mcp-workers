@@ -22,8 +22,15 @@ export function resolveMcpOperationPolicy(
 ): EffectiveOperationPolicy {
   const connection = getConnection(connectionId);
   if (!connection) return policyForEffect('unknown', 'conservative_default');
+  return resolveMcpOperationPolicyForConnection(connection, toolName, annotations);
+}
 
-  const local = getLocalToolPolicy(connectionId, toolName);
+export function resolveMcpOperationPolicyForConnection(
+  connection: McpConnection,
+  toolName: string,
+  annotations: McpToolAnnotations | undefined
+): EffectiveOperationPolicy {
+  const local = connection.tools[toolName];
   if (local) {
     return {
       ...policyForEffect(local.effect, 'local_tool_policy'),
