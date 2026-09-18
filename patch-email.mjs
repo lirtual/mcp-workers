@@ -1,0 +1,1 @@
+import fs from 'node:fs'; console.log('cwd='+process.cwd()); console.log('source_exists='+fs.existsSync('src/imap-smtp-provider.ts')); console.log('root_source_exists='+fs.existsSync('apps/email-mcp-worker/src/imap-smtp-provider.ts'));
