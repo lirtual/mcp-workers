@@ -134,11 +134,7 @@ jobs:
 
       - name: Install workspace
         if: steps.scope.outputs.apps != ''
-        run: |
-          pnpm install --no-frozen-lockfile --ignore-scripts
-          echo '--- EMAIL LOCKFILE DIFF START ---'
-          git diff -- pnpm-lock.yaml
-          echo '--- EMAIL LOCKFILE DIFF END ---'
+        run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Check shared portal-auth package
         if: steps.scope.outputs.portal_auth_changed == 'true'
