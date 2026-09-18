@@ -33,7 +33,7 @@ const connections = {
     },
     trustAnnotations: false,
     tools: {
-      workflow_list: { effect: 'read' }
+      health_check: { effect: 'read' }
     }
   },
   'smoke-modern': {
