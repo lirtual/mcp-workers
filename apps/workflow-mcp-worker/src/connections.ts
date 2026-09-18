@@ -42,12 +42,14 @@ const connections = {
     protocolVersion: '2026-07-28',
     endpoint: 'https://example.invalid/mcp-modern',
     auth: {
-      header: 'X-Smoke-Auth',
-      format: 'raw',
+      header: 'Authorization',
+      format: 'bearer',
       secret: 'SMOKE_READONLY_MCP_TOKEN'
     },
-    trustAnnotations: true,
-    tools: {}
+    trustAnnotations: false,
+    tools: {
+      workflow_list: { effect: 'read' }
+    }
   }
 } as const satisfies Record<string, McpConnection>;
 
