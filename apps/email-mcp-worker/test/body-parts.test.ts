@@ -1,4 +1,3 @@
-import { Buffer } from "node:buffer";
 import { describe, expect, it } from "vitest";
 import type { MessageStructureObject } from "imapflow";
 import {
@@ -73,9 +72,9 @@ describe("email_get body-part selection", () => {
 
   it("decodes transfer encoding and charset through the bounded MIME normalizer", async () => {
     const parts = selectReadableBodyParts(structure());
-    const fetched = new Map<string, Buffer>([
-      ["1", Buffer.from("SGVsbG8g5LiW55WM", "ascii")],
-      ["2", Buffer.from("<p>Hello=20HTML</p>", "ascii")],
+    const fetched = new Map<string, Uint8Array>([
+      ["1", new TextEncoder().encode("SGVsbG8g5LiW55WM")],
+      ["2", new TextEncoder().encode("<p>Hello=20HTML</p>")],
     ]);
 
     await expect(normalizeFetchedBodyParts(parts, fetched)).resolves.toMatchObject({
@@ -91,9 +90,8 @@ describe("email_get body-part selection", () => {
   it("parses and unfolds References without requiring full RFC822 source", () => {
     expect(
       parseReferencesHeader(
-        Buffer.from(
+        new TextEncoder().encode(
           "References: <root@example.com>\r\n\t<parent@example.com>\r\n\r\n",
-          "utf8",
         ),
       ),
     ).toBe("<root@example.com> <parent@example.com>");
