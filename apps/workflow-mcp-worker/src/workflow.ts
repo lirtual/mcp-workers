@@ -13,6 +13,7 @@ import {
 } from './execute-capability.js';
 import type { EffectiveOperationPolicy } from './effective-policy.js';
 import {
+  cancelGitHubRun,
   decideDispatchSequence,
   dispatchGitHubExecutor,
   getGitHubRunFact,
@@ -59,6 +60,10 @@ export async function executeDagRun(
   if (!definition) return { ok: false, runId, errorCode: 'PINNED_DEFINITION_NOT_FOUND' };
 
   const plan = asRuntimePlan(definition.plan);
+  if (run.state === 'cancel_requested') {
+    await store.finishRun({ runId, state: 'cancelled', output: {} });
+    return { ok: false, runId, errorCode: 'WORKFLOW_CANCELLED' };
+  }
   await store.markRunRunning(runId);
 
   const existing = await store.listStepSummaries(runId);
@@ -67,6 +72,12 @@ export async function executeDagRun(
   seedTerminalState(existing, states, stepOutputs);
 
   while (Object.keys(states).length < Object.keys(plan.steps).length) {
+    const currentRun = await store.getRun(runId);
+    if (!currentRun) return { ok: false, runId, errorCode: 'RUN_NOT_FOUND' };
+    if (currentRun.state === 'cancel_requested') {
+      return finishCancelledRun(store, runId, states);
+    }
+
     const ready = readyStepIds(plan, states);
     if (ready.length === 0) {
       await store.finishRun({
@@ -98,6 +109,11 @@ export async function executeDagRun(
     for (const item of completed) {
       states[item.stepId] = item.state;
       if (item.output) stepOutputs[item.stepId] = item.output;
+    }
+
+    const afterWave = await store.getRun(runId);
+    if (afterWave?.state === 'cancel_requested') {
+      return finishCancelledRun(store, runId, states);
     }
   }
 
@@ -155,6 +171,11 @@ async function executeReadyStep(input: {
   const definition = input.plan.steps[input.stepId];
   if (!definition) {
     return { stepId: input.stepId, state: 'failed' };
+  }
+
+  const currentRun = await input.store.getRun(input.runId);
+  if (!currentRun || currentRun.state === 'cancel_requested') {
+    return { stepId: input.stepId, state: 'cancelled' };
   }
 
   const identity = await makeStepIdentity(input.runId, input.stepId);
