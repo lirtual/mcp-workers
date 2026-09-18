@@ -1,5 +1,11 @@
+export interface WorkflowRunParams {
+  runId: string;
+}
+
 export interface Env {
   MCP_ACCESS_TOKEN?: string;
+  DB: D1Database;
+  WORKFLOW: Workflow<WorkflowRunParams>;
 }
 
 export interface WorkflowInputMetadata {
