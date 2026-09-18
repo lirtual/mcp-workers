@@ -9,17 +9,27 @@ import {
 import type { ResolvedEmailAccount } from "./config.js";
 import { EmailToolError } from "./errors.js";
 import {
+  decodeMessageReference,
   decodeSearchCursor,
   encodeMessageReference,
   encodeSearchCursor,
   type SearchCursorScope,
 } from "./message-reference.js";
+import {
+  MAX_SOURCE_BYTES,
+  normalizeMimeMessage,
+  oversizedMessageFallback,
+  structureAttachmentMetadata,
+  unavailableMessageBody,
+} from "./message-normalizer.js";
 import type {
   EmailAddress,
   EmailFolder,
+  EmailMessageDetail,
   EmailProvider,
   EmailSearchFilters,
   EmailSearchMessage,
+  GetMessageOptions,
   ListFoldersOptions,
   SearchMessagesOptions,
   SearchMessagesResult,
@@ -348,6 +358,121 @@ export class ImapSmtpProvider implements EmailProvider {
       };
     });
   }
+
+  async getMessage(options: GetMessageOptions): Promise<EmailMessageDetail> {
+    const reference = decodeMessageReference(options.messageId);
+    if (
+      reference.accountId !== this.account.id ||
+      reference.folderId !== options.folderId
+    ) {
+      throw new EmailToolError(
+        "MESSAGE_REFERENCE_STALE",
+        "The message reference does not belong to the selected mailbox.",
+      );
+    }
+
+    return this.withImap(async (client) => {
+      const mailbox = await client.mailboxOpen(options.folderId, {
+        readOnly: true,
+      });
+
+      if (String(mailbox.uidValidity) !== reference.uidValidity) {
+        throw new EmailToolError(
+          "MESSAGE_REFERENCE_STALE",
+          "The message reference is stale because the mailbox identity changed.",
+        );
+      }
+
+      const metadata = await client.fetchOne(
+        reference.uid,
+        {
+          uid: true,
+          envelope: true,
+          flags: true,
+          size: true,
+          bodyStructure: true,
+        },
+        { uid: true },
+      );
+
+      if (!metadata) {
+        throw new EmailToolError(
+          "MESSAGE_NOT_FOUND",
+          "The requested email message was not found.",
+        );
+      }
+
+      const envelope = metadata.envelope;
+      const flags = metadata.flags ?? new Set<string>();
+      const date = envelope?.date
+        ? new Date(envelope.date).toISOString()
+        : undefined;
+
+      let normalized:
+        | Awaited<ReturnType<typeof normalizeMimeMessage>>
+        | ReturnType<typeof oversizedMessageFallback>;
+
+      if ((metadata.size ?? 0) > MAX_SOURCE_BYTES) {
+        normalized = oversizedMessageFallback(metadata.bodyStructure);
+      } else {
+        const sourceMessage = await client.fetchOne(
+          reference.uid,
+          metadata.size == null
+            ? { source: { maxLength: MAX_SOURCE_BYTES + 1 } }
+            : { source: true },
+          { uid: true },
+        );
+        const source = sourceMessage?.source;
+
+        if (!source) {
+          normalized = {
+            body: unavailableMessageBody("message_source_unavailable"),
+            attachments: structureAttachmentMetadata(metadata.bodyStructure),
+            reply_to: normalizeAddresses(envelope?.replyTo),
+          };
+        } else if (source.byteLength > MAX_SOURCE_BYTES) {
+          normalized = oversizedMessageFallback(metadata.bodyStructure);
+        } else {
+          normalized = await normalizeMimeMessage(source);
+        }
+      }
+
+      const attachments = normalized.attachments;
+      return {
+        message_id: options.messageId,
+        folder_id: options.folderId,
+        ...(envelope?.subject ? { subject: envelope.subject } : {}),
+        from: normalizeAddresses(envelope?.from),
+        to: normalizeAddresses(envelope?.to),
+        cc: normalizeAddresses(envelope?.cc),
+        reply_to:
+          normalized.reply_to.length > 0
+            ? normalized.reply_to
+            : normalizeAddresses(envelope?.replyTo),
+        ...(date ? { date } : {}),
+        unread: !flags.has("\\Seen"),
+        flagged: flags.has("\\Flagged"),
+        has_attachments: attachments.length > 0,
+        ...(metadata.size != null ? { size_bytes: metadata.size } : {}),
+        ...(normalized.internet_message_id
+          ? { internet_message_id: normalized.internet_message_id }
+          : envelope?.messageId
+            ? { internet_message_id: envelope.messageId }
+            : {}),
+        ...(normalized.in_reply_to
+          ? { in_reply_to: normalized.in_reply_to }
+          : envelope?.inReplyTo
+            ? { in_reply_to: envelope.inReplyTo }
+            : {}),
+        ...("references" in normalized && normalized.references
+          ? { references: normalized.references }
+          : {}),
+        body: normalized.body,
+        attachments,
+      };
+    });
+  }
+
 }
 
 export function createImapSmtpProvider(
