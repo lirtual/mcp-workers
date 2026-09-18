@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -74,7 +74,13 @@ export async function runExecutor(
   let result: Record<string, unknown>;
   try {
     const output = await executeRegisteredCapability(manifest, env);
-    result = { state: 'succeeded', output };
+    const uploadedOutput = await uploadRegisteredArtifacts(
+      baseUrl,
+      lease,
+      output,
+      fetchImpl
+    );
+    result = { state: 'succeeded', output: uploadedOutput };
   } catch (error) {
     result = {
       state: 'failed',
@@ -135,9 +141,96 @@ export async function executeRegisteredCapability(
       mediaType: 'text/markdown',
       size: bytes.byteLength,
       sha256,
+      sourceUrl,
+      localPath: join(tempDir, 'archive.md')
+    }
+  };
+}
+
+export async function uploadRegisteredArtifacts(
+  baseUrl: string,
+  lease: string,
+  output: Record<string, unknown>,
+  fetchImpl: typeof fetch = fetch
+): Promise<Record<string, unknown>> {
+  const artifact = objectField(output, 'artifact');
+  const name = stringField(artifact, 'name');
+  const mediaType = stringField(artifact, 'mediaType');
+  const sha256 = stringField(artifact, 'sha256');
+  const sourceUrl = stringField(artifact, 'sourceUrl');
+  const localPath = stringField(artifact, 'localPath');
+  const size = numberField(artifact, 'size');
+
+  const allocationResponse = await fetchImpl(
+    `${baseUrl}/executor/artifacts/allocate`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${lease}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ name, mediaType, size, sha256 })
+    }
+  );
+  if (!allocationResponse.ok) {
+    throw new Error(`Artifact allocation failed with status ${allocationResponse.status}.`);
+  }
+
+  const allocation = (await allocationResponse.json()) as {
+    artifactId?: string;
+    uploadUrl?: string;
+    requiredHeaders?: Record<string, string>;
+  };
+  const artifactId = required(allocation.artifactId, 'artifact allocation id');
+  const uploadUrl = required(allocation.uploadUrl, 'artifact upload URL');
+  const bytes = await readFile(localPath);
+  if (bytes.byteLength !== size) {
+    throw new Error('Local Artifact size changed after allocation metadata was computed.');
+  }
+
+  const uploadResponse = await fetchImpl(uploadUrl, {
+    method: 'PUT',
+    headers: allocation.requiredHeaders ?? {},
+    body: bytes
+  });
+  if (!uploadResponse.ok) {
+    throw new Error(`Direct R2 Artifact upload failed with status ${uploadResponse.status}.`);
+  }
+
+  return {
+    artifact: {
+      artifactId,
+      name,
+      mediaType,
+      size,
+      sha256,
       sourceUrl
     }
   };
+}
+
+function objectField(value: Record<string, unknown>, key: string): Record<string, unknown> {
+  const field = value[key];
+  if (!field || typeof field !== 'object' || Array.isArray(field)) {
+    throw new Error(`Runner field "${key}" must be an object.`);
+  }
+  return field as Record<string, unknown>;
+}
+
+function stringField(value: Record<string, unknown>, key: string): string {
+  const field = value[key];
+  if (typeof field !== 'string' || field.length === 0) {
+    throw new Error(`Runner field "${key}" must be a non-empty string.`);
+  }
+  return field;
+}
+
+function numberField(value: Record<string, unknown>, key: string): number {
+  const field = value[key];
+  if (typeof field !== 'number' || !Number.isInteger(field) || field < 0) {
+    throw new Error(`Runner field "${key}" must be a non-negative integer.`);
+  }
+  return field;
 }
 
 async function requestOidcToken(
