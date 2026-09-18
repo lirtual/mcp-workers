@@ -28,6 +28,7 @@ describe('workflow discovery tools', () => {
     const data = result.structuredContent as { workflows: Array<{ id: string; definitionDigest: string }> };
 
     expect(data.workflows.map(workflow => workflow.id)).toEqual([
+      'local-http-smoke',
       'mcp-connection-smoke',
       'web-archive-smoke'
     ]);
