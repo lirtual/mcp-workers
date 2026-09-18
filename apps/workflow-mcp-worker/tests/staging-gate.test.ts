@@ -14,9 +14,19 @@ async function workflow(name: string): Promise<Record<string, unknown>> {
 describe('Workflow MCP staging release gate contract', () => {
   it('keeps the staging gate manual-only and release-oriented', async () => {
     const value = await workflow('workflow-mcp-staging.yml');
-    expect(Object.keys(value.on as Record<string, unknown>)).toEqual([
-      'workflow_dispatch'
-    ]);
+    const triggers = value.on as Record<string, unknown>;
+    expect(Object.keys(triggers).sort()).toEqual(['push', 'workflow_dispatch']);
+    expect(triggers).not.toHaveProperty('pull_request');
+    const push = triggers.push as Record<string, unknown>;
+    expect(push).toMatchObject({
+      branches: ['main'],
+      paths: [
+        'apps/workflow-mcp-worker/**',
+        '.github/workflows/workflow-executor.yml',
+        '.github/workflows/workflow-executor-staging.yml',
+        '.github/workflows/workflow-mcp-staging.yml'
+      ]
+    });
     expect(value.permissions).toEqual({
       contents: 'read',
       actions: 'read'
