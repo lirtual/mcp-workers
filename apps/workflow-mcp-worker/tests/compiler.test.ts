@@ -18,7 +18,7 @@ steps:
   fetch:
     uses: http.read
     with:
-      url: "${{ input.url }}"
+      url: "\${{ input.url }}"
 outputs:
   body: "\${{ steps.fetch.outputs.body }}"
 `;
@@ -102,7 +102,7 @@ steps:
 
   it('rejects unknown capability inputs and unsafe retry elevation', () => {
     expect(() =>
-      compileWorkflowText(base.replace('url: "\${{ input.url }}"', 'other: value'))
+      compileWorkflowText(base.replace('url: "${{ input.url }}"', 'other: value'))
     ).toThrow(/unknown input/i);
 
     expect(() =>
