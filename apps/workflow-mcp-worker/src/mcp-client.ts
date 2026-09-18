@@ -88,18 +88,11 @@ export async function inspectMcpTool(
   const secret = readConnectionSecret(env, connection);
   if (!secret) throw new Error(`MCP connection "${connectionId}" credential is not configured.`);
 
-  let session: McpSession;
-  let tools: McpTool[];
-  try {
-    const modern = await listToolsModern(connection, secret, fetchImpl);
-    session = modern.session;
-    tools = modern.tools;
-  } catch (error) {
-    if (!shouldFallbackToLegacy(error)) throw error;
-    const legacy = await listToolsLegacy(connection, secret, fetchImpl);
-    session = legacy.session;
-    tools = legacy.tools;
-  }
+  const listed =
+    connection.protocolVersion === MODERN_PROTOCOL
+      ? await listToolsModern(connection, secret, fetchImpl)
+      : await listToolsLegacy(connection, secret, fetchImpl);
+  const { session, tools } = listed;
 
   const tool = tools.find(candidate => candidate.name === toolName);
   if (!tool) throw new Error(`MCP tool "${toolName}" was not found on connection "${connectionId}".`);
@@ -205,7 +198,7 @@ async function listToolsModern(
     const next = result.nextCursor;
     if (typeof next !== 'string' || next.length === 0) {
       return {
-        session: { era: 'modern', protocolVersion: MODERN_PROTOCOL, ...(serverInfo ? { serverInfo } : {}) },
+        session: { era: 'modern', protocolVersion: connection.protocolVersion, ...(serverInfo ? { serverInfo } : {}) },
         tools
       };
     }
@@ -228,7 +221,7 @@ async function listToolsLegacy(
       id: 'init',
       method: 'initialize',
       params: {
-        protocolVersion: LEGACY_PROTOCOL,
+        protocolVersion: connection.protocolVersion,
         capabilities: {},
         clientInfo: CLIENT_INFO
       }
@@ -239,7 +232,7 @@ async function listToolsLegacy(
 
   const initResult = asObject(initialized.envelope.result, 'MCP initialize result is invalid.');
   const negotiatedVersion =
-    typeof initResult.protocolVersion === 'string' ? initResult.protocolVersion : LEGACY_PROTOCOL;
+    typeof initResult.protocolVersion === 'string' ? initResult.protocolVersion : connection.protocolVersion;
   const serverInfo = isObject(initResult.serverInfo)
     ? {
         ...(typeof initResult.serverInfo.name === 'string' ? { name: initResult.serverInfo.name } : {}),
@@ -304,7 +297,7 @@ async function modernRpc(
   };
 
   const headers: Record<string, string> = {
-    'MCP-Protocol-Version': MODERN_PROTOCOL,
+    'MCP-Protocol-Version': connection.protocolVersion,
     'Mcp-Method': method
   };
   if (name) headers['Mcp-Name'] = name;
@@ -451,12 +444,6 @@ function extractToolError(result: Record<string, unknown>): string {
     if (text) return text;
   }
   return 'MCP tool reported an error result.';
-}
-
-function shouldFallbackToLegacy(error: unknown): boolean {
-  if (error instanceof McpHttpError) return error.status === 400 || error.status === 404 || error.status === 405;
-  if (error instanceof McpRpcError) return error.code === -32601 || error.code === -32022;
-  return false;
 }
 
 function sessionHeader(response: Response): string | null {
