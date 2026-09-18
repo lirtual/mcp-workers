@@ -130,6 +130,41 @@ steps:
     ).toThrow(/maximum is 262144/);
   });
 
+  it('validates webhook secret references and schedule cron syntax at build time', () => {
+    expect(() =>
+      compileWorkflowText(`
+version: 1
+id: bad-webhook
+name: Bad webhook
+triggers:
+  - type: webhook
+    id: inbound
+steps:
+  fetch:
+    uses: http.read
+    with:
+      url: https://example.com/
+`)
+    ).toThrow();
+
+    expect(() =>
+      compileWorkflowText(`
+version: 1
+id: bad-cron
+name: Bad cron
+triggers:
+  - type: schedule
+    id: bad
+    cron: "0 0 L * *"
+steps:
+  fetch:
+    uses: http.read
+    with:
+      url: https://example.com/
+`)
+    ).toThrow(/Invalid cron field/);
+  });
+
   it('emits generated registry entries in workflow-id order', () => {
     const b = compileWorkflowText(base.replaceAll('compile-smoke', 'z-workflow'), 'z.yaml');
     const a = compileWorkflowText(base.replaceAll('compile-smoke', 'a-workflow'), 'a.yaml');
