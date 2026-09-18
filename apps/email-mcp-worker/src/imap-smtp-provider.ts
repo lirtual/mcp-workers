@@ -1,4 +1,3 @@
-import { Buffer } from "node:buffer";
 import nodemailer from "nodemailer";
 import {
   ImapFlow,
@@ -217,17 +216,16 @@ export async function normalizeFetchedBodyParts(
     const transferEncoding = part.encoding
       ? "\r\nContent-Transfer-Encoding: " + part.encoding
       : "";
-    const synthetic = Buffer.concat([
-      Buffer.from(
-        "MIME-Version: 1.0\r\nContent-Type: " +
-          part.mediaType +
-          charset +
-          transferEncoding +
-          "\r\n\r\n",
-        "utf8",
-      ),
-      Buffer.from(raw),
-    ]);
+    const header = new TextEncoder().encode(
+      "MIME-Version: 1.0\r\nContent-Type: " +
+        part.mediaType +
+        charset +
+        transferEncoding +
+        "\r\n\r\n",
+    );
+    const synthetic = new Uint8Array(header.byteLength + raw.byteLength);
+    synthetic.set(header, 0);
+    synthetic.set(raw, header.byteLength);
 
     const normalized = await normalizeMimeMessage(synthetic);
     truncated = truncated || normalized.body.truncated;
@@ -266,8 +264,8 @@ export function parseReferencesHeader(
   headers: Uint8Array | undefined,
 ): string | undefined {
   if (!headers) return undefined;
-  const unfolded = Buffer.from(headers)
-    .toString("utf8")
+  const unfolded = new TextDecoder()
+    .decode(headers)
     .replace(/\r?\n[\t ]+/g, " ");
   const match = unfolded.match(/^references:\s*(.+)$/im);
   const value = match?.[1]?.trim();
@@ -713,7 +711,9 @@ export class ImapSmtpProvider implements EmailProvider {
 
         normalized = await normalizeFetchedBodyParts(
           readableParts,
-          bodyMessage?.bodyParts ?? new Map<string, Buffer>(),
+          bodyMessage && bodyMessage.bodyParts
+            ? bodyMessage.bodyParts
+            : new Map<string, Uint8Array>(),
         );
       }
 
