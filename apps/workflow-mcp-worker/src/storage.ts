@@ -354,12 +354,14 @@ export class D1WorkflowStore {
     output?: Record<string, unknown>;
     errorCode?: string;
     errorSummary?: string;
+    dependencySnapshot?: Record<string, unknown>;
   }): Promise<void> {
     const endedAt = nowIso();
     const result = await this.db
       .prepare(
         `UPDATE step_attempts
-         SET state = ?, terminal_result_json = ?, error_code = ?, error_summary = ?, ended_at = ?
+         SET state = ?, terminal_result_json = ?, error_code = ?, error_summary = ?,
+             dependency_snapshot_json = ?, ended_at = ?
          WHERE attempt_id = ? AND state = 'running'`
       )
       .bind(
@@ -367,6 +369,7 @@ export class D1WorkflowStore {
         input.output ? JSON.stringify(input.output) : null,
         input.errorCode ?? null,
         input.errorSummary ?? null,
+        input.dependencySnapshot ? JSON.stringify(input.dependencySnapshot) : null,
         endedAt,
         input.attemptId
       )
@@ -453,6 +456,15 @@ export class D1WorkflowStore {
         input.errorCode ? { code: input.errorCode } : {}
       );
     }
+  }
+
+  async getStepRunPolicy(stepRunId: string): Promise<Record<string, unknown> | null> {
+    const row = await this.db
+      .prepare('SELECT effective_policy_json FROM step_runs WHERE step_run_id = ?')
+      .bind(stepRunId)
+      .first<{ effective_policy_json: string | null }>();
+    if (!row?.effective_policy_json) return null;
+    return parseObject(row.effective_policy_json);
   }
 
   async getSchedulerState(scheduleKey: string): Promise<SchedulerState | null> {
