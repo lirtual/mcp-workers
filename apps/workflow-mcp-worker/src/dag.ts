@@ -45,7 +45,11 @@ export function readyStepIds(
 
 export function decideStep(
   step: RuntimeStep,
-  dependencyStates: Readonly<Record<string, StepTerminalState>>
+  dependencyStates: Readonly<Record<string, StepTerminalState>>,
+  context: {
+    input: Readonly<Record<string, unknown>>;
+    stepOutputs: Readonly<Record<string, unknown>>;
+  }
 ): StepDecision {
   if (!step.if) {
     const allSucceeded = step.needs.every(dependency => dependencyStates[dependency] === 'succeeded');
@@ -53,8 +57,8 @@ export function decideStep(
   }
 
   const condition = evaluateRuntimeExpression(step.if, {
-    input: {},
-    stepOutputs: {},
+    input: context.input,
+    stepOutputs: context.stepOutputs,
     dependencyStates
   });
   return Boolean(condition)
