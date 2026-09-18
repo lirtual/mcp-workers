@@ -3,7 +3,11 @@ export type EmailErrorCode =
   | "ACCOUNT_DISABLED"
   | "AUTH_FAILED"
   | "UPSTREAM_UNAVAILABLE"
-  | "UPSTREAM_TIMEOUT";
+  | "UPSTREAM_TIMEOUT"
+  | "FOLDER_NOT_FOUND"
+  | "MESSAGE_NOT_FOUND"
+  | "MESSAGE_REFERENCE_STALE"
+  | "CURSOR_INVALID";
 
 export class EmailToolError extends Error {
   constructor(
