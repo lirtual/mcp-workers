@@ -3,6 +3,8 @@ import { buildWorkflowMcpServer } from './mcp.js';
 import { authenticateWorkflowPortal } from './portal-auth.js';
 import type { Env } from './types.js';
 
+export { WorkflowRuntime } from './workflow.js';
+
 function authError(status: number, code: string, message: string): Response {
   return Response.json(
     { error: code, message },
@@ -37,7 +39,7 @@ export default {
       return authError(401, 'unauthorized', 'Valid MCP Portal authentication is required.');
     }
 
-    const handler = createMcpHandler(() => buildWorkflowMcpServer(), { legacy: 'stateless' });
+    const handler = createMcpHandler(() => buildWorkflowMcpServer(env), { legacy: 'stateless' });
     return handler.fetch(portalAuth.request, { authInfo: portalAuth.authInfo });
   }
-};
+} satisfies ExportedHandler<Env>;
