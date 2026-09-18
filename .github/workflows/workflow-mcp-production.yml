@@ -1,4 +1,4 @@
-name: Workflow MCP Staging Gate
+name: Workflow MCP Production Release
 
 on:
   push:
@@ -7,8 +7,8 @@ on:
     paths:
       - apps/workflow-mcp-worker/**
       - .github/workflows/workflow-executor.yml
-      - .github/workflows/workflow-executor-staging.yml
-      - .github/workflows/workflow-mcp-staging.yml
+      - .github/workflows/workflow-executor-production.yml
+      - .github/workflows/workflow-mcp-production.yml
   workflow_dispatch:
     inputs:
       source_url:
@@ -17,7 +17,7 @@ on:
         default: https://example.com/
         type: string
       bootstrap:
-        description: Skip pre-deploy compatibility query for a brand-new empty staging D1
+        description: Skip pre-deploy compatibility query for a brand-new empty production D1
         required: false
         default: false
         type: boolean
@@ -27,25 +27,25 @@ permissions:
   actions: write
 
 concurrency:
-  group: workflow-mcp-staging
+  group: workflow-mcp-production
   cancel-in-progress: false
 
 jobs:
-  staging:
-    environment: workflow-mcp-staging
+  production:
+    environment: workflow-mcp-production
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: 8bb496011403552e785ea1b834daffdf
-      WORKFLOW_MCP_STAGING_D1_DATABASE_ID: 8e0763e4-e6a6-4559-9928-709652404a1e
-      WORKFLOW_MCP_STAGING_D1_DATABASE_NAME: ${{ vars.WORKFLOW_MCP_STAGING_D1_DATABASE_NAME || 'workflow-mcp-staging' }}
-      WORKFLOW_MCP_STAGING_WORKER_NAME: ${{ vars.WORKFLOW_MCP_STAGING_WORKER_NAME || 'workflow-mcp-worker-staging' }}
-      WORKFLOW_MCP_STAGING_R2_BUCKET: ${{ vars.WORKFLOW_MCP_STAGING_R2_BUCKET || 'workflow-mcp-artifacts-staging' }}
-      WORKFLOW_MCP_STAGING_URL: ${{ vars.WORKFLOW_MCP_STAGING_URL || 'https://workflow-mcp-worker-staging.aiyaya.workers.dev' }}
-      WORKFLOW_MCP_STAGING_SOURCE_URL: ${{ inputs.source_url }}
+      WORKFLOW_MCP_PRODUCTION_D1_DATABASE_ID: 238891f8-4007-4436-890d-819d54e3e01b
+      WORKFLOW_MCP_PRODUCTION_D1_DATABASE_NAME: ${{ vars.WORKFLOW_MCP_PRODUCTION_D1_DATABASE_NAME || 'workflow-mcp' }}
+      WORKFLOW_MCP_PRODUCTION_WORKER_NAME: ${{ vars.WORKFLOW_MCP_PRODUCTION_WORKER_NAME || 'workflow-mcp-worker' }}
+      WORKFLOW_MCP_PRODUCTION_R2_BUCKET: ${{ vars.WORKFLOW_MCP_PRODUCTION_R2_BUCKET || 'workflow-mcp-artifacts' }}
+      WORKFLOW_MCP_PRODUCTION_URL: ${{ vars.WORKFLOW_MCP_PRODUCTION_URL || 'https://workflow-mcp-worker.aiyaya.workers.dev' }}
+      WORKFLOW_MCP_PRODUCTION_SOURCE_URL: ${{ inputs.source_url }}
       WORKFLOW_MCP_GITHUB_ACTIONS_TOKEN: ${{ github.token }}
-      STAGING_EVIDENCE_PATH: ${{ github.workspace }}/workflow-mcp-staging-evidence.json
+      PRODUCTION_EVIDENCE_PATH: ${{ github.workspace }}/workflow-mcp-production-evidence.json
     steps:
       - uses: actions/checkout@v4
 
@@ -64,12 +64,12 @@ jobs:
       - name: Install workspace
         run: pnpm install --frozen-lockfile --ignore-scripts
 
-      - name: Generate ephemeral staging credentials
+      - name: Generate ephemeral production credentials
         shell: bash
         run: |
           set -euo pipefail
           if [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]]; then
-            echo "::error::Missing staging environment value: CLOUDFLARE_API_TOKEN"
+            echo "::error::Missing production environment value: CLOUDFLARE_API_TOKEN"
             exit 1
           fi
 
@@ -109,25 +109,25 @@ jobs:
           echo "::add-mask::$trigger_token"
           echo "::add-mask::$r2_access_key_id"
           echo "::add-mask::$r2_secret_access_key"
-          echo "WORKFLOW_MCP_STAGING_ACCESS_TOKEN=$access_token" >> "$GITHUB_ENV"
+          echo "WORKFLOW_MCP_PRODUCTION_ACCESS_TOKEN=$access_token" >> "$GITHUB_ENV"
           echo "EXECUTOR_LEASE_SECRET=$lease_secret" >> "$GITHUB_ENV"
           echo "TRIGGER_SMOKE_WEBHOOK_TOKEN=$trigger_token" >> "$GITHUB_ENV"
           echo "R2_ACCESS_KEY_ID=$r2_access_key_id" >> "$GITHUB_ENV"
           echo "R2_SECRET_ACCESS_KEY=$r2_secret_access_key" >> "$GITHUB_ENV"
 
-      - name: Validate required staging configuration
+      - name: Validate required production configuration
         shell: bash
         run: |
           set -euo pipefail
           required=(
             CLOUDFLARE_API_TOKEN
             CLOUDFLARE_ACCOUNT_ID
-            WORKFLOW_MCP_STAGING_D1_DATABASE_ID
-            WORKFLOW_MCP_STAGING_D1_DATABASE_NAME
-            WORKFLOW_MCP_STAGING_WORKER_NAME
-            WORKFLOW_MCP_STAGING_R2_BUCKET
-            WORKFLOW_MCP_STAGING_URL
-            WORKFLOW_MCP_STAGING_ACCESS_TOKEN
+            WORKFLOW_MCP_PRODUCTION_D1_DATABASE_ID
+            WORKFLOW_MCP_PRODUCTION_D1_DATABASE_NAME
+            WORKFLOW_MCP_PRODUCTION_WORKER_NAME
+            WORKFLOW_MCP_PRODUCTION_R2_BUCKET
+            WORKFLOW_MCP_PRODUCTION_URL
+            WORKFLOW_MCP_PRODUCTION_ACCESS_TOKEN
             WORKFLOW_MCP_GITHUB_ACTIONS_TOKEN
             EXECUTOR_LEASE_SECRET
             R2_ACCESS_KEY_ID
@@ -136,7 +136,7 @@ jobs:
           )
           for name in "${required[@]}"; do
             if [[ -z "${!name:-}" ]]; then
-              echo "::error::Missing staging environment value: $name"
+              echo "::error::Missing production environment value: $name"
               exit 1
             fi
           done
@@ -144,17 +144,17 @@ jobs:
       - name: Run application release checks
         run: pnpm --filter workflow-mcp-worker check
 
-      - name: Build isolated staging Wrangler config
+      - name: Build isolated production Wrangler config
         id: config
         shell: bash
         run: |
           set -euo pipefail
-          config="$GITHUB_WORKSPACE/apps/workflow-mcp-worker/wrangler.staging.generated.json"
-          pnpm --filter workflow-mcp-worker exec tsx scripts/build-staging-config.ts "$config"
+          config="$GITHUB_WORKSPACE/apps/workflow-mcp-worker/wrangler.production.generated.json"
+          pnpm --filter workflow-mcp-worker exec tsx scripts/build-production-config.ts "$config"
           echo "path=$config" >> "$GITHUB_OUTPUT"
           echo "WORKFLOW_MCP_WRANGLER_CONFIG=$config" >> "$GITHUB_ENV"
 
-      - name: Apply staging D1 migrations
+      - name: Apply production D1 migrations
         working-directory: apps/workflow-mcp-worker
         run: pnpm exec wrangler d1 migrations apply DB --remote --config "$WORKFLOW_MCP_WRANGLER_CONFIG"
 
@@ -162,20 +162,20 @@ jobs:
         if: inputs.bootstrap != true
         run: pnpm --filter workflow-mcp-worker run release:compatibility
 
-      - name: Deploy isolated staging Worker
+      - name: Deploy isolated production Worker
         shell: bash
         working-directory: apps/workflow-mcp-worker
         env:
           GITHUB_ACTIONS_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          secret_file="$RUNNER_TEMP/workflow-mcp-staging-secrets.json"
+          secret_file="$RUNNER_TEMP/workflow-mcp-production-secrets.json"
           trap 'rm -f "$secret_file"' EXIT
           SECRET_FILE="$secret_file" node <<'NODE'
           const fs = require('node:fs');
           const values = {
-            MCP_ACCESS_TOKEN: process.env.WORKFLOW_MCP_STAGING_ACCESS_TOKEN,
-            SMOKE_READONLY_MCP_TOKEN: process.env.WORKFLOW_MCP_STAGING_ACCESS_TOKEN,
+            MCP_ACCESS_TOKEN: process.env.WORKFLOW_MCP_PRODUCTION_ACCESS_TOKEN,
+            SMOKE_READONLY_MCP_TOKEN: process.env.WORKFLOW_MCP_PRODUCTION_ACCESS_TOKEN,
             TRIGGER_SMOKE_WEBHOOK_TOKEN: process.env.TRIGGER_SMOKE_WEBHOOK_TOKEN,
             EXECUTOR_LEASE_SECRET: process.env.EXECUTOR_LEASE_SECRET,
             GITHUB_ACTIONS_TOKEN: process.env.GITHUB_ACTIONS_TOKEN,
@@ -190,54 +190,54 @@ jobs:
           NODE
           pnpm exec wrangler deploy             --config "$WORKFLOW_MCP_WRANGLER_CONFIG"             --secrets-file "$secret_file"
 
-      - name: Wait for staging health
+      - name: Wait for production health
         shell: bash
         run: |
           set -euo pipefail
           for attempt in {1..30}; do
-            if curl --fail --silent --show-error "$WORKFLOW_MCP_STAGING_URL/health" >/dev/null; then
+            if curl --fail --silent --show-error "$WORKFLOW_MCP_PRODUCTION_URL/health" >/dev/null; then
               exit 0
             fi
             sleep 2
           done
-          echo "::error::Staging Worker did not become healthy."
+          echo "::error::Production Worker did not become healthy."
           exit 1
 
       - name: Run MCP heavy and connection tracers
         id: tracer
         working-directory: apps/workflow-mcp-worker
-        run: pnpm exec tsx scripts/run-staging-tracer.ts
+        run: pnpm exec tsx scripts/run-production-tracer.ts
 
       - name: Verify GitHub executor terminal evidence
         working-directory: apps/workflow-mcp-worker
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: pnpm exec tsx scripts/verify-staging-executor.ts
+        run: pnpm exec tsx scripts/verify-production-executor.ts
 
-      - name: Publish staging evidence summary
+      - name: Publish production evidence summary
         if: always()
         shell: bash
         run: |
           {
-            echo "## Workflow MCP staging gate"
+            echo "## Workflow MCP production gate"
             echo
-            echo "- Worker: \`$WORKFLOW_MCP_STAGING_URL\`"
+            echo "- Worker: \`$WORKFLOW_MCP_PRODUCTION_URL\`"
             echo "- Commit: \`$GITHUB_SHA\`"
             echo "- Heavy run: \`${{ steps.tracer.outputs.heavy_run_id || 'not-completed' }}\`"
             echo "- MCP run: \`${{ steps.tracer.outputs.mcp_run_id || 'not-completed' }}\`"
-            if [[ -f "$STAGING_EVIDENCE_PATH" ]]; then
+            if [[ -f "$PRODUCTION_EVIDENCE_PATH" ]]; then
               echo
               echo '```json'
-              cat "$STAGING_EVIDENCE_PATH"
+              cat "$PRODUCTION_EVIDENCE_PATH"
               echo '```'
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload staging evidence
+      - name: Upload production evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: workflow-mcp-staging-evidence-${{ github.run_id }}
-          path: workflow-mcp-staging-evidence.json
+          name: workflow-mcp-production-evidence-${{ github.run_id }}
+          path: workflow-mcp-production-evidence.json
           if-no-files-found: warn
           retention-days: 14
