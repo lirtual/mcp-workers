@@ -43,6 +43,7 @@ class MemoryMaintenanceStore implements MaintenanceStore {
   notified: string[] = [];
   ignored: Array<{ id: string; reason: string }> = [];
   failures: Array<{ id: string; next: string }> = [];
+  cancellationAttempts: RemoteAttemptRecord[] = [];
 
   async listDueCallbackNotifications(): Promise<CallbackInboxRecord[]> {
     return this.callbacks;
@@ -62,6 +63,10 @@ class MemoryMaintenanceStore implements MaintenanceStore {
 
   async recordCallbackNotificationFailure(id: string, next: string): Promise<void> {
     this.failures.push({ id, next });
+  }
+
+  async listCancellationWakeAttempts(limit: number): Promise<RemoteAttemptRecord[]> {
+    return this.cancellationAttempts.slice(0, limit);
   }
 }
 
@@ -113,6 +118,41 @@ describe('callback maintenance', () => {
 
     expect(sendEvent).not.toHaveBeenCalled();
     expect(store.ignored).toEqual([{ id: 'cb_1', reason: 'attempt_failed' }]);
+  });
+
+  it('retries a durable cancellation wake-up through the same Attempt channel', async () => {
+    const store = new MemoryMaintenanceStore();
+    store.callbacks = [];
+    store.cancellationAttempts = [
+      attempt({ state: 'cancel_requested', runState: 'cancel_requested' })
+    ];
+    const sendEvent = vi.fn(async () => undefined);
+
+    await expect(
+      runMaintenanceBatch(env(sendEvent), 20, { store, nowMs: 10_000 })
+    ).resolves.toBe(1);
+
+    expect(sendEvent).toHaveBeenCalledWith({
+      type: 'attempt_att_1',
+      payload: { kind: 'cancel_requested' }
+    });
+  });
+
+  it('keeps cancellation retryable when a maintenance wake-up fails', async () => {
+    const store = new MemoryMaintenanceStore();
+    store.callbacks = [];
+    store.cancellationAttempts = [
+      attempt({ state: 'cancel_requested', runState: 'cancel_requested' })
+    ];
+    const sendEvent = vi.fn(async () => {
+      throw new Error('event outage');
+    });
+
+    await expect(
+      runMaintenanceBatch(env(sendEvent), 20, { store, nowMs: 10_000 })
+    ).resolves.toBe(1);
+
+    expect(store.cancellationAttempts).toHaveLength(1);
   });
 
   it('respects the explicit batch bound', async () => {
