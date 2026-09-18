@@ -641,7 +641,7 @@ async function runAttempts(input: {
 }): Promise<{ stepId: string; state: StepTerminalState; output?: Record<string, unknown> }> {
   for (let attemptNumber = 1; attemptNumber <= input.maxAttempts; attemptNumber += 1) {
     const attemptId = await makeAttemptId(input.stepRunId, attemptNumber);
-    await input.store.ensureAttempt({
+    const authorized = await input.store.ensureAttempt({
       runId: input.runId,
       stepRunId: input.stepRunId,
       stepId: input.stepId,
@@ -649,6 +649,15 @@ async function runAttempts(input: {
       attemptNumber,
       executorType: input.definition.executor
     });
+    if (!authorized) {
+      await input.store.finishStep({
+        runId: input.runId,
+        stepRunId: input.stepRunId,
+        stepId: input.stepId,
+        state: 'cancelled'
+      });
+      return { stepId: input.stepId, state: 'cancelled' };
+    }
 
     const result = await executeDurableAttempt(
       input.env,
