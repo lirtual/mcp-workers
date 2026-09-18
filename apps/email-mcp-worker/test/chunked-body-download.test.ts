@@ -59,8 +59,8 @@ describe("bounded body-part download", () => {
         },
       },
     ]);
+    expect(result.body.text?.trimEnd()).toBe("hello from qq");
     expect(result.body).toMatchObject({
-      text: "hello from qq",
       truncated: false,
       untrusted_external_content: true,
     });
