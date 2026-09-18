@@ -116,3 +116,43 @@ function required(value: string | undefined, name: string): string {
 function safeMessage(error: unknown): string {
   return (error instanceof Error ? error.message : 'Unknown GitHub dispatch error.').slice(0, 500);
 }
+
+
+export interface GitHubRunFact {
+  runId: string;
+  status: 'queued' | 'in_progress' | 'completed' | 'unknown';
+  conclusion?: string;
+}
+
+export async function getGitHubRunFact(
+  env: Env,
+  runId: string,
+  fetchImpl: typeof fetch = fetch
+): Promise<GitHubRunFact> {
+  const repository = required(env.GITHUB_REPOSITORY, 'GITHUB_REPOSITORY');
+  const token = required(env.GITHUB_ACTIONS_TOKEN, 'GITHUB_ACTIONS_TOKEN');
+  const response = await fetchImpl(
+    `https://api.github.com/repos/${repository}/actions/runs/${encodeURIComponent(runId)}`,
+    {
+      headers: {
+        Accept: 'application/vnd.github+json',
+        Authorization: `Bearer ${token}`,
+        'X-GitHub-Api-Version': '2026-03-10',
+        'User-Agent': 'workflow-mcp-worker'
+      }
+    }
+  );
+  if (!response.ok) {
+    throw new Error(`GitHub workflow run lookup failed with status ${response.status}.`);
+  }
+  const body = (await response.json()) as { status?: string; conclusion?: string | null };
+  const status =
+    body.status === 'queued' || body.status === 'in_progress' || body.status === 'completed'
+      ? body.status
+      : 'unknown';
+  return {
+    runId,
+    status,
+    ...(typeof body.conclusion === 'string' ? { conclusion: body.conclusion } : {})
+  };
+}
