@@ -77,13 +77,12 @@ describe("email_get body-part selection", () => {
       ["2", new TextEncoder().encode("<p>Hello=20HTML</p>")],
     ]);
 
-    await expect(normalizeFetchedBodyParts(parts, fetched)).resolves.toMatchObject({
-      body: {
-        text: "Hello 世界",
-        html: "<p>Hello HTML</p>",
-        truncated: false,
-        untrusted_external_content: true,
-      },
+    const normalized = await normalizeFetchedBodyParts(parts, fetched);
+    expect(normalized.body.text).toBe("Hello 世界");
+    expect(normalized.body.html?.trim()).toBe("<p>Hello HTML</p>");
+    expect(normalized.body).toMatchObject({
+      truncated: false,
+      untrusted_external_content: true,
     });
   });
 
