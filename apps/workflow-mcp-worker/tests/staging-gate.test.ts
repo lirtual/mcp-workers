@@ -55,6 +55,10 @@ describe('Workflow MCP staging release gate contract', () => {
     expect(workflowText).toContain(
       'accounts/$CLOUDFLARE_ACCOUNT_ID/tokens/verify'
     );
+    expect(workflowText).toContain(
+      'https://api.cloudflare.com/client/v4/user/tokens/verify'
+    );
+    expect(workflowText).toContain('token_owner="user"');
     expect(workflowText).toContain('user/tokens/verify');
     expect(workflowText).toContain('token_owner="user"');
     expect(workflowText).toContain(
