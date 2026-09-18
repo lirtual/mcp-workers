@@ -96,7 +96,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          config="$RUNNER_TEMP/workflow-mcp-staging.json"
+          config="$GITHUB_WORKSPACE/apps/workflow-mcp-worker/wrangler.staging.generated.json"
           pnpm --filter workflow-mcp-worker exec tsx scripts/build-staging-config.ts "$config"
           echo "path=$config" >> "$GITHUB_OUTPUT"
           echo "WORKFLOW_MCP_WRANGLER_CONFIG=$config" >> "$GITHUB_ENV"
