@@ -11,6 +11,28 @@ export type RunState =
   | 'timed_out'
   | 'indeterminate';
 
+export type StepRunState =
+  | 'pending'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'skipped_condition'
+  | 'skipped_dependency'
+  | 'cancelled'
+  | 'timed_out'
+  | 'indeterminate';
+
+export type AttemptState =
+  | 'queued'
+  | 'claimed'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'cancel_requested'
+  | 'cancelled'
+  | 'timed_out'
+  | 'indeterminate';
+
 export interface StoredRun {
   runId: string;
   workflowId: string;
@@ -62,8 +84,9 @@ export interface WorkflowEventRecord {
 export interface StepSummary {
   stepRunId: string;
   stepId: string;
-  state: string;
-  output?: unknown;
+  operationId: string;
+  state: StepRunState;
+  output?: Record<string, unknown>;
   errorCode?: string;
   errorSummary?: string;
 }
@@ -214,123 +237,221 @@ export class D1WorkflowStore {
 
   async markRunRunning(runId: string): Promise<void> {
     const startedAt = nowIso();
-    await this.db
-      .prepare(`UPDATE workflow_runs SET state = 'running', started_at = COALESCE(started_at, ?) WHERE run_id = ?`)
+    const result = await this.db
+      .prepare(
+        `UPDATE workflow_runs
+         SET state = 'running', started_at = COALESCE(started_at, ?)
+         WHERE run_id = ? AND state = 'queued'`
+      )
       .bind(startedAt, runId)
       .run();
-    await this.appendEvent(runId, 'run.started', {});
+    if ((result.meta.changes ?? 0) === 1) await this.appendEvent(runId, 'run.started', {});
   }
 
-  async startLocalStep(input: {
+  async ensureStepRun(input: {
     runId: string;
     stepId: string;
     stepRunId: string;
     operationId: string;
+    effectivePolicy: Record<string, unknown>;
+  }): Promise<void> {
+    const createdAt = nowIso();
+    const result = await this.db
+      .prepare(
+        `INSERT OR IGNORE INTO step_runs
+         (step_run_id, run_id, step_id, operation_id, state, effective_policy_json, created_at)
+         VALUES (?, ?, ?, ?, 'pending', ?, ?)`
+      )
+      .bind(
+        input.stepRunId,
+        input.runId,
+        input.stepId,
+        input.operationId,
+        JSON.stringify(input.effectivePolicy),
+        createdAt
+      )
+      .run();
+    if ((result.meta.changes ?? 0) === 1) {
+      await this.appendEvent(input.runId, 'step.created', { stepId: input.stepId }, input.stepRunId);
+    }
+  }
+
+  async markStepSkipped(input: {
+    runId: string;
+    stepRunId: string;
+    stepId: string;
+    state: 'skipped_condition' | 'skipped_dependency';
+  }): Promise<void> {
+    const endedAt = nowIso();
+    const result = await this.db
+      .prepare(
+        `UPDATE step_runs SET state = ?, ended_at = ?
+         WHERE step_run_id = ? AND state = 'pending'`
+      )
+      .bind(input.state, endedAt, input.stepRunId)
+      .run();
+    if ((result.meta.changes ?? 0) === 1) {
+      await this.appendEvent(input.runId, 'step.skipped', { stepId: input.stepId, state: input.state }, input.stepRunId);
+    }
+  }
+
+  async ensureAttempt(input: {
+    runId: string;
+    stepRunId: string;
+    stepId: string;
     attemptId: string;
+    attemptNumber: number;
     executorType: string;
   }): Promise<void> {
     const startedAt = nowIso();
-    await this.db.batch([
+    const results = await this.db.batch([
       this.db
         .prepare(
-          `INSERT OR IGNORE INTO step_runs
-           (step_run_id, run_id, step_id, operation_id, state, created_at, started_at)
-           VALUES (?, ?, ?, ?, 'running', ?, ?)`
+          `UPDATE step_runs
+           SET state = 'running', started_at = COALESCE(started_at, ?)
+           WHERE step_run_id = ? AND state = 'pending'`
         )
-        .bind(input.stepRunId, input.runId, input.stepId, input.operationId, startedAt, startedAt),
+        .bind(startedAt, input.stepRunId),
       this.db
         .prepare(
           `INSERT OR IGNORE INTO step_attempts
            (attempt_id, step_run_id, attempt_number, executor_type, state, created_at, started_at)
-           VALUES (?, ?, 1, ?, 'running', ?, ?)`
+           VALUES (?, ?, ?, ?, 'running', ?, ?)`
         )
-        .bind(input.attemptId, input.stepRunId, input.executorType, startedAt, startedAt)
+        .bind(
+          input.attemptId,
+          input.stepRunId,
+          input.attemptNumber,
+          input.executorType,
+          startedAt,
+          startedAt
+        )
     ]);
-    await this.appendEvent(input.runId, 'step.started', { stepId: input.stepId }, input.stepRunId, input.attemptId);
+    if ((results[1]?.meta.changes ?? 0) === 1) {
+      await this.appendEvent(
+        input.runId,
+        'attempt.started',
+        { stepId: input.stepId, attemptNumber: input.attemptNumber },
+        input.stepRunId,
+        input.attemptId
+      );
+    }
   }
 
-  async completeLocalStep(input: {
+  async recordAttemptResult(input: {
     runId: string;
     stepRunId: string;
-    attemptId: string;
     stepId: string;
+    attemptId: string;
+    state: 'succeeded' | 'failed' | 'timed_out' | 'indeterminate';
+    output?: Record<string, unknown>;
+    errorCode?: string;
+    errorSummary?: string;
+  }): Promise<void> {
+    const endedAt = nowIso();
+    const result = await this.db
+      .prepare(
+        `UPDATE step_attempts
+         SET state = ?, terminal_result_json = ?, error_code = ?, error_summary = ?, ended_at = ?
+         WHERE attempt_id = ? AND state = 'running'`
+      )
+      .bind(
+        input.state,
+        input.output ? JSON.stringify(input.output) : null,
+        input.errorCode ?? null,
+        input.errorSummary ?? null,
+        endedAt,
+        input.attemptId
+      )
+      .run();
+    if ((result.meta.changes ?? 0) === 1) {
+      await this.appendEvent(
+        input.runId,
+        `attempt.${input.state}`,
+        {
+          stepId: input.stepId,
+          ...(input.errorCode ? { code: input.errorCode } : {})
+        },
+        input.stepRunId,
+        input.attemptId
+      );
+    }
+  }
+
+  async finishStep(input: {
+    runId: string;
+    stepRunId: string;
+    stepId: string;
+    state: 'succeeded' | 'failed' | 'timed_out' | 'indeterminate';
+    output?: Record<string, unknown>;
+    errorCode?: string;
+    errorSummary?: string;
+  }): Promise<void> {
+    const endedAt = nowIso();
+    const result = await this.db
+      .prepare(
+        `UPDATE step_runs
+         SET state = ?, output_json = ?, error_code = ?, error_summary = ?, ended_at = ?
+         WHERE step_run_id = ? AND state IN ('pending', 'running')`
+      )
+      .bind(
+        input.state,
+        input.output ? JSON.stringify(input.output) : null,
+        input.errorCode ?? null,
+        input.errorSummary ?? null,
+        endedAt,
+        input.stepRunId
+      )
+      .run();
+    if ((result.meta.changes ?? 0) === 1) {
+      await this.appendEvent(
+        input.runId,
+        `step.${input.state}`,
+        {
+          stepId: input.stepId,
+          ...(input.errorCode ? { code: input.errorCode } : {})
+        },
+        input.stepRunId
+      );
+    }
+  }
+
+  async finishRun(input: {
+    runId: string;
+    state: 'succeeded' | 'failed' | 'timed_out' | 'indeterminate';
     output: Record<string, unknown>;
-    workflowOutput: Record<string, unknown>;
+    errorCode?: string;
+    errorSummary?: string;
   }): Promise<void> {
     const endedAt = nowIso();
-    await this.db.batch([
-      this.db
-        .prepare(
-          `UPDATE step_attempts
-           SET state = 'succeeded', terminal_result_json = ?, ended_at = ?
-           WHERE attempt_id = ?`
-        )
-        .bind(JSON.stringify(input.output), endedAt, input.attemptId),
-      this.db
-        .prepare(
-          `UPDATE step_runs
-           SET state = 'succeeded', output_json = ?, ended_at = ?
-           WHERE step_run_id = ?`
-        )
-        .bind(JSON.stringify(input.output), endedAt, input.stepRunId),
-      this.db
-        .prepare(
-          `UPDATE workflow_runs
-           SET state = 'succeeded', output_json = ?, ended_at = ?
-           WHERE run_id = ?`
-        )
-        .bind(JSON.stringify(input.workflowOutput), endedAt, input.runId)
-    ]);
-    await this.appendEvent(input.runId, 'step.succeeded', { stepId: input.stepId }, input.stepRunId, input.attemptId);
-    await this.appendEvent(input.runId, 'run.succeeded', {});
-  }
-
-  async failLocalStep(input: {
-    runId: string;
-    stepRunId: string;
-    attemptId: string;
-    stepId: string;
-    code: string;
-    summary: string;
-  }): Promise<void> {
-    const endedAt = nowIso();
-    await this.db.batch([
-      this.db
-        .prepare(
-          `UPDATE step_attempts
-           SET state = 'failed', error_code = ?, error_summary = ?, ended_at = ?
-           WHERE attempt_id = ?`
-        )
-        .bind(input.code, input.summary, endedAt, input.attemptId),
-      this.db
-        .prepare(
-          `UPDATE step_runs
-           SET state = 'failed', error_code = ?, error_summary = ?, ended_at = ?
-           WHERE step_run_id = ?`
-        )
-        .bind(input.code, input.summary, endedAt, input.stepRunId),
-      this.db
-        .prepare(
-          `UPDATE workflow_runs
-           SET state = 'failed', error_code = ?, error_summary = ?, ended_at = ?
-           WHERE run_id = ?`
-        )
-        .bind(input.code, input.summary, endedAt, input.runId)
-    ]);
-    await this.appendEvent(
-      input.runId,
-      'step.failed',
-      { stepId: input.stepId, code: input.code },
-      input.stepRunId,
-      input.attemptId
-    );
-    await this.appendEvent(input.runId, 'run.failed', { code: input.code });
+    const result = await this.db
+      .prepare(
+        `UPDATE workflow_runs
+         SET state = ?, output_json = ?, error_code = ?, error_summary = ?, ended_at = ?
+         WHERE run_id = ? AND state IN ('queued', 'running', 'waiting')`
+      )
+      .bind(
+        input.state,
+        JSON.stringify(input.output),
+        input.errorCode ?? null,
+        input.errorSummary ?? null,
+        endedAt,
+        input.runId
+      )
+      .run();
+    if ((result.meta.changes ?? 0) === 1) {
+      await this.appendEvent(
+        input.runId,
+        `run.${input.state}`,
+        input.errorCode ? { code: input.errorCode } : {}
+      );
+    }
   }
 
   async listStepSummaries(runId: string): Promise<StepSummary[]> {
     const result = await this.db
       .prepare(
-        `SELECT step_run_id, step_id, state, output_json, error_code, error_summary
+        `SELECT step_run_id, step_id, operation_id, state, output_json, error_code, error_summary
          FROM step_runs WHERE run_id = ? ORDER BY created_at, step_id`
       )
       .bind(runId)
@@ -339,8 +460,9 @@ export class D1WorkflowStore {
     return result.results.map(row => ({
       stepRunId: String(row.step_run_id),
       stepId: String(row.step_id),
-      state: String(row.state),
-      ...(row.output_json ? { output: JSON.parse(row.output_json) as unknown } : {}),
+      operationId: String(row.operation_id),
+      state: String(row.state) as StepRunState,
+      ...(row.output_json ? { output: parseObject(row.output_json) } : {}),
       ...(row.error_code ? { errorCode: row.error_code } : {}),
       ...(row.error_summary ? { errorSummary: row.error_summary } : {})
     }));
