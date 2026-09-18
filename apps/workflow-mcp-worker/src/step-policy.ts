@@ -6,7 +6,7 @@ import {
 } from './effective-policy.js';
 import { inspectMcpTool } from './mcp-client.js';
 import type { RuntimeStep } from './runtime-plan.js';
-import { D1WorkflowStore } from './storage.js';
+import type { D1WorkflowStore } from './storage.js';
 import type { Env } from './types.js';
 
 export type StepPolicyResolution =
