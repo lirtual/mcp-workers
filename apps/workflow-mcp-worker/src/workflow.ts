@@ -1,4 +1,5 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
+import { cancellationBlocksNewStep } from './cancellation-gate.js';
 import {
   decideStep,
   deriveRunTerminalState,
@@ -60,7 +61,7 @@ export async function executeDagRun(
   if (!definition) return { ok: false, runId, errorCode: 'PINNED_DEFINITION_NOT_FOUND' };
 
   const plan = asRuntimePlan(definition.plan);
-  if (run.state === 'cancel_requested') {
+  if (cancellationBlocksNewStep(run.state)) {
     await store.finishRun({ runId, state: 'cancelled', output: {} });
     return { ok: false, runId, errorCode: 'WORKFLOW_CANCELLED' };
   }
@@ -74,7 +75,7 @@ export async function executeDagRun(
   while (Object.keys(states).length < Object.keys(plan.steps).length) {
     const currentRun = await store.getRun(runId);
     if (!currentRun) return { ok: false, runId, errorCode: 'RUN_NOT_FOUND' };
-    if (currentRun.state === 'cancel_requested') {
+    if (cancellationBlocksNewStep(currentRun.state)) {
       return finishCancelledRun(store, runId, states);
     }
 
@@ -112,7 +113,7 @@ export async function executeDagRun(
     }
 
     const afterWave = await store.getRun(runId);
-    if (afterWave?.state === 'cancel_requested') {
+    if (afterWave && cancellationBlocksNewStep(afterWave.state)) {
       return finishCancelledRun(store, runId, states);
     }
   }
@@ -174,7 +175,7 @@ async function executeReadyStep(input: {
   }
 
   const currentRun = await input.store.getRun(input.runId);
-  if (!currentRun || currentRun.state === 'cancel_requested') {
+  if (!currentRun || cancellationBlocksNewStep(currentRun.state)) {
     return { stepId: input.stepId, state: 'cancelled' };
   }
 
@@ -452,7 +453,7 @@ async function runRemoteAttempt(input: {
   }
 
   const latestRun = await input.store.getRun(input.runId);
-  if (wakeKind === 'cancel_requested' || latestRun?.state === 'cancel_requested') {
+  if (wakeKind === 'cancel_requested' || (latestRun && cancellationBlocksNewStep(latestRun.state))) {
     return cancelAndReconcileRemoteAttempt(input, attemptId, callbackId);
   }
 
