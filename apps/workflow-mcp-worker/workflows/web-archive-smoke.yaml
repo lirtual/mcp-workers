@@ -1,0 +1,23 @@
+version: 1
+id: web-archive-smoke
+name: Web archive smoke
+description: Fetch a small public page locally, then archive its content with the registered GitHub executor.
+inputs:
+  url:
+    type: string
+triggers:
+  - type: manual
+steps:
+  fetch:
+    uses: http.read
+    with:
+      url: "${{ input.url }}"
+  archive:
+    uses: github.archive_markdown
+    needs:
+      - fetch
+    with:
+      content: "${{ steps.fetch.outputs.body }}"
+      source_url: "${{ input.url }}"
+outputs:
+  artifact: "${{ steps.archive.outputs.artifact }}"
