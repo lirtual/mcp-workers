@@ -1,0 +1,15 @@
+version: 1
+id: mcp-connection-smoke
+name: MCP connection smoke
+description: Call one configured read-only MCP tool through the generic MCP adapter.
+triggers:
+  - type: manual
+steps:
+  call:
+    uses: mcp.call
+    with:
+      connection: smoke-readonly
+      tool: health_check
+      arguments: {}
+outputs:
+  result: "${{ steps.call.outputs.result }}"
