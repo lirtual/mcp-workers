@@ -77,12 +77,28 @@ jobs:
           trigger_token="$(openssl rand -hex 32)"
           account_verify_url="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/tokens/verify"
           user_verify_url="https://api.cloudflare.com/client/v4/user/tokens/verify"
-          if token_json="$(curl --fail --silent --show-error "$account_verify_url" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" 2>/dev/null)"; then
+          account_body="$RUNNER_TEMP/cloudflare-account-token-verify.json"
+          user_body="$RUNNER_TEMP/cloudflare-user-token-verify.json"
+
+          account_status="$(curl --silent --show-error --output "$account_body" --write-out '%{http_code}' \
+            "$account_verify_url" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN")"
+          if [[ "$account_status" == "200" ]]; then
+            token_json="$(cat "$account_body")"
             token_owner="account"
           else
-            token_json="$(curl --fail --silent --show-error "$user_verify_url" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN")"
-            token_owner="user"
+            user_status="$(curl --silent --show-error --output "$user_body" --write-out '%{http_code}' \
+              "$user_verify_url" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN")"
+            if [[ "$user_status" == "200" ]]; then
+              token_json="$(cat "$user_body")"
+              token_owner="user"
+            else
+              account_error="$(node -e "const fs=require('node:fs'); const x=JSON.parse(fs.readFileSync(process.argv[1],'utf8')); const e=x.errors?.[0]; process.stdout.write(e ? String(e.code)+': '+String(e.message) : 'unknown')" "$account_body" 2>/dev/null || echo unknown)"
+              user_error="$(node -e "const fs=require('node:fs'); const x=JSON.parse(fs.readFileSync(process.argv[1],'utf8')); const e=x.errors?.[0]; process.stdout.write(e ? String(e.code)+': '+String(e.message) : 'unknown')" "$user_body" 2>/dev/null || echo unknown)"
+              echo "::error::Cloudflare token verification failed (account HTTP $account_status, $account_error; user HTTP $user_status, $user_error)."
+              exit 1
+            fi
           fi
+          rm -f "$account_body" "$user_body"
           r2_access_key_id="$(node -e "const x=JSON.parse(process.argv[1]); if(!x.success||!x.result?.id||x.result.status!=='active') process.exit(1); process.stdout.write(x.result.id)" "$token_json")"
           echo "Cloudflare token verified as $token_owner-owned."
           r2_secret_access_key="$(printf '%s' "$CLOUDFLARE_API_TOKEN" | sha256sum | awk '{print $1}')"
