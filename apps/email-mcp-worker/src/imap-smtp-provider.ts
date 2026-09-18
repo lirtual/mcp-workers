@@ -17,6 +17,7 @@ import {
   type SearchCursorScope,
 } from "./message-reference.js";
 import {
+  MAX_BODY_BYTES,
   MAX_SOURCE_BYTES,
   normalizeMimeMessage,
   type NormalizedMessagePayload,
@@ -206,6 +207,70 @@ export function readableBodyPartFetchKeys(
   parts: ReadableBodyPart[],
 ): string[] {
   return parts.map((part) => part.part);
+}
+
+const BODY_DOWNLOAD_CHUNK_BYTES = 64 * 1024;
+const BODY_DOWNLOAD_MAX_BYTES = MAX_BODY_BYTES + 1;
+
+export function preferredReadableBodyPart(
+  parts: ReadableBodyPart[],
+): ReadableBodyPart | undefined {
+  return (
+    parts.find((part) => part.mediaType === "text/plain") ??
+    parts.find((part) => part.mediaType === "text/html")
+  );
+}
+
+async function readDownloadBytes(
+  content: AsyncIterable<unknown>,
+): Promise<Uint8Array> {
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+
+  for await (const chunk of content) {
+    const bytes =
+      typeof chunk === "string"
+        ? new TextEncoder().encode(chunk)
+        : chunk instanceof Uint8Array
+          ? chunk
+          : undefined;
+    if (!bytes) continue;
+    chunks.push(bytes);
+    total += bytes.byteLength;
+  }
+
+  const result = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return result;
+}
+
+export async function downloadReadableBodyPart(
+  client: Pick<ImapFlow, "download">,
+  uid: number,
+  part: ReadableBodyPart,
+): Promise<NormalizedMessagePayload> {
+  const download = await client.download(uid, part.part, {
+    uid: true,
+    chunkSize: BODY_DOWNLOAD_CHUNK_BYTES,
+    maxBytes: BODY_DOWNLOAD_MAX_BYTES,
+  });
+  const raw = await readDownloadBytes(
+    download.content as unknown as AsyncIterable<unknown>,
+  );
+
+  const header = new TextEncoder().encode(
+    "MIME-Version: 1.0\r\nContent-Type: " +
+      part.mediaType +
+      '; charset="utf-8"\r\n\r\n',
+  );
+  const synthetic = new Uint8Array(header.byteLength + raw.byteLength);
+  synthetic.set(header, 0);
+  synthetic.set(raw, header.byteLength);
+  return normalizeMimeMessage(synthetic);
 }
 
 function findFetchedBodyPart(
@@ -731,7 +796,8 @@ export class ImapSmtpProvider implements EmailProvider {
       const readableParts = selectReadableBodyParts(metadata.bodyStructure);
 
       let normalized: NormalizedMessagePayload;
-      if (readableParts.length === 0) {
+      const preferredPart = preferredReadableBodyPart(readableParts);
+      if (!preferredPart) {
         normalized = {
           body: unavailableMessageBody(
             hasOversizedReadableBodyPart(metadata.bodyStructure)
@@ -742,42 +808,31 @@ export class ImapSmtpProvider implements EmailProvider {
           reply_to: [],
         };
       } else {
-        const fetchedBodyParts = new Map<string, Uint8Array>();
-        for (const part of readableParts) {
-          const bodyMessage = await client.fetchOne(
+        try {
+          normalized = await downloadReadableBodyPart(
+            client,
             reference.uid,
-            {
-              bodyParts: [part.part],
-            },
-            { uid: true },
+            preferredPart,
           );
-          if (bodyMessage && bodyMessage.bodyParts) {
-            for (const [key, value] of bodyMessage.bodyParts) {
-              fetchedBodyParts.set(key, value);
-            }
+        } catch (error) {
+          const bodyError = normalizeImapError(error);
+          if (
+            bodyError.code !== "UPSTREAM_TIMEOUT" &&
+            bodyError.code !== "UPSTREAM_UNAVAILABLE"
+          ) {
+            throw bodyError;
           }
+          normalized = {
+            body: unavailableMessageBody("body_fetch_failed"),
+            attachments: [],
+            reply_to: [],
+          };
         }
-
-        normalized = await normalizeFetchedBodyParts(
-          readableParts,
-          fetchedBodyParts,
-        );
       }
 
-      let references: string | undefined;
-      try {
-        const headerMessage = await client.fetchOne(
-          reference.uid,
-          { headers: ["references"] },
-          { uid: true },
-        );
-        references = parseReferencesHeader(
-          headerMessage ? headerMessage.headers : undefined,
-        );
-      } catch {
-        // References are optional for a read. Some IMAP servers reject
-        // HEADER.FIELDS after a body fetch; do not fail email_get for that.
-      }
+      // References are optional for reads. Avoid an extra HEADER.FIELDS round
+      // trip because some QQ IMAP sessions become unstable after body transfer.
+      const references: string | undefined = undefined;
 
       return {
         message_id: options.messageId,
