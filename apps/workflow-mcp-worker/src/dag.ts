@@ -61,7 +61,7 @@ export function decideStep(
     stepOutputs: context.stepOutputs,
     dependencyStates
   });
-  return Boolean(condition)
+  return condition
     ? { action: 'run' }
     : { action: 'skip', skipState: 'skipped_condition' };
 }
