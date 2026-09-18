@@ -408,14 +408,14 @@ function sendConfirmationPreview(prepared: PreparedSendEmail): string {
   const cc = prepared.cc.map((value) => value.address).join(", ") || "(none)";
   return [
     "Send this email?",
-    \`From: \${prepared.from}\`,
-    \`To: \${to}\`,
-    \`Cc: \${cc}\`,
-    \`Bcc recipients: \${prepared.bcc.length}\`,
-    \`Subject: \${prepared.subject}\`,
+    `From: ${prepared.from}`,
+    `To: ${to}`,
+    `Cc: ${cc}`,
+    `Bcc recipients: ${prepared.bcc.length}`,
+    `Subject: ${prepared.subject}`,
     "",
     prepared.body_text,
-  ].join("\\n");
+  ].join("\n");
 }
 
 export function buildEmailServer(
