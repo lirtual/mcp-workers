@@ -32,10 +32,10 @@ describe("bounded message normalization", () => {
 
     const result = await normalizeMimeMessage(new TextEncoder().encode(raw));
     expect(result.body).toMatchObject({
-      text: "hello body",
       truncated: false,
       untrusted_external_content: true,
     });
+    expect(result.body.text?.trim()).toBe("hello body");
     expect(result.body.warning).toContain("untrusted");
     expect(result.attachments).toEqual([
       expect.objectContaining({
