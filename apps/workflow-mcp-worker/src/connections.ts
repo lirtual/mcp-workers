@@ -35,6 +35,19 @@ const connections = {
     tools: {
       health_check: { effect: 'read' }
     }
+  },
+  'smoke-modern': {
+    id: 'smoke-modern',
+    transport: 'streamable-http',
+    protocolVersion: '2026-07-28',
+    endpoint: 'https://example.invalid/mcp-modern',
+    auth: {
+      header: 'X-Smoke-Auth',
+      format: 'raw',
+      secret: 'SMOKE_READONLY_MCP_TOKEN'
+    },
+    trustAnnotations: true,
+    tools: {}
   }
 } as const satisfies Record<string, McpConnection>;
 
