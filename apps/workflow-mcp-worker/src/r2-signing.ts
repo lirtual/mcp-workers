@@ -65,7 +65,7 @@ export async function presignR2Url(
   ].join('\n');
 
   const dateKey = await hmac(
-    new TextEncoder().encode(`AWS4${secretAccessKey}`),
+    toArrayBuffer(new TextEncoder().encode(`AWS4${secretAccessKey}`)),
     dateStamp
   );
   const regionKey = await hmac(dateKey, 'auto');
@@ -115,7 +115,7 @@ async function sha256Hex(value: string): Promise<string> {
   return hex(new Uint8Array(digest));
 }
 
-async function hmac(key: BufferSource, value: string): Promise<Uint8Array> {
+async function hmac(key: ArrayBuffer, value: string): Promise<ArrayBuffer> {
   const cryptoKey = await crypto.subtle.importKey(
     'raw',
     key,
@@ -123,13 +123,23 @@ async function hmac(key: BufferSource, value: string): Promise<Uint8Array> {
     false,
     ['sign']
   );
-  return new Uint8Array(
-    await crypto.subtle.sign('HMAC', cryptoKey, new TextEncoder().encode(value))
+  return crypto.subtle.sign(
+    'HMAC',
+    cryptoKey,
+    toArrayBuffer(new TextEncoder().encode(value))
   );
 }
 
-function hex(bytes: Uint8Array): string {
-  return [...bytes].map(byte => byte.toString(16).padStart(2, '0')).join('');
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  return bytes.buffer.slice(
+    bytes.byteOffset,
+    bytes.byteOffset + bytes.byteLength
+  ) as ArrayBuffer;
+}
+
+function hex(bytes: ArrayBuffer | Uint8Array): string {
+  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  return [...view].map(byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
 function required(value: string | undefined, name: string): string {
