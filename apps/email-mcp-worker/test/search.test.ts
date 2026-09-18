@@ -78,6 +78,9 @@ describe("email_search tracer", () => {
           next_cursor: "cursor-2",
         };
       },
+      async getMessage() {
+        throw new Error("not used in this test");
+      },
     });
 
     await expect(
