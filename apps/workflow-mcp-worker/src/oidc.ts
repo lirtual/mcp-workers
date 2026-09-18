@@ -51,7 +51,7 @@ export async function verifyGitHubOidcToken(
     headers: { Accept: 'application/json' }
   });
   if (!jwksResponse.ok) throw new Error(`OIDC JWKS request failed with status ${jwksResponse.status}.`);
-  const jwks = (await jwksResponse.json()) as { keys?: JsonWebKey[] };
+  const jwks = (await jwksResponse.json()) as { keys?: Array<JsonWebKey & { kid?: string }> };
   const jwk = jwks.keys?.find(key => key.kid === header.kid);
   if (!jwk) throw new Error('OIDC signing key was not found in JWKS.');
 
@@ -93,10 +93,11 @@ function parseJsonPart<T>(part: string): T {
   return JSON.parse(new TextDecoder().decode(bytes)) as T;
 }
 
-function base64UrlDecode(value: string): Uint8Array {
+function base64UrlDecode(value: string): ArrayBuffer {
   const padded = value.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (value.length % 4)) % 4);
   const binary = atob(padded);
-  return Uint8Array.from(binary, char => char.charCodeAt(0));
+  const bytes = Uint8Array.from(binary, char => char.charCodeAt(0));
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
 
 function requiredString(value: unknown, name: string): string {
