@@ -13,6 +13,7 @@ export interface LocalToolPolicy {
 export interface McpConnection {
   id: string;
   transport: 'streamable-http';
+  protocolVersion: '2025-11-25' | '2026-07-28';
   endpoint: string;
   auth: ConnectionAuth;
   trustAnnotations: boolean;
@@ -23,6 +24,7 @@ const connections = {
   'smoke-readonly': {
     id: 'smoke-readonly',
     transport: 'streamable-http',
+    protocolVersion: '2025-11-25',
     endpoint: 'https://example.invalid/mcp',
     auth: {
       header: 'Authorization',
