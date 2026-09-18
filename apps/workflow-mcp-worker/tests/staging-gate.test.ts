@@ -45,6 +45,7 @@ describe('Workflow MCP staging release gate contract', () => {
       names.indexOf('Check nonterminal runtime compatibility')
     );
     expect(names).toContain('Deploy isolated staging Worker');
+    expect(names).not.toContain('Install staging Worker secrets');
     expect(names).toContain('Run MCP heavy and connection tracers');
     expect(names).toContain('Verify GitHub executor terminal evidence');
 
@@ -60,6 +61,7 @@ describe('Workflow MCP staging release gate contract', () => {
     expect(workflowText).toContain(
       'printf \'%s\' "$CLOUDFLARE_API_TOKEN" | sha256sum'
     );
+    expect(workflowText).toContain('--secrets-file "$secret_file"');
     expect(workflowText).not.toContain(
       'WORKFLOW_MCP_STAGING_R2_ACCESS_KEY_ID'
     );
