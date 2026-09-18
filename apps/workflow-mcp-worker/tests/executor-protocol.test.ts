@@ -84,6 +84,8 @@ describe('remote executor protocol', () => {
     const record = await store.getRemoteAttempt(prepared.attemptId);
     expect(record?.state).toBe('claimed');
     expect(['9001', '9002']).toContain(record?.githubRunId);
+    expect(record?.executorVersion).toBe('workflow-runner-v1');
+    expect(record?.executorRevision).toBe(workflowSha);
 
     const loserRun = record?.githubRunId === '9001' ? '9002' : '9001';
     const loserToken = await oidcToken({ run_id: loserRun, run_attempt: '2' });
@@ -439,6 +441,7 @@ class MemoryExecutorStore implements ExecutorProtocolStore {
       expectedWorkflowRef: input.expectedWorkflowRef,
       expectedRef: input.expectedRef,
       ...(input.expectedWorkflowSha ? { expectedWorkflowSha: input.expectedWorkflowSha } : {}),
+      executorVersion: input.executorVersion,
       executionManifest: { ...input.executionManifest }
     });
   }
@@ -478,6 +481,7 @@ class MemoryExecutorStore implements ExecutorProtocolStore {
     attempt.githubRunId = input.githubRunId;
     attempt.githubRunAttempt = input.githubRunAttempt;
     attempt.githubWorkflowSha = input.githubWorkflowSha;
+    attempt.executorRevision = input.executorRevision;
     return true;
   }
 
