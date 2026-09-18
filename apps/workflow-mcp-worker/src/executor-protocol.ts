@@ -1,5 +1,10 @@
 import { issueExecutorLease, verifyExecutorLease, type ExecutorLeaseClaims } from './lease.js';
 import {
+  assertExecutionManifestCompatible,
+  RUNNER_VERSION,
+  SUPPORTED_EXECUTION_MANIFEST_VERSION
+} from './provenance.js';
+import {
   verifyGitHubOidcToken,
   type GitHubJobIdentity,
   type GitHubOidcVerificationConfig
@@ -29,7 +34,7 @@ export interface ExecutorProtocolStore {
 }
 
 export interface ExecutionManifest {
-  version: 1;
+  version: typeof SUPPORTED_EXECUTION_MANIFEST_VERSION;
   runId: string;
   stepRunId: string;
   attemptId: string;
@@ -87,6 +92,7 @@ export async function prepareRemoteAttempt(
     expectedWorkflowRef: input.trust.workflowRef,
     expectedRef: input.trust.ref,
     ...(input.trust.workflowSha ? { expectedWorkflowSha: input.trust.workflowSha } : {}),
+    executorVersion: RUNNER_VERSION,
     executionManifest: { ...input.manifest }
   });
 
@@ -153,6 +159,7 @@ export async function claimRemoteAttempt(
     githubRunId: identity.runId,
     githubRunAttempt: identity.runAttempt,
     githubWorkflowSha: identity.workflowSha,
+    executorRevision: identity.workflowSha,
     expectedRepositoryId: identity.repositoryId,
     expectedWorkflowRef: identity.workflowRef,
     expectedRef: identity.ref
@@ -394,6 +401,7 @@ function assertLeaseMatchesAttempt(
 }
 
 function validateManifest(manifest: ExecutionManifest, input: PrepareRemoteAttemptInput): void {
+  assertExecutionManifestCompatible(manifest);
   if (
     manifest.version !== 1 ||
     manifest.runId !== input.runId ||
@@ -413,6 +421,7 @@ function validateStoredManifest(
   value: Record<string, unknown>,
   claims: ExecutorLeaseClaims
 ): void {
+  assertExecutionManifestCompatible(value);
   if (
     value.version !== 1 ||
     value.runId !== claims.runId ||
