@@ -96,7 +96,7 @@ describe("email_send preparation", () => {
     expect(() =>
       prepareSendEmail(catalog, {
         ...baseInput,
-        to: Array.from({ length: 21 }, (_, i) => \`u\${i}@example.com\`),
+        to: Array.from({ length: 21 }, (_, i) => `u${i}@example.com`),
       }),
     ).toThrowError(
       expect.objectContaining<Partial<EmailToolError>>({
