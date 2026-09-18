@@ -418,6 +418,282 @@ function sendConfirmationPreview(prepared: PreparedSendEmail): string {
   ].join("\n");
 }
 
+
+export type RespondMode = "reply" | "reply_all" | "forward";
+
+interface RespondCommonInput {
+  account_id?: string;
+  from?: string;
+  folder_id: string;
+  message_id: string;
+  body_text: string;
+}
+
+export type RespondEmailInput =
+  | (RespondCommonInput & {
+      mode: "reply" | "reply_all";
+    })
+  | (RespondCommonInput & {
+      mode: "forward";
+      to: string[];
+      cc?: string[];
+      bcc?: string[];
+    });
+
+export interface PreparedRespondEmail extends PreparedSendEmail {
+  mode: RespondMode;
+  source_message_id: string;
+  in_reply_to?: string;
+  references?: string;
+  attachments_omitted: boolean;
+}
+
+function validOriginalAddresses(values: { address: string }[]): string[] {
+  return values.flatMap((value) =>
+    emailAddressSchema.safeParse(value.address).success ? [value.address] : [],
+  );
+}
+
+function uniqueAddresses(
+  values: string[],
+  excluded: Set<string> = new Set(),
+): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const key = value.toLowerCase();
+    if (excluded.has(key) || seen.has(key)) continue;
+    seen.add(key);
+    result.push(value);
+  }
+  return result;
+}
+
+function responseSubject(subject: string | undefined, mode: RespondMode): string {
+  const base = (subject ?? "").trim();
+  if (mode === "forward") {
+    return /^(?:fwd?|fw)\s*:/i.test(base) ? base : ("Fwd: " + base).trim();
+  }
+  return /^re\s*:/i.test(base) ? base : ("Re: " + base).trim();
+}
+
+function responseReferences(message: EmailMessageDetail): string | undefined {
+  const values = [
+    ...(message.references?.split(/\s+/).filter(Boolean) ?? []),
+    ...(message.internet_message_id ? [message.internet_message_id] : []),
+  ];
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const value of values) {
+    const key = value.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(value);
+  }
+  return unique.length > 0 ? unique.join(" ") : undefined;
+}
+
+function truncateUtf8(value: string, maxBytes: number): string {
+  if (maxBytes <= 0) return "";
+  const encoder = new TextEncoder();
+  let used = 0;
+  let result = "";
+  for (const character of value) {
+    const size = encoder.encode(character).byteLength;
+    if (used + size > maxBytes) break;
+    result += character;
+    used += size;
+  }
+  return result;
+}
+
+function composeResponseBody(
+  userText: string,
+  source: EmailMessageDetail,
+  mode: RespondMode,
+): string {
+  const encoder = new TextEncoder();
+  const userBytes = encoder.encode(userText).byteLength;
+  if (userBytes > SEND_BODY_MAX_BYTES) {
+    throw new EmailToolError(
+      "MESSAGE_TOO_LARGE",
+      "Email body exceeds the 128 KiB UTF-8 limit.",
+    );
+  }
+
+  const sourceText =
+    source.body.text ??
+    (source.body.body_unavailable_reason
+      ? "[Original message body unavailable: " + source.body.body_unavailable_reason + "]"
+      : "[Original message body unavailable]");
+  const quoted =
+    mode === "forward"
+      ? "\n\n-------- Forwarded message --------\n" + sourceText
+      : "\n\n--- Original message ---\n" +
+        sourceText
+          .split("\n")
+          .map((line) => "> " + line)
+          .join("\n");
+  const remaining = SEND_BODY_MAX_BYTES - userBytes;
+  return userText + truncateUtf8(quoted, remaining);
+}
+
+function replyRecipients(
+  accountSenders: string[],
+  source: EmailMessageDetail,
+  replyAll: boolean,
+): { to: string[]; cc: string[] } {
+  const self = new Set(accountSenders.map((value) => value.toLowerCase()));
+  const primaryRaw =
+    source.reply_to.length > 0
+      ? validOriginalAddresses(source.reply_to)
+      : validOriginalAddresses(source.from);
+  let to = uniqueAddresses(primaryRaw, self);
+  let cc: string[] = [];
+
+  if (replyAll) {
+    const toKeys = new Set(to.map((value) => value.toLowerCase()));
+    cc = uniqueAddresses(
+      [
+        ...validOriginalAddresses(source.to),
+        ...validOriginalAddresses(source.cc),
+      ],
+      new Set([...self, ...toKeys]),
+    );
+  }
+
+  if (to.length === 0 && cc.length > 0) {
+    to = [cc[0]];
+    cc = cc.slice(1);
+  }
+  if (to.length === 0) {
+    throw new EmailToolError(
+      "UNSUPPORTED_PROVIDER_CAPABILITY",
+      "The source message does not contain a safe reply recipient.",
+    );
+  }
+  return { to, cc };
+}
+
+export async function prepareRespondEmail(
+  catalog: EmailCatalog,
+  providerFactory: EmailProviderFactory,
+  input: RespondEmailInput,
+): Promise<PreparedRespondEmail> {
+  const account = resolveAccount(catalog, input.account_id);
+  const reference = decodeMessageReference(input.message_id);
+  if (
+    reference.accountId !== account.id ||
+    reference.folderId !== input.folder_id
+  ) {
+    throw new EmailToolError(
+      "MESSAGE_REFERENCE_STALE",
+      "The message reference does not belong to the selected mailbox.",
+    );
+  }
+
+  const provider = providerFactory(account);
+  const source = await provider.getMessage({
+    folderId: input.folder_id,
+    messageId: input.message_id,
+  });
+
+  let to: string[];
+  let cc: string[];
+  let bcc: string[];
+  if (input.mode === "forward") {
+    to = input.to;
+    cc = input.cc ?? [];
+    bcc = input.bcc ?? [];
+  } else {
+    const derived = replyRecipients(
+      [account.address, ...account.senders],
+      source,
+      input.mode === "reply_all",
+    );
+    to = derived.to;
+    cc = derived.cc;
+    bcc = [];
+  }
+
+  const bodyText = composeResponseBody(input.body_text, source, input.mode);
+  const prepared = prepareSendEmail(catalog, {
+    account_id: account.id,
+    from: input.from,
+    to,
+    cc,
+    bcc,
+    subject: responseSubject(source.subject, input.mode),
+    body_text: bodyText,
+  });
+
+  const threaded = input.mode !== "forward";
+  const references = threaded ? responseReferences(source) : undefined;
+  return {
+    ...prepared,
+    mode: input.mode,
+    source_message_id: input.message_id,
+    ...(threaded && source.internet_message_id
+      ? { in_reply_to: source.internet_message_id }
+      : {}),
+    ...(references ? { references } : {}),
+    attachments_omitted: source.attachments.length > 0,
+  };
+}
+
+async function sendPreparedRespondEmail(
+  catalog: EmailCatalog,
+  providerFactory: EmailProviderFactory,
+  prepared: PreparedRespondEmail,
+): Promise<
+  SendMessageResult & {
+    account_id: string;
+    mode: RespondMode;
+    attachments_omitted: boolean;
+  }
+> {
+  const account = resolveAccount(catalog, prepared.account_id);
+  const provider = providerFactory(account);
+  return {
+    account_id: account.id,
+    mode: prepared.mode,
+    attachments_omitted: prepared.attachments_omitted,
+    ...(await provider.sendMessage({
+      from: prepared.from,
+      to: prepared.to,
+      cc: prepared.cc,
+      bcc: prepared.bcc,
+      subject: prepared.subject,
+      bodyText: prepared.body_text,
+      inReplyTo: prepared.in_reply_to,
+      references: prepared.references,
+    })),
+  };
+}
+
+export async function respondEmail(
+  catalog: EmailCatalog,
+  gates: EmailFeatureGates,
+  providerFactory: EmailProviderFactory,
+  input: RespondEmailInput,
+) {
+  if (!gates.allowSend) {
+    throw new EmailToolError(
+      "SEND_DISABLED",
+      "Email sending is disabled by server configuration.",
+    );
+  }
+  const prepared = await prepareRespondEmail(catalog, providerFactory, input);
+  return sendPreparedRespondEmail(catalog, providerFactory, prepared);
+}
+
+function respondConfirmationPreview(prepared: PreparedRespondEmail): string {
+  const attachmentNotice = prepared.attachments_omitted
+    ? "\n\nAttachments from the source email will be omitted in v0.1."
+    : "";
+  return sendConfirmationPreview(prepared) + attachmentNotice;
+}
+
 export function buildEmailServer(
   catalog: EmailCatalog,
   gates: EmailFeatureGates,
@@ -722,6 +998,101 @@ export function buildEmailServer(
 
       return runTool(() =>
         sendEmail(catalog, gates, providerFactory, input),
+      );
+    },
+  );
+
+
+  const respondCommonSchema = z.object({
+    account_id: accountIdSchema.optional(),
+    from: emailAddressSchema.optional(),
+    folder_id: folderIdSchema,
+    message_id: z.string().min(1).max(8192),
+    body_text: z.string(),
+  });
+  const respondInputSchema = z.discriminatedUnion("mode", [
+    respondCommonSchema.extend({ mode: z.literal("reply") }).strict(),
+    respondCommonSchema.extend({ mode: z.literal("reply_all") }).strict(),
+    respondCommonSchema
+      .extend({
+        mode: z.literal("forward"),
+        to: z.array(emailAddressSchema).min(1).max(20),
+        cc: z.array(emailAddressSchema).max(20).optional(),
+        bcc: z.array(emailAddressSchema).max(20).optional(),
+      })
+      .strict(),
+  ]);
+
+  server.registerTool(
+    "email_respond",
+    {
+      description:
+        "Reply, reply-all, or forward one selected email. Replies preserve threading and derive recipients safely; forward requires explicit recipients. Source attachments are not forwarded in v0.1. All outbound responses require protocol-level user confirmation.",
+      annotations: {
+        readOnlyHint: false,
+        idempotentHint: false,
+        destructiveHint: true,
+        openWorldHint: false,
+      },
+      inputSchema: respondInputSchema,
+    },
+    async (input, ctx) => {
+      if (!gates.allowSend) {
+        return toolFailure(
+          new EmailToolError(
+            "SEND_DISABLED",
+            "Email sending is disabled by server configuration.",
+          ),
+        );
+      }
+
+      let prepared: PreparedRespondEmail;
+      try {
+        prepared = await prepareRespondEmail(catalog, providerFactory, input);
+      } catch (error) {
+        if (error instanceof EmailToolError) return toolFailure(error);
+        return toolFailure(
+          new EmailToolError(
+            "UPSTREAM_UNAVAILABLE",
+            "The source email could not be prepared for response.",
+          ),
+        );
+      }
+
+      const expected: EmailConfirmationState = {
+        operation: "respond",
+        targetHash: await confirmationTargetHash({
+          operation: "respond",
+          accountId: prepared.account_id,
+          mode: prepared.mode,
+          sourceMessageId: prepared.source_message_id,
+          from: prepared.from,
+          to: prepared.to,
+          cc: prepared.cc,
+          bcc: prepared.bcc,
+          subject: prepared.subject,
+          bodyText: prepared.body_text,
+          inReplyTo: prepared.in_reply_to,
+          references: prepared.references,
+          attachmentsOmitted: prepared.attachments_omitted,
+        }),
+      };
+      const decision = await emailConfirmation(
+        confirmationCodec,
+        ctx.mcpReq.inputResponses,
+        ctx.mcpReq.requestState<EmailConfirmationState>(),
+        expected,
+        respondConfirmationPreview(prepared),
+      );
+      if (decision.kind === "input_required") return decision.result;
+      if (decision.kind === "denied") {
+        return toolFailure(
+          new EmailToolError(decision.code, decision.message),
+        );
+      }
+
+      return runTool(() =>
+        sendPreparedRespondEmail(catalog, providerFactory, prepared),
       );
     },
   );
