@@ -19,7 +19,7 @@ export interface Env {
   R2_ACCESS_KEY_ID?: string;
   R2_SECRET_ACCESS_KEY?: string;
   DB: D1Database;
-  ARTIFACTS: R2Bucket;
+  ARTIFACTS?: R2Bucket;
   WORKFLOW: Workflow<WorkflowRunParams>;
 }
 
