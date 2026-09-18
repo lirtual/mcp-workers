@@ -116,6 +116,34 @@ describe('checked-in GitHub runner', () => {
           }
         });
       }
+      if (url.endsWith('/executor/artifacts/allocate')) {
+        expect(new Headers(init?.headers).get('Authorization')).toBe('Bearer lease-token');
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        expect(body).toMatchObject({
+          name: 'archive.md',
+          mediaType: 'text/markdown',
+          size: 7
+        });
+        expect(body.sha256).toMatch(/^[a-f0-9]{64}$/);
+        return Response.json({
+          artifactId: 'artifact_123',
+          uploadUrl: 'https://acct.r2.cloudflarestorage.com/bucket/object?signed=1',
+          requiredHeaders: {
+            'Content-Type': 'text/markdown',
+            'x-amz-meta-artifact-id': 'artifact_123',
+            'x-amz-meta-sha256': body.sha256
+          },
+          expiresInSeconds: 300
+        });
+      }
+      if (url.startsWith('https://acct.r2.cloudflarestorage.com/')) {
+        expect(init?.method).toBe('PUT');
+        const headers = new Headers(init?.headers);
+        expect(headers.get('Content-Type')).toBe('text/markdown');
+        expect(headers.get('x-amz-meta-artifact-id')).toBe('artifact_123');
+        expect(init?.body).toBeInstanceOf(Uint8Array);
+        return new Response(null, { status: 200 });
+      }
       if (url.endsWith('/executor/callback')) {
         expect(new Headers(init?.headers).get('Authorization')).toBe('Bearer lease-token');
         const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
@@ -125,6 +153,16 @@ describe('checked-in GitHub runner', () => {
         });
         const result = body.result as Record<string, unknown>;
         expect(result.state).toBe('succeeded');
+        const output = result.output as Record<string, unknown>;
+        expect(output.artifact).toMatchObject({
+          artifactId: 'artifact_123',
+          name: 'archive.md',
+          mediaType: 'text/markdown',
+          size: 7,
+          sourceUrl: 'https://example.com/'
+        });
+        expect(JSON.stringify(body)).not.toContain('# hello');
+        expect(JSON.stringify(body)).not.toContain('localPath');
         return Response.json({ inserted: true, notified: true }, { status: 202 });
       }
       throw new Error(`unexpected request ${url}`);
@@ -150,6 +188,8 @@ describe('checked-in GitHub runner', () => {
       'https://oidc.example/token?audience=workflow-mcp-worker',
       'https://workflow.example/executor/claim',
       'https://workflow.example/executor/manifest',
+      'https://workflow.example/executor/artifacts/allocate',
+      'https://acct.r2.cloudflarestorage.com/bucket/object?signed=1',
       'https://workflow.example/executor/callback'
     ]);
   });
