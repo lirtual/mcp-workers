@@ -46,6 +46,7 @@ export interface StoredRun {
   createdAt: string;
   startedAt?: string;
   endedAt?: string;
+  cancelRequestedAt?: string;
 }
 
 export interface StoredDefinition {
@@ -292,7 +293,8 @@ export class D1WorkflowStore {
     const row = await this.db
       .prepare(
         `SELECT run_id, workflow_id, definition_digest, input_json, trigger_json, state,
-                output_json, error_code, error_summary, created_at, started_at, ended_at
+                output_json, error_code, error_summary, created_at, started_at, ended_at,
+                cancel_requested_at
          FROM workflow_runs WHERE run_id = ?`
       )
       .bind(runId)
@@ -311,7 +313,8 @@ export class D1WorkflowStore {
       ...(row.error_summary ? { errorSummary: row.error_summary } : {}),
       createdAt: String(row.created_at),
       ...(row.started_at ? { startedAt: row.started_at } : {}),
-      ...(row.ended_at ? { endedAt: row.ended_at } : {})
+      ...(row.ended_at ? { endedAt: row.ended_at } : {}),
+      ...(row.cancel_requested_at ? { cancelRequestedAt: row.cancel_requested_at } : {})
     };
   }
 
@@ -455,7 +458,7 @@ export class D1WorkflowStore {
     stepRunId: string;
     stepId: string;
     attemptId: string;
-    state: 'succeeded' | 'failed' | 'timed_out' | 'indeterminate';
+    state: 'succeeded' | 'failed' | 'cancelled' | 'timed_out' | 'indeterminate';
     output?: Record<string, unknown>;
     errorCode?: string;
     errorSummary?: string;
@@ -467,7 +470,7 @@ export class D1WorkflowStore {
         `UPDATE step_attempts
          SET state = ?, terminal_result_json = ?, error_code = ?, error_summary = ?,
              dependency_snapshot_json = ?, ended_at = ?
-         WHERE attempt_id = ? AND state IN ('queued', 'claimed', 'running')`
+         WHERE attempt_id = ? AND state IN ('queued', 'claimed', 'running', 'cancel_requested')`
       )
       .bind(
         input.state,
@@ -497,7 +500,7 @@ export class D1WorkflowStore {
     runId: string;
     stepRunId: string;
     stepId: string;
-    state: 'succeeded' | 'failed' | 'timed_out' | 'indeterminate';
+    state: 'succeeded' | 'failed' | 'cancelled' | 'timed_out' | 'indeterminate';
     output?: Record<string, unknown>;
     errorCode?: string;
     errorSummary?: string;
@@ -507,7 +510,7 @@ export class D1WorkflowStore {
       .prepare(
         `UPDATE step_runs
          SET state = ?, output_json = ?, error_code = ?, error_summary = ?, ended_at = ?
-         WHERE step_run_id = ? AND state IN ('pending', 'running')`
+         WHERE step_run_id = ? AND state IN ('pending', 'running', 'cancelled')`
       )
       .bind(
         input.state,
@@ -533,7 +536,7 @@ export class D1WorkflowStore {
 
   async finishRun(input: {
     runId: string;
-    state: 'succeeded' | 'failed' | 'timed_out' | 'indeterminate';
+    state: 'succeeded' | 'failed' | 'cancelled' | 'timed_out' | 'indeterminate';
     output: Record<string, unknown>;
     errorCode?: string;
     errorSummary?: string;
@@ -543,7 +546,7 @@ export class D1WorkflowStore {
       .prepare(
         `UPDATE workflow_runs
          SET state = ?, output_json = ?, error_code = ?, error_summary = ?, ended_at = ?
-         WHERE run_id = ? AND state IN ('queued', 'running', 'waiting')`
+         WHERE run_id = ? AND state IN ('queued', 'running', 'waiting', 'cancel_requested')`
       )
       .bind(
         input.state,
@@ -561,6 +564,90 @@ export class D1WorkflowStore {
         input.errorCode ? { code: input.errorCode } : {}
       );
     }
+  }
+
+  async requestRunCancellation(runId: string): Promise<StoredRun | null> {
+    const requestedAt = nowIso();
+    const result = await this.db
+      .prepare(
+        `UPDATE workflow_runs
+         SET state = 'cancel_requested',
+             cancel_requested_at = COALESCE(cancel_requested_at, ?)
+         WHERE run_id = ?
+           AND state IN ('queued', 'running', 'waiting')
+           AND cancel_requested_at IS NULL`
+      )
+      .bind(requestedAt, runId)
+      .run();
+
+    if ((result.meta.changes ?? 0) === 1) {
+      await this.appendEvent(runId, 'run.cancel_requested', {});
+    }
+    return this.getRun(runId);
+  }
+
+  async listActiveRemoteAttemptsForRun(runId: string): Promise<RemoteAttemptRecord[]> {
+    const result = await this.db
+      .prepare(
+        `SELECT sa.attempt_id
+         FROM step_attempts sa
+         JOIN step_runs sr ON sr.step_run_id = sa.step_run_id
+         WHERE sr.run_id = ?
+           AND sa.executor_type = 'github'
+           AND sa.state IN ('queued', 'claimed', 'running', 'cancel_requested')
+         ORDER BY sa.created_at ASC, sa.attempt_number ASC`
+      )
+      .bind(runId)
+      .all<{ attempt_id: string }>();
+
+    const attempts: RemoteAttemptRecord[] = [];
+    for (const row of result.results) {
+      const attempt = await this.getRemoteAttempt(row.attempt_id);
+      if (attempt) attempts.push(attempt);
+    }
+    return attempts;
+  }
+
+  async markRemoteAttemptCancelRequested(attemptId: string): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE step_attempts
+         SET state = CASE
+           WHEN state IN ('claimed', 'running') THEN 'cancel_requested'
+           ELSE state
+         END
+         WHERE attempt_id = ?
+           AND executor_type = 'github'
+           AND state IN ('queued', 'claimed', 'running', 'cancel_requested')`
+      )
+      .bind(attemptId)
+      .run();
+    return (result.meta.changes ?? 0) === 1;
+  }
+
+  async listCancellationWakeAttempts(limit: number): Promise<RemoteAttemptRecord[]> {
+    const result = await this.db
+      .prepare(
+        `SELECT sa.attempt_id
+         FROM step_attempts sa
+         JOIN step_runs sr ON sr.step_run_id = sa.step_run_id
+         JOIN workflow_runs wr ON wr.run_id = sr.run_id
+         WHERE wr.state = 'cancel_requested'
+           AND wr.cancel_requested_at IS NOT NULL
+           AND sa.executor_type = 'github'
+           AND sa.state IN ('queued', 'claimed', 'running', 'cancel_requested')
+         ORDER BY wr.cancel_requested_at ASC, sa.created_at ASC
+         LIMIT ?`
+      )
+      .bind(limit)
+      .all<{ attempt_id: string }>();
+
+    const attempts: RemoteAttemptRecord[] = [];
+    for (const row of result.results) {
+      const attempt = await this.getRemoteAttempt(row.attempt_id);
+      if (attempt) attempts.push(attempt);
+    }
+    return attempts;
   }
 
   async getStepRunPolicy(stepRunId: string): Promise<Record<string, unknown> | null> {
