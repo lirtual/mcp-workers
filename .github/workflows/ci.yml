@@ -61,6 +61,7 @@ jobs:
             openlist-mcp-worker
             raindrop-mcp-worker
             weread-mcp-worker
+            workflow-mcp-worker
           )
 
           check_all=false
