@@ -130,6 +130,8 @@ export interface SendMessageOptions {
   bcc: SendRecipient[];
   subject: string;
   bodyText: string;
+  inReplyTo?: string;
+  references?: string;
 }
 
 export interface SendMessageResult {
