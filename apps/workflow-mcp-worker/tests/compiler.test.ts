@@ -18,7 +18,7 @@ steps:
   fetch:
     uses: http.read
     with:
-      url: "\${{ input.url }}"
+      url: "${{ input.url }}"
 outputs:
   body: "\${{ steps.fetch.outputs.body }}"
 `;
