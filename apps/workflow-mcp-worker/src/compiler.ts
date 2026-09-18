@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { parse as parseYaml } from 'yaml';
 import * as z from 'zod/v4';
+import { getCapabilityDescriptor } from './capabilities.js';
 
 const IDENTIFIER = /^[A-Za-z][A-Za-z0-9_-]{0,127}$/;
 const CAPABILITY_NAME = /^[A-Za-z][A-Za-z0-9_.-]{0,127}$/;
@@ -75,24 +76,6 @@ interface Token {
   type: 'identifier' | 'number' | 'string' | 'op' | 'lparen' | 'rparen' | 'dot' | 'eof';
   value: string;
 }
-
-const capabilityContracts = {
-  'http.read': {
-    allowedInputs: new Set(['url']),
-    maxAttempts: 3,
-    executor: 'cloudflare'
-  },
-  'mcp.call': {
-    allowedInputs: new Set(['connection', 'tool', 'arguments']),
-    maxAttempts: 1,
-    executor: 'cloudflare'
-  },
-  'github.archive_markdown': {
-    allowedInputs: new Set(['content', 'source_url']),
-    maxAttempts: 1,
-    executor: 'github'
-  }
-} as const;
 
 const staticConnections = new Set(['smoke-readonly']);
 
@@ -418,7 +401,7 @@ function normalizeWorkflow(raw: RawWorkflowDefinition): unknown {
   const normalizedSteps: Record<string, unknown> = {};
 
   for (const [stepId, step] of Object.entries(raw.steps)) {
-    const contract = capabilityContracts[step.uses as keyof typeof capabilityContracts];
+    const contract = getCapabilityDescriptor(step.uses);
     if (!contract) fail(`Unknown capability "${step.uses}" in step "${stepId}".`);
 
     const needs = step.needs === undefined ? [] : typeof step.needs === 'string' ? [step.needs] : step.needs;
@@ -443,8 +426,8 @@ function normalizeWorkflow(raw: RawWorkflowDefinition): unknown {
     }
 
     const retryMaxAttempts = step.retry?.maxAttempts;
-    if (retryMaxAttempts !== undefined && retryMaxAttempts > contract.maxAttempts) {
-      fail(`Step "${stepId}" requests ${retryMaxAttempts} attempts but capability "${step.uses}" permits at most ${contract.maxAttempts}.`);
+    if (retryMaxAttempts !== undefined && retryMaxAttempts > contract.maxAutomaticAttempts) {
+      fail(`Step "${stepId}" requests ${retryMaxAttempts} attempts but capability "${step.uses}" permits at most ${contract.maxAutomaticAttempts}.`);
     }
 
     const expressionContext = { inputNames, stepNames };
