@@ -3,6 +3,7 @@ import { parse as parseYaml } from 'yaml';
 import * as z from 'zod/v4';
 
 const IDENTIFIER = /^[A-Za-z][A-Za-z0-9_-]{0,127}$/;
+const CAPABILITY_NAME = /^[A-Za-z][A-Za-z0-9_.-]{0,127}$/;
 const MAX_PLAN_BYTES = 256 * 1024;
 
 const inputDefinitionSchema = z
@@ -34,7 +35,7 @@ const retrySchema = z.object({ maxAttempts: z.number().int().min(1).max(10) }).s
 
 const stepDefinitionSchema = z
   .object({
-    uses: z.string().regex(IDENTIFIER),
+    uses: z.string().regex(CAPABILITY_NAME),
     needs: z.union([z.string().regex(IDENTIFIER), z.array(z.string().regex(IDENTIFIER)).max(64)]).optional(),
     if: z.string().min(1).max(4096).optional(),
     with: z.record(z.string(), z.unknown()).optional(),
