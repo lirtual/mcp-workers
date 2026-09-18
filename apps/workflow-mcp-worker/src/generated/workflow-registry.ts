@@ -125,6 +125,68 @@ export const workflowRegistry = [
     }
   },
   {
+    "sourcePath": "workflows/trigger-http-smoke.yaml",
+    "definitionDigest": "3fa645f75b39ef7c67109a6c91d7fff0ec672e6062e6265cf7874cc4498bb533",
+    "metadata": {
+      "id": "trigger-http-smoke",
+      "name": "Trigger HTTP smoke",
+      "description": "Exercise webhook and schedule admission through the same local workflow runtime.",
+      "definitionDigest": "3fa645f75b39ef7c67109a6c91d7fff0ec672e6062e6265cf7874cc4498bb533",
+      "triggerTypes": [
+        "webhook",
+        "schedule"
+      ],
+      "inputs": {},
+      "stepCapabilities": [
+        "http.read"
+      ]
+    },
+    "plan": {
+      "dslVersion": 1,
+      "id": "trigger-http-smoke",
+      "name": "Trigger HTTP smoke",
+      "description": "Exercise webhook and schedule admission through the same local workflow runtime.",
+      "inputs": {},
+      "triggers": [
+        {
+          "type": "webhook",
+          "id": "inbound",
+          "secret": "TRIGGER_SMOKE_WEBHOOK_TOKEN"
+        },
+        {
+          "type": "schedule",
+          "id": "every-five",
+          "cron": "*/5 * * * *",
+          "timezone": "UTC",
+          "misfire": "latest"
+        }
+      ],
+      "steps": {
+        "fetch": {
+          "uses": "http.read",
+          "executor": "cloudflare",
+          "needs": [],
+          "with": {
+            "url": "https://example.com/"
+          }
+        }
+      },
+      "outputs": {
+        "body": {
+          "$expr": {
+            "kind": "ref",
+            "path": [
+              "steps",
+              "fetch",
+              "outputs",
+              "body"
+            ]
+          }
+        }
+      }
+    }
+  },
+  {
     "sourcePath": "workflows/web-archive-smoke.yaml",
     "definitionDigest": "6077af97d0ad7d08e3bc01f47bab4667b55b63263d9834e0ebef145c5a8fcc40",
     "metadata": {
