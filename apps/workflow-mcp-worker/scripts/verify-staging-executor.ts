@@ -6,8 +6,9 @@ const evidencePath = required('STAGING_EVIDENCE_PATH');
 const config = required('WORKFLOW_MCP_WRANGLER_CONFIG');
 const repository = required('GITHUB_REPOSITORY');
 const token = required('GITHUB_TOKEN');
-const evidence = JSON.parse(await readFile(evidencePath, 'utf8')) as Record<string, any>;
-const heavyRunId = evidence.heavy?.runId;
+const evidence = asObject(JSON.parse(await readFile(evidencePath, 'utf8')));
+const heavy = asObject(evidence.heavy);
+const heavyRunId = heavy.runId;
 if (typeof heavyRunId !== 'string') throw new Error('Evidence is missing heavy.runId.');
 if (!/^run_[A-Za-z0-9_-]+$/.test(heavyRunId)) throw new Error('Heavy run ID has an unexpected format.');
 
@@ -86,11 +87,11 @@ function extractRows(value: unknown): Array<Record<string, unknown>> {
   return [];
 }
 
-function asObject(value: unknown): Record<string, any> {
+function asObject(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('Expected object.');
   }
-  return value as Record<string, any>;
+  return value as Record<string, unknown>;
 }
 
 function required(name: string): string {
