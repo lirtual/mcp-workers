@@ -1,0 +1,70 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "workflow-mcp-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-18",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "workers_dev": true,
+  "preview_urls": false,
+  "keep_vars": true,
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "invocation_logs": true,
+      "head_sampling_rate": 1
+    }
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "workflow-mcp",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "workflows": [
+    {
+      "name": "workflow-mcp-runtime",
+      "binding": "WORKFLOW",
+      "class_name": "WorkflowRuntime"
+    }
+  ],
+  "triggers": {
+    "crons": [
+      "* * * * *"
+    ]
+  },
+  "vars": {
+    "GITHUB_OIDC_ISSUER": "https://token.actions.githubusercontent.com",
+    "GITHUB_OIDC_AUDIENCE": "workflow-mcp-worker",
+    "GITHUB_OIDC_JWKS_URL": "https://token.actions.githubusercontent.com/.well-known/jwks",
+    "GITHUB_REPOSITORY": "lirtual/mcp-workers",
+    "GITHUB_REPOSITORY_ID": "1371085786",
+    "GITHUB_EXECUTOR_REF": "main",
+    "GITHUB_EXECUTOR_WORKFLOW": "workflow-executor.yml",
+    "R2_BUCKET_NAME": "workflow-mcp-artifacts"
+  },
+  "secrets": {
+    "required": [
+      "MCP_ACCESS_TOKEN",
+      "TRIGGER_SMOKE_WEBHOOK_TOKEN",
+      "EXECUTOR_LEASE_SECRET",
+      "GITHUB_ACTIONS_TOKEN",
+      "R2_ACCOUNT_ID",
+      "R2_ACCESS_KEY_ID",
+      "R2_SECRET_ACCESS_KEY",
+      "SMOKE_READONLY_MCP_TOKEN"
+    ]
+  },
+  "r2_buckets": [
+    {
+      "binding": "ARTIFACTS",
+      "bucket_name": "workflow-mcp-artifacts"
+    }
+  ],
+  "version_metadata": {
+    "binding": "CF_VERSION_METADATA"
+  }
+}

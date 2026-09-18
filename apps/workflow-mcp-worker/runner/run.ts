@@ -1,0 +1,284 @@
+import { createHash } from 'node:crypto';
+import { readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+interface RunnerManifest {
+  version: 1;
+  runId: string;
+  stepRunId: string;
+  attemptId: string;
+  operationId: string;
+  capability: string;
+  input: Record<string, unknown>;
+  timeoutMs?: number;
+}
+
+interface RunnerEnv {
+  ATTEMPT_ID?: string;
+  CLAIM_NONCE?: string;
+  WORKFLOW_MCP_URL?: string;
+  WORKFLOW_MCP_OIDC_AUDIENCE?: string;
+  ACTIONS_ID_TOKEN_REQUEST_URL?: string;
+  ACTIONS_ID_TOKEN_REQUEST_TOKEN?: string;
+  GITHUB_RUN_ID?: string;
+  GITHUB_RUN_ATTEMPT?: string;
+  RUNNER_TEMP?: string;
+}
+
+export async function runExecutor(
+  env: RunnerEnv = process.env,
+  fetchImpl: typeof fetch = fetch
+): Promise<{ claimed: boolean }> {
+  const attemptId = required(env.ATTEMPT_ID, 'ATTEMPT_ID');
+  const claimNonce = required(env.CLAIM_NONCE, 'CLAIM_NONCE');
+  const baseUrl = required(env.WORKFLOW_MCP_URL, 'WORKFLOW_MCP_URL').replace(/\/+$/, '');
+  const audience = env.WORKFLOW_MCP_OIDC_AUDIENCE || 'workflow-mcp-worker';
+  const oidcToken = await requestOidcToken(env, audience, fetchImpl);
+
+  const claimResponse = await fetchImpl(`${baseUrl}/executor/claim`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${oidcToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ attemptId, claimNonce })
+  });
+
+  if (claimResponse.status === 409) {
+    const body = await safeJson(claimResponse);
+    const code = readErrorCode(body);
+    if (code === 'ATTEMPT_CLAIM_REJECTED' || code === 'RUN_NOT_CLAIMABLE') {
+      console.log(`Candidate Job did not win Claim (${code}); exiting without business work.`);
+      return { claimed: false };
+    }
+  }
+  if (!claimResponse.ok) {
+    throw new Error(`Claim failed with status ${claimResponse.status}.`);
+  }
+
+  const claim = (await claimResponse.json()) as { lease?: string };
+  const lease = required(claim.lease, 'claim lease');
+
+  const manifestResponse = await fetchImpl(`${baseUrl}/executor/manifest`, {
+    headers: { Authorization: `Bearer ${lease}` }
+  });
+  if (!manifestResponse.ok) {
+    throw new Error(`Manifest fetch failed with status ${manifestResponse.status}.`);
+  }
+  const manifestEnvelope = (await manifestResponse.json()) as { manifest?: RunnerManifest };
+  if (!manifestEnvelope.manifest) throw new Error('Manifest response is missing manifest.');
+  const manifest = manifestEnvelope.manifest;
+  if (manifest.attemptId !== attemptId) throw new Error('Manifest Attempt does not match dispatch input.');
+
+  let result: Record<string, unknown>;
+  try {
+    const output = await executeRegisteredCapability(manifest, env);
+    const uploadedOutput = await uploadRegisteredArtifacts(
+      baseUrl,
+      lease,
+      output,
+      fetchImpl
+    );
+    result = { state: 'succeeded', output: uploadedOutput };
+  } catch (error) {
+    result = {
+      state: 'failed',
+      errorCode: 'RUNNER_CAPABILITY_FAILED',
+      errorSummary: safeMessage(error)
+    };
+  }
+
+  const callbackId = [
+    'result',
+    attemptId,
+    env.GITHUB_RUN_ID || 'unknown-run',
+    env.GITHUB_RUN_ATTEMPT || '1'
+  ].join(':');
+  const callbackResponse = await fetchImpl(`${baseUrl}/executor/callback`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${lease}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      callbackId,
+      kind: 'result',
+      result
+    })
+  });
+  if (!callbackResponse.ok) {
+    throw new Error(`Result callback failed with status ${callbackResponse.status}.`);
+  }
+
+  if (result.state !== 'succeeded') {
+    throw new Error(String(result.errorSummary ?? 'Registered capability failed.'));
+  }
+  return { claimed: true };
+}
+
+export async function executeRegisteredCapability(
+  manifest: RunnerManifest,
+  env: RunnerEnv = process.env
+): Promise<Record<string, unknown>> {
+  if (manifest.capability !== 'github.archive_markdown') {
+    throw new Error(`Unregistered GitHub capability "${manifest.capability}".`);
+  }
+  const content = manifest.input.content;
+  const sourceUrl = manifest.input.source_url;
+  if (typeof content !== 'string' || typeof sourceUrl !== 'string') {
+    throw new Error('github.archive_markdown requires string content and source_url.');
+  }
+
+  const bytes = new TextEncoder().encode(content);
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  const tempDir = env.RUNNER_TEMP || process.cwd();
+  await writeFile(join(tempDir, 'archive.md'), content, 'utf8');
+
+  return {
+    artifact: {
+      name: 'archive.md',
+      mediaType: 'text/markdown',
+      size: bytes.byteLength,
+      sha256,
+      sourceUrl,
+      localPath: join(tempDir, 'archive.md')
+    }
+  };
+}
+
+export async function uploadRegisteredArtifacts(
+  baseUrl: string,
+  lease: string,
+  output: Record<string, unknown>,
+  fetchImpl: typeof fetch = fetch
+): Promise<Record<string, unknown>> {
+  const artifact = objectField(output, 'artifact');
+  const name = stringField(artifact, 'name');
+  const mediaType = stringField(artifact, 'mediaType');
+  const sha256 = stringField(artifact, 'sha256');
+  const sourceUrl = stringField(artifact, 'sourceUrl');
+  const localPath = stringField(artifact, 'localPath');
+  const size = numberField(artifact, 'size');
+
+  const allocationResponse = await fetchImpl(
+    `${baseUrl}/executor/artifacts/allocate`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${lease}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ name, mediaType, size, sha256 })
+    }
+  );
+  if (!allocationResponse.ok) {
+    throw new Error(`Artifact allocation failed with status ${allocationResponse.status}.`);
+  }
+
+  const allocation = (await allocationResponse.json()) as {
+    artifactId?: string;
+    uploadUrl?: string;
+    requiredHeaders?: Record<string, string>;
+  };
+  const artifactId = required(allocation.artifactId, 'artifact allocation id');
+  const uploadUrl = required(allocation.uploadUrl, 'artifact upload URL');
+  const bytes = await readFile(localPath);
+  if (bytes.byteLength !== size) {
+    throw new Error('Local Artifact size changed after allocation metadata was computed.');
+  }
+
+  const uploadResponse = await fetchImpl(uploadUrl, {
+    method: 'PUT',
+    headers: allocation.requiredHeaders ?? {},
+    body: bytes
+  });
+  if (!uploadResponse.ok) {
+    throw new Error(`Direct R2 Artifact upload failed with status ${uploadResponse.status}.`);
+  }
+
+  return {
+    artifact: {
+      artifactId,
+      name,
+      mediaType,
+      size,
+      sha256,
+      sourceUrl
+    }
+  };
+}
+
+function objectField(value: Record<string, unknown>, key: string): Record<string, unknown> {
+  const field = value[key];
+  if (!field || typeof field !== 'object' || Array.isArray(field)) {
+    throw new Error(`Runner field "${key}" must be an object.`);
+  }
+  return field as Record<string, unknown>;
+}
+
+function stringField(value: Record<string, unknown>, key: string): string {
+  const field = value[key];
+  if (typeof field !== 'string' || field.length === 0) {
+    throw new Error(`Runner field "${key}" must be a non-empty string.`);
+  }
+  return field;
+}
+
+function numberField(value: Record<string, unknown>, key: string): number {
+  const field = value[key];
+  if (typeof field !== 'number' || !Number.isInteger(field) || field < 0) {
+    throw new Error(`Runner field "${key}" must be a non-negative integer.`);
+  }
+  return field;
+}
+
+async function requestOidcToken(
+  env: RunnerEnv,
+  audience: string,
+  fetchImpl: typeof fetch
+): Promise<string> {
+  const requestUrl = required(env.ACTIONS_ID_TOKEN_REQUEST_URL, 'ACTIONS_ID_TOKEN_REQUEST_URL');
+  const requestToken = required(env.ACTIONS_ID_TOKEN_REQUEST_TOKEN, 'ACTIONS_ID_TOKEN_REQUEST_TOKEN');
+  const separator = requestUrl.includes('?') ? '&' : '?';
+  const response = await fetchImpl(
+    `${requestUrl}${separator}audience=${encodeURIComponent(audience)}`,
+    { headers: { Authorization: `Bearer ${requestToken}` } }
+  );
+  if (!response.ok) throw new Error(`OIDC token request failed with status ${response.status}.`);
+  const body = (await response.json()) as { value?: string };
+  return required(body.value, 'OIDC token value');
+}
+
+async function safeJson(response: Response): Promise<unknown> {
+  try {
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+
+function readErrorCode(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const error = (value as Record<string, unknown>).error;
+  if (!error || typeof error !== 'object' || Array.isArray(error)) return undefined;
+  const code = (error as Record<string, unknown>).code;
+  return typeof code === 'string' ? code : undefined;
+}
+
+function required(value: string | undefined, name: string): string {
+  if (!value) throw new Error(`${name} is not configured.`);
+  return value;
+}
+
+function safeMessage(error: unknown): string {
+  return (error instanceof Error ? error.message : 'Unknown runner error.').slice(0, 500);
+}
+
+const invokedPath = process.argv[1] ? pathToFileURL(process.argv[1]).href : '';
+if (import.meta.url === invokedPath) {
+  runExecutor().catch(error => {
+    console.error(safeMessage(error));
+    process.exitCode = 1;
+  });
+}

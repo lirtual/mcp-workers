@@ -1,0 +1,39 @@
+name: Workflow MCP Staging Executor
+
+on:
+  workflow_dispatch:
+    inputs:
+      attempt_id:
+        description: Registered Workflow MCP Attempt ID
+        required: true
+        type: string
+      claim_nonce:
+        description: Attempt-scoped Claim nonce
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  execute:
+    environment: workflow-mcp-staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ATTEMPT_ID: ${{ inputs.attempt_id }}
+      CLAIM_NONCE: ${{ inputs.claim_nonce }}
+      WORKFLOW_MCP_URL: ${{ vars.WORKFLOW_MCP_STAGING_URL }}
+      WORKFLOW_MCP_OIDC_AUDIENCE: workflow-mcp-worker
+    steps:
+      - name: Checkout registered runner
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Execute registered capability
+        run: node apps/workflow-mcp-worker/runner/run.ts
