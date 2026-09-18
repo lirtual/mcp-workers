@@ -24,7 +24,7 @@ const descriptors = {
     allowedInputs: new Set(['connection', 'tool', 'arguments']),
     executor: 'cloudflare',
     effect: 'unknown',
-    maxAutomaticAttempts: 1,
+    maxAutomaticAttempts: 3,
     defaultAutomaticAttempts: 1
   },
   'github.archive_markdown': {
