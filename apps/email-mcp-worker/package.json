@@ -16,7 +16,8 @@
   "dependencies": {
     "@mcp-workers/portal-auth": "workspace:*",
     "@modelcontextprotocol/server": "2.0.0",
-    "zod": "^4.2.0"
+    "zod": "^4.2.0",
+    "imapflow": "^2.0.5"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260911.1",
