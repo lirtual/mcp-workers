@@ -1,0 +1,28 @@
+{
+  "name": "email-mcp-worker-runtime-prototype",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "THROWAWAY Cloudflare Workers IMAP/SMTP runtime probe",
+  "packageManager": "pnpm@10.17.1",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "deploy:dry-run": "wrangler deploy --dry-run",
+    "typecheck": "tsc --noEmit",
+    "check": "pnpm run typecheck && pnpm run deploy:dry-run"
+  },
+  "dependencies": {
+    "imapflow": "^1.6.6",
+    "nodemailer": "^9.0.5"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260911.1",
+    "@types/nodemailer": "^8.0.1",
+    "typescript": "^6.0.0",
+    "wrangler": "4.130.0"
+  }
+}
