@@ -158,6 +158,8 @@ export function registerWorkflowTools(server: ToolRegistrar, env?: Env): void {
           definitionDigest: run.definitionDigest,
           state: run.state,
           createdAt: run.createdAt,
+          ...(run.engineVersion ? { engineVersion: run.engineVersion } : {}),
+          ...(run.cfWorkflowVersionId ? { cfWorkflowVersionId: run.cfWorkflowVersionId } : {}),
           ...(run.startedAt ? { startedAt: run.startedAt } : {}),
           ...(run.endedAt ? { endedAt: run.endedAt } : {}),
           ...(run.errorCode ? { errorCode: run.errorCode, errorSummary: run.errorSummary } : {}),
