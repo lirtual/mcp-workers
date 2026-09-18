@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
 import { admitManualWorkflow, PublicWorkflowError } from './admission.js';
+import { artifactReadReferences } from './artifacts.js';
 import { findWorkflow, getWorkflowRegistry } from './registry.js';
 import { D1WorkflowStore } from './storage.js';
 import type { Env } from './types.js';
@@ -174,15 +175,17 @@ export function registerWorkflowTools(server: ToolRegistrar, env?: Env): void {
     async rawArgs =>
       runSafely(async () => {
         const { runId } = z.object({ runId: runIdSchema }).parse(rawArgs);
-        const store = new D1WorkflowStore(requiredEnv(env).DB);
+        const runtime = requiredEnv(env);
+        const store = new D1WorkflowStore(runtime.DB);
         const run = await store.getRun(runId);
         if (!run) return failure('RUN_NOT_FOUND', 'Workflow run was not found.');
         const ready = terminalStates.has(run.state);
+        const artifacts = ready ? await artifactReadReferences(runtime, runId, { store }) : [];
         return success({
           runId,
           ready,
           state: run.state,
-          ...(ready ? { outputs: run.output ?? {}, artifacts: [] } : {}),
+          ...(ready ? { outputs: run.output ?? {}, artifacts } : {}),
           ...(run.errorCode ? { errorCode: run.errorCode, errorSummary: run.errorSummary } : {})
         });
       })
