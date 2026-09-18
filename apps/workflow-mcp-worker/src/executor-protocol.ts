@@ -8,6 +8,7 @@ import {
   D1WorkflowStore,
   type CallbackInboxInput,
   type CallbackInboxInsertResult,
+  type ExecutorDispatchFact,
   type RemoteAttemptRecord,
   type RemoteAttemptRegistration,
   type RemoteClaimInput
@@ -20,6 +21,7 @@ const CALLBACK_RETRY_MS = 30 * 1000;
 export interface ExecutorProtocolStore {
   registerRemoteAttempt(input: RemoteAttemptRegistration): Promise<void>;
   getRemoteAttempt(attemptId: string): Promise<RemoteAttemptRecord | null>;
+  listExecutorDispatches(attemptId: string): Promise<ExecutorDispatchFact[]>;
   claimRemoteAttempt(input: RemoteClaimInput): Promise<boolean>;
   insertCallbackInbox(input: CallbackInboxInput): Promise<CallbackInboxInsertResult>;
   markCallbackNotified(callbackId: string): Promise<void>;
@@ -133,6 +135,9 @@ export async function claimRemoteAttempt(
   }
 
   assertCandidateMatchesRegistration(identity, registered);
+  const dispatchFacts = await store.listExecutorDispatches(input.attemptId);
+  assertCandidateMatchesDispatchFacts(identity, dispatchFacts);
+
   const claimNonceHash = await sha256Hex(input.claimNonce);
   const claimOwner = `github:${identity.runId}:${identity.runAttempt}`;
   const claimed = await store.claimRemoteAttempt({
@@ -205,20 +210,22 @@ export async function acceptExecutorCallback(
   );
   const store = options.store ?? new D1WorkflowStore(env.DB);
   const attempt = await store.getRemoteAttempt(claims.attemptId);
-  assertLeaseMatchesAttempt(claims, attempt);
+  assertLeasePhysicalBinding(claims, attempt);
 
+  const ignoredReason = staleCallbackReason(attempt);
   const inserted = await store.insertCallbackInbox({
     callbackId: input.callbackId,
     attemptId: claims.attemptId,
     githubRunId: claims.githubRunId,
     githubRunAttempt: claims.githubRunAttempt,
     callbackKind: input.kind,
-    result: input.result
+    result: input.result,
+    ...(ignoredReason ? { ignoredReason } : {})
   });
 
   const eventType = attemptEventType(claims.attemptId);
-  if (!inserted.inserted) {
-    return { inserted: false, notified: false, eventType };
+  if (!inserted.inserted || ignoredReason) {
+    return { inserted: inserted.inserted, notified: false, eventType };
   }
 
   try {
@@ -291,6 +298,71 @@ function assertCandidateMatchesRegistration(
       'GitHub Job identity does not match the registered Attempt trust policy.'
     );
   }
+}
+
+function assertCandidateMatchesDispatchFacts(
+  identity: GitHubJobIdentity,
+  facts: readonly ExecutorDispatchFact[]
+): void {
+  const hasUnknown = facts.some(fact => fact.outcome === 'unknown');
+  if (hasUnknown) return;
+
+  const acceptedRunIds = new Set(
+    facts.flatMap(fact =>
+      fact.outcome === 'accepted' && fact.returnedGitHubRunId
+        ? [fact.returnedGitHubRunId]
+        : []
+    )
+  );
+  if (acceptedRunIds.size > 0 && !acceptedRunIds.has(identity.runId)) {
+    throw new ExecutorProtocolError(
+      403,
+      'EXECUTOR_RUN_MISMATCH',
+      'GitHub Job run ID does not match the known accepted dispatch.'
+    );
+  }
+}
+
+function assertLeasePhysicalBinding(
+  claims: ExecutorLeaseClaims,
+  attempt: RemoteAttemptRecord | null
+): asserts attempt is RemoteAttemptRecord {
+  if (
+    !attempt ||
+    attempt.runId !== claims.runId ||
+    attempt.stepRunId !== claims.stepRunId ||
+    attempt.githubRunId !== claims.githubRunId ||
+    attempt.githubRunAttempt !== claims.githubRunAttempt ||
+    attempt.claimOwner !== `github:${claims.githubRunId}:${claims.githubRunAttempt}`
+  ) {
+    throw new ExecutorProtocolError(
+      403,
+      'LEASE_BINDING_MISMATCH',
+      'Executor lease is not bound to the current Attempt owner.'
+    );
+  }
+}
+
+function staleCallbackReason(attempt: RemoteAttemptRecord): string | undefined {
+  if (
+    attempt.runState === 'succeeded' ||
+    attempt.runState === 'failed' ||
+    attempt.runState === 'cancelled' ||
+    attempt.runState === 'timed_out' ||
+    attempt.runState === 'indeterminate'
+  ) {
+    return `run_${attempt.runState}`;
+  }
+  if (
+    attempt.state === 'succeeded' ||
+    attempt.state === 'failed' ||
+    attempt.state === 'cancelled' ||
+    attempt.state === 'timed_out' ||
+    attempt.state === 'indeterminate'
+  ) {
+    return `attempt_${attempt.state}`;
+  }
+  return undefined;
 }
 
 function assertLeaseMatchesAttempt(
