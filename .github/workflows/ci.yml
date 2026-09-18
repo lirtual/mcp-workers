@@ -81,7 +81,20 @@ jobs:
           if [[ "$check_all" == "true" ]]; then
             selected=("${apps[@]}")
           else
+            workflow_control_plane_changed=false
+            for file in "${changed_files[@]}"; do
+              case "$file" in
+                .github/workflows/workflow-executor.yml|.github/workflows/workflow-executor-staging.yml|.github/workflows/workflow-mcp-staging.yml)
+                  workflow_control_plane_changed=true
+                  ;;
+              esac
+            done
+
             for app in "${apps[@]}"; do
+              if [[ "$app" == "workflow-mcp-worker" && "$workflow_control_plane_changed" == "true" ]]; then
+                selected+=("$app")
+                continue
+              fi
               for file in "${changed_files[@]}"; do
                 if [[ "$file" == "apps/$app/"* ]]; then
                   selected+=("$app")
