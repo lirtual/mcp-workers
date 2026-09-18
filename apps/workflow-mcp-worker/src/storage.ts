@@ -345,6 +345,20 @@ export class D1WorkflowStore {
     }
   }
 
+  async recordAttemptDependencySnapshot(
+    attemptId: string,
+    snapshot: Record<string, unknown>
+  ): Promise<void> {
+    await this.db
+      .prepare(
+        `UPDATE step_attempts
+         SET dependency_snapshot_json = ?
+         WHERE attempt_id = ?`
+      )
+      .bind(JSON.stringify(snapshot), attemptId)
+      .run();
+  }
+
   async recordAttemptResult(input: {
     runId: string;
     stepRunId: string;
