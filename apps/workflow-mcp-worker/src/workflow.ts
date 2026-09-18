@@ -16,6 +16,7 @@ import {
 import type { EffectiveOperationPolicy } from './effective-policy.js';
 import { makeAttemptId, makeStepIdentity } from './identities.js';
 import { asRuntimePlan, resolveRuntimeValue, type RuntimePlan, type RuntimeStep } from './runtime-plan.js';
+import { resolveStepExecutionPolicy } from './step-policy.js';
 import { D1WorkflowStore, type StepSummary } from './storage.js';
 import type { Env, WorkflowRunParams } from './types.js';
 
@@ -71,6 +72,7 @@ export async function executeDagRun(
     const completed = await Promise.all(
       ready.map(stepId =>
         executeReadyStep({
+          env,
           env,
           store,
           durableStep,
@@ -143,14 +145,10 @@ async function executeReadyStep(input: {
 }): Promise<{ stepId: string; state: StepTerminalState; output?: Record<string, unknown> }> {
   const definition = input.plan.steps[input.stepId];
   if (!definition) {
-    return {
-      stepId: input.stepId,
-      state: 'failed'
-    };
+    return { stepId: input.stepId, state: 'failed' };
   }
 
   const identity = await makeStepIdentity(input.runId, input.stepId);
-  const descriptor = getCapabilityDescriptor(definition.uses);
   const dependencyStates = Object.fromEntries(
     definition.needs.map(dependency => [dependency, input.states[dependency] as StepTerminalState])
   );
@@ -160,19 +158,19 @@ async function executeReadyStep(input: {
   });
 
   if (decision.action === 'skip') {
-    const state = decision.skipState ?? 'skipped_condition';
     await input.store.ensureStepRun({
       runId: input.runId,
       stepId: input.stepId,
       stepRunId: identity.stepRunId,
       operationId: identity.operationId,
       effectivePolicy: {
-        effect: descriptor?.effect ?? 'unknown',
-        source: 'capability',
-        maxAutomaticAttempts: descriptor?.maxAutomaticAttempts ?? 1,
-        defaultAutomaticAttempts: descriptor?.defaultAutomaticAttempts ?? 1
+        effect: 'unknown',
+        source: 'conservative_default',
+        maxAutomaticAttempts: 1,
+        defaultAutomaticAttempts: 1
       }
     });
+    const state = decision.skipState ?? 'skipped_condition';
     await input.store.markStepSkipped({
       runId: input.runId,
       stepRunId: identity.stepRunId,
@@ -189,10 +187,10 @@ async function executeReadyStep(input: {
       stepRunId: identity.stepRunId,
       operationId: identity.operationId,
       effectivePolicy: {
-        effect: descriptor?.effect ?? 'unknown',
-        source: 'capability',
-        maxAutomaticAttempts: descriptor?.maxAutomaticAttempts ?? 1,
-        defaultAutomaticAttempts: descriptor?.defaultAutomaticAttempts ?? 1
+        effect: 'unknown',
+        source: 'conservative_default',
+        maxAutomaticAttempts: 1,
+        defaultAutomaticAttempts: 1
       }
     });
     await input.store.finishStep({
@@ -218,8 +216,8 @@ async function executeReadyStep(input: {
       stepRunId: identity.stepRunId,
       operationId: identity.operationId,
       effectivePolicy: {
-        effect: descriptor?.effect ?? 'unknown',
-        source: 'capability',
+        effect: 'unknown',
+        source: 'conservative_default',
         maxAutomaticAttempts: 1,
         defaultAutomaticAttempts: 1
       }
@@ -235,45 +233,34 @@ async function executeReadyStep(input: {
     return { stepId: input.stepId, state: 'failed' };
   }
 
-  let prepared;
-  try {
-    prepared = await prepareCloudflareCapability(
-      input.env,
-      definition.uses,
-      resolved as Record<string, unknown>,
-      definition.retryMaxAttempts
-    );
-  } catch (error) {
-    await input.store.ensureStepRun({
-      runId: input.runId,
-      stepId: input.stepId,
-      stepRunId: identity.stepRunId,
-      operationId: identity.operationId,
-      effectivePolicy: {
-        effect: descriptor?.effect ?? 'unknown',
-        source: 'capability',
-        maxAutomaticAttempts: 1,
-        defaultAutomaticAttempts: 1
-      }
-    });
-    await input.store.finishStep({
-      runId: input.runId,
-      stepRunId: identity.stepRunId,
-      stepId: input.stepId,
-      state: 'failed',
-      errorCode: 'CAPABILITY_PREPARATION_FAILED',
-      errorSummary: safeErrorMessage(error)
-    });
-    return { stepId: input.stepId, state: 'failed' };
-  }
+  const capabilityInput = resolved as Record<string, unknown>;
+  const policyResolution = await resolveStepExecutionPolicy({
+    env: input.env,
+    store: input.store,
+    stepRunId: identity.stepRunId,
+    definition,
+    capabilityInput
+  });
 
   await input.store.ensureStepRun({
     runId: input.runId,
     stepId: input.stepId,
     stepRunId: identity.stepRunId,
     operationId: identity.operationId,
-    effectivePolicy: prepared.policy as unknown as Record<string, unknown>
+    effectivePolicy: policyResolution.policy as unknown as Record<string, unknown>
   });
+
+  if (!policyResolution.ok) {
+    await input.store.finishStep({
+      runId: input.runId,
+      stepRunId: identity.stepRunId,
+      stepId: input.stepId,
+      state: 'failed',
+      errorCode: policyResolution.errorCode,
+      errorSummary: policyResolution.errorSummary
+    });
+    return { stepId: input.stepId, state: 'failed' };
+  }
 
   return runAttempts({
     env: input.env,
@@ -284,10 +271,12 @@ async function executeReadyStep(input: {
     definition,
     stepRunId: identity.stepRunId,
     operationId: identity.operationId,
-    maxAttempts: prepared.maxAttempts,
-    effectivePolicy: prepared.policy,
-    ...(prepared.dependencySnapshot ? { dependencySnapshot: prepared.dependencySnapshot } : {}),
-    capabilityInput: resolved as Record<string, unknown>
+    maxAttempts: policyResolution.maxAttempts,
+    effectivePolicy: policyResolution.policy,
+    ...(policyResolution.dependencySnapshot
+      ? { dependencySnapshot: policyResolution.dependencySnapshot }
+      : {}),
+    capabilityInput
   });
 }
 
@@ -301,7 +290,7 @@ async function runAttempts(input: {
   stepRunId: string;
   operationId: string;
   maxAttempts: number;
-  effectivePolicy: EffectiveOperationPolicy;
+  effectivePolicy: import('./effective-policy.js').EffectiveOperationPolicy;
   dependencySnapshot?: Record<string, unknown>;
   capabilityInput: Readonly<Record<string, unknown>>;
 }): Promise<{ stepId: string; state: StepTerminalState; output?: Record<string, unknown> }> {
@@ -315,9 +304,6 @@ async function runAttempts(input: {
       attemptNumber,
       executorType: input.definition.executor
     });
-    if (input.dependencySnapshot) {
-      await input.store.recordAttemptDependencySnapshot(attemptId, input.dependencySnapshot);
-    }
 
     const result = await executeDurableAttempt(
       input.env,
@@ -325,13 +311,11 @@ async function runAttempts(input: {
       input.stepId,
       attemptNumber,
       input.definition,
-      input.capabilityInput,
       input.operationId,
-      input.effectivePolicy
+      input.effectivePolicy,
+      input.dependencySnapshot,
+      input.capabilityInput
     );
-    if (result.dependencySnapshot) {
-      await input.store.recordAttemptDependencySnapshot(attemptId, result.dependencySnapshot);
-    }
 
     await input.store.recordAttemptResult({
       runId: input.runId,
@@ -342,7 +326,12 @@ async function runAttempts(input: {
       ...(result.state === 'succeeded' ? { output: result.output } : {}),
       ...(result.state === 'succeeded'
         ? {}
-        : { errorCode: result.errorCode, errorSummary: result.errorSummary })
+        : { errorCode: result.errorCode, errorSummary: result.errorSummary }),
+      ...('dependencySnapshot' in result && result.dependencySnapshot
+        ? { dependencySnapshot: result.dependencySnapshot }
+        : input.dependencySnapshot
+          ? { dependencySnapshot: input.dependencySnapshot }
+          : {})
     });
 
     if (result.state === 'succeeded') {
@@ -368,8 +357,7 @@ async function runAttempts(input: {
       return { stepId: input.stepId, state: 'indeterminate' };
     }
 
-    const hasNextAttempt = attemptNumber < input.maxAttempts;
-    if (hasNextAttempt) continue;
+    if (attemptNumber < input.maxAttempts) continue;
 
     await input.store.finishStep({
       runId: input.runId,
@@ -391,9 +379,10 @@ async function executeDurableAttempt(
   stepId: string,
   attemptNumber: number,
   definition: RuntimeStep,
-  capabilityInput: Readonly<Record<string, unknown>>,
   operationId: string,
-  effectivePolicy: EffectiveOperationPolicy
+  effectivePolicy: import('./effective-policy.js').EffectiveOperationPolicy,
+  dependencySnapshot: Record<string, unknown> | undefined,
+  capabilityInput: Readonly<Record<string, unknown>>
 ): Promise<AttemptResult> {
   try {
     const serialized = await durableStep.do(
@@ -408,6 +397,7 @@ async function executeDurableAttempt(
             env,
             operationId,
             effectivePolicy,
+            ...(dependencySnapshot ? { dependencySnapshot } : {}),
             ...(definition.timeoutMs ? { timeoutMs: definition.timeoutMs } : {})
           })
         )
