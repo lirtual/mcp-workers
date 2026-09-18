@@ -14,7 +14,12 @@ export interface Env {
   GITHUB_EXECUTOR_REF?: string;
   GITHUB_EXECUTOR_WORKFLOW?: string;
   GITHUB_EXECUTOR_WORKFLOW_SHA?: string;
+  R2_ACCOUNT_ID?: string;
+  R2_BUCKET_NAME?: string;
+  R2_ACCESS_KEY_ID?: string;
+  R2_SECRET_ACCESS_KEY?: string;
   DB: D1Database;
+  ARTIFACTS: R2Bucket;
   WORKFLOW: Workflow<WorkflowRunParams>;
 }
 
