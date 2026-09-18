@@ -6,12 +6,25 @@ import {
 } from './oidc.js';
 import {
   D1WorkflowStore,
-  type RemoteAttemptRecord
+  type CallbackInboxInput,
+  type CallbackInboxInsertResult,
+  type RemoteAttemptRecord,
+  type RemoteAttemptRegistration,
+  type RemoteClaimInput
 } from './storage.js';
 import type { Env } from './types.js';
 
 const CLAIM_TTL_MS = 15 * 60 * 1000;
 const CALLBACK_RETRY_MS = 30 * 1000;
+
+export interface ExecutorProtocolStore {
+  registerRemoteAttempt(input: RemoteAttemptRegistration): Promise<void>;
+  getRemoteAttempt(attemptId: string): Promise<RemoteAttemptRecord | null>;
+  claimRemoteAttempt(input: RemoteClaimInput): Promise<boolean>;
+  insertCallbackInbox(input: CallbackInboxInput): Promise<CallbackInboxInsertResult>;
+  markCallbackNotified(callbackId: string): Promise<void>;
+  recordCallbackNotificationFailure(callbackId: string, nextNotificationAt: string): Promise<void>;
+}
 
 export interface ExecutionManifest {
   version: 1;
@@ -54,7 +67,7 @@ export interface ClaimResult {
 }
 
 export async function prepareRemoteAttempt(
-  store: D1WorkflowStore,
+  store: ExecutorProtocolStore,
   input: PrepareRemoteAttemptInput
 ): Promise<PreparedRemoteAttempt> {
   validateManifest(input.manifest, input);
@@ -92,6 +105,7 @@ export async function claimRemoteAttempt(
   options: {
     fetchImpl?: typeof fetch;
     nowMs?: number;
+    store?: ExecutorProtocolStore;
   } = {}
 ): Promise<ClaimResult> {
   const config = oidcConfig(env);
@@ -103,7 +117,7 @@ export async function claimRemoteAttempt(
     Math.floor(nowMs / 1000)
   );
 
-  const store = new D1WorkflowStore(env.DB);
+  const store = options.store ?? new D1WorkflowStore(env.DB);
   const registered = await store.getRemoteAttempt(input.attemptId);
   if (!registered) throw new ExecutorProtocolError(404, 'ATTEMPT_NOT_FOUND', 'Registered Attempt was not found.');
 
@@ -151,10 +165,10 @@ export async function claimRemoteAttempt(
 export async function getExecutionManifest(
   env: Env,
   leaseToken: string,
-  nowSeconds?: number
+  options: { nowSeconds?: number; store?: ExecutorProtocolStore } = {}
 ): Promise<ExecutionManifest> {
-  const claims = await verifyLease(env, leaseToken, 'manifest:read', nowSeconds);
-  const store = new D1WorkflowStore(env.DB);
+  const claims = await verifyLease(env, leaseToken, 'manifest:read', options.nowSeconds);
+  const store = options.store ?? new D1WorkflowStore(env.DB);
   const attempt = await store.getRemoteAttempt(claims.attemptId);
   assertLeaseMatchesAttempt(claims, attempt);
   validateStoredManifest(attempt.executionManifest, claims);
@@ -169,7 +183,7 @@ export async function acceptExecutorCallback(
     kind: 'result';
     result: Record<string, unknown>;
   },
-  options: { nowMs?: number } = {}
+  options: { nowMs?: number; store?: ExecutorProtocolStore } = {}
 ): Promise<{ inserted: boolean; notified: boolean; eventType: string }> {
   const nowMs = options.nowMs ?? Date.now();
   const claims = await verifyLease(
@@ -178,7 +192,7 @@ export async function acceptExecutorCallback(
     'callback:write',
     Math.floor(nowMs / 1000)
   );
-  const store = new D1WorkflowStore(env.DB);
+  const store = options.store ?? new D1WorkflowStore(env.DB);
   const attempt = await store.getRemoteAttempt(claims.attemptId);
   assertLeaseMatchesAttempt(claims, attempt);
 
