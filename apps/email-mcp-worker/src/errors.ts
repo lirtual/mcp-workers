@@ -21,10 +21,18 @@ export type EmailErrorCode =
   | "RECIPIENT_LIMIT_EXCEEDED"
   | "UNSUPPORTED_PROVIDER_CAPABILITY";
 
+export interface EmailErrorDetails {
+  provider_code?: string;
+  response_status?: string;
+  response_code?: string;
+  command?: string;
+}
+
 export class EmailToolError extends Error {
   constructor(
     public readonly code: EmailErrorCode,
     message: string,
+    public readonly details?: EmailErrorDetails,
   ) {
     super(message);
     this.name = "EmailToolError";

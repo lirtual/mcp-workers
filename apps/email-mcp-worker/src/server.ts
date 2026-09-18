@@ -113,6 +113,7 @@ function toolFailure(error: EmailToolError) {
     error: {
       code: error.code,
       message: error.message,
+      ...(error.details ? { details: error.details } : {}),
     },
   };
   return {

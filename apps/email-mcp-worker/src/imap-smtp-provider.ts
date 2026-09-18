@@ -470,6 +470,7 @@ export function normalizeImapError(error: unknown): EmailToolError {
           code?: unknown;
           responseStatus?: unknown;
           responseCode?: unknown;
+          command?: unknown;
           authenticationFailed?: unknown;
         })
       : {};
@@ -515,9 +516,30 @@ export function normalizeImapError(error: unknown): EmailToolError {
     );
   }
 
+  const cleanDetail = (value: unknown): string | undefined => {
+    if (typeof value !== "string") return undefined;
+    const cleaned = value
+      .toUpperCase()
+      .replace(/[^A-Z0-9_. -]/g, "")
+      .trim()
+      .slice(0, 64);
+    return cleaned || undefined;
+  };
+  const providerCode = cleanDetail(details.code);
+  const safeStatus = cleanDetail(details.responseStatus);
+  const safeResponseCode = cleanDetail(details.responseCode);
+  const safeCommand = cleanDetail(details.command);
+  const diagnostic = {
+    ...(providerCode ? { provider_code: providerCode } : {}),
+    ...(safeStatus ? { response_status: safeStatus } : {}),
+    ...(safeResponseCode ? { response_code: safeResponseCode } : {}),
+    ...(safeCommand ? { command: safeCommand } : {}),
+  };
+
   return new EmailToolError(
     "UPSTREAM_UNAVAILABLE",
     "Email provider is unavailable.",
+    Object.keys(diagnostic).length > 0 ? diagnostic : undefined,
   );
 }
 
@@ -689,7 +711,6 @@ export class ImapSmtpProvider implements EmailProvider {
           flags: true,
           size: true,
           bodyStructure: true,
-          headers: ["references"],
         },
         { uid: true },
       );
@@ -721,23 +742,43 @@ export class ImapSmtpProvider implements EmailProvider {
           reply_to: [],
         };
       } else {
-        const bodyMessage = await client.fetchOne(
-          reference.uid,
-          {
-            bodyParts: readableBodyPartFetchKeys(readableParts),
-          },
-          { uid: true },
-        );
+        const fetchedBodyParts = new Map<string, Uint8Array>();
+        for (const part of readableParts) {
+          const bodyMessage = await client.fetchOne(
+            reference.uid,
+            {
+              bodyParts: [part.part],
+            },
+            { uid: true },
+          );
+          if (bodyMessage && bodyMessage.bodyParts) {
+            for (const [key, value] of bodyMessage.bodyParts) {
+              fetchedBodyParts.set(key, value);
+            }
+          }
+        }
 
         normalized = await normalizeFetchedBodyParts(
           readableParts,
-          bodyMessage && bodyMessage.bodyParts
-            ? bodyMessage.bodyParts
-            : new Map<string, Uint8Array>(),
+          fetchedBodyParts,
         );
       }
 
-      const references = parseReferencesHeader(metadata.headers);
+      let references: string | undefined;
+      try {
+        const headerMessage = await client.fetchOne(
+          reference.uid,
+          { headers: ["references"] },
+          { uid: true },
+        );
+        references = parseReferencesHeader(
+          headerMessage ? headerMessage.headers : undefined,
+        );
+      } catch {
+        // References are optional for a read. Some IMAP servers reject
+        // HEADER.FIELDS after a body fetch; do not fail email_get for that.
+      }
+
       return {
         message_id: options.messageId,
         folder_id: options.folderId,
