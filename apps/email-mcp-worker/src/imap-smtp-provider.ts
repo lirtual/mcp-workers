@@ -456,9 +456,34 @@ export function normalizeSmtpSendError(
       "Email provider request timed out.",
     );
   }
+  const cleanDetail = (value: unknown): string | undefined => {
+    if (typeof value !== "string") return undefined;
+    const cleaned = value
+      .toUpperCase()
+      .replace(/[^A-Z0-9_. -]/g, "")
+      .trim()
+      .slice(0, 64);
+    return cleaned || undefined;
+  };
+  const diagnostic = {
+    ...(cleanDetail(details.code)
+      ? { provider_code: cleanDetail(details.code) }
+      : {}),
+    ...(cleanDetail(details.responseStatus)
+      ? { response_status: cleanDetail(details.responseStatus) }
+      : {}),
+    ...(cleanDetail(details.responseCode)
+      ? { response_code: cleanDetail(details.responseCode) }
+      : {}),
+    ...("command" in details && cleanDetail((details as { command?: unknown }).command)
+      ? { command: cleanDetail((details as { command?: unknown }).command) }
+      : {}),
+  };
+
   return new EmailToolError(
     "UPSTREAM_UNAVAILABLE",
     "Email provider is unavailable.",
+    Object.keys(diagnostic).length > 0 ? diagnostic : undefined,
   );
 }
 
