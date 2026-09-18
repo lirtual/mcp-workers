@@ -212,7 +212,7 @@ export async function acceptExecutorCallback(
   const attempt = await store.getRemoteAttempt(claims.attemptId);
   assertLeasePhysicalBinding(claims, attempt);
 
-  const ignoredReason = staleCallbackReason(attempt);
+  const ignoredReason = callbackStaleReason(attempt);
   const inserted = await store.insertCallbackInbox({
     callbackId: input.callbackId,
     attemptId: claims.attemptId,
@@ -343,7 +343,7 @@ function assertLeasePhysicalBinding(
   }
 }
 
-function staleCallbackReason(attempt: RemoteAttemptRecord): string | undefined {
+export function callbackStaleReason(attempt: RemoteAttemptRecord): string | undefined {
   if (
     attempt.runState === 'succeeded' ||
     attempt.runState === 'failed' ||
