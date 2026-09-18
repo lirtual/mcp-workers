@@ -82,7 +82,7 @@ jobs:
             workflow_control_plane_changed=false
             for file in "${changed_files[@]}"; do
               case "$file" in
-                .github/workflows/workflow-executor.yml|.github/workflows/workflow-executor-staging.yml|.github/workflows/workflow-mcp-staging.yml)
+                .github/workflows/workflow-executor.yml|.github/workflows/workflow-executor-production.yml|.github/workflows/workflow-mcp-production.yml)
                   workflow_control_plane_changed=true
                   ;;
               esac
