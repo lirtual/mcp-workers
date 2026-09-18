@@ -26,7 +26,7 @@ export interface ExecutorProtocolStore {
   recordCallbackNotificationFailure(callbackId: string, nextNotificationAt: string): Promise<void>;
 }
 
-export interface ExecutionManifest {
+export interface ExecutionManifest extends Record<string, unknown> {
   version: 1;
   runId: string;
   stepRunId: string;
