@@ -29,7 +29,10 @@
       "class_name": "WorkflowRuntime"
     }
   ],
+  "triggers": {
+    "crons": ["* * * * *"]
+  },
   "secrets": {
-    "required": ["MCP_ACCESS_TOKEN"]
+    "required": ["MCP_ACCESS_TOKEN", "TRIGGER_SMOKE_WEBHOOK_TOKEN"]
   }
 }
