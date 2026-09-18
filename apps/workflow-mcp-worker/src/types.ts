@@ -8,6 +8,12 @@ export interface Env {
   GITHUB_OIDC_ISSUER?: string;
   GITHUB_OIDC_AUDIENCE?: string;
   GITHUB_OIDC_JWKS_URL?: string;
+  GITHUB_ACTIONS_TOKEN?: string;
+  GITHUB_REPOSITORY?: string;
+  GITHUB_REPOSITORY_ID?: string;
+  GITHUB_EXECUTOR_REF?: string;
+  GITHUB_EXECUTOR_WORKFLOW?: string;
+  GITHUB_EXECUTOR_WORKFLOW_SHA?: string;
   DB: D1Database;
   WORKFLOW: Workflow<WorkflowRunParams>;
 }
