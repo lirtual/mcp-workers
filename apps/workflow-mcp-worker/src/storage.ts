@@ -81,6 +81,13 @@ export interface WorkflowEventRecord {
   createdAt: string;
 }
 
+export interface SchedulerState {
+  scheduleKey: string;
+  lastEvaluatedAt: number;
+  lastAdmittedScheduledTime?: number;
+  nextDueOccurrence?: number;
+}
+
 export interface StepSummary {
   stepRunId: string;
   stepId: string;
@@ -446,6 +453,48 @@ export class D1WorkflowStore {
         input.errorCode ? { code: input.errorCode } : {}
       );
     }
+  }
+
+  async getSchedulerState(scheduleKey: string): Promise<SchedulerState | null> {
+    const row = await this.db
+      .prepare(
+        `SELECT schedule_key, last_evaluated_at, last_admitted_scheduled_time, next_due_occurrence
+         FROM scheduler_state WHERE schedule_key = ?`
+      )
+      .bind(scheduleKey)
+      .first<Record<string, string | number | null>>();
+    if (!row) return null;
+
+    return {
+      scheduleKey: String(row.schedule_key),
+      lastEvaluatedAt: Number(row.last_evaluated_at),
+      ...(row.last_admitted_scheduled_time === null
+        ? {}
+        : { lastAdmittedScheduledTime: Number(row.last_admitted_scheduled_time) }),
+      ...(row.next_due_occurrence === null
+        ? {}
+        : { nextDueOccurrence: Number(row.next_due_occurrence) })
+    };
+  }
+
+  async saveSchedulerState(input: SchedulerState): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO scheduler_state
+         (schedule_key, last_evaluated_at, last_admitted_scheduled_time, next_due_occurrence)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(schedule_key) DO UPDATE SET
+           last_evaluated_at = excluded.last_evaluated_at,
+           last_admitted_scheduled_time = excluded.last_admitted_scheduled_time,
+           next_due_occurrence = excluded.next_due_occurrence`
+      )
+      .bind(
+        input.scheduleKey,
+        input.lastEvaluatedAt,
+        input.lastAdmittedScheduledTime ?? null,
+        input.nextDueOccurrence ?? null
+      )
+      .run();
   }
 
   async listStepSummaries(runId: string): Promise<StepSummary[]> {
