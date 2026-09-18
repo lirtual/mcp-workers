@@ -47,6 +47,23 @@ describe('Workflow MCP staging release gate contract', () => {
     expect(names).toContain('Deploy isolated staging Worker');
     expect(names).toContain('Run MCP heavy and connection tracers');
     expect(names).toContain('Verify GitHub executor terminal evidence');
+
+    const workflowText = await readFile(
+      path.resolve(process.cwd(), '../../.github/workflows/workflow-mcp-staging.yml'),
+      'utf8'
+    );
+    expect(workflowText).toContain(
+      'accounts/$CLOUDFLARE_ACCOUNT_ID/tokens/verify'
+    );
+    expect(workflowText).toContain(
+      'printf \'%s\' "$CLOUDFLARE_API_TOKEN" | sha256sum'
+    );
+    expect(workflowText).not.toContain(
+      'WORKFLOW_MCP_STAGING_R2_ACCESS_KEY_ID'
+    );
+    expect(workflowText).not.toContain(
+      'WORKFLOW_MCP_STAGING_R2_SECRET_ACCESS_KEY'
+    );
   });
 
   it('keeps the staging executor dispatch-only with the same two identity inputs', async () => {
