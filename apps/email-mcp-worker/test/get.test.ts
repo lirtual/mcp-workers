@@ -31,6 +31,7 @@ describe("email_get tracer", () => {
       async listFolders() { return []; },
       async searchMessages() { return { messages: [] }; },
       async modifyMessages() { throw new Error("not used"); },
+      async sendMessage() { throw new Error("not used"); },
       async getMessage(options) {
         calls.push(options);
         return {
@@ -83,6 +84,7 @@ describe("email_get tracer", () => {
       async listFolders() { return []; },
       async searchMessages() { return { messages: [] }; },
       async modifyMessages() { throw new Error("not used"); },
+      async sendMessage() { throw new Error("not used"); },
       async getMessage() {
         called = true;
         throw new Error("should not run");

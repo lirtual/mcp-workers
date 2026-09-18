@@ -1,3 +1,4 @@
+import nodemailer from "nodemailer";
 import {
   ImapFlow,
   type ListResponse,
@@ -36,6 +37,8 @@ import type {
   ModifyMessagesResult,
   SearchMessagesOptions,
   SearchMessagesResult,
+  SendMessageOptions,
+  SendMessageResult,
 } from "./provider.js";
 
 type FolderEntry = Pick<
@@ -195,6 +198,83 @@ function trashPath(folders: ListResponse[]): string | undefined {
   return folders.find(
     (folder) => folder.specialUse?.toLowerCase() === "\\trash",
   )?.path;
+}
+
+
+export function buildSmtpTransportOptions(account: ResolvedEmailAccount) {
+  const implicit = account.smtp.tls === "implicit";
+  return {
+    host: account.smtp.host,
+    port: account.smtp.port,
+    secure: implicit,
+    requireTLS: !implicit,
+    auth: {
+      user: account.auth.username,
+      pass: account.auth.password,
+    },
+    connectionTimeout: 15_000,
+    greetingTimeout: 15_000,
+    socketTimeout: 15_000,
+    disableFileAccess: true,
+    disableUrlAccess: true,
+  };
+}
+
+function addressText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object" && "address" in value) {
+    const address = (value as { address?: unknown }).address;
+    return typeof address === "string" ? address : String(address ?? "");
+  }
+  return String(value ?? "");
+}
+
+export function normalizeSmtpSendResult(info: {
+  messageId?: string;
+  accepted?: unknown[];
+  rejected?: unknown[];
+}): SendMessageResult {
+  const accepted = (info.accepted ?? []).map(addressText).filter(Boolean);
+  const rejected = (info.rejected ?? []).map(addressText).filter(Boolean);
+  return {
+    ...(info.messageId ? { message_id: info.messageId } : {}),
+    accepted,
+    rejected,
+    partial: accepted.length > 0 && rejected.length > 0,
+  };
+}
+
+export function normalizeSmtpSendError(
+  error: unknown,
+  sendAttempted: boolean,
+): EmailToolError {
+  const details =
+    error && typeof error === "object"
+      ? (error as { code?: unknown; responseCode?: unknown; command?: unknown })
+      : {};
+  const code = typeof details.code === "string" ? details.code.toUpperCase() : "";
+  if (code === "EAUTH") {
+    return new EmailToolError(
+      "AUTH_FAILED",
+      "Email provider authentication failed.",
+    );
+  }
+  if (sendAttempted) {
+    return new EmailToolError(
+      "SEND_OUTCOME_UNKNOWN",
+      "The SMTP connection failed after the send may have started. The message was not retried.",
+    );
+  }
+  if (code === "ETIMEDOUT" || code === "ETIMEOUT" || code === "ESOCKETTIMEDOUT") {
+    return new EmailToolError(
+      "UPSTREAM_TIMEOUT",
+      "Email provider request timed out.",
+    );
+  }
+  return new EmailToolError(
+    "UPSTREAM_UNAVAILABLE",
+    "Email provider is unavailable.",
+  );
 }
 
 export function normalizeImapError(error: unknown): EmailToolError {
@@ -604,6 +684,41 @@ export class ImapSmtpProvider implements EmailProvider {
         ...(destination ? { target_folder_id: destination } : {}),
       };
     });
+  }
+
+
+  async sendMessage(options: SendMessageOptions): Promise<SendMessageResult> {
+    const transporter = nodemailer.createTransport(
+      buildSmtpTransportOptions(this.account),
+    );
+    try {
+      try {
+        await transporter.verify();
+      } catch (error) {
+        throw normalizeSmtpSendError(error, false);
+      }
+
+      let sendAttempted = false;
+      try {
+        sendAttempted = true;
+        const info = await transporter.sendMail({
+          from: options.from,
+          to: options.to.map((value) => value.address),
+          cc: options.cc.map((value) => value.address),
+          bcc: options.bcc.map((value) => value.address),
+          subject: options.subject,
+          text: options.bodyText,
+          disableFileAccess: true,
+          disableUrlAccess: true,
+        });
+        return normalizeSmtpSendResult(info);
+      } catch (error) {
+        if (error instanceof EmailToolError) throw error;
+        throw normalizeSmtpSendError(error, sendAttempted);
+      }
+    } finally {
+      transporter.close();
+    }
   }
 
 }

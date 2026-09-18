@@ -24,6 +24,8 @@ import type {
   EmailSearchFilters,
   ModifyMessagesResult,
   SearchMessagesResult,
+  SendMessageResult,
+  SendRecipient,
 } from "./provider.js";
 import { decodeMessageReference } from "./message-reference.js";
 import { EmailToolError } from "./errors.js";
@@ -297,6 +299,125 @@ export async function modifyEmail(
   };
 }
 
+
+const emailAddressSchema = z.string().email().max(320);
+const SEND_BODY_MAX_BYTES = 128 * 1024;
+const SEND_RECIPIENT_MAX = 20;
+
+export interface SendEmailInput {
+  account_id?: string;
+  from?: string;
+  to: string[];
+  cc?: string[];
+  bcc?: string[];
+  subject: string;
+  body_text: string;
+}
+
+export interface PreparedSendEmail {
+  account_id: string;
+  from: string;
+  to: SendRecipient[];
+  cc: SendRecipient[];
+  bcc: SendRecipient[];
+  subject: string;
+  body_text: string;
+}
+
+function recipients(values: string[] | undefined): SendRecipient[] {
+  return (values ?? []).map((value) => ({
+    address: emailAddressSchema.parse(value),
+  }));
+}
+
+export function prepareSendEmail(
+  catalog: EmailCatalog,
+  input: SendEmailInput,
+): PreparedSendEmail {
+  const account = resolveAccount(catalog, input.account_id);
+  const from = input.from ?? account.address;
+  const allowed = new Set(account.senders.map((value) => value.toLowerCase()));
+  if (!allowed.has(from.toLowerCase())) {
+    throw new EmailToolError(
+      "SENDER_NOT_ALLOWED",
+      "The selected From address is not configured for this account.",
+    );
+  }
+  emailAddressSchema.parse(from);
+
+  const to = recipients(input.to);
+  const cc = recipients(input.cc);
+  const bcc = recipients(input.bcc);
+  const recipientCount = to.length + cc.length + bcc.length;
+  if (recipientCount < 1 || recipientCount > SEND_RECIPIENT_MAX) {
+    throw new EmailToolError(
+      "RECIPIENT_LIMIT_EXCEEDED",
+      "Email requires 1 to 20 total recipients across To, Cc, and Bcc.",
+    );
+  }
+
+  if (new TextEncoder().encode(input.body_text).byteLength > SEND_BODY_MAX_BYTES) {
+    throw new EmailToolError(
+      "MESSAGE_TOO_LARGE",
+      "Email body exceeds the 128 KiB UTF-8 limit.",
+    );
+  }
+
+  return {
+    account_id: account.id,
+    from,
+    to,
+    cc,
+    bcc,
+    subject: input.subject,
+    body_text: input.body_text,
+  };
+}
+
+export async function sendEmail(
+  catalog: EmailCatalog,
+  gates: EmailFeatureGates,
+  providerFactory: EmailProviderFactory,
+  input: SendEmailInput,
+): Promise<SendMessageResult & { account_id: string }> {
+  if (!gates.allowSend) {
+    throw new EmailToolError(
+      "SEND_DISABLED",
+      "Email sending is disabled by server configuration.",
+    );
+  }
+
+  const prepared = prepareSendEmail(catalog, input);
+  const account = resolveAccount(catalog, prepared.account_id);
+  const provider = providerFactory(account);
+  return {
+    account_id: account.id,
+    ...(await provider.sendMessage({
+      from: prepared.from,
+      to: prepared.to,
+      cc: prepared.cc,
+      bcc: prepared.bcc,
+      subject: prepared.subject,
+      bodyText: prepared.body_text,
+    })),
+  };
+}
+
+function sendConfirmationPreview(prepared: PreparedSendEmail): string {
+  const to = prepared.to.map((value) => value.address).join(", ");
+  const cc = prepared.cc.map((value) => value.address).join(", ") || "(none)";
+  return [
+    "Send this email?",
+    `From: ${prepared.from}`,
+    `To: ${to}`,
+    `Cc: ${cc}`,
+    `Bcc recipients: ${prepared.bcc.length}`,
+    `Subject: ${prepared.subject}`,
+    "",
+    prepared.body_text,
+  ].join("\n");
+}
+
 export function buildEmailServer(
   catalog: EmailCatalog,
   gates: EmailFeatureGates,
@@ -521,6 +642,86 @@ export function buildEmailServer(
 
       return runTool(() =>
         modifyEmail(catalog, gates, providerFactory, input),
+      );
+    },
+  );
+
+
+  server.registerTool(
+    "email_send",
+    {
+      description:
+        "Compose and send one bounded plain-text email. Sending is disabled unless the server gate is enabled and always requires protocol-level user confirmation. Attachments, HTML, custom headers, and caller-selected SMTP endpoints are not accepted.",
+      annotations: {
+        readOnlyHint: false,
+        idempotentHint: false,
+        destructiveHint: true,
+        openWorldHint: false,
+      },
+      inputSchema: z
+        .object({
+          account_id: accountIdSchema.optional(),
+          from: emailAddressSchema.optional(),
+          to: z.array(emailAddressSchema).min(1).max(20),
+          cc: z.array(emailAddressSchema).max(20).optional(),
+          bcc: z.array(emailAddressSchema).max(20).optional(),
+          subject: z.string().max(998),
+          body_text: z.string(),
+        })
+        .strict(),
+    },
+    async (input, ctx) => {
+      if (!gates.allowSend) {
+        return toolFailure(
+          new EmailToolError(
+            "SEND_DISABLED",
+            "Email sending is disabled by server configuration.",
+          ),
+        );
+      }
+
+      let prepared: PreparedSendEmail;
+      try {
+        prepared = prepareSendEmail(catalog, input);
+      } catch (error) {
+        if (error instanceof EmailToolError) return toolFailure(error);
+        return toolFailure(
+          new EmailToolError(
+            "UPSTREAM_UNAVAILABLE",
+            "Email compose input is invalid.",
+          ),
+        );
+      }
+
+      const expected: EmailConfirmationState = {
+        operation: "send",
+        targetHash: await confirmationTargetHash({
+          operation: "send",
+          accountId: prepared.account_id,
+          from: prepared.from,
+          to: prepared.to,
+          cc: prepared.cc,
+          bcc: prepared.bcc,
+          subject: prepared.subject,
+          bodyText: prepared.body_text,
+        }),
+      };
+      const decision = await emailConfirmation(
+        confirmationCodec,
+        ctx.mcpReq.inputResponses,
+        ctx.mcpReq.requestState<EmailConfirmationState>(),
+        expected,
+        sendConfirmationPreview(prepared),
+      );
+      if (decision.kind === "input_required") return decision.result;
+      if (decision.kind === "denied") {
+        return toolFailure(
+          new EmailToolError(decision.code, decision.message),
+        );
+      }
+
+      return runTool(() =>
+        sendEmail(catalog, gates, providerFactory, input),
       );
     },
   );
