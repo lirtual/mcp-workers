@@ -85,7 +85,7 @@ export async function prepareRemoteAttempt(
     expectedWorkflowRef: input.trust.workflowRef,
     expectedRef: input.trust.ref,
     ...(input.trust.workflowSha ? { expectedWorkflowSha: input.trust.workflowSha } : {}),
-    executionManifest: input.manifest
+    executionManifest: { ...input.manifest }
   });
 
   return {
