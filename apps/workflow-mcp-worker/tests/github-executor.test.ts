@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { decideDispatchSequence, dispatchGitHubExecutor, getGitHubRunFact, githubExecutorTrust } from '../src/github-executor.js';
+import { cancelGitHubRun, classifyCancellationRunFacts, decideDispatchSequence, dispatchGitHubExecutor, getGitHubRunFact, githubExecutorTrust } from '../src/github-executor.js';
 import type { Env } from '../src/types.js';
 
 const env = {
@@ -96,6 +96,71 @@ describe('GitHub executor dispatch', () => {
       status: 'completed',
       conclusion: 'failure'
     });
+  });
+
+  it('requests normal GitHub cancellation with Actions API credentials', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toBe(
+        'https://api.github.com/repos/lirtual/mcp-workers/actions/runs/9001/cancel'
+      );
+      expect(init?.method).toBe('POST');
+      const headers = new Headers(init?.headers);
+      expect(headers.get('Authorization')).toBe('Bearer gh-token');
+      expect(headers.get('X-GitHub-Api-Version')).toBe('2026-03-10');
+      return new Response(null, { status: 202 });
+    });
+
+    await expect(
+      cancelGitHubRun(env, '9001', fetchImpl as typeof fetch)
+    ).resolves.toEqual({ runId: '9001', outcome: 'accepted' });
+  });
+
+  it('treats a 409 as already terminal only after reconciling the run fact', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/cancel')) return new Response(null, { status: 409 });
+      return Response.json({ status: 'completed', conclusion: 'success' });
+    });
+
+    await expect(
+      cancelGitHubRun(env, '9001', fetchImpl as typeof fetch)
+    ).resolves.toEqual({ runId: '9001', outcome: 'already_terminal' });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports cancellation transport ambiguity instead of claiming success', async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new TypeError('network reset');
+    });
+
+    await expect(
+      cancelGitHubRun(env, '9001', fetchImpl as typeof fetch)
+    ).resolves.toMatchObject({ runId: '9001', outcome: 'unknown' });
+  });
+
+  it('classifies cancellation reconciliation facts conservatively', () => {
+    expect(
+      classifyCancellationRunFacts([
+        { runId: '1', status: 'completed', conclusion: 'cancelled' },
+        { runId: '2', status: 'completed', conclusion: 'failure' }
+      ])
+    ).toBe('stopped');
+
+    expect(
+      classifyCancellationRunFacts([
+        { runId: '1', status: 'completed', conclusion: 'success' },
+        { runId: '2', status: 'completed', conclusion: 'cancelled' }
+      ])
+    ).toBe('success_without_callback');
+
+    expect(
+      classifyCancellationRunFacts([
+        { runId: '1', status: 'in_progress' },
+        { runId: '2', status: 'completed', conclusion: 'cancelled' }
+      ])
+    ).toBe('unresolved');
+
+    expect(classifyCancellationRunFacts([])).toBe('unresolved');
   });
 
   it('derives the OIDC trust policy from server configuration', () => {

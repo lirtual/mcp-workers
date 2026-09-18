@@ -20,6 +20,7 @@ export interface MaintenanceStore {
   markCallbackIgnored(callbackId: string, reason: string): Promise<void>;
   markCallbackNotified(callbackId: string): Promise<void>;
   recordCallbackNotificationFailure(callbackId: string, nextNotificationAt: string): Promise<void>;
+  listCancellationWakeAttempts(limit: number): Promise<RemoteAttemptRecord[]>;
 }
 
 export async function runMaintenanceBatch(
@@ -74,6 +75,23 @@ export async function runMaintenanceBatch(
         callback.callbackId,
         new Date(nowMs + delay).toISOString()
       );
+    }
+  }
+
+  const remaining = Math.max(0, limit - processed);
+  if (remaining > 0) {
+    const cancellationAttempts = await store.listCancellationWakeAttempts(remaining);
+    for (const attempt of cancellationAttempts) {
+      processed += 1;
+      try {
+        const instance = await env.WORKFLOW.get(attempt.runId);
+        await instance.sendEvent({
+          type: attemptEventType(attempt.attemptId),
+          payload: { kind: 'cancel_requested' }
+        });
+      } catch {
+        // Durable run/attempt cancellation state remains the retry source.
+      }
     }
   }
 
