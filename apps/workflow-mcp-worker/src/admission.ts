@@ -94,7 +94,6 @@ async function admitCompiledWorkflow(
   if (!entry) throw new PublicWorkflowError('WORKFLOW_NOT_FOUND', 'Workflow definition was not found.');
 
   const plan = asRuntimePlan(entry.plan);
-  assertRunnablePlan(plan);
   const input = validateWorkflowInput(plan.inputs, rawInput);
   const runId = source.deterministicRunId
     ? `run_${(await sha256Hex(source.admissionKey)).slice(0, 40)}`
@@ -188,16 +187,6 @@ function validateWorkflowInput(
   }
 
   return { ...input };
-}
-
-function assertRunnablePlan(plan: RuntimePlan): void {
-  const unsupported = Object.values(plan.steps).find(step => step.executor !== 'cloudflare');
-  if (unsupported) {
-    throw new PublicWorkflowError(
-      'WORKFLOW_NOT_IMPLEMENTED',
-      'This workflow depends on capabilities scheduled for a later v0.1 implementation ticket.'
-    );
-  }
 }
 
 async function sha256Hex(value: string): Promise<string> {
