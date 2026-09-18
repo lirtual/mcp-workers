@@ -19,11 +19,11 @@ All MCP Worker apps use their Cloudflare `workers.dev` origin as the production 
 - no custom domain or zone route is required for MCP ingress
 - Cloudflare MCP Portal points to each Worker's `https://<worker-name>.<workers-subdomain>.workers.dev/mcp` endpoint
 
-Worker names remain app-specific (`<app>-mcp-worker`) and each Worker keeps its own `MCP_ACCESS_TOKEN`.
+Worker names remain app-specific (`<app>-mcp-worker`) and each Worker keeps its own `MCP_ACCESS_TOKEN`. The Email MCP app is `apps/email-mcp-worker` and publishes the provider-neutral `email_*` tool surface.
 
 ## Runtime configuration
 
-The six Workers share one source-controlled contract for required runtime secret names and Workers Observability while keeping actual secret values in Cloudflare Runtime Secrets. See [`docs/runtime-configuration.md`](docs/runtime-configuration.md) for the required-secret matrix, build-time versus runtime configuration rules, logging baseline, and deployment verification steps.
+The seven Workers share one source-controlled contract for required runtime secret names and Workers Observability while keeping actual secret values in Cloudflare Runtime Secrets. See [`docs/runtime-configuration.md`](docs/runtime-configuration.md) for the required-secret matrix, build-time versus runtime configuration rules, logging baseline, and deployment verification steps.
 
 ## MCP smoke runner
 
