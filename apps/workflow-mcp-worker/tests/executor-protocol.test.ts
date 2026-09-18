@@ -253,7 +253,13 @@ describe('remote executor protocol', () => {
         {
           attemptId: prepared.attemptId,
           claimNonce: prepared.claimNonce,
-          oidcToken: await oidcToken({ run_id: '9301', run_attempt: '1' })
+          oidcToken: await oidcToken({
+            run_id: '9301',
+            run_attempt: '1',
+            iat: 1_800_100_000 - 10,
+            nbf: 1_800_100_000 - 10,
+            exp: 1_800_100_000 + 300
+          })
         },
         { store, fetchImpl: jwksFetch() as typeof fetch, nowMs: 1_800_100_000_000 }
       )
