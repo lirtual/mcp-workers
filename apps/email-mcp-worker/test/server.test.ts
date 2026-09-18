@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { parseEmailAccountsConfig } from "../src/config.js";
-import { listAccountMetadata } from "../src/server.js";
+import {
+  buildEmailServer,
+  listAccountMetadata,
+  listFolderMetadata,
+  type EmailProviderFactory,
+} from "../src/server.js";
 
 describe("email_accounts tool projection", () => {
   it("uses the configured default and exposes only non-secret capability metadata", () => {
@@ -44,14 +49,6 @@ describe("email_accounts tool projection", () => {
     });
   });
 });
-
-import { describe, expect, it } from "vitest";
-import { parseEmailAccountsConfig } from "../src/config.js";
-import {
-  buildEmailServer,
-  listFolderMetadata,
-  type EmailProviderFactory,
-} from "../src/server.js";
 
 const catalog = parseEmailAccountsConfig(
   JSON.stringify({
