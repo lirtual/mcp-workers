@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { EmailToolError } from "./errors.js";
 
 export type EmailProviderName = "qq" | "gmail" | "icloud" | "fastmail" | "custom";
 export type ImapTlsMode = "implicit";
@@ -248,10 +249,10 @@ export function resolveAccount(
   const id = accountId ?? catalog.defaultAccount;
   const account = catalog.accounts.find((candidate) => candidate.id === id);
   if (!account) {
-    throw new Error("ACCOUNT_NOT_FOUND");
+    throw new EmailToolError("ACCOUNT_NOT_FOUND", "Email account was not found.");
   }
   if (!account.enabled) {
-    throw new Error("ACCOUNT_DISABLED");
+    throw new EmailToolError("ACCOUNT_DISABLED", "Email account is disabled.");
   }
   return account;
 }
