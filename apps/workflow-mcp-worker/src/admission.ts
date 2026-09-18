@@ -19,7 +19,7 @@ export async function admitManualWorkflow(
   if (!entry) throw new PublicWorkflowError('WORKFLOW_NOT_FOUND', 'Workflow definition was not found.');
 
   const plan = asRuntimePlan(entry.plan);
-  assertT02Runnable(plan);
+  assertRunnablePlan(plan);
   const input = validateWorkflowInput(plan.inputs, rawInput);
 
   if (idempotencyKey !== undefined && (idempotencyKey.length < 1 || idempotencyKey.length > 128)) {
@@ -119,9 +119,11 @@ function validateWorkflowInput(
   return { ...input };
 }
 
-function assertT02Runnable(plan: RuntimePlan): void {
-  const steps = Object.values(plan.steps);
-  if (steps.length !== 1 || steps[0]?.uses !== 'http.read' || steps[0].executor !== 'cloudflare') {
+function assertRunnablePlan(plan: RuntimePlan): void {
+  const unsupported = Object.values(plan.steps).find(
+    step => step.executor !== 'cloudflare' || step.uses !== 'http.read'
+  );
+  if (unsupported) {
     throw new PublicWorkflowError(
       'WORKFLOW_NOT_IMPLEMENTED',
       'This workflow depends on capabilities scheduled for a later v0.1 implementation ticket.'
