@@ -1,4 +1,5 @@
 import { createMcpHandler } from '@modelcontextprotocol/server';
+import { handleExecutorRoute } from './executor-routes.js';
 import { buildWorkflowMcpServer } from './mcp.js';
 import { authenticateWorkflowPortal } from './portal-auth.js';
 import { runSchedulerTick } from './scheduler.js';
@@ -26,6 +27,11 @@ export default {
 
     if (url.pathname === '/health') {
       return Response.json({ status: 'ok' });
+    }
+
+    if (url.pathname.startsWith('/executor/')) {
+      const executorResponse = await handleExecutorRoute(request, env);
+      if (executorResponse) return executorResponse;
     }
 
     const webhookMatch = url.pathname.match(/^\/hooks\/([A-Za-z0-9_-]+)\/([A-Za-z0-9_-]+)$/);

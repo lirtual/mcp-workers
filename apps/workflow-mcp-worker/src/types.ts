@@ -4,6 +4,10 @@ export interface WorkflowRunParams {
 
 export interface Env {
   MCP_ACCESS_TOKEN?: string;
+  EXECUTOR_LEASE_SECRET?: string;
+  GITHUB_OIDC_ISSUER?: string;
+  GITHUB_OIDC_AUDIENCE?: string;
+  GITHUB_OIDC_JWKS_URL?: string;
   DB: D1Database;
   WORKFLOW: Workflow<WorkflowRunParams>;
 }

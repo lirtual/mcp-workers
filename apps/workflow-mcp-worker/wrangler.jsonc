@@ -32,7 +32,16 @@
   "triggers": {
     "crons": ["* * * * *"]
   },
+  "vars": {
+    "GITHUB_OIDC_ISSUER": "https://token.actions.githubusercontent.com",
+    "GITHUB_OIDC_AUDIENCE": "workflow-mcp-worker",
+    "GITHUB_OIDC_JWKS_URL": "https://token.actions.githubusercontent.com/.well-known/jwks"
+  },
   "secrets": {
-    "required": ["MCP_ACCESS_TOKEN", "TRIGGER_SMOKE_WEBHOOK_TOKEN"]
+    "required": [
+      "MCP_ACCESS_TOKEN",
+      "TRIGGER_SMOKE_WEBHOOK_TOKEN",
+      "EXECUTOR_LEASE_SECRET"
+    ]
   }
 }
