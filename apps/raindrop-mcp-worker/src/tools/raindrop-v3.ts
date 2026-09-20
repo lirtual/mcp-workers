@@ -11,7 +11,7 @@ const writableCollectionId = z.number().int().refine(
   (v) => Number.isSafeInteger(v) && (v === -1 || v > 0),
   "Destination must be a collection or Unsorted",
 );
-const link = z.string().url().refine((value) => {
+const link = z.string().url().max(8192).refine((value) => {
   const protocol = new URL(value).protocol;
   return protocol === "http:" || protocol === "https:";
 }, "Only HTTP(S) links are supported");
@@ -25,19 +25,20 @@ const writable = {
   important: z.boolean(),
   collection: z.object({ $id: writableCollectionId }).strict(),
 };
+// https://developer.raindrop.io/v1/raindrops/multiple
 const sortValues = [
-  "+created", "-created", "+title", "-title",
-  "+domain", "-domain", "+score", "-score",
+  "-created", "created", "score", "-sort",
+  "title", "-title", "domain", "-domain",
 ] as const;
 const listInput = z.object({
   collectionId: collectionId.default(0),
-  search: z.string().optional(),
+  search: z.string().max(8192).optional(),
   sort: z.enum(sortValues).default("-created"),
-  page: z.number().int().min(0).refine(Number.isSafeInteger).default(0),
+  page: z.number().int().safe().min(0).default(0),
   perpage: z.number().int().min(1).max(50).default(25),
   nested: z.boolean().default(false),
 }).strict().refine(
-  (v) => !v.sort.endsWith("score") || Boolean(v.search?.trim()),
+  (v) => v.sort !== "score" || Boolean(v.search?.trim()),
   { message: "Score sorting requires a non-empty search", path: ["sort"] },
 );
 const createInput = z.object({
