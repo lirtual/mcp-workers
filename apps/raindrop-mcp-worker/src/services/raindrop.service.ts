@@ -254,8 +254,8 @@ export default class RaindropService {
    */
   async listCollectionsV3(): Promise<Collection[]> {
     const read = async (endpoint: "/collections" | "/collections/childrens") => {
-      const { data } = await this.withRateLimit<any>(() =>
-        (this.client as any).GET(endpoint),
+      const { data } = await this.withRateLimit(() =>
+        this.client.GET(endpoint),
       );
       if (data?.result !== true || !Array.isArray(data.items)) {
         throw new UpstreamError(`Invalid collection index response from ${endpoint}`);
@@ -288,8 +288,8 @@ export default class RaindropService {
     title: string,
     parent?: { $id: number },
   ): Promise<Collection> {
-    const { data } = await this.withWriteRateLimit<any>(() =>
-      (this.client as any).POST("/collection", {
+    const { data } = await this.withWriteRateLimit(() =>
+      this.client.POST("/collection", {
         body: { title, ...(parent === undefined ? {} : { parent }) },
       }),
     );
@@ -305,8 +305,8 @@ export default class RaindropService {
     id: number,
     updates: { title?: string; parent?: { $id: number } | null },
   ): Promise<Collection> {
-    const { data } = await this.withWriteRateLimit<any>(() =>
-      (this.client as any).PUT("/collection/{id}", {
+    const { data } = await this.withWriteRateLimit(() =>
+      this.client.PUT("/collection/{id}", {
         params: { path: { id } },
         body: updates,
       }),
@@ -320,8 +320,8 @@ export default class RaindropService {
   }
 
   async deleteCollectionV3(id: number): Promise<void> {
-    const { data } = await this.withWriteRateLimit<any>(() =>
-      (this.client as any).DELETE("/collection/{id}", {
+    const { data } = await this.withWriteRateLimit(() =>
+      this.client.DELETE("/collection/{id}", {
         params: { path: { id } },
       }),
     );
@@ -371,7 +371,7 @@ export default class RaindropService {
     nested: boolean;
   }): Promise<{ items: Bookmark[]; count: number | null }> {
     const { data } = await this.withRateLimit(async () =>
-      (this.client as any).GET("/raindrops/{collectionId}", {
+      this.client.GET("/raindrops/{collectionId}", {
         params: {
           path: { collectionId: params.collectionId },
           query: {
@@ -404,7 +404,7 @@ export default class RaindropService {
     collection?: { $id: number };
   }): Promise<Bookmark> {
     const { data } = await this.withWriteRateLimit(async () =>
-      (this.client as any).POST("/raindrop", {
+      this.client.POST("/raindrop", {
         body: { ...fields, collection: fields.collection ?? { $id: -1 }, pleaseParse: {} },
       }),
     );
@@ -424,7 +424,7 @@ export default class RaindropService {
     collection?: { $id: number };
   }): Promise<Bookmark> {
     const { data } = await this.withWriteRateLimit(async () =>
-      (this.client as any).PUT("/raindrop/{id}", {
+      this.client.PUT("/raindrop/{id}", {
         params: { path: { id } },
         body: fields,
       }),
@@ -448,11 +448,11 @@ export default class RaindropService {
   ): Promise<{ modified: number | null }> {
     const { data } = await this.withWriteRateLimit(async () =>
       kind === "update"
-        ? (this.client as any).PUT("/raindrops/{collectionId}", {
+        ? this.client.PUT("/raindrops/{collectionId}", {
             params: { path: { collectionId } },
             body: { ids, ...fields },
           })
-        : (this.client as any).DELETE("/raindrops/{collectionId}", {
+        : this.client.DELETE("/raindrops/{collectionId}", {
             params: { path: { collectionId } },
             body: { ids },
           }),
@@ -491,7 +491,7 @@ export default class RaindropService {
       });
       if (data?.result === false) throw new UpstreamError("Bookmark detail was rejected");
       if (!data?.item) throw new NotFoundError("Bookmark not found");
-      return data.item as any as Bookmark;
+      return data.item as Bookmark;
     });
 
     this.cacheBookmarks.set(`id:${id}`, bookmark);
@@ -526,8 +526,8 @@ export default class RaindropService {
 
   /** Official Trash endpoint; unlike the legacy helper this is not a batch bookmark delete. */
   async emptyTrashV3(): Promise<void> {
-    const { data } = await this.withWriteRateLimit<any>(() =>
-      (this.client as any).DELETE("/collection/-99"),
+    const { data } = await this.withWriteRateLimit(() =>
+      this.client.DELETE("/collection/-99"),
     );
     if (data?.result === false) throw new UpstreamRejectedError("Trash empty was rejected");
     if (data?.result !== true) {
@@ -544,8 +544,8 @@ export default class RaindropService {
   async listTagsV3(collectionId?: number): Promise<Array<{ _id: string; count: number }>> {
     const { data } = await this.withRateLimit(async () =>
       collectionId === undefined
-        ? (this.client as any).GET("/tags")
-        : (this.client as any).GET("/tags/{collectionId}", {
+        ? this.client.GET("/tags")
+        : this.client.GET("/tags/{collectionId}", {
             params: { path: { collectionId } },
           }),
     );
@@ -655,8 +655,8 @@ export default class RaindropService {
   ): Promise<{ items: Highlight[]; count: number | null }> {
     const { data } = await this.withRateLimit(async () =>
       collectionId === undefined
-        ? (this.client as any).GET("/highlights", { params: { query: { page, perpage } } })
-        : (this.client as any).GET("/highlights/{collectionId}", {
+        ? this.client.GET("/highlights", { params: { query: { page, perpage } } })
+        : this.client.GET("/highlights/{collectionId}", {
             params: { path: { collectionId }, query: { page, perpage } },
           }),
     );
@@ -679,7 +679,7 @@ export default class RaindropService {
     highlight: { _id?: string; text?: string; note?: string; color?: HighlightColor },
   ): Promise<{ item: Bookmark | null; targetVerified: boolean }> {
     const { data } = await this.withWriteRateLimit(async () =>
-      (this.client as any).PUT("/raindrop/{id}", {
+      this.client.PUT("/raindrop/{id}", {
         params: { path: { id: raindropId } },
         body: { highlights: [highlight] },
       }),
