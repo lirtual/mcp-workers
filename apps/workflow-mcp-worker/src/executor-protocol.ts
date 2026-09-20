@@ -121,7 +121,7 @@ export async function claimRemoteAttempt(
     store?: ExecutorProtocolStore;
   } = {}
 ): Promise<ClaimResult> {
-  const config = oidcConfig(env);
+  const config = oidcConfig();
   const nowMs = options.nowMs ?? Date.now();
   const identity = await verifyGitHubOidcToken(
     input.oidcToken,
@@ -437,11 +437,11 @@ function validateStoredManifest(
   }
 }
 
-function oidcConfig(env: Env): GitHubOidcVerificationConfig {
+function oidcConfig(): GitHubOidcVerificationConfig {
   return {
-    issuer: env.GITHUB_OIDC_ISSUER ?? GITHUB_EXECUTOR_CONFIG.oidc.issuer,
-    audience: env.GITHUB_OIDC_AUDIENCE ?? GITHUB_EXECUTOR_CONFIG.oidc.audience,
-    jwksUrl: env.GITHUB_OIDC_JWKS_URL ?? GITHUB_EXECUTOR_CONFIG.oidc.jwksUrl
+    issuer: GITHUB_EXECUTOR_CONFIG.oidc.issuer,
+    audience: GITHUB_EXECUTOR_CONFIG.oidc.audience,
+    jwksUrl: GITHUB_EXECUTOR_CONFIG.oidc.jwksUrl
   };
 }
 
