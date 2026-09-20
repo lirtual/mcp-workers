@@ -36,8 +36,8 @@ export async function dispatchGitHubExecutor(
 ): Promise<GitHubDispatchResult> {
   const generation = options.generation ?? 1;
   const repository = required(env.GITHUB_REPOSITORY, 'GITHUB_REPOSITORY');
-  const workflow = env.GITHUB_EXECUTOR_WORKFLOW ?? GITHUB_EXECUTOR_CONFIG.workflow;
-  const ref = env.GITHUB_EXECUTOR_REF ?? GITHUB_EXECUTOR_CONFIG.ref;
+  const workflow = GITHUB_EXECUTOR_CONFIG.workflow;
+  const ref = GITHUB_EXECUTOR_CONFIG.ref;
   const token = required(env.GITHUB_ACTIONS_TOKEN, 'GITHUB_ACTIONS_TOKEN');
   const fetchImpl = options.fetchImpl ?? fetch;
   const endpoint =
@@ -110,8 +110,8 @@ export async function dispatchGitHubExecutor(
 export function githubExecutorTrust(env: Env): RemoteAttemptTrust {
   const repository = required(env.GITHUB_REPOSITORY, 'GITHUB_REPOSITORY');
   const repositoryId = required(env.GITHUB_REPOSITORY_ID, 'GITHUB_REPOSITORY_ID');
-  const workflow = env.GITHUB_EXECUTOR_WORKFLOW ?? GITHUB_EXECUTOR_CONFIG.workflow;
-  const configuredRef = env.GITHUB_EXECUTOR_REF ?? GITHUB_EXECUTOR_CONFIG.ref;
+  const workflow = GITHUB_EXECUTOR_CONFIG.workflow;
+  const configuredRef = GITHUB_EXECUTOR_CONFIG.ref;
   const ref = configuredRef.startsWith('refs/') ? configuredRef : `refs/heads/${configuredRef}`;
 
   return {
