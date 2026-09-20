@@ -36,49 +36,17 @@ describe('MCP connection auth formatting', () => {
     ).toEqual({ name: 'Authorization', value: 'Bearer secret' });
   });
 
-  it('overrides only the smoke endpoint while preserving static policy and auth', () => {
-    const resolved = resolveConnection(
-      { SMOKE_READONLY_MCP_ENDPOINT: 'https://staging.example.test/mcp' },
-      'smoke-readonly'
-    );
+  it('uses the shared MCP caller token only for the self-connection', () => {
+    const resolved = resolveConnection({}, 'workflow-self');
     expect(resolved).toMatchObject({
-      id: 'smoke-readonly',
-      endpoint: 'https://staging.example.test/mcp',
-      protocolVersion: '2025-11-25',
-      trustAnnotations: false,
-      tools: {
-        health_check: { effect: 'read' }
-      },
-      auth: {
-        header: 'Authorization',
-        format: 'bearer',
-        secret: 'SMOKE_READONLY_MCP_TOKEN'
-      }
-    });
-  });
-
-  it('resolves the modern staging self-connection with Bearer auth and read-only policy', () => {
-    const resolved = resolveConnection(
-      { SMOKE_MODERN_MCP_ENDPOINT: 'https://staging.example.test/mcp' },
-      'smoke-modern'
-    );
-    expect(resolved).toMatchObject({
-      endpoint: 'https://staging.example.test/mcp',
+      endpoint: 'https://workflow-mcp-worker.aiyaya.workers.dev/mcp',
       protocolVersion: '2026-07-28',
       trustAnnotations: false,
       tools: { workflow_list: { effect: 'read' } },
-      auth: {
-        header: 'Authorization',
-        format: 'bearer',
-        secret: 'SMOKE_READONLY_MCP_TOKEN'
-      }
+      auth: { header: 'Authorization', format: 'bearer', secret: 'MCP_ACCESS_TOKEN' }
     });
-  });
-
-  it('uses the checked-in endpoint when no staging override is configured', () => {
-    expect(resolveConnection({}, 'smoke-readonly')?.endpoint).toBe(
-      'https://example.invalid/mcp'
-    );
+    expect(resolveConnection({}, 'smoke-readonly')).toBeUndefined();
+    expect(resolveConnection({}, 'smoke-modern')).toBeUndefined();
   });
 
   it('supports explicit custom prefixes without assuming Bearer', () => {
