@@ -43,6 +43,8 @@ describe('Workflow MCP deploy gate contract', () => {
     expect(names).not.toContain('Generate ephemeral runtime credentials');
     expect(names).toContain('Validate required Workflow MCP configuration');
     expect(names).toContain('Run application release checks');
+    expect(names).toContain('Verify existing production MCP credentials');
+    expect(names.indexOf('Verify existing production MCP credentials')).toBeLessThan(names.indexOf('Apply D1 migrations'));
     expect(names).toContain('Check nonterminal runtime compatibility');
     expect(names).toContain('Apply D1 migrations');
     expect(names.indexOf('Validate required Workflow MCP configuration')).toBeLessThan(
