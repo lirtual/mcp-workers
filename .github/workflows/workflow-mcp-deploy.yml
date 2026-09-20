@@ -20,6 +20,11 @@ on:
         required: false
         default: false
         type: boolean
+      verify_raindrop_manual:
+        description: Run the authenticated Raindrop manual acceptance tracer after the heavy release gate
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -176,6 +181,12 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: pnpm exec tsx scripts/verify-deploy-executor.ts
 
+      - name: Verify Raindrop manual acceptance
+        if: inputs.verify_raindrop_manual == true
+        id: raindrop
+        working-directory: apps/workflow-mcp-worker
+        run: pnpm run release:raindrop-manual
+
       - name: Publish deployment evidence summary
         if: always()
         shell: bash
@@ -187,6 +198,7 @@ jobs:
             echo "- Commit: \`$GITHUB_SHA\`"
             echo "- Heavy run: \`${{ steps.tracer.outputs.heavy_run_id || 'not-completed' }}\`"
             echo "- MCP run: \`${{ steps.tracer.outputs.mcp_run_id || 'not-completed' }}\`"
+            echo "- Raindrop manual run: \`${{ steps.raindrop.outputs.raindrop_run_id || 'not-requested' }}\`"
             echo "- Raindrop manual run: \`${{ steps.tracer.outputs.raindrop_run_id || 'not-completed' }}\`"
             if [[ -f "$WORKFLOW_MCP_EVIDENCE_PATH" ]]; then
               echo
@@ -201,6 +213,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: workflow-mcp-evidence-${{ github.run_id }}
-          path: workflow-mcp-evidence.json
+          path: |
+            workflow-mcp-evidence.json
+            workflow-mcp-raindrop-evidence.json
           if-no-files-found: warn
           retention-days: 14
