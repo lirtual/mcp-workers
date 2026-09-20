@@ -84,6 +84,9 @@ describe("Raindrop request budget", () => {
       RAINDROP_ACCESS_TOKEN: "upstream-test",
     } as never);
     const assertion = expect(pending).resolves.toMatchObject({ status: 408 });
+    // Portal authentication is asynchronous. Drain that microtask chain so
+    // the ingress timer is installed before advancing the fake clock.
+    await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(EXECUTION_LIMITS.fetchMs + 1);
     await assertion;
     expect(fetchMock).not.toHaveBeenCalled();
