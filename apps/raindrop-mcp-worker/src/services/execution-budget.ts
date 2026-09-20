@@ -43,7 +43,8 @@ export async function readBounded(
       size += value.byteLength;
       if (size > maxBytes) {
         // Request.clone() tees the body; awaiting cancellation can hang while
-        // the other branch remains unread. Stop reading immediately instead.\n        void reader.cancel().catch(() => undefined);
+        // the other branch remains unread. Stop reading immediately instead.
+        void reader.cancel().catch(() => undefined);
         throw new ValidationError("Payload exceeds the configured byte limit");
       }
       parts.push(value);
