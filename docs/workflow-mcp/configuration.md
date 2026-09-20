@@ -71,10 +71,13 @@ rather than regenerating secret values on each push.
 The initial migration is **not** complete merely because the generated config
 builds. T15 must pass two successive production deployments with stable
 credentials, compatibility checks and both real heavy/MCP tracers. Then T16
-must prove a manual Raindrop result. The generated configuration now retains
-one Cloudflare minute-level Cron, but it is **not active in production** while
-this branch remains an unmerged draft. T17 requires a real post-job
-09:00 Asia/Shanghai occurrence, correlated with D1 and MCP evidence.
+must prove a manual Raindrop result. The generated configuration leaves Cron disabled by default. After the T16
+manual production tracer succeeds, set the protected GitHub environment variable
+`WORKFLOW_MCP_ENABLE_SCHEDULE=true` and dispatch the deployment workflow.
+Only then does the generator add exactly one `* * * * *` Cloudflare Cron.
+Keep the flag set for later ordinary pushes. Set it to `false` (and redeploy)
+to suspend new ticks during recovery. T17 requires a real post-job 09:00
+Asia/Shanghai occurrence, correlated with D1 and MCP evidence.
 
 Never claim a real scheduled occurrence succeeded from compiler tests or a
 manual run. Keep #105–#108 open until their respective acceptance evidence
