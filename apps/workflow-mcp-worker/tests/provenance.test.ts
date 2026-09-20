@@ -161,6 +161,35 @@ describe('runtime provenance and pinned plans', () => {
     ).toThrow(/invalid-execution-manifest/);
   });
 
+  it('blocks nonterminal pinned plans when the new bundle removes their smoke connection', () => {
+    const baseline = {
+      runId: 'run_active_legacy_mcp',
+      definitionDigest: 'a'.repeat(64),
+      dslVersion: 1,
+      manifestVersions: [1],
+      hasInvalidManifest: false
+    };
+    const legacy = {
+      ...baseline,
+      normalizedPlanJson: JSON.stringify({
+        steps: { call: { with: { connection: 'smoke-modern', tool: 'workflow_list' } } }
+      })
+    };
+    expect(() => assertReleaseCompatibility([legacy])).toThrow(/removed-smoke-connection/);
+    expect(() => assertReleaseCompatibility([{
+      ...legacy,
+      normalizedPlanJson: JSON.stringify({
+        steps: { call: { with: { connection: 'smoke-readonly' } } }
+      })
+    }])).toThrow(/removed-smoke-connection/);
+    expect(() => assertReleaseCompatibility([{
+      ...baseline,
+      normalizedPlanJson: JSON.stringify({
+        steps: { call: { with: { connection: 'workflow-self' } } }
+      })
+    }])).not.toThrow();
+  });
+
   it('pins an explicit checked-in runner contract version', () => {
     expect(RUNNER_VERSION).toBe('workflow-runner-v1');
   });
