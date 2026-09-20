@@ -33,7 +33,17 @@ Cloudflare isolated script `raindrop-mcp-worker-v3-test`, deployment `850c9092-9
 4. Use a local harness to profile **fresh server construction alone** alongside complete ingress/SDK requests. Construction is a subset of the full path; never sum separately sampled medians as if they were additive.
 5. If local profiling cannot attribute a section, mark it `Unresolved`. Do not substitute `performance.now()` deltas within continuous Worker CPU work: Workers timers advance on I/O. Node `process.cpuUsage()`, DevTools and wall time are diagnostics only, not the Free release gate.
 
-The existing `scripts/test-direct-mcp.mjs` deliberately refuses localhost in CPU mode; **do not weaken that isolated-host safety check** to obtain a local profile. Use an independent local-only request driver. Never run the lifecycle suites or a destructive Raindrop operation for CPU investigation.
+Use the new **loopback-only** `scripts/profile-local-cpu.mjs` driver. It accepts only plain HTTP localhost / 127.0.0.1 / [::1], disables redirects, prints operation labels but no response contents, and makes no read or write calls to the Raindrop API. Use disposable **synthetic tokens** in a local untracked `.dev.vars` (not in the repository or profiler export), e.g. `MCP_ACCESS_TOKEN=local-mcp-profile-token` and `RAINDROP_ACCESS_TOKEN=synthetic-not-a-real-credential`. Ensure they match the driver’s local token. With Wrangler running on `127.0.0.1:8787`, record **separate** DevTools profiles for the following commands from the Worker package directory:
+
+```bash
+node scripts/profile-local-cpu.mjs initialize
+node scripts/profile-local-cpu.mjs tools_list
+node scripts/profile-local-cpu.mjs diagnostics_local
+```
+
+The driver defaults to 2 warmup calls and 10 samples per operation; change these using `RAINDROP_LOCAL_PROFILE_WARMUPS` and `RAINDROP_LOCAL_PROFILE_SAMPLES` (maximum 10 and 50). Logs are progress markers **not CPU times**. Fail any malformed response, JSON-RPC error, unexpected 26-tool count, or failed local diagnostics. Collect actual function-level CPU results from the DevTools profile only. These local samples do not establish Cloudflare native CPU compliance.
+
+The existing `scripts/test-direct-mcp.mjs` deliberately refuses localhost in CPU mode; **do not weaken that isolated-host safety check** to obtain a local profile. Never run lifecycle suites or a destructive Raindrop operation for CPU investigation.
 
 ## Phase B: decision and release evidence
 
