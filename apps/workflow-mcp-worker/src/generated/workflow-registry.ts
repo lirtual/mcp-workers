@@ -208,6 +208,89 @@ export const workflowRegistry = [
     }
   },
   {
+    "sourcePath": "workflows/raindrop-daily-snapshot.yaml",
+    "definitionDigest": "3ce110f8ff39b95b932ec886d88450782831a3d854b7776732da948af8dc044d",
+    "metadata": {
+      "id": "raindrop-daily-snapshot",
+      "name": "Daily Raindrop snapshot",
+      "description": "Fetch the latest 20 Raindrop bookmarks through the fixed read-only MCP connection.",
+      "definitionDigest": "3ce110f8ff39b95b932ec886d88450782831a3d854b7776732da948af8dc044d",
+      "triggerTypes": [
+        "manual",
+        "schedule"
+      ],
+      "inputs": {},
+      "stepCapabilities": [
+        "mcp.call"
+      ]
+    },
+    "plan": {
+      "dslVersion": 1,
+      "id": "raindrop-daily-snapshot",
+      "name": "Daily Raindrop snapshot",
+      "description": "Fetch the latest 20 Raindrop bookmarks through the fixed read-only MCP connection.",
+      "inputs": {},
+      "triggers": [
+        {
+          "type": "manual"
+        },
+        {
+          "type": "schedule",
+          "id": "daily-nine",
+          "cron": "0 9 * * *",
+          "timezone": "Asia/Shanghai",
+          "misfire": "latest"
+        }
+      ],
+      "steps": {
+        "fetch": {
+          "uses": "mcp.call",
+          "executor": "cloudflare",
+          "needs": [],
+          "with": {
+            "connection": "raindrop",
+            "tool": "list_raindrops",
+            "arguments": {
+              "collectionId": 0,
+              "page": 0,
+              "perPage": 20,
+              "sort": "-created",
+              "skipCache": true
+            }
+          }
+        }
+      },
+      "outputs": {
+        "bookmarks": {
+          "$expr": {
+            "kind": "ref",
+            "path": [
+              "steps",
+              "fetch",
+              "outputs",
+              "result",
+              "structuredContent",
+              "items"
+            ]
+          }
+        },
+        "count": {
+          "$expr": {
+            "kind": "ref",
+            "path": [
+              "steps",
+              "fetch",
+              "outputs",
+              "result",
+              "structuredContent",
+              "count"
+            ]
+          }
+        }
+      }
+    }
+  },
+  {
     "sourcePath": "workflows/sequential-http-smoke.yaml",
     "definitionDigest": "320d63de02a8296fea0eb9e5ca59b3388ca8f6d8f98115e40e0840fa4da6d31f",
     "metadata": {
