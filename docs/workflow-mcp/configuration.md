@@ -23,13 +23,28 @@ The generator rejects missing/malformed context before Wrangler deployment.
 Keep the D1 database ID, Worker name, R2 bucket and callback base URL tied to
 the same real deployment. Do not manually edit the generated file.
 
-## Pending production contract migration (T15)
+## Stable deployment credentials (T15, staged; production activation pending)
 
 Five *independent, stable* platform secrets are required:
 `MCP_ACCESS_TOKEN`, `GITHUB_ACTIONS_TOKEN` (repository-scoped fine-grained
 Actions token), `EXECUTOR_LEASE_SECRET`, `R2_ACCESS_KEY_ID`, and
-`R2_SECRET_ACCESS_KEY`. Provision them as protected GitHub environment secrets
-for deployment and Cloudflare Worker secrets. The Actions token is **not**
+`R2_SECRET_ACCESS_KEY`. Provision the five values as protected GitHub environment secrets for
+`workflow-mcp-worker` (names exactly as above) before making the PR mergeable.
+The deploy job now consumes these persisted values, validates that none are
+missing and never generates or derives new values during an ordinary run.
+The production Worker already has bindings named for the five platform
+credentials; their values cannot be recovered from metadata or assumed to
+match GitHub's. The GitHub environment must contain the **same effective
+values** as the existing live Worker to preserve active MCP clients and
+in-flight Attempt leases. A missing environment secret intentionally blocks
+deployment before D1 migrations rather than regenerating it.
+
+The legacy `TRIGGER_SMOKE_WEBHOOK_TOKEN` remains an additional temporary
+migration prerequisite until the smoke trigger replacement is implemented.
+The Raindrop Connection also needs an independent
+`RAINDROP_MCP_ACCESS_TOKEN` secret before its manual production tracer.
+Do not mistake these transitional business/test bindings for the five
+platform credentials. The Actions token is **not**
 the deploy job's ephemeral `github.token`. Never print credentials or upload
 the generated secret file as deployment evidence.
 
