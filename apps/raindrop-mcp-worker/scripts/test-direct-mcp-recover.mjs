@@ -81,10 +81,23 @@ async function removeEmpty(id, expectedTitle) {
 }
 
 try {
-  await rpc("initialize", {
-    protocolVersion: "2025-11-25", capabilities: {},
-    clientInfo: { name: "raindrop-v3-recovery", version: "1.0.0" },
-  });
+  let initialized = false;
+  for (let attempt = 0; attempt < 12; attempt++) {
+    try {
+      await rpc("initialize", {
+        protocolVersion: "2025-11-25", capabilities: {},
+        clientInfo: { name: "raindrop-v3-recovery", version: "1.0.0" },
+      });
+      initialized = true;
+      break;
+    } catch (error) {
+      // Only reissue the read-only handshake when a newly rotated MCP
+      // credential has not reached the edge. Never retry a mutation.
+      if (!String(error).includes("HTTP 401 for initialize") || attempt === 11) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+  }
+  assert(initialized, "Read-only direct MCP handshake did not complete");
   const currentSource = await inspectBookmark();
   console.log("PASS: exact test-owned bookmark identity and source verified");
 
