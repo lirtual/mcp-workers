@@ -62,15 +62,14 @@ config.workflows = [
     class_name: 'WorkflowRuntime'
   }
 ];
-config.triggers = { crons: [] };
+config.triggers = { crons: ['* * * * *'] };
 config.r2_buckets = [{ binding: 'ARTIFACTS', bucket_name: r2Bucket }];
 config.vars = {
   ...(config.vars ?? {}),
   GITHUB_REPOSITORY: repository,
   GITHUB_REPOSITORY_ID: repositoryId,
   R2_ACCOUNT_ID: accountId,
-  R2_BUCKET_NAME: r2Bucket,
-  SMOKE_MODERN_MCP_ENDPOINT: `${baseUrl}/mcp`
+  R2_BUCKET_NAME: r2Bucket
 };
 
 await writeFile(outputPath, JSON.stringify(config, null, 2) + '\n', 'utf8');
