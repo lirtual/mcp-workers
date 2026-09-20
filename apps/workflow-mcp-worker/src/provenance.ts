@@ -19,6 +19,7 @@ export interface ReleaseCompatibilityRecord {
   dslVersion: number;
   manifestVersions: number[];
   hasInvalidManifest: boolean;
+  normalizedPlanJson?: string;
 }
 
 export interface ReleaseCompatibilityStore {
@@ -94,6 +95,11 @@ export function assertReleaseCompatibility(
     }
     if (record.hasInvalidManifest) {
       failures.push(`${record.runId}:invalid-execution-manifest`);
+    }
+    // A pinned plan survives a registry update, but its removed legacy smoke
+    // connection would not resolve. Reject incompatible nonterminal runs.
+    if (record.normalizedPlanJson && /"smoke-(?:modern|readonly)"/.test(record.normalizedPlanJson)) {
+      failures.push(`${record.runId}:removed-smoke-connection`);
     }
     for (const version of record.manifestVersions) {
       if (version !== SUPPORTED_EXECUTION_MANIFEST_VERSION) {
