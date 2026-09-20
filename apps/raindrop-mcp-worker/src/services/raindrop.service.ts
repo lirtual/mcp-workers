@@ -611,6 +611,41 @@ export default class RaindropService {
   }
 
   /**
+   * One source-scoped upstream mutation. The caller validates the explicit IDs
+   * and source. Never retry a submitted write or manufacture per-ID results.
+   */
+  async mutateRaindropsV3(
+    kind: "update" | "delete",
+    collectionId: number,
+    ids: number[],
+    fields: { important?: boolean; tags?: string[]; collection?: { $id: number } } = {},
+  ): Promise<{ modified: number | null }> {
+    const { data } = await this.withWriteRateLimit(async () =>
+      kind === "update"
+        ? (this.client as any).PUT("/raindrops/{collectionId}", {
+            params: { path: { collectionId } },
+            body: { ids, ...fields },
+          })
+        : (this.client as any).DELETE("/raindrops/{collectionId}", {
+            params: { path: { collectionId } },
+            body: { ids },
+          }),
+    );
+    // A successful HTTP status alone does not establish that the mutation ran.
+    // Missing/malformed acknowledgement is uncertain once a write was submitted.
+    if (data?.result !== true) {
+      throw new UpstreamError("Upstream mutation acknowledgement is missing");
+    }
+    this.cacheBookmarks.clear();
+    this.cacheSearch.clear();
+    this.cacheCollections.clear();
+    return {
+      modified: Number.isSafeInteger(data.modified) && data.modified >= 0
+        ? data.modified : null,
+    };
+  }
+
+  /**
    * Fetch a single bookmark by ID
    * Raindrop.io API: GET /raindrop/{id}
    */
