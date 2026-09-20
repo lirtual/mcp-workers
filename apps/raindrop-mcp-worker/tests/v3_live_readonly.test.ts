@@ -60,8 +60,9 @@ describeLive("T09 real-account read-only MCP smoke (never changes existing data)
     const result = await client.callTool({ name, arguments: args });
     // Deliberately avoid asserting on/printing real profile, bookmark or tag data.
     expect(result.isError === true).toBe(false);
-    expect(result.structuredContent?.ok).toBe(true);
-    expect(result.structuredContent?.meta).toBeDefined();
+    const envelope = result.structuredContent as { ok?: boolean; meta?: unknown } | undefined;
+    expect(envelope?.ok).toBe(true);
+    expect(envelope?.meta).toBeDefined();
   });
 
   it("reads profile resource without logging the user's identity", async () => {
@@ -72,24 +73,24 @@ describeLive("T09 real-account read-only MCP smoke (never changes existing data)
     expect(content && "text" in content && typeof content.text === "string").toBe(true);
   });
 
-  it.each(["duplicates", "broken"] as const)(
-    "checks the %s filter without inferring semantics or plan access",
-    async (kind, context) => {
+  for (const kind of ["duplicates", "broken"] as const) {
+    it(`checks the ${kind} filter without inferring semantics or plan access`, async (context) => {
       const result = await client.callTool({
         name: "library_audit",
         arguments: { kind, collectionId: 0, page: 0, perpage: 1 },
       });
+      const envelope = result.structuredContent as
+        { ok?: boolean; error?: { code?: string } } | undefined;
       if (result.isError === true) {
-        const error = result.structuredContent?.error as { code?: string } | undefined;
-        if (error?.code === "FEATURE_UNAVAILABLE" || error?.code === "FEATURE_UNVERIFIED") {
-          // Report the blocked capability separately, rather than turning a
-          // subscription limitation into a false passing assertion.
+        const code = envelope?.error?.code;
+        if (code === "FEATURE_UNAVAILABLE" || code === "FEATURE_UNVERIFIED") {
+          // Record subscription limitations as an explicit skipped test.
           context.skip();
           return;
         }
       }
       expect(result.isError === true).toBe(false);
-      expect(result.structuredContent?.ok).toBe(true);
-    },
-  );
+      expect(envelope?.ok).toBe(true);
+    });
+  }
 });
