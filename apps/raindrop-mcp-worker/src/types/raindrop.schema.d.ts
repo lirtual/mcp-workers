@@ -712,12 +712,10 @@ export type components = {
             readonly color?: "blue" | "brown" | "cyan" | "gray" | "green" | "indigo" | "orange" | "pink" | "purple" | "red" | "teal" | "yellow";
         };
         readonly TagOperationRequest: {
-            /** @description Original tag name (for rename operation) */
-            readonly from?: string;
-            /** @description New tag name */
-            readonly to?: string;
-            /** @description Array of tag names (for merge operation) */
-            readonly tags?: readonly string[];
+            /** @description Exact source tag names to rename or merge */
+            readonly tags: readonly string[];
+            /** @description New tag name used for rename or merge */
+            readonly replace: string;
         };
         readonly ImportBookmarksRequest: {
             /**
