@@ -1,4 +1,4 @@
-/* global process, fetch, URL, AbortSignal, console */
+/* global process, fetch, URL, AbortSignal, console, setTimeout */
 import { strict as assert } from "node:assert";
 import { randomUUID } from "node:crypto";
 
