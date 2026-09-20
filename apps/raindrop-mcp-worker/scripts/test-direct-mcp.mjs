@@ -156,10 +156,14 @@ if (cpuProfile) {
   ];
   for (const [label, method, params, count] of samples) {
     for (let i = 0; i < count; i++) {
+      // Native invocation logs might omit custom request headers. UTC boundaries
+      // provide a second, non-sensitive way to correlate isolated operations.
+      console.log(`CPU_SAMPLE_BEGIN op=${label} sample=${i + 1}/${count} utc=${new Date().toISOString()}`);
       const result = await mcp(method, params);
       if (method === "tools/call") assert.equal(result?.structuredContent?.ok, true, `Read-only ${label} failed`);
       else if (method === "initialize") assert(result?.serverInfo, "initialize failed");
       else assert.equal(result?.tools?.length, 26, "tools/list changed");
+      console.log(`CPU_SAMPLE_END op=${label} sample=${i + 1}/${count} utc=${new Date().toISOString()}`);
     }
     console.log(`PASS: read-only CPU sample group ${label}, count=${count} (no account content logged)`);
   }
