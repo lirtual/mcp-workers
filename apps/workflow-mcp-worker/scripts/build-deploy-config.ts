@@ -23,6 +23,26 @@ const d1Name = required('WORKFLOW_MCP_D1_DATABASE_NAME');
 const d1Id = required('WORKFLOW_MCP_D1_DATABASE_ID');
 const r2Bucket = required('WORKFLOW_MCP_R2_BUCKET');
 const baseUrl = required('WORKFLOW_MCP_URL').replace(/\/+$/, '');
+const repository = required('GITHUB_REPOSITORY');
+const repositoryId = required('GITHUB_REPOSITORY_ID');
+const accountId = required('CLOUDFLARE_ACCOUNT_ID');
+if (repository !== 'lirtual/mcp-workers') {
+  throw new Error('GITHUB_REPOSITORY does not match the trusted executor repository.');
+}
+if (repositoryId !== '1371085786') {
+  throw new Error('GITHUB_REPOSITORY_ID does not match the trusted executor repository ID.');
+}
+if (!/^[a-f0-9]{32}$/i.test(accountId)) {
+  throw new Error('CLOUDFLARE_ACCOUNT_ID must be a 32-character Cloudflare account ID.');
+}
+if (!/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(r2Bucket)) {
+  throw new Error('WORKFLOW_MCP_R2_BUCKET must be a valid R2 bucket name.');
+}
+const parsedUrl = new URL(baseUrl);
+if (parsedUrl.protocol !== 'https:' || parsedUrl.username || parsedUrl.password ||
+    parsedUrl.search || parsedUrl.hash) {
+  throw new Error('WORKFLOW_MCP_URL must be an HTTPS URL without credentials or query.');
+}
 
 config.name = workerName;
 config.workers_dev = true;
@@ -42,12 +62,17 @@ config.workflows = [
     class_name: 'WorkflowRuntime'
   }
 ];
-config.triggers = { crons: [] };
+// A deployment must not silently remove the checked-in scheduler trigger.
+const crons = config.triggers?.crons;
+if (!Array.isArray(crons) || crons.length !== 1 || crons[0] !== '* * * * *') {
+  throw new Error('Canonical one-minute Workflow MCP Cron is missing or inconsistent.');
+}
 config.r2_buckets = [{ binding: 'ARTIFACTS', bucket_name: r2Bucket }];
 config.vars = {
   ...(config.vars ?? {}),
-  GITHUB_EXECUTOR_REF: 'main',
-  GITHUB_EXECUTOR_WORKFLOW: 'workflow-executor.yml',
+  GITHUB_REPOSITORY: repository,
+  GITHUB_REPOSITORY_ID: repositoryId,
+  R2_ACCOUNT_ID: accountId,
   R2_BUCKET_NAME: r2Bucket,
   SMOKE_MODERN_MCP_ENDPOINT: `${baseUrl}/mcp`
 };
