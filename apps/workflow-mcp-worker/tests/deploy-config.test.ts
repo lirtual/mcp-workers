@@ -42,6 +42,7 @@ describe('Workflow MCP deploy configuration expansion', () => {
     });
     expect(config?.vars).not.toHaveProperty('GITHUB_OIDC_ISSUER');
     expect(config?.vars).not.toHaveProperty('GITHUB_EXECUTOR_REF');
+    expect(config?.vars).not.toHaveProperty('SMOKE_MODERN_MCP_ENDPOINT');
     expect(config?.r2_buckets).toEqual([
       { binding: 'ARTIFACTS', bucket_name: 'workflow-mcp-artifacts' }
     ]);
