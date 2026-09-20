@@ -24,8 +24,9 @@ export async function readBounded(
   const aborted = signal
     ? new Promise<never>((_resolve, reject) => {
         onAbort = () => {
-          void reader.cancel().catch(() => undefined);
+          // Settle the abort race before cancellation resolves a pending read as done.
           reject(new DOMException("Upstream reading aborted", "AbortError"));
+          void reader.cancel().catch(() => undefined);
         };
         signal.addEventListener("abort", onAbort, { once: true });
         if (signal.aborted) onAbort();
