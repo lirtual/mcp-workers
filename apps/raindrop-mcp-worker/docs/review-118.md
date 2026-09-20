@@ -1,63 +1,35 @@
-# #118 two-axis pre-merge review — 2026-09-20
+# #118 two-axis review — 2026-09-20
 
-**Status: open findings; NOT an approval or permission to merge/deploy.**
-Fixed source baseline: `93ff4f343c029aabf1a5a3a56056d0342760037e`;
-reviewed PR branch through `56d7103c5cd88d4397566c4c42e66eef8828bddd`.
-Sources: [spec #110](https://github.com/lirtual/mcp-workers/issues/110),
-[ticket #118](https://github.com/lirtual/mcp-workers/issues/118),
-`CONTEXT.md` and `docs/adr/0001-replace-legacy-tool-contract.md`.
-No repository-wide `CODING_STANDARDS.md` / `CONTRIBUTING.md` was present.
-This is a manual two-axis review, **not** a claim of separate parallel reviewer or live-account validation.
+**Status: manual Standards/Spec re-review completed on pinned source; independent parallel reviewer sign-off and PR merge remain outstanding.** This document is **not** production deployment approval.
 
-## Standards axis — architecture and code quality
+- Source-spec baseline: `93ff4f343c029aabf1a5a3a56056d0342760037e`.
+- Verified PR merge base against current main: `9434aa25d96244087e6b27fb2302c0e620a8d14c`.
+- Reviewed source HEAD: `f9421be691d3cefc6bf9a6322a8aa5c8edb2d3fb` (documentation-only changes after `a4486585b81db5bb98a518b734f35939ebbade83`; rerun checks after any further code change).
+- Sources: [spec #110](https://github.com/lirtual/mcp-workers/issues/110), [ticket #118](https://github.com/lirtual/mcp-workers/issues/118), `CONTEXT.md`, and `docs/adr/0001-replace-legacy-tool-contract.md`.
+- No repository-wide `CODING_STANDARDS.md` / `CONTRIBUTING.md` was found. The review below checks each axis independently but was not performed by two isolated subagents.
 
-- **Open — generated boundary undermined by `as any`.**
-  `src/services/raindrop.service.ts:255–259` and other v3 calls bypass
-  `openapi-fetch<paths>` typing, so the generated definition cannot catch a
-  wrong HTTP path or method. Resolve while pruning and regenerating the YAML.
-  Do not declare OpenAPI/type alignment until this is done.
-- **Open — request body preflight deadline.**
-  `src/services/execution-budget.ts:125–132` bounds the request-body size
-  before starting the outbound timeout; a stalled source stream is not itself
-  protected by that timer. The normal tool JSON body is finite, but the
-  specified 20-second wall budget should also apply to preflight reads.
-  Add a bounded abort and a no-submit test before final approval.
-- **Addressed in this branch — duplicate v2 source.**
-  Removed obsolete public tool modules, historical tests and service methods.
-  `src/tools/index.ts` now enumerates the 26 v3 actions, with no v2 aliases.
-- **Addressed in this branch — response semantics.**
-  Explicit HTTP 4xx and `result:false` write replies are now classified as
-  `UPSTREAM_REJECTED` / `failed`, distinct from unknown (5xx, 429,
-  transport ambiguity). Error envelopes include explicit target IDs/scope;
-  a single batch request does not manufacture per-ID or multi-request status.
-  Relevant fixtures: `tests/v3_mutation_contract.test.ts`.
+## Standards axis — architecture and reliability
 
-## Spec axis — #110 / #118 compliance
+**Resolved: typed upstream boundary.** `src/services/raindrop.service.ts:256–706` now invokes `openapi-fetch<paths>` for active routes without `(this.client as any)`. The compiler exposed and forced fixes for incorrect optional create fields, nullable parent, allowed sorts, response counts and tag write body. The source uses a runtime check for the permitted sort values and refuses `parent=null` with `FEATURE_UNVERIFIED`; it does not silently drop a requested root move.
 
-- **Blocking — active OpenAPI incomplete.**
-  `raindrop-complete.yaml:72` still contains an obsolete
-  `/collections/{parentId}/childrens` route. The active
-  `/collections/childrens` and `/collection/-99` routes are absent; the
-  `/tags` key lacks global PUT/DELETE, with historical `/tags/0` still in
-  the generated source. See [route-by-route audit](./openapi-audit.md).
-  YAML and the committed generated `src/types/raindrop.schema.d.ts`
-  must be updated **together** and checked deterministically.
-- **Pending — isolated live acceptance (#119).**
-  The duplicate deletion gate and moving a collection to root
-  (`parent=null`) remain disabled until documented disposable-account
-  evidence. This is correct fail-closed behavior, not a passing live test.
-- **Offline contract checked previously** for 26 tool discovery,
-  input/output schemas, MCP transport, strict resource URIs, bounded
-  reads/writes, and Wrangler dry-run. Any new code requires its own
-  successful CI result; prior green runs are not transferable to later SHAs.
+**Resolved: bounded body preflight.** `src/services/execution-budget.ts:114–175` uses the remaining wall deadline, an abort controller and an 8-second maximum while reading the request body, including a pre-aborted-signal check. `tests/core_reliability.test.ts:220–264` checks stalled input and caller abort; both require zero submissions and zero write attempts. All responses are size-bounded and outbound redirects are not automatically followed.
 
-## Exit criteria
+**Resolved: legacy and response handling.** Removed the obsolete 17-tool files/tests/service methods. `src/tools/index.ts` enumerates 26 v3 tools. Acknowledged writes keep known status when result data exceeds 2 MiB; unacknowledged writes are not retried or mislabeled as succeeded. `tests/v3_mutation_contract.test.ts`, `tests/v3_result_limit.test.ts`, and `tests/retry_safety.test.ts` cover these distinctions.
 
-1. Constrain YAML and regenerate types with `pnpm run generate:schema`;
-   ensure `check:schema` passes from a clean checkout and remove needed
-   `as any` only when the generated signatures agree with official docs.
-2. Close the preflight abort finding with a focused test.
-3. Run application check, exact 26-tool MCP tests, and a fresh two-axis pass
-   pinned to the final commit; do not use this preliminary note as approval.
-4. Run #119 only against a disposable account and explicitly authorized
-   test objects; do not infer production readiness from dry-run CI.
+**Residual operational limitation (not a #118 code defect):** a successful Wrangler dry-run or fixed request/byte budgets alone do not establish Cloudflare Free-plan CPU/memory usage under full load. That evidence remains in #119.
+
+## Spec axis — #110 / #118 functional contract
+
+**Resolved: active OpenAPI and generated types.** The YAML has exactly 16 route shapes; it removes historical wrong or unused paths, adds GET `/collections/childrens`, DELETE `/collection/-99`, global PUT/DELETE `/tags`, and scopes GET/PUT/DELETE `/tags/{collectionId}` correctly. It drops unsupported DELETE `/raindrop/{id}` and POST `/highlights`. The declaration was regenerated with the pinned `openapi-typescript` command, and the deterministic `check:schema` passed in [CI #35515414295](https://github.com/lirtual/mcp-workers/actions/runs/35515414295). Historical unused **component models** remain, but are not advertised as supported operations. The temporary one-off schema-sync workflow was removed after committing the generated declaration.
+
+**Resolved: public tools/resources/prompts.** `tests/tool_contract.test.ts` and `tests/v3_resource_contract.test.ts` verify exact 26-tool discovery, input/output schemas through an MCP Client, strict full-string resource IDs and separate templates. Legacy Sampling/elicitation claims were removed, migration is described in README, and `docs/api-coverage.md` separates implementation, offline and live evidence.
+
+**Partial live evidence belongs to #119, not #118.** The isolated test Worker passed direct `/mcp` smoke, scoped bookmark and collection lifecycle, tag and highlight operations, cross-collection isolation, safety gates and exact-ID Trash deletion. The entitlement-gated duplicate/broken filters returned `FEATURE_UNAVAILABLE`, and both unverified destructive/root-move gates remain closed. The user requested **no Portal testing**; none is claimed. Refer to `docs/live-acceptance-119.md`. Production remains on v2.4.5.
+
+## Exit and remaining gates
+
+- [x] Contract source, generated types, request signatures and deterministic schema check align.
+- [x] Stalled preflight/abort and no-submit regression tests are present.
+- [x] Last code-changing commit `a4486585` passed application checks (typecheck, lint, offline tests, schema, Wrangler dry-run) in [CI #35515414295](https://github.com/lirtual/mcp-workers/actions/runs/35515414295).
+- [ ] Independently execute the separate Standards and Spec review on the final PR diff, and verify the newest documentation-only HEAD CI before formally closing #118.
+- [ ] Keep PR #120 Draft pending remaining #119 live/resource evidence and explicit production release decision. Never treat this review as permission to clear an existing account Trash.
