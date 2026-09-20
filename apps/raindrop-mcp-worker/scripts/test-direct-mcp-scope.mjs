@@ -110,8 +110,11 @@ try {
       "Wrong-source update reported a nonzero modification",
     );
   } catch (error) {
-    if (error?.name === "AssertionError") throw error;
-    // An explicit upstream error may be a valid source-scoping rejection.
+    // Rejecting the wrong source is valid, but never misclassify auth,
+    // timeout, or unknown submitted-write outcomes as source isolation.
+    if (!/^raindrop_bulk_update: (UPSTREAM_REJECTED|VALIDATION_ERROR),/.test(
+      String(error?.message || error),
+    )) throw error;
   }
   const guard = await getOwned("y");
   assert.equal(guard.collection?.$id, collections.b);
