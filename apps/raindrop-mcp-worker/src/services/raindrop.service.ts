@@ -1094,6 +1094,69 @@ export default class RaindropService {
    * Fetch highlights for a specific bookmark
    * Raindrop.io API: GET /raindrop/{id}/highlights
    */
+  /**
+   * Fetch one official highlight page. Never infer all highlights from one
+   * bookmark-list page; a single bookmark is handled by its detail endpoint.
+   */
+  async listHighlightsV3(
+    collectionId: number | undefined,
+    page: number,
+    perpage: number,
+  ): Promise<{ items: Highlight[]; count: number | null }> {
+    const { data } = await this.withRateLimit(async () =>
+      collectionId === undefined
+        ? (this.client as any).GET("/highlights", { params: { query: { page, perpage } } })
+        : (this.client as any).GET("/highlights/{collectionId}", {
+            params: { path: { collectionId }, query: { page, perpage } },
+          }),
+    );
+    if (!data || data.result === false || !Array.isArray(data.items)) {
+      throw new UpstreamError("Upstream highlights response is invalid or rejected");
+    }
+    return {
+      items: data.items as Highlight[],
+      count: Number.isSafeInteger(data.count) && data.count >= 0 ? data.count : null,
+    };
+  }
+
+  /**
+   * Write one highlight through the documented single-bookmark update API.
+   * The upstream does not provide a per-highlight mutation acknowledgement.
+   */
+  async mutateHighlightV3(
+    raindropId: number,
+    operation: "create" | "update" | "delete",
+    highlight: { _id?: string; text?: string; note?: string; color?: HighlightColor },
+  ): Promise<{ item: Bookmark | null; targetVerified: boolean }> {
+    const { data } = await this.withWriteRateLimit(async () =>
+      (this.client as any).PUT("/raindrop/{id}", {
+        params: { path: { id: raindropId } },
+        body: { highlights: [highlight] },
+      }),
+    );
+    if (!data || data.result === false) {
+      throw new UpstreamError("Upstream highlight mutation acknowledgement is missing");
+    }
+    const item = data.item && typeof data.item === "object" ? data.item as Bookmark : null;
+    this.cacheBookmarks.delete(`id:${raindropId}`);
+    this.cacheSearch.clear();
+    const returned = item?.highlights;
+    let targetVerified = false;
+    if (Array.isArray(returned) && highlight._id) {
+      const matched = returned.find((candidate) => candidate._id === highlight._id);
+      if (operation === "delete") {
+        targetVerified = matched === undefined;
+      } else if (operation === "update" && matched) {
+        targetVerified = Object.entries(highlight).every(([key, value]) =>
+          key === "_id" || (matched as unknown as Record<string, unknown>)[key] === value
+        );
+      }
+    }
+    // For creation the generated _id is not returned separately: do not guess
+    // it from the text, which can be identical to an existing highlight.
+    return { item, targetVerified };
+  }
+
   async getHighlights(raindropId: number): Promise<Highlight[]> {
     return this.withRateLimit(async () => {
       const { data } = await this.client.GET("/raindrop/{id}/highlights", {
