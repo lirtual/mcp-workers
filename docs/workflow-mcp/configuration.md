@@ -46,10 +46,13 @@ R2 verification is explicitly initiated separately, using an authorized test
 context and `scripts/run-deploy-tracer.ts`.
 
 Before production deployment, #123 requires an explicit operator-approved
-provisioning/cutover: align the seven separate Worker
-`MCP_ACCESS_TOKEN` bindings and update clients, provision the independent
-persistent Workflow platform credentials, convert the legacy `R2_ACCOUNT_ID` and `R2_ACCESS_KEY_ID` Secrets into non-secret
-configuration and the deployment variable respectively, and
+**Workflow configuration migration, not a shared-token cutover**. The operator
+confirmed on 2026-09-20 that all seven production Workers already share the
+same `MCP_ACCESS_TOKEN` value: **preserve all seven installed bindings and
+existing MCP clients/Portal connections**. Verify independent persistent
+Workflow platform credentials, convert the legacy `R2_ACCOUNT_ID` and
+`R2_ACCESS_KEY_ID` Secrets into non-secret configuration and the deployment
+variable respectively without changing the effective R2 credential pair, and
 safely remove obsolete smoke-only bindings **after** the new registry and
 compatibility checks are accepted. The deployment intentionally fails closed if
 the GitHub environment's R2 access ID is absent, a required runtime Secret is
@@ -66,7 +69,7 @@ business occurrence; #108 verifies that occurrence separately.
 ## Acceptance boundary
 
 #105, #121, #122 and #106 are code/configuration slices. Only #123 covers
-an **explicitly authorized live** migration and actual post-job acceptance;
+an **explicitly authorized live Workflow configuration** migration and actual post-job acceptance;
 #107 and #108 remain separate business verification. A green code-only CI run
 does not establish that seven live Secret values match, that the GitHub
 runtime credential works after CI exits, or that any schedule executed.
