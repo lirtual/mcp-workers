@@ -72,12 +72,12 @@ export const workflowRegistry = [
   },
   {
     "sourcePath": "workflows/mcp-connection-smoke.yaml",
-    "definitionDigest": "77d0571cced4750a8c7fff7a2ad47a4fe55072a409f28a8234f04c21b70c0364",
+    "definitionDigest": "0352a00bd84ee4f6f4f2daa8f34575c54bdf911a8a2c765f8369259a7238c6ef",
     "metadata": {
       "id": "mcp-connection-smoke",
       "name": "MCP connection smoke",
       "description": "Call one configured read-only MCP tool through the generic MCP adapter.",
-      "definitionDigest": "77d0571cced4750a8c7fff7a2ad47a4fe55072a409f28a8234f04c21b70c0364",
+      "definitionDigest": "0352a00bd84ee4f6f4f2daa8f34575c54bdf911a8a2c765f8369259a7238c6ef",
       "triggerTypes": [
         "manual"
       ],
@@ -103,7 +103,7 @@ export const workflowRegistry = [
           "executor": "cloudflare",
           "needs": [],
           "with": {
-            "connection": "smoke-modern",
+            "connection": "workflow-self",
             "tool": "workflow_list",
             "arguments": {}
           }
@@ -223,68 +223,6 @@ export const workflowRegistry = [
             "path": [
               "steps",
               "second",
-              "outputs",
-              "body"
-            ]
-          }
-        }
-      }
-    }
-  },
-  {
-    "sourcePath": "workflows/trigger-http-smoke.yaml",
-    "definitionDigest": "3fa645f75b39ef7c67109a6c91d7fff0ec672e6062e6265cf7874cc4498bb533",
-    "metadata": {
-      "id": "trigger-http-smoke",
-      "name": "Trigger HTTP smoke",
-      "description": "Exercise webhook and schedule admission through the same local workflow runtime.",
-      "definitionDigest": "3fa645f75b39ef7c67109a6c91d7fff0ec672e6062e6265cf7874cc4498bb533",
-      "triggerTypes": [
-        "webhook",
-        "schedule"
-      ],
-      "inputs": {},
-      "stepCapabilities": [
-        "http.read"
-      ]
-    },
-    "plan": {
-      "dslVersion": 1,
-      "id": "trigger-http-smoke",
-      "name": "Trigger HTTP smoke",
-      "description": "Exercise webhook and schedule admission through the same local workflow runtime.",
-      "inputs": {},
-      "triggers": [
-        {
-          "type": "webhook",
-          "id": "inbound",
-          "secret": "TRIGGER_SMOKE_WEBHOOK_TOKEN"
-        },
-        {
-          "type": "schedule",
-          "id": "every-five",
-          "cron": "*/5 * * * *",
-          "timezone": "UTC",
-          "misfire": "latest"
-        }
-      ],
-      "steps": {
-        "fetch": {
-          "uses": "http.read",
-          "executor": "cloudflare",
-          "needs": [],
-          "with": {
-            "url": "https://example.com/"
-          }
-        }
-      },
-      "outputs": {
-        "body": {
-          "$expr": {
-            "kind": "ref",
-            "path": [
-              "steps",
-              "fetch",
               "outputs",
               "body"
             ]
