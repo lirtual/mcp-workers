@@ -217,6 +217,55 @@ describe("streaming request safety", () => {
   });
 });
 
+describe("bounded request-body preflight", () => {
+  const stalledBody = () => new ReadableStream<Uint8Array>({
+    pull: () => new Promise<void>(() => undefined),
+  });
+
+  it("aborts a stalled preflight on its deadline without submitting or counting a write", async () => {
+    vi.useFakeTimers();
+    const upstream = vi.fn();
+    vi.stubGlobal("fetch", upstream);
+    const budget = new ExecutionBudget();
+    const request = new Request("https://api.raindrop.io/rest/v1/collection", {
+      method: "POST",
+      body: stalledBody(),
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+    const pending = budget.fetch(request);
+    const assertion = expect(pending).rejects.toMatchObject({
+      details: { submitted: false },
+    });
+    await vi.advanceTimersByTimeAsync(EXECUTION_LIMITS.fetchMs + 1);
+    await assertion;
+    expect(upstream).not.toHaveBeenCalled();
+    expect(budget.requestCount).toBe(0);
+    expect(budget.writeAttemptCount).toBe(0);
+  });
+
+  it("respects external preflight abort before a single upstream submission", async () => {
+    const upstream = vi.fn();
+    vi.stubGlobal("fetch", upstream);
+    const controller = new AbortController();
+    const budget = new ExecutionBudget();
+    const request = new Request("https://api.raindrop.io/rest/v1/collection", {
+      method: "POST",
+      body: stalledBody(),
+      signal: controller.signal,
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+    const pending = budget.fetch(request);
+    const assertion = expect(pending).rejects.toMatchObject({
+      details: { submitted: false },
+    });
+    controller.abort();
+    await assertion;
+    expect(upstream).not.toHaveBeenCalled();
+    expect(budget.requestCount).toBe(0);
+    expect(budget.writeAttemptCount).toBe(0);
+  });
+});
+
 describe("request budget concurrency", () => {
   it.each([
     ["GET", 3],
