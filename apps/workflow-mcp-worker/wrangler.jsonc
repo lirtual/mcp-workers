@@ -32,9 +32,7 @@
     }
   ],
   "triggers": {
-    "crons": [
-      "* * * * *"
-    ]
+    "crons": []
   },
   "vars": {},
   "secrets": {
