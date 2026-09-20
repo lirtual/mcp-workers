@@ -337,6 +337,28 @@ export class RaindropMCPService {
         {
           requestCount: this.raindropService.budget.requestCount,
           status: uncertain ? "unknown" : definiteFailure ? "failed" : "not_executed",
+          // Report only explicit selectors, never arbitrary user-provided bodies,
+          // links, note text, or credentials in an error envelope.
+          ...(() => {
+            const selectors = parsed.data as {
+              id?: unknown; raindropId?: unknown; ids?: unknown;
+              collectionId?: unknown; scope?: unknown;
+            };
+            const requestedIds = Array.isArray(selectors.ids)
+              ? selectors.ids
+              : typeof selectors.id === "number" ? [selectors.id]
+              : typeof selectors.raindropId === "number" ? [selectors.raindropId]
+              : undefined;
+            const scope = typeof selectors.collectionId === "number"
+              ? { collectionId: selectors.collectionId }
+              : typeof selectors.scope === "string" ? { type: selectors.scope }
+              : config.name === "trash_empty" ? { collectionId: -99 }
+              : undefined;
+            return {
+              ...(requestedIds ? { requestedIds } : {}),
+              ...(scope ? { scope } : {}),
+            };
+          })(),
         },
         {
           ...(details.status !== undefined ? { upstreamStatus: details.status } : {}),
