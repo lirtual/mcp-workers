@@ -40,10 +40,16 @@ jobs:
 
       - name: Verify isolated deploy credentials
         shell: bash
+        env:
+          RAINDROP_V3_TEST_ACCESS_TOKEN: ${{ secrets.RAINDROP_V3_TEST_ACCESS_TOKEN }}
         run: |
           set -euo pipefail
           if [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]]; then
-            echo "::error::Cloudflare deployment credential unavailable in the restricted environment"
+            echo "::error::Missing existing Cloudflare deployment credential"
+            exit 1
+          fi
+          if [[ -z "${RAINDROP_V3_TEST_ACCESS_TOKEN:-}" ]]; then
+            echo "::error::Set RAINDROP_V3_TEST_ACCESS_TOKEN as an environment secret; do not commit or log it"
             exit 1
           fi
 
@@ -53,11 +59,37 @@ jobs:
       - name: Check v3 application
         run: pnpm --filter raindrop-mcp-worker check
 
-      - name: Deploy ONLY the isolated test Worker
+      - name: Deploy and probe ONLY the isolated v3 test Worker
         working-directory: apps/raindrop-mcp-worker
         shell: bash
+        env:
+          RAINDROP_V3_TEST_ACCESS_TOKEN: ${{ secrets.RAINDROP_V3_TEST_ACCESS_TOKEN }}
         run: |
           set -euo pipefail
-          pnpm exec wrangler deploy --name raindrop-mcp-worker-v3-test
-          echo "Isolated target: raindrop-mcp-worker-v3-test"
-          echo "The production raindrop-mcp-worker is not a deploy target."
+          umask 077
+          secrets_file="$RUNNER_TEMP/raindrop-v3-secrets-$$.json"
+          trap 'rm -f "$secrets_file"' EXIT
+
+          # Only the isolated Worker receives these two credentials.
+          # Generate the MCP transport secret per run; it is never printed.
+          mcp_token="$(openssl rand -hex 32)"
+          echo "::add-mask::$mcp_token"
+          echo "::add-mask::$RAINDROP_V3_TEST_ACCESS_TOKEN"
+          export mcp_token
+
+          node --input-type=module -e '
+            import fs from "node:fs";
+            fs.writeFileSync(process.argv[1], JSON.stringify({
+              RAINDROP_ACCESS_TOKEN: process.env.RAINDROP_V3_TEST_ACCESS_TOKEN,
+              MCP_ACCESS_TOKEN: process.env.mcp_token,
+            }), { mode: 0o600 });
+          ' "$secrets_file"
+
+          pnpm exec wrangler deploy --name raindrop-mcp-worker-v3-test --secrets-file "$secrets_file"
+
+          export MCP_ACCESS_TOKEN="$mcp_token"
+          export RAINDROP_V3_TEST_URL="https://raindrop-mcp-worker-v3-test.aiyaya.workers.dev"
+          # Direct HTTPS/JSON-RPC over /mcp, not Portal; only read-only actions.
+          node scripts/test-direct-mcp.mjs
+
+          echo "Direct isolated v3 MCP smoke passed (no account contents or secrets logged)."
