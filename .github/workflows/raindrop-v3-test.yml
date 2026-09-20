@@ -61,6 +61,7 @@ jobs:
           node --check apps/raindrop-mcp-worker/scripts/test-direct-mcp-lifecycle.mjs
           node --check apps/raindrop-mcp-worker/scripts/test-direct-mcp-scope.mjs
           node --check apps/raindrop-mcp-worker/scripts/test-direct-mcp-remainder.mjs
+          node --check apps/raindrop-mcp-worker/scripts/test-direct-mcp-recover.mjs
           node --check apps/raindrop-mcp-worker/scripts/test-direct-mcp-nested-trash.mjs
 
       - name: Deploy and probe ONLY the isolated v3 test Worker
@@ -92,6 +93,14 @@ jobs:
           export RAINDROP_V3_TEST_URL="https://raindrop-mcp-worker-v3-test.aiyaya.workers.dev"
           # Probe max 50-item read page before any test-owned writes.
           # Bounded authentication-propagation retry is read-only; never replay writes.
+          # Recovery mode is activated by a temporary, checked-in marker.
+          # It never creates new objects or starts the regular mutation suites.
+          if [[ -f scripts/.raindrop-recovery-only ]]; then
+            node scripts/test-direct-mcp-recover.mjs
+            echo "Isolated test-owned recovery completed; regular suites intentionally skipped."
+            exit 0
+          fi
+
           # Direct HTTPS/JSON-RPC over /mcp, not Portal; only read-only actions.
           node scripts/test-direct-mcp.mjs
           # Tag writes use UUID-suffixed test-owned names and explicit collection scope.
