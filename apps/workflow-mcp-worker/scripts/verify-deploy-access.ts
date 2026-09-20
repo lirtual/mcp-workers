@@ -27,7 +27,13 @@ async function verifyTools(url: string, token: string, requiredTool: string): Pr
       jsonrpc: '2.0',
       id: 'predeploy-access',
       method: 'tools/list',
-      params: {}
+      params: {
+        _meta: {
+          'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+          'io.modelcontextprotocol/clientInfo': { name: 'workflow-deploy-preflight', version: '0.1.0' },
+          'io.modelcontextprotocol/clientCapabilities': {}
+        }
+      }
     }),
     signal: AbortSignal.timeout(20_000)
   });
@@ -45,10 +51,13 @@ async function verifyTools(url: string, token: string, requiredTool: string): Pr
     : response;
   if (!data) throw new Error(`Predeployment ${requiredTool} returned no response envelope.`);
   const envelope = JSON.parse(data) as {
+    jsonrpc?: string;
+    id?: string | number | null;
     error?: unknown;
     result?: { tools?: Array<{ name?: string }> };
   };
-  if (envelope.error || !envelope.result?.tools?.some(tool => tool.name === requiredTool)) {
+  if (envelope.jsonrpc !== '2.0' || envelope.id !== 'predeploy-access' ||
+      envelope.error || !envelope.result?.tools?.some(tool => tool.name === requiredTool)) {
     throw new Error(`Predeployment ${requiredTool} was not available at the authenticated endpoint.`);
   }
 }
