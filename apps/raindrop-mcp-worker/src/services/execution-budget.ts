@@ -15,23 +15,40 @@ export const EXECUTION_LIMITS = {
 export async function readBounded(
   stream: ReadableStream<Uint8Array> | null,
   maxBytes: number,
+  signal?: AbortSignal,
 ): Promise<Uint8Array> {
   if (!stream) return new Uint8Array(0);
+  if (signal?.aborted) throw new DOMException("Upstream reading aborted", "AbortError");
   const reader = stream.getReader();
+  let onAbort: (() => void) | undefined;
+  const aborted = signal
+    ? new Promise<never>((_resolve, reject) => {
+        onAbort = () => {
+          void reader.cancel().catch(() => undefined);
+          reject(new DOMException("Upstream reading aborted", "AbortError"));
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+        if (signal.aborted) onAbort();
+      })
+    : undefined;
   const parts: Uint8Array[] = [];
   let size = 0;
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = aborted
+        ? await Promise.race([reader.read(), aborted])
+        : await reader.read();
       if (done) break;
       size += value.byteLength;
       if (size > maxBytes) {
-        // Request.clone() tees the body; awaiting cancellation can hang while\n        // the other branch remains unread. Stop reading immediately instead.\n        void reader.cancel().catch(() => undefined);
+        // Request.clone() tees the body; awaiting cancellation can hang while
+        // the other branch remains unread. Stop reading immediately instead.\n        void reader.cancel().catch(() => undefined);
         throw new ValidationError("Payload exceeds the configured byte limit");
       }
       parts.push(value);
     }
   } finally {
+    if (signal && onAbort) signal.removeEventListener("abort", onAbort);
     reader.releaseLock();
   }
   const result = new Uint8Array(size);
@@ -140,6 +157,7 @@ export class ExecutionBudget {
         const bytes = await readBounded(
           response.body,
           EXECUTION_LIMITS.responseBytes,
+          controller.signal,
         );
         return new Response(bytes.buffer as ArrayBuffer, {
           status: response.status,
