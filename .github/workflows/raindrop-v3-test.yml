@@ -84,5 +84,7 @@ jobs:
           export RAINDROP_V3_TEST_URL="https://raindrop-mcp-worker-v3-test.aiyaya.workers.dev"
           # Direct HTTPS/JSON-RPC over /mcp, not Portal; only read-only actions.
           node scripts/test-direct-mcp.mjs
+          # Mutate only brand-new test-owned IDs, then use scoped cleanup.
+          node scripts/test-direct-mcp-lifecycle.mjs
 
-          echo "Direct isolated v3 MCP smoke passed (no account contents or secrets logged)."
+          echo "Direct isolated v3 MCP smoke and owned lifecycle completed (no account contents or secrets logged)."
