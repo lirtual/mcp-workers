@@ -12,13 +12,6 @@ const tag = z.string().min(1);
 const names = z.array(tag).min(1).max(50).refine(
   (value) => new Set(value).size === value.length, "Names must be distinct",
 );
-const scope = z.object({
-  scope: z.enum(["all", "collection"]),
-  collectionId: collectionId.optional(),
-}).strict().refine(
-  (value) => value.scope === "all" ? value.collectionId === undefined : value.collectionId !== undefined,
-  { message: "scope=all forbids collectionId; scope=collection requires it", path: ["collectionId"] },
-);
 const listSchema = z.object({
   collectionId: collectionId.optional(), page, perpage,
 }).strict();
