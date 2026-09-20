@@ -73,9 +73,28 @@ export function toolSuccess(
   const structuredContent = { ok: true, data, meta };
   if (new TextEncoder().encode(JSON.stringify(structuredContent)).byteLength >
       EXECUTION_LIMITS.resultBytes) {
+    // Once the upstream has acknowledged a write, response serialization must
+    // never make it look failed or unknown. Preserve the known write status
+    // and scope while omitting only the oversized result data.
+    if (meta.status === "succeeded" || meta.status === "partial") {
+      const warnings = Array.isArray(meta.warnings) ? meta.warnings.filter(
+        (warning): warning is string => typeof warning === "string",
+      ) : [];
+      return {
+        content: shortText("Write accepted; result data exceeds 2 MiB and was omitted. Read the target for details."),
+        structuredContent: {
+          ok: true as const,
+          data: null,
+          meta: {
+            ...meta,
+            warnings: [...warnings, "Result data exceeds 2 MiB; read the target for details"],
+            outputOmitted: true,
+          },
+        },
+      };
+    }
     return toolFailure("RESPONSE_TOO_LARGE", "Tool result exceeds 2 MiB", {
       ...meta,
-      status: meta.status === "succeeded" ? "succeeded" : meta.status,
     });
   }
   return { content: shortText(message), structuredContent };
