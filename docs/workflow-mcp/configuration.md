@@ -1,7 +1,7 @@
 # Workflow MCP deployment configuration
 
 This document describes the staged migration in [v0.1 §27.1](v0.1-spec.md).
-Do not merge or deploy a partial migration until the full release gate passes.
+Do not enable the production schedule before the stable-credential release checks and manual Raindrop acceptance pass. The real production tracer runs as part of the deployment job, so the post-deploy acceptance evidence cannot exist before its first deployment.
 
 ## Source-controlled trust configuration
 
@@ -70,8 +70,9 @@ rather than regenerating secret values on each push.
 
 The initial migration is **not** complete merely because the generated config
 builds. T15 must pass two successive production deployments with stable
-credentials, compatibility checks and both real heavy/MCP tracers. Then T16
-must prove a manual Raindrop result. The generated configuration leaves Cron disabled by default. After the T16
+credentials, compatibility checks, and all three real tracers: heavy GitHub, self-MCP,
+and a manual Raindrop run with valid structured result (T16). Record the three
+Run IDs from deployment evidence. The generated configuration leaves Cron disabled by default. After the T16
 manual production tracer succeeds, set the protected GitHub environment variable
 `WORKFLOW_MCP_ENABLE_SCHEDULE=true` and dispatch the deployment workflow.
 Only then does the generator add exactly one `* * * * *` Cloudflare Cron.
