@@ -63,6 +63,59 @@ describe("Raindrop request budget", () => {
     expect(budget.requestCount).toBe(1);
   });
 
+  it("times out a stalled authenticated MCP ingress before reaching the SDK or upstream", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const stream = new ReadableStream<Uint8Array>({
+      pull: () => new Promise<void>(() => undefined),
+    });
+    const request = new Request("https://raindrop.example/mcp", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer portal-test",
+        "Content-Type": "application/json",
+      },
+      body: stream,
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+    const pending = worker.fetch(request, {
+      MCP_ACCESS_TOKEN: "portal-test",
+      RAINDROP_ACCESS_TOKEN: "upstream-test",
+    } as never);
+    const assertion = expect(pending).resolves.toMatchObject({ status: 408 });
+    await vi.advanceTimersByTimeAsync(EXECUTION_LIMITS.fetchMs + 1);
+    await assertion;
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("aborts authenticated ingress when the calling client disconnects", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const stream = new ReadableStream<Uint8Array>({
+      pull: () => new Promise<void>(() => undefined),
+    });
+    const controller = new AbortController();
+    const request = new Request("https://raindrop.example/mcp", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer portal-test",
+        "Content-Type": "application/json",
+      },
+      body: stream,
+      signal: controller.signal,
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+    const pending = worker.fetch(request, {
+      MCP_ACCESS_TOKEN: "portal-test",
+      RAINDROP_ACCESS_TOKEN: "upstream-test",
+    } as never);
+    const assertion = expect(pending).resolves.toMatchObject({ status: 408 });
+    controller.abort();
+    await assertion;
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("rejects oversized authenticated MCP ingress by actual streamed bytes", async () => {
     const request = new Request("https://raindrop.example/mcp", {
       method: "POST",
