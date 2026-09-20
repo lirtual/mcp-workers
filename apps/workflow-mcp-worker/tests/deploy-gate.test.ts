@@ -56,6 +56,7 @@ describe('Workflow MCP deploy gate contract', () => {
     );
     expect(text).toContain('R2_ACCESS_KEY_ID: ${{ vars.R2_ACCESS_KEY_ID }}');
     expect(text).toContain('wrangler secret list');
+    expect(text).toContain("['R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID']");
     expect(text).toContain('wrangler deploy --config');
     expect(text).not.toContain('--secrets-file');
     expect(text).not.toContain('openssl rand');
