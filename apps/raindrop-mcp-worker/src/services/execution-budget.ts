@@ -123,6 +123,9 @@ export class ExecutionBudget {
     const isRead = request.method === "GET";
     const release = isRead ? await this.acquireRead() : await this.acquireWrite();
     try {
+      if (request.signal.aborted) {
+        throw new UpstreamError("Request aborted before submission", { submitted: false, budget: true });
+      }
       // Count bytes before sending anything; never rely on Content-Length.
       // Preflight consumes the SAME wall deadline, and has its own timeout so
       // a stalled request stream cannot hold a read/write slot indefinitely.
@@ -137,6 +140,7 @@ export class ExecutionBudget {
         const preflight = new AbortController();
         const abortPreflight = () => preflight.abort();
         request.signal.addEventListener("abort", abortPreflight, { once: true });
+        if (request.signal.aborted) abortPreflight();
         const preflightTimeout = setTimeout(
           abortPreflight,
           Math.min(EXECUTION_LIMITS.fetchMs, remainingBeforePreflight),
@@ -165,6 +169,9 @@ export class ExecutionBudget {
           clearTimeout(preflightTimeout);
           request.signal.removeEventListener("abort", abortPreflight);
         }
+      }
+      if (request.signal.aborted) {
+        throw new UpstreamError("Request aborted before submission", { submitted: false, budget: true });
       }
       const remaining = this.remainingMs();
       if (remaining <= 0 || this.attemptsUsed >= EXECUTION_LIMITS.attempts) {
