@@ -31,23 +31,26 @@ CPU/memory load test.
 The public surface is the 26 names enumerated in `tests/tool_contract.test.ts`.
 Legacy names are not registered; clients must refresh discovery on cutover.
 The retired v2 tool modules, their obsolete tests and deprecated service
-methods have been removed from the source branch. The separate historical
-OpenAPI YAML/generated-type audit is still outstanding; this is **not** a
-claim of complete coverage of the Raindrop REST API.
+methods have been removed from the source branch. The historical OpenAPI YAML has been reduced to 16 active route shapes
+and its generated types regenerated. This is **not** a claim of complete
+coverage of the Raindrop REST API.
 
 The filename `raindrop-complete.yaml` is historical and **does not promise
-coverage of every Raindrop API**. Its historical endpoint entries and generated
-types still require a separate audit against used methods and verified official
-documentation. Do not count speculative endpoints as v3 coverage.
+coverage of every Raindrop API**. Its active endpoint set has been audited against the 26-tool scope; unused
+historical component models remain in the definition for now. Do not count
+those retained models as implementation or live coverage.
 
 ## Acceptance remaining
 
 - [x] #118: remove registered legacy tools, unused source and stale tests;
       verify exact 26-tool discovery, schemas, prompts and resources offline.
-- [ ] #118: constrain and regenerate historical OpenAPI YAML with a deterministic
-      generated-type check; complete the independent Standards/Spec review.
-- [ ] #119: isolated real-account lifecycle, live read-only duplicate/broken
-      filter and entitlement verification, `parent=null` gate verification,
-      Portal tool refresh, Cloudflare Free-plan resource evidence.
+- [x] #118: restrict to 16 route shapes, regenerate historical OpenAPI types,
+      remove `(this.client as any)` REST calls, and pass the deterministic check.
+- [ ] #118: record final separate Standards/Spec review against the latest SHA.
+- [x] #119 (direct test Worker only): live read/write on test-owned bookmarks,
+      collections, scoped tags and highlights, and exact-ID cleanup.
+- [ ] #119: entitlement-blocked duplicate/broken semantics and disabled
+      destructive gates, Cloudflare Free-plan resource evidence. Portal is
+      explicitly outside the owner-authorized direct-MCP test path.
 - [ ] Keep both dangerous gates disabled until a reviewed commit records
       passing, dated, isolated evidence. Never destroy pre-existing account data.
