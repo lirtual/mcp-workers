@@ -95,6 +95,7 @@ try {
     link: testLink,
     title,
     note: "Test-owned content only",
+    tags: [`mcp-v3-tag-${runId}`],
     collection: { $id: collectionId },
   });
   bookmarkId = ownedId(createdBookmark.data?.item?._id, "Created bookmark");
@@ -106,6 +107,51 @@ try {
   assertOwnedBookmark(updated);
   assert.equal(updated.note, "Updated test-owned content only");
   console.log("PASS: update/readback owned bookmark");
+
+  const tags = (await tool("tag_list", { collectionId, page: 0, perpage: 10 })).data?.items;
+  assert(Array.isArray(tags), "Scoped tag list response missing items");
+  console.log("PASS: scoped tag_list on owned collection");
+
+  const bulk = await tool("raindrop_bulk_update", {
+    collectionId, ids: [bookmarkId], important: true,
+  });
+  assert.equal(bulk.meta?.status, "succeeded");
+  const bulkUpdated = (await tool("raindrop_get", { id: bookmarkId })).data?.item;
+  assertOwnedBookmark(bulkUpdated);
+  assert.equal(bulkUpdated.important, true);
+  console.log("PASS: source-scoped bulk update and readback of owned bookmark");
+
+  const highlightText = `mcp-v3-highlight-${runId}`;
+  await tool("highlight_create", {
+    raindropId: bookmarkId, text: highlightText, note: "owned highlight", color: "yellow",
+  });
+  const highlighted = (await tool("raindrop_get", { id: bookmarkId })).data?.item;
+  assertOwnedBookmark(highlighted);
+  const candidates = (highlighted?.highlights || []).filter(h => h.text === highlightText);
+  assert.equal(candidates.length, 1, "Created highlight must be identifiable uniquely on owned bookmark");
+  const highlightId = candidates[0]?._id;
+  assert(typeof highlightId === "string" && highlightId.length > 0, "Created highlight _id must be a nonempty string");
+  console.log("PASS: create/readback highlight on owned bookmark");
+
+  const highlightUpdated = await tool("highlight_update", {
+    raindropId: bookmarkId, _id: highlightId, note: "updated owned highlight",
+  });
+  assert.equal(highlightUpdated.meta?.status, "succeeded");
+  const afterHighlightUpdate = (await tool("raindrop_get", { id: bookmarkId })).data?.item;
+  assertOwnedBookmark(afterHighlightUpdate);
+  assert.equal(afterHighlightUpdate.highlights?.find(h => h._id === highlightId)?.note, "updated owned highlight");
+  console.log("PASS: note-only highlight update and readback");
+
+  const highlightPreview = await tool("highlight_delete", { raindropId: bookmarkId, _id: highlightId });
+  assert.equal(highlightPreview.meta?.status, "preview");
+  const highlightDeleted = await tool("highlight_delete", {
+    raindropId: bookmarkId, _id: highlightId, confirm: true,
+  });
+  assert.equal(highlightDeleted.meta?.status, "succeeded");
+  const afterHighlightDelete = (await tool("raindrop_get", { id: bookmarkId })).data?.item;
+  assertOwnedBookmark(afterHighlightDelete);
+  assert(!afterHighlightDelete.highlights?.some(h => h._id === highlightId), "Owned highlight must be absent after confirmed delete");
+  console.log("PASS: preview/delete/readback owned highlight");
 } catch (err) {
   problems.push(`lifecycle: ${err?.message || String(err)}`);
 } finally {
