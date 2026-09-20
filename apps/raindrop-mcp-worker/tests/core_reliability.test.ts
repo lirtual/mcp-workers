@@ -221,7 +221,7 @@ describe("streaming request safety", () => {
     ).rejects.toThrow(/byte limit/);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(budget.requestCount).toBe(1);
-    expect(cancelled).toBe(true);
+    await vi.waitFor(() => expect(cancelled).toBe(true));
   });
 });
 
