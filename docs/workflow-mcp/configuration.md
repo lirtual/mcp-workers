@@ -39,19 +39,27 @@ values** as the existing live Worker to preserve active MCP clients and
 in-flight Attempt leases. A missing environment secret intentionally blocks
 deployment before D1 migrations rather than regenerating it.
 
-The legacy `TRIGGER_SMOKE_WEBHOOK_TOKEN` remains an additional temporary
-migration prerequisite until the smoke trigger replacement is implemented.
-The Raindrop Connection also needs an independent
-`RAINDROP_MCP_ACCESS_TOKEN` secret before its manual production tracer.
+The webhook/scheduled smoke definition now lives only under
+`tests/fixtures/`; the production workflow registry has no retired smoke
+schedule or webhook secret reference. Legacy Connection aliases remain
+available for pinned nonterminal Plans until compatibility checks and live
+tracers authorize their removal. The Raindrop Connection needs a sixth,
+independent business secret `RAINDROP_MCP_ACCESS_TOKEN`, matching the
+Raindrop Worker's `MCP_ACCESS_TOKEN`, before its manual production tracer.
+Cloudflare exposes only secret names, not values: do not rotate the existing
+Raindrop token or guess its value. Use secure provisioning of the existing
+credential, or coordinate an explicit rotation when no dependent clients
+will be interrupted.
 Do not mistake these transitional business/test bindings for the five
 platform credentials. The Actions token is **not**
 the deploy job's ephemeral `github.token`. Never print credentials or upload
 the generated secret file as deployment evidence.
 
-During the Expand phase, existing smoke-only connections and webhook secrets
-remain valid. Removing them requires migrating workflow definitions and tracer
-verification first; avoid leaving registered workflows with missing Connection
-references. R2 remains a direct runner-to-R2 signed upload/download path.
+The new `workflow-self` Connection uses the stable `MCP_ACCESS_TOKEN` and a
+fixed production endpoint. Its heavy and self-connection tracers must pass
+before removing obsolete **deployed** Cloudflare secrets. The source-level
+connection aliases are retained for older pinned Plans. R2 remains a direct
+runner-to-R2 signed upload/download path.
 
 Keep credential values unchanged across ordinary deployments. Explicit rotation
 must consider connected MCP clients, in-flight Claims, leases, pending callbacks,
@@ -63,8 +71,10 @@ rather than regenerating secret values on each push.
 The initial migration is **not** complete merely because the generated config
 builds. T15 must pass two successive production deployments with stable
 credentials, compatibility checks and both real heavy/MCP tracers. Then T16
-must prove a manual Raindrop result; T17 owns enabling exactly one minute-level
-Cron and observing a real post-job 09:00 Asia/Shanghai occurrence.
+must prove a manual Raindrop result. The generated configuration now retains
+one Cloudflare minute-level Cron, but it is **not active in production** while
+this branch remains an unmerged draft. T17 requires a real post-job
+09:00 Asia/Shanghai occurrence, correlated with D1 and MCP evidence.
 
 Never claim a real scheduled occurrence succeeded from compiler tests or a
 manual run. Keep #105–#108 open until their respective acceptance evidence
