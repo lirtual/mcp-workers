@@ -16,7 +16,10 @@ const EXPECTED_TOOL_NAMES = [
   "highlight_manage",
   "library_audit",
   "list_raindrops",
+  "raindrop_bulk_delete",
+  "raindrop_bulk_update",
   "raindrop_create",
+  "raindrop_delete",
   "raindrop_get",
   "raindrop_list",
   "raindrop_suggest",
@@ -27,7 +30,7 @@ const EXPECTED_TOOL_NAMES = [
 ].sort();
 
 describe("Raindrop MCP capability contract", () => {
-  it("tracks the transitional 22-tool set until final 26-tool cutover", async () => {
+  it("tracks the transitional 25-tool set until final 26-tool cutover", async () => {
     const service = new RaindropMCPService({ accessToken: "test-token" });
 
     try {
@@ -35,7 +38,7 @@ describe("Raindrop MCP capability contract", () => {
       const actual = tools.map((tool) => tool.id).sort();
 
       expect(actual).toEqual(EXPECTED_TOOL_NAMES);
-      expect(actual).toHaveLength(22);
+      expect(actual).toHaveLength(25);
       expect(actual).toContain("diagnostics");
     } finally {
       await service.cleanup();
