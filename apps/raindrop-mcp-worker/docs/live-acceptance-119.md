@@ -58,6 +58,22 @@ Cloudflare GraphQL `workersInvocationsAdaptive` was queried read-only over 2026-
 
 The [Workers limits](https://developers.cloudflare.com/workers/platform/limits/) reference lists 10 ms/request CPU for Free HTTP invocations and 128 MB/isolate memory. CPU measurements for the new version remain above this Free reference; measured memory is below its reference, but 5 invocations and zero errors do not demonstrate Free-plan compatibility, actual Free-plan enforcement or representative load. **Free-plan CPU release gate remains NOT APPROVED.** Do not extrapolate the older version's 13-call metrics to this new source. The next stage is a narrowly scoped CPU optimization/review followed by non-mutating, representative measurement; avoid rerunning the full real-account write suite or claiming this test covers production.
 
+## Offline CPU breakdown (diagnostic only, 2026-09-20)
+
+A **temporary** GitHub Actions profile ran a fake-token, no-network Node/Vitest benchmark of fresh per-request MCP registration and complete authenticated read-only Worker paths. This is an approximate `process.cpuUsage()` measurement on the CI runner, **not** Cloudflare's native CPU metric. It cannot certify Workers Free, and the individual groups cannot be simply summed.
+
+| Offline operation | Samples | CPU p50 | CPU p95 |
+| --- | ---: | ---: | ---: |
+| Fresh `RaindropMCPService` construction / 26 tool registrations ([first run #35519108112](https://github.com/lirtual/mcp-workers/actions/runs/35519108112)) | 40 | 2.924 ms | 8.436 ms |
+| `/health` ([complete-path run #35519179842](https://github.com/lirtual/mcp-workers/actions/runs/35519179842)) | 15 | 0.121 ms | 0.334 ms |
+| Authenticated `initialize` (same run) | 15 | 5.579 ms | 11.273 ms |
+| Authenticated `tools/list` (same run) | 15 | 6.595 ms | 10.262 ms |
+| Fresh MCP Server construction in the second run | 40 | 2.384 ms | 7.467 ms |
+
+**Interpretation:** even offline, MCP initialization/tool discovery is costlier than health; registration contributes but does not establish the cause of the earlier Cloudflare p50 **26.02 ms** (5 observed invocations). Cloudflare `workersInvocationsAdaptive` supports grouping by version/status but not the MCP JSON-RPC method. Cloudflare's deployed `performance.now()` timer does not advance during uninterrupted pure CPU work, so it is not an appropriate per-stage CPU timer ([performance docs](https://developers.cloudflare.com/workers/runtime-apis/performance/)). Do **not** share a mutable MCP Server across requests merely to eliminate registration: the server owns per-request credentials, execution budget, and transport state.
+
+**Next resource gate:** determine the CPU cost of representative real, read-only `tools/call` operations for a version pinned to the final source; use Cloudflare-native per-invocation data and confirm the actual account plan. If CPU remains above Free's 10 ms/request limit, pursue a narrowly measured optimization before release. Do not repeat the full real-account mutation suite, claim these Node values are Free-plan numbers, or move production. The temporary benchmark test and one-off workflow were removed after recording the results; this document is the permanent evidence.
+
 ## Read-only smoke on the existing account (safe to run first)
 
 This is explicitly opt-in, uses a local environment credential, and prints neither the credential nor personal item content. The source file is `tests/v3_live_readonly.test.ts`. It tests the app's MCP Client -> tool handler -> Raindrop API path, **not** a deployed Worker or Portal connection.
