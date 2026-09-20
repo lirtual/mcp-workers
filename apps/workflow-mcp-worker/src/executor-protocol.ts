@@ -1,3 +1,4 @@
+import { GITHUB_EXECUTOR_CONFIG } from './platform-config.js';
 import { issueExecutorLease, verifyExecutorLease, type ExecutorLeaseClaims } from './lease.js';
 import {
   assertExecutionManifestCompatible,
@@ -438,9 +439,9 @@ function validateStoredManifest(
 
 function oidcConfig(env: Env): GitHubOidcVerificationConfig {
   return {
-    issuer: requiredEnv(env.GITHUB_OIDC_ISSUER, 'GITHUB_OIDC_ISSUER'),
-    audience: requiredEnv(env.GITHUB_OIDC_AUDIENCE, 'GITHUB_OIDC_AUDIENCE'),
-    jwksUrl: requiredEnv(env.GITHUB_OIDC_JWKS_URL, 'GITHUB_OIDC_JWKS_URL')
+    issuer: env.GITHUB_OIDC_ISSUER ?? GITHUB_EXECUTOR_CONFIG.oidc.issuer,
+    audience: env.GITHUB_OIDC_AUDIENCE ?? GITHUB_EXECUTOR_CONFIG.oidc.audience,
+    jwksUrl: env.GITHUB_OIDC_JWKS_URL ?? GITHUB_EXECUTOR_CONFIG.oidc.jwksUrl
   };
 }
 
