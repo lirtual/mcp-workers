@@ -4,6 +4,7 @@ import { raindropV3MutationTools } from "./raindrop-v3-mutations.js";
 import { raindropV3TagTools } from "./raindrop-v3-tags.js";
 import { raindropV3HighlightTools } from "./raindrop-v3-highlights.js";
 import { raindropV3CollectionTools } from "./raindrop-v3-collections.js";
+import { raindropV3CleanupTools } from "./raindrop-v3-cleanup.js";
 import { bulkTools } from "./bulk.js";
 import { cleanupTools } from "./cleanup.js";
 import { collectionTools } from "./collections.js";
@@ -34,6 +35,7 @@ export const buildToolConfigs = (options: { serverVersion: string }) => {
     ...raindropV3TagTools,
     ...raindropV3HighlightTools,
     ...raindropV3CollectionTools,
+    ...raindropV3CleanupTools,
     ...tagTools,
     ...highlightTools,
     ...bulkTools,
