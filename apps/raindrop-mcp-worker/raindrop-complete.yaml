@@ -338,18 +338,21 @@ paths:
       summary: Get bookmarks from a collection
       description: Retrieves bookmarks from a specific collection with filtering options
       parameters:
-        - $ref: '#/components/parameters/CollectionId'
+        - name: collectionId
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: Collection ID
         - $ref: '#/components/parameters/SearchQuery'
         - $ref: '#/components/parameters/SortOrder'
-        - $ref: '#/components/parameters/TagFilter'
-        - $ref: '#/components/parameters/ImportantFilter'
-        - $ref: '#/components/parameters/DuplicatesFilter'
-        - $ref: '#/components/parameters/BrokenFilter'
-        - $ref: '#/components/parameters/NotagFilter'
-        - $ref: '#/components/parameters/HighlightFilter'
-        - $ref: '#/components/parameters/DomainFilter'
         - $ref: '#/components/parameters/PerPage'
         - $ref: '#/components/parameters/Page'
+        - name: nested
+          in: query
+          schema:
+            type: boolean
+          description: Include nested collections
       responses:
         '200':
           description: Bookmarks retrieved successfully
@@ -363,7 +366,12 @@ paths:
       summary: Update multiple bookmarks in a collection
       description: Update properties of multiple bookmarks in a specific collection at once
       parameters:
-        - $ref: '#/components/parameters/CollectionId'
+        - name: collectionId
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: Collection ID
       requestBody:
         required: true
         content:
@@ -383,7 +391,12 @@ paths:
       summary: Delete multiple bookmarks or empty collection
       description: Delete multiple bookmarks in a specific collection or empty trash/collection
       parameters:
-        - $ref: '#/components/parameters/CollectionId'
+        - name: collectionId
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: Collection ID
       requestBody:
         required: false
         content:
@@ -1216,14 +1229,14 @@ components:
       schema:
         type: string
         enum:
-          - +created
           - -created
-          - +title
+          - created
+          - score
+          - -sort
+          - title
           - -title
-          - +domain
+          - domain
           - -domain
-          - +score
-          - -score
         default: -created
       description: Sort order for results
 
@@ -1288,9 +1301,9 @@ components:
       in: query
       schema:
         type: integer
-        default: 50
+        default: 25
         minimum: 1
-        maximum: 100
+        maximum: 50
       description: Number of items per page
 
     Page:
