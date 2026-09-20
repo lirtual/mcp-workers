@@ -1,6 +1,6 @@
 {
   "name": "raindrop-mcp-worker",
-  "version": "2.4.5",
+  "version": "3.0.0",
   "description": "Private Cloudflare Worker MCP server for Raindrop.io bookmark management",
   "type": "module",
   "private": true,
