@@ -185,14 +185,14 @@ export default class RaindropService {
         if (retryCount >= maxRetries) {
           throw new RateLimitError(
             `Upstream rate limit exceeded after ${maxRetries} retries`,
-            err,
+            { status: 429, retryAfterMs },
           );
         }
 
         if (backoffMs > remainingBudgetMs) {
           throw new RateLimitError(
             `Upstream retry delay ${Math.ceil(backoffMs / 1000)}s exceeds remaining read retry budget ${Math.ceil(remainingBudgetMs / 1000)}s`,
-            err,
+            { status: 429, retryAfterMs: backoffMs },
           );
         }
 
