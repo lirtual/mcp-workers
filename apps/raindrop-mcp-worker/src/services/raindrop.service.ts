@@ -887,30 +887,35 @@ export default class RaindropService {
    * Fetch user statistics (total bookmarks, collections, highlights, tags)
    * Raindrop.io API: GET /user/stats, /collections, and /tags/0
    */
-  async getUserStats(): Promise<
-    components["schemas"]["UserStatsResponse"]["stats"]
-  > {
+  async getUserStats(): Promise<{
+    bookmarks: number | null;
+    trash: number | null;
+    collections: null;
+    highlights: null;
+    tags: null;
+    pro: boolean | null;
+  }> {
     return this.withRateLimit(async () => {
-      // 1. Get system counts from /user/stats (bookmarks, trash)
-      const statsResponse = await this.client.GET("/user/stats");
-      const statsData = statsResponse.data as any;
-
-      // 2. Get collection count from /collections
-      const collectionsResponse = await this.client.GET("/collections");
-
-      // 3. Get tag count from /tags/0
-      const tagsResponse = await this.client.GET("/tags/0");
-
-      const items = statsData?.items || [];
-      const totalBookmarks = items.find((i: any) => i._id === 0)?.count || 0;
-      const trashCount = items.find((i: any) => i._id === -99)?.count || 0;
-
+      const { data } = await this.client.GET("/user/stats");
+      const payload = data as {
+        result?: boolean;
+        items?: Array<{ _id?: number; count?: number }>;
+        pro?: boolean;
+      } | undefined;
+      if (!payload || payload.result === false || !Array.isArray(payload.items)) {
+        throw new UpstreamError("Raindrop user statistics are unavailable");
+      }
+      const count = (id: number): number | null => {
+        const item = payload.items?.find((entry) => entry._id === id);
+        return item && typeof item.count === "number" ? item.count : null;
+      };
       return {
-        bookmarks: totalBookmarks,
-        trash: trashCount,
-        collections: collectionsResponse.data?.items?.length || 0,
-        highlights: 0, // No direct total highlights count available
-        tags: tagsResponse.data?.items?.length || 0,
+        bookmarks: count(0),
+        trash: count(-99),
+        collections: null,
+        highlights: null,
+        tags: null,
+        pro: typeof payload.pro === "boolean" ? payload.pro : null,
       };
     });
   }
