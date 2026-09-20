@@ -16,6 +16,8 @@ Issue: [#119](https://github.com/lirtual/mcp-workers/issues/119). Parent: [#110]
 
 **Scoped tag-write direct-MCP evidence (2026-09-20):** [Actions #35513162549](https://github.com/lirtual/mcp-workers/actions/runs/35513162549) passed after verifying every proposed UUID-suffixed test tag was absent from the global tag list. Within an owned collection/bookmark, the run previewed and confirmed a one-tag rename, a two-tag merge and an exact-tag delete, freshly reading back the bookmark after each operation and confirming the unaffected test tag remained. The same run reconfirmed highlight lifecycle and cross-collection scope isolation and cleaned only its own bookmarks/collections. This does not establish global tag-mutation safety for arbitrary existing tags.
 
+**Nested collection and exact-ID Trash deletion (2026-09-20):** [Actions #35513312252](https://github.com/lirtual/mcp-workers/actions/runs/35513312252) passed direct MCP tests using a new UUID-labelled parent collection, child and bookmark. It checked the nested tree, exact child in parent-delete preview, fail-closed cycle and `parent=null` operations, fresh source in Trash, permanent preview and deletion of **only that verified test bookmark ID**, and confirmed the deleted ID cannot be read. Both known-empty test collections were deleted. This is **not** evidence that moving an existing child to root works; the `FEATURE_UNVERIFIED` gate remains closed. No global Trash purge occurred.
+
 ## Read-only smoke on the existing account (safe to run first)
 
 This is explicitly opt-in, uses a local environment credential, and prints neither the credential nor personal item content. The source file is `tests/v3_live_readonly.test.ts`. It tests the app's MCP Client -> tool handler -> Raindrop API path, **not** a deployed Worker or Portal connection.
@@ -31,13 +33,13 @@ Run the default `pnpm check` independently. The explicit live test is excluded f
 The current account is not an isolated disposable account, so the destructive operations below require tighter protections:
 
 - [x] Generate a unique run prefix, e.g. `mcp-v3-acceptance-<run-id>`. Snapshot no personal content.
-- [x] Create two private test collections A/B and record their exact IDs; child collection creation remains untested.
+- [x] Create two private test collections A/B and record exact IDs; a separate live run also created a nested child, verified tree ancestry and safely deleted it.
 - [ ] Create **new** test bookmarks with unique test links, notes and tags inside A only; record all IDs. Use only these IDs and collections for create/read/update/move/scoped delete and highlight lifecycle.
 - [x] Test collection-scoped tag rename/merge/delete only with newly created globally unique test tag names; verified original absence and readback. Global tag writes on existing names remain out of scope.
-- [ ] Parent-to-root: keep the `FEATURE_UNVERIFIED` gate closed until a separate isolated candidate, exact parent serialization and evidence can be tested safely.
+- [x] Confirmed `parent=null` remains `FEATURE_UNVERIFIED` without a write and cycle moves fail closed. Actual parent-to-root write still blocked pending verified API serialization.
 - [x] Source isolation: verify a test bookmark placed in B is unaffected by a source-A **bulk update**; source-A bulk-delete denial remains untested. Never probe with an existing bookmark ID.
 - [ ] Duplicate/broken filters and entitlement: use read-only evidence first. Keep `duplicates_delete(confirm=true)` disabled unless a reviewed commit records clear semantics and test-created candidates.
-- [ ] Do **not** run `trash_empty(confirm=true)` on this account unless every item in the entire Trash was created for the test and the inventory is verified immediately before execution. Generally leave it untested.
+- [x] Ran *specified-ID permanent deletion* for one freshly created, re-identified Trash bookmark; confirmed it is no longer readable. Do **not** run `trash_empty(confirm=true)` while the account Trash contains other entries; whole-Trash purge remains Not run.
 - [x] Perform targeted cleanup of **only** returned test IDs for the first lifecycle run; verified the bookmark's source and collection's name/empty-leaf status before deletion. The test bookmark remains in Trash by design. Never use account-wide cleanup.
 - [ ] Exercise deployed Worker/Portal discovery only after an approved v3 deployment: exact 26 tools, one safe read, authentication, redacted logs and Free-plan CPU/memory evidence. Direct local tests cannot satisfy this step.
 
@@ -47,10 +49,10 @@ The current account is not an isolated disposable account, so the destructive op
 | --- | --- | --- |
 | Offline 26-tool discovery and contract | Pass at last green CI SHA `fd77fda` | [CI](https://github.com/lirtual/mcp-workers/actions/runs/35507962617); recheck after later commits |
 | Current-account direct MCP smoke | Pass (specified checks) | [#35511457233 attempt 2](https://github.com/lirtual/mcp-workers/actions/runs/35511457233): health, 401, initialize, 26 tools, authenticated diagnostic and collection page |
-| Current-account scoped object lifecycle | Partial pass | [#35513162549](https://github.com/lirtual/mcp-workers/actions/runs/35513162549): owned tag rename/merge/delete with readback; [#35513029221](https://github.com/lirtual/mcp-workers/actions/runs/35513029221): cross-collection move/source isolation; [#35512551236](https://github.com/lirtual/mcp-workers/actions/runs/35512551236): highlight lifecycle. Child collection, permanent Trash deletion and resource ceilings remain |
-| Parent-to-root write | Blocked | Compile-time `FEATURE_UNVERIFIED` gate |
+| Current-account scoped object lifecycle | Partial pass | [#35513312252](https://github.com/lirtual/mcp-workers/actions/runs/35513312252): owned nested collection, source-verified test-ID permanent deletion and cleanup; [#35513162549](https://github.com/lirtual/mcp-workers/actions/runs/35513162549): scoped tag writes; [#35513029221](https://github.com/lirtual/mcp-workers/actions/runs/35513029221): source isolation. Free-plan maxima and gated operations remain |
+| Parent-to-root write | Blocked (fail-closed confirmed live) | [#35513312252](https://github.com/lirtual/mcp-workers/actions/runs/35513312252): `parent=null` rejected with `FEATURE_UNVERIFIED`; actual move not submitted |
 | Duplicate deletion write | Blocked | Compile-time `FEATURE_UNVERIFIED` gate; operator/plan unverified |
-| Entire Trash purge | Not run | Existing Trash could contain non-test entries |
+| Exact-ID permanent delete / entire Trash purge | Pass / Not run | [#35513312252](https://github.com/lirtual/mcp-workers/actions/runs/35513312252): one newly created verified Trash ID permanently deleted; entire Trash never purged |
 | Deployed direct Worker (no Portal) | Pass for test Worker only | v3.0.0 direct HTTP checks passed; production still v2.4.5; Portal never used |
 | Free-plan resource measurements | Not run | Wrangler dry-run is not real CPU/memory evidence |
 
