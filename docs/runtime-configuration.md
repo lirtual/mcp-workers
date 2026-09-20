@@ -38,7 +38,7 @@ Every production Worker configuration declares its mandatory runtime secret name
 | `database-mcp-worker` | `MCP_ACCESS_TOKEN`, `DATABASE_CONFIG` |
 | `raindrop-mcp-worker` | `MCP_ACCESS_TOKEN`, `RAINDROP_ACCESS_TOKEN` |
 | `instapaper-mcp-worker` | `MCP_ACCESS_TOKEN`, `INSTAPAPER_CONSUMER_KEY`, `INSTAPAPER_CONSUMER_SECRET`, `INSTAPAPER_OAUTH_TOKEN`, `INSTAPAPER_OAUTH_TOKEN_SECRET` |
-| `workflow-mcp-worker` | `MCP_ACCESS_TOKEN`, `TRIGGER_SMOKE_WEBHOOK_TOKEN`, `EXECUTOR_LEASE_SECRET`, `GITHUB_ACTIONS_TOKEN`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `SMOKE_READONLY_MCP_TOKEN` (T14 Expand code contract; the currently deployed production contract may still contain `R2_ACCOUNT_ID`) |
+| `workflow-mcp-worker` (PR #125 target) | `MCP_ACCESS_TOKEN`, `EXECUTOR_LEASE_SECRET`, `GITHUB_ACTIONS_TOKEN`, `R2_SECRET_ACCESS_KEY`; separately required non-secret `R2_ACCESS_KEY_ID`. The deployed production Worker is unchanged until #123. |
 
 `database-mcp-worker` stores its complete logical database catalog in the single `DATABASE_CONFIG` Secret. Direct SQL URLs therefore remain secret without requiring separate `DATABASE_URL` / `DATABASE_WRITE_URL` variables. Hyperdrive entries still refer to Wrangler bindings by name.
 
@@ -57,7 +57,9 @@ For local development, use uncommitted `.dev.vars` or `.env` files with keys mat
 | Cron scheduler | Preserve the intended scheduler tick. T14 preserves the checked-in `* * * * *` Cron in generated configuration. Live schedule verification is still required separately by #108. |
 | Ownership and consistency | `wrangler.jsonc` and audited code defaults own non-sensitive settings; Cloudflare runtime owns secret values; CI owns only genuine deployment/test credentials. Never rotate or delete a live Secret just to reconcile naming before code and clients are ready. |
 
-**Implementation specification:** [`docs/workflow-mcp/runtime-config-simplification-spec.md`](./workflow-mcp/runtime-config-simplification-spec.md) governs the cross-Worker rollout and end-to-end acceptance. Its four-Secret Workflow platform baseline also keeps `R2_ACCESS_KEY_ID` as a separately required non-secret credential identifier; real integrations may require additional Secrets. Do not optimize for a raw dashboard count.\n\n**Current implementation is not yet compliant.** The deployed contract still requires `TRIGGER_SMOKE_WEBHOOK_TOKEN` and `SMOKE_READONLY_MCP_TOKEN`; the deploy workflow generates random MCP/lease/smoke credentials and writes the ephemeral `github.token` to `GITHUB_ACTIONS_TOKEN`. The implementation phase must change the deploy script, Wrangler required names, smoke callers, endpoint/test fixtures and configuration references together before any runtime-secret cleanup.
+**Implementation specification:** [`docs/workflow-mcp/runtime-config-simplification-spec.md`](./workflow-mcp/runtime-config-simplification-spec.md) governs the cross-Worker rollout and end-to-end acceptance. Its four-Secret Workflow platform baseline also keeps `R2_ACCESS_KEY_ID` as a separately required non-secret credential identifier; real integrations may require additional Secrets. Do not optimize for a raw dashboard count.
+
+**Current deployed production is not yet compliant.**** The deployed contract still requires `TRIGGER_SMOKE_WEBHOOK_TOKEN` and `SMOKE_READONLY_MCP_TOKEN`; the deploy workflow generates random MCP/lease/smoke credentials and writes the ephemeral `github.token` to `GITHUB_ACTIONS_TOKEN`. PR #125 implements code/configuration changes, but they are not live. Production cutover and removal of superseded bindings require the separately authorized #123 preflight and verification.
 
 ## Workers Observability baseline
 
@@ -93,6 +95,20 @@ After deployment, verify the Worker at the public seams:
 
 Use the root `pnpm smoke:mcp` runner for a representative explicitly selected safe/read-only MCP tool after Portal discovery succeeds.
 
-### Workflow T14 Expand implementation (code-only)
+### Workflow implementation and deployment boundary
 
-The generated deployment config derives `GITHUB_REPOSITORY`, `GITHUB_REPOSITORY_ID`, `R2_ACCOUNT_ID` and `R2_BUCKET_NAME` from the GitHub/Cloudflare deployment context and R2 binding. `src/platform-config.ts` pins the executor ref/workflow and GitHub OIDC trust anchors. T14 retains existing production smoke credentials and the separate R2 access-key identifier; it does not deploy or rotate secrets. Do not merge the incomplete migration while the current deploy workflow still regenerates platform credentials; follow #106 and #122 for the safe credential and smoke cutover. The minute Cron remains enabled in the generated Wrangler config; #108 separately verifies the actual business occurrence.
+The [configuration implementation PR](https://github.com/lirtual/mcp-workers/pull/125)
+derives non-sensitive repository/R2 settings, pins GitHub OIDC trust anchors,
+retains the minute Cron, and uses four distinct platform Secrets plus the
+non-secret `R2_ACCESS_KEY_ID` deployment variable. It removes dedicated
+production smoke-only credentials from its required-secret contract and
+moves the webhook smoke definition to tests. Normal deployment does not
+generate or upload production credentials, and the authenticated heavy/connection
+tracer is an explicitly invoked acceptance check.
+
+This PR is a **code-only draft**, not evidence of a live migration. A legacy
+`R2_ACCESS_KEY_ID` Secret conflicts with the target ordinary variable and
+must be converted under #123 before deployment. The intended shared MCP
+caller **value** must likewise be installed independently on seven Workers
+and clients updated under #123's explicit authorization. Continue to keep
+existing production credentials unchanged until cutover prerequisites pass.
