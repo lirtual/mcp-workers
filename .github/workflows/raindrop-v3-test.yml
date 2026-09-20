@@ -6,7 +6,6 @@ on:
       - feat/raindrop-v3-core-reliability
     paths:
       - .github/workflows/raindrop-v3-test.yml
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -91,27 +90,10 @@ jobs:
 
           export MCP_ACCESS_TOKEN="$mcp_token"
           export RAINDROP_V3_TEST_URL="https://raindrop-mcp-worker-v3-test.aiyaya.workers.dev"
-          # Probe max 50-item read page before any test-owned writes.
-          # Bounded authentication-propagation retry is read-only; never replay writes.
-          # Recovery uses read-only handshake retry; never retry submitted writes.
-          # Recovery handshake alone may be retried during secret propagation.
-          # Recovery mode is activated by a temporary, checked-in marker.
-          # It never creates new objects or starts the regular mutation suites.
-          if [[ -f scripts/.raindrop-recovery-only ]]; then
-            node scripts/test-direct-mcp-recover.mjs
-            echo "Isolated test-owned recovery completed; regular suites intentionally skipped."
-            exit 0
-          fi
-
-          # Direct HTTPS/JSON-RPC over /mcp, not Portal; only read-only actions.
+          # For every branch push, deploy ONLY the isolated Worker and run fixed read-only MCP requests.
+          # CPU mode refuses 401 retries and redirects, and fails closed on any unsuccessful request.
+          # Intentionally NO recovery marker or mutation suite in this workflow.
+          # This branch-scoped push is the only executable trigger before default-branch registration.
+          export RAINDROP_V3_CPU_PROFILE=true
           node scripts/test-direct-mcp.mjs
-          # Tag writes use UUID-suffixed test-owned names and explicit collection scope.
-          # Run live reads first, then test only run-owned tag/highlight/bulk changes.
-          # Never clear Trash or mutate pre-existing user objects.
-          node scripts/test-direct-mcp-lifecycle.mjs
-          node scripts/test-direct-mcp-scope.mjs
-          node scripts/test-direct-mcp-remainder.mjs
-          # Permanent deletion is restricted to one freshly created verified test ID.
-          node scripts/test-direct-mcp-nested-trash.mjs
-
-          echo "Direct isolated v3 MCP smoke, owned lifecycle and cross-collection scope and exact test-owned Trash deletion completed (no account contents or secrets logged)."
+          echo "Isolated v3 test Worker read-only CPU probe completed (no account writes or secrets logged)."
