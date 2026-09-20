@@ -583,16 +583,25 @@ export default class RaindropService {
     collectionId?: number,
     replace?: string,
   ): Promise<void> {
-    const endpoint = collectionId === undefined ? "/tags" : "/tags/{collectionId}";
-    const options = {
-      ...(collectionId === undefined ? {} : { params: { path: { collectionId } } }),
-      body: action === "delete" ? { tags } : { tags, replace },
-    };
-    const { data } = await this.withWriteRateLimit(async () =>
-      action === "delete"
-        ? (this.client as any).DELETE(endpoint, options)
-        : (this.client as any).PUT(endpoint, options),
-    );
+    if (action !== "delete" && (!replace || !replace.trim())) {
+      throw new ValidationError("A nonempty replacement tag is required");
+    }
+    const { data } = await this.withWriteRateLimit(async () => {
+      if (collectionId === undefined) {
+        return action === "delete"
+          ? this.client.DELETE("/tags", { body: { tags } })
+          : this.client.PUT("/tags", { body: { tags, replace: replace! } });
+      }
+      return action === "delete"
+        ? this.client.DELETE("/tags/{collectionId}", {
+            params: { path: { collectionId } },
+            body: { tags },
+          })
+        : this.client.PUT("/tags/{collectionId}", {
+            params: { path: { collectionId } },
+            body: { tags, replace: replace! },
+          });
+    });
     if (data?.result === false) throw new UpstreamRejectedError("Tag mutation was rejected");
     if (data?.result !== true) {
       throw new UpstreamError("Upstream tag mutation acknowledgement is missing");
