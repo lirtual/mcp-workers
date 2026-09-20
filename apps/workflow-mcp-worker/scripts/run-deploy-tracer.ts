@@ -20,7 +20,7 @@ const evidence: Record<string, unknown> = {
 await assertHealth();
 const listed = await waitForAuthenticatedMcp();
 const workflowIds = asArray(listed.workflows).map(item => stringField(asObject(item), 'id'));
-for (const requiredWorkflow of ['web-archive-smoke', 'mcp-connection-smoke']) {
+for (const requiredWorkflow of ['web-archive-smoke', 'mcp-connection-smoke', 'raindrop-daily-snapshot']) {
   if (!workflowIds.includes(requiredWorkflow)) {
     throw new Error(`Workflow MCP workflow_list is missing "${requiredWorkflow}".`);
   }
@@ -70,6 +70,32 @@ if (asArray(nestedStructured.workflows).length < 2) {
   throw new Error('MCP smoke did not return the Workflow MCP workflow_list payload.');
 }
 
+// T16: a genuine manual business workflow run is part of the production gate.
+// A successful empty list is valid; an upstream MCP error is not.
+const raindropAdmission = await callTool('workflow_run', {
+  workflow: 'raindrop-daily-snapshot',
+  input: {},
+  idempotencyKey: `workflow-raindrop-${process.env.GITHUB_RUN_ID || Date.now()}`
+});
+const raindropRunId = stringField(raindropAdmission, 'runId');
+const raindropStatus = await waitForTerminal(raindropRunId, 'raindrop');
+if (raindropStatus.state !== 'succeeded') {
+  throw new Error(`Raindrop run ended as ${String(raindropStatus.state)}: ${JSON.stringify(raindropStatus)}`);
+}
+const raindropResult = await callTool('workflow_result', { runId: raindropRunId });
+if (raindropResult.ready !== true || raindropResult.state !== 'succeeded') {
+  throw new Error('Raindrop workflow_result was not succeeded/ready.');
+}
+const raindropOutputs = asObject(raindropResult.outputs);
+const bookmarks = asArray(raindropOutputs.bookmarks);
+const totalCount = raindropOutputs.count;
+if (bookmarks.length > 20 || !bookmarks.every(item =>
+  item !== null && typeof item === 'object' && !Array.isArray(item)
+) || typeof totalCount !== 'number' || !Number.isSafeInteger(totalCount) ||
+  totalCount < bookmarks.length) {
+  throw new Error('Raindrop structured bookmark result violated the live tool contract.');
+}
+
 Object.assign(evidence, {
   completedAt: new Date().toISOString(),
   heavy: {
@@ -90,12 +116,19 @@ Object.assign(evidence, {
     runId: mcpRunId,
     state: mcpStatus.state,
     returnedWorkflowCount: asArray(nestedStructured.workflows).length
+  },
+  raindrop: {
+    runId: raindropRunId,
+    state: raindropStatus.state,
+    returnedRecords: bookmarks.length,
+    totalCount
   }
 });
 
 await writeFile(evidencePath, JSON.stringify(evidence, null, 2) + '\n', 'utf8');
 appendGitHubOutput('heavy_run_id', heavyRunId);
 appendGitHubOutput('mcp_run_id', mcpRunId);
+appendGitHubOutput('raindrop_run_id', raindropRunId);
 appendGitHubOutput('evidence_path', evidencePath);
 console.log(JSON.stringify(evidence, null, 2));
 
