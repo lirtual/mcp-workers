@@ -224,3 +224,41 @@ describe("streaming request safety", () => {
     expect(cancelled).toBe(true);
   });
 });
+
+describe("request budget concurrency", () => {
+  it.each([
+    ["GET", 3],
+    ["POST", 1],
+  ])("never exceeds the %s concurrency limit when new work races queued work", async (method, limit) => {
+    const budget = new ExecutionBudget();
+    let active = 0;
+    let maximum = 0;
+    const releases: Array<() => void> = [];
+    const fetchMock = vi.fn(
+      async (): Promise<Response> =>
+        new Promise((resolve) => {
+          active++;
+          maximum = Math.max(maximum, active);
+          releases.push(() => {
+            active--;
+            resolve(Response.json({ result: true }));
+          });
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const submit = () =>
+      budget.fetch(new Request("https://api.raindrop.io/rest/v1/collection", { method }));
+    const initial = Array.from({ length: limit + 1 }, submit);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(limit));
+    releases.shift()?.();
+    const late = submit();
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(limit + 1));
+    expect(maximum).toBeLessThanOrEqual(limit);
+    for (let remaining = 0; remaining < limit + 1; remaining++) {
+      await vi.waitFor(() => expect(releases.length).toBeGreaterThan(0));
+      releases.shift()?.();
+    }
+    await Promise.all([...initial, late]);
+    expect(maximum).toBeLessThanOrEqual(limit);
+  });
+});
