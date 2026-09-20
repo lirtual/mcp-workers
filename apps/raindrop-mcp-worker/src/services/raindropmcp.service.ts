@@ -2,6 +2,9 @@ import { McpServer } from "@modelcontextprotocol/server";
 import type { Prompt } from "@modelcontextprotocol/server";
 import pkg from "../../package.json";
 import { buildToolConfigs } from "../tools/index.js";
+import type { ToolConfig } from "../tools/common.js";
+import { toolFailure } from "../tools/common.js";
+import { McpError, AuthError, RateLimitError } from "../types/mcpErrors.js";
 import {
   NotFoundError,
   UpstreamError,
@@ -172,13 +175,10 @@ export class RaindropMCPService {
           description: config.description,
           inputSchema: config.inputSchema,
           outputSchema: config.outputSchema,
+          annotations: config.annotations,
         },
         this.asyncHandler(async (args: any, extra: any) =>
-          config.handler(args, {
-            raindropService: this.raindropService,
-            mcpServer: this.server.server, // Pass the underlying McpServer instance
-            ...extra,
-          }),
+          this.executeTool(config, args, extra),
         ),
       );
     }
@@ -290,15 +290,61 @@ export class RaindropMCPService {
    * @param input - Input object for the tool
    * @returns Tool response
    */
-  public async callTool(toolId: string, input: any): Promise<any> {
-    const config = toolConfigs.find((tool) => tool.name === toolId);
-    if (!config) {
-      throw new Error(`Tool with id "${toolId}" not found.`);
+  private async executeTool(
+    config: ToolConfig<any, any>,
+    input: unknown,
+    extra: Record<string, unknown> = {},
+  ): Promise<any> {
+    const parsed = config.inputSchema.safeParse(input ?? {});
+    const initialWrites = this.raindropService.budget.writeAttemptCount;
+    if (!parsed.success) {
+      return toolFailure("VALIDATION_ERROR", "Invalid tool input", {
+        status: "not_executed",
+        requestCount: this.raindropService.budget.requestCount,
+      });
     }
-    return await config.handler(input ?? {}, {
-      raindropService: this.raindropService,
-      mcpServer: this.server.server,
-    });
+    try {
+      return await config.handler(parsed.data, {
+        raindropService: this.raindropService,
+        mcpServer: this.server.server,
+        ...extra,
+      });
+    } catch (err) {
+      const cause = err instanceof McpError ? err.cause : undefined;
+      const details = cause && typeof cause === "object"
+        ? cause as { status?: number; retryAfterMs?: number }
+        : {};
+      const submittedWrite =
+        this.raindropService.budget.writeAttemptCount > initialWrites;
+      const uncertain =
+        submittedWrite &&
+        !(err instanceof AuthError) &&
+        (err instanceof RateLimitError ||
+          !(err instanceof McpError) ||
+          (err instanceof McpError && err.code === "UPSTREAM_ERROR"));
+      return toolFailure(
+        uncertain ? "WRITE_OUTCOME_UNKNOWN" :
+          err instanceof McpError ? err.code : "INTERNAL_ERROR",
+        uncertain
+          ? "Upstream write was submitted, but its outcome is unknown. Read the target before retrying."
+          : err instanceof McpError ? err.message : "Tool execution failed",
+        {
+          requestCount: this.raindropService.budget.requestCount,
+          status: uncertain ? "unknown" : "not_executed",
+        },
+        {
+          ...(details.status !== undefined ? { upstreamStatus: details.status } : {}),
+          ...(details.retryAfterMs !== undefined ? { retryAfterMs: details.retryAfterMs } : {}),
+        },
+      );
+    }
+  }
+
+  /** The public test/helper path applies the same validation and handler conversion. */
+  public async callTool(toolId: string, input: unknown): Promise<any> {
+    const config = toolConfigs.find((tool) => tool.name === toolId);
+    if (!config) throw new NotFoundError("Unknown tool");
+    return this.executeTool(config, input);
   }
 
   /**
