@@ -9,6 +9,7 @@ import {
 } from "../types/mcpErrors.js";
 import type { components, paths } from "../types/raindrop.schema.js";
 import { createLogger } from "../utils/logger.js";
+import { ExecutionBudget } from "./execution-budget.js";
 
 type Bookmark = components["schemas"]["Bookmark"];
 type Collection = components["schemas"]["Collection"];
@@ -19,6 +20,7 @@ export interface RaindropServiceConfig {
   accessToken?: string;
   maxReadRetries?: number;
   debugHttp?: boolean;
+  budget?: ExecutionBudget;
 }
 
 export default class RaindropService {
@@ -32,22 +34,25 @@ export default class RaindropService {
   private cacheBookmarks = new Map<string, unknown>();
   private cacheSearch = new Map<string, unknown>();
   private readonly maxRateLimitRetries: number;
+  public readonly budget: ExecutionBudget;
 
   constructor(config: string | RaindropServiceConfig = {}) {
     const normalized: RaindropServiceConfig =
       typeof config === "string" ? { accessToken: config } : config;
+    this.budget = normalized.budget ?? new ExecutionBudget();
     const maxReadRetries = normalized.maxReadRetries;
     this.maxRateLimitRetries =
       maxReadRetries !== undefined &&
       Number.isInteger(maxReadRetries) &&
       maxReadRetries >= 0
-        ? maxReadRetries
+        ? Math.min(3, maxReadRetries)
         : 3;
     const accessToken = normalized.accessToken ?? "";
     const debugHttp = normalized.debugHttp ?? false;
 
     this.client = createClient<paths>({
       baseUrl: "https://api.raindrop.io/rest/v1",
+      fetch: (request: Request) => this.budget.fetch(request),
       headers: {
         Authorization: `Bearer ${accessToken}`,
       },
@@ -58,7 +63,7 @@ export default class RaindropService {
         if (debugHttp) {
           // Use the application logger so request diagnostics follow the same redaction path.
           const logger = createLogger("raindrop-service");
-          logger.debug(`${request.method} ${request.url}`);
+          logger.debug(`${request.method} ${new URL(request.url).pathname}`);
         }
         return request;
       },
@@ -83,10 +88,13 @@ export default class RaindropService {
               retryAfterMs,
             });
           }
+          if (response.status === 403)
+            throw new AuthError("Forbidden: Raindrop access is not permitted");
           if (response.status === 404)
             throw new NotFoundError("Resource not found");
           throw new UpstreamError(
             `API Error: ${response.status} ${response.statusText}`,
+            { status: response.status },
           );
         }
         return response;
@@ -147,7 +155,7 @@ export default class RaindropService {
     startedAtMs = Date.now(),
   ): Promise<T> {
     const maxRetries = this.maxRateLimitRetries;
-    const readRetryBudgetMs = 15_000;
+    const readRetryBudgetMs = Math.min(15_000, this.budget.remainingMs());
     try {
       return await fn();
     } catch (err: any) {
@@ -169,7 +177,10 @@ export default class RaindropService {
             ? retryAfterMs + 250
             : Math.min(750 * Math.pow(2, retryCount), 10000);
         const elapsedMs = Date.now() - startedAtMs;
-        const remainingBudgetMs = Math.max(0, readRetryBudgetMs - elapsedMs);
+        const remainingBudgetMs = Math.min(
+          this.budget.remainingMs(),
+          Math.max(0, readRetryBudgetMs - elapsedMs),
+        );
 
         if (retryCount >= maxRetries) {
           throw new RateLimitError(
@@ -201,12 +212,17 @@ export default class RaindropService {
       // intentionally at-most-once from this client once submitted upstream.
       if (
         err instanceof UpstreamError &&
+        (Boolean((err.cause as { network?: boolean } | undefined)?.network) ||
+          Number((err.cause as { status?: number } | undefined)?.status) >= 500) &&
         retryMode === "read" &&
         retryCount < maxRetries
       ) {
         const backoffMs = Math.min(500 * Math.pow(2, retryCount), 5000);
         const elapsedMs = Date.now() - startedAtMs;
-        const remainingBudgetMs = Math.max(0, readRetryBudgetMs - elapsedMs);
+        const remainingBudgetMs = Math.min(
+          this.budget.remainingMs(),
+          Math.max(0, readRetryBudgetMs - elapsedMs),
+        );
         if (backoffMs > remainingBudgetMs) {
           throw err;
         }
