@@ -40,6 +40,24 @@ Queried Cloudflare GraphQL `workersInvocationsAdaptive` read-only, filtering exa
 
 Cloudflare's current Workers Free HTTP CPU limit is **10 ms per request**, with **128 MB memory per isolate** (see [Workers limits](https://developers.cloudflare.com/workers/platform/limits/)). The observed CPU percentiles are above the Free CPU limit, while measured memory is below its limit. Zero Worker errors does **not** certify compatibility with Free: the account's billing plan was not established from `usageModel`, and per-request CPU distribution/maximum, representative Free-plan enforcement, and full-load evidence are missing. **Do not mark the Free-plan resource gate as Pass or switch production for a Free-plan deployment based on this evidence.** No additional real-account write/load requests were made for this measurement.
 
+## Current v3 source read-only CPU probe (2026-09-20)
+
+[GitHub Actions #35518631508](https://github.com/lirtual/mcp-workers/actions/runs/35518631508) deployed branch SHA `9085c10318aaa577255060c81508e5fc9086e6b9` to the **isolated** test Worker only, yielding Cloudflare version `cb3b4b7a-504f-4571-974b-b18227c6a1c7` at 15:09 UTC. The direct `/mcp` probe passed HTTP health, unauthenticated 401, initialize, all 26 tool names, authenticated diagnostics, collection read and max-50 bookmark page. This run executed **no write or cleanup scripts**, used the already provisioned Raindrop Secret and a new short-lived transport token, and never used Portal. Cloudflare confirmed this exact version received 100% of the isolated test Worker's traffic.
+
+Cloudflare GraphQL `workersInvocationsAdaptive` was queried read-only over 2026-09-20 15:08–15:30 UTC, grouped by exact `scriptVersion`. At the latest query, only **5 invocations** of the new version had appeared in the analytics dataset; this is a small, possibly ingestion-lagged observation, not a per-operation benchmark or worst-case maximum:
+
+| Observed metric, new version only | Value |
+| --- | ---: |
+| Invocation records | 5 |
+| Worker runtime errors | 0 |
+| CPU p50 | **26,020 µs = 26.02 ms** |
+| CPU p99 | **60,355 µs = 60.355 ms** |
+| Memory p50 | 19,264,702 bytes ≈ 19.26 MB |
+| Memory p99 | 19,665,752 bytes ≈ 19.67 MB |
+| Observed `usageModel` | `standard` — billing entitlement not established |
+
+The [Workers limits](https://developers.cloudflare.com/workers/platform/limits/) reference lists 10 ms/request CPU for Free HTTP invocations and 128 MB/isolate memory. CPU measurements for the new version remain above this Free reference; measured memory is below its reference, but 5 invocations and zero errors do not demonstrate Free-plan compatibility, actual Free-plan enforcement or representative load. **Free-plan CPU release gate remains NOT APPROVED.** Do not extrapolate the older version's 13-call metrics to this new source. The next stage is a narrowly scoped CPU optimization/review followed by non-mutating, representative measurement; avoid rerunning the full real-account write suite or claiming this test covers production.
+
 ## Read-only smoke on the existing account (safe to run first)
 
 This is explicitly opt-in, uses a local environment credential, and prints neither the credential nor personal item content. The source file is `tests/v3_live_readonly.test.ts`. It tests the app's MCP Client -> tool handler -> Raindrop API path, **not** a deployed Worker or Portal connection.
@@ -76,6 +94,6 @@ The current account is not an isolated disposable account, so the destructive op
 | Duplicate deletion write | Blocked (fail-closed confirmed live) | [#35513757148](https://github.com/lirtual/mcp-workers/actions/runs/35513757148): `duplicates` and `broken` audits returned `FEATURE_UNAVAILABLE`; confirmed execution gate `FEATURE_UNVERIFIED` on test ID |
 | Exact-ID permanent delete / entire Trash purge | Pass / Not run | [#35513757148](https://github.com/lirtual/mcp-workers/actions/runs/35513757148) and [recovery #35514031332](https://github.com/lirtual/mcp-workers/actions/runs/35514031332): verified test-only Trash IDs permanently removed. Other test-created soft-deleted items may remain; entire Trash never purged |
 | Deployed direct Worker (no Portal) | Pass for test Worker only | v3.0.0 direct HTTP checks passed; production still v2.4.5; Portal never used |
-| Free-plan resource measurements | Measured / **not approved** | Cloudflare GraphQL latest deployed version: 13 calls, 0 runtime errors; CPU p50 11.046 ms, p99 44.843 ms, memory p99 23.08 MB. CPU exceeds Free 10 ms reference; current HEAD/Free enforcement and representative load remain unverified; earlier 50-item page passed but follow-up hit `RATE_LIMITED` |
+| Free-plan resource measurements | Measured / **not approved** | [#35518631508](https://github.com/lirtual/mcp-workers/actions/runs/35518631508): current source read-only smoke passed; exact newly deployed version has 5 analytics records, CPU p50 26.02 ms/p99 60.355 ms, memory p99 ≈19.67 MB, 0 runtime errors; Free CPU reference is 10 ms/request. Sample, Free enforcement and full-load behavior are not established; older version 13-call values are preserved above. |
 
 Every status must be updated from actual observations; preparing a test or passing mock CI does not turn a **Not run** or **Blocked** cell into a pass.
