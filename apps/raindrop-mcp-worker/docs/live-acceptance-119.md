@@ -12,6 +12,8 @@ Issue: [#119](https://github.com/lirtual/mcp-workers/issues/119). Parent: [#110]
 
 **Extended direct-MCP evidence (2026-09-20):** [Actions #35512551236](https://github.com/lirtual/mcp-workers/actions/runs/35512551236) passed after a bounded authentication-propagation retry was added to the read-only initialize step. In addition to the preceding lifecycle it passed scoped `tag_list`, source-scoped `raindrop_bulk_update` with readback, and test-bookmark `highlight_create`, note-only `highlight_update`, preview/confirmed `highlight_delete` with fresh readbacks. Only test-created IDs were changed. The test bookmark was moved to Trash and its empty test collection deleted; no account-wide Trash purge was invoked. This is a partial #119 pass, **not** evidence for scoped cross-collection moves, tag rename/merge, plan-gated duplicate deletion, or Cloudflare resource ceilings.
 
+**Cross-collection direct-MCP evidence (2026-09-20):** [Actions #35513029221](https://github.com/lirtual/mcp-workers/actions/runs/35513029221) passed on isolated v3 after read-only authentication propagation handling. A unique test run created collections A/B and two bookmark IDs. It verified a source-A bulk move to B, a wrong-source-A bulk update that did not change an independent B bookmark, correct-source-B bulk update and readback, and a single-bookmark move B to A. The run re-read the exact owned IDs and sources, moved **only** both test bookmarks to Trash and deleted both known-empty test collections. No existing bookmark, personal tag or entire Trash was modified. This is direct MCP evidence; Portal was not used.
+
 ## Read-only smoke on the existing account (safe to run first)
 
 This is explicitly opt-in, uses a local environment credential, and prints neither the credential nor personal item content. The source file is `tests/v3_live_readonly.test.ts`. It tests the app's MCP Client -> tool handler -> Raindrop API path, **not** a deployed Worker or Portal connection.
@@ -27,11 +29,11 @@ Run the default `pnpm check` independently. The explicit live test is excluded f
 The current account is not an isolated disposable account, so the destructive operations below require tighter protections:
 
 - [x] Generate a unique run prefix, e.g. `mcp-v3-acceptance-<run-id>`. Snapshot no personal content.
-- [ ] Create two private test collections A/B and a child of A. Record the returned exact IDs before any other writes.
+- [x] Create two private test collections A/B and record their exact IDs; child collection creation remains untested.
 - [ ] Create **new** test bookmarks with unique test links, notes and tags inside A only; record all IDs. Use only these IDs and collections for create/read/update/move/scoped delete and highlight lifecycle.
 - [ ] Test tag rename/merge only with newly created globally unique test tag names; avoid affecting any existing tag with the same name. If ownership cannot be verified, mark the test **Blocked**.
 - [ ] Parent-to-root: keep the `FEATURE_UNVERIFIED` gate closed until a separate isolated candidate, exact parent serialization and evidence can be tested safely.
-- [ ] Scoped-delete: verify a test bookmark placed in B is unaffected by a source-A deletion; never probe with an existing bookmark ID.
+- [x] Source isolation: verify a test bookmark placed in B is unaffected by a source-A **bulk update**; source-A bulk-delete denial remains untested. Never probe with an existing bookmark ID.
 - [ ] Duplicate/broken filters and entitlement: use read-only evidence first. Keep `duplicates_delete(confirm=true)` disabled unless a reviewed commit records clear semantics and test-created candidates.
 - [ ] Do **not** run `trash_empty(confirm=true)` on this account unless every item in the entire Trash was created for the test and the inventory is verified immediately before execution. Generally leave it untested.
 - [x] Perform targeted cleanup of **only** returned test IDs for the first lifecycle run; verified the bookmark's source and collection's name/empty-leaf status before deletion. The test bookmark remains in Trash by design. Never use account-wide cleanup.
@@ -43,7 +45,7 @@ The current account is not an isolated disposable account, so the destructive op
 | --- | --- | --- |
 | Offline 26-tool discovery and contract | Pass at last green CI SHA `fd77fda` | [CI](https://github.com/lirtual/mcp-workers/actions/runs/35507962617); recheck after later commits |
 | Current-account direct MCP smoke | Pass (specified checks) | [#35511457233 attempt 2](https://github.com/lirtual/mcp-workers/actions/runs/35511457233): health, 401, initialize, 26 tools, authenticated diagnostic and collection page |
-| Current-account scoped object lifecycle | Partial pass | [#35512551236](https://github.com/lirtual/mcp-workers/actions/runs/35512551236): owned collection/bookmark, scoped tag read, bulk update, highlight create/note-only update/delete, source-scoped bookmark removal, empty collection removal. Cross-collection scope/moves, tag writes remain |
+| Current-account scoped object lifecycle | Partial pass | [#35513029221](https://github.com/lirtual/mcp-workers/actions/runs/35513029221): two owned collections/bookmarks, cross-collection bulk/single moves, wrong-source update isolation, safe cleanup; [#35512551236](https://github.com/lirtual/mcp-workers/actions/runs/35512551236) covers highlight lifecycle. Tag writes, child collection and permanent Trash deletion remain |
 | Parent-to-root write | Blocked | Compile-time `FEATURE_UNVERIFIED` gate |
 | Duplicate deletion write | Blocked | Compile-time `FEATURE_UNVERIFIED` gate; operator/plan unverified |
 | Entire Trash purge | Not run | Existing Trash could contain non-test entries |
