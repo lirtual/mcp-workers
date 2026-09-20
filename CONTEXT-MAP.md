@@ -8,6 +8,8 @@ This repository contains multiple independently owned MCP application contexts. 
 
 The existing MCP apps are independent bounded contexts. Their tool contracts and upstream semantics remain owned by each app and are not redefined by the workflow system.
 
+- [Raindrop MCP](./apps/raindrop-mcp-worker/CONTEXT.md): owns Raindrop.io bookmark, collection, tag, highlight, cleanup, and upstream API semantics.
+
 ### Workflow Automation
 
 The Workflow Automation context coordinates repeatable automation without absorbing the domain model of the systems it invokes.
