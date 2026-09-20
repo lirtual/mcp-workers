@@ -47,6 +47,24 @@ describe("T08: strict dynamic resource templates", () => {
     }
   });
 
+  it.each([
+    ["collection", "mcp://collection/17", "/rest/v1/collection/17"],
+    ["raindrop", "mcp://raindrop/17", "/rest/v1/raindrop/17"],
+  ])("never returns rejected %s detail as a successful resource", async (_kind, uri, path) => {
+    const spy = vi.fn((req: Request) => {
+      expect(new URL(req.url).pathname).toBe(path);
+      return Response.json({ result: false, item: { _id: 17 } });
+    });
+    vi.stubGlobal("fetch", spy);
+    const app = makeService();
+    try {
+      await expect(app.readResource(uri)).rejects.toMatchObject({ code: "UPSTREAM_ERROR" });
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      await app.cleanup();
+    }
+  });
+
   it("lists static resources separately from URI templates at the MCP transport boundary", async () => {
     const service = makeService();
     const client = new Client({ name: "v3-resource-contract", version: "1" });
