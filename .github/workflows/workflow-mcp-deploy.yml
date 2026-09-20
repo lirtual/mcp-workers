@@ -50,6 +50,7 @@ jobs:
       EXECUTOR_LEASE_SECRET: ${{ secrets.EXECUTOR_LEASE_SECRET }}
       R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
       R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      RAINDROP_MCP_ACCESS_TOKEN: ${{ secrets.RAINDROP_MCP_ACCESS_TOKEN }}
       TRIGGER_SMOKE_WEBHOOK_TOKEN: ${{ secrets.TRIGGER_SMOKE_WEBHOOK_TOKEN }}
       WORKFLOW_MCP_EVIDENCE_PATH: ${{ github.workspace }}/workflow-mcp-evidence.json
     steps:
@@ -89,6 +90,7 @@ jobs:
             EXECUTOR_LEASE_SECRET
             R2_ACCESS_KEY_ID
             R2_SECRET_ACCESS_KEY
+            RAINDROP_MCP_ACCESS_TOKEN
             TRIGGER_SMOKE_WEBHOOK_TOKEN
           )
           for name in "${required[@]}"; do
@@ -143,7 +145,8 @@ jobs:
             EXECUTOR_LEASE_SECRET: process.env.EXECUTOR_LEASE_SECRET,
             GITHUB_ACTIONS_TOKEN: process.env.WORKFLOW_MCP_GITHUB_ACTIONS_TOKEN,
             R2_ACCESS_KEY_ID: process.env.R2_ACCESS_KEY_ID,
-            R2_SECRET_ACCESS_KEY: process.env.R2_SECRET_ACCESS_KEY
+            R2_SECRET_ACCESS_KEY: process.env.R2_SECRET_ACCESS_KEY,
+            RAINDROP_MCP_ACCESS_TOKEN: process.env.RAINDROP_MCP_ACCESS_TOKEN
           };
           for (const [name, value] of Object.entries(values)) {
             if (!value) throw new Error('Missing secret value for ' + name);
