@@ -169,6 +169,12 @@ A symbolic reference to a Connection. Workflow Definitions select approved Conne
 ### Connection Credential
 Sensitive authentication material owned by a Connection. Workflow Definitions never contain Connection Credential values.
 
+### Shared MCP Caller Credential
+The single-user deployment's common `MCP_ACCESS_TOKEN` **value** installed independently as a runtime Secret in each of the seven MCP Workers. It grants the caller access at each application's MCP entry surface, but is not an upstream Connection Credential, administrator credential, webhook token, executor lease, or infrastructure Platform Credential. Its compromise affects all seven MCP applications and its rotation must be coordinated.
+
+### Production Smoke Credential
+A dedicated secret used only for deploy-time test traffic, not a business or platform authority. In the approved v0.1 simplification, the redundant MCP smoke token and dedicated smoke webhook token are removed from the production Worker contract. Authenticated smoke tests are separately invoked and authorized; they must not create new permanent production secrets.
+
 ### Platform Credential
 A privileged credential required by the workflow platform itself to operate an infrastructure integration. Platform Credentials are distinct from workflow business secrets and are never delegated through ordinary workflow data.
 
@@ -228,3 +234,4 @@ A restricted declarative expression that reads workflow data and computes condit
 - Authoring format and Canonical Workflow Representation are distinct; version identity is derived from the canonical representation.
 - Workflow Expressions are declarative and cannot escape into arbitrary code execution or undeclared I/O.
 - Credentials and authority do not cross Trust Surfaces unless an explicit delegation protocol grants a narrower temporary authority.
+- The shared MCP caller value may be reused across independently deployed applications' MCP entry interfaces, but never as an administrator, executor, webhook, or upstream API credential; see ADR 0028.
