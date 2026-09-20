@@ -535,6 +535,82 @@ export default class RaindropService {
   }
 
   /**
+   * v3 read/write tracer: direct documented endpoints with no legacy search
+   * shortcuts, and only explicitly writable fields in mutation bodies.
+   */
+  async listRaindropsV3(params: {
+    collectionId: number;
+    search?: string;
+    sort: string;
+    page: number;
+    perpage: number;
+    nested: boolean;
+  }): Promise<{ items: Bookmark[]; count: number | null }> {
+    const { data } = await this.withRateLimit(async () =>
+      (this.client as any).GET("/raindrops/{collectionId}", {
+        params: {
+          path: { collectionId: params.collectionId },
+          query: {
+            page: params.page,
+            perpage: params.perpage,
+            sort: params.sort,
+            nested: params.nested,
+            ...(params.search === undefined ? {} : { search: params.search }),
+          },
+        },
+      }),
+    );
+    if (!data || !Array.isArray(data.items)) {
+      throw new UpstreamError("Raindrop list response is missing items");
+    }
+    return {
+      items: data.items as Bookmark[],
+      count: Number.isSafeInteger(data.count) && data.count >= 0
+        ? data.count : null,
+    };
+  }
+
+  async createRaindropV3(fields: {
+    link: string;
+    title?: string;
+    excerpt?: string;
+    note?: string;
+    tags?: string[];
+    important?: boolean;
+    collection?: { $id: number };
+  }): Promise<Bookmark> {
+    const { data } = await this.withWriteRateLimit(async () =>
+      (this.client as any).POST("/raindrop", {
+        body: { ...fields, collection: fields.collection ?? { $id: -1 }, pleaseParse: {} },
+      }),
+    );
+    if (!data?.item) throw new UpstreamError("Upstream create response has no bookmark");
+    this.cacheSearch.clear();
+    return data.item as Bookmark;
+  }
+
+  async updateRaindropV3(id: number, fields: {
+    link?: string;
+    title?: string;
+    excerpt?: string;
+    note?: string;
+    tags?: string[];
+    important?: boolean;
+    collection?: { $id: number };
+  }): Promise<Bookmark> {
+    const { data } = await this.withWriteRateLimit(async () =>
+      (this.client as any).PUT("/raindrop/{id}", {
+        params: { path: { id } },
+        body: fields,
+      }),
+    );
+    if (!data?.item) throw new UpstreamError("Upstream update response has no bookmark");
+    this.cacheBookmarks.delete(`id:${id}`);
+    this.cacheSearch.clear();
+    return data.item as Bookmark;
+  }
+
+  /**
    * Fetch a single bookmark by ID
    * Raindrop.io API: GET /raindrop/{id}
    */
@@ -566,18 +642,22 @@ export default class RaindropService {
   async getSuggestions(
     target: string | number,
   ): Promise<components["schemas"]["SuggestionsResponse"]> {
-    return this.withRateLimit(async () => {
-      if (typeof target === "number") {
+    if (typeof target === "number") {
+      return this.withRateLimit(async () => {
         const { data } = await this.client.GET("/raindrop/{id}/suggest", {
           params: { path: { id: target } },
         });
+        if (!data) throw new UpstreamError("Suggestions response is missing");
         return data as components["schemas"]["SuggestionsResponse"];
-      } else {
-        const { data } = await this.client.POST("/raindrop/suggest", {
-          body: { link: target },
-        });
-        return data as components["schemas"]["SuggestionsResponse"];
-      }
+      });
+    }
+    // POST suggestion is read-like, but must not be replayed after submission.
+    return this.withWriteRateLimit(async () => {
+      const { data } = await this.client.POST("/raindrop/suggest", {
+        body: { link: target },
+      });
+      if (!data) throw new UpstreamError("Suggestions response is missing");
+      return data as components["schemas"]["SuggestionsResponse"];
     });
   }
 
