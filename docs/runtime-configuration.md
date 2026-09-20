@@ -18,18 +18,23 @@ Cloudflare Builds variables/secrets are a different scope: they are available wh
 | Cloudflare Runtime Secrets | Worker runtime | Actual tokens, API keys, OAuth credentials, passwords, secret JSON configuration |
 | Cloudflare Build variables/secrets | Build/deploy process | Only values genuinely required during build/deploy |
 
+## Common MCP access-token name
+
+All MCP Worker entry points use the **runtime Secret name** `MCP_ACCESS_TOKEN` for their own MCP client/Portal access check. This is a naming and semantic contract, not a replacement for independent upstream API credentials, outbound GitHub credentials, executor leases, or webhook authentication. The Workflow Worker already follows this contract at its `/mcp` boundary. Do not introduce a worker-prefixed runtime alias or duplicate a second Secret solely for a deployment smoke test. Any decision to share or isolate actual token **values** across Workers must preserve each Worker's trust boundary and be recorded separately.
+
 ## Required secrets
 
 Every production Worker configuration declares its mandatory runtime secret names with `secrets.required`. A missing secret is an intentional deployment blocker: `wrangler deploy` must fail and list the missing secret instead of publishing a Worker that fails later at runtime.
 
 | Worker | Required runtime secrets |
 | --- | --- |
-| `ima-mcp-worker` | `MCP_ACCESS_TOKEN`, `API_KEY`, `CLIENT_ID`, `IMA_DOWNLOAD_SIGNING_KEY` |
+| `ima-mcp-worker` | `MCP_ACCESS_TOKEN`, `API_KEY`, `CLIENT_ID` |
 | `openlist-mcp-worker` | `MCP_ACCESS_TOKEN`, `OPENLIST_TOKEN` |
 | `weread-mcp-worker` | `MCP_ACCESS_TOKEN`, `WEREAD_API_KEY` |
 | `database-mcp-worker` | `MCP_ACCESS_TOKEN`, `DATABASE_CONFIG` |
 | `raindrop-mcp-worker` | `MCP_ACCESS_TOKEN`, `RAINDROP_ACCESS_TOKEN` |
 | `instapaper-mcp-worker` | `MCP_ACCESS_TOKEN`, `INSTAPAPER_CONSUMER_KEY`, `INSTAPAPER_CONSUMER_SECRET`, `INSTAPAPER_OAUTH_TOKEN`, `INSTAPAPER_OAUTH_TOKEN_SECRET` |
+| `workflow-mcp-worker` | `MCP_ACCESS_TOKEN`, `TRIGGER_SMOKE_WEBHOOK_TOKEN`, `EXECUTOR_LEASE_SECRET`, `GITHUB_ACTIONS_TOKEN`, `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `SMOKE_READONLY_MCP_TOKEN` (current deployment contract; simplification under design review) |
 
 `database-mcp-worker` stores its complete logical database catalog in the single `DATABASE_CONFIG` Secret. Direct SQL URLs therefore remain secret without requiring separate `DATABASE_URL` / `DATABASE_WRITE_URL` variables. Hyperdrive entries still refer to Wrangler bindings by name.
 
@@ -37,7 +42,7 @@ For local development, use uncommitted `.dev.vars` or `.env` files with keys mat
 
 ## Workers Observability baseline
 
-All six Workers use the same Cloudflare Workers Logs baseline:
+All seven Workers use the same Cloudflare Workers Logs baseline:
 
 ```jsonc
 "observability": {
