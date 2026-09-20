@@ -12,7 +12,8 @@ const validEnv = {
   WORKFLOW_MCP_URL: 'https://workflow-mcp-worker.aiyaya.workers.dev',
   CLOUDFLARE_ACCOUNT_ID: '8bb496011403552e785ea1b834daffdf',
   GITHUB_REPOSITORY: 'lirtual/mcp-workers',
-  GITHUB_REPOSITORY_ID: '1371085786'
+  GITHUB_REPOSITORY_ID: '1371085786',
+  WORKFLOW_MCP_ENABLE_SCHEDULE: 'false'
 };
 
 async function generate(overrides: Record<string, string> = {}) {
@@ -46,6 +47,12 @@ describe('Workflow MCP deploy configuration expansion', () => {
     expect(config?.r2_buckets).toEqual([
       { binding: 'ARTIFACTS', bucket_name: 'workflow-mcp-artifacts' }
     ]);
+    expect(config?.triggers).toEqual({ crons: [] });
+  });
+
+  it('activates exactly one minute-level Cron after manual acceptance', async () => {
+    const { execution, config } = await generate({ WORKFLOW_MCP_ENABLE_SCHEDULE: 'true' });
+    expect(execution.status).toBe(0);
     expect(config?.triggers).toEqual({ crons: ['* * * * *'] });
   });
 
@@ -54,7 +61,8 @@ describe('Workflow MCP deploy configuration expansion', () => {
       ['GITHUB_REPOSITORY', ''],
       ['GITHUB_REPOSITORY_ID', 'not-an-id'],
       ['CLOUDFLARE_ACCOUNT_ID', 'wrong-account'],
-      ['WORKFLOW_MCP_R2_BUCKET', 'Invalid_Bucket']
+      ['WORKFLOW_MCP_R2_BUCKET', 'Invalid_Bucket'],
+      ['WORKFLOW_MCP_ENABLE_SCHEDULE', 'perhaps']
     ] as const) {
       const { execution, config } = await generate({ [name]: value });
       expect(execution.status, name).not.toBe(0);
