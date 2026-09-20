@@ -14,6 +14,13 @@ if (!token) throw new Error("MCP_ACCESS_TOKEN required");
 const runId = randomUUID();
 const title = `mcp-v3-acceptance-${runId}`;
 const testLink = `https://example.com/?mcp-v3-acceptance=${runId}`;
+const ownedTags = {
+  first: `mcp-v3-first-${runId}`,
+  second: `mcp-v3-second-${runId}`,
+  keep: `mcp-v3-keep-${runId}`,
+  renamed: `mcp-v3-renamed-${runId}`,
+  merged: `mcp-v3-merged-${runId}`,
+};
 let collectionId = null;
 let bookmarkId = null;
 let safeToDeleteBookmark;
@@ -91,11 +98,19 @@ try {
   assertOwnedCollection((await tool("collection_get", { id: collectionId })).data?.item);
   console.log("PASS: update/readback owned test collection");
 
+  // Explicitly verify that the random test tags do not exist already.
+  const globalTags = await tool("tag_list", { page: 0, perpage: 50 });
+  assert.equal(globalTags.meta?.hasMore, false, "Cannot establish global test-tag uniqueness");
+  const existing = new Set(globalTags.data?.items?.map(item => item._id));
+  for (const name of Object.values(ownedTags)) {
+    assert(!existing.has(name), "A proposed test tag already exists");
+  }
+
   const createdBookmark = await tool("raindrop_create", {
     link: testLink,
     title,
     note: "Test-owned content only",
-    tags: [`mcp-v3-tag-${runId}`],
+    tags: [ownedTags.first, ownedTags.second, ownedTags.keep],
     collection: { $id: collectionId },
   });
   bookmarkId = ownedId(createdBookmark.data?.item?._id, "Created bookmark");
@@ -111,6 +126,44 @@ try {
   const tags = (await tool("tag_list", { collectionId, page: 0, perpage: 10 })).data?.items;
   assert(Array.isArray(tags), "Scoped tag list response missing items");
   console.log("PASS: scoped tag_list on owned collection");
+
+  const renameArgs = {
+    scope: "collection", collectionId, tags: [ownedTags.first], replace: ownedTags.renamed,
+  };
+  const renamePreview = await tool("tag_rename", renameArgs);
+  assert.equal(renamePreview.meta?.status, "preview");
+  const renamed = await tool("tag_rename", { ...renameArgs, confirm: true });
+  assert.equal(renamed.meta?.status, "succeeded");
+  let currentTags = (await tool("raindrop_get", { id: bookmarkId })).data?.item?.tags;
+  assert(Array.isArray(currentTags) && currentTags.includes(ownedTags.renamed));
+  assert(!currentTags.includes(ownedTags.first));
+  assert(currentTags.includes(ownedTags.second) && currentTags.includes(ownedTags.keep));
+  console.log("PASS: preview/rename and readback of unique test-owned tag");
+
+  const mergeArgs = {
+    scope: "collection", collectionId,
+    tags: [ownedTags.renamed, ownedTags.second], replace: ownedTags.merged,
+  };
+  const mergePreview = await tool("tag_merge", mergeArgs);
+  assert.equal(mergePreview.meta?.status, "preview");
+  const merged = await tool("tag_merge", { ...mergeArgs, confirm: true });
+  assert.equal(merged.meta?.status, "succeeded");
+  currentTags = (await tool("raindrop_get", { id: bookmarkId })).data?.item?.tags;
+  assert(Array.isArray(currentTags) && currentTags.includes(ownedTags.merged));
+  assert(!currentTags.includes(ownedTags.renamed) && !currentTags.includes(ownedTags.second));
+  assert(currentTags.includes(ownedTags.keep));
+  console.log("PASS: preview/merge and readback of unique test-owned tags");
+
+  const deleteArgs = { scope: "collection", collectionId, tags: [ownedTags.merged] };
+  const tagPreview = await tool("tag_delete", deleteArgs);
+  assert.equal(tagPreview.meta?.status, "preview");
+  const deletedTag = await tool("tag_delete", { ...deleteArgs, confirm: true });
+  assert.equal(deletedTag.meta?.status, "succeeded");
+  currentTags = (await tool("raindrop_get", { id: bookmarkId })).data?.item?.tags;
+  assert(Array.isArray(currentTags) && !currentTags.includes(ownedTags.merged));
+  assert(currentTags.includes(ownedTags.keep), "Untouched test tag must remain intact");
+  console.log("PASS: preview/delete and readback of unique test-owned tag");
+
 
   const bulk = await tool("raindrop_bulk_update", {
     collectionId, ids: [bookmarkId], important: true,
