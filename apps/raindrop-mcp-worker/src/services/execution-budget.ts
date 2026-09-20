@@ -83,10 +83,52 @@ export class ExecutionBudget {
     return Math.max(0, this.deadline - Date.now());
   }
 
-  private async acquireRead(): Promise<() => void> {
+  /**
+   * Waiting for a concurrency slot must be bounded by the same request wall
+   * deadline as fetch. Remove abandoned waiters so a later release cannot hand
+   * an owned slot to a cancelled operation.
+   */
+  private async waitForSlot(queue: Array<() => void>, signal: AbortSignal): Promise<void> {
+    const remaining = this.remainingMs();
+    if (remaining <= 0 || signal.aborted) {
+      throw new UpstreamError("Upstream slot unavailable before submission", {
+        submitted: false, budget: true,
+      });
+    }
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const cleanup = () => {
+        clearTimeout(timeout);
+        signal.removeEventListener("abort", abort);
+      };
+      const granted = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve();
+      };
+      const fail = () => {
+        if (settled) return;
+        settled = true;
+        const position = queue.indexOf(granted);
+        if (position >= 0) queue.splice(position, 1);
+        cleanup();
+        reject(new UpstreamError("Upstream slot wait exhausted or aborted", {
+          submitted: false, budget: true,
+        }));
+      };
+      const abort = () => fail();
+      const timeout = setTimeout(fail, remaining);
+      queue.push(granted);
+      signal.addEventListener("abort", abort, { once: true });
+      if (signal.aborted) abort();
+    });
+  }
+
+  private async acquireRead(signal: AbortSignal): Promise<() => void> {
     if (this.activeReads >= EXECUTION_LIMITS.concurrentReads) {
       // The releasing request transfers its slot directly to this waiter.
-      await new Promise<void>((resolve) => this.readQueue.push(resolve));
+      await this.waitForSlot(this.readQueue, signal);
     } else {
       this.activeReads++;
     }
@@ -97,10 +139,10 @@ export class ExecutionBudget {
     };
   }
 
-  private async acquireWrite(): Promise<() => void> {
+  private async acquireWrite(signal: AbortSignal): Promise<() => void> {
     if (this.activeWrites >= 1) {
       // Keep write ownership reserved until the queued operation acquires it.
-      await new Promise<void>((resolve) => this.writeQueue.push(resolve));
+      await this.waitForSlot(this.writeQueue, signal);
     } else {
       this.activeWrites++;
     }
@@ -121,7 +163,7 @@ export class ExecutionBudget {
     }
 
     const isRead = request.method === "GET";
-    const release = isRead ? await this.acquireRead() : await this.acquireWrite();
+    const release = isRead ? await this.acquireRead(request.signal) : await this.acquireWrite(request.signal);
     try {
       if (request.signal.aborted) {
         throw new UpstreamError("Request aborted before submission", { submitted: false, budget: true });
