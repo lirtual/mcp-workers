@@ -2,7 +2,7 @@ import { appendFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 
 const baseUrl = required('WORKFLOW_MCP_URL').replace(/\/+$/, '');
-const accessToken = required('WORKFLOW_MCP_ACCESS_TOKEN');
+const accessToken = required('MCP_ACCESS_TOKEN');
 const sourceUrl = process.env.WORKFLOW_MCP_SOURCE_URL || 'https://example.com/';
 const evidencePath = process.env.WORKFLOW_MCP_EVIDENCE_PATH || 'workflow-mcp-evidence.json';
 const timeoutMs = Number(process.env.WORKFLOW_MCP_TIMEOUT_MS || 15 * 60 * 1000);
