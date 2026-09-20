@@ -205,7 +205,6 @@ jobs:
             echo "- Heavy run: \`${{ steps.tracer.outputs.heavy_run_id || 'not-completed' }}\`"
             echo "- MCP run: \`${{ steps.tracer.outputs.mcp_run_id || 'not-completed' }}\`"
             echo "- Raindrop manual run: \`${{ steps.raindrop.outputs.raindrop_run_id || 'not-requested' }}\`"
-            echo "- Raindrop manual run: \`${{ steps.tracer.outputs.raindrop_run_id || 'not-completed' }}\`"
             if [[ -f "$WORKFLOW_MCP_EVIDENCE_PATH" ]]; then
               echo
               echo '```json'
