@@ -131,6 +131,16 @@ describe("T06: documented v3 highlight contract", () => {
     });
   });
 
+  it("does not claim write success for HTTP 200 without an explicit acknowledgement", async () => {
+    const mock = fake(() => Response.json({}));
+    const result = await service().callTool("highlight_update", { raindropId: 7, _id: "hl-1", note: "x" });
+    expect(mock).toHaveBeenCalledTimes(1);
+    expect(result.structuredContent).toMatchObject({
+      ok: false, error: { code: "WRITE_OUTCOME_UNKNOWN" },
+      meta: { status: "unknown", requestCount: 1 },
+    });
+  });
+
   it("exposes the contract through a real in-memory MCP Client", async () => {
     const mock = fake(() => { throw Error("Unexpected upstream request"); });
     const app = service();
