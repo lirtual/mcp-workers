@@ -46,6 +46,8 @@ export async function readBounded(
 export class ExecutionBudget {
   private readonly deadline = Date.now() + EXECUTION_LIMITS.wallMs;
   private activeReads = 0;
+  private activeWrites = 0;
+  private readonly writeQueue: Array<() => void> = [];
   private readonly readQueue: Array<() => void> = [];
   private attemptsUsed = 0;
   private writesStarted = 0;
@@ -73,6 +75,17 @@ export class ExecutionBudget {
     };
   }
 
+  private async acquireWrite(): Promise<() => void> {
+    if (this.activeWrites >= 1) {
+      await new Promise<void>((resolve) => this.writeQueue.push(resolve));
+    }
+    this.activeWrites++;
+    return () => {
+      this.activeWrites--;
+      this.writeQueue.shift()?.();
+    };
+  }
+
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     if (
@@ -83,7 +96,7 @@ export class ExecutionBudget {
     }
 
     const isRead = request.method === "GET";
-    const release = isRead ? await this.acquireRead() : () => undefined;
+    const release = isRead ? await this.acquireRead() : await this.acquireWrite();
     try {
       // Count bytes before sending anything; never rely on Content-Length.
       if (request.body) {
