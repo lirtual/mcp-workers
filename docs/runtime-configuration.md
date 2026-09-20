@@ -20,7 +20,11 @@ Cloudflare Builds variables/secrets are a different scope: they are available wh
 
 ## Common MCP access-token name
 
-All MCP Worker entry points use the **runtime Secret name** `MCP_ACCESS_TOKEN` for their own MCP client/Portal access check. This is a naming and semantic contract, not a replacement for independent upstream API credentials, outbound GitHub credentials, executor leases, or webhook authentication. The Workflow Worker already follows this contract at its `/mcp` boundary. Do not introduce a worker-prefixed runtime alias or duplicate a second Secret solely for a deployment smoke test. Any decision to share or isolate actual token **values** across Workers must preserve each Worker's trust boundary and be recorded separately.
+All seven MCP Worker entry points use the runtime Secret name `MCP_ACCESS_TOKEN` and, for this **single-user deployment**, the **same token value** for MCP client/Portal entry authentication. This is a deliberate shared **MCP caller credential**, not a shared upstream, platform, administrator, executor, or webhook credential. Worker deployments remain independent: every deployed Worker must receive its own runtime Secret binding containing that same value. A matching name does not automatically distribute or synchronize Secret values between Workers.
+
+Do not add worker-prefixed MCP runtime aliases (such as `WORKFLOW_MCP_ACCESS_TOKEN`) or a second runtime Secret solely for an automated smoke test. Keep the shared value out of Git, plaintext Wrangler `vars`, logs, execution manifests, and workflow definitions. Do not silently replace it on routine deployment; initialize it once and rotate it deliberately across all seven Workers and the MCP clients that depend on it. Since compromising one MCP entry credential now grants access to **every** MCP Worker, protect the token as a cross-application credential and revisit this decision if ownership, users, or exposure diverge.
+
+The single shared MCP caller token does **not** supersede `docs/adr/0022-separate-user-admin-executor-and-webhook-trust-surfaces.md`: the Workflow admin, GitHub executor, and real webhook surfaces remain separately authenticated. Keep each app's upstream credential independent. See `docs/adr/0028-share-single-user-mcp-entry-token-and-minimize-runtime-configuration.md` for the accepted scope and deployment consequences.
 
 ## Required secrets
 
@@ -39,6 +43,21 @@ Every production Worker configuration declares its mandatory runtime secret name
 `database-mcp-worker` stores its complete logical database catalog in the single `DATABASE_CONFIG` Secret. Direct SQL URLs therefore remain secret without requiring separate `DATABASE_URL` / `DATABASE_WRITE_URL` variables. Hyperdrive entries still refer to Wrangler bindings by name.
 
 For local development, use uncommitted `.dev.vars` or `.env` files with keys matching `secrets.required`.
+
+## Workflow v0.1 configuration reduction (approved design; not yet deployed)
+
+| Setting group | Decision |
+| --- | --- |
+| MCP caller | One shared `MCP_ACCESS_TOKEN` value across all seven Workers. No `WORKFLOW_MCP_ACCESS_TOKEN` runtime alias and no duplicate `SMOKE_READONLY_MCP_TOKEN`. |
+| Routine deployment verification | Check health and reject unauthenticated MCP requests without using the production MCP token. Full authenticated MCP/heavy/connection smoke tests are manual, separately invoked acceptance checks, not mandatory steps of every production push. Keep test-only credentials in the explicit test context and never create an auto-rotating production MCP secret. |
+| Dedicated smoke webhook | Remove the smoke-only webhook and `TRIGGER_SMOKE_WEBHOOK_TOKEN` from the production runtime contract. Do not remove real webhook support: real configured triggers have distinct, scoped authentication and are not authenticated by `MCP_ACCESS_TOKEN`. |
+| Static configuration | Fixed repository/ref/workflow, GitHub OIDC URLs/audience, resource names, and safe non-sensitive defaults live in version-controlled configuration or code. Avoid duplicate Cloudflare dashboard overrides and duplicated CI inputs. Keep actual Cloudflare resource IDs in the deployment configuration as needed; they are identifiers, not secrets. |
+| Platform credentials | Keep `GITHUB_ACTIONS_TOKEN` (repository-scoped long-lived authorization, **not** a deployment-job `github.token`), `EXECUTOR_LEASE_SECRET`, and the credentials required by the **current** R2 direct-upload signing implementation separate. Consider the latter for reduction only after verifying equivalent signed-upload behavior. |
+| Runtime resources | Keep the D1, Workflows, R2, and version-metadata bindings as needed by implemented behavior. Do not classify bindings as optional merely to lower a dashboard count. |
+| Cron scheduler | Preserve the intended scheduler tick. The existing generated deployment config sets `triggers.crons=[]`; resolve this explicitly when implementing rather than silently dropping schedules. |
+| Ownership and consistency | `wrangler.jsonc` and audited code defaults own non-sensitive settings; Cloudflare runtime owns secret values; CI owns only genuine deployment/test credentials. Never rotate or delete a live Secret just to reconcile naming before code and clients are ready. |
+
+**Current implementation is not yet compliant.** The deployed contract still requires `TRIGGER_SMOKE_WEBHOOK_TOKEN` and `SMOKE_READONLY_MCP_TOKEN`; the deploy workflow generates random MCP/lease/smoke credentials and writes the ephemeral `github.token` to `GITHUB_ACTIONS_TOKEN`. The implementation phase must change the deploy script, Wrangler required names, smoke callers, endpoint/test fixtures and configuration references together before any runtime-secret cleanup. The previously discussed four-platform-secret target is a *design estimate*, not a verified final minimum for all features.
 
 ## Workers Observability baseline
 
