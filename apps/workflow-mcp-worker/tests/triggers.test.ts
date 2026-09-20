@@ -1,4 +1,16 @@
-import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { describe, expect, it, vi } from 'vitest';
+import { compileWorkflowText } from '../src/compiler.js';
+
+vi.mock('../src/registry.js', () => ({
+  findWorkflow: (id: string) => {
+    if (id !== 'trigger-http-smoke') return undefined;
+    return compileWorkflowText(
+      readFileSync(new URL('./fixtures/trigger-http-smoke.yaml', import.meta.url), 'utf8'),
+      'tests/fixtures/trigger-http-smoke.yaml'
+    );
+  }
+}));
 import { handleWebhookTrigger } from '../src/triggers.js';
 import type { Env } from '../src/types.js';
 
