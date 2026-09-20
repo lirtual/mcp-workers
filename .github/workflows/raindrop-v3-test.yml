@@ -93,6 +93,7 @@ jobs:
           export RAINDROP_V3_TEST_URL="https://raindrop-mcp-worker-v3-test.aiyaya.workers.dev"
           # Probe max 50-item read page before any test-owned writes.
           # Bounded authentication-propagation retry is read-only; never replay writes.
+          # Recovery uses read-only handshake retry; never retry submitted writes.
           # Recovery handshake alone may be retried during secret propagation.
           # Recovery mode is activated by a temporary, checked-in marker.
           # It never creates new objects or starts the regular mutation suites.
