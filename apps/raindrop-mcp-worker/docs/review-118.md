@@ -4,9 +4,19 @@
 
 - Source-spec baseline: `93ff4f343c029aabf1a5a3a56056d0342760037e`.
 - Verified PR merge base against current main: `9434aa25d96244087e6b27fb2302c0e620a8d14c`.
-- Reviewed source HEAD: `f9421be691d3cefc6bf9a6322a8aa5c8edb2d3fb` (documentation-only changes after `a4486585b81db5bb98a518b734f35939ebbade83`; rerun checks after any further code change).
+- Previously reviewed source HEAD: `f9421be691d3cefc6bf9a6322a8aa5c8edb2d3fb`; follow-up review and repair were performed against source `e2d161c2c7e408dd4a37d011262838e0bec2611d`. The newest review documentation itself is not a code change.
 - Sources: [spec #110](https://github.com/lirtual/mcp-workers/issues/110), [ticket #118](https://github.com/lirtual/mcp-workers/issues/118), `CONTEXT.md`, and `docs/adr/0001-replace-legacy-tool-contract.md`.
 - No repository-wide `CODING_STANDARDS.md` / `CONTRIBUTING.md` was found. The review below checks each axis independently but was not performed by two isolated subagents.
+
+## Follow-up review against PR HEAD `e2d161c2`
+
+During this second manual Standards pass, a concrete ingress budget gap was found: authenticated `worker.fetch` read the MCP body using a byte cap without a deadline or caller abort. A stream that never ended could stall **before** the upstream execution budget existed. The matching Spec axis concern was #110 §2.3/§4/AC-15 (bounded ingress and client cancellation), not the pre-existing outbound budget.
+
+**Fixed** in `src/worker.ts:132–156`: an 8-second timeout and propagated caller abort now bound the ingress stream. An aborted ingress returns a redacted 408 and never enters the SDK. New regression tests in `tests/core_reliability.test.ts` cover both a stalled stream and a client disconnect. A first test run advanced fake timers before the async Portal authentication had installed the deadline, so the fixture was corrected to flush the async chain; no production behavior was relaxed.
+
+**Verification:** [CI #35517076473 attempt 2](https://github.com/lirtual/mcp-workers/actions/runs/35517076473) succeeded for source SHA `e2d161c2c7e408dd4a37d011262838e0bec2611d`: affected application checks and database integration both passed. Attempt 1 failed only to initialize an unrelated MySQL container because its fixed host port was already in use; that job was retried successfully.
+
+This is a grounded manual review and repair, **not independent parallel subagent sign-off**. Do not close the separate independent reviewer gate or treat this as production release approval.
 
 ## Standards axis — architecture and reliability
 
@@ -31,5 +41,5 @@
 - [x] Contract source, generated types, request signatures and deterministic schema check align.
 - [x] Stalled preflight/abort and no-submit regression tests are present.
 - [x] Last code-changing commit `a4486585` passed application checks (typecheck, lint, offline tests, schema, Wrangler dry-run) in [CI #35515414295](https://github.com/lirtual/mcp-workers/actions/runs/35515414295).
-- [ ] Independently execute the separate Standards and Spec review on the final PR diff, and verify the newest documentation-only HEAD CI before formally closing #118.
+- [ ] Obtain an independent Standards and Spec review of the final PR diff. The follow-up manual review identified/fixed ingress cancellation and was verified against `e2d161c2`; it does not constitute two isolated reviewers.
 - [ ] Keep PR #120 Draft pending remaining #119 live/resource evidence and explicit production release decision. Never treat this review as permission to clear an existing account Trash.
