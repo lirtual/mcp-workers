@@ -70,7 +70,7 @@ describe('MCP connection auth formatting', () => {
       auth: {
         header: 'Authorization',
         format: 'bearer',
-        secret: 'SMOKE_READONLY_MCP_TOKEN'
+        secret: 'MCP_ACCESS_TOKEN'
       }
     });
   });
