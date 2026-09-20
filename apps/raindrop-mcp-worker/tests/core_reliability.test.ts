@@ -234,7 +234,7 @@ describe("bounded request-body preflight", () => {
     } as RequestInit & { duplex: "half" });
     const pending = budget.fetch(request);
     const assertion = expect(pending).rejects.toMatchObject({
-      details: { submitted: false },
+      cause: { submitted: false },
     });
     await vi.advanceTimersByTimeAsync(EXECUTION_LIMITS.fetchMs + 1);
     await assertion;
@@ -256,7 +256,7 @@ describe("bounded request-body preflight", () => {
     } as RequestInit & { duplex: "half" });
     const pending = budget.fetch(request);
     const assertion = expect(pending).rejects.toMatchObject({
-      details: { submitted: false },
+      cause: { submitted: false },
     });
     controller.abort();
     await assertion;
