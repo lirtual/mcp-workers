@@ -129,14 +129,31 @@ export default {
     // before the request reaches the MCP SDK or any Raindrop tool/service code.
     // Check actual streamed bytes: Content-Length is untrusted and may be absent.
     // Keep authentication and the empty compatibility probe ahead of this read.
+    // Ingress happens BEFORE the request-scoped upstream budget is created.
+    // Bound the streaming read itself and propagate client disconnects.
+    const ingress = new AbortController();
+    const abortIngress = () => ingress.abort();
+    portalAuth.request.signal.addEventListener("abort", abortIngress, { once: true });
+    if (portalAuth.request.signal.aborted) abortIngress();
+    const ingressTimeout = setTimeout(abortIngress, EXECUTION_LIMITS.fetchMs);
     let body: Uint8Array;
     try {
       body = await readBounded(
         portalAuth.request.body,
         EXECUTION_LIMITS.requestBytes,
+        ingress.signal,
       );
+      if (ingress.signal.aborted) {
+        return jsonError(408, "REQUEST_BODY_TIMEOUT", "MCP request body timed out or was cancelled.");
+      }
     } catch {
+      if (ingress.signal.aborted) {
+        return jsonError(408, "REQUEST_BODY_TIMEOUT", "MCP request body timed out or was cancelled.");
+      }
       return jsonError(413, "REQUEST_TOO_LARGE", "MCP request exceeds 128 KiB.");
+    } finally {
+      clearTimeout(ingressTimeout);
+      portalAuth.request.signal.removeEventListener("abort", abortIngress);
     }
     const headers = new Headers(portalAuth.request.headers);
     headers.delete("content-length");
