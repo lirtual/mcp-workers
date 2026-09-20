@@ -44,5 +44,14 @@ export class UpstreamError extends McpError {
   }
 }
 
+/** The upstream explicitly rejected the operation. A submitted write is failed,
+ * not unknown, and must not be retried automatically. */
+export class UpstreamRejectedError extends McpError {
+  constructor(message: string, cause?: unknown) {
+    super("UPSTREAM_REJECTED", message, cause);
+    this.name = "UpstreamRejectedError";
+  }
+}
+
 export type KnownMcpError =
-  NotFoundError | ValidationError | AuthError | RateLimitError | UpstreamError;
+  NotFoundError | ValidationError | AuthError | RateLimitError | UpstreamError | UpstreamRejectedError;
