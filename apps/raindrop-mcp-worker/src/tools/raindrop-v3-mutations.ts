@@ -53,8 +53,7 @@ function mutationMeta(
     requestedIds,
     modified,
     requestCount,
-    // The upstream API reports a batch result but no per-ID success list.
-    operations: [{ status: "succeeded", requestedIds, modified }],
+    // One upstream request: only batch-wide status is known; no per-ID claims.
   };
 }
 
