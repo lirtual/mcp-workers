@@ -54,13 +54,12 @@ export class RaindropMCPService {
     },
     {
       name: "find_duplicates",
-      description:
-        "Identify potential duplicate bookmarks using URL + title similarity.",
+      description: "Review official current-page duplicate candidates before choosing any destructive action.",
       messages: [
         {
           role: "user",
           content:
-            "You detect duplicate bookmarks. Consider URL normalization, title similarity, and canonical forms. Return suspected duplicate pairs.",
+            "Call library_audit with kind=duplicates and inspect its current page. Do not invent duplicate matches using URL similarity; preview explicit candidates with duplicates_delete. Its execution remains disabled until isolated live verification. Never auto-delete bookmarked notes or highlights.",
         },
       ],
     },
@@ -132,13 +131,6 @@ export class RaindropMCPService {
             resources: { subscribe: false, listChanged: false },
             prompts: { listChanged: false },
             tools: { listChanged: false },
-            experimental: {
-              elicitation: {
-                supported: true,
-                description:
-                  "Destructive and ambiguous actions require confirmation or clarification.",
-              },
-            },
           },
         },
       );
