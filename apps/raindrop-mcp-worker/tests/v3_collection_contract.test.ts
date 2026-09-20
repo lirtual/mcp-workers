@@ -9,9 +9,10 @@ const C = (id: number, parent?: number, count = 0) => ({
   _id: id, title: `collection-${id}`, count,
   ...(parent === undefined ? {} : { parent: { $id: parent } }),
 });
+type CollectionFixture = { _id: number; title: string; count?: number; parent?: { $id: number } };
 const mockIndex = (
-  roots: ReturnType<typeof C>[],
-  children: ReturnType<typeof C>[] = [],
+  roots: CollectionFixture[],
+  children: CollectionFixture[] = [],
   onWrite?: (req: Request) => Promise<Response> | Response,
 ) => {
   const spy = vi.fn(async (request: Request) => {
