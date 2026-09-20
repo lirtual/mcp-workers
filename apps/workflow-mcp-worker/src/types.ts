@@ -9,6 +9,7 @@ export interface Env {
     timestamp?: string;
   };
   MCP_ACCESS_TOKEN?: string;
+  RAINDROP_MCP_ACCESS_TOKEN?: string;
   EXECUTOR_LEASE_SECRET?: string;
   GITHUB_ACTIONS_TOKEN?: string;
   GITHUB_REPOSITORY?: string;
