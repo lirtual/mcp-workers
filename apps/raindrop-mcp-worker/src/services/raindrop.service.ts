@@ -642,8 +642,8 @@ export default class RaindropService {
         },
       }),
     );
-    if (!data || !Array.isArray(data.items)) {
-      throw new UpstreamError("Raindrop list response is missing items");
+    if (!data || data.result === false || !Array.isArray(data.items)) {
+      throw new UpstreamError("Raindrop list response is missing or rejected");
     }
     return {
       items: data.items as Bookmark[],
