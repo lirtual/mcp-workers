@@ -1,3 +1,4 @@
+/* global process, fetch, URL, AbortSignal, console */
 import { strict as assert } from "node:assert";
 import { randomUUID } from "node:crypto";
 
@@ -15,8 +16,8 @@ const title = `mcp-v3-acceptance-${runId}`;
 const testLink = `https://example.com/?mcp-v3-acceptance=${runId}`;
 let collectionId = null;
 let bookmarkId = null;
-let safeToDeleteBookmark = false;
-let safeToDeleteCollection = false;
+let safeToDeleteBookmark;
+let safeToDeleteCollection;
 const problems = [];
 
 function ownedId(value, label) {
@@ -88,7 +89,6 @@ try {
 
   await tool("collection_update", { id: collectionId, title: `${title}-renamed` });
   assertOwnedCollection((await tool("collection_get", { id: collectionId })).data?.item);
-  safeToDeleteCollection = true;
   console.log("PASS: update/readback owned test collection");
 
   const createdBookmark = await tool("raindrop_create", {
@@ -99,7 +99,6 @@ try {
   });
   bookmarkId = ownedId(createdBookmark.data?.item?._id, "Created bookmark");
   assertOwnedBookmark((await tool("raindrop_get", { id: bookmarkId })).data?.item);
-  safeToDeleteBookmark = true;
   console.log("PASS: create/get owned test bookmark");
 
   await tool("raindrop_update", { id: bookmarkId, note: "Updated test-owned content only" });
