@@ -18,9 +18,6 @@ export interface Env {
   R2_BUCKET_NAME?: string;
   R2_ACCESS_KEY_ID?: string;
   R2_SECRET_ACCESS_KEY?: string;
-  SMOKE_READONLY_MCP_ENDPOINT?: string;
-  SMOKE_MODERN_MCP_ENDPOINT?: string;
-  SMOKE_READONLY_MCP_TOKEN?: string;
   DB: D1Database;
   ARTIFACTS?: R2Bucket;
   WORKFLOW: Workflow<WorkflowRunParams>;
