@@ -125,6 +125,12 @@ jobs:
           echo "path=$config" >> "$GITHUB_OUTPUT"
           echo "WORKFLOW_MCP_WRANGLER_CONFIG=$config" >> "$GITHUB_ENV"
 
+      - name: Verify existing production MCP credentials
+        working-directory: apps/workflow-mcp-worker
+        env:
+          WORKFLOW_MCP_BOOTSTRAP: ${{ inputs.bootstrap == true && 'true' || 'false' }}
+        run: pnpm exec tsx scripts/verify-deploy-access.ts
+
       - name: Apply D1 migrations
         working-directory: apps/workflow-mcp-worker
         run: pnpm exec wrangler d1 migrations apply DB --remote --config "$WORKFLOW_MCP_WRANGLER_CONFIG"
