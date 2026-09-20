@@ -6,7 +6,7 @@ const mode = process.argv.includes('--local') ? '--local' : '--remote';
 const wranglerConfig = process.env.WORKFLOW_MCP_WRANGLER_CONFIG;
 
 const query = `
-SELECT wr.run_id, wr.definition_digest, wdv.dsl_version, sa.execution_manifest_json
+SELECT wr.run_id, wr.definition_digest, wdv.dsl_version, wdv.normalized_plan_json, sa.execution_manifest_json
 FROM workflow_runs wr
 JOIN workflow_definition_versions wdv
   ON wdv.definition_digest = wr.definition_digest
@@ -47,6 +47,21 @@ if (result.status !== 0) {
 }
 
 const rows = extractRows(JSON.parse(result.stdout || '[]'));
+// Old pinned plans can remain runnable after a registry change, but the removed
+// smoke-only connection names cannot resolve in the new runtime. Fail before
+// deployment until those Attempts terminate; do not silently rewrite their plans.
+const incompatibleSmokeRuns = new Set(
+  rows.filter(row => {
+    const plan = row.normalized_plan_json;
+    return typeof plan === 'string' &&
+      /"smoke-(?:modern|readonly)"/.test(plan);
+  }).map(row => String(row.run_id))
+);
+if (incompatibleSmokeRuns.size > 0) {
+  throw new Error(
+    `Release compatibility gate blocked ${incompatibleSmokeRuns.size} nonterminal run(s) referencing removed smoke-only MCP connections. Wait for them to terminate before deploying.`
+  );
+}
 const grouped = new Map<
   string,
   {
