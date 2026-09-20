@@ -62,10 +62,21 @@ const unauth = await fetch(new URL("/mcp", baseUrl), {
 assert.equal(unauth.status, 401, "Unauthenticated direct MCP must fail closed");
 console.log("PASS: direct MCP rejects unauthenticated request");
 
-const initialized = await mcp("initialize", {
-  protocolVersion: "2025-11-25", capabilities: {},
-  clientInfo: { name: "raindrop-v3-isolated-direct", version: "1.0.0" },
-});
+let initialized;
+for (let attempt = 0; attempt < 12; attempt++) {
+  try {
+    initialized = await mcp("initialize", {
+      protocolVersion: "2025-11-25", capabilities: {},
+      clientInfo: { name: "raindrop-v3-isolated-direct", version: "1.0.0" },
+    });
+    break;
+  } catch (error) {
+    // A successful deploy can precede propagation of the new per-run secret.
+    // Retry ONLY authentication; never replay a submitted mutation.
+    if (!String(error).includes("MCP initialize: HTTP 401") || attempt === 11) throw error;
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  }
+}
 assert(initialized?.serverInfo, "Direct MCP initialization must return serverInfo");
 console.log("PASS: direct MCP initialize");
 
