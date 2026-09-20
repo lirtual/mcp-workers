@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { callMcpTool } from '../src/mcp-client.js';
 import type { Env } from '../src/types.js';
 import { compileWorkflowText } from '../src/compiler.js';
+import { latestDueOccurrence } from '../src/cron.js';
 import { getConnection, buildConnectionAuthHeader } from '../src/connections.js';
 import { resolveMcpOperationPolicy } from '../src/effective-policy.js';
 import { resolveRuntimeValue, asRuntimePlan } from '../src/runtime-plan.js';
@@ -28,6 +29,21 @@ describe('Raindrop daily snapshot', () => {
       }
     });
     expect(Object.values(plan.steps).every(step => step.executor === 'cloudflare')).toBe(true);
+  });
+
+  it('maps Beijing 09:00 to UTC 01:00 across UTC day boundaries', () => {
+    const schedule = { cron: '0 9 * * *', timezone: 'Asia/Shanghai' };
+    const due = Date.parse('2026-09-21T01:00:00Z');
+    expect(latestDueOccurrence({
+      ...schedule,
+      fromExclusive: Date.parse('2026-09-20T23:59:00Z'),
+      toInclusive: due
+    })).toBe(due);
+    expect(latestDueOccurrence({
+      ...schedule,
+      fromExclusive: due,
+      toInclusive: due + 60_000
+    })).toBeNull();
   });
 
   it('uses one immutable endpoint, independent credential, and explicit local read policy', () => {
