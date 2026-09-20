@@ -55,11 +55,11 @@ const connections = {
     id: 'smoke-modern',
     transport: 'streamable-http',
     protocolVersion: '2026-07-28',
-    endpoint: 'https://example.invalid/mcp-modern',
+    endpoint: 'https://workflow-mcp-worker.aiyaya.workers.dev/mcp',
     auth: {
       header: 'Authorization',
       format: 'bearer',
-      secret: 'SMOKE_READONLY_MCP_TOKEN'
+      secret: 'MCP_ACCESS_TOKEN'
     },
     trustAnnotations: false,
     tools: {
