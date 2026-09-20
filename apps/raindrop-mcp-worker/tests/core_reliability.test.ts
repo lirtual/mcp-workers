@@ -18,8 +18,7 @@ describe("Raindrop request budget", () => {
       accessToken: "fake",
       maxReadRetries: 0,
     });
-    const result = await service.callTool("collection_manage", {
-      operation: "create",
+    const result = await service.callTool("collection_create", {
       title: "disposable-fixture",
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -92,8 +91,7 @@ describe("submitted-write uncertainty regressions", () => {
       accessToken: "fake-token",
       maxReadRetries: 3,
     });
-    const result = await service.callTool("collection_manage", {
-      operation: "create",
+    const result = await service.callTool("collection_create", {
       title: "isolated-test-only",
     });
     return { fetchMock, result };
@@ -171,8 +169,7 @@ describe("submitted-write uncertainty regressions", () => {
       accessToken: "fake-token",
       maxReadRetries: 3,
     });
-    const pending = service.callTool("collection_manage", {
-      operation: "create",
+    const pending = service.callTool("collection_create", {
       title: "isolated-test-only",
     });
     await vi.advanceTimersByTimeAsync(EXECUTION_LIMITS.fetchMs + 1);
@@ -279,8 +276,7 @@ describe("bounded response and definite write errors", () => {
     const fetchMock = vi.fn(async () => new Response(null, { status }));
     vi.stubGlobal("fetch", fetchMock);
     const service = new RaindropMCPService({ accessToken: "fake", maxReadRetries: 0 });
-    const result = await service.callTool("collection_manage", {
-      operation: "create",
+    const result = await service.callTool("collection_create", {
       title: "isolated-test-only",
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
