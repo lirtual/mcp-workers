@@ -1134,7 +1134,7 @@ export default class RaindropService {
         body: { highlights: [highlight] },
       }),
     );
-    if (!data || data.result === false) {
+    if (data?.result !== true) {
       throw new UpstreamError("Upstream highlight mutation acknowledgement is missing");
     }
     const item = data.item && typeof data.item === "object" ? data.item as Bookmark : null;
