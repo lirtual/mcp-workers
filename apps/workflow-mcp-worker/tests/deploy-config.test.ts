@@ -38,15 +38,14 @@ describe('Workflow MCP deploy configuration expansion', () => {
       GITHUB_REPOSITORY: 'lirtual/mcp-workers',
       GITHUB_REPOSITORY_ID: '1371085786',
       R2_ACCOUNT_ID: '8bb496011403552e785ea1b834daffdf',
-      R2_BUCKET_NAME: 'workflow-mcp-artifacts',
-      SMOKE_MODERN_MCP_ENDPOINT: 'https://workflow-mcp-worker.aiyaya.workers.dev/mcp'
+      R2_BUCKET_NAME: 'workflow-mcp-artifacts'
     });
     expect(config?.vars).not.toHaveProperty('GITHUB_OIDC_ISSUER');
     expect(config?.vars).not.toHaveProperty('GITHUB_EXECUTOR_REF');
     expect(config?.r2_buckets).toEqual([
       { binding: 'ARTIFACTS', bucket_name: 'workflow-mcp-artifacts' }
     ]);
-    expect(config?.triggers).toEqual({ crons: [] }); // T17 owns schedule activation.
+    expect(config?.triggers).toEqual({ crons: ['* * * * *'] });
   });
 
   it('rejects missing or malformed identity before producing a deployment config', async () => {
