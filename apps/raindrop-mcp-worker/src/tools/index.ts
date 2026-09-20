@@ -3,6 +3,7 @@ import { raindropV3Tools } from "./raindrop-v3.js";
 import { raindropV3MutationTools } from "./raindrop-v3-mutations.js";
 import { raindropV3TagTools } from "./raindrop-v3-tags.js";
 import { raindropV3HighlightTools } from "./raindrop-v3-highlights.js";
+import { raindropV3CollectionTools } from "./raindrop-v3-collections.js";
 import { bulkTools } from "./bulk.js";
 import { cleanupTools } from "./cleanup.js";
 import { collectionTools } from "./collections.js";
@@ -25,12 +26,14 @@ export const buildToolConfigs = (options: { serverVersion: string }) => {
 
   toolConfigs = [
     diagnosticsTool,
-    ...collectionTools,
+    // During migration, v3 collection_list replaces the legacy tool of the same name.
+    ...collectionTools.filter((tool) => tool.name !== "collection_list"),
     ...bookmarkTools,
     ...raindropV3Tools,
     ...raindropV3MutationTools,
     ...raindropV3TagTools,
     ...raindropV3HighlightTools,
+    ...raindropV3CollectionTools,
     ...tagTools,
     ...highlightTools,
     ...bulkTools,
