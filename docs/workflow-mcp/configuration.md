@@ -38,6 +38,13 @@ match GitHub's. The GitHub environment must contain the **same effective
 values** as the existing live Worker to preserve active MCP clients and
 in-flight Attempt leases. A missing environment secret intentionally blocks
 deployment before D1 migrations rather than regenerating it.
+Before any D1 migration or Worker deployment, a read-only preflight checks the
+existing live Workflow MCP token (except first-time `bootstrap=true`) and the
+Raindrop token via authenticated `tools/list`. It verifies required tool names
+without logging credential values or bookmark contents. Missing or mismatched
+credentials fail closed; the check cannot establish that the independent lease,
+GitHub Actions or R2 keys match the currently deployed secrets. Those are
+covered by the subsequent actual executor/artifact tracers.
 
 The webhook/scheduled smoke definition now lives only under
 `tests/fixtures/`; the production workflow registry has no retired smoke
