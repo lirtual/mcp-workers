@@ -15,7 +15,7 @@ const names = [
 ].sort();
 
 const timeoutMs = 15000;
-async function mcp(method, params = {}) {
+async function mcp(method, params = {}, authAttempt = 0) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -29,6 +29,14 @@ async function mcp(method, params = {}) {
       body: JSON.stringify({ jsonrpc: "2.0", id: randomUUID(), method, params }),
       signal: controller.signal,
     });
+    const readOnly = method === "initialize" || method === "tools/list" ||
+      (method === "tools/call" && ["diagnostics", "collection_list"].includes(params.name));
+    if (res.status === 401 && readOnly && authAttempt < 11) {
+      // Only replay read-only handshake operations while a rotated secret
+      // propagates. Mutations must NEVER be retried after submission.
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      return mcp(method, params, authAttempt + 1);
+    }
     if (!res.ok) throw new Error(`MCP ${method}: HTTP ${res.status}`);
     const type = res.headers.get("content-type") || "";
     if (type.includes("text/event-stream")) {
