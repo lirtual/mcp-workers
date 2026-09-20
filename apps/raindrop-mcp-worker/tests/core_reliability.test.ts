@@ -83,3 +83,144 @@ describe("Raindrop request budget", () => {
     });
   });
 });
+
+describe("submitted-write uncertainty regressions", () => {
+  const runWrite = async (upstream: (request: Request) => Promise<Response>) => {
+    const fetchMock = vi.fn(upstream);
+    vi.stubGlobal("fetch", fetchMock);
+    const service = new RaindropMCPService({
+      accessToken: "fake-token",
+      maxReadRetries: 3,
+    });
+    const result = await service.callTool("collection_manage", {
+      operation: "create",
+      title: "isolated-test-only",
+    });
+    return { fetchMock, result };
+  };
+
+  it.each([
+    ["429 with Retry-After", 429, "60"],
+    ["503 after submission", 503, undefined],
+  ])("does not replay a write after %s", async (_case, status, retryAfter) => {
+    const { fetchMock, result } = await runWrite(async () =>
+      new Response("upstream failure", {
+        status,
+        headers: retryAfter ? { "retry-after": retryAfter } : {},
+      }),
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      isError: true,
+      structuredContent: {
+        ok: false,
+        error: { code: "WRITE_OUTCOME_UNKNOWN", upstreamStatus: status },
+        meta: { status: "unknown", requestCount: 1 },
+      },
+    });
+    if (status === 429) {
+      expect(result.structuredContent.error.retryAfterMs).toBe(60_000);
+    }
+  });
+
+  it("does not replay a write after a transport disconnect", async () => {
+    const { fetchMock, result } = await runWrite(async () => {
+      throw new TypeError("mock network disconnect");
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: { code: "WRITE_OUTCOME_UNKNOWN" },
+        meta: { status: "unknown", requestCount: 1 },
+      },
+    });
+  });
+
+  it("does not replay a write after an unparseable successful HTTP response", async () => {
+    const { fetchMock, result } = await runWrite(async () =>
+      new Response("{broken-json", {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: { code: "WRITE_OUTCOME_UNKNOWN" },
+        meta: { status: "unknown", requestCount: 1 },
+      },
+    });
+  });
+
+  it("aborts a stalled upstream write once instead of replaying it", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(
+      async (request: Request): Promise<Response> =>
+        new Promise((_resolve, reject) => {
+          request.signal.addEventListener(
+            "abort",
+            () => reject(new DOMException("aborted", "AbortError")),
+            { once: true },
+          );
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const service = new RaindropMCPService({
+      accessToken: "fake-token",
+      maxReadRetries: 3,
+    });
+    const pending = service.callTool("collection_manage", {
+      operation: "create",
+      title: "isolated-test-only",
+    });
+    await vi.advanceTimersByTimeAsync(EXECUTION_LIMITS.fetchMs + 1);
+    const result = await pending;
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: { code: "WRITE_OUTCOME_UNKNOWN" },
+        meta: { status: "unknown", requestCount: 1 },
+      },
+    });
+  });
+});
+
+describe("streaming request safety", () => {
+  it("rejects an oversized write body before submission", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const budget = new ExecutionBudget();
+    const request = new Request("https://api.raindrop.io/rest/v1/collection", {
+      method: "POST",
+      body: "x".repeat(EXECUTION_LIMITS.requestBytes + 1),
+    });
+    await expect(budget.fetch(request)).rejects.toThrow(/byte limit/);
+    expect(budget.requestCount).toBe(0);
+    expect(budget.writeAttemptCount).toBe(0);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("stops reading an over-limit streamed upstream response without Content-Length", async () => {
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(new Uint8Array(64 * 1024));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const fetchMock = vi.fn(async () => new Response(stream, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const budget = new ExecutionBudget();
+    await expect(
+      budget.fetch(new Request("https://api.raindrop.io/rest/v1/collections")),
+    ).rejects.toThrow(/byte limit/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(budget.requestCount).toBe(1);
+    expect(cancelled).toBe(true);
+  });
+});
