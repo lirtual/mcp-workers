@@ -45,7 +45,8 @@
       "GITHUB_ACTIONS_TOKEN",
       "R2_ACCESS_KEY_ID",
       "R2_SECRET_ACCESS_KEY",
-      "SMOKE_READONLY_MCP_TOKEN"
+      "SMOKE_READONLY_MCP_TOKEN",
+      "RAINDROP_MCP_ACCESS_TOKEN"
     ]
   },
   "r2_buckets": [
