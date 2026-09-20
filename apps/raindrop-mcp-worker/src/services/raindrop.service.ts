@@ -6,6 +6,7 @@ import {
   NotFoundError,
   RateLimitError,
   UpstreamError,
+  UpstreamRejectedError,
 } from "../types/mcpErrors.js";
 import type { components, paths } from "../types/raindrop.schema.js";
 import { createLogger } from "../utils/logger.js";
@@ -92,6 +93,8 @@ export default class RaindropService {
             throw new AuthError("Forbidden: Raindrop access is not permitted");
           if (response.status === 404)
             throw new NotFoundError("Resource not found");
+          if (response.status >= 400 && response.status < 500)
+            throw new UpstreamRejectedError("Raindrop rejected the request", { status: response.status });
           throw new UpstreamError(
             `API Error: ${response.status} ${response.statusText}`,
             { status: response.status },
@@ -290,6 +293,7 @@ export default class RaindropService {
         body: { title, ...(parent === undefined ? {} : { parent }) },
       }),
     );
+    if (data?.result === false) throw new UpstreamRejectedError("Collection create was rejected");
     if (data?.result !== true || !data.item) {
       throw new UpstreamError("Collection create acknowledgement is missing");
     }
@@ -307,6 +311,7 @@ export default class RaindropService {
         body: updates,
       }),
     );
+    if (data?.result === false) throw new UpstreamRejectedError("Collection update was rejected");
     if (data?.result !== true || !data.item) {
       throw new UpstreamError("Collection update acknowledgement is missing");
     }
@@ -320,6 +325,7 @@ export default class RaindropService {
         params: { path: { id } },
       }),
     );
+    if (data?.result === false) throw new UpstreamRejectedError("Collection delete was rejected");
     if (data?.result !== true) {
       throw new UpstreamError("Collection delete acknowledgement is missing");
     }
@@ -402,6 +408,7 @@ export default class RaindropService {
         body: { ...fields, collection: fields.collection ?? { $id: -1 }, pleaseParse: {} },
       }),
     );
+    if (data?.result === false) throw new UpstreamRejectedError("Bookmark creation was rejected");
     if (!data?.item) throw new UpstreamError("Upstream create response has no bookmark");
     this.cacheSearch.clear();
     return data.item as Bookmark;
@@ -422,6 +429,7 @@ export default class RaindropService {
         body: fields,
       }),
     );
+    if (data?.result === false) throw new UpstreamRejectedError("Bookmark update was rejected");
     if (!data?.item) throw new UpstreamError("Upstream update response has no bookmark");
     this.cacheBookmarks.delete(`id:${id}`);
     this.cacheSearch.clear();
@@ -451,6 +459,7 @@ export default class RaindropService {
     );
     // A successful HTTP status alone does not establish that the mutation ran.
     // Missing/malformed acknowledgement is uncertain once a write was submitted.
+    if (data?.result === false) throw new UpstreamRejectedError("Batch mutation was rejected");
     if (data?.result !== true) {
       throw new UpstreamError("Upstream mutation acknowledgement is missing");
     }
@@ -520,6 +529,7 @@ export default class RaindropService {
     const { data } = await this.withWriteRateLimit<any>(() =>
       (this.client as any).DELETE("/collection/-99"),
     );
+    if (data?.result === false) throw new UpstreamRejectedError("Trash empty was rejected");
     if (data?.result !== true) {
       throw new UpstreamError("Trash empty acknowledgement is missing");
     }
@@ -574,6 +584,7 @@ export default class RaindropService {
         ? (this.client as any).DELETE(endpoint, options)
         : (this.client as any).PUT(endpoint, options),
     );
+    if (data?.result === false) throw new UpstreamRejectedError("Tag mutation was rejected");
     if (data?.result !== true) {
       throw new UpstreamError("Upstream tag mutation acknowledgement is missing");
     }
@@ -672,6 +683,7 @@ export default class RaindropService {
         body: { highlights: [highlight] },
       }),
     );
+    if (data?.result === false) throw new UpstreamRejectedError("Highlight mutation was rejected");
     if (data?.result !== true) {
       throw new UpstreamError("Upstream highlight mutation acknowledgement is missing");
     }
