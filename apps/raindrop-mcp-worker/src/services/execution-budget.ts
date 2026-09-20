@@ -135,7 +135,7 @@ export class ExecutionBudget {
           response.body,
           EXECUTION_LIMITS.responseBytes,
         );
-        return new Response(bytes, {
+        return new Response(bytes.buffer as ArrayBuffer, {
           status: response.status,
           statusText: response.statusText,
           headers: response.headers,
