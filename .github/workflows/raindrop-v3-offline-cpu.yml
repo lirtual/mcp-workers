@@ -26,5 +26,5 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile --ignore-scripts
-      - name: Measure offline MCP construction CPU only
+      - name: Measure offline MCP construction and read-only Worker CPU
         run: pnpm --filter raindrop-mcp-worker exec vitest run tests/v3_cpu_profile.test.ts --reporter=verbose
