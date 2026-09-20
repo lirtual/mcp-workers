@@ -21,6 +21,21 @@ export interface McpConnection {
 }
 
 const connections = {
+  'workflow-self': {
+    id: 'workflow-self',
+    transport: 'streamable-http',
+    protocolVersion: '2026-07-28',
+    endpoint: 'https://workflow-mcp-worker.aiyaya.workers.dev/mcp',
+    auth: {
+      header: 'Authorization',
+      format: 'bearer',
+      secret: 'MCP_ACCESS_TOKEN'
+    },
+    trustAnnotations: false,
+    tools: {
+      workflow_list: { effect: 'read' }
+    }
+  },
   raindrop: {
     id: 'raindrop',
     transport: 'streamable-http',
