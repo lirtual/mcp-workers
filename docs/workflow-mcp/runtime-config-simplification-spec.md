@@ -120,6 +120,22 @@ Also run the existing `pnpm --filter workflow-mcp-worker check`, root CI for aff
 - Redesigning workflow orchestration, changing D1 schema, implementing new business automations, or guaranteeing atomic zero-downtime rotation.
 - Disabling the scheduler, changing the protocol of existing MCP tools, or removing genuine webhook functionality.
 
-## 8. Completion definition and handoff
+## 8. Implementation ticket DAG (published)
 
-Implementation is complete only after C01–C12, documentation/runbook updates, and live acceptance after deploy-job completion have passed. The four confirmed decisions from the grilling round remain authoritative: Q1:B shared MCP value; Q2:A lightweight automatic deploy; Q3:A no production smoke-only webhook; Q4:A repository-owned static config. Decompose into dependency-ordered implementation tickets only after publication of this spec; production secret cutover is a separate explicitly authorized operational step.
+This spec is decomposed into existing and new GitHub issues. Existing tickets were revised rather than duplicated; all links below are live tracker identifiers.
+
+| Ticket | Slice / phase | Blocked by |
+| --- | --- | --- |
+| [#105](https://github.com/lirtual/mcp-workers/issues/105) T14 | Expand: derive fixed non-secret config while preserving Cron and compatibility | none |
+| [#121](https://github.com/lirtual/mcp-workers/issues/121) T18 | Cross-app MCP token contract checks and safe rotation runbook | none |
+| [#122](https://github.com/lirtual/mcp-workers/issues/122) T19 | Separate smoke fixtures and light release probe without runtime test credentials | none |
+| [#106](https://github.com/lirtual/mcp-workers/issues/106) T15 | Contract: persistent deployment credentials and clean runtime/CI configuration, **code-only** | #105, #122 |
+| [#123](https://github.com/lirtual/mcp-workers/issues/123) T20 | Separately authorized seven-Worker production shared-token cutover and real acceptance | #121, #106 |
+| [#107](https://github.com/lirtual/mcp-workers/issues/107) T16 | First actual Raindrop manual business workflow (existing separate feature) | #106, #123 |
+| [#108](https://github.com/lirtual/mcp-workers/issues/108) T17 | Observe real 09:00 scheduled occurrence after production deployment | #106, #107, #123 |
+
+No live Cloudflare Secret mutation, production deploy or GitHub secret change is authorized by publishing these tickets. In particular, #123 requires a new explicit operator go-ahead after its preflight. Only currently unblocked work should receive the `ready-for-agent` label; do not close the existing Workflow parent or unrelated tickets during decomposition.
+
+## 9. Completion definition and handoff
+
+Implementation is complete only after C01–C12, documentation/runbook updates, and live acceptance after deploy-job completion have passed. The four confirmed decisions from the grilling round remain authoritative: Q1:B shared MCP value; Q2:A lightweight automatic deploy; Q3:A no production smoke-only webhook; Q4:A repository-owned static config. Implementation tickets are published above; production secret cutover remains a separate explicitly authorized operational step.
