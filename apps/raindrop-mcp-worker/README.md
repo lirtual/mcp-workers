@@ -46,8 +46,8 @@ assume that pushing this branch changes the active client.
 | Maintenance | `library_audit`, `duplicates_delete`, `trash_empty`, `diagnostics` |
 
 **No old tool names or arguments are registered in v3.** Clients must refresh
-MCP tool discovery after an explicitly approved rollout. The legacy source files
-may remain temporarily for migration tests, but are not exported as public tools.
+MCP tool discovery after an explicitly approved rollout. Retired v2 tool modules
+and their obsolete tests have been removed from this source branch.
 The old `suggest_tags` Sampling tool is not supported.
 
 Dangerous operations default to preview. In particular:
@@ -63,6 +63,15 @@ Dangerous operations default to preview. In particular:
   this against an account containing pre-existing non-test Trash items.
 - Reads are bounded, submitted writes are never automatically retried,
   and an uncertain upstream write is reported as unknown.
+
+The historical `raindrop-complete.yaml` name does not imply complete REST API
+coverage. The v3 generation source contains **16 active route shapes** used by
+the 26 public tools. Its declarations are regenerated in
+`src/types/raindrop.schema.d.ts` and verified by `pnpm run check:schema`.
+
+An isolated `raindrop-mcp-worker-v3-test` has been exercised directly through
+`/mcp` with test-owned data. This is separate from the production Portal
+configuration and is **not** a production deployment or a Portal acceptance.
 
 See `docs/api-coverage.md` for independent implementation, offline contract,
 and live acceptance states. Offline fixtures and Wrangler dry-run **do not**
