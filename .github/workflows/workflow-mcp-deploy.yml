@@ -44,6 +44,7 @@ jobs:
       WORKFLOW_MCP_WORKER_NAME: ${{ vars.WORKFLOW_MCP_WORKER_NAME || 'workflow-mcp-worker' }}
       WORKFLOW_MCP_R2_BUCKET: ${{ vars.WORKFLOW_MCP_R2_BUCKET || 'workflow-mcp-artifacts' }}
       WORKFLOW_MCP_URL: ${{ vars.WORKFLOW_MCP_URL || 'https://workflow-mcp-worker.aiyaya.workers.dev' }}
+      WORKFLOW_MCP_ENABLE_SCHEDULE: ${{ vars.WORKFLOW_MCP_ENABLE_SCHEDULE || 'false' }}
       WORKFLOW_MCP_SOURCE_URL: ${{ inputs.source_url }}
       WORKFLOW_MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
       WORKFLOW_MCP_GITHUB_ACTIONS_TOKEN: ${{ secrets.GITHUB_ACTIONS_TOKEN }}
