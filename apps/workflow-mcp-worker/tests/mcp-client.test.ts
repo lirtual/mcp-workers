@@ -3,7 +3,8 @@ import { callMcpTool, inspectMcpTool } from '../src/mcp-client.js';
 import type { Env } from '../src/types.js';
 
 const env = {
-  SMOKE_READONLY_MCP_TOKEN: 'secret'
+  SMOKE_READONLY_MCP_TOKEN: 'secret',
+  MCP_ACCESS_TOKEN: 'secret'
 } as unknown as Env;
 
 function jsonResponse(
