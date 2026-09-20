@@ -53,10 +53,12 @@ async function mcp(method, params = {}, authAttempt = 0) {
       },
       body: JSON.stringify({ jsonrpc: "2.0", id: randomUUID(), method, params }),
       signal: controller.signal,
+      // Never follow an unexpected redirect while using the authenticated CPU probe.
+      ...(cpuProfile ? { redirect: "error" } : {}),
     });
     const readOnly = method === "initialize" || method === "tools/list" ||
       (method === "tools/call" && ["diagnostics", "collection_list", "raindrop_list"].includes(params.name));
-    if (res.status === 401 && readOnly && authAttempt < 11) {
+    if (res.status === 401 && readOnly && !cpuProfile && authAttempt < 11) {
       // Only replay read-only handshake operations while a rotated secret
       // propagates. Mutations must NEVER be retried after submission.
       await new Promise((resolve) => setTimeout(resolve, 1500));
@@ -80,7 +82,10 @@ async function mcp(method, params = {}, authAttempt = 0) {
   }
 }
 
-const healthResponse = await fetch(new URL("/health", baseUrl), { signal: AbortSignal.timeout(timeoutMs) });
+const healthResponse = await fetch(new URL("/health", baseUrl), {
+  signal: AbortSignal.timeout(timeoutMs),
+  ...(cpuProfile ? { redirect: "error" } : {}),
+});
 assert.equal(healthResponse.status, 200, "Test Worker /health HTTP status");
 const health = await healthResponse.json();
 assert.equal(health.version, "3.0.0", "Test Worker must be v3; never test production by mistake");
@@ -91,6 +96,7 @@ const unauth = await fetch(new URL("/mcp", baseUrl), {
   headers: { Accept: "application/json", "Content-Type": "application/json" },
   body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }),
   signal: AbortSignal.timeout(timeoutMs),
+  ...(cpuProfile ? { redirect: "error" } : {}),
 });
 assert.equal(unauth.status, 401, "Unauthenticated direct MCP must fail closed");
 console.log("PASS: direct MCP rejects unauthenticated request");
@@ -106,7 +112,7 @@ for (let attempt = 0; attempt < 12; attempt++) {
   } catch (error) {
     // A successful deploy can precede propagation of the new per-run secret.
     // Retry ONLY authentication; never replay a submitted mutation.
-    if (!String(error).includes("MCP initialize: HTTP 401") || attempt === 11) throw error;
+    if (cpuProfile || !String(error).includes("MCP initialize: HTTP 401") || attempt === 11) throw error;
     await new Promise((resolve) => setTimeout(resolve, 1500));
   }
 }
