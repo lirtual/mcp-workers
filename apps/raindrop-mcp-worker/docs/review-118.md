@@ -18,6 +18,14 @@ During this second manual Standards pass, a concrete ingress budget gap was foun
 
 This is a grounded manual review and repair, **not independent parallel subagent sign-off**. Do not close the separate independent reviewer gate or treat this as production release approval.
 
+## Second follow-up: concurrency-slot deadline (source `50b64850`)
+
+The manual Standards review identified another bounded-execution issue in `src/services/execution-budget.ts`: a request queued behind the 3-read/1-write concurrency slots previously waited without its own deadline or caller-abort handling. If earlier queued fetches stalled, the waiter could exceed `EXECUTION_LIMITS.wallMs` before reaching the post-acquisition budget check. This conflicts with #110's request-level bounded-execution intent (Spec axis, §2.3, §4, US-26).
+
+**Fixed** by applying the existing wall deadline and `Request.signal` to the queue wait. Expired/aborted waiters are removed before a slot can be passed to them; the budget reports `submitted:false` and does not issue an upstream request. The new `bounded concurrency wait` test holds all read slots and verifies the fourth request stops at the deadline without an additional submission.
+
+**Verified:** [CI #35517699927](https://github.com/lirtual/mcp-workers/actions/runs/35517699927) fully succeeded at source SHA `50b64850c864ff872fcbfc9b9de2089778b031d1`, including the application checks and unrelated database integration. This is a manual second-pass finding and remedy; it is **not** an independently signed review. The production Worker and the real account were not used.
+
 ## Standards axis — architecture and reliability
 
 **Resolved: typed upstream boundary.** `src/services/raindrop.service.ts:256–706` now invokes `openapi-fetch<paths>` for active routes without `(this.client as any)`. The compiler exposed and forced fixes for incorrect optional create fields, nullable parent, allowed sorts, response counts and tag write body. The source uses a runtime check for the permitted sort values and refuses `parent=null` with `FEATURE_UNVERIFIED`; it does not silently drop a requested root move.
