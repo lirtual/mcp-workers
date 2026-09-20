@@ -551,11 +551,8 @@ export type components = {
         readonly CreateCollectionRequest: {
             /** @description Collection title */
             readonly title: string;
-            /**
-             * @description Whether collection should be public
-             * @default false
-             */
-            readonly public: boolean;
+            /** @description Whether collection should be public */
+            readonly public?: boolean;
             /** @description Parent collection reference */
             readonly parent?: {
                 readonly $id?: number;
@@ -598,13 +595,12 @@ export type components = {
             readonly title?: string;
             /** @description Bookmark description */
             readonly excerpt?: string;
+            /** @description User notes for the bookmark */
+            readonly note?: string;
             /** @description Array of tags */
             readonly tags?: readonly string[];
-            /**
-             * @description Whether bookmark is important
-             * @default false
-             */
-            readonly important: boolean;
+            /** @description Whether bookmark is important */
+            readonly important?: boolean;
             /** @description Target collection reference */
             readonly collection?: {
                 readonly $id?: number;
@@ -632,6 +628,14 @@ export type components = {
             readonly collection?: {
                 readonly $id?: number;
             };
+            /** @description One-element v3 highlight mutation payload */
+            readonly highlights?: readonly {
+                readonly _id?: string;
+                readonly text?: string;
+                readonly note?: string;
+                /** @enum {string} */
+                readonly color?: "blue" | "brown" | "cyan" | "gray" | "green" | "indigo" | "orange" | "pink" | "purple" | "red" | "teal" | "yellow";
+            }[];
             /**
              * Format: uri
              * @description Cover image URL
@@ -845,6 +849,8 @@ export type components = {
         readonly HighlightsResponse: {
             readonly result: boolean;
             readonly items: readonly components["schemas"]["Highlight"][];
+            /** @description Total matching highlights if supplied by upstream */
+            readonly count?: number;
         };
         readonly HighlightItemResponse: {
             readonly result: boolean;
@@ -936,6 +942,8 @@ export type components = {
         readonly ResultResponse: {
             /** @description Whether the operation was successful */
             readonly result: boolean;
+            /** @description Optional upstream batch modification count */
+            readonly modified?: number;
         };
         readonly ErrorResponse: {
             /** @default false */
@@ -1207,11 +1215,13 @@ export interface operations {
         readonly requestBody?: never;
         readonly responses: {
             /** @description Collection deleted successfully */
-            readonly 204: {
+            readonly 200: {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": components["schemas"]["ResultResponse"];
+                };
             };
             readonly 404: components["responses"]["NotFoundError"];
         };
