@@ -28,6 +28,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Verify shared MCP entry contract
+        run: node --test scripts/mcp-entry-contract.test.mjs
+
       - id: scope
         name: Select affected applications
         shell: bash
