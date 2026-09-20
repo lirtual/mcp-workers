@@ -102,3 +102,14 @@ const collectionList = await mcp("tools/call", {
 });
 assert(collectionList?.structuredContent?.ok === true, "Direct collection read must succeed");
 console.log("PASS: direct MCP read-only collection_list (content withheld)");
+
+const maxPage = await mcp("tools/call", {
+  name: "raindrop_list", arguments: { collectionId: 0, page: 0, perpage: 50 },
+});
+const pageData = maxPage?.structuredContent;
+assert(pageData?.ok === true, "Maximum read page must succeed");
+assert.equal(pageData.meta?.perpage, 50);
+assert(Array.isArray(pageData.data?.items), "Bookmark page must contain an array");
+assert(pageData.data.items.length <= 50, "Read must honor the maximum page size");
+assert.equal(pageData.meta?.returned, pageData.data.items.length);
+console.log("PASS: direct MCP maximum 50-item read page (content withheld)");
