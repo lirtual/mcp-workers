@@ -55,6 +55,9 @@ jobs:
       - name: Check v3 application
         run: pnpm --filter raindrop-mcp-worker check
 
+      - name: Check direct MCP lifecycle script syntax
+        run: node --check apps/raindrop-mcp-worker/scripts/test-direct-mcp-lifecycle.mjs
+
       - name: Deploy and probe ONLY the isolated v3 test Worker
         working-directory: apps/raindrop-mcp-worker
         shell: bash
