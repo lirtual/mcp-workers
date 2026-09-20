@@ -17,6 +17,10 @@ describe('Workflow MCP deploy gate contract', () => {
     const triggers = value.on as Record<string, unknown>;
     expect(Object.keys(triggers).sort()).toEqual(['push', 'workflow_dispatch']);
     expect(triggers).not.toHaveProperty('pull_request');
+    const dispatchInputs = (triggers.workflow_dispatch as Record<string, unknown>).inputs as Record<string, Record<string, unknown>>;
+    expect(dispatchInputs.verify_raindrop_manual).toMatchObject({
+      required: false, default: false, type: 'boolean'
+    });
     const push = triggers.push as Record<string, unknown>;
     expect(push).toMatchObject({
       branches: ['main'],
@@ -48,6 +52,12 @@ describe('Workflow MCP deploy gate contract', () => {
     expect(names).not.toContain('Install Workflow MCP Worker secrets');
     expect(names).toContain('Run MCP heavy and connection tracers');
     expect(names).toContain('Verify GitHub executor terminal evidence');
+    expect(names).toContain('Verify Raindrop manual acceptance');
+    expect(names.indexOf('Verify Raindrop manual acceptance')).toBeGreaterThan(
+      names.indexOf('Verify GitHub executor terminal evidence')
+    );
+    const raindropStep = steps.find(step => step.name === 'Verify Raindrop manual acceptance');
+    expect(raindropStep?.if).toBe('inputs.verify_raindrop_manual == true');
 
     const workflowText = await readFile(
       path.resolve(process.cwd(), '../../.github/workflows/workflow-mcp-deploy.yml'),
