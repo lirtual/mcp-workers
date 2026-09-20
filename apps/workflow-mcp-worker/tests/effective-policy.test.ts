@@ -27,7 +27,7 @@ function customConnection(
 
 describe('MCP Effective Operation Policy', () => {
   it('prefers explicit local tool policy over contradictory annotations', () => {
-    const policy = resolveMcpOperationPolicy('smoke-readonly', 'health_check', {
+    const policy = resolveMcpOperationPolicy('workflow-self', 'workflow_list', {
       readOnlyHint: false,
       destructiveHint: true,
       idempotentHint: false
@@ -41,7 +41,7 @@ describe('MCP Effective Operation Policy', () => {
   });
 
   it('ignores annotations when a connection does not trust them', () => {
-    const policy = resolveMcpOperationPolicy('smoke-readonly', 'unclassified', {
+    const policy = resolveMcpOperationPolicy('workflow-self', 'unclassified', {
       readOnlyHint: true
     });
 
