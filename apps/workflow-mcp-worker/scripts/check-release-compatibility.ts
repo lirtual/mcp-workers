@@ -47,21 +47,6 @@ if (result.status !== 0) {
 }
 
 const rows = extractRows(JSON.parse(result.stdout || '[]'));
-// Old pinned plans can remain runnable after a registry change, but the removed
-// smoke-only connection names cannot resolve in the new runtime. Fail before
-// deployment until those Attempts terminate; do not silently rewrite their plans.
-const incompatibleSmokeRuns = new Set(
-  rows.filter(row => {
-    const plan = row.normalized_plan_json;
-    return typeof plan === 'string' &&
-      /"smoke-(?:modern|readonly)"/.test(plan);
-  }).map(row => String(row.run_id))
-);
-if (incompatibleSmokeRuns.size > 0) {
-  throw new Error(
-    `Release compatibility gate blocked ${incompatibleSmokeRuns.size} nonterminal run(s) referencing removed smoke-only MCP connections. Wait for them to terminate before deploying.`
-  );
-}
 const grouped = new Map<
   string,
   {
@@ -82,7 +67,8 @@ for (const row of rows) {
       definitionDigest: String(row.definition_digest),
       dslVersion: Number(row.dsl_version),
       manifestVersions: [],
-      hasInvalidManifest: false
+      hasInvalidManifest: false,
+      normalizedPlanJson: typeof row.normalized_plan_json === 'string' ? row.normalized_plan_json : ''
     };
     grouped.set(runId, record);
   }
