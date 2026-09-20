@@ -10,6 +10,8 @@ Issue: [#119](https://github.com/lirtual/mcp-workers/issues/119). Parent: [#110]
 
 **Historical blocker — earlier 2026-09-20 attempt (resolved):** Cloudflare management API successfully created the separate `raindrop-mcp-worker-v3-test` with a temporary 503-only initialization script. The user-supplied temporary `RAINDROP_ACCESS_TOKEN` was stored as a Secret on this test Worker; confirmed by a binding-name-only settings read. Attempts to initialize a separate `MCP_ACCESS_TOKEN` through the connected management action were blocked, so the v3 application was **not** deployed and `/mcp` was **not** tested. The production `raindrop-mcp-worker` was untouched. The temporary Raindrop token is still stored in the test Worker; rotate/revoke it when testing is finished or abandoned. The existing Actions workflow remains blocked by its absent GitHub environment secret until a supported credential-provisioning path is available. No account data was mutated.
 
+**Extended direct-MCP evidence (2026-09-20):** [Actions #35512551236](https://github.com/lirtual/mcp-workers/actions/runs/35512551236) passed after a bounded authentication-propagation retry was added to the read-only initialize step. In addition to the preceding lifecycle it passed scoped `tag_list`, source-scoped `raindrop_bulk_update` with readback, and test-bookmark `highlight_create`, note-only `highlight_update`, preview/confirmed `highlight_delete` with fresh readbacks. Only test-created IDs were changed. The test bookmark was moved to Trash and its empty test collection deleted; no account-wide Trash purge was invoked. This is a partial #119 pass, **not** evidence for scoped cross-collection moves, tag rename/merge, plan-gated duplicate deletion, or Cloudflare resource ceilings.
+
 ## Read-only smoke on the existing account (safe to run first)
 
 This is explicitly opt-in, uses a local environment credential, and prints neither the credential nor personal item content. The source file is `tests/v3_live_readonly.test.ts`. It tests the app's MCP Client -> tool handler -> Raindrop API path, **not** a deployed Worker or Portal connection.
@@ -41,7 +43,7 @@ The current account is not an isolated disposable account, so the destructive op
 | --- | --- | --- |
 | Offline 26-tool discovery and contract | Pass at last green CI SHA `fd77fda` | [CI](https://github.com/lirtual/mcp-workers/actions/runs/35507962617); recheck after later commits |
 | Current-account direct MCP smoke | Pass (specified checks) | [#35511457233 attempt 2](https://github.com/lirtual/mcp-workers/actions/runs/35511457233): health, 401, initialize, 26 tools, authenticated diagnostic and collection page |
-| Current-account scoped object lifecycle | Partial pass | [#35512357739](https://github.com/lirtual/mcp-workers/actions/runs/35512357739): owned collection and bookmark create/get/update, source-scoped preview/delete and empty collection deletion; tags/highlights/bulk moves remain |
+| Current-account scoped object lifecycle | Partial pass | [#35512551236](https://github.com/lirtual/mcp-workers/actions/runs/35512551236): owned collection/bookmark, scoped tag read, bulk update, highlight create/note-only update/delete, source-scoped bookmark removal, empty collection removal. Cross-collection scope/moves, tag writes remain |
 | Parent-to-root write | Blocked | Compile-time `FEATURE_UNVERIFIED` gate |
 | Duplicate deletion write | Blocked | Compile-time `FEATURE_UNVERIFIED` gate; operator/plan unverified |
 | Entire Trash purge | Not run | Existing Trash could contain non-test entries |
