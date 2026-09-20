@@ -4,7 +4,7 @@ Issue: [#119](https://github.com/lirtual/mcp-workers/issues/119). Parent: [#110]
 
 **Account selection:** owner authorized use of their current Raindrop account on 2026-09-20. This does **not** authorize changing pre-existing bookmarks, tags, collections, highlights or Trash. All mutable test objects must be created for this test, uniquely named, recorded by ID and scoped explicitly.
 
-**Evidence as of 2026-09-20:** Live account **NOT RUN**. The assistant's available connection does not expose a usable Raindrop MCP account session or the existing secret. Repository CI and fake-token fixtures cannot be recorded as a live pass. The current branch also remains Draft and #118's OpenAPI/type and final review are outstanding. No production deployment or Portal switch has been performed by this test.
+**Evidence as of 2026-09-20:** Existing production Worker diagnostics were reachable and advertised v2.4.5 (17 tools), not v3; this does not count as v3 acceptance. An isolated deployment attempt for `raindrop-mcp-worker-v3-test` ran in [Actions #35510338549](https://github.com/lirtual/mcp-workers/actions/runs/35510338549). The v3 application check passed, but Wrangler rejected creation of the new Worker because its required `MCP_ACCESS_TOKEN` and `RAINDROP_ACCESS_TOKEN` bindings had not been supplied. The Cloudflare management secret-initialization action was unavailable in this session. **No v3 Worker was deployed; no v3 real-account HTTP read or write was executed.** The production Worker and original collection data were not altered. Keep PR #120 Draft while #118's final review is outstanding.
 
 ## Read-only smoke on the existing account (safe to run first)
 
@@ -36,12 +36,12 @@ The current account is not an isolated disposable account, so the destructive op
 | Check | Status | Evidence / remaining blocker |
 | --- | --- | --- |
 | Offline 26-tool discovery and contract | Pass at last green CI SHA `fd77fda` | [CI](https://github.com/lirtual/mcp-workers/actions/runs/35507962617); recheck after later commits |
-| Current-account read-only MCP smoke | Not run | Added opt-in harness, but no authenticated execution in this session |
+| Current-account read-only MCP smoke | Blocked | Isolated Worker creation rejected missing required secrets; no v3 endpoint to call |
 | Current-account scoped object lifecycle | Not run | Requires #118 gate and local authenticated execution with recorded new IDs |
 | Parent-to-root write | Blocked | Compile-time `FEATURE_UNVERIFIED` gate |
 | Duplicate deletion write | Blocked | Compile-time `FEATURE_UNVERIFIED` gate; operator/plan unverified |
 | Entire Trash purge | Not run | Existing Trash could contain non-test entries |
-| Deployed Worker + Portal cutover | Not run | No approved v3 deployment or authenticated Portal evidence |
+| Deployed Worker + Portal cutover | Blocked | Isolated deployment failed before creation; production remains v2.4.5; Portal unchanged |
 | Free-plan resource measurements | Not run | Wrangler dry-run is not real CPU/memory evidence |
 
 Every status must be updated from actual observations; preparing a test or passing mock CI does not turn a **Not run** or **Blocked** cell into a pass.
