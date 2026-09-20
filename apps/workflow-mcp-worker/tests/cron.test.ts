@@ -41,6 +41,40 @@ describe('workflow scheduler cron subset', () => {
     expect(due).toBe(Date.parse('2026-01-01T01:00:00Z'));
   });
 
+  it('maps each Shanghai 09:00 boundary to 01:00 UTC without admitting other minutes', () => {
+    for (const day of ['2026-09-20', '2026-09-21']) {
+      const start = Date.parse(day + 'T00:59:00Z');
+      const due = Date.parse(day + 'T01:00:00Z');
+      expect(latestDueOccurrence({
+        cron: '0 9 * * *',
+        timezone: 'Asia/Shanghai',
+        fromExclusive: start,
+        toInclusive: due - 1
+      })).toBeNull();
+      expect(latestDueOccurrence({
+        cron: '0 9 * * *',
+        timezone: 'Asia/Shanghai',
+        fromExclusive: start,
+        toInclusive: due
+      })).toBe(due);
+      expect(latestDueOccurrence({
+        cron: '0 9 * * *',
+        timezone: 'Asia/Shanghai',
+        fromExclusive: due,
+        toInclusive: due + 60_000
+      })).toBeNull();
+    }
+  });
+
+  it('keeps only the newest Shanghai daily occurrence after several missed days', () => {
+    expect(latestDueOccurrence({
+      cron: '0 9 * * *',
+      timezone: 'Asia/Shanghai',
+      fromExclusive: Date.parse('2026-09-18T01:00:00Z'),
+      toInclusive: Date.parse('2026-09-21T01:01:00Z')
+    })).toBe(Date.parse('2026-09-21T01:00:00Z'));
+  });
+
   it('validates IANA timezones', () => {
     expect(() => validateTimeZone('Asia/Shanghai')).not.toThrow();
     expect(() => validateTimeZone('Not/AZone')).toThrow(/Invalid schedule timezone/);
