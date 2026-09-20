@@ -247,6 +247,87 @@ export default class RaindropService {
   }
 
   /**
+   * Complete collection metadata requires two official endpoints. Reject invalid
+   * responses before combining them; /collections alone omits nested nodes.
+   */
+  async listCollectionsV3(): Promise<Collection[]> {
+    const read = async (endpoint: "/collections" | "/collections/childrens") => {
+      const { data } = await this.withRateLimit(() =>
+        (this.client as any).GET(endpoint),
+      );
+      if (data?.result !== true || !Array.isArray(data.items)) {
+        throw new UpstreamError(`Invalid collection index response from ${endpoint}`);
+      }
+      if (data.items.length > 1000) {
+        throw new McpError("RESOURCE_LIMIT", "Collection metadata exceeds 1000 items");
+      }
+      for (const item of data.items as Collection[]) {
+        if (!Number.isSafeInteger(item?._id) || item._id <= 0 ||
+            typeof item.title !== "string") {
+          throw new UpstreamError("Collection metadata contains an invalid item");
+        }
+      }
+      return data.items as Collection[];
+    };
+    const roots = await read("/collections");
+    const children = await read("/collections/childrens");
+    const byId = new Map<number, Collection>();
+    // Child records take precedence when an ID appears in both responses.
+    for (const collection of [...roots, ...children]) {
+      byId.set(collection._id, collection);
+      if (byId.size > 1000) {
+        throw new McpError("RESOURCE_LIMIT", "Collection metadata exceeds 1000 unique items");
+      }
+    }
+    return [...byId.values()].sort((a, b) => a._id - b._id);
+  }
+
+  async createCollectionV3(
+    title: string,
+    parent?: { $id: number },
+  ): Promise<Collection> {
+    const { data } = await this.withWriteRateLimit(() =>
+      (this.client as any).POST("/collection", {
+        body: { title, ...(parent === undefined ? {} : { parent }) },
+      }),
+    );
+    if (data?.result !== true || !data.item) {
+      throw new UpstreamError("Collection create acknowledgement is missing");
+    }
+    this.cacheCollections.clear();
+    return data.item as Collection;
+  }
+
+  async updateCollectionV3(
+    id: number,
+    updates: { title?: string; parent?: { $id: number } | null },
+  ): Promise<Collection> {
+    const { data } = await this.withWriteRateLimit(() =>
+      (this.client as any).PUT("/collection/{id}", {
+        params: { path: { id } },
+        body: updates,
+      }),
+    );
+    if (data?.result !== true || !data.item) {
+      throw new UpstreamError("Collection update acknowledgement is missing");
+    }
+    this.cacheCollections.clear();
+    return data.item as Collection;
+  }
+
+  async deleteCollectionV3(id: number): Promise<void> {
+    const { data } = await this.withWriteRateLimit(() =>
+      (this.client as any).DELETE("/collection/{id}", {
+        params: { path: { id } },
+      }),
+    );
+    if (data?.result !== true) {
+      throw new UpstreamError("Collection delete acknowledgement is missing");
+    }
+    this.cacheCollections.clear();
+  }
+
+  /**
    * Fetch all collections
    * Raindrop.io API: GET /collections
    */
