@@ -51,7 +51,7 @@ describe("Raindrop request budget", () => {
 
   it("limits the response stream even without Content-Length", async () => {
     const fetchMock = vi.fn(async () =>
-      new Response(new Uint8Array(EXECUTION_LIMITS.responseBytes + 1), {
+      new Response(new Uint8Array(EXECUTION_LIMITS.responseBytes + 1).buffer, {
         status: 200,
         headers: { "content-type": "application/json" },
       }),
