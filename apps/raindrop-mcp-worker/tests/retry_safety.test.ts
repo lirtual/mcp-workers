@@ -40,6 +40,12 @@ describe("RaindropService retry safety", () => {
           status: 200,
           headers: { "content-type": "application/json" },
         }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ result: true, items: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
       );
     vi.stubGlobal("fetch", fetchMock);
 
