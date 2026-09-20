@@ -1,6 +1,7 @@
 import { bookmarkTools } from "./bookmarks.js";
 import { raindropV3Tools } from "./raindrop-v3.js";
 import { raindropV3MutationTools } from "./raindrop-v3-mutations.js";
+import { raindropV3TagTools } from "./raindrop-v3-tags.js";
 import { bulkTools } from "./bulk.js";
 import { cleanupTools } from "./cleanup.js";
 import { collectionTools } from "./collections.js";
@@ -27,6 +28,7 @@ export const buildToolConfigs = (options: { serverVersion: string }) => {
     ...bookmarkTools,
     ...raindropV3Tools,
     ...raindropV3MutationTools,
+    ...raindropV3TagTools,
     ...tagTools,
     ...highlightTools,
     ...bulkTools,
