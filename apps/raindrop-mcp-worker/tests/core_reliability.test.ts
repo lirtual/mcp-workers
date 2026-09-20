@@ -84,10 +84,22 @@ describe("Raindrop request budget", () => {
       RAINDROP_ACCESS_TOKEN: "upstream-test",
     } as never);
     const assertion = expect(pending).resolves.toMatchObject({ status: 408 });
-    // Portal authentication is asynchronous. Drain that microtask chain so
-    // the ingress timer is installed before advancing the fake clock.
-    await vi.advanceTimersByTimeAsync(0);
-    await vi.advanceTimersByTimeAsync(EXECUTION_LIMITS.fetchMs + 1);
+    // Portal authentication is asynchronous and may need more than one tick.
+    // Wait until the ingress deadline timer is ACTUALLY registered before
+    // advancing the fake clock; advancing early can leave the request stuck.
+    const timeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    try {
+      await vi.waitFor(
+        () => expect(timeoutSpy).toHaveBeenCalledWith(
+          expect.any(Function),
+          EXECUTION_LIMITS.fetchMs,
+        ),
+        { interval: 1, timeout: 1_000 },
+      );
+      await vi.advanceTimersByTimeAsync(EXECUTION_LIMITS.fetchMs + 1);
+    } finally {
+      timeoutSpy.mockRestore();
+    }
     await assertion;
     expect(fetchMock).not.toHaveBeenCalled();
   });
