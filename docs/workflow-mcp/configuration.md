@@ -48,12 +48,12 @@ context and `scripts/run-deploy-tracer.ts`.
 Before production deployment, #123 requires an explicit operator-approved
 provisioning/cutover: align the seven separate Worker
 `MCP_ACCESS_TOKEN` bindings and update clients, provision the independent
-persistent Workflow platform credentials, convert the legacy
-`R2_ACCESS_KEY_ID` Secret into the non-secret deployment variable, and
+persistent Workflow platform credentials, convert the legacy `R2_ACCOUNT_ID` and `R2_ACCESS_KEY_ID` Secrets into non-secret
+configuration and the deployment variable respectively, and
 safely remove obsolete smoke-only bindings **after** the new registry and
 compatibility checks are accepted. The deployment intentionally fails closed if
 the GitHub environment's R2 access ID is absent, a required runtime Secret is
-missing, or a legacy conflicting `R2_ACCESS_KEY_ID` Secret remains. Do not
+missing, or a legacy conflicting `R2_ACCOUNT_ID` or `R2_ACCESS_KEY_ID` Secret remains. Do not
 remove or rotate a live token merely because this code branch exists.
 
 See [the full spec](runtime-config-simplification-spec.md),
