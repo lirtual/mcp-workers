@@ -113,3 +113,24 @@ The current account is not an isolated disposable account, so the destructive op
 | Free-plan resource measurements | Measured / **not approved** | [#35518631508](https://github.com/lirtual/mcp-workers/actions/runs/35518631508): current source read-only smoke passed; exact newly deployed version has 5 analytics records, CPU p50 26.02 ms/p99 60.355 ms, memory p99 ≈19.67 MB, 0 runtime errors; Free CPU reference is 10 ms/request. Sample, Free enforcement and full-load behavior are not established; older version 13-call values are preserved above. |
 
 Every status must be updated from actual observations; preparing a test or passing mock CI does not turn a **Not run** or **Blocked** cell into a pass.
+
+
+## Retrospective operation-level CPU attribution (2026-09-21 review of 2026-09-20 observations)
+
+The Cloudflare Workers Observability telemetry API returned **individual invocation logs** for the prior isolated version `cb3b4b7a-504f-4571-974b-b18227c6a1c7`, UTC 2026-09-20 15:08–15:30. Exactly five successful authenticated `POST /mcp` invocation records appeared for that version. The previous aggregate CPU p50/p99 figures included these five calls, but did not identify their JSON-RPC methods.
+
+Correlated the invocation timestamps with the sequential, *read-only* `scripts/test-direct-mcp.mjs` operations. As a cross-check, each log's Content-Length uniquely matches the UTF-8 byte length of that script's JSON-RPC body with a 36-character UUID; no personal data or token is needed for this correlation. Values below are platform-reported `$workers.cpuTimeMs` (rounded to integral milliseconds), **not** Node.js `process.cpuUsage`:
+
+| Order | Request body bytes | Operation | Cloudflare CPU | Wall time | HTTP |
+| ---: | ---: | --- | ---: | ---: | ---: |
+| 1 | 213 | `initialize` | **60 ms** | 69 ms | 200 |
+| 2 | 95 | `tools/list` | **46 ms** | 47 ms | 200 |
+| 3 | 152 | `tools/call diagnostics`, `includeUpstream=true` | **26 ms** | 306 ms | 200 |
+| 4 | 154 | `tools/call collection_list`, `perpage=1` | **20 ms** | 466 ms | 200 |
+| 5 | 170 | `tools/call raindrop_list`, `perpage=50` | **20 ms** | 653 ms | 200 |
+
+This is one sample per operation, not a statistical distribution or a measured CPU breakdown of individual functions. The 60 ms / 46 ms handshake and discovery records are evidence that non-upstream MCP work deserves investigation, **not proof** that tool registration specifically consumes those amounts. This version predates later #118 fixes and PR HEAD `210240ef`. Client and Cloudflare regions, cold/warm isolate effects, telemetry rounding, and per-operation repeatability are not controlled. The deployment and the account's `default_usage_model=standard` do not establish Free-plan entitlement or enforcement.
+
+The same source branch now includes optional, non-secret `X-Raindrop-Profile-Op` labels and bounded additional *read-only* probes in `scripts/test-direct-mcp.mjs` (commit `1354a1b8`). This is **test preparation only**: do not claim that these new probes ran or that a final-HEAD Free-plan result exists. Default execution still performs the original read-only smoke. The test label header is generated from fixed method/tool enums, contains no user content or credentials and is not consumed by the Worker. No production change or real-account mutation is implied.
+
+**Decision:** #119 CPU/resource gate remains **not approved**. Repeat isolated, version-pinned native per-invocation measurements for representative read-only operations on the final source, confirm actual Free entitlement/enforcement, and investigate observed hot paths before considering optimizations. Keep per-request MCP Server, credentials, and execution budgets isolated; don't share them without a separate safety proof. Do not rerun account mutations simply to profile CPU.
