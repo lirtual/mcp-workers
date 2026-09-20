@@ -62,7 +62,12 @@ config.workflows = [
     class_name: 'WorkflowRuntime'
   }
 ];
-config.triggers = { crons: ['* * * * *'] };
+const scheduleSetting = process.env.WORKFLOW_MCP_ENABLE_SCHEDULE || 'false';
+if (scheduleSetting !== 'true' && scheduleSetting !== 'false') {
+  throw new Error('WORKFLOW_MCP_ENABLE_SCHEDULE must be true or false.');
+}
+// Enable the single scheduler tick only after T16 manual production acceptance.
+config.triggers = { crons: scheduleSetting === 'true' ? ['* * * * *'] : [] };
 config.r2_buckets = [{ binding: 'ARTIFACTS', bucket_name: r2Bucket }];
 config.vars = {
   ...(config.vars ?? {}),
