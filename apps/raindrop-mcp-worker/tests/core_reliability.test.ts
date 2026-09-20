@@ -360,6 +360,39 @@ describe("request budget concurrency", () => {
   });
 });
 
+describe("bounded concurrency wait", () => {
+  it("abandons a queued read at the wall deadline without submitting it", async () => {
+    vi.useFakeTimers();
+    const releases: Array<(response: Response) => void> = [];
+    const upstream = vi.fn(async (): Promise<Response> =>
+      new Promise((resolve) => releases.push(resolve)),
+    );
+    vi.stubGlobal("fetch", upstream);
+    const budget = new ExecutionBudget();
+    const request = () => new Request("https://api.raindrop.io/rest/v1/collections");
+
+    // Fill all read slots with requests whose mocked network never settles.
+    const active = Array.from({ length: EXECUTION_LIMITS.concurrentReads },
+      () => budget.fetch(request()));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(upstream).toHaveBeenCalledTimes(EXECUTION_LIMITS.concurrentReads);
+
+    const queued = budget.fetch(request());
+    const failed = expect(queued).rejects.toMatchObject({
+      cause: { submitted: false, budget: true },
+    });
+    await vi.advanceTimersByTimeAsync(EXECUTION_LIMITS.wallMs + 1);
+    await failed;
+    expect(upstream).toHaveBeenCalledTimes(EXECUTION_LIMITS.concurrentReads);
+
+    // Release our fixtures after the deadline so their promises cannot keep
+    // an artificially occupied slot or a live timer in the test environment.
+    for (const release of releases) release(Response.json({ result: true }));
+    await Promise.allSettled(active);
+    expect(budget.requestCount).toBe(EXECUTION_LIMITS.concurrentReads);
+  });
+});
+
 describe("bounded response and definite write errors", () => {
   it("times out when an upstream response body stalls after HTTP headers", async () => {
     vi.useFakeTimers();
