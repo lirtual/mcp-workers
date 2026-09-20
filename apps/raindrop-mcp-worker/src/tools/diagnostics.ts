@@ -14,7 +14,7 @@ export const createDiagnosticsTool = (
 ) =>
   defineTool({
     name: "diagnostics",
-    description: "Local Worker metadata; optionally read official Raindrop user statistics.",
+    description: "Diagnostics: local Worker metadata; optionally read official Raindrop user statistics.",
     inputSchema: DiagnosticsInputSchema,
     outputSchema: DiagnosticsOutputSchema,
     annotations: { readOnlyHint: true },
