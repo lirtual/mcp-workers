@@ -22,7 +22,8 @@
     "test:e2e": "vitest run tests/mcp.integration.test.ts",
     "generate:schema": "openapi-typescript ./raindrop-complete.yaml -o ./src/types/raindrop.schema.d.ts --tsconfig ./tsconfig.json --export-type --useUnionTypes --immutable",
     "check:schema": "pnpm run generate:schema && git diff --exit-code -- src/types/raindrop.schema.d.ts",
-    "check": "pnpm run typecheck && pnpm run lint && pnpm test && pnpm run check:schema && pnpm run deploy:dry-run"
+    "check": "pnpm run typecheck && pnpm run lint && pnpm test && pnpm run check:schema && pnpm run deploy:dry-run",
+    "test:live:readonly": "vitest run tests/v3_live_readonly.test.ts"
   },
   "license": "MIT",
   "dependencies": {
