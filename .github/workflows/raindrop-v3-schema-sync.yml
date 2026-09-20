@@ -1,0 +1,51 @@
+name: Raindrop v3 Schema Sync
+
+on:
+  push:
+    branches:
+      - feat/raindrop-v3-core-reliability
+    paths:
+      - apps/raindrop-mcp-worker/raindrop-complete.yaml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: raindrop-v3-schema-sync
+  cancel-in-progress: false
+
+jobs:
+  regenerate:
+    if: github.repository == 'lirtual/mcp-workers'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Regenerate exactly from the checked-in v3 YAML
+        run: pnpm --filter raindrop-mcp-worker generate:schema
+      - name: Commit generated declaration to PR source branch only
+        shell: bash
+        run: |
+          set -euo pipefail
+          generated="apps/raindrop-mcp-worker/src/types/raindrop.schema.d.ts"
+          git add -- "$generated"
+          if git diff --cached --quiet -- "$generated"; then
+            echo "Generated types already deterministic"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore(raindrop): regenerate v3 OpenAPI types (#118)"
+          git push origin "HEAD:refs/heads/feat/raindrop-v3-core-reliability"
