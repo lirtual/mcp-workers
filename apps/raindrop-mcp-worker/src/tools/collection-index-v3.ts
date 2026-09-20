@@ -82,7 +82,7 @@ export function descendantIdsV3<T extends { _id: number; title: string; count?: 
   const queue = [...root.children];
   const visited = new Set([root._id]);
   for (let i = 0; i < queue.length; i++) {
-    const node = queue[i];
+    const node = queue[i]!;
     if (visited.has(node._id)) continue;
     visited.add(node._id);
     ids.push(node._id);
