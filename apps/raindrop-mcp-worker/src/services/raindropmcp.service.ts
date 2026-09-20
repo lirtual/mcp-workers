@@ -377,7 +377,7 @@ export class RaindropMCPService {
     for (const kind of ["collection", "raindrop"] as const) {
       if (uri.startsWith(`mcp://${kind}/`)) {
         const suffix = uri.slice(`mcp://${kind}/`.length);
-        if (!/^[1-9]\\d*$/.test(suffix)) {
+        if (!/^[1-9]\d*$/.test(suffix)) {
           throw new ValidationError("Resource requires an exact positive decimal ID");
         }
         const id = Number(suffix);
