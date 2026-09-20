@@ -30,9 +30,10 @@ CPU/memory load test.
 
 The public surface is the 26 names enumerated in `tests/tool_contract.test.ts`.
 Legacy names are not registered; clients must refresh discovery on cutover.
-Some unused legacy source modules/methods and historical tests remain in the PR
-until they can be deleted alongside the generated-schema cleanup; their presence
-is **not** a claim of legacy public compatibility.
+The retired v2 tool modules, their obsolete tests and deprecated service
+methods have been removed from the source branch. The separate historical
+OpenAPI YAML/generated-type audit is still outstanding; this is **not** a
+claim of complete coverage of the Raindrop REST API.
 
 The filename `raindrop-complete.yaml` is historical and **does not promise
 coverage of every Raindrop API**. Its historical endpoint entries and generated
@@ -41,9 +42,10 @@ documentation. Do not count speculative endpoints as v3 coverage.
 
 ## Acceptance remaining
 
-- [ ] #118: remove unused legacy code and stale tests; constrain active YAML;
-      review exact public JSON schemas, prompts and resource behavior;
-      full two-axis standards/spec review.
+- [x] #118: remove registered legacy tools, unused source and stale tests;
+      verify exact 26-tool discovery, schemas, prompts and resources offline.
+- [ ] #118: constrain and regenerate historical OpenAPI YAML with a deterministic
+      generated-type check; complete the independent Standards/Spec review.
 - [ ] #119: isolated real-account lifecycle, live read-only duplicate/broken
       filter and entitlement verification, `parent=null` gate verification,
       Portal tool refresh, Cloudflare Free-plan resource evidence.
