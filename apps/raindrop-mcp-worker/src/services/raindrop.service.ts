@@ -2,6 +2,7 @@
 import createClient from "openapi-fetch";
 import {
   AuthError,
+  McpError,
   NotFoundError,
   RateLimitError,
   UpstreamError,
@@ -889,6 +890,60 @@ export default class RaindropService {
    * Fetch tags for a collection or all
    * Raindrop.io API: GET /tags/{collectionId} or /tags/0
    */
+  /**
+   * Official v3 tag endpoint: global scope omits collectionId entirely.
+   * Old /tags/0 is not an authenticated alias for the global endpoint.
+   */
+  async listTagsV3(collectionId?: number): Promise<Array<{ _id: string; count: number }>> {
+    const { data } = await this.withRateLimit(async () =>
+      collectionId === undefined
+        ? (this.client as any).GET("/tags")
+        : (this.client as any).GET("/tags/{collectionId}", {
+            params: { path: { collectionId } },
+          }),
+    );
+    if (!data || data.result === false || !Array.isArray(data.items)) {
+      throw new UpstreamError("Upstream tags response is invalid or rejected");
+    }
+    if (data.items.length > 5000) {
+      throw new McpError("RESOURCE_LIMIT", "Tag metadata exceeds the 5000-item limit");
+    }
+    if (!data.items.every((item: unknown) => {
+      const tag = item as { _id?: unknown; count?: unknown };
+      return tag && typeof tag._id === "string" && typeof tag.count === "number";
+    })) {
+      throw new UpstreamError("Upstream tags response contains invalid items");
+    }
+    return data.items as Array<{ _id: string; count: number }>;
+  }
+
+  /**
+   * One tag operation by explicit official scope. A submitted mutation is never retried.
+   * API only acknowledges the whole operation; it supplies no per-tag modified list.
+   */
+  async mutateTagsV3(
+    action: "rename" | "merge" | "delete",
+    tags: string[],
+    collectionId?: number,
+    replace?: string,
+  ): Promise<void> {
+    const endpoint = collectionId === undefined ? "/tags" : "/tags/{collectionId}";
+    const options = {
+      ...(collectionId === undefined ? {} : { params: { path: { collectionId } } }),
+      body: action === "delete" ? { tags } : { tags, replace },
+    };
+    const { data } = await this.withWriteRateLimit(async () =>
+      action === "delete"
+        ? (this.client as any).DELETE(endpoint, options)
+        : (this.client as any).PUT(endpoint, options),
+    );
+    if (data?.result !== true) {
+      throw new UpstreamError("Upstream tag mutation acknowledgement is missing");
+    }
+    this.cacheSearch.clear();
+    this.cacheBookmarks.clear();
+  }
+
   async getTags(
     collectionId?: number,
   ): Promise<{ _id: string; count: number }[]> {
