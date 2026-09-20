@@ -6,6 +6,8 @@ Issue: [#119](https://github.com/lirtual/mcp-workers/issues/119). Parent: [#110]
 
 **Evidence as of 2026-09-20:** Existing production Worker diagnostics were reachable and advertised v2.4.5 (17 tools), not v3; this does not count as v3 acceptance. An isolated deployment attempt for `raindrop-mcp-worker-v3-test` ran in [Actions #35510338549](https://github.com/lirtual/mcp-workers/actions/runs/35510338549). The v3 application check passed, but Wrangler rejected creation of the new Worker because its required `MCP_ACCESS_TOKEN` and `RAINDROP_ACCESS_TOKEN` bindings had not been supplied. The Cloudflare management secret-initialization action was unavailable in this session. **No v3 Worker was deployed; no v3 real-account HTTP read or write was executed.** The production Worker and original collection data were not altered. Keep PR #120 Draft while #118's final review is outstanding.
 
+**2026-09-20 direct-MCP follow-up:** The branch now includes `scripts/test-direct-mcp.mjs` and an isolated GitHub Actions deployment with a per-run random `MCP_ACCESS_TOKEN`, a secret-file upload and direct authenticated `/mcp` checks (no Portal). [Run #35510822074](https://github.com/lirtual/mcp-workers/actions/runs/35510822074) stopped safely during credential preflight because the environment secret `RAINDROP_V3_TEST_ACCESS_TOKEN` was not available. No deployment or remote v3 MCP invocation occurred. The account token was not committed or printed. Grant the Cloudflare connector a usable action to bind the provided test token, or provision that token into the isolated GitHub Actions environment secret; neither needs an account-wide or production deployment.
+
 ## Read-only smoke on the existing account (safe to run first)
 
 This is explicitly opt-in, uses a local environment credential, and prints neither the credential nor personal item content. The source file is `tests/v3_live_readonly.test.ts`. It tests the app's MCP Client -> tool handler -> Raindrop API path, **not** a deployed Worker or Portal connection.
@@ -36,12 +38,12 @@ The current account is not an isolated disposable account, so the destructive op
 | Check | Status | Evidence / remaining blocker |
 | --- | --- | --- |
 | Offline 26-tool discovery and contract | Pass at last green CI SHA `fd77fda` | [CI](https://github.com/lirtual/mcp-workers/actions/runs/35507962617); recheck after later commits |
-| Current-account read-only MCP smoke | Blocked | Isolated Worker creation rejected missing required secrets; no v3 endpoint to call |
+| Current-account read-only MCP smoke | Blocked | [#35510822074](https://github.com/lirtual/mcp-workers/actions/runs/35510822074): RAINDROP_V3_TEST_ACCESS_TOKEN unavailable in isolated deploy environment; direct v3 endpoint not created |
 | Current-account scoped object lifecycle | Not run | Requires #118 gate and local authenticated execution with recorded new IDs |
 | Parent-to-root write | Blocked | Compile-time `FEATURE_UNVERIFIED` gate |
 | Duplicate deletion write | Blocked | Compile-time `FEATURE_UNVERIFIED` gate; operator/plan unverified |
 | Entire Trash purge | Not run | Existing Trash could contain non-test entries |
-| Deployed Worker + Portal cutover | Blocked | Isolated deployment failed before creation; production remains v2.4.5; Portal unchanged |
+| Deployed direct Worker (no Portal) | Blocked | Separate v3 test Worker has not deployed; existing production remains v2.4.5; Portal not used |
 | Free-plan resource measurements | Not run | Wrangler dry-run is not real CPU/memory evidence |
 
 Every status must be updated from actual observations; preparing a test or passing mock CI does not turn a **Not run** or **Blocked** cell into a pass.
