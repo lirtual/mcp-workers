@@ -6,7 +6,6 @@ import {
   NotFoundError,
   RateLimitError,
   UpstreamError,
-  ValidationError,
 } from "../types/mcpErrors.js";
 import type { components, paths } from "../types/raindrop.schema.js";
 import { createLogger } from "../utils/logger.js";
@@ -327,7 +326,6 @@ export default class RaindropService {
     this.cacheCollections.clear();
   }
 
-
   /**
    * Fetch a single collection by ID
    * Raindrop.io API: GET /collection/{id}
@@ -352,13 +350,6 @@ export default class RaindropService {
     this.cacheCollections.set(`id:${id}`, collection);
     return collection;
   }
-
-
-
-
-
-
-
 
   /**
    * v3 read/write tracer: direct documented endpoints with no legacy search
@@ -522,16 +513,6 @@ export default class RaindropService {
     });
   }
 
-
-
-
-
-
-
-  /**
-   * Empty trash
-   * Raindrop.io API: DELETE /raindrops/-99
-   */
   /** Official Trash endpoint; unlike the legacy helper this is not a batch bookmark delete. */
   async emptyTrashV3(): Promise<void> {
     const { data } = await this.withWriteRateLimit<any>(() =>
@@ -544,12 +525,6 @@ export default class RaindropService {
     this.cacheSearch.clear();
   }
 
-
-
-  /**
-   * Fetch tags for a collection or all
-   * Raindrop.io API: GET /tags/{collectionId} or /tags/0
-   */
   /**
    * Official v3 tag endpoint: global scope omits collectionId entirely.
    * Old /tags/0 is not an authenticated alias for the global endpoint.
@@ -604,11 +579,6 @@ export default class RaindropService {
     this.cacheBookmarks.clear();
   }
 
-
-
-
-
-
   /**
    * Fetch user info
    * Raindrop.io API: GET /user
@@ -623,7 +593,7 @@ export default class RaindropService {
 
   /**
    * Fetch user statistics (total bookmarks, collections, highlights, tags)
-   * Raindrop.io API: GET /user/stats, /collections, and /tags/0
+   * Raindrop.io API: GET /user/stats; unavailable counters stay null
    */
   async getUserStats(): Promise<{
     bookmarks: number | null;
@@ -726,9 +696,5 @@ export default class RaindropService {
     // it from the text, which can be identical to an existing highlight.
     return { item, targetVerified };
   }
-
-
-
-
 
 }
