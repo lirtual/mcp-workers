@@ -3,7 +3,6 @@ import createClient from "openapi-fetch";
 import {
   AuthError,
   McpError,
-  McpError,
   NotFoundError,
   RateLimitError,
   UpstreamError,
@@ -641,52 +640,6 @@ export default class RaindropService {
     this.cacheBookmarks.clear();
     this.cacheSearch.clear();
     this.cacheCollections.clear();
-    return {
-      modified: Number.isSafeInteger(data.modified) && data.modified >= 0
-        ? data.modified : null,
-    };
-  }
-
-  /** Official global or collection tag list; local pagination is the tool's concern. */
-  async listTagsV3(collectionId?: number): Promise<Array<{ _id: string; [key: string]: unknown }>> {
-    const { data } = await this.withRateLimit(async () =>
-      collectionId === undefined
-        ? (this.client as any).GET("/tags")
-        : (this.client as any).GET("/tags/{collectionId}", {
-            params: { path: { collectionId } },
-          }),
-    );
-    if (data?.result === false || !Array.isArray(data?.items)) {
-      throw new UpstreamError("Raindrop tag response is missing a valid items list");
-    }
-    if (data.items.length > 5000) {
-      throw new McpError("RESOURCE_LIMIT", "Tag metadata exceeds the 5000-item limit");
-    }
-    return data.items as Array<{ _id: string; [key: string]: unknown }>;
-  }
-
-  /** Write only one explicit tag-scope request, without client-side retries. */
-  async mutateTagsV3(
-    action: "put" | "delete",
-    tags: string[],
-    collectionId?: number,
-    replace?: string,
-  ): Promise<{ modified: number | null }> {
-    const path = collectionId === undefined ? "/tags" : "/tags/{collectionId}";
-    const options = {
-      ...(collectionId === undefined ? {} : { params: { path: { collectionId } } }),
-      body: action === "put" ? { tags, replace } : { tags },
-    };
-    const { data } = await this.withWriteRateLimit(async () =>
-      action === "put"
-        ? (this.client as any).PUT(path, options)
-        : (this.client as any).DELETE(path, options),
-    );
-    if (data?.result !== true) {
-      throw new UpstreamError("Upstream tag mutation acknowledgement is missing");
-    }
-    this.cacheBookmarks.clear();
-    this.cacheSearch.clear();
     return {
       modified: Number.isSafeInteger(data.modified) && data.modified >= 0
         ? data.modified : null,
