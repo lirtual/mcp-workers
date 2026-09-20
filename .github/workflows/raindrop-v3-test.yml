@@ -91,6 +91,7 @@ jobs:
           # Bounded authentication-propagation retry is read-only; never replay writes.
           # Direct HTTPS/JSON-RPC over /mcp, not Portal; only read-only actions.
           node scripts/test-direct-mcp.mjs
+          # Tag writes use UUID-suffixed test-owned names and explicit collection scope.
           # Run live reads first, then test only run-owned tag/highlight/bulk changes.
           # Never clear Trash or mutate pre-existing user objects.
           node scripts/test-direct-mcp-lifecycle.mjs
