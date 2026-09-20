@@ -56,7 +56,7 @@ describe("T04: collection hierarchy and exact deletion scope", () => {
     expect(graph.roots).toHaveLength(1);
     expect(graph.unattached.map((x) => x._id)).toEqual([999, 1000]);
     expect(graph.warnings).toEqual(["cycle:1000", "missing-parent:5000"]);
-    expect(descendantIdsV3(graph.roots[0])).toHaveLength(997);
+    expect(descendantIdsV3(graph.roots[0]!)).toHaveLength(997);
     expect(graph.byId.get(998)?.path).toHaveLength(998);
   });
 
@@ -154,13 +154,16 @@ describe("T04: collection hierarchy and exact deletion scope", () => {
     expect(spy).toHaveBeenCalledTimes(3);
   });
 
-  it.each([
-    [C(1, undefined, 1), [], "nonempty"],
-    [{ _id: 1, title: "unknown count" }, [], "unknown count"],
-    [C(1, undefined, 0), [C(2, 1, 0)], "has descendant"],
-  ])("rejects onlyIfEmpty %s before deletion", async (root, children) => {
+  const emptyCases: Array<{ root: CollectionFixture; children: CollectionFixture[]; label: string }> = [
+    { root: C(1, undefined, 1), children: [], label: "nonempty" },
+    { root: { _id: 1, title: "unknown count" }, children: [], label: "unknown count" },
+    { root: C(1, undefined, 0), children: [C(2, 1, 0)], label: "has descendant" },
+  ];
+  it.each(emptyCases)("rejects onlyIfEmpty $label before deletion", async ({ root, children }) => {
     const spy = mockIndex([root], children);
-    const result = await resultOf("collection_delete", { id: 1, onlyIfEmpty: true, confirm: true, descendantIds: children.map(x => x._id) });
+    const result = await resultOf("collection_delete", {
+      id: 1, onlyIfEmpty: true, confirm: true, descendantIds: children.map((x) => x._id),
+    });
     expect(result).toMatchObject({ ok: false, error: { code: "VALIDATION_ERROR" } });
     expect(spy).toHaveBeenCalledTimes(2);
   });
