@@ -312,7 +312,7 @@ export default class RaindropService {
     const { data } = await this.withWriteRateLimit(() =>
       this.client.PUT("/collection/{id}", {
         params: { path: { id } },
-        body: { ...updates },
+        body: { title: updates.title, parent: updates.parent ?? undefined },
       }),
     );
     if (data?.result === false) throw new UpstreamRejectedError("Collection update was rejected");
