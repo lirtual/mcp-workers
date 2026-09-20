@@ -59,7 +59,7 @@ For local development, use uncommitted `.dev.vars` or `.env` files with keys mat
 
 **Implementation specification:** [`docs/workflow-mcp/runtime-config-simplification-spec.md`](./workflow-mcp/runtime-config-simplification-spec.md) governs the cross-Worker rollout and end-to-end acceptance. Its four-Secret Workflow platform baseline also keeps `R2_ACCESS_KEY_ID` as a separately required non-secret credential identifier; real integrations may require additional Secrets. Do not optimize for a raw dashboard count.
 
-**Current deployed production is not yet compliant.**** The deployed contract still requires `TRIGGER_SMOKE_WEBHOOK_TOKEN` and `SMOKE_READONLY_MCP_TOKEN`; the deploy workflow generates random MCP/lease/smoke credentials and writes the ephemeral `github.token` to `GITHUB_ACTIONS_TOKEN`. PR #125 implements code/configuration changes, but they are not live. Production cutover and removal of superseded bindings require the separately authorized #123 preflight and verification.
+**Current deployed production is not yet compliant.** The deployed contract still requires `TRIGGER_SMOKE_WEBHOOK_TOKEN` and `SMOKE_READONLY_MCP_TOKEN`; the deploy workflow generates random MCP/lease/smoke credentials and writes the ephemeral `github.token` to `GITHUB_ACTIONS_TOKEN`. PR #125 implements code/configuration changes, but they are not live. Production cutover and removal of superseded bindings require the separately authorized #123 preflight and verification.
 
 ## Workers Observability baseline
 
