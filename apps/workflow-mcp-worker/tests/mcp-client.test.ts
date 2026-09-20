@@ -3,7 +3,7 @@ import { callMcpTool, inspectMcpTool } from '../src/mcp-client.js';
 import type { Env } from '../src/types.js';
 
 vi.mock('../src/connections.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../src/connections.js')>();
+  const actual = await importOriginal<{ resolveConnection: (env: object, id: string) => unknown }>();
   return {
     ...actual,
     // Legacy protocol coverage is test-only: production no longer binds a
