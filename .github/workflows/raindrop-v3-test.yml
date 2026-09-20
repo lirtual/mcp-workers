@@ -38,20 +38,16 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
 
-      - name: Verify isolated deploy credentials
+      - name: Verify Cloudflare deploy credential
         shell: bash
-        env:
-          RAINDROP_V3_TEST_ACCESS_TOKEN: ${{ secrets.RAINDROP_V3_TEST_ACCESS_TOKEN }}
         run: |
           set -euo pipefail
           if [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]]; then
-            echo "::error::Missing existing Cloudflare deployment credential"
+            echo "::error::Missing Cloudflare deployment credential"
             exit 1
           fi
-          if [[ -z "${RAINDROP_V3_TEST_ACCESS_TOKEN:-}" ]]; then
-            echo "::error::Set RAINDROP_V3_TEST_ACCESS_TOKEN as an environment secret; do not commit or log it"
-            exit 1
-          fi
+          # RAINDROP_ACCESS_TOKEN is pre-provisioned directly on this exact
+          # isolated Cloudflare Worker, never exported into GitHub Actions.
 
       - name: Install workspace
         run: pnpm install --frozen-lockfile --ignore-scripts
@@ -62,30 +58,27 @@ jobs:
       - name: Deploy and probe ONLY the isolated v3 test Worker
         working-directory: apps/raindrop-mcp-worker
         shell: bash
-        env:
-          RAINDROP_V3_TEST_ACCESS_TOKEN: ${{ secrets.RAINDROP_V3_TEST_ACCESS_TOKEN }}
         run: |
           set -euo pipefail
           umask 077
           secrets_file="$RUNNER_TEMP/raindrop-v3-secrets-$$.json"
           trap 'rm -f "$secrets_file"' EXIT
 
-          # Only the isolated Worker receives these two credentials.
+          # Upload ONLY the per-run MCP credential; Cloudflare retains the
+          # pre-existing isolated RAINDROP_ACCESS_TOKEN secret.
           # Generate the MCP transport secret per run; it is never printed.
           mcp_token="$(openssl rand -hex 32)"
           echo "::add-mask::$mcp_token"
-          echo "::add-mask::$RAINDROP_V3_TEST_ACCESS_TOKEN"
           export mcp_token
 
           node --input-type=module -e '
             import fs from "node:fs";
             fs.writeFileSync(process.argv[1], JSON.stringify({
-              RAINDROP_ACCESS_TOKEN: process.env.RAINDROP_V3_TEST_ACCESS_TOKEN,
               MCP_ACCESS_TOKEN: process.env.mcp_token,
             }), { mode: 0o600 });
           ' "$secrets_file"
 
-          pnpm exec wrangler deploy --name raindrop-mcp-worker-v3-test --secrets-file "$secrets_file"
+          pnpm exec wrangler deploy --name raindrop-mcp-worker-v3-test --keep-vars --secrets-file "$secrets_file"
 
           export MCP_ACCESS_TOKEN="$mcp_token"
           export RAINDROP_V3_TEST_URL="https://raindrop-mcp-worker-v3-test.aiyaya.workers.dev"
