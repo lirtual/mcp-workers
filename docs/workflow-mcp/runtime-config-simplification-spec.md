@@ -80,11 +80,11 @@ No database schema or model-facing MCP tool/API change is required by this featu
 
 ## 5. Migration and rollback contract
 
-**Preflight, no mutation:** inventory each Worker's present `MCP_ACCESS_TOKEN` **presence** (not value), clients/Portal connections, dependency on the smoke fixtures, Workflow's current active/nonterminal runs, current scheduler activation and current GitHub/R2 credential validity. Choose and securely retain one new or existing strong shared token; never print, commit, log or copy it through plaintext repository config. Record a rotation checkpoint and authorized rollback plan. Do not claim that values are synchronized merely because names match.
+**Preflight, no mutation:** the operator confirmed on 2026-09-20 that the seven production Workers already share one `MCP_ACCESS_TOKEN` value. Inventory Secret **presence and type** (not the value), existing clients/Portal connections, smoke-fixture dependencies, Workflow active/nonterminal runs, scheduler activation and GitHub/R2 readiness. Preserve that installed value, record a no-rotation/rollback checkpoint, and do not force client reconnect. Operator confirmation is not an independently readable comparison of Cloudflare Secret values.
 
 **Prepare:** implement and test the no-auto-rotation deploy and the new required-secret contract before removing existing runtime bindings. Provision distinct persistent GitHub, R2 and lease credentials where missing; coordinate with active executor leases, especially if an existing lease key must be replaced. Preserve the current live value until the caller cutover is authorized. Where a required platform credential is missing, stop migration before deploying instead of generating an emergency fallback. Check real schedules/triggers after configuration build.
 
-**MCP cutover:** install the chosen token value independently on all seven Workers using an explicitly authorized production operation; update all connected MCP clients/Portal connections to match. Changes to separate Workers are not atomic: use a planned maintenance window or staged client updates, expect a short mismatch window, and verify each Worker with authenticated tool discovery plus unauthenticated rejection. Do not promise zero downtime, silently enable a second accepted token, or perform bulk rotation without explicit authorization. Keep existing values available in the operator's secure recovery process until verified.
+**MCP continuity (no cutover necessary):** do **not** reinstall or rotate the existing shared `MCP_ACCESS_TOKEN` on any Worker, and do not update existing clients/Portal connectors. Verify ordinary connected-client behavior and fail-closed missing/invalid-token rejection through existing supported seams without publishing credentials. Investigate any unexpected mismatch independently and stop if the assumption of an already shared value is contradicted. Any later security-driven rotation would be a distinct, expressly authorized task.
 
 **Post-cutover:** verify scheduler activation and a safe scheduler tick/maintenance path, regular MCP/connection behavior, and a deliberately invoked heavy GitHub/R2 acceptance run **after** the deployment job ended. The first genuine Raindrop 09:00 business occurrence is verified only after #107 adds that workflow, under #108; it must not block #123 itself. Only once the code no longer references redundant secrets and all checks pass, explicitly delete superseded production smoke bindings and obsolete dashboard overrides; verify those names remain absent after the next deployment.
 
@@ -105,7 +105,7 @@ Use existing high-level seams (Wrangler generated-config inspection, HTTP `/heal
 | C07 | After deploy job ends, dispatch, inspect and cancel a GitHub run | The runtime's persistent `GITHUB_ACTIONS_TOKEN` works; CI job token is not installed as runtime authority. |
 | C08 | Run explicitly authorized heavy acceptance | Actual GitHub OIDC/Attempt Claim, callback and direct R2 artifact write/read succeed without durable R2 credentials exposed to the executor. |
 | C09 | Required production secret missing | Deployment fails closed with its missing name; no generated fallback or silent accidental secret reset. |
-| C10 | Rotate shared token with connected clients | All seven eventually accept the chosen value; clients are reconfigured; remaining mismatch is explicitly reported and rollback instructions are usable. |
+| C10 | Preserve the operator-confirmed existing shared token through migration | No `MCP_ACCESS_TOKEN` binding is rewritten or rotated, and connected clients remain usable without reauthorization; investigate any observed mismatch rather than initiating a bulk rotation. |
 | C11 | Inspect logs, CI artifacts and configuration files | No shared token, upstream secret, lease key, R2 secret or presigned URL is leaked. |
 | C12 | Check existing `tests/deploy-gate.test.ts`, connection/compiler/trigger tests | Assertions change to reflect the new contract, no old snapshot demands ephemeral credentials or mandatory heavy tracers on push. |
 
@@ -130,7 +130,7 @@ This spec is decomposed into existing and new GitHub issues. Existing tickets we
 | [#121](https://github.com/lirtual/mcp-workers/issues/121) T18 | Cross-app MCP token contract checks and safe rotation runbook | none |
 | [#122](https://github.com/lirtual/mcp-workers/issues/122) T19 | Separate smoke fixtures and light release probe without runtime test credentials | none |
 | [#106](https://github.com/lirtual/mcp-workers/issues/106) T15 | Contract: persistent deployment credentials and clean runtime/CI configuration, **code-only** | #105, #122 |
-| [#123](https://github.com/lirtual/mcp-workers/issues/123) T20 | Separately authorized seven-Worker production shared-token cutover and real acceptance | #121, #106 |
+| [#123](https://github.com/lirtual/mcp-workers/issues/123) T20 | Preserve the existing shared MCP token; separately authorize Workflow production configuration migration and acceptance | #121, #106 |
 | [#107](https://github.com/lirtual/mcp-workers/issues/107) T16 | First actual Raindrop manual business workflow (existing separate feature) | #106, #123 |
 | [#108](https://github.com/lirtual/mcp-workers/issues/108) T17 | Observe real 09:00 scheduled occurrence after production deployment | #106, #107, #123 |
 
@@ -138,4 +138,4 @@ No live Cloudflare Secret mutation, production deploy or GitHub secret change is
 
 ## 9. Completion definition and handoff
 
-Implementation is complete only after C01–C12, documentation/runbook updates, and live acceptance after deploy-job completion have passed. The four confirmed decisions from the grilling round remain authoritative: Q1:B shared MCP value; Q2:A lightweight automatic deploy; Q3:A no production smoke-only webhook; Q4:A repository-owned static config. Implementation tickets are published above; production secret cutover remains a separate explicitly authorized operational step.
+Implementation is complete only after C01–C12, documentation/runbook updates, and live acceptance after deploy-job completion have passed. The four confirmed decisions from the grilling round remain authoritative: Q1:B shared MCP value; Q2:A lightweight automatic deploy; Q3:A no production smoke-only webhook; Q4:A repository-owned static config. Implementation tickets are published above; Workflow production configuration changes and live acceptance remain separately authorized operational steps; shared MCP token rotation is not needed.
