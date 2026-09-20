@@ -319,9 +319,13 @@ export class RaindropMCPService {
       const uncertain =
         submittedWrite &&
         !(err instanceof AuthError) &&
+        !(err instanceof NotFoundError) &&
+        !(err instanceof ValidationError) &&
         (err instanceof RateLimitError ||
           !(err instanceof McpError) ||
           (err instanceof McpError && err.code === "UPSTREAM_ERROR"));
+      // A definite upstream rejection is a failed write, not an unsubmitted one.
+      const definiteFailure = submittedWrite && !uncertain;
       return toolFailure(
         uncertain ? "WRITE_OUTCOME_UNKNOWN" :
           err instanceof McpError ? err.code : "INTERNAL_ERROR",
@@ -330,7 +334,7 @@ export class RaindropMCPService {
           : err instanceof McpError ? err.message : "Tool execution failed",
         {
           requestCount: this.raindropService.budget.requestCount,
-          status: uncertain ? "unknown" : "not_executed",
+          status: uncertain ? "unknown" : definiteFailure ? "failed" : "not_executed",
         },
         {
           ...(details.status !== undefined ? { upstreamStatus: details.status } : {}),
