@@ -48,7 +48,7 @@ async function callMcp({ method, params }) {
   const response = await fetch(new URL("/mcp", url), {
     method: "POST",
     headers: {
-      Authorization: \`Bearer \${token}\`,
+      Authorization: `Bearer ${token}`,
       Accept: "application/json, text/event-stream",
       "Content-Type": "application/json",
     },
@@ -56,7 +56,7 @@ async function callMcp({ method, params }) {
     signal: AbortSignal.timeout(timeoutMs),
     redirect: "error",
   });
-  assert.equal(response.status, 200, \`\${method}: unexpected HTTP \${response.status}\`);
+  assert.equal(response.status, 200, `${method}: unexpected HTTP ${response.status}`);
   const contentType = response.headers.get("content-type") ?? "";
   const text = await response.text();
   let payload;
@@ -68,21 +68,21 @@ async function callMcp({ method, params }) {
   } else if (contentType.includes("application/json")) {
     payload = JSON.parse(text);
   } else {
-    throw new Error(\`\${method}: unexpected Content-Type\`);
+    throw new Error(`${method}: unexpected Content-Type`);
   }
-  assert(payload && payload.id === id, \`\${method}: no matching JSON-RPC response\`);
-  assert(!payload.error, \`\${method}: JSON-RPC error \${payload.error?.code}\`);
+  assert(payload && payload.id === id, `${method}: no matching JSON-RPC response`);
+  assert(!payload.error, `${method}: JSON-RPC error ${payload.error?.code}`);
   if (method === "initialize") assert(payload.result?.serverInfo, "Missing serverInfo");
   else if (method === "tools/list") assert.equal(payload.result?.tools?.length, 26, "Unexpected tool count");
   else assert.equal(payload.result?.structuredContent?.ok, true, "Local diagnostics failed");
 }
 
-console.log(\`LOCAL_PROFILE_START op=\${operation} samples=\${count} warmups=\${warmups} utc=\${new Date().toISOString()}\`);
+console.log(`LOCAL_PROFILE_START op=${operation} samples=${count} warmups=${warmups} utc=${new Date().toISOString()}`);
 for (let i = 0; i < warmups + count; i++) {
   const phase = i < warmups ? "warmup" : "sample";
   const n = i < warmups ? i + 1 : i - warmups + 1;
-  console.log(\`LOCAL_PROFILE_BEGIN op=\${operation} phase=\${phase} sample=\${n} utc=\${new Date().toISOString()}\`);
+  console.log(`LOCAL_PROFILE_BEGIN op=${operation} phase=${phase} sample=${n} utc=${new Date().toISOString()}`);
   await callMcp(requests[operation]);
-  console.log(\`LOCAL_PROFILE_END op=\${operation} phase=\${phase} sample=\${n} utc=\${new Date().toISOString()}\`);
+  console.log(`LOCAL_PROFILE_END op=${operation} phase=${phase} sample=${n} utc=${new Date().toISOString()}`);
 }
-console.log(\`LOCAL_PROFILE_PASS op=\${operation} utc=\${new Date().toISOString()} (no upstream reads/writes, no response bodies logged)\`);
+console.log(`LOCAL_PROFILE_PASS op=${operation} utc=${new Date().toISOString()} (no upstream reads/writes, no response bodies logged)`);
