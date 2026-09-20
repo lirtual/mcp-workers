@@ -31,29 +31,42 @@ It is not published as an npm package and does not support standalone STDIO, sta
 
 `MCP_ACCESS_TOKEN` and `RAINDROP_ACCESS_TOKEN` are separate credentials and must never be reused for each other.
 
-## MCP tools
+## MCP v3 tools (breaking source-branch contract)
 
-The exact supported tool-name contract is regression-tested and currently contains 17 tools:
+The **v3 source branch** registers exactly 26 tools. The deployed Portal may
+still expose a prior version until separately accepted and cut over; do not
+assume that pushing this branch changes the active client.
 
-- `diagnostics`
-- `collection_list`
-- `get_collection_tree`
-- `collection_manage`
-- `bookmark_search`
-- `bookmark_manage`
-- `get_raindrop`
-- `list_raindrops`
-- `get_suggestions`
-- `suggest_tags`
-- `bulk_edit_raindrops`
-- `tag_manage`
-- `highlight_manage`
-- `library_audit`
-- `empty_trash`
-- `cleanup_collections`
-- `remove_duplicates`
+| Capability | Public tools |
+| --- | --- |
+| Bookmark | `raindrop_list`, `raindrop_get`, `raindrop_create`, `raindrop_update`, `raindrop_delete`, `raindrop_bulk_update`, `raindrop_bulk_delete`, `raindrop_suggest` |
+| Collection | `collection_list`, `collection_tree`, `collection_get`, `collection_create`, `collection_update`, `collection_delete` |
+| Tags | `tag_list`, `tag_rename`, `tag_merge`, `tag_delete` |
+| Highlights | `highlight_list`, `highlight_create`, `highlight_update`, `highlight_delete` |
+| Maintenance | `library_audit`, `duplicates_delete`, `trash_empty`, `diagnostics` |
 
-Destructive tools keep their explicit confirmation requirements. Tests and acceptance checks must not mutate a real Raindrop library unless a task explicitly authorizes that action.
+**No old tool names or arguments are registered in v3.** Clients must refresh
+MCP tool discovery after an explicitly approved rollout. The legacy source files
+may remain temporarily for migration tests, but are not exported as public tools.
+The old `suggest_tags` Sampling tool is not supported.
+
+Dangerous operations default to preview. In particular:
+
+- `collection_delete` re-reads the subtree and requires an exact descendant
+  set before confirmed deletion; `onlyIfEmpty` requires a known-empty leaf.
+- `collection_update(parent=null)` is disabled with `FEATURE_UNVERIFIED`
+  pending isolated validation of move-to-root semantics.
+- `duplicates_delete(confirm=true)` is disabled with
+  `FEATURE_UNVERIFIED` pending live, read-only verification of the official
+  duplicate filter and account entitlement. A preview is **not** a snapshot.
+- `trash_empty(confirm=true)` targets the **entire current Trash**; never run
+  this against an account containing pre-existing non-test Trash items.
+- Reads are bounded, submitted writes are never automatically retried,
+  and an uncertain upstream write is reported as unknown.
+
+See `docs/api-coverage.md` for independent implementation, offline contract,
+and live acceptance states. Offline fixtures and Wrangler dry-run **do not**
+constitute a live Raindrop/Portal or Cloudflare Free-plan runtime acceptance.
 
 ## Configuration
 
@@ -72,7 +85,7 @@ Do not commit secret values to the repository.
 
 ## OpenAPI type generation
 
-`raindrop-complete.yaml` is the single canonical OpenAPI source retained by this application. Runtime code imports the generated `src/types/raindrop.schema.d.ts` types through `openapi-fetch`.
+`raindrop-complete.yaml` is the single canonical OpenAPI source retained by this application. The filename does not imply coverage of every official API; v3 supports only the scope above. Runtime code imports the generated `src/types/raindrop.schema.d.ts` types through `openapi-fetch`.
 
 Regenerate the schema types from the monorepo root with:
 
@@ -91,7 +104,7 @@ pnpm install --frozen-lockfile
 pnpm --filter raindrop-mcp-worker check
 ```
 
-The application `check` runs TypeScript validation, lint, the local regression suite including the exact 17-tool contract, deterministic OpenAPI type regeneration, and Wrangler dry-run deployment validation.
+The application `check` runs TypeScript validation, lint, the local regression suite including the exact 26-tool contract, deterministic OpenAPI type regeneration, and Wrangler dry-run deployment validation.
 
 Optional tests that require a real `RAINDROP_ACCESS_TOKEN` remain outside the default CI-safe test set. `test:env` includes explicitly gated live checks, including a destructive lifecycle test; run those only with disposable/non-production test data and the documented opt-in flags, never as routine production cutover smoke.
 
