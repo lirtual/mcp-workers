@@ -1,5 +1,6 @@
 import { appendFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
+import { verifyRaindropOutput } from './raindrop-verification.js';
 
 const baseUrl = required('WORKFLOW_MCP_URL').replace(/\/+$/, '');
 const accessToken = required('WORKFLOW_MCP_ACCESS_TOKEN');
@@ -86,15 +87,7 @@ const raindropResult = await callTool('workflow_result', { runId: raindropRunId 
 if (raindropResult.ready !== true || raindropResult.state !== 'succeeded') {
   throw new Error('Raindrop workflow_result was not succeeded/ready.');
 }
-const raindropOutputs = asObject(raindropResult.outputs);
-const bookmarks = asArray(raindropOutputs.bookmarks);
-const totalCount = raindropOutputs.count;
-if (bookmarks.length > 20 || !bookmarks.every(item =>
-  item !== null && typeof item === 'object' && !Array.isArray(item)
-) || typeof totalCount !== 'number' || !Number.isSafeInteger(totalCount) ||
-  totalCount < bookmarks.length) {
-  throw new Error('Raindrop structured bookmark result violated the live tool contract.');
-}
+const raindropEvidence = verifyRaindropOutput(raindropResult.outputs);
 
 Object.assign(evidence, {
   completedAt: new Date().toISOString(),
@@ -120,8 +113,9 @@ Object.assign(evidence, {
   raindrop: {
     runId: raindropRunId,
     state: raindropStatus.state,
-    returnedRecords: bookmarks.length,
-    totalCount
+    returnedRecords: raindropEvidence.returnedCount,
+    totalCount: raindropEvidence.totalCount,
+    recordsSha256: raindropEvidence.recordsSha256
   }
 });
 
