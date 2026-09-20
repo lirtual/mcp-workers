@@ -65,6 +65,23 @@ describe("T08: strict dynamic resource templates", () => {
     }
   });
 
+  it("does not return a rejected user response as a valid profile", async () => {
+    const spy = vi.fn((req: Request) => {
+      expect(new URL(req.url).pathname).toBe("/rest/v1/user");
+      return Response.json({ result: false, user: { email: "invalid@example.test" } });
+    });
+    vi.stubGlobal("fetch", spy);
+    const app = makeService();
+    try {
+      await expect(app.readResource("mcp://user/profile")).rejects.toMatchObject({
+        code: "UPSTREAM_ERROR",
+      });
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      await app.cleanup();
+    }
+  });
+
   it("lists static resources separately from URI templates at the MCP transport boundary", async () => {
     const service = makeService();
     const client = new Client({ name: "v3-resource-contract", version: "1" });
