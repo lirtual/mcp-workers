@@ -60,6 +60,7 @@ jobs:
           node --check apps/raindrop-mcp-worker/scripts/test-direct-mcp.mjs
           node --check apps/raindrop-mcp-worker/scripts/test-direct-mcp-lifecycle.mjs
           node --check apps/raindrop-mcp-worker/scripts/test-direct-mcp-scope.mjs
+          node --check apps/raindrop-mcp-worker/scripts/test-direct-mcp-remainder.mjs
           node --check apps/raindrop-mcp-worker/scripts/test-direct-mcp-nested-trash.mjs
 
       - name: Deploy and probe ONLY the isolated v3 test Worker
@@ -98,6 +99,7 @@ jobs:
           # Never clear Trash or mutate pre-existing user objects.
           node scripts/test-direct-mcp-lifecycle.mjs
           node scripts/test-direct-mcp-scope.mjs
+          node scripts/test-direct-mcp-remainder.mjs
           # Permanent deletion is restricted to one freshly created verified test ID.
           node scripts/test-direct-mcp-nested-trash.mjs
 
