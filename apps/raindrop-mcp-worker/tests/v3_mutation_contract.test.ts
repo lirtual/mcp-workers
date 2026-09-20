@@ -124,6 +124,25 @@ describe("T03: source-scoped Raindrop mutations", () => {
     });
   });
 
+  it.each([
+    ["explicit result=false", () => Response.json({ result: false, error: "validation" }), undefined],
+    ["HTTP 400", () => new Response(null, { status: 400 }), 400],
+  ])("reports %s as a definite failed write, not unknown", async (_label, response, status) => {
+    const spy = fake(response);
+    const result = await service().callTool("raindrop_bulk_delete", {
+      collectionId: 5, ids: [1], confirm: true,
+    });
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      isError: true,
+      structuredContent: {
+        ok: false,
+        error: { code: "UPSTREAM_REJECTED", ...(status === undefined ? {} : { upstreamStatus: status }) },
+        meta: { status: "failed", requestCount: 1 },
+      },
+    });
+  });
+
   it("exposes the contract via the actual MCP Client transport", async () => {
     const spy = fake(async (request) => {
       expect(request.method).toBe("PUT");
