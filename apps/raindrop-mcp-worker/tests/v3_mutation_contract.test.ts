@@ -27,6 +27,7 @@ describe("T03: source-scoped Raindrop mutations", () => {
       meta: { status: "partial", requestedIds: [11, 12], modified: 1, requestCount: 1 },
     });
     expect(result.structuredContent.meta).not.toHaveProperty("succeededIds");
+    expect(result.structuredContent.meta).not.toHaveProperty("operations");
   });
 
   it("previews deletion without upstream work and writes only the selected source after confirm", async () => {
@@ -138,7 +139,7 @@ describe("T03: source-scoped Raindrop mutations", () => {
       structuredContent: {
         ok: false,
         error: { code: "UPSTREAM_REJECTED", ...(status === undefined ? {} : { upstreamStatus: status }) },
-        meta: { status: "failed", requestCount: 1 },
+        meta: { status: "failed", requestCount: 1, requestedIds: [1], scope: { collectionId: 5 } },
       },
     });
   });
