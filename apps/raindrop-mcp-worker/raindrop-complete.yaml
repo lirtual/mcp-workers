@@ -151,8 +151,12 @@ paths:
       parameters:
         - $ref: '#/components/parameters/CollectionId'
       responses:
-        '204':
+        '200':
           description: Collection deleted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultResponse'
         '404':
           $ref: '#/components/responses/NotFoundError'
 
@@ -972,7 +976,6 @@ components:
           description: Collection title
         public:
           type: boolean
-          default: false
           description: Whether collection should be public
         parent:
           type: object
@@ -1040,6 +1043,9 @@ components:
         excerpt:
           type: string
           description: Bookmark description
+        note:
+          type: string
+          description: User notes for the bookmark
         tags:
           type: array
           items:
@@ -1047,7 +1053,6 @@ components:
           description: Array of tags
         important:
           type: boolean
-          default: false
           description: Whether bookmark is important
         collection:
           type: object
@@ -1091,6 +1096,21 @@ components:
             $id:
               type: integer
           description: Target collection reference
+        highlights:
+          type: array
+          items:
+            type: object
+            properties:
+              _id:
+                type: string
+              text:
+                type: string
+              note:
+                type: string
+              color:
+                type: string
+                enum: [blue, brown, cyan, gray, green, indigo, orange, pink, purple, red, teal, yellow]
+          description: One-element v3 highlight mutation payload
         cover:
           type: string
           format: uri
@@ -1455,6 +1475,10 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Highlight'
+        count:
+          type: integer
+          minimum: 0
+          description: Total matching highlights if supplied by upstream
       required:
         - result
         - items
@@ -1649,6 +1673,10 @@ components:
         result:
           type: boolean
           description: Whether the operation was successful
+        modified:
+          type: integer
+          minimum: 0
+          description: Optional upstream batch modification count
       required:
         - result
 
