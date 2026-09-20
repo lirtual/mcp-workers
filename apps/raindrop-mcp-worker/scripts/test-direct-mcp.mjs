@@ -16,6 +16,18 @@ const names = [
 
 const timeoutMs = 15000;
 const cpuProfile = process.env.RAINDROP_V3_CPU_PROFILE === "true";
+if (cpuProfile) {
+  // Refuse to profile any production, Portal or alternate Worker, even if its
+  // /health endpoint also reports v3. This check runs before network requests.
+  const target = new URL(baseUrl);
+  if (target.protocol !== "https:" ||
+      target.hostname !== "raindrop-mcp-worker-v3-test.aiyaya.workers.dev" ||
+      target.port !== "" || (target.pathname !== "/" && target.pathname !== "") ||
+      target.search !== "" || target.hash !== "" ||
+      target.username !== "" || target.password !== "") {
+    throw new Error("CPU probe is restricted to the dedicated isolated v3 test Worker");
+  }
+}
 // A fixed, non-sensitive operation label for Cloudflare invocation-log correlation.
 // The Worker never trusts or reads this diagnostic-only request header.
 function profileLabel(method, params) {
