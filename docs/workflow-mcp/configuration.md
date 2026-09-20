@@ -102,6 +102,8 @@ Only then does the generator add exactly one `* * * * *` Cloudflare Cron.
 Keep the flag set for later ordinary pushes. Set it to `false` (and redeploy)
 to suspend new ticks during recovery. T17 requires a real post-job 09:00
 Asia/Shanghai occurrence, correlated with D1 and MCP evidence.
+Follow [the post-job schedule verification procedure](schedule-verification.md)
+before closing #108.
 
 Never claim a real scheduled occurrence succeeded from compiler tests or a
 manual run. Keep #105–#108 open until their respective acceptance evidence
