@@ -32,7 +32,6 @@ describe('workflow discovery tools', () => {
       'mcp-connection-smoke',
       'raindrop-daily-snapshot',
       'sequential-http-smoke',
-      'trigger-http-smoke',
       'web-archive-smoke'
     ]);
     for (const workflow of data.workflows) {
