@@ -143,7 +143,7 @@ export default {
     const boundedRequest = new Request(portalAuth.request.url, {
       method: portalAuth.request.method,
       headers,
-      body: body.length ? body : null,
+      body: body.length ? (body.buffer as ArrayBuffer) : null,
       signal: portalAuth.request.signal,
     });
     return createHandler(env).fetch(boundedRequest);
