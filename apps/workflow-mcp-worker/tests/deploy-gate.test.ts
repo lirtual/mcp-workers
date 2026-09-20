@@ -59,10 +59,14 @@ describe('Workflow MCP deploy gate contract', () => {
       'GITHUB_ACTIONS_TOKEN',
       'EXECUTOR_LEASE_SECRET',
       'R2_ACCESS_KEY_ID',
-      'R2_SECRET_ACCESS_KEY'
+      'R2_SECRET_ACCESS_KEY',
+      'RAINDROP_MCP_ACCESS_TOKEN'
     ]) {
       expect(workflowText).toContain('secrets.' + secret);
     }
+    expect(workflowText).not.toContain('TRIGGER_SMOKE_WEBHOOK_TOKEN');
+    expect(workflowText).not.toContain('SMOKE_READONLY_MCP_TOKEN');
+    expect(workflowText).not.toContain('SMOKE_MODERN_MCP_ENDPOINT');
     expect(workflowText).not.toContain('openssl rand');
     expect(workflowText).not.toContain('sha256sum');
     expect(workflowText).not.toContain(
