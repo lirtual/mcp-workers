@@ -3,7 +3,7 @@ import type { Prompt } from "@modelcontextprotocol/server";
 import pkg from "../../package.json";
 import { buildToolConfigs } from "../tools/index.js";
 import type { ToolConfig } from "../tools/common.js";
-import { toolFailure } from "../tools/common.js";
+import { ToolEnvelopeSchema, toolFailure } from "../tools/common.js";
 import { EXECUTION_LIMITS } from "./execution-budget.js";
 import { McpError, AuthError, RateLimitError } from "../types/mcpErrors.js";
 import {
@@ -167,7 +167,7 @@ export class RaindropMCPService {
             .replace(/\b\w/g, (l) => l.toUpperCase()),
           description: config.description,
           inputSchema: config.inputSchema,
-          outputSchema: config.outputSchema,
+          outputSchema: config.outputSchema ?? ToolEnvelopeSchema,
           annotations: config.annotations,
         },
         this.asyncHandler(async (args: any, extra: any) =>
@@ -282,7 +282,7 @@ export class RaindropMCPService {
       name: config.name,
       description: config.description,
       inputSchema: config.inputSchema,
-      outputSchema: config.outputSchema || {},
+      outputSchema: config.outputSchema ?? ToolEnvelopeSchema,
     }));
   }
 
