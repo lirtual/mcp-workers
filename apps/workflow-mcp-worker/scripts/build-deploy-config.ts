@@ -74,7 +74,7 @@ config.vars = {
   GITHUB_REPOSITORY_ID: repositoryId,
   R2_ACCOUNT_ID: accountId,
   R2_BUCKET_NAME: r2Bucket,
-  SMOKE_MODERN_MCP_ENDPOINT: `${baseUrl}/mcp`
+  R2_ACCESS_KEY_ID: required('R2_ACCESS_KEY_ID')
 };
 
 await writeFile(outputPath, JSON.stringify(config, null, 2) + '\n', 'utf8');
