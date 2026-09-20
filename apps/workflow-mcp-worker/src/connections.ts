@@ -21,6 +21,21 @@ export interface McpConnection {
 }
 
 const connections = {
+  raindrop: {
+    id: 'raindrop',
+    transport: 'streamable-http',
+    protocolVersion: '2026-07-28',
+    endpoint: 'https://raindrop-mcp-worker.aiyaya.workers.dev/mcp',
+    auth: {
+      header: 'Authorization',
+      format: 'bearer',
+      secret: 'RAINDROP_MCP_ACCESS_TOKEN'
+    },
+    trustAnnotations: false,
+    tools: {
+      list_raindrops: { effect: 'read' }
+    }
+  },
   'smoke-readonly': {
     id: 'smoke-readonly',
     transport: 'streamable-http',
