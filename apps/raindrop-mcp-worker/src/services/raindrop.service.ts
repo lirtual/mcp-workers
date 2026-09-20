@@ -948,6 +948,18 @@ export default class RaindropService {
    * Empty trash
    * Raindrop.io API: DELETE /raindrops/-99
    */
+  /** Official Trash endpoint; unlike the legacy helper this is not a batch bookmark delete. */
+  async emptyTrashV3(): Promise<void> {
+    const { data } = await this.withWriteRateLimit<any>(() =>
+      (this.client as any).DELETE("/collection/-99"),
+    );
+    if (data?.result !== true) {
+      throw new UpstreamError("Trash empty acknowledgement is missing");
+    }
+    this.cacheBookmarks.clear();
+    this.cacheSearch.clear();
+  }
+
   async emptyTrash(): Promise<boolean> {
     return this.batchDeleteBookmarksInCollection(-99);
   }
@@ -1152,6 +1164,7 @@ export default class RaindropService {
         result?: boolean;
         items?: Array<{ _id?: number; count?: number }>;
         pro?: boolean;
+        meta?: { pro?: boolean };
       } | undefined;
       if (!payload || payload.result === false || !Array.isArray(payload.items)) {
         throw new UpstreamError("Raindrop user statistics are unavailable");
@@ -1166,7 +1179,8 @@ export default class RaindropService {
         collections: null,
         highlights: null,
         tags: null,
-        pro: typeof payload.pro === "boolean" ? payload.pro : null,
+        pro: typeof payload.meta?.pro === "boolean" ? payload.meta.pro :
+          typeof payload.pro === "boolean" ? payload.pro : null,
       };
     });
   }
