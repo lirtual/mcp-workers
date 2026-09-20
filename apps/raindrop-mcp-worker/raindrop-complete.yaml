@@ -1237,17 +1237,18 @@ components:
     TagOperationRequest:
       type: object
       properties:
-        from:
-          type: string
-          description: Original tag name (for rename operation)
-        to:
-          type: string
-          description: New tag name
         tags:
           type: array
+          minItems: 1
           items:
             type: string
-          description: Array of tag names (for merge operation)
+          description: Exact source tag names to rename or merge
+        replace:
+          type: string
+          description: New tag name used for rename or merge
+      required:
+        - tags
+        - replace
 
     ImportBookmarksRequest:
       type: object
