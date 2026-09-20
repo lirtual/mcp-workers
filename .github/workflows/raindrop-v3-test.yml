@@ -1,0 +1,63 @@
+name: Raindrop v3 Isolated Test Deploy
+
+on:
+  push:
+    branches:
+      - feat/raindrop-v3-core-reliability
+    paths:
+      - .github/workflows/raindrop-v3-test.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: raindrop-mcp-worker-v3-test
+  cancel-in-progress: false
+
+jobs:
+  deploy-test-only:
+    name: Deploy isolated v3 test Worker
+    environment: workflow-mcp-worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: 8bb496011403552e785ea1b834daffdf
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Verify isolated deploy credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]]; then
+            echo "::error::Cloudflare deployment credential unavailable in the restricted environment"
+            exit 1
+          fi
+
+      - name: Install workspace
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Check v3 application
+        run: pnpm --filter raindrop-mcp-worker check
+
+      - name: Deploy ONLY the isolated test Worker
+        working-directory: apps/raindrop-mcp-worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm exec wrangler deploy --name raindrop-mcp-worker-v3-test
+          echo "Isolated target: raindrop-mcp-worker-v3-test"
+          echo "The production raindrop-mcp-worker is not a deploy target."
