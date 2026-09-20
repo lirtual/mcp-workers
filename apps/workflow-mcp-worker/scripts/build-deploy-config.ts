@@ -23,6 +23,26 @@ const d1Name = required('WORKFLOW_MCP_D1_DATABASE_NAME');
 const d1Id = required('WORKFLOW_MCP_D1_DATABASE_ID');
 const r2Bucket = required('WORKFLOW_MCP_R2_BUCKET');
 const baseUrl = required('WORKFLOW_MCP_URL').replace(/\/+$/, '');
+const repository = required('GITHUB_REPOSITORY');
+const repositoryId = required('GITHUB_REPOSITORY_ID');
+const accountId = required('CLOUDFLARE_ACCOUNT_ID');
+if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
+  throw new Error('GITHUB_REPOSITORY must be the checkout owner/repository.');
+}
+if (!/^[1-9][0-9]*$/.test(repositoryId)) {
+  throw new Error('GITHUB_REPOSITORY_ID must be a positive repository ID.');
+}
+if (!/^[a-f0-9]{32}$/i.test(accountId)) {
+  throw new Error('CLOUDFLARE_ACCOUNT_ID must be a 32-character Cloudflare account ID.');
+}
+if (!/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(r2Bucket)) {
+  throw new Error('WORKFLOW_MCP_R2_BUCKET must be a valid R2 bucket name.');
+}
+const parsedUrl = new URL(baseUrl);
+if (parsedUrl.protocol !== 'https:' || parsedUrl.username || parsedUrl.password ||
+    parsedUrl.search || parsedUrl.hash) {
+  throw new Error('WORKFLOW_MCP_URL must be an HTTPS URL without credentials or query.');
+}
 
 config.name = workerName;
 config.workers_dev = true;
@@ -46,8 +66,9 @@ config.triggers = { crons: [] };
 config.r2_buckets = [{ binding: 'ARTIFACTS', bucket_name: r2Bucket }];
 config.vars = {
   ...(config.vars ?? {}),
-  GITHUB_EXECUTOR_REF: 'main',
-  GITHUB_EXECUTOR_WORKFLOW: 'workflow-executor.yml',
+  GITHUB_REPOSITORY: repository,
+  GITHUB_REPOSITORY_ID: repositoryId,
+  R2_ACCOUNT_ID: accountId,
   R2_BUCKET_NAME: r2Bucket,
   SMOKE_MODERN_MCP_ENDPOINT: `${baseUrl}/mcp`
 };
