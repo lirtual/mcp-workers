@@ -3,6 +3,7 @@ import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
 import { createMcpHandler } from "@modelcontextprotocol/server";
 import pkg from "../package.json";
 import { RaindropMCPService } from "./services/raindropmcp.service.js";
+import { EXECUTION_LIMITS, readBounded } from "./services/execution-budget.js";
 import { createLogger } from "./utils/logger.js";
 
 interface Env {
@@ -15,7 +16,7 @@ const logger = createLogger("worker");
 
 const parseMaxReadRetries = (value: string | undefined): number => {
   const parsed = Number(value ?? "3");
-  return Number.isInteger(parsed) && parsed >= 0 ? parsed : 3;
+  return Number.isInteger(parsed) && parsed >= 0 ? Math.min(3, parsed) : 3;
 };
 
 const createHandler = (env: Env) =>
@@ -29,7 +30,7 @@ const createHandler = (env: Env) =>
     {
       legacy: "stateless",
       responseMode: "auto",
-      onerror: (error) => logger.error("MCP handler error", error),
+      onerror: () => logger.error("MCP handler error"),
     },
   );
 
@@ -68,7 +69,6 @@ export default {
         service: "raindrop-mcp-worker",
         version: pkg.version,
         runtime: "cloudflare-workers",
-        protocolTarget: "2026-07-28",
         httpMode: "per-request",
       });
     }
@@ -127,6 +127,25 @@ export default {
 
     // The shared Portal auth boundary removes the ingress Authorization header
     // before the request reaches the MCP SDK or any Raindrop tool/service code.
-    return createHandler(env).fetch(portalAuth.request);
+    // Check actual streamed bytes: Content-Length is untrusted and may be absent.
+    // Keep authentication and the empty compatibility probe ahead of this read.
+    let body: Uint8Array;
+    try {
+      body = await readBounded(
+        portalAuth.request.body,
+        EXECUTION_LIMITS.requestBytes,
+      );
+    } catch {
+      return jsonError(413, "REQUEST_TOO_LARGE", "MCP request exceeds 128 KiB.");
+    }
+    const headers = new Headers(portalAuth.request.headers);
+    headers.delete("content-length");
+    const boundedRequest = new Request(portalAuth.request.url, {
+      method: portalAuth.request.method,
+      headers,
+      body: body.length ? body : null,
+      signal: portalAuth.request.signal,
+    });
+    return createHandler(env).fetch(boundedRequest);
   },
 };
