@@ -2,59 +2,48 @@ import { describe, expect, it } from "vitest";
 import { RaindropMCPService } from "../src/services/raindropmcp.service.js";
 
 const EXPECTED_TOOL_NAMES = [
-  "bookmark_manage",
-  "bookmark_search",
-  "bulk_edit_raindrops",
-  "cleanup_collections",
-  "collection_create",
-  "collection_delete",
-  "collection_get",
+  "raindrop_list",
+  "raindrop_get",
+  "raindrop_create",
+  "raindrop_update",
+  "raindrop_delete",
+  "raindrop_bulk_update",
+  "raindrop_bulk_delete",
+  "raindrop_suggest",
   "collection_list",
   "collection_tree",
+  "collection_get",
+  "collection_create",
   "collection_update",
-  "collection_manage",
-  "diagnostics",
-  "duplicates_delete",
-  "empty_trash",
-  "get_collection_tree",
-  "get_raindrop",
-  "get_suggestions",
-  "highlight_create",
-  "highlight_delete",
-  "highlight_list",
-  "highlight_manage",
-  "highlight_update",
-  "library_audit",
-  "list_raindrops",
-  "raindrop_bulk_delete",
-  "raindrop_bulk_update",
-  "raindrop_create",
-  "raindrop_delete",
-  "raindrop_get",
-  "raindrop_list",
-  "raindrop_suggest",
-  "raindrop_update",
-  "remove_duplicates",
-  "suggest_tags",
-  "tag_delete",
+  "collection_delete",
   "tag_list",
-  "tag_manage",
-  "tag_merge",
   "tag_rename",
+  "tag_merge",
+  "tag_delete",
+  "highlight_list",
+  "highlight_create",
+  "highlight_update",
+  "highlight_delete",
+  "library_audit",
+  "duplicates_delete",
   "trash_empty",
+  "diagnostics",
 ].sort();
 
-describe("Raindrop MCP capability contract", () => {
-  it("tracks the transitional 40-tool set until final 26-tool cutover", async () => {
+describe("Raindrop MCP v3 public contract", () => {
+  it("exposes exactly the approved 26 tools with no legacy alias", async () => {
     const service = new RaindropMCPService({ accessToken: "test-token" });
-
     try {
       const tools = await service.listTools();
       const actual = tools.map((tool) => tool.id).sort();
-
       expect(actual).toEqual(EXPECTED_TOOL_NAMES);
-      expect(actual).toHaveLength(40);
+      expect(new Set(actual).size).toBe(26);
+      expect(actual).toHaveLength(26);
       expect(actual).toContain("diagnostics");
+      for (const tool of tools) {
+        expect(tool.inputSchema).toBeDefined();
+        expect(tool.outputSchema).toBeDefined();
+      }
     } finally {
       await service.cleanup();
     }
