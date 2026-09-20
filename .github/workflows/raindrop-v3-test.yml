@@ -88,6 +88,7 @@ jobs:
 
           export MCP_ACCESS_TOKEN="$mcp_token"
           export RAINDROP_V3_TEST_URL="https://raindrop-mcp-worker-v3-test.aiyaya.workers.dev"
+          # Bounded authentication-propagation retry is read-only; never replay writes.
           # Direct HTTPS/JSON-RPC over /mcp, not Portal; only read-only actions.
           node scripts/test-direct-mcp.mjs
           # Run live reads first, then test only run-owned tag/highlight/bulk changes.
