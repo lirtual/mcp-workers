@@ -19,7 +19,7 @@ describe("RaindropService retry safety", () => {
     const service = new RaindropService({ accessToken: "test-token", maxReadRetries: 1 });
     (service as any).rateLimiter = undefined;
 
-    await expect(service.createCollection("one-shot")).rejects.toThrow(
+    await expect(service.createCollectionV3("one-shot")).rejects.toThrow(
       "API Error: 500 Internal Server Error",
     );
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -36,7 +36,7 @@ describe("RaindropService retry safety", () => {
         }),
       )
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ items: [] }), {
+        new Response(JSON.stringify({ result: true, items: [] }), {
           status: 200,
           headers: { "content-type": "application/json" },
         }),
@@ -46,11 +46,11 @@ describe("RaindropService retry safety", () => {
     const service = new RaindropService({ accessToken: "test-token", maxReadRetries: 1 });
     (service as any).rateLimiter = undefined;
 
-    const resultPromise = service.getCollections(true);
+    const resultPromise = service.listCollectionsV3();
     await vi.runAllTimersAsync();
 
     await expect(resultPromise).resolves.toEqual([]);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it("does not retry a read before a Retry-After that exceeds its budget", async () => {
@@ -65,7 +65,7 @@ describe("RaindropService retry safety", () => {
     const service = new RaindropService({ accessToken: "test-token", maxReadRetries: 1 });
     (service as any).rateLimiter = undefined;
 
-    await expect(service.getCollections(true)).rejects.toThrow(
+    await expect(service.listCollectionsV3()).rejects.toThrow(
       /exceeds remaining read retry budget/,
     );
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -83,7 +83,7 @@ describe("RaindropService retry safety", () => {
     const service = new RaindropService({ accessToken: "test-token", maxReadRetries: 1 });
     (service as any).rateLimiter = undefined;
 
-    await expect(service.createCollection("one-shot")).rejects.toThrow(
+    await expect(service.createCollectionV3("one-shot")).rejects.toThrow(
       /Rate limited by Raindrop.io/,
     );
     expect(fetchMock).toHaveBeenCalledTimes(1);
