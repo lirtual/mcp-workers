@@ -55,7 +55,7 @@ describe('Workflow MCP deploy configuration expansion', () => {
       ['GITHUB_REPOSITORY_ID', 'not-an-id'],
       ['CLOUDFLARE_ACCOUNT_ID', 'wrong-account'],
       ['WORKFLOW_MCP_R2_BUCKET', 'Invalid_Bucket']
-    ]) {
+    ] as const) {
       const { execution, config } = await generate({ [name]: value });
       expect(execution.status, name).not.toBe(0);
       expect(config, name).toBeUndefined();
