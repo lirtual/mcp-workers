@@ -343,6 +343,7 @@ export default class RaindropService {
       const { data } = await this.client.GET("/collection/{id}", {
         params: { path: { id } },
       });
+      if (data?.result === false) throw new UpstreamError("Collection detail was rejected");
       if (!data?.item) throw new NotFoundError("Collection not found");
       return data.item as Collection;
     });
@@ -479,6 +480,7 @@ export default class RaindropService {
       const { data } = await this.client.GET("/raindrop/{id}", {
         params: { path: { id } },
       });
+      if (data?.result === false) throw new UpstreamError("Bookmark detail was rejected");
       if (!data?.item) throw new NotFoundError("Bookmark not found");
       return data.item as any as Bookmark;
     });
@@ -499,7 +501,7 @@ export default class RaindropService {
         const { data } = await this.client.GET("/raindrop/{id}/suggest", {
           params: { path: { id: target } },
         });
-        if (!data) throw new UpstreamError("Suggestions response is missing");
+        if (!data || data.result === false) throw new UpstreamError("Suggestions response is missing or rejected");
         return data as components["schemas"]["SuggestionsResponse"];
       });
     }
@@ -508,7 +510,7 @@ export default class RaindropService {
       const { data } = await this.client.POST("/raindrop/suggest", {
         body: { link: target },
       });
-      if (!data) throw new UpstreamError("Suggestions response is missing");
+      if (!data || data.result === false) throw new UpstreamError("Suggestions response is missing or rejected");
       return data as components["schemas"]["SuggestionsResponse"];
     });
   }
@@ -630,10 +632,6 @@ export default class RaindropService {
     });
   }
 
-  /**
-   * Fetch highlights for a specific bookmark
-   * Raindrop.io API: GET /raindrop/{id}/highlights
-   */
   /**
    * Fetch one official highlight page. Never infer all highlights from one
    * bookmark-list page; a single bookmark is handled by its detail endpoint.
