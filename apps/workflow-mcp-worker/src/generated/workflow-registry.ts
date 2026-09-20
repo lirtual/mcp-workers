@@ -72,12 +72,12 @@ export const workflowRegistry = [
   },
   {
     "sourcePath": "workflows/mcp-connection-smoke.yaml",
-    "definitionDigest": "77d0571cced4750a8c7fff7a2ad47a4fe55072a409f28a8234f04c21b70c0364",
+    "definitionDigest": "0352a00bd84ee4f6f4f2daa8f34575c54bdf911a8a2c765f8369259a7238c6ef4",
     "metadata": {
       "id": "mcp-connection-smoke",
       "name": "MCP connection smoke",
       "description": "Call one configured read-only MCP tool through the generic MCP adapter.",
-      "definitionDigest": "77d0571cced4750a8c7fff7a2ad47a4fe55072a409f28a8234f04c21b70c0364",
+      "definitionDigest": "0352a00bd84ee4f6f4f2daa8f34575c54bdf911a8a2c765f8369259a7238c6ef4",
       "triggerTypes": [
         "manual"
       ],
@@ -103,7 +103,7 @@ export const workflowRegistry = [
           "executor": "cloudflare",
           "needs": [],
           "with": {
-            "connection": "smoke-modern",
+            "connection": "workflow-self",
             "tool": "workflow_list",
             "arguments": {}
           }
