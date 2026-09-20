@@ -257,3 +257,36 @@ describe("request budget concurrency", () => {
     expect(maximum).toBeLessThanOrEqual(limit);
   });
 });
+
+describe("bounded response and definite write errors", () => {
+  it("times out when an upstream response body stalls after HTTP headers", async () => {
+    vi.useFakeTimers();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([123]));
+      },
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(stream, { status: 200 })));
+    const budget = new ExecutionBudget();
+    const pending = budget.fetch(new Request("https://api.raindrop.io/rest/v1/collections"));
+    const assertion = expect(pending).rejects.toThrow(/timed out|aborted/i);
+    await vi.advanceTimersByTimeAsync(EXECUTION_LIMITS.fetchMs + 1);
+    await assertion;
+    expect(budget.requestCount).toBe(1);
+  });
+
+  it.each([401, 403, 404])("reports a submitted write with definitive HTTP %i as failed", async (status) => {
+    const fetchMock = vi.fn(async () => new Response(null, { status }));
+    vi.stubGlobal("fetch", fetchMock);
+    const service = new RaindropMCPService({ accessToken: "fake", maxReadRetries: 0 });
+    const result = await service.callTool("collection_manage", {
+      operation: "create",
+      title: "isolated-test-only",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.structuredContent).toMatchObject({
+      ok: false,
+      meta: { status: "failed", requestCount: 1 },
+    });
+  });
+});
