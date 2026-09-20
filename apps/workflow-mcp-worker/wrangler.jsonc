@@ -26,7 +26,7 @@
   ],
   "workflows": [
     {
-      "name": "workflow-mcp-runtime",
+      "name": "workflow-mcp-worker-runtime",
       "binding": "WORKFLOW",
       "class_name": "WorkflowRuntime"
     }
