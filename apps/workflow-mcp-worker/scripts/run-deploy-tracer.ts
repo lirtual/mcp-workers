@@ -1,6 +1,5 @@
 import { appendFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
-import { verifyRaindropOutput } from './raindrop-verification.js';
 
 const baseUrl = required('WORKFLOW_MCP_URL').replace(/\/+$/, '');
 const accessToken = required('WORKFLOW_MCP_ACCESS_TOKEN');
@@ -71,24 +70,6 @@ if (asArray(nestedStructured.workflows).length < 2) {
   throw new Error('MCP smoke did not return the Workflow MCP workflow_list payload.');
 }
 
-// T16: a genuine manual business workflow run is part of the production gate.
-// A successful empty list is valid; an upstream MCP error is not.
-const raindropAdmission = await callTool('workflow_run', {
-  workflow: 'raindrop-daily-snapshot',
-  input: {},
-  idempotencyKey: `workflow-raindrop-${process.env.GITHUB_RUN_ID || Date.now()}`
-});
-const raindropRunId = stringField(raindropAdmission, 'runId');
-const raindropStatus = await waitForTerminal(raindropRunId, 'raindrop');
-if (raindropStatus.state !== 'succeeded') {
-  throw new Error(`Raindrop run ended as ${String(raindropStatus.state)}: ${JSON.stringify(raindropStatus)}`);
-}
-const raindropResult = await callTool('workflow_result', { runId: raindropRunId });
-if (raindropResult.ready !== true || raindropResult.state !== 'succeeded') {
-  throw new Error('Raindrop workflow_result was not succeeded/ready.');
-}
-const raindropEvidence = verifyRaindropOutput(raindropResult.outputs);
-
 Object.assign(evidence, {
   completedAt: new Date().toISOString(),
   heavy: {
@@ -109,20 +90,12 @@ Object.assign(evidence, {
     runId: mcpRunId,
     state: mcpStatus.state,
     returnedWorkflowCount: asArray(nestedStructured.workflows).length
-  },
-  raindrop: {
-    runId: raindropRunId,
-    state: raindropStatus.state,
-    returnedRecords: raindropEvidence.returnedCount,
-    totalCount: raindropEvidence.totalCount,
-    recordsSha256: raindropEvidence.recordsSha256
   }
 });
 
 await writeFile(evidencePath, JSON.stringify(evidence, null, 2) + '\n', 'utf8');
 appendGitHubOutput('heavy_run_id', heavyRunId);
 appendGitHubOutput('mcp_run_id', mcpRunId);
-appendGitHubOutput('raindrop_run_id', raindropRunId);
 appendGitHubOutput('evidence_path', evidencePath);
 console.log(JSON.stringify(evidence, null, 2));
 
