@@ -23,37 +23,50 @@ The generator rejects missing, malformed, or wrong-repository context before Wra
 Keep the D1 database ID, Worker name, R2 bucket and callback base URL tied to
 the same real deployment. Do not manually edit the generated file.
 
-## Pending production contract migration (T15)
+## Code-level contract (PR #125; production cutover pending)
 
-Four *independent, stable* platform secrets are required:
-`MCP_ACCESS_TOKEN`, `GITHUB_ACTIONS_TOKEN` (repository-scoped fine-grained
-Actions token), `EXECUTOR_LEASE_SECRET`, and `R2_SECRET_ACCESS_KEY`.
-`R2_ACCESS_KEY_ID` is the separate required non-secret credential identifier.
-Provision the credentials as protected GitHub environment secrets
-for deployment and Cloudflare Worker secrets. The Actions token is **not**
-the deploy job's ephemeral `github.token`. Never print credentials or upload
-the generated secret file as deployment evidence.
+The code-level platform baseline declares four **independent** Worker Secrets:
+`MCP_ACCESS_TOKEN`, `EXECUTOR_LEASE_SECRET`, `GITHUB_ACTIONS_TOKEN`
+(repository-scoped long-lived authorization), and `R2_SECRET_ACCESS_KEY`.
+`R2_ACCESS_KEY_ID` is still required by the S3 presigner but is a **non-secret**
+identifier supplied by the protected GitHub deployment environment variable
+`R2_ACCESS_KEY_ID` and compiled into a normal Worker `vars` binding. It must
+match its independently provisioned `R2_SECRET_ACCESS_KEY`. No runtime credential
+may be regenerated on an ordinary deployment or copied to CI just to pass tests.
+The GitHub Actions `github.token` cannot replace the Worker's long-lived
+`GITHUB_ACTIONS_TOKEN`.
 
-During the Expand phase, existing smoke-only connections and webhook secrets
-remain valid. Removing them requires migrating workflow definitions and tracer
-verification first; avoid leaving registered workflows with missing Connection
-references. R2 remains a direct runner-to-R2 signed upload/download path.
+The default deploy checks required configuration and the **names** of persisted
+Worker Secrets, runs the app checks and compatibility gate, deploys without a
+`--secrets-file`, and verifies `/health` plus an unauthenticated `/mcp`
+rejection. The dedicated webhook smoke fixture is local to tests, and the
+optional manual MCP self-connection uses the same `MCP_ACCESS_TOKEN`, not a
+second production smoke token. Full authenticated MCP, GitHub Claim/OIDC and
+R2 verification is explicitly initiated separately, using an authorized test
+context and `scripts/run-deploy-tracer.ts`.
 
-Keep credential values unchanged across ordinary deployments. Explicit rotation
-must consider connected MCP clients, in-flight Claims, leases, pending callbacks,
-and presigned artifact transfers; coordinate cutover and use a verified release
-rather than regenerating secret values on each push.
+Before production deployment, #123 requires an explicit operator-approved
+provisioning/cutover: align the seven separate Worker
+`MCP_ACCESS_TOKEN` bindings and update clients, provision the independent
+persistent Workflow platform credentials, convert the legacy
+`R2_ACCESS_KEY_ID` Secret into the non-secret deployment variable, and
+safely remove obsolete smoke-only bindings **after** the new registry and
+compatibility checks are accepted. The deployment intentionally fails closed if
+the GitHub environment's R2 access ID is absent, a required runtime Secret is
+missing, or a legacy conflicting `R2_ACCESS_KEY_ID` Secret remains. Do not
+remove or rotate a live token merely because this code branch exists.
 
-## Release and activation gate
+See [the full spec](runtime-config-simplification-spec.md),
+[the operator runbook](shared-mcp-token-cutover.md), and
+[ADR 0028](../adr/0028-share-single-user-mcp-entry-token-and-minimize-runtime-configuration.md)
+for dependent-client coordination and rollback. Preserve the checked-in
+`* * * * *` Cron. Do not confuse this scheduler tick with an observed 09:00
+business occurrence; #108 verifies that occurrence separately.
 
-The initial migration is **not** complete merely because the generated config
-builds. T15 must pass two successive production deployments with stable
-credentials, compatibility checks and both real heavy/MCP tracers. Then T16
-must prove a manual Raindrop result; T17 owns independently observing a real
-post-job 09:00 Asia/Shanghai occurrence. T14 already preserves the one-minute
-Cron in generated config. Production deployment and credential migration remain
-blocked until the independent release gates are satisfied.
+## Acceptance boundary
 
-Never claim a real scheduled occurrence succeeded from compiler tests or a
-manual run. Keep #105–#108 open until their respective acceptance evidence
-exists.
+#105, #121, #122 and #106 are code/configuration slices. Only #123 covers
+an **explicitly authorized live** migration and actual post-job acceptance;
+#107 and #108 remain separate business verification. A green code-only CI run
+does not establish that seven live Secret values match, that the GitHub
+runtime credential works after CI exits, or that any schedule executed.
