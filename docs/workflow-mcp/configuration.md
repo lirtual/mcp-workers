@@ -66,6 +66,29 @@ must consider connected MCP clients, in-flight Claims, leases, pending callbacks
 and presigned artifact transfers; coordinate cutover and use a verified release
 rather than regenerating secret values on each push.
 
+## Explicit Raindrop manual acceptance
+
+After five stable platform secrets and the separate
+`RAINDROP_MCP_ACCESS_TOKEN` are provisioned consistently in the protected
+GitHub environment, use the existing **Workflow MCP Deploy** manual dispatch
+with `verify_raindrop_manual=true` and
+`WORKFLOW_MCP_ENABLE_SCHEDULE=false` (default). This verifies the heavy
+GitHub→R2 and self-MCP release tracers first, then admits a real manual
+`raindrop-daily-snapshot` Run. It checks `workflow_list`/`workflow_get`
+digest, `workflow_status` provenance and terminal success,
+`workflow_result` structured outputs (0–20 returned items, separate upstream
+total), and `workflow_logs`. The summary and artifact
+`workflow-mcp-raindrop-evidence.json` contain Run ID, version/digest,
+timestamps, counts and SHA-256 of the actual records; **bookmark titles, URLs,
+secrets, and signed URLs are not printed**. The real record set remains
+available from authenticated `workflow_result`.
+
+The verifier can also be invoked independently with
+`pnpm --filter workflow-mcp-worker release:raindrop-manual` when
+`WORKFLOW_MCP_URL` and `WORKFLOW_MCP_ACCESS_TOKEN` are supplied securely.
+It does not activate Cron or mutate bookmarks; upstream failures keep the
+manual acceptance open. Do not claim T16 success from compiled fixtures.
+
 ## Release and activation gate
 
 The initial migration is **not** complete merely because the generated config
