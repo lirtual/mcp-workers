@@ -252,7 +252,7 @@ export default class RaindropService {
    */
   async listCollectionsV3(): Promise<Collection[]> {
     const read = async (endpoint: "/collections" | "/collections/childrens") => {
-      const { data } = await this.withRateLimit(() =>
+      const { data } = await this.withRateLimit<any>(() =>
         (this.client as any).GET(endpoint),
       );
       if (data?.result !== true || !Array.isArray(data.items)) {
@@ -286,7 +286,7 @@ export default class RaindropService {
     title: string,
     parent?: { $id: number },
   ): Promise<Collection> {
-    const { data } = await this.withWriteRateLimit(() =>
+    const { data } = await this.withWriteRateLimit<any>(() =>
       (this.client as any).POST("/collection", {
         body: { title, ...(parent === undefined ? {} : { parent }) },
       }),
@@ -302,7 +302,7 @@ export default class RaindropService {
     id: number,
     updates: { title?: string; parent?: { $id: number } | null },
   ): Promise<Collection> {
-    const { data } = await this.withWriteRateLimit(() =>
+    const { data } = await this.withWriteRateLimit<any>(() =>
       (this.client as any).PUT("/collection/{id}", {
         params: { path: { id } },
         body: updates,
@@ -316,7 +316,7 @@ export default class RaindropService {
   }
 
   async deleteCollectionV3(id: number): Promise<void> {
-    const { data } = await this.withWriteRateLimit(() =>
+    const { data } = await this.withWriteRateLimit<any>(() =>
       (this.client as any).DELETE("/collection/{id}", {
         params: { path: { id } },
       }),
