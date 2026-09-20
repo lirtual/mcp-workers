@@ -22,6 +22,7 @@ export interface WorkflowDeployContext {
   CLOUDFLARE_ACCOUNT_ID: string;
   GITHUB_REPOSITORY: string;
   GITHUB_REPOSITORY_ID: string;
+  R2_ACCESS_KEY_ID: string;
 }
 
 const ACCOUNT_ID = /^[a-f0-9]{32}$/i;
@@ -38,7 +39,8 @@ export function readWorkflowDeployContext(
     WORKFLOW_MCP_URL: required(env, 'WORKFLOW_MCP_URL'),
     CLOUDFLARE_ACCOUNT_ID: required(env, 'CLOUDFLARE_ACCOUNT_ID'),
     GITHUB_REPOSITORY: required(env, 'GITHUB_REPOSITORY'),
-    GITHUB_REPOSITORY_ID: required(env, 'GITHUB_REPOSITORY_ID')
+    GITHUB_REPOSITORY_ID: required(env, 'GITHUB_REPOSITORY_ID'),
+    R2_ACCESS_KEY_ID: required(env, 'R2_ACCESS_KEY_ID')
   };
 }
 
@@ -118,7 +120,8 @@ export function buildWorkflowDeployConfig(
       GITHUB_REPOSITORY: context.GITHUB_REPOSITORY,
       GITHUB_REPOSITORY_ID: context.GITHUB_REPOSITORY_ID,
       R2_ACCOUNT_ID: context.CLOUDFLARE_ACCOUNT_ID,
-      R2_BUCKET_NAME: context.WORKFLOW_MCP_R2_BUCKET
+      R2_BUCKET_NAME: context.WORKFLOW_MCP_R2_BUCKET,
+      R2_ACCESS_KEY_ID: context.R2_ACCESS_KEY_ID
     }
   };
 }

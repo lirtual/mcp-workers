@@ -15,7 +15,8 @@ const validContext = {
   WORKFLOW_MCP_URL: 'https://workflow-mcp-worker.aiyaya.workers.dev',
   CLOUDFLARE_ACCOUNT_ID: '8bb496011403552e785ea1b834daffdf',
   GITHUB_REPOSITORY: 'lirtual/mcp-workers',
-  GITHUB_REPOSITORY_ID: '1371085786'
+  GITHUB_REPOSITORY_ID: '1371085786',
+  R2_ACCESS_KEY_ID: 'r2-access-key-id'
 };
 
 async function sourceConfig(): Promise<WranglerDeployConfig> {
@@ -31,7 +32,8 @@ describe('Workflow MCP deploy configuration expansion', () => {
       GITHUB_REPOSITORY: 'lirtual/mcp-workers',
       GITHUB_REPOSITORY_ID: '1371085786',
       R2_ACCOUNT_ID: '8bb496011403552e785ea1b834daffdf',
-      R2_BUCKET_NAME: 'workflow-mcp-artifacts'
+      R2_BUCKET_NAME: 'workflow-mcp-artifacts',
+      R2_ACCESS_KEY_ID: 'r2-access-key-id'
     });
     expect(config.vars).not.toHaveProperty('GITHUB_OIDC_ISSUER');
     expect(config.vars).not.toHaveProperty('GITHUB_EXECUTOR_REF');
@@ -42,7 +44,6 @@ describe('Workflow MCP deploy configuration expansion', () => {
         'MCP_ACCESS_TOKEN',
         'EXECUTOR_LEASE_SECRET',
         'GITHUB_ACTIONS_TOKEN',
-        'R2_ACCESS_KEY_ID',
         'R2_SECRET_ACCESS_KEY'
       ]
     });
