@@ -60,6 +60,7 @@ jobs:
           node --check apps/raindrop-mcp-worker/scripts/test-direct-mcp.mjs
           node --check apps/raindrop-mcp-worker/scripts/test-direct-mcp-lifecycle.mjs
           node --check apps/raindrop-mcp-worker/scripts/test-direct-mcp-scope.mjs
+          node --check apps/raindrop-mcp-worker/scripts/test-direct-mcp-nested-trash.mjs
 
       - name: Deploy and probe ONLY the isolated v3 test Worker
         working-directory: apps/raindrop-mcp-worker
@@ -96,5 +97,7 @@ jobs:
           # Never clear Trash or mutate pre-existing user objects.
           node scripts/test-direct-mcp-lifecycle.mjs
           node scripts/test-direct-mcp-scope.mjs
+          # Permanent deletion is restricted to one freshly created verified test ID.
+          node scripts/test-direct-mcp-nested-trash.mjs
 
-          echo "Direct isolated v3 MCP smoke, owned lifecycle and cross-collection scope completed (no account contents or secrets logged)."
+          echo "Direct isolated v3 MCP smoke, owned lifecycle and cross-collection scope and exact test-owned Trash deletion completed (no account contents or secrets logged)."
