@@ -163,6 +163,18 @@ describe('GitHub executor dispatch', () => {
     expect(classifyCancellationRunFacts([])).toBe('unresolved');
   });
 
+  it('ignores dashboard overrides for the pinned executor workflow/ref', () => {
+    const altered = {
+      ...env,
+      GITHUB_EXECUTOR_WORKFLOW: 'untrusted.yml',
+      GITHUB_EXECUTOR_REF: 'untrusted'
+    } as Env;
+    expect(githubExecutorTrust(altered)).toMatchObject({
+      workflowRef: 'lirtual/mcp-workers/.github/workflows/workflow-executor.yml@refs/heads/main',
+      ref: 'refs/heads/main'
+    });
+  });
+
   it('derives the OIDC trust policy from server configuration', () => {
     expect(githubExecutorTrust(env)).toEqual({
       repositoryId: '1371085786',
