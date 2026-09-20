@@ -50,7 +50,6 @@ jobs:
       WORKFLOW_MCP_R2_BUCKET: ${{ vars.WORKFLOW_MCP_R2_BUCKET || 'workflow-mcp-artifacts' }}
       WORKFLOW_MCP_URL: ${{ vars.WORKFLOW_MCP_URL || 'https://workflow-mcp-worker.aiyaya.workers.dev' }}
       WORKFLOW_MCP_SOURCE_URL: ${{ inputs.source_url }}
-      WORKFLOW_MCP_GITHUB_ACTIONS_TOKEN: ${{ github.token }}
       WORKFLOW_MCP_EVIDENCE_PATH: ${{ github.workspace }}/workflow-mcp-evidence.json
       R2_ACCESS_KEY_ID: ${{ vars.R2_ACCESS_KEY_ID }}
     steps:
