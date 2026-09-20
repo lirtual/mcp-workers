@@ -72,22 +72,24 @@ describeLive("T09 real-account read-only MCP smoke (never changes existing data)
     expect(content && "text" in content && typeof content.text === "string").toBe(true);
   });
 
-  it("validates the duplicate/broken filter without assuming a plan entitlement", async () => {
-    for (const kind of ["duplicates", "broken"] as const) {
+  it.each(["duplicates", "broken"] as const)(
+    "checks the %s filter without inferring semantics or plan access",
+    async (kind, context) => {
       const result = await client.callTool({
         name: "library_audit",
         arguments: { kind, collectionId: 0, page: 0, perpage: 1 },
       });
       if (result.isError === true) {
         const error = result.structuredContent?.error as { code?: string } | undefined;
-        // A genuine non-Pro or unknown entitlement is a recorded limitation,
-        // not an empty successful search result or an excuse to mutate data.
         if (error?.code === "FEATURE_UNAVAILABLE" || error?.code === "FEATURE_UNVERIFIED") {
-          continue;
+          // Report the blocked capability separately, rather than turning a
+          // subscription limitation into a false passing assertion.
+          context.skip();
+          return;
         }
       }
       expect(result.isError === true).toBe(false);
       expect(result.structuredContent?.ok).toBe(true);
-    }
-  });
+    },
+  );
 });
