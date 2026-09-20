@@ -5,6 +5,7 @@ import { raindropV3TagTools } from "./raindrop-v3-tags.js";
 import { raindropV3HighlightTools } from "./raindrop-v3-highlights.js";
 import { raindropV3CollectionTools } from "./raindrop-v3-collections.js";
 import { raindropV3CleanupTools } from "./raindrop-v3-cleanup.js";
+import { raindropV3AuditTools } from "./raindrop-v3-audit.js";
 import { bulkTools } from "./bulk.js";
 import { cleanupTools } from "./cleanup.js";
 import { collectionTools } from "./collections.js";
@@ -36,10 +37,11 @@ export const buildToolConfigs = (options: { serverVersion: string }) => {
     ...raindropV3HighlightTools,
     ...raindropV3CollectionTools,
     ...raindropV3CleanupTools,
+    ...raindropV3AuditTools,
     ...tagTools,
     ...highlightTools,
     ...bulkTools,
-    ...cleanupTools,
+    ...cleanupTools.filter((tool) => tool.name !== "library_audit"),
     ...suggestionTools,
   ];
 
