@@ -36,12 +36,13 @@ describe('Workflow MCP deploy gate contract', () => {
     expect(deploy.environment).toBe('workflow-mcp-worker');
     const steps = deploy.steps as Array<Record<string, unknown>>;
     const names = steps.map(step => step.name).filter(Boolean);
-    expect(names).toContain('Generate ephemeral runtime credentials');
+    expect(names).not.toContain('Generate ephemeral runtime credentials');
+    expect(names).toContain('Validate required Workflow MCP configuration');
     expect(names).toContain('Run application release checks');
     expect(names).toContain('Check nonterminal runtime compatibility');
     expect(names).toContain('Apply D1 migrations');
-    expect(names.indexOf('Apply deploy D1 migrations')).toBeLessThan(
-      names.indexOf('Check nonterminal runtime compatibility')
+    expect(names.indexOf('Validate required Workflow MCP configuration')).toBeLessThan(
+      names.indexOf('Apply D1 migrations')
     );
     expect(names).toContain('Deploy Workflow MCP Worker');
     expect(names).not.toContain('Install Workflow MCP Worker secrets');
@@ -52,30 +53,31 @@ describe('Workflow MCP deploy gate contract', () => {
       path.resolve(process.cwd(), '../../.github/workflows/workflow-mcp-deploy.yml'),
       'utf8'
     );
-    expect(workflowText).toContain(
-      'accounts/$CLOUDFLARE_ACCOUNT_ID/tokens/verify'
-    );
-    expect(workflowText).toContain('user/tokens/verify');
-    expect(workflowText).toContain('token_owner="user"');
-    expect(workflowText).toContain(
-      'printf \'%s\' "$CLOUDFLARE_API_TOKEN" | sha256sum'
-    );
     expect(workflowText).toContain('--secrets-file "$secret_file"');
+    for (const secret of [
+      'MCP_ACCESS_TOKEN',
+      'GITHUB_ACTIONS_TOKEN',
+      'EXECUTOR_LEASE_SECRET',
+      'R2_ACCESS_KEY_ID',
+      'R2_SECRET_ACCESS_KEY'
+    ]) {
+      expect(workflowText).toContain('secrets.' + secret);
+    }
+    expect(workflowText).not.toContain('openssl rand');
+    expect(workflowText).not.toContain('sha256sum');
     expect(workflowText).not.toContain(
-      'WORKFLOW_MCP_R2_ACCESS_KEY_ID'
-    );
-    expect(workflowText).not.toContain(
-      'WORKFLOW_MCP_R2_SECRET_ACCESS_KEY'
-    );
-    expect(workflowText).toContain(
       'WORKFLOW_MCP_GITHUB_ACTIONS_TOKEN: ${{ github.token }}'
     );
-    expect(workflowText).toContain(
+    expect(workflowText).not.toContain(
       'GITHUB_ACTIONS_TOKEN: ${{ github.token }}'
     );
-    expect(workflowText).not.toContain(
-      'secrets.WORKFLOW_MCP_GITHUB_ACTIONS_TOKEN'
+    expect(workflowText).toContain(
+      'GITHUB_ACTIONS_TOKEN: process.env.WORKFLOW_MCP_GITHUB_ACTIONS_TOKEN'
     );
+    const env = deploy.env as Record<string, string>;
+    expect(env.WORKFLOW_MCP_GITHUB_ACTIONS_TOKEN).toBe('${{ secrets.GITHUB_ACTIONS_TOKEN }}');
+    expect(env.WORKFLOW_MCP_ACCESS_TOKEN).toBe('${{ secrets.MCP_ACCESS_TOKEN }}');
+
   });
 
   it('keeps the executor dispatch-only with the same two identity inputs', async () => {
