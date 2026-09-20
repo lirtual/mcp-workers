@@ -124,8 +124,47 @@ export class ExecutionBudget {
     const release = isRead ? await this.acquireRead() : await this.acquireWrite();
     try {
       // Count bytes before sending anything; never rely on Content-Length.
+      // Preflight consumes the SAME wall deadline, and has its own timeout so
+      // a stalled request stream cannot hold a read/write slot indefinitely.
       if (request.body) {
-        await readBounded(request.clone().body, EXECUTION_LIMITS.requestBytes);
+        const remainingBeforePreflight = this.remainingMs();
+        if (remainingBeforePreflight <= 0 || this.attemptsUsed >= EXECUTION_LIMITS.attempts) {
+          throw new UpstreamError("Request budget exhausted before upstream submission", {
+            submitted: false,
+            budget: true,
+          });
+        }
+        const preflight = new AbortController();
+        const abortPreflight = () => preflight.abort();
+        request.signal.addEventListener("abort", abortPreflight, { once: true });
+        const preflightTimeout = setTimeout(
+          abortPreflight,
+          Math.min(EXECUTION_LIMITS.fetchMs, remainingBeforePreflight),
+        );
+        try {
+          await readBounded(
+            request.clone().body,
+            EXECUTION_LIMITS.requestBytes,
+            preflight.signal,
+          );
+          if (preflight.signal.aborted) {
+            throw new UpstreamError("Request body preflight aborted or timed out", {
+              submitted: false,
+              budget: true,
+            });
+          }
+        } catch (error) {
+          if (preflight.signal.aborted) {
+            throw new UpstreamError("Request body preflight aborted or timed out", {
+              submitted: false,
+              budget: true,
+            });
+          }
+          throw error;
+        } finally {
+          clearTimeout(preflightTimeout);
+          request.signal.removeEventListener("abort", abortPreflight);
+        }
       }
       const remaining = this.remainingMs();
       if (remaining <= 0 || this.attemptsUsed >= EXECUTION_LIMITS.attempts) {
