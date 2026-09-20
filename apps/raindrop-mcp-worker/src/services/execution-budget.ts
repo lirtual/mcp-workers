@@ -66,23 +66,29 @@ export class ExecutionBudget {
 
   private async acquireRead(): Promise<() => void> {
     if (this.activeReads >= EXECUTION_LIMITS.concurrentReads) {
+      // The releasing request transfers its slot directly to this waiter.
       await new Promise<void>((resolve) => this.readQueue.push(resolve));
+    } else {
+      this.activeReads++;
     }
-    this.activeReads++;
     return () => {
-      this.activeReads--;
-      this.readQueue.shift()?.();
+      const next = this.readQueue.shift();
+      if (next) next();
+      else this.activeReads--;
     };
   }
 
   private async acquireWrite(): Promise<() => void> {
     if (this.activeWrites >= 1) {
+      // Keep write ownership reserved until the queued operation acquires it.
       await new Promise<void>((resolve) => this.writeQueue.push(resolve));
+    } else {
+      this.activeWrites++;
     }
-    this.activeWrites++;
     return () => {
-      this.activeWrites--;
-      this.writeQueue.shift()?.();
+      const next = this.writeQueue.shift();
+      if (next) next();
+      else this.activeWrites--;
     };
   }
 
