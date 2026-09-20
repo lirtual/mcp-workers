@@ -7,6 +7,7 @@ import {
   RateLimitError,
   UpstreamError,
   UpstreamRejectedError,
+  ValidationError,
 } from "../types/mcpErrors.js";
 import type { components, paths } from "../types/raindrop.schema.js";
 import { createLogger } from "../utils/logger.js";
@@ -305,10 +306,13 @@ export default class RaindropService {
     id: number,
     updates: { title?: string; parent?: { $id: number } | null },
   ): Promise<Collection> {
+    if (updates.parent === null) {
+      throw new McpError("FEATURE_UNVERIFIED", "Moving a collection to root is not verified");
+    }
     const { data } = await this.withWriteRateLimit(() =>
       this.client.PUT("/collection/{id}", {
         params: { path: { id } },
-        body: updates,
+        body: { ...updates },
       }),
     );
     if (data?.result === false) throw new UpstreamRejectedError("Collection update was rejected");
@@ -370,6 +374,11 @@ export default class RaindropService {
     perpage: number;
     nested: boolean;
   }): Promise<{ items: Bookmark[]; count: number | null }> {
+    const supportedSort = ["title", "created", "-created", "score", "-sort", "-title", "domain", "-domain"] as const;
+    if (!supportedSort.some((sort) => sort === params.sort)) {
+      throw new ValidationError("Unsupported Raindrop sort parameter");
+    }
+    const sort = params.sort as (typeof supportedSort)[number];
     const { data } = await this.withRateLimit(async () =>
       this.client.GET("/raindrops/{collectionId}", {
         params: {
@@ -377,7 +386,7 @@ export default class RaindropService {
           query: {
             page: params.page,
             perpage: params.perpage,
-            sort: params.sort,
+            sort,
             nested: params.nested,
             ...(params.search === undefined ? {} : { search: params.search }),
           },
@@ -389,7 +398,7 @@ export default class RaindropService {
     }
     return {
       items: data.items as Bookmark[],
-      count: Number.isSafeInteger(data.count) && data.count >= 0
+      count: typeof data.count === "number" && Number.isSafeInteger(data.count) && data.count >= 0
         ? data.count : null,
     };
   }
@@ -467,7 +476,7 @@ export default class RaindropService {
     this.cacheSearch.clear();
     this.cacheCollections.clear();
     return {
-      modified: Number.isSafeInteger(data.modified) && data.modified >= 0
+      modified: typeof data.modified === "number" && Number.isSafeInteger(data.modified) && data.modified >= 0
         ? data.modified : null,
     };
   }
@@ -665,7 +674,7 @@ export default class RaindropService {
     }
     return {
       items: data.items as Highlight[],
-      count: Number.isSafeInteger(data.count) && data.count >= 0 ? data.count : null,
+      count: typeof data.count === "number" && Number.isSafeInteger(data.count) && data.count >= 0 ? data.count : null,
     };
   }
 
