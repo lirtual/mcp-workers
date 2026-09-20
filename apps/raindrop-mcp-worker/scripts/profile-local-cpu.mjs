@@ -1,3 +1,4 @@
+/* global process, URL, fetch, AbortSignal, console */
 /**
  * Local-only, read-only request driver for Wrangler DevTools CPU profiles (#119).
  * This does NOT measure native Cloudflare CPU and must never target a deployed Worker.
