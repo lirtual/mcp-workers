@@ -22,7 +22,7 @@ This token authenticates only the MCP caller. Never reuse it as an upstream serv
 2. Install that value as each Worker's **own** `MCP_ACCESS_TOKEN` runtime Secret. Record successes and errors by Worker name only. A partial rollout creates transient mismatches; pause, do not add an ad-hoc second accepted token.
 3. Update all authorized Portal/client connections in a coordinated maintenance window, without exposing the value in verification transcripts. Verify each Worker accepts the chosen value and rejects missing/incorrect authorization using its existing supported MCP transport.
 4. Provision distinct stable Workflow platform credentials as needed; never use a deployment-job `github.token` as `GITHUB_ACTIONS_TOKEN`. Do not replace lease keys while old Attempts need them; rotate the R2 access ID and signing secret as a **pair**.
-5. Deploy the reviewed Workflow code; run two normal deployments and confirm stable tokens and leases. Verify the intended Cron and a real schedule, separately authenticated real webhook, and an explicitly invoked GitHub OIDC/Attempt Claim → R2 end-to-end acceptance after the deploying CI job has finished.
+5. Deploy the reviewed Workflow code; run two normal deployments and confirm stable tokens and leases. Verify the intended Cron and safe scheduler tick/maintenance path, separately authenticated real webhook, and an explicitly invoked GitHub OIDC/Attempt Claim → R2 end-to-end acceptance after the deploying CI job has finished. The first genuine Raindrop 09:00 occurrence is verified after #107 adds that workflow, under #108.
 6. Only after checking no code/compiled registry/client needs them, remove old `SMOKE_READONLY_MCP_TOKEN`, `TRIGGER_SMOKE_WEBHOOK_TOKEN` and smoke endpoint overrides. Check a subsequent deployment does not reintroduce them.
 
 ## Failure and rollback
@@ -31,7 +31,7 @@ Stop further changes on any failure. For an interrupted shared-token rollout, re
 
 ## Redacted acceptance record
 
-For each Worker, record name, deployment revision, MCP authenticated/unauthenticated check outcome and client reconnection outcome. For Workflow, record CI deployment run IDs, Cron presence and observed genuine schedule, GitHub executor run ID/conclusion, OIDC callback/Claim outcome, R2 artifact metadata (never presigned URLs), and whether the second deployment preserved credential identities. Record absence of obsolete smoke-only bindings by **name**, not values. A successful CI-only test does not establish equality of live Secret values.
+For each Worker, record name, deployment revision, MCP authenticated/unauthenticated check outcome and client reconnection outcome. For Workflow, record CI deployment run IDs, Cron presence and safe scheduler tick (real business occurrence is #108), GitHub executor run ID/conclusion, OIDC callback/Claim outcome, R2 artifact metadata (never presigned URLs), and whether the second deployment preserved credential identities. Record absence of obsolete smoke-only bindings by **name**, not values. A successful CI-only test does not establish equality of live Secret values.
 
 ## Local contract verification
 
