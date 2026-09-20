@@ -1,3 +1,4 @@
+import { GITHUB_EXECUTOR_CONFIG } from '../src/platform-config.js';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   acceptExecutorCallback,
@@ -18,9 +19,8 @@ import type {
 } from '../src/storage.js';
 import type { Env } from '../src/types.js';
 
-const issuer = 'https://token.actions.example.test';
-const audience = 'workflow-mcp-worker';
-const jwksUrl = 'https://token.actions.example.test/jwks';
+const issuer = GITHUB_EXECUTOR_CONFIG.oidc.issuer;
+const audience = GITHUB_EXECUTOR_CONFIG.oidc.audience;
 const workflowRef =
   'lirtual/mcp-workers/.github/workflows/workflow-executor.yml@refs/heads/main';
 const ref = 'refs/heads/main';
@@ -564,10 +564,7 @@ function executorEnv(
     WORKFLOW: {
       get: async () => ({ sendEvent })
     } as unknown as Env['WORKFLOW'],
-    EXECUTOR_LEASE_SECRET: 'lease-secret',
-    GITHUB_OIDC_ISSUER: issuer,
-    GITHUB_OIDC_AUDIENCE: audience,
-    GITHUB_OIDC_JWKS_URL: jwksUrl
+    EXECUTOR_LEASE_SECRET: 'lease-secret'
   };
 }
 
