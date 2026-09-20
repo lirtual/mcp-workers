@@ -376,11 +376,11 @@ export class RaindropMCPService {
     // segments, query strings, decimal/exponent forms, and unsafe integers.
     for (const kind of ["collection", "raindrop"] as const) {
       if (uri.startsWith(`mcp://${kind}/`)) {
-        const match = uri.match(new RegExp(`^mcp:\\/\\/${kind}\\/([1-9]\\d*)$`));
-        if (!match || !match[1]) {
+        const suffix = uri.slice(`mcp://${kind}/`.length);
+        if (!/^[1-9]\\d*$/.test(suffix)) {
           throw new ValidationError("Resource requires an exact positive decimal ID");
         }
-        const id = Number(match[1]);
+        const id = Number(suffix);
         if (!Number.isSafeInteger(id)) {
           throw new ValidationError("Resource ID exceeds safe integer precision");
         }
