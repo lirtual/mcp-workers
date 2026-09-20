@@ -1567,7 +1567,7 @@ export type components = {
         /** @description Search query for filtering results */
         readonly SearchQuery: string;
         /** @description Sort order for results */
-        readonly SortOrder: "+created" | "-created" | "+title" | "-title" | "+domain" | "-domain" | "+score" | "-score";
+        readonly SortOrder: "-created" | "created" | "score" | "-sort" | "title" | "-title" | "domain" | "-domain";
         /** @description Filter by specific tag */
         readonly TagFilter: string;
         /** @description Filter by important flag */
@@ -2009,29 +2009,17 @@ export interface operations {
                 readonly search?: components["parameters"]["SearchQuery"];
                 /** @description Sort order for results */
                 readonly sort?: components["parameters"]["SortOrder"];
-                /** @description Filter by specific tag */
-                readonly tag?: components["parameters"]["TagFilter"];
-                /** @description Filter by important flag */
-                readonly important?: components["parameters"]["ImportantFilter"];
-                /** @description Filter by duplicates */
-                readonly duplicates?: components["parameters"]["DuplicatesFilter"];
-                /** @description Filter by broken links */
-                readonly broken?: components["parameters"]["BrokenFilter"];
-                /** @description Filter by items without tags */
-                readonly notag?: components["parameters"]["NotagFilter"];
-                /** @description Filter by presence of highlights */
-                readonly highlight?: components["parameters"]["HighlightFilter"];
-                /** @description Filter by domain */
-                readonly domain?: components["parameters"]["DomainFilter"];
                 /** @description Number of items per page */
                 readonly perpage?: components["parameters"]["PerPage"];
                 /** @description Page number for pagination */
                 readonly page?: components["parameters"]["Page"];
+                /** @description Include nested collections */
+                readonly nested?: boolean;
             };
             readonly header?: never;
             readonly path: {
                 /** @description Collection ID */
-                readonly id: components["parameters"]["CollectionId"];
+                readonly collectionId: number;
             };
             readonly cookie?: never;
         };
@@ -2054,7 +2042,7 @@ export interface operations {
             readonly header?: never;
             readonly path: {
                 /** @description Collection ID */
-                readonly id: components["parameters"]["CollectionId"];
+                readonly collectionId: number;
             };
             readonly cookie?: never;
         };
@@ -2081,7 +2069,7 @@ export interface operations {
             readonly header?: never;
             readonly path: {
                 /** @description Collection ID */
-                readonly id: components["parameters"]["CollectionId"];
+                readonly collectionId: number;
             };
             readonly cookie?: never;
         };
