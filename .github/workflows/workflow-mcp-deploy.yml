@@ -51,7 +51,6 @@ jobs:
       R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
       R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
       RAINDROP_MCP_ACCESS_TOKEN: ${{ secrets.RAINDROP_MCP_ACCESS_TOKEN }}
-      TRIGGER_SMOKE_WEBHOOK_TOKEN: ${{ secrets.TRIGGER_SMOKE_WEBHOOK_TOKEN }}
       WORKFLOW_MCP_EVIDENCE_PATH: ${{ github.workspace }}/workflow-mcp-evidence.json
     steps:
       - uses: actions/checkout@v4
@@ -91,7 +90,6 @@ jobs:
             R2_ACCESS_KEY_ID
             R2_SECRET_ACCESS_KEY
             RAINDROP_MCP_ACCESS_TOKEN
-            TRIGGER_SMOKE_WEBHOOK_TOKEN
           )
           for name in "${required[@]}"; do
             if [[ -z "${!name:-}" ]]; then
@@ -140,8 +138,6 @@ jobs:
           const fs = require('node:fs');
           const values = {
             MCP_ACCESS_TOKEN: process.env.WORKFLOW_MCP_ACCESS_TOKEN,
-            SMOKE_READONLY_MCP_TOKEN: process.env.WORKFLOW_MCP_ACCESS_TOKEN,
-            TRIGGER_SMOKE_WEBHOOK_TOKEN: process.env.TRIGGER_SMOKE_WEBHOOK_TOKEN,
             EXECUTOR_LEASE_SECRET: process.env.EXECUTOR_LEASE_SECRET,
             GITHUB_ACTIONS_TOKEN: process.env.WORKFLOW_MCP_GITHUB_ACTIONS_TOKEN,
             R2_ACCESS_KEY_ID: process.env.R2_ACCESS_KEY_ID,
