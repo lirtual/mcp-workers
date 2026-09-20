@@ -1,5 +1,7 @@
 import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { callMcpTool } from '../src/mcp-client.js';
+import type { Env } from '../src/types.js';
 import { compileWorkflowText } from '../src/compiler.js';
 import { getConnection, buildConnectionAuthHeader } from '../src/connections.js';
 import { resolveMcpOperationPolicy } from '../src/effective-policy.js';
@@ -58,4 +60,64 @@ describe('Raindrop daily snapshot', () => {
     const context = { input: {}, stepOutputs: { fetch: { error: 'UPSTREAM_UNAVAILABLE' } } };
     expect(resolveRuntimeValue(plan.outputs.bookmarks, context)).toBeUndefined();
   });
+  it.each([0, 4, 20])('invokes the read-only MCP adapter and preserves %i actual records', async count => {
+    const items = Array.from({ length: count }, (_, n) => ({ id: n + 1, title: 'Bookmark ' + n }));
+    const requests: Array<{ url: string; method: string; auth: string | null; body: Record<string, unknown> }> = [];
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      requests.push({
+        url: String(input),
+        method: String(body.method),
+        auth: new Headers(init?.headers).get('Authorization'),
+        body
+      });
+      const result = body.method === 'tools/list'
+        ? { tools: [{ name: 'list_raindrops', inputSchema: {
+            type: 'object', properties: {
+              collectionId: { type: 'number' }, page: { type: 'number' },
+              perPage: { type: 'number' }, sort: { type: 'string' },
+              skipCache: { type: 'boolean' }
+            }, additionalProperties: false
+          } }] }
+        : { structuredContent: { items, count: 120 }, content: [] };
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    });
+    const result = await callMcpTool(
+      { RAINDROP_MCP_ACCESS_TOKEN: 'raindrop-secret' } as Env,
+      'raindrop',
+      'list_raindrops',
+      { collectionId: 0, page: 0, perPage: 20, sort: '-created', skipCache: true },
+      fetchImpl as typeof fetch
+    );
+    expect(result.result.structuredContent).toEqual({ items, count: 120 });
+    expect(requests.map(request => request.method)).toEqual(['tools/list', 'tools/call']);
+    expect(requests.every(request =>
+      request.url === 'https://raindrop-mcp-worker.aiyaya.workers.dev/mcp'
+      && request.auth === 'Bearer raindrop-secret'
+    )).toBe(true);
+    const params = requests[1]!.body.params as Record<string, unknown>;
+    expect(params).toMatchObject({ name: 'list_raindrops', arguments: {
+      collectionId: 0, page: 0, perPage: 20, sort: '-created', skipCache: true
+    } });
+  });
+
+  it('rejects an upstream tool error rather than recording empty success', async () => {
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      const result = body.method === 'tools/list'
+        ? { tools: [{ name: 'list_raindrops',
+            inputSchema: { type: 'object', properties: {} } }] }
+        : { isError: true, content: [{ type: 'text', text: 'upstream auth failure' }] };
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    });
+    await expect(callMcpTool(
+      { RAINDROP_MCP_ACCESS_TOKEN: 'raindrop-secret' } as Env,
+      'raindrop', 'list_raindrops', {}, fetchImpl as typeof fetch
+    )).rejects.toThrow('upstream auth failure');
+  });
+
 });
