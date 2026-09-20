@@ -122,9 +122,11 @@ jobs:
           )).secrets.required;
           const missing = required.filter(name => !present.has(name));
           if (missing.length > 0) throw new Error('Missing persisted Worker Secrets: ' + missing.join(', '));
-          if (present.has('R2_ACCESS_KEY_ID')) throw new Error(
-            'R2_ACCESS_KEY_ID is still a legacy Secret; migrate its binding to the approved non-secret variable before deploying.'
-          );
+          for (const legacy of ['R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID']) {
+            if (present.has(legacy)) throw new Error(
+              legacy + ' is still a legacy Secret; migrate the binding to the approved non-secret variable before deploying.'
+            );
+          }
           console.log('Required persistent runtime Secret names are configured.');
           NODE
 
