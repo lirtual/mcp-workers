@@ -599,6 +599,7 @@ export default class RaindropService {
   async getUserInfo(): Promise<{ email: string; [key: string]: any }> {
     return this.withRateLimit(async () => {
       const { data } = await this.client.GET("/user");
+      if (data?.result === false) throw new UpstreamError("User profile was rejected");
       if (!data?.user) throw new NotFoundError("User not found");
       return data.user;
     });
