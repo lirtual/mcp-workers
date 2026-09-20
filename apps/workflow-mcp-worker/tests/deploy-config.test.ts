@@ -12,7 +12,8 @@ const validEnv = {
   WORKFLOW_MCP_URL: 'https://workflow-mcp-worker.aiyaya.workers.dev',
   CLOUDFLARE_ACCOUNT_ID: '8bb496011403552e785ea1b834daffdf',
   GITHUB_REPOSITORY: 'lirtual/mcp-workers',
-  GITHUB_REPOSITORY_ID: '1371085786'
+  GITHUB_REPOSITORY_ID: '1371085786',
+  R2_ACCESS_KEY_ID: 'example-r2-access-id'
 };
 
 async function generate(overrides: Record<string, string> = {}) {
@@ -39,14 +40,14 @@ describe('Workflow MCP deploy configuration expansion', () => {
       GITHUB_REPOSITORY_ID: '1371085786',
       R2_ACCOUNT_ID: '8bb496011403552e785ea1b834daffdf',
       R2_BUCKET_NAME: 'workflow-mcp-artifacts',
-      SMOKE_MODERN_MCP_ENDPOINT: 'https://workflow-mcp-worker.aiyaya.workers.dev/mcp'
+      R2_ACCESS_KEY_ID: 'example-r2-access-id'
     });
+    expect(config?.vars).not.toHaveProperty('SMOKE_MODERN_MCP_ENDPOINT');
     expect(config?.vars).not.toHaveProperty('GITHUB_OIDC_ISSUER');
     expect(config?.vars).not.toHaveProperty('GITHUB_EXECUTOR_REF');
     expect(config?.secrets).toEqual({ required: [
-      'MCP_ACCESS_TOKEN', 'TRIGGER_SMOKE_WEBHOOK_TOKEN', 'EXECUTOR_LEASE_SECRET',
-      'GITHUB_ACTIONS_TOKEN', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY',
-      'SMOKE_READONLY_MCP_TOKEN'
+      'MCP_ACCESS_TOKEN', 'EXECUTOR_LEASE_SECRET',
+      'GITHUB_ACTIONS_TOKEN', 'R2_SECRET_ACCESS_KEY'
     ] });
     expect(config?.r2_buckets).toEqual([
       { binding: 'ARTIFACTS', bucket_name: 'workflow-mcp-artifacts' }
@@ -61,7 +62,8 @@ describe('Workflow MCP deploy configuration expansion', () => {
       ['GITHUB_REPOSITORY', 'another-owner/another-repo'],
       ['GITHUB_REPOSITORY_ID', '123456'],
       ['CLOUDFLARE_ACCOUNT_ID', 'wrong-account'],
-      ['WORKFLOW_MCP_R2_BUCKET', 'Invalid_Bucket']
+      ['WORKFLOW_MCP_R2_BUCKET', 'Invalid_Bucket'],
+      ['R2_ACCESS_KEY_ID', '']
     ] as const) {
       const { execution, config } = await generate({ [name]: value });
       expect(execution.status, name).not.toBe(0);
