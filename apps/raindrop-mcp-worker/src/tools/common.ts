@@ -5,12 +5,6 @@ import { EXECUTION_LIMITS } from "../services/execution-budget.js";
 export interface ToolHandlerContext {
   raindropService: RaindropService;
   mcpServer: any;
-  mcpReq?: {
-    requestSampling: (params: any) => Promise<any>;
-    elicitInput: (params: any) => Promise<any>;
-    log: (level: string, message: string, logger?: string) => Promise<void>;
-  };
-  reportProgress?: (progress: { progress: number; total: number }) => void;
   [key: string]: unknown;
 }
 
@@ -48,55 +42,6 @@ export const textContent = (text: string): McpContent => ({
   type: "text",
   text,
 });
-
-export const makeCollectionLink = (collection: any): McpContent => ({
-  type: "resource",
-  resource: {
-    uri: `mcp://collection/${collection._id}`,
-    mimeType: "application/json",
-    text: JSON.stringify(
-      {
-        _id: collection._id,
-        title: collection.title || "Untitled Collection",
-        count: collection.count || 0,
-        description: collection.description,
-      },
-      null,
-      2,
-    ),
-  },
-});
-
-export const makeBookmarkLink = (bookmark: any): McpContent => ({
-  type: "resource",
-  resource: {
-    uri: `mcp://raindrop/${bookmark._id}`,
-    mimeType: "application/json",
-    text: JSON.stringify(
-      {
-        _id: bookmark._id,
-        title: bookmark.title || "Untitled",
-        link: bookmark.link,
-        excerpt: bookmark.excerpt,
-        tags: bookmark.tags,
-      },
-      null,
-      2,
-    ),
-  },
-});
-
-export const setIfDefined = (
-  target: Record<string, unknown>,
-  key: string,
-  value: unknown,
-) => {
-  if (value !== undefined) {
-    target[key] = value;
-  }
-  return target;
-};
-
 
 export type WriteStatus =
   | "preview"
