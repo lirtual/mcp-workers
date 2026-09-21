@@ -58,6 +58,24 @@ the sanitized discovery evidence separately from the manual Run evidence.
    containing count and record hash, not bookmark URLs/titles or credentials.
    This verifier is **not** a default deploy probe.
 
+## Opt-in GitHub deployment acceptance
+
+After a **separately approved** production deployment, the operator may
+manually dispatch `Workflow MCP Deploy` from the reviewed default-branch
+commit with `raindrop_manual_acceptance: true`. Keep the regular
+`full_acceptance` option independent. The new flag is **false by default**
+for ordinary pushes and manual deploys. The protected
+`workflow-mcp-worker` GitHub environment supplies the existing
+`MCP_ACCESS_TOKEN`; it is not passed as a workflow input or printed.
+The selected deploy job runs read-only authenticated discovery **before** D1
+migrations and deployment. If discovery fails, stop without mutation.
+After deployment and health checks it invokes the actual manual Run,
+verifies terminal result and logs, and uploads a 14-day sanitized Raindrop
+evidence artifact. This dispatch deploys production code: do not enable it
+merely to obtain pre-merge discovery evidence. Prior to approval or merging,
+use the operator-run read-only discovery command instead. Do not activate
+the 09:00 business schedule here: #108 owns that acceptance.
+
 The definition includes `0 9 * * *` in `Asia/Shanghai` and
 `misfire: latest`. Its first actual scheduled occurrence and activation
 belong to #108; T16 only verifies a real manual Run. Do not claim T16
