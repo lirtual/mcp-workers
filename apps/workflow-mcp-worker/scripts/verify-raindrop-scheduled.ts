@@ -3,8 +3,10 @@ import { writeFile } from 'node:fs/promises';
 import { verifyRaindropOutput } from './raindrop-verification.js';
 import {
   SNAPSHOT_SCHEDULE_KEY,
+  T17_CANARY_SCHEDULE_KEY,
   SNAPSHOT_WORKFLOW_ID,
   parseExpectedNineAmUtc,
+  parseExpectedT17CanaryUtc,
   verifyCompletedDeploy,
   verifyScheduledD1,
   type ScheduledDbRow,
@@ -19,7 +21,11 @@ const expectedIso = required('WORKFLOW_MCP_EXPECTED_UTC');
 const deployRunId = Number(required('WORKFLOW_MCP_DEPLOY_RUN_ID'));
 const path = process.env.WORKFLOW_MCP_SCHEDULED_EVIDENCE_PATH ||
   'workflow-mcp-scheduled-evidence.json';
-const expectedMs = parseExpectedNineAmUtc(expectedIso, Date.now());
+const canaryMode = process.env.WORKFLOW_MCP_T17_CANARY === 'true';
+const scheduleKey = canaryMode ? T17_CANARY_SCHEDULE_KEY : SNAPSHOT_SCHEDULE_KEY;
+const expectedMs = canaryMode
+  ? parseExpectedT17CanaryUtc(expectedIso, Date.now())
+  : parseExpectedNineAmUtc(expectedIso, Date.now());
 if (!Number.isSafeInteger(deployRunId) || deployRunId < 1) {
   throw new Error('WORKFLOW_MCP_DEPLOY_RUN_ID must be a positive GitHub Actions run ID.');
 }
@@ -41,7 +47,7 @@ const d1Path = 'https://api.cloudflare.com/client/v4/accounts/' +
 const state = await d1Read<SchedulerDbState>(
   'SELECT schedule_key,last_evaluated_at,last_admitted_scheduled_time ' +
   'FROM scheduler_state WHERE schedule_key = ? LIMIT 2',
-  [SNAPSHOT_SCHEDULE_KEY]
+  [scheduleKey]
 );
 const rows = await d1Read<ScheduledDbRow>(
   'SELECT wr.run_id,wr.workflow_id,wr.state,wr.definition_digest,wr.engine_version,' +
@@ -52,7 +58,7 @@ const rows = await d1Read<ScheduledDbRow>(
   'WHERE ra.workflow_id = ? AND ra.source_type = ? AND ra.source_key = ? LIMIT 2',
   [SNAPSHOT_WORKFLOW_ID, 'schedule', String(expectedMs)]
 );
-const dbRun = verifyScheduledD1(state, rows, expectedMs);
+const dbRun = verifyScheduledD1(state, rows, expectedMs, scheduleKey);
 const listed = await callTool('workflow_list', {});
 const entry = asArray(listed.workflows).map(asObject)
   .find(item => item.id === SNAPSHOT_WORKFLOW_ID);
@@ -88,10 +94,11 @@ const evidence = {
   verifiedAt: new Date().toISOString(),
   expectedUtcOccurrence: new Date(expectedMs).toISOString(),
   timezone: 'Asia/Shanghai',
+  acceptanceKind: canaryMode ? 'single-occurrence-canary' : 'daily-nine',
   deployRunId,
   deployCommitSha: deploy.commitSha,
   deployCompletedAt: deploy.completedAt,
-  scheduleKey: SNAPSHOT_SCHEDULE_KEY,
+  scheduleKey,
   schedulerLastEvaluatedAt: new Date(state[0]!.last_evaluated_at).toISOString(),
   runId: dbRun.run_id,
   triggerType: dbRun.trigger_type,
