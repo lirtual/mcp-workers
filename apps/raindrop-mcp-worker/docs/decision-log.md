@@ -2,6 +2,52 @@
 
 This file records user-settled decisions separately from proposed designs. Scope: `apps/raindrop-mcp-worker`. The v3 baseline remains governed by [Spec #110](https://github.com/lirtual/mcp-workers/issues/110) and [ADR-0001](./adr/0001-replace-legacy-tool-contract.md). A decision to investigate a design does not approve implementation, deployment, or release.
 
+## 2026-09-21 — v4 Worker-native / Grill-with-docs final consensus (Q19–Q24)
+
+All 24 Q1–Q24 decisions are settled as **architecture and acceptance-policy direction**, not as implementation, Free compliance, or production authorization.
+
+| Question | Choice | Settled decision |
+| --- | --- | --- |
+| Q19 | A | Group **only pure-read** capabilities by Raindrop resource: bookmarks, collections, tags, highlights, diagnostics and audit, using typed `action` parameters. Write, delete and batch tools remain independently exposed. Final tool names/count, types, and v3→v4 mapping belong to to-spec. |
+| Q20 | A | Existing SDK remains default. A replacement must pass required protocol/client compatibility, show reproducible **at least 20% lower native CPU** on key operations under comparable conditions, and have acceptable maintenance/security cost. Otherwise retain the SDK; no replacement is chosen here. |
+| Q21 | A | Pin protocol version and capability set actually negotiated by v3; validate Streamable HTTP, auth, initialize, tools, necessary resources/prompts, errors and cancellation via contract tests **and actual ChatGPT MCP Portal read-only discovery/invocation**. Neither assumed target versions nor unused optional capabilities count as the baseline. |
+| Q22 | B | Separate first-observed CPU samples; collect **30 subsequent labeled native observations per required operation across three windows**. Two consecutive observations >10 ms **or more than one** over 10 ms among the 30 = Fail. Exactly one over-limit observation needs explicit review and **cannot auto-pass**. Errors or missing telemetry block acceptance. First observations are retained, not automatically excused as cold starts; any over-limit first observation requires review. This is a project gate, not Cloudflare's enforcement promise. |
+| Q23 | A | Dedicated v4 isolated Worker; manually triggered, read-only, commit-SHA-pinned workflow; verifiable deployed script/version identity, least-privilege credentials, raw native CPU artifacts, fail-closed handling; no production/v3 access or changes. Specific implementation details remain to-spec. |
+| Q24 | B | Preserve v3 PR #120 and independent evidence. After **full** v4 acceptance, separately approve Portal/client migration and production cutover and only then decide v3 PR's disposition. No automatic #119 closure, merge or replacement. |
+
+### Q1–Q24 cross-round consistency audit
+
+| Earlier decisions | Final clarification and consistency |
+| --- | --- |
+| Q1:B, Q7:B, Q13:B → Q19:A | Moderate regrouping is limited to pure-read resource/action tools. Explicit write/delete/batch separation, scoped preview/confirmation and accurate unknown-write reporting remain. No generic read/write dispatcher. |
+| Q2:B, Q8:B, Q9:B, Q14:A, Q15:B → Q20:A, Q21:A | SDK-first bounded comparison remains. Protocol tests and real client evidence are mandatory. The 20% native CPU criterion refines, rather than replaces, parity and maintenance/security conditions. If evidence is inconclusive, keep SDK. |
+| Q3:A, Q4:A | Share immutable secret-free definitions only, isolate mutable server/transport, credential, handlers, budget, Raindrop client and caches per request. Preserve business capabilities and necessary resources/prompts. |
+| Q5:B, Q11:B, Q16:B → Q22:B | Free-first, repeatable and exact-deployment measurements. The fixed 30-sample/three-window rule implements the predeclared project test. One >10 ms reading is **Review/Blocked, not Pass**; recurring breaches are Fail. No outcome is inferred from HTTP 200 or old samples. |
+| Q6:B, Q10:B, Q12:B, Q17:B, Q18:B → Q23:A, Q24:B | Keep v3 frozen; separate v4 endpoint/workflow and independent cutover decision. A v4 read-only prototype is not full production-shaped acceptance. |
+
+**ADR audit:** ADR-0001 remains accepted for v3 and retains its independent action and mutation safety intent. ADR-0002 adds v4 Free-first, limited pure-read grouping, SDK comparison and isolated evidence. No decision supersedes v3 Spec #110's *v3-specific* SDK constraint. Only v4 comparison is authorized at the design level.
+
+### CPU acceptance and interpretation
+
+- **Evidence identity:** require immutable source SHA, verified deployed Worker version and script name, Free entitlement, UTC event timestamp, operation label, raw native `cpuTimeMs`, HTTP/protocol status, errors and missing data; no inferred zeroes.
+- **Sample stratification:** first-observed request recorded separately for each required operation; 30 **subsequent** requests per operation across three independent windows (10 each if evenly distributed). Maintain request ordering *within* each window for consecutive-overage detection; do not infer that a first-observed sample equals an independently proven cold start.
+- **Fail:** any two consecutive later samples >10 ms, or at least two later samples >10 ms in total, or invalid/failed requests/missing native telemetry; distinguish a resource Fail from Blocked evidence, recording the cause.
+- **Review, not automatic Pass:** exactly one over-limit later sample, or an over-limit first-observed sample; preserve raw data and written disposition before any release decision. Individual review does **not** override Cloudflare's actual platform limits.
+- **No automatically proven Pass:** if all 30 later samples are <=10 ms, the first-observed sample is accounted for, telemetry is complete and all other relevant gates pass, this satisfies only the defined **CPU sample rule**. Full v4 release additionally requires protocol/Portal, write/side-effect safety, memory, subrequest and deployment tests. The small sample is not a statistical warranty or proof against later overages.
+- **SDK comparative gate:** same operation fixtures and input/load/limits on exact deployed variants; demonstrate >=20% lower native CPU on predefined key operations, record baseline and comparison method in to-spec (e.g., a deterministic aggregate per operation), independently meet Free rule, and retain SDK if inconclusive. Percentage criterion alone does not grant release.
+
+### To-spec dependencies (operational details, not new architectural decisions)
+
+1. Produce complete v3-to-v4 mapping and exact typed read-only action schema, preserved data envelopes and authorization/validation; define key comparison operations.
+2. Extract negotiated v3 protocol version/capabilities from actual trace and pin contract/client fixtures, errors, aborted streams and cancellation behavior. Confirm Portal read-only tests are available in the intended environment.
+3. Define comparable measurement setup and 20% metric without cherry-picking; first-observation review disposition, data sufficiency and verification of 3 windows; separately specify required representative write/memory/subrequest gates.
+4. Fix v4 Worker/workflow identifiers, permissible manual trigger refs, commit/version attestation, minimal credential provisioning, UTC raw artifact format/retention, no production access and rollback/failure cleanup. Ensure existing v3 mutation suites are not invoked.
+5. Maintain v3 PR #120 and #119 independently. A separately reviewed release decision is required after v4 full acceptance.
+
+**Readiness:** Q1–Q24 can enter **to-spec** with these implementation-level details as spec acceptance criteria; **not** ready for implementation, to-tickets, merger, Free-compliance signoff or production cutover. v3 #119 remains unpassed; PR #120 and #126 remain Draft/unmerged.
+
+---
+
 ## 2026-09-21 — v4 Worker-native / Grill-with-docs round 3
 
 Q13–Q18 are **settled architecture decisions**, but no implementation, precise performance cutoff or release decision is approved.
