@@ -21,30 +21,15 @@ export interface McpConnection {
 }
 
 const connections = {
-  'smoke-readonly': {
-    id: 'smoke-readonly',
-    transport: 'streamable-http',
-    protocolVersion: '2025-11-25',
-    endpoint: 'https://example.invalid/mcp',
-    auth: {
-      header: 'Authorization',
-      format: 'bearer',
-      secret: 'SMOKE_READONLY_MCP_TOKEN'
-    },
-    trustAnnotations: false,
-    tools: {
-      health_check: { effect: 'read' }
-    }
-  },
-  'smoke-modern': {
-    id: 'smoke-modern',
+  'workflow-self': {
+    id: 'workflow-self',
     transport: 'streamable-http',
     protocolVersion: '2026-07-28',
-    endpoint: 'https://example.invalid/mcp-modern',
+    endpoint: 'https://workflow-mcp-worker.aiyaya.workers.dev/mcp',
     auth: {
       header: 'Authorization',
       format: 'bearer',
-      secret: 'SMOKE_READONLY_MCP_TOKEN'
+      secret: 'MCP_ACCESS_TOKEN'
     },
     trustAnnotations: false,
     tools: {
@@ -63,22 +48,8 @@ export function resolveConnection(
 ): McpConnection | undefined {
   const connection = getConnection(id);
   if (!connection) return undefined;
-  const record = env as Record<string, unknown>;
-  const overrideKey =
-    id === 'smoke-readonly'
-      ? 'SMOKE_READONLY_MCP_ENDPOINT'
-      : id === 'smoke-modern'
-        ? 'SMOKE_MODERN_MCP_ENDPOINT'
-        : undefined;
-  if (!overrideKey) return connection;
-
-  const endpoint = record[overrideKey];
-  if (typeof endpoint !== 'string' || endpoint.length === 0) return connection;
-  const parsed = new URL(endpoint);
-  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-    throw new Error(`MCP connection "${id}" endpoint override must use HTTP(S).`);
-  }
-  return { ...connection, endpoint: parsed.toString() };
+  void env;
+  return connection;
 }
 
 export function hasConnection(id: string): boolean {

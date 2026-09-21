@@ -1,5 +1,7 @@
 import { appendFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
+import { callMcpTool } from '../src/mcp-client.js';
+import type { Env } from '../src/types.js';
 
 const baseUrl = required('WORKFLOW_MCP_URL').replace(/\/+$/, '');
 const accessToken = required('WORKFLOW_MCP_ACCESS_TOKEN');
@@ -52,8 +54,15 @@ const artifactBytes = new Uint8Array(await artifactResponse.arrayBuffer());
 if (artifactBytes.byteLength === 0) throw new Error('Artifact GET returned an empty object.');
 const heavyLogs = await callTool('workflow_logs', { runId: heavyRunId, cursor: 0, limit: 100 });
 
-if (asArray(listed.workflows).length < 1) {
-  throw new Error('Authenticated MCP workflow_list returned no workflows.');
+const connectionCall = await callMcpTool(
+  { MCP_ACCESS_TOKEN: accessToken } as Env,
+  'workflow-self',
+  'workflow_list',
+  {}
+);
+const connectionStructured = asObject(connectionCall.result.structuredContent);
+if (asArray(connectionStructured.workflows).length < 1) {
+  throw new Error('Generic MCP connection did not return the Workflow MCP workflow_list payload.');
 }
 
 Object.assign(evidence, {
@@ -73,13 +82,14 @@ Object.assign(evidence, {
     lifecycleEvents: asArray(heavyLogs.events).map(item => asObject(item).eventType)
   },
   mcp: {
-    listedWorkflowCount: asArray(listed.workflows).length
+    connection: connectionCall.dependencySnapshot.connection,
+    returnedWorkflowCount: asArray(connectionStructured.workflows).length
   }
 });
 
 await writeFile(evidencePath, JSON.stringify(evidence, null, 2) + '\n', 'utf8');
 appendGitHubOutput('heavy_run_id', heavyRunId);
-appendGitHubOutput('mcp_run_id', 'authenticated-list');
+appendGitHubOutput('mcp_run_id', 'connection-direct');
 appendGitHubOutput('evidence_path', evidencePath);
 console.log(JSON.stringify(evidence, null, 2));
 

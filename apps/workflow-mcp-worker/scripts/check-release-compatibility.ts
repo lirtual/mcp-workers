@@ -55,6 +55,7 @@ const grouped = new Map<
     dslVersion: number;
     manifestVersions: number[];
     hasInvalidManifest: boolean;
+    normalizedPlanJson: string;
   }
 >();
 

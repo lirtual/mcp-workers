@@ -15,11 +15,6 @@ on:
         required: false
         default: https://example.com/
         type: string
-      bootstrap:
-        description: Skip pre-deploy compatibility query for a brand-new empty D1
-        required: false
-        default: false
-        type: boolean
       full_acceptance:
         description: Run the authenticated heavy GitHub/R2/MCP tracer after deploy
         required: false
@@ -135,7 +130,6 @@ jobs:
         run: pnpm exec wrangler d1 migrations apply DB --remote --config "$WORKFLOW_MCP_WRANGLER_CONFIG"
 
       - name: Check nonterminal runtime compatibility
-        if: inputs.bootstrap != true
         run: pnpm --filter workflow-mcp-worker run release:compatibility
 
       - name: Deploy Workflow MCP Worker

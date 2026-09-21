@@ -172,6 +172,8 @@ describe('runtime provenance and pinned plans', () => {
     const legacy = {
       ...baseline,
       normalizedPlanJson: JSON.stringify({
+        dslVersion: 1,
+        id: 'legacy-smoke',
         steps: { call: { with: { connection: 'smoke-modern', tool: 'workflow_list' } } }
       })
     };
@@ -179,15 +181,23 @@ describe('runtime provenance and pinned plans', () => {
     expect(() => assertReleaseCompatibility([{
       ...legacy,
       normalizedPlanJson: JSON.stringify({
+        dslVersion: 1,
+        id: 'legacy-smoke',
         steps: { call: { with: { connection: 'smoke-readonly' } } }
       })
     }])).toThrow(/removed-smoke-connection/);
     expect(() => assertReleaseCompatibility([{
       ...baseline,
       normalizedPlanJson: JSON.stringify({
+        dslVersion: 1,
+        id: 'self-check',
         steps: { call: { with: { connection: 'workflow-self' } } }
       })
     }])).not.toThrow();
+    expect(() => assertReleaseCompatibility([{
+      ...baseline,
+      normalizedPlanJson: '{not-json'
+    }])).toThrow(/invalid-normalized-plan/);
   });
 
   it('pins an explicit checked-in runner contract version', () => {

@@ -17,6 +17,10 @@ describe('Workflow MCP deploy gate contract', () => {
     const triggers = value.on as Record<string, unknown>;
     expect(Object.keys(triggers).sort()).toEqual(['push', 'workflow_dispatch']);
     expect(triggers).not.toHaveProperty('pull_request');
+    expect(Object.keys((triggers.workflow_dispatch as Record<string, unknown>).inputs as object).sort()).toEqual([
+      'full_acceptance',
+      'source_url'
+    ]);
     expect((triggers.push as Record<string, unknown>)).toMatchObject({
       branches: ['main'],
       paths: [
