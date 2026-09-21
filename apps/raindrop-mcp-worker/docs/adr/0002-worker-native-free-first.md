@@ -28,6 +28,15 @@ These decisions narrow the accepted first-round direction; they do not authorize
 - **Resource evidence (Q11)**: use exact-deployment, operation-labeled native CPU samples on Free, with repeated observations for first and subsequent requests, all overages and failures recorded. Seek no persistent over-limit behavior; the sample size, persistence definition and numeric release criteria remain unresolved. Neither old deployment samples nor local profiling nor HTTP 200 alone satisfies acceptance.
 - **Isolated measurement workflow (Q12)**: plan a distinct read-only v4 workflow pinned to an immutable source SHA and verified deployed script/version. No use of the frozen v3 workflow for v4; trigger scope, credential boundaries, artifact retention and rollback need further decisions.
 
+## Refinement — third Grill-with-docs round (Q13:B, Q14:A, Q15:B, Q16:B, Q17:B, Q18:B)
+
+- **Typed read-only resource groups (Q13)**: group candidate read-only capabilities by business resource, such as bookmark search/detail, collection query and diagnostics, with explicit action parameters and preserved input/output semantics. Final names, group count and schemas are not yet selected; writes, deletes and batch operations remain separate.
+- **SDK selection (Q14)**: existing SDK is the default. A lighter adapter can be selected only if it proves reproducible **native** CPU benefits, parity on required MCP and client behavior, and acceptable maintenance/security cost. Inconclusive comparison means the SDK remains; no replacement has been authorized.
+- **Conformance gate (Q15)**: require both MCP contract tests and actual ChatGPT MCP Portal **read-only discovery and invocation**, including relevant error and cancellation behavior. Local mock passing is not client acceptance and does not permit production migration.
+- **Predeclared CPU decision rule (Q16)**: define sample counts and stratification, persistence and outlier criteria, missing-data/error handling, and explicit native CPU pass/fail **before** measuring the release candidate. Review any sporadic overages, and do not automatically excuse them or infer success from HTTP 200. No numeric statistics/criteria are approved by Q16; first-observed requests are not proven cold starts.
+- **Independent isolated environment (Q17)**: provision a dedicated v4 test Worker and separate read-only workflow with source SHA and deployed-version identity, not the frozen v3 workflow. Concrete naming, permissions, credentials, collection strategy, artifact retention and rollback remain open.
+- **V3 preservation (Q18)**: preserve PR #120's evidence and explicitly decide its disposition only after independent v4 acceptance. Nothing in this ADR automatically merges/closes/replaces v3 or closes #119.
+
 ## Relationship to ADR-0001 and v3 Spec #110
 
 ADR-0001 remains accepted for the v3 baseline. Its separation of read, write, delete and batch tools is **not automatically replaced** by a v4 grouping proposal. A v4 grouping that combines read and write or hides destructive scope behind a generic action would conflict with the established safety intent and requires an explicit further decision and separate contract tests. Round-two Q7 further limits regrouping to purely read-only tools: it retains independently exposed write, delete and batch tools, so their v3 safety intent remains intact. No combined read/write action is authorized.
@@ -42,6 +51,6 @@ The v3 spec explicitly says not to replace the SDK or HTTP framework in that rel
 
 ## Explicitly unresolved
 
-Next Grill-with-docs round: precise read-only grouping and schema; quantitative SDK comparison and inconclusive-result handling; concrete MCP conformance cases; Portal migration and rollback policy; number of samples, statistical acceptance and errors/missing-telemetry handling; isolated workflow trigger, credentials, version identity and artifacts; and v3 PR disposition.
+Final consensus still required: exact read-only tool groups and typed schemas; concrete protocol/client fixtures and SDK comparative decision metrics; native CPU sample counts, overage persistence/statistics, errors/missing telemetry and later write/resource limits; v4 isolated workflow triggers, credential boundaries, deployment identity and artifact/rollback plan; independent production migration and v3 PR decision. The first three rounds permit **final consensus confirmation**, not yet to-spec, implementation or deployment.
 
 References: [v3 Spec #110](https://github.com/lirtual/mcp-workers/issues/110), [#119](https://github.com/lirtual/mcp-workers/issues/119), [Draft PR #120](https://github.com/lirtual/mcp-workers/pull/120), [ADR-0001](./0001-replace-legacy-tool-contract.md), [decision log](../decision-log.md).
