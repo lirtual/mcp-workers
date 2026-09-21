@@ -1,0 +1,85 @@
+# TEMPORARY. Remove this entire workflow in the approved T17 canary rollback.
+# It starts only after a completed production deployment; no GitHub Cron or dispatch.
+name: Workflow MCP T17 Canary Acceptance
+on:
+  workflow_run:
+    workflows:
+      - Workflow MCP Deploy
+    types:
+      - completed
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: workflow-mcp-t17-canary-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'
+    environment: workflow-mcp-worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      WORKFLOW_MCP_URL: ${{ vars.WORKFLOW_MCP_URL || 'https://workflow-mcp-worker.aiyaya.workers.dev' }}
+      WORKFLOW_MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      GITHUB_TOKEN: ${{ github.token }}
+      WORKFLOW_MCP_T17_CANARY: 'true'
+      WORKFLOW_MCP_EXPECTED_UTC: '2026-09-21T09:20:00.000Z'
+      WORKFLOW_MCP_DEPLOY_RUN_ID: ${{ github.event.workflow_run.id }}
+      WORKFLOW_MCP_SCHEDULED_EVIDENCE_PATH: ${{ github.workspace }}/workflow-mcp-t17-canary-evidence.json
+    steps:
+      - name: Gate exact single-day window and wait for genuine occurrence
+        id: window
+        shell: bash
+        run: |
+          set -euo pipefail
+          now="$(date -u +%s)"
+          start="$(date -u -d '2026-09-21T09:05:00Z' +%s)"
+          verify_at="$(date -u -d '2026-09-21T09:22:00Z' +%s)"
+          expires="$(date -u -d '2026-09-21T09:35:00Z' +%s)"
+          if (( now < start || now >= expires )); then
+            echo "Outside T17 canary window; no work performed."
+            echo 'enabled=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo 'enabled=true' >> "$GITHUB_OUTPUT"
+          if (( now < verify_at )); then sleep "$((verify_at - now))"; fi
+
+      - uses: actions/checkout@v4
+        if: steps.window.outputs.enabled == 'true'
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Use Node.js 24
+        if: steps.window.outputs.enabled == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Activate pinned pnpm
+        if: steps.window.outputs.enabled == 'true'
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.17.1 --activate
+
+      - name: Install workspace
+        if: steps.window.outputs.enabled == 'true'
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Verify one real canary tick after the deployment job exited
+        if: steps.window.outputs.enabled == 'true'
+        working-directory: apps/workflow-mcp-worker
+        run: pnpm run release:raindrop-scheduled
+
+      - name: Upload sanitized canary evidence
+        if: always() && steps.window.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow-mcp-t17-canary-evidence-${{ github.run_id }}
+          path: workflow-mcp-t17-canary-evidence.json
+          if-no-files-found: warn
+          retention-days: 14
