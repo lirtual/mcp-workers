@@ -3,10 +3,8 @@ import { writeFile } from 'node:fs/promises';
 import { verifyRaindropOutput } from './raindrop-verification.js';
 import {
   SNAPSHOT_SCHEDULE_KEY,
-  T17_CANARY_SCHEDULE_KEY,
   SNAPSHOT_WORKFLOW_ID,
   parseExpectedNineAmUtc,
-  parseExpectedT17CanaryUtc,
   verifyCompletedDeploy,
   verifyScheduledD1,
   type ScheduledDbRow,
@@ -21,11 +19,8 @@ const expectedIso = required('WORKFLOW_MCP_EXPECTED_UTC');
 const deployRunId = Number(required('WORKFLOW_MCP_DEPLOY_RUN_ID'));
 const path = process.env.WORKFLOW_MCP_SCHEDULED_EVIDENCE_PATH ||
   'workflow-mcp-scheduled-evidence.json';
-const canaryMode = process.env.WORKFLOW_MCP_T17_CANARY === 'true';
-const scheduleKey = canaryMode ? T17_CANARY_SCHEDULE_KEY : SNAPSHOT_SCHEDULE_KEY;
-const expectedMs = canaryMode
-  ? parseExpectedT17CanaryUtc(expectedIso, Date.now())
-  : parseExpectedNineAmUtc(expectedIso, Date.now());
+const scheduleKey = SNAPSHOT_SCHEDULE_KEY;
+const expectedMs = parseExpectedNineAmUtc(expectedIso, Date.now());
 if (!Number.isSafeInteger(deployRunId) || deployRunId < 1) {
   throw new Error('WORKFLOW_MCP_DEPLOY_RUN_ID must be a positive GitHub Actions run ID.');
 }
@@ -94,7 +89,7 @@ const evidence = {
   verifiedAt: new Date().toISOString(),
   expectedUtcOccurrence: new Date(expectedMs).toISOString(),
   timezone: 'Asia/Shanghai',
-  acceptanceKind: canaryMode ? 'single-occurrence-canary' : 'daily-nine',
+  acceptanceKind: 'daily-nine',
   deployRunId,
   deployCommitSha: deploy.commitSha,
   deployCompletedAt: deploy.completedAt,
