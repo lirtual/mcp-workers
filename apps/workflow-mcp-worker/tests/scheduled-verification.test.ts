@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   SNAPSHOT_SCHEDULE_KEY,
   SNAPSHOT_WORKFLOW_ID,
-  parseExpectedNineAmUtc,
+  parseExpectedOccurrence,
   verifyCompletedDeploy,
   verifyScheduledD1,
   type ScheduledDbRow
@@ -10,7 +10,7 @@ import {
 
 const expected = Date.parse('2026-09-22T01:00:00Z');
 const state = [{
-  schedule_key: SNAPSHOT_SCHEDULE_KEY,
+  schedule_key: SNAPSHOT_SCHEDULE_KEY + 'daily-nine',
   last_evaluated_at: expected + 60_000,
   last_admitted_scheduled_time: expected
 }];
@@ -31,13 +31,13 @@ const row: ScheduledDbRow = {
 
 describe('T17 bounded post-deployment verification', () => {
   it('accepts the true 09:00 Asia/Shanghai UTC occurrence only after it elapsed', () => {
-    expect(parseExpectedNineAmUtc('2026-09-22T01:00:00.000Z', expected + 60_000))
+    expect(parseExpectedOccurrence('2026-09-22T01:00:00.000Z', expected + 60_000))
       .toBe(expected);
-    expect(() => parseExpectedNineAmUtc('2026-09-22T09:00:00Z', expected + 60_000))
-      .toThrow(/01:00:00Z/);
-    expect(() => parseExpectedNineAmUtc('2026-09-22T01:00:00Z', expected))
+    expect(parseExpectedOccurrence('2026-09-22T09:00:00Z', expected + 9 * 3600_000 + 60_000))
+      .toBe(Date.parse('2026-09-22T09:00:00Z'));
+    expect(() => parseExpectedOccurrence('2026-09-22T01:00:00Z', expected))
       .toThrow(/not yet elapsed/);
-    expect(() => parseExpectedNineAmUtc('2026-09-22T01:00:00Z', expected + 49 * 3600_000))
+    expect(() => parseExpectedOccurrence('2026-09-22T01:00:00Z', expected + 49 * 3600_000))
       .toThrow(/48-hour/);
   });
 
