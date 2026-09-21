@@ -19,6 +19,7 @@ describe('Workflow MCP deploy gate contract', () => {
     expect(triggers).not.toHaveProperty('pull_request');
     expect(Object.keys((triggers.workflow_dispatch as Record<string, unknown>).inputs as object).sort()).toEqual([
       'full_acceptance',
+      'raindrop_manual_acceptance',
       'source_url'
     ]);
     expect((triggers.push as Record<string, unknown>)).toMatchObject({
@@ -39,6 +40,9 @@ describe('Workflow MCP deploy gate contract', () => {
     expect(names).toContain('Run application release checks');
     expect(names).toContain('Check persisted Worker Secret names');
     expect(names).toContain('Apply D1 migrations');
+    expect(names).toContain('Verify live Raindrop contract before any deployment mutations');
+    expect(names).toContain('Verify real Raindrop manual Run and structured result');
+    expect(names).toContain('Upload sanitized Raindrop acceptance evidence');
     expect(names).toContain('Check nonterminal runtime compatibility');
     expect(names).toContain('Deploy Workflow MCP Worker');
     expect(names).toContain('Wait for Worker health');
@@ -49,6 +53,24 @@ describe('Workflow MCP deploy gate contract', () => {
     expect(names.indexOf('Check persisted Worker Secret names')).toBeLessThan(
       names.indexOf('Apply D1 migrations')
     );
+    expect(names.indexOf('Verify live Raindrop contract before any deployment mutations')).toBeLessThan(
+      names.indexOf('Apply D1 migrations')
+    );
+    expect(names.indexOf('Verify real Raindrop manual Run and structured result')).toBeGreaterThan(
+      names.indexOf('Probe health and unauthenticated MCP')
+    );
+    const discovery = steps.find(step => step.name === 'Verify live Raindrop contract before any deployment mutations');
+    const manual = steps.find(step => step.name === 'Verify real Raindrop manual Run and structured result');
+    expect(discovery?.if).toContain('raindrop_manual_acceptance');
+    expect(manual?.if).toContain('raindrop_manual_acceptance');
+    expect(discovery?.run).toBe('pnpm run release:raindrop-discovery');
+    expect(manual?.run).toBe('pnpm run release:raindrop-manual');
+    expect(discovery?.env).toMatchObject({
+      WORKFLOW_MCP_ACCESS_TOKEN: '${{ secrets.MCP_ACCESS_TOKEN }}'
+    });
+    expect(manual?.env).toMatchObject({
+      WORKFLOW_MCP_ACCESS_TOKEN: '${{ secrets.MCP_ACCESS_TOKEN }}'
+    });
     expect(names).not.toContain('Generate ephemeral runtime credentials');
     const tracer = steps.find(step => step.name === 'Run MCP heavy and connection tracers');
     const executorEvidence = steps.find(step => step.name === 'Verify GitHub executor terminal evidence');
