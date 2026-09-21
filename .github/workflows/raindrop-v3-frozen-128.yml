@@ -1,0 +1,74 @@
+name: Raindrop frozen v3 T01 isolate
+
+on:
+  push:
+    branches:
+      - ops/raindrop-v3-frozen-128
+    paths:
+      - .github/workflows/raindrop-v3-frozen-128.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: raindrop-mcp-worker-v3-test
+  cancel-in-progress: false
+
+jobs:
+  deploy-frozen-test-only:
+    name: Deploy exact frozen v3 isolate
+    environment: workflow-mcp-worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: 8bb496011403552e785ea1b834daffdf
+      FROZEN_SHA: cc05fc9ecbdac38a57d66856f771583746b0e6df
+    steps:
+      - name: Checkout exact frozen source
+        uses: actions/checkout@v4
+        with:
+          ref: cc05fc9ecbdac38a57d66856f771583746b0e6df
+          fetch-depth: 1
+
+      - name: Verify immutable source
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "$FROZEN_SHA"
+          echo "source_sha=$actual"
+          echo "trigger_sha=${{ github.sha }}"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Verify isolated deploy credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}"
+
+      - name: Install and verify frozen application
+        run: |
+          pnpm install --frozen-lockfile --ignore-scripts
+          pnpm --filter raindrop-mcp-worker check
+
+      - name: Deploy exact frozen source to isolated Worker
+        working-directory: apps/raindrop-mcp-worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$FROZEN_SHA"
+          pnpm exec wrangler deploy --name raindrop-mcp-worker-v3-test --keep-vars
+          echo "deployed_source_sha=$FROZEN_SHA"
+          echo "isolated_script=raindrop-mcp-worker-v3-test"
+          echo "portal=BLOCKED_PENDING_REAL_PORTAL_CONNECTION"
