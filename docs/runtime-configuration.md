@@ -38,7 +38,7 @@ Every production Worker configuration declares its mandatory runtime secret name
 | `database-mcp-worker` | `MCP_ACCESS_TOKEN`, `DATABASE_CONFIG` |
 | `raindrop-mcp-worker` | `MCP_ACCESS_TOKEN`, `RAINDROP_ACCESS_TOKEN` |
 | `instapaper-mcp-worker` | `MCP_ACCESS_TOKEN`, `INSTAPAPER_CONSUMER_KEY`, `INSTAPAPER_CONSUMER_SECRET`, `INSTAPAPER_OAUTH_TOKEN`, `INSTAPAPER_OAUTH_TOKEN_SECRET` |
-| `workflow-mcp-worker` | `MCP_ACCESS_TOKEN`, `EXECUTOR_LEASE_SECRET`, `GITHUB_ACTIONS_TOKEN`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` |
+| `workflow-mcp-worker` (release candidate) | `MCP_ACCESS_TOKEN`, `EXECUTOR_LEASE_SECRET`, `GITHUB_ACTIONS_TOKEN`, `R2_SECRET_ACCESS_KEY`; separately required non-secret `R2_ACCESS_KEY_ID`. Production remains unchanged until the authorized #123 cutover. |
 
 `database-mcp-worker` stores its complete logical database catalog in the single `DATABASE_CONFIG` Secret. Direct SQL URLs therefore remain secret without requiring separate `DATABASE_URL` / `DATABASE_WRITE_URL` variables. Hyperdrive entries still refer to Wrangler bindings by name.
 
@@ -57,7 +57,9 @@ For local development, use uncommitted `.dev.vars` or `.env` files with keys mat
 | Cron scheduler | Preserve the intended scheduler tick. Generated deployment configuration keeps the checked-in `* * * * *` Cron. Live 09:00 business occurrence remains #108. |
 | Ownership and consistency | `wrangler.jsonc` and audited code defaults own non-sensitive settings; Cloudflare runtime owns secret values; CI owns only genuine deployment/test credentials. Never rotate or delete a live Secret just to reconcile naming before code and clients are ready. |
 
-**Implementation specification:** [`docs/workflow-mcp/runtime-config-simplification-spec.md`](./workflow-mcp/runtime-config-simplification-spec.md) governs the cross-Worker rollout and end-to-end acceptance. Its four-Secret Workflow platform baseline also keeps `R2_ACCESS_KEY_ID` as a separately required non-secret credential identifier; real integrations may require additional Secrets. Do not optimize for a raw dashboard count.\n\nThe source contract no longer requires production-only smoke webhook/MCP secrets. Ordinary deploys still must not rotate live platform credentials; #106 owns the remaining deploy-workflow credential persistence work. Shared-value cutover is #123. See [`mcp-shared-token-runbook.md`](./mcp-shared-token-runbook.md).
+**Implementation specification:** [`docs/workflow-mcp/runtime-config-simplification-spec.md`](./workflow-mcp/runtime-config-simplification-spec.md) governs the cross-Worker rollout and end-to-end acceptance. Its four-Secret Workflow platform baseline also keeps `R2_ACCESS_KEY_ID` as a separately required non-secret credential identifier; real integrations may require additional Secrets. Do not optimize for a raw dashboard count.
+
+The release candidate no longer requires production-only smoke webhook/MCP Secrets and ordinary deploys do not rotate live platform credentials. This is a code contract, not evidence of a completed production migration: the live binding-type change and shared-value cutover remain #123 and require separate authorization. See [`mcp-shared-token-runbook.md`](./mcp-shared-token-runbook.md).
 
 ## Workers Observability baseline
 
@@ -79,7 +81,7 @@ Do not deliberately log `Authorization` values, `MCP_ACCESS_TOKEN`, `DATABASE_CO
 
 ## Deployment behavior
 
-Before deploying an existing Worker, configure its required values under **Worker Settings → Variables and Secrets** as **Secret** values. Then deploy from the app directory with its normal `pnpm run deploy` command or through the configured Cloudflare Build.
+Before deploying an existing Worker, configure the names in `secrets.required` under **Worker Settings → Variables and Secrets** as **Secret** values. Configure required non-secret identifiers, including Workflow's `R2_ACCESS_KEY_ID`, as ordinary variables. Then deploy from the app directory with its normal `pnpm run deploy` command or through the configured Cloudflare Build.
 
 A successful deployment means all names in `secrets.required` already exist on the target Worker. Do not remove a required name merely to make a deployment green; add the missing runtime secret instead.
 
