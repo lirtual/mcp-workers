@@ -123,4 +123,99 @@ describe("Raindrop MCP v3 public contract", () => {
     }
   });
 
+
+  it("routes valid arguments for all 26 tools through MCP Client without live upstream", async () => {
+    // A failed fake upstream response is intentional here: the purpose of this
+    // matrix is proving the real MCP boundary reaches each handler without
+    // accidentally performing an account mutation. Feature-gated execution
+    // remains denied locally. Successful HTTP contracts live in feature suites.
+    const cases: Array<{
+      name: string;
+      args: Record<string, unknown>;
+      expectedPath: string | null;
+      expectedMethod?: string;
+      expectedCode?: string;
+    }> = [
+      { name: "raindrop_list", args: {}, expectedPath: "/rest/v1/raindrops/0" },
+      { name: "raindrop_get", args: { id: 7 }, expectedPath: "/rest/v1/raindrop/7" },
+      { name: "raindrop_create", args: { link: "https://example.test/" }, expectedPath: "/rest/v1/raindrop", expectedMethod: "POST" },
+      { name: "raindrop_update", args: { id: 7, note: "" }, expectedPath: "/rest/v1/raindrop/7", expectedMethod: "PUT" },
+      { name: "raindrop_delete", args: { id: 7 }, expectedPath: "/rest/v1/raindrop/7" },
+      { name: "raindrop_bulk_update", args: { collectionId: 7, ids: [8], important: false }, expectedPath: "/rest/v1/raindrops/7", expectedMethod: "PUT" },
+      { name: "raindrop_bulk_delete", args: { collectionId: 7, ids: [8], confirm: true }, expectedPath: "/rest/v1/raindrops/7", expectedMethod: "DELETE" },
+      { name: "raindrop_suggest", args: { id: 7 }, expectedPath: "/rest/v1/raindrop/7/suggest" },
+      { name: "collection_list", args: {}, expectedPath: "/rest/v1/collections" },
+      { name: "collection_tree", args: {}, expectedPath: "/rest/v1/collections" },
+      { name: "collection_get", args: { id: 7 }, expectedPath: "/rest/v1/collection/7" },
+      { name: "collection_create", args: { title: "fixture" }, expectedPath: "/rest/v1/collection", expectedMethod: "POST" },
+      { name: "collection_update", args: { id: 7, title: "fixture" }, expectedPath: "/rest/v1/collection/7", expectedMethod: "PUT" },
+      { name: "collection_delete", args: { id: 7 }, expectedPath: "/rest/v1/collections" },
+      { name: "tag_list", args: {}, expectedPath: "/rest/v1/tags" },
+      { name: "tag_rename", args: { scope: "collection", collectionId: 7, tags: ["old"], replace: "new", confirm: true }, expectedPath: "/rest/v1/tags/7", expectedMethod: "PUT" },
+      { name: "tag_merge", args: { scope: "collection", collectionId: 7, tags: ["a", "b"], replace: "c", confirm: true }, expectedPath: "/rest/v1/tags/7", expectedMethod: "PUT" },
+      { name: "tag_delete", args: { scope: "collection", collectionId: 7, tags: ["old"], confirm: true }, expectedPath: "/rest/v1/tags/7", expectedMethod: "DELETE" },
+      { name: "highlight_list", args: {}, expectedPath: "/rest/v1/highlights" },
+      { name: "highlight_create", args: { raindropId: 7, text: "fixture" }, expectedPath: "/rest/v1/raindrop/7", expectedMethod: "PUT" },
+      { name: "highlight_update", args: { raindropId: 7, _id: "hl-7", note: "" }, expectedPath: "/rest/v1/raindrop/7", expectedMethod: "PUT" },
+      { name: "highlight_delete", args: { raindropId: 7, _id: "hl-7" }, expectedPath: "/rest/v1/raindrop/7" },
+      { name: "library_audit", args: { kind: "untagged" }, expectedPath: "/rest/v1/raindrops/0" },
+      { name: "duplicates_delete", args: { collectionId: 7, ids: [8], confirm: true }, expectedPath: null, expectedCode: "FEATURE_UNVERIFIED" },
+      { name: "trash_empty", args: {}, expectedPath: "/rest/v1/user/stats" },
+      { name: "diagnostics", args: {}, expectedPath: null },
+    ];
+    expect(cases.map(({ name }) => name).sort()).toEqual(EXPECTED_TOOL_NAMES);
+    for (const entry of cases) {
+      const fetchSpy = vi.fn(async (_request: Request) => new Response(null, { status: 503 }));
+      vi.stubGlobal("fetch", fetchSpy);
+      const app = new RaindropMCPService({ accessToken: "fake", maxReadRetries: 0 });
+      const client = new Client({ name: "v3-all-valid-arguments", version: "1" });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      try {
+        await Promise.all([app.getServer().connect(serverTransport), client.connect(clientTransport)]);
+        const result = await client.callTool({ name: entry.name, arguments: entry.args });
+        const envelope = result.structuredContent as {
+          ok: boolean; error?: { code?: string }; meta?: Record<string, unknown>;
+        } | undefined;
+        expect(envelope, entry.name).toBeDefined();
+        expect(envelope?.error?.code, entry.name).not.toBe("VALIDATION_ERROR");
+        if (entry.expectedCode) expect(envelope?.error?.code, entry.name).toBe(entry.expectedCode);
+        if (entry.expectedPath === null) {
+          expect(fetchSpy, entry.name).not.toHaveBeenCalled();
+        } else {
+          expect(fetchSpy, entry.name).toHaveBeenCalled();
+          const paths = fetchSpy.mock.calls.map(([request]) => new URL(request.url).pathname);
+          expect(paths, entry.name).toContain(entry.expectedPath);
+          if (entry.expectedMethod) {
+            expect(fetchSpy.mock.calls.some(([request]) =>
+              request.method === entry.expectedMethod &&
+              new URL(request.url).pathname === entry.expectedPath
+            ), entry.name).toBe(true);
+          }
+        }
+      } finally {
+        await client.close();
+        await app.cleanup();
+        vi.unstubAllGlobals();
+      }
+    }
+  });
+
+  it("rejects score sorting without a search before an upstream request", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    const app = new RaindropMCPService({ accessToken: "fake", maxReadRetries: 0 });
+    const client = new Client({ name: "v3-score-guard", version: "1" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    try {
+      await Promise.all([app.getServer().connect(serverTransport), client.connect(clientTransport)]);
+      const result = await client.callTool({ name: "raindrop_list", arguments: { sort: "score" } });
+      expect(result.isError).toBe(true);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      await client.close();
+      await app.cleanup();
+      vi.unstubAllGlobals();
+    }
+  });
+
 });
