@@ -1,5 +1,12 @@
 // Simple, clean openapi-fetch REST client
 import createClient from "openapi-fetch";
+import { createBoundedFetch } from "../bounded-fetch.js";
+import {
+  clampReadRetries,
+  ConcurrencyGate,
+  ExecutionBudget,
+  UnknownWriteError,
+} from "../execution-budget.js";
 import {
   AuthError,
   NotFoundError,
@@ -19,6 +26,9 @@ export interface RaindropServiceConfig {
   accessToken?: string;
   maxReadRetries?: number;
   debugHttp?: boolean;
+  fetchImpl?: typeof fetch;
+  maxRequestBytes?: number;
+  maxResponseBytes?: number;
 }
 
 export default class RaindropService {
@@ -32,17 +42,19 @@ export default class RaindropService {
   private cacheBookmarks = new Map<string, unknown>();
   private cacheSearch = new Map<string, unknown>();
   private readonly maxRateLimitRetries: number;
+  private readonly budget: ExecutionBudget;
+  private readonly gate: ConcurrencyGate;
 
   constructor(config: string | RaindropServiceConfig = {}) {
     const normalized: RaindropServiceConfig =
       typeof config === "string" ? { accessToken: config } : config;
-    const maxReadRetries = normalized.maxReadRetries;
-    this.maxRateLimitRetries =
-      maxReadRetries !== undefined &&
-      Number.isInteger(maxReadRetries) &&
-      maxReadRetries >= 0
-        ? maxReadRetries
-        : 3;
+    this.maxRateLimitRetries = clampReadRetries(normalized.maxReadRetries);
+    this.budget = new ExecutionBudget({
+      maxReadRetries: this.maxRateLimitRetries,
+      maxRequestBytes: normalized.maxRequestBytes,
+      maxResponseBytes: normalized.maxResponseBytes,
+    });
+    this.gate = new ConcurrencyGate();
     const accessToken = normalized.accessToken ?? "";
     const debugHttp = normalized.debugHttp ?? false;
 
@@ -51,6 +63,11 @@ export default class RaindropService {
       headers: {
         Authorization: `Bearer ${accessToken}`,
       },
+      fetch: createBoundedFetch({
+        budget: this.budget,
+        gate: this.gate,
+        fetchImpl: normalized.fetchImpl,
+      }),
     });
 
     this.client.use({
@@ -151,25 +168,30 @@ export default class RaindropService {
     try {
       return await fn();
     } catch (err: any) {
-      // Non-retryable errors: auth, not found, validation
-      if (err instanceof AuthError || err instanceof NotFoundError) {
+      if (err instanceof AuthError || err instanceof NotFoundError || err instanceof ValidationError) {
         throw err;
+      }
+
+      if (retryMode === "write") {
+        if (err instanceof UnknownWriteError) throw err;
+        throw new UnknownWriteError(
+          err instanceof Error ? err.message : "Write outcome is unknown.",
+          this.getUpstreamRetryAfterMs(err),
+        );
       }
 
       // Once a write has reached the upstream request, never resubmit it
       // automatically: the remote mutation may already have succeeded.
       if (err instanceof RateLimitError) {
-        if (retryMode === "write") {
-          throw err;
-        }
-
         const retryAfterMs = this.getUpstreamRetryAfterMs(err);
         const backoffMs =
           retryAfterMs !== undefined
             ? retryAfterMs + 250
             : Math.min(750 * Math.pow(2, retryCount), 10000);
-        const elapsedMs = Date.now() - startedAtMs;
-        const remainingBudgetMs = Math.max(0, readRetryBudgetMs - elapsedMs);
+        const remainingBudgetMs = Math.min(
+          Math.max(0, readRetryBudgetMs - (Date.now() - startedAtMs)),
+          this.budget.remainingMs(),
+        );
 
         if (retryCount >= maxRetries) {
           throw new RateLimitError(
@@ -205,8 +227,10 @@ export default class RaindropService {
         retryCount < maxRetries
       ) {
         const backoffMs = Math.min(500 * Math.pow(2, retryCount), 5000);
-        const elapsedMs = Date.now() - startedAtMs;
-        const remainingBudgetMs = Math.max(0, readRetryBudgetMs - elapsedMs);
+        const remainingBudgetMs = Math.min(
+          Math.max(0, readRetryBudgetMs - (Date.now() - startedAtMs)),
+          this.budget.remainingMs(),
+        );
         if (backoffMs > remainingBudgetMs) {
           throw err;
         }

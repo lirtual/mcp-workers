@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { UnknownWriteError } from "../src/execution-budget.js";
 import RaindropService from "../src/services/raindrop.service.js";
 
 describe("RaindropService retry safety", () => {
@@ -19,8 +20,8 @@ describe("RaindropService retry safety", () => {
     const service = new RaindropService({ accessToken: "test-token", maxReadRetries: 1 });
     (service as any).rateLimiter = undefined;
 
-    await expect(service.createCollection("one-shot")).rejects.toThrow(
-      "API Error: 500 Internal Server Error",
+    await expect(service.createCollection("one-shot")).rejects.toBeInstanceOf(
+      UnknownWriteError,
     );
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
@@ -83,8 +84,8 @@ describe("RaindropService retry safety", () => {
     const service = new RaindropService({ accessToken: "test-token", maxReadRetries: 1 });
     (service as any).rateLimiter = undefined;
 
-    await expect(service.createCollection("one-shot")).rejects.toThrow(
-      /Rate limited by Raindrop.io/,
+    await expect(service.createCollection("one-shot")).rejects.toBeInstanceOf(
+      UnknownWriteError,
     );
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });

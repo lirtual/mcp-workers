@@ -30,7 +30,7 @@ describe("Worker-native diagnostics contract", () => {
       "diagnostics",
       "collection_list",
     ]);
-    const result = await tool.handler({ includeEnvironment: true }, context);
+    const result = await tool.handler({ includeUpstream: true }, context);
     const structured = DiagnosticsOutputSchema.parse(
       (result as { structuredContent: unknown }).structuredContent,
     );
@@ -38,7 +38,7 @@ describe("Worker-native diagnostics contract", () => {
     expect(tool.name).toBe("diagnostics");
     expect(structured).toMatchObject({
       version: "2.4.5",
-      mcpProtocolVersion: "2026-07-28",
+      protocolTarget: "2026-07-28",
       runtime: "cloudflare-workers",
       httpMode: "per-request",
       enabledTools: ["diagnostics", "collection_list"],
@@ -52,6 +52,7 @@ describe("Worker-native diagnostics contract", () => {
         untaggedCount: 3,
       },
     });
+    expect(structured).not.toHaveProperty("mcpProtocolVersion");
 
     const content = (result as { content: Array<{ resource?: { text?: string } }> })
       .content[0];
@@ -69,5 +70,22 @@ describe("Worker-native diagnostics contract", () => {
       expect(resourcePayload).not.toHaveProperty(obsoleteField);
     }
     expect(JSON.stringify(resourcePayload)).not.toContain("RAINDROP_ACCESS_TOKEN");
+  });
+
+  it("makes no upstream calls for default diagnostics", async () => {
+    const getUserStats = vi.fn();
+    const getBookmarks = vi.fn();
+    const context = {
+      raindropService: { getUserStats, getBookmarks },
+    } as unknown as ToolHandlerContext;
+    const tool = createDiagnosticsTool("2.4.5", () => ["diagnostics"]);
+    const result = await tool.handler({}, context);
+    const structured = DiagnosticsOutputSchema.parse(
+      (result as { structuredContent: unknown }).structuredContent,
+    );
+    expect(getUserStats).not.toHaveBeenCalled();
+    expect(getBookmarks).not.toHaveBeenCalled();
+    expect(structured.libraryHealth).toBeNull();
+    expect(structured).not.toHaveProperty("mcpProtocolVersion");
   });
 });
