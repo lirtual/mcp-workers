@@ -2,6 +2,7 @@ import { appendFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { verifyRaindropOutput } from './raindrop-verification.js';
+import { discoverRaindropLiveContract } from './raindrop-discovery.js';
 
 const baseUrl = required('WORKFLOW_MCP_URL').replace(/\/+$/, '');
 const accessToken = required('WORKFLOW_MCP_ACCESS_TOKEN');
@@ -10,6 +11,8 @@ const timeoutMs = 3 * 60 * 1000;
 const pollMs = 3000;
 const workflowId = 'raindrop-daily-snapshot';
 
+// Fail closed on live schema drift before admitting any workflow Run.
+const liveContract = await discoverRaindropLiveContract(accessToken);
 const list = await callTool('workflow_list', {});
 const entry = asArray(list.workflows)
   .map(asObject)
@@ -66,6 +69,7 @@ const evidence = {
   runId,
   state: status.state,
   definitionDigest: digest,
+  liveRaindropSchemaSha256: liveContract.schemaSha256,
   engineVersion: status.engineVersion ?? null,
   cfWorkflowVersionId: status.cfWorkflowVersionId ?? null,
   startedAt: status.startedAt ?? null,
