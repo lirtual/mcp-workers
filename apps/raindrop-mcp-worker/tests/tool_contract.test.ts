@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { RaindropMCPService } from "../src/services/raindropmcp.service.js";
 import { prepareToolSchema } from "../src/services/tool-schema.js";
+import { ToolEnvelopeSchema } from "../src/tools/common.js";
 import { z } from "zod";
 
 const EXPECTED_TOOL_NAMES = [
@@ -91,6 +92,56 @@ describe("Raindrop MCP v3 public contract", () => {
       await service.cleanup();
     }
   });
+  it("requires distinct success and failure fields in every public output schema", async () => {
+    const invalid = [
+      { ok: true, meta: {} },
+      { ok: false, meta: {} },
+      { ok: true, data: {}, error: { code: "X", message: "x" }, meta: {} },
+      { ok: false, data: null, error: { code: "X", message: "x" }, meta: {} },
+      { ok: true, data: undefined, meta: {} },
+      { ok: false, error: { code: "X" }, meta: {} },
+    ];
+    for (const value of invalid) {
+      expect(ToolEnvelopeSchema.safeParse(value).success, JSON.stringify(value)).toBe(false);
+    }
+    expect(ToolEnvelopeSchema.safeParse({ ok: true, data: { items: [] }, meta: {} }).success).toBe(true);
+    expect(ToolEnvelopeSchema.safeParse({
+      ok: false, error: { code: "UPSTREAM_ERROR", message: "Unavailable" }, meta: {},
+    }).success).toBe(true);
+
+    const app = new RaindropMCPService({ accessToken: "offline-token" });
+    const client = new Client({ name: "v3-output-schema", version: "1" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    try {
+      await Promise.all([app.getServer().connect(serverTransport), client.connect(clientTransport)]);
+      const tools = (await client.listTools()).tools;
+      expect(tools.map((tool) => tool.name).sort()).toEqual(EXPECTED_TOOL_NAMES);
+      for (const tool of tools) {
+        const requiredSets: string[][] = [];
+        const inspect = (value: unknown): void => {
+          if (!value || typeof value !== "object") return;
+          if (Array.isArray(value)) {
+            value.forEach(inspect);
+            return;
+          }
+          const object = value as Record<string, unknown>;
+          if (Array.isArray(object.required)) {
+            requiredSets.push(object.required.filter((key): key is string => typeof key === "string"));
+          }
+          Object.values(object).forEach(inspect);
+        };
+        inspect(tool.outputSchema);
+        for (const mandatory of [["ok", "data", "meta"], ["ok", "error", "meta"]]) {
+          expect(requiredSets.some((set) => mandatory.every((field) => set.includes(field))),
+            `tool ${tool.name} output schema must require ${mandatory.join(", ")}`).toBe(true);
+        }
+      }
+    } finally {
+      await client.close();
+      await app.cleanup();
+    }
+  });
+
   it("rejects unknown fields for every one of the 26 tools through MCP Client", async () => {
     const fetchSpy = vi.fn(() => {
       throw new Error("Schema must reject inputs before any upstream request");
