@@ -13,6 +13,10 @@ import {
 import type { components, paths } from "../types/raindrop.schema.js";
 import { createLogger } from "../utils/logger.js";
 import { ExecutionBudget } from "./execution-budget.js";
+import {
+  BookmarkBusinessSchema, CollectionBusinessSchema, HighlightBusinessSchema,
+  TagBusinessSchema, requireBusiness,
+} from "./business-contracts.js";
 
 type Bookmark = components["schemas"]["Bookmark"];
 type Collection = components["schemas"]["Collection"];
@@ -304,11 +308,8 @@ export default class RaindropService {
       if (data.items.length > 1000) {
         throw new McpError("RESOURCE_LIMIT", "Collection metadata exceeds 1000 items");
       }
-      for (const item of data.items as Collection[]) {
-        if (!Number.isSafeInteger(item?._id) || item._id <= 0 ||
-            typeof item.title !== "string") {
-          throw new UpstreamError("Collection metadata contains an invalid item");
-        }
+      for (const item of data.items) {
+        requireBusiness(CollectionBusinessSchema, item, "collection index item");
       }
       return data.items as Collection[];
     };
@@ -339,7 +340,7 @@ export default class RaindropService {
       throw new UpstreamError("Collection create acknowledgement is missing");
     }
     this.cacheCollections.clear();
-    if (!data.item) throw new WriteResultUnavailableError();
+    if (!CollectionBusinessSchema.safeParse(data.item).success) throw new WriteResultUnavailableError();
     return data.item as Collection;
   }
 
@@ -361,7 +362,7 @@ export default class RaindropService {
       throw new UpstreamError("Collection update acknowledgement is missing");
     }
     this.cacheCollections.clear();
-    if (!data.item) throw new WriteResultUnavailableError();
+    if (!CollectionBusinessSchema.safeParse(data.item).success) throw new WriteResultUnavailableError();
     return data.item as Collection;
   }
 
@@ -397,7 +398,7 @@ export default class RaindropService {
       });
       if (data?.result === false) throw new UpstreamError("Collection detail was rejected");
       if (!data?.item) throw new NotFoundError("Collection not found");
-      return data.item as Collection;
+      return requireBusiness(CollectionBusinessSchema, data.item, "collection detail") as Collection;
     });
 
     this.cacheCollections.set(`id:${id}`, collection);
@@ -439,7 +440,7 @@ export default class RaindropService {
       throw new UpstreamError("Raindrop list response is missing or rejected");
     }
     return {
-      items: data.items as Bookmark[],
+      items: data.items.map((item) => requireBusiness(BookmarkBusinessSchema, item, "bookmark list item")) as Bookmark[],
       count: typeof data.count === "number" && Number.isSafeInteger(data.count) && data.count >= 0
         ? data.count : null,
     };
@@ -465,6 +466,7 @@ export default class RaindropService {
       throw new UpstreamError("Upstream create response has no bookmark");
     }
     this.cacheSearch.clear();
+    if (!BookmarkBusinessSchema.safeParse(data.item).success) throw new WriteResultUnavailableError();
     return data.item as Bookmark;
   }
 
@@ -490,6 +492,7 @@ export default class RaindropService {
     }
     this.cacheBookmarks.delete(`id:${id}`);
     this.cacheSearch.clear();
+    if (!BookmarkBusinessSchema.safeParse(data.item).success) throw new WriteResultUnavailableError();
     return data.item as Bookmark;
   }
 
@@ -548,7 +551,7 @@ export default class RaindropService {
       });
       if (data?.result === false) throw new UpstreamError("Bookmark detail was rejected");
       if (!data?.item) throw new NotFoundError("Bookmark not found");
-      return data.item as Bookmark;
+      return requireBusiness(BookmarkBusinessSchema, data.item, "bookmark detail") as Bookmark;
     });
 
     this.cacheBookmarks.set(`id:${id}`, bookmark);
@@ -612,11 +615,8 @@ export default class RaindropService {
     if (data.items.length > 5000) {
       throw new McpError("RESOURCE_LIMIT", "Tag metadata exceeds the 5000-item limit");
     }
-    if (!data.items.every((item: unknown) => {
-      const tag = item as { _id?: unknown; count?: unknown };
-      return tag && typeof tag._id === "string" && typeof tag.count === "number";
-    })) {
-      throw new UpstreamError("Upstream tags response contains invalid items");
+    for (const item of data.items) {
+      requireBusiness(TagBusinessSchema, item, "tag list item");
     }
     return data.items as Array<{ _id: string; count: number }>;
   }
@@ -730,7 +730,7 @@ export default class RaindropService {
       throw new UpstreamError("Upstream highlights response is invalid or rejected");
     }
     return {
-      items: data.items as Highlight[],
+      items: data.items.map((item) => requireBusiness(HighlightBusinessSchema, item, "highlight list item")) as Highlight[],
       count: typeof data.count === "number" && Number.isSafeInteger(data.count) && data.count >= 0 ? data.count : null,
     };
   }
@@ -754,7 +754,7 @@ export default class RaindropService {
     if (data?.result !== true) {
       throw new UpstreamError("Upstream highlight mutation acknowledgement is missing");
     }
-    const item = data.item && typeof data.item === "object" ? data.item as Bookmark : null;
+    const item = BookmarkBusinessSchema.safeParse(data.item).success ? data.item as Bookmark : null;
     this.cacheBookmarks.delete(`id:${raindropId}`);
     this.cacheSearch.clear();
     const returned = item?.highlights;
