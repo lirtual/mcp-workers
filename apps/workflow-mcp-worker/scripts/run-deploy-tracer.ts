@@ -1,6 +1,7 @@
 import { appendFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { callMcpTool } from '../src/mcp-client.js';
+import { assertWorkflowMcpHealth } from '../src/release-health.js';
 import type { Env } from '../src/types.js';
 
 const baseUrl = required('WORKFLOW_MCP_URL').replace(/\/+$/, '');
@@ -19,7 +20,7 @@ const evidence: Record<string, unknown> = {
   sourceUrl
 };
 
-await assertHealth();
+await assertWorkflowMcpHealth(baseUrl);
 const listed = await waitForAuthenticatedMcp();
 const workflowIds = asArray(listed.workflows).map(item => stringField(asObject(item), 'id'));
 for (const requiredWorkflow of ['web-archive-smoke']) {
@@ -92,13 +93,6 @@ appendGitHubOutput('heavy_run_id', heavyRunId);
 appendGitHubOutput('mcp_run_id', 'connection-direct');
 appendGitHubOutput('evidence_path', evidencePath);
 console.log(JSON.stringify(evidence, null, 2));
-
-async function assertHealth(): Promise<void> {
-  const response = await fetch(`${baseUrl}/health`);
-  if (!response.ok) throw new Error(`Workflow MCP health failed with status ${response.status}.`);
-  const body = asObject(await response.json());
-  if (body.status !== 'ok') throw new Error('Workflow MCP health payload is invalid.');
-}
 
 async function waitForAuthenticatedMcp(): Promise<Record<string, unknown>> {
   const result = await callTool('workflow_list', {});

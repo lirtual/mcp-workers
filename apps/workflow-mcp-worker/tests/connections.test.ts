@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildConnectionAuthHeader,
-  resolveConnection,
+  getConnection,
   type McpConnection
 } from '../src/connections.js';
 
@@ -37,7 +37,7 @@ describe('MCP connection auth formatting', () => {
   });
 
   it('uses the shared MCP caller token only for the self-connection', () => {
-    const resolved = resolveConnection({}, 'workflow-self');
+    const resolved = getConnection('workflow-self');
     expect(resolved).toMatchObject({
       endpoint: 'https://workflow-mcp-worker.aiyaya.workers.dev/mcp',
       protocolVersion: '2026-07-28',
@@ -45,8 +45,8 @@ describe('MCP connection auth formatting', () => {
       tools: { workflow_list: { effect: 'read' } },
       auth: { header: 'Authorization', format: 'bearer', secret: 'MCP_ACCESS_TOKEN' }
     });
-    expect(resolveConnection({}, 'smoke-readonly')).toBeUndefined();
-    expect(resolveConnection({}, 'smoke-modern')).toBeUndefined();
+    expect(getConnection('smoke-readonly')).toBeUndefined();
+    expect(getConnection('smoke-modern')).toBeUndefined();
   });
 
   it('supports explicit custom prefixes without assuming Bearer', () => {

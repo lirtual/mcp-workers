@@ -1,13 +1,8 @@
+import { assertWorkflowMcpHealth } from '../src/release-health.js';
+
 const baseUrl = required('WORKFLOW_MCP_URL').replace(/\/+$/, '');
 
-const health = await fetch(`${baseUrl}/health`);
-if (!health.ok) {
-  throw new Error(`Workflow MCP health failed with status ${health.status}.`);
-}
-const healthBody = asObject(await health.json());
-if (healthBody.status !== 'ok') {
-  throw new Error('Workflow MCP health payload is invalid.');
-}
+await assertWorkflowMcpHealth(baseUrl);
 
 const unauthenticated = await fetch(`${baseUrl}/mcp`, {
   method: 'POST',

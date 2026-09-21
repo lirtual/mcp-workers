@@ -3,11 +3,11 @@ import { callMcpTool, inspectMcpTool } from '../src/mcp-client.js';
 import type { Env } from '../src/types.js';
 
 vi.mock('../src/connections.js', async importOriginal => {
-  const actual = await importOriginal<{ resolveConnection: (env: object, id: string) => unknown }>();
+  const actual = await importOriginal<{ getConnection: (id: string) => unknown }>();
   return {
     ...actual,
-    resolveConnection(env: object, id: string) {
-      if (id !== 'legacy-test') return actual.resolveConnection(env, id);
+    getConnection(id: string) {
+      if (id !== 'legacy-test') return actual.getConnection(id);
       return {
         id: 'legacy-test',
         transport: 'streamable-http',

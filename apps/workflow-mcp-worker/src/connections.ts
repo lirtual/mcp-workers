@@ -42,16 +42,6 @@ export function getConnection(id: string): McpConnection | undefined {
   return connections[id as keyof typeof connections];
 }
 
-export function resolveConnection(
-  env: object,
-  id: string
-): McpConnection | undefined {
-  const connection = getConnection(id);
-  if (!connection) return undefined;
-  void env;
-  return connection;
-}
-
 export function hasConnection(id: string): boolean {
   return getConnection(id) !== undefined;
 }
