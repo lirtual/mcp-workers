@@ -1,0 +1,64 @@
+name: Workflow MCP Scheduled Acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_utc:
+        description: Exact business occurrence at 01:00 UTC (09:00 Asia/Shanghai), e.g. 2026-09-22T01:00:00.000Z
+        required: true
+        type: string
+      deploy_run_id:
+        description: Completed successful Workflow MCP Deploy run ID, finished before the occurrence
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: workflow-mcp-scheduled-acceptance
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Read-only post-job 09:00 evidence
+    environment: workflow-mcp-worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      WORKFLOW_MCP_URL: ${{ vars.WORKFLOW_MCP_URL || 'https://workflow-mcp-worker.aiyaya.workers.dev' }}
+      WORKFLOW_MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      GITHUB_TOKEN: ${{ github.token }}
+      WORKFLOW_MCP_EXPECTED_UTC: ${{ inputs.expected_utc }}
+      WORKFLOW_MCP_DEPLOY_RUN_ID: ${{ inputs.deploy_run_id }}
+      WORKFLOW_MCP_SCHEDULED_EVIDENCE_PATH: ${{ github.workspace }}/workflow-mcp-scheduled-evidence.json
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Activate pinned pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.17.1 --activate
+
+      - name: Install workspace
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Verify already-completed deployment and real scheduled occurrence (read-only)
+        working-directory: apps/workflow-mcp-worker
+        run: pnpm run release:raindrop-scheduled
+
+      - name: Upload sanitized scheduled evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow-mcp-scheduled-evidence-${{ github.run_id }}
+          path: workflow-mcp-scheduled-evidence.json
+          if-no-files-found: warn
+          retention-days: 14
