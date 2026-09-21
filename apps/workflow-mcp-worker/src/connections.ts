@@ -35,6 +35,22 @@ const connections = {
     tools: {
       workflow_list: { effect: 'read' }
     }
+  },
+  // Raindrop MCP ingress uses the shared MCP token; its business API token stays inside Raindrop.
+  raindrop: {
+    id: 'raindrop',
+    transport: 'streamable-http',
+    protocolVersion: '2026-07-28',
+    endpoint: 'https://raindrop-mcp-worker.aiyaya.workers.dev/mcp',
+    auth: {
+      header: 'Authorization',
+      format: 'bearer',
+      secret: 'MCP_ACCESS_TOKEN'
+    },
+    trustAnnotations: false,
+    tools: {
+      list_raindrops: { effect: 'read' }
+    }
   }
 } as const satisfies Record<string, McpConnection>;
 
