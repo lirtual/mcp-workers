@@ -269,4 +269,58 @@ describe("Raindrop MCP v3 public contract", () => {
     }
   });
 
+
+  it.each([
+    ["raindrop_get", { id: 7 }, { result: true, item: "invalid" }, "UPSTREAM_ERROR"],
+    ["raindrop_list", {}, { result: true, items: ["invalid"] }, "UPSTREAM_ERROR"],
+    ["highlight_list", {}, { result: true, items: ["invalid"] }, "UPSTREAM_ERROR"],
+    ["collection_get", { id: 7 }, { result: true, item: "invalid" }, "UPSTREAM_ERROR"],
+  ])("rejects malformed %s business results through a real MCP Client", async (name, args, payload, code) => {
+    const fetchSpy = vi.fn(async () => Response.json(payload));
+    vi.stubGlobal("fetch", fetchSpy);
+    const app = new RaindropMCPService({ accessToken: "offline-token", maxReadRetries: 0 });
+    const client = new Client({ name: "v3-malformed-read", version: "1" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    try {
+      await Promise.all([app.getServer().connect(serverTransport), client.connect(clientTransport)]);
+      const result = await client.callTool({ name, arguments: args });
+      expect(result.isError, name).toBe(true);
+      expect(result.structuredContent, name).toMatchObject({
+        ok: false, error: { code }, meta: { requestCount: 1 },
+      });
+      expect(fetchSpy, name).toHaveBeenCalledTimes(1);
+    } finally {
+      await client.close();
+      await app.cleanup();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each(["raindrop_create", "raindrop_update"])(
+    "preserves acknowledged %s writes with malformed business results without replaying",
+    async (name) => {
+      const fetchSpy = vi.fn(async () => Response.json({ result: true, item: "invalid" }));
+      vi.stubGlobal("fetch", fetchSpy);
+      const app = new RaindropMCPService({ accessToken: "offline-token", maxReadRetries: 0 });
+      const client = new Client({ name: "v3-malformed-write", version: "1" });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      try {
+        await Promise.all([app.getServer().connect(serverTransport), client.connect(clientTransport)]);
+        const result = await client.callTool({
+          name,
+          arguments: name === "raindrop_create" ? { link: "https://example.test/" } : { id: 7, note: "" },
+        });
+        expect(result.structuredContent, name).toMatchObject({
+          ok: true, data: null,
+          meta: { status: "succeeded", outputOmitted: true, requestCount: 1 },
+        });
+        expect(fetchSpy, name).toHaveBeenCalledTimes(1);
+      } finally {
+        await client.close();
+        await app.cleanup();
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
 });
