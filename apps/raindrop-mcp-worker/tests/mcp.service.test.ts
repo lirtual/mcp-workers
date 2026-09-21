@@ -11,24 +11,6 @@ const describeLive = runLive ? describe : describe.skip;
 const USER_PROFILE_URI = "mcp://user/profile";
 const DIAGNOSTICS_URI = "diagnostics://server";
 
-const firstResourceUriByPrefix = (content: any[], prefix: string) => {
-  const item = content.find(
-    (entry) =>
-      entry?.type === "resource" &&
-      typeof entry?.resource?.uri === "string" &&
-      entry.resource.uri.startsWith(prefix),
-  );
-  return item?.resource?.uri as string | undefined;
-};
-
-const parseIdFromResourceUri = (uri: string) => {
-  const id = Number.parseInt(uri.split("/").pop() || "", 10);
-  if (!Number.isFinite(id)) {
-    throw new Error(`Failed to parse numeric ID from URI: ${uri}`);
-  }
-  return id;
-};
-
 describe("RaindropMCPService", () => {
   let mcpService: RaindropMCPService;
 
@@ -132,82 +114,44 @@ describe("RaindropMCPService", () => {
   });
 });
 
-describeLive("RaindropMCPService live API checks", () => {
+describeLive("RaindropMCPService live read-only resource checks", () => {
   let mcpService: RaindropMCPService;
 
-  beforeEach(async () => {
-    if (mcpService && typeof mcpService.cleanup === "function") {
-      await mcpService.cleanup();
-    }
-    mcpService = new RaindropMCPService({ accessToken: process.env.RAINDROP_ACCESS_TOKEN ?? "" });
+  beforeEach(() => {
+    mcpService = new RaindropMCPService({
+      accessToken: process.env.RAINDROP_ACCESS_TOKEN ?? "",
+    });
   });
 
   afterEach(async () => {
-    if (typeof mcpService?.cleanup === "function") {
-      await mcpService.cleanup();
-    }
-    mcpService = undefined as unknown as RaindropMCPService;
+    await mcpService.cleanup();
   });
 
-  it("reads user profile resource when live tests are enabled", async () => {
+  it("reads the authenticated profile resource", async () => {
     const result = await mcpService.readResource(USER_PROFILE_URI);
-    expect(result).toBeDefined();
-    expect(Array.isArray(result)).toBe(true);
-    expect(result.length).toBeGreaterThan(0);
-    const first = result[0];
-    if (!first) throw new Error("No user profile content returned");
-    expect(first.uri).toBe(USER_PROFILE_URI);
-    expect(first.text).toContain("profile");
+    expect(result[0]?.uri).toBe(USER_PROFILE_URI);
+    expect(JSON.parse(result[0]!.text).profile).toBeDefined();
   });
 
-  it("discovers a collection and reads it via resource URI", async () => {
-    const listResult = await mcpService.callTool("collection_list", {});
-    const collectionUri = firstResourceUriByPrefix(
-      listResult.content,
-      "mcp://collection/",
-    );
-
-    if (!collectionUri) {
-      throw new Error("No collection resource URI found from collection_list");
-    }
-
-    const resource = await mcpService.readResource(collectionUri);
-    const first = resource[0];
-    if (!first) throw new Error("No collection resource content returned");
-    expect(first.uri).toBe(collectionUri);
-    expect(first.text).toContain("collection");
+  it("reads a currently listed collection by strict resource URI when one exists", async () => {
+    const list = await mcpService.callTool("collection_list", {});
+    expect(list.structuredContent?.ok).toBe(true);
+    const data = list.structuredContent?.data as { items?: Array<{ _id: number }> } | undefined;
+    const first = data?.items?.[0];
+    if (!first) return; // An empty isolated account is valid.
+    const uri = `mcp://collection/${first._id}`;
+    const resource = await mcpService.readResource(uri);
+    expect(JSON.parse(resource[0]!.text).collection._id).toBe(first._id);
   });
 
-  it("discovers a bookmark and reads it via resource URI", async () => {
-    const listCollections = await mcpService.callTool("collection_list", {});
-    const collectionUri = firstResourceUriByPrefix(
-      listCollections.content,
-      "mcp://collection/",
-    );
-
-    if (!collectionUri) {
-      throw new Error("No collection resource URI found from collection_list");
-    }
-
-    const collectionId = parseIdFromResourceUri(collectionUri);
-    const listBookmarks = await mcpService.callTool("list_raindrops", {
-      collectionId,
-      perPage: 10,
-    });
-
-    const raindropUri = firstResourceUriByPrefix(
-      listBookmarks.content,
-      "mcp://raindrop/",
-    );
-
-    if (!raindropUri) {
-      throw new Error("No raindrop resource URI found from list_raindrops");
-    }
-
-    const resource = await mcpService.readResource(raindropUri);
-    const first = resource[0];
-    if (!first) throw new Error("No raindrop resource content returned");
-    expect(first.uri).toBe(raindropUri);
-    expect(first.text).toContain("raindrop");
+  it("reads a currently listed bookmark by strict resource URI when one exists", async () => {
+    const list = await mcpService.callTool("raindrop_list", { collectionId: 0, perpage: 1 });
+    expect(list.structuredContent?.ok).toBe(true);
+    const data = list.structuredContent?.data as { items?: Array<{ _id: number }> } | undefined;
+    const first = data?.items?.[0];
+    if (!first) return; // No fallback to a hardcoded or personal bookmark.
+    const uri = `mcp://raindrop/${first._id}`;
+    const resource = await mcpService.readResource(uri);
+    expect(JSON.parse(resource[0]!.text).raindrop._id).toBe(first._id);
   });
 });

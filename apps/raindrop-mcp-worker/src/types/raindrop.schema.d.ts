@@ -64,7 +64,7 @@ export type paths = {
         readonly patch?: never;
         readonly trace?: never;
     };
-    readonly "/collections/{parentId}/childrens": {
+    readonly "/collections/childrens": {
         readonly parameters: {
             readonly query?: never;
             readonly header?: never;
@@ -72,71 +72,11 @@ export type paths = {
             readonly cookie?: never;
         };
         /**
-         * Get child collections
-         * @description Retrieves child collections of a specific parent collection
+         * Get all child collections
+         * @description Retrieves child collections for the authenticated user
          */
         readonly get: operations["getChildCollections"];
         readonly put?: never;
-        readonly post?: never;
-        readonly delete?: never;
-        readonly options?: never;
-        readonly head?: never;
-        readonly patch?: never;
-        readonly trace?: never;
-    };
-    readonly "/collections/sort": {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly get?: never;
-        /**
-         * Reorder collections
-         * @description Change the sort order of collections
-         */
-        readonly put: operations["reorderCollections"];
-        readonly post?: never;
-        readonly delete?: never;
-        readonly options?: never;
-        readonly head?: never;
-        readonly patch?: never;
-        readonly trace?: never;
-    };
-    readonly "/collections/collapsed": {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly get?: never;
-        /**
-         * Toggle collections expansion
-         * @description Expand or collapse collections in the UI
-         */
-        readonly put: operations["toggleCollectionsExpansion"];
-        readonly post?: never;
-        readonly delete?: never;
-        readonly options?: never;
-        readonly head?: never;
-        readonly patch?: never;
-        readonly trace?: never;
-    };
-    readonly "/collections/clean": {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly get?: never;
-        /**
-         * Remove empty collections
-         * @description Remove all empty collections from the account
-         */
-        readonly put: operations["removeEmptyCollections"];
         readonly post?: never;
         readonly delete?: never;
         readonly options?: never;
@@ -192,101 +132,21 @@ export type paths = {
         readonly patch?: never;
         readonly trace?: never;
     };
-    readonly "/collection/{id}/stats": {
+    readonly "/collection/-99": {
         readonly parameters: {
             readonly query?: never;
             readonly header?: never;
             readonly path?: never;
             readonly cookie?: never;
         };
-        /**
-         * Get collection statistics
-         * @description Retrieves statistics for a specific collection
-         */
-        readonly get: operations["getCollectionStats"];
+        readonly get?: never;
         readonly put?: never;
         readonly post?: never;
-        readonly delete?: never;
-        readonly options?: never;
-        readonly head?: never;
-        readonly patch?: never;
-        readonly trace?: never;
-    };
-    readonly "/collection/{id}/sharing": {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly get?: never;
         /**
-         * Share a collection
-         * @description Share a collection with specific users or generate public sharing link
+         * Permanently empty current Trash
+         * @description Deletes all items currently in Trash; the MCP v3 tool requires explicit confirmation
          */
-        readonly put: operations["shareCollection"];
-        readonly post?: never;
-        readonly delete?: never;
-        readonly options?: never;
-        readonly head?: never;
-        readonly patch?: never;
-        readonly trace?: never;
-    };
-    readonly "/collection/{id}/merge": {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly get?: never;
-        /**
-         * Merge collections
-         * @description Merge multiple collections into a target collection
-         */
-        readonly put: operations["mergeCollections"];
-        readonly post?: never;
-        readonly delete?: never;
-        readonly options?: never;
-        readonly head?: never;
-        readonly patch?: never;
-        readonly trace?: never;
-    };
-    readonly "/collection/-99/clear": {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly get?: never;
-        /**
-         * Empty trash
-         * @description Permanently delete all bookmarks in the trash collection
-         */
-        readonly put: operations["emptyTrash"];
-        readonly post?: never;
-        readonly delete?: never;
-        readonly options?: never;
-        readonly head?: never;
-        readonly patch?: never;
-        readonly trace?: never;
-    };
-    readonly "/raindrops/0": {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        /**
-         * Get all bookmarks
-         * @description Retrieves all bookmarks from all collections with filtering options
-         */
-        readonly get: operations["getAllBookmarks"];
-        readonly put?: never;
-        readonly post?: never;
-        readonly delete?: never;
+        readonly delete: operations["emptyTrash"];
         readonly options?: never;
         readonly head?: never;
         readonly patch?: never;
@@ -315,150 +175,6 @@ export type paths = {
          * @description Delete multiple bookmarks in a specific collection or empty trash/collection
          */
         readonly delete: operations["batchDeleteBookmarksInCollection"];
-        readonly options?: never;
-        readonly head?: never;
-        readonly patch?: never;
-        readonly trace?: never;
-    };
-    readonly "/raindrops": {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        /**
-         * Advanced bookmark search
-         * @description Search bookmarks with advanced filtering options
-         */
-        readonly get: operations["searchRaindrops"];
-        /**
-         * Update multiple bookmarks
-         * @description Update properties of multiple bookmarks at once
-         */
-        readonly put: operations["batchUpdateBookmarks"];
-        readonly post?: never;
-        readonly delete?: never;
-        readonly options?: never;
-        readonly head?: never;
-        readonly patch?: never;
-        readonly trace?: never;
-    };
-    readonly "/raindrops/single": {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        /**
-         * Get detailed information about a single bookmark
-         * @description Retrieves comprehensive details about a specific bookmark by ID
-         */
-        readonly get: operations["getSingleBookmark"];
-        readonly put?: never;
-        readonly post?: never;
-        readonly delete?: never;
-        readonly options?: never;
-        readonly head?: never;
-        readonly patch?: never;
-        readonly trace?: never;
-    };
-    readonly "/raindrops/multiple": {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        /**
-         * Get multiple bookmarks by IDs
-         * @description Retrieves multiple bookmarks by their IDs
-         */
-        readonly get: operations["getMultipleBookmarks"];
-        readonly put?: never;
-        readonly post?: never;
-        readonly delete?: never;
-        readonly options?: never;
-        readonly head?: never;
-        readonly patch?: never;
-        readonly trace?: never;
-    };
-    readonly "/raindrops/suggest": {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        /**
-         * Suggest tags, collections, and covers based on URL
-         * @description Get AI-powered suggestions for organizing a bookmark based on its URL
-         */
-        readonly get: operations["suggestTagsCollectionsCovers"];
-        readonly put?: never;
-        readonly post?: never;
-        readonly delete?: never;
-        readonly options?: never;
-        readonly head?: never;
-        readonly patch?: never;
-        readonly trace?: never;
-    };
-    readonly "/raindrops/move": {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly get?: never;
-        /**
-         * Move multiple bookmarks
-         * @description Move multiple bookmarks to a different collection
-         */
-        readonly put: operations["bulkMoveBookmarks"];
-        readonly post?: never;
-        readonly delete?: never;
-        readonly options?: never;
-        readonly head?: never;
-        readonly patch?: never;
-        readonly trace?: never;
-    };
-    readonly "/raindrops/tags": {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly get?: never;
-        /**
-         * Add or remove tags from bookmarks
-         * @description Batch operation to add or remove tags from multiple bookmarks
-         */
-        readonly put: operations["batchTagBookmarks"];
-        readonly post?: never;
-        readonly delete?: never;
-        readonly options?: never;
-        readonly head?: never;
-        readonly patch?: never;
-        readonly trace?: never;
-    };
-    readonly "/raindrops/delete": {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly get?: never;
-        readonly put?: never;
-        readonly post?: never;
-        /**
-         * Delete multiple bookmarks
-         * @description Delete multiple bookmarks at once
-         */
-        readonly delete: operations["batchDeleteBookmarks"];
         readonly options?: never;
         readonly head?: never;
         readonly patch?: never;
@@ -502,362 +218,6 @@ export type paths = {
          */
         readonly put: operations["updateBookmark"];
         readonly post?: never;
-        /**
-         * Delete a bookmark
-         * @description Moves a bookmark to trash (soft delete)
-         */
-        readonly delete: operations["deleteBookmark"];
-        readonly options?: never;
-        readonly head?: never;
-        readonly patch?: never;
-        readonly trace?: never;
-    };
-    readonly "/raindrop/{id}/permanent": {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly get?: never;
-        readonly put?: never;
-        readonly post?: never;
-        /**
-         * Permanently delete a bookmark
-         * @description Permanently deletes a bookmark (cannot be recovered)
-         */
-        readonly delete: operations["permanentDeleteBookmark"];
-        readonly options?: never;
-        readonly head?: never;
-        readonly patch?: never;
-        readonly trace?: never;
-    };
-    readonly "/raindrop/{id}/reminder": {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly get?: never;
-        /**
-         * Set a reminder for a bookmark
-         * @description Set or update a reminder notification for a bookmark
-         */
-        readonly put: operations["setReminder"];
-        readonly post?: never;
-        /**
-         * Delete a bookmark reminder
-         * @description Remove the reminder notification from a bookmark
-         */
-        readonly delete: operations["deleteReminder"];
-        readonly options?: never;
-        readonly head?: never;
-        readonly patch?: never;
-        readonly trace?: never;
-    };
-    readonly "/raindrop/{id}/highlights": {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        /**
-         * Get highlights for a specific bookmark
-         * @description Retrieves all text highlights for a given bookmark
-         */
-        readonly get: operations["getHighlightsForBookmark"];
-        readonly put?: never;
-        readonly post?: never;
-        readonly delete?: never;
-        readonly options?: never;
-        readonly head?: never;
-        readonly patch?: never;
-        readonly trace?: never;
-    };
-    readonly "/raindrop/file": {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly get?: never;
-        /**
-         * Upload a file as a bookmark
-         * @description Upload a file and create a bookmark from it
-         */
-        readonly put: operations["uploadFile"];
-        readonly post?: never;
-        readonly delete?: never;
-        readonly options?: never;
-        readonly head?: never;
-        readonly patch?: never;
-        readonly trace?: never;
-    };
-    readonly "/file/{id}": {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        /**
-         * Retrieve a file
-         * @description Download or retrieve information about an uploaded file
-         */
-        readonly get: operations["getFile"];
-        readonly put?: never;
-        readonly post?: never;
-        /**
-         * Delete a file
-         * @description Delete an uploaded file
-         */
-        readonly delete: operations["deleteFile"];
-        readonly options?: never;
-        readonly head?: never;
-        readonly patch?: never;
-        readonly trace?: never;
-    };
-    readonly "/highlights": {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        /**
-         * Get all highlights
-         * @description Retrieves all highlights from a user's bookmarks with pagination
-         */
-        readonly get: operations["getAllHighlights"];
-        readonly put?: never;
-        /**
-         * Add a new highlight to a bookmark
-         * @description Creates a new text highlight for a specific bookmark
-         */
-        readonly post: operations["addHighlightToBookmark"];
-        readonly delete?: never;
-        readonly options?: never;
-        readonly head?: never;
-        readonly patch?: never;
-        readonly trace?: never;
-    };
-    readonly "/highlights/{id}": {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly get?: never;
-        /**
-         * Update a highlight
-         * @description Modifies an existing highlight's text, note, or color
-         */
-        readonly put: operations["updateHighlight"];
-        readonly post?: never;
-        /**
-         * Delete a highlight
-         * @description Permanently removes a highlight from a bookmark
-         */
-        readonly delete: operations["deleteHighlight"];
-        readonly options?: never;
-        readonly head?: never;
-        readonly patch?: never;
-        readonly trace?: never;
-    };
-    readonly "/highlights/{collectionId}": {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        /**
-         * Get all highlights in a collection
-         * @description Retrieves all highlights from bookmarks in a specific collection
-         */
-        readonly get: operations["getHighlightsByCollection"];
-        readonly put?: never;
-        readonly post?: never;
-        readonly delete?: never;
-        readonly options?: never;
-        readonly head?: never;
-        readonly patch?: never;
-        readonly trace?: never;
-    };
-    readonly "/tags": {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        /**
-         * Get all tags used in bookmarks
-         * @description Retrieves all unique tags used in the user's bookmarks
-         */
-        readonly get: operations["getAllTags"];
-        readonly put?: never;
-        readonly post?: never;
-        readonly delete?: never;
-        readonly options?: never;
-        readonly head?: never;
-        readonly patch?: never;
-        readonly trace?: never;
-    };
-    readonly "/tags/0": {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        /**
-         * Get all tags (alternative endpoint)
-         * @description Alternative endpoint to retrieve all tags
-         */
-        readonly get: operations["getAllTagsAlt"];
-        /**
-         * Rename or merge tags globally
-         * @description Rename or merge tags across all collections
-         */
-        readonly put: operations["renameOrMergeAllTags"];
-        readonly post?: never;
-        /**
-         * Delete multiple tags globally
-         * @description Delete multiple tags from all bookmarks
-         */
-        readonly delete: operations["deleteAllTags"];
-        readonly options?: never;
-        readonly head?: never;
-        readonly patch?: never;
-        readonly trace?: never;
-    };
-    readonly "/tags/{collectionId}": {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        /**
-         * Get tags from a specific collection
-         * @description Retrieves all tags used in bookmarks within a specific collection
-         */
-        readonly get: operations["getTagsByCollection"];
-        /**
-         * Rename or merge tags in a collection
-         * @description Rename or merge tags within a specific collection
-         */
-        readonly put: operations["renameOrMergeCollectionTags"];
-        readonly post?: never;
-        /**
-         * Delete tags from a collection
-         * @description Delete multiple tags from bookmarks in a specific collection
-         */
-        readonly delete: operations["deleteCollectionTags"];
-        readonly options?: never;
-        readonly head?: never;
-        readonly patch?: never;
-        readonly trace?: never;
-    };
-    readonly "/import": {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly get?: never;
-        readonly put?: never;
-        /**
-         * Import bookmarks from external services
-         * @description Import bookmarks from files or external services
-         */
-        readonly post: operations["importBookmarks"];
-        readonly delete?: never;
-        readonly options?: never;
-        readonly head?: never;
-        readonly patch?: never;
-        readonly trace?: never;
-    };
-    readonly "/import/url": {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly get?: never;
-        readonly put?: never;
-        /**
-         * Import bookmarks from URL
-         * @description Import bookmarks from a remote URL hosting a bookmarks file
-         */
-        readonly post: operations["importFromUrl"];
-        readonly delete?: never;
-        readonly options?: never;
-        readonly head?: never;
-        readonly patch?: never;
-        readonly trace?: never;
-    };
-    readonly "/import/status": {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        /**
-         * Get import status
-         * @description Check the status of an ongoing import operation
-         */
-        readonly get: operations["getImportStatus"];
-        readonly put?: never;
-        readonly post?: never;
-        readonly delete?: never;
-        readonly options?: never;
-        readonly head?: never;
-        readonly patch?: never;
-        readonly trace?: never;
-    };
-    readonly "/export": {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly get?: never;
-        readonly put?: never;
-        /**
-         * Export bookmarks
-         * @description Export bookmarks in various formats
-         */
-        readonly post: operations["exportBookmarks"];
-        readonly delete?: never;
-        readonly options?: never;
-        readonly head?: never;
-        readonly patch?: never;
-        readonly trace?: never;
-    };
-    readonly "/export/status": {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        /**
-         * Get export status
-         * @description Check the status of an ongoing export operation
-         */
-        readonly get: operations["getExportStatus"];
-        readonly put?: never;
-        readonly post?: never;
         readonly delete?: never;
         readonly options?: never;
         readonly head?: never;
@@ -898,7 +258,7 @@ export type paths = {
         readonly patch?: never;
         readonly trace?: never;
     };
-    readonly "/filters": {
+    readonly "/highlights": {
         readonly parameters: {
             readonly query?: never;
             readonly header?: never;
@@ -906,13 +266,89 @@ export type paths = {
             readonly cookie?: never;
         };
         /**
-         * Get available filters for bookmarks
-         * @description Returns available filters such as tags, domains, and highlights to refine searches
+         * Get all highlights
+         * @description Retrieves all highlights from a user's bookmarks with pagination
          */
-        readonly get: operations["getAvailableFilters"];
+        readonly get: operations["getAllHighlights"];
         readonly put?: never;
         readonly post?: never;
         readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/highlights/{collectionId}": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * Get all highlights in a collection
+         * @description Retrieves all highlights from bookmarks in a specific collection
+         */
+        readonly get: operations["getHighlightsByCollection"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/tags": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * Get all tags used in bookmarks
+         * @description Retrieves all unique tags used in the user's bookmarks
+         */
+        readonly get: operations["getAllTags"];
+        /**
+         * Rename or merge tags globally
+         * @description Rename or merge tags across all collections
+         */
+        readonly put: operations["renameOrMergeAllTagsV3"];
+        readonly post?: never;
+        /**
+         * Delete multiple tags globally
+         * @description Delete multiple tags from all bookmarks
+         */
+        readonly delete: operations["deleteAllTagsV3"];
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/tags/{collectionId}": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * Get tags from a specific collection
+         * @description Retrieves all tags used in bookmarks within a specific collection
+         */
+        readonly get: operations["getTagsByCollection"];
+        /**
+         * Rename or merge tags in a collection
+         * @description Rename or merge tags within a specific collection
+         */
+        readonly put: operations["renameOrMergeCollectionTags"];
+        readonly post?: never;
+        /**
+         * Delete tags from a collection
+         * @description Delete multiple tags from bookmarks in a specific collection
+         */
+        readonly delete: operations["deleteCollectionTags"];
         readonly options?: never;
         readonly head?: never;
         readonly patch?: never;
@@ -1115,11 +551,8 @@ export type components = {
         readonly CreateCollectionRequest: {
             /** @description Collection title */
             readonly title: string;
-            /**
-             * @description Whether collection should be public
-             * @default false
-             */
-            readonly public: boolean;
+            /** @description Whether collection should be public */
+            readonly public?: boolean;
             /** @description Parent collection reference */
             readonly parent?: {
                 readonly $id?: number;
@@ -1162,13 +595,12 @@ export type components = {
             readonly title?: string;
             /** @description Bookmark description */
             readonly excerpt?: string;
+            /** @description User notes for the bookmark */
+            readonly note?: string;
             /** @description Array of tags */
             readonly tags?: readonly string[];
-            /**
-             * @description Whether bookmark is important
-             * @default false
-             */
-            readonly important: boolean;
+            /** @description Whether bookmark is important */
+            readonly important?: boolean;
             /** @description Target collection reference */
             readonly collection?: {
                 readonly $id?: number;
@@ -1196,6 +628,14 @@ export type components = {
             readonly collection?: {
                 readonly $id?: number;
             };
+            /** @description One-element v3 highlight mutation payload */
+            readonly highlights?: readonly {
+                readonly _id?: string;
+                readonly text?: string;
+                readonly note?: string;
+                /** @enum {string} */
+                readonly color?: "blue" | "brown" | "cyan" | "gray" | "green" | "indigo" | "orange" | "pink" | "purple" | "red" | "teal" | "yellow";
+            }[];
             /**
              * Format: uri
              * @description Cover image URL
@@ -1272,12 +712,10 @@ export type components = {
             readonly color?: "blue" | "brown" | "cyan" | "gray" | "green" | "indigo" | "orange" | "pink" | "purple" | "red" | "teal" | "yellow";
         };
         readonly TagOperationRequest: {
-            /** @description Original tag name (for rename operation) */
-            readonly from?: string;
-            /** @description New tag name */
-            readonly to?: string;
-            /** @description Array of tag names (for merge operation) */
-            readonly tags?: readonly string[];
+            /** @description Exact source tag names to rename or merge */
+            readonly tags: readonly string[];
+            /** @description New tag name used for rename or merge */
+            readonly replace: string;
         };
         readonly ImportBookmarksRequest: {
             /**
@@ -1409,6 +847,8 @@ export type components = {
         readonly HighlightsResponse: {
             readonly result: boolean;
             readonly items: readonly components["schemas"]["Highlight"][];
+            /** @description Total matching highlights if supplied by upstream */
+            readonly count?: number;
         };
         readonly HighlightItemResponse: {
             readonly result: boolean;
@@ -1500,6 +940,8 @@ export type components = {
         readonly ResultResponse: {
             /** @description Whether the operation was successful */
             readonly result: boolean;
+            /** @description Optional upstream batch modification count */
+            readonly modified?: number;
         };
         readonly ErrorResponse: {
             /** @default false */
@@ -1567,7 +1009,7 @@ export type components = {
         /** @description Search query for filtering results */
         readonly SearchQuery: string;
         /** @description Sort order for results */
-        readonly SortOrder: "+created" | "-created" | "+title" | "-title" | "+domain" | "-domain" | "+score" | "-score";
+        readonly SortOrder: "-created" | "created" | "score" | "-sort" | "title" | "-title" | "domain" | "-domain";
         /** @description Filter by specific tag */
         readonly TagFilter: string;
         /** @description Filter by important flag */
@@ -1664,10 +1106,7 @@ export interface operations {
         readonly parameters: {
             readonly query?: never;
             readonly header?: never;
-            readonly path: {
-                /** @description Parent collection ID */
-                readonly parentId: number;
-            };
+            readonly path?: never;
             readonly cookie?: never;
         };
         readonly requestBody?: never;
@@ -1681,83 +1120,7 @@ export interface operations {
                     readonly "application/json": components["schemas"]["CollectionsResponse"];
                 };
             };
-        };
-    };
-    readonly reorderCollections: {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly requestBody: {
-            readonly content: {
-                readonly "application/json": {
-                    /** @description Sort order specification */
-                    readonly sort: string;
-                };
-            };
-        };
-        readonly responses: {
-            /** @description Collections reordered successfully */
-            readonly 200: {
-                headers: {
-                    readonly [name: string]: unknown;
-                };
-                content: {
-                    readonly "application/json": components["schemas"]["ResultResponse"];
-                };
-            };
-        };
-    };
-    readonly toggleCollectionsExpansion: {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly requestBody: {
-            readonly content: {
-                readonly "application/json": {
-                    /** @description Whether collections should be collapsed */
-                    readonly collapsed: boolean;
-                };
-            };
-        };
-        readonly responses: {
-            /** @description Collections expansion toggled successfully */
-            readonly 200: {
-                headers: {
-                    readonly [name: string]: unknown;
-                };
-                content: {
-                    readonly "application/json": components["schemas"]["ResultResponse"];
-                };
-            };
-        };
-    };
-    readonly removeEmptyCollections: {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly requestBody?: never;
-        readonly responses: {
-            /** @description Empty collections removed successfully */
-            readonly 200: {
-                headers: {
-                    readonly [name: string]: unknown;
-                };
-                content: {
-                    readonly "application/json": {
-                        /** @description Number of collections removed */
-                        readonly count?: number;
-                    };
-                };
-            };
+            readonly 401: components["responses"]["UnauthorizedError"];
         };
     };
     readonly createCollection: {
@@ -1850,85 +1213,6 @@ export interface operations {
         readonly requestBody?: never;
         readonly responses: {
             /** @description Collection deleted successfully */
-            readonly 204: {
-                headers: {
-                    readonly [name: string]: unknown;
-                };
-                content?: never;
-            };
-            readonly 404: components["responses"]["NotFoundError"];
-        };
-    };
-    readonly getCollectionStats: {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path: {
-                /** @description Collection ID */
-                readonly id: components["parameters"]["CollectionId"];
-            };
-            readonly cookie?: never;
-        };
-        readonly requestBody?: never;
-        readonly responses: {
-            /** @description Collection statistics retrieved successfully */
-            readonly 200: {
-                headers: {
-                    readonly [name: string]: unknown;
-                };
-                content: {
-                    readonly "application/json": components["schemas"]["CollectionStatsResponse"];
-                };
-            };
-        };
-    };
-    readonly shareCollection: {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path: {
-                /** @description Collection ID */
-                readonly id: components["parameters"]["CollectionId"];
-            };
-            readonly cookie?: never;
-        };
-        readonly requestBody: {
-            readonly content: {
-                readonly "application/json": components["schemas"]["ShareCollectionRequest"];
-            };
-        };
-        readonly responses: {
-            /** @description Collection shared successfully */
-            readonly 200: {
-                headers: {
-                    readonly [name: string]: unknown;
-                };
-                content: {
-                    readonly "application/json": components["schemas"]["ShareCollectionResponse"];
-                };
-            };
-        };
-    };
-    readonly mergeCollections: {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path: {
-                /** @description Collection ID */
-                readonly id: components["parameters"]["CollectionId"];
-            };
-            readonly cookie?: never;
-        };
-        readonly requestBody: {
-            readonly content: {
-                readonly "application/json": {
-                    /** @description Array of collection IDs to merge into the target */
-                    readonly with: readonly number[];
-                };
-            };
-        };
-        readonly responses: {
-            /** @description Collections merged successfully */
             readonly 200: {
                 headers: {
                     readonly [name: string]: unknown;
@@ -1937,6 +1221,7 @@ export interface operations {
                     readonly "application/json": components["schemas"]["ResultResponse"];
                 };
             };
+            readonly 404: components["responses"]["NotFoundError"];
         };
     };
     readonly emptyTrash: {
@@ -1957,49 +1242,7 @@ export interface operations {
                     readonly "application/json": components["schemas"]["ResultResponse"];
                 };
             };
-        };
-    };
-    readonly getAllBookmarks: {
-        readonly parameters: {
-            readonly query?: {
-                /** @description Search query for filtering results */
-                readonly search?: components["parameters"]["SearchQuery"];
-                /** @description Sort order for results */
-                readonly sort?: components["parameters"]["SortOrder"];
-                /** @description Filter by specific tag */
-                readonly tag?: components["parameters"]["TagFilter"];
-                /** @description Filter by important flag */
-                readonly important?: components["parameters"]["ImportantFilter"];
-                /** @description Filter by duplicates */
-                readonly duplicates?: components["parameters"]["DuplicatesFilter"];
-                /** @description Filter by broken links */
-                readonly broken?: components["parameters"]["BrokenFilter"];
-                /** @description Filter by items without tags */
-                readonly notag?: components["parameters"]["NotagFilter"];
-                /** @description Filter by presence of highlights */
-                readonly highlight?: components["parameters"]["HighlightFilter"];
-                /** @description Filter by domain */
-                readonly domain?: components["parameters"]["DomainFilter"];
-                /** @description Number of items per page */
-                readonly perpage?: components["parameters"]["PerPage"];
-                /** @description Page number for pagination */
-                readonly page?: components["parameters"]["Page"];
-            };
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly requestBody?: never;
-        readonly responses: {
-            /** @description Bookmarks retrieved successfully */
-            readonly 200: {
-                headers: {
-                    readonly [name: string]: unknown;
-                };
-                content: {
-                    readonly "application/json": components["schemas"]["BookmarksResponse"];
-                };
-            };
+            readonly 401: components["responses"]["UnauthorizedError"];
         };
     };
     readonly getBookmarksByCollection: {
@@ -2009,29 +1252,17 @@ export interface operations {
                 readonly search?: components["parameters"]["SearchQuery"];
                 /** @description Sort order for results */
                 readonly sort?: components["parameters"]["SortOrder"];
-                /** @description Filter by specific tag */
-                readonly tag?: components["parameters"]["TagFilter"];
-                /** @description Filter by important flag */
-                readonly important?: components["parameters"]["ImportantFilter"];
-                /** @description Filter by duplicates */
-                readonly duplicates?: components["parameters"]["DuplicatesFilter"];
-                /** @description Filter by broken links */
-                readonly broken?: components["parameters"]["BrokenFilter"];
-                /** @description Filter by items without tags */
-                readonly notag?: components["parameters"]["NotagFilter"];
-                /** @description Filter by presence of highlights */
-                readonly highlight?: components["parameters"]["HighlightFilter"];
-                /** @description Filter by domain */
-                readonly domain?: components["parameters"]["DomainFilter"];
                 /** @description Number of items per page */
                 readonly perpage?: components["parameters"]["PerPage"];
                 /** @description Page number for pagination */
                 readonly page?: components["parameters"]["Page"];
+                /** @description Include nested collections */
+                readonly nested?: boolean;
             };
             readonly header?: never;
             readonly path: {
                 /** @description Collection ID */
-                readonly id: components["parameters"]["CollectionId"];
+                readonly collectionId: number;
             };
             readonly cookie?: never;
         };
@@ -2054,7 +1285,7 @@ export interface operations {
             readonly header?: never;
             readonly path: {
                 /** @description Collection ID */
-                readonly id: components["parameters"]["CollectionId"];
+                readonly collectionId: number;
             };
             readonly cookie?: never;
         };
@@ -2081,7 +1312,7 @@ export interface operations {
             readonly header?: never;
             readonly path: {
                 /** @description Collection ID */
-                readonly id: components["parameters"]["CollectionId"];
+                readonly collectionId: number;
             };
             readonly cookie?: never;
         };
@@ -2090,216 +1321,6 @@ export interface operations {
                 readonly "application/json": {
                     /** @description Array of bookmark IDs to delete */
                     readonly ids?: readonly number[];
-                };
-            };
-        };
-        readonly responses: {
-            /** @description Bookmarks deleted successfully */
-            readonly 200: {
-                headers: {
-                    readonly [name: string]: unknown;
-                };
-                content: {
-                    readonly "application/json": components["schemas"]["ResultResponse"];
-                };
-            };
-        };
-    };
-    readonly searchRaindrops: {
-        readonly parameters: {
-            readonly query?: {
-                /** @description Search query for filtering results */
-                readonly search?: components["parameters"]["SearchQuery"];
-                /** @description Filter by collection ID */
-                readonly collection?: components["parameters"]["CollectionFilter"];
-                /** @description Filter by tags */
-                readonly tags?: readonly string[];
-                /** @description Filter by creation date (start) */
-                readonly createdStart?: string;
-                /** @description Filter by creation date (end) */
-                readonly createdEnd?: string;
-                /** @description Filter by important flag */
-                readonly important?: components["parameters"]["ImportantFilter"];
-                /** @description Filter by media type */
-                readonly media?: string;
-                /** @description Number of items per page */
-                readonly perpage?: components["parameters"]["PerPage"];
-                /** @description Page number for pagination */
-                readonly page?: components["parameters"]["Page"];
-                /** @description Sort order for results */
-                readonly sort?: components["parameters"]["SortOrder"];
-            };
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly requestBody?: never;
-        readonly responses: {
-            /** @description Search results retrieved successfully */
-            readonly 200: {
-                headers: {
-                    readonly [name: string]: unknown;
-                };
-                content: {
-                    readonly "application/json": components["schemas"]["BookmarksResponse"];
-                };
-            };
-        };
-    };
-    readonly batchUpdateBookmarks: {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly requestBody: {
-            readonly content: {
-                readonly "application/json": components["schemas"]["BatchUpdateBookmarksRequest"];
-            };
-        };
-        readonly responses: {
-            /** @description Bookmarks updated successfully */
-            readonly 200: {
-                headers: {
-                    readonly [name: string]: unknown;
-                };
-                content: {
-                    readonly "application/json": components["schemas"]["ResultResponse"];
-                };
-            };
-        };
-    };
-    readonly getSingleBookmark: {
-        readonly parameters: {
-            readonly query: {
-                /** @description Bookmark ID */
-                readonly id: number;
-            };
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly requestBody?: never;
-        readonly responses: {
-            /** @description Bookmark retrieved successfully */
-            readonly 200: {
-                headers: {
-                    readonly [name: string]: unknown;
-                };
-                content: {
-                    readonly "application/json": components["schemas"]["BookmarkItemResponse"];
-                };
-            };
-            readonly 404: components["responses"]["NotFoundError"];
-        };
-    };
-    readonly getMultipleBookmarks: {
-        readonly parameters: {
-            readonly query: {
-                /** @description Comma-separated bookmark IDs */
-                readonly ids: string;
-            };
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly requestBody?: never;
-        readonly responses: {
-            /** @description Bookmarks retrieved successfully */
-            readonly 200: {
-                headers: {
-                    readonly [name: string]: unknown;
-                };
-                content: {
-                    readonly "application/json": components["schemas"]["BookmarksResponse"];
-                };
-            };
-        };
-    };
-    readonly suggestTagsCollectionsCovers: {
-        readonly parameters: {
-            readonly query: {
-                /** @description URL to analyze for suggestions */
-                readonly url: string;
-            };
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly requestBody?: never;
-        readonly responses: {
-            /** @description Suggestions retrieved successfully */
-            readonly 200: {
-                headers: {
-                    readonly [name: string]: unknown;
-                };
-                content: {
-                    readonly "application/json": components["schemas"]["SuggestionsResponse"];
-                };
-            };
-        };
-    };
-    readonly bulkMoveBookmarks: {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly requestBody: {
-            readonly content: {
-                readonly "application/json": components["schemas"]["BulkMoveBookmarksRequest"];
-            };
-        };
-        readonly responses: {
-            /** @description Bookmarks moved successfully */
-            readonly 200: {
-                headers: {
-                    readonly [name: string]: unknown;
-                };
-                content: {
-                    readonly "application/json": components["schemas"]["ResultResponse"];
-                };
-            };
-        };
-    };
-    readonly batchTagBookmarks: {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly requestBody: {
-            readonly content: {
-                readonly "application/json": components["schemas"]["BatchTagBookmarksRequest"];
-            };
-        };
-        readonly responses: {
-            /** @description Tags updated successfully */
-            readonly 200: {
-                headers: {
-                    readonly [name: string]: unknown;
-                };
-                content: {
-                    readonly "application/json": components["schemas"]["ResultResponse"];
-                };
-            };
-        };
-    };
-    readonly batchDeleteBookmarks: {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly requestBody: {
-            readonly content: {
-                readonly "application/json": {
-                    /** @description Array of bookmark IDs to delete */
-                    readonly ids: readonly number[];
                 };
             };
         };
@@ -2391,197 +1412,53 @@ export interface operations {
             };
         };
     };
-    readonly deleteBookmark: {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path: {
-                /** @description Bookmark ID */
-                readonly id: components["parameters"]["BookmarkId"];
-            };
-            readonly cookie?: never;
-        };
-        readonly requestBody?: never;
-        readonly responses: {
-            /** @description Bookmark deleted successfully */
-            readonly 204: {
-                headers: {
-                    readonly [name: string]: unknown;
-                };
-                content?: never;
-            };
-            readonly 404: components["responses"]["NotFoundError"];
-        };
-    };
-    readonly permanentDeleteBookmark: {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path: {
-                /** @description Bookmark ID */
-                readonly id: components["parameters"]["BookmarkId"];
-            };
-            readonly cookie?: never;
-        };
-        readonly requestBody?: never;
-        readonly responses: {
-            /** @description Bookmark permanently deleted */
-            readonly 204: {
-                headers: {
-                    readonly [name: string]: unknown;
-                };
-                content?: never;
-            };
-            readonly 404: components["responses"]["NotFoundError"];
-        };
-    };
-    readonly setReminder: {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path: {
-                /** @description Bookmark ID */
-                readonly id: components["parameters"]["BookmarkId"];
-            };
-            readonly cookie?: never;
-        };
-        readonly requestBody: {
-            readonly content: {
-                readonly "application/json": components["schemas"]["SetReminderRequest"];
-            };
-        };
-        readonly responses: {
-            /** @description Reminder set successfully */
-            readonly 200: {
-                headers: {
-                    readonly [name: string]: unknown;
-                };
-                content: {
-                    readonly "application/json": components["schemas"]["BookmarkItemResponse"];
-                };
-            };
-        };
-    };
-    readonly deleteReminder: {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path: {
-                /** @description Bookmark ID */
-                readonly id: components["parameters"]["BookmarkId"];
-            };
-            readonly cookie?: never;
-        };
-        readonly requestBody?: never;
-        readonly responses: {
-            /** @description Reminder deleted successfully */
-            readonly 200: {
-                headers: {
-                    readonly [name: string]: unknown;
-                };
-                content: {
-                    readonly "application/json": components["schemas"]["BookmarkItemResponse"];
-                };
-            };
-        };
-    };
-    readonly getHighlightsForBookmark: {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path: {
-                /** @description Bookmark ID */
-                readonly id: components["parameters"]["BookmarkId"];
-            };
-            readonly cookie?: never;
-        };
-        readonly requestBody?: never;
-        readonly responses: {
-            /** @description Highlights retrieved successfully */
-            readonly 200: {
-                headers: {
-                    readonly [name: string]: unknown;
-                };
-                content: {
-                    readonly "application/json": components["schemas"]["HighlightsResponse"];
-                };
-            };
-        };
-    };
-    readonly uploadFile: {
+    readonly suggestForUrl: {
         readonly parameters: {
             readonly query?: never;
             readonly header?: never;
             readonly path?: never;
             readonly cookie?: never;
         };
-        readonly requestBody: {
+        readonly requestBody?: {
             readonly content: {
-                readonly "multipart/form-data": {
-                    /**
-                     * Format: binary
-                     * @description File to upload
-                     */
-                    readonly file: string;
-                    /** @description Collection ID to add the file to */
-                    readonly collectionId: string;
+                readonly "application/json": {
+                    /** Format: uri */
+                    readonly link: string;
                 };
             };
         };
         readonly responses: {
-            /** @description File uploaded successfully */
-            readonly 201: {
-                headers: {
-                    readonly [name: string]: unknown;
-                };
-                content: {
-                    readonly "application/json": components["schemas"]["BookmarkItemResponse"];
-                };
-            };
-        };
-    };
-    readonly getFile: {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path: {
-                /** @description File ID */
-                readonly id: string;
-            };
-            readonly cookie?: never;
-        };
-        readonly requestBody?: never;
-        readonly responses: {
-            /** @description File retrieved successfully */
+            /** @description Suggestions retrieved successfully */
             readonly 200: {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": components["schemas"]["SuggestionsResponse"];
+                };
             };
-            readonly 404: components["responses"]["NotFoundError"];
         };
     };
-    readonly deleteFile: {
+    readonly suggestForBookmark: {
         readonly parameters: {
             readonly query?: never;
             readonly header?: never;
             readonly path: {
-                /** @description File ID */
-                readonly id: string;
+                readonly id: number;
             };
             readonly cookie?: never;
         };
         readonly requestBody?: never;
         readonly responses: {
-            /** @description File deleted successfully */
-            readonly 204: {
+            /** @description Suggestions retrieved successfully */
+            readonly 200: {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": components["schemas"]["SuggestionsResponse"];
+                };
             };
-            readonly 404: components["responses"]["NotFoundError"];
         };
     };
     readonly getAllHighlights: {
@@ -2607,79 +1484,6 @@ export interface operations {
                     readonly "application/json": components["schemas"]["HighlightsResponse"];
                 };
             };
-        };
-    };
-    readonly addHighlightToBookmark: {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly requestBody: {
-            readonly content: {
-                readonly "application/json": components["schemas"]["CreateHighlightRequest"];
-            };
-        };
-        readonly responses: {
-            /** @description Highlight created successfully */
-            readonly 201: {
-                headers: {
-                    readonly [name: string]: unknown;
-                };
-                content: {
-                    readonly "application/json": components["schemas"]["HighlightItemResponse"];
-                };
-            };
-        };
-    };
-    readonly updateHighlight: {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path: {
-                /** @description Highlight ID */
-                readonly id: number;
-            };
-            readonly cookie?: never;
-        };
-        readonly requestBody: {
-            readonly content: {
-                readonly "application/json": components["schemas"]["UpdateHighlightRequest"];
-            };
-        };
-        readonly responses: {
-            /** @description Highlight updated successfully */
-            readonly 200: {
-                headers: {
-                    readonly [name: string]: unknown;
-                };
-                content: {
-                    readonly "application/json": components["schemas"]["HighlightItemResponse"];
-                };
-            };
-        };
-    };
-    readonly deleteHighlight: {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path: {
-                /** @description Highlight ID */
-                readonly id: number;
-            };
-            readonly cookie?: never;
-        };
-        readonly requestBody?: never;
-        readonly responses: {
-            /** @description Highlight deleted successfully */
-            readonly 204: {
-                headers: {
-                    readonly [name: string]: unknown;
-                };
-                content?: never;
-            };
-            readonly 404: components["responses"]["NotFoundError"];
         };
     };
     readonly getHighlightsByCollection: {
@@ -2730,27 +1534,7 @@ export interface operations {
             };
         };
     };
-    readonly getAllTagsAlt: {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly requestBody?: never;
-        readonly responses: {
-            /** @description Tags retrieved successfully */
-            readonly 200: {
-                headers: {
-                    readonly [name: string]: unknown;
-                };
-                content: {
-                    readonly "application/json": components["schemas"]["TagsResponse"];
-                };
-            };
-        };
-    };
-    readonly renameOrMergeAllTags: {
+    readonly renameOrMergeAllTagsV3: {
         readonly parameters: {
             readonly query?: never;
             readonly header?: never;
@@ -2774,7 +1558,7 @@ export interface operations {
             };
         };
     };
-    readonly deleteAllTags: {
+    readonly deleteAllTagsV3: {
         readonly parameters: {
             readonly query?: never;
             readonly header?: never;
@@ -2806,8 +1590,7 @@ export interface operations {
             readonly query?: never;
             readonly header?: never;
             readonly path: {
-                /** @description Collection ID */
-                readonly id: components["parameters"]["CollectionId"];
+                readonly collectionId: number;
             };
             readonly cookie?: never;
         };
@@ -2829,8 +1612,7 @@ export interface operations {
             readonly query?: never;
             readonly header?: never;
             readonly path: {
-                /** @description Collection ID */
-                readonly id: components["parameters"]["CollectionId"];
+                readonly collectionId: number;
             };
             readonly cookie?: never;
         };
@@ -2856,8 +1638,7 @@ export interface operations {
             readonly query?: never;
             readonly header?: never;
             readonly path: {
-                /** @description Collection ID */
-                readonly id: components["parameters"]["CollectionId"];
+                readonly collectionId: number;
             };
             readonly cookie?: never;
         };
@@ -2877,187 +1658,6 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["ResultResponse"];
-                };
-            };
-        };
-    };
-    readonly importBookmarks: {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly requestBody: {
-            readonly content: {
-                readonly "multipart/form-data": components["schemas"]["ImportBookmarksRequest"];
-            };
-        };
-        readonly responses: {
-            /** @description Import completed successfully */
-            readonly 200: {
-                headers: {
-                    readonly [name: string]: unknown;
-                };
-                content: {
-                    readonly "application/json": components["schemas"]["ImportResponse"];
-                };
-            };
-        };
-    };
-    readonly importFromUrl: {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly requestBody: {
-            readonly content: {
-                readonly "application/json": components["schemas"]["ImportFromUrlRequest"];
-            };
-        };
-        readonly responses: {
-            /** @description Import initiated successfully */
-            readonly 200: {
-                headers: {
-                    readonly [name: string]: unknown;
-                };
-                content: {
-                    readonly "application/json": components["schemas"]["ImportJobResponse"];
-                };
-            };
-        };
-    };
-    readonly getImportStatus: {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly requestBody?: never;
-        readonly responses: {
-            /** @description Import status retrieved successfully */
-            readonly 200: {
-                headers: {
-                    readonly [name: string]: unknown;
-                };
-                content: {
-                    readonly "application/json": components["schemas"]["ImportStatusResponse"];
-                };
-            };
-        };
-    };
-    readonly exportBookmarks: {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly requestBody: {
-            readonly content: {
-                readonly "application/json": components["schemas"]["ExportBookmarksRequest"];
-            };
-        };
-        readonly responses: {
-            /** @description Export initiated successfully */
-            readonly 200: {
-                headers: {
-                    readonly [name: string]: unknown;
-                };
-                content: {
-                    readonly "application/json": components["schemas"]["ExportResponse"];
-                };
-            };
-        };
-    };
-    readonly getExportStatus: {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly requestBody?: never;
-        readonly responses: {
-            /** @description Export status retrieved successfully */
-            readonly 200: {
-                headers: {
-                    readonly [name: string]: unknown;
-                };
-                content: {
-                    readonly "application/json": components["schemas"]["ExportStatusResponse"];
-                };
-            };
-        };
-    };
-    readonly suggestForUrl: {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly requestBody?: {
-            readonly content: {
-                readonly "application/json": {
-                    /** Format: uri */
-                    readonly link: string;
-                };
-            };
-        };
-        readonly responses: {
-            /** @description Suggestions retrieved successfully */
-            readonly 200: {
-                headers: {
-                    readonly [name: string]: unknown;
-                };
-                content: {
-                    readonly "application/json": components["schemas"]["SuggestionsResponse"];
-                };
-            };
-        };
-    };
-    readonly suggestForBookmark: {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path: {
-                readonly id: number;
-            };
-            readonly cookie?: never;
-        };
-        readonly requestBody?: never;
-        readonly responses: {
-            /** @description Suggestions retrieved successfully */
-            readonly 200: {
-                headers: {
-                    readonly [name: string]: unknown;
-                };
-                content: {
-                    readonly "application/json": components["schemas"]["SuggestionsResponse"];
-                };
-            };
-        };
-    };
-    readonly getAvailableFilters: {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly requestBody?: never;
-        readonly responses: {
-            /** @description Filters retrieved successfully */
-            readonly 200: {
-                headers: {
-                    readonly [name: string]: unknown;
-                };
-                content: {
-                    readonly "application/json": components["schemas"]["FiltersResponse"];
                 };
             };
         };

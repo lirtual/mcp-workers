@@ -1,86 +1,54 @@
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
-import { config } from "dotenv";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { RaindropMCPService } from "../src/services/raindropmcp.service.js";
 
-config();
-
-const hasToken = Boolean(process.env.RAINDROP_ACCESS_TOKEN?.trim());
-const describeIf = hasToken ? describe : describe.skip;
-
-const isDiagnosticsResource = (
-  content: unknown,
-): content is { type: "resource"; resource: { uri: string; text: string } } =>
-  typeof content === "object" &&
-  content !== null &&
-  "type" in content &&
-  content.type === "resource" &&
-  "resource" in content &&
-  typeof content.resource === "object" &&
-  content.resource !== null &&
-  "uri" in content.resource &&
-  content.resource.uri === "diagnostics://server" &&
-  "text" in content.resource &&
-  typeof content.resource.text === "string";
-
-describeIf("MCP protocol integration", () => {
+describe("MCP v3 protocol integration (offline)", () => {
   let client: Client;
   let service: RaindropMCPService;
+  const upstream = vi.fn();
 
   beforeAll(async () => {
-    service = new RaindropMCPService();
-    client = new Client({ name: "raindrop-mcp-test-client", version: "1.0.0" });
-
-    const [clientTransport, serverTransport] =
-      InMemoryTransport.createLinkedPair();
-
-    await Promise.all([
-      service.getServer().connect(serverTransport),
-      client.connect(clientTransport),
-    ]);
+    // This suite validates MCP transport and advertised contracts, not a live
+    // account. No real token is loaded or needed.
+    vi.stubGlobal("fetch", upstream);
+    service = new RaindropMCPService({ accessToken: "offline-token" });
+    client = new Client({ name: "raindrop-v3-integration", version: "1" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([service.getServer().connect(serverTransport), client.connect(clientTransport)]);
   });
 
   afterAll(async () => {
     await client?.close();
     await service?.cleanup();
+    vi.unstubAllGlobals();
   });
 
-  it("exposes core tools through the MCP client", async () => {
+  it("advertises only the approved 26 public tools and a real output schema", async () => {
     const { tools } = await client.listTools();
-    const toolNames = tools.map((tool) => tool.name);
-
-    expect(toolNames).toContain("diagnostics");
-    expect(toolNames).toContain("collection_list");
-    expect(toolNames).toContain("bookmark_search");
-    for (const name of ["diagnostics", "collection_list", "bookmark_search"]) {
-      expect(
-        tools.find((tool) => tool.name === name)?.outputSchema,
-      ).toBeDefined();
+    expect(tools).toHaveLength(26);
+    const names = tools.map((tool) => tool.name);
+    expect(new Set(names).size).toBe(26);
+    for (const name of ["diagnostics", "collection_list", "raindrop_list", "duplicates_delete", "trash_empty"]) {
+      expect(names).toContain(name);
+      expect(tools.find((tool) => tool.name === name)?.outputSchema).toBeDefined();
+    }
+    for (const name of ["bookmark_search", "list_raindrops", "suggest_tags", "empty_trash", "cleanup_collections"]) {
+      expect(names).not.toContain(name);
     }
   });
 
-  it("executes diagnostics through the MCP client", async () => {
-    const result = await client.callTool({
-      name: "diagnostics",
-      arguments: {},
-    });
-    const content = (result as { content: unknown }).content;
-    if (!Array.isArray(content)) {
-      throw new Error("Expected tool response content array");
-    }
-    const diagnosticsContent = content.find(isDiagnosticsResource);
-
-    expect(diagnosticsContent).toBeDefined();
-    if (!diagnosticsContent) {
-      throw new Error("Expected diagnostics resource payload");
-    }
-
-    const diagnostics = JSON.parse(diagnosticsContent.resource.text);
-    expect(diagnostics.mcpProtocolVersion).toBe("2026-07-28");
-    expect(diagnostics.version).toBeDefined();
+  it("returns truthful local diagnostics without fabricating an upstream count or protocol version", async () => {
+    const result = await client.callTool({ name: "diagnostics", arguments: {} });
+    expect(result.isError).not.toBe(true);
     expect(result.structuredContent).toMatchObject({
-      mcpProtocolVersion: "2026-07-28",
-      version: diagnostics.version,
+      ok: true,
+      data: {
+        runtime: "cloudflare-workers",
+        protocolVersion: null,
+        libraryHealth: null,
+      },
+      meta: { requestCount: 0 },
     });
+    expect(upstream).not.toHaveBeenCalled();
   });
 });

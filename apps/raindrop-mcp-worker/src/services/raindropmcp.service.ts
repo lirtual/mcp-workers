@@ -2,10 +2,16 @@ import { McpServer } from "@modelcontextprotocol/server";
 import type { Prompt } from "@modelcontextprotocol/server";
 import pkg from "../../package.json";
 import { buildToolConfigs } from "../tools/index.js";
+import type { ToolConfig } from "../tools/common.js";
+import { ToolEnvelopeSchema, toolFailure, toolSuccess } from "../tools/common.js";
+import { EXECUTION_LIMITS } from "./execution-budget.js";
+import { prepareToolSchema } from "./tool-schema.js";
+import { McpError, AuthError, RateLimitError } from "../types/mcpErrors.js";
 import {
   NotFoundError,
   UpstreamError,
   ValidationError,
+  WriteResultUnavailableError,
 } from "../types/mcpErrors.js";
 import RaindropService, { type RaindropServiceConfig } from "./raindrop.service.js";
 
@@ -15,6 +21,11 @@ const SERVER_VERSION = pkg.version;
 const { toolConfigs } = buildToolConfigs({
   serverVersion: SERVER_VERSION,
 });
+const registrationSchemas = toolConfigs.map((config) => ({
+  config,
+  input: prepareToolSchema(config.inputSchema),
+  output: prepareToolSchema(config.outputSchema ?? ToolEnvelopeSchema, "output"),
+}));
 
 // --- MCP Server class ---
 /**
@@ -51,13 +62,12 @@ export class RaindropMCPService {
     },
     {
       name: "find_duplicates",
-      description:
-        "Identify potential duplicate bookmarks using URL + title similarity.",
+      description: "Review official current-page duplicate candidates before choosing any destructive action.",
       messages: [
         {
           role: "user",
           content:
-            "You detect duplicate bookmarks. Consider URL normalization, title similarity, and canonical forms. Return suspected duplicate pairs.",
+            "Call library_audit with kind=duplicates and inspect its current page. Do not invent duplicate matches using URL similarity; preview explicit candidates with duplicates_delete. Its execution remains disabled until isolated live verification. Never auto-delete bookmarked notes or highlights.",
         },
       ],
     },
@@ -129,13 +139,6 @@ export class RaindropMCPService {
             resources: { subscribe: false, listChanged: false },
             prompts: { listChanged: false },
             tools: { listChanged: false },
-            experimental: {
-              elicitation: {
-                supported: true,
-                description:
-                  "Destructive and ambiguous actions require confirmation or clarification.",
-              },
-            },
           },
         },
       );
@@ -162,7 +165,7 @@ export class RaindropMCPService {
   }
 
   private registerDeclarativeTools() {
-    for (const config of toolConfigs) {
+    for (const { config, input, output } of registrationSchemas) {
       this.server.registerTool(
         config.name,
         {
@@ -170,15 +173,12 @@ export class RaindropMCPService {
             .replace(/_/g, " ")
             .replace(/\b\w/g, (l) => l.toUpperCase()),
           description: config.description,
-          inputSchema: config.inputSchema,
-          outputSchema: config.outputSchema,
+          inputSchema: input,
+          outputSchema: output,
+          annotations: config.annotations,
         },
         this.asyncHandler(async (args: any, extra: any) =>
-          config.handler(args, {
-            raindropService: this.raindropService,
-            mcpServer: this.server.server, // Pass the underlying McpServer instance
-            ...extra,
-          }),
+          this.executeTool(config, args, extra),
         ),
       );
     }
@@ -230,12 +230,21 @@ export class RaindropMCPService {
 
     this.server.server.setRequestHandler(
       "resources/read",
-      this.asyncHandler(async (request: any) => {
-        const contents = await this.readResource(request.params.uri);
-        return { contents };
-      }),
+      this.asyncHandler(async (request: any) => ({
+        contents: await this.readResource(request.params.uri),
+      })),
     );
-
+    this.server.server.setRequestHandler(
+      "resources/templates/list",
+      this.asyncHandler(async () => ({
+        resourceTemplates: [
+          { name: "collection_resource", uriTemplate: "mcp://collection/{id}",
+            description: "Read an exact positive collection ID", mimeType: "application/json" },
+          { name: "raindrop_resource", uriTemplate: "mcp://raindrop/{id}",
+            description: "Read an exact positive bookmark ID", mimeType: "application/json" },
+        ],
+      })),
+    );
   }
 
   private registerPromptHandlers() {
@@ -280,7 +289,7 @@ export class RaindropMCPService {
       name: config.name,
       description: config.description,
       inputSchema: config.inputSchema,
-      outputSchema: config.outputSchema || {},
+      outputSchema: config.outputSchema ?? ToolEnvelopeSchema,
     }));
   }
 
@@ -290,15 +299,99 @@ export class RaindropMCPService {
    * @param input - Input object for the tool
    * @returns Tool response
    */
-  public async callTool(toolId: string, input: any): Promise<any> {
-    const config = toolConfigs.find((tool) => tool.name === toolId);
-    if (!config) {
-      throw new Error(`Tool with id "${toolId}" not found.`);
+  private async executeTool(
+    config: ToolConfig<any, any>,
+    input: unknown,
+    extra: Record<string, unknown> = {},
+  ): Promise<any> {
+    const parsed = config.inputSchema.safeParse(input ?? {});
+    const initialWrites = this.raindropService.budget.writeAttemptCount;
+    if (!parsed.success) {
+      return toolFailure("VALIDATION_ERROR", "Invalid tool input", {
+        status: "not_executed",
+        requestCount: this.raindropService.budget.requestCount,
+      });
     }
-    return await config.handler(input ?? {}, {
-      raindropService: this.raindropService,
-      mcpServer: this.server.server,
-    });
+    const unbind = extra.signal instanceof AbortSignal
+      ? this.raindropService.bindCancellation(extra.signal) : undefined;
+    try {
+      return await config.handler(parsed.data, {
+        raindropService: this.raindropService,
+        mcpServer: this.server.server,
+        ...extra,
+      });
+    } catch (err) {
+      if (err instanceof WriteResultUnavailableError) {
+        return toolSuccess(null, { status: "succeeded", outputOmitted: true,
+          warnings: [err.message], requestCount: this.raindropService.budget.requestCount }, err.message);
+      }
+      const cause = err instanceof McpError ? err.cause : undefined;
+      const details = cause && typeof cause === "object"
+        ? cause as { status?: number; retryAfterMs?: number }
+        : {};
+      // Upstream POST is not necessarily a user-data mutation: URL suggestions
+      // query the official API via POST without changing the account.
+      // Keep that request non-retryable, but never report an unknown write.
+      const submittedWrite =
+        config.annotations?.readOnlyHint !== true &&
+        this.raindropService.budget.writeAttemptCount > initialWrites;
+      const uncertain =
+        submittedWrite &&
+        !(err instanceof AuthError) &&
+        !(err instanceof NotFoundError) &&
+        !(err instanceof ValidationError) &&
+        (err instanceof RateLimitError ||
+          !(err instanceof McpError) ||
+          (err instanceof McpError && err.code === "UPSTREAM_ERROR"));
+      // A definite upstream rejection is a failed write, not an unsubmitted one.
+      const definiteFailure = submittedWrite && !uncertain;
+      return toolFailure(
+        uncertain ? "WRITE_OUTCOME_UNKNOWN" :
+          err instanceof McpError ? err.code : "INTERNAL_ERROR",
+        uncertain
+          ? "Upstream write was submitted, but its outcome is unknown. Read the target before retrying."
+          : err instanceof McpError ? err.message : "Tool execution failed",
+        {
+          requestCount: this.raindropService.budget.requestCount,
+          status: uncertain ? "unknown" : definiteFailure ? "failed" : "not_executed",
+          // Report only explicit selectors, never arbitrary user-provided bodies,
+          // links, note text, or credentials in an error envelope.
+          ...(() => {
+            const selectors = parsed.data as {
+              id?: unknown; raindropId?: unknown; ids?: unknown;
+              collectionId?: unknown; scope?: unknown;
+            };
+            const requestedIds = Array.isArray(selectors.ids)
+              ? selectors.ids
+              : typeof selectors.id === "number" ? [selectors.id]
+              : typeof selectors.raindropId === "number" ? [selectors.raindropId]
+              : undefined;
+            const scope = typeof selectors.collectionId === "number"
+              ? { collectionId: selectors.collectionId }
+              : typeof selectors.scope === "string" ? { type: selectors.scope }
+              : config.name === "trash_empty" ? { collectionId: -99 }
+              : undefined;
+            return {
+              ...(requestedIds ? { requestedIds } : {}),
+              ...(scope ? { scope } : {}),
+            };
+          })(),
+        },
+        {
+          ...(details.status !== undefined ? { upstreamStatus: details.status } : {}),
+          ...(details.retryAfterMs !== undefined ? { retryAfterMs: details.retryAfterMs } : {}),
+        },
+      );
+    } finally {
+      unbind?.();
+    }
+  }
+
+  /** The public test/helper path applies the same validation and handler conversion. */
+  public async callTool(toolId: string, input: unknown): Promise<any> {
+    const config = toolConfigs.find((tool) => tool.name === toolId);
+    if (!config) throw new NotFoundError("Unknown tool");
+    return this.executeTool(config, input);
   }
 
   /**
@@ -309,91 +402,42 @@ export class RaindropMCPService {
    * @returns The resource contents as an array of objects with uri and text.
    * @throws Error if the resource is not found or not readable.
    */
-  public async readResource(
-    uri: string,
-  ): Promise<Array<{ uri: string; text: string }>> {
-    if (!uri) {
+  public async readResource(uri: string): Promise<Array<{ uri: string; text: string }>> {
+    if (!uri || typeof uri !== "string") {
       throw new ValidationError("Resource URI is required");
     }
-
-    try {
-      if (uri.startsWith("mcp://collection/")) {
-        const collectionIdStr = uri.split("/").pop();
-        if (!collectionIdStr) {
-          throw new ValidationError("Collection ID is required");
-        }
-
-        const collectionId = Number.parseInt(collectionIdStr, 10);
-        if (Number.isNaN(collectionId)) {
-          throw new ValidationError(
-            `Invalid collection ID: ${collectionIdStr}`,
-          );
-        }
-
-        const collection =
-          await this.raindropService.getCollection(collectionId);
-        return [
-          {
-            uri,
-            text: JSON.stringify({ collection }, null, 2),
-          },
-        ];
+    const encode = (record: unknown) => {
+      const text = JSON.stringify(record);
+      if (new TextEncoder().encode(text).byteLength > EXECUTION_LIMITS.resultBytes) {
+        throw new McpError("RESPONSE_TOO_LARGE", "Resource exceeds the configured result size limit");
       }
-
-      if (uri.startsWith("mcp://raindrop/")) {
-        const raindropIdStr = uri.split("/").pop();
-        if (!raindropIdStr) {
-          throw new ValidationError("Raindrop ID is required");
+      return [{ uri, text }];
+    };
+    // Whole-string matching rejects negative IDs, partial parses, extra path
+    // segments, query strings, decimal/exponent forms, and unsafe integers.
+    for (const kind of ["collection", "raindrop"] as const) {
+      if (uri.startsWith(`mcp://${kind}/`)) {
+        const suffix = uri.slice(`mcp://${kind}/`.length);
+        if (!/^[1-9]\d*$/.test(suffix)) {
+          throw new ValidationError("Resource requires an exact positive decimal ID");
         }
-
-        const raindropId = Number.parseInt(raindropIdStr, 10);
-        if (Number.isNaN(raindropId)) {
-          throw new ValidationError(`Invalid raindrop ID: ${raindropIdStr}`);
+        const id = Number(suffix);
+        if (!Number.isSafeInteger(id)) {
+          throw new ValidationError("Resource ID exceeds safe integer precision");
         }
-
-        const raindrop = await this.raindropService.getBookmark(raindropId);
-        return [
-          {
-            uri,
-            text: JSON.stringify({ raindrop }, null, 2),
-          },
-        ];
+        const item = kind === "collection"
+          ? await this.raindropService.getCollection(id, true)
+          : await this.raindropService.getBookmark(id, true);
+        return encode(kind === "collection" ? { collection: item } : { raindrop: item });
       }
-
-      if (uri === "mcp://user/profile") {
-        const userInfo = await this.raindropService.getUserInfo();
-        return [
-          {
-            uri,
-            text: JSON.stringify({ profile: userInfo }, null, 2),
-          },
-        ];
-      }
-    } catch (error) {
-      if (
-        error instanceof ValidationError ||
-        error instanceof NotFoundError ||
-        error instanceof UpstreamError
-      ) {
-        throw error;
-      }
-
-      throw new UpstreamError(
-        `Failed to fetch data for resource ${uri}: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
     }
-
+    if (uri === "mcp://user/profile") {
+      return encode({ profile: await this.raindropService.getUserInfo() });
+    }
     const resource = this.resources[uri] as
       { contents: Array<{ uri: string; text: string }> } | undefined;
-    if (resource?.contents) {
-      return resource.contents;
-    }
-
-    throw new NotFoundError(
-      `Resource with uri "${uri}" not found or not readable.`,
-    );
+    if (resource?.contents) return resource.contents;
+    throw new NotFoundError(`Resource with uri "${uri}" not found or not readable`);
   }
 
   /**
@@ -418,29 +462,7 @@ export class RaindropMCPService {
       mimeType: "application/json",
     }));
 
-    // Add dynamic resource patterns for documentation
-    const dynamicResourcePatterns = [
-      {
-        id: "mcp://collection/{id}",
-        name: "collection_resource",
-        uri: "mcp://collection/{id}",
-        title: "Collection Resource Pattern",
-        description:
-          "Access any Raindrop collection by ID (e.g., mcp://collection/123456)",
-        mimeType: "application/json",
-      },
-      {
-        id: "mcp://raindrop/{id}",
-        name: "raindrop_resource",
-        uri: "mcp://raindrop/{id}",
-        title: "Raindrop Resource Pattern",
-        description:
-          "Access any Raindrop bookmark by ID (e.g., mcp://raindrop/987654)",
-        mimeType: "application/json",
-      },
-    ];
-
-    return [...staticResources, ...dynamicResourcePatterns];
+    return staticResources;
   }
 
   /**

@@ -3,6 +3,7 @@ import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
 import { createMcpHandler } from "@modelcontextprotocol/server";
 import pkg from "../package.json";
 import { RaindropMCPService } from "./services/raindropmcp.service.js";
+import { EXECUTION_LIMITS, readBounded } from "./services/execution-budget.js";
 import { createLogger } from "./utils/logger.js";
 
 interface Env {
@@ -15,21 +16,22 @@ const logger = createLogger("worker");
 
 const parseMaxReadRetries = (value: string | undefined): number => {
   const parsed = Number(value ?? "3");
-  return Number.isInteger(parsed) && parsed >= 0 ? parsed : 3;
+  return Number.isInteger(parsed) && parsed >= 0 ? Math.min(3, parsed) : 3;
 };
 
-const createHandler = (env: Env) =>
+const createHandler = (env: Env, signal: AbortSignal) =>
   createMcpHandler(
     () =>
       new RaindropMCPService({
         accessToken: env.RAINDROP_ACCESS_TOKEN,
         maxReadRetries: parseMaxReadRetries(env.RAINDROP_RATE_LIMIT_MAX_RETRIES),
         debugHttp: false,
+        signal,
       }).getServer(),
     {
       legacy: "stateless",
       responseMode: "auto",
-      onerror: (error) => logger.error("MCP handler error", error),
+      onerror: () => logger.error("MCP handler error"),
     },
   );
 
@@ -68,7 +70,6 @@ export default {
         service: "raindrop-mcp-worker",
         version: pkg.version,
         runtime: "cloudflare-workers",
-        protocolTarget: "2026-07-28",
         httpMode: "per-request",
       });
     }
@@ -127,6 +128,42 @@ export default {
 
     // The shared Portal auth boundary removes the ingress Authorization header
     // before the request reaches the MCP SDK or any Raindrop tool/service code.
-    return createHandler(env).fetch(portalAuth.request);
+    // Check actual streamed bytes: Content-Length is untrusted and may be absent.
+    // Keep authentication and the empty compatibility probe ahead of this read.
+    // Ingress happens BEFORE the request-scoped upstream budget is created.
+    // Bound the streaming read itself and propagate client disconnects.
+    const ingress = new AbortController();
+    const abortIngress = () => ingress.abort();
+    portalAuth.request.signal.addEventListener("abort", abortIngress, { once: true });
+    if (portalAuth.request.signal.aborted) abortIngress();
+    const ingressTimeout = setTimeout(abortIngress, EXECUTION_LIMITS.fetchMs);
+    let body: Uint8Array;
+    try {
+      body = await readBounded(
+        portalAuth.request.body,
+        EXECUTION_LIMITS.requestBytes,
+        ingress.signal,
+      );
+      if (ingress.signal.aborted) {
+        return jsonError(408, "REQUEST_BODY_TIMEOUT", "MCP request body timed out or was cancelled.");
+      }
+    } catch {
+      if (ingress.signal.aborted) {
+        return jsonError(408, "REQUEST_BODY_TIMEOUT", "MCP request body timed out or was cancelled.");
+      }
+      return jsonError(413, "REQUEST_TOO_LARGE", "MCP request exceeds 128 KiB.");
+    } finally {
+      clearTimeout(ingressTimeout);
+      portalAuth.request.signal.removeEventListener("abort", abortIngress);
+    }
+    const headers = new Headers(portalAuth.request.headers);
+    headers.delete("content-length");
+    const boundedRequest = new Request(portalAuth.request.url, {
+      method: portalAuth.request.method,
+      headers,
+      body: body.length ? (body.buffer as ArrayBuffer) : null,
+      signal: portalAuth.request.signal,
+    });
+    return createHandler(env, boundedRequest.signal).fetch(boundedRequest);
   },
 };

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/worker.js";
 
 const workerUrl = "https://raindrop-mcp-worker.example.test";
@@ -167,6 +167,63 @@ describe("Cloudflare Worker Portal authentication", () => {
     const body = await response.text();
     expect(body).toContain('"jsonrpc":"2.0"');
     expect(body).toContain('"serverInfo"');
+  });
+
+  it("runs successful read and write tools/call via the authenticated HTTP Worker and fake upstream", async () => {
+    const item = { _id: 17, link: "https://example.test/", note: "fixture" };
+    const upstream = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      expect(request.headers.get("Authorization")).toBe(`Bearer ${raindropToken}`);
+      if (request.method === "GET" && url.pathname === "/rest/v1/raindrop/17") {
+        return Response.json({ result: true, item });
+      }
+      if (request.method === "POST" && url.pathname === "/rest/v1/raindrop") {
+        expect(await request.json()).toEqual({
+          link: item.link, collection: { $id: -1 }, pleaseParse: {},
+        });
+        return Response.json({ result: true, item });
+      }
+      throw new Error(`Unexpected upstream route: ${request.method} ${url.pathname}`);
+    });
+    vi.stubGlobal("fetch", upstream);
+    const decode = async (response: Response) => {
+      expect(response.status).toBe(200);
+      const text = await response.text();
+      const json = text.trim().startsWith("{")
+        ? text
+        : text.split(/\r?\n/).find((line) => line.startsWith("data:"))?.slice(5).trim();
+      expect(json).toBeDefined();
+      return JSON.parse(json!) as {
+        result?: { isError?: boolean; structuredContent?: unknown };
+      };
+    };
+    try {
+      const cases = [
+        { name: "raindrop_get", arguments: { id: 17 }, method: "GET" },
+        { name: "raindrop_create", arguments: { link: item.link }, method: "POST" },
+      ];
+      for (const [index, entry] of cases.entries()) {
+        const request = mcpRequest({
+          ...portalAuth,
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream",
+          "MCP-Protocol-Version": "2025-03-26",
+        }, JSON.stringify({
+          jsonrpc: "2.0", id: index + 1, method: "tools/call",
+          params: { name: entry.name, arguments: entry.arguments },
+        }));
+        const rpc = await decode(await worker.fetch(request, env() as never));
+        expect(rpc.result?.isError).not.toBe(true);
+        expect(rpc.result?.structuredContent).toMatchObject({
+          ok: true, data: { item: { _id: 17 } },
+          meta: entry.method === "POST" ? { status: "succeeded", requestCount: 1 } : { requestCount: 1 },
+        });
+      }
+      expect(upstream).toHaveBeenCalledTimes(2);
+      expect(upstream.mock.calls.map(([request]) => request.method)).toEqual(["GET", "POST"]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("accepts the temporary empty compatibility probe only after Portal auth", async () => {

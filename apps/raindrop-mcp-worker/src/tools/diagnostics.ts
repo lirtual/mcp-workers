@@ -1,26 +1,12 @@
 import { z } from "zod";
-import pkg from "../../package.json";
 import type { ToolHandlerContext } from "./common.js";
-import { defineTool } from "./common.js";
+import { defineTool, ToolEnvelopeSchema, toolSuccess } from "./common.js";
 
 export const DiagnosticsInputSchema = z.object({
-  includeEnvironment: z
-    .boolean()
-    .optional()
-    .describe(
-      "Deprecated compatibility flag. Worker diagnostics never expose environment variables or credentials.",
-    ),
-});
+  includeUpstream: z.boolean().default(false),
+}).strict();
 
-export const DiagnosticsOutputSchema = z.object({
-  version: z.string(),
-  mcpProtocolVersion: z.string(),
-  sdkVersion: z.string(),
-  runtime: z.literal("cloudflare-workers"),
-  httpMode: z.literal("per-request"),
-  enabledTools: z.array(z.string()),
-  libraryHealth: z.record(z.string(), z.number()).optional(),
-});
+export const DiagnosticsOutputSchema = ToolEnvelopeSchema;
 
 export const createDiagnosticsTool = (
   serverVersion: string,
@@ -28,67 +14,38 @@ export const createDiagnosticsTool = (
 ) =>
   defineTool({
     name: "diagnostics",
-    description:
-      "Diagnostics for the Worker server, tool metadata, and Raindrop library health.",
+    description: "Diagnostics: local Worker metadata; optionally read official Raindrop user statistics.",
     inputSchema: DiagnosticsInputSchema,
     outputSchema: DiagnosticsOutputSchema,
+    annotations: { readOnlyHint: true },
     handler: async (
-      _args?: z.infer<typeof DiagnosticsInputSchema>,
-      context?: ToolHandlerContext,
+      args: z.infer<typeof DiagnosticsInputSchema>,
+      context: ToolHandlerContext,
     ) => {
-      const stats = context?.raindropService
+      // Do not inspect runtime environment, sample client models, or infer any
+      // upstream count by performing a potentially unbounded library scan.
+      const stats = args.includeUpstream
         ? await context.raindropService.getUserStats()
         : null;
-
-      let healthDetails: Record<string, number> = {};
-      if (context?.raindropService) {
-        const [broken, duplicates, untagged] = await Promise.all([
-          context.raindropService.getBookmarks({ broken: true, perPage: 1 }),
-          context.raindropService.getBookmarks({
-            duplicates: true,
-            perPage: 1,
-          }),
-          context.raindropService.getBookmarks({ notag: true, perPage: 1 }),
-        ]);
-        healthDetails = {
-          brokenCount: broken.count,
-          duplicateCount: duplicates.count,
-          untaggedCount: untagged.count,
-        };
-      }
-
-      const diagnosticsData = {
+      const data = {
         version: serverVersion,
-        mcpProtocolVersion: "2026-07-28",
-        sdkVersion: pkg.dependencies["@modelcontextprotocol/server"],
-        runtime: "cloudflare-workers" as const,
-        httpMode: "per-request" as const,
+        protocolVersion: null, // The negotiated version is not exposed here.
+        runtime: "cloudflare-workers",
+        httpMode: "per-request",
+        enabledTools: getEnabledToolNames(),
         libraryHealth: stats
           ? {
-              totalBookmarks: stats.bookmarks,
-              totalCollections: stats.collections,
-              totalHighlights: stats.highlights,
-              totalTags: stats.tags,
-              ...healthDetails,
+              totalBookmarks: stats.bookmarks ?? null,
+              totalCollections: stats.collections ?? null,
+              totalHighlights: stats.highlights ?? null,
+              totalTags: stats.tags ?? null,
             }
-          : undefined,
-        enabledTools: getEnabledToolNames(),
+          : null,
       };
-
-      const structuredContent = DiagnosticsOutputSchema.parse(diagnosticsData);
-
-      return {
-        content: [
-          {
-            type: "resource",
-            resource: {
-              uri: "diagnostics://server",
-              mimeType: "application/json",
-              text: JSON.stringify(structuredContent, null, 2),
-            },
-          },
-        ],
-        structuredContent,
-      };
+      return toolSuccess(
+        data,
+        { requestCount: context.raindropService.budget.requestCount },
+        "Diagnostics collected",
+      );
     },
   });
