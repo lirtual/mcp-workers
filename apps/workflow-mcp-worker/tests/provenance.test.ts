@@ -161,6 +161,45 @@ describe('runtime provenance and pinned plans', () => {
     ).toThrow(/invalid-execution-manifest/);
   });
 
+  it('blocks nonterminal pinned plans when the new bundle removes their smoke connection', () => {
+    const baseline = {
+      runId: 'run_active_legacy_mcp',
+      definitionDigest: 'a'.repeat(64),
+      dslVersion: 1,
+      manifestVersions: [1],
+      hasInvalidManifest: false
+    };
+    const legacy = {
+      ...baseline,
+      normalizedPlanJson: JSON.stringify({
+        dslVersion: 1,
+        id: 'legacy-smoke',
+        steps: { call: { with: { connection: 'smoke-modern', tool: 'workflow_list' } } }
+      })
+    };
+    expect(() => assertReleaseCompatibility([legacy])).toThrow(/removed-smoke-connection/);
+    expect(() => assertReleaseCompatibility([{
+      ...legacy,
+      normalizedPlanJson: JSON.stringify({
+        dslVersion: 1,
+        id: 'legacy-smoke',
+        steps: { call: { with: { connection: 'smoke-readonly' } } }
+      })
+    }])).toThrow(/removed-smoke-connection/);
+    expect(() => assertReleaseCompatibility([{
+      ...baseline,
+      normalizedPlanJson: JSON.stringify({
+        dslVersion: 1,
+        id: 'self-check',
+        steps: { call: { with: { connection: 'workflow-self' } } }
+      })
+    }])).not.toThrow();
+    expect(() => assertReleaseCompatibility([{
+      ...baseline,
+      normalizedPlanJson: '{not-json'
+    }])).toThrow(/invalid-normalized-plan/);
+  });
+
   it('pins an explicit checked-in runner contract version', () => {
     expect(RUNNER_VERSION).toBe('workflow-runner-v1');
   });

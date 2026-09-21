@@ -15,8 +15,8 @@ on:
         required: false
         default: https://example.com/
         type: string
-      bootstrap:
-        description: Skip pre-deploy compatibility query for a brand-new empty D1
+      full_acceptance:
+        description: Run the authenticated heavy GitHub/R2/MCP tracer after deploy
         required: false
         default: false
         type: boolean
@@ -37,14 +37,16 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: 8bb496011403552e785ea1b834daffdf
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
       WORKFLOW_MCP_D1_DATABASE_ID: 238891f8-4007-4436-890d-819d54e3e01b
       WORKFLOW_MCP_D1_DATABASE_NAME: ${{ vars.WORKFLOW_MCP_D1_DATABASE_NAME || 'workflow-mcp' }}
       WORKFLOW_MCP_WORKER_NAME: ${{ vars.WORKFLOW_MCP_WORKER_NAME || 'workflow-mcp-worker' }}
       WORKFLOW_MCP_R2_BUCKET: ${{ vars.WORKFLOW_MCP_R2_BUCKET || 'workflow-mcp-artifacts' }}
       WORKFLOW_MCP_URL: ${{ vars.WORKFLOW_MCP_URL || 'https://workflow-mcp-worker.aiyaya.workers.dev' }}
       WORKFLOW_MCP_SOURCE_URL: ${{ inputs.source_url }}
-      WORKFLOW_MCP_GITHUB_ACTIONS_TOKEN: ${{ github.token }}
       WORKFLOW_MCP_EVIDENCE_PATH: ${{ github.workspace }}/workflow-mcp-evidence.json
+      R2_ACCESS_KEY_ID: ${{ vars.R2_ACCESS_KEY_ID }}
     steps:
       - uses: actions/checkout@v4
 
@@ -63,57 +65,6 @@ jobs:
       - name: Install workspace
         run: pnpm install --frozen-lockfile --ignore-scripts
 
-      - name: Generate ephemeral runtime credentials
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]]; then
-            echo "::error::Missing Workflow MCP environment value: CLOUDFLARE_API_TOKEN"
-            exit 1
-          fi
-
-          access_token="$(openssl rand -hex 32)"
-          lease_secret="$(openssl rand -hex 32)"
-          trigger_token="$(openssl rand -hex 32)"
-          account_verify_url="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/tokens/verify"
-          user_verify_url="https://api.cloudflare.com/client/v4/user/tokens/verify"
-          account_body="$RUNNER_TEMP/cloudflare-account-token-verify.json"
-          user_body="$RUNNER_TEMP/cloudflare-user-token-verify.json"
-
-          account_status="$(curl --silent --show-error --output "$account_body" --write-out '%{http_code}' \
-            "$account_verify_url" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN")"
-          if [[ "$account_status" == "200" ]]; then
-            token_json="$(cat "$account_body")"
-            token_owner="account"
-          else
-            user_status="$(curl --silent --show-error --output "$user_body" --write-out '%{http_code}' \
-              "$user_verify_url" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN")"
-            if [[ "$user_status" == "200" ]]; then
-              token_json="$(cat "$user_body")"
-              token_owner="user"
-            else
-              account_error="$(node -e "const fs=require('node:fs'); const x=JSON.parse(fs.readFileSync(process.argv[1],'utf8')); const e=x.errors?.[0]; process.stdout.write(e ? String(e.code)+': '+String(e.message) : 'unknown')" "$account_body" 2>/dev/null || echo unknown)"
-              user_error="$(node -e "const fs=require('node:fs'); const x=JSON.parse(fs.readFileSync(process.argv[1],'utf8')); const e=x.errors?.[0]; process.stdout.write(e ? String(e.code)+': '+String(e.message) : 'unknown')" "$user_body" 2>/dev/null || echo unknown)"
-              echo "::error::Cloudflare token verification failed (account HTTP $account_status, $account_error; user HTTP $user_status, $user_error)."
-              exit 1
-            fi
-          fi
-          rm -f "$account_body" "$user_body"
-          r2_access_key_id="$(node -e "const x=JSON.parse(process.argv[1]); if(!x.success||!x.result?.id||x.result.status!=='active') process.exit(1); process.stdout.write(x.result.id)" "$token_json")"
-          echo "Cloudflare token verified as $token_owner-owned."
-          r2_secret_access_key="$(printf '%s' "$CLOUDFLARE_API_TOKEN" | sha256sum | awk '{print $1}')"
-
-          echo "::add-mask::$access_token"
-          echo "::add-mask::$lease_secret"
-          echo "::add-mask::$trigger_token"
-          echo "::add-mask::$r2_access_key_id"
-          echo "::add-mask::$r2_secret_access_key"
-          echo "WORKFLOW_MCP_ACCESS_TOKEN=$access_token" >> "$GITHUB_ENV"
-          echo "EXECUTOR_LEASE_SECRET=$lease_secret" >> "$GITHUB_ENV"
-          echo "TRIGGER_SMOKE_WEBHOOK_TOKEN=$trigger_token" >> "$GITHUB_ENV"
-          echo "R2_ACCESS_KEY_ID=$r2_access_key_id" >> "$GITHUB_ENV"
-          echo "R2_SECRET_ACCESS_KEY=$r2_secret_access_key" >> "$GITHUB_ENV"
-
       - name: Validate required Workflow MCP configuration
         shell: bash
         run: |
@@ -126,12 +77,9 @@ jobs:
             WORKFLOW_MCP_WORKER_NAME
             WORKFLOW_MCP_R2_BUCKET
             WORKFLOW_MCP_URL
-            WORKFLOW_MCP_ACCESS_TOKEN
-            WORKFLOW_MCP_GITHUB_ACTIONS_TOKEN
-            EXECUTOR_LEASE_SECRET
+            GITHUB_REPOSITORY
+            GITHUB_REPOSITORY_ID
             R2_ACCESS_KEY_ID
-            R2_SECRET_ACCESS_KEY
-            TRIGGER_SMOKE_WEBHOOK_TOKEN
           )
           for name in "${required[@]}"; do
             if [[ -z "${!name:-}" ]]; then
@@ -153,41 +101,44 @@ jobs:
           echo "path=$config" >> "$GITHUB_OUTPUT"
           echo "WORKFLOW_MCP_WRANGLER_CONFIG=$config" >> "$GITHUB_ENV"
 
+      - name: Check persisted Worker Secret names
+        shell: bash
+        working-directory: apps/workflow-mcp-worker
+        run: |
+          set -euo pipefail
+          # Read names, not values; fail closed before migrations and deploy.
+          secret_names="$(pnpm exec wrangler secret list --config "$WORKFLOW_MCP_WRANGLER_CONFIG" --format json)"
+          SECRET_NAMES="$secret_names" node <<'NODE'
+          const names = JSON.parse(process.env.SECRET_NAMES ?? '[]');
+          if (!Array.isArray(names)) throw new Error('Invalid Worker Secret inventory.');
+          const present = new Set(names.map(binding => binding.name));
+          const required = JSON.parse(require('node:fs').readFileSync(
+            process.env.WORKFLOW_MCP_WRANGLER_CONFIG, 'utf8'
+          )).secrets.required;
+          const missing = required.filter(name => !present.has(name));
+          if (missing.length > 0) throw new Error('Missing persisted Worker Secrets: ' + missing.join(', '));
+          for (const legacy of ['R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID']) {
+            if (present.has(legacy)) throw new Error(
+              legacy + ' is still a legacy Secret; migrate the binding to the approved non-secret variable before deploying.'
+            );
+          }
+          console.log('Required persistent runtime Secret names are configured.');
+          NODE
+
       - name: Apply D1 migrations
         working-directory: apps/workflow-mcp-worker
         run: pnpm exec wrangler d1 migrations apply DB --remote --config "$WORKFLOW_MCP_WRANGLER_CONFIG"
 
       - name: Check nonterminal runtime compatibility
-        if: inputs.bootstrap != true
         run: pnpm --filter workflow-mcp-worker run release:compatibility
 
       - name: Deploy Workflow MCP Worker
         shell: bash
         working-directory: apps/workflow-mcp-worker
-        env:
-          GITHUB_ACTIONS_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          secret_file="$RUNNER_TEMP/workflow-mcp-worker-secrets.json"
-          trap 'rm -f "$secret_file"' EXIT
-          SECRET_FILE="$secret_file" node <<'NODE'
-          const fs = require('node:fs');
-          const values = {
-            MCP_ACCESS_TOKEN: process.env.WORKFLOW_MCP_ACCESS_TOKEN,
-            SMOKE_READONLY_MCP_TOKEN: process.env.WORKFLOW_MCP_ACCESS_TOKEN,
-            TRIGGER_SMOKE_WEBHOOK_TOKEN: process.env.TRIGGER_SMOKE_WEBHOOK_TOKEN,
-            EXECUTOR_LEASE_SECRET: process.env.EXECUTOR_LEASE_SECRET,
-            GITHUB_ACTIONS_TOKEN: process.env.GITHUB_ACTIONS_TOKEN,
-            R2_ACCOUNT_ID: process.env.CLOUDFLARE_ACCOUNT_ID,
-            R2_ACCESS_KEY_ID: process.env.R2_ACCESS_KEY_ID,
-            R2_SECRET_ACCESS_KEY: process.env.R2_SECRET_ACCESS_KEY
-          };
-          for (const [name, value] of Object.entries(values)) {
-            if (!value) throw new Error('Missing secret value for ' + name);
-          }
-          fs.writeFileSync(process.env.SECRET_FILE, JSON.stringify(values));
-          NODE
-          pnpm exec wrangler deploy             --config "$WORKFLOW_MCP_WRANGLER_CONFIG"             --secrets-file "$secret_file"
+          # Secrets remain managed in Cloudflare; never install a CI job token.
+          pnpm exec wrangler deploy --config "$WORKFLOW_MCP_WRANGLER_CONFIG"
 
       - name: Wait for Worker health
         shell: bash
@@ -202,12 +153,20 @@ jobs:
           echo "::error::Workflow MCP Worker did not become healthy."
           exit 1
 
+      - name: Probe health and unauthenticated MCP
+        working-directory: apps/workflow-mcp-worker
+        run: pnpm exec tsx scripts/run-release-probe.ts
+
       - name: Run MCP heavy and connection tracers
+        if: github.event_name == 'workflow_dispatch' && inputs.full_acceptance
         id: tracer
         working-directory: apps/workflow-mcp-worker
+        env:
+          WORKFLOW_MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
         run: pnpm exec tsx scripts/run-deploy-tracer.ts
 
       - name: Verify GitHub executor terminal evidence
+        if: github.event_name == 'workflow_dispatch' && inputs.full_acceptance
         working-directory: apps/workflow-mcp-worker
         env:
           GITHUB_TOKEN: ${{ github.token }}

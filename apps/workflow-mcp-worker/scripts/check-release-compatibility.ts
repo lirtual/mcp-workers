@@ -6,7 +6,7 @@ const mode = process.argv.includes('--local') ? '--local' : '--remote';
 const wranglerConfig = process.env.WORKFLOW_MCP_WRANGLER_CONFIG;
 
 const query = `
-SELECT wr.run_id, wr.definition_digest, wdv.dsl_version, sa.execution_manifest_json
+SELECT wr.run_id, wr.definition_digest, wdv.dsl_version, wdv.normalized_plan_json, sa.execution_manifest_json
 FROM workflow_runs wr
 JOIN workflow_definition_versions wdv
   ON wdv.definition_digest = wr.definition_digest
@@ -55,6 +55,7 @@ const grouped = new Map<
     dslVersion: number;
     manifestVersions: number[];
     hasInvalidManifest: boolean;
+    normalizedPlanJson: string;
   }
 >();
 
@@ -67,7 +68,8 @@ for (const row of rows) {
       definitionDigest: String(row.definition_digest),
       dslVersion: Number(row.dsl_version),
       manifestVersions: [],
-      hasInvalidManifest: false
+      hasInvalidManifest: false,
+      normalizedPlanJson: typeof row.normalized_plan_json === 'string' ? row.normalized_plan_json : ''
     };
     grouped.set(runId, record);
   }

@@ -2,8 +2,27 @@ import { describe, expect, it, vi } from 'vitest';
 import { callMcpTool, inspectMcpTool } from '../src/mcp-client.js';
 import type { Env } from '../src/types.js';
 
+vi.mock('../src/connections.js', async importOriginal => {
+  const actual = await importOriginal<{ getConnection: (id: string) => unknown }>();
+  return {
+    ...actual,
+    getConnection(id: string) {
+      if (id !== 'legacy-test') return actual.getConnection(id);
+      return {
+        id: 'legacy-test',
+        transport: 'streamable-http',
+        protocolVersion: '2025-11-25',
+        endpoint: 'https://example.invalid/mcp',
+        auth: { header: 'Authorization', format: 'bearer', secret: 'MCP_ACCESS_TOKEN' },
+        trustAnnotations: false,
+        tools: { health_check: { effect: 'read' } }
+      };
+    }
+  };
+});
+
 const env = {
-  SMOKE_READONLY_MCP_TOKEN: 'secret'
+  MCP_ACCESS_TOKEN: 'secret'
 } as unknown as Env;
 
 function jsonResponse(
@@ -77,7 +96,7 @@ describe('MCP Streamable HTTP client', () => {
 
     const result = await callMcpTool(
       env,
-      'smoke-readonly',
+      'legacy-test',
       'health_check',
       {},
       fetchImpl as typeof fetch
@@ -85,7 +104,7 @@ describe('MCP Streamable HTTP client', () => {
 
     expect(result.result.structuredContent).toEqual({ ok: true });
     expect(result.dependencySnapshot).toMatchObject({
-      connection: 'smoke-readonly',
+      connection: 'legacy-test',
       tool: 'health_check',
       serverName: 'legacy-smoke',
       serverVersion: '1.2.3'
@@ -123,7 +142,7 @@ describe('MCP Streamable HTTP client', () => {
 
     const inspection = await inspectMcpTool(
       env,
-      'smoke-modern',
+      'workflow-self',
       'modern_read',
       fetchImpl as typeof fetch
     );
@@ -175,7 +194,7 @@ describe('MCP Streamable HTTP client', () => {
     await expect(
       callMcpTool(
         env,
-        'smoke-readonly',
+        'legacy-test',
         'health_check',
         {},
         fetchImpl as typeof fetch

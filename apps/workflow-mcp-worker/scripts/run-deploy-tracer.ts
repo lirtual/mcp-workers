@@ -1,5 +1,8 @@
 import { appendFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
+import { callMcpTool } from '../src/mcp-client.js';
+import { assertWorkflowMcpHealth } from '../src/release-health.js';
+import type { Env } from '../src/types.js';
 
 const baseUrl = required('WORKFLOW_MCP_URL').replace(/\/+$/, '');
 const accessToken = required('WORKFLOW_MCP_ACCESS_TOKEN');
@@ -17,10 +20,10 @@ const evidence: Record<string, unknown> = {
   sourceUrl
 };
 
-await assertHealth();
+await assertWorkflowMcpHealth(baseUrl);
 const listed = await waitForAuthenticatedMcp();
 const workflowIds = asArray(listed.workflows).map(item => stringField(asObject(item), 'id'));
-for (const requiredWorkflow of ['web-archive-smoke', 'mcp-connection-smoke']) {
+for (const requiredWorkflow of ['web-archive-smoke']) {
   if (!workflowIds.includes(requiredWorkflow)) {
     throw new Error(`Workflow MCP workflow_list is missing "${requiredWorkflow}".`);
   }
@@ -52,22 +55,15 @@ const artifactBytes = new Uint8Array(await artifactResponse.arrayBuffer());
 if (artifactBytes.byteLength === 0) throw new Error('Artifact GET returned an empty object.');
 const heavyLogs = await callTool('workflow_logs', { runId: heavyRunId, cursor: 0, limit: 100 });
 
-const mcpAdmission = await callTool('workflow_run', {
-  workflow: 'mcp-connection-smoke',
-  input: {},
-  idempotencyKey: `workflow-mcp-${process.env.GITHUB_RUN_ID || Date.now()}`
-});
-const mcpRunId = stringField(mcpAdmission, 'runId');
-const mcpStatus = await waitForTerminal(mcpRunId, 'mcp');
-if (mcpStatus.state !== 'succeeded') {
-  throw new Error(`MCP workflow run ended as ${String(mcpStatus.state)}: ${JSON.stringify(mcpStatus)}`);
-}
-const mcpResult = await callTool('workflow_result', { runId: mcpRunId });
-const mcpOutputs = asObject(mcpResult.outputs);
-const nestedMcpResult = asObject(mcpOutputs.result);
-const nestedStructured = asObject(nestedMcpResult.structuredContent);
-if (asArray(nestedStructured.workflows).length < 2) {
-  throw new Error('MCP smoke did not return the Workflow MCP workflow_list payload.');
+const connectionCall = await callMcpTool(
+  { MCP_ACCESS_TOKEN: accessToken } as Env,
+  'workflow-self',
+  'workflow_list',
+  {}
+);
+const connectionStructured = asObject(connectionCall.result.structuredContent);
+if (asArray(connectionStructured.workflows).length < 1) {
+  throw new Error('Generic MCP connection did not return the Workflow MCP workflow_list payload.');
 }
 
 Object.assign(evidence, {
@@ -87,24 +83,16 @@ Object.assign(evidence, {
     lifecycleEvents: asArray(heavyLogs.events).map(item => asObject(item).eventType)
   },
   mcp: {
-    runId: mcpRunId,
-    state: mcpStatus.state,
-    returnedWorkflowCount: asArray(nestedStructured.workflows).length
+    connection: connectionCall.dependencySnapshot.connection,
+    returnedWorkflowCount: asArray(connectionStructured.workflows).length
   }
 });
 
 await writeFile(evidencePath, JSON.stringify(evidence, null, 2) + '\n', 'utf8');
 appendGitHubOutput('heavy_run_id', heavyRunId);
-appendGitHubOutput('mcp_run_id', mcpRunId);
+appendGitHubOutput('mcp_run_id', 'connection-direct');
 appendGitHubOutput('evidence_path', evidencePath);
 console.log(JSON.stringify(evidence, null, 2));
-
-async function assertHealth(): Promise<void> {
-  const response = await fetch(`${baseUrl}/health`);
-  if (!response.ok) throw new Error(`Workflow MCP health failed with status ${response.status}.`);
-  const body = asObject(await response.json());
-  if (body.status !== 'ok') throw new Error('Workflow MCP health payload is invalid.');
-}
 
 async function waitForAuthenticatedMcp(): Promise<Record<string, unknown>> {
   const result = await callTool('workflow_list', {});

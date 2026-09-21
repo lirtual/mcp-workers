@@ -38,7 +38,7 @@ Every production Worker configuration declares its mandatory runtime secret name
 | `database-mcp-worker` | `MCP_ACCESS_TOKEN`, `DATABASE_CONFIG` |
 | `raindrop-mcp-worker` | `MCP_ACCESS_TOKEN`, `RAINDROP_ACCESS_TOKEN` |
 | `instapaper-mcp-worker` | `MCP_ACCESS_TOKEN`, `INSTAPAPER_CONSUMER_KEY`, `INSTAPAPER_CONSUMER_SECRET`, `INSTAPAPER_OAUTH_TOKEN`, `INSTAPAPER_OAUTH_TOKEN_SECRET` |
-| `workflow-mcp-worker` | `MCP_ACCESS_TOKEN`, `TRIGGER_SMOKE_WEBHOOK_TOKEN`, `EXECUTOR_LEASE_SECRET`, `GITHUB_ACTIONS_TOKEN`, `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `SMOKE_READONLY_MCP_TOKEN` (current deployment contract; simplification under design review) |
+| `workflow-mcp-worker` (release candidate) | `MCP_ACCESS_TOKEN`, `EXECUTOR_LEASE_SECRET`, `GITHUB_ACTIONS_TOKEN`, `R2_SECRET_ACCESS_KEY`; separately required non-secret `R2_ACCESS_KEY_ID`. Production remains unchanged until the authorized #123 cutover. |
 
 `database-mcp-worker` stores its complete logical database catalog in the single `DATABASE_CONFIG` Secret. Direct SQL URLs therefore remain secret without requiring separate `DATABASE_URL` / `DATABASE_WRITE_URL` variables. Hyperdrive entries still refer to Wrangler bindings by name.
 
@@ -54,10 +54,12 @@ For local development, use uncommitted `.dev.vars` or `.env` files with keys mat
 | Static configuration | Fixed repository/ref/workflow, GitHub OIDC URLs/audience, resource names, and safe non-sensitive defaults live in version-controlled configuration or code. Avoid duplicate Cloudflare dashboard overrides and duplicated CI inputs. Keep actual Cloudflare resource IDs in the deployment configuration as needed; they are identifiers, not secrets. |
 | Platform credentials | Keep `GITHUB_ACTIONS_TOKEN` (repository-scoped long-lived authorization, **not** a deployment-job `github.token`), `EXECUTOR_LEASE_SECRET`, and the credentials required by the **current** R2 direct-upload signing implementation separate. Consider the latter for reduction only after verifying equivalent signed-upload behavior. |
 | Runtime resources | Keep the D1, Workflows, R2, and version-metadata bindings as needed by implemented behavior. Do not classify bindings as optional merely to lower a dashboard count. |
-| Cron scheduler | Preserve the intended scheduler tick. The existing generated deployment config sets `triggers.crons=[]`; resolve this explicitly when implementing rather than silently dropping schedules. |
+| Cron scheduler | Preserve the intended scheduler tick. Generated deployment configuration keeps the checked-in `* * * * *` Cron. Live 09:00 business occurrence remains #108. |
 | Ownership and consistency | `wrangler.jsonc` and audited code defaults own non-sensitive settings; Cloudflare runtime owns secret values; CI owns only genuine deployment/test credentials. Never rotate or delete a live Secret just to reconcile naming before code and clients are ready. |
 
-**Implementation specification:** [`docs/workflow-mcp/runtime-config-simplification-spec.md`](./workflow-mcp/runtime-config-simplification-spec.md) governs the cross-Worker rollout and end-to-end acceptance. Its four-Secret Workflow platform baseline also keeps `R2_ACCESS_KEY_ID` as a separately required non-secret credential identifier; real integrations may require additional Secrets. Do not optimize for a raw dashboard count.\n\n**Current implementation is not yet compliant.** The deployed contract still requires `TRIGGER_SMOKE_WEBHOOK_TOKEN` and `SMOKE_READONLY_MCP_TOKEN`; the deploy workflow generates random MCP/lease/smoke credentials and writes the ephemeral `github.token` to `GITHUB_ACTIONS_TOKEN`. The implementation phase must change the deploy script, Wrangler required names, smoke callers, endpoint/test fixtures and configuration references together before any runtime-secret cleanup.
+**Implementation specification:** [`docs/workflow-mcp/runtime-config-simplification-spec.md`](./workflow-mcp/runtime-config-simplification-spec.md) governs the cross-Worker rollout and end-to-end acceptance. Its four-Secret Workflow platform baseline also keeps `R2_ACCESS_KEY_ID` as a separately required non-secret credential identifier; real integrations may require additional Secrets. Do not optimize for a raw dashboard count.
+
+The release candidate no longer requires production-only smoke webhook/MCP Secrets and ordinary deploys do not rotate live platform credentials. This is a code contract, not evidence of a completed production migration: the live binding-type change and shared-value cutover remain #123 and require separate authorization. See [`mcp-shared-token-runbook.md`](./mcp-shared-token-runbook.md).
 
 ## Workers Observability baseline
 
@@ -79,7 +81,7 @@ Do not deliberately log `Authorization` values, `MCP_ACCESS_TOKEN`, `DATABASE_CO
 
 ## Deployment behavior
 
-Before deploying an existing Worker, configure its required values under **Worker Settings → Variables and Secrets** as **Secret** values. Then deploy from the app directory with its normal `pnpm run deploy` command or through the configured Cloudflare Build.
+Before deploying an existing Worker, configure the names in `secrets.required` under **Worker Settings → Variables and Secrets** as **Secret** values. Configure required non-secret identifiers, including Workflow's `R2_ACCESS_KEY_ID`, as ordinary variables. Then deploy from the app directory with its normal `pnpm run deploy` command or through the configured Cloudflare Build.
 
 A successful deployment means all names in `secrets.required` already exist on the target Worker. Do not remove a required name merely to make a deployment green; add the missing runtime secret instead.
 
@@ -92,3 +94,9 @@ After deployment, verify the Worker at the public seams:
 5. Confirm logs do not expose the access token or upstream credentials.
 
 Use the root `pnpm smoke:mcp` runner for a representative explicitly selected safe/read-only MCP tool after Portal discovery succeeds.
+
+### Workflow derived configuration (T14) and smoke isolation (T19)
+
+Generated production Wrangler config derives `GITHUB_REPOSITORY`, `GITHUB_REPOSITORY_ID`, `R2_ACCOUNT_ID`, and `R2_BUCKET_NAME` from the GitHub/Cloudflare deployment context and R2 bucket binding. `src/platform-config.ts` pins executor ref/workflow and GitHub OIDC trust anchors. Dedicated smoke webhook/connection fixtures live under `apps/workflow-mcp-worker/acceptance/` and are not compiled into the production registry. The default deploy probe is `/health` plus unauthenticated `/mcp` denial; the authenticated heavy tracer runs only when `full_acceptance` is set on a manual dispatch.
+
+The generated deployment config sets `keep_vars` to `false`, so checked-in and derived non-secret variables replace stale Dashboard variables on deploy. Cloudflare preserves encrypted Worker Secrets independently; obsolete Secrets are removed only by an explicit, authorized `wrangler secret delete` operation.

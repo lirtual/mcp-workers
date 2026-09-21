@@ -19,6 +19,7 @@ export interface ReleaseCompatibilityRecord {
   dslVersion: number;
   manifestVersions: number[];
   hasInvalidManifest: boolean;
+  normalizedPlanJson?: string;
 }
 
 export interface ReleaseCompatibilityStore {
@@ -95,6 +96,18 @@ export function assertReleaseCompatibility(
     if (record.hasInvalidManifest) {
       failures.push(`${record.runId}:invalid-execution-manifest`);
     }
+    if (record.normalizedPlanJson) {
+      try {
+        const removedConnections = referencedConnectionIds(record.normalizedPlanJson).filter(
+          connection => connection === 'smoke-modern' || connection === 'smoke-readonly'
+        );
+        if (removedConnections.length > 0) {
+          failures.push(`${record.runId}:removed-smoke-connection`);
+        }
+      } catch {
+        failures.push(`${record.runId}:invalid-normalized-plan`);
+      }
+    }
     for (const version of record.manifestVersions) {
       if (version !== SUPPORTED_EXECUTION_MANIFEST_VERSION) {
         failures.push(`${record.runId}:manifest=${version}`);
@@ -106,6 +119,14 @@ export function assertReleaseCompatibility(
       `Release compatibility gate rejected ${failures.length} nonterminal runtime contract(s): ${failures.join(', ')}`
     );
   }
+}
+
+function referencedConnectionIds(normalizedPlanJson: string): string[] {
+  const plan = asRuntimePlan(JSON.parse(normalizedPlanJson));
+  return Object.values(plan.steps).flatMap(step => {
+    const connection = step.with.connection;
+    return typeof connection === 'string' ? [connection] : [];
+  });
 }
 
 export async function runReleaseCompatibilityGate(
