@@ -1,6 +1,17 @@
+import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
+import { compileWorkflowText } from '../src/compiler.js';
 import { handleWebhookTrigger } from '../src/triggers.js';
 import type { Env } from '../src/types.js';
+
+const fixture = compileWorkflowText(
+  await readFile(new URL('../acceptance/workflows/trigger-http-smoke.yaml', import.meta.url), 'utf8'),
+  'acceptance/workflows/trigger-http-smoke.yaml'
+);
+
+function lookup(id: string) {
+  return id === fixture.metadata.id ? fixture : undefined;
+}
 
 function env(overrides: Record<string, unknown> = {}): Env {
   return {
@@ -16,7 +27,8 @@ describe('webhook trigger ingress', () => {
       new Request('https://workflow.example/hooks/trigger-http-smoke/inbound', { method: 'POST' }),
       env(),
       'trigger-http-smoke',
-      'inbound'
+      'inbound',
+      lookup
     );
     expect(missing.status).toBe(401);
 
@@ -27,9 +39,27 @@ describe('webhook trigger ingress', () => {
       }),
       env(),
       'trigger-http-smoke',
-      'inbound'
+      'inbound',
+      lookup
     );
     expect(invalid.status).toBe(401);
+  });
+
+  it('does not treat the shared MCP caller token as webhook authentication', async () => {
+    const response = await handleWebhookTrigger(
+      new Request('https://workflow.example/hooks/trigger-http-smoke/inbound', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer portal',
+          'X-Workflow-Event-Key': 'evt-1'
+        }
+      }),
+      env(),
+      'trigger-http-smoke',
+      'inbound',
+      lookup
+    );
+    expect(response.status).toBe(401);
   });
 
   it('requires a stable caller-supplied event key', async () => {
@@ -40,7 +70,8 @@ describe('webhook trigger ingress', () => {
       }),
       env(),
       'trigger-http-smoke',
-      'inbound'
+      'inbound',
+      lookup
     );
 
     expect(response.status).toBe(400);
@@ -60,7 +91,8 @@ describe('webhook trigger ingress', () => {
       }),
       env(),
       'trigger-http-smoke',
-      'missing'
+      'missing',
+      lookup
     );
     expect(response.status).toBe(404);
   });
