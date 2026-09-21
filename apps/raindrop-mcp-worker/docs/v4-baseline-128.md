@@ -19,7 +19,7 @@ This is a factual v3→candidate-v4 **planning and regression fixture**, not a n
 | `audit_read.check` | `library_audit` | GET `/user/stats` when gated, GET one `/raindrops/{collectionId}` page and collection metadata as applicable | `kind` = duplicates/broken/untagged/empty_collections; unknown entitlement never interpreted as empty or success; unsupported search gate preserved |
 | `diagnostics_read.local` | `diagnostics` | No upstream request by default | Redacted local diagnostics; zero upstream by default |
 | `diagnostics_read.upstream` | `diagnostics` | Optional GET `/user/stats` | Explicit opt-in; redact credentials, distinguish unavailable/unknown |
- 
+
 Although there are **11 read action selectors**, they map to **10 distinct source tools** because diagnostics has two selectors. Do not count the extra selector as a separate v3 tool. The six group names are candidates under the accepted v4 decision; no current v3 tool has been renamed or removed by T01.
 
 | Independently exposed tool (16) | Existing upstream path / budget and guard |
