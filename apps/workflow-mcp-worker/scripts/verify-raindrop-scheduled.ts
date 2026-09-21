@@ -5,7 +5,7 @@ import {
   SNAPSHOT_SCHEDULE_KEY,
   T17_CANARY_SCHEDULE_KEY,
   SNAPSHOT_WORKFLOW_ID,
-  parseExpectedNineAmUtc,
+  parseExpectedOccurrence,
   parseExpectedT17CanaryUtc,
   verifyCompletedDeploy,
   verifyScheduledD1,
@@ -46,7 +46,7 @@ const d1Path = 'https://api.cloudflare.com/client/v4/accounts/' +
   '238891f8-4007-4436-890d-819d54e3e01b/query';
 const state = await d1Read<SchedulerDbState>(
   'SELECT schedule_key,last_evaluated_at,last_admitted_scheduled_time ' +
-  'FROM scheduler_state WHERE schedule_key = ? LIMIT 2',
+  'FROM scheduler_state WHERE schedule_key LIKE ? LIMIT 3',
   [scheduleKey]
 );
 const rows = await d1Read<ScheduledDbRow>(
