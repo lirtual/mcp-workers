@@ -1,0 +1,114 @@
+# Manual post-deployment heavy acceptance for T17. This workflow does not deploy,
+# migrate D1, modify Cloudflare configuration, or run Raindrop.
+name: Workflow MCP Heavy Acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_url:
+        description: Small public page for the approved web-archive-smoke tracer
+        required: true
+        default: https://example.com/
+        type: string
+      confirm_heavy_run:
+        description: I authorize one independent live GitHub/OIDC to R2 archive tracer
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: workflow-mcp-heavy-acceptance
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.ref == 'refs/heads/main' && inputs.confirm_heavy_run
+    environment: workflow-mcp-worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      CLOUDFLARE_ACCOUNT_ID: 8bb496011403552e785ea1b834daffdf
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      GITHUB_TOKEN: ${{ github.token }}
+      WORKFLOW_MCP_D1_DATABASE_ID: 238891f8-4007-4436-890d-819d54e3e01b
+      WORKFLOW_MCP_D1_DATABASE_NAME: ${{ vars.WORKFLOW_MCP_D1_DATABASE_NAME || 'workflow-mcp' }}
+      WORKFLOW_MCP_WORKER_NAME: ${{ vars.WORKFLOW_MCP_WORKER_NAME || 'workflow-mcp-worker' }}
+      WORKFLOW_MCP_R2_BUCKET: ${{ vars.WORKFLOW_MCP_R2_BUCKET || 'workflow-mcp-artifacts' }}
+      WORKFLOW_MCP_URL: ${{ vars.WORKFLOW_MCP_URL || 'https://workflow-mcp-worker.aiyaya.workers.dev' }}
+      WORKFLOW_MCP_SOURCE_URL: ${{ inputs.source_url }}
+      WORKFLOW_MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
+      GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
+      R2_ACCESS_KEY_ID: ${{ vars.R2_ACCESS_KEY_ID }}
+      WORKFLOW_MCP_EVIDENCE_PATH: ${{ github.workspace }}/workflow-mcp-heavy-evidence.json
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Activate pinned pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.17.1 --activate
+
+      - name: Install workspace
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Validate pre-existing verification credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in CLOUDFLARE_API_TOKEN WORKFLOW_MCP_ACCESS_TOKEN R2_ACCESS_KEY_ID; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Missing existing verification configuration: $name"
+              exit 1
+            fi
+          done
+
+      - name: Build local config for read-only D1 lookup (not deployment)
+        shell: bash
+        run: |
+          set -euo pipefail
+          config="$GITHUB_WORKSPACE/apps/workflow-mcp-worker/wrangler.generated.json"
+          pnpm --filter workflow-mcp-worker exec tsx scripts/build-deploy-config.ts "$config"
+          echo "WORKFLOW_MCP_WRANGLER_CONFIG=$config" >> "$GITHUB_ENV"
+
+      - name: Run independent MCP GitHub OIDC to R2 tracer
+        id: tracer
+        working-directory: apps/workflow-mcp-worker
+        run: pnpm exec tsx scripts/run-deploy-tracer.ts
+
+      - name: Verify remote D1 attempt and GitHub executor terminal state
+        working-directory: apps/workflow-mcp-worker
+        run: pnpm exec tsx scripts/verify-deploy-executor.ts
+
+      - name: Summarize sanitized evidence
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## Independent Workflow MCP heavy regression'
+            echo
+            printf -- '- Commit: `%s`\n' "$GITHUB_SHA"
+            printf -- '- Heavy Run: `%s`\n' "${{ steps.tracer.outputs.heavy_run_id || 'not-completed' }}"
+            echo '- No deployment, D1 migration, Raindrop run or schedule mutation performed.'
+            if [[ -f "$WORKFLOW_MCP_EVIDENCE_PATH" ]]; then
+              echo
+              echo 'Evidence is attached as a 14-day artifact.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload sanitized heavy evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow-mcp-heavy-evidence-${{ github.run_id }}
+          path: workflow-mcp-heavy-evidence.json
+          if-no-files-found: warn
+          retention-days: 14
