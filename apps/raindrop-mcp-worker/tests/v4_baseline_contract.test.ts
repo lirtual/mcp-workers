@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { buildToolConfigs } from "../src/tools/index.js";
 import { RaindropMCPService } from "../src/services/raindropmcp.service.js";
-import { ToolEnvelopeSchema } from "../src/tools/common.js";
 
 /**
  * T01 (#128): immutable v3-to-v4 design baseline, not v4 registration.
@@ -87,7 +86,7 @@ describe("Raindrop v4 T01 contract baseline (v3 source cc05fc9)", () => {
         expect(result.error.issues.map((issue) => issue.code), tool.name)
           .toContain("unrecognized_keys");
       }
-      expect(tool.outputSchema ?? ToolEnvelopeSchema, tool.name).toBeDefined();
+      // The real emitted outputSchema is checked through Client.listTools below.
     }
   });
 
@@ -99,8 +98,26 @@ describe("Raindrop v4 T01 contract baseline (v3 source cc05fc9)", () => {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     try {
       await Promise.all([service.getServer().connect(serverTransport), client.connect(clientTransport)]);
-      expect((await client.listTools()).tools.map((tool) => tool.name).sort())
+      const discovered = (await client.listTools()).tools;
+      expect(discovered.map((tool) => tool.name).sort())
         .toEqual(tools.map((tool) => tool.name).sort());
+      // Assert the public wire-level SDK schema, not an always-defined local fallback.
+      // Every v3 tool deliberately uses the same structured success/error envelope.
+      for (const tool of discovered) {
+        expect(tool.outputSchema, tool.name).toMatchObject({
+          type: "object",
+          properties: {
+            ok: { type: "boolean" },
+            meta: { type: "object" },
+            error: {
+              type: "object",
+              properties: { code: { type: "string" }, message: { type: "string" } },
+            },
+          },
+        });
+        expect(tool.outputSchema?.required, tool.name)
+          .toEqual(expect.arrayContaining(["ok", "meta"]));
+      }
       expect((await client.listResources()).resources.map((resource) => resource.uri).sort())
         .toEqual(["diagnostics://server", "mcp://user/profile"]);
       expect((await client.listResourceTemplates()).resourceTemplates.map((template) => template.uriTemplate))
