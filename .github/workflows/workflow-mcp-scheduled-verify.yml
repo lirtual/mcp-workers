@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       expected_utc:
-        description: Exact business occurrence at 01:00 UTC (09:00 Asia/Shanghai), e.g. 2026-09-22T01:00:00.000Z
+        description: Exact scheduled occurrence UTC minute, e.g. canary 2026-09-21T09:15:00.000Z
         required: true
         type: string
       deploy_run_id:
