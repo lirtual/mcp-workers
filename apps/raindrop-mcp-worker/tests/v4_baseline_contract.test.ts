@@ -78,7 +78,12 @@ describe("Raindrop v4 T01 contract baseline (v3 source cc05fc9)", () => {
 
   it("requires strict existing input schemas and structured output envelopes for all mappings", () => {
     for (const tool of tools) {
-      expect(tool.inputSchema.safeParse({ __unknownField: true }).success, tool.name).toBe(false);
+      const result = tool.inputSchema.safeParse({ __unknownField: true });
+      expect(result.success, tool.name).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues.map((issue) => issue.code), tool.name)
+          .toContain("unrecognized_keys");
+      }
       expect(tool.outputSchema ?? ToolEnvelopeSchema, tool.name).toBeDefined();
     }
   });
