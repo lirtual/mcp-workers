@@ -51,17 +51,27 @@ export type WriteStatus =
   | "unknown"
   | "not_executed";
 
-export const ToolEnvelopeSchema = z.object({
-  ok: z.boolean(),
-  data: z.unknown().optional(),
-  error: z.object({
-    code: z.string(),
-    message: z.string(),
-    upstreamStatus: z.number().optional(),
-    retryAfterMs: z.number().optional(),
-  }).optional(),
-  meta: z.record(z.string(), z.unknown()),
-});
+// The MCP output contract is a discriminated envelope, not an arbitrary
+// object with optional data/error. The success data is JSON object/array/null;
+// these shapes remain intentionally open to upstream business fields.
+export const ToolEnvelopeSchema = z.discriminatedUnion("ok", [
+  z.object({
+    ok: z.literal(true),
+    data: z.union([z.record(z.string(), z.unknown()), z.array(z.unknown()), z.null()]),
+    meta: z.record(z.string(), z.unknown()),
+  }).strict(),
+  z.object({
+    ok: z.literal(false),
+    error: z.object({
+      code: z.string(),
+      message: z.string(),
+      upstreamStatus: z.number().optional(),
+      upstreamCode: z.string().optional(),
+      retryAfterMs: z.number().optional(),
+    }),
+    meta: z.record(z.string(), z.unknown()),
+  }).strict(),
+]);
 
 const shortText = (message: string) => [{ type: "text" as const, text: message }];
 
