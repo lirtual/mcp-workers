@@ -275,6 +275,11 @@ describe("Raindrop MCP v3 public contract", () => {
     ["raindrop_list", {}, { result: true, items: ["invalid"] }, "UPSTREAM_ERROR"],
     ["highlight_list", {}, { result: true, items: ["invalid"] }, "UPSTREAM_ERROR"],
     ["collection_get", { id: 7 }, { result: true, item: "invalid" }, "UPSTREAM_ERROR"],
+    ["raindrop_get", { id: 7 }, { result: true, item: { title: "missing _id" } }, "UPSTREAM_ERROR"],
+    ["raindrop_list", {}, { result: true, items: [{ link: "https://example.test/missing-id" }] }, "UPSTREAM_ERROR"],
+    ["highlight_list", {}, { result: true, items: [{ _id: "hl-7" }] }, "UPSTREAM_ERROR"],
+    ["collection_get", { id: 7 }, { result: true, item: { _id: 7 } }, "UPSTREAM_ERROR"],
+    ["tag_list", {}, { result: true, items: [{ _id: "tag-without-count" }] }, "UPSTREAM_ERROR"],
   ])("rejects malformed %s business results through a real MCP Client", async (name, args, payload, code) => {
     const fetchSpy = vi.fn(async () => Response.json(payload));
     vi.stubGlobal("fetch", fetchSpy);
