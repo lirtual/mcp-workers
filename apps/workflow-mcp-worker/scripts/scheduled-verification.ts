@@ -1,5 +1,5 @@
 export const SNAPSHOT_WORKFLOW_ID = 'raindrop-daily-snapshot';
-export const SNAPSHOT_SCHEDULE_KEY = 'raindrop-daily-snapshot:daily-nine';
+export const SNAPSHOT_SCHEDULE_KEY = 'raindrop-daily-snapshot:';
 export const T17_CANARY_SCHEDULE_KEY = 'raindrop-daily-snapshot:t17-canary-20260921';
 export const T17_CANARY_EXPECTED_UTC = '2026-09-21T09:20:00.000Z';
 
@@ -70,6 +70,7 @@ export function verifyScheduledD1(
   }
   const row = rows[0]!;
   if (row.workflow_id !== SNAPSHOT_WORKFLOW_ID ||
+      row.source_key !== String(expectedMs) ||
       row.trigger_type !== 'schedule' ||
       row.source_type !== 'schedule' ||
       row.source_key !== String(expectedMs) ||
