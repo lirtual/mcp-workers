@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { buildToolConfigs } from "../src/tools/index.js";
 import { RaindropMCPService } from "../src/services/raindropmcp.service.js";
 import { ToolEnvelopeSchema } from "../src/tools/common.js";
@@ -44,6 +45,8 @@ export const V4_INDEPENDENT_MUTATION_BASELINE = [
   "trash_empty",
 ] as const;
 
+afterEach(() => vi.unstubAllGlobals());
+
 describe("Raindrop v4 T01 contract baseline (v3 source cc05fc9)", () => {
   const tools = buildToolConfigs({ serverVersion: "3.0.0" }).toolConfigs;
   const byName = new Map(tools.map((tool) => [tool.name, tool]));
@@ -85,6 +88,34 @@ describe("Raindrop v4 T01 contract baseline (v3 source cc05fc9)", () => {
           .toContain("unrecognized_keys");
       }
       expect(tool.outputSchema ?? ToolEnvelopeSchema, tool.name).toBeDefined();
+    }
+  });
+
+  it("exercises real SDK Client discovery and local diagnostics without asserting Portal negotiation", async () => {
+    const upstream = vi.fn(() => { throw new Error("No upstream request allowed in the offline protocol fixture"); });
+    vi.stubGlobal("fetch", upstream);
+    const service = new RaindropMCPService({ accessToken: "synthetic-t01-token", maxReadRetries: 0 });
+    const client = new Client({ name: "v4-t01-offline-only", version: "1" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    try {
+      await Promise.all([service.getServer().connect(serverTransport), client.connect(clientTransport)]);
+      expect((await client.listTools()).tools.map((tool) => tool.name).sort())
+        .toEqual(tools.map((tool) => tool.name).sort());
+      expect((await client.listResources()).resources.map((resource) => resource.uri).sort())
+        .toEqual(["diagnostics://server", "mcp://user/profile"]);
+      expect((await client.listResourceTemplates()).resourceTemplates.map((template) => template.uriTemplate))
+        .toEqual(["mcp://collection/{id}", "mcp://raindrop/{id}"]);
+      expect((await client.listPrompts()).prompts.map((prompt) => prompt.name).sort())
+        .toEqual(["export_markdown", "find_duplicates", "organize_by_topic"]);
+      const result = await client.callTool({ name: "diagnostics", arguments: {} });
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        ok: true, data: { protocolVersion: null }, meta: { requestCount: 0 },
+      });
+      expect(upstream).not.toHaveBeenCalled();
+    } finally {
+      await client.close();
+      await service.cleanup();
     }
   });
 
