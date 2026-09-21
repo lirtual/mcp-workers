@@ -2,6 +2,45 @@
 
 This file records user-settled decisions separately from proposed designs. Scope: `apps/raindrop-mcp-worker`. The v3 baseline remains governed by [Spec #110](https://github.com/lirtual/mcp-workers/issues/110) and [ADR-0001](./adr/0001-replace-legacy-tool-contract.md). A decision to investigate a design does not approve implementation, deployment, or release.
 
+## 2026-09-21 — v4 Worker-native / Grill-with-docs round 3
+
+Q13–Q18 are **settled architecture decisions**, but no implementation, precise performance cutoff or release decision is approved.
+
+| Question | Choice | Settled decision |
+| --- | --- | --- |
+| Q13 | B | Group **purely read-only** tools by Raindrop resource, e.g., bookmark search/detail, collections and diagnostics, with explicit action parameters and preserved domain semantics. Names, exact groups and schemas remain open; writes/deletes/batches stay separate. |
+| Q14 | A | Retain the current MCP SDK by default. Select a lighter adapter only on reproducible native CPU benefit plus functional/client parity and acceptable maintenance/security costs. Inconclusive comparison means retain SDK. |
+| Q15 | B | Require protocol contract tests and actual ChatGPT MCP Portal read-only discovery/call, covering authentication, transport, errors and cancellation. Local mocks alone cannot certify client compatibility. |
+| Q16 | B | **Predeclare** CPU sample sizes, initial/subsequent split, persistence criterion, outlier handling, failure/missing data policy and pass/fail rule before validation. Individual sporadic overages require review, not automatic acceptance. Exact numbers and rule are not yet decided. |
+| Q17 | B | Use dedicated v4 isolated Worker, separate read-only workflow, immutable source SHA and verified deployed version; protect v3/production endpoint and credentials. Workflow execution details remain open. |
+| Q18 | B | Keep v3 test/review evidence. Decide separately whether to close, retain, merge or supersede PR #120 after independent v4 acceptance; no implicit cutover. |
+
+### Consistency with ADR-0001 and ADR-0002
+
+- **ADR-0001** remains accepted for the v3 baseline. Q13's *read-only* grouping is compatible with Q7's explicit write/delete/batch segregation; it does not authorize a generic read/write dispatcher or a reduction of destructive safeguards.
+- **ADR-0002** now explicitly records Q13–Q18. Q14 confirms the existing SDK is the default in any inconclusive comparison; Q15 makes real Portal compatibility a requirement for adapter selection. This is a v4 investigation, not a change to the v3 no-SDK-replacement requirement.
+- **Q16** is a *decision to predeclare a test policy*, not that the policy has already been chosen. Free entitlement is owner-confirmed, but native CPU and other Free resource compliance are unproven. A locally timed profile, earlier v3 CPU data, HTTP 200, or v4 read-only proof does not pass the v3 #119 live acceptance.
+- **Q17/Q18** retain independent release and deployment lifecycles. No permission for production, credentials or account data changes; PRs #120/#126 stay Draft and unmerged.
+
+### CPU acceptance policy: decisions versus open numbers
+
+**Decided:** evaluate the exact SHA **and deployed Worker version** under the confirmed Free plan; compare operations individually, distinguish first-observed and subsequent requests (do not label a first-observed 38 ms as a cold start without supporting evidence), preserve raw UTC observations with op label, errors and missing telemetry, and reject persistent over-limit behavior. Any exception requires written review before a release decision.
+
+**Unsettled:** number of repeats and measurement windows; meaning of persistent (e.g., frequency and clustering of overages); whether/which percentile is used; treatment of first observations and individual spikes; criteria for an error, missing telemetry or a failed probe; and whether a separate regression bound against the v3 baseline is required. Do not turn a candidate value into a decision or conflate Cloudflare enforcement with our own evidence standard. Verify representative *writes* and request/memory/subrequest limits in later production-shaped acceptance; read-only prototype alone does not cover these.
+
+### Smallest comparative prototype: open dependencies
+
+1. Map every v3 read operation to candidate groups; choose exact names, typed action schemas, output equivalence and protected fields.
+2. Define identical SDK/adapter fixtures (initialize and protocol negotiation, tools/list, diagnostics, representative tools/call, resources/list and read, prompts/list and get, malformed method/authorization, abort) and pass/fail for the actual Portal.
+3. Pin SDK and candidate source/deployed version; compare same inputs, request sizes, isolation and native CPU statistics, plus implementation/maintenance/security cost.
+4. Specify v4 isolated worker name, safe credentials, read-only workflow trigger, immutable SHA verification, artifacts, rollback and failure cleanup. Do not trigger existing v3 mutation suites.
+5. Finalize numeric CPU/resource gate and exact post-prototype expansion criteria. Inconclusive results retain SDK and keep the release blocked; no automatic Paid migration.
+6. Retain v3 PR status until a separate decision after v4 evidence.
+
+**Gate:** ready for a *final, focused consensus round* on the above remaining policy choices, **not** yet ready for to-spec/implementation because quantitative and operational acceptance are undefined.
+
+---
+
 ## 2026-09-21 — v4 Worker-native / Grill-with-docs round 2
 
 These user-settled choices depend on first-round Q1–Q6; they refine the candidate architecture, not the existing v3 release requirements.
