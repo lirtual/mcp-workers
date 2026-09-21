@@ -329,7 +329,11 @@ export class RaindropMCPService {
       const details = cause && typeof cause === "object"
         ? cause as { status?: number; retryAfterMs?: number }
         : {};
+      // Upstream POST is not necessarily a user-data mutation: URL suggestions
+      // query the official API via POST without changing the account.
+      // Keep that request non-retryable, but never report an unknown write.
       const submittedWrite =
+        config.annotations?.readOnlyHint !== true &&
         this.raindropService.budget.writeAttemptCount > initialWrites;
       const uncertain =
         submittedWrite &&
