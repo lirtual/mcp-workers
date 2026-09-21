@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
-import { existsSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { buildToolConfigs } from "../src/tools/index.js";
 import { ToolEnvelopeSchema } from "../src/tools/common.js";
 import { RaindropMCPService } from "../src/services/raindropmcp.service.js";
@@ -119,6 +120,8 @@ const knownErrorCodes = new Set<string>([
   "FEATURE_UNVERIFIED",
   "SCOPE_CHANGED",
 ]);
+const EXPECTED_CONTRACT_SHA256 =
+  "59d96a10d41e042d2d70bd8cc77af32b009af45c1f0937258b87ba84df67f362";
 
 /**
  * Executable T01 migration contract. Every source tool owns one row. The
@@ -567,6 +570,14 @@ describe("Raindrop v4 T01 contract baseline (v3 source cc05fc9)", () => {
         row.tests.every((test) => existsSync(new URL(test, import.meta.url))),
         row.v3Tool,
       ).toBe(true);
+      expect(
+        row.tests.some((test) =>
+          readFileSync(new URL(test, import.meta.url), "utf8").includes(
+            row.v3Tool,
+          ),
+        ),
+        `${row.v3Tool}: referenced tests must name the tool`,
+      ).toBe(true);
       expect(row.upstream.length, row.v3Tool).toBeGreaterThan(0);
       expect(row.budget.nominal.length, row.v3Tool).toBeGreaterThan(0);
       expect(row.budget.maximum.length, row.v3Tool).toBeGreaterThan(0);
@@ -589,6 +600,13 @@ describe("Raindrop v4 T01 contract baseline (v3 source cc05fc9)", () => {
         row.v3Tool,
       ).toContain(row.featureGate);
     }
+  });
+
+  it("pins the complete contract matrix against silent semantic drift", () => {
+    const digest = createHash("sha256")
+      .update(JSON.stringify(V3_TOOL_CONTRACT_MATRIX))
+      .digest("hex");
+    expect(digest).toBe(EXPECTED_CONTRACT_SHA256);
   });
 
   it("keeps read grouping and independent mutation targets synchronized with the per-tool matrix", () => {

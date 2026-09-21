@@ -35,8 +35,8 @@ Although there are **11 read action selectors**, they map to **10 distinct sourc
 | `tag_rename` | PUT `/tags` or `/tags/{collectionId}`; scope and confirmation |
 | `tag_merge` | PUT `/tags` or `/tags/{collectionId}`; scope and confirmation |
 | `tag_delete` | DELETE `/tags` or `/tags/{collectionId}`; scope and confirmation |
-| `highlight_create` | GET/PUT `/raindrop/{id}`; one highlight at a time |
-| `highlight_update` | GET/PUT `/raindrop/{id}`; exact string `_id`, preserve others |
+| `highlight_create` | PUT `/raindrop/{id}`; one highlight at a time |
+| `highlight_update` | PUT `/raindrop/{id}`; exact string `_id`, preserve others |
 | `highlight_delete` | GET/PUT `/raindrop/{id}`; confirm exact target, preserve others |
 | `duplicates_delete` | Protected GET/read-before-delete and scoped DELETE; **execution gate off** pending separate live evidence |
 | `trash_empty` | GET `/user/stats` preview, DELETE `/collection/-99` only with explicit whole-Trash confirmation; never against existing-account data |
