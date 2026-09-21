@@ -4,6 +4,7 @@ export interface WranglerDeployConfig {
   name?: string;
   workers_dev?: boolean;
   preview_urls?: boolean;
+  keep_vars?: boolean;
   d1_databases?: unknown[];
   workflows?: unknown[];
   triggers?: { crons?: unknown };
@@ -98,6 +99,7 @@ export function buildWorkflowDeployConfig(
     name: workerName,
     workers_dev: true,
     preview_urls: false,
+    keep_vars: false,
     d1_databases: [
       {
         binding: 'DB',

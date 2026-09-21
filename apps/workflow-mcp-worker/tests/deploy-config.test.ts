@@ -38,6 +38,7 @@ describe('Workflow MCP deploy configuration expansion', () => {
     expect(config.vars).not.toHaveProperty('GITHUB_OIDC_ISSUER');
     expect(config.vars).not.toHaveProperty('GITHUB_EXECUTOR_REF');
     expect(config.vars).not.toHaveProperty('SMOKE_MODERN_MCP_ENDPOINT');
+    expect(config.keep_vars).toBe(false);
     expect(config.triggers).toEqual({ crons: [CANONICAL_SCHEDULER_CRON] });
     expect(config.secrets).toEqual({
       required: [

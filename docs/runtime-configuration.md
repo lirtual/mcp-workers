@@ -98,3 +98,5 @@ Use the root `pnpm smoke:mcp` runner for a representative explicitly selected sa
 ### Workflow derived configuration (T14) and smoke isolation (T19)
 
 Generated production Wrangler config derives `GITHUB_REPOSITORY`, `GITHUB_REPOSITORY_ID`, `R2_ACCOUNT_ID`, and `R2_BUCKET_NAME` from the GitHub/Cloudflare deployment context and R2 bucket binding. `src/platform-config.ts` pins executor ref/workflow and GitHub OIDC trust anchors. Dedicated smoke webhook/connection fixtures live under `apps/workflow-mcp-worker/acceptance/` and are not compiled into the production registry. The default deploy probe is `/health` plus unauthenticated `/mcp` denial; the authenticated heavy tracer runs only when `full_acceptance` is set on a manual dispatch.
+
+The generated deployment config sets `keep_vars` to `false`, so checked-in and derived non-secret variables replace stale Dashboard variables on deploy. Cloudflare preserves encrypted Worker Secrets independently; obsolete Secrets are removed only by an explicit, authorized `wrangler secret delete` operation.
