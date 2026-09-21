@@ -43,12 +43,12 @@ describe('Raindrop read-only live discovery gate', () => {
     { ...validTool, inputSchema: { ...validTool.inputSchema, required: ['collectionId', 'other'] } },
     { ...validTool, inputSchema: { ...validTool.inputSchema, properties: {
       ...validTool.inputSchema.properties, perPage: { type: 'string' }
-    } },
+    } } },
     { ...validTool, outputSchema: undefined },
     { ...validTool, outputSchema: { ...validTool.outputSchema, required: ['items'] } },
     { ...validTool, outputSchema: { ...validTool.outputSchema, properties: {
       ...validTool.outputSchema.properties, items: { type: 'string' }
-    } }
+    } } }
   ])('fails closed on incompatible live tools/list schemas', tool => {
     expect(() => verifyRaindropToolSchema(tool)).toThrow('RAINDROP_CONTRACT_MISMATCH');
   });
