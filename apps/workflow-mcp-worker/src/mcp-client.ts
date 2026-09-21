@@ -147,6 +147,16 @@ export async function callMcpTool(
     if (result.isError === true) {
       throw new McpRpcError(undefined, extractToolError(result));
     }
+    // A successful tool call must honor the discovered structured output contract.
+    if (inspection.tool.outputSchema) {
+      try {
+        z.fromJSONSchema(
+          inspection.tool.outputSchema as Parameters<typeof z.fromJSONSchema>[0]
+        ).parse(result.structuredContent);
+      } catch {
+        throw new Error('MCP_OUTPUT_SCHEMA_MISMATCH: tools/call structuredContent does not match the discovered output schema.');
+      }
+    }
 
     return {
       result,

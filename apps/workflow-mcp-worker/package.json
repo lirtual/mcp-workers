@@ -13,6 +13,8 @@
     "deploy": "wrangler deploy",
     "registry:generate": "tsx scripts/compile-workflows.ts",
     "registry:validate": "tsx scripts/compile-workflows.ts --validate",
+    "release:raindrop-discovery": "tsx scripts/verify-raindrop-discovery.ts",
+    "release:raindrop-manual": "tsx scripts/verify-raindrop-manual.ts",
     "deploy:dry-run": "wrangler deploy src/index.ts --dry-run --name workflow-mcp-worker --compatibility-date 2026-09-18 --compatibility-flag nodejs_compat",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

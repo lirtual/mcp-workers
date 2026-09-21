@@ -20,7 +20,7 @@ describe('production workflow registry membership', () => {
     const ids = getWorkflowRegistry().map(entry => entry.metadata.id);
     expect(ids).not.toContain('trigger-http-smoke');
     expect(ids).not.toContain('mcp-connection-smoke');
-    expect(ids).toEqual(['local-http-smoke', 'sequential-http-smoke', 'web-archive-smoke']);
+    expect(ids).toEqual(['local-http-smoke', 'raindrop-daily-snapshot', 'sequential-http-smoke', 'web-archive-smoke']);
     expect(JSON.stringify(getWorkflowRegistry())).not.toContain('MCP_ACCESS_TOKEN');
   });
 });

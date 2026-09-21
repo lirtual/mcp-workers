@@ -29,6 +29,7 @@ describe('workflow discovery tools', () => {
 
     expect(data.workflows.map(workflow => workflow.id)).toEqual([
       'local-http-smoke',
+      'raindrop-daily-snapshot',
       'sequential-http-smoke',
       'web-archive-smoke'
     ]);
