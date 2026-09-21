@@ -40,12 +40,10 @@ describe('Workflow MCP deploy configuration expansion', () => {
     expect(config.secrets).toEqual({
       required: [
         'MCP_ACCESS_TOKEN',
-        'TRIGGER_SMOKE_WEBHOOK_TOKEN',
         'EXECUTOR_LEASE_SECRET',
         'GITHUB_ACTIONS_TOKEN',
         'R2_ACCESS_KEY_ID',
-        'R2_SECRET_ACCESS_KEY',
-        'SMOKE_READONLY_MCP_TOKEN'
+        'R2_SECRET_ACCESS_KEY'
       ]
     });
     expect(config.r2_buckets).toEqual([

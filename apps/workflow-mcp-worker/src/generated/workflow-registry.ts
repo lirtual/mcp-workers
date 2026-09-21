@@ -71,60 +71,6 @@ export const workflowRegistry = [
     }
   },
   {
-    "sourcePath": "workflows/mcp-connection-smoke.yaml",
-    "definitionDigest": "77d0571cced4750a8c7fff7a2ad47a4fe55072a409f28a8234f04c21b70c0364",
-    "metadata": {
-      "id": "mcp-connection-smoke",
-      "name": "MCP connection smoke",
-      "description": "Call one configured read-only MCP tool through the generic MCP adapter.",
-      "definitionDigest": "77d0571cced4750a8c7fff7a2ad47a4fe55072a409f28a8234f04c21b70c0364",
-      "triggerTypes": [
-        "manual"
-      ],
-      "inputs": {},
-      "stepCapabilities": [
-        "mcp.call"
-      ]
-    },
-    "plan": {
-      "dslVersion": 1,
-      "id": "mcp-connection-smoke",
-      "name": "MCP connection smoke",
-      "description": "Call one configured read-only MCP tool through the generic MCP adapter.",
-      "inputs": {},
-      "triggers": [
-        {
-          "type": "manual"
-        }
-      ],
-      "steps": {
-        "call": {
-          "uses": "mcp.call",
-          "executor": "cloudflare",
-          "needs": [],
-          "with": {
-            "connection": "smoke-modern",
-            "tool": "workflow_list",
-            "arguments": {}
-          }
-        }
-      },
-      "outputs": {
-        "result": {
-          "$expr": {
-            "kind": "ref",
-            "path": [
-              "steps",
-              "call",
-              "outputs",
-              "result"
-            ]
-          }
-        }
-      }
-    }
-  },
-  {
     "sourcePath": "workflows/sequential-http-smoke.yaml",
     "definitionDigest": "320d63de02a8296fea0eb9e5ca59b3388ca8f6d8f98115e40e0840fa4da6d31f",
     "metadata": {
@@ -223,68 +169,6 @@ export const workflowRegistry = [
             "path": [
               "steps",
               "second",
-              "outputs",
-              "body"
-            ]
-          }
-        }
-      }
-    }
-  },
-  {
-    "sourcePath": "workflows/trigger-http-smoke.yaml",
-    "definitionDigest": "3fa645f75b39ef7c67109a6c91d7fff0ec672e6062e6265cf7874cc4498bb533",
-    "metadata": {
-      "id": "trigger-http-smoke",
-      "name": "Trigger HTTP smoke",
-      "description": "Exercise webhook and schedule admission through the same local workflow runtime.",
-      "definitionDigest": "3fa645f75b39ef7c67109a6c91d7fff0ec672e6062e6265cf7874cc4498bb533",
-      "triggerTypes": [
-        "webhook",
-        "schedule"
-      ],
-      "inputs": {},
-      "stepCapabilities": [
-        "http.read"
-      ]
-    },
-    "plan": {
-      "dslVersion": 1,
-      "id": "trigger-http-smoke",
-      "name": "Trigger HTTP smoke",
-      "description": "Exercise webhook and schedule admission through the same local workflow runtime.",
-      "inputs": {},
-      "triggers": [
-        {
-          "type": "webhook",
-          "id": "inbound",
-          "secret": "TRIGGER_SMOKE_WEBHOOK_TOKEN"
-        },
-        {
-          "type": "schedule",
-          "id": "every-five",
-          "cron": "*/5 * * * *",
-          "timezone": "UTC",
-          "misfire": "latest"
-        }
-      ],
-      "steps": {
-        "fetch": {
-          "uses": "http.read",
-          "executor": "cloudflare",
-          "needs": [],
-          "with": {
-            "url": "https://example.com/"
-          }
-        }
-      },
-      "outputs": {
-        "body": {
-          "$expr": {
-            "kind": "ref",
-            "path": [
-              "steps",
-              "fetch",
               "outputs",
               "body"
             ]

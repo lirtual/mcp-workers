@@ -20,6 +20,11 @@ on:
         required: false
         default: false
         type: boolean
+      full_acceptance:
+        description: Run the authenticated heavy GitHub/R2/MCP tracer after deploy
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -205,12 +210,18 @@ jobs:
           echo "::error::Workflow MCP Worker did not become healthy."
           exit 1
 
+      - name: Probe health and unauthenticated MCP
+        working-directory: apps/workflow-mcp-worker
+        run: pnpm exec tsx scripts/run-release-probe.ts
+
       - name: Run MCP heavy and connection tracers
+        if: github.event_name == 'workflow_dispatch' && inputs.full_acceptance
         id: tracer
         working-directory: apps/workflow-mcp-worker
         run: pnpm exec tsx scripts/run-deploy-tracer.ts
 
       - name: Verify GitHub executor terminal evidence
+        if: github.event_name == 'workflow_dispatch' && inputs.full_acceptance
         working-directory: apps/workflow-mcp-worker
         env:
           GITHUB_TOKEN: ${{ github.token }}

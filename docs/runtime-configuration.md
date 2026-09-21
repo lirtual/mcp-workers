@@ -38,7 +38,7 @@ Every production Worker configuration declares its mandatory runtime secret name
 | `database-mcp-worker` | `MCP_ACCESS_TOKEN`, `DATABASE_CONFIG` |
 | `raindrop-mcp-worker` | `MCP_ACCESS_TOKEN`, `RAINDROP_ACCESS_TOKEN` |
 | `instapaper-mcp-worker` | `MCP_ACCESS_TOKEN`, `INSTAPAPER_CONSUMER_KEY`, `INSTAPAPER_CONSUMER_SECRET`, `INSTAPAPER_OAUTH_TOKEN`, `INSTAPAPER_OAUTH_TOKEN_SECRET` |
-| `workflow-mcp-worker` | `MCP_ACCESS_TOKEN`, `TRIGGER_SMOKE_WEBHOOK_TOKEN`, `EXECUTOR_LEASE_SECRET`, `GITHUB_ACTIONS_TOKEN`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `SMOKE_READONLY_MCP_TOKEN` |
+| `workflow-mcp-worker` | `MCP_ACCESS_TOKEN`, `EXECUTOR_LEASE_SECRET`, `GITHUB_ACTIONS_TOKEN`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` |
 
 `database-mcp-worker` stores its complete logical database catalog in the single `DATABASE_CONFIG` Secret. Direct SQL URLs therefore remain secret without requiring separate `DATABASE_URL` / `DATABASE_WRITE_URL` variables. Hyperdrive entries still refer to Wrangler bindings by name.
 
@@ -57,9 +57,7 @@ For local development, use uncommitted `.dev.vars` or `.env` files with keys mat
 | Cron scheduler | Preserve the intended scheduler tick. Generated deployment configuration keeps the checked-in `* * * * *` Cron. Live 09:00 business occurrence remains #108. |
 | Ownership and consistency | `wrangler.jsonc` and audited code defaults own non-sensitive settings; Cloudflare runtime owns secret values; CI owns only genuine deployment/test credentials. Never rotate or delete a live Secret just to reconcile naming before code and clients are ready. |
 
-**Implementation specification:** [`docs/workflow-mcp/runtime-config-simplification-spec.md`](./workflow-mcp/runtime-config-simplification-spec.md) governs the cross-Worker rollout and end-to-end acceptance. Its four-Secret Workflow platform baseline also keeps `R2_ACCESS_KEY_ID` as a separately required non-secret credential identifier; real integrations may require additional Secrets. Do not optimize for a raw dashboard count.
-
-T14 pins executor/OIDC in source and derives repository and R2 identifiers at deploy time. The source contract still requires `TRIGGER_SMOKE_WEBHOOK_TOKEN` and `SMOKE_READONLY_MCP_TOKEN` until T19. Ordinary deploys still must not rotate live platform credentials; #106 owns remaining deploy-workflow credential persistence. Shared-value cutover is #123.
+**Implementation specification:** [`docs/workflow-mcp/runtime-config-simplification-spec.md`](./workflow-mcp/runtime-config-simplification-spec.md) governs the cross-Worker rollout and end-to-end acceptance. Its four-Secret Workflow platform baseline also keeps `R2_ACCESS_KEY_ID` as a separately required non-secret credential identifier; real integrations may require additional Secrets. Do not optimize for a raw dashboard count.\n\nThe source contract no longer requires production-only smoke webhook/MCP secrets. Ordinary deploys still must not rotate live platform credentials; #106 owns the remaining deploy-workflow credential persistence work. Shared-value cutover is #123.
 
 ## Workers Observability baseline
 
@@ -95,6 +93,6 @@ After deployment, verify the Worker at the public seams:
 
 Use the root `pnpm smoke:mcp` runner for a representative explicitly selected safe/read-only MCP tool after Portal discovery succeeds.
 
-### Workflow derived configuration (T14)
+### Workflow derived configuration (T14) and smoke isolation (T19)
 
-Generated production Wrangler config derives `GITHUB_REPOSITORY`, `GITHUB_REPOSITORY_ID`, `R2_ACCOUNT_ID`, and `R2_BUCKET_NAME` from the GitHub/Cloudflare deployment context and R2 bucket binding. `src/platform-config.ts` pins executor ref/workflow and GitHub OIDC trust anchors. Generated config keeps the checked-in `* * * * *` Cron.
+Generated production Wrangler config derives `GITHUB_REPOSITORY`, `GITHUB_REPOSITORY_ID`, `R2_ACCOUNT_ID`, and `R2_BUCKET_NAME` from the GitHub/Cloudflare deployment context and R2 bucket binding. `src/platform-config.ts` pins executor ref/workflow and GitHub OIDC trust anchors. Dedicated smoke webhook/connection fixtures live under `apps/workflow-mcp-worker/acceptance/` and are not compiled into the production registry. The default deploy probe is `/health` plus unauthenticated `/mcp` denial; the authenticated heavy tracer runs only when `full_acceptance` is set on a manual dispatch.

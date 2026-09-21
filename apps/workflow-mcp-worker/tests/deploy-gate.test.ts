@@ -45,8 +45,13 @@ describe('Workflow MCP deploy gate contract', () => {
     );
     expect(names).toContain('Deploy Workflow MCP Worker');
     expect(names).not.toContain('Install Workflow MCP Worker secrets');
+    expect(names).toContain('Probe health and unauthenticated MCP');
     expect(names).toContain('Run MCP heavy and connection tracers');
     expect(names).toContain('Verify GitHub executor terminal evidence');
+    const tracer = steps.find(step => step.name === 'Run MCP heavy and connection tracers');
+    const executorEvidence = steps.find(step => step.name === 'Verify GitHub executor terminal evidence');
+    expect(tracer?.if).toContain('full_acceptance');
+    expect(executorEvidence?.if).toContain('full_acceptance');
 
     const workflowText = await readFile(
       path.resolve(process.cwd(), '../../.github/workflows/workflow-mcp-deploy.yml'),
