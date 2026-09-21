@@ -139,6 +139,28 @@ describe("five bounded v3 Raindrop bookmark contracts", () => {
     expect(byLink.structuredContent.ok).toBe(true);
   });
 
+  it.each([
+    [429, "RATE_LIMITED"],
+    [503, "UPSTREAM_ERROR"],
+  ])("classifies failed read-only URL suggestion POST (%i) without claiming a mutation", async (status, expectedCode) => {
+    const spy = fake((request) => {
+      expect(request.method).toBe("POST");
+      expect(new URL(request.url).pathname).toBe("/rest/v1/raindrop/suggest");
+      return new Response(null, { status });
+    });
+    const result = await service().callTool("raindrop_suggest", { link: item.link });
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      isError: true,
+      structuredContent: {
+        ok: false,
+        error: { code: expectedCode, upstreamStatus: status },
+        meta: { status: "not_executed", requestCount: 1 },
+      },
+    });
+    expect(result.structuredContent.error.code).not.toBe("WRITE_OUTCOME_UNKNOWN");
+  });
+
   it("registers the five tools for a real in-memory MCP client", async () => {
     const spy = fake(() => Response.json({ result: true, item }));
     const s = service();
