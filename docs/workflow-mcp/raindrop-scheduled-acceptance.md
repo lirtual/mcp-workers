@@ -1,0 +1,111 @@
+# T17 — real scheduled Raindrop occurrence
+
+## Observed baseline (2026-09-21)
+
+The Cloudflare production `workflow-mcp-worker` already has **exactly one**
+`* * * * *` Cron, deployed by Wrangler (latest verified deployment
+`be89526a-8726-4df4-b208-855b03fefacf`). This is the engine's minute tick,
+not an additional business-time Cron. The source-generated config enforces
+exactly this value and fails closed on missing or duplicate scheduler Crons.
+Do not add another Cloudflare Cron or GitHub/ChatGPT recurring trigger.
+
+`raindrop-daily-snapshot` compiles to `0 9 * * *`,
+`Asia/Shanghai`, `misfire: latest`. The actual due time is
+**01:00:00 UTC / 09:00:00 China Standard Time**. The minute tick evaluates
+the compiled definition using the durable `scheduler_state`; admission uses
+a deterministic occurrence key. It must not backfill all missed days.
+The previous #107 successful manual Run (20 returned items, 503 upstream)
+does not qualify as a scheduled occurrence.
+
+The 2026-09-21 local 09:00 boundary passed before the production Cron was
+enabled. As of `2026-09-21T08:51Z`, the live D1 state evaluated
+`raindrop-daily-snapshot:daily-nine` but had no scheduled admission.
+The first prospective business occurrence is **2026-09-22T01:00:00Z**
+(2026-09-22 09:00 Asia/Shanghai). Never claim acceptance from a simulated
+clock, the presence of a Cron, a manual Run, or a green deployment.
+
+## Independent post-deployment verification (read-only)
+
+Wait until the selected deployment job is **completed/success**, and then
+until the real 09:00 occurrence has elapsed. On GitHub Actions, manually
+dispatch **Workflow MCP Scheduled Acceptance** from the reviewed `main`
+commit with the exact `expected_utc` (for the first prospective occurrence:
+`2026-09-22T01:00:00.000Z`) and the actual prior successful
+`deploy_run_id` (for the T16 deployment: `35579720076`). This is a
+separate read-only job; it does not redeploy, migrate D1, execute
+`workflow_run`, add Cron schedules, or send notifications. Its job requires
+existing `workflow-mcp-worker` GitHub environment credentials and uses
+fixed queries and MCP reads only. Do not send tokens to the chat.
+
+The bounded verifier:
+1. Confirms the referenced deployment completed successfully before the
+   occurrence, and rejects future or more-than-48-hour-old occurrences.
+2. Reads D1 `scheduler_state` and its unique schedule admission/Run for the
+   exact UTC epoch. Any missing/duplicate/incorrect trigger fails closed.
+3. Cross-checks `workflow_list` and `workflow_get` definition digest,
+   `workflow_status` terminal state/engine, `workflow_result` and
+   `workflow_logs`. For success, it validates real 0–20 bookmark records,
+   the upstream count and lifecycle markers. Errors are truthful failures,
+   never substituted with empty successful outputs.
+4. Writes a 14-day artifact containing timestamps, Run/deploy IDs, definition
+   and engine provenance, record count, SHA-256 digest and event names.
+   **No bookmark titles, URLs, bearer token, or signed links** are exported.
+   Preserve the artifact outside Actions if longer retention is required.
+
+If no D1 scheduled admission exists, do not manufacture an occurrence by
+calling `workflow_run`. Inspect the minute Cron, scheduler errors, and D1
+state without mutating it. If the upstream fails, record the actual terminal
+error code, investigate the source, and assess recovery for a **future**
+legitimate occurrence. Never reset `scheduler_state` or backdate an
+occurrence merely to pass acceptance.
+
+## Independent heavy regression
+
+The `web-archive-smoke` GitHub/OIDC → R2 heavy tracer is a **separate**
+regression. Run the approved `run-deploy-tracer.ts` against the deployed
+Worker, or authorize a distinct `full_acceptance` workflow. It must not
+be dispatched to execute Raindrop. A green Raindrop result does not imply
+the heavy regression passed. Check post-job GitHub executor and R2 artifact
+evidence independently.
+
+Close #108 only after both the actual post-job scheduled occurrence and
+the independent heavy regression have verified evidence. The schedule is
+read-only: no Raindrop bookmark mutation, no notifications, and no second
+scheduler.
+
+## Authorized temporary fast canary (2026-09-21 only)
+
+The operator separately approved a **single real production canary and its
+restoration** to avoid waiting for tomorrow to debug. The temporary
+`src/t17-canary.ts` is called from the *existing* Cloudflare minute
+`scheduled()` handler. It uses the normal read-only Raindrop snapshot plan,
+the real `admitScheduledWorkflow`/D1/Cloudflare Workflow route, and a distinct
+`t17-canary-20260921` occurrence ID. It is **not** a manual
+`workflow_run` and it does not add any Cloudflare or GitHub recurring Cron.
+
+The canary occurrence is exactly **2026-09-21T09:20:00Z** (17:20 China
+Standard Time). The internal guard permits first admission only between
+09:20:00Z and 09:35:00Z, with idempotent D1 admission. At or after 09:35Z
+its code is inert even if a cleanup deployment is delayed. Its fixed
+annual-form cron expression is checked only inside this 15-minute guarded
+window and cannot generate another occurrence in subsequent days. The
+permanent `daily-nine` compiled trigger and the canonical one-minute Cron
+remain unchanged.
+
+A **temporary** `Workflow MCP T17 Canary Acceptance` GitHub workflow is
+triggered by the successful *completed* production deploy (no GitHub Cron).
+It waits until 09:22Z, then queries the unique canary D1 record, MCP status,
+result and logs with `WORKFLOW_MCP_T17_CANARY=true`, and uploads a 14-day
+sanitized evidence artifact. The verifier rejects evidence before the real
+clock or at/after the 15-minute deadline. Any failure must be investigated,
+not treated as synthetic success. This tests the real minute trigger and
+scheduler admission, but **is not** the actual permanent daily 09:00
+business occurrence; preserve #108 open until the normal occurrence and
+independent heavy regression are verified.
+
+**Mandatory rollback:** remove `src/t17-canary.ts`, its call in
+`src/scheduler.ts`, both `t17-canary*.test.ts` files and
+`.github/workflows/workflow-mcp-t17-canary-verify.yml` in a separately
+reviewed restoration deployment. Confirm the Cloudflare Worker again has
+exactly one minute Cron and the permanent `daily-nine` business schedule
+was not changed. Never reset D1 canary evidence or rotate credentials.
