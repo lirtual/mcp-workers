@@ -1,3 +1,4 @@
+import { GITHUB_EXECUTOR_CONFIG } from './platform-config.js';
 import { issueExecutorLease, verifyExecutorLease, type ExecutorLeaseClaims } from './lease.js';
 import {
   assertExecutionManifestCompatible,
@@ -120,7 +121,7 @@ export async function claimRemoteAttempt(
     store?: ExecutorProtocolStore;
   } = {}
 ): Promise<ClaimResult> {
-  const config = oidcConfig(env);
+  const config = oidcConfig();
   const nowMs = options.nowMs ?? Date.now();
   const identity = await verifyGitHubOidcToken(
     input.oidcToken,
@@ -436,11 +437,11 @@ function validateStoredManifest(
   }
 }
 
-function oidcConfig(env: Env): GitHubOidcVerificationConfig {
+function oidcConfig(): GitHubOidcVerificationConfig {
   return {
-    issuer: requiredEnv(env.GITHUB_OIDC_ISSUER, 'GITHUB_OIDC_ISSUER'),
-    audience: requiredEnv(env.GITHUB_OIDC_AUDIENCE, 'GITHUB_OIDC_AUDIENCE'),
-    jwksUrl: requiredEnv(env.GITHUB_OIDC_JWKS_URL, 'GITHUB_OIDC_JWKS_URL')
+    issuer: GITHUB_EXECUTOR_CONFIG.oidc.issuer,
+    audience: GITHUB_EXECUTOR_CONFIG.oidc.audience,
+    jwksUrl: GITHUB_EXECUTOR_CONFIG.oidc.jwksUrl
   };
 }
 
