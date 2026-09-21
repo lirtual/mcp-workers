@@ -12,7 +12,7 @@ _Avoid_: Generic item when the distinction matters
 The upstream operation meanings, parameters, paths, and results that the Worker maps into MCP tools. Source code or a local OpenAPI file is not proof that an upstream behavior is valid.
 
 **MCP tool contract**:
-The client-visible tool name, input, output, side effects, and error behavior. Tools are organized by resource and explicit action; read, write, delete, and batch operations remain distinct.
+The client-visible tool name, input, output, side effects, and error behavior. Under the approved v3 contract, tools are organized by resource and explicit action; read, write, delete, and batch operations remain distinct. The proposed v4 design may regroup non-dangerous operations but must preserve independently discoverable dangerous-operation safety boundaries (see ADR-0002).
 
 **Capability acceptance state**:
 The independently recorded states of implementation complete, contract tests passed, and live invocation accepted. Local tests never substitute for live acceptance.
@@ -35,3 +35,22 @@ A write that reached the upstream request boundary but did not return enough evi
 8. Live writes are accepted only against dedicated test collections and disposable test data. Account, sharing, import/export, backup, upload, and permanent-copy APIs remain out of scope until separately requested.
 
 The approved specification is published as a GitHub specification issue rather than committed as a repository spec file. The application ADR records the breaking public-contract decision; implementation tickets own concrete tool schemas, limits, tests, and rollout work.
+
+## v4 Worker-native direction (decisions accepted 2026-09-21; design only)
+
+**Worker-native MCP**: A stateless MCP adapter and domain layer designed for the Cloudflare Workers Free per-request CPU budget, not an API endpoint-for-tool mapping or an assumed long-lived server. Free suitability must be validated on an exact isolated deployment; it is not guaranteed by the architecture name.
+
+**Immutable shared metadata**: Module-scoped, secret-free, immutable schemas and tool definitions that are safe to reuse across requests. A mutable `McpServer`, transport, upstream client, request handler, credential, budget, or request cache is not shared across requests.
+
+**v3 baseline / v4 candidate**: v3 Spec #110 and Draft PR #120 remain frozen pending independent #119 resource and live acceptance. v4 is an independent, proposed design; its prototype, acceptance, and rollout cannot be reported as v3 completion.
+
+**V4 first-round decisions** (Q1:B, Q2:B, Q3:A, Q4:A, Q5:B, Q6:B; see [decision log](./docs/decision-log.md) and [ADR-0002](./docs/adr/0002-worker-native-free-first.md)):
+
+1. Permit moderate regrouping of client-facing MCP tools by resource/action while keeping dangerous operations independently identifiable and retaining their explicit scope, preview, confirmation and fail-closed protections. Do not assume a fixed target tool count.
+2. Prefer the existing SDK initially; compare an SDK path and a smaller protocol-adapter proof of concept before any SDK replacement. Do not pre-approve a hand-rolled full MCP implementation.
+3. Share only immutable, secret-free metadata. Keep credentials, mutable server and transport, upstream client, budgets, caches and request handlers isolated by request.
+4. Preserve existing Raindrop business capabilities and necessary MCP resources/prompts; a lighter protocol adapter must not silently remove them.
+5. Treat Workers Free as the preferred target, not a claim of proven compliance. If repeatable CPU breaches persist after constrained improvements, reconsider the external contract while preserving safety; do not release until agreed Free resource gates pass. No Paid upgrade is approved by this decision.
+6. Preserve and freeze the v3 PR #120 scope. Design and verify v4 independently, without merging #120, switching production, or treating #119 as passed.
+
+**Not decided yet**: exact public tool grouping and names, compatibility policy, SDK-versus-adapter choice, protocol conformance scope, measured CPU thresholds/statistics and sample method, isolated deployment/rollback procedure, and disposition of the v3 PR after independent v4 evidence. No production changes or implementation are authorized by this record.
