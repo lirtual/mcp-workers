@@ -1,4 +1,4 @@
-name: Raindrop frozen v3 T01 isolate
+name: Raindrop frozen v3 T01 production acceptance
 
 on:
   push:
@@ -11,12 +11,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: raindrop-mcp-worker-v3-test
+  group: raindrop-mcp-worker-production
   cancel-in-progress: false
 
 jobs:
-  deploy-frozen-test-only:
-    name: Deploy exact frozen v3 isolate
+  deploy-frozen-production:
+    name: Deploy exact frozen v3 to authorized production target
     environment: workflow-mcp-worker
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -24,6 +24,8 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: 8bb496011403552e785ea1b834daffdf
       FROZEN_SHA: cc05fc9ecbdac38a57d66856f771583746b0e6df
+      ROLLBACK_DEPLOYMENT: f98c5459-bcba-4fe8-a87c-c52b7a97c266
+      ROLLBACK_VERSION: 8ec94687-81bd-4c79-915c-3e9d6947a1ef
     steps:
       - name: Checkout exact frozen source
         uses: actions/checkout@v4
@@ -31,7 +33,7 @@ jobs:
           ref: cc05fc9ecbdac38a57d66856f771583746b0e6df
           fetch-depth: 1
 
-      - name: Verify immutable source
+      - name: Verify immutable source and rollback record
         shell: bash
         run: |
           set -euo pipefail
@@ -39,6 +41,8 @@ jobs:
           test "$actual" = "$FROZEN_SHA"
           echo "source_sha=$actual"
           echo "trigger_sha=${{ github.sha }}"
+          echo "rollback_deployment=$ROLLBACK_DEPLOYMENT"
+          echo "rollback_version=$ROLLBACK_VERSION"
 
       - uses: pnpm/action-setup@v4
         with:
@@ -51,7 +55,7 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
 
-      - name: Verify isolated deploy credential
+      - name: Verify production deploy credential
         shell: bash
         run: |
           set -euo pipefail
@@ -62,13 +66,13 @@ jobs:
           pnpm install --frozen-lockfile --ignore-scripts
           pnpm --filter raindrop-mcp-worker check
 
-      - name: Deploy exact frozen source to isolated Worker
+      - name: Deploy exact frozen source to production Worker
         working-directory: apps/raindrop-mcp-worker
         shell: bash
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$FROZEN_SHA"
-          pnpm exec wrangler deploy --name raindrop-mcp-worker-v3-test --keep-vars
+          pnpm exec wrangler deploy --name raindrop-mcp-worker --keep-vars
           echo "deployed_source_sha=$FROZEN_SHA"
-          echo "isolated_script=raindrop-mcp-worker-v3-test"
-          echo "portal=BLOCKED_PENDING_REAL_PORTAL_CONNECTION"
+          echo "target_script=raindrop-mcp-worker"
+          echo "acceptance_mode=OWNER_AUTHORIZED_UNUSED_PRODUCTION"
