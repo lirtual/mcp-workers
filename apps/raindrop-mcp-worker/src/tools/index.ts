@@ -7,6 +7,7 @@ import { raindropV3CleanupTools } from "./raindrop-v3-cleanup.js";
 import { raindropV3AuditTools } from "./raindrop-v3-audit.js";
 import { createDiagnosticsTool } from "./diagnostics.js";
 import type { ToolConfig } from "./common.js";
+import { outputSchemaForTool } from "./output-contracts.js";
 
 export type { ToolConfig, ToolHandlerContext, McpContent } from "./common.js";
 
@@ -24,5 +25,8 @@ export const buildToolConfigs = (options: { serverVersion: string }) => {
     ...raindropV3AuditTools,
     ...raindropV3CleanupTools,
   ];
+  for (const config of toolConfigs) {
+    config.outputSchema = outputSchemaForTool(config.name);
+  }
   return { toolConfigs, getEnabledToolNames };
 };
