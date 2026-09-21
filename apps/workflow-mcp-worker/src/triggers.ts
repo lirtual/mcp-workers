@@ -13,11 +13,12 @@ export async function handleWebhookTrigger(
   request: Request,
   env: Env,
   workflowId: string,
-  triggerId: string
+  triggerId: string,
+  lookup: typeof findWorkflow = findWorkflow
 ): Promise<Response> {
   if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
 
-  const entry = findWorkflow(workflowId);
+  const entry = lookup(workflowId);
   if (!entry) return triggerError(404, 'WORKFLOW_NOT_FOUND', 'Workflow definition was not found.');
 
   const plan = asRuntimePlan(entry.plan);

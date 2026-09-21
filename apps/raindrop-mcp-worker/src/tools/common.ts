@@ -18,6 +18,12 @@ export interface ToolConfig<I = unknown, O = unknown> {
   description: string;
   inputSchema: z.ZodTypeAny;
   outputSchema?: z.ZodTypeAny;
+  annotations?: {
+    readOnlyHint?: boolean;
+    destructiveHint?: boolean;
+    idempotentHint?: boolean;
+    openWorldHint?: boolean;
+  };
   handler: (args: I, context: ToolHandlerContext) => Promise<O>;
   execution?: {
     taskSupport?: "supported" | "forbidden";

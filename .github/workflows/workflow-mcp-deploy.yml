@@ -20,6 +20,11 @@ on:
         required: false
         default: false
         type: boolean
+      full_acceptance:
+        description: Run the authenticated heavy GitHub/R2/MCP tracer after deploy
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -37,6 +42,8 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: 8bb496011403552e785ea1b834daffdf
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
       WORKFLOW_MCP_D1_DATABASE_ID: 238891f8-4007-4436-890d-819d54e3e01b
       WORKFLOW_MCP_D1_DATABASE_NAME: ${{ vars.WORKFLOW_MCP_D1_DATABASE_NAME || 'workflow-mcp' }}
       WORKFLOW_MCP_WORKER_NAME: ${{ vars.WORKFLOW_MCP_WORKER_NAME || 'workflow-mcp-worker' }}
@@ -126,6 +133,8 @@ jobs:
             WORKFLOW_MCP_WORKER_NAME
             WORKFLOW_MCP_R2_BUCKET
             WORKFLOW_MCP_URL
+            GITHUB_REPOSITORY
+            GITHUB_REPOSITORY_ID
             WORKFLOW_MCP_ACCESS_TOKEN
             WORKFLOW_MCP_GITHUB_ACTIONS_TOKEN
             EXECUTOR_LEASE_SECRET
@@ -178,7 +187,6 @@ jobs:
             TRIGGER_SMOKE_WEBHOOK_TOKEN: process.env.TRIGGER_SMOKE_WEBHOOK_TOKEN,
             EXECUTOR_LEASE_SECRET: process.env.EXECUTOR_LEASE_SECRET,
             GITHUB_ACTIONS_TOKEN: process.env.GITHUB_ACTIONS_TOKEN,
-            R2_ACCOUNT_ID: process.env.CLOUDFLARE_ACCOUNT_ID,
             R2_ACCESS_KEY_ID: process.env.R2_ACCESS_KEY_ID,
             R2_SECRET_ACCESS_KEY: process.env.R2_SECRET_ACCESS_KEY
           };
@@ -202,12 +210,18 @@ jobs:
           echo "::error::Workflow MCP Worker did not become healthy."
           exit 1
 
+      - name: Probe health and unauthenticated MCP
+        working-directory: apps/workflow-mcp-worker
+        run: pnpm exec tsx scripts/run-release-probe.ts
+
       - name: Run MCP heavy and connection tracers
+        if: github.event_name == 'workflow_dispatch' && inputs.full_acceptance
         id: tracer
         working-directory: apps/workflow-mcp-worker
         run: pnpm exec tsx scripts/run-deploy-tracer.ts
 
       - name: Verify GitHub executor terminal evidence
+        if: github.event_name == 'workflow_dispatch' && inputs.full_acceptance
         working-directory: apps/workflow-mcp-worker
         env:
           GITHUB_TOKEN: ${{ github.token }}

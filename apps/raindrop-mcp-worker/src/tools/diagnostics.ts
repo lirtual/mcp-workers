@@ -10,16 +10,22 @@ export const DiagnosticsInputSchema = z.object({
     .describe(
       "Deprecated compatibility flag. Worker diagnostics never expose environment variables or credentials.",
     ),
+  includeUpstream: z
+    .boolean()
+    .optional()
+    .describe(
+      "When true, fetch current Raindrop library statistics. Default diagnostics make no upstream calls.",
+    ),
 });
 
 export const DiagnosticsOutputSchema = z.object({
   version: z.string(),
-  mcpProtocolVersion: z.string(),
+  protocolTarget: z.string(),
   sdkVersion: z.string(),
   runtime: z.literal("cloudflare-workers"),
   httpMode: z.literal("per-request"),
   enabledTools: z.array(z.string()),
-  libraryHealth: z.record(z.string(), z.number()).optional(),
+  libraryHealth: z.record(z.string(), z.number().nullable()).nullable(),
 });
 
 export const createDiagnosticsTool = (
@@ -32,16 +38,19 @@ export const createDiagnosticsTool = (
       "Diagnostics for the Worker server, tool metadata, and Raindrop library health.",
     inputSchema: DiagnosticsInputSchema,
     outputSchema: DiagnosticsOutputSchema,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+    },
     handler: async (
-      _args?: z.infer<typeof DiagnosticsInputSchema>,
+      args?: z.infer<typeof DiagnosticsInputSchema>,
       context?: ToolHandlerContext,
     ) => {
-      const stats = context?.raindropService
-        ? await context.raindropService.getUserStats()
-        : null;
-
-      let healthDetails: Record<string, number> = {};
-      if (context?.raindropService) {
+      const includeUpstream = args?.includeUpstream === true;
+      let libraryHealth: Record<string, number | null> | null = null;
+      if (includeUpstream && context?.raindropService) {
+        const stats = await context.raindropService.getUserStats();
         const [broken, duplicates, untagged] = await Promise.all([
           context.raindropService.getBookmarks({ broken: true, perPage: 1 }),
           context.raindropService.getBookmarks({
@@ -50,28 +59,24 @@ export const createDiagnosticsTool = (
           }),
           context.raindropService.getBookmarks({ notag: true, perPage: 1 }),
         ]);
-        healthDetails = {
-          brokenCount: broken.count,
-          duplicateCount: duplicates.count,
-          untaggedCount: untagged.count,
+        libraryHealth = {
+          totalBookmarks: stats?.bookmarks ?? null,
+          totalCollections: stats?.collections ?? null,
+          totalHighlights: stats?.highlights ?? null,
+          totalTags: stats?.tags ?? null,
+          brokenCount: broken.count ?? null,
+          duplicateCount: duplicates.count ?? null,
+          untaggedCount: untagged.count ?? null,
         };
       }
 
       const diagnosticsData = {
         version: serverVersion,
-        mcpProtocolVersion: "2026-07-28",
+        protocolTarget: "2026-07-28",
         sdkVersion: pkg.dependencies["@modelcontextprotocol/server"],
         runtime: "cloudflare-workers" as const,
         httpMode: "per-request" as const,
-        libraryHealth: stats
-          ? {
-              totalBookmarks: stats.bookmarks,
-              totalCollections: stats.collections,
-              totalHighlights: stats.highlights,
-              totalTags: stats.tags,
-              ...healthDetails,
-            }
-          : undefined,
+        libraryHealth,
         enabledTools: getEnabledToolNames(),
       };
 

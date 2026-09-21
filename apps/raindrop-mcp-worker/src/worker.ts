@@ -15,7 +15,8 @@ const logger = createLogger("worker");
 
 const parseMaxReadRetries = (value: string | undefined): number => {
   const parsed = Number(value ?? "3");
-  return Number.isInteger(parsed) && parsed >= 0 ? parsed : 3;
+  if (!Number.isInteger(parsed) || parsed < 0) return 3;
+  return Math.min(3, parsed);
 };
 
 const createHandler = (env: Env) =>

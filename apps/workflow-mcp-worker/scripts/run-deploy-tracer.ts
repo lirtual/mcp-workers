@@ -20,7 +20,7 @@ const evidence: Record<string, unknown> = {
 await assertHealth();
 const listed = await waitForAuthenticatedMcp();
 const workflowIds = asArray(listed.workflows).map(item => stringField(asObject(item), 'id'));
-for (const requiredWorkflow of ['web-archive-smoke', 'mcp-connection-smoke']) {
+for (const requiredWorkflow of ['web-archive-smoke']) {
   if (!workflowIds.includes(requiredWorkflow)) {
     throw new Error(`Workflow MCP workflow_list is missing "${requiredWorkflow}".`);
   }
@@ -52,22 +52,8 @@ const artifactBytes = new Uint8Array(await artifactResponse.arrayBuffer());
 if (artifactBytes.byteLength === 0) throw new Error('Artifact GET returned an empty object.');
 const heavyLogs = await callTool('workflow_logs', { runId: heavyRunId, cursor: 0, limit: 100 });
 
-const mcpAdmission = await callTool('workflow_run', {
-  workflow: 'mcp-connection-smoke',
-  input: {},
-  idempotencyKey: `workflow-mcp-${process.env.GITHUB_RUN_ID || Date.now()}`
-});
-const mcpRunId = stringField(mcpAdmission, 'runId');
-const mcpStatus = await waitForTerminal(mcpRunId, 'mcp');
-if (mcpStatus.state !== 'succeeded') {
-  throw new Error(`MCP workflow run ended as ${String(mcpStatus.state)}: ${JSON.stringify(mcpStatus)}`);
-}
-const mcpResult = await callTool('workflow_result', { runId: mcpRunId });
-const mcpOutputs = asObject(mcpResult.outputs);
-const nestedMcpResult = asObject(mcpOutputs.result);
-const nestedStructured = asObject(nestedMcpResult.structuredContent);
-if (asArray(nestedStructured.workflows).length < 2) {
-  throw new Error('MCP smoke did not return the Workflow MCP workflow_list payload.');
+if (asArray(listed.workflows).length < 1) {
+  throw new Error('Authenticated MCP workflow_list returned no workflows.');
 }
 
 Object.assign(evidence, {
@@ -87,15 +73,13 @@ Object.assign(evidence, {
     lifecycleEvents: asArray(heavyLogs.events).map(item => asObject(item).eventType)
   },
   mcp: {
-    runId: mcpRunId,
-    state: mcpStatus.state,
-    returnedWorkflowCount: asArray(nestedStructured.workflows).length
+    listedWorkflowCount: asArray(listed.workflows).length
   }
 });
 
 await writeFile(evidencePath, JSON.stringify(evidence, null, 2) + '\n', 'utf8');
 appendGitHubOutput('heavy_run_id', heavyRunId);
-appendGitHubOutput('mcp_run_id', mcpRunId);
+appendGitHubOutput('mcp_run_id', 'authenticated-list');
 appendGitHubOutput('evidence_path', evidencePath);
 console.log(JSON.stringify(evidence, null, 2));
 

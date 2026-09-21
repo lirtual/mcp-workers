@@ -76,10 +76,11 @@ describeIf("MCP protocol integration", () => {
     }
 
     const diagnostics = JSON.parse(diagnosticsContent.resource.text);
-    expect(diagnostics.mcpProtocolVersion).toBe("2026-07-28");
+    expect(diagnostics.protocolTarget).toBe("2026-07-28");
+    expect(diagnostics).not.toHaveProperty("mcpProtocolVersion");
     expect(diagnostics.version).toBeDefined();
     expect(result.structuredContent).toMatchObject({
-      mcpProtocolVersion: "2026-07-28",
+      protocolTarget: "2026-07-28",
       version: diagnostics.version,
     });
   });

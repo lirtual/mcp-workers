@@ -1,9 +1,13 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import type { Prompt } from "@modelcontextprotocol/server";
+import { z } from "zod";
 import pkg from "../../package.json";
-import { buildToolConfigs } from "../tools/index.js";
+import { UnknownWriteError } from "../execution-budget.js";
+import { errorResult, mcpStructuredFromUnknownWrite } from "../result.js";
+import { buildToolConfigs, type ToolConfig } from "../tools/index.js";
 import {
   NotFoundError,
+  RateLimitError,
   UpstreamError,
   ValidationError,
 } from "../types/mcpErrors.js";
@@ -170,17 +174,49 @@ export class RaindropMCPService {
             .replace(/_/g, " ")
             .replace(/\b\w/g, (l) => l.toUpperCase()),
           description: config.description,
-          inputSchema: config.inputSchema,
+          inputSchema: strictSchema(config.inputSchema),
           outputSchema: config.outputSchema,
+          annotations: config.annotations,
         },
         this.asyncHandler(async (args: any, extra: any) =>
-          config.handler(args, {
-            raindropService: this.raindropService,
-            mcpServer: this.server.server, // Pass the underlying McpServer instance
-            ...extra,
-          }),
+          this.invokeConfiguredTool(config, args, extra),
         ),
       );
+    }
+  }
+
+  private async invokeConfiguredTool(
+    config: ToolConfig<any, any>,
+    input: unknown,
+    extra: Record<string, unknown> = {},
+  ): Promise<any> {
+    try {
+      const parsed = strictSchema(config.inputSchema).parse(input ?? {});
+      return await config.handler(parsed, {
+        raindropService: this.raindropService,
+        mcpServer: this.server.server,
+        ...extra,
+      });
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        throw new ValidationError(
+          err.issues.map((issue) => issue.message).join("; "),
+        );
+      }
+      if (err instanceof UnknownWriteError) {
+        return mcpStructuredFromUnknownWrite(err);
+      }
+      if (err instanceof RateLimitError) {
+        return {
+          content: [{ type: "text", text: err.message }],
+          structuredContent: errorResult(
+            { code: "RATE_LIMITED", message: err.message },
+            { retryAfterMs: retryAfterFrom(err) },
+          ),
+          isError: true,
+        };
+      }
+      throw err;
     }
   }
 
@@ -295,10 +331,7 @@ export class RaindropMCPService {
     if (!config) {
       throw new Error(`Tool with id "${toolId}" not found.`);
     }
-    return await config.handler(input ?? {}, {
-      raindropService: this.raindropService,
-      mcpServer: this.server.server,
-    });
+    return await this.invokeConfiguredTool(config, input);
   }
 
   /**
@@ -462,4 +495,27 @@ export class RaindropMCPService {
         "MCP Server for Raindrop.io with advanced interactive capabilities",
     };
   }
+}
+
+function strictSchema(schema: z.ZodTypeAny): z.ZodTypeAny {
+  if (schema instanceof z.ZodObject) {
+    return schema.strict();
+  }
+  return schema;
+}
+
+function retryAfterFrom(error: unknown): number | null {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5; depth += 1) {
+    if (!current || typeof current !== "object") return null;
+    const direct = (current as { retryAfterMs?: unknown }).retryAfterMs;
+    if (typeof direct === "number" && Number.isFinite(direct)) return direct;
+    const cause = (current as { cause?: unknown }).cause;
+    if (cause && typeof cause === "object") {
+      const nested = (cause as { retryAfterMs?: unknown }).retryAfterMs;
+      if (typeof nested === "number" && Number.isFinite(nested)) return nested;
+    }
+    current = cause;
+  }
+  return null;
 }
