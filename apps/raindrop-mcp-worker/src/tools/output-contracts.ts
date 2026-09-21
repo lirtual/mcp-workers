@@ -52,7 +52,14 @@ const outputData: Record<string, z.ZodTypeAny> = {
   highlight_list: items(highlight),
   highlight_create: object({ item: bookmark.nullable(), highlights: z.array(highlight).nullable() }),
   highlight_update: object({ item: bookmark.nullable(), targetId: z.string().min(1) }),
-  highlight_delete: object({ item: bookmark.nullable(), targetId: z.string().min(1) }),
+  highlight_delete: z.union([
+    // Preview exposes the exact selected string highlight ID, not a bookmark item.
+    object({ targets: z.array(object({
+      raindropId: BusinessId, _id: z.string().min(1), text: z.string(),
+    })) }),
+    // Confirmed writes return the acknowledged bookmark (or null if omitted).
+    object({ item: bookmark.nullable(), targetId: z.string().min(1) }),
+  ]),
   library_audit: items(z.union([bookmark, collection])),
   duplicates_delete: object({
     eligibleIds: z.array(BusinessId),
