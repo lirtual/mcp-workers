@@ -5,9 +5,7 @@ import type { Env } from '../src/types.js';
 const env = {
   GITHUB_ACTIONS_TOKEN: 'gh-token',
   GITHUB_REPOSITORY: 'lirtual/mcp-workers',
-  GITHUB_REPOSITORY_ID: '1371085786',
-  GITHUB_EXECUTOR_REF: 'main',
-  GITHUB_EXECUTOR_WORKFLOW: 'workflow-executor.yml'
+  GITHUB_REPOSITORY_ID: '1371085786'
 } as unknown as Env;
 
 describe('GitHub executor dispatch', () => {
@@ -161,6 +159,18 @@ describe('GitHub executor dispatch', () => {
     ).toBe('unresolved');
 
     expect(classifyCancellationRunFacts([])).toBe('unresolved');
+  });
+
+  it('ignores dashboard overrides for the pinned executor workflow/ref', () => {
+    const altered = {
+      ...env,
+      GITHUB_EXECUTOR_WORKFLOW: 'untrusted.yml',
+      GITHUB_EXECUTOR_REF: 'untrusted'
+    } as Env;
+    expect(githubExecutorTrust(altered)).toMatchObject({
+      workflowRef: 'lirtual/mcp-workers/.github/workflows/workflow-executor.yml@refs/heads/main',
+      ref: 'refs/heads/main'
+    });
   });
 
   it('derives the OIDC trust policy from server configuration', () => {
