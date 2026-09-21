@@ -20,6 +20,11 @@ on:
         required: false
         default: false
         type: boolean
+      raindrop_manual_acceptance:
+        description: Explicitly verify live Raindrop schema before deploy and manual Run after deploy (T16)
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -125,6 +130,13 @@ jobs:
           console.log('Required persistent runtime Secret names are configured.');
           NODE
 
+      - name: Verify live Raindrop contract before any deployment mutations
+        if: github.event_name == 'workflow_dispatch' && inputs.raindrop_manual_acceptance
+        working-directory: apps/workflow-mcp-worker
+        env:
+          WORKFLOW_MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
+        run: pnpm run release:raindrop-discovery
+
       - name: Apply D1 migrations
         working-directory: apps/workflow-mcp-worker
         run: pnpm exec wrangler d1 migrations apply DB --remote --config "$WORKFLOW_MCP_WRANGLER_CONFIG"
@@ -157,6 +169,15 @@ jobs:
         working-directory: apps/workflow-mcp-worker
         run: pnpm exec tsx scripts/run-release-probe.ts
 
+      - name: Verify real Raindrop manual Run and structured result
+        if: github.event_name == 'workflow_dispatch' && inputs.raindrop_manual_acceptance
+        id: raindrop
+        working-directory: apps/workflow-mcp-worker
+        env:
+          WORKFLOW_MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
+          WORKFLOW_MCP_RAINDROP_EVIDENCE_PATH: ${{ github.workspace }}/workflow-mcp-raindrop-evidence.json
+        run: pnpm run release:raindrop-manual
+
       - name: Run MCP heavy and connection tracers
         if: github.event_name == 'workflow_dispatch' && inputs.full_acceptance
         id: tracer
@@ -183,6 +204,7 @@ jobs:
             echo "- Commit: \`$GITHUB_SHA\`"
             echo "- Heavy run: \`${{ steps.tracer.outputs.heavy_run_id || 'not-completed' }}\`"
             echo "- MCP run: \`${{ steps.tracer.outputs.mcp_run_id || 'not-completed' }}\`"
+            echo "- Raindrop manual run: \`${{ steps.raindrop.outputs.raindrop_run_id || 'not-requested-or-incomplete' }}\`"
             if [[ -f "$WORKFLOW_MCP_EVIDENCE_PATH" ]]; then
               echo
               echo '```json'
@@ -197,5 +219,14 @@ jobs:
         with:
           name: workflow-mcp-evidence-${{ github.run_id }}
           path: workflow-mcp-evidence.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload sanitized Raindrop acceptance evidence
+        if: github.event_name == 'workflow_dispatch' && inputs.raindrop_manual_acceptance && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow-mcp-raindrop-evidence-${{ github.run_id }}
+          path: workflow-mcp-raindrop-evidence.json
           if-no-files-found: warn
           retention-days: 14
