@@ -17,9 +17,20 @@ ADR-0001 adopted v3's explicit resource/action contract, separately exposing rea
 5. **Resource and release gate**: Free is the prioritized target, not a proven property. If repeatable native CPU breaches remain after constrained changes, consider revising the external contract without weakening safety. Do not report acceptance or release until agreed Free resource and client acceptance gates pass. No Paid upgrade is authorized.
 6. **Separation of work**: freeze v3 Draft PR #120 and retain #119 as unpassed until its evidence is actually obtained. Conduct v4 design/prototype/acceptance independently; no merge, production cutover, credential mutation, or account-data change.
 
+## Refinement — second Grill-with-docs round (Q7:B, Q8:B, Q9:B, Q10:B, Q11:B, Q12:B)
+
+These decisions narrow the accepted first-round direction; they do not authorize runtime changes.
+
+- **Read-only grouping (Q7)**: v4 may regroup **purely read-only** tools. Writes, deletes and batch operations remain independently exposed, with explicit confirmation, source scope, fail-closed safeguards and accurate unknown-write reporting. Do not combine reads with writes or hide dangerous actions in generic dispatch.
+- **Comparative prototype (Q8)**: compare existing SDK and proposed lightweight adapter using initialize, tools/list, local diagnostics, representative read-only tools/call, necessary resource and prompt requests. Record protocol behavior as well as measured CPU. No full replacement is approved.
+- **Minimum conformance (Q9)**: the candidate must support the v3-used MCP capabilities, with tests for authentication, transport, negotiated protocol behavior, error semantics, cancellation and target client compatibility; implementing unused optional features is not a requirement. Precise fixtures and protocol version pins are deferred.
+- **Parallel entry (Q10)**: prove an independently isolated v4 endpoint before deciding whether and how Portal/client migration or production cutover occurs. No current v3 endpoint or token changes.
+- **Resource evidence (Q11)**: use exact-deployment, operation-labeled native CPU samples on Free, with repeated observations for first and subsequent requests, all overages and failures recorded. Seek no persistent over-limit behavior; the sample size, persistence definition and numeric release criteria remain unresolved. Neither old deployment samples nor local profiling nor HTTP 200 alone satisfies acceptance.
+- **Isolated measurement workflow (Q12)**: plan a distinct read-only v4 workflow pinned to an immutable source SHA and verified deployed script/version. No use of the frozen v3 workflow for v4; trigger scope, credential boundaries, artifact retention and rollback need further decisions.
+
 ## Relationship to ADR-0001 and v3 Spec #110
 
-ADR-0001 remains accepted for the v3 baseline. Its separation of read, write, delete and batch tools is **not automatically replaced** by a v4 grouping proposal. A v4 grouping that combines read and write or hides destructive scope behind a generic action would conflict with the established safety intent and requires an explicit further decision and separate contract tests. Moderate regrouping of non-dangerous operations that retains these invariants is not necessarily in conflict.
+ADR-0001 remains accepted for the v3 baseline. Its separation of read, write, delete and batch tools is **not automatically replaced** by a v4 grouping proposal. A v4 grouping that combines read and write or hides destructive scope behind a generic action would conflict with the established safety intent and requires an explicit further decision and separate contract tests. Round-two Q7 further limits regrouping to purely read-only tools: it retains independently exposed write, delete and batch tools, so their v3 safety intent remains intact. No combined read/write action is authorized.
 
 The v3 spec explicitly says not to replace the SDK or HTTP framework in that release. A *comparative v4 prototype* does not amend that v3 constraint. If a future v4 SDK replacement is approved, document the protocol and migration consequences in a new ADR/spec before implementation.
 
@@ -31,6 +42,6 @@ The v3 spec explicitly says not to replace the SDK or HTTP framework in that rel
 
 ## Explicitly unresolved
 
-Next Grill-with-docs round: the non-dangerous grouping boundary; SDK comparison criteria and MCP protocol conformance (initialize, tools, resources, prompts, errors, transport); compatibility and release strategy; sampling and CPU pass/fail policy; safe isolated deployment identity/rollback and v3 closure conditions.
+Next Grill-with-docs round: precise read-only grouping and schema; quantitative SDK comparison and inconclusive-result handling; concrete MCP conformance cases; Portal migration and rollback policy; number of samples, statistical acceptance and errors/missing-telemetry handling; isolated workflow trigger, credentials, version identity and artifacts; and v3 PR disposition.
 
 References: [v3 Spec #110](https://github.com/lirtual/mcp-workers/issues/110), [#119](https://github.com/lirtual/mcp-workers/issues/119), [Draft PR #120](https://github.com/lirtual/mcp-workers/pull/120), [ADR-0001](./0001-replace-legacy-tool-contract.md), [decision log](../decision-log.md).
