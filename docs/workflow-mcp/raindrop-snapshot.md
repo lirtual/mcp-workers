@@ -25,6 +25,17 @@ names. Before acceptance, authenticate to the *live* Raindrop endpoint,
 discover `list_raindrops`, verify its input and output schemas, and stop if
 they disagree with the source. Do not log the token or bookmark contents.
 
+Before deployment, an operator with an already-authorized ingress token can run
+`pnpm --filter workflow-mcp-worker release:raindrop-discovery` with
+`WORKFLOW_MCP_ACCESS_TOKEN` securely supplied. This command sends only an
+authenticated, read-only `tools/list` to the **fixed** Raindrop endpoint.
+It verifies the fixed input types and required structured bookmark fields,
+failing on an incompatible or missing tool. It prints only the endpoint, tool,
+time, and SHA-256 schema digest; it never invokes `tools/call`, changes
+Secrets, fetches bookmarks, or deploys any Worker. Missing credentials or
+HTTP/auth/schema errors are blockers, not successful empty responses. Record
+the sanitized discovery evidence separately from the manual Run evidence.
+
 ## Manual acceptance, only after separately authorized deployment
 
 1. Confirm #106/#123 release evidence and compatibility with nonterminal Runs.
