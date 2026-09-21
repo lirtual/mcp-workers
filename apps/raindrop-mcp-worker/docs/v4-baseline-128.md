@@ -51,6 +51,26 @@ Although there are **11 read action selectors**, they map to **10 distinct sourc
 - **Blocked / no assumed protocol version:** the actual version/capabilities negotiated with the *real* v3 ChatGPT MCP Portal session have not been independently observed in this ticket. Neither source-declared target version nor an in-memory SDK test constitutes real Portal evidence. Record a redacted, dated actual negotiation transcript before claiming compatibility.
 - **Blocked / no Free acceptance:** no native CPU measurements, verified v4 deploy ID, or real v4 Portal call exist in this ticket. Isolated deployment/measurement is #129 and later gates. No production Worker, credential, pre-existing bookmark or Trash change is authorized.
 
+## T01 actual Portal protocol evidence capture (BLOCKED until observed)
+
+**Evidence source:** one *real* ChatGPT MCP Portal connection to an explicitly approved, isolated v3 deployment of frozen source `cc05fc9ecbdac38a57d66856f771583746b0e6df`. The v4 implementation branch's package version, a direct HTTP test, SDK client fixture, Portal client configuration, or a `/health` response is **not** evidence of the real Portal's negotiated protocol. Before connecting, independently match the isolated Cloudflare script, deployment/version ID, and source SHA; if exact linkage or a safe isolated connection is unavailable, stop and record **Blocked**. Do not repoint an existing production client or change credentials merely to gather evidence.
+
+Capture only protocol metadata, not secrets or personal account content. In an access-controlled evidence location, retain sanitized request/response metadata and attach a stable reference to #128 with these fields:
+
+| Evidence | Required observation / classification |
+| --- | --- |
+| Provenance | UTC timestamp; v3 source SHA; isolated script name + deployment/version ID; observer; whether the request traversed *real Portal* or only direct/SDK (separate rows) |
+| `initialize` | Actual **client-offered** `params.protocolVersion`, actual **server-returned** `result.protocolVersion` (negotiated value), sanitized client/server info and `result.capabilities`; never substitute the test fixture's `2025-11-25` |
+| Transport | Request method/path, HTTP status, Accept/Content-Type, sanitized MCP-Protocol-Version header if present, response JSON versus SSE, MCP-Session-Id presence/absence (never its value), behavior across requests; do not infer statelessness from one response |
+| Discovery | HTTP and JSON-RPC status, counts and exact tool names for `tools/list`, resource URIs for `resources/list`, template URIs for `resources/templates/list`, prompt names for `prompts/list`; verify 26 v3 names and known static/templated discovery |
+| Read and errors | One bounded, safe `diagnostics` local `tools/call` with requestCount=0; negative no-credential probe and invalid method or invalid input; note whether Portal surfaced/redacted errors as expected |
+| Cancellation | Portal-observable cancelled read, if supported; actual abort propagation and no further upstream work must be evidenced, not inferred from offline code |
+| Sanitization | Exclude Authorization, cookies, access tokens, session IDs, profile/bookmark/tag bodies, user IDs, complete personal URLs and notes. Preserve only status, error codes, names/counts, protocol metadata and safe operation labels |
+
+Record each row as **Observed / Not observed / Blocked**, with evidence URL and source/deployment identity; do not replace a missing trace with a hypothesized result. Portal UI-only discovery may establish visible tool names but **cannot establish wire-level negotiated protocol, HTTP headers or abort behavior**. If wire-level Portal telemetry is unavailable, mark those fields Blocked even if UI discovery succeeds. If the approved isolated v3 deployment is not the frozen source, collect diagnostic evidence but do not attribute it to T01's frozen baseline.
+
+The new `Client + InMemoryTransport` regression verifies offline SDK discovery and local diagnostics without any upstream access. Its `protocolVersion: null` diagnostic value is an explicit **unknown**, not the negotiated version. Existing `tests/worker.security.test.ts` separately checks direct `worker.fetch` authentication/Origin/initialize. Both fixtures remain distinct from the required real Portal session.
+
 ## Verification and dependencies
 
 T01 executable regression: `pnpm --filter raindrop-mcp-worker exec vitest run tests/v4_baseline_contract.test.ts`. Include it in the existing `test:local` app check. Test validates tool discovery/count, read-only annotations, strict schemas, resource/prompt metadata; it does **not** assert a v4 implementation is live. Follow-up #129 remains blocked on explicit v3 actual protocol evidence and isolated Cloudflare/Portal availability when those claims are needed. If a CI check fails, correct and rerun before marking T01 code ready.
