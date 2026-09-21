@@ -8,6 +8,7 @@ import {
   UpstreamError,
   UpstreamRejectedError,
   ValidationError,
+  WriteResultUnavailableError,
 } from "../types/mcpErrors.js";
 import type { components, paths } from "../types/raindrop.schema.js";
 import { createLogger } from "../utils/logger.js";
@@ -23,10 +24,12 @@ export interface RaindropServiceConfig {
   maxReadRetries?: number;
   debugHttp?: boolean;
   budget?: ExecutionBudget;
+  signal?: AbortSignal;
 }
 
 export default class RaindropService {
   private client;
+  private readonly cancellation = new AbortController();
   private logger = createLogger("raindrop-service");
 
   // These caches are intentionally request/service-instance scoped. The Worker
@@ -42,6 +45,7 @@ export default class RaindropService {
     const normalized: RaindropServiceConfig =
       typeof config === "string" ? { accessToken: config } : config;
     this.budget = normalized.budget ?? new ExecutionBudget();
+    if (normalized.signal) this.bindCancellation(normalized.signal);
     const maxReadRetries = normalized.maxReadRetries;
     this.maxRateLimitRetries =
       maxReadRetries !== undefined &&
@@ -54,7 +58,9 @@ export default class RaindropService {
 
     this.client = createClient<paths>({
       baseUrl: "https://api.raindrop.io/rest/v1",
-      fetch: (request: Request) => this.budget.fetch(request),
+      fetch: (request: Request) => this.budget.fetch(new Request(request, {
+        signal: AbortSignal.any([request.signal, this.cancellation.signal]),
+      })),
       headers: {
         Authorization: `Bearer ${accessToken}`,
       },
@@ -148,6 +154,38 @@ export default class RaindropService {
       : undefined;
   }
 
+  /** Request-local cancellation remains latched across all reads and writes. */
+  public bindCancellation(signal: AbortSignal): () => void {
+    const abort = () => this.cancellation.abort();
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+    return () => signal.removeEventListener("abort", abort);
+  }
+
+  private checkCancellation(): void {
+    if (this.cancellation.signal.aborted) {
+      throw new UpstreamError("Request cancelled", { submitted: false, budget: true });
+    }
+  }
+
+  private async retryDelay(ms: number): Promise<void> {
+    this.checkCancellation();
+    const signal = this.cancellation.signal;
+    await new Promise<void>((resolve, reject) => {
+      const abort = () => {
+        clearTimeout(timer);
+        signal.removeEventListener("abort", abort);
+        reject(new UpstreamError("Request cancelled during retry wait", { submitted: false, budget: true }));
+      };
+      const timer = setTimeout(() => {
+        signal.removeEventListener("abort", abort);
+        resolve();
+      }, ms);
+      signal.addEventListener("abort", abort, { once: true });
+      if (signal.aborted) abort();
+    });
+  }
+
   private async withWriteRateLimit<T>(fn: () => Promise<T>): Promise<T> {
     return this.withRateLimit(fn, "write");
   }
@@ -158,11 +196,13 @@ export default class RaindropService {
     retryCount = 0,
     startedAtMs = Date.now(),
   ): Promise<T> {
+    this.checkCancellation();
     const maxRetries = this.maxRateLimitRetries;
     const readRetryBudgetMs = Math.min(15_000, this.budget.remainingMs());
     try {
       return await fn();
     } catch (err: any) {
+      this.checkCancellation();
       // Non-retryable errors: auth, not found, validation
       if (err instanceof AuthError || err instanceof NotFoundError) {
         throw err;
@@ -203,7 +243,7 @@ export default class RaindropService {
         this.logger.warn(
           `Upstream rate limited, retrying in ${Math.ceil(backoffMs / 1000)}s (attempt ${retryCount + 1}/${maxRetries})`,
         );
-        await new Promise((resolve) => setTimeout(resolve, backoffMs));
+        await this.retryDelay(backoffMs);
         return this.withRateLimit(
           fn,
           retryMode,
@@ -234,7 +274,7 @@ export default class RaindropService {
         this.logger.warn(
           `Transient error, retrying in ${Math.ceil(backoffMs / 1000)}s (attempt ${retryCount + 1}/${maxRetries}): ${err.message}`,
         );
-        await new Promise((resolve) => setTimeout(resolve, backoffMs));
+        await this.retryDelay(backoffMs);
         return this.withRateLimit(
           fn,
           retryMode,
@@ -295,10 +335,11 @@ export default class RaindropService {
       }),
     );
     if (data?.result === false) throw new UpstreamRejectedError("Collection create was rejected");
-    if (data?.result !== true || !data.item) {
+    if (data?.result !== true) {
       throw new UpstreamError("Collection create acknowledgement is missing");
     }
     this.cacheCollections.clear();
+    if (!data.item) throw new WriteResultUnavailableError();
     return data.item as Collection;
   }
 
@@ -316,10 +357,11 @@ export default class RaindropService {
       }),
     );
     if (data?.result === false) throw new UpstreamRejectedError("Collection update was rejected");
-    if (data?.result !== true || !data.item) {
+    if (data?.result !== true) {
       throw new UpstreamError("Collection update acknowledgement is missing");
     }
     this.cacheCollections.clear();
+    if (!data.item) throw new WriteResultUnavailableError();
     return data.item as Collection;
   }
 
@@ -418,7 +460,10 @@ export default class RaindropService {
       }),
     );
     if (data?.result === false) throw new UpstreamRejectedError("Bookmark creation was rejected");
-    if (!data?.item) throw new UpstreamError("Upstream create response has no bookmark");
+    if (!data?.item) {
+      if (data?.result === true) throw new WriteResultUnavailableError();
+      throw new UpstreamError("Upstream create response has no bookmark");
+    }
     this.cacheSearch.clear();
     return data.item as Bookmark;
   }
@@ -439,7 +484,10 @@ export default class RaindropService {
       }),
     );
     if (data?.result === false) throw new UpstreamRejectedError("Bookmark update was rejected");
-    if (!data?.item) throw new UpstreamError("Upstream update response has no bookmark");
+    if (!data?.item) {
+      if (data?.result === true) throw new WriteResultUnavailableError();
+      throw new UpstreamError("Upstream update response has no bookmark");
+    }
     this.cacheBookmarks.delete(`id:${id}`);
     this.cacheSearch.clear();
     return data.item as Bookmark;

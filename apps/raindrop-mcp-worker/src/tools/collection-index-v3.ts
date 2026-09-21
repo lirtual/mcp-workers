@@ -1,3 +1,6 @@
+import { McpError } from "../types/mcpErrors.js";
+import { EXECUTION_LIMITS } from "../services/execution-budget.js";
+
 /** A bounded, deterministic hierarchy builder. Invalid ancestry is never
  * silently promoted into a root and a cycle is never traversed recursively. */
 export type CollectionTreeNode<T> = T & {
@@ -8,6 +11,9 @@ export type CollectionTreeNode<T> = T & {
 export function buildCollectionIndexV3<
   T extends { _id: number; title: string; count?: number; parent?: { $id?: number } },
 >(collections: T[]) {
+  let pathBytes = 0;
+  const pathSizes = new Map<number, number>();
+  const encoder = new TextEncoder();
   const records = new Map<number, CollectionTreeNode<T>>();
   for (const item of collections) {
     records.set(item._id, { ...item, path: [], children: [] });
@@ -22,11 +28,13 @@ export function buildCollectionIndexV3<
     let cursor: CollectionTreeNode<T> | undefined = start;
     let valid = true;
     let prefix: string[] = [];
+    let prefixBytes = 0;
     while (cursor) {
       const known = resolved.get(cursor._id);
       if (known !== undefined) {
         valid = known;
         prefix = valid ? cursor.path : [];
+        prefixBytes = valid ? pathSizes.get(cursor._id)! : 0;
         break;
       }
       if (encountered.has(cursor._id)) {
@@ -52,7 +60,15 @@ export function buildCollectionIndexV3<
     }
     for (const node of trace.reverse()) {
       resolved.set(node._id, valid);
+      const titleBytes = encoder.encode(JSON.stringify(node.title)).byteLength + 1;
+      const bytes = (valid ? prefixBytes : 0) + titleBytes;
+      pathBytes += bytes + 2;
+      if (pathBytes > EXECUTION_LIMITS.resultBytes) {
+        throw new McpError("RESOURCE_LIMIT", "Collection path expansion exceeds the result byte limit");
+      }
       node.path = valid ? [...prefix, node.title] : [node.title];
+      pathSizes.set(node._id, bytes);
+      prefixBytes = bytes;
       prefix = node.path;
     }
   }

@@ -3,13 +3,15 @@ import type { Prompt } from "@modelcontextprotocol/server";
 import pkg from "../../package.json";
 import { buildToolConfigs } from "../tools/index.js";
 import type { ToolConfig } from "../tools/common.js";
-import { ToolEnvelopeSchema, toolFailure } from "../tools/common.js";
+import { ToolEnvelopeSchema, toolFailure, toolSuccess } from "../tools/common.js";
 import { EXECUTION_LIMITS } from "./execution-budget.js";
+import { prepareToolSchema } from "./tool-schema.js";
 import { McpError, AuthError, RateLimitError } from "../types/mcpErrors.js";
 import {
   NotFoundError,
   UpstreamError,
   ValidationError,
+  WriteResultUnavailableError,
 } from "../types/mcpErrors.js";
 import RaindropService, { type RaindropServiceConfig } from "./raindrop.service.js";
 
@@ -19,6 +21,11 @@ const SERVER_VERSION = pkg.version;
 const { toolConfigs } = buildToolConfigs({
   serverVersion: SERVER_VERSION,
 });
+const registrationSchemas = toolConfigs.map((config) => ({
+  config,
+  input: prepareToolSchema(config.inputSchema),
+  output: prepareToolSchema(config.outputSchema ?? ToolEnvelopeSchema, "output"),
+}));
 
 // --- MCP Server class ---
 /**
@@ -158,7 +165,7 @@ export class RaindropMCPService {
   }
 
   private registerDeclarativeTools() {
-    for (const config of toolConfigs) {
+    for (const { config, input, output } of registrationSchemas) {
       this.server.registerTool(
         config.name,
         {
@@ -166,8 +173,8 @@ export class RaindropMCPService {
             .replace(/_/g, " ")
             .replace(/\b\w/g, (l) => l.toUpperCase()),
           description: config.description,
-          inputSchema: config.inputSchema,
-          outputSchema: config.outputSchema ?? ToolEnvelopeSchema,
+          inputSchema: input,
+          outputSchema: output,
           annotations: config.annotations,
         },
         this.asyncHandler(async (args: any, extra: any) =>
@@ -305,6 +312,8 @@ export class RaindropMCPService {
         requestCount: this.raindropService.budget.requestCount,
       });
     }
+    const unbind = extra.signal instanceof AbortSignal
+      ? this.raindropService.bindCancellation(extra.signal) : undefined;
     try {
       return await config.handler(parsed.data, {
         raindropService: this.raindropService,
@@ -312,6 +321,10 @@ export class RaindropMCPService {
         ...extra,
       });
     } catch (err) {
+      if (err instanceof WriteResultUnavailableError) {
+        return toolSuccess(null, { status: "succeeded", outputOmitted: true,
+          warnings: [err.message], requestCount: this.raindropService.budget.requestCount }, err.message);
+      }
       const cause = err instanceof McpError ? err.cause : undefined;
       const details = cause && typeof cause === "object"
         ? cause as { status?: number; retryAfterMs?: number }
@@ -365,6 +378,8 @@ export class RaindropMCPService {
           ...(details.retryAfterMs !== undefined ? { retryAfterMs: details.retryAfterMs } : {}),
         },
       );
+    } finally {
+      unbind?.();
     }
   }
 

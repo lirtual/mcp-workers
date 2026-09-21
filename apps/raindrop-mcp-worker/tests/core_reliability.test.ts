@@ -9,6 +9,58 @@ afterEach(() => {
 });
 
 describe("Raindrop request budget", () => {
+  it("cancels a retry wait without submitting another upstream request", async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const fetchMock = vi.fn(async () => new Response(null, {
+      status: 429, headers: { "Retry-After": "1" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const service = new RaindropMCPService({ accessToken: "fixture", signal: controller.signal });
+    const pending = service.callTool("raindrop_list", {});
+    await vi.advanceTimersByTimeAsync(10);
+    controller.abort();
+    const result = await pending;
+    expect(result.structuredContent.meta.status).toBe("not_executed");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it("does not submit a delete after HTTP cancellation during its source read", async () => {
+    const controller = new AbortController();
+    const fetchMock = vi.fn(async () => {
+      controller.abort();
+      return Response.json({ result: true, item: { _id: 7, collection: { $id: 1 } } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const response = await worker.fetch(new Request("https://raindrop.example/mcp", {
+      method: "POST",
+      headers: { Authorization: "Bearer fixture", "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream", "MCP-Protocol-Version": "2025-03-26" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call",
+        params: { name: "raindrop_delete", arguments: { id: 7, confirm: true } } }),
+      signal: controller.signal,
+    }), { MCP_ACCESS_TOKEN: "fixture", RAINDROP_ACCESS_TOKEN: "fixture", RAINDROP_RATE_LIMIT_MAX_RETRIES: "0" });
+    await response.text();
+    // The transport may return before a disconnected tool finishes running.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["collection_create", { title: "fixture" }],
+    ["collection_update", { id: 7, title: "fixture" }],
+    ["raindrop_create", { link: "https://example.com" }],
+    ["raindrop_update", { id: 7, title: "fixture" }],
+  ])("preserves acknowledged %s when the returned item is unavailable", async (name, input) => {
+    const fetchMock = vi.fn(async () => Response.json({ result: true }));
+    vi.stubGlobal("fetch", fetchMock);
+    const service = new RaindropMCPService({ accessToken: "fixture", maxReadRetries: 0 });
+    const result = await service.callTool(name as string, input);
+    expect(result.structuredContent).toMatchObject({ ok: true, data: null,
+      meta: { status: "succeeded", outputOmitted: true } });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("counts each GET retry and never retries a submitted write", async () => {
     const fetchMock = vi.fn(async () =>
       new Response("failure", { status: 500, statusText: "Internal Server Error" }),

@@ -19,13 +19,14 @@ const parseMaxReadRetries = (value: string | undefined): number => {
   return Number.isInteger(parsed) && parsed >= 0 ? Math.min(3, parsed) : 3;
 };
 
-const createHandler = (env: Env) =>
+const createHandler = (env: Env, signal: AbortSignal) =>
   createMcpHandler(
     () =>
       new RaindropMCPService({
         accessToken: env.RAINDROP_ACCESS_TOKEN,
         maxReadRetries: parseMaxReadRetries(env.RAINDROP_RATE_LIMIT_MAX_RETRIES),
         debugHttp: false,
+        signal,
       }).getServer(),
     {
       legacy: "stateless",
@@ -163,6 +164,6 @@ export default {
       body: body.length ? (body.buffer as ArrayBuffer) : null,
       signal: portalAuth.request.signal,
     });
-    return createHandler(env).fetch(boundedRequest);
+    return createHandler(env, boundedRequest.signal).fetch(boundedRequest);
   },
 };

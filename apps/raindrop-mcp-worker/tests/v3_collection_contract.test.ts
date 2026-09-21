@@ -33,6 +33,12 @@ const resultOf = async (name: string, input: Record<string, unknown> = {}) =>
   (await app().callTool(name, input)).structuredContent;
 
 describe("T04: collection hierarchy and exact deletion scope", () => {
+  it("rejects cumulative path amplification before constructing huge output", () => {
+    const chain = Array.from({ length: 1000 }, (_, i) => ({
+      ...C(i + 1, i === 0 ? undefined : i), title: "x".repeat(1000),
+    }));
+    expect(() => buildCollectionIndexV3(chain)).toThrow(/path.*limit/i);
+  });
   it("merges both official endpoints, deduplicates child IDs and sorts/paginates by _id", async () => {
     const spy = mockIndex([C(9), C(1)], [C(4, 1), C(4, 1), C(3, 4)]);
     const result = await resultOf("collection_list", { perpage: 2, page: 1 });
@@ -47,8 +53,8 @@ describe("T04: collection hierarchy and exact deletion scope", () => {
   });
 
   it("keeps orphan/cycle records unattached, reports warnings and never loops on deep trees", async () => {
-    const root = C(1);
-    const nested = Array.from({ length: 997 }, (_, i) => C(i + 2, i + 1));
+    const root = { ...C(1), title: "c" };
+    const nested = Array.from({ length: 997 }, (_, i) => ({ ...C(i + 2, i + 1), title: "c" }));
     const orphan = C(999, 5000);
     const cycle = C(1000, 1000);
     const graph = buildCollectionIndexV3([orphan, cycle, ...nested.reverse(), root]);

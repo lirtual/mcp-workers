@@ -55,3 +55,10 @@ export class UpstreamRejectedError extends McpError {
 
 export type KnownMcpError =
   NotFoundError | ValidationError | AuthError | RateLimitError | UpstreamError | UpstreamRejectedError;
+
+/** A write was acknowledged, but its returned representation is unavailable. */
+export class WriteResultUnavailableError extends McpError {
+  constructor() {
+    super("WRITE_RESULT_UNAVAILABLE", "Write accepted; read the target for result details.");
+  }
+}
