@@ -1,7 +1,6 @@
 import { admitScheduledWorkflow } from './admission.js';
 import { latestDueOccurrence } from './cron.js';
 import { runMaintenanceBatch } from './maintenance.js';
-import { runT17CanaryTick } from './t17-canary.js';
 import { getWorkflowRegistry } from './registry.js';
 import { asRuntimePlan } from './runtime-plan.js';
 import { D1WorkflowStore } from './storage.js';
@@ -70,14 +69,6 @@ export async function runSchedulerTick(
       }
     }
     if (evaluatedSchedules >= maxSchedules) break;
-  }
-
-  // TEMPORARY T17 self-expiring canary, using the existing real Cloudflare minute tick.
-  // It cannot fire outside the 2026-09-21 09:20–09:35 UTC acceptance window.
-  try {
-    if (await runT17CanaryTick(env, scheduledTime)) admittedRuns += 1;
-  } catch {
-    errors += 1;
   }
 
   const maintenanceProcessed = await runMaintenanceBatch(env, maintenanceLimit);

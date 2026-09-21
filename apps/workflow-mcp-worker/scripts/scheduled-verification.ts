@@ -1,7 +1,5 @@
 export const SNAPSHOT_WORKFLOW_ID = 'raindrop-daily-snapshot';
 export const SNAPSHOT_SCHEDULE_KEY = 'raindrop-daily-snapshot:daily-nine';
-export const T17_CANARY_SCHEDULE_KEY = 'raindrop-daily-snapshot:t17-canary-20260921';
-export const T17_CANARY_EXPECTED_UTC = '2026-09-21T09:20:00.000Z';
 
 export interface ScheduledDbRow {
   run_id: string;
@@ -35,18 +33,6 @@ export function parseExpectedNineAmUtc(input: string, nowMs: number): number {
   if (nowMs < expectedMs + 60_000) throw new Error('The actual 09:00 occurrence has not yet elapsed.');
   if (nowMs > expectedMs + 48 * 60 * 60_000) {
     throw new Error('Expected occurrence is older than the bounded 48-hour acceptance window.');
-  }
-  return expectedMs;
-}
-
-export function parseExpectedT17CanaryUtc(input: string, nowMs: number): number {
-  if (input !== T17_CANARY_EXPECTED_UTC) {
-    throw new Error('T17 canary timestamp must match the fixed authorized occurrence.');
-  }
-  const expectedMs = Date.parse(input);
-  if (nowMs < expectedMs + 60_000) throw new Error('T17 canary has not yet elapsed.');
-  if (nowMs >= expectedMs + 15 * 60_000) {
-    throw new Error('T17 canary verification exceeded the bounded 15-minute window.');
   }
   return expectedMs;
 }
