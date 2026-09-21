@@ -14,7 +14,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "pnpm run test:local",
-    "test:local": "vitest run tests/mcp.service.test.ts tests/tool_contract.test.ts tests/logger.test.ts tests/diagnostics_contract.test.ts tests/core_reliability.test.ts tests/raindrop_v3_contract.test.ts tests/v3_bookmark_contract.test.ts tests/v3_mutation_contract.test.ts tests/v3_tag_contract.test.ts tests/v3_highlight_contract.test.ts tests/v3_collection_contract.test.ts tests/v3_cleanup_contract.test.ts tests/v3_audit_contract.test.ts tests/v3_resource_contract.test.ts tests/v3_result_limit.test.ts tests/worker.security.test.ts tests/retry_safety.test.ts tests/schemaEmission.test.ts",
+    "test:local": "vitest run tests/mcp.service.test.ts tests/tool_contract.test.ts tests/v4_baseline_contract.test.ts tests/logger.test.ts tests/diagnostics_contract.test.ts tests/core_reliability.test.ts tests/raindrop_v3_contract.test.ts tests/v3_bookmark_contract.test.ts tests/v3_mutation_contract.test.ts tests/v3_tag_contract.test.ts tests/v3_highlight_contract.test.ts tests/v3_collection_contract.test.ts tests/v3_cleanup_contract.test.ts tests/v3_audit_contract.test.ts tests/v3_resource_contract.test.ts tests/v3_result_limit.test.ts tests/worker.security.test.ts tests/retry_safety.test.ts tests/schemaEmission.test.ts",
     "test:all": "vitest run",
     "test:env": "vitest run tests/mcp.integration.test.ts tests/diagnostics_health.test.ts",
     "test:watch": "vitest",
