@@ -73,39 +73,20 @@ the independent heavy regression have verified evidence. The schedule is
 read-only: no Raindrop bookmark mutation, no notifications, and no second
 scheduler.
 
-## Authorized temporary fast canary (2026-09-21 only)
+## Historical rapid canary evidence (2026-09-21)
 
-The operator separately approved a **single real production canary and its
-restoration** to avoid waiting for tomorrow to debug. The temporary
-`src/t17-canary.ts` is called from the *existing* Cloudflare minute
-`scheduled()` handler. It uses the normal read-only Raindrop snapshot plan,
-the real `admitScheduledWorkflow`/D1/Cloudflare Workflow route, and a distinct
-`t17-canary-20260921` occurrence ID. It is **not** a manual
-`workflow_run` and it does not add any Cloudflare or GitHub recurring Cron.
+The separately approved, date-scoped production canary occurred at
+`2026-09-21T09:20:00.000Z` (17:20 Asia/Shanghai) after production deploy
+[35581352946](https://github.com/lirtual/mcp-workers/actions/runs/35581352946)
+completed. Independent [acceptance run 35581416104](https://github.com/lirtual/mcp-workers/actions/runs/35581416104)
+confirmed D1 schedule-source admission `run_6e72a9b3b55d2a39c1efbf992401dfe04df520ba`,
+terminal `succeeded`, 20 returned records, 503 upstream total, matching
+definition/engine provenance and seven lifecycle events. Its 14-day artifact
+contains no bookmark URLs/titles or credentials.
 
-The canary occurrence is exactly **2026-09-21T09:20:00Z** (17:20 China
-Standard Time). The internal guard permits first admission only between
-09:20:00Z and 09:35:00Z, with idempotent D1 admission. At or after 09:35Z
-its code is inert even if a cleanup deployment is delayed. Its fixed
-annual-form cron expression is checked only inside this 15-minute guarded
-window and cannot generate another occurrence in subsequent days. The
-permanent `daily-nine` compiled trigger and the canonical one-minute Cron
-remain unchanged.
-
-A **temporary** `Workflow MCP T17 Canary Acceptance` GitHub workflow is
-triggered by the successful *completed* production deploy (no GitHub Cron).
-It waits until 09:22Z, then queries the unique canary D1 record, MCP status,
-result and logs with `WORKFLOW_MCP_T17_CANARY=true`, and uploads a 14-day
-sanitized evidence artifact. The verifier rejects evidence before the real
-clock or at/after the 15-minute deadline. Any failure must be investigated,
-not treated as synthetic success. This tests the real minute trigger and
-scheduler admission, but **is not** the actual permanent daily 09:00
-business occurrence; preserve #108 open until the normal occurrence and
-independent heavy regression are verified.
-
-**Mandatory rollback:** remove `src/t17-canary.ts`, its call in
-`src/scheduler.ts`, both `t17-canary*.test.ts` files and
-`.github/workflows/workflow-mcp-t17-canary-verify.yml` in a separately
-reviewed restoration deployment. Confirm the Cloudflare Worker again has
-exactly one minute Cron and the permanent `daily-nine` business schedule
-was not changed. Never reset D1 canary evidence or rotate credentials.
+The temporary `src/t17-canary.ts` hook, tests and GitHub acceptance workflow
+were then removed in the approved restoration release. Historical D1 evidence
+is intentionally retained; the ordinary daily-nine schedule and the one
+canonical minute Cron are not reset or altered. This fast canary proves the
+real scheduler path, but does **not** substitute for the normal 09:00 occurrence
+or the independent heavy GitHub/R2 regression.
