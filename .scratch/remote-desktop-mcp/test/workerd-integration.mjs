@@ -131,6 +131,25 @@ try {
   assert.equal((await call("tools/call", { name: "sandbox_ping", arguments: { echo: "timeout" } }, 13)).data.error.message, "timeout");
   assert.equal((await call("tools/call", { name: "sandbox_ping", arguments: { echo: "disconnect" } }, 14)).data.error.message, "offline");
 
+  // A bad device result must close only that device connection, not the Worker.
+  // Verify actual workerd WebSocket size enforcement (UTF-8 bytes, not characters).
+  const oversizedSocket = device();
+  await once(oversizedSocket, "open");
+  const tooLargeClosed = once(oversizedSocket, "close");
+  oversizedSocket.send(JSON.stringify({ type: "result", id: "unknown",
+    result: { text: "界".repeat(3000) } }));
+  assert.equal((await Promise.race([
+    tooLargeClosed, sleep(5000).then(() => { throw new Error("oversized_socket_did_not_close"); }),
+  ]))[0], 1009);
+
+  const malformedSocket = device();
+  await once(malformedSocket, "open");
+  const malformedClosed = once(malformedSocket, "close");
+  malformedSocket.send("{invalid-json");
+  assert.equal((await Promise.race([
+    malformedClosed, sleep(5000).then(() => { throw new Error("malformed_socket_did_not_close"); }),
+  ]))[0], 1007);
+
   // A real local read-only bridge now reads ONLY its fixed temporary directory,
   // while the previous synthetic device exercises timed calls and reordering.
   fixtureRoot = await mkdtemp(join(tmpdir(), "remote-desktop-173-"));
@@ -175,7 +194,7 @@ try {
   const response = await once(forbidden, "unexpected-response");
   assert.equal(response[1].statusCode, 403);
   forbidden.terminate();
-  console.log("PASS local workerd: MCP initialize/list, real isolated upstream stdio round trip, fixed directory read, invalid path, unauthorized admin/device, oversized UTF-8/JSON, forbidden tools, auth, offline, WebSocket echo, concurrency, timeout, disconnect, reconnect, revoke");
+  console.log("PASS local workerd: MCP initialize/list, real isolated upstream stdio round trip, fixed directory read, invalid path, unauthorized admin/device, oversized HTTP/WebSocket UTF-8, malformed WebSocket/JSON, forbidden tools, auth, offline, WebSocket echo, concurrency, timeout, disconnect, reconnect, revoke");
 } finally {
   socket?.terminate();
   if (child && child.exitCode === null) {
