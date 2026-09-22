@@ -1356,8 +1356,15 @@ export class D1WorkflowStore {
          (schedule_key, last_evaluated_at, last_admitted_scheduled_time, next_due_occurrence)
          VALUES (?, ?, ?, ?)
          ON CONFLICT(schedule_key) DO UPDATE SET
-           last_evaluated_at = excluded.last_evaluated_at,
-           last_admitted_scheduled_time = excluded.last_admitted_scheduled_time,
+           -- Concurrent ticks must never move an existing schedule cursor back.
+           last_evaluated_at = MAX(scheduler_state.last_evaluated_at, excluded.last_evaluated_at),
+           last_admitted_scheduled_time = CASE
+             WHEN excluded.last_admitted_scheduled_time IS NULL
+               THEN scheduler_state.last_admitted_scheduled_time
+             WHEN scheduler_state.last_admitted_scheduled_time IS NULL
+               THEN excluded.last_admitted_scheduled_time
+             ELSE MAX(scheduler_state.last_admitted_scheduled_time, excluded.last_admitted_scheduled_time)
+           END,
            next_due_occurrence = excluded.next_due_occurrence`
       )
       .bind(
