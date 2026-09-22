@@ -1,71 +1,102 @@
-# T09 — isolated, trusted catalog publisher handoff
+# T09 — trusted catalog publisher: live-test handoff
 
-This is an **implementation runbook**, not a record of completed live acceptance.
-The public Engine repository contains the trusted publisher code and GitHub
-Actions workflow. The separately approved catalog contains only definition YAML
-and business tests; catalog scripts, Actions and package manifests are **never**
-executed by the publisher. Editing YAML must not redeploy the Engine.
+This runbook documents setup and **uncompleted** acceptance; it is not a record
+of a successful platform publication. The owner approved using the existing,
+not-yet-in-service Cloudflare `workflow-mcp-worker` **as a test target**, instead
+of provisioning an additional Worker. This changes the test topology, **not**
+the independently required security, evidence or production release gates.
+Live-target tests cannot be reported as independent isolated-environment proof.
 
-## Owner-only setup (no production resources)
+The trusted publisher runs only from the **Engine** repository; the independent
+catalog holds declarative YAML and business tests. Catalog scripts, Actions
+and package manifests are never executed with publisher authority. Changing
+YAML must not require deploying the Engine.
 
-1. Create or select one *independent* public Git catalog repository and record
-   its exact `owner/repo` and immutable numeric GitHub repository ID. Establish
-   the agreed protected main/review policy. Keep engine publisher authority and
-   secrets out of this repository. Do not treat a proposed repository name as
-   an existing or approved identity.
-2. Create an **isolated** Worker and managed D1/Workflows test bindings, with
-   approved migrations and non-production data. Verify its own admin publisher
-   OIDC settings for the trusted **engine** repository:
-   `ADMIN_PUBLISHER_REPOSITORY_ID` (engine ID),
-   `ADMIN_PUBLISHER_WORKFLOW_REF` =
-   `lirtual/mcp-workers/.github/workflows/workflow-mcp-publisher.yml@refs/heads/main`,
-   `ADMIN_PUBLISHER_REF` = `refs/heads/main`. Optionally pin the engine
-   workflow SHA with `ADMIN_PUBLISHER_WORKFLOW_SHA`, updating it through the
-   owner-controlled configuration process when the trusted workflow changes.
-   Never use the catalog repo ID as the authorized OIDC publisher ID.
-3. In the **engine** GitHub repository create environment
-   `workflow-mcp-publisher-isolated`. Configure an explicit owner approval
-   rule before granting stage/activate authority. For a single-user setup,
-   self-review must not be forbidden if that user is the only reviewer; if
-   account/plan protection cannot provide a real approval, do not enable remote
-   mutations pending an alternative approved review path.
-4. Set the following engine environment variables (non-secret):
-   `WORKFLOW_CATALOG_REPOSITORY`, `WORKFLOW_CATALOG_REPOSITORY_ID` and
-   `WORKFLOW_MCP_ISOLATED_URL`. The last one must name only the isolated
-   HTTPS Worker; the production workers.dev endpoint is expressly rejected.
-   The workflow's `GITHUB_TOKEN` has read-only contents scope. A private
-   cross-repository checkout is not supported by this minimal public-catalog
-   workflow and must not be simulated as accepted.
+## Verified GitHub identity
 
-## Reproducible acceptance sequence
+- Engine: `lirtual/mcp-workers`, numeric repository ID `1371085786`.
+- Catalog: `lirtual/workflow-catalog`, numeric repository ID `1382132570`.
+- Catalog `main` was initialized at `9fba40497623e33ac9ec3d8612334736b25c7ee4`.
+  Initial Raindrop YAML is pending review in catalog PR #1, branch
+  `feat/initial-raindrop-catalog`, commit
+  `1d0dd05d8ced607891c7eb7a9024222c46f22270`.
+  The copied file has the same Git blob SHA as the Engine baseline:
+  `4a2967eb683447224cc424d264cfef5cfb79a27b`.
+- By owner decision, **do not configure Catalog branch protection**. Record this
+  as a deviation from the approved T09 protection requirement, not a passing
+  test. Require explicit review, exact approved source SHA, canonical digest
+  and protected Engine-side publisher authorization as compensating controls.
+  An open Draft PR is **not** a publishable approved source revision.
 
-- Run the **engine** `Workflow MCP Catalog Publisher` manually from protected
-  `main` with an exact 40-character catalog commit SHA, e.g.
-  `workflows/raindrop-daily-snapshot.yaml`, and `mode=dry-run`. This
-  checks the real GitHub repository ID, checkout SHA, trusted snapshot/OIDC,
-  compiler policy and generated digest; it performs no stage/activate.
-- Inspect the exact source SHA, canonical digest, policy revision and run ID.
-  Reject changed source, stale policy, unapproved Connection/tool/webhook or
-  unexpected source path. The catalog's own Actions have no publisher authority.
-- Following explicit isolated approval, run `mode=stage`. Verify immutable
-  `workflow_definition_versions` and source provenance in D1; list/get
-  remain unchanged. An identical retry **within the same trusted GitHub run**
-  retains the same publication ID. A separate GitHub run receives a distinct
-  publication ID to preserve verified publisher-run provenance.
-- Following explicit isolated approval, run `mode=activate`, supplying the
-  exact `expected_revision` and `expected_digest` (empty only for the first
-  activation). Verify a CAS conflict does not change active digest or audit,
-  then use the isolated MCP/HTTP path to check the published definition.
-  Reconcile an ambiguous response from D1 action history; do not blindly
-  repeat a potentially successful external operation.
-- Edit **only YAML** in the catalog, repeat the isolated checks with the new
-  exact catalog SHA, and compare the Engine SHA/deployment before and after.
-  Prove Engine code and deployment did not change. Record actual Actions run,
-  D1 digest/revision, live HTTP/MCP evidence and rollback separately.
+## Platform setup (no implicit production migration)
 
-**Not established by the public-repo CI:** a real catalog repository,
-branch/environment protection, enabled isolated bindings, real OIDC exchange,
-protected publication, D1 CAS under managed concurrency or production release.
-T09 remains Open until those checks are evidenced. This workflow does not
-apply D1 migrations, deploy the Worker, rotate Secrets, change Cron, dispatch
-business work or merge any pull request.
+1. Record the current Worker deployment, D1 schema, active registry, schedule
+   cursor, nonterminal Runs and Workflows instance state. Export a verifiable
+   D1 backup and prepare an actionable rollback **before any live mutation**.
+   Never reset an existing table, replay an old Cron tick or reuse a real
+   webhook Secret as a test fixture.
+2. The source-controlled publisher allows **only the owner-approved live-test
+   HTTPS origin**. A dashboard-selected arbitrary HTTPS endpoint must never
+   receive the GitHub OIDC token; adding a different test target requires
+   reviewed source changes rather than only an environment variable.
+   Existing test target:
+   `https://workflow-mcp-worker.aiyaya.workers.dev`. Its D1 and Workflows
+   bindings must be inspected, not assumed to be v0.2-compatible. The Worker
+   must actually expose protected admin endpoints and approved schema before
+   any dry-run can succeed. Do not apply D1 migrations, change Worker Secrets,
+   deploy the Engine, trigger an external write, or change live Cron based on
+   this document alone. Those changes require a separate specific authorization.
+3. Owner-configured Cloudflare admin publisher identity must trust the Engine,
+   **not the catalog**: `ADMIN_PUBLISHER_REPOSITORY_ID=1371085786`,
+   `ADMIN_PUBLISHER_WORKFLOW_REF=lirtual/mcp-workers/.github/workflows/workflow-mcp-publisher.yml@refs/heads/main`,
+   and `ADMIN_PUBLISHER_REF=refs/heads/main`. An optional
+   `ADMIN_PUBLISHER_WORKFLOW_SHA` must track the explicitly approved Engine
+   workflow SHA. Keep normal MCP access separate from the OIDC admin audience.
+4. In the **Engine** repository, create protected Environment
+   `workflow-mcp-publisher-live-test`. Require actual owner approval for
+   publication; single-user approval must be achievable in the selected
+   GitHub account/plan. If effective approval is unavailable, do not enable
+   `stage` or `activate`. Set environment variables:
+   - `WORKFLOW_CATALOG_REPOSITORY=lirtual/workflow-catalog`
+   - `WORKFLOW_CATALOG_REPOSITORY_ID=1382132570`
+   - `WORKFLOW_MCP_TARGET_URL=https://workflow-mcp-worker.aiyaya.workers.dev`
+   - `WORKFLOW_MCP_ALLOW_LIVE_TEST_TARGET=true` to allow **read-only dry-run**
+     against this exact known live hostname. Leave this unset/false otherwise.
+   - `WORKFLOW_MCP_ALLOW_LIVE_TEST_MUTATIONS=false` initially. Set to
+     `true` **only after backup, verified compatible schema and separate
+     live-test mutation authorization**; this permits stage/activate, but
+     does not itself provide GitHub environment review or a production release.
+5. The current publisher is a Draft PR based on an unmerged v0.2 chain. Its
+   workflow is intentionally `main`-only, and the Engine's deploy workflow
+   automatically deploys changes under `apps/workflow-mcp-worker/**` when
+   pushed to `main`. Plan an explicitly authorized integration/deployment
+   gate before expecting a real `main` publication; never bypass the trusted
+   ref check or treat Draft-branch CI as live publisher evidence.
+
+## Ordered test protocol
+
+- Confirm review, exact Catalog SHA and matching canonical digest; record
+  the intentionally unprotected Catalog branch as an acceptance variance.
+  Use only the trusted Engine publisher, with read-only catalog checkout;
+  do not run any catalog-authored script or use catalog admin secrets.
+- With live-test mutation opt-in **false**, request `mode=dry-run` from the
+  approved Engine `main`; confirm its exact source SHA, policy revision,
+  canonical digest and trusted GitHub run identity. An unavailable or
+  incompatible live admin endpoint is **Blocked**, not Pass.
+- After backup and a *separate* permission decision for D1 writes, require
+  actual GitHub approval and request `mode=stage`. Verify immutable D1
+  provenance, idempotent retry and unchanged active registry.
+- Require actual approval before `mode=activate` with exact
+  `expected_revision` and `expected_digest`. Check CAS failure, normal
+  MCP/HTTP admission, old pinned Run recovery and rollback. Do not activate a
+  scheduled Raindrop change until the schedule transition is independently
+  safe and specifically authorized.
+- Change only reviewed Catalog YAML, publish with a new exact SHA, and compare
+  Engine deployment SHA before/after to prove definition-only updates need no
+  Engine redeployment. Preserve sanitized Actions and managed D1/Workflow
+  evidence; never copy credentials into public logs or this repo.
+
+**Not yet proven:** effective Engine environment protection, real publisher
+OIDC exchange, compatible live schema, managed D1 CAS/recovery, full isolated
+AC15, Raindrop business acceptance or production AC16. Keep #157/#159/#160
+open until their individual evidence and approvals are satisfied.

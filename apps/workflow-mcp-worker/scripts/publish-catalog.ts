@@ -2,6 +2,7 @@ import { readFile, lstat, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import * as z from 'zod/v4';
 import { prepareCatalogActivation, prepareCatalogPublication } from '../src/catalog-publication.js';
+import { validateCatalogPublisherTarget, type CatalogPublisherMode } from '../src/catalog-publisher-target.js';
 
 const sha = /^[0-9a-f]{40}$/;
 const positiveId = /^[1-9][0-9]*$/;
@@ -22,7 +23,7 @@ const policySchema = z.object({
   }).strict()).max(64).optional()
 }).strict();
 
-type Mode = 'dry-run' | 'stage' | 'activate';
+
 function requireValue(env: NodeJS.ProcessEnv, name: string): string {
   const value = env[name];
   if (!value || value.trim() !== value) throw new Error('Missing or malformed ' + name);
@@ -47,14 +48,16 @@ async function boundedJson(response: Response): Promise<unknown> {
 
 async function run(): Promise<void> {
   const env = process.env;
-  const mode = (env.WORKFLOW_CATALOG_MODE || 'dry-run') as Mode;
+  const mode = (env.WORKFLOW_CATALOG_MODE || 'dry-run') as CatalogPublisherMode;
   if (!['dry-run', 'stage', 'activate'].includes(mode)) throw new Error('Invalid publisher mode.');
-  const endpoint = new URL(requireValue(env, 'WORKFLOW_MCP_ISOLATED_URL'));
-  if (endpoint.protocol !== 'https:' || endpoint.username || endpoint.password ||
-      endpoint.search || endpoint.hash || endpoint.pathname !== '/' ||
-      endpoint.hostname === 'workflow-mcp-worker.aiyaya.workers.dev') {
-    throw new Error('Publisher requires an explicit isolated HTTPS Worker URL.');
-  }
+  const endpoint = validateCatalogPublisherTarget(
+    requireValue(env, 'WORKFLOW_MCP_TARGET_URL'),
+    mode,
+    {
+      allowLiveTarget: env.WORKFLOW_MCP_ALLOW_LIVE_TEST_TARGET,
+      allowLiveMutations: env.WORKFLOW_MCP_ALLOW_LIVE_TEST_MUTATIONS
+    }
+  );
   const expectedRepository = requireValue(env, 'WORKFLOW_CATALOG_REPOSITORY');
   const expectedRepositoryId = requireValue(env, 'WORKFLOW_CATALOG_REPOSITORY_ID');
   const checkedRepository = requireValue(env, 'CATALOG_CHECKED_REPOSITORY');
