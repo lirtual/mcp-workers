@@ -143,6 +143,24 @@ function guardedFetch(
   }) as typeof fetch;
 }
 
+/** Run-aware discovery must use the same live authorization boundary as tools/call. */
+export async function inspectPinnedMcpTool(
+  env: Env,
+  connectionId: string,
+  toolName: string,
+  options: PinnedMcpCallOptions,
+  fetchImpl: typeof fetch = fetch
+): Promise<ToolInspection> {
+  if (options.pinned.connectionId !== connectionId || options.pinned.toolName !== toolName) {
+    throw new McpConnectionDeniedError();
+  }
+  return inspectMcpTool(
+    env, connectionId, toolName,
+    guardedFetch(fetchImpl, connectionId, options),
+    options.pinned.connection
+  );
+}
+
 export async function callMcpTool(
   env: Env,
   connectionId: string,
