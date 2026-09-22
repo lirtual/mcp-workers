@@ -113,6 +113,7 @@ export async function inspectMcpTool(
 export interface PinnedMcpCallOptions {
   pinned: PinnedConnectionAuthority;
   db: D1Database;
+  legacy?: boolean;
 }
 
 export class McpConnectionDeniedError extends Error {
@@ -134,7 +135,9 @@ function guardedFetch(
   return (async (resource: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const control = await readLiveConnectionControl(options.db, connectionId);
     const verdict = authorizePinnedConnectionAttempt(options.pinned, control);
-    if (!verdict.allowed) throw new McpConnectionDeniedError();
+    // Only pre-v0.2 static runs may use an absent control. Once a control
+    // exists, emergency disable/tightening applies to them as well.
+    if (!verdict.allowed && !(options.legacy && !control)) throw new McpConnectionDeniedError();
     if (String(resource) !== options.pinned.endpoint) throw new McpConnectionDeniedError();
     return fetchImpl(resource, init);
   }) as typeof fetch;
