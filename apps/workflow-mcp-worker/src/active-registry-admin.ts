@@ -46,7 +46,7 @@ async function verifyActivationCandidate(
   db: D1Database,
   workflowId: string,
   digest: string
-): Promise<boolean> {
+): Promise<number | null> {
   const version = await db.prepare(
     `SELECT d.normalized_plan_json, d.workflow_id
      FROM workflow_definition_versions d
@@ -54,41 +54,41 @@ async function verifyActivationCandidate(
        AND EXISTS (SELECT 1 FROM definition_publications p
                    WHERE p.workflow_id = d.workflow_id AND p.definition_digest = d.definition_digest)`
   ).bind(digest, workflowId).first<{ normalized_plan_json: string; workflow_id: string }>();
-  if (!version) return false;
+  if (!version) return null;
   const plan = validateVersionedWorkflowPlan(JSON.parse(version.normalized_plan_json));
-  if (plan.id !== workflowId) return false;
+  if (plan.id !== workflowId) return null;
   for (const step of Object.values(plan.steps)) {
     const descriptor = getCapabilityDescriptor(step.uses);
-    if (!descriptor || descriptor.executor !== step.executor) return false;
+    if (!descriptor || descriptor.executor !== step.executor) return null;
     if (step.uses !== 'mcp.call') {
-      if ((step.retryMaxAttempts ?? 1) > descriptor.maxAutomaticAttempts) return false;
+      if ((step.retryMaxAttempts ?? 1) > descriptor.maxAutomaticAttempts) return null;
       continue;
     }
     const connectionId = step.with.connection;
     const toolName = step.with.tool;
-    if (typeof connectionId !== 'string' || typeof toolName !== 'string') return false;
+    if (typeof connectionId !== 'string' || typeof toolName !== 'string') return null;
     const approved = getConnection(connectionId);
-    if (!approved || !approved.tools[toolName]) return false;
+    if (!approved || !approved.tools[toolName]) return null;
     const current = await db.prepare(
       'SELECT disabled, allowed_tools_json FROM connection_controls WHERE connection_id = ?'
     ).bind(connectionId).first<{ disabled: number; allowed_tools_json: string }>();
-    if (!current || current.disabled !== 0) return false;
+    if (!current || current.disabled !== 0) return null;
     const tools: unknown = JSON.parse(current.allowed_tools_json);
     if (!tools || typeof tools !== 'object' || Array.isArray(tools) ||
         !Array.isArray((tools as Record<string, unknown>)[toolName]) ||
-        !(tools as Record<string, string[]>)[toolName]!.includes(approved.tools[toolName]!.effect)) return false;
+        !(tools as Record<string, string[]>)[toolName]!.includes(approved.tools[toolName]!.effect)) return null;
     const retryLimit = approved.tools[toolName]!.effect === 'read' ? 3 :
       approved.tools[toolName]!.effect === 'idempotent_write' ? 2 : 1;
-    if ((step.retryMaxAttempts ?? 1) > retryLimit) return false;
+    if ((step.retryMaxAttempts ?? 1) > retryLimit) return null;
   }
   for (const trigger of plan.triggers) {
     if (trigger.type !== 'webhook') continue;
     if (!getWorkflowRegistry().some(entry => entry.metadata.id === workflowId &&
         (entry.plan as { triggers?: Array<{ type: string; id?: string; secret?: string }> })
           .triggers?.some(t => t.type === 'webhook' && t.id === trigger.id &&
-            t.secret === trigger.secret))) return false;
+            t.secret === trigger.secret))) return null;
   }
-  return true;
+  return plan.triggers.filter(trigger => trigger.type === 'schedule').length;
 }
 
 /** Independent trusted publisher mutation: rollback reuses activate. */
@@ -141,9 +141,10 @@ export async function updateActiveDefinition(
       'SELECT revision FROM connection_policy_revision WHERE singleton = 1'
     ).first<{ revision: number }>();
     if (!policy || !Number.isSafeInteger(policy.revision)) return error(503, 'policy_unavailable');
-    if (action.targetDigest && !(await verifyActivationCandidate(env.DB, action.workflowId, action.targetDigest))) {
-      return error(422, 'definition_not_approved');
-    }
+    const targetSchedules = action.targetDigest
+      ? await verifyActivationCandidate(env.DB, action.workflowId, action.targetDigest)
+      : 0;
+    if (targetSchedules === null) return error(422, 'definition_not_approved');
     const now = new Date().toISOString();
     const results = await env.DB.batch([
       env.DB.prepare(
@@ -157,12 +158,26 @@ export async function updateActiveDefinition(
            )) OR EXISTS (
              SELECT 1 FROM workflow_active_definitions WHERE workflow_id = ?
              AND registry_revision = ? AND active_digest IS ?
+           ))
+           AND (? IS NULL OR (
+             (SELECT COUNT(*) FROM workflow_active_definitions
+              WHERE state = 'enabled' AND workflow_id != ?) < 64
+             AND (
+               SELECT COALESCE(SUM((
+                 SELECT COUNT(*) FROM json_each(d.normalized_plan_json, '$.triggers') t
+                 WHERE json_extract(t.value, '$.type') = 'schedule'
+               )), 0)
+               FROM workflow_active_definitions a
+               JOIN workflow_definition_versions d ON d.definition_digest = a.active_digest
+               WHERE a.state = 'enabled' AND a.workflow_id != ?
+             ) + ? <= 64
            ))`
       ).bind(action.actionId, action.workflowId, kind, action.expectedDigest, action.targetDigest,
         action.expectedRevision, nextRevision, publisher.repositoryId, publisher.runId,
         publisher.runAttempt, signature, now, policy.revision,
         action.expectedRevision, action.workflowId, action.workflowId,
-        action.expectedRevision, action.expectedDigest),
+        action.expectedRevision, action.expectedDigest,
+        action.targetDigest, action.workflowId, action.workflowId, targetSchedules),
       env.DB.prepare(
         `INSERT INTO workflow_active_definitions
          (workflow_id, active_digest, registry_revision, state, activated_at, updated_at)
