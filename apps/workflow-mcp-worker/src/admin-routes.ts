@@ -71,7 +71,7 @@ export async function handleAdminRoute(
   const repositoryId = required(env.ADMIN_PUBLISHER_REPOSITORY_ID);
   const workflowRef = required(env.ADMIN_PUBLISHER_WORKFLOW_REF);
   const ref = required(env.ADMIN_PUBLISHER_REF);
-  if (!repositoryId || !workflowRef || !ref || ADMIN_AUDIENCE === GITHUB_EXECUTOR_CONFIG.oidc.audience) {
+  if (!repositoryId || !workflowRef || !ref) {
     return reply(503, 'admin_auth_not_configured');
   }
 
