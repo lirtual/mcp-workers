@@ -68,19 +68,20 @@ try {
 
   socket = device();
   await once(socket, "open");
-  const received = [];
+  const pair = [];
   socket.on("message", (data) => {
     const msg = JSON.parse(data.toString());
-    received.push(msg);
     if (msg.arguments.echo === "timeout") return;
     if (msg.arguments.echo === "disconnect") { socket.close(); return; }
-    if (msg.arguments.echo === "second" && received.length >= 2) {
-      for (const item of received.splice(0).reverse()) {
-        socket.send(JSON.stringify({ type: "result", id: item.id, result: { echo: item.arguments.echo } }));
+    if (msg.arguments.echo === "first" || msg.arguments.echo === "second") {
+      pair.push(msg);
+      if (pair.length === 2) {
+        for (const item of pair.splice(0).reverse()) {
+          socket.send(JSON.stringify({ type: "result", id: item.id, result: { echo: item.arguments.echo } }));
+        }
       }
       return;
     }
-    if (msg.arguments.echo === "first") return;
     socket.send(JSON.stringify({ type: "result", id: msg.id, result: { echo: msg.arguments.echo } }));
   });
   const echoed = await call("tools/call", { name: "sandbox_ping", arguments: { echo: "hello" } }, 10);
@@ -107,6 +108,7 @@ try {
   assert.equal(revoked.status, 200);
   assert.equal((await call("tools/call", { name: "sandbox_ping", arguments: { echo: "after-revoke" } }, 16)).data.error.message, "revoked");
   const forbidden = device();
+  forbidden.on("error", () => {}); // ws also emits ECONNRESET-style errors after rejected handshakes.
   const response = await once(forbidden, "unexpected-response");
   assert.equal(response[0].statusCode, 403);
   forbidden.terminate();
