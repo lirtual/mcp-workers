@@ -9,6 +9,8 @@ export interface Env {
     timestamp?: string;
   };
   MCP_ACCESS_TOKEN?: string;
+  /** Owner-provisioned JSON array of at most 64 approved dynamic webhook Secret names. */
+  WEBHOOK_SECRET_ALLOWLIST?: string;
   /** Explicit OFF-by-default gate for isolated D1-backed list/get only. */
   DYNAMIC_WORKFLOW_REGISTRY_ENABLED?: string;
   /** T06: explicitly opt in to version-pinned D1 manual admission; OFF by default. */
