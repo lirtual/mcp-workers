@@ -23,9 +23,38 @@ async function authorized(request, expected) {
 }
 
 async function body(request) {
-  const raw = await request.text();
-  if (new TextEncoder().encode(raw).byteLength > LIMIT) throw new Error("payload_too_large");
-  return JSON.parse(raw);
+  // Never buffer a whole untrusted HTTP request before enforcing its limit.
+  // Content-Length is an early rejection only; a streaming count is required
+  // because chunked bodies and incorrect Content-Length values are possible.
+  const declared = request.headers.get("content-length");
+  if (declared !== null && /^\\d+$/.test(declared) && Number(declared) > LIMIT) {
+    throw new Error("payload_too_large");
+  }
+  if (!request.body) return JSON.parse("");
+  const reader = request.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > LIMIT) {
+        await reader.cancel("payload_too_large");
+        throw new Error("payload_too_large");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
 }
 
 export class PrototypeDevice extends DurableObject {
