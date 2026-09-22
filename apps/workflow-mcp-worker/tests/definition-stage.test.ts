@@ -36,9 +36,9 @@ async function openStore(): Promise<D1Database | null> {
   }
   const statement = (sql: string, args: unknown[] = []) => ({
     bind: (...params: unknown[]) => statement(sql, params),
-    first: async () => sqlite.prepare(sql).get(...args) ?? null,
-    all: async () => ({ results: sqlite.prepare(sql).all(...args) }),
-    run: async () => ({ meta: { changes: sqlite.prepare(sql).run(...args).changes } })
+    first: async () => sqlite.prepare(sql).get(...(args as Array<string | number | bigint | null>)) ?? null,
+    all: async () => ({ results: sqlite.prepare(sql).all(...(args as Array<string | number | bigint | null>)) }),
+    run: async () => ({ meta: { changes: sqlite.prepare(sql).run(...(args as Array<string | number | bigint | null>)).changes } })
   });
   return {
     prepare: (sql: string) => statement(sql),
