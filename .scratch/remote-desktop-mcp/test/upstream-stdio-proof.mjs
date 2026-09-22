@@ -11,8 +11,11 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const bin = resolve(here, "../node_modules/@wonderwhy-er/desktop-commander/dist/index.js");
-const root = await mkdtemp(join(tmpdir(), "desktop-commander-probe-"));
-const directory = join(root, "allowed");
+// Only the isolated Docker test harness may set this variable. It is never
+// read from an MCP request or supplied by the WebSocket caller.
+const externalRoot = process.env.UPSTREAM_FIXED_READ_ROOT;
+const root = externalRoot ? null : await mkdtemp(join(tmpdir(), "desktop-commander-probe-"));
+const directory = externalRoot || join(root, "allowed");
 let child, buffered = "", nextId = 1;
 const pending = new Map();
 const timeoutMs = 45000;
@@ -33,15 +36,17 @@ function request(method, params = {}) {
 }
 
 try {
-  await (await import("node:fs/promises")).mkdir(directory);
-  await writeFile(join(directory, "proof-only.txt"), "test fixture\n");
+  if (!externalRoot) {
+    await (await import("node:fs/promises")).mkdir(directory);
+    await writeFile(join(directory, "proof-only.txt"), "test fixture\n");
+  }
   child = spawn(process.execPath, [bin, "--no-onboarding"], {
     cwd: directory,
     env: {
       ...process.env,
-      HOME: root,
-      XDG_CONFIG_HOME: root,
-      XDG_DATA_HOME: root,
+      HOME: root || "/tmp",
+      XDG_CONFIG_HOME: root || "/tmp",
+      XDG_DATA_HOME: root || "/tmp",
       CI: "true",
     },
     stdio: ["pipe", "pipe", "pipe"],
@@ -102,7 +107,12 @@ try {
   const text = output.content?.filter((part) => part.type === "text")
     .map((part) => part.text).join("\n") ?? "";
   assert.ok(text.includes("proof-only.txt"), "upstream_did_not_read_fixed_test_directory");
-  console.log("PASS actual Desktop Commander 0.2.51 local stdio: initialize, tool discovery, fixed-fixture read");
+  if (externalRoot) {
+    // Machine-only output for the CI relay test; fail closed above on tool error.
+    process.stdout.write(JSON.stringify({ source: "desktop-commander-0.2.51", text: text.slice(0, 4096) }) + "\n");
+  } else {
+    console.log("PASS actual Desktop Commander 0.2.51 local stdio: initialize, tool discovery, fixed-fixture read");
+  }
 } finally {
   for (const [, item] of pending) {
     clearTimeout(item.timer);
@@ -114,5 +124,5 @@ try {
     await Promise.race([once(child, "exit"), new Promise((resolve) => setTimeout(resolve, 2000))]);
     if (child.exitCode === null) child.kill("SIGKILL");
   }
-  await rm(root, { recursive: true, force: true });
+  if (root) await rm(root, { recursive: true, force: true });
 }
