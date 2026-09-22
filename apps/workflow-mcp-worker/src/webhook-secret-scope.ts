@@ -1,4 +1,4 @@
-import { isProtectedWebhookSecret } from './webhook-secret-policy.js';
+import { hasApprovedWebhookBinding } from './webhook-secret-policy.js';
 import type { Env } from './types.js';
 
 /** Platform bindings cannot be granted by an author-controlled YAML secret name. */
@@ -18,7 +18,8 @@ export async function resolveApprovedWebhookSecret(
   definitionDigest: string,
   declaredSecret: string
 ): Promise<string | null> {
-  if (!env.DB || !SECRET_REF.test(declaredSecret) || isProtectedWebhookSecret(declaredSecret)) {
+  if (!env.DB || !SECRET_REF.test(declaredSecret) ||
+      !hasApprovedWebhookBinding(env as unknown as Record<string, unknown>, declaredSecret)) {
     return null;
   }
 
@@ -39,7 +40,7 @@ export async function resolveApprovedWebhookSecret(
   if (!row || row.enabled !== 1 || row.secret_name !== declaredSecret ||
       !Number.isSafeInteger(row.policy_revision) || row.policy_revision < 1 ||
       row.policy_revision !== row.current_policy_revision ||
-      isProtectedWebhookSecret(row.secret_name)) {
+      !hasApprovedWebhookBinding(env as unknown as Record<string, unknown>, row.secret_name)) {
     return null;
   }
 
