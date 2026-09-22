@@ -96,7 +96,7 @@ describe('T07 protected webhook secret registration', () => {
   it('rejects a missing, malformed or unrelated owner binding allowlist', async () => {
     const f = fixture();
     try {
-      f.env.WEBHOOK_SECRET_ALLOWLIST = undefined;
+      delete f.env.WEBHOOK_SECRET_ALLOWLIST;
       expect((await f.register(f.body('missing-allowlist'))).status).toBe(400);
       f.env.WEBHOOK_SECRET_ALLOWLIST = 'not-json';
       expect((await f.register(f.body('malformed-allowlist'))).status).toBe(400);
