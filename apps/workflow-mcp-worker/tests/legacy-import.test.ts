@@ -119,5 +119,16 @@ describe('T10 v0.1 import preflight (no D1 writes)', () => {
     expect(() => prepareLegacyImport({ ...state(), nonterminal: [{
       ...run, definitionDigest: 'a'.repeat(64)
     }] })).toThrow(/historical pinned definition/);
+    expect(() => prepareLegacyImport({ ...state(), nonterminal: [{
+      ...run, normalizedPlanJson: JSON.stringify({
+        ...entries.find(e => e.metadata.id === 'local-http-smoke')!.plan as object,
+        name: 'Unapproved changed historical plan'
+      })
+    }] })).toThrow(/pinned plan or digest/);
+    expect(() => prepareLegacyImport({ ...state(), nonterminal: [{
+      ...run, normalizedPlanJson: JSON.stringify(
+        entries.find(e => e.metadata.id === 'raindrop-daily-snapshot')!.plan
+      )
+    }] })).toThrow(/pinned plan or digest/);
   });
 });
