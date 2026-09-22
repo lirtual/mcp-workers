@@ -255,6 +255,7 @@ async function executeReadyStep(input: {
   const policyResolution = await resolveStepExecutionPolicy({
     env: input.env,
     store: input.store,
+    runId: input.runId,
     stepRunId: identity.stepRunId,
     definition,
     capabilityInput
