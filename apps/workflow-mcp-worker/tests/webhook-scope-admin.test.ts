@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { compileWorkflowText } from '../src/compiler.js';
+import type { Env } from '../src/types.js';
 import { registerApprovedWebhookScope } from '../src/webhook-scope-admin.js';
 
 const compiled = compileWorkflowText(
@@ -54,11 +55,13 @@ function fixture() {
     definitionDigest: compiled.definitionDigest, secretName: hook.secret,
     expectedPolicyRevision: revision, ...overrides
   });
+  const env = { DB: db, WEBHOOK_SECRET_ALLOWLIST: JSON.stringify([hook.secret]),
+    [hook.secret!]: 'configured-hook-token' } as unknown as Env;
   const register = (value: Record<string, unknown>) =>
     registerApprovedWebhookScope(new Request('https://example/admin/webhooks/scopes/register', {
       method: 'POST', body: JSON.stringify(value)
-    }), db);
-  return { sqlite, body, register };
+    }), env);
+  return { sqlite, env, body, register };
 }
 
 describe('T07 protected webhook secret registration', () => {
@@ -90,6 +93,22 @@ describe('T07 protected webhook secret registration', () => {
     } finally { f.sqlite.close(); }
   });
 
+  it('rejects a missing, malformed or unrelated owner binding allowlist', async () => {
+    const f = fixture();
+    try {
+      f.env.WEBHOOK_SECRET_ALLOWLIST = undefined;
+      expect((await f.register(f.body('missing-allowlist'))).status).toBe(400);
+      f.env.WEBHOOK_SECRET_ALLOWLIST = 'not-json';
+      expect((await f.register(f.body('malformed-allowlist'))).status).toBe(400);
+      f.env.WEBHOOK_SECRET_ALLOWLIST = JSON.stringify(['OTHER_WEBHOOK_TOKEN']);
+      expect((await f.register(f.body('unapproved-reference'))).status).toBe(400);
+      f.env.WEBHOOK_SECRET_ALLOWLIST = JSON.stringify([hook.secret]);
+      delete (f.env as unknown as Record<string, unknown>)[hook.secret!];
+      expect((await f.register(f.body('unprovisioned-binding'))).status).toBe(400);
+      expect(f.sqlite.prepare('SELECT count(*) AS n FROM webhook_secret_scope_actions').get())
+        .toEqual({ n: 0 });
+    } finally { f.sqlite.close(); }
+  });
   it('does not report a revoked or stale scope as successfully replayed', async () => {
     const f = fixture();
     try {
