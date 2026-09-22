@@ -396,7 +396,10 @@ export class D1WorkflowStore {
          SELECT ?, 'run.admitted', ?, ?
          WHERE EXISTS (
            SELECT 1 FROM run_admissions WHERE admission_key = ? AND run_id = ?
-         ) AND EXISTS (SELECT 1 FROM workflow_runs WHERE run_id = ?)`
+         ) AND EXISTS (SELECT 1 FROM workflow_runs WHERE run_id = ?)
+           AND NOT EXISTS (
+             SELECT 1 FROM workflow_events WHERE run_id = ? AND event_type = 'run.admitted'
+           )`
       ).bind(
         input.proposedRunId,
         JSON.stringify({
@@ -404,7 +407,7 @@ export class D1WorkflowStore {
           definitionDigest: input.definitionDigest,
           sourceType: input.sourceType
         }),
-        createdAt, input.admissionKey, input.proposedRunId, input.proposedRunId
+        createdAt, input.admissionKey, input.proposedRunId, input.proposedRunId, input.proposedRunId
       )
     ]);
     const inserted = (results[0]?.meta.changes ?? 0) === 1;
