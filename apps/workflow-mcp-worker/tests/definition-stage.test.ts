@@ -20,7 +20,8 @@ const envelope = () => ({
   sourceSha,
   sourcePath: entry.sourcePath,
   policyRevision: 1,
-  plan: entry.plan
+  plan: entry.plan,
+  metadata: entry.metadata
 });
 
 async function openStore(): Promise<D1Database | null> {
@@ -87,6 +88,7 @@ describe('immutable staged definition with real SQLite', () => {
     if (!db) return;
     const env = { DB: db } as Env;
     expect((await stageDefinition(send({ ...envelope(), definitionDigest: 'b'.repeat(64) }), env, publisher)).status).toBe(422);
+    expect((await stageDefinition(send({ ...envelope(), metadata: { ...entry.metadata, name: 'forged' } }), env, publisher)).status).toBe(422);
     expect((await stageDefinition(send({ ...envelope(), policyRevision: 100 }), env, publisher)).status).toBe(409);
     expect((await stageDefinition(send(envelope()), env, publisher)).status).toBe(200);
     const changed = { ...envelope(), sourceSha: 'b'.repeat(40) };
