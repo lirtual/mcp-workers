@@ -56,18 +56,21 @@ export async function runSchedulerTick(
     const rows = await env.DB.prepare(
       `SELECT a.workflow_id, a.active_digest, a.registry_revision, d.normalized_plan_json
        FROM workflow_active_definitions a
-       JOIN workflow_definition_versions d ON d.definition_digest = a.active_digest
+       LEFT JOIN workflow_definition_versions d
+         ON d.definition_digest = a.active_digest AND d.workflow_id = a.workflow_id
        WHERE a.state = 'enabled' AND a.active_digest IS NOT NULL
-         AND d.workflow_id = a.workflow_id
        ORDER BY a.workflow_id`
     ).all<{
-      workflow_id: string; active_digest: string; registry_revision: number; normalized_plan_json: string
+      workflow_id: string; active_digest: string; registry_revision: number; normalized_plan_json: string | null
     }>();
     for (const row of rows.results) {
       if (!/^[0-9a-f]{64}$/.test(row.active_digest) ||
           !Number.isSafeInteger(row.registry_revision) || row.registry_revision < 1) {
         throw new Error('Invalid active schedule version.');
       }
+      // A dangling active pointer must invalidate the entire D1 schedule
+      // snapshot rather than silently dropping one workflow from evaluation.
+      if (!row.normalized_plan_json) throw new Error('Active schedule definition is missing.');
       const plan = asRuntimePlan(validateVersionedWorkflowPlan(JSON.parse(row.normalized_plan_json)));
       if (plan.id !== row.workflow_id) throw new Error('Active schedule workflow mismatch.');
       entries.push({ plan, selected: {
