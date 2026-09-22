@@ -20,6 +20,11 @@ export async function handleWebhookTrigger(
 ): Promise<Response> {
   if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
 
+  if (env.DYNAMIC_WORKFLOW_REGISTRY_ENABLED === 'true' &&
+      env.DYNAMIC_WORKFLOW_ADMISSION_ENABLED !== 'true') {
+    return triggerError(503, 'TRIGGER_ADMISSION_NOT_CONFIGURED',
+      'Versioned webhook admission is not configured.');
+  }
   const dynamic = env.DYNAMIC_WORKFLOW_REGISTRY_ENABLED === 'true' &&
     env.DYNAMIC_WORKFLOW_ADMISSION_ENABLED === 'true';
   let selected: { active_digest: string; registry_revision: number } | null = null;
