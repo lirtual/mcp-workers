@@ -15,6 +15,14 @@ function fixture() {
      (schedule_key, last_evaluated_at, last_admitted_scheduled_time, next_due_occurrence)
      VALUES (?, ?, ?, ?)`
   ).run(scheduleKey, 1_790_000_000_000, 1_789_999_940_000, 1_790_000_060_000);
+  sqlite.prepare(
+    'INSERT INTO connection_config_versions (connection_id, version, config_json, created_at) VALUES (?, 1, ?, ?)'
+  ).run('raindrop', '{}', '2026-09-23');
+  sqlite.prepare(
+    `INSERT INTO connection_controls
+     (connection_id, current_version, revision, disabled, allowed_tools_json, updated_at)
+     VALUES (?, 1, 1, 0, ?, ?)`
+  ).run('raindrop', JSON.stringify({ list_raindrops: ['read'] }), '2026-09-23');
   type Arg = string | number | bigint | null;
   const statement = (sql: string, args: unknown[] = []) => ({
     bind: (...next: unknown[]) => statement(sql, next),
@@ -82,6 +90,22 @@ describe('T10 additive isolated D1 legacy definition seeding', () => {
       sqlite.prepare('UPDATE scheduler_state SET last_evaluated_at = last_evaluated_at + 60000')
         .run();
       await expect(seedLegacyDefinitions(db, state, 1)).rejects.toThrow(/schedule changed/);
+      expect((sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_definition_versions')
+        .get() as { count: number }).count).toBe(0);
+    } finally { sqlite.close(); }
+  });
+
+  it('requires the real D1-approved connection policy, not merely a claimed snapshot', async () => {
+    const { sqlite, db, state } = fixture();
+    try {
+      sqlite.prepare('UPDATE connection_controls SET disabled = 1 WHERE connection_id = ?')
+        .run('raindrop');
+      await expect(seedLegacyDefinitions(db, state, 1))
+        .rejects.toThrow(/approval is missing or disabled/);
+      sqlite.prepare('UPDATE connection_controls SET disabled = 0, allowed_tools_json = ? WHERE connection_id = ?')
+        .run(JSON.stringify({ list_raindrops: ['unsafe_write'] }), 'raindrop');
+      await expect(seedLegacyDefinitions(db, state, 1))
+        .rejects.toThrow(/tool is not approved/);
       expect((sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_definition_versions')
         .get() as { count: number }).count).toBe(0);
     } finally { sqlite.close(); }
