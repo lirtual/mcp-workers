@@ -94,18 +94,29 @@ export async function registerApprovedWebhookScope(
          SELECT ?, ?, ?, ?, ?, ?, ?, ?
          WHERE EXISTS (SELECT 1 FROM connection_policy_revision
                        WHERE singleton = 1 AND revision = ?)
-           AND NOT EXISTS (SELECT 1 FROM workflow_webhook_secret_scopes
-             WHERE workflow_id = ? AND trigger_id = ? AND definition_digest = ?)`
+           AND (
+             NOT EXISTS (SELECT 1 FROM workflow_webhook_secret_scopes
+               WHERE workflow_id = ? AND trigger_id = ? AND definition_digest = ?)
+             OR EXISTS (SELECT 1 FROM workflow_webhook_secret_scopes
+               WHERE workflow_id = ? AND trigger_id = ? AND definition_digest = ?
+                 AND secret_name = ? AND enabled = 1 AND policy_revision < ?)
+           )`
       ).bind(actionId, workflowId, triggerId, definitionDigest, secretName,
         expectedPolicyRevision, expectedPolicyRevision, now, expectedPolicyRevision,
-        workflowId, triggerId, definitionDigest),
+        workflowId, triggerId, definitionDigest,
+        workflowId, triggerId, definitionDigest, secretName, expectedPolicyRevision),
       db.prepare(
-        `INSERT OR IGNORE INTO workflow_webhook_secret_scopes
+        `INSERT INTO workflow_webhook_secret_scopes
          (workflow_id, trigger_id, definition_digest, secret_name, policy_revision, enabled, approved_at)
          SELECT ?, ?, ?, ?, ?, 1, ?
          WHERE EXISTS (SELECT 1 FROM webhook_secret_scope_actions
                        WHERE action_id = ? AND workflow_id = ? AND trigger_id = ?
-                         AND definition_digest = ? AND secret_name = ? AND expected_policy_revision = ?)`
+                         AND definition_digest = ? AND secret_name = ? AND expected_policy_revision = ?)
+         ON CONFLICT(workflow_id, trigger_id, definition_digest) DO UPDATE SET
+           policy_revision = excluded.policy_revision, approved_at = excluded.approved_at
+         WHERE workflow_webhook_secret_scopes.enabled = 1
+           AND workflow_webhook_secret_scopes.secret_name = excluded.secret_name
+           AND workflow_webhook_secret_scopes.policy_revision < excluded.policy_revision`
       ).bind(workflowId, triggerId, definitionDigest, secretName, expectedPolicyRevision, now,
         actionId, workflowId, triggerId, definitionDigest, secretName, expectedPolicyRevision)
     ]);
