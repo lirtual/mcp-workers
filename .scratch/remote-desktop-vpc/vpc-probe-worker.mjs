@@ -60,8 +60,29 @@ export default {
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(26000),
       });
-      const bytes = await response.arrayBuffer();
-      if (bytes.byteLength > MAX_BYTES) return reply(502, "upstream_result_too_large");
+      const announced = response.headers.get("content-length");
+      if (announced !== null && /^\d+$/.test(announced) && Number(announced) > MAX_BYTES) {
+        await response.body?.cancel().catch(() => {});
+        return reply(502, "upstream_result_too_large");
+      }
+      const chunks = [];
+      let total = 0;
+      const reader = response.body?.getReader();
+      if (reader) {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          total += value.byteLength;
+          if (total > MAX_BYTES) {
+            await reader.cancel().catch(() => {});
+            return reply(502, "upstream_result_too_large");
+          }
+          chunks.push(value);
+        }
+      }
+      const bytes = new Uint8Array(total);
+      let offset = 0;
+      for (const part of chunks) { bytes.set(part, offset); offset += part.byteLength; }
       return new Response(bytes, { status: response.status,
         headers: { "content-type": "application/json", "cache-control": "no-store" } });
     } catch {

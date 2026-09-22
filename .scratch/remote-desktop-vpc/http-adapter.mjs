@@ -54,12 +54,22 @@ export function createAdapter({ token, fixedRoot, execute = readViaIsolatedDeskt
     try {
       const body = await receive(req);
       validate(body);
-      const result = body.tool === "sandbox_ping"
-        ? { source: "restricted-adapter", text: "pong" }
-        : await Promise.race([
+      let result;
+      if (body.tool === "sandbox_ping") {
+        result = { source: "restricted-adapter", text: "pong" };
+      } else {
+        let deadline;
+        try {
+          result = await Promise.race([
             execute(fixedRoot),
-            new Promise((_, reject) => setTimeout(() => reject(new Error("upstream_timeout")), timeoutMs)),
+            new Promise((_, reject) => {
+              deadline = setTimeout(() => reject(new Error("upstream_timeout")), timeoutMs);
+            }),
           ]);
+        } finally {
+          clearTimeout(deadline);
+        }
+      }
       const encoded = JSON.stringify({ tool: body.tool, result });
       if (Buffer.byteLength(encoded) > MAX_RESULT_BYTES) throw new Error("result_too_large");
       res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });

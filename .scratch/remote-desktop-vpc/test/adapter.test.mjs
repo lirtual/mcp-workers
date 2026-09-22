@@ -93,6 +93,14 @@ test("Worker mocked VPC binding: positive call, reject client, offline and malfo
     const failed = await invoke();
     assert.equal(failed.status, 503);
     assert.deepEqual(await failed.json(), { error: "private_device_unavailable" });
+    env.PRIVATE_DEVICE = { fetch: async () => new Response("x".repeat(9000)) };
+    const oversized = await invoke();
+    assert.equal(oversized.status, 502);
+    assert.deepEqual(await oversized.json(), { error: "upstream_result_too_large" });
+    env.PRIVATE_DEVICE = { fetch: (_url, init) => fetch(url, init) };
+    const recovered = await invoke();
+    assert.equal(recovered.status, 200);
+    assert.equal((await recovered.json()).result.text, "pong");
   } finally { await stop(server); }
 });
 test("CI ONLY: mocked VPC fetch → loopback adapter → real pinned isolated stdio read", {
