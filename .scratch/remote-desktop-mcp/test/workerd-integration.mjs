@@ -1,13 +1,14 @@
-// THROWAWAY local workerd integration test for #173. Never connects to a real desktop.
+// THROWAWAY local workerd integration test for #173; upstream runs in a no-network Docker sandbox, never on the real host.
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { writeFile, rm, mkdtemp } from "node:fs/promises";
+import { writeFile, rm, mkdtemp, chmod } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, join } from "node:path";
 import { tmpdir } from "node:os";
 import { connectSandboxBridge } from "../local-bridge.mjs";
+import { readViaIsolatedDesktopCommander } from "../isolated-upstream.mjs";
 import WebSocket from "ws";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -122,6 +123,27 @@ try {
   assert.deepEqual(JSON.parse(actualFiles.data.result.content[0].text), { entries: ["test-only.txt"] });
   assert.equal((await call("tools/call", { name: "sandbox_list_directory",
     arguments: { path: "/etc" } }, 19)).data.error.code, -32602);
+
+  // Actual upstream round trip: MCP -> Worker -> DO -> outbound WebSocket ->
+  // Docker-isolated Desktop Commander 0.2.51 stdio -> WebSocket -> MCP.
+  // Docker runs with --network none, read-only root, no capabilities, non-root.
+  await chmod(fixtureRoot, 0o755); // Allow fixed non-root container UID to read mount.
+  await writeFile(join(fixtureRoot, "proof-only.txt"), "upstream fixture", { mode: 0o644 });
+  socket = await connectSandboxBridge({
+    endpoint: base.replace("http:", "ws:") + "/device",
+    token: deviceToken,
+    sandboxRoot: fixtureRoot,
+    directoryReader: readViaIsolatedDesktopCommander,
+  });
+  const upstream = await call("tools/call", { name: "sandbox_list_directory", arguments: {} }, 20);
+  assert.equal(upstream.status, 200);
+  assert.equal(upstream.data.error, undefined, JSON.stringify(upstream.data.error));
+  const upstreamResult = JSON.parse(upstream.data.result.content[0].text);
+  assert.equal(upstreamResult.source, "desktop-commander-0.2.51");
+  assert.ok(upstreamResult.text.includes("proof-only.txt"), "upstream_reply_missing_fixture");
+  assert.equal((await call("tools/call", { name: "sandbox_list_directory",
+    arguments: { path: "/etc" } }, 21)).data.error.code, -32602);
+
   const revoked = await fetch(base + "/admin/revoke", { method: "POST", headers: auth(adminToken) });
   assert.equal(revoked.status, 200);
   assert.equal((await call("tools/call", { name: "sandbox_ping", arguments: { echo: "after-revoke" } }, 16)).data.error.message, "revoked");
@@ -130,7 +152,7 @@ try {
   const response = await once(forbidden, "unexpected-response");
   assert.equal(response[1].statusCode, 403);
   forbidden.terminate();
-  console.log("PASS local workerd: MCP initialize/list, real local sandbox directory read, invalid path, auth, offline, WebSocket echo, concurrency, timeout, disconnect, reconnect, revoke");
+  console.log("PASS local workerd: MCP initialize/list, real isolated upstream stdio round trip, fixed directory read, invalid path, auth, offline, WebSocket echo, concurrency, timeout, disconnect, reconnect, revoke");
 } finally {
   socket?.terminate();
   if (child && child.exitCode === null) {
