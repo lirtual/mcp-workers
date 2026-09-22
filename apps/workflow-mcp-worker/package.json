@@ -19,10 +19,11 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "lint": "eslint .",
-    "check": "pnpm run registry:check && pnpm run typecheck && pnpm run lint && pnpm test && pnpm run deploy:dry-run",
+    "check": "pnpm run registry:check && pnpm run typecheck && pnpm run lint && pnpm test && pnpm run deploy:dry-run && pnpm run test:d1",
     "registry:check": "pnpm run registry:generate && git diff --exit-code -- src/generated/workflow-registry.ts",
     "release:compatibility": "tsx scripts/check-release-compatibility.ts --remote",
-    "release:raindrop-scheduled": "tsx scripts/verify-raindrop-scheduled.ts"
+    "release:raindrop-scheduled": "tsx scripts/verify-raindrop-scheduled.ts",
+    "test:d1": "tsx scripts/verify-connection-d1.mjs"
   },
   "dependencies": {
     "@mcp-workers/portal-auth": "workspace:*",
