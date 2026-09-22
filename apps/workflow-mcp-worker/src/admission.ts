@@ -194,10 +194,10 @@ async function recoverDynamicInstance(env: Env, run: StoredRun): Promise<void> {
     const code = error && typeof error === 'object' && 'code' in error
       ? String(error.code) : '';
     if (code !== 'instance.not_found') {
-      throw new PublicWorkflowError(
-        'WORKFLOW_RECOVERY_UNCERTAIN',
-        'Cannot determine whether the original Workflow instance exists.'
-      );
+      // Lookup failures are not evidence that an instance is absent. Return
+      // the durable original Run instead of creating a second instance.
+      console.warn('workflow.recovery.uncertain', { runId: run.runId });
+      return;
     }
   }
   // Only a positively identified missing instance can be reconsidered. An
@@ -205,10 +205,9 @@ async function recoverDynamicInstance(env: Env, run: StoredRun): Promise<void> {
   const admittedAt = Date.parse(run.createdAt);
   const ageMs = Date.now() - admittedAt;
   if (!Number.isFinite(admittedAt) || ageMs < 0 || ageMs > 60 * 60 * 1000) {
-    throw new PublicWorkflowError(
-      'WORKFLOW_RECOVERY_EXPIRED',
-      'Original admission is too old for automatic instance recovery.'
-    );
+    // An expired repair window must not invalidate a durable Admission Key.
+    console.warn('workflow.recovery.expired', { runId: run.runId });
+    return;
   }
   // Cloudflare createBatch skips an existing custom ID within retention.
   await env.WORKFLOW.createBatch([{ id: run.runId, params: { runId: run.runId } }]);
