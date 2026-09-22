@@ -6,7 +6,6 @@ import { getWorkflowRegistry } from './registry.js';
 import type { Env } from './types.js';
 
 const ADMIN_AUDIENCE = 'workflow-mcp-publisher';
-const INITIAL_POLICY_REVISION = 1;
 
 type AdminEnv = Env & {
   ADMIN_PUBLISHER_REPOSITORY_ID?: string;
@@ -56,10 +55,9 @@ async function policySnapshot(env: AdminEnv): Promise<Record<string, unknown>> {
       }
     }
   }
-  // The bootstrap snapshot remains available to the isolated auth tests.
-  // Actual deployed Workers always have DB; never silently reuse bootstrap
-  // data if a configured D1 query fails.
-  if (!env.DB) return { revision: INITIAL_POLICY_REVISION, connections, webhookBindings };
+  // A missing D1 binding is a configuration failure, never an approval of
+  // synthetic bootstrap data from an unverified static policy.
+  if (!env.DB) throw new Error('Approved policy store is unavailable.');
   const revision = await env.DB.prepare(
     'SELECT revision FROM connection_policy_revision WHERE singleton = 1'
   ).first<{ revision: number }>();
