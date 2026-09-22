@@ -7,6 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { webcrypto } from 'node:crypto';
 import { registerApprovedConnection } from '../src/connection-admin.ts';
 import { handleAdminRoute } from '../src/admin-routes.ts';
+import { stageDefinition } from '../src/stage-definition.ts';
 import { resolveRunConnectionPin, readLiveConnectionControl } from '../src/connection-revocation.ts';
 import { callMcpTool, McpConnectionDeniedError } from '../src/mcp-client.ts';
 import { resolveStepExecutionPolicy } from '../src/step-policy.ts';
@@ -282,5 +283,31 @@ const evidence = sqlite.prepare('SELECT publisher_repository_id, publisher_run_i
 assert.deepEqual(evidence, {
   publisher_repository_id: '1371085786', publisher_run_id: '12345', publisher_run_attempt: 1
 });
+// The competing implementation (#165) identified a valuable race regression:
+// a policy update after pre-validation but before the D1 batch must not
+// produce a publication, even when the immutable plan already exists.
+let interceptedStageBatch = false;
+const racingDb = {
+  ...db,
+  async batch(statements) {
+    if (!interceptedStageBatch) {
+      interceptedStageBatch = true;
+      sqlite.prepare('UPDATE connection_policy_revision SET revision = revision + 1 WHERE singleton = 1').run();
+    }
+    return db.batch(statements);
+  }
+};
+const stageAfterRace = await stageDefinition(request('/admin/definitions/stage', {
+  ...stage, sourceSha: 'c'.repeat(40)
+}), { ...env, DB: racingDb }, {
+  repositoryId: '1371085786', workflowRef, workflowSha: 'trusted-sha',
+  ref: 'refs/heads/main', runId: '12345', runAttempt: 1
+});
+assert.equal(interceptedStageBatch, true);
+assert.equal(stageAfterRace.status, 409);
+assert.equal(sqlite.prepare('SELECT count(*) AS n FROM definition_publications').get().n, 2);
+assert.equal(sqlite.prepare(
+  'SELECT count(*) AS n FROM workflow_definition_versions WHERE definition_digest = ?'
+).get(entry.definitionDigest).n, 1);
 sqlite.close();
 console.log('PASS: real SQLite D1 migration, approved revision update, secret rotation, signed admin CAS, pinned Run call, revoke-before-tools/call, and immutable definition stage');
