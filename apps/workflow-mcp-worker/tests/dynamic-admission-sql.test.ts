@@ -115,6 +115,23 @@ describe('T06 gated, immutable D1 manual admission', () => {
     } finally { f.sqlite.close(); }
   });
 
+  it('returns terminal historical Run without another Workflow start after deactivation', async () => {
+    const f = fixture();
+    try {
+      const first = await admitManualWorkflow(f.env, original.metadata.id, input, 'terminal-key');
+      f.sqlite.prepare(
+        "UPDATE workflow_runs SET state = 'succeeded', output_json = ? WHERE run_id = ?"
+      ).run(JSON.stringify({ answer: 42 }), first.runId);
+      f.change(null, 2);
+      const replay = await admitManualWorkflow(f.env, original.metadata.id, input, 'terminal-key');
+      expect(replay).toMatchObject({
+        runId: first.runId, definitionDigest: first.definitionDigest,
+        alreadyAdmitted: true, state: 'succeeded'
+      });
+      expect(f.starts()).toBe(1);
+    } finally { f.sqlite.close(); }
+  });
+
   it('rejects an activation race without writing an admission or starting an instance', async () => {
     const f = fixture();
     try {
