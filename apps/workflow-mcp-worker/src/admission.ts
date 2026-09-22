@@ -192,7 +192,11 @@ async function admitDynamicManualWorkflow(
     workflowId, definitionDigest: active.active_digest, input,
     trigger: source.trigger, sourceType: source.sourceType, sourceKey: source.sourceKey,
     engineVersion: currentEngineVersion(env), expectedRegistryRevision: active.registry_revision,
-    expectedPolicyRevision: policy.revision
+    expectedPolicyRevision: policy.revision,
+    ...(selectedSchedule ? { schedulerClaim: {
+      scheduleKey: `${workflowId}:${selectedSchedule.triggerId}`,
+      scheduledTime: selectedSchedule.scheduledTime
+    } } : {})
   });
   if (!admitted) {
     // The active revision may have changed while a same-key rival admitted.
