@@ -227,3 +227,41 @@ describe('D1-backed approved Connection snapshot', () => {
     expect(response.status).toBe(503);
   });
 });
+
+describe('concurrent admin action replay reconciliation', () => {
+  it('returns the authoritative registration result after a losing unique-ID race', async () => {
+    let reads = 0;
+    const db = {
+      prepare: () => ({
+        bind: () => ({ first: async () => ++reads === 1 ? null : {
+          connection_id: 'raindrop', action_kind: 'register',
+          request_digest: awaitDigest, resulting_revision: 1
+        } })
+      }),
+      batch: async () => { throw new Error('UNIQUE constraint failed'); }
+    } as unknown as D1Database;
+    const requestBody = {
+      actionId: 'race-register', connectionId: 'raindrop', expectedRevision: 0, tools: ['list_raindrops']
+    };
+    // The digest is bound to the approved static configuration, never to credential bytes.
+    // Obtain it from the exact registered action calculation via the shared registry.
+    const { getConnection } = await import('../src/connections.js');
+    const connection = getConnection('raindrop')!;
+    const config = JSON.stringify({
+      endpoint: connection.endpoint, transport: connection.transport,
+      protocolVersion: connection.protocolVersion, authSecret: connection.auth.secret,
+      trustAnnotations: false, tools: { list_raindrops: connection.tools.list_raindrops }
+    });
+    const hash = await crypto.subtle.digest('SHA-256',
+      new TextEncoder().encode(JSON.stringify(['raindrop', 0, config])));
+    const awaitDigest = [...new Uint8Array(hash)].map(b => b.toString(16).padStart(2, '0')).join('');
+    const request = new Request('https://example.test/admin/connections/register', {
+      method: 'POST',
+      headers: { authorization: 'Bearer ' + await token() },
+      body: JSON.stringify(requestBody)
+    });
+    const response = (await handleAdminRoute(request, { ...env, DB: db }, options))!;
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ version: 1, revision: 1 });
+  });
+});
