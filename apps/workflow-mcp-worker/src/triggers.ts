@@ -3,6 +3,7 @@ import { findWorkflow } from './registry.js';
 import { asRuntimePlan } from './runtime-plan.js';
 import { validateVersionedWorkflowPlan } from './runtime-plan-validation.js';
 import { resolveApprovedWebhookSecret } from './webhook-secret-scope.js';
+import { D1WorkflowStore } from './storage.js';
 import type { Env } from './types.js';
 
 interface WebhookTrigger {
@@ -28,6 +29,76 @@ export async function handleWebhookTrigger(
   const dynamic = env.DYNAMIC_WORKFLOW_REGISTRY_ENABLED === 'true' &&
     env.DYNAMIC_WORKFLOW_ADMISSION_ENABLED === 'true';
   let selected: { active_digest: string; registry_revision: number } | null = null;
+  if (dynamic) {
+    const eventKey = request.headers.get('x-workflow-event-key')?.trim() ?? '';
+    if (eventKey && eventKey.length <= 256) {
+      // Historical replays authenticate against their original immutable
+      // trigger, never the currently active definition or a global token.
+      // An absent or disabled scope still fails closed.
+      let original;
+      let stored;
+      try {
+        const store = new D1WorkflowStore(env.DB);
+        original = await store.getAdmissionRun(`webhook:${workflowId}:${triggerId}:${eventKey}`);
+        if (original) stored = await store.getDefinition(original.definitionDigest);
+      } catch {
+        return triggerError(503, 'REGISTRY_UNAVAILABLE', 'Active workflow registry is unavailable.');
+      }
+      if (original) {
+        if (!stored || original.workflowId !== workflowId ||
+            original.trigger.type !== 'webhook' || original.trigger.triggerId !== triggerId ||
+            original.trigger.eventKey !== eventKey) {
+          return triggerError(503, 'REGISTRY_UNAVAILABLE', 'Original webhook admission is unavailable.');
+        }
+        let historicalPlan;
+        try {
+          historicalPlan = validateVersionedWorkflowPlan(stored.plan);
+          if (historicalPlan.id !== workflowId) throw new Error('Workflow mismatch');
+        } catch {
+          return triggerError(503, 'REGISTRY_UNAVAILABLE', 'Original workflow definition is unavailable.');
+        }
+        const historicalTrigger = historicalPlan.triggers.find(t =>
+          isWebhookTrigger(t) && t.id === triggerId);
+        if (!historicalTrigger || !isWebhookTrigger(historicalTrigger)) {
+          return triggerError(503, 'REGISTRY_UNAVAILABLE', 'Original webhook trigger is unavailable.');
+        }
+        let historicalToken: string | null;
+        try {
+          historicalToken = await resolveApprovedWebhookSecret(
+            env, workflowId, triggerId, original.definitionDigest, historicalTrigger.secret
+          );
+        } catch {
+          return triggerError(503, 'TRIGGER_AUTH_NOT_CONFIGURED',
+            'Webhook trigger authentication is not configured.');
+        }
+        if (!historicalToken) {
+          return triggerError(503, 'TRIGGER_AUTH_NOT_CONFIGURED',
+            'Webhook trigger authentication is not configured.');
+        }
+        const presented = readBearer(request.headers.get('authorization'));
+        if (!presented || !timingSafeEqual(presented, historicalToken)) {
+          return unauthorized();
+        }
+        let historicalInput: unknown;
+        try {
+          historicalInput = await readWebhookInput(request);
+        } catch {
+          return triggerError(400, 'INVALID_WEBHOOK_BODY', 'Webhook body is invalid.');
+        }
+        try {
+          const result = await admitVersionedWebhookWorkflow(
+            env, workflowId, triggerId, historicalInput, eventKey,
+            { definitionDigest: original.definitionDigest, registryRevision: 0,
+              secretName: historicalTrigger.secret }
+          );
+          return admittedResponse(result);
+        } catch (error) {
+          if (error instanceof PublicWorkflowError) return triggerError(400, error.code, error.message);
+          return triggerError(500, 'TRIGGER_ADMISSION_FAILED', 'Webhook admission failed.');
+        }
+      }
+    }
+  }
   const entry = dynamic ? undefined : lookup(workflowId);
   let plan;
   if (dynamic) {
@@ -75,17 +146,7 @@ export async function handleWebhookTrigger(
 
   const bearer = readBearer(request.headers.get('authorization'));
   if (!bearer || !timingSafeEqual(bearer, expectedToken)) {
-    return new Response(
-      JSON.stringify({ error: { code: 'UNAUTHORIZED', message: 'Valid webhook authentication is required.' } }),
-      {
-        status: 401,
-        headers: {
-          'Content-Type': 'application/json; charset=utf-8',
-          'Cache-Control': 'no-store',
-          'WWW-Authenticate': 'Bearer'
-        }
-      }
-    );
+    return unauthorized();
   }
 
   const eventKey = request.headers.get('x-workflow-event-key')?.trim() ?? '';
@@ -111,19 +172,28 @@ export async function handleWebhookTrigger(
           secretName: trigger.secret
         })
       : await admitWebhookWorkflow(env, workflowId, triggerId, input, eventKey);
-    return Response.json(
-      {
-        runId: result.runId,
-        state: result.state,
-        definitionDigest: result.definitionDigest,
-        alreadyAdmitted: result.alreadyAdmitted
-      },
-      { status: 202, headers: { 'Cache-Control': 'no-store' } }
-    );
+    return admittedResponse(result);
   } catch (error) {
     if (error instanceof PublicWorkflowError) return triggerError(400, error.code, error.message);
     return triggerError(500, 'TRIGGER_ADMISSION_FAILED', 'Webhook admission failed.');
   }
+}
+
+function unauthorized(): Response {
+  return new Response(
+    JSON.stringify({ error: { code: 'UNAUTHORIZED', message: 'Valid webhook authentication is required.' } }),
+    { status: 401, headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store', 'WWW-Authenticate': 'Bearer'
+    } }
+  );
+}
+
+function admittedResponse(result: Awaited<ReturnType<typeof admitVersionedWebhookWorkflow>>): Response {
+  return Response.json({
+    runId: result.runId, state: result.state,
+    definitionDigest: result.definitionDigest, alreadyAdmitted: result.alreadyAdmitted
+  }, { status: 202, headers: { 'Cache-Control': 'no-store' } });
 }
 
 function isWebhookTrigger(value: Readonly<Record<string, unknown>>): value is Readonly<WebhookTrigger> {
