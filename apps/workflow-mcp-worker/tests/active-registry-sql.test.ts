@@ -230,6 +230,49 @@ describe('real SQLite active pointer and rollback contract', () => {
     expect((await updateActiveDefinition(
       request('stale-cutover', null, digest, 0), env, publisher, 'activate')).status).toBe(409);
     expect(await new D1WorkflowStore(db).getSchedulerState(scheduleKey)).toEqual(state);
+
+    // An edited cron/timezone and later removal/re-addition share one durable
+    // cursor. No activation may reset the admitted high-water mark.
+    const editedPlan = JSON.parse(JSON.stringify(scheduledPlan)) as Record<string, unknown>;
+    editedPlan.triggers = [
+      { type: 'manual' },
+      { type: 'schedule', id: 'daily-nine', cron: '15 10 * * *',
+        timezone: 'Asia/Shanghai', misfire: 'latest' }
+    ];
+    const editedDigest = 'e'.repeat(64);
+    await db.prepare(
+      `INSERT INTO workflow_definition_versions
+       (definition_digest, workflow_id, dsl_version, normalized_plan_json, source_path, created_at)
+       VALUES (?, ?, 1, ?, ?, ?)`
+    ).bind(editedDigest, entry.metadata.id, JSON.stringify(editedPlan),
+      entry.sourcePath, '2026-09-22').run();
+    await db.prepare(
+      `INSERT INTO definition_publications
+       (publication_id, workflow_id, definition_digest, source_sha, repository_id,
+        publisher_run_id, publisher_run_attempt, publisher_workflow_sha, policy_revision, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`
+    ).bind('stage-edited-schedule', entry.metadata.id, editedDigest, 'e'.repeat(40),
+      publisher.repositoryId, publisher.runId, publisher.runAttempt,
+      publisher.workflowSha, '2026-09-22').run();
+    const edited = await updateActiveDefinition(
+      request('edit-schedule', digest, editedDigest, 1), env, publisher, 'activate');
+    expect(edited.status).toBe(200);
+    const afterEdit = await new D1WorkflowStore(db).getSchedulerState(scheduleKey);
+    expect(afterEdit?.lastAdmittedScheduledTime).toBe(60000);
+    expect(afterEdit?.lastEvaluatedAt).toBeGreaterThanOrEqual(activationMinute);
+    expect(afterEdit?.nextDueOccurrence).toBeUndefined();
+
+    const removed = await updateActiveDefinition(
+      request('remove-schedule', editedDigest, null, 2), env, publisher, 'deactivate');
+    expect(removed.status).toBe(200);
+    expect(await new D1WorkflowStore(db).getSchedulerState(scheduleKey)).toEqual(afterEdit);
+    const readded = await updateActiveDefinition(
+      request('readd-schedule', null, digest, 3), env, publisher, 'activate');
+    expect(readded.status).toBe(200);
+    const afterReadd = await new D1WorkflowStore(db).getSchedulerState(scheduleKey);
+    expect(afterReadd?.lastAdmittedScheduledTime).toBe(60000);
+    expect(afterReadd?.lastEvaluatedAt).toBeGreaterThanOrEqual(afterEdit!.lastEvaluatedAt);
+    expect(afterReadd?.nextDueOccurrence).toBeUndefined();
   });
 
   it('rejects stale expected revision without changing pointer or recording misleading audit', async () => {
