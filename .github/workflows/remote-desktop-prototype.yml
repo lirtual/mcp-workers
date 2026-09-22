@@ -41,7 +41,7 @@ jobs:
         run: |
           npm install --prefix .scratch/remote-desktop-mcp --no-save --no-package-lock --ignore-scripts \
             ws@8.18.3 vitest@4.1.0 @cloudflare/vitest-plugin@1.0.0 \
-            @wonderwhy-er/desktop-commander@0.2.51
+            @wonderwhy-er/desktop-commander@0.2.51 @modelcontextprotocol/inspector@2.7.0
       - name: Exercise local workerd WebSocket + synthetic MCP (no deploy)
         run: node .scratch/remote-desktop-mcp/test/workerd-integration.mjs
       - name: Verify real pinned Desktop Commander stdio in locked-down test container
