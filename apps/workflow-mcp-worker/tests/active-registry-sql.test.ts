@@ -278,9 +278,9 @@ describe('real SQLite active pointer and rollback contract', () => {
     expect((await updateActiveDefinition(
       request('legacy-activate', null, entry.definitionDigest, 0), env, publisher, 'activate'
     )).status).toBe(200);
-    const store = new D1WorkflowStore(db);
+    const runStore = new D1WorkflowStore(db);
     const runId = 'legacy-before-deactivate';
-    await store.admitRun({
+    await runStore.admitRun({
       admissionKey: 'legacy-admission',
       proposedRunId: runId,
       workflowId: entry.metadata.id,
@@ -290,7 +290,7 @@ describe('real SQLite active pointer and rollback contract', () => {
       sourceType: 'manual',
       engineVersion: 'test-engine'
     });
-    await store.finishRun({ runId, state: 'succeeded', output: { answer: 42 } });
+    await runStore.finishRun({ runId, state: 'succeeded', output: { answer: 42 } });
     expect((await updateActiveDefinition(
       request('legacy-deactivate', entry.definitionDigest, null, 1),
       env, publisher, 'deactivate'
