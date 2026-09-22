@@ -185,16 +185,8 @@ async function admitDynamicManualWorkflow(
  */
 async function recoverDynamicInstance(env: Env, run: StoredRun): Promise<void> {
   if (run.state !== 'queued') return;
-  // Workflows instance IDs are idempotent only while retained. Never attempt
-  // repair of stale D1 history after the retention horizon may have elapsed.
-  const admittedAt = Date.parse(run.createdAt);
-  const ageMs = Date.now() - admittedAt;
-  if (!Number.isFinite(admittedAt) || ageMs < 0 || ageMs > 60 * 60 * 1000) {
-    throw new PublicWorkflowError(
-      'WORKFLOW_RECOVERY_EXPIRED',
-      'Original admission is too old for automatic instance recovery.'
-    );
-  }
+  // Existing instances are safe to read at any age. The recovery window
+  // restricts recreation only, not access to an original admitted Run.
   try {
     await env.WORKFLOW.get(run.runId);
     return;
@@ -207,6 +199,16 @@ async function recoverDynamicInstance(env: Env, run: StoredRun): Promise<void> {
         'Cannot determine whether the original Workflow instance exists.'
       );
     }
+  }
+  // Only a positively identified missing instance can be reconsidered. An
+  // unknown Cloudflare error is handled above as uncertain (fail closed).
+  const admittedAt = Date.parse(run.createdAt);
+  const ageMs = Date.now() - admittedAt;
+  if (!Number.isFinite(admittedAt) || ageMs < 0 || ageMs > 60 * 60 * 1000) {
+    throw new PublicWorkflowError(
+      'WORKFLOW_RECOVERY_EXPIRED',
+      'Original admission is too old for automatic instance recovery.'
+    );
   }
   // Cloudflare createBatch skips an existing custom ID within retention.
   await env.WORKFLOW.createBatch([{ id: run.runId, params: { runId: run.runId } }]);
