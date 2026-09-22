@@ -110,7 +110,18 @@ export async function seedLegacyDefinitions(
   // The additive definitions may already be committed, but the reader remains
   // OFF; an owner must obtain a new snapshot before any later activation.
   const after = await readLegacyImportState(db);
-  assertLegacyImportSnapshot({ ...state, definitions: after.definitions }, after);
+  // The only permitted change is the approved additive legacy seed. Never
+  // take the post-write definition inventory as its own expected baseline:
+  // a concurrent insertion of an unrelated definition would otherwise pass.
+  const expectedDefinitions = [
+    ...state.definitions,
+    ...prepared.definitions.filter(row => !row.alreadyStored).map(row => ({
+      definitionDigest: row.definitionDigest, workflowId: row.workflowId,
+      dslVersion: row.dslVersion, normalizedPlanJson: row.normalizedPlanJson,
+      sourcePath: row.sourcePath
+    }))
+  ];
+  assertLegacyImportSnapshot({ ...state, definitions: expectedDefinitions }, after);
   return {
     definitionsVerified: prepared.definitions.length,
     inserted: results.reduce((sum, result) => sum + (result.meta.changes ?? 0), 0),

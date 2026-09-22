@@ -306,6 +306,33 @@ describe('T10 additive isolated D1 legacy definition seeding', () => {
     } finally { sqlite.close(); }
   });
 
+  it('rejects an unrelated definition inserted after the seed instead of self-approving post-write inventory', async () => {
+    const { sqlite, db, state } = fixture();
+    try {
+      const underlyingBatch = db.batch.bind(db);
+      const racing = {
+        prepare: db.prepare.bind(db),
+        batch: async (queries: Parameters<D1Database['batch']>[0]) => {
+          const results = await underlyingBatch(queries);
+          // Another writer inserts an unrelated version after the seed commits.
+          // The import must not silently expand its accepted definition set.
+          sqlite.prepare(
+            `INSERT INTO workflow_definition_versions
+             (definition_digest, workflow_id, dsl_version, normalized_plan_json, source_path, created_at)
+             VALUES (?, ?, 1, '{}', 'workflows/unrelated.yaml', ?)`
+          ).run('f'.repeat(64), 'unrelated', '2026-09-23');
+          return results;
+        }
+      } as D1Database;
+      await expect(seedLegacyDefinitions(racing, state, 1))
+        .rejects.toThrow(/snapshot differs/);
+      expect((sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_definition_versions')
+        .get() as { count: number }).count).toBe(5);
+      expect((sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_active_definitions')
+        .get() as { count: number }).count).toBe(0);
+    } finally { sqlite.close(); }
+  });
+
   it('detects a concurrent immutable digest collision rather than accepting INSERT OR IGNORE', async () => {
     const { sqlite, db, state } = fixture();
     try {

@@ -8,14 +8,29 @@ Implementation baseline: `src/legacy-import.ts` (read-only preflight) and
 migrations. It does **not** prove Cloudflare managed-D1 or external Workflows
 binding behavior.
 
-## Isolated import prerequisites
+## Owner-approved live-target topology
+
+The owner permits testing the existing, not-yet-in-service
+`workflow-mcp-worker` and its current D1/Workflows resources, rather than
+creating another Worker. This is a **shared live-target test**, not independently
+isolated acceptance under the original AC15; report that variance explicitly.
+The owner has **not** approved an automatic D1 migration, production cutover,
+Cron change, live upstream write, Secret rotation or final release. Before any
+write, verify the exact deployed Worker HEAD and D1 schema, take an independently
+recoverable D1 export, inventory nonterminal Runs/instances and scheduler cursor,
+and obtain separate authorization for the specific mutation. Do not use a
+locally simulated SQLite result as Cloudflare managed-D1 evidence.
+
+## Import prerequisites
 
 1. Record the exact running v0.1 engine SHA and its compiled Registry. Confirm
    four IDs and their original 64-character canonical digests match the frozen
    baseline. Do not treat the current checked-in Registry as proof of what an
    unknown production SHA is running.
-2. Use an owner-approved **isolated** D1 and Workflows binding, with migrations
-   through the approved v0.2 schema. Keep both dynamic feature gates OFF.
+2. Use only the explicitly approved test target and verify its actual D1 and
+   Workflows bindings and approved v0.2 schema before an authorized test. If
+   required migrations are missing, **stop** rather than silently applying
+   them. Keep both dynamic feature gates OFF.
    Take a read-only snapshot of immutable definitions, active pointers,
    Connection policy revision and controls, *all* nonterminal Run/manifest
    records, and the `raindrop-daily-snapshot:daily-nine` scheduler row.
@@ -28,7 +43,7 @@ binding behavior.
    immediately before import, including all nonterminal Run/manifest rows.
    Pass it and the exact policy revision to `prepareLegacyImport` /
    `seedLegacyDefinitions` in an isolated test
-   harness. Verify all four original digests/source paths and exact normalized
+   harness only after authorization. Verify all four original digests/source paths and exact normalized
    plans, current D1 tool approval and unchanged `daily-nine` values. An
    identical seed is idempotent; a collision on the same digest must fail.
    Re-read the D1 snapshot and nonterminal Run records after the operation.
@@ -44,7 +59,7 @@ binding behavior.
    immutable D1 digest alone is not proof of an authorized publication.
    If the protected publisher/catalog is unavailable, stop before cutover.
 6. Separately approve active Registry CAS and reader gate cutover **only after**
-   isolated D1/Workflows, manual/webhook/scheduled and old-Run continuation
+   required managed D1/Workflows, manual/webhook/scheduled and old-Run continuation
    acceptance. The import must not implicitly activate anything. Preserve
    the old static read path until the switch is authorized.
 
@@ -61,4 +76,6 @@ delete historical definitions, Runs or scheduler rows to make a rollback pass.
 For production, a separate owner authorization is required for exact-SHA D1
 migration, feature gate change and deployment. Do not treat CI SQLite results
 or this runbook as such authorization. Real platform acceptance remains Open
-until captured with managed D1 and Workflows binding.
+until captured with managed D1 and Workflows binding. Successful live-target
+results cannot be labeled independent-isolation PASS; record the deviation
+and obtain a separate acceptance decision.
