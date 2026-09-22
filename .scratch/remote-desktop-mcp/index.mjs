@@ -82,7 +82,10 @@ export class PrototypeDevice extends DurableObject {
         return json({ error: "invalid_call" }, 400);
       }
       try {
-        const result = await this.relay.invoke(call.id, call.tool, call.arguments, 1500);
+        // External stdio launch within isolated CI has bounded startup cost.
+        // Keep the synthetic ping timeout short for offline/error tests.
+        const deadline = call.tool === "sandbox_list_directory" ? 25000 : 1500;
+        const result = await this.relay.invoke(call.id, call.tool, call.arguments, deadline);
         return json({ result });
       } catch (e) {
         const reason = e.message;
