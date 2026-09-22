@@ -1,5 +1,6 @@
 import { validateVersionedWorkflowPlan } from './runtime-plan-validation.js';
-import { isProtectedWebhookSecret } from './webhook-secret-policy.js';
+import { hasApprovedWebhookBinding } from './webhook-secret-policy.js';
+import type { Env } from './types.js';
 
 const ID = /^[A-Za-z][A-Za-z0-9_-]{0,127}$/;
 const SHA = /^[0-9a-f]{64}$/;
@@ -17,8 +18,9 @@ function error(status: number, code: string): Response {
  * rotation needs a separate approved revision protocol.
  */
 export async function registerApprovedWebhookScope(
-  request: Request, db: D1Database
+  request: Request, env: Env
 ): Promise<Response> {
+  const db = env.DB;
   const length = Number(request.headers.get('content-length') ?? '0');
   if (!Number.isFinite(length) || length > 8192) return error(413, 'body_too_large');
   let body: unknown;
@@ -41,7 +43,7 @@ export async function registerApprovedWebhookScope(
       typeof triggerId !== 'string' || !ID.test(triggerId) ||
       typeof definitionDigest !== 'string' || !SHA.test(definitionDigest) ||
       typeof secretName !== 'string' || !SECRET.test(secretName) ||
-      isProtectedWebhookSecret(secretName) ||
+      !hasApprovedWebhookBinding(env as unknown as Record<string, unknown>, secretName) ||
       !Number.isSafeInteger(expectedPolicyRevision) || (expectedPolicyRevision as number) < 1) {
     return error(400, 'invalid_body');
   }
