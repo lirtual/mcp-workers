@@ -25,7 +25,8 @@ export async function readLegacyImportState(db: D1Database): Promise<LegacyImpor
             source_path AS sourcePath FROM workflow_definition_versions ORDER BY definition_digest LIMIT 1025`
   ).all<Definition>()).results;
   const active = (await db.prepare(
-    `SELECT workflow_id AS workflowId, active_digest AS activeDigest
+    `SELECT workflow_id AS workflowId, active_digest AS activeDigest,
+            registry_revision AS registryRevision, state
      FROM workflow_active_definitions ORDER BY workflow_id LIMIT 65`
   ).all<Active>()).results;
   const schedulerRows = (await db.prepare(
