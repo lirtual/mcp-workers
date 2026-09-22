@@ -41,8 +41,11 @@ function fixture() {
   } as unknown as D1Database;
   let starts = 0;
   let lostResponse = false;
+  let failBeforeCreate = false;
   let uncertainLookup = false;
   let uncertainStatus = false;
+  let missingOnStatus = false;
+  let restShapedMissing = false;
   const instances = new Set<string>();
   const env = {
     DB: db,
@@ -51,18 +54,30 @@ function fixture() {
     WORKFLOW: {
       get: async (id: string) => {
         if (uncertainLookup) throw new Error('simulated upstream timeout');
-        if (!instances.has(id)) throw Object.assign(new Error('Instance does not exist'), {
+        if (restShapedMissing && !instances.has(id)) {
+          throw Object.assign(new Error('workflows.api.error.instance.not_found'), { code: 10400 });
+        }
+        if (!instances.has(id) && !missingOnStatus) throw Object.assign(new Error('Instance does not exist'), {
           code: 'instance.not_found'
         });
         return {
           id,
           status: async () => {
             if (uncertainStatus) throw new Error('simulated status RPC timeout');
+            if (missingOnStatus) {
+              throw Object.assign(new Error('Instance missing on status'), {
+                code: 'instance.not_found'
+              });
+            }
             return { status: 'queued' };
           }
         };
       },
       createBatch: async (batch: Array<{ id: string; params: { runId: string } }>) => {
+        if (failBeforeCreate) {
+          failBeforeCreate = false;
+          throw new Error('simulated createBatch failure before persistence');
+        }
         for (const instance of batch) {
           if (!instances.has(instance.id)) {
             instances.add(instance.id);
@@ -106,9 +121,12 @@ function fixture() {
   return {
     sqlite, db, env, save, change, starts: () => starts,
     loseNextResponse: () => { lostResponse = true; },
+    failNextCreateBeforePersistence: () => { failBeforeCreate = true; },
     loseInstance: (id: string) => { instances.delete(id); },
     failLookup: (fail: boolean) => { uncertainLookup = fail; },
-    failStatus: (fail: boolean) => { uncertainStatus = fail; }
+    failStatus: (fail: boolean) => { uncertainStatus = fail; },
+    missOnStatus: (missing: boolean) => { missingOnStatus = missing; },
+    useRestShapedMissing: (enabled: boolean) => { restShapedMissing = enabled; }
   };
 }
 
@@ -438,6 +456,101 @@ describe('T06 gated, immutable D1 manual admission', () => {
 });
 
 describe('T07 transactional webhook authorization', () => {
+  it('rejects a stale Connection policy revision before any new admission side effect', async () => {
+    const f = fixture();
+    try {
+      const baseBatch = f.db.batch.bind(f.db);
+      let changed = false;
+      const racingDb = {
+        prepare: f.db.prepare.bind(f.db),
+        batch: async (commands: Parameters<D1Database['batch']>[0]) => {
+          if (!changed) {
+            changed = true;
+            f.sqlite.prepare(
+              'UPDATE connection_policy_revision SET revision = revision + 1 WHERE singleton = 1'
+            ).run();
+          }
+          return baseBatch(commands);
+        }
+      } as D1Database;
+      await expect(admitManualWorkflow({ ...f.env, DB: racingDb },
+        original.metadata.id, input, 'stale-policy')).rejects.toMatchObject({
+        code: 'REGISTRY_CONFLICT'
+      });
+      expect((f.sqlite.prepare('SELECT COUNT(*) AS count FROM run_admissions')
+        .get() as { count: number }).count).toBe(0);
+      expect((f.sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_runs')
+        .get() as { count: number }).count).toBe(0);
+      expect(f.starts()).toBe(0);
+      const retry = await admitManualWorkflow(f.env, original.metadata.id, input, 'stale-policy');
+      expect(retry).toMatchObject({
+        definitionDigest: original.definitionDigest, alreadyAdmitted: false
+      });
+      expect(f.starts()).toBe(1);
+    } finally { f.sqlite.close(); }
+  });
+
+  it('reuses the original ID when the handle exists but status confirms missing instance', async () => {
+    const f = fixture();
+    try {
+      const first = await admitManualWorkflow(f.env, original.metadata.id, input, 'status-missing');
+      f.loseInstance(first.runId);
+      // A binding may return a handle from get() and report absence at status().
+      // Only the positively identified not-found status permits same-ID repair.
+      f.missOnStatus(true);
+      const replay = await admitManualWorkflow(f.env, original.metadata.id, input, 'status-missing');
+      expect(replay).toMatchObject({
+        runId: first.runId, definitionDigest: first.definitionDigest, alreadyAdmitted: true
+      });
+      expect(f.starts()).toBe(2);
+      expect((f.sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_runs')
+        .get() as { count: number }).count).toBe(1);
+    } finally { f.sqlite.close(); }
+  });
+
+  it('does not mistake REST API 10400 for verified Workflow binding absence', async () => {
+    const f = fixture();
+    try {
+      const first = await admitManualWorkflow(f.env, original.metadata.id, input, 'rest-10400');
+      f.loseInstance(first.runId);
+      f.useRestShapedMissing(true);
+      const replay = await admitManualWorkflow(f.env, original.metadata.id, input, 'rest-10400');
+      expect(replay).toMatchObject({
+        runId: first.runId, definitionDigest: first.definitionDigest, alreadyAdmitted: true
+      });
+      // REST evidence alone must not authorize recreation of an external instance.
+      expect(f.starts()).toBe(1);
+      expect((f.sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_runs')
+        .get() as { count: number }).count).toBe(1);
+    } finally { f.sqlite.close(); }
+  });
+
+  it('repairs an admitted but never-created instance using the original Run ID', async () => {
+    const f = fixture();
+    try {
+      f.failNextCreateBeforePersistence();
+      await expect(admitManualWorkflow(f.env, original.metadata.id, input, 'never-created'))
+        .rejects.toThrow('simulated createBatch failure before persistence');
+      expect(f.starts()).toBe(0);
+      const recorded = f.sqlite.prepare(
+        'SELECT run_id, definition_digest FROM workflow_runs'
+      ).get() as { run_id: string; definition_digest: string };
+      f.change(null, 2);
+      const replay = await admitManualWorkflow(f.env, original.metadata.id, input, 'never-created');
+      expect(replay).toMatchObject({
+        runId: recorded.run_id, definitionDigest: recorded.definition_digest, alreadyAdmitted: true
+      });
+      expect(f.starts()).toBe(1);
+      expect((f.sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_runs')
+        .get() as { count: number }).count).toBe(1);
+      expect((f.sqlite.prepare("SELECT COUNT(*) AS count FROM workflow_events WHERE event_type = 'run.admitted'")
+        .get() as { count: number }).count).toBe(1);
+      const repeated = await admitManualWorkflow(f.env, original.metadata.id, input, 'never-created');
+      expect(repeated.runId).toBe(recorded.run_id);
+      expect(f.starts()).toBe(1);
+    } finally { f.sqlite.close(); }
+  });
+
   it('rotates to the new trigger credential without granting it the previous Run', async () => {
     const f = fixture();
     try {
