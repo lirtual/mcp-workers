@@ -41,10 +41,10 @@ export async function stageDefinition(
   if (!decoded || typeof decoded !== 'object' || Array.isArray(decoded)) return reject(400, 'invalid_body');
   const data = decoded as Record<string, unknown>;
   if (Object.keys(data).sort().join(',') !==
-      'definitionDigest,metadata,plan,policyRevision,publicationId,sourcePath,sourceSha,workflowId') {
+      'definitionDigest,manifestVersion,metadata,plan,policyRevision,publicationId,sourcePath,sourceSha,workflowId') {
     return reject(400, 'invalid_body');
   }
-  const { definitionDigest, metadata, plan, policyRevision, publicationId, sourcePath, sourceSha, workflowId } = data;
+  const { definitionDigest, manifestVersion, metadata, plan, policyRevision, publicationId, sourcePath, sourceSha, workflowId } = data;
   if (typeof definitionDigest !== 'string' || !HEX.test(definitionDigest) ||
       typeof sourceSha !== 'string' || !SOURCE_SHA.test(sourceSha) ||
       typeof publicationId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(publicationId) ||
@@ -56,6 +56,7 @@ export async function stageDefinition(
   let normalized: ReturnType<typeof validateVersionedWorkflowPlan>;
   try { normalized = validateVersionedWorkflowPlan(plan); }
   catch { return reject(422, 'invalid_plan'); }
+  if (manifestVersion !== 1) return reject(422, 'unsupported_manifest');
   if (normalized.id !== workflowId) return reject(422, 'metadata_mismatch');
   // Metadata is compiler-derived, not publisher-authored authority. Verify
   // every field against the normalized plan before recording a claim.
