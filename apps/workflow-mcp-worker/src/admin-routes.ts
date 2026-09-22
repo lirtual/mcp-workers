@@ -1,3 +1,4 @@
+import { updateActiveDefinition } from './active-registry-admin.js';
 import { stageDefinition } from './definition-stage.js';
 import { registerApprovedConnection } from './connection-admin.js';
 import { getConnection } from './connections.js';
@@ -120,7 +121,9 @@ export async function handleAdminRoute(
   const disableRoute = url.pathname === '/admin/connections/disable';
   const registerRoute = url.pathname === '/admin/connections/register';
   const stageRoute = url.pathname === '/admin/definitions/stage';
-  if (!snapshotRoute && !disableRoute && !registerRoute && !stageRoute) return reply(404, 'not_found');
+  const activateRoute = url.pathname === '/admin/definitions/activate';
+  const deactivateRoute = url.pathname === '/admin/definitions/deactivate';
+  if (!snapshotRoute && !disableRoute && !registerRoute && !stageRoute && !activateRoute && !deactivateRoute) return reply(404, 'not_found');
   if (request.method !== (snapshotRoute ? 'GET' : 'POST')) return reply(405, 'method_not_allowed');
 
   const repositoryId = required(env.ADMIN_PUBLISHER_REPOSITORY_ID);
@@ -153,6 +156,9 @@ export async function handleAdminRoute(
   if (disableRoute) return disableConnection(request, env);
   if (registerRoute) return registerApprovedConnection(request, env.DB);
   if (stageRoute) return stageDefinition(request, env, publisher);
+  if (activateRoute || deactivateRoute) {
+    return updateActiveDefinition(request, env, publisher, activateRoute ? 'activate' : 'deactivate');
+  }
   try {
     return Response.json(await policySnapshot(env), { headers: { 'Cache-Control': 'no-store' } });
   } catch {
