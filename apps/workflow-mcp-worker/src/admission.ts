@@ -233,8 +233,14 @@ async function recoverDynamicInstance(env: Env, run: StoredRun): Promise<void> {
     console.warn('workflow.recovery.expired', { runId: run.runId });
     return;
   }
-  // Cloudflare createBatch skips an existing custom ID within retention.
-  await env.WORKFLOW.createBatch([{ id: run.runId, params: { runId: run.runId } }]);
+  // Cloudflare createBatch skips an existing custom ID within retention. An
+  // uncertain create response must never erase an already admitted Run or
+  // prompt another instance ID; a later duplicate diagnoses the same ID.
+  try {
+    await env.WORKFLOW.createBatch([{ id: run.runId, params: { runId: run.runId } }]);
+  } catch {
+    console.warn('workflow.recovery.create_uncertain', { runId: run.runId });
+  }
 }
 
 async function admitCompiledWorkflow(
