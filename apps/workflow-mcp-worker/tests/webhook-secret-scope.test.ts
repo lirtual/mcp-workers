@@ -25,6 +25,7 @@ function fixture() {
   ).run();
   const env = {
     SAMPLE_HOOK: 'authorized-token', OTHER_HOOK: 'other-token',
+    WEBHOOK_SECRET_ALLOWLIST: JSON.stringify(['SAMPLE_HOOK']),
     MCP_ACCESS_TOKEN: 'platform-token',
     DB: {
       prepare: (sql: string) => ({
@@ -74,6 +75,9 @@ describe('T07 approved webhook secret resolution', () => {
       expect(await resolve()).toBeNull();
       f.sqlite.exec(`UPDATE workflow_webhook_secret_scopes SET policy_revision =
         (SELECT revision FROM connection_policy_revision WHERE singleton = 1)`);
+      f.env.WEBHOOK_SECRET_ALLOWLIST = '[]';
+      expect(await resolve()).toBeNull();
+      f.env.WEBHOOK_SECRET_ALLOWLIST = JSON.stringify(['SAMPLE_HOOK']);
       delete (f.env as unknown as Record<string, unknown>).SAMPLE_HOOK;
       expect(await resolve()).toBeNull();
     } finally { f.sqlite.close(); }
