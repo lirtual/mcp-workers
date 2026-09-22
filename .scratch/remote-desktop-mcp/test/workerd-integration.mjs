@@ -110,7 +110,7 @@ try {
   const forbidden = device();
   forbidden.on("error", () => {}); // ws also emits ECONNRESET-style errors after rejected handshakes.
   const response = await once(forbidden, "unexpected-response");
-  assert.equal(response[0].statusCode, 403);
+  assert.equal(response[1].statusCode, 403);
   forbidden.terminate();
   console.log("PASS local workerd: MCP initialize/list, auth, offline, WebSocket echo, concurrency, timeout, disconnect, reconnect, revoke");
 } finally {
