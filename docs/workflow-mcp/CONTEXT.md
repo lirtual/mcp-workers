@@ -7,6 +7,24 @@ This glossary defines the canonical language for the Workflow Automation bounded
 ### Workflow Definition
 A reusable declarative description of an automation: how it starts, which steps it contains, how data flows between them, and what completion means.
 
+### Workflow Definition Package
+A reviewed, versioned delivery unit containing one or more Workflow Definitions and their non-secret publication metadata. A package is an authoring and delivery unit, not a new runtime authority or executable code capability.
+
+### Definition Publication
+The authorized process of validating an immutable, source-attributed Workflow Definition Package and making its definitions eligible for activation. Publication does not, by itself, authorize a new Workflow Run.
+
+### Definition Activation
+The deliberate selection of one validated Workflow Definition Version for new Run admission. Activation leaves existing Runs bound to their prior version.
+
+### Definition Deactivation
+The withdrawal of a Workflow Definition from new Run admission while preserving historical versions and already admitted Runs. Deactivation does not imply cancellation.
+
+### Active Registry
+The mapping of available Workflow IDs to versions currently eligible for new Run admission, distinct from the immutable historical version store.
+
+### Connection Configuration Version
+A recorded revision of administratively approved, non-secret Connection metadata and operation policy. It is distinct from the secret value and from a Workflow Definition Version.
+
 ### Workflow Definition Version
 An immutable revision of a Workflow Definition identified by the canonical content of that definition rather than by the storage system that happened to contain it. Every Workflow Run is associated with exactly one definition version so later edits cannot change the meaning of an existing run.
 
@@ -197,6 +215,11 @@ A deterministic, normalized representation of a Workflow Definition used for val
 A restricted declarative expression that reads workflow data and computes conditions or values without ambient access to code execution, network, files, or other undeclared capabilities.
 
 ## Invariants
+
+- Business Workflow Definition Packages may be delivered independently of engine deployments; only validated and approved definitions may become active.
+- A change to the Active Registry affects future admission only; nonterminal Runs retain immutable Pinned Plans, and deactivation never silently cancels them.
+- Git-authored definition content is authoritative; registry persistence is the approved runtime projection, not an unrestricted second authoring source.
+- Connection Configuration Versions are non-secret; their associated credentials remain protected and are not supplied in a Workflow Definition Package.
 
 - Trigger, Workflow, Capability, and Executor are distinct concepts and must not be conflated.
 - Trigger Events are normalized before workflow logic consumes them.
