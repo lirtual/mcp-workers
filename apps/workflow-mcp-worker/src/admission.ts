@@ -128,6 +128,12 @@ async function admitDynamicManualWorkflow(
   const store = new D1WorkflowStore(env.DB);
   const original = await store.getAdmissionRun(source.admissionKey);
   if (original) {
+    // A caller authorized against a different active webhook version must
+    // never inherit a same-key Run admitted under another credential.
+    if (authenticated && original.definitionDigest !== authenticated.definitionDigest) {
+      throw new PublicWorkflowError('REGISTRY_CONFLICT',
+        'Webhook admission belongs to another definition version; retry.');
+    }
     // Never recreate a terminal historical Run. Only an unfinished Run may
     // need repair after an uncertain initial createBatch response.
     await recoverDynamicInstance(env, original);
@@ -151,6 +157,10 @@ async function admitDynamicManualWorkflow(
     // definition was deactivated in the meantime.
     const winner = await store.getAdmissionRun(source.admissionKey);
     if (winner) {
+      if (authenticated && winner.definitionDigest !== authenticated.definitionDigest) {
+        throw new PublicWorkflowError('REGISTRY_CONFLICT',
+          'Webhook admission belongs to another definition version; retry.');
+      }
       await recoverDynamicInstance(env, winner);
       return {
         runId: winner.runId, alreadyAdmitted: true,
@@ -204,6 +214,10 @@ async function admitDynamicManualWorkflow(
     // Return the existing immutable Run rather than a spurious conflict.
     const winner = await store.getAdmissionRun(source.admissionKey);
     if (winner) {
+      if (authenticated && winner.definitionDigest !== authenticated.definitionDigest) {
+        throw new PublicWorkflowError('REGISTRY_CONFLICT',
+          'Webhook admission belongs to another definition version; retry.');
+      }
       await recoverDynamicInstance(env, winner);
       return {
         runId: winner.runId, alreadyAdmitted: true,
@@ -218,6 +232,10 @@ async function admitDynamicManualWorkflow(
   }
   // A concurrent request may have won the key. Never restart a terminal Run.
   if (admitted.alreadyAdmitted) {
+    if (authenticated && recorded.definitionDigest !== authenticated.definitionDigest) {
+      throw new PublicWorkflowError('REGISTRY_CONFLICT',
+        'Webhook admission belongs to another definition version; retry.');
+    }
     await recoverDynamicInstance(env, recorded);
   } else {
     await env.WORKFLOW.createBatch([{ id: admitted.runId, params: { runId: admitted.runId } }]);
