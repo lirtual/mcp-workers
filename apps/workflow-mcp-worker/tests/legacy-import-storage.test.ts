@@ -201,6 +201,31 @@ describe('T10 additive isolated D1 legacy definition seeding', () => {
     } finally { sqlite.close(); }
   });
 
+  it('does not claim successful cutover evidence when the Cron cursor changes during the seed', async () => {
+    const { sqlite, db, state } = fixture();
+    try {
+      const underlyingBatch = db.batch.bind(db);
+      const racing = {
+        prepare: db.prepare.bind(db),
+        batch: async (queries: Parameters<D1Database['batch']>[0]) => {
+          const results = await underlyingBatch(queries);
+          // A separate tick advances the durable cursor just after the seed
+          // transaction commits; the reader still has not been enabled.
+          sqlite.prepare(
+            'UPDATE scheduler_state SET last_evaluated_at = last_evaluated_at + 60000 WHERE schedule_key = ?'
+          ).run(scheduleKey);
+          return results;
+        }
+      } as D1Database;
+      await expect(seedLegacyDefinitions(racing, state, 1))
+        .rejects.toThrow(/snapshot differs/);
+      expect((sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_active_definitions')
+        .get() as { count: number }).count).toBe(0);
+      expect((sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_definition_versions')
+        .get() as { count: number }).count).toBe(4);
+    } finally { sqlite.close(); }
+  });
+
   it('detects a concurrent immutable digest collision rather than accepting INSERT OR IGNORE', async () => {
     const { sqlite, db, state } = fixture();
     try {
