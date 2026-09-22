@@ -39,6 +39,7 @@ function fixture() {
   } as unknown as D1Database;
   let starts = 0;
   let lostResponse = false;
+  let failBeforeCreate = false;
   let uncertainLookup = false;
   let uncertainStatus = false;
   let missingOnStatus = false;
@@ -71,6 +72,10 @@ function fixture() {
         };
       },
       createBatch: async (batch: Array<{ id: string; params: { runId: string } }>) => {
+        if (failBeforeCreate) {
+          failBeforeCreate = false;
+          throw new Error('simulated createBatch failure before persistence');
+        }
         for (const instance of batch) {
           if (!instances.has(instance.id)) {
             instances.add(instance.id);
@@ -114,6 +119,7 @@ function fixture() {
   return {
     sqlite, db, env, save, change, starts: () => starts,
     loseNextResponse: () => { lostResponse = true; },
+    failNextCreateBeforePersistence: () => { failBeforeCreate = true; },
     loseInstance: (id: string) => { instances.delete(id); },
     failLookup: (fail: boolean) => { uncertainLookup = fail; },
     failStatus: (fail: boolean) => { uncertainStatus = fail; },
@@ -491,6 +497,32 @@ describe('T06 gated, immutable D1 manual admission', () => {
       expect(replay).toMatchObject({
         runId: first.runId, definitionDigest: first.definitionDigest, alreadyAdmitted: true
       });
+      expect(f.starts()).toBe(1);
+    } finally { f.sqlite.close(); }
+  });
+
+  it('repairs an admitted but never-created instance using the original Run ID', async () => {
+    const f = fixture();
+    try {
+      f.failNextCreateBeforePersistence();
+      await expect(admitManualWorkflow(f.env, original.metadata.id, input, 'never-created'))
+        .rejects.toThrow('simulated createBatch failure before persistence');
+      expect(f.starts()).toBe(0);
+      const recorded = f.sqlite.prepare(
+        'SELECT run_id, definition_digest FROM workflow_runs'
+      ).get() as { run_id: string; definition_digest: string };
+      f.change(null, 2);
+      const replay = await admitManualWorkflow(f.env, original.metadata.id, input, 'never-created');
+      expect(replay).toMatchObject({
+        runId: recorded.run_id, definitionDigest: recorded.definition_digest, alreadyAdmitted: true
+      });
+      expect(f.starts()).toBe(1);
+      expect((f.sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_runs')
+        .get() as { count: number }).count).toBe(1);
+      expect((f.sqlite.prepare("SELECT COUNT(*) AS count FROM workflow_events WHERE event_type = 'run.admitted'")
+        .get() as { count: number }).count).toBe(1);
+      const repeated = await admitManualWorkflow(f.env, original.metadata.id, input, 'never-created');
+      expect(repeated.runId).toBe(recorded.run_id);
       expect(f.starts()).toBe(1);
     } finally { f.sqlite.close(); }
   });
