@@ -1,3 +1,5 @@
+import type { EffectClass } from './capabilities.js';
+
 /**
  * Connection authorization for a single external attempt.
  *
@@ -14,14 +16,14 @@ export interface PinnedConnectionAuthority {
   version: number;
   endpoint: string;
   toolName: string;
-  effect: 'read' | 'idempotent-write' | 'non-idempotent-write';
+  effect: EffectClass;
 }
 
 export interface LiveConnectionControl {
   connectionId: string;
   disabled: boolean;
   /** The currently approved authority, inclusive of older pinned versions. */
-  allowedTools: Readonly<Record<string, readonly string[]>>;
+  allowedTools: Readonly<Record<string, readonly EffectClass[]>>;
 }
 
 export type ConnectionAuthorization =
