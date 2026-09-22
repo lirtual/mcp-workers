@@ -156,6 +156,50 @@ describe('T10 additive isolated D1 legacy definition seeding', () => {
     } finally { sqlite.close(); }
   });
 
+  it('rejects a caller snapshot that hides existing nonterminal Runs', async () => {
+    const { sqlite, db, state } = fixture();
+    try {
+      await seedLegacyDefinitions(db, state, 1);
+      const definitions = sqlite.prepare(
+        'SELECT definition_digest AS definitionDigest, workflow_id AS workflowId, dsl_version AS dslVersion, normalized_plan_json AS normalizedPlanJson, source_path AS sourcePath FROM workflow_definition_versions'
+      ).all() as unknown as LegacyImportState['definitions'];
+      const stored = definitions.find(row => row.workflowId === 'local-http-smoke')!;
+      sqlite.prepare(
+        `INSERT INTO workflow_runs (run_id, workflow_id, definition_digest, input_json,
+         trigger_json, state, cf_workflow_instance_id, created_at)
+         VALUES ('still-running', 'local-http-smoke', ?, '{}', '{"type":"manual"}',
+                 'waiting', 'still-running', '2026-09-23')`
+      ).run(stored.definitionDigest);
+      const falseEmpty: LegacyImportState = { ...state, definitions, nonterminal: [] };
+      await expect(seedLegacyDefinitions(db, falseEmpty, 1))
+        .rejects.toThrow(/snapshot differs/);
+      expect((sqlite.prepare(
+        "SELECT state FROM workflow_runs WHERE run_id = 'still-running'"
+      ).get() as { state: string }).state).toBe('waiting');
+    } finally { sqlite.close(); }
+  });
+
+  it('rejects a caller snapshot that hides an existing active pointer', async () => {
+    const { sqlite, db, state } = fixture();
+    try {
+      await seedLegacyDefinitions(db, state, 1);
+      const definitions = sqlite.prepare(
+        'SELECT definition_digest AS definitionDigest, workflow_id AS workflowId, dsl_version AS dslVersion, normalized_plan_json AS normalizedPlanJson, source_path AS sourcePath FROM workflow_definition_versions'
+      ).all() as unknown as LegacyImportState['definitions'];
+      const digest = definitions.find(row => row.workflowId === 'local-http-smoke')!.definitionDigest;
+      sqlite.prepare(
+        `INSERT INTO workflow_active_definitions
+         (workflow_id, active_digest, registry_revision, state, activated_at, updated_at)
+         VALUES ('local-http-smoke', ?, 1, 'enabled', '2026-09-23', '2026-09-23')`
+      ).run(digest);
+      await expect(seedLegacyDefinitions(db, { ...state, definitions, active: [] }, 1))
+        .rejects.toThrow(/snapshot differs/);
+      expect((sqlite.prepare(
+        "SELECT active_digest FROM workflow_active_definitions WHERE workflow_id = 'local-http-smoke'"
+      ).get() as { active_digest: string }).active_digest).toBe(digest);
+    } finally { sqlite.close(); }
+  });
+
   it('detects a concurrent immutable digest collision rather than accepting INSERT OR IGNORE', async () => {
     const { sqlite, db, state } = fixture();
     try {
