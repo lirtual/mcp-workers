@@ -1,5 +1,6 @@
 // THROWAWAY prototype for #173: deliberately NOT a deployable production MCP server.
 // Requires three independent secrets; no oauth or unrestricted local tools.
+import { DurableObject } from "cloudflare:workers";
 import { RelayState } from "./relay-state.mjs";
 
 const LIMIT = 8192;
