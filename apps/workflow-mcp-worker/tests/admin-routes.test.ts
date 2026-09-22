@@ -178,3 +178,33 @@ describe('protected bounded Connection registration', () => {
     expect((await register(approved, database(0))).status).toBe(409);
   });
 });
+
+describe('D1-backed approved Connection snapshot', () => {
+  it('reflects current version and global revision without credential or endpoint exposure', async () => {
+    const db = {
+      prepare: (sql: string) => ({
+        first: async () => sql.includes('connection_policy_revision') ? { revision: 7 } : null,
+        all: async () => ({
+          results: [{ connection_id: 'raindrop', current_version: 3, disabled: 1,
+            allowed_tools_json: '{"list_raindrops":["read"]}' }]
+        })
+      })
+    } as unknown as D1Database;
+    const response = await invoke('Bearer ' + await token(), { ...env, DB: db });
+    expect(response.status).toBe(200);
+    const snapshot = await response.json() as { revision: number;
+      connections: Record<string, { version: number; enabled: boolean }> };
+    expect(snapshot.revision).toBe(7);
+    expect(snapshot.connections.raindrop).toMatchObject({ version: 3, enabled: false });
+    const serialized = JSON.stringify(snapshot);
+    expect(serialized).not.toContain('ordinary-mcp-secret');
+    expect(serialized).not.toContain('MCP_ACCESS_TOKEN');
+    expect(serialized).not.toContain('https://');
+  });
+
+  it('fails closed if the policy store cannot provide an authoritative revision', async () => {
+    const db = { prepare: () => ({ first: async () => null }) } as unknown as D1Database;
+    const response = await invoke('Bearer ' + await token(), { ...env, DB: db });
+    expect(response.status).toBe(503);
+  });
+});
