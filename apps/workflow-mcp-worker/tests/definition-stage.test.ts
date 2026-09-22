@@ -99,6 +99,25 @@ describe('immutable staged definition with real SQLite', () => {
     expect(JSON.parse(persisted!.normalized_plan_json)).toEqual(entry.plan);
   });
 
+
+  it('does not persist an orphaned plan if the approval revision changes just before the atomic batch', async () => {
+    const db = await openStore();
+    if (!db) return;
+    const intercepted = {
+      prepare: db.prepare.bind(db),
+      batch: async (commands: Parameters<D1Database['batch']>[0]) => {
+        await db.prepare('UPDATE connection_policy_revision SET revision = revision + 1 WHERE singleton = 1').run();
+        return db.batch(commands);
+      }
+    } as D1Database;
+    const response = await stageDefinition(send(envelope()), { DB: intercepted } as Env, publisher);
+    expect(response.status).toBe(409);
+    const stored = await db.prepare(
+      'SELECT COUNT(*) AS count FROM workflow_definition_versions'
+    ).first<{ count: number }>();
+    expect(stored?.count).toBe(0);
+  });
+
   it('denies unsupported capability and unknown secrets before publication', async () => {
     const db = await openStore();
     if (!db) return;
