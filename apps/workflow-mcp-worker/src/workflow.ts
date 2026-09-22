@@ -848,7 +848,8 @@ async function runAttempts(input: {
       input.operationId,
       input.effectivePolicy,
       input.dependencySnapshot,
-      input.capabilityInput
+      input.capabilityInput,
+      input.runId
     );
 
     await input.store.recordAttemptResult({
@@ -916,7 +917,8 @@ async function executeDurableAttempt(
   operationId: string,
   effectivePolicy: EffectiveOperationPolicy,
   dependencySnapshot: Record<string, unknown> | undefined,
-  capabilityInput: Readonly<Record<string, unknown>>
+  capabilityInput: Readonly<Record<string, unknown>>,
+  runId: string
 ): Promise<AttemptResult> {
   try {
     const serialized = await durableStep.do(
@@ -929,6 +931,7 @@ async function executeDurableAttempt(
         JSON.stringify(
           await executeCloudflareCapability(definition.uses, capabilityInput, {
             env,
+            runId,
             operationId,
             effectivePolicy,
             ...(dependencySnapshot ? { dependencySnapshot } : {}),
