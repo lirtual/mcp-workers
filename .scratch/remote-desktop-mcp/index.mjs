@@ -27,7 +27,7 @@ async function body(request) {
   // Content-Length is an early rejection only; a streaming count is required
   // because chunked bodies and incorrect Content-Length values are possible.
   const declared = request.headers.get("content-length");
-  if (declared !== null && /^\\d+$/.test(declared) && Number(declared) > LIMIT) {
+  if (declared !== null && /^[0-9]+$/.test(declared) && Number(declared) > LIMIT) {
     throw new Error("payload_too_large");
   }
   if (!request.body) return JSON.parse("");
@@ -149,7 +149,17 @@ export class PrototypeDevice extends DurableObject {
 
 export default {
   async fetch(request, env) {
-    const path = new URL(request.url).pathname;
+    const target = new URL(request.url);
+    const path = target.pathname;
+    // Streamable HTTP requires Origin validation to prevent DNS rebinding.
+    // This throwaway prototype permits only same-origin browser requests;
+    // production ChatGPT/Portal origins must be decided during OAuth review.
+    const origin = request.headers.get("origin");
+    if (origin !== null) {
+      let parsedOrigin;
+      try { parsedOrigin = new URL(origin).origin; } catch { return json({ error: "origin_denied" }, 403); }
+      if (parsedOrigin !== target.origin) return json({ error: "origin_denied" }, 403);
+    }
     const configured = [env.PROTOTYPE_MCP_TOKEN, env.PROTOTYPE_DEVICE_TOKEN, env.PROTOTYPE_ADMIN_TOKEN]
       .every((token) => typeof token === "string" && token.length >= 24);
     if (!configured) return json({ error: "prototype_not_configured" }, 503);
@@ -172,6 +182,12 @@ export default {
     if (msg.method === "notifications/initialized") return new Response(null, { status: 202 });
     const id = msg.id ?? null;
     if (id === null || (typeof id !== "string" && typeof id !== "number")) return json(error(null, -32600, "Invalid Request"));
+    // The initialize handshake negotiates a legacy version; subsequent calls
+    // cannot silently be interpreted as the incompatible 2026-07-28 protocol.
+    const version = request.headers.get("mcp-protocol-version");
+    if (msg.method !== "initialize" && version !== null && version !== "2025-06-18") {
+      return json(error(id, -32600, "Unsupported protocol version: 2025-06-18 only"), 400);
+    }
     if (msg.method === "initialize") {
       return json(reply(id, { protocolVersion: "2025-06-18",
         capabilities: { tools: {} },
