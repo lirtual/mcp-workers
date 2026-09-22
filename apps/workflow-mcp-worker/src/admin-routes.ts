@@ -148,17 +148,27 @@ async function disableConnection(request: Request, env: AdminEnv): Promise<Respo
         headers: { 'Cache-Control': 'no-store' }
       });
     }
-    const changed = await env.DB.prepare(
-      `UPDATE connection_controls SET disabled = 1, revision = revision + 1, updated_at = ?
-       WHERE connection_id = ? AND revision = ? AND disabled = 0`
-    ).bind(new Date().toISOString(), connectionId, expectedRevision).run();
-    if (changed.meta.changes !== 1) return reply(409, 'revision_conflict');
-    // The action carries only identifiers and a request hash, never credentials.
-    await env.DB.prepare(
-      `INSERT INTO connection_admin_actions
-       (action_id, connection_id, action_kind, request_digest, resulting_revision, created_at)
-       VALUES (?, ?, 'disable', ?, ?, ?)`
-    ).bind(actionId, connectionId, digest, (expectedRevision as number) + 1, new Date().toISOString()).run();
+    // D1 batch executes the precondition, action claim and control update in
+    // one transaction. A concurrent competing action cannot claim this CAS.
+    const now = new Date().toISOString();
+    const results = await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO connection_admin_actions
+         (action_id, connection_id, action_kind, request_digest, resulting_revision, created_at)
+         SELECT ?, connection_id, 'disable', ?, revision + 1, ?
+         FROM connection_controls
+         WHERE connection_id = ? AND revision = ? AND disabled = 0`
+      ).bind(actionId, digest, now, connectionId, expectedRevision as number),
+      env.DB.prepare(
+        `UPDATE connection_controls SET disabled = 1, revision = revision + 1, updated_at = ?
+         WHERE connection_id = ? AND revision = ? AND disabled = 0
+           AND EXISTS (SELECT 1 FROM connection_admin_actions
+                       WHERE action_id = ? AND request_digest = ?)`
+      ).bind(now, connectionId, expectedRevision as number, actionId, digest)
+    ]);
+    if (results[0]?.meta.changes !== 1 || results[1]?.meta.changes !== 1) {
+      return reply(409, 'revision_conflict');
+    }
     return Response.json({ connectionId, revision: (expectedRevision as number) + 1, disabled: true }, {
       headers: { 'Cache-Control': 'no-store' }
     });
