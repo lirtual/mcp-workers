@@ -162,6 +162,23 @@ describe('T08 dynamic scheduler runtime', () => {
       expect(degraded).toEqual({
         evaluatedSchedules: 0, admittedRuns: 0, maintenanceProcessed: 0, errors: 1
       });
+      const dangling = {
+        prepare: (sql: string) => {
+          if (sql.includes('LEFT JOIN workflow_definition_versions')) {
+            return { all: async () => ({ results: [{
+              workflow_id: original.metadata.id, active_digest: digest,
+              registry_revision: 2, normalized_plan_json: null
+            }] }) };
+          }
+          return base.prepare(sql);
+        },
+        batch: base.batch.bind(base)
+      } as unknown as D1Database;
+      const missing = await runSchedulerTick({ ...f.env, DB: dangling }, Date.now(),
+        { maintenanceLimit: 1 });
+      expect(missing).toEqual({
+        evaluatedSchedules: 0, admittedRuns: 0, maintenanceProcessed: 0, errors: 1
+      });
       expect((f.sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_runs')
         .get() as { count: number }).count).toBe(0);
     } finally { f.sqlite.close(); }
