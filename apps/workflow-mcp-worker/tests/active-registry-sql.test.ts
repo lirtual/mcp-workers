@@ -199,6 +199,75 @@ describe('real SQLite active pointer and rollback contract', () => {
       .first<{ count: number }>())?.count).toBe(1);
   });
 
+
+  it('revalidates a revoked Connection before rolling back a previously approved version', async () => {
+    const db = await store();
+    if (!db) throw new Error('node:sqlite is required for real CAS validation');
+    const connected = getWorkflowRegistry().find(item => item.metadata.id === 'raindrop-daily-snapshot')!;
+    const connectionId = 'raindrop';
+    const now = '2026-09-22T00:00:00.000Z';
+    await db.prepare(
+      'INSERT INTO connection_config_versions (connection_id, version, config_json, created_at) VALUES (?, 1, ?, ?)'
+    ).bind(connectionId, '{}', now).run();
+    await db.prepare(
+      `INSERT INTO connection_controls
+       (connection_id, current_version, revision, disabled, allowed_tools_json, updated_at)
+       VALUES (?, 1, 1, 0, ?, ?)`
+    ).bind(connectionId, JSON.stringify({ list_raindrops: ['read'] }), now).run();
+    await db.prepare(
+      `INSERT INTO workflow_definition_versions
+       (definition_digest, workflow_id, dsl_version, normalized_plan_json, source_path, created_at)
+       VALUES (?, ?, 1, ?, ?, ?)`
+    ).bind(connected.definitionDigest, connected.metadata.id, JSON.stringify(connected.plan),
+      connected.sourcePath, now).run();
+    await db.prepare(
+      `INSERT INTO definition_publications
+       (publication_id, workflow_id, definition_digest, source_sha, repository_id,
+        publisher_run_id, publisher_run_attempt, publisher_workflow_sha, policy_revision, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`
+    ).bind('stage-connected', connected.metadata.id, connected.definitionDigest,
+      'b'.repeat(40), publisher.repositoryId, publisher.runId, publisher.runAttempt,
+      publisher.workflowSha, now).run();
+
+    const env = { DB: db, DYNAMIC_WORKFLOW_REGISTRY_ENABLED: 'true' } as Env;
+    const connectedRequest = (actionId: string, before: string | null,
+      after: string | null, revision: number) =>
+      new Request('https://example.invalid/admin/definitions/activate', {
+        method: 'POST',
+        body: JSON.stringify({
+          actionId, workflowId: connected.metadata.id,
+          expectedDigest: before, targetDigest: after, expectedRevision: revision
+        })
+      });
+    expect((await updateActiveDefinition(
+      connectedRequest('connected-first', null, connected.definitionDigest, 0),
+      env, publisher, 'activate')).status).toBe(200);
+    expect((await updateActiveDefinition(
+      connectedRequest('connected-disable', connected.definitionDigest, null, 1),
+      env, publisher, 'deactivate')).status).toBe(200);
+    await db.prepare(
+      'UPDATE connection_controls SET disabled = 1, revision = 2 WHERE connection_id = ?'
+    ).bind(connectionId).run();
+    await db.prepare(
+      'UPDATE connection_policy_revision SET revision = revision + 1 WHERE singleton = 1'
+    ).run();
+
+    const denied = await updateActiveDefinition(
+      connectedRequest('connected-rollback', null, connected.definitionDigest, 2),
+      env, publisher, 'activate');
+    expect(denied.status).toBe(422);
+    expect(await denied.json()).toEqual({ error: 'definition_not_approved' });
+    expect((await db.prepare(
+      'SELECT state, registry_revision FROM workflow_active_definitions WHERE workflow_id = ?'
+    ).bind(connected.metadata.id).first<{ state: string; registry_revision: number }>())).toMatchObject({
+      state: 'disabled', registry_revision: 2
+    });
+    expect((await db.prepare(
+      'SELECT COUNT(*) AS count FROM workflow_registry_actions WHERE workflow_id = ?'
+    ).bind(connected.metadata.id).first<{ count: number }>())?.count).toBe(2);
+    expect(await listVisibleWorkflows(env)).toEqual([]);
+  });
+
   it('rejects an unstaged target without creating a pointer or audit event', async () => {
     const db = await store();
     if (!db) throw new Error('node:sqlite is required for real CAS validation');
