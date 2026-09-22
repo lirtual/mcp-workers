@@ -49,11 +49,24 @@ async function run(): Promise<void> {
   const env = process.env;
   const mode = (env.WORKFLOW_CATALOG_MODE || 'dry-run') as Mode;
   if (!['dry-run', 'stage', 'activate'].includes(mode)) throw new Error('Invalid publisher mode.');
-  const endpoint = new URL(requireValue(env, 'WORKFLOW_MCP_ISOLATED_URL'));
+  const endpoint = new URL(requireValue(env, 'WORKFLOW_MCP_TARGET_URL'));
   if (endpoint.protocol !== 'https:' || endpoint.username || endpoint.password ||
-      endpoint.search || endpoint.hash || endpoint.pathname !== '/' ||
-      endpoint.hostname === 'workflow-mcp-worker.aiyaya.workers.dev') {
-    throw new Error('Publisher requires an explicit isolated HTTPS Worker URL.');
+      endpoint.search || endpoint.hash || endpoint.pathname !== '/') {
+    throw new Error('Publisher requires an explicit HTTPS Worker URL without path or credentials.');
+  }
+  // The owner permits LIVE test targeting of the not-yet-in-service Worker;
+  // this is deliberately distinct from independent isolated acceptance.
+  const liveTestTarget = endpoint.hostname === 'workflow-mcp-worker.aiyaya.workers.dev';
+  if (liveTestTarget && env.WORKFLOW_MCP_ALLOW_LIVE_TEST_TARGET !== 'true') {
+    throw new Error('Live Worker testing requires explicit target approval.');
+  }
+  if (liveTestTarget && mode !== 'dry-run' &&
+      env.WORKFLOW_MCP_ALLOW_LIVE_TEST_MUTATIONS !== 'true') {
+    throw new Error('Live Worker stage/activate requires separate mutation approval.');
+  }
+  if (!liveTestTarget && (env.WORKFLOW_MCP_ALLOW_LIVE_TEST_TARGET === 'true' ||
+                          env.WORKFLOW_MCP_ALLOW_LIVE_TEST_MUTATIONS === 'true')) {
+    throw new Error('Live-test approval cannot be applied to an unrecognized Worker.');
   }
   const expectedRepository = requireValue(env, 'WORKFLOW_CATALOG_REPOSITORY');
   const expectedRepositoryId = requireValue(env, 'WORKFLOW_CATALOG_REPOSITORY_ID');
