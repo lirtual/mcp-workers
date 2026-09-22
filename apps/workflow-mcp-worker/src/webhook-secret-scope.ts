@@ -1,11 +1,7 @@
+import { isProtectedWebhookSecret } from './webhook-secret-policy.js';
 import type { Env } from './types.js';
 
 /** Platform bindings cannot be granted by an author-controlled YAML secret name. */
-const RESERVED_SECRETS = new Set([
-  'MCP_ACCESS_TOKEN', 'EXECUTOR_LEASE_SECRET', 'GITHUB_ACTIONS_TOKEN',
-  'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY'
-]);
-
 const SECRET_REF = /^[A-Z][A-Z0-9_]{0,127}$/;
 
 /**
@@ -22,7 +18,7 @@ export async function resolveApprovedWebhookSecret(
   definitionDigest: string,
   declaredSecret: string
 ): Promise<string | null> {
-  if (!env.DB || !SECRET_REF.test(declaredSecret) || RESERVED_SECRETS.has(declaredSecret)) {
+  if (!env.DB || !SECRET_REF.test(declaredSecret) || isProtectedWebhookSecret(declaredSecret)) {
     return null;
   }
 
@@ -43,7 +39,7 @@ export async function resolveApprovedWebhookSecret(
   if (!row || row.enabled !== 1 || row.secret_name !== declaredSecret ||
       !Number.isSafeInteger(row.policy_revision) || row.policy_revision < 1 ||
       row.policy_revision !== row.current_policy_revision ||
-      RESERVED_SECRETS.has(row.secret_name)) {
+      isProtectedWebhookSecret(row.secret_name)) {
     return null;
   }
 
