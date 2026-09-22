@@ -32,3 +32,11 @@ CREATE TABLE IF NOT EXISTS connection_admin_actions (
 -- Run pin is a compact map of connection IDs to approved revision numbers.
 -- NULL means a pre-v0.2 run and must be interpreted using legacy static policy.
 ALTER TABLE workflow_runs ADD COLUMN connection_versions_json TEXT;
+
+-- One global monotonic publisher snapshot revision; independent Connection
+-- revisions cannot be combined using MAX without losing intervening changes.
+CREATE TABLE IF NOT EXISTS connection_policy_revision (
+  singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+  revision INTEGER NOT NULL CHECK(revision > 0)
+);
+INSERT OR IGNORE INTO connection_policy_revision (singleton, revision) VALUES (1, 1);
