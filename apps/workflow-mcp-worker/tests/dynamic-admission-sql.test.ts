@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { admitManualWorkflow } from '../src/admission.js';
+import { registerWorkflowTools } from '../src/mcp.js';
 import type { PublicWorkflowError } from '../src/admission.js';
 import { getWorkflowRegistry } from '../src/registry.js';
 import type { Env } from '../src/types.js';
@@ -129,6 +130,40 @@ describe('T06 gated, immutable D1 manual admission', () => {
         alreadyAdmitted: true, state: 'succeeded'
       });
       expect(f.starts()).toBe(1);
+    } finally { f.sqlite.close(); }
+  });
+
+  it('keeps the seven-tool MCP surface and pins workflow_run to D1 digest', async () => {
+    const f = fixture();
+    try {
+      type Reply = { structuredContent?: unknown; isError?: boolean };
+      const handlers = new Map<string, (args: unknown) => Promise<Reply>>();
+      const server = { registerTool: (name: string, _config: unknown,
+        handler: (args: unknown) => Promise<Reply>) => { handlers.set(name, handler); } };
+      registerWorkflowTools(server as unknown as Parameters<typeof registerWorkflowTools>[0], f.env);
+      expect([...handlers.keys()].sort()).toEqual([
+        'workflow_cancel', 'workflow_get', 'workflow_list', 'workflow_logs',
+        'workflow_result', 'workflow_run', 'workflow_status'
+      ]);
+      const call = (name: string, args: unknown) => handlers.get(name)!(args);
+      const first = await call('workflow_run', {
+        workflow: original.metadata.id, input, idempotencyKey: 'mcp-pinned-1'
+      });
+      expect(first.isError).not.toBe(true);
+      const data = first.structuredContent as { runId: string; definitionDigest: string; alreadyAdmitted: boolean };
+      expect(data).toMatchObject({ definitionDigest: original.definitionDigest, alreadyAdmitted: false });
+      f.change(null, 2);
+      const repeated = await call('workflow_run', {
+        workflow: original.metadata.id, input, idempotencyKey: 'mcp-pinned-1'
+      });
+      expect(repeated.structuredContent).toMatchObject({
+        runId: data.runId, definitionDigest: data.definitionDigest, alreadyAdmitted: true
+      });
+      expect((await call('workflow_status', { runId: data.runId })).structuredContent)
+        .toMatchObject({ runId: data.runId, definitionDigest: data.definitionDigest });
+      expect((await call('workflow_list', {})).structuredContent).toEqual({ workflows: [] });
+      expect((await call('workflow_get', { workflow: original.metadata.id })).isError).toBe(true);
+      expect((await call('workflow_logs', { runId: data.runId })).isError).not.toBe(true);
     } finally { f.sqlite.close(); }
   });
 
