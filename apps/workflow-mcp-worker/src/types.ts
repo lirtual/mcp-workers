@@ -14,6 +14,10 @@ export interface Env {
   GITHUB_REPOSITORY?: string;
   GITHUB_REPOSITORY_ID?: string;
   GITHUB_EXECUTOR_WORKFLOW_SHA?: string;
+  ADMIN_PUBLISHER_REPOSITORY_ID?: string;
+  ADMIN_PUBLISHER_WORKFLOW_REF?: string;
+  ADMIN_PUBLISHER_REF?: string;
+  ADMIN_PUBLISHER_WORKFLOW_SHA?: string;
   R2_ACCOUNT_ID?: string;
   R2_BUCKET_NAME?: string;
   R2_ACCESS_KEY_ID?: string;

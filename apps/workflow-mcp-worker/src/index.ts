@@ -1,4 +1,5 @@
 import { createMcpHandler } from '@modelcontextprotocol/server';
+import { handleAdminRoute } from './admin-routes.js';
 import { handleExecutorRoute } from './executor-routes.js';
 import { buildWorkflowMcpServer } from './mcp.js';
 import { authenticateWorkflowPortal } from './portal-auth.js';
@@ -27,6 +28,11 @@ export default {
 
     if (url.pathname === '/health') {
       return Response.json({ status: 'ok' });
+    }
+
+    if (url.pathname.startsWith('/admin/')) {
+      const adminResponse = await handleAdminRoute(request, env);
+      if (adminResponse) return adminResponse;
     }
 
     if (url.pathname.startsWith('/executor/')) {
