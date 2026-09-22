@@ -289,6 +289,7 @@ describe('protected immutable definition staging', () => {
     expect((await stage(valid, db(), 'Bearer ordinary-mcp-secret')).status).toBe(401);
     expect((await stage({ ...valid, definitionDigest: '0'.repeat(64) }, db())).status).toBe(400);
     expect((await stage({ ...valid, plan: { ...plan, injected: 'unexpected' } }, db())).status).toBe(400);
+    expect((await stage({ ...valid, sourcePath: 'workflows\\\\..\\\\evil.yml' }, db())).status).toBe(400);
     expect((await stage(valid, db(2))).status).toBe(409);
   });
 
