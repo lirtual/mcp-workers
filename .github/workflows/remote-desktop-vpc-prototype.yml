@@ -1,0 +1,37 @@
+name: Remote desktop VPC throwaway contract (NOT hosted VPC)
+
+on:
+  pull_request:
+    paths:
+      - ".scratch/remote-desktop-vpc/**"
+      - ".github/workflows/remote-desktop-vpc-prototype.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install pinned upstream in throwaway scratch fixture
+        run: |
+          npm install --prefix .scratch/remote-desktop-mcp --no-save --no-package-lock --ignore-scripts \
+            @wonderwhy-er/desktop-commander@0.2.51
+      - name: Verify simulated VPC fetch, restricted HTTP adapter and real isolated stdio
+        env:
+          RUN_REAL_UPSTREAM: "1"
+        run: node --test .scratch/remote-desktop-vpc/test/adapter.test.mjs
+      - name: Ensure prototype Worker is not publicly configured
+        run: |
+          node --input-type=module -e '
+            import fs from "node:fs";
+            const c=JSON.parse(fs.readFileSync(".scratch/remote-desktop-vpc/wrangler.jsonc","utf8"));
+            if(c.workers_dev!==false || c.preview_urls!==false || c.routes || c.route || c.name!=="throwaway-vpc-178") process.exit(1);
+            if(c.vpc_services?.length!==1 || c.vpc_services[0].binding!=="PRIVATE_DEVICE") process.exit(1);
+            console.log("PASS: no public endpoint; VPC Service placeholder only. NO hosted VPC assertion.");
+          '
