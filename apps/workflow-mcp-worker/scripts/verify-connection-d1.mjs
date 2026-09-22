@@ -84,6 +84,13 @@ sqlite.prepare(`INSERT INTO workflow_runs
   VALUES ('old-run','test','digest','{}','{}','running','test','old-run',?,'{"raindrop":1}')`).run(now);
 const pinned = await resolveRunConnectionPin(db, 'old-run', 'raindrop', 'list_raindrops', 'read');
 assert.equal(pinned.version, 1);
+// Publish a newer approved revision. The existing Run still uses revision 1.
+const updated = await registerApprovedConnection(request('/admin/connections/register',
+  { ...initial, actionId: 'register-2', expectedRevision: 1 }), db);
+assert.equal(updated.status, 200, await updated.text());
+assert.equal(sqlite.prepare('SELECT current_version FROM connection_controls').get().current_version, 2);
+assert.equal((await resolveRunConnectionPin(db, 'old-run', 'raindrop', 'list_raindrops', 'read')).version, 1);
+assert.equal(sqlite.prepare('SELECT revision FROM connection_policy_revision').get().revision, 3);
 
 const workflowRef = 'lirtual/mcp-workers/.github/workflows/workflow-mcp-publisher.yml@refs/heads/main';
 const pair = await crypto.subtle.generateKey({
@@ -123,7 +130,23 @@ async function admin(path, body) {
 const before = await handleAdminRoute(new Request('https://example.test/admin/connections/snapshot',
   { headers: { Authorization: 'Bearer ' + bearer } }), env, opts);
 assert.equal(before.status, 200);
-assert.equal((await before.json()).revision, 2);
+assert.equal((await before.json()).revision, 3);
+// Secret rotation is evaluated at use, without changing immutable D1 metadata.
+env.MCP_ACCESS_TOKEN = 'rotated-test-token';
+const successful = [];
+const successFetch = async (_url, init) => {
+  const rpc = JSON.parse(String(init.body));
+  successful.push(rpc.method);
+  assert.equal(new Headers(init.headers).get('Authorization'), 'Bearer rotated-test-token');
+  if (rpc.method === 'tools/list') return Response.json({
+    jsonrpc: '2.0', id: rpc.id, result: {
+      tools: [{ name: 'list_raindrops', inputSchema: { type: 'object', properties: {} } }]
+    }
+  });
+  return Response.json({ jsonrpc: '2.0', id: rpc.id, result: { content: [] } });
+};
+await callMcpTool(env, 'raindrop', 'list_raindrops', {}, successFetch, { db, pinned });
+assert.deepEqual(successful, ['tools/list', 'tools/call']);
 
 const external = [];
 const mockFetch = async (_url, init) => {
@@ -132,7 +155,7 @@ const mockFetch = async (_url, init) => {
   if (rpc.method === 'tools/list') {
     const decisions = await Promise.all([
       admin('/admin/connections/disable', {
-        actionId: 'disable-1', connectionId: 'raindrop', expectedRevision: 1
+        actionId: 'disable-1', connectionId: 'raindrop', expectedRevision: 2
       }),
       admin('/admin/connections/disable', {
         actionId: 'disable-2', connectionId: 'raindrop', expectedRevision: 1
@@ -150,16 +173,18 @@ await assert.rejects(
   error => error instanceof McpConnectionDeniedError
 );
 assert.deepEqual(external, ['tools/list']);
-assert.equal(sqlite.prepare('SELECT revision FROM connection_policy_revision').get().revision, 3);
+assert.equal(sqlite.prepare('SELECT revision FROM connection_policy_revision').get().revision, 4);
 assert.equal((await readLiveConnectionControl(db, 'raindrop')).disabled, true);
 const after = await handleAdminRoute(new Request('https://example.test/admin/connections/snapshot',
   { headers: { Authorization: 'Bearer ' + bearer } }), env, opts);
 assert.equal(after.status, 200);
 const snapshot = JSON.stringify(await after.json());
-assert.ok(snapshot.includes('"revision":3'));
+assert.ok(snapshot.includes('"revision":4'));
 assert.ok(!snapshot.includes('sensitive-do-not-persist'));
 assert.ok(!snapshot.includes('MCP_ACCESS_TOKEN'));
 const saved = sqlite.prepare('SELECT config_json FROM connection_config_versions').get().config_json;
 assert.ok(!saved.includes('sensitive-do-not-persist'));
+assert.ok(!saved.includes('rotated-test-token'));
+assert.ok(!snapshot.includes('rotated-test-token'));
 sqlite.close();
-console.log('PASS: real SQLite migrations, signed admin snapshot, CAS conflict, immutable Run pin, and revoke-before-tools/call');
+console.log('PASS: real SQLite D1 migration, approved revision update, secret rotation, signed admin CAS, pinned Run call, and revoke-before-tools/call');
