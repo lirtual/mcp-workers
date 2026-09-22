@@ -170,7 +170,13 @@ async function admitDynamicManualWorkflow(
   if (!recorded) {
     throw new PublicWorkflowError('ADMISSION_UNAVAILABLE', 'Durable admission record is unavailable.');
   }
-  await env.WORKFLOW.createBatch([{ id: admitted.runId, params: { runId: admitted.runId } }]);
+  // A competing request can win the admission key after our initial read.
+  // Apply the same terminal guard to that path as to an early duplicate.
+  if (!new Set<StoredRun['state']>([
+    'succeeded', 'failed', 'cancelled', 'timed_out', 'indeterminate'
+  ]).has(recorded.state)) {
+    await env.WORKFLOW.createBatch([{ id: admitted.runId, params: { runId: admitted.runId } }]);
+  }
   return {
     ...admitted, definitionDigest: recorded.definitionDigest, state: recorded.state
   };
