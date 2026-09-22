@@ -3,7 +3,7 @@ import { env } from "cloudflare:workers";
 import { evictDurableObject } from "cloudflare:test";
 import { test, expect } from "vitest";
 
-test("hibernated connection restores from attachment; revoked state survives eviction", async () => {
+test("hibernated connection restores from attachment", async () => {
   const stub = env.DEVICE.get(env.DEVICE.idFromName("scratch-only"));
   const response = await stub.fetch("https://internal/device", {
     headers: { Upgrade: "websocket" },
@@ -35,10 +35,16 @@ test("hibernated connection restores from attachment; revoked state survives evi
   expect(await result.json()).toEqual({ result: { echo: "wake" } });
   console.log("eviction-proof: round trip succeeded");
 
+  socket.close(1000, "done");
+});
+
+test("revoked device remains revoked across eviction without stale socket", async () => {
+  // Separate object: revocation closes an active socket asynchronously; do not
+  // mix an unacknowledged WebSocket close with the storage-persistence check.
+  const stub = env.DEVICE.get(env.DEVICE.idFromName("revocation-proof"));
   const revoked = await stub.fetch("https://internal/revoke", { method: "POST" });
   expect(revoked.status).toBe(200);
-  await evictDurableObject(stub, { webSockets: "hibernate" });
-  console.log("eviction-proof: revoked state eviction completed");
+  await evictDurableObject(stub);
   const denied = await stub.fetch("https://internal/device", { headers: { Upgrade: "websocket" } });
   expect(denied.status).toBe(403);
   const blocked = await stub.fetch("https://internal/invoke", {
@@ -47,5 +53,4 @@ test("hibernated connection restores from attachment; revoked state survives evi
   });
   expect(blocked.status).toBe(403);
   expect(await blocked.json()).toEqual({ error: "revoked" });
-  socket.close(1000, "done");
 });
