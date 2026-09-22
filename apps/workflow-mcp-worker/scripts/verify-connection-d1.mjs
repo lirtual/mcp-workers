@@ -28,11 +28,18 @@ function bindSql(sql, args) {
     run: async () => ({ meta: { changes: Number(statement.run(...args).changes) } })
   };
 }
+let transactionTail = Promise.resolve();
 const db = {
   prepare(sql) {
     return { bind: (...args) => bindSql(sql, args), ...bindSql(sql, []) };
   },
   async batch(statements) {
+    // A single SQLite connection cannot start nested transactions. Serialize
+    // transactions while preserving the competing requests' stale pre-read.
+    const previous = transactionTail;
+    let release;
+    transactionTail = new Promise(resolve => { release = resolve; });
+    await previous;
     sqlite.exec('BEGIN IMMEDIATE');
     try {
       const result = [];
@@ -42,6 +49,8 @@ const db = {
     } catch (e) {
       sqlite.exec('ROLLBACK');
       throw e;
+    } finally {
+      release();
     }
   }
 };
