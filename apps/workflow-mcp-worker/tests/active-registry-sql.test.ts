@@ -171,6 +171,34 @@ describe('real SQLite active pointer and rollback contract', () => {
     expect(pointer).toMatchObject({ active_digest: entry.definitionDigest, registry_revision: 1 });
   });
 
+
+  it('reconciles an identical action when D1 loses its response after commit', async () => {
+    const db = await store();
+    if (!db) throw new Error('node:sqlite is required for real CAS validation');
+    const originalBatch = db.batch.bind(db);
+    let dropResponse = true;
+    const env = { DB: {
+      prepare: db.prepare.bind(db),
+      batch: async (statements: Parameters<D1Database['batch']>[0]) => {
+        const result = await originalBatch(statements);
+        if (dropResponse) {
+          dropResponse = false;
+          throw new Error('lost D1 response after commit');
+        }
+        return result;
+      }
+    } as D1Database } as Env;
+    const first = await updateActiveDefinition(
+      request('lost-response', null, entry.definitionDigest, 0), env, publisher, 'activate');
+    expect(first.status).toBe(200);
+    expect(await first.json()).toMatchObject({ activeDigest: entry.definitionDigest, revision: 1 });
+    const replay = await updateActiveDefinition(
+      request('lost-response', null, entry.definitionDigest, 0), env, publisher, 'activate');
+    expect(replay.status).toBe(200);
+    expect((await db.prepare('SELECT COUNT(*) AS count FROM workflow_registry_actions')
+      .first<{ count: number }>())?.count).toBe(1);
+  });
+
   it('rejects an unstaged target without creating a pointer or audit event', async () => {
     const db = await store();
     if (!db) throw new Error('node:sqlite is required for real CAS validation');
