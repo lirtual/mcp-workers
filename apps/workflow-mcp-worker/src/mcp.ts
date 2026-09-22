@@ -3,7 +3,7 @@ import * as z from 'zod/v4';
 import { admitManualWorkflow, PublicWorkflowError } from './admission.js';
 import { artifactReadReferences } from './artifacts.js';
 import { requestWorkflowCancellation } from './cancellation.js';
-import { findWorkflow, getWorkflowRegistry } from './registry.js';
+import { findVisibleWorkflow, listVisibleWorkflows } from './registry.js';
 import { D1WorkflowStore } from './storage.js';
 import type { Env } from './types.js';
 
@@ -79,9 +79,9 @@ export function registerWorkflowTools(server: ToolRegistrar, env?: Env): void {
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false }
     },
     async () =>
-      success({
-        workflows: getWorkflowRegistry().map(entry => entry.metadata)
-      })
+      runSafely(async () => success({
+        workflows: (await listVisibleWorkflows(env)).map(entry => entry.metadata)
+      }))
   );
 
   server.registerTool(
@@ -91,15 +91,16 @@ export function registerWorkflowTools(server: ToolRegistrar, env?: Env): void {
       inputSchema: z.object({ workflow: workflowIdSchema }).strict(),
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false }
     },
-    async rawArgs => {
-      const parsed = z.object({ workflow: workflowIdSchema }).parse(rawArgs);
-      const entry = findWorkflow(parsed.workflow);
-      if (!entry) return failure('WORKFLOW_NOT_FOUND', 'Workflow definition was not found.');
-      return success({
-        workflow: entry.metadata,
-        sourcePath: entry.sourcePath
-      });
-    }
+    async rawArgs =>
+      runSafely(async () => {
+        const parsed = z.object({ workflow: workflowIdSchema }).parse(rawArgs);
+        const entry = await findVisibleWorkflow(parsed.workflow, env);
+        if (!entry) return failure('WORKFLOW_NOT_FOUND', 'Workflow definition was not found.');
+        return success({
+          workflow: entry.metadata,
+          sourcePath: entry.sourcePath
+        });
+      })
   );
 
   server.registerTool(
