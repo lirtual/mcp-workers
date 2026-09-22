@@ -3,6 +3,7 @@ import type { RuntimePlan } from './runtime-plan.js';
 
 const identifier = z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,127}$/);
 const capability = z.string().regex(/^[A-Za-z][A-Za-z0-9_.-]{0,127}$/);
+const secretRef = z.string().regex(/^[A-Z][A-Z0-9_]{0,127}$/);
 const literal = z.union([z.string(), z.number().finite(), z.boolean(), z.null()]);
 const expression: z.ZodType<unknown> = z.lazy(() =>
   z.discriminatedUnion('kind', [
@@ -23,13 +24,13 @@ const value: z.ZodType<unknown> = z.lazy(() =>
   z.union([
     literal,
     z.array(value),
-    z.record(z.string(), value),
+    z.record(z.string(), value).refine(object => !Object.hasOwn(object, '$expr')),
     z.object({ $expr: expression }).strict()
   ])
 );
 const trigger = z.discriminatedUnion('type', [
   z.object({ type: z.literal('manual') }).strict(),
-  z.object({ type: z.literal('webhook'), id: identifier, secret: identifier }).strict(),
+  z.object({ type: z.literal('webhook'), id: identifier, secret: secretRef }).strict(),
   z.object({
     type: z.literal('schedule'), id: identifier, cron: z.string().min(1).max(128),
     timezone: z.string().min(1).max(128), misfire: z.literal('latest')
