@@ -9,6 +9,7 @@ import { registerApprovedConnection } from '../src/connection-admin.ts';
 import { handleAdminRoute } from '../src/admin-routes.ts';
 import { resolveRunConnectionPin, readLiveConnectionControl } from '../src/connection-revocation.ts';
 import { callMcpTool, McpConnectionDeniedError } from '../src/mcp-client.ts';
+import { resolveStepExecutionPolicy } from '../src/step-policy.ts';
 import { GITHUB_EXECUTOR_CONFIG } from '../src/platform-config.ts';
 
 const crypto = globalThis.crypto ?? webcrypto;
@@ -186,5 +187,24 @@ const saved = sqlite.prepare('SELECT config_json FROM connection_config_versions
 assert.ok(!saved.includes('sensitive-do-not-persist'));
 assert.ok(!saved.includes('rotated-test-token'));
 assert.ok(!snapshot.includes('rotated-test-token'));
+// A disabled old Run must not leak its credential during early step discovery.
+let unauthorizedDiscovery = 0;
+const originalFetch = globalThis.fetch;
+globalThis.fetch = async () => {
+  unauthorizedDiscovery++;
+  throw new Error('Revoked discovery contacted the remote MCP server.');
+};
+try {
+  const decision = await resolveStepExecutionPolicy({
+    env, store: { getStepRunPolicy: async () => null },
+    runId: 'old-run', stepRunId: 'unstarted-step',
+    definition: { uses: 'mcp.call', executor: 'cloudflare', needs: [], with: {} },
+    capabilityInput: { connection: 'raindrop', tool: 'list_raindrops' }
+  });
+  assert.equal(decision.ok, false);
+  assert.equal(unauthorizedDiscovery, 0);
+} finally {
+  globalThis.fetch = originalFetch;
+}
 sqlite.close();
 console.log('PASS: real SQLite D1 migration, approved revision update, secret rotation, signed admin CAS, pinned Run call, and revoke-before-tools/call');
