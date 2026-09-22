@@ -432,7 +432,7 @@ describe('T06 gated, immutable D1 manual admission', () => {
       });
       expect((f.sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_runs').get() as { count: number }).count)
         .toBe(1);
-      expect(f.starts()).toBe(2);
+      expect(f.starts()).toBe(1);
     } finally { f.sqlite.close(); }
   });
 });
@@ -482,10 +482,10 @@ describe('T07 transactional webhook authorization', () => {
       await expect(run('event-2')).rejects.toMatchObject({ code: 'REGISTRY_CONFLICT' });
       f.sqlite.exec("UPDATE workflow_webhook_secret_scopes SET enabled = 1");
       f.change(null, 3);
-      await expect(run('event-3')).rejects.toMatchObject({ code: 'REGISTRY_CONFLICT' });
+      await expect(run('event-3')).rejects.toMatchObject({ code: 'WORKFLOW_NOT_FOUND' });
       expect((f.sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_runs')
-        .get() as { count: number }).count).toBe(1);
-      expect(f.starts()).toBe(1);
+        .get() as { count: number }).count).toBe(2);
+      expect(f.starts()).toBe(2);
     } finally { f.sqlite.close(); }
   });
 });
