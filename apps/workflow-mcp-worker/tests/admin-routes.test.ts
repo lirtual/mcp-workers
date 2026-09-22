@@ -227,3 +227,81 @@ describe('D1-backed approved Connection snapshot', () => {
     expect(response.status).toBe(503);
   });
 });
+
+
+describe('protected immutable definition staging', () => {
+  const plan = {
+    dslVersion: 1, id: 'TestStage', name: 'Staged workflow',
+    inputs: {}, triggers: [{ type: 'manual' }],
+    steps: { read: { uses: 'http.read', executor: 'cloudflare', needs: [],
+      with: { url: 'https://example.invalid' } } },
+    outputs: {}
+  };
+  function canonical(value: unknown): string {
+    if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']';
+    if (value && typeof value === 'object') {
+      return '{' + Object.keys(value as Record<string, unknown>).sort().map(
+        key => JSON.stringify(key) + ':' + canonical((value as Record<string, unknown>)[key])
+      ).join(',') + '}';
+    }
+    return JSON.stringify(value);
+  }
+  async function sha256(value: string): Promise<string> {
+    const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+    return [...new Uint8Array(bytes)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+  }
+  async function envelope(): Promise<Record<string, unknown>> {
+    return {
+      workflowId: plan.id, definitionDigest: await sha256(canonical(plan)),
+      sourceSha: 'a'.repeat(40), sourcePath: 'workflows/test-stage.yml',
+      policyRevision: 1, connectionVersions: {}, plan
+    };
+  }
+  function db(revision = 1, alreadyStaged = false): D1Database {
+    return {
+      prepare: (sql: string) => ({
+        first: async () => sql.includes('connection_policy_revision')
+          ? { revision }
+          : sql.includes('definition_publications') ? { publication_id: 'published' } : null,
+        bind: () => ({
+          first: async () => sql.includes('definition_publications') ? { publication_id: 'published' } : null
+        })
+      }),
+      batch: async (statements: unknown[]) => {
+        expect(statements).toHaveLength(2);
+        return [{ meta: { changes: alreadyStaged ? 0 : 1 } },
+          { meta: { changes: alreadyStaged ? 0 : 1 } }];
+      }
+    } as unknown as D1Database;
+  }
+  async function stage(body: unknown, database: D1Database, bearer?: string): Promise<Response> {
+    const request = new Request('https://example.test/admin/definitions/stage', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json',
+        authorization: bearer ?? 'Bearer ' + await token() },
+      body: JSON.stringify(body)
+    });
+    return (await handleAdminRoute(request, { ...env, DB: database }, options))!;
+  }
+
+  it('requires trusted publisher and checks digest, strict IR and revision', async () => {
+    const valid = await envelope();
+    expect((await stage(valid, db(), 'Bearer ordinary-mcp-secret')).status).toBe(401);
+    expect((await stage({ ...valid, definitionDigest: '0'.repeat(64) }, db())).status).toBe(400);
+    expect((await stage({ ...valid, plan: { ...plan, injected: 'unexpected' } }, db())).status).toBe(400);
+    expect((await stage(valid, db(2))).status).toBe(409);
+  });
+
+  it('stages an immutable plan without exposing credentials or activating it', async () => {
+    const valid = await envelope();
+    const response = await stage(valid, db());
+    expect(response.status).toBe(200);
+    const output = await response.json() as Record<string, unknown>;
+    expect(output).toMatchObject({
+      workflowId: plan.id, definitionDigest: valid.definitionDigest,
+      staged: true, alreadyStaged: false
+    });
+    expect(JSON.stringify(output)).not.toContain('ordinary-mcp-secret');
+    expect((await stage(valid, db(1, true)).json() as { alreadyStaged: boolean }).alreadyStaged).toBe(true);
+  });
+});
