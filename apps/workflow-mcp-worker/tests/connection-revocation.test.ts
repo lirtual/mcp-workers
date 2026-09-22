@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { authorizePinnedConnectionAttempt, readLiveConnectionControl, type PinnedConnectionAuthority } from '../src/connection-revocation.js';
+import { authorizePinnedConnectionAttempt, readLiveConnectionControl, resolveRunConnectionPin, type PinnedConnectionAuthority } from '../src/connection-revocation.js';
 
 const pinned: PinnedConnectionAuthority = {
   connectionId: 'raindrop',
@@ -57,5 +57,41 @@ describe('D1 live Connection controls', () => {
       disabled: 0,
       allowed_tools_json: '{"list_raindrops":["privileged"]}'
     }), 'raindrop')).rejects.toThrow('invalid');
+  });
+});
+
+describe('Run-scoped Connection pin resolution', () => {
+  function db(pin: string | null, config: string | null): D1Database {
+    return {
+      prepare: (sql: string) => ({
+        bind: () => ({
+          first: async () => sql.includes('workflow_runs')
+            ? { connection_versions_json: pin }
+            : config === null ? null : { config_json: config }
+        })
+      })
+    } as unknown as D1Database;
+  }
+
+  it('preserves explicit legacy NULL compatibility', async () => {
+    expect(await resolveRunConnectionPin(db(null, null), 'old-run', 'raindrop', 'list_raindrops', 'read'))
+      .toBeUndefined();
+  });
+
+  it('resolves a pinned revision without silently retargeting', async () => {
+    expect(await resolveRunConnectionPin(
+      db('{"raindrop":2}', '{"endpoint":"https://example.invalid/mcp"}'),
+      'new-run', 'raindrop', 'list_raindrops', 'read'
+    )).toEqual({
+      connectionId: 'raindrop', version: 2, endpoint: 'https://example.invalid/mcp',
+      toolName: 'list_raindrops', effect: 'read'
+    });
+  });
+
+  it('fails closed on missing revision and malformed pin map', async () => {
+    await expect(resolveRunConnectionPin(db('{}', null), 'new-run', 'raindrop', 'list_raindrops', 'read'))
+      .rejects.toThrow('unavailable');
+    await expect(resolveRunConnectionPin(db('[]', null), 'new-run', 'raindrop', 'list_raindrops', 'read'))
+      .rejects.toThrow('invalid');
   });
 });
