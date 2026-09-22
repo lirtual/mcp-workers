@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { seedLegacyDefinitions } from '../src/legacy-import-storage.js';
-import type { LegacyImportState } from '../src/legacy-import.js';
+import { prepareLegacyImport, type LegacyImportState } from '../src/legacy-import.js';
 
 const scheduleKey = 'raindrop-daily-snapshot:daily-nine';
 function fixture() {
@@ -81,6 +81,48 @@ describe('T10 additive isolated D1 legacy definition seeding', () => {
         last_admitted_scheduled_time: 1_789_999_940_000,
         next_due_occurrence: 1_790_000_060_000
       }]);
+    } finally { sqlite.close(); }
+  });
+
+  it('does not change an existing nonterminal Run pinned to the original legacy definition', async () => {
+    const { sqlite, db, state } = fixture();
+    try {
+      const original = prepareLegacyImport(state).definitions.find(
+        row => row.workflowId === 'local-http-smoke')!;
+      sqlite.prepare(
+        `INSERT INTO workflow_definition_versions
+         (definition_digest, workflow_id, dsl_version, normalized_plan_json, source_path, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      ).run(original.definitionDigest, original.workflowId, original.dslVersion,
+        original.normalizedPlanJson, original.sourcePath, '2026-09-21');
+      sqlite.prepare(
+        `INSERT INTO workflow_runs
+         (run_id, workflow_id, definition_digest, input_json, trigger_json, state,
+          engine_version, cf_workflow_instance_id, created_at)
+         VALUES (?, ?, ?, ?, ?, 'waiting', ?, ?, ?)`
+      ).run('run_legacy_waiting', original.workflowId, original.definitionDigest,
+        JSON.stringify({ url: 'https://example.com/' }), JSON.stringify({ type: 'manual' }),
+        'old-worker-version', 'run_legacy_waiting', '2026-09-21');
+      const before = sqlite.prepare('SELECT * FROM workflow_runs WHERE run_id = ?')
+        .get('run_legacy_waiting');
+      const imported = await seedLegacyDefinitions(db, {
+        ...state,
+        definitions: [{
+          definitionDigest: original.definitionDigest, workflowId: original.workflowId,
+          dslVersion: original.dslVersion, normalizedPlanJson: original.normalizedPlanJson,
+          sourcePath: original.sourcePath
+        }],
+        nonterminal: [{
+          runId: 'run_legacy_waiting', definitionDigest: original.definitionDigest,
+          dslVersion: 1, normalizedPlanJson: original.normalizedPlanJson,
+          manifestVersions: [], hasInvalidManifest: false
+        }]
+      }, 1);
+      expect(imported).toMatchObject({ definitionsVerified: 4, inserted: 3, readerGateChanged: false });
+      expect(sqlite.prepare('SELECT * FROM workflow_runs WHERE run_id = ?')
+        .get('run_legacy_waiting')).toEqual(before);
+      expect((sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_events')
+        .get() as { count: number }).count).toBe(0);
     } finally { sqlite.close(); }
   });
 
