@@ -39,17 +39,32 @@ function fixture() {
   } as unknown as D1Database;
   let starts = 0;
   let lostResponse = false;
+  let uncertainLookup = false;
+  const instances = new Set<string>();
   const env = {
     DB: db,
     DYNAMIC_WORKFLOW_REGISTRY_ENABLED: 'true',
     DYNAMIC_WORKFLOW_ADMISSION_ENABLED: 'true',
     WORKFLOW: {
-      createBatch: async (_instances: Array<{ id: string; params: { runId: string } }>) => {
-        starts++;
+      get: async (id: string) => {
+        if (uncertainLookup) throw new Error('simulated upstream timeout');
+        if (!instances.has(id)) throw Object.assign(new Error('Instance does not exist'), {
+          code: 'instance.not_found'
+        });
+        return { id };
+      },
+      createBatch: async (batch: Array<{ id: string; params: { runId: string } }>) => {
+        for (const instance of batch) {
+          if (!instances.has(instance.id)) {
+            instances.add(instance.id);
+            starts++;
+          }
+        }
         if (lostResponse) {
           lostResponse = false;
           throw new Error('simulated lost createBatch response');
         }
+        return [];
       }
     }
   } as unknown as Env;
@@ -79,7 +94,12 @@ function fixture() {
       'UPDATE workflow_active_definitions SET active_digest = ?, registry_revision = ?, state = ? WHERE workflow_id = ?'
     ).run(digest, revision, digest ? 'enabled' : 'disabled', original.metadata.id);
   };
-  return { sqlite, db, env, save, change, starts: () => starts, loseNextResponse: () => { lostResponse = true; } };
+  return {
+    sqlite, db, env, save, change, starts: () => starts,
+    loseNextResponse: () => { lostResponse = true; },
+    loseInstance: (id: string) => { instances.delete(id); },
+    failLookup: (fail: boolean) => { uncertainLookup = fail; }
+  };
 }
 
 const input = { url: 'https://example.test/' };
@@ -190,6 +210,34 @@ describe('T06 gated, immutable D1 manual admission', () => {
     } finally { f.sqlite.close(); }
   });
 
+  it('repairs only a confirmed missing queued instance using the original ID', async () => {
+    const f = fixture();
+    try {
+      const first = await admitManualWorkflow(f.env, original.metadata.id, input, 'missing-instance');
+      f.loseInstance(first.runId);
+      const replay = await admitManualWorkflow(f.env, original.metadata.id, input, 'missing-instance');
+      expect(replay).toMatchObject({ runId: first.runId, alreadyAdmitted: true });
+      expect(f.starts()).toBe(2);
+      const rows = f.sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_runs')
+        .get() as { count: number };
+      expect(rows.count).toBe(1);
+    } finally { f.sqlite.close(); }
+  });
+
+  it('fails closed on an uncertain instance lookup without another external start', async () => {
+    const f = fixture();
+    try {
+      const first = await admitManualWorkflow(f.env, original.metadata.id, input, 'uncertain-lookup');
+      f.failLookup(true);
+      await expect(admitManualWorkflow(f.env, original.metadata.id, input, 'uncertain-lookup'))
+        .rejects.toMatchObject({ code: 'WORKFLOW_RECOVERY_UNCERTAIN' });
+      expect(f.starts()).toBe(1);
+      expect((f.sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_runs')
+        .get() as { count: number }).count).toBe(1);
+      expect(first.alreadyAdmitted).toBe(false);
+    } finally { f.sqlite.close(); }
+  });
+
   it('reuses the durable original Run after an uncertain external create response', async () => {
     const f = fixture();
     try {
@@ -206,7 +254,7 @@ describe('T06 gated, immutable D1 manual admission', () => {
       });
       expect((f.sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_runs').get() as { count: number }).count)
         .toBe(1);
-      expect(f.starts()).toBe(2);
+      expect(f.starts()).toBe(1);
     } finally { f.sqlite.close(); }
   });
 });
