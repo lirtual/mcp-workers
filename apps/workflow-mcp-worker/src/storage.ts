@@ -69,6 +69,7 @@ export interface AdmissionRequest {
   sourceType: string;
   sourceKey?: string;
   engineVersion: string;
+  connectionVersions?: Readonly<Record<string, number>> | null;
 }
 
 export interface AdmissionResult {
@@ -306,8 +307,8 @@ export class D1WorkflowStore {
         .prepare(
           `INSERT OR IGNORE INTO workflow_runs
            (run_id, workflow_id, definition_digest, input_json, trigger_json, state,
-            engine_version, cf_workflow_instance_id, created_at)
-           SELECT ?, ?, ?, ?, ?, 'queued', ?, ?, ?
+            engine_version, cf_workflow_instance_id, created_at, connection_versions_json)
+           SELECT ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?
            WHERE EXISTS (
              SELECT 1 FROM run_admissions
              WHERE admission_key = ? AND run_id = ?
@@ -322,6 +323,7 @@ export class D1WorkflowStore {
           input.engineVersion,
           input.proposedRunId,
           createdAt,
+          input.connectionVersions ? JSON.stringify(input.connectionVersions) : null,
           input.admissionKey,
           input.proposedRunId
         )
