@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
-import { admitManualWorkflow } from '../src/admission.js';
+import { admitManualWorkflow, admitVersionedWebhookWorkflow } from '../src/admission.js';
 import { registerWorkflowTools } from '../src/mcp.js';
 import type { PublicWorkflowError } from '../src/admission.js';
 import { getWorkflowRegistry } from '../src/registry.js';
@@ -13,7 +13,8 @@ function fixture() {
   const sqlite = new DatabaseSync(':memory:');
   for (const migration of ['0001_core.sql', '0002_scheduler.sql', '0003_mcp_dependencies.sql',
     '0004_remote_executor.sql', '0005_artifacts.sql', '0006_provenance.sql',
-    '0007_connection_versions.sql', '0008_definition_publications.sql', '0009_active_definitions.sql']) {
+    '0007_connection_versions.sql', '0008_definition_publications.sql', '0009_active_definitions.sql',
+    '0010_webhook_secret_scopes.sql']) {
     sqlite.exec(readFileSync('migrations/' + migration, 'utf8'));
   }
   const statement = (sql: string, args: unknown[] = []) => ({
@@ -430,6 +431,42 @@ describe('T06 gated, immutable D1 manual admission', () => {
       });
       expect((f.sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_runs').get() as { count: number }).count)
         .toBe(1);
+      expect(f.starts()).toBe(1);
+    } finally { f.sqlite.close(); }
+  });
+});
+
+describe('T07 transactional webhook authorization', () => {
+  it('pins the authenticated digest and fails closed after deactivation or scope revocation', async () => {
+    const f = fixture();
+    try {
+      const plan = JSON.parse(JSON.stringify(original.plan)) as {
+        triggers: Array<Record<string, unknown>>
+      };
+      plan.triggers.push({ type: 'webhook', id: 'incoming', secret: 'TEST_WEBHOOK_TOKEN' });
+      const digest = 'c'.repeat(64);
+      f.save(digest, plan);
+      f.change(digest, 2);
+      const revision = (f.sqlite.prepare(
+        'SELECT revision FROM connection_policy_revision WHERE singleton = 1'
+      ).get() as { revision: number }).revision;
+      f.sqlite.prepare(`INSERT INTO workflow_webhook_secret_scopes
+        (workflow_id, trigger_id, definition_digest, secret_name, policy_revision, enabled, approved_at)
+        VALUES (?, 'incoming', ?, 'TEST_WEBHOOK_TOKEN', ?, 1, '2026-09-22')`)
+        .run(original.metadata.id, digest, revision);
+      const selected = { definitionDigest: digest, registryRevision: 2, secretName: 'TEST_WEBHOOK_TOKEN' };
+      const run = (key: string, env = f.env) =>
+        admitVersionedWebhookWorkflow(env, original.metadata.id, 'incoming', input, key, selected);
+      const first = await run('event-1');
+      expect(first).toMatchObject({ definitionDigest: digest, alreadyAdmitted: false });
+      expect(await run('event-1')).toMatchObject({ runId: first.runId, alreadyAdmitted: true });
+      f.sqlite.exec("UPDATE workflow_webhook_secret_scopes SET enabled = 0");
+      await expect(run('event-2')).rejects.toMatchObject({ code: 'REGISTRY_CONFLICT' });
+      f.sqlite.exec("UPDATE workflow_webhook_secret_scopes SET enabled = 1");
+      f.change(null, 3);
+      await expect(run('event-3')).rejects.toMatchObject({ code: 'REGISTRY_CONFLICT' });
+      expect((f.sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_runs')
+        .get() as { count: number }).count).toBe(1);
       expect(f.starts()).toBe(1);
     } finally { f.sqlite.close(); }
   });
