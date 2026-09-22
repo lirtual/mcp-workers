@@ -52,6 +52,11 @@ export function compileTimeMcpRetryLimit(connectionId: string, toolName: string)
   return policyForEffect(local.effect, 'local_tool_policy').maxAutomaticAttempts;
 }
 
+/** Retry limit for a tool in an authenticated approved policy snapshot. */
+export function compileTimeMcpRetryLimitForApprovedTool(effect: EffectClass): number {
+  return policyForEffect(effect, 'local_tool_policy').maxAutomaticAttempts;
+}
+
 export function configuredConnection(connectionId: string): McpConnection | undefined {
   return getConnection(connectionId);
 }
