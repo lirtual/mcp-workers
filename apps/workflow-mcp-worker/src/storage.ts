@@ -388,18 +388,30 @@ export class D1WorkflowStore {
         input.proposedRunId, createdAt,
         input.connectionVersions ? JSON.stringify(input.connectionVersions) : null,
         input.admissionKey, input.proposedRunId
+      ),
+      // The event is part of the same transaction as admission and Run insert.
+      // A duplicate key does not emit a second admitted event.
+      this.db.prepare(
+        `INSERT INTO workflow_events (run_id, event_type, summary_json, created_at)
+         SELECT ?, 'run.admitted', ?, ?
+         WHERE EXISTS (
+           SELECT 1 FROM run_admissions WHERE admission_key = ? AND run_id = ?
+         ) AND EXISTS (SELECT 1 FROM workflow_runs WHERE run_id = ?)`
+      ).bind(
+        input.proposedRunId,
+        JSON.stringify({
+          workflowId: input.workflowId,
+          definitionDigest: input.definitionDigest,
+          sourceType: input.sourceType
+        }),
+        createdAt, input.admissionKey, input.proposedRunId, input.proposedRunId
       )
     ]);
     const inserted = (results[0]?.meta.changes ?? 0) === 1;
     if (inserted) {
-      if (results[1]?.meta.changes !== 1) {
-        throw new Error('Version-pinned Run could not be recorded.');
+      if (results[1]?.meta.changes !== 1 || results[2]?.meta.changes !== 1) {
+        throw new Error('Version-pinned Run and event could not be recorded.');
       }
-      await this.appendEvent(input.proposedRunId, 'run.admitted', {
-        workflowId: input.workflowId,
-        definitionDigest: input.definitionDigest,
-        sourceType: input.sourceType
-      });
       return { runId: input.proposedRunId, alreadyAdmitted: false };
     }
     const existing = await this.getAdmissionRun(input.admissionKey);
