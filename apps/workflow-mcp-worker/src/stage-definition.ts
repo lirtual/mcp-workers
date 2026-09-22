@@ -46,7 +46,8 @@ function parseEnvelope(value: unknown): StagePayload | null {
       typeof item.definitionDigest !== 'string' || !/^[a-f0-9]{64}$/.test(item.definitionDigest) ||
       typeof item.sourceSha !== 'string' || !/^[a-f0-9]{40}$/.test(item.sourceSha) ||
       typeof item.sourcePath !== 'string' || item.sourcePath.length < 1 || item.sourcePath.length > 512 ||
-      item.sourcePath.startsWith('/') || item.sourcePath.split('/').some(x => x === '..' || x === '') ||
+      item.sourcePath.startsWith('/') || item.sourcePath.includes('\\') ||
+      item.sourcePath.split('/').some(x => x === '..' || x === '.' || x === '') ||
       !Number.isSafeInteger(item.policyRevision) || (item.policyRevision as number) < 1 ||
       !item.connectionVersions || typeof item.connectionVersions !== 'object' ||
       Array.isArray(item.connectionVersions)) return null;
@@ -69,10 +70,35 @@ export async function stageDefinition(
   publisher: GitHubJobIdentity
 ): Promise<Response> {
   const length = Number(request.headers.get('content-length') ?? 0);
-  if (!Number.isFinite(length) || length > MAX_BODY_BYTES) return failure(413, 'body_too_large');
+  if (!Number.isFinite(length) || length < 0 || length > MAX_BODY_BYTES) {
+    return failure(413, 'body_too_large');
+  }
+  // Enforce the 320 KiB limit while streaming, even for a missing or forged
+  // Content-Length. Never materialize an unbounded request body in the Worker.
+  const reader = request.body?.getReader();
+  if (!reader) return failure(400, 'invalid_body');
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    let part: ReadableStreamReadResult<Uint8Array>;
+    try { part = await reader.read(); } catch { return failure(400, 'invalid_body'); }
+    if (part.done) break;
+    total += part.value.byteLength;
+    if (total > MAX_BODY_BYTES) {
+      await reader.cancel().catch(() => undefined);
+      return failure(413, 'body_too_large');
+    }
+    chunks.push(part.value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
   let raw: string;
-  try { raw = await request.text(); } catch { return failure(400, 'invalid_body'); }
-  if (new TextEncoder().encode(raw).byteLength > MAX_BODY_BYTES) return failure(413, 'body_too_large');
+  try { raw = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+  catch { return failure(400, 'invalid_body'); }
   let input: unknown;
   try { input = JSON.parse(raw); } catch { return failure(400, 'invalid_body'); }
   const envelope = parseEnvelope(input);
