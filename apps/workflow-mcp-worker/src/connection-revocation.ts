@@ -151,7 +151,9 @@ export async function resolveRunConnectionPin(
     }
     tools[name] = original;
   }
-  if (Object.keys(tools).length === 0) throw new Error('Pinned Connection has no approved tools.');
+  if (Object.keys(tools).length === 0 || !tools[toolName] || tools[toolName].effect !== effect) {
+    throw new Error('Pinned Connection tool authority is not approved.');
+  }
   const connection: McpConnection = { ...approved, tools };
   return {
     connectionId,
