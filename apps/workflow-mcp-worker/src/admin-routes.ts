@@ -1,3 +1,4 @@
+import { stageDefinition } from './definition-stage.js';
 import { registerApprovedConnection } from './connection-admin.js';
 import { getConnection } from './connections.js';
 import { verifyGitHubOidcToken, type GitHubOidcVerificationConfig } from './oidc.js';
@@ -118,7 +119,8 @@ export async function handleAdminRoute(
   const snapshotRoute = url.pathname === '/admin/connections/snapshot';
   const disableRoute = url.pathname === '/admin/connections/disable';
   const registerRoute = url.pathname === '/admin/connections/register';
-  if (!snapshotRoute && !disableRoute && !registerRoute) return reply(404, 'not_found');
+  const stageRoute = url.pathname === '/admin/definitions/stage';
+  if (!snapshotRoute && !disableRoute && !registerRoute && !stageRoute) return reply(404, 'not_found');
   if (request.method !== (snapshotRoute ? 'GET' : 'POST')) return reply(405, 'method_not_allowed');
 
   const repositoryId = required(env.ADMIN_PUBLISHER_REPOSITORY_ID);
@@ -132,6 +134,7 @@ export async function handleAdminRoute(
   if (!authorization?.startsWith('Bearer ') || authorization.length <= 7) {
     return reply(401, 'unauthorized');
   }
+  let publisher: Awaited<ReturnType<typeof verifyGitHubOidcToken>>;
   try {
     const oidc: GitHubOidcVerificationConfig = { ...GITHUB_EXECUTOR_CONFIG.oidc, audience: ADMIN_AUDIENCE };
     const identity = await verifyGitHubOidcToken(
@@ -142,12 +145,14 @@ export async function handleAdminRoute(
         identity.workflowSha !== env.ADMIN_PUBLISHER_WORKFLOW_SHA)) {
       return reply(403, 'publisher_identity_mismatch');
     }
+    publisher = identity;
   } catch {
     // Never reflect raw credentials, JWT parsing details or platform Secret names.
     return reply(401, 'unauthorized');
   }
   if (disableRoute) return disableConnection(request, env);
   if (registerRoute) return registerApprovedConnection(request, env.DB);
+  if (stageRoute) return stageDefinition(request, env, publisher);
   try {
     return Response.json(await policySnapshot(env), { headers: { 'Cache-Control': 'no-store' } });
   } catch {
