@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { authorizePinnedConnectionAttempt, type PinnedConnectionAuthority } from '../src/connection-revocation.js';
+import { authorizePinnedConnectionAttempt, readLiveConnectionControl, type PinnedConnectionAuthority } from '../src/connection-revocation.js';
 
 const pinned: PinnedConnectionAuthority = {
   connectionId: 'raindrop',
@@ -29,5 +29,33 @@ describe('pinned Connection authorization', () => {
       allowed: false, reason: 'policy_tightened'
     });
     expect(authorizePinnedConnectionAttempt(pinned, allowed)).toEqual({ allowed: true });
+  });
+});
+
+describe('D1 live Connection controls', () => {
+  function db(row: unknown): D1Database {
+    return {
+      prepare: () => ({
+        bind: () => ({ first: async () => row })
+      })
+    } as unknown as D1Database;
+  }
+
+  it('loads current controls for every new check', async () => {
+    const read = await readLiveConnectionControl(db({
+      connection_id: 'raindrop',
+      disabled: 1,
+      allowed_tools_json: '{"list_raindrops":["read"]}'
+    }), 'raindrop');
+    expect(authorizePinnedConnectionAttempt(pinned, read)).toEqual({ allowed: false, reason: 'revoked' });
+  });
+
+  it('rejects missing or malformed controls without static fallback', async () => {
+    expect(await readLiveConnectionControl(db(null), 'raindrop')).toBeNull();
+    await expect(readLiveConnectionControl(db({
+      connection_id: 'raindrop',
+      disabled: 0,
+      allowed_tools_json: '{"list_raindrops":["privileged"]}'
+    }), 'raindrop')).rejects.toThrow('invalid');
   });
 });
