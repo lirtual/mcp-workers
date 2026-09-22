@@ -45,3 +45,45 @@ export function authorizePinnedConnectionAttempt(
   }
   return { allowed: true };
 }
+
+/**
+ * Read the latest persisted controls for a pinned Connection.
+ * Call this for each external attempt, not once per Run.
+ * D1 failures propagate and must block the call; callers must not fall back to
+ * static policy when a v0.2 Run has a pinned revision.
+ */
+export async function readLiveConnectionControl(
+  db: D1Database,
+  connectionId: string
+): Promise<LiveConnectionControl | null> {
+  const row = await db.prepare(
+    'SELECT connection_id, disabled, allowed_tools_json FROM connection_controls WHERE connection_id = ?'
+  ).bind(connectionId).first<{
+    connection_id: string;
+    disabled: number;
+    allowed_tools_json: string;
+  }>();
+  if (!row) return null;
+  const parsed: unknown = JSON.parse(row.allowed_tools_json);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Connection control policy is invalid.');
+  }
+  const tools: Record<string, readonly EffectClass[]> = {};
+  const validEffects: readonly string[] = ['read', 'idempotent_write', 'unsafe_write', 'unknown'];
+  for (const [name, effects] of Object.entries(parsed)) {
+    if (!name || !Array.isArray(effects) || !effects.every(
+      item => typeof item === 'string' && validEffects.includes(item)
+    )) {
+      throw new Error('Connection control policy is invalid.');
+    }
+    tools[name] = effects as EffectClass[];
+  }
+  if (row.disabled !== 0 && row.disabled !== 1) {
+    throw new Error('Connection control status is invalid.');
+  }
+  return {
+    connectionId: row.connection_id,
+    disabled: row.disabled === 1,
+    allowedTools: tools
+  };
+}
