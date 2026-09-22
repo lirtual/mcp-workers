@@ -496,6 +496,25 @@ describe('T07 transactional webhook authorization', () => {
         .toMatchObject({ code: 'REGISTRY_CONFLICT' });
       expect((f.sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_runs')
         .get() as { count: number }).count).toBe(2);
+      f.sqlite.exec("UPDATE workflow_webhook_secret_scopes SET enabled = 1");
+      // A concurrent activation that changes only the registry revision must
+      // also invalidate the already authenticated version before Run insert.
+      let activationAtCommit = true;
+      const activationDb = {
+        prepare: f.db.prepare.bind(f.db),
+        batch: async (commands: Parameters<D1Database['batch']>[0]) => {
+          if (activationAtCommit) {
+            activationAtCommit = false;
+            f.change(digest, 3);
+          }
+          return baseBatch(commands);
+        }
+      } as D1Database;
+      await expect(run('event-activation-race', { ...f.env, DB: activationDb }))
+        .rejects.toMatchObject({ code: 'REGISTRY_CONFLICT' });
+      f.change(digest, 2);
+      expect((f.sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_runs')
+        .get() as { count: number }).count).toBe(2);
       f.sqlite.exec("UPDATE workflow_webhook_secret_scopes SET enabled = 0");
       await expect(run('event-2')).rejects.toMatchObject({ code: 'REGISTRY_CONFLICT' });
       f.sqlite.exec("UPDATE workflow_webhook_secret_scopes SET enabled = 1");
