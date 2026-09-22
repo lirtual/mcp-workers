@@ -55,7 +55,9 @@ describe('T07 approved webhook secret scope schema', () => {
     try {
       for (const reserved of [
         'MCP_ACCESS_TOKEN', 'EXECUTOR_LEASE_SECRET', 'GITHUB_ACTIONS_TOKEN',
-        'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY'
+        'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY',
+        'ADMIN_PUBLISHER_WORKFLOW_SHA', 'GITHUB_REPOSITORY_ID',
+        'DYNAMIC_WORKFLOW_ADMISSION_ENABLED', 'CF_VERSION_METADATA'
       ]) {
         expect(() => approve(db, 'incoming', reserved)).toThrow();
       }
