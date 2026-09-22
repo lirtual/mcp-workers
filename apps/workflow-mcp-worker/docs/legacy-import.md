@@ -37,6 +37,11 @@ binding behavior.
    source SHA and matching original digest before any `/admin/definitions/activate`
    request can succeed. Never synthesize a fake publication, repository ID,
    source commit or publisher run identity to bypass the T05 activation guard.
+   Run the read-only `verifyLegacyPublicationReadiness(db, { workflowId,
+   approvedSourceSha, trustedPublisherRepositoryId, expectedPolicyRevision })`
+   for each definition targeted for activation, using owner-approved exact
+   Catalog SHA and the Engine repository's numeric publisher ID. A matching
+   immutable D1 digest alone is not proof of an authorized publication.
    If the protected publisher/catalog is unavailable, stop before cutover.
 6. Separately approve active Registry CAS and reader gate cutover **only after**
    isolated D1/Workflows, manual/webhook/scheduled and old-Run continuation
