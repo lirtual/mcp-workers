@@ -173,7 +173,7 @@ export async function updateActiveDefinition(
                FROM workflow_active_definitions a
                JOIN workflow_definition_versions d ON d.definition_digest = a.active_digest
                WHERE a.state = 'enabled' AND a.workflow_id != ?
-             ) + ? <= 64
+             ) + ? <= 50
            ))`
       ).bind(action.actionId, action.workflowId, kind, action.expectedDigest, action.targetDigest,
         action.expectedRevision, nextRevision, publisher.repositoryId, publisher.runId,
