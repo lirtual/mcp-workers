@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
 import { parse as parseYaml } from 'yaml';
 import * as z from 'zod/v4';
-import { getCapabilityDescriptor } from './capabilities.js';
+import { getCapabilityDescriptor, type EffectClass } from './capabilities.js';
 import { hasConnection } from './connections.js';
 import { parseCronExpression, validateTimeZone } from './cron.js';
-import { compileTimeMcpRetryLimit } from './effective-policy.js';
+import { compileTimeMcpRetryLimit, compileTimeMcpRetryLimitForApprovedTool } from './effective-policy.js';
 
 const IDENTIFIER = /^[A-Za-z][A-Za-z0-9_-]{0,127}$/;
 const CAPABILITY_NAME = /^[A-Za-z][A-Za-z0-9_.-]{0,127}$/;
@@ -63,6 +63,14 @@ const workflowDefinitionSchema = z
   .strict();
 
 type RawWorkflowDefinition = z.infer<typeof workflowDefinitionSchema>;
+
+/** Approved non-secret policy supplied by the trusted publisher, not catalog YAML. */
+export interface TrustedCompilePolicy {
+  readonly revision: number;
+  readonly connections: Readonly<
+    Record<string, { readonly tools: Readonly<Record<string, { readonly effect: EffectClass }>> }>
+  >;
+}
 
 export type ExpressionAst =
   | { kind: 'literal'; value: string | number | boolean | null }
@@ -393,7 +401,7 @@ export function canonicalStringify(value: unknown): string {
   return JSON.stringify(canonicalize(value));
 }
 
-function normalizeWorkflow(raw: RawWorkflowDefinition): unknown {
+function normalizeWorkflow(raw: RawWorkflowDefinition, policy?: TrustedCompilePolicy): unknown {
   if (Object.keys(raw.steps).length === 0) fail('Workflow must contain at least one step.');
   if (Object.keys(raw.steps).length > 64) fail('Workflow may contain at most 64 steps.');
 
@@ -424,13 +432,21 @@ function normalizeWorkflow(raw: RawWorkflowDefinition): unknown {
     if (step.uses === 'mcp.call') {
       const connection = withValue.connection;
       const tool = withValue.tool;
-      if (typeof connection !== 'string' || !hasConnection(connection)) {
+      if (typeof connection !== 'string' || (!policy && !hasConnection(connection))) {
         fail(`Step "${stepId}" must reference a configured static MCP connection.`);
       }
       if (typeof tool !== 'string' || tool.length === 0) {
         fail(`Step "${stepId}" must reference a literal MCP tool name.`);
       }
-      operationMaxAttempts = compileTimeMcpRetryLimit(connection, tool);
+      if (policy) {
+        const approvedConnection = policy.connections[connection];
+        if (!approvedConnection) fail('Unapproved MCP connection in step "' + stepId + '".');
+        const approvedTool = approvedConnection.tools[tool];
+        if (!approvedTool) fail('Unapproved MCP tool in step "' + stepId + '".');
+        operationMaxAttempts = compileTimeMcpRetryLimitForApprovedTool(approvedTool.effect);
+      } else {
+        operationMaxAttempts = compileTimeMcpRetryLimit(connection, tool);
+      }
     }
 
     const retryMaxAttempts = step.retry?.maxAttempts;
@@ -501,10 +517,10 @@ function normalizeWorkflow(raw: RawWorkflowDefinition): unknown {
   };
 }
 
-export function compileWorkflowText(source: string, sourcePath = '<memory>'): CompiledWorkflowEntry {
+export function compileWorkflowText(source: string, sourcePath = '<memory>', policy?: TrustedCompilePolicy): CompiledWorkflowEntry {
   const parsed = parseYaml(source);
   const raw = workflowDefinitionSchema.parse(parsed);
-  const plan = normalizeWorkflow(raw);
+  const plan = normalizeWorkflow(raw, policy);
   const serialized = canonicalStringify(plan);
   const size = Buffer.byteLength(serialized, 'utf8');
   if (size > MAX_PLAN_BYTES) {
