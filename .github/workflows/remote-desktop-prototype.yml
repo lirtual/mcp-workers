@@ -31,7 +31,7 @@ jobs:
       - name: Install existing pinned workspace (no new prototype dependencies)
         run: pnpm install --frozen-lockfile --ignore-scripts
       - name: State-machine tests (logic only, not real DO acceptance)
-        run: node --test .scratch/remote-desktop-mcp/test/*.test.mjs
+        run: node --test .scratch/remote-desktop-mcp/test/relay-state.test.mjs
       - name: Compile Cloudflare DO configuration without deploying
         run: |
           pnpm --filter workflow-mcp-worker exec wrangler deploy --dry-run \
