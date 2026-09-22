@@ -74,9 +74,17 @@ export async function registerApprovedWebhookScope(
       row.trigger_id === triggerId && row.definition_digest === definitionDigest &&
       row.secret_name === secretName && row.expected_policy_revision === expectedPolicyRevision;
     if (previous) {
-      return same(previous) ? Response.json({ workflowId, triggerId, definitionDigest, registered: true }, {
+      if (!same(previous)) return error(409, 'action_conflict');
+      const retained = await db.prepare(
+        `SELECT 1 AS ok FROM workflow_webhook_secret_scopes s
+         JOIN connection_policy_revision p ON p.singleton = 1
+         WHERE s.workflow_id = ? AND s.trigger_id = ? AND s.definition_digest = ?
+           AND s.secret_name = ? AND s.enabled = 1 AND s.policy_revision = p.revision`
+      ).bind(workflowId, triggerId, definitionDigest, secretName).first<{ ok: number }>();
+      if (!retained) return error(409, 'scope_conflict');
+      return Response.json({ workflowId, triggerId, definitionDigest, registered: true }, {
         headers: { 'Cache-Control': 'no-store' }
-      }) : error(409, 'action_conflict');
+      });
     }
 
     const now = new Date().toISOString();
