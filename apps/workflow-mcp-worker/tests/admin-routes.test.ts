@@ -389,3 +389,52 @@ describe('signed definition activation HTTP boundary', () => {
     }, 'Bearer ordinary-mcp-secret', db())).status).toBe(401);
   });
 });
+
+describe('signed active registry mutation boundary', () => {
+  const definition = getWorkflowRegistry().find(entry => entry.metadata.id === 'local-http-smoke')!;
+  const payload = {
+    actionId: 'activation-http-1',
+    workflowId: definition.metadata.id,
+    expectedDigest: null,
+    expectedRevision: 0,
+    targetDigest: definition.definitionDigest
+  };
+  function database(): D1Database {
+    const statement = (sql: string) => ({
+      bind: (..._args: unknown[]) => statement(sql),
+      first: async () => sql.includes('connection_policy_revision') ? { revision: 1 } :
+        sql.includes('workflow_definition_versions d') ? {
+          normalized_plan_json: JSON.stringify(definition.plan), workflow_id: definition.metadata.id
+        } : null
+    });
+    return {
+      prepare: statement,
+      batch: async (commands: unknown[]) => {
+        expect(commands).toHaveLength(2);
+        return [{ meta: { changes: 1 } }, { meta: { changes: 1 } }];
+      }
+    } as unknown as D1Database;
+  }
+  async function call(body: unknown, bearer?: string): Promise<Response> {
+    return (await handleAdminRoute(new Request('https://example.test/admin/definitions/activate', {
+      method: 'POST',
+      headers: { authorization: bearer ?? 'Bearer ' + await token() },
+      body: JSON.stringify(body)
+    }), { ...env, DB: database() }, options))!;
+  }
+
+  it('denies shared token, wrong publisher and unrecognized fields', async () => {
+    expect((await call(payload, 'Bearer ordinary-mcp-secret')).status).toBe(401);
+    expect((await call(payload, 'Bearer ' + await token({ repository_id: 'invalid' }))).status).toBe(403);
+    expect((await call({ ...payload, credential: 'not-allowed' })).status).toBe(400);
+  });
+
+  it('requires a signed publisher and returns only safe CAS activation metadata', async () => {
+    const response = await call(payload);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      workflowId: definition.metadata.id, activeDigest: definition.definitionDigest, revision: 1
+    });
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+  });
+});
