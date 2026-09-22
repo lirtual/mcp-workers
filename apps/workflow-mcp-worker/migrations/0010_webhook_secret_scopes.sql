@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS workflow_webhook_secret_scopes (
   CHECK (length(workflow_id) > 0 AND length(trigger_id) > 0),
   CHECK (length(secret_name) > 0 AND length(secret_name) <= 128),
   -- Protected platform credentials must never be usable as webhook tokens.
-  CHECK (secret_name NOT IN ('DB', 'WORKFLOW', 'ARTIFACTS')
+  CHECK (secret_name NOT IN ('DB', 'WORKFLOW', 'ARTIFACTS', 'WEBHOOK_SECRET_ALLOWLIST')
     AND secret_name NOT GLOB 'MCP_*'
     AND secret_name NOT GLOB 'EXECUTOR_*'
     AND secret_name NOT GLOB 'GITHUB_*'
