@@ -146,6 +146,24 @@ export async function registerApprovedConnection(request: Request, db: D1Databas
       headers: { 'Cache-Control': 'no-store' }
     });
   } catch {
+    // Concurrent replay may lose the unique action-ID race after the initial
+    // lookup. Reconcile the committed action rather than retrying the mutation.
+    try {
+      const committed = await db.prepare(
+        'SELECT connection_id, action_kind, request_digest, resulting_revision FROM connection_admin_actions WHERE action_id = ?'
+      ).bind(input.actionId).first<{
+        connection_id: string; action_kind: string; request_digest: string; resulting_revision: number
+      }>();
+      if (committed) {
+        if (committed.connection_id !== input.connectionId || committed.action_kind !== 'register' ||
+            committed.request_digest !== digest) return error(409, 'action_conflict');
+        return Response.json({
+          connectionId: input.connectionId, version: revision, revision: committed.resulting_revision
+        }, { headers: { 'Cache-Control': 'no-store' } });
+      }
+    } catch {
+      // A failed reconciliation must never grant authority.
+    }
     return error(503, 'admin_storage_unavailable');
   }
 }
