@@ -277,6 +277,7 @@ describe('authenticated immutable definition staging', () => {
     workflowId: definition.metadata.id,
     definitionDigest: definition.definitionDigest,
     plan: definition.plan,
+    metadata: definition.metadata,
     policyRevision: 1,
     sourcePath: definition.sourcePath,
     sourceSha: 'a'.repeat(40)
@@ -308,6 +309,7 @@ describe('authenticated immutable definition staging', () => {
     expect((await invokeStage(envelope(), 'Bearer ' + await token({ repository_id: '999' }))).status).toBe(403);
     const forged = { ...envelope(), definitionDigest: 'f'.repeat(64) };
     expect((await invokeStage(forged)).status).toBe(422);
+    expect((await invokeStage({ ...envelope(), metadata: { ...definition.metadata, name: 'altered' } })).status).toBe(422);
   });
 
   it('stages a bounded, signed, unactivated definition with no secret data in reply', async () => {
