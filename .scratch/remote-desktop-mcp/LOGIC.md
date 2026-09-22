@@ -36,7 +36,8 @@ The Worker fails closed if any of `PROTOTYPE_MCP_TOKEN`, `PROTOTYPE_DEVICE_TOKEN
 - The 8192-byte prototype HTTP cap is enforced **while consuming** the request stream, with an early Content-Length rejection where available. It no longer reads an unbounded body into a string before checking its length; UTF-8 bytes are counted rather than characters.
 - Local workerd negative cases verify malformed JSON, oversized ASCII and multibyte UTF-8 bodies, invalid MCP and independent admin/device credentials, forbidden `execute_command` and unexpected arguments. Existing bounded real-upstream round trip and DO eviction tests remain included.
 - Verified code HEAD `f7f0fb48f3c591bccd57a979d43d44b1e6d5c446`: [prototype Actions #35764935896](https://github.com/lirtual/mcp-workers/actions/runs/35764935896) and [repository CI #35764935954](https://github.com/lirtual/mcp-workers/actions/runs/35764935954), both SUCCESS.
-- This is ingress resource-limit evidence, **not** MCP Inspector / OAuth acceptance. WebSocket oversize and in-flight eviction still need their own targeted negative tests. Static prototype bearer tokens remain non-production.
+- Local workerd now also checks **oversized multibyte UTF-8 WebSocket frames are closed with code 1009** and malformed device JSON frames with code 1007; a subsequent device connection can recover and still complete the real upstream read-only call. Tested code HEAD `97d999fa79ebb5c497b96e43f2a83d3cf2ef602e`: [prototype Actions #35765276440](https://github.com/lirtual/mcp-workers/actions/runs/35765276440) and [repository CI #35765276584](https://github.com/lirtual/mcp-workers/actions/runs/35765276584), both SUCCESS.
+- These are resource-limit and malformed-frame proofs, **not** MCP Inspector / OAuth acceptance. In-flight eviction still requires its own targeted test. Static prototype bearer tokens remain non-production.
 
 ## What this does NOT prove
 
