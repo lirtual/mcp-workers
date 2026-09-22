@@ -146,6 +146,31 @@ describe('real SQLite active pointer and rollback contract', () => {
       .first<{ count: number }>())?.count).toBe(1);
   });
 
+
+  it('serializes competing first activations, leaving exactly one durable winner', async () => {
+    const db = await store();
+    if (!db) throw new Error('node:sqlite is required for real CAS validation');
+    const env = { DB: db, DYNAMIC_WORKFLOW_REGISTRY_ENABLED: 'true' } as Env;
+    const [first, second] = await Promise.all([
+      updateActiveDefinition(request('racing-first', null, entry.definitionDigest, 0),
+        env, publisher, 'activate'),
+      updateActiveDefinition(request('racing-second', null, entry.definitionDigest, 0),
+        env, publisher, 'activate')
+    ]);
+    expect([first.status, second.status].sort()).toEqual([200, 409]);
+    const events = await db.prepare(
+      'SELECT action_id, previous_digest, next_digest, resulting_revision FROM workflow_registry_actions'
+    ).all<{ action_id: string; previous_digest: string | null; next_digest: string; resulting_revision: number }>();
+    expect(events.results).toHaveLength(1);
+    expect(events.results[0]).toMatchObject({
+      previous_digest: null, next_digest: entry.definitionDigest, resulting_revision: 1
+    });
+    const pointer = await db.prepare(
+      'SELECT active_digest, registry_revision FROM workflow_active_definitions WHERE workflow_id = ?'
+    ).bind(entry.metadata.id).first<{ active_digest: string; registry_revision: number }>();
+    expect(pointer).toMatchObject({ active_digest: entry.definitionDigest, registry_revision: 1 });
+  });
+
   it('rejects an unstaged target without creating a pointer or audit event', async () => {
     const db = await store();
     if (!db) throw new Error('node:sqlite is required for real CAS validation');
