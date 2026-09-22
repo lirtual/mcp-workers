@@ -40,6 +40,7 @@ function fixture() {
   let starts = 0;
   let lostResponse = false;
   let uncertainLookup = false;
+  let uncertainStatus = false;
   const instances = new Set<string>();
   const env = {
     DB: db,
@@ -51,7 +52,13 @@ function fixture() {
         if (!instances.has(id)) throw Object.assign(new Error('Instance does not exist'), {
           code: 'instance.not_found'
         });
-        return { id };
+        return {
+          id,
+          status: async () => {
+            if (uncertainStatus) throw new Error('simulated status RPC timeout');
+            return { status: 'queued' };
+          }
+        };
       },
       createBatch: async (batch: Array<{ id: string; params: { runId: string } }>) => {
         for (const instance of batch) {
@@ -98,7 +105,8 @@ function fixture() {
     sqlite, db, env, save, change, starts: () => starts,
     loseNextResponse: () => { lostResponse = true; },
     loseInstance: (id: string) => { instances.delete(id); },
-    failLookup: (fail: boolean) => { uncertainLookup = fail; }
+    failLookup: (fail: boolean) => { uncertainLookup = fail; },
+    failStatus: (fail: boolean) => { uncertainStatus = fail; }
   };
 }
 
@@ -370,6 +378,19 @@ describe('T06 gated, immutable D1 manual admission', () => {
       expect((f.sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_runs')
         .get() as { count: number }).count).toBe(1);
       expect(first.alreadyAdmitted).toBe(false);
+    } finally { f.sqlite.close(); }
+  });
+
+  it('does not recreate when an existing handle has an uncertain status RPC', async () => {
+    const f = fixture();
+    try {
+      const first = await admitManualWorkflow(f.env, original.metadata.id, input, 'status-rpc');
+      f.failStatus(true);
+      const replay = await admitManualWorkflow(f.env, original.metadata.id, input, 'status-rpc');
+      expect(replay).toMatchObject({
+        runId: first.runId, definitionDigest: first.definitionDigest, alreadyAdmitted: true
+      });
+      expect(f.starts()).toBe(1);
     } finally { f.sqlite.close(); }
   });
 
