@@ -59,9 +59,10 @@ async function policySnapshot(env: AdminEnv): Promise<Record<string, unknown>> {
   const scopes = await env.DB.prepare(
     `SELECT workflow_id, trigger_id, secret_name, policy_revision
      FROM workflow_webhook_secret_scopes
-     WHERE enabled = 1 AND policy_revision = ?
+     WHERE enabled = 1
+       AND policy_revision = (SELECT revision FROM connection_policy_revision WHERE singleton = 1)
      ORDER BY workflow_id, trigger_id, definition_digest LIMIT 65`
-  ).bind(revision.revision).all<{
+  ).all<{
     workflow_id: string; trigger_id: string; secret_name: string; policy_revision: number
   }>();
   if (scopes.results.length > 64) throw new Error('Approved webhook binding snapshot exceeds bound.');
