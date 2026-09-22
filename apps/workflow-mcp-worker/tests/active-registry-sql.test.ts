@@ -181,6 +181,57 @@ describe('real SQLite active pointer and rollback contract', () => {
     });
   });
 
+  it('commits a schedule cutover with activation without rewinding admitted history', async () => {
+    const db = await store();
+    if (!db) throw new Error('node:sqlite is required for the cutover transaction test');
+    const env = { DB: db, DYNAMIC_WORKFLOW_REGISTRY_ENABLED: 'true' } as Env;
+    const scheduledPlan = JSON.parse(JSON.stringify(entry.plan)) as Record<string, unknown>;
+    scheduledPlan.triggers = [
+      { type: 'manual' },
+      { type: 'schedule', id: 'daily-nine', cron: '0 9 * * *', timezone: 'UTC', misfire: 'latest' }
+    ];
+    const digest = 'c'.repeat(64);
+    await db.prepare(
+      `INSERT INTO workflow_definition_versions
+       (definition_digest, workflow_id, dsl_version, normalized_plan_json, source_path, created_at)
+       VALUES (?, ?, 1, ?, ?, ?)`
+    ).bind(digest, entry.metadata.id, JSON.stringify(scheduledPlan), entry.sourcePath, '2026-09-22').run();
+    await db.prepare(
+      `INSERT INTO definition_publications
+       (publication_id, workflow_id, definition_digest, source_sha, repository_id,
+        publisher_run_id, publisher_run_attempt, publisher_workflow_sha, policy_revision, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`
+    ).bind('stage-scheduled', entry.metadata.id, digest, 'd'.repeat(40),
+      publisher.repositoryId, publisher.runId, publisher.runAttempt,
+      publisher.workflowSha, '2026-09-22').run();
+    const scheduleKey = entry.metadata.id + ':daily-nine';
+    await db.prepare(
+      `INSERT INTO scheduler_state
+       (schedule_key, last_evaluated_at, last_admitted_scheduled_time, next_due_occurrence)
+       VALUES (?, 60000, 60000, 120000)`
+    ).bind(scheduleKey).run();
+    const activated = await updateActiveDefinition(
+      request('scheduled-cutover', null, digest, 0), env, publisher, 'activate');
+    expect(activated.status).toBe(200);
+    const state = await new D1WorkflowStore(db).getSchedulerState(scheduleKey);
+    const pointer = await db.prepare(
+      'SELECT activated_at FROM workflow_active_definitions WHERE workflow_id = ?'
+    ).bind(entry.metadata.id).first<{ activated_at: string }>();
+    const activationMinute = Math.floor(Date.parse(pointer!.activated_at) / 60_000) * 60_000;
+    expect(state).toMatchObject({
+      lastEvaluatedAt: activationMinute, lastAdmittedScheduledTime: 60000
+    });
+    expect(state?.nextDueOccurrence).toBeUndefined();
+    // Replays of the same trusted action cannot advance the cutover again.
+    expect((await updateActiveDefinition(
+      request('scheduled-cutover', null, digest, 0), env, publisher, 'activate')).status).toBe(200);
+    expect(await new D1WorkflowStore(db).getSchedulerState(scheduleKey)).toEqual(state);
+    // A rejected stale activation must not mutate the active cursor.
+    expect((await updateActiveDefinition(
+      request('stale-cutover', null, digest, 0), env, publisher, 'activate')).status).toBe(409);
+    expect(await new D1WorkflowStore(db).getSchedulerState(scheduleKey)).toEqual(state);
+  });
+
   it('rejects stale expected revision without changing pointer or recording misleading audit', async () => {
     const db = await store();
     if (!db) throw new Error('node:sqlite is required for real CAS validation');
