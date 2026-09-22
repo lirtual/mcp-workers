@@ -133,3 +133,35 @@ export async function resolveRunConnectionPin(
     effect
   };
 }
+
+/**
+ * Capture current approved Connection revisions for a newly admitted Run.
+ * A legacy static Connection without controls is intentionally omitted only
+ * when no versioned Connection is used. Any explicitly versioned connection
+ * without an approved control fails closed.
+ */
+export async function captureConnectionPins(
+  db: D1Database,
+  connectionIds: readonly string[]
+): Promise<Record<string, number> | null> {
+  if (connectionIds.length === 0) return null;
+  const pins: Record<string, number> = {};
+  for (const id of [...new Set(connectionIds)]) {
+    const row = await db.prepare(
+      'SELECT current_version, disabled FROM connection_controls WHERE connection_id = ?'
+    ).bind(id).first<{ current_version: number; disabled: number }>();
+    if (!row) {
+      // The two bundled v0.1 Connections remain compatible until explicitly
+      // registered. Never silently permit a missing dynamic Connection.
+      if (id !== 'workflow-self' && id !== 'raindrop') {
+        throw new Error('Connection is not approved.');
+      }
+      continue;
+    }
+    if (row.disabled !== 0 || !Number.isSafeInteger(row.current_version) || row.current_version < 1) {
+      throw new Error('Connection is disabled or has an invalid revision.');
+    }
+    pins[id] = row.current_version;
+  }
+  return Object.keys(pins).length ? pins : null;
+}
