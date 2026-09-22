@@ -69,7 +69,30 @@ try {
   assert.equal((await call("tools/call", { name: "sandbox_list_directory", arguments: { path: "/" } }, 6)).data.error.code, -32602);
   assert.equal((await call("tools/call", { name: "sandbox_list_directory", arguments: {} }, 7)).data.error.message, "offline");
   assert.equal((await call("tools/list", {}, 5, "wrong-token")).status, 401);
-  assert.equal((await call("tools/call", { name: "sandbox_ping", arguments: { echo: "offline" } })).data.error.message, "offline");
+  // Exercise unauthenticated and malformed requests without dispatching a tool.
+  assert.equal((await fetch(base + "/admin/revoke", { method: "POST",
+    headers: auth("wrong-admin") })).status, 401);
+  const wrongDevice = device("wrong-device");
+  wrongDevice.on("error", () => {});
+  const refused = await once(wrongDevice, "unexpected-response");
+  assert.equal(refused[1].statusCode, 401);
+  wrongDevice.terminate();
+  const raw = async (text) => fetch(base + "/mcp", {
+    method: "POST",
+    headers: { ...auth(mcpToken), "content-type": "application/json" },
+    body: text,
+  });
+  assert.equal((await raw("{invalid-json")).status, 400);
+  assert.equal((await raw("x".repeat(9000))).status, 400);
+  const encoded = "界".repeat(3000); // chars < LIMIT, UTF-8 bytes > LIMIT
+  assert.equal((await raw(JSON.stringify({ jsonrpc: "2.0", id: 200,
+    method: "ping", padding: encoded }))).status, 400);
+  assert.equal((await call("tools/call", { name: "execute_command",
+    arguments: { command: "true" } }, 201)).data.error.code, -32602);
+  assert.equal((await call("tools/call", { name: "sandbox_ping",
+    arguments: { echo: "ok", command: "true" } }, 202)).data.error.code, -32602);
+  assert.equal((await call("tools/call", { name: "sandbox_ping",
+    arguments: { echo: "offline" } })).data.error.message, "offline");
 
   socket = device();
   await once(socket, "open");
@@ -152,7 +175,7 @@ try {
   const response = await once(forbidden, "unexpected-response");
   assert.equal(response[1].statusCode, 403);
   forbidden.terminate();
-  console.log("PASS local workerd: MCP initialize/list, real isolated upstream stdio round trip, fixed directory read, invalid path, auth, offline, WebSocket echo, concurrency, timeout, disconnect, reconnect, revoke");
+  console.log("PASS local workerd: MCP initialize/list, real isolated upstream stdio round trip, fixed directory read, invalid path, unauthorized admin/device, oversized UTF-8/JSON, forbidden tools, auth, offline, WebSocket echo, concurrency, timeout, disconnect, reconnect, revoke");
 } finally {
   socket?.terminate();
   if (child && child.exitCode === null) {
