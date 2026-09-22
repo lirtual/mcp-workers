@@ -99,6 +99,14 @@ async function policySnapshot(env: AdminEnv): Promise<Record<string, unknown>> {
       tools: enabledTools
     };
   }
+  // Reject a snapshot that straddled a concurrent registration/revocation.
+  // The trusted publisher must retry rather than compile against a torn view.
+  const after = await env.DB.prepare(
+    'SELECT revision FROM connection_policy_revision WHERE singleton = 1'
+  ).first<{ revision: number }>();
+  if (!after || after.revision !== revision.revision) {
+    throw new Error('Approved policy changed during snapshot.');
+  }
   return { revision: revision.revision, connections, webhookBindings };
 }
 
