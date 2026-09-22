@@ -58,6 +58,7 @@ try {
     `PROTOTYPE_MCP_TOKEN="${mcpToken}"`,
     `PROTOTYPE_DEVICE_TOKEN="${deviceToken}"`,
     `PROTOTYPE_ADMIN_TOKEN="${adminToken}"`,
+    `PROTOTYPE_ALLOWED_ORIGIN="${base}"`,
     "",
   ].join("\n"), { mode: 0o600 });
   child = spawn("pnpm", [
@@ -115,6 +116,14 @@ try {
     body: JSON.stringify({ jsonrpc: "2.0", id: 203, method: "ping" }),
   });
   assert.equal((await originCall("https://untrusted.invalid")).status, 403);
+  // A forged Host paired with a matching evil Origin is still forbidden.
+  const rebound = await fetch(base + "/mcp", {
+    method: "POST",
+    headers: { ...auth(mcpToken), host: "untrusted.invalid",
+      origin: "http://untrusted.invalid", "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 205, method: "ping" }),
+  });
+  assert.equal(rebound.status, 403);
   assert.equal((await originCall("null")).status, 403);
   assert.equal((await originCall(base)).status, 200);
   const versionCall = async (version) => fetch(base + "/mcp", {
