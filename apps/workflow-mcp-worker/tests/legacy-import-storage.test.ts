@@ -55,7 +55,8 @@ function fixture() {
       nextDueOccurrence: 1_790_000_060_000
     }],
     nonterminal: [],
-    approvedConnectionIds: ['raindrop', 'workflow-self']
+    // Only raindrop has a matching enabled connection_controls row in this D1.
+    approvedConnectionIds: ['raindrop']
   };
   return { sqlite, db, state };
 }
