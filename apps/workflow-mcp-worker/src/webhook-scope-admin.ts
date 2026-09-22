@@ -87,9 +87,12 @@ export async function registerApprovedWebhookScope(
           expected_policy_revision, resulting_policy_revision, created_at)
          SELECT ?, ?, ?, ?, ?, ?, ?, ?
          WHERE EXISTS (SELECT 1 FROM connection_policy_revision
-                       WHERE singleton = 1 AND revision = ?)`
+                       WHERE singleton = 1 AND revision = ?)
+           AND NOT EXISTS (SELECT 1 FROM workflow_webhook_secret_scopes
+             WHERE workflow_id = ? AND trigger_id = ? AND definition_digest = ?)`
       ).bind(actionId, workflowId, triggerId, definitionDigest, secretName,
-        expectedPolicyRevision, expectedPolicyRevision, now, expectedPolicyRevision),
+        expectedPolicyRevision, expectedPolicyRevision, now, expectedPolicyRevision,
+        workflowId, triggerId, definitionDigest),
       db.prepare(
         `INSERT OR IGNORE INTO workflow_webhook_secret_scopes
          (workflow_id, trigger_id, definition_digest, secret_name, policy_revision, enabled, approved_at)
