@@ -3,7 +3,7 @@ const PLATFORM_PREFIXES = [
   'MCP_', 'EXECUTOR_', 'GITHUB_', 'ADMIN_', 'R2_', 'CF_', 'DYNAMIC_WORKFLOW_'
 ] as const;
 
-const PLATFORM_BINDINGS = new Set(['DB', 'WORKFLOW', 'ARTIFACTS']);
+const PLATFORM_BINDINGS = new Set(['DB', 'WORKFLOW', 'ARTIFACTS', 'WEBHOOK_SECRET_ALLOWLIST']);
 
 export function isProtectedWebhookSecret(name: string): boolean {
   return PLATFORM_BINDINGS.has(name) ||
