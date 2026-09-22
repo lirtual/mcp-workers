@@ -32,6 +32,17 @@ describe('Workers-safe v1 normalized plan boundary', () => {
     })).toThrow();
   });
 
+  it('rejects cyclic normalized DAG even when all step references exist', () => {
+    const plan = compiled.plan as Record<string, unknown>;
+    expect(() => validateVersionedWorkflowPlan({
+      ...plan,
+      steps: {
+        first: { uses: 'http.read', executor: 'cloudflare', needs: ['second'], with: {} },
+        second: { uses: 'http.read', executor: 'cloudflare', needs: ['first'], with: {} }
+      }
+    })).toThrow();
+  });
+
   it('rejects an invalid expression AST before runtime interpretation', () => {
     const plan = compiled.plan as Record<string, unknown>;
     expect(() => validateVersionedWorkflowPlan({
