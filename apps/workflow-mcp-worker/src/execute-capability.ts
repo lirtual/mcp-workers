@@ -1,4 +1,5 @@
 import { resolveRunConnectionPin } from './connection-revocation.js';
+import { getConnection } from './connections.js';
 import { httpRead } from './http-read.js';
 import {
   callMcpTool,
@@ -129,9 +130,26 @@ async function executeMcpCall(
     const pinned = context.runId
       ? await resolveRunConnectionPin(context.env.DB, context.runId, connection, tool, context.effectivePolicy.effect)
       : undefined;
+    const legacyConnection = context.runId && !pinned ? getConnection(connection) : undefined;
+    // Pre-v0.2 Runs retain their original static target, but must still observe
+    // a live disable or tighter tool permission if the Connection is controlled.
+    const options = pinned
+      ? { db: context.env.DB, pinned }
+      : legacyConnection
+        ? {
+            db: context.env.DB,
+            legacy: true,
+            pinned: {
+              connectionId: connection,
+              version: 0,
+              endpoint: legacyConnection.endpoint,
+              toolName: tool,
+              effect: context.effectivePolicy.effect
+            }
+          }
+        : undefined;
     const result = await callMcpTool(
-      context.env, connection, tool, argumentsWithIdempotency, fetch,
-      pinned ? { db: context.env.DB, pinned } : undefined
+      context.env, connection, tool, argumentsWithIdempotency, fetch, options
     );
     return {
       state: 'succeeded',
