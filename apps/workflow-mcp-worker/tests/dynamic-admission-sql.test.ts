@@ -224,6 +224,19 @@ describe('T06 gated, immutable D1 manual admission', () => {
     } finally { f.sqlite.close(); }
   });
 
+  it('does not recreate a stale queued Run after external retention may have expired', async () => {
+    const f = fixture();
+    try {
+      const first = await admitManualWorkflow(f.env, original.metadata.id, input, 'expired-recovery');
+      f.sqlite.prepare('UPDATE workflow_runs SET created_at = ? WHERE run_id = ?')
+        .run('2020-01-01T00:00:00.000Z', first.runId);
+      f.loseInstance(first.runId);
+      await expect(admitManualWorkflow(f.env, original.metadata.id, input, 'expired-recovery'))
+        .rejects.toMatchObject({ code: 'WORKFLOW_RECOVERY_EXPIRED' });
+      expect(f.starts()).toBe(1);
+    } finally { f.sqlite.close(); }
+  });
+
   it('fails closed on an uncertain instance lookup without another external start', async () => {
     const f = fixture();
     try {
