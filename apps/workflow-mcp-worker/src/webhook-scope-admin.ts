@@ -1,13 +1,9 @@
 import { validateVersionedWorkflowPlan } from './runtime-plan-validation.js';
+import { isProtectedWebhookSecret } from './webhook-secret-policy.js';
 
 const ID = /^[A-Za-z][A-Za-z0-9_-]{0,127}$/;
 const SHA = /^[0-9a-f]{64}$/;
 const SECRET = /^[A-Z][A-Z0-9_]{0,127}$/;
-const RESERVED = new Set([
-  'MCP_ACCESS_TOKEN', 'EXECUTOR_LEASE_SECRET', 'GITHUB_ACTIONS_TOKEN',
-  'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY'
-]);
-
 function error(status: number, code: string): Response {
   return Response.json({ error: code }, {
     status, headers: { 'Cache-Control': 'no-store' }
@@ -45,7 +41,7 @@ export async function registerApprovedWebhookScope(
       typeof triggerId !== 'string' || !ID.test(triggerId) ||
       typeof definitionDigest !== 'string' || !SHA.test(definitionDigest) ||
       typeof secretName !== 'string' || !SECRET.test(secretName) ||
-      RESERVED.has(secretName) ||
+      isProtectedWebhookSecret(secretName) ||
       !Number.isSafeInteger(expectedPolicyRevision) || (expectedPolicyRevision as number) < 1) {
     return error(400, 'invalid_body');
   }
