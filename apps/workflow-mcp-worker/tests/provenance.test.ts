@@ -200,6 +200,25 @@ describe('runtime provenance and pinned plans', () => {
     }])).toThrow(/invalid-normalized-plan/);
   });
 
+  it('blocks cutover when an old nonterminal Run lost its pinned plan or Connection mapping', () => {
+    const base = {
+      runId: 'run_old', definitionDigest: 'f'.repeat(64),
+      dslVersion: 1, manifestVersions: [1], hasInvalidManifest: false
+    };
+    expect(() => assertReleaseCompatibility([{ ...base, dslVersion: -1,
+      normalizedPlanJson: '' }])).toThrow(/missing-pinned-plan/);
+    expect(() => assertReleaseCompatibility([{ ...base, normalizedPlanJson: '' }]))
+      .toThrow(/missing-pinned-plan/);
+    expect(() => assertReleaseCompatibility([{ ...base, normalizedPlanJson: JSON.stringify({
+      dslVersion: 1, id: 'legacy-run',
+      steps: { call: { with: { connection: 'removed-custom-connection' } } }
+    }) }])).toThrow(/unknown-connection-mapping/);
+    expect(() => assertReleaseCompatibility([{ ...base, normalizedPlanJson: JSON.stringify({
+      dslVersion: 1, id: 'legacy-run',
+      steps: { call: { with: { connection: 'raindrop' } } }
+    }) }])).not.toThrow();
+  });
+
   it('pins an explicit checked-in runner contract version', () => {
     expect(RUNNER_VERSION).toBe('workflow-runner-v1');
   });
