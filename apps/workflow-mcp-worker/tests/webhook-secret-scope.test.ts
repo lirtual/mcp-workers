@@ -53,7 +53,8 @@ describe('T07 approved webhook secret resolution', () => {
         ['sample', 'other', DIGEST, 'SAMPLE_HOOK'],
         ['sample', 'incoming', 'b'.repeat(64), 'SAMPLE_HOOK'],
         ['sample', 'incoming', DIGEST, 'OTHER_HOOK'],
-        ['sample', 'incoming', DIGEST, 'MCP_ACCESS_TOKEN']
+        ['sample', 'incoming', DIGEST, 'MCP_ACCESS_TOKEN'],
+        ['sample', 'incoming', DIGEST, 'ADMIN_PUBLISHER_WORKFLOW_SHA']
       ]) {
         expect(await resolveApprovedWebhookSecret(f.env, workflow!, trigger!, digest!, secret!))
           .toBeNull();
