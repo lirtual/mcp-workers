@@ -24,7 +24,7 @@ async function store(): Promise<D1Database | null> {
   for (const name of ['0001_core.sql', '0002_scheduler.sql', '0003_mcp_dependencies.sql',
     '0004_remote_executor.sql', '0005_artifacts.sql', '0006_provenance.sql',
     '0007_connection_versions.sql', '0008_definition_publications.sql',
-    '0009_active_definitions.sql']) {
+    '0009_active_definitions.sql', '0010_webhook_secret_scopes.sql']) {
     sqlite.exec(readFileSync('migrations/' + name, 'utf8'));
   }
   sqlite.prepare(
@@ -72,6 +72,45 @@ function request(actionId: string, expectedDigest: string | null, targetDigest: 
 }
 
 describe('real SQLite active pointer and rollback contract', () => {
+  it('requires a separately approved scoped webhook before activating a new independent definition', async () => {
+    const db = await store();
+    if (!db) throw new Error('node:sqlite is required for real CAS validation');
+    const plan = JSON.parse(JSON.stringify(entry.plan)) as {
+      id: string; triggers: Array<Record<string, unknown>>
+    };
+    plan.triggers.push({ type: 'webhook', id: 'incoming', secret: 'NEW_HOOK_TOKEN' });
+    const digest = 'f'.repeat(64);
+    await db.prepare(`INSERT INTO workflow_definition_versions
+      (definition_digest, workflow_id, dsl_version, normalized_plan_json, source_path, created_at)
+      VALUES (?, ?, 1, ?, ?, '2026-09-22')`
+    ).bind(digest, entry.metadata.id, JSON.stringify(plan), entry.sourcePath).run();
+    await db.prepare(`INSERT INTO definition_publications
+      (publication_id, workflow_id, definition_digest, source_sha, repository_id, publisher_run_id,
+       publisher_run_attempt, publisher_workflow_sha, policy_revision, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, '2026-09-22')`
+    ).bind('independent-webhook-stage', entry.metadata.id, digest, 'c'.repeat(40),
+      publisher.repositoryId, publisher.runId, publisher.runAttempt, publisher.workflowSha).run();
+    const env = { DB: db, WEBHOOK_SECRET_ALLOWLIST: '["NEW_HOOK_TOKEN"]',
+      NEW_HOOK_TOKEN: 'configured-token' } as unknown as Env;
+    const activate = (id: string, before: string | null, target: string | null, revision: number) =>
+      updateActiveDefinition(request(id, before, target, revision), env, publisher,
+        target ? 'activate' : 'deactivate');
+    expect((await activate('before-scope', null, digest, 0)).status).toBe(422);
+    const policy = await db.prepare('SELECT revision FROM connection_policy_revision WHERE singleton = 1')
+      .first<{ revision: number }>();
+    await db.prepare(`INSERT INTO workflow_webhook_secret_scopes
+      (workflow_id, trigger_id, definition_digest, secret_name, policy_revision, enabled, approved_at)
+      VALUES (?, 'incoming', ?, 'NEW_HOOK_TOKEN', ?, 1, '2026-09-22')`
+    ).bind(entry.metadata.id, digest, policy!.revision).run();
+    expect((await activate('approved-hook', null, digest, 0)).status).toBe(200);
+    expect((await activate('disable-hook', digest, null, 1)).status).toBe(200);
+    await db.prepare(`UPDATE workflow_webhook_secret_scopes SET enabled = 0
+      WHERE definition_digest = ?`).bind(digest).run();
+    expect((await activate('revoked-rollback', null, digest, 2)).status).toBe(422);
+    expect((await db.prepare('SELECT state FROM workflow_active_definitions WHERE workflow_id = ?')
+      .bind(entry.metadata.id).first<{ state: string }>())?.state).toBe('disabled');
+  });
+
   it('activates exact staged digest, hides on deactivation and rolls back using activate', async () => {
     const db = await store();
     if (!db) throw new Error('node:sqlite is required for real CAS validation');
