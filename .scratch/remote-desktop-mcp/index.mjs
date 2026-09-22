@@ -151,18 +151,24 @@ export default {
   async fetch(request, env) {
     const target = new URL(request.url);
     const path = target.pathname;
-    // Streamable HTTP requires Origin validation to prevent DNS rebinding.
-    // This throwaway prototype permits only same-origin browser requests;
-    // production ChatGPT/Portal origins must be decided during OAuth review.
-    const origin = request.headers.get("origin");
-    if (origin !== null) {
-      let parsedOrigin;
-      try { parsedOrigin = new URL(origin).origin; } catch { return json({ error: "origin_denied" }, 403); }
-      if (parsedOrigin !== target.origin) return json({ error: "origin_denied" }, 403);
-    }
     const configured = [env.PROTOTYPE_MCP_TOKEN, env.PROTOTYPE_DEVICE_TOKEN, env.PROTOTYPE_ADMIN_TOKEN]
       .every((token) => typeof token === "string" && token.length >= 24);
-    if (!configured) return json({ error: "prototype_not_configured" }, 503);
+    // An explicit allowed Host + Origin is required. Comparing Origin only to
+    // request.url would accept an attacker-controlled Host after DNS rebinding.
+    let allowedOrigin;
+    try {
+      allowedOrigin = new URL(env.PROTOTYPE_ALLOWED_ORIGIN);
+    } catch {
+      return json({ error: "prototype_not_configured" }, 503);
+    }
+    if (!configured || !["http:", "https:"].includes(allowedOrigin.protocol) ||
+        allowedOrigin.origin !== env.PROTOTYPE_ALLOWED_ORIGIN || allowedOrigin.pathname !== "/" ||
+        allowedOrigin.search || allowedOrigin.hash) {
+      return json({ error: "prototype_not_configured" }, 503);
+    }
+    if (target.origin !== allowedOrigin.origin) return json({ error: "host_denied" }, 403);
+    const origin = request.headers.get("origin");
+    if (origin !== null && origin !== allowedOrigin.origin) return json({ error: "origin_denied" }, 403);
     if (path === "/device") {
       if (!(await authorized(request, env.PROTOTYPE_DEVICE_TOKEN))) return json({ error: "unauthorized" }, 401);
       const stub = env.DEVICE.get(env.DEVICE.idFromName("scratch-only"));
