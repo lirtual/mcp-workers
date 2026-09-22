@@ -102,6 +102,32 @@ describe('real SQLite active pointer and rollback contract', () => {
       (workflow_id, trigger_id, definition_digest, secret_name, policy_revision, enabled, approved_at)
       VALUES (?, 'incoming', ?, 'NEW_HOOK_TOKEN', ?, 1, '2026-09-22')`
     ).bind(entry.metadata.id, digest, policy!.revision).run();
+    // The separate scope lookup succeeded, but an emergency disable wins
+    // before the D1 activation transaction claims its first action.
+    const originalBatch = db.batch.bind(db);
+    let revokeBeforeCommit = true;
+    const racingEnv = {
+      ...env,
+      DB: {
+        prepare: db.prepare.bind(db),
+        batch: async (commands: Parameters<D1Database['batch']>[0]) => {
+          if (revokeBeforeCommit) {
+            revokeBeforeCommit = false;
+            await db.prepare(`UPDATE workflow_webhook_secret_scopes SET enabled = 0
+              WHERE definition_digest = ?`).bind(digest).run();
+          }
+          return originalBatch(commands);
+        }
+      } as D1Database
+    } as Env;
+    const race = await updateActiveDefinition(
+      request('revocation-race', null, digest, 0), racingEnv, publisher, 'activate'
+    );
+    expect(race.status).toBe(409);
+    expect((await db.prepare('SELECT COUNT(*) AS count FROM workflow_registry_actions')
+      .first<{ count: number }>())?.count).toBe(0);
+    await db.prepare(`UPDATE workflow_webhook_secret_scopes SET enabled = 1
+      WHERE definition_digest = ?`).bind(digest).run();
     expect((await activate('approved-hook', null, digest, 0)).status).toBe(200);
     expect((await activate('disable-hook', digest, null, 1)).status).toBe(200);
     await db.prepare(`UPDATE workflow_webhook_secret_scopes SET enabled = 0
