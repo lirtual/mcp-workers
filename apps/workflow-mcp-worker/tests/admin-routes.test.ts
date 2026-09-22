@@ -202,6 +202,18 @@ describe('D1-backed approved Connection snapshot', () => {
     expect(serialized).not.toContain('https://');
   });
 
+  it('rejects a torn snapshot when policy changes between reads', async () => {
+    let revisionRead = 0;
+    const db = {
+      prepare: () => ({
+        first: async () => ({ revision: ++revisionRead }),
+        all: async () => ({ results: [] })
+      })
+    } as unknown as D1Database;
+    const response = await invoke('Bearer ' + await token(), { ...env, DB: db });
+    expect(response.status).toBe(503);
+  });
+
   it('fails closed if the policy store cannot provide an authoritative revision', async () => {
     const db = { prepare: () => ({ first: async () => null }) } as unknown as D1Database;
     const response = await invoke('Bearer ' + await token(), { ...env, DB: db });
