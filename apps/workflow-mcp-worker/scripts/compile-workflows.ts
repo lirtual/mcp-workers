@@ -33,9 +33,15 @@ const policySchema = z.object({
   revision: z.number().int().nonnegative(),
   connections: z.record(z.string(), z.object({
     tools: z.record(z.string(), z.object({
-      effect: z.enum(['read', 'idempotent_write', 'unsafe_write', 'unknown'])
-    }).strict())
-  }).strict())
+      effect: z.enum(['read', 'idempotent_write', 'unsafe_write', 'unknown']),
+      operationIdArgument: z.string().optional()
+    }).strict()),
+    version: z.number().int().positive().optional(),
+    enabled: z.boolean().optional()
+  }).strict()),
+  webhookBindings: z.array(z.object({
+    workflowId: z.string(), triggerId: z.string(), referenceId: z.string()
+  }).strict()).max(64).optional()
 }).strict();
 
 const policy: TrustedCompilePolicy | undefined = policyFile

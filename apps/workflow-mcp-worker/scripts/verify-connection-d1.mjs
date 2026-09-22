@@ -14,11 +14,13 @@ import { GITHUB_EXECUTOR_CONFIG } from '../src/platform-config.ts';
 
 const crypto = globalThis.crypto ?? webcrypto;
 const sqlite = new DatabaseSync(':memory:');
-for (let index = 1; index <= 7; index++) {
+for (let index = 1; index <= 10; index++) {
   const files = {
     1: '0001_core.sql', 2: '0002_scheduler.sql', 3: '0003_mcp_dependencies.sql',
     4: '0004_remote_executor.sql', 5: '0005_artifacts.sql',
-    6: '0006_provenance.sql', 7: '0007_connection_versions.sql'
+    6: '0006_provenance.sql', 7: '0007_connection_versions.sql',
+    8: '0008_definition_publications.sql', 9: '0009_active_definitions.sql',
+    10: '0010_webhook_secret_scopes.sql'
   };
   sqlite.exec(readFileSync(new URL('../migrations/' + files[index], import.meta.url), 'utf8'));
 }

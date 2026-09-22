@@ -74,6 +74,27 @@ export async function admitWebhookWorkflow(
   });
 }
 
+/** Admit only the immutable webhook version that authenticated this caller. */
+export async function admitVersionedWebhookWorkflow(
+  env: Env, workflowId: string, triggerId: string, rawInput: unknown,
+  eventKey: string, authenticated: {
+    definitionDigest: string; registryRevision: number; secretName: string
+  }
+): Promise<WorkflowAdmissionResult> {
+  if (eventKey.length < 1 || eventKey.length > 256) {
+    throw new PublicWorkflowError('INVALID_EVENT_KEY', 'Webhook event key must contain 1 to 256 characters.');
+  }
+  if (env.DYNAMIC_WORKFLOW_REGISTRY_ENABLED !== 'true' ||
+      env.DYNAMIC_WORKFLOW_ADMISSION_ENABLED !== 'true') {
+    throw new PublicWorkflowError('RUNTIME_NOT_CONFIGURED', 'Versioned webhook admission is not configured.');
+  }
+  return admitDynamicManualWorkflow(env, workflowId, rawInput, {
+    admissionKey: `webhook:${workflowId}:${triggerId}:${eventKey}`,
+    sourceType: 'webhook', sourceKey: eventKey,
+    trigger: { type: 'webhook', triggerId, eventKey }, deterministicRunId: true
+  }, authenticated);
+}
+
 export async function admitScheduledWorkflow(
   env: Env,
   workflowId: string,
@@ -98,7 +119,8 @@ async function admitDynamicManualWorkflow(
   env: Env,
   workflowId: string,
   rawInput: unknown,
-  source: AdmissionSource
+  source: AdmissionSource,
+  authenticated?: { definitionDigest: string; registryRevision: number; secretName: string }
 ): Promise<WorkflowAdmissionResult> {
   if (env.DYNAMIC_WORKFLOW_REGISTRY_ENABLED !== 'true' || !env.DB) {
     throw new PublicWorkflowError('RUNTIME_NOT_CONFIGURED', 'Dynamic admission requires the D1 registry.');
@@ -106,6 +128,12 @@ async function admitDynamicManualWorkflow(
   const store = new D1WorkflowStore(env.DB);
   const original = await store.getAdmissionRun(source.admissionKey);
   if (original) {
+    // A caller authorized against a different active webhook version must
+    // never inherit a same-key Run admitted under another credential.
+    if (authenticated && original.definitionDigest !== authenticated.definitionDigest) {
+      throw new PublicWorkflowError('REGISTRY_CONFLICT',
+        'Webhook admission belongs to another definition version; retry.');
+    }
     // Never recreate a terminal historical Run. Only an unfinished Run may
     // need repair after an uncertain initial createBatch response.
     await recoverDynamicInstance(env, original);
@@ -129,6 +157,10 @@ async function admitDynamicManualWorkflow(
     // definition was deactivated in the meantime.
     const winner = await store.getAdmissionRun(source.admissionKey);
     if (winner) {
+      if (authenticated && winner.definitionDigest !== authenticated.definitionDigest) {
+        throw new PublicWorkflowError('REGISTRY_CONFLICT',
+          'Webhook admission belongs to another definition version; retry.');
+      }
       await recoverDynamicInstance(env, winner);
       return {
         runId: winner.runId, alreadyAdmitted: true,
@@ -147,6 +179,12 @@ async function admitDynamicManualWorkflow(
     if (plan.id !== workflowId) throw new Error('Workflow mismatch');
   } catch {
     throw new PublicWorkflowError('REGISTRY_UNAVAILABLE', 'Active workflow registry is invalid.');
+  }
+  if (authenticated && (active.active_digest !== authenticated.definitionDigest ||
+      active.registry_revision !== authenticated.registryRevision ||
+      !plan.triggers.some(t => t.type === 'webhook' &&
+        t.id === source.trigger.triggerId && t.secret === authenticated.secretName))) {
+    throw new PublicWorkflowError('REGISTRY_CONFLICT', 'Webhook version changed during authorization; retry.');
   }
   const input = validateWorkflowInput(plan.inputs, rawInput);
   const policy = await env.DB.prepare(
@@ -168,13 +206,18 @@ async function admitDynamicManualWorkflow(
     workflowId, definitionDigest: active.active_digest, input,
     trigger: source.trigger, sourceType: source.sourceType, sourceKey: source.sourceKey,
     engineVersion: currentEngineVersion(env), expectedRegistryRevision: active.registry_revision,
-    expectedPolicyRevision: policy.revision
+    expectedPolicyRevision: policy.revision,
+    ...(authenticated ? { webhookScope: { triggerId: String(source.trigger.triggerId), secretName: authenticated.secretName } } : {})
   });
   if (!admitted) {
     // The active revision may have changed while a same-key rival admitted.
     // Return the existing immutable Run rather than a spurious conflict.
     const winner = await store.getAdmissionRun(source.admissionKey);
     if (winner) {
+      if (authenticated && winner.definitionDigest !== authenticated.definitionDigest) {
+        throw new PublicWorkflowError('REGISTRY_CONFLICT',
+          'Webhook admission belongs to another definition version; retry.');
+      }
       await recoverDynamicInstance(env, winner);
       return {
         runId: winner.runId, alreadyAdmitted: true,
@@ -189,6 +232,10 @@ async function admitDynamicManualWorkflow(
   }
   // A concurrent request may have won the key. Never restart a terminal Run.
   if (admitted.alreadyAdmitted) {
+    if (authenticated && recorded.definitionDigest !== authenticated.definitionDigest) {
+      throw new PublicWorkflowError('REGISTRY_CONFLICT',
+        'Webhook admission belongs to another definition version; retry.');
+    }
     await recoverDynamicInstance(env, recorded);
   } else {
     await env.WORKFLOW.createBatch([{ id: admitted.runId, params: { runId: admitted.runId } }]);

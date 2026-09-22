@@ -355,6 +355,7 @@ export class D1WorkflowStore {
   async admitVersionPinnedRun(input: AdmissionRequest & {
     expectedRegistryRevision: number;
     expectedPolicyRevision: number;
+    webhookScope?: { triggerId: string; secretName: string };
   }): Promise<AdmissionResult | null> {
     const createdAt = nowIso();
     const results = await this.db.batch([
@@ -368,11 +369,19 @@ export class D1WorkflowStore {
              AND active_digest = ? AND registry_revision = ?
          ) AND EXISTS (
            SELECT 1 FROM connection_policy_revision WHERE singleton = 1 AND revision = ?
-         )`
+         ) AND (? = 0 OR EXISTS (
+           SELECT 1 FROM workflow_webhook_secret_scopes s
+           WHERE s.workflow_id = ? AND s.trigger_id = ?
+             AND s.definition_digest = ? AND s.secret_name = ?
+             AND s.policy_revision = ? AND s.enabled = 1
+         ))`
       ).bind(
         input.admissionKey, input.proposedRunId, input.workflowId, input.sourceType,
         input.sourceKey ?? null, createdAt, input.workflowId, input.definitionDigest,
-        input.expectedRegistryRevision, input.expectedPolicyRevision
+        input.expectedRegistryRevision, input.expectedPolicyRevision,
+        input.webhookScope ? 1 : 0, input.workflowId,
+        input.webhookScope?.triggerId ?? '', input.definitionDigest,
+        input.webhookScope?.secretName ?? '', input.expectedPolicyRevision
       ),
       this.db.prepare(
         `INSERT OR IGNORE INTO workflow_runs

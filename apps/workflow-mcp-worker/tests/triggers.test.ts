@@ -22,6 +22,25 @@ function env(overrides: Record<string, unknown> = {}): Env {
 }
 
 describe('webhook trigger ingress', () => {
+  it('fails closed when dynamic registry and admission gates disagree', async () => {
+    for (const flags of [
+      { DYNAMIC_WORKFLOW_REGISTRY_ENABLED: 'true' },
+      { DYNAMIC_WORKFLOW_ADMISSION_ENABLED: 'true' }
+    ]) {
+      const response = await handleWebhookTrigger(
+        new Request('https://workflow.example/hooks/trigger-http-smoke/inbound', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer hook-secret', 'X-Workflow-Event-Key': 'mismatch' }
+        }),
+        env(flags), 'trigger-http-smoke', 'inbound', lookup
+      );
+      expect(response.status).toBe(503);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { code: 'TRIGGER_ADMISSION_NOT_CONFIGURED' }
+      });
+    }
+  });
+
   it('rejects missing or invalid trigger authentication before touching runtime bindings', async () => {
     const missing = await handleWebhookTrigger(
       new Request('https://workflow.example/hooks/trigger-http-smoke/inbound', { method: 'POST' }),
