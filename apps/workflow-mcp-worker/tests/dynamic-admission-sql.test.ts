@@ -113,6 +113,10 @@ describe('T06 gated, immutable D1 manual admission', () => {
       expect(rolledBack.runId).toBe(first.runId);
       const count = f.sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_runs').get() as { count: number };
       expect(count.count).toBe(1);
+      const admittedEvents = f.sqlite.prepare(
+        "SELECT COUNT(*) AS count FROM workflow_events WHERE run_id = ? AND event_type = 'run.admitted'"
+      ).get(first.runId) as { count: number };
+      expect(admittedEvents.count).toBe(1);
     } finally { f.sqlite.close(); }
   });
 
