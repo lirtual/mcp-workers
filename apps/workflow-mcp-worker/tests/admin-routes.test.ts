@@ -230,13 +230,16 @@ describe('D1-backed approved Connection snapshot', () => {
 
 describe('concurrent admin action replay reconciliation', () => {
   it('returns the authoritative registration result after a losing unique-ID race', async () => {
-    let reads = 0;
+    let actionReads = 0;
+    let awaitDigest = '';
     const db = {
-      prepare: () => ({
-        bind: () => ({ first: async () => ++reads === 1 ? null : {
-          connection_id: 'raindrop', action_kind: 'register',
-          request_digest: awaitDigest, resulting_revision: 1
-        } })
+      prepare: (sql: string) => ({
+        bind: () => ({ first: async () =>
+          sql.includes('connection_admin_actions') && ++actionReads === 2 ? {
+            connection_id: 'raindrop', action_kind: 'register',
+            request_digest: awaitDigest, resulting_revision: 1
+          } : null
+        })
       }),
       batch: async () => { throw new Error('UNIQUE constraint failed'); }
     } as unknown as D1Database;
@@ -254,7 +257,7 @@ describe('concurrent admin action replay reconciliation', () => {
     });
     const hash = await crypto.subtle.digest('SHA-256',
       new TextEncoder().encode(JSON.stringify(['raindrop', 0, config])));
-    const awaitDigest = [...new Uint8Array(hash)].map(b => b.toString(16).padStart(2, '0')).join('');
+    awaitDigest = [...new Uint8Array(hash)].map(b => b.toString(16).padStart(2, '0')).join('');
     const request = new Request('https://example.test/admin/connections/register', {
       method: 'POST',
       headers: { authorization: 'Bearer ' + await token() },
