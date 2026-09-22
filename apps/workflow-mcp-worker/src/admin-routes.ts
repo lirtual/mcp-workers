@@ -57,11 +57,11 @@ async function policySnapshot(env: AdminEnv): Promise<Record<string, unknown>> {
   // Only durable scopes at this precise approved revision are publisher-visible.
   // A bundled YAML trigger is never itself permission to use a Worker Secret.
   const scopes = await env.DB.prepare(
-    `SELECT workflow_id, trigger_id, secret_name, policy_revision
+    `SELECT DISTINCT workflow_id, trigger_id, secret_name, policy_revision
      FROM workflow_webhook_secret_scopes
      WHERE enabled = 1
        AND policy_revision = (SELECT revision FROM connection_policy_revision WHERE singleton = 1)
-     ORDER BY workflow_id, trigger_id, definition_digest LIMIT 65`
+     ORDER BY workflow_id, trigger_id, secret_name LIMIT 65`
   ).all<{
     workflow_id: string; trigger_id: string; secret_name: string; policy_revision: number
   }>();
