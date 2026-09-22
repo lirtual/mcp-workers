@@ -28,7 +28,7 @@ function required(value: string | undefined): string | undefined {
   return value && value.trim() === value && value.length > 0 ? value : undefined;
 }
 
-function policySnapshot(): Record<string, unknown> {
+async function policySnapshot(env: AdminEnv): Promise<Record<string, unknown>> {
   const connections: Record<string, unknown> = {};
   // This is the bounded approved bootstrap configuration; never expose connection.auth or Env.
   for (const id of ['workflow-self', 'raindrop']) {
@@ -56,7 +56,50 @@ function policySnapshot(): Record<string, unknown> {
       }
     }
   }
-  return { revision: INITIAL_POLICY_REVISION, connections, webhookBindings };
+  // The bootstrap snapshot remains available to the isolated auth tests.
+  // Actual deployed Workers always have DB; never silently reuse bootstrap
+  // data if a configured D1 query fails.
+  if (!env.DB) return { revision: INITIAL_POLICY_REVISION, connections, webhookBindings };
+  const revision = await env.DB.prepare(
+    'SELECT revision FROM connection_policy_revision WHERE singleton = 1'
+  ).first<{ revision: number }>();
+  if (!revision || !Number.isSafeInteger(revision.revision) || revision.revision < 1) {
+    throw new Error('Approved policy revision is unavailable.');
+  }
+  const listed = await env.DB.prepare(
+    'SELECT connection_id, current_version, disabled, allowed_tools_json FROM connection_controls ORDER BY connection_id LIMIT 33'
+  ).all<{
+    connection_id: string; current_version: number; disabled: number; allowed_tools_json: string
+  }>();
+  if (listed.results.length > 32) throw new Error('Approved policy snapshot exceeds bound.');
+  for (const control of listed.results) {
+    const original = getConnection(control.connection_id);
+    if (!original || !Number.isSafeInteger(control.current_version) || control.current_version < 1 ||
+        (control.disabled !== 0 && control.disabled !== 1)) {
+      throw new Error('Approved policy snapshot is invalid.');
+    }
+    const parsed: unknown = JSON.parse(control.allowed_tools_json);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('Approved policy snapshot is invalid.');
+    }
+    const enabledTools: Record<string, unknown> = {};
+    for (const [name, effects] of Object.entries(parsed)) {
+      const tool = original.tools[name];
+      if (!tool || !Array.isArray(effects) || effects.length !== 1 || effects[0] !== tool.effect) {
+        throw new Error('Approved policy snapshot is invalid.');
+      }
+      enabledTools[name] = {
+        effect: tool.effect,
+        ...(tool.operationIdArgument ? { operationIdArgument: tool.operationIdArgument } : {})
+      };
+    }
+    connections[control.connection_id] = {
+      version: control.current_version,
+      enabled: control.disabled === 0,
+      tools: enabledTools
+    };
+  }
+  return { revision: revision.revision, connections, webhookBindings };
 }
 
 export async function handleAdminRoute(
@@ -99,7 +142,11 @@ export async function handleAdminRoute(
   }
   if (disableRoute) return disableConnection(request, env);
   if (registerRoute) return registerApprovedConnection(request, env.DB);
-  return Response.json(policySnapshot(), { headers: { 'Cache-Control': 'no-store' } });
+  try {
+    return Response.json(await policySnapshot(env), { headers: { 'Cache-Control': 'no-store' } });
+  } catch {
+    return reply(503, 'admin_storage_unavailable');
+  }
 }
 
 /** CAS disable is deliberately narrower than general configuration registration. */
