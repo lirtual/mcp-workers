@@ -463,7 +463,8 @@ describe('T07 transactional webhook authorization', () => {
           .run(original.metadata.id, digest, secret, policy);
       }
       const env = {
-        ...f.env, OLD_HOOK_TOKEN: 'old-token', NEW_HOOK_TOKEN: 'new-token'
+        ...f.env, OLD_HOOK_TOKEN: 'old-token', NEW_HOOK_TOKEN: 'new-token',
+        WEBHOOK_SECRET_ALLOWLIST: JSON.stringify(['OLD_HOOK_TOKEN', 'NEW_HOOK_TOKEN'])
       } as Env;
       const request = (token: string, key: string) => new Request(
         `https://workflow.example/hooks/${original.metadata.id}/incoming`, {
@@ -517,7 +518,8 @@ describe('T07 transactional webhook authorization', () => {
       const selected = { definitionDigest: digest, registryRevision: 2, secretName: 'TEST_WEBHOOK_TOKEN' };
       const run = (key: string, env = f.env) =>
         admitVersionedWebhookWorkflow(env, original.metadata.id, 'incoming', input, key, selected);
-      const hookEnv = { ...f.env, TEST_WEBHOOK_TOKEN: 'valid-token' } as Env;
+      const hookEnv = { ...f.env, TEST_WEBHOOK_TOKEN: 'valid-token',
+        WEBHOOK_SECRET_ALLOWLIST: JSON.stringify(['TEST_WEBHOOK_TOKEN']) } as Env;
       const request = (token: string, eventKey: string) => new Request(
         `https://workflow.example/hooks/${original.metadata.id}/incoming`, {
           method: 'POST', headers: {
