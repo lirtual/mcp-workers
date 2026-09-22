@@ -130,9 +130,16 @@ export async function registerApprovedConnection(request: Request, db: D1Databas
            updated_at = excluded.updated_at
          WHERE connection_controls.revision = ? AND connection_controls.disabled = 0`
       ).bind(input.connectionId, revision, revision, policy, now,
-        input.actionId, digest, input.expectedRevision)
+        input.actionId, digest, input.expectedRevision),
+      db.prepare(
+        `UPDATE connection_policy_revision SET revision = revision + 1
+         WHERE singleton = 1 AND EXISTS (
+           SELECT 1 FROM connection_admin_actions WHERE action_id = ? AND request_digest = ?
+         )`
+      ).bind(input.actionId, digest)
     ]);
-    if (results[1]?.meta.changes !== 1 || results[2]?.meta.changes !== 1) {
+    if (results[1]?.meta.changes !== 1 || results[2]?.meta.changes !== 1 ||
+        results[3]?.meta.changes !== 1) {
       return error(409, 'revision_conflict');
     }
     return Response.json({ connectionId: input.connectionId, version: revision, revision }, {
