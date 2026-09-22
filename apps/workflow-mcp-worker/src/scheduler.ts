@@ -92,6 +92,17 @@ export async function runSchedulerTick(
         // Missing dynamic cutover is a broken registry invariant. Never
         // backfill from an arbitrary previous minute in that situation.
         if (selected && !state) throw new Error('Schedule cutover cursor is missing.');
+        if (selected && state?.lastAdmittedScheduledTime !== undefined) {
+          // D1 may have committed admission and cursor before createBatch lost
+          // its response. Diagnose the original queued Run by the same key,
+          // even when there is no new due minute. Never create a second ID.
+          const lastKey = `schedule:${plan.id}:${candidate.id}:${state.lastAdmittedScheduledTime}`;
+          const original = await store.getAdmissionRun(lastKey);
+          if (original?.state === 'queued') {
+            await admitScheduledWorkflow(env, plan.id, candidate.id,
+              state.lastAdmittedScheduledTime, selected);
+          }
+        }
         const previousEvaluation = state?.lastEvaluatedAt ?? currentMinute - 60_000;
         const due = latestDueOccurrence({
           cron: candidate.cron,
