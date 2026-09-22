@@ -75,6 +75,34 @@ describe('T07 protected webhook secret registration', () => {
       expect(f.sqlite.prepare('SELECT count(*) AS n FROM workflow_webhook_secret_scopes').get()).toEqual({n: 1});
     } finally { f.sqlite.close(); }
   });
+  it('recovers a committed registration when D1 loses its response', async () => {
+    const f = fixture();
+    try {
+      const base = f.env.DB;
+      let dropResponse = true;
+      f.env.DB = {
+        prepare: base.prepare.bind(base),
+        batch: async (statements: Parameters<D1Database['batch']>[0]) => {
+          const result = await base.batch(statements);
+          if (dropResponse) {
+            dropResponse = false;
+            throw new Error('simulated response lost after commit');
+          }
+          return result;
+        }
+      } as D1Database;
+      const recovered = await f.register(f.body('lost-response'));
+      expect(recovered.status).toBe(200);
+      expect(await recovered.json()).toMatchObject({ registered: true });
+      expect((await f.register(f.body('lost-response'))).status).toBe(200);
+      expect((await f.register(f.body('different-action'))).status).toBe(409);
+      expect(f.sqlite.prepare('SELECT count(*) AS n FROM webhook_secret_scope_actions').get())
+        .toEqual({ n: 1 });
+      expect(f.sqlite.prepare('SELECT count(*) AS n FROM workflow_webhook_secret_scopes').get())
+        .toEqual({ n: 1 });
+    } finally { f.sqlite.close(); }
+  });
+
   it('rolls back the action claim if the second D1 batch statement fails', async () => {
     const f = fixture();
     try {
