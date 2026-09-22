@@ -206,6 +206,40 @@ describe('T06 gated, immutable D1 manual admission', () => {
     } finally { f.sqlite.close(); }
   });
 
+  it('rejects a stale Connection policy revision before any new admission side effect', async () => {
+    const f = fixture();
+    try {
+      const baseBatch = f.db.batch.bind(f.db);
+      let changed = false;
+      const racingDb = {
+        prepare: f.db.prepare.bind(f.db),
+        batch: async (commands: Parameters<D1Database['batch']>[0]) => {
+          if (!changed) {
+            changed = true;
+            f.sqlite.prepare(
+              'UPDATE connection_policy_revision SET revision = revision + 1 WHERE singleton = 1'
+            ).run();
+          }
+          return baseBatch(commands);
+        }
+      } as D1Database;
+      await expect(admitManualWorkflow({ ...f.env, DB: racingDb },
+        original.metadata.id, input, 'stale-policy')).rejects.toMatchObject({
+        code: 'REGISTRY_CONFLICT'
+      });
+      expect((f.sqlite.prepare('SELECT COUNT(*) AS count FROM run_admissions')
+        .get() as { count: number }).count).toBe(0);
+      expect((f.sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_runs')
+        .get() as { count: number }).count).toBe(0);
+      expect(f.starts()).toBe(0);
+      const retry = await admitManualWorkflow(f.env, original.metadata.id, input, 'stale-policy');
+      expect(retry).toMatchObject({
+        definitionDigest: original.definitionDigest, alreadyAdmitted: false
+      });
+      expect(f.starts()).toBe(1);
+    } finally { f.sqlite.close(); }
+  });
+
   it('rejects an activation race without writing an admission or starting an instance', async () => {
     const f = fixture();
     try {
