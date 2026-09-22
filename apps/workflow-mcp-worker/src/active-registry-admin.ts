@@ -146,6 +146,9 @@ export async function updateActiveDefinition(
       : 0;
     if (targetSchedules === null) return error(422, 'definition_not_approved');
     const now = new Date().toISOString();
+    // Activation starts new cron/timezone evaluation strictly after its UTC minute.
+    // Align this timestamp with the active pointer in the SAME D1 transaction.
+    const cutoverMinute = Math.floor(Date.parse(now) / 60_000) * 60_000;
     const results = await env.DB.batch([
       env.DB.prepare(
         `INSERT INTO workflow_registry_actions
@@ -191,7 +194,28 @@ export async function updateActiveDefinition(
       ).bind(action.workflowId, action.targetDigest, nextRevision,
         action.targetDigest ? 'enabled' : 'disabled',
         action.targetDigest ? now : null, now, action.actionId, signature,
-        action.expectedRevision, action.expectedDigest)
+        action.expectedRevision, action.expectedDigest),
+      // Retain historical admitted-minute high-water marks on update/rollback.
+      // A removed trigger keeps its durable cursor; only the newly enabled
+      // plan's schedule triggers receive a cutover. The active pointer, audit
+      // and cursor are committed together, without a separate scheduler lock.
+      env.DB.prepare(
+        `INSERT INTO scheduler_state
+         (schedule_key, last_evaluated_at, last_admitted_scheduled_time, next_due_occurrence)
+         SELECT ? || ':' || json_extract(t.value, '$.id'), ?, NULL, NULL
+         FROM workflow_definition_versions d, json_each(d.normalized_plan_json, '$.triggers') t
+         WHERE d.workflow_id = ? AND d.definition_digest = ?
+           AND json_extract(t.value, '$.type') = 'schedule'
+           AND EXISTS (SELECT 1 FROM workflow_registry_actions
+                       WHERE action_id = ? AND request_digest = ?)
+           AND EXISTS (SELECT 1 FROM workflow_active_definitions
+                       WHERE workflow_id = ? AND active_digest = ?
+                         AND registry_revision = ? AND state = 'enabled')
+         ON CONFLICT(schedule_key) DO UPDATE SET
+           last_evaluated_at = MAX(scheduler_state.last_evaluated_at, excluded.last_evaluated_at),
+           next_due_occurrence = NULL`
+      ).bind(action.workflowId, cutoverMinute, action.workflowId, action.targetDigest,
+        action.actionId, signature, action.workflowId, action.targetDigest, nextRevision)
     ]);
     if (results[0]?.meta.changes !== 1 || results[1]?.meta.changes !== 1) {
       return error(409, 'revision_conflict');
