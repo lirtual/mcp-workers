@@ -62,7 +62,9 @@ try {
   assert.equal((await call("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "1" } })).data.result.serverInfo.name,
     "throwaway-remote-desktop-prototype");
   const list = await call("tools/list", {});
-  assert.deepEqual(list.data.result.tools.map((x) => x.name), ["sandbox_ping"]);
+  assert.deepEqual(list.data.result.tools.map((x) => x.name), ["sandbox_ping", "sandbox_list_directory"]);
+  assert.equal((await call("tools/call", { name: "sandbox_list_directory", arguments: { path: "/" } }, 6)).data.error.code, -32602);
+  assert.equal((await call("tools/call", { name: "sandbox_list_directory", arguments: {} }, 7)).data.error.message, "offline");
   assert.equal((await call("tools/list", {}, 5, "wrong-token")).status, 401);
   assert.equal((await call("tools/call", { name: "sandbox_ping", arguments: { echo: "offline" } })).data.error.message, "offline");
 
@@ -71,6 +73,11 @@ try {
   const pair = [];
   socket.on("message", (data) => {
     const msg = JSON.parse(data.toString());
+    if (msg.tool === "sandbox_list_directory") {
+      assert.deepEqual(msg.arguments, {});
+      socket.send(JSON.stringify({ type: "result", id: msg.id, result: { entries: ["test-only.txt"] } }));
+      return;
+    }
     if (msg.arguments.echo === "timeout") return;
     if (msg.arguments.echo === "disconnect") { socket.close(); return; }
     if (msg.arguments.echo === "first" || msg.arguments.echo === "second") {
@@ -86,6 +93,8 @@ try {
   });
   const echoed = await call("tools/call", { name: "sandbox_ping", arguments: { echo: "hello" } }, 10);
   assert.deepEqual(JSON.parse(echoed.data.result.content[0].text), { echo: "hello" });
+  const listed = await call("tools/call", { name: "sandbox_list_directory", arguments: {} }, 17);
+  assert.deepEqual(JSON.parse(listed.data.result.content[0].text), { entries: ["test-only.txt"] });
 
   const [first, second] = await Promise.all([
     call("tools/call", { name: "sandbox_ping", arguments: { echo: "first" } }, 11),
@@ -112,7 +121,7 @@ try {
   const response = await once(forbidden, "unexpected-response");
   assert.equal(response[1].statusCode, 403);
   forbidden.terminate();
-  console.log("PASS local workerd: MCP initialize/list, auth, offline, WebSocket echo, concurrency, timeout, disconnect, reconnect, revoke");
+  console.log("PASS local workerd: MCP initialize/list, read-only directory transport, invalid path, auth, offline, WebSocket echo, concurrency, timeout, disconnect, reconnect, revoke");
 } finally {
   socket?.terminate();
   if (child && child.exitCode === null) {
