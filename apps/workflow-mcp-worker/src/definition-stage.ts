@@ -1,6 +1,7 @@
 import { validateVersionedWorkflowPlan } from './runtime-plan-validation.js';
 import { getCapabilityDescriptor } from './capabilities.js';
 import { getConnection } from './connections.js';
+import { hasApprovedWebhookBinding } from './webhook-secret-policy.js';
 import type { GitHubJobIdentity } from './oidc.js';
 import type { Env } from './types.js';
 
@@ -113,18 +114,15 @@ export async function stageDefinition(
     }
     for (const trigger of normalized.triggers) {
       if (trigger.type !== 'webhook') continue;
-      // T04 only accepts webhook bindings already present in the bundled
-      // approved registry; dynamic binding provisioning is not a stage action.
+      // Stage requires an owner-provisioned webhook binding, not an author
+      // assertion or a bundled static registry entry. The exact per-digest
+      // scope can only be registered after this immutable definition is stored;
+      // activation validates that separate scope before enabling it.
       const reference = trigger.secret;
-      if (typeof reference !== 'string' || !/^[A-Z][A-Z0-9_]{0,127}$/.test(reference)) {
-        return reject(422, 'invalid_reference');
+      if (typeof reference !== 'string' ||
+          !hasApprovedWebhookBinding(env as unknown as Record<string, unknown>, reference)) {
+        return reject(422, 'webhook_not_approved');
       }
-      const { getWorkflowRegistry } = await import('./registry.js');
-      const permitted = getWorkflowRegistry().some(entry =>
-        entry.metadata.id === workflowId &&
-        (entry.plan as { triggers?: Array<{ type: string; id?: string; secret?: string }> })
-          .triggers?.some(t => t.type === 'webhook' && t.id === trigger.id && t.secret === reference));
-      if (!permitted) return reject(422, 'webhook_not_approved');
     }
     const revision = await env.DB.prepare(
       'SELECT revision FROM connection_policy_revision WHERE singleton = 1'
