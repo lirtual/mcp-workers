@@ -24,8 +24,10 @@ binding behavior.
    manifest, policy mismatch, unexpected active version or missing/invalid
    scheduler high-water mark is a **stop**, not permission to create a new Run
    or reinitialize its cursor.
-4. Feed a *fresh* authorized snapshot and exact policy revision to
-   `prepareLegacyImport` / `seedLegacyDefinitions` in an isolated test
+4. Obtain the *fresh* authoritative snapshot with `readLegacyImportState(db)`
+   immediately before import, including all nonterminal Run/manifest rows.
+   Pass it and the exact policy revision to `prepareLegacyImport` /
+   `seedLegacyDefinitions` in an isolated test
    harness. Verify all four original digests/source paths and exact normalized
    plans, current D1 tool approval and unchanged `daily-nine` values. An
    identical seed is idempotent; a collision on the same digest must fail.
