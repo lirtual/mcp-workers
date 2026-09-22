@@ -59,3 +59,33 @@ test("revocation survives forced eviction after draining the HTTP response", asy
   expect(blocked.status).toBe(403);
   expect(await blocked.json()).toEqual({ error: "revoked" });
 });
+
+test("live device revoke closes connection and survives forced eviction", async () => {
+  const stub = env.DEVICE.get(env.DEVICE.idFromName("connected-revoke-proof"));
+  const response = await stub.fetch("https://internal/device", {
+    headers: { Upgrade: "websocket" },
+  });
+  expect(response.status).toBe(101);
+  const socket = response.webSocket;
+  socket.accept();
+
+  const revoked = await stub.fetch("https://internal/revoke", { method: "POST" });
+  expect(revoked.status).toBe(200);
+  expect(await revoked.json()).toEqual({ revoked: true });
+
+  // This explicitly tests a previously connected device, rather than only a
+  // new/revoked DO. The fixture drains the response before forcing eviction.
+  await evictDurableObject(stub, { webSockets: "close" });
+  const denied = await stub.fetch("https://internal/device", {
+    headers: { Upgrade: "websocket" },
+  });
+  expect(denied.status).toBe(403);
+  expect(await denied.json()).toEqual({ error: "revoked" });
+
+  const blocked = await stub.fetch("https://internal/invoke", {
+    method: "POST",
+    body: JSON.stringify({ id: "revoke-live-restart", tool: "sandbox_ping", arguments: { echo: "blocked" } }),
+  });
+  expect(blocked.status).toBe(403);
+  expect(await blocked.json()).toEqual({ error: "revoked" });
+});
