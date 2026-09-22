@@ -37,6 +37,10 @@ jobs:
           pnpm --filter workflow-mcp-worker exec wrangler deploy --dry-run \
             --config ../../.scratch/remote-desktop-mcp/wrangler.jsonc \
             --outdir /tmp/remote-desktop-prototype-173
+      - name: Install pinned scratch WebSocket test client (CI only)
+        run: npm install --prefix .scratch/remote-desktop-mcp --no-save --no-package-lock --ignore-scripts ws@8.18.3
+      - name: Exercise local workerd WebSocket + synthetic MCP (no deploy)
+        run: node .scratch/remote-desktop-mcp/test/workerd-integration.mjs
       - name: Assert no unexpected public endpoint configuration
         run: |
           node -e 'const fs=require("fs"); const x=JSON.parse(fs.readFileSync(".scratch/remote-desktop-mcp/wrangler.jsonc"));if(x.workers_dev!==false||x.preview_urls!==false||x.routes||x.route) process.exit(1)'
