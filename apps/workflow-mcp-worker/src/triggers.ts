@@ -1,6 +1,8 @@
-import { admitWebhookWorkflow, PublicWorkflowError } from './admission.js';
+import { admitWebhookWorkflow, admitVersionedWebhookWorkflow, PublicWorkflowError } from './admission.js';
 import { findWorkflow } from './registry.js';
 import { asRuntimePlan } from './runtime-plan.js';
+import { validateVersionedWorkflowPlan } from './runtime-plan-validation.js';
+import { resolveApprovedWebhookSecret } from './webhook-secret-scope.js';
 import type { Env } from './types.js';
 
 interface WebhookTrigger {
@@ -18,16 +20,50 @@ export async function handleWebhookTrigger(
 ): Promise<Response> {
   if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
 
-  const entry = lookup(workflowId);
-  if (!entry) return triggerError(404, 'WORKFLOW_NOT_FOUND', 'Workflow definition was not found.');
-
-  const plan = asRuntimePlan(entry.plan);
+  const dynamic = env.DYNAMIC_WORKFLOW_REGISTRY_ENABLED === 'true' &&
+    env.DYNAMIC_WORKFLOW_ADMISSION_ENABLED === 'true';
+  let selected: { active_digest: string; registry_revision: number } | null = null;
+  const entry = dynamic ? undefined : lookup(workflowId);
+  let plan;
+  if (dynamic) {
+    try {
+      if (!env.DB) throw new Error('D1 unavailable');
+      const row = await env.DB.prepare(
+        `SELECT a.active_digest, a.registry_revision, d.normalized_plan_json
+         FROM workflow_active_definitions a
+         JOIN workflow_definition_versions d ON d.definition_digest = a.active_digest
+         WHERE a.workflow_id = ? AND a.state = 'enabled' AND d.workflow_id = a.workflow_id`
+      ).bind(workflowId).first<{
+        active_digest: string; registry_revision: number; normalized_plan_json: string
+      }>();
+      if (!row) return triggerError(404, 'WORKFLOW_NOT_FOUND', 'Workflow definition was not found.');
+      if (!/^[0-9a-f]{64}$/.test(row.active_digest) ||
+          !Number.isSafeInteger(row.registry_revision) || row.registry_revision < 1) {
+        throw new Error('Invalid active version');
+      }
+      plan = validateVersionedWorkflowPlan(JSON.parse(row.normalized_plan_json));
+      if (plan.id !== workflowId) throw new Error('Workflow mismatch');
+      selected = { active_digest: row.active_digest, registry_revision: row.registry_revision };
+    } catch {
+      return triggerError(503, 'REGISTRY_UNAVAILABLE', 'Active workflow registry is unavailable.');
+    }
+  } else {
+    if (!entry) return triggerError(404, 'WORKFLOW_NOT_FOUND', 'Workflow definition was not found.');
+    plan = asRuntimePlan(entry.plan);
+  }
   const trigger = plan.triggers.find(candidate => isWebhookTrigger(candidate) && candidate.id === triggerId);
   if (!trigger || !isWebhookTrigger(trigger)) {
     return triggerError(404, 'TRIGGER_NOT_FOUND', 'Webhook trigger was not found.');
   }
 
-  const expectedToken = readNamedSecret(env, trigger.secret);
+  let expectedToken: string | null | undefined;
+  try {
+    expectedToken = selected
+      ? await resolveApprovedWebhookSecret(env, workflowId, triggerId, selected.active_digest, trigger.secret)
+      : readNamedSecret(env, trigger.secret);
+  } catch {
+    return triggerError(503, 'TRIGGER_AUTH_NOT_CONFIGURED', 'Webhook trigger authentication is not configured.');
+  }
   if (!expectedToken) {
     return triggerError(503, 'TRIGGER_AUTH_NOT_CONFIGURED', 'Webhook trigger authentication is not configured.');
   }
@@ -64,7 +100,12 @@ export async function handleWebhookTrigger(
   }
 
   try {
-    const result = await admitWebhookWorkflow(env, workflowId, triggerId, input, eventKey);
+    const result = selected
+      ? await admitVersionedWebhookWorkflow(env, workflowId, triggerId, input, eventKey, {
+          definitionDigest: selected.active_digest, registryRevision: selected.registry_revision,
+          secretName: trigger.secret
+        })
+      : await admitWebhookWorkflow(env, workflowId, triggerId, input, eventKey);
     return Response.json(
       {
         runId: result.runId,
