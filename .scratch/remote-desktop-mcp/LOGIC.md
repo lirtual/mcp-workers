@@ -21,7 +21,7 @@ Can a per-device Durable Object coordinate one outbound WebSocket and multiple b
 
 ## Isolation and credentials
 
-The Worker fails closed if any of `PROTOTYPE_MCP_TOKEN`, `PROTOTYPE_DEVICE_TOKEN`, `PROTOTYPE_ADMIN_TOKEN` is unset or shorter than 24 characters. Never put real credentials in this public repository. The deliberately simplified static test tokens are **not an OAuth implementation**, nor are they compatible by themselves with ChatGPT. The paths have independent credentials and are not intentionally exposed to the public internet.
+The Worker fails closed unless all three `PROTOTYPE_MCP_TOKEN`, `PROTOTYPE_DEVICE_TOKEN`, `PROTOTYPE_ADMIN_TOKEN` are present and at least 24 characters each, and `PROTOTYPE_ALLOWED_ORIGIN` is set to one exact HTTP(S) origin. Never put real credentials in this public repository. The deliberately simplified static test tokens are **not an OAuth implementation**, nor are they compatible by themselves with ChatGPT. The paths have independent credentials and are not intentionally exposed to the public internet.
 
 ## Model and constraints
 
@@ -46,10 +46,18 @@ The Worker fails closed if any of `PROTOTYPE_MCP_TOKEN`, `PROTOTYPE_DEVICE_TOKEN
 - Local workerd tests reject forged/cross-site `Origin` headers and permit same-origin. This only proves a local DNS-rebinding guard; production ChatGPT/Portal origins and OAuth discovery need separate security review.
 - Evidence at exact HEAD `7c6304bec5020c9da2a01221f945802e352fad86`: [prototype Actions #35766442351](https://github.com/lirtual/mcp-workers/actions/runs/35766442351) and [repository CI #35766442426](https://github.com/lirtual/mcp-workers/actions/runs/35766442426), both SUCCESS. No public deployment or real ChatGPT validation.
 
+## Official MCP Inspector and protocol security checkpoint
+
+- The official `@modelcontextprotocol/inspector@2.7.0` CLI (`--transport http --protocol-era legacy`) performed `tools/list --strict` and `tools/call sandbox_ping` over the live local workerd `/mcp` route, with an ephemeral Authorization header. Both passed at HEAD `eb4853ee9a908b37fb967ef841b279843d7dda66`: [prototype Actions #35766077254](https://github.com/lirtual/mcp-workers/actions/runs/35766077254) and [repo CI #35766077314](https://github.com/lirtual/mcp-workers/actions/runs/35766077314), both SUCCESS.
+- The prototype explicitly negotiates the **legacy `2025-06-18`** version. After initialization, unsupported `MCP-Protocol-Version` headers (`2025-11-25`, `2026-07-28`) get HTTP 400 rather than accidental acceptance. The 2026-07-28 era is a different protocol with no `initialize` handshake, different metadata and header requirements; it is **not implemented** in this throwaway prototype.
+- Each incoming public Worker request requires `PROTOTYPE_ALLOWED_ORIGIN` to be configured as one exact HTTP(S) origin. The request host and any supplied `Origin` must match this explicit value; forged Host + matching attacker Origin is denied even though simple request-local Origin/Host comparisons would have passed. No dynamic public origins are enabled. These are **prototype-local** checks; production Cloudflare hostname / Portal / ChatGPT origin decisions await OAuth and deployment review.
+- The bounded HTTP `Content-Length` early check uses a decimal-only pattern and is backed by the independent streaming byte count, so chunked or misleading lengths cannot bypass the 8192-byte cap.
+- Latest tested code HEAD `67f5cc9852232de4be3bef74cc5f475ce8ac2c89`: [prototype Actions #35766814615](https://github.com/lirtual/mcp-workers/actions/runs/35766814615) and [repo CI #35766814678](https://github.com/lirtual/mcp-workers/actions/runs/35766814678), both SUCCESS. All previous device, real-upstream round-trip and forced DO eviction tests remain green.
+
 ## What this does NOT prove
 
 - Hosted Cloudflare DO behavior or in-flight request behavior during eviction. The **local end-to-end proof now reaches the real upstream executable**, but only in an ephemeral isolated CI container.
-- Proper OAuth discovery, PKCE, token refresh or Portal/ChatGPT interoperability.
+- Proper OAuth discovery, PKCE, token refresh, current 2026-07-28 MCP protocol or Portal/ChatGPT interoperability. **Legacy MCP Inspector CLI tool list/call is now verified**, not full modern conformance.
 - Secure Windows/Linux device packaging, OS sandbox operation on the user’s machine, or any remote shell/write capability. The fixed-root test-only local bridge can list one ephemeral directory but cannot read arbitrary caller-chosen files.
 - That secret checks and simple synthetic JSON-RPC framing satisfy a production MCP security review.
 - Availability, error handling and deployment on real Cloudflare bindings.
