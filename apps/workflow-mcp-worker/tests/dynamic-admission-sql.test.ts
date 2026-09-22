@@ -456,7 +456,7 @@ describe('T07 transactional webhook authorization', () => {
       ).get() as { revision: number }).revision;
       for (const [digest, secret] of [
         [firstDigest, 'OLD_HOOK_TOKEN'], [secondDigest, 'NEW_HOOK_TOKEN']
-      ]) {
+      ] as const) {
         f.sqlite.prepare(`INSERT INTO workflow_webhook_secret_scopes
           (workflow_id, trigger_id, definition_digest, secret_name, policy_revision, enabled, approved_at)
           VALUES (?, 'incoming', ?, ?, ?, 1, '2026-09-22')`)
