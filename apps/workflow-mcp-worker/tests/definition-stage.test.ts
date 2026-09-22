@@ -25,6 +25,37 @@ const envelope = () => ({
   metadata: entry.metadata
 });
 
+function canonical(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.keys(value as Record<string, unknown>).sort()
+      .map(key => [key, canonical((value as Record<string, unknown>)[key])]));
+  }
+  return value;
+}
+async function envelopeForPlan(plan: unknown): Promise<ReturnType<typeof envelope>> {
+  const normalized = plan as {
+    triggers: Array<{ type: string }>;
+    steps: Record<string, { uses: string }>;
+  };
+  const serialized = JSON.stringify(canonical(plan));
+  const bytes = new Uint8Array(await crypto.subtle.digest(
+    'SHA-256', new TextEncoder().encode(serialized)
+  ));
+  const definitionDigest = [...bytes].map(b => b.toString(16).padStart(2, '0')).join('');
+  return {
+    ...envelope(),
+    plan,
+    definitionDigest,
+    metadata: {
+      ...entry.metadata,
+      definitionDigest,
+      triggerTypes: normalized.triggers.map(trigger => trigger.type),
+      stepCapabilities: [...new Set(Object.values(normalized.steps).map(step => step.uses))]
+    }
+  };
+}
+
 async function openStore(): Promise<D1Database | null> {
   let sqlite: DatabaseSync;
   try {
@@ -120,14 +151,35 @@ describe('immutable staged definition with real SQLite', () => {
     expect(stored?.count).toBe(0);
   });
 
-  it('denies unsupported capability and unknown secrets before publication', async () => {
+  it('rejects unknown capability, unsafe retry and unapproved webhook Secret with valid digests', async () => {
     const db = await openStore();
     if (!db) return;
     const env = { DB: db } as Env;
-    const unsafe = JSON.parse(JSON.stringify(entry.plan)) as { steps: Record<string, { uses: string }> };
-    unsafe.steps.fetch!.uses = 'unknown.capability';
-    expect((await stageDefinition(send({ ...envelope(), plan: unsafe }), env, publisher)).status).toBe(422);
-    expect((await db.prepare('SELECT COUNT(*) AS count FROM definition_publications')
-      .first<{ count: number }>())?.count).toBe(0);
+    const unsupported = JSON.parse(JSON.stringify(entry.plan)) as {
+      steps: Record<string, { uses: string }>;
+    };
+    unsupported.steps.fetch!.uses = 'unknown.capability';
+    const unknown = await stageDefinition(send(await envelopeForPlan(unsupported)), env, publisher);
+    expect(unknown.status).toBe(422);
+    expect(await unknown.json()).toEqual({ error: 'unsupported_capability' });
+
+    const unsafe = JSON.parse(JSON.stringify(entry.plan)) as {
+      steps: Record<string, { retryMaxAttempts?: number }>;
+    };
+    unsafe.steps.fetch!.retryMaxAttempts = 10;
+    const retry = await stageDefinition(send(await envelopeForPlan(unsafe)), env, publisher);
+    expect(retry.status).toBe(422);
+    expect(await retry.json()).toEqual({ error: 'unsafe_retry' });
+
+    const webhook = JSON.parse(JSON.stringify(entry.plan)) as {
+      triggers: Array<{ type: string; id?: string; secret?: string }>;
+    };
+    webhook.triggers.push({ type: 'webhook', id: 'unapproved', secret: 'ARBITRARY_SECRET' });
+    const secret = await stageDefinition(send(await envelopeForPlan(webhook)), env, publisher);
+    expect(secret.status).toBe(422);
+    expect(await secret.json()).toEqual({ error: 'webhook_not_approved' });
+    const count = await db.prepare('SELECT COUNT(*) AS count FROM definition_publications')
+      .first<{ count: number }>();
+    expect(count?.count).toBe(0);
   });
 });
