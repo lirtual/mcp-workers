@@ -1,3 +1,4 @@
+import { captureConnectionPins } from './connection-revocation.js';
 import { currentEngineVersion } from './provenance.js';
 import { findWorkflow } from './registry.js';
 import type { RuntimeInputDefinition, RuntimePlan } from './runtime-plan.js';
@@ -119,7 +120,16 @@ async function persistAndStart(
     sourcePath: entry.sourcePath
   });
 
+  // Capture the approved revision before admission. The INSERT OR IGNORE path
+  // never rewrites an existing Run's immutable Connection pins on replay.
+  const connectionIds = Object.values(plan.steps)
+    .filter(step => step.uses === 'mcp.call')
+    .map(step => step.with.connection)
+    .filter((value): value is string => typeof value === 'string');
+  const connectionVersions = await captureConnectionPins(env.DB, connectionIds);
+
   const admission = await store.admitRun({
+    connectionVersions,
     admissionKey: source.admissionKey,
     proposedRunId,
     workflowId: plan.id,

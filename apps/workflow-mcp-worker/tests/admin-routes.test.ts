@@ -26,7 +26,13 @@ const env = {
   ADMIN_PUBLISHER_WORKFLOW_REF: workflowRef,
   ADMIN_PUBLISHER_REF: 'refs/heads/main',
   ADMIN_PUBLISHER_WORKFLOW_SHA: 'trusted-sha',
-  MCP_ACCESS_TOKEN: 'ordinary-mcp-secret'
+  MCP_ACCESS_TOKEN: 'ordinary-mcp-secret',
+  DB: {
+    prepare: () => ({
+      first: async () => ({ revision: 1 }),
+      all: async () => ({ results: [] })
+    })
+  } as unknown as D1Database
 } as Env;
 
 function encoded(value: unknown): string {
@@ -77,6 +83,7 @@ describe('protected publisher admin boundary', () => {
     expect((await invoke()).status).toBe(401);
     expect((await invoke('Bearer ordinary-mcp-secret')).status).toBe(401);
     expect((await invoke('Bearer ' + await token(), {} as Env)).status).toBe(503);
+    expect((await invoke('Bearer ' + await token(), { ...env, DB: undefined } as unknown as Env)).status).toBe(503);
   });
 
   it('rejects wrong repo, ref, workflow, revision SHA, executor audience and expired token', async () => {
@@ -92,5 +99,172 @@ describe('protected publisher admin boundary', () => {
   it('exposes no admin mutation or MCP fallthrough', async () => {
     expect((await invoke('Bearer ' + await token(), env, 'POST')).status).toBe(405);
     expect(await handleAdminRoute(new Request('https://example.test/mcp'), env, options)).toBeNull();
+  });
+});
+
+describe('protected Connection disable CAS', () => {
+  function db(changes: number): D1Database {
+    const prepare = (sql: string) => ({
+      bind: (..._args: unknown[]) => ({
+        first: async () => null,
+        run: async () => ({ meta: { changes: 1 } }),
+        sql
+      })
+    });
+    return {
+      prepare,
+      batch: async (statements: unknown[]) => {
+        expect(statements).toHaveLength(3);
+        return [{ meta: { changes } }, { meta: { changes } }, { meta: { changes } }];
+      }
+    } as unknown as D1Database;
+  }
+  async function disable(database: D1Database, body: unknown, bearer?: string): Promise<Response> {
+    const request = new Request('https://example.test/admin/connections/disable', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', authorization: bearer ?? 'Bearer ' + await token() },
+      body: JSON.stringify(body)
+    });
+    return (await handleAdminRoute(request, { ...env, DB: database }, options))!;
+  }
+
+  it('requires valid publisher identity and strict action shape', async () => {
+    const body = { actionId: 'disable-1', connectionId: 'raindrop', expectedRevision: 1 };
+    expect((await disable(db(1), body, 'Bearer ordinary-mcp-secret')).status).toBe(401);
+    expect((await disable(db(1), { ...body, credential: 'must-not-persist' })).status).toBe(400);
+    expect((await disable(db(1), { ...body, expectedRevision: -1 })).status).toBe(400);
+  });
+
+  it('atomically claims CAS or rejects stale revision without leaking credentials', async () => {
+    const body = { actionId: 'disable-1', connectionId: 'raindrop', expectedRevision: 1 };
+    const accepted = await disable(db(1), body);
+    expect(accepted.status).toBe(200);
+    expect(await accepted.json()).toEqual({ connectionId: 'raindrop', revision: 2, disabled: true });
+    const stale = await disable(db(0), body);
+    expect(stale.status).toBe(409);
+    expect(await stale.text()).not.toContain('ordinary-mcp-secret');
+  });
+});
+
+describe('protected bounded Connection registration', () => {
+  const approved = { actionId: 'register-raindrop-1', connectionId: 'raindrop',
+    expectedRevision: 0, tools: ['list_raindrops'] };
+  function database(changes: number): D1Database {
+    return {
+      prepare: () => ({
+        bind: () => ({ first: async () => null })
+      }),
+      batch: async (statements: unknown[]) => {
+        expect(statements).toHaveLength(4);
+        return [{ meta: { changes: 1 } }, { meta: { changes } }, { meta: { changes } }, { meta: { changes } }];
+      }
+    } as unknown as D1Database;
+  }
+  async function register(body: unknown, db: D1Database, authorization?: string): Promise<Response> {
+    const request = new Request('https://example.test/admin/connections/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json',
+        authorization: authorization ?? 'Bearer ' + await token() },
+      body: JSON.stringify(body)
+    });
+    return (await handleAdminRoute(request, { ...env, DB: db }, options))!;
+  }
+
+  it('requires the signed publisher and refuses unknown tools or credentials', async () => {
+    expect((await register(approved, database(1), 'Bearer ordinary-mcp-secret')).status).toBe(401);
+    expect((await register({ ...approved, tools: ['unknown_tool'] }, database(1))).status).toBe(403);
+    expect((await register({ ...approved, secret: 'MCP_ACCESS_TOKEN' }, database(1))).status).toBe(400);
+    expect((await register({ ...approved, endpoint: 'https://attacker.invalid/mcp' }, database(1))).status).toBe(400);
+  });
+
+  it('accepts a bounded approved tracer through the HTTP and D1 boundary', async () => {
+    const response = await register(approved, database(1));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ connectionId: 'raindrop', version: 1, revision: 1 });
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+    expect((await register(approved, database(0))).status).toBe(409);
+  });
+});
+
+describe('D1-backed approved Connection snapshot', () => {
+  it('reflects current version and global revision without credential or endpoint exposure', async () => {
+    const db = {
+      prepare: (sql: string) => ({
+        first: async () => sql.includes('connection_policy_revision') ? { revision: 7 } : null,
+        all: async () => ({
+          results: [{ connection_id: 'raindrop', current_version: 3, disabled: 1,
+            allowed_tools_json: '{"list_raindrops":["read"]}' }]
+        })
+      })
+    } as unknown as D1Database;
+    const response = await invoke('Bearer ' + await token(), { ...env, DB: db });
+    expect(response.status).toBe(200);
+    const snapshot = await response.json() as { revision: number;
+      connections: Record<string, { version: number; enabled: boolean }> };
+    expect(snapshot.revision).toBe(7);
+    expect(snapshot.connections.raindrop).toMatchObject({ version: 3, enabled: false });
+    const serialized = JSON.stringify(snapshot);
+    expect(serialized).not.toContain('ordinary-mcp-secret');
+    expect(serialized).not.toContain('MCP_ACCESS_TOKEN');
+    expect(serialized).not.toContain('https://');
+  });
+
+  it('rejects a torn snapshot when policy changes between reads', async () => {
+    let revisionRead = 0;
+    const db = {
+      prepare: () => ({
+        first: async () => ({ revision: ++revisionRead }),
+        all: async () => ({ results: [] })
+      })
+    } as unknown as D1Database;
+    const response = await invoke('Bearer ' + await token(), { ...env, DB: db });
+    expect(response.status).toBe(503);
+  });
+
+  it('fails closed if the policy store cannot provide an authoritative revision', async () => {
+    const db = { prepare: () => ({ first: async () => null }) } as unknown as D1Database;
+    const response = await invoke('Bearer ' + await token(), { ...env, DB: db });
+    expect(response.status).toBe(503);
+  });
+});
+
+describe('concurrent admin action replay reconciliation', () => {
+  it('returns the authoritative registration result after a losing unique-ID race', async () => {
+    let actionReads = 0;
+    let awaitDigest = '';
+    const db = {
+      prepare: (sql: string) => ({
+        bind: () => ({ first: async () =>
+          sql.includes('connection_admin_actions') && ++actionReads === 2 ? {
+            connection_id: 'raindrop', action_kind: 'register',
+            request_digest: awaitDigest, resulting_revision: 1
+          } : null
+        })
+      }),
+      batch: async () => { throw new Error('UNIQUE constraint failed'); }
+    } as unknown as D1Database;
+    const requestBody = {
+      actionId: 'race-register', connectionId: 'raindrop', expectedRevision: 0, tools: ['list_raindrops']
+    };
+    // The digest is bound to the approved static configuration, never to credential bytes.
+    // Obtain it from the exact registered action calculation via the shared registry.
+    const { getConnection } = await import('../src/connections.js');
+    const connection = getConnection('raindrop')!;
+    const config = JSON.stringify({
+      endpoint: connection.endpoint, transport: connection.transport,
+      protocolVersion: connection.protocolVersion, authSecret: connection.auth.secret,
+      trustAnnotations: false, tools: { list_raindrops: connection.tools.list_raindrops }
+    });
+    const hash = await crypto.subtle.digest('SHA-256',
+      new TextEncoder().encode(JSON.stringify(['raindrop', 0, config])));
+    awaitDigest = [...new Uint8Array(hash)].map(b => b.toString(16).padStart(2, '0')).join('');
+    const request = new Request('https://example.test/admin/connections/register', {
+      method: 'POST',
+      headers: { authorization: 'Bearer ' + await token() },
+      body: JSON.stringify(requestBody)
+    });
+    const response = (await handleAdminRoute(request, { ...env, DB: db }, options))!;
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ version: 1, revision: 1 });
   });
 });

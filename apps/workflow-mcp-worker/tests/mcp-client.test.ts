@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { callMcpTool, inspectMcpTool } from '../src/mcp-client.js';
+import { callMcpTool, inspectMcpTool, McpConnectionDeniedError } from '../src/mcp-client.js';
 import type { Env } from '../src/types.js';
 
 vi.mock('../src/connections.js', async importOriginal => {
@@ -201,5 +201,131 @@ describe('MCP Streamable HTTP client', () => {
       )
     ).rejects.toThrow(/MCP_INPUT_SCHEMA_MISMATCH/);
     expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+});
+
+
+describe('pinned MCP external boundary', () => {
+  it('rechecks D1 after discovery and prevents tools/call when revoked', async () => {
+    let disabled = false;
+    const db = {
+      prepare: () => ({
+        bind: () => ({
+          first: async () => ({
+            connection_id: 'workflow-self',
+            disabled: disabled ? 1 : 0,
+            allowed_tools_json: '{"workflow_list":["read"]}'
+          })
+        })
+      })
+    } as unknown as D1Database;
+    const outgoing: string[] = [];
+    const fetchImpl = vi.fn(async (_resource: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { method: string; id: string };
+      outgoing.push(body.method);
+      if (body.method === 'tools/list') {
+        disabled = true;
+        return jsonResponse({
+          jsonrpc: '2.0', id: body.id,
+          result: { tools: [{ name: 'workflow_list', inputSchema: { type: 'object', properties: {} } }] }
+        });
+      }
+      throw new Error('revoked tools/call must not be transmitted');
+    });
+    await expect(callMcpTool(
+      env, 'workflow-self', 'workflow_list', {},
+      fetchImpl as typeof fetch,
+      {
+        db,
+        pinned: {
+          connectionId: 'workflow-self', version: 1,
+          endpoint: 'https://workflow-mcp-worker.aiyaya.workers.dev/mcp',
+          toolName: 'workflow_list', effect: 'read'
+        }
+      }
+    )).rejects.toBeInstanceOf(McpConnectionDeniedError);
+    expect(outgoing).toEqual(['tools/list']);
+  });
+
+  it('fails closed before discovery if the live controls are missing', async () => {
+    const db = { prepare: () => ({ bind: () => ({ first: async () => null }) }) } as unknown as D1Database;
+    const fetchImpl = vi.fn();
+    await expect(callMcpTool(
+      env, 'workflow-self', 'workflow_list', {},
+      fetchImpl as typeof fetch,
+      {
+        db,
+        pinned: {
+          connectionId: 'workflow-self', version: 1,
+          endpoint: 'https://workflow-mcp-worker.aiyaya.workers.dev/mcp',
+          toolName: 'workflow_list', effect: 'read'
+        }
+      }
+    )).rejects.toBeInstanceOf(McpConnectionDeniedError);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('legacy Run live revocation compatibility', () => {
+  const pin = {
+    connectionId: 'workflow-self', version: 0,
+    endpoint: 'https://workflow-mcp-worker.aiyaya.workers.dev/mcp',
+    toolName: 'workflow_list', effect: 'read' as const
+  };
+  it('rejects a disabled static Connection before any external request', async () => {
+    const db = {
+      prepare: () => ({ bind: () => ({ first: async () => ({
+        connection_id: 'workflow-self', disabled: 1,
+        allowed_tools_json: '{"workflow_list":["read"]}'
+      }) }) })
+    } as unknown as D1Database;
+    const outgoing = vi.fn();
+    await expect(callMcpTool(env, 'workflow-self', 'workflow_list', {},
+      outgoing as typeof fetch, { db, pinned: pin, legacy: true }
+    )).rejects.toBeInstanceOf(McpConnectionDeniedError);
+    expect(outgoing).not.toHaveBeenCalled();
+  });
+  it('permits the legacy static lookup when there is no versioned control', async () => {
+    const db = {
+      prepare: () => ({ bind: () => ({ first: async () => null }) })
+    } as unknown as D1Database;
+    const outgoing = vi.fn(async (_resource: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { method: string; id: string };
+      if (body.method === 'tools/list') return jsonResponse({
+        jsonrpc: '2.0', id: body.id,
+        result: { tools: [{ name: 'workflow_list', inputSchema: { type: 'object', properties: {} } }] }
+      });
+      return jsonResponse({ jsonrpc: '2.0', id: body.id, result: { content: [] } });
+    });
+    await callMcpTool(env, 'workflow-self', 'workflow_list', {},
+      outgoing as typeof fetch, { db, pinned: pin, legacy: true });
+    expect(outgoing).toHaveBeenCalledTimes(2);
+  });
+});
+
+
+describe('pre-send D1 failure classification', () => {
+  it('rejects a failed revocation read without transmitting an external write', async () => {
+    const db = {
+      prepare: () => ({
+        bind: () => ({
+          first: async () => { throw new Error('D1 temporarily unavailable'); }
+        })
+      })
+    } as unknown as D1Database;
+    const outgoing = vi.fn();
+    await expect(callMcpTool(
+      env, 'workflow-self', 'workflow_list', {},
+      outgoing as typeof fetch, {
+        db,
+        pinned: {
+          connectionId: 'workflow-self', version: 1,
+          endpoint: 'https://workflow-mcp-worker.aiyaya.workers.dev/mcp',
+          toolName: 'workflow_list', effect: 'read'
+        }
+      }
+    )).rejects.toBeInstanceOf(McpConnectionDeniedError);
+    expect(outgoing).not.toHaveBeenCalled();
   });
 });

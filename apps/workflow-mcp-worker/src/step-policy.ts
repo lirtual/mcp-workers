@@ -1,10 +1,13 @@
+import { resolveRunConnectionPin } from './connection-revocation.js';
+import { getConnection } from './connections.js';
 import { getCapabilityDescriptor } from './capabilities.js';
 import {
   allowedAttempts,
   resolveMcpOperationPolicy,
+  resolveMcpOperationPolicyForConnection,
   type EffectiveOperationPolicy
 } from './effective-policy.js';
-import { inspectMcpTool } from './mcp-client.js';
+import { inspectMcpTool, inspectPinnedMcpTool } from './mcp-client.js';
 import type { RuntimeStep } from './runtime-plan.js';
 import type { D1WorkflowStore } from './storage.js';
 import type { Env } from './types.js';
@@ -28,6 +31,7 @@ export async function resolveStepExecutionPolicy(input: {
   env: Env;
   store: D1WorkflowStore;
   stepRunId: string;
+  runId?: string;
   definition: RuntimeStep;
   capabilityInput: Readonly<Record<string, unknown>>;
 }): Promise<StepPolicyResolution> {
@@ -83,9 +87,24 @@ export async function resolveStepExecutionPolicy(input: {
   }
 
   try {
-    const inspection = await inspectMcpTool(input.env, connectionId, toolName);
-    const policy =
-      stored ?? resolveMcpOperationPolicy(connectionId, toolName, inspection.tool.annotations);
+    const legacyConnection = getConnection(connectionId);
+    const intendedEffect = stored?.effect ?? legacyConnection?.tools[toolName]?.effect ?? 'unknown';
+    const pinned = input.runId
+      ? await resolveRunConnectionPin(input.env.DB, input.runId, connectionId, toolName, intendedEffect)
+      : undefined;
+    const guard = pinned
+      ? { db: input.env.DB, pinned }
+      : legacyConnection && input.runId
+        ? { db: input.env.DB, legacy: true,
+            pinned: { connectionId, version: 0, endpoint: legacyConnection.endpoint,
+              toolName, effect: intendedEffect } }
+        : undefined;
+    const inspection = guard
+      ? await inspectPinnedMcpTool(input.env, connectionId, toolName, guard)
+      : await inspectMcpTool(input.env, connectionId, toolName);
+    const policy = stored ?? (pinned?.connection
+      ? resolveMcpOperationPolicyForConnection(pinned.connection, toolName, inspection.tool.annotations)
+      : resolveMcpOperationPolicy(connectionId, toolName, inspection.tool.annotations));
 
     return {
       ok: true,
