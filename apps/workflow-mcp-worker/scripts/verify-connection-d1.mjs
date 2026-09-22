@@ -158,7 +158,7 @@ const mockFetch = async (_url, init) => {
         actionId: 'disable-1', connectionId: 'raindrop', expectedRevision: 2
       }),
       admin('/admin/connections/disable', {
-        actionId: 'disable-2', connectionId: 'raindrop', expectedRevision: 1
+        actionId: 'disable-2', connectionId: 'raindrop', expectedRevision: 2
       })
     ]);
     assert.deepEqual(decisions.map(d => d.status).sort(), [200, 409]);
