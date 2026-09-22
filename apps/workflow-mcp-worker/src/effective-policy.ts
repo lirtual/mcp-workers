@@ -52,6 +52,11 @@ export function compileTimeMcpRetryLimit(connectionId: string, toolName: string)
   return policyForEffect(local.effect, 'local_tool_policy').maxAutomaticAttempts;
 }
 
+/** Compile-time retry bounds for a tool explicitly approved by the trusted publisher. */
+export function compileTimeMcpRetryLimitForApprovedTool(effect: EffectClass): number {
+  return policyForEffect(effect, 'local_tool_policy').maxAutomaticAttempts;
+}
+
 export function configuredConnection(connectionId: string): McpConnection | undefined {
   return getConnection(connectionId);
 }
