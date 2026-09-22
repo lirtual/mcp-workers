@@ -43,13 +43,15 @@ jobs:
   publish:
     # Publisher must run from the trusted ENGINE main ref, not catalog code.
     if: github.ref == 'refs/heads/main'
-    environment: workflow-mcp-publisher-isolated
+    environment: workflow-mcp-publisher-live-test
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
       WORKFLOW_CATALOG_REPOSITORY: ${{ vars.WORKFLOW_CATALOG_REPOSITORY }}
       WORKFLOW_CATALOG_REPOSITORY_ID: ${{ vars.WORKFLOW_CATALOG_REPOSITORY_ID }}
-      WORKFLOW_MCP_ISOLATED_URL: ${{ vars.WORKFLOW_MCP_ISOLATED_URL }}
+      WORKFLOW_MCP_TARGET_URL: ${{ vars.WORKFLOW_MCP_TARGET_URL }}
+      WORKFLOW_MCP_ALLOW_LIVE_TEST_TARGET: ${{ vars.WORKFLOW_MCP_ALLOW_LIVE_TEST_TARGET || 'false' }}
+      WORKFLOW_MCP_ALLOW_LIVE_TEST_MUTATIONS: ${{ vars.WORKFLOW_MCP_ALLOW_LIVE_TEST_MUTATIONS || 'false' }}
       WORKFLOW_CATALOG_MODE: ${{ inputs.mode }}
       CATALOG_REQUESTED_SHA: ${{ inputs.catalog_sha }}
       CATALOG_SOURCE_PATH: ${{ inputs.definition_path }}
@@ -64,7 +66,7 @@ jobs:
           [[ "$CATALOG_REQUESTED_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
           [[ "$WORKFLOW_CATALOG_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || exit 1
           [[ "$WORKFLOW_CATALOG_REPOSITORY_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
-          [[ -n "$WORKFLOW_MCP_ISOLATED_URL" ]] || exit 1
+          [[ -n "$WORKFLOW_MCP_TARGET_URL" ]] || exit 1
 
       - name: Checkout trusted engine code
         uses: actions/checkout@v4
@@ -114,7 +116,7 @@ jobs:
       - name: Install trusted engine dependencies only
         run: pnpm install --frozen-lockfile --ignore-scripts
 
-      - name: Compile against isolated approved policy and publish if authorized
+      - name: Compile against target approved policy and publish if authorized
         working-directory: apps/workflow-mcp-worker
         run: pnpm exec tsx scripts/publish-catalog.ts
 
@@ -123,7 +125,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo '## Isolated definition-only catalog publisher'
+            echo '## Protected definition-only catalog publisher'
             echo "- Engine HEAD: \`$GITHUB_SHA\`"
             echo "- Catalog SHA: \`$CATALOG_REQUESTED_SHA\`"
             echo "- Definition: \`$CATALOG_SOURCE_PATH\`"
