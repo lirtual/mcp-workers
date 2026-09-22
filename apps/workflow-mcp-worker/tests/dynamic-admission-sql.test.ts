@@ -284,7 +284,7 @@ describe('T08 schedule edit, removal and rollback', () => {
         { maintenanceLimit: 1 });
       expect(later).toMatchObject({ admittedRuns: 1, errors: 0 });
       const rows = f.sqlite.prepare(
-        "SELECT source_key, definition_digest FROM workflow_runs ORDER BY CAST(json_extract(trigger_json, '$.scheduledTime') AS INTEGER)"
+        "SELECT a.source_key, r.definition_digest FROM workflow_runs r JOIN run_admissions a ON a.run_id = r.run_id ORDER BY CAST(json_extract(r.trigger_json, '$.scheduledTime') AS INTEGER)"
       ).all() as Array<{ source_key: string; definition_digest: string }>;
       expect(rows).toEqual([
         { source_key: String(minute - 60_000), definition_digest: oldDigest },
