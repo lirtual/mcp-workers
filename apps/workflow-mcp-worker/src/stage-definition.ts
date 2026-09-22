@@ -148,7 +148,7 @@ export async function stageDefinition(
       }
     }
     for (const trigger of plan.triggers) {
-      if (trigger.type === 'webhook' && !webhookRefs.has(trigger.secret)) {
+      if (trigger.type === 'webhook' && (typeof trigger.secret !== 'string' || !webhookRefs.has(trigger.secret))) {
         return failure(403, 'unapproved_webhook_reference');
       }
     }
