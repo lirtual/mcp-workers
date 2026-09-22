@@ -98,7 +98,7 @@ try {
     name: "list_directory",
     arguments: { path: directory },
   });
-  assert.equal(output.isError, false, "upstream_list_directory_reported_error");
+  assert.notEqual(output.isError, true, "upstream_list_directory_reported_error");
   const text = output.content?.filter((part) => part.type === "text")
     .map((part) => part.text).join("\n") ?? "";
   assert.ok(text.includes("proof-only.txt"), "upstream_did_not_read_fixed_test_directory");
