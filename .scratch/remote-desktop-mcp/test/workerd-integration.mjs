@@ -3,9 +3,11 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { writeFile, rm } from "node:fs/promises";
+import { writeFile, rm, mkdtemp } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { dirname, resolve, join } from "node:path";
+import { tmpdir } from "node:os";
+import { connectSandboxBridge } from "../local-bridge.mjs";
 import WebSocket from "ws";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -13,7 +15,7 @@ const varsPath = resolve(root, ".dev.vars");
 const token = () => randomBytes(32).toString("hex");
 const mcpToken = token(), deviceToken = token(), adminToken = token();
 const base = "http://127.0.0.1:18773";
-let child, socket;
+let child, socket, fixtureRoot;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const auth = (value) => ({ authorization: `Bearer ${value}` });
 
@@ -105,14 +107,21 @@ try {
   assert.equal((await call("tools/call", { name: "sandbox_ping", arguments: { echo: "timeout" } }, 13)).data.error.message, "timeout");
   assert.equal((await call("tools/call", { name: "sandbox_ping", arguments: { echo: "disconnect" } }, 14)).data.error.message, "offline");
 
-  socket = device();
-  await once(socket, "open");
-  socket.on("message", (data) => {
-    const msg = JSON.parse(data.toString());
-    socket.send(JSON.stringify({ type: "result", id: msg.id, result: { echo: msg.arguments.echo } }));
+  // A real local read-only bridge now reads ONLY its fixed temporary directory,
+  // while the previous synthetic device exercises timed calls and reordering.
+  fixtureRoot = await mkdtemp(join(tmpdir(), "remote-desktop-173-"));
+  await writeFile(join(fixtureRoot, "test-only.txt"), "safe fixture");
+  socket = await connectSandboxBridge({
+    endpoint: base.replace("http:", "ws:") + "/device",
+    token: deviceToken,
+    sandboxRoot: fixtureRoot,
   });
   assert.equal(JSON.parse((await call("tools/call",
     { name: "sandbox_ping", arguments: { echo: "reconnected" } }, 15)).data.result.content[0].text).echo, "reconnected");
+  const actualFiles = await call("tools/call", { name: "sandbox_list_directory", arguments: {} }, 18);
+  assert.deepEqual(JSON.parse(actualFiles.data.result.content[0].text), { entries: ["test-only.txt"] });
+  assert.equal((await call("tools/call", { name: "sandbox_list_directory",
+    arguments: { path: "/etc" } }, 19)).data.error.code, -32602);
   const revoked = await fetch(base + "/admin/revoke", { method: "POST", headers: auth(adminToken) });
   assert.equal(revoked.status, 200);
   assert.equal((await call("tools/call", { name: "sandbox_ping", arguments: { echo: "after-revoke" } }, 16)).data.error.message, "revoked");
@@ -121,7 +130,7 @@ try {
   const response = await once(forbidden, "unexpected-response");
   assert.equal(response[1].statusCode, 403);
   forbidden.terminate();
-  console.log("PASS local workerd: MCP initialize/list, read-only directory transport, invalid path, auth, offline, WebSocket echo, concurrency, timeout, disconnect, reconnect, revoke");
+  console.log("PASS local workerd: MCP initialize/list, real local sandbox directory read, invalid path, auth, offline, WebSocket echo, concurrency, timeout, disconnect, reconnect, revoke");
 } finally {
   socket?.terminate();
   if (child && child.exitCode === null) {
@@ -130,4 +139,5 @@ try {
     if (child.exitCode === null) child.kill("SIGKILL");
   }
   await rm(varsPath, { force: true });
+  if (fixtureRoot) await rm(fixtureRoot, { recursive: true, force: true });
 }
