@@ -7,8 +7,9 @@ import { prepareLegacyImport, type LegacyImportState } from '../src/legacy-impor
 const scheduleKey = 'raindrop-daily-snapshot:daily-nine';
 function fixture() {
   const sqlite = new DatabaseSync(':memory:');
-  for (const migration of ['0001_core.sql', '0002_scheduler.sql', '0007_connection_versions.sql',
-    '0008_definition_publications.sql', '0009_active_definitions.sql']) {
+  for (const migration of ['0001_core.sql', '0002_scheduler.sql', '0003_mcp_dependencies.sql',
+    '0004_remote_executor.sql', '0005_artifacts.sql', '0006_provenance.sql',
+    '0007_connection_versions.sql', '0008_definition_publications.sql', '0009_active_definitions.sql']) {
     sqlite.exec(readFileSync('migrations/' + migration, 'utf8'));
   }
   sqlite.prepare(
@@ -28,6 +29,7 @@ function fixture() {
   const statement = (sql: string, args: unknown[] = []) => ({
     bind: (...next: unknown[]) => statement(sql, next),
     first: async () => sqlite.prepare(sql).get(...(args as Arg[])) ?? null,
+    all: async () => ({ results: sqlite.prepare(sql).all(...(args as Arg[])) }),
     run: async () => ({ meta: { changes: sqlite.prepare(sql).run(...(args as Arg[])).changes } })
   });
   const db = {
@@ -164,7 +166,7 @@ describe('T10 additive isolated D1 legacy definition seeding', () => {
          VALUES (?, ?, 1, '{}', 'workflows/forged.yaml', ?)`
       ).run(digest, 'local-http-smoke', '2026-09-23');
       await expect(seedLegacyDefinitions(db, state, 1))
-        .rejects.toThrow(/immutable definition verification/);
+        .rejects.toThrow(/snapshot differs/);
       expect((sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_active_definitions')
         .get() as { count: number }).count).toBe(0);
     } finally { sqlite.close(); }
