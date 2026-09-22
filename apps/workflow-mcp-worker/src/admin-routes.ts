@@ -5,7 +5,7 @@ import { registerApprovedConnection } from './connection-admin.js';
 import { getConnection } from './connections.js';
 import { verifyGitHubOidcToken, type GitHubOidcVerificationConfig } from './oidc.js';
 import { GITHUB_EXECUTOR_CONFIG } from './platform-config.js';
-import { getWorkflowRegistry } from './registry.js';
+import { hasApprovedWebhookBinding } from './webhook-secret-policy.js';
 import type { Env } from './types.js';
 
 const ADMIN_AUDIENCE = 'workflow-mcp-publisher';
@@ -45,19 +45,6 @@ async function policySnapshot(env: AdminEnv): Promise<Record<string, unknown>> {
       ]))
     };
   }
-  const webhookBindings: Array<{ workflowId: string; triggerId: string; referenceId: string }> = [];
-  for (const entry of getWorkflowRegistry()) {
-    const plan = entry.plan as { triggers?: Array<Record<string, unknown>> };
-    for (const trigger of plan.triggers ?? []) {
-      if (trigger.type === 'webhook' && typeof trigger.id === 'string' && typeof trigger.secret === 'string') {
-        webhookBindings.push({
-          workflowId: entry.metadata.id,
-          triggerId: trigger.id,
-          referenceId: trigger.secret
-        });
-      }
-    }
-  }
   // A missing D1 binding is a configuration failure, never an approval of
   // synthetic bootstrap data from an unverified static policy.
   if (!env.DB) throw new Error('Approved policy store is unavailable.');
@@ -66,6 +53,30 @@ async function policySnapshot(env: AdminEnv): Promise<Record<string, unknown>> {
   ).first<{ revision: number }>();
   if (!revision || !Number.isSafeInteger(revision.revision) || revision.revision < 1) {
     throw new Error('Approved policy revision is unavailable.');
+  }
+  // Only durable scopes at this precise approved revision are publisher-visible.
+  // A bundled YAML trigger is never itself permission to use a Worker Secret.
+  const scopes = await env.DB.prepare(
+    `SELECT workflow_id, trigger_id, secret_name, policy_revision
+     FROM workflow_webhook_secret_scopes
+     WHERE enabled = 1 AND policy_revision = ?
+     ORDER BY workflow_id, trigger_id, definition_digest LIMIT 65`
+  ).bind(revision.revision).all<{
+    workflow_id: string; trigger_id: string; secret_name: string; policy_revision: number
+  }>();
+  if (scopes.results.length > 64) throw new Error('Approved webhook binding snapshot exceeds bound.');
+  const webhookBindings: Array<{ workflowId: string; triggerId: string; referenceId: string }> = [];
+  for (const scope of scopes.results) {
+    if (scope.policy_revision !== revision.revision ||
+        !hasApprovedWebhookBinding(env as unknown as Record<string, unknown>, scope.secret_name)) {
+      throw new Error('Approved webhook binding snapshot is invalid.');
+    }
+    if (!webhookBindings.some(binding => binding.workflowId === scope.workflow_id &&
+        binding.triggerId === scope.trigger_id && binding.referenceId === scope.secret_name)) {
+      webhookBindings.push({
+        workflowId: scope.workflow_id, triggerId: scope.trigger_id, referenceId: scope.secret_name
+      });
+    }
   }
   const listed = await env.DB.prepare(
     'SELECT connection_id, current_version, disabled, allowed_tools_json FROM connection_controls ORDER BY connection_id LIMIT 33'
