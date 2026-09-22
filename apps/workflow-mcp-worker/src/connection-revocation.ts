@@ -163,5 +163,10 @@ export async function captureConnectionPins(
     }
     pins[id] = row.current_version;
   }
+  // A partially pinned map cannot distinguish an intentionally legacy static
+  // Connection from a missing pin on the same new Run. Reject mixed modes.
+  if (Object.keys(pins).length > 0 && Object.keys(pins).length !== new Set(connectionIds).size) {
+    throw new Error('Mixed versioned and legacy Connections are not yet supported.');
+  }
   return Object.keys(pins).length ? pins : null;
 }
