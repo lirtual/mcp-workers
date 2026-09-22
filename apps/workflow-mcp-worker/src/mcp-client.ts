@@ -5,6 +5,11 @@ import {
   readConnectionSecret,
   type McpConnection
 } from './connections.js';
+import {
+  authorizePinnedConnectionAttempt,
+  readLiveConnectionControl,
+  type PinnedConnectionAuthority
+} from './connection-revocation.js';
 import type { McpToolAnnotations } from './effective-policy.js';
 import type { Env } from './types.js';
 
@@ -104,14 +109,49 @@ export async function inspectMcpTool(
   };
 }
 
+export interface PinnedMcpCallOptions {
+  pinned: PinnedConnectionAuthority;
+  db: D1Database;
+}
+
+export class McpConnectionDeniedError extends Error {
+  constructor() {
+    super('MCP_CONNECTION_AUTHORITY_DENIED');
+  }
+}
+
+/**
+ * For versioned Runs, read live controls immediately before EACH outgoing request,
+ * including discovery and tools/call. Keep pre-fetch rejection distinct from an
+ * unknown transport outcome: no remote write was attempted when this guard fails.
+ */
+function guardedFetch(
+  fetchImpl: typeof fetch,
+  connectionId: string,
+  options: PinnedMcpCallOptions
+): typeof fetch {
+  return (async (resource: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const control = await readLiveConnectionControl(options.db, connectionId);
+    const verdict = authorizePinnedConnectionAttempt(options.pinned, control);
+    if (!verdict.allowed) throw new McpConnectionDeniedError();
+    if (String(resource) !== options.pinned.endpoint) throw new McpConnectionDeniedError();
+    return fetchImpl(resource, init);
+  }) as typeof fetch;
+}
+
 export async function callMcpTool(
   env: Env,
   connectionId: string,
   toolName: string,
   args: Record<string, unknown>,
-  fetchImpl: typeof fetch = fetch
+  fetchImpl: typeof fetch = fetch,
+  options?: PinnedMcpCallOptions
 ): Promise<McpToolCallResult> {
-  const inspection = await inspectMcpTool(env, connectionId, toolName, fetchImpl);
+  if (options && (options.pinned.connectionId !== connectionId || options.pinned.toolName !== toolName)) {
+    throw new McpConnectionDeniedError();
+  }
+  const requestFetch = options ? guardedFetch(fetchImpl, connectionId, options) : fetchImpl;
+  const inspection = await inspectMcpTool(env, connectionId, toolName, requestFetch);
   validateToolArguments(inspection.tool, args);
 
   const secret = readConnectionSecret(env, inspection.connection);
@@ -125,7 +165,7 @@ export async function callMcpTool(
             secret,
             'tools/call',
             { name: toolName, arguments: args },
-            fetchImpl,
+            requestFetch,
             toolName
           )
         : await legacyRpc(
@@ -134,7 +174,7 @@ export async function callMcpTool(
             inspection.session,
             'tools/call',
             { name: toolName, arguments: args },
-            fetchImpl
+            requestFetch
           );
 
     const result = asObject(envelope.result, 'MCP tools/call result is invalid.');
@@ -163,7 +203,7 @@ export async function callMcpTool(
       dependencySnapshot: inspection.dependencySnapshot
     };
   } catch (error) {
-    if (error instanceof McpRpcError) throw error;
+    if (error instanceof McpRpcError || error instanceof McpConnectionDeniedError) throw error;
     throw new McpToolCallTransportError(
       error instanceof Error ? error.message : 'MCP tool call transport failed.'
     );
