@@ -65,8 +65,10 @@ export async function handleAdminRoute(
 ): Promise<Response | null> {
   const url = new URL(request.url);
   if (!url.pathname.startsWith('/admin/')) return null;
-  if (url.pathname !== '/admin/connections/snapshot') return reply(404, 'not_found');
-  if (request.method !== 'GET') return reply(405, 'method_not_allowed');
+  const snapshotRoute = url.pathname === '/admin/connections/snapshot';
+  const disableRoute = url.pathname === '/admin/connections/disable';
+  if (!snapshotRoute && !disableRoute) return reply(404, 'not_found');
+  if (request.method !== (snapshotRoute ? 'GET' : 'POST')) return reply(405, 'method_not_allowed');
 
   const repositoryId = required(env.ADMIN_PUBLISHER_REPOSITORY_ID);
   const workflowRef = required(env.ADMIN_PUBLISHER_WORKFLOW_REF);
@@ -89,9 +91,78 @@ export async function handleAdminRoute(
         identity.workflowSha !== env.ADMIN_PUBLISHER_WORKFLOW_SHA)) {
       return reply(403, 'publisher_identity_mismatch');
     }
-    return Response.json(policySnapshot(), { headers: { 'Cache-Control': 'no-store' } });
   } catch {
     // Never reflect raw credentials, JWT parsing details or platform Secret names.
     return reply(401, 'unauthorized');
+  }
+  if (disableRoute) return disableConnection(request, env);
+  return Response.json(policySnapshot(), { headers: { 'Cache-Control': 'no-store' } });
+}
+
+/** CAS disable is deliberately narrower than general configuration registration. */
+async function disableConnection(request: Request, env: AdminEnv): Promise<Response> {
+  const size = Number(request.headers.get('content-length') ?? 0);
+  if (!Number.isFinite(size) || size > 8192) return reply(413, 'body_too_large');
+  let raw: string;
+  try {
+    raw = await request.text();
+  } catch {
+    return reply(400, 'invalid_body');
+  }
+  if (raw.length > 8192) return reply(413, 'body_too_large');
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return reply(400, 'invalid_body');
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return reply(400, 'invalid_body');
+  const body = value as Record<string, unknown>;
+  if (Object.keys(body).sort().join(',') !== 'actionId,connectionId,expectedRevision') {
+    return reply(400, 'invalid_body');
+  }
+  const { actionId, connectionId, expectedRevision } = body;
+  if (typeof actionId !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(actionId) ||
+      typeof connectionId !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(connectionId) ||
+      !Number.isSafeInteger(expectedRevision) || (expectedRevision as number) < 1) {
+    return reply(400, 'invalid_body');
+  }
+
+  const digestBytes = await crypto.subtle.digest(
+    'SHA-256', new TextEncoder().encode(JSON.stringify([actionId, connectionId, expectedRevision]))
+  );
+  const digest = Array.from(new Uint8Array(digestBytes)).map(byte => byte.toString(16).padStart(2, '0')).join('');
+  try {
+    const existing = await env.DB.prepare(
+      'SELECT connection_id, action_kind, request_digest, resulting_revision FROM connection_admin_actions WHERE action_id = ?'
+    ).bind(actionId).first<{
+      connection_id: string;
+      action_kind: string;
+      request_digest: string;
+      resulting_revision: number;
+    }>();
+    if (existing) {
+      if (existing.connection_id !== connectionId || existing.action_kind !== 'disable' ||
+          existing.request_digest !== digest) return reply(409, 'action_conflict');
+      return Response.json({ connectionId, revision: existing.resulting_revision, disabled: true }, {
+        headers: { 'Cache-Control': 'no-store' }
+      });
+    }
+    const changed = await env.DB.prepare(
+      `UPDATE connection_controls SET disabled = 1, revision = revision + 1, updated_at = ?
+       WHERE connection_id = ? AND revision = ? AND disabled = 0`
+    ).bind(new Date().toISOString(), connectionId, expectedRevision).run();
+    if (changed.meta.changes !== 1) return reply(409, 'revision_conflict');
+    // The action carries only identifiers and a request hash, never credentials.
+    await env.DB.prepare(
+      `INSERT INTO connection_admin_actions
+       (action_id, connection_id, action_kind, request_digest, resulting_revision, created_at)
+       VALUES (?, ?, 'disable', ?, ?, ?)`
+    ).bind(actionId, connectionId, digest, (expectedRevision as number) + 1, new Date().toISOString()).run();
+    return Response.json({ connectionId, revision: (expectedRevision as number) + 1, disabled: true }, {
+      headers: { 'Cache-Control': 'no-store' }
+    });
+  } catch {
+    return reply(503, 'admin_storage_unavailable');
   }
 }
