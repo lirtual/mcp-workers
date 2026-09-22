@@ -26,7 +26,13 @@ const env = {
   ADMIN_PUBLISHER_WORKFLOW_REF: workflowRef,
   ADMIN_PUBLISHER_REF: 'refs/heads/main',
   ADMIN_PUBLISHER_WORKFLOW_SHA: 'trusted-sha',
-  MCP_ACCESS_TOKEN: 'ordinary-mcp-secret'
+  MCP_ACCESS_TOKEN: 'ordinary-mcp-secret',
+  DB: {
+    prepare: () => ({
+      first: async () => ({ revision: 1 }),
+      all: async () => ({ results: [] })
+    })
+  } as unknown as D1Database
 } as Env;
 
 function encoded(value: unknown): string {
@@ -77,6 +83,7 @@ describe('protected publisher admin boundary', () => {
     expect((await invoke()).status).toBe(401);
     expect((await invoke('Bearer ordinary-mcp-secret')).status).toBe(401);
     expect((await invoke('Bearer ' + await token(), {} as Env)).status).toBe(503);
+    expect((await invoke('Bearer ' + await token(), { ...env, DB: undefined } as unknown as Env)).status).toBe(503);
   });
 
   it('rejects wrong repo, ref, workflow, revision SHA, executor audience and expired token', async () => {
