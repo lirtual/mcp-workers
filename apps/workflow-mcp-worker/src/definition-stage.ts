@@ -41,10 +41,10 @@ export async function stageDefinition(
   if (!decoded || typeof decoded !== 'object' || Array.isArray(decoded)) return reject(400, 'invalid_body');
   const data = decoded as Record<string, unknown>;
   if (Object.keys(data).sort().join(',') !==
-      'definitionDigest,plan,policyRevision,publicationId,sourcePath,sourceSha,workflowId') {
+      'definitionDigest,metadata,plan,policyRevision,publicationId,sourcePath,sourceSha,workflowId') {
     return reject(400, 'invalid_body');
   }
-  const { definitionDigest, plan, policyRevision, publicationId, sourcePath, sourceSha, workflowId } = data;
+  const { definitionDigest, metadata, plan, policyRevision, publicationId, sourcePath, sourceSha, workflowId } = data;
   if (typeof definitionDigest !== 'string' || !HEX.test(definitionDigest) ||
       typeof sourceSha !== 'string' || !SOURCE_SHA.test(sourceSha) ||
       typeof publicationId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(publicationId) ||
@@ -57,6 +57,21 @@ export async function stageDefinition(
   try { normalized = validateVersionedWorkflowPlan(plan); }
   catch { return reject(422, 'invalid_plan'); }
   if (normalized.id !== workflowId) return reject(422, 'metadata_mismatch');
+  // Metadata is compiler-derived, not publisher-authored authority. Verify
+  // every field against the normalized plan before recording a claim.
+  const expectedMetadata = {
+    id: normalized.id,
+    name: normalized.name,
+    ...(normalized.description ? { description: normalized.description } : {}),
+    definitionDigest,
+    triggerTypes: normalized.triggers.map(trigger => trigger.type),
+    inputs: normalized.inputs,
+    stepCapabilities: [...new Set(Object.values(normalized.steps).map(step => step.uses))]
+  };
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata) ||
+      JSON.stringify(canonical(metadata)) !== JSON.stringify(canonical(expectedMetadata))) {
+    return reject(422, 'metadata_mismatch');
+  }
   const serialized = JSON.stringify(canonical(normalized));
   if (new TextEncoder().encode(serialized).byteLength > MAX_PLAN) return reject(413, 'plan_too_large');
   if (await digest(serialized) !== definitionDigest) return reject(422, 'digest_mismatch');
