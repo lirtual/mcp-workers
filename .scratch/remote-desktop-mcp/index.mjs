@@ -66,8 +66,19 @@ export class PrototypeDevice extends DurableObject {
     if (path === "/invoke" && request.method === "POST") {
       let call;
       try { call = await body(request); } catch { return json({ error: "bad_request" }, 400); }
-      if (call.tool !== "sandbox_ping" || typeof call.id !== "string" ||
-          typeof call.arguments?.echo !== "string" || call.arguments.echo.length > 64) {
+      if (typeof call.id !== "string" || call.id.length > 128 ||
+          !call.arguments || typeof call.arguments !== "object" || Array.isArray(call.arguments)) {
+        return json({ error: "invalid_call" }, 400);
+      }
+      if (call.tool === "sandbox_ping") {
+        if (typeof call.arguments.echo !== "string" || call.arguments.echo.length > 64 ||
+            Object.keys(call.arguments).some((key) => key !== "echo")) {
+          return json({ error: "invalid_call" }, 400);
+        }
+      } else if (call.tool === "sandbox_list_directory") {
+        // No remotely chosen path: local bridge holds the only sandbox path.
+        if (Object.keys(call.arguments).length !== 0) return json({ error: "invalid_call" }, 400);
+      } else {
         return json({ error: "invalid_call" }, 400);
       }
       try {
@@ -139,17 +150,27 @@ export default {
       return json(reply(id, { tools: [{ name: "sandbox_ping",
         description: "Harmless synthetic device reachability test; no filesystem or shell access.",
         inputSchema: { type: "object", properties: { echo: { type: "string", maxLength: 64 } },
-          required: ["echo"], additionalProperties: false } }] }));
+          required: ["echo"], additionalProperties: false } },
+        { name: "sandbox_list_directory",
+          description: "Read-only listing of the bridge's predefined test directory; caller cannot choose a path.",
+          inputSchema: { type: "object", properties: {}, additionalProperties: false } }] }));
     }
     if (msg.method === "tools/call") {
-      if (msg.params?.name !== "sandbox_ping" ||
-          typeof msg.params?.arguments?.echo !== "string" ||
-          msg.params.arguments.echo.length > 64) return json(error(id, -32602, "Invalid params"));
+      const name = msg.params?.name;
+      const args = msg.params?.arguments;
+      if (!args || typeof args !== "object" || Array.isArray(args)) {
+        return json(error(id, -32602, "Invalid params"));
+      }
+      if (name === "sandbox_ping") {
+        if (typeof args.echo !== "string" || args.echo.length > 64 ||
+            Object.keys(args).some((key) => key !== "echo")) return json(error(id, -32602, "Invalid params"));
+      } else if (name === "sandbox_list_directory") {
+        if (Object.keys(args).length !== 0) return json(error(id, -32602, "Invalid params"));
+      } else return json(error(id, -32602, "Invalid params"));
       const stub = env.DEVICE.get(env.DEVICE.idFromName("scratch-only"));
       const result = await stub.fetch(new Request("https://internal/invoke", {
         method: "POST",
-        body: JSON.stringify({ id: crypto.randomUUID(), tool: "sandbox_ping",
-          arguments: { echo: msg.params.arguments.echo } }),
+        body: JSON.stringify({ id: crypto.randomUUID(), tool: name, arguments: args }),
       }));
       const data = await result.json();
       if (!result.ok) return json(error(id, -32000, data.error || "offline"));
