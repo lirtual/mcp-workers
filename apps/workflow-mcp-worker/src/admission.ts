@@ -108,11 +108,7 @@ async function admitDynamicManualWorkflow(
   if (original) {
     // Never recreate a terminal historical Run. Only an unfinished Run may
     // need repair after an uncertain initial createBatch response.
-    if (!new Set<StoredRun['state']>([
-      'succeeded', 'failed', 'cancelled', 'timed_out', 'indeterminate'
-    ]).has(original.state)) {
-      await env.WORKFLOW.createBatch([{ id: original.runId, params: { runId: original.runId } }]);
-    }
+    await recoverDynamicInstance(env, original);
     return {
       runId: original.runId, alreadyAdmitted: true,
       definitionDigest: original.definitionDigest, state: original.state
@@ -170,16 +166,40 @@ async function admitDynamicManualWorkflow(
   if (!recorded) {
     throw new PublicWorkflowError('ADMISSION_UNAVAILABLE', 'Durable admission record is unavailable.');
   }
-  // A competing request can win the admission key after our initial read.
-  // Apply the same terminal guard to that path as to an early duplicate.
-  if (!new Set<StoredRun['state']>([
-    'succeeded', 'failed', 'cancelled', 'timed_out', 'indeterminate'
-  ]).has(recorded.state)) {
+  // A concurrent request may have won the key. Never restart a terminal Run.
+  if (admitted.alreadyAdmitted) {
+    await recoverDynamicInstance(env, recorded);
+  } else {
     await env.WORKFLOW.createBatch([{ id: admitted.runId, params: { runId: admitted.runId } }]);
   }
   return {
     ...admitted, definitionDigest: recorded.definitionDigest, state: recorded.state
   };
+}
+
+/**
+ * Only repair a queued, already-admitted Run. Inspect the external instance
+ * first; an uncertain lookup is not evidence of absence. A specifically
+ * reported not-found instance is recreated with the original ID, never a
+ * different ID or a new definition. Do not restart running/terminal history.
+ */
+async function recoverDynamicInstance(env: Env, run: StoredRun): Promise<void> {
+  if (run.state !== 'queued') return;
+  try {
+    await env.WORKFLOW.get(run.runId);
+    return;
+  } catch (error) {
+    const code = error && typeof error === 'object' && 'code' in error
+      ? String(error.code) : '';
+    if (code !== 'instance.not_found') {
+      throw new PublicWorkflowError(
+        'WORKFLOW_RECOVERY_UNCERTAIN',
+        'Cannot determine whether the original Workflow instance exists.'
+      );
+    }
+  }
+  // Cloudflare createBatch skips an existing custom ID within retention.
+  await env.WORKFLOW.createBatch([{ id: run.runId, params: { runId: run.runId } }]);
 }
 
 async function admitCompiledWorkflow(
