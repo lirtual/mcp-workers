@@ -167,9 +167,16 @@ async function disableConnection(request: Request, env: AdminEnv): Promise<Respo
          WHERE connection_id = ? AND revision = ? AND disabled = 0
            AND EXISTS (SELECT 1 FROM connection_admin_actions
                        WHERE action_id = ? AND request_digest = ?)`
-      ).bind(now, connectionId, expectedRevision as number, actionId, digest)
+      ).bind(now, connectionId, expectedRevision as number, actionId, digest),
+      env.DB.prepare(
+        `UPDATE connection_policy_revision SET revision = revision + 1
+         WHERE singleton = 1 AND EXISTS (
+           SELECT 1 FROM connection_admin_actions WHERE action_id = ? AND request_digest = ?
+         )`
+      ).bind(actionId, digest)
     ]);
-    if (results[0]?.meta.changes !== 1 || results[1]?.meta.changes !== 1) {
+    if (results[0]?.meta.changes !== 1 || results[1]?.meta.changes !== 1 ||
+        results[2]?.meta.changes !== 1) {
       return reply(409, 'revision_conflict');
     }
     return Response.json({ connectionId, revision: (expectedRevision as number) + 1, disabled: true }, {
