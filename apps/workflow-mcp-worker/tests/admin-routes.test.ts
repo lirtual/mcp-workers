@@ -193,8 +193,9 @@ describe('D1-backed approved Connection snapshot', () => {
       prepare: (sql: string) => ({
         first: async () => sql.includes('connection_policy_revision') ? { revision: 7 } : null,
         all: async () => ({
-          results: [{ connection_id: 'raindrop', current_version: 3, disabled: 1,
-            allowed_tools_json: '{"list_raindrops":["read"]}' }]
+          results: sql.includes('workflow_webhook_secret_scopes') ? [] :
+            [{ connection_id: 'raindrop', current_version: 3, disabled: 1,
+              allowed_tools_json: '{"list_raindrops":["read"]}' }]
         })
       })
     } as unknown as D1Database;
