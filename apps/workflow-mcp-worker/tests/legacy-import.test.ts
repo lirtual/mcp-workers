@@ -94,7 +94,7 @@ describe('T10 v0.1 import preflight (no D1 writes)', () => {
         ...active, workflowId: 'unexpected-catalog-definition'
       }]
     })).toThrow(/Unexpected or duplicate active workflow/);
-    expect(() => prepareLegacyImport({
+    expect(prepareLegacyImport({
       ...state(), active: [active]
     }).definitions).toHaveLength(4);
   });
