@@ -151,24 +151,6 @@ export async function handleAdminRoute(
   try {
     return Response.json(await policySnapshot(env), { headers: { 'Cache-Control': 'no-store' } });
   } catch {
-    // A concurrent identical disable can have committed its action after the
-    // first lookup. Reconcile that outcome; never blindly repeat the mutation.
-    try {
-      const committed = await env.DB.prepare(
-        'SELECT connection_id, action_kind, request_digest, resulting_revision FROM connection_admin_actions WHERE action_id = ?'
-      ).bind(actionId).first<{
-        connection_id: string; action_kind: string; request_digest: string; resulting_revision: number
-      }>();
-      if (committed) {
-        if (committed.connection_id !== connectionId || committed.action_kind !== 'disable' ||
-            committed.request_digest !== digest) return reply(409, 'action_conflict');
-        return Response.json({
-          connectionId, revision: committed.resulting_revision, disabled: true
-        }, { headers: { 'Cache-Control': 'no-store' } });
-      }
-    } catch {
-      // Remain fail closed if the authoritative record cannot be checked.
-    }
     return reply(503, 'admin_storage_unavailable');
   }
 }
@@ -254,6 +236,24 @@ async function disableConnection(request: Request, env: AdminEnv): Promise<Respo
       headers: { 'Cache-Control': 'no-store' }
     });
   } catch {
+    // A concurrently committed identical action may have beaten our first
+    // lookup. Reconcile its durable record without issuing another mutation.
+    try {
+      const committed = await env.DB.prepare(
+        'SELECT connection_id, action_kind, request_digest, resulting_revision FROM connection_admin_actions WHERE action_id = ?'
+      ).bind(actionId).first<{
+        connection_id: string; action_kind: string; request_digest: string; resulting_revision: number
+      }>();
+      if (committed) {
+        if (committed.connection_id !== connectionId || committed.action_kind !== 'disable' ||
+            committed.request_digest !== digest) return reply(409, 'action_conflict');
+        return Response.json({
+          connectionId, revision: committed.resulting_revision, disabled: true
+        }, { headers: { 'Cache-Control': 'no-store' } });
+      }
+    } catch {
+      // Fail closed if D1 cannot supply the authoritative action outcome.
+    }
     return reply(503, 'admin_storage_unavailable');
   }
 }
