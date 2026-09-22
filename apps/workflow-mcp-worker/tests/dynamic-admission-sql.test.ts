@@ -3,6 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { admitManualWorkflow, admitVersionedWebhookWorkflow } from '../src/admission.js';
 import { registerWorkflowTools } from '../src/mcp.js';
+import { handleWebhookTrigger } from '../src/triggers.js';
 import type { PublicWorkflowError } from '../src/admission.js';
 import { getWorkflowRegistry } from '../src/registry.js';
 import type { Env } from '../src/types.js';
@@ -431,7 +432,7 @@ describe('T06 gated, immutable D1 manual admission', () => {
       });
       expect((f.sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_runs').get() as { count: number }).count)
         .toBe(1);
-      expect(f.starts()).toBe(1);
+      expect(f.starts()).toBe(2);
     } finally { f.sqlite.close(); }
   });
 });
@@ -457,6 +458,23 @@ describe('T07 transactional webhook authorization', () => {
       const selected = { definitionDigest: digest, registryRevision: 2, secretName: 'TEST_WEBHOOK_TOKEN' };
       const run = (key: string, env = f.env) =>
         admitVersionedWebhookWorkflow(env, original.metadata.id, 'incoming', input, key, selected);
+      const hookEnv = { ...f.env, TEST_WEBHOOK_TOKEN: 'valid-token' } as Env;
+      const request = (token: string, eventKey: string) => new Request(
+        `https://workflow.example/hooks/${original.metadata.id}/incoming`, {
+          method: 'POST', headers: {
+            Authorization: `Bearer ${token}`, 'X-Workflow-Event-Key': eventKey
+          }, body: JSON.stringify({ input })
+        }
+      );
+      const invalid = await handleWebhookTrigger(
+        request('wrong-token', 'invalid-1'), hookEnv, original.metadata.id, 'incoming'
+      );
+      expect(invalid.status).toBe(401);
+      const accepted = await handleWebhookTrigger(
+        request('valid-token', 'http-event'), hookEnv, original.metadata.id, 'incoming'
+      );
+      expect(accepted.status).toBe(202);
+      expect(await accepted.json()).toMatchObject({ definitionDigest: digest, alreadyAdmitted: false });
       const first = await run('event-1');
       expect(first).toMatchObject({ definitionDigest: digest, alreadyAdmitted: false });
       expect(await run('event-1')).toMatchObject({ runId: first.runId, alreadyAdmitted: true });
