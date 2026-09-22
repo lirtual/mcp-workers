@@ -210,6 +210,69 @@ describe('T06 gated, immutable D1 manual admission', () => {
     } finally { f.sqlite.close(); }
   });
 
+  it('pins the winning revision during an activate/admit interleaving and retries cleanly', async () => {
+    const f = fixture();
+    try {
+      const second = JSON.parse(JSON.stringify(original.plan)) as Record<string, unknown>;
+      second.name = 'Later approved definition';
+      const nextDigest = 'b'.repeat(64);
+      f.save(nextDigest, second);
+      const baseBatch = f.db.batch.bind(f.db);
+      let switched = false;
+      const racingDb = {
+        prepare: f.db.prepare.bind(f.db),
+        batch: async (commands: Parameters<D1Database['batch']>[0]) => {
+          if (!switched) {
+            switched = true;
+            f.change(nextDigest, 2);
+          }
+          return baseBatch(commands);
+        }
+      } as D1Database;
+      await expect(admitManualWorkflow({ ...f.env, DB: racingDb }, original.metadata.id,
+        input, 'stale-revision')).rejects.toMatchObject({ code: 'REGISTRY_CONFLICT' });
+      const accepted = await admitManualWorkflow(f.env, original.metadata.id, input, 'new-revision');
+      expect(accepted).toMatchObject({ definitionDigest: nextDigest, alreadyAdmitted: false });
+      const rows = f.sqlite.prepare(
+        'SELECT definition_digest, input_json FROM workflow_runs'
+      ).all() as Array<{ definition_digest: string; input_json: string }>;
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.definition_digest).toBe(nextDigest);
+      expect(JSON.parse(rows[0]!.input_json)).toEqual(input);
+      expect(f.starts()).toBe(1);
+    } finally { f.sqlite.close(); }
+  });
+
+  it('resolves the original Run when a same-key rival wins between lookup and insert', async () => {
+    const f = fixture();
+    try {
+      const baseBatch = f.db.batch.bind(f.db);
+      let winner: Awaited<ReturnType<typeof admitManualWorkflow>> | undefined;
+      let raced = false;
+      const racingDb = {
+        prepare: f.db.prepare.bind(f.db),
+        batch: async (commands: Parameters<D1Database['batch']>[0]) => {
+          if (!raced) {
+            raced = true;
+            winner = await admitManualWorkflow(f.env, original.metadata.id, input, 'shared-race');
+            f.change(null, 2);
+          }
+          return baseBatch(commands);
+        }
+      } as D1Database;
+      const loser = await admitManualWorkflow({ ...f.env, DB: racingDb },
+        original.metadata.id, input, 'shared-race');
+      expect(loser).toMatchObject({
+        runId: winner!.runId, definitionDigest: winner!.definitionDigest, alreadyAdmitted: true
+      });
+      expect((f.sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_runs')
+        .get() as { count: number }).count).toBe(1);
+      expect((f.sqlite.prepare("SELECT COUNT(*) AS count FROM workflow_events WHERE event_type = 'run.admitted'")
+        .get() as { count: number }).count).toBe(1);
+      expect(f.starts()).toBe(1);
+    } finally { f.sqlite.close(); }
+  });
+
   it('repairs only a confirmed missing queued instance using the original ID', async () => {
     const f = fixture();
     try {
