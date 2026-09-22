@@ -355,8 +355,9 @@ describe('signed definition activation HTTP boundary', () => {
     return {
       prepare: statement,
       batch: async (queries: unknown[]) => {
-        expect(queries).toHaveLength(2);
-        return [{ meta: { changes } }, { meta: { changes } }];
+        // T08 activation atomically includes the schedule cutover statement.
+        expect(queries).toHaveLength(3);
+        return [{ meta: { changes } }, { meta: { changes } }, { meta: { changes: 0 } }];
       }
     } as unknown as D1Database;
   }
