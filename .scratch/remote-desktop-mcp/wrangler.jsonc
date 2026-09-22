@@ -1,5 +1,4 @@
 {
-  "$schema": "../../apps/workflow-mcp-worker/node_modules/wrangler/config-schema.json",
   "name": "throwaway-remote-desktop-173",
   "main": "./index.mjs",
   "compatibility_date": "2026-09-23",
