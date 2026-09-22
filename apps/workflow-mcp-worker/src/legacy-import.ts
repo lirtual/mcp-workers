@@ -106,10 +106,23 @@ export function prepareLegacyImport(state: LegacyImportState,
     if (!rows.some(row => row.workflowId === id)) throw new Error('Legacy workflow is missing.');
   }
   for (const run of state.nonterminal) {
-    if (!hash.test(run.definitionDigest) ||
-        (!rows.some(row => row.definitionDigest === run.definitionDigest) &&
-         !state.definitions.some(d => d.definitionDigest === run.definitionDigest))) {
+    const pinned = state.definitions.find(d => d.definitionDigest === run.definitionDigest) ??
+      rows.find(row => row.definitionDigest === run.definitionDigest);
+    if (!hash.test(run.definitionDigest) || !pinned) {
       throw new Error('Nonterminal Run lacks its historical pinned definition.');
+    }
+    // A stored digest row is not sufficient if a nonterminal Run's recovered
+    // plan differs from it. Verify the canonical identity before cutover.
+    const pinnedPlan = validateVersionedWorkflowPlan(JSON.parse(pinned.normalizedPlanJson));
+    const runPlan = validateVersionedWorkflowPlan(JSON.parse(run.normalizedPlanJson ?? 'null'));
+    const canonicalPinned = JSON.stringify(canonical(pinnedPlan));
+    const canonicalRun = JSON.stringify(canonical(runPlan));
+    if (pinnedPlan.id !== pinned.workflowId ||
+        pinnedPlan.dslVersion !== pinned.dslVersion ||
+        runPlan.id !== pinned.workflowId || runPlan.dslVersion !== run.dslVersion ||
+        canonicalPinned !== canonicalRun ||
+        createHash('sha256').update(canonicalRun).digest('hex') !== run.definitionDigest) {
+      throw new Error('Nonterminal Run pinned plan or digest differs from its historical definition.');
     }
   }
   const cursor = state.scheduler.filter(s => s.scheduleKey === SCHEDULE_KEY);
