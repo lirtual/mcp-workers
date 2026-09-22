@@ -220,6 +220,82 @@ describe('T08 dynamic scheduler runtime', () => {
   });
 });
 
+describe('T08 schedule edit, removal and rollback', () => {
+  it('does not replay a previous cron or trigger after activation and re-addition', async () => {
+    const f = fixture();
+    try {
+      const plan = JSON.parse(JSON.stringify(original.plan)) as Record<string, unknown>;
+      plan.inputs = {};
+      plan.triggers = [
+        { type: 'manual' },
+        { type: 'schedule', id: 'minute', cron: '* * * * *', timezone: 'UTC', misfire: 'latest' }
+      ];
+      const oldDigest = '1'.repeat(64);
+      const newDigest = '2'.repeat(64);
+      const manualDigest = '3'.repeat(64);
+      f.save(oldDigest, plan);
+      const edited = JSON.parse(JSON.stringify(plan)) as Record<string, unknown>;
+      edited.triggers = [
+        { type: 'manual' },
+        { type: 'schedule', id: 'minute', cron: '* * * * *',
+          timezone: 'Asia/Shanghai', misfire: 'latest' }
+      ];
+      f.save(newDigest, edited);
+      const manual = JSON.parse(JSON.stringify(plan)) as Record<string, unknown>;
+      manual.triggers = [{ type: 'manual' }];
+      f.save(manualDigest, manual);
+
+      const minute = Math.floor(Date.now() / 60_000) * 60_000;
+      const key = original.metadata.id + ':minute';
+      f.change(oldDigest, 2);
+      f.sqlite.prepare('INSERT INTO scheduler_state (schedule_key, last_evaluated_at) VALUES (?, ?)')
+        .run(key, minute - 2 * 60_000);
+      const first = await runSchedulerTick(f.env, minute - 60_000, { maintenanceLimit: 1 });
+      expect(first).toMatchObject({ admittedRuns: 1, errors: 0 });
+
+      // A new timezone is activated at the current minute. An already-due
+      // occurrence from the old version cannot be evaluated under the new one.
+      f.change(newDigest, 3);
+      f.sqlite.prepare('UPDATE scheduler_state SET last_evaluated_at = ? WHERE schedule_key = ?')
+        .run(minute, key);
+      const sameMinute = await runSchedulerTick(f.env, minute, { maintenanceLimit: 1 });
+      expect(sameMinute).toMatchObject({ admittedRuns: 0, errors: 0 });
+      const next = await runSchedulerTick(f.env, minute + 60_000, { maintenanceLimit: 1 });
+      expect(next).toMatchObject({ admittedRuns: 1, errors: 0 });
+      expect((f.sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_runs')
+        .get() as { count: number }).count).toBe(2);
+      const replay = await runSchedulerTick(f.env, minute + 60_000, { maintenanceLimit: 1 });
+      expect(replay).toMatchObject({ admittedRuns: 0, errors: 0 });
+
+      // Removing the trigger stops new starts but retains its durable cursor.
+      f.change(manualDigest, 4);
+      const removed = await runSchedulerTick(f.env, minute + 2 * 60_000,
+        { maintenanceLimit: 1 });
+      expect(removed).toMatchObject({ evaluatedSchedules: 0, admittedRuns: 0, errors: 0 });
+
+      // Re-add/rollback starts strictly after the new activation minute.
+      f.change(oldDigest, 5);
+      f.sqlite.prepare('UPDATE scheduler_state SET last_evaluated_at = ? WHERE schedule_key = ?')
+        .run(minute + 2 * 60_000, key);
+      const restored = await runSchedulerTick(f.env, minute + 2 * 60_000,
+        { maintenanceLimit: 1 });
+      expect(restored).toMatchObject({ admittedRuns: 0, errors: 0 });
+      const later = await runSchedulerTick(f.env, minute + 3 * 60_000,
+        { maintenanceLimit: 1 });
+      expect(later).toMatchObject({ admittedRuns: 1, errors: 0 });
+      const rows = f.sqlite.prepare(
+        "SELECT source_key, definition_digest FROM workflow_runs ORDER BY CAST(json_extract(trigger_json, '$.scheduledTime') AS INTEGER)"
+      ).all() as Array<{ source_key: string; definition_digest: string }>;
+      expect(rows).toEqual([
+        { source_key: String(minute - 60_000), definition_digest: oldDigest },
+        { source_key: String(minute + 60_000), definition_digest: newDigest },
+        { source_key: String(minute + 3 * 60_000), definition_digest: oldDigest }
+      ]);
+      expect(f.starts()).toBe(3);
+    } finally { f.sqlite.close(); }
+  });
+});
+
 describe('T08 atomic versioned schedule admission', () => {
   it('claims one occurrence in D1 and never admits a stale activation version', async () => {
     const f = fixture();
