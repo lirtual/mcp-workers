@@ -109,6 +109,25 @@ describe('T07 protected webhook secret registration', () => {
         .toEqual({ n: 0 });
     } finally { f.sqlite.close(); }
   });
+  it('can explicitly reapprove an enabled scope after unrelated policy revision changes', async () => {
+    const f = fixture();
+    try {
+      expect((await f.register(f.body('initial'))).status).toBe(200);
+      f.sqlite.exec('UPDATE connection_policy_revision SET revision = revision + 1 WHERE singleton = 1');
+      expect((await f.register(f.body('initial'))).status).toBe(409);
+      expect((await f.register(f.body('new-approval', { expectedPolicyRevision: 2 }))).status).toBe(200);
+      expect(f.sqlite.prepare('SELECT policy_revision FROM workflow_webhook_secret_scopes').get())
+        .toEqual({ policy_revision: 2 });
+      expect((await f.register(f.body('initial'))).status).toBe(200);
+      f.sqlite.exec('UPDATE workflow_webhook_secret_scopes SET enabled = 0');
+      f.sqlite.exec('UPDATE connection_policy_revision SET revision = revision + 1 WHERE singleton = 1');
+      expect((await f.register(f.body('revoked-approval', { expectedPolicyRevision: 3 }))).status)
+        .toBe(409);
+      expect(f.sqlite.prepare('SELECT enabled FROM workflow_webhook_secret_scopes').get())
+        .toEqual({ enabled: 0 });
+    } finally { f.sqlite.close(); }
+  });
+
   it('does not report a revoked or stale scope as successfully replayed', async () => {
     const f = fixture();
     try {
