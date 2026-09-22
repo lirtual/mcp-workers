@@ -85,18 +85,23 @@ export async function inspectMcpTool(
   connectionId: string,
   toolName: string,
   fetchImpl: typeof fetch = fetch,
-  approvedConnection?: McpConnection
+  approvedConnection?: McpConnection,
+  options?: PinnedMcpCallOptions
 ): Promise<ToolInspection> {
+  if (options && (options.pinned.connectionId !== connectionId || options.pinned.toolName !== toolName)) {
+    throw new McpConnectionDeniedError();
+  }
   const connection = approvedConnection ?? getConnection(connectionId);
   if (!connection) throw new Error(`MCP connection "${connectionId}" is not configured.`);
 
   const secret = readConnectionSecret(env, connection);
   if (!secret) throw new Error(`MCP connection "${connectionId}" credential is not configured.`);
 
+  const requestFetch = options ? guardedFetch(fetchImpl, connectionId, options) : fetchImpl;
   const listed =
     connection.protocolVersion === MODERN_PROTOCOL
-      ? await listToolsModern(connection, secret, fetchImpl)
-      : await listToolsLegacy(connection, secret, fetchImpl);
+      ? await listToolsModern(connection, secret, requestFetch)
+      : await listToolsLegacy(connection, secret, requestFetch);
   const { session, tools } = listed;
 
   const tool = tools.find(candidate => candidate.name === toolName);
