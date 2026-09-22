@@ -31,6 +31,13 @@ The Worker fails closed if any of `PROTOTYPE_MCP_TOKEN`, `PROTOTYPE_DEVICE_TOKEN
 4. On DO wakeup, use `ctx.getWebSockets()` and socket attachments to reconstruct the **connection**. The in-memory pending-call map is intentionally not durable. A forced-eviction round trip has passed in the Cloudflare test runtime. In-flight request loss, device restart, and hosted Cloudflare behavior remain unverified. Revoked-state recovery after eviction is verified in the isolated test runtime for both disconnected and previously connected devices.
 5. Maximum 8192 bytes of inbound JSON; echoed input 64 characters; 1.5-second ping timeout, 25-second restricted directory-call timeout, 20-second isolated Docker process timeout. These are experimental limits, not a final product policy.
 
+## HTTP ingress hardening checkpoint
+
+- The 8192-byte prototype HTTP cap is enforced **while consuming** the request stream, with an early Content-Length rejection where available. It no longer reads an unbounded body into a string before checking its length; UTF-8 bytes are counted rather than characters.
+- Local workerd negative cases verify malformed JSON, oversized ASCII and multibyte UTF-8 bodies, invalid MCP and independent admin/device credentials, forbidden `execute_command` and unexpected arguments. Existing bounded real-upstream round trip and DO eviction tests remain included.
+- Verified code HEAD `f7f0fb48f3c591bccd57a979d43d44b1e6d5c446`: [prototype Actions #35764935896](https://github.com/lirtual/mcp-workers/actions/runs/35764935896) and [repository CI #35764935954](https://github.com/lirtual/mcp-workers/actions/runs/35764935954), both SUCCESS.
+- This is ingress resource-limit evidence, **not** MCP Inspector / OAuth acceptance. WebSocket oversize and in-flight eviction still need their own targeted negative tests. Static prototype bearer tokens remain non-production.
+
 ## What this does NOT prove
 
 - Hosted Cloudflare DO behavior or in-flight request behavior during eviction. The **local end-to-end proof now reaches the real upstream executable**, but only in an ephemeral isolated CI container.
