@@ -84,6 +84,7 @@ describe('T07 protected webhook secret registration', () => {
     const f = fixture();
     try {
       expect((await f.register(f.body('bad', {secretName:'MCP_ACCESS_TOKEN'}))).status).toBe(400);
+      expect((await f.register(f.body('bad', {secretName:'ADMIN_PUBLISHER_WORKFLOW_SHA'}))).status).toBe(400);
       expect((await f.register(f.body('bad', {secretName:'OTHER_TOKEN'}))).status).toBe(400);
       expect((await f.register(f.body('stale', {expectedPolicyRevision:999}))).status).toBe(409);
       expect((await f.register(f.body('action-one'))).status).toBe(200);
