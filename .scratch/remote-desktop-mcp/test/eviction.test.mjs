@@ -41,12 +41,16 @@ test("hibernated connection restores from attachment", async () => {
 test("revoked device remains revoked across eviction without stale socket", async () => {
   // Separate object: revocation closes an active socket asynchronously; do not
   // mix an unacknowledged WebSocket close with the storage-persistence check.
+  console.log("revocation-proof: starting");
   const stub = env.DEVICE.get(env.DEVICE.idFromName("revocation-proof"));
   const revoked = await stub.fetch("https://internal/revoke", { method: "POST" });
   expect(revoked.status).toBe(200);
+  console.log("revocation-proof: revoke response");
   await evictDurableObject(stub);
+  console.log("revocation-proof: eviction completed");
   const denied = await stub.fetch("https://internal/device", { headers: { Upgrade: "websocket" } });
   expect(denied.status).toBe(403);
+  console.log("revocation-proof: reconnect denied");
   const blocked = await stub.fetch("https://internal/invoke", {
     method: "POST",
     body: JSON.stringify({ id: "after-revoke", tool: "sandbox_ping", arguments: { echo: "no" } }),
