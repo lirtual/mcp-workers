@@ -10,15 +10,17 @@ import { handleAdminRoute } from '../src/admin-routes.ts';
 import { resolveRunConnectionPin, readLiveConnectionControl } from '../src/connection-revocation.ts';
 import { callMcpTool, McpConnectionDeniedError } from '../src/mcp-client.ts';
 import { resolveStepExecutionPolicy } from '../src/step-policy.ts';
+import { getWorkflowRegistry } from '../src/registry.ts';
 import { GITHUB_EXECUTOR_CONFIG } from '../src/platform-config.ts';
 
 const crypto = globalThis.crypto ?? webcrypto;
 const sqlite = new DatabaseSync(':memory:');
-for (let index = 1; index <= 7; index++) {
+for (let index = 1; index <= 8; index++) {
   const files = {
     1: '0001_core.sql', 2: '0002_scheduler.sql', 3: '0003_mcp_dependencies.sql',
     4: '0004_remote_executor.sql', 5: '0005_artifacts.sql',
-    6: '0006_provenance.sql', 7: '0007_connection_versions.sql'
+    6: '0006_provenance.sql', 7: '0007_connection_versions.sql',
+    8: '0008_definition_publications.sql'
   };
   sqlite.exec(readFileSync(new URL('../migrations/' + files[index], import.meta.url), 'utf8'));
 }
@@ -206,5 +208,46 @@ try {
 } finally {
   globalThis.fetch = originalFetch;
 }
+
+const registry = getWorkflowRegistry();
+const baselineCount = registry.length;
+const entry = registry.find(item => item.metadata.id === 'local-http-smoke');
+assert.ok(entry);
+const stage = {
+  workflowId: entry.metadata.id,
+  definitionDigest: entry.definitionDigest,
+  sourceSha: 'a'.repeat(40),
+  sourcePath: entry.sourcePath,
+  policyRevision: 4,
+  connectionVersions: {},
+  plan: entry.plan
+};
+const staged = await admin('/admin/definitions/stage', stage);
+assert.equal(staged.status, 200, await staged.text());
+const stagedReply = await staged.json();
+assert.equal(stagedReply.staged, true);
+assert.equal(stagedReply.alreadyStaged, false);
+const repeatedStage = await admin('/admin/definitions/stage', stage);
+assert.equal(repeatedStage.status, 200);
+assert.equal((await repeatedStage.json()).alreadyStaged, true);
+assert.equal((await admin('/admin/definitions/stage',
+  { ...stage, definitionDigest: '0'.repeat(64) })).status, 400);
+assert.equal((await admin('/admin/definitions/stage',
+  { ...stage, policyRevision: 3 })).status, 409);
+assert.equal((await admin('/admin/definitions/stage',
+  { ...stage, sourceSha: 'invalid' })).status, 400);
+const differingSource = await admin('/admin/definitions/stage',
+  { ...stage, sourceSha: 'b'.repeat(40) });
+assert.equal(differingSource.status, 200);
+assert.equal(sqlite.prepare('SELECT count(*) AS n FROM definition_publications').get().n, 2);
+assert.equal(sqlite.prepare(
+  'SELECT count(*) AS n FROM workflow_definition_versions WHERE definition_digest = ?'
+).get(entry.definitionDigest).n, 1);
+assert.equal(getWorkflowRegistry().length, baselineCount);
+assert.equal(sqlite.prepare('SELECT revision FROM connection_policy_revision').get().revision, 4);
+const evidence = sqlite.prepare('SELECT publisher_repository_id, publisher_run_id, publisher_run_attempt FROM definition_publications LIMIT 1').get();
+assert.deepEqual(evidence, {
+  publisher_repository_id: '1371085786', publisher_run_id: '12345', publisher_run_attempt: 1
+});
 sqlite.close();
-console.log('PASS: real SQLite D1 migration, approved revision update, secret rotation, signed admin CAS, pinned Run call, and revoke-before-tools/call');
+console.log('PASS: real SQLite D1 migration, approved revision update, secret rotation, signed admin CAS, pinned Run call, revoke-before-tools/call, and immutable definition stage');
