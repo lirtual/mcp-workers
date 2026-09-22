@@ -72,6 +72,24 @@ describe('T07 protected webhook secret registration', () => {
       expect(f.sqlite.prepare('SELECT count(*) AS n FROM workflow_webhook_secret_scopes').get()).toEqual({n: 1});
     } finally { f.sqlite.close(); }
   });
+  it('rolls back the action claim if the second D1 batch statement fails', async () => {
+    const f = fixture();
+    try {
+      f.sqlite.exec(`CREATE TRIGGER reject_webhook_scope BEFORE INSERT ON workflow_webhook_secret_scopes
+        BEGIN SELECT RAISE(ABORT, 'simulated scope storage failure'); END`);
+      const failed = await f.register(f.body('atomic-failure'));
+      expect(failed.status).toBe(503);
+      expect(f.sqlite.prepare('SELECT count(*) AS n FROM webhook_secret_scope_actions').get())
+        .toEqual({ n: 0 });
+      expect(f.sqlite.prepare('SELECT count(*) AS n FROM workflow_webhook_secret_scopes').get())
+        .toEqual({ n: 0 });
+      f.sqlite.exec('DROP TRIGGER reject_webhook_scope');
+      expect((await f.register(f.body('atomic-failure'))).status).toBe(200);
+      expect(f.sqlite.prepare('SELECT count(*) AS n FROM webhook_secret_scope_actions').get())
+        .toEqual({ n: 1 });
+    } finally { f.sqlite.close(); }
+  });
+
   it('does not report a revoked or stale scope as successfully replayed', async () => {
     const f = fixture();
     try {
