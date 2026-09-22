@@ -39,6 +39,13 @@ The Worker fails closed if any of `PROTOTYPE_MCP_TOKEN`, `PROTOTYPE_DEVICE_TOKEN
 - Local workerd now also checks **oversized multibyte UTF-8 WebSocket frames are closed with code 1009** and malformed device JSON frames with code 1007; a subsequent device connection can recover and still complete the real upstream read-only call. Tested code HEAD `97d999fa79ebb5c497b96e43f2a83d3cf2ef602e`: [prototype Actions #35765276440](https://github.com/lirtual/mcp-workers/actions/runs/35765276440) and [repository CI #35765276584](https://github.com/lirtual/mcp-workers/actions/runs/35765276584), both SUCCESS.
 - These are resource-limit and malformed-frame proofs, **not** MCP Inspector / OAuth acceptance. In-flight eviction still requires its own targeted test. Static prototype bearer tokens remain non-production.
 
+## Official MCP Inspector and version boundary (2026-09-23)
+
+- Official `@modelcontextprotocol/inspector@2.7.0` CLI (not hand-written JSON-RPC) verified the legacy Streamable HTTP connection, `tools/list` and `sandbox_ping` `tools/call` against local workerd.
+- The prototype deliberately negotiates `2025-06-18`; post-initialize `MCP-Protocol-Version` headers with `2026-07-28` or `2025-11-25` are **rejected** with HTTP 400, while `2025-06-18` is accepted. This documents an intentional compatibility limit, **not** newer-protocol support.
+- Local workerd tests reject forged/cross-site `Origin` headers and permit same-origin. This only proves a local DNS-rebinding guard; production ChatGPT/Portal origins and OAuth discovery need separate security review.
+- Evidence at exact HEAD `7c6304bec5020c9da2a01221f945802e352fad86`: [prototype Actions #35766442351](https://github.com/lirtual/mcp-workers/actions/runs/35766442351) and [repository CI #35766442426](https://github.com/lirtual/mcp-workers/actions/runs/35766442426), both SUCCESS. No public deployment or real ChatGPT validation.
+
 ## What this does NOT prove
 
 - Hosted Cloudflare DO behavior or in-flight request behavior during eviction. The **local end-to-end proof now reaches the real upstream executable**, but only in an ephemeral isolated CI container.
