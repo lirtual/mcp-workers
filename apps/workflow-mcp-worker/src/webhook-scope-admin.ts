@@ -128,6 +128,39 @@ export async function registerApprovedWebhookScope(
       headers: { 'Cache-Control': 'no-store' }
     });
   } catch {
+    // D1 may have committed an identical action before its response was lost,
+    // or a concurrent request may have won the action ID. Reconcile only the
+    // authoritative durable action + currently enabled scope; never retry a
+    // blind write after an uncertain response.
+    try {
+      const committed = await db.prepare(
+        `SELECT workflow_id, trigger_id, definition_digest, secret_name, expected_policy_revision
+         FROM webhook_secret_scope_actions WHERE action_id = ?`
+      ).bind(actionId).first<{
+        workflow_id: string; trigger_id: string; definition_digest: string;
+        secret_name: string; expected_policy_revision: number
+      }>();
+      if (committed) {
+        if (committed.workflow_id !== workflowId || committed.trigger_id !== triggerId ||
+            committed.definition_digest !== definitionDigest || committed.secret_name !== secretName ||
+            committed.expected_policy_revision !== expectedPolicyRevision) {
+          return error(409, 'action_conflict');
+        }
+        const scope = await db.prepare(
+          `SELECT 1 AS approved FROM workflow_webhook_secret_scopes s
+           JOIN connection_policy_revision p ON p.singleton = 1
+           WHERE s.workflow_id = ? AND s.trigger_id = ? AND s.definition_digest = ?
+             AND s.secret_name = ? AND s.enabled = 1 AND s.policy_revision = p.revision`
+        ).bind(workflowId, triggerId, definitionDigest, secretName)
+          .first<{ approved: number }>();
+        if (!scope) return error(409, 'scope_conflict');
+        return Response.json({ workflowId, triggerId, definitionDigest, registered: true }, {
+          headers: { 'Cache-Control': 'no-store' }
+        });
+      }
+    } catch {
+      // Unknown transaction outcome: do not claim success.
+    }
     // Never reflect token names, SQL diagnostics or raw admin credentials.
     return error(503, 'admin_storage_unavailable');
   }
