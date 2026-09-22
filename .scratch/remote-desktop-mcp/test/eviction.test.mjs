@@ -89,3 +89,67 @@ test("live device revoke closes connection and survives forced eviction", async 
   expect(blocked.status).toBe(403);
   expect(await blocked.json()).toEqual({ error: "revoked" });
 });
+
+
+// Graceful eviction must not be mistaken for a forced crash. The helper waits
+// for active HTTP requests to drain before replacing in-memory RelayState.
+test("eviction during a pending invoke waits for its response then restores socket", async () => {
+  const stub = env.DEVICE.get(env.DEVICE.idFromName("active-call-drain-proof"));
+  const connected = await stub.fetch("https://internal/device", {
+    headers: { Upgrade: "websocket" },
+  });
+  expect(connected.status).toBe(101);
+  const socket = connected.webSocket;
+  expect(socket).toBeDefined();
+  socket.accept();
+
+  const nextMessage = () => new Promise((resolve) => {
+    socket.addEventListener("message", (event) => resolve(JSON.parse(event.data)), { once: true });
+  });
+  // Begin the request and observe its dispatch before initiating eviction.
+  const firstMessage = nextMessage();
+  const inFlight = stub.fetch("https://internal/invoke", {
+    method: "POST",
+    body: JSON.stringify({
+      id: "before-graceful-eviction", tool: "sandbox_ping", arguments: { echo: "first" },
+    }),
+  });
+  const firstCall = await firstMessage;
+  expect(firstCall).toMatchObject({ type: "call", id: "before-graceful-eviction" });
+
+  let evictionFinished = false;
+  const eviction = evictDurableObject(stub, { webSockets: "hibernate" })
+    .then(() => { evictionFinished = true; });
+  await Promise.resolve();
+  expect(evictionFinished).toBe(false);
+
+  // The existing in-flight request must be able to complete even though
+  // eviction was requested. Consume its response body before awaiting eviction.
+  socket.send(JSON.stringify({
+    type: "result", id: firstCall.id, result: { echo: "first" },
+  }));
+  const firstResponse = await inFlight;
+  expect(firstResponse.status).toBe(200);
+  expect(await firstResponse.json()).toEqual({ result: { echo: "first" } });
+  await eviction;
+  expect(evictionFinished).toBe(true);
+  expect(socket.readyState).toBe(WebSocket.OPEN);
+
+  // A fresh request rehydrates the original hibernated connection.
+  const restoredMessage = nextMessage();
+  const restoredCall = stub.fetch("https://internal/invoke", {
+    method: "POST",
+    body: JSON.stringify({
+      id: "after-graceful-eviction", tool: "sandbox_ping", arguments: { echo: "second" },
+    }),
+  });
+  const secondCall = await restoredMessage;
+  expect(secondCall).toMatchObject({ type: "call", id: "after-graceful-eviction" });
+  socket.send(JSON.stringify({
+    type: "result", id: secondCall.id, result: { echo: "second" },
+  }));
+  const secondResponse = await restoredCall;
+  expect(secondResponse.status).toBe(200);
+  expect(await secondResponse.json()).toEqual({ result: { echo: "second" } });
+  socket.close(1000, "done");
+});
