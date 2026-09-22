@@ -1,5 +1,6 @@
 import type { LegacyImportState } from './legacy-import.js';
 import { prepareLegacyImport } from './legacy-import.js';
+import { getConnection } from './connections.js';
 
 /**
  * Additive, fail-closed v0.1 definition seed. The caller must supply a fresh
@@ -34,6 +35,39 @@ export async function seedLegacyDefinitions(
       initialCursor.next_due_occurrence !==
         (prepared.preservedSchedule.nextDueOccurrence ?? null)) {
     throw new Error('Legacy schedule changed since preflight; no definitions seeded.');
+  }
+  // Verify actual approved D1 tool controls, not just the snapshot's claim.
+  // A stale or fabricated approvedConnectionIds list cannot grant an import.
+  for (const row of prepared.definitions) {
+    const plan = JSON.parse(row.normalizedPlanJson) as {
+      steps: Record<string, { uses: string; with: Record<string, unknown> }>
+    };
+    for (const step of Object.values(plan.steps)) {
+      if (step.uses !== 'mcp.call') continue;
+      const connectionId = step.with.connection;
+      const toolName = step.with.tool;
+      if (typeof connectionId !== 'string' || typeof toolName !== 'string') {
+        throw new Error('Legacy Connection reference is invalid.');
+      }
+      const control = await db.prepare(
+        'SELECT current_version, disabled, allowed_tools_json FROM connection_controls WHERE connection_id = ?'
+      ).bind(connectionId).first<{
+        current_version: number; disabled: number; allowed_tools_json: string
+      }>();
+      const effect = getConnection(connectionId)?.tools[toolName]?.effect;
+      if (!control || control.disabled !== 0 || !Number.isSafeInteger(control.current_version) ||
+          control.current_version < 1 || !effect) {
+        throw new Error('Legacy Connection approval is missing or disabled in D1.');
+      }
+      let allowed: unknown;
+      try { allowed = JSON.parse(control.allowed_tools_json); }
+      catch { throw new Error('Legacy Connection tool policy is malformed.'); }
+      const tools = allowed && typeof allowed === 'object' && !Array.isArray(allowed)
+        ? (allowed as Record<string, unknown>)[toolName] : null;
+      if (!Array.isArray(tools) || !tools.includes(effect)) {
+        throw new Error('Legacy Connection tool is not approved in D1.');
+      }
+    }
   }
   const now = new Date().toISOString();
   const results = await db.batch(prepared.definitions.map(row => db.prepare(
