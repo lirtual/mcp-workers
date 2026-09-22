@@ -84,9 +84,10 @@ export async function inspectMcpTool(
   env: Env,
   connectionId: string,
   toolName: string,
-  fetchImpl: typeof fetch = fetch
+  fetchImpl: typeof fetch = fetch,
+  approvedConnection?: McpConnection
 ): Promise<ToolInspection> {
-  const connection = getConnection(connectionId);
+  const connection = approvedConnection ?? getConnection(connectionId);
   if (!connection) throw new Error(`MCP connection "${connectionId}" is not configured.`);
 
   const secret = readConnectionSecret(env, connection);
@@ -151,7 +152,7 @@ export async function callMcpTool(
     throw new McpConnectionDeniedError();
   }
   const requestFetch = options ? guardedFetch(fetchImpl, connectionId, options) : fetchImpl;
-  const inspection = await inspectMcpTool(env, connectionId, toolName, requestFetch);
+  const inspection = await inspectMcpTool(env, connectionId, toolName, requestFetch, options?.pinned.connection);
   validateToolArguments(inspection.tool, args);
 
   const secret = readConnectionSecret(env, inspection.connection);
