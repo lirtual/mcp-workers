@@ -64,8 +64,17 @@ describe('T10 v0.1 import preflight (no D1 writes)', () => {
 
   it('does not replace a conflicting active pointer or silently approve MCP connections', () => {
     expect(() => prepareLegacyImport({
-      ...state(), active: [{ workflowId: 'raindrop-daily-snapshot', activeDigest: 'f'.repeat(64) }]
+      ...state(), active: [{ workflowId: 'raindrop-daily-snapshot', activeDigest: 'f'.repeat(64),
+        registryRevision: 1, state: 'enabled' }]
     })).toThrow(/separate approved CAS/);
+    expect(() => prepareLegacyImport({ ...state(), active: [{
+      workflowId: 'raindrop-daily-snapshot', activeDigest: LEGACY_DEFINITIONS['raindrop-daily-snapshot'],
+      registryRevision: 0, state: 'enabled'
+    }] })).toThrow(/revision\/state/);
+    expect(() => prepareLegacyImport({ ...state(), active: [{
+      workflowId: 'raindrop-daily-snapshot', activeDigest: null,
+      registryRevision: 1, state: 'enabled'
+    }] })).toThrow(/revision\/state/);
     expect(() => prepareLegacyImport({ ...state(), approvedConnectionIds: [] }))
       .toThrow(/explicit compatible approval/);
   });
