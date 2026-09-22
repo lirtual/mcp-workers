@@ -13,6 +13,8 @@ export interface TrustedCatalogSource {
   expectedRepositoryId: string;
   requestedSha: string;
   checkedOutSha: string;
+  publisherRunId: string;
+  publisherRunAttempt: number;
   sourcePath: string;
   yaml: string;
   policy: TrustedCompilePolicy;
@@ -39,6 +41,10 @@ export function prepareCatalogPublication(source: TrustedCatalogSource) {
       source.checkedOutSha !== source.requestedSha) {
     throw new Error('Catalog checkout does not match the requested commit.');
   }
+  if (!/^[1-9][0-9]*$/.test(source.publisherRunId) ||
+      !Number.isSafeInteger(source.publisherRunAttempt) || source.publisherRunAttempt < 1) {
+    throw new Error('Trusted publisher run identity is invalid.');
+  }
   if (!SOURCE.test(source.sourcePath) || source.sourcePath.includes('..')) {
     throw new Error('Catalog definition must use a bounded workflows/*.yaml path.');
   }
@@ -48,7 +54,8 @@ export function prepareCatalogPublication(source: TrustedCatalogSource) {
   const entry = compileWorkflowText(source.yaml, source.sourcePath, source.policy);
   if (!DIGEST.test(entry.definitionDigest)) throw new Error('Compiled digest is invalid.');
   const publicationId = 'pub_' + hash([
-    source.repositoryId, source.requestedSha, source.sourcePath, entry.definitionDigest
+    source.repositoryId, source.requestedSha, source.sourcePath, entry.definitionDigest,
+    source.publisherRunId, source.publisherRunAttempt
   ]).slice(0,40);
   return {
     definitionDigest: entry.definitionDigest,
@@ -68,7 +75,8 @@ export function prepareCatalogActivation(
   current: { activeDigest: string | null; revision: number }
 ) {
   if (!Number.isSafeInteger(current.revision) || current.revision < 0 ||
-      (current.activeDigest !== null && !DIGEST.test(current.activeDigest))) {
+      (current.activeDigest !== null && !DIGEST.test(current.activeDigest)) ||
+      (current.revision === 0 && current.activeDigest !== null)) {
     throw new Error('Current registry revision or digest is invalid.');
   }
   const actionId = 'act_' + hash([
