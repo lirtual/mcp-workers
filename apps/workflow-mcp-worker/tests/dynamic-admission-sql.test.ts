@@ -335,6 +335,26 @@ describe('T06 gated, immutable D1 manual admission', () => {
     } finally { f.sqlite.close(); }
   });
 
+  it('keeps the original Run when repair creates an instance but its response is lost', async () => {
+    const f = fixture();
+    try {
+      const first = await admitManualWorkflow(f.env, original.metadata.id, input, 'repair-lost-response');
+      f.loseInstance(first.runId);
+      f.loseNextResponse();
+      const repaired = await admitManualWorkflow(f.env, original.metadata.id, input, 'repair-lost-response');
+      expect(repaired).toMatchObject({
+        runId: first.runId, definitionDigest: first.definitionDigest, alreadyAdmitted: true
+      });
+      const replay = await admitManualWorkflow(f.env, original.metadata.id, input, 'repair-lost-response');
+      expect(replay.runId).toBe(first.runId);
+      expect(f.starts()).toBe(2);
+      expect((f.sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_runs')
+        .get() as { count: number }).count).toBe(1);
+      expect((f.sqlite.prepare("SELECT COUNT(*) AS count FROM workflow_events WHERE event_type = 'run.admitted'")
+        .get() as { count: number }).count).toBe(1);
+    } finally { f.sqlite.close(); }
+  });
+
   it('does not recreate a stale queued Run after external retention may have expired', async () => {
     const f = fixture();
     try {
