@@ -107,6 +107,25 @@ try {
     body: text,
   });
   assert.equal((await raw("{invalid-json")).status, 400);
+  // Same-origin request is allowed, cross-origin and forged/new MCP versions
+  // fail before a tool can be dispatched; future Portal origins need review.
+  const originCall = async (origin) => fetch(base + "/mcp", {
+    method: "POST",
+    headers: { ...auth(mcpToken), origin, "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 203, method: "ping" }),
+  });
+  assert.equal((await originCall("https://untrusted.invalid")).status, 403);
+  assert.equal((await originCall("null")).status, 403);
+  assert.equal((await originCall(base)).status, 200);
+  const versionCall = async (version) => fetch(base + "/mcp", {
+    method: "POST",
+    headers: { ...auth(mcpToken), "content-type": "application/json",
+      "mcp-protocol-version": version },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 204, method: "ping" }),
+  });
+  assert.equal((await versionCall("2026-07-28")).status, 400);
+  assert.equal((await versionCall("2025-11-25")).status, 400);
+  assert.equal((await versionCall("2025-06-18")).status, 200);
   assert.equal((await raw("x".repeat(9000))).status, 400);
   const encoded = "界".repeat(3000); // chars < LIMIT, UTF-8 bytes > LIMIT
   assert.equal((await raw(JSON.stringify({ jsonrpc: "2.0", id: 200,
@@ -222,7 +241,7 @@ try {
   const response = await once(forbidden, "unexpected-response");
   assert.equal(response[1].statusCode, 403);
   forbidden.terminate();
-  console.log("PASS local workerd: official MCP Inspector legacy tool listing/call, MCP initialize/list, real isolated upstream stdio round trip, fixed directory read, invalid path, unauthorized admin/device, oversized HTTP/WebSocket UTF-8, malformed WebSocket/JSON, forbidden tools, auth, offline, WebSocket echo, concurrency, timeout, disconnect, reconnect, revoke");
+  console.log("PASS local workerd: official MCP Inspector legacy tool listing/call, Origin/version rejection, MCP initialize/list, real isolated upstream stdio round trip, fixed directory read, invalid path, unauthorized admin/device, oversized HTTP/WebSocket UTF-8, malformed WebSocket/JSON, forbidden tools, auth, offline, WebSocket echo, concurrency, timeout, disconnect, reconnect, revoke");
 } finally {
   socket?.terminate();
   if (child && child.exitCode === null) {
