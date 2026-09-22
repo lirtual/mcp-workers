@@ -438,6 +438,65 @@ describe('T06 gated, immutable D1 manual admission', () => {
 });
 
 describe('T07 transactional webhook authorization', () => {
+  it('rotates to the new trigger credential without granting it the previous Run', async () => {
+    const f = fixture();
+    try {
+      const firstPlan = JSON.parse(JSON.stringify(original.plan)) as {
+        triggers: Array<Record<string, unknown>>
+      };
+      firstPlan.triggers.push({ type: 'webhook', id: 'incoming', secret: 'OLD_HOOK_TOKEN' });
+      const secondPlan = JSON.parse(JSON.stringify(firstPlan)) as typeof firstPlan;
+      secondPlan.triggers[secondPlan.triggers.length - 1]!.secret = 'NEW_HOOK_TOKEN';
+      const firstDigest = 'd'.repeat(64);
+      const secondDigest = 'e'.repeat(64);
+      f.save(firstDigest, firstPlan);
+      f.save(secondDigest, secondPlan);
+      const policy = (f.sqlite.prepare(
+        'SELECT revision FROM connection_policy_revision WHERE singleton = 1'
+      ).get() as { revision: number }).revision;
+      for (const [digest, secret] of [
+        [firstDigest, 'OLD_HOOK_TOKEN'], [secondDigest, 'NEW_HOOK_TOKEN']
+      ]) {
+        f.sqlite.prepare(`INSERT INTO workflow_webhook_secret_scopes
+          (workflow_id, trigger_id, definition_digest, secret_name, policy_revision, enabled, approved_at)
+          VALUES (?, 'incoming', ?, ?, ?, 1, '2026-09-22')`)
+          .run(original.metadata.id, digest, secret, policy);
+      }
+      const env = {
+        ...f.env, OLD_HOOK_TOKEN: 'old-token', NEW_HOOK_TOKEN: 'new-token'
+      } as Env;
+      const request = (token: string, key: string) => new Request(
+        `https://workflow.example/hooks/${original.metadata.id}/incoming`, {
+          method: 'POST', headers: {
+            Authorization: `Bearer ${token}`, 'X-Workflow-Event-Key': key
+          }, body: JSON.stringify({ input })
+        }
+      );
+      const invoke = (token: string, key: string) =>
+        handleWebhookTrigger(request(token, key), env, original.metadata.id, 'incoming');
+      f.change(firstDigest, 2);
+      const initial = await invoke('old-token', 'original-event');
+      expect(initial.status).toBe(202);
+      const originalResponse = await initial.json() as { runId: string };
+      f.change(secondDigest, 3);
+      expect((await invoke('old-token', 'fresh-event')).status).toBe(401);
+      const rotated = await invoke('new-token', 'fresh-event');
+      expect(rotated.status).toBe(202);
+      expect(await rotated.json()).toMatchObject({
+        definitionDigest: secondDigest, alreadyAdmitted: false
+      });
+      expect((await invoke('new-token', 'original-event')).status).toBe(401);
+      const historical = await invoke('old-token', 'original-event');
+      expect(historical.status).toBe(202);
+      expect(await historical.json()).toMatchObject({
+        runId: originalResponse.runId, definitionDigest: firstDigest, alreadyAdmitted: true
+      });
+      expect((f.sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_runs')
+        .get() as { count: number }).count).toBe(2);
+      expect(f.starts()).toBe(2);
+    } finally { f.sqlite.close(); }
+  });
+
   it('pins the authenticated digest and fails closed after deactivation or scope revocation', async () => {
     const f = fixture();
     try {
