@@ -199,6 +199,30 @@ export async function updateActiveDefinition(
     return Response.json({ workflowId: action.workflowId, activeDigest: action.targetDigest,
       revision: nextRevision }, { headers: { 'Cache-Control': 'no-store' } });
   } catch {
+    // A competing request may have committed the identical action after our
+    // first lookup. Re-read the durable result; do not blindly retry the write.
+    try {
+      const committed = await env.DB.prepare(
+        'SELECT workflow_id, action_kind, previous_digest, next_digest, expected_revision, request_digest, resulting_revision, repository_id, publisher_run_id, publisher_run_attempt FROM workflow_registry_actions WHERE action_id = ?'
+      ).bind(action.actionId).first<{
+        workflow_id: string; action_kind: string; previous_digest: string | null; next_digest: string | null;
+        expected_revision: number; request_digest: string; resulting_revision: number;
+        repository_id: string; publisher_run_id: string; publisher_run_attempt: number
+      }>();
+      if (committed) {
+        if (committed.workflow_id !== action.workflowId || committed.action_kind !== kind ||
+            committed.request_digest !== signature || committed.repository_id !== publisher.repositoryId ||
+            committed.publisher_run_id !== publisher.runId || committed.publisher_run_attempt !== publisher.runAttempt) {
+          return error(409, 'action_conflict');
+        }
+        return Response.json({
+          workflowId: action.workflowId, activeDigest: committed.next_digest,
+          revision: committed.resulting_revision
+        }, { headers: { 'Cache-Control': 'no-store' } });
+      }
+    } catch {
+      // No authoritative action outcome is available. Fail closed.
+    }
     return error(503, 'registry_storage_unavailable');
   }
 }
