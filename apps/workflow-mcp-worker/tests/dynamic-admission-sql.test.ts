@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
-import { admitManualWorkflow } from '../src/admission.js';
+import { admitManualWorkflow, admitScheduledWorkflow } from '../src/admission.js';
 import { registerWorkflowTools } from '../src/mcp.js';
 import type { PublicWorkflowError } from '../src/admission.js';
 import { getWorkflowRegistry } from '../src/registry.js';
@@ -129,6 +129,91 @@ function fixture() {
 }
 
 const input = { url: 'https://example.test/' };
+
+describe('T08 atomic versioned schedule admission', () => {
+  it('claims one occurrence in D1 and never admits a stale activation version', async () => {
+    const f = fixture();
+    try {
+      const plan = JSON.parse(JSON.stringify(original.plan)) as Record<string, unknown>;
+      plan.inputs = {};
+      plan.triggers = [
+        { type: 'manual' },
+        { type: 'schedule', id: 'minute', cron: '* * * * *', timezone: 'UTC', misfire: 'latest' }
+      ];
+      const digest = 'd'.repeat(64);
+      f.save(digest, plan);
+      f.change(digest, 2);
+      const scheduledTime = Math.floor(Date.now() / 60_000) * 60_000;
+      const key = original.metadata.id + ':minute';
+      f.sqlite.prepare(
+        `INSERT INTO scheduler_state
+         (schedule_key, last_evaluated_at, last_admitted_scheduled_time)
+         VALUES (?, ?, NULL)`
+      ).run(key, scheduledTime - 60_000);
+      const select = { definitionDigest: digest, registryRevision: 2 };
+      const first = await admitScheduledWorkflow(f.env, original.metadata.id, 'minute', scheduledTime, select);
+      expect(first).toMatchObject({ definitionDigest: digest, alreadyAdmitted: false });
+      expect((f.sqlite.prepare(
+        'SELECT last_admitted_scheduled_time FROM scheduler_state WHERE schedule_key = ?'
+      ).get(key) as { last_admitted_scheduled_time: number }).last_admitted_scheduled_time)
+        .toBe(scheduledTime);
+      const replay = await admitScheduledWorkflow(f.env, original.metadata.id, 'minute', scheduledTime, select);
+      expect(replay).toMatchObject({ runId: first.runId, alreadyAdmitted: true });
+      expect(f.starts()).toBe(1);
+
+      f.change(null, 3);
+      const historical = await admitScheduledWorkflow(f.env, original.metadata.id, 'minute', scheduledTime, select);
+      expect(historical).toMatchObject({
+        runId: first.runId, definitionDigest: digest, alreadyAdmitted: true
+      });
+      await expect(admitScheduledWorkflow(f.env, original.metadata.id, 'minute',
+        scheduledTime + 60_000, select)).rejects.toMatchObject({ code: 'WORKFLOW_NOT_FOUND' });
+      expect((f.sqlite.prepare('SELECT COUNT(*) AS total FROM workflow_runs')
+        .get() as { total: number }).total).toBe(1);
+    } finally { f.sqlite.close(); }
+  });
+
+  it('rejects a stale tick when activation moves the cursor before its D1 batch', async () => {
+    const f = fixture();
+    try {
+      const plan = JSON.parse(JSON.stringify(original.plan)) as Record<string, unknown>;
+      plan.inputs = {};
+      plan.triggers = [
+        { type: 'manual' },
+        { type: 'schedule', id: 'minute', cron: '* * * * *', timezone: 'UTC', misfire: 'latest' }
+      ];
+      const digest = 'e'.repeat(64);
+      f.save(digest, plan);
+      f.change(digest, 2);
+      const scheduledTime = Math.floor(Date.now() / 60_000) * 60_000;
+      const key = original.metadata.id + ':minute';
+      f.sqlite.prepare(
+        'INSERT INTO scheduler_state (schedule_key, last_evaluated_at) VALUES (?, ?)'
+      ).run(key, scheduledTime - 60_000);
+      const baseBatch = f.db.batch.bind(f.db);
+      let cutover = false;
+      const racing = {
+        prepare: f.db.prepare.bind(f.db),
+        batch: async (commands: Parameters<D1Database['batch']>[0]) => {
+          if (!cutover) {
+            cutover = true;
+            f.sqlite.prepare(
+              'UPDATE scheduler_state SET last_evaluated_at = ? WHERE schedule_key = ?'
+            ).run(scheduledTime, key);
+          }
+          return baseBatch(commands);
+        }
+      } as D1Database;
+      await expect(admitScheduledWorkflow({ ...f.env, DB: racing },
+        original.metadata.id, 'minute', scheduledTime, {
+          definitionDigest: digest, registryRevision: 2
+        })).rejects.toMatchObject({ code: 'REGISTRY_CONFLICT' });
+      expect((f.sqlite.prepare('SELECT COUNT(*) AS total FROM run_admissions')
+        .get() as { total: number }).total).toBe(0);
+      expect(f.starts()).toBe(0);
+    } finally { f.sqlite.close(); }
+  });
+});
 
 describe('T06 gated, immutable D1 manual admission', () => {
   it('returns original Run and digest on the same key after an update, disable and rollback', async () => {
