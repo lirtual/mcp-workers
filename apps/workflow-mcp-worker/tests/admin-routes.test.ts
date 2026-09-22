@@ -138,3 +138,43 @@ describe('protected Connection disable CAS', () => {
     expect(await stale.text()).not.toContain('ordinary-mcp-secret');
   });
 });
+
+describe('protected bounded Connection registration', () => {
+  const approved = { actionId: 'register-raindrop-1', connectionId: 'raindrop',
+    expectedRevision: 0, tools: ['list_raindrops'] };
+  function database(changes: number): D1Database {
+    return {
+      prepare: () => ({
+        bind: () => ({ first: async () => null })
+      }),
+      batch: async (statements: unknown[]) => {
+        expect(statements).toHaveLength(3);
+        return [{ meta: { changes: 1 } }, { meta: { changes } }, { meta: { changes } }];
+      }
+    } as unknown as D1Database;
+  }
+  async function register(body: unknown, db: D1Database, authorization?: string): Promise<Response> {
+    const request = new Request('https://example.test/admin/connections/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json',
+        authorization: authorization ?? 'Bearer ' + await token() },
+      body: JSON.stringify(body)
+    });
+    return (await handleAdminRoute(request, { ...env, DB: db }, options))!;
+  }
+
+  it('requires the signed publisher and refuses unknown tools or credentials', async () => {
+    expect((await register(approved, database(1), 'Bearer ordinary-mcp-secret')).status).toBe(401);
+    expect((await register({ ...approved, tools: ['unknown_tool'] }, database(1))).status).toBe(403);
+    expect((await register({ ...approved, secret: 'MCP_ACCESS_TOKEN' }, database(1))).status).toBe(400);
+    expect((await register({ ...approved, endpoint: 'https://attacker.invalid/mcp' }, database(1))).status).toBe(400);
+  });
+
+  it('accepts a bounded approved tracer through the HTTP and D1 boundary', async () => {
+    const response = await register(approved, database(1));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ connectionId: 'raindrop', version: 1, revision: 1 });
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+    expect((await register(approved, database(0))).status).toBe(409);
+  });
+});
