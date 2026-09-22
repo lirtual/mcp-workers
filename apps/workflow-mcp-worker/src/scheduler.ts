@@ -37,8 +37,14 @@ export async function runSchedulerTick(
 
   // The new path is enabled only when both existing v0.2 gates are explicitly
   // enabled. Legacy production Cron and maintenance continue unchanged.
-  const dynamic = env.DYNAMIC_WORKFLOW_REGISTRY_ENABLED === 'true' &&
-    env.DYNAMIC_WORKFLOW_ADMISSION_ENABLED === 'true';
+  const registryEnabled = env.DYNAMIC_WORKFLOW_REGISTRY_ENABLED === 'true';
+  const admissionEnabled = env.DYNAMIC_WORKFLOW_ADMISSION_ENABLED === 'true';
+  if (registryEnabled !== admissionEnabled) {
+    // Never execute a bundled schedule while only one D1 gate is enabled.
+    const maintenanceProcessed = await runMaintenanceBatch(env, maintenanceLimit);
+    return { evaluatedSchedules: 0, admittedRuns: 0, maintenanceProcessed, errors: 1 };
+  }
+  const dynamic = registryEnabled && admissionEnabled;
   const entries: Array<{
     plan: ReturnType<typeof asRuntimePlan>;
     selected?: { definitionDigest: string; registryRevision: number };
@@ -47,14 +53,14 @@ export async function runSchedulerTick(
     // Never silently truncate active schedules or fall back to bundled YAML
     // after a D1 failure: this would restart an obsolete version.
     const rows = await env.DB.prepare(
-      `SELECT a.active_digest, a.registry_revision, d.normalized_plan_json
+      `SELECT a.workflow_id, a.active_digest, a.registry_revision, d.normalized_plan_json
        FROM workflow_active_definitions a
        JOIN workflow_definition_versions d ON d.definition_digest = a.active_digest
        WHERE a.state = 'enabled' AND a.active_digest IS NOT NULL
          AND d.workflow_id = a.workflow_id
        ORDER BY a.workflow_id`
     ).all<{
-      active_digest: string; registry_revision: number; normalized_plan_json: string
+      workflow_id: string; active_digest: string; registry_revision: number; normalized_plan_json: string
     }>();
     for (const row of rows.results) {
       if (!/^[0-9a-f]{64}$/.test(row.active_digest) ||
@@ -62,6 +68,7 @@ export async function runSchedulerTick(
         throw new Error('Invalid active schedule version.');
       }
       const plan = asRuntimePlan(validateVersionedWorkflowPlan(JSON.parse(row.normalized_plan_json)));
+      if (plan.id !== row.workflow_id) throw new Error('Active schedule workflow mismatch.');
       entries.push({ plan, selected: {
         definitionDigest: row.active_digest, registryRevision: row.registry_revision
       } });
