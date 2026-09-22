@@ -1,4 +1,5 @@
 import { LEGACY_DEFINITIONS } from './legacy-import.js';
+import { getWorkflowRegistry } from './registry.js';
 
 const HEX40 = /^[0-9a-f]{40}$/;
 const DECIMAL_ID = /^[1-9][0-9]*$/;
@@ -55,11 +56,8 @@ export async function verifyLegacyPublicationReadiness(
   }
   // The immutable seed itself cannot be used to forge a matching publication.
   // Every approved source must still be consistent with the original v0.1 plan.
-  const { prepareLegacyImport } = await import('./legacy-import.js');
-  // Avoid invoking the full preflight with a synthetic state: its authoritative
-  // snapshot must come from the caller. Here verify just the stored canonical
-  // plan against the original compiled Registry identity.
-  const { getWorkflowRegistry } = await import('./registry.js');
+  // This read-only guard compares the stored plan to the original bundled
+  // Registry, but does not bypass the caller's authoritative D1 preflight.
   const entry = getWorkflowRegistry().find(value => value.metadata.id === options.workflowId);
   if (!entry || entry.definitionDigest !== expectedDigest ||
       JSON.stringify(canonical(JSON.parse(publication.normalizedPlanJson))) !==
