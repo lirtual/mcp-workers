@@ -19,6 +19,8 @@ const source = {
   expectedRepositoryId: '123456789',
   requestedSha: 'a'.repeat(40),
   checkedOutSha: 'a'.repeat(40),
+  publisherRunId: '12345',
+  publisherRunAttempt: 1,
   sourcePath: 'workflows/isolated-catalog-smoke.yaml',
   yaml,
   policy: { revision: 3, connections: {} }
@@ -38,6 +40,8 @@ describe('T09 trusted, definition-only catalog publication', () => {
     });
     expect(staged.definitionDigest).toMatch(/^[0-9a-f]{64}$/);
     expect(prepareCatalogPublication(source)).toEqual(staged);
+    expect(prepareCatalogPublication({ ...source, publisherRunId: '12346' }).publicationId)
+      .not.toBe(staged.publicationId);
     const action = prepareCatalogActivation(staged, { activeDigest: null, revision: 0 });
     expect(action).toEqual({
       actionId: action.actionId, workflowId: staged.workflowId,
@@ -59,6 +63,8 @@ describe('T09 trusted, definition-only catalog publication', () => {
       .toThrow(/checkout/);
     expect(() => prepareCatalogPublication({ ...source, requestedSha: 'refs/heads/main' }))
       .toThrow(/checkout/);
+    expect(() => prepareCatalogPublication({ ...source, publisherRunId: 'not-a-run' }))
+      .toThrow(/run identity/);
     expect(() => prepareCatalogPublication({ ...source, sourcePath: '../secrets.yaml' }))
       .toThrow(/workflows/);
     expect(() => prepareCatalogPublication({ ...source, sourcePath: 'workflows/../other.yaml' }))
