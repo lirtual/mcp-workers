@@ -28,7 +28,7 @@ The Worker fails closed unless all three `PROTOTYPE_MCP_TOKEN`, `PROTOTYPE_DEVIC
 1. `connect(generation)` supersedes previous sockets and fails old pending calls. Each request has a random ID and is associated with the current connection generation.
 2. `result` only accepts a matching ID from the current socket. Late, duplicate, stale and unknown IDs are ignored.
 3. `disconnect`, `timeout` and `revoke` release pending promises. Revocation persists to Durable Object storage before cancellation; restoration checks storage.
-4. On DO wakeup, use `ctx.getWebSockets()` and socket attachments to reconstruct the **connection**. The in-memory pending-call map is intentionally not durable. A forced-eviction round trip has passed in the Cloudflare test runtime. In-flight request loss, device restart, and hosted Cloudflare behavior remain unverified. Revoked-state recovery after eviction is verified in the isolated test runtime for both disconnected and previously connected devices.
+4. On DO wakeup, use `ctx.getWebSockets()` and socket attachments to reconstruct the **connection**. The in-memory pending-call map is intentionally not durable. A forced-eviction round trip has passed in the Cloudflare test runtime. A CI-only graceful-eviction test now verifies that a pending HTTP call finishes and its response body is consumed before the instance is evicted, then a new call recovers on the same hibernated WebSocket. **Forced process termination, actual hosted Cloudflare shutdown/in-flight behavior, and device restart remain unverified.** Revoked-state recovery after eviction is verified in the isolated test runtime for both disconnected and previously connected devices.
 5. Maximum 8192 bytes of inbound JSON; echoed input 64 characters; 1.5-second ping timeout, 25-second restricted directory-call timeout, 20-second isolated Docker process timeout. These are experimental limits, not a final product policy.
 
 ## HTTP ingress hardening checkpoint
@@ -37,7 +37,7 @@ The Worker fails closed unless all three `PROTOTYPE_MCP_TOKEN`, `PROTOTYPE_DEVIC
 - Local workerd negative cases verify malformed JSON, oversized ASCII and multibyte UTF-8 bodies, invalid MCP and independent admin/device credentials, forbidden `execute_command` and unexpected arguments. Existing bounded real-upstream round trip and DO eviction tests remain included.
 - Verified code HEAD `f7f0fb48f3c591bccd57a979d43d44b1e6d5c446`: [prototype Actions #35764935896](https://github.com/lirtual/mcp-workers/actions/runs/35764935896) and [repository CI #35764935954](https://github.com/lirtual/mcp-workers/actions/runs/35764935954), both SUCCESS.
 - Local workerd now also checks **oversized multibyte UTF-8 WebSocket frames are closed with code 1009** and malformed device JSON frames with code 1007; a subsequent device connection can recover and still complete the real upstream read-only call. Tested code HEAD `97d999fa79ebb5c497b96e43f2a83d3cf2ef602e`: [prototype Actions #35765276440](https://github.com/lirtual/mcp-workers/actions/runs/35765276440) and [repository CI #35765276584](https://github.com/lirtual/mcp-workers/actions/runs/35765276584), both SUCCESS.
-- These are resource-limit and malformed-frame proofs, **not** MCP Inspector / OAuth acceptance. In-flight eviction still requires its own targeted test. Static prototype bearer tokens remain non-production.
+- These are resource-limit and malformed-frame proofs, **not** MCP Inspector / OAuth acceptance. Graceful in-flight eviction is now covered by a dedicated local test; forced abort, real hosted shutdown and device restart remain separate. Static prototype bearer tokens remain non-production.
 
 ## Official MCP Inspector and version boundary (2026-09-23)
 
@@ -54,9 +54,16 @@ The Worker fails closed unless all three `PROTOTYPE_MCP_TOKEN`, `PROTOTYPE_DEVIC
 - The bounded HTTP `Content-Length` early check uses a decimal-only pattern and is backed by the independent streaming byte count, so chunked or misleading lengths cannot bypass the 8192-byte cap.
 - Latest tested code HEAD `67f5cc9852232de4be3bef74cc5f475ce8ac2c89`: [prototype Actions #35766814615](https://github.com/lirtual/mcp-workers/actions/runs/35766814615) and [repo CI #35766814678](https://github.com/lirtual/mcp-workers/actions/runs/35766814678), both SUCCESS. All previous device, real-upstream round-trip and forced DO eviction tests remain green.
 
+## Active-call graceful eviction checkpoint
+
+- The `cloudflare:test` `evictDurableObject(stub, { webSockets: "hibernate" })` helper **waits up to 30 seconds for in-flight requests to drain**; this tests graceful draining, not a forced crash. See [Cloudflare eviction testing guidance](https://developers.cloudflare.com/durable-objects/examples/testing-with-durable-objects/).
+- New fourth Vitest case starts an actual DO `/invoke`, observes the outbound WebSocket dispatch, requests eviction while its reply is pending, sends the device result, fully consumes the HTTP response, awaits eviction, and verifies a fresh call still works on the restored socket.
+- Implementation HEAD `75c27fbcc2e295fa301d5f8d21a0ea1aaef454e9`: [prototype Actions #35767652970](https://github.com/lirtual/mcp-workers/actions/runs/35767652970) and [repo CI #35767653048](https://github.com/lirtual/mcp-workers/actions/runs/35767653048) both **SUCCESS**. Earlier three hibernation/revocation cases and the isolated Desktop Commander 0.2.51 round trip remain in the green suite.
+- **Do not infer recovery from a hard process kill or a deployed Cloudflare DO** from this test. Both still need independent checks.
+
 ## What this does NOT prove
 
-- Hosted Cloudflare DO behavior or in-flight request behavior during eviction. The **local end-to-end proof now reaches the real upstream executable**, but only in an ephemeral isolated CI container.
+- Hosted Cloudflare DO shutdown behavior, hard-aborted in-flight requests, or device restart. **Graceful in-flight draining is now locally verified**, and the real-upstream end-to-end proof still runs only in an isolated CI container.
 - Proper OAuth discovery, PKCE, token refresh, current 2026-07-28 MCP protocol or Portal/ChatGPT interoperability. **Legacy MCP Inspector CLI tool list/call is now verified**, not full modern conformance.
 - Secure Windows/Linux device packaging, OS sandbox operation on the user’s machine, or any remote shell/write capability. The fixed-root test-only local bridge can list one ephemeral directory but cannot read arbitrary caller-chosen files.
 - That secret checks and simple synthetic JSON-RPC framing satisfy a production MCP security review.
