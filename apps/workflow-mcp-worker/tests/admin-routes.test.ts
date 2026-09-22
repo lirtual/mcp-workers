@@ -302,6 +302,6 @@ describe('protected immutable definition staging', () => {
       staged: true, alreadyStaged: false
     });
     expect(JSON.stringify(output)).not.toContain('ordinary-mcp-secret');
-    expect((await stage(valid, db(1, true)).json() as { alreadyStaged: boolean }).alreadyStaged).toBe(true);
+    expect(((await (await stage(valid, db(1, true))).json()) as { alreadyStaged: boolean }).alreadyStaged).toBe(true);
   });
 });
