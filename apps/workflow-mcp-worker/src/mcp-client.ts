@@ -138,7 +138,14 @@ function guardedFetch(
   options: PinnedMcpCallOptions
 ): typeof fetch {
   return (async (resource: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    const control = await readLiveConnectionControl(options.db, connectionId);
+    // A D1 read or decoding failure occurs before the external request. Treat
+    // it as a fail-closed denial, never as an unknown transmitted write.
+    let control;
+    try {
+      control = await readLiveConnectionControl(options.db, connectionId);
+    } catch {
+      throw new McpConnectionDeniedError();
+    }
     const verdict = authorizePinnedConnectionAttempt(options.pinned, control);
     // Only pre-v0.2 static runs may use an absent control. Once a control
     // exists, emergency disable/tightening applies to them as well.
