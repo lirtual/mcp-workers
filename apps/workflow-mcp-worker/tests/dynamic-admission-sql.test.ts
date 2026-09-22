@@ -273,6 +273,46 @@ describe('T06 gated, immutable D1 manual admission', () => {
     } finally { f.sqlite.close(); }
   });
 
+  it('returns a same-key winner if activation is disabled after the initial lookup', async () => {
+    const f = fixture();
+    try {
+      let winner: Awaited<ReturnType<typeof admitManualWorkflow>> | undefined;
+      let raced = false;
+      const racingDb = {
+        prepare: (sql: string) => {
+          const stmt = f.db.prepare(sql);
+          if (!sql.includes('SELECT a.active_digest')) return stmt;
+          return {
+            bind: (...args: unknown[]) => {
+              const bound = stmt.bind(...args);
+              return {
+                first: async () => {
+                  if (!raced) {
+                    raced = true;
+                    winner = await admitManualWorkflow(f.env, original.metadata.id,
+                      input, 'deactivate-race');
+                    f.change(null, 2);
+                  }
+                  return bound.first();
+                }
+              };
+            }
+          };
+        },
+        batch: f.db.batch.bind(f.db)
+      } as unknown as D1Database;
+      const loser = await admitManualWorkflow({ ...f.env, DB: racingDb },
+        original.metadata.id, input, 'deactivate-race');
+      expect(loser).toMatchObject({
+        runId: winner!.runId, definitionDigest: winner!.definitionDigest,
+        alreadyAdmitted: true
+      });
+      expect((f.sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_runs')
+        .get() as { count: number }).count).toBe(1);
+      expect(f.starts()).toBe(1);
+    } finally { f.sqlite.close(); }
+  });
+
   it('repairs only a confirmed missing queued instance using the original ID', async () => {
     const f = fixture();
     try {
