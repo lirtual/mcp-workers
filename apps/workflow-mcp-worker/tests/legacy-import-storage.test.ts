@@ -201,6 +201,39 @@ describe('T10 additive isolated D1 legacy definition seeding', () => {
     } finally { sqlite.close(); }
   });
 
+  it('detects revision-only and state-only Registry changes with the same baseline', async () => {
+    const { sqlite, db, state } = fixture();
+    try {
+      await seedLegacyDefinitions(db, state, 1);
+      const definitions = sqlite.prepare(
+        'SELECT definition_digest AS definitionDigest, workflow_id AS workflowId, dsl_version AS dslVersion, normalized_plan_json AS normalizedPlanJson, source_path AS sourcePath FROM workflow_definition_versions'
+      ).all() as unknown as LegacyImportState['definitions'];
+      const digest = definitions.find(row => row.workflowId === 'local-http-smoke')!.definitionDigest;
+      sqlite.prepare(
+        `INSERT INTO workflow_active_definitions
+          (workflow_id, active_digest, registry_revision, state, activated_at, updated_at)
+          VALUES ('local-http-smoke', ?, 1, 'enabled', '2026-09-23', '2026-09-23')`
+      ).run(digest);
+      const claimed: LegacyImportState = {
+        ...state, definitions,
+        active: [{ workflowId: 'local-http-smoke', activeDigest: digest,
+          registryRevision: 1, state: 'enabled' }]
+      };
+      sqlite.prepare(
+        "UPDATE workflow_active_definitions SET registry_revision = 2 WHERE workflow_id = 'local-http-smoke'"
+      ).run();
+      await expect(seedLegacyDefinitions(db, claimed, 1))
+        .rejects.toThrow(/snapshot differs/);
+      sqlite.prepare(
+        "UPDATE workflow_active_definitions SET registry_revision = 1, active_digest = NULL, state = 'disabled' WHERE workflow_id = 'local-http-smoke'"
+      ).run();
+      await expect(seedLegacyDefinitions(db, claimed, 1))
+        .rejects.toThrow(/snapshot differs/);
+      expect((sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_runs')
+        .get() as { count: number }).count).toBe(0);
+    } finally { sqlite.close(); }
+  });
+
   it('does not claim successful cutover evidence when the Cron cursor changes during the seed', async () => {
     const { sqlite, db, state } = fixture();
     try {
