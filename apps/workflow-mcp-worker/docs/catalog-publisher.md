@@ -22,9 +22,11 @@ YAML must not require deploying the Engine.
   `1d0dd05d8ced607891c7eb7a9024222c46f22270`.
   The copied file has the same Git blob SHA as the Engine baseline:
   `4a2967eb683447224cc424d264cfef5cfb79a27b`.
-- Confirm catalog `main` protection, reviewed YAML, canonical digest and exact
-  approved SHA before claiming T09/T11 acceptance. An open Draft PR is **not**
-  a publishable approved source revision.
+- By owner decision, **do not configure Catalog branch protection**. Record this
+  as a deviation from the approved T09 protection requirement, not a passing
+  test. Require explicit review, exact approved source SHA, canonical digest
+  and protected Engine-side publisher authorization as compensating controls.
+  An open Draft PR is **not** a publishable approved source revision.
 
 ## Platform setup (no implicit production migration)
 
@@ -33,7 +35,11 @@ YAML must not require deploying the Engine.
    D1 backup and prepare an actionable rollback **before any live mutation**.
    Never reset an existing table, replay an old Cron tick or reuse a real
    webhook Secret as a test fixture.
-2. Existing test target:
+2. The source-controlled publisher allows **only the owner-approved live-test
+   HTTPS origin**. A dashboard-selected arbitrary HTTPS endpoint must never
+   receive the GitHub OIDC token; adding a different test target requires
+   reviewed source changes rather than only an environment variable.
+   Existing test target:
    `https://workflow-mcp-worker.aiyaya.workers.dev`. Its D1 and Workflows
    bindings must be inspected, not assumed to be v0.2-compatible. The Worker
    must actually expose protected admin endpoints and approved schema before
@@ -69,8 +75,9 @@ YAML must not require deploying the Engine.
 
 ## Ordered test protocol
 
-- Confirm review, exact Catalog SHA, branch protection and matching canonical
-  digest. Use only the trusted Engine publisher, with read-only catalog checkout;
+- Confirm review, exact Catalog SHA and matching canonical digest; record
+  the intentionally unprotected Catalog branch as an acceptance variance.
+  Use only the trusted Engine publisher, with read-only catalog checkout;
   do not run any catalog-authored script or use catalog admin secrets.
 - With live-test mutation opt-in **false**, request `mode=dry-run` from the
   approved Engine `main`; confirm its exact source SHA, policy revision,
@@ -89,7 +96,7 @@ YAML must not require deploying the Engine.
   Engine redeployment. Preserve sanitized Actions and managed D1/Workflow
   evidence; never copy credentials into public logs or this repo.
 
-**Not yet proven:** effective branch/environment protection, real publisher
+**Not yet proven:** effective Engine environment protection, real publisher
 OIDC exchange, compatible live schema, managed D1 CAS/recovery, full isolated
 AC15, Raindrop business acceptance or production AC16. Keep #157/#159/#160
 open until their individual evidence and approvals are satisfied.

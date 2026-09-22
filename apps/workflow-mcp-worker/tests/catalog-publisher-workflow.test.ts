@@ -4,6 +4,7 @@ import { parse } from 'yaml';
 
 const workflow = readFileSync('../../.github/workflows/workflow-mcp-publisher.yml', 'utf8');
 const publisherScript = readFileSync('scripts/publish-catalog.ts', 'utf8');
+const trustedTarget = readFileSync('src/catalog-publisher-target.ts', 'utf8');
 const doc = parse(workflow) as Record<string, unknown>;
 
 describe('T09 trusted Engine publisher workflow', () => {
@@ -33,10 +34,11 @@ describe('T09 trusted Engine publisher workflow', () => {
     expect(workflow).toContain('WORKFLOW_MCP_ALLOW_LIVE_TEST_TARGET:');
     expect(workflow).toContain('WORKFLOW_MCP_ALLOW_LIVE_TEST_MUTATIONS:');
     expect(publisherScript).toContain("requireValue(env, 'WORKFLOW_MCP_TARGET_URL')");
-    expect(publisherScript).toContain("endpoint.hostname === 'workflow-mcp-worker.aiyaya.workers.dev'");
-    expect(publisherScript).toContain("env.WORKFLOW_MCP_ALLOW_LIVE_TEST_TARGET !== 'true'");
-    expect(publisherScript).toContain("env.WORKFLOW_MCP_ALLOW_LIVE_TEST_MUTATIONS !== 'true'");
-    expect(publisherScript).toContain("mode !== 'dry-run'");
+    expect(publisherScript).toContain('validateCatalogPublisherTarget(');
+    expect(trustedTarget).toContain("const APPROVED_LIVE_TEST_URL = 'https://workflow-mcp-worker.aiyaya.workers.dev'");
+    expect(publisherScript).toContain('allowLiveTarget: env.WORKFLOW_MCP_ALLOW_LIVE_TEST_TARGET');
+    expect(publisherScript).toContain('allowLiveMutations: env.WORKFLOW_MCP_ALLOW_LIVE_TEST_MUTATIONS');
+    expect(trustedTarget).toContain("mode !== 'dry-run'");
 
   });
 
