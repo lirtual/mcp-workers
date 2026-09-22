@@ -1,3 +1,5 @@
+import { validateVersionedWorkflowPlan } from './runtime-plan-validation.js';
+import type { Env } from './types.js';
 import { workflowRegistry } from './generated/workflow-registry.js';
 import type { WorkflowRegistryEntry } from './types.js';
 
@@ -10,4 +12,58 @@ export function getWorkflowRegistry(): readonly WorkflowRegistryEntry[] {
 
 export function findWorkflow(workflowId: string): WorkflowRegistryEntry | undefined {
   return byId.get(workflowId);
+}
+
+/**
+ * T05 read-only projection. The generated v0.1 registry remains the default.
+ * After an explicitly authorized cutover, absence of D1 or invalid source
+ * fails closed; never revert to static entries on a D1 fault.
+ */
+export async function listVisibleWorkflows(env?: Env): Promise<readonly WorkflowRegistryEntry[]> {
+  if (env?.DYNAMIC_WORKFLOW_REGISTRY_ENABLED !== 'true') return getWorkflowRegistry();
+  if (!env.DB) throw new Error('Dynamic workflow registry storage is unavailable.');
+  const page = await env.DB.prepare(
+    `SELECT a.workflow_id, a.active_digest, d.normalized_plan_json, d.source_path
+     FROM workflow_active_definitions a
+     JOIN workflow_definition_versions d ON d.definition_digest = a.active_digest
+     WHERE a.state = 'enabled'
+     ORDER BY a.workflow_id LIMIT 65`
+  ).all<{
+    workflow_id: string; active_digest: string; normalized_plan_json: string; source_path: string
+  }>();
+  if (page.results.length > 64) throw new Error('Active workflow population exceeds supported bound.');
+  let scheduleCount = 0;
+  const visible = page.results.map(row => {
+    const plan = validateVersionedWorkflowPlan(JSON.parse(row.normalized_plan_json));
+    if (plan.id !== row.workflow_id || !/^[0-9a-f]{64}$/.test(row.active_digest)) {
+      throw new Error('Active workflow definition is inconsistent.');
+    }
+    scheduleCount += plan.triggers.filter(trigger => trigger.type === 'schedule').length;
+    const metadata: WorkflowRegistryEntry['metadata'] = {
+      id: plan.id,
+      name: plan.name,
+      ...(plan.description ? { description: plan.description } : {}),
+      definitionDigest: row.active_digest,
+      triggerTypes: plan.triggers.map(trigger => String(trigger.type)),
+      inputs: plan.inputs,
+      stepCapabilities: [...new Set(Object.values(plan.steps).map(step => step.uses))]
+    };
+    return {
+      sourcePath: row.source_path,
+      definitionDigest: row.active_digest,
+      metadata,
+      plan
+    } satisfies WorkflowRegistryEntry;
+  });
+  if (scheduleCount > 64) throw new Error('Active schedules exceed supported bound.');
+  return visible;
+}
+
+export async function findVisibleWorkflow(
+  workflowId: string,
+  env?: Env
+): Promise<WorkflowRegistryEntry | undefined> {
+  if (env?.DYNAMIC_WORKFLOW_REGISTRY_ENABLED !== 'true') return findWorkflow(workflowId);
+  const visible = await listVisibleWorkflows(env);
+  return visible.find(entry => entry.metadata.id === workflowId);
 }
