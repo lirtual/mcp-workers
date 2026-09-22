@@ -124,6 +124,17 @@ async function admitDynamicManualWorkflow(
     active_digest: string; registry_revision: number; normalized_plan_json: string
   }>();
   if (!active) {
+    // Another request can win this Admission Key between our initial lookup
+    // and the active-pointer read. Resolve that durable winner even if the
+    // definition was deactivated in the meantime.
+    const winner = await store.getAdmissionRun(source.admissionKey);
+    if (winner) {
+      await recoverDynamicInstance(env, winner);
+      return {
+        runId: winner.runId, alreadyAdmitted: true,
+        definitionDigest: winner.definitionDigest, state: winner.state
+      };
+    }
     throw new PublicWorkflowError('WORKFLOW_NOT_FOUND', 'Workflow definition was not found.');
   }
   if (!Number.isSafeInteger(active.registry_revision) || active.registry_revision < 1 ||
@@ -160,6 +171,16 @@ async function admitDynamicManualWorkflow(
     expectedPolicyRevision: policy.revision
   });
   if (!admitted) {
+    // The active revision may have changed while a same-key rival admitted.
+    // Return the existing immutable Run rather than a spurious conflict.
+    const winner = await store.getAdmissionRun(source.admissionKey);
+    if (winner) {
+      await recoverDynamicInstance(env, winner);
+      return {
+        runId: winner.runId, alreadyAdmitted: true,
+        definitionDigest: winner.definitionDigest, state: winner.state
+      };
+    }
     throw new PublicWorkflowError('REGISTRY_CONFLICT', 'Active workflow changed during admission; retry.');
   }
   const recorded = await store.getRun(admitted.runId);
