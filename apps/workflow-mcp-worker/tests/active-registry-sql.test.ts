@@ -94,6 +94,20 @@ describe('real SQLite active pointer and rollback contract', () => {
     const events = await db.prepare('SELECT COUNT(*) AS count FROM workflow_registry_actions')
       .first<{ count: number }>();
     expect(events?.count).toBe(3);
+    const history = await db.prepare(
+      'SELECT action_kind, previous_digest, next_digest, expected_revision, resulting_revision FROM workflow_registry_actions ORDER BY resulting_revision'
+    ).all<{
+      action_kind: string; previous_digest: string | null; next_digest: string | null;
+      expected_revision: number; resulting_revision: number
+    }>();
+    expect(history.results).toMatchObject([
+      { action_kind: 'activate', previous_digest: null, next_digest: entry.definitionDigest,
+        expected_revision: 0, resulting_revision: 1 },
+      { action_kind: 'deactivate', previous_digest: entry.definitionDigest, next_digest: null,
+        expected_revision: 1, resulting_revision: 2 },
+      { action_kind: 'activate', previous_digest: null, next_digest: entry.definitionDigest,
+        expected_revision: 2, resulting_revision: 3 }
+    ]);
   });
 
   it('rejects stale expected revision without changing pointer or recording misleading audit', async () => {
