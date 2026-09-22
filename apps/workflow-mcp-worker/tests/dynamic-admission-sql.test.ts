@@ -483,6 +483,17 @@ describe('T07 transactional webhook authorization', () => {
       f.sqlite.exec("UPDATE workflow_webhook_secret_scopes SET enabled = 1");
       f.change(null, 3);
       await expect(run('event-3')).rejects.toMatchObject({ code: 'WORKFLOW_NOT_FOUND' });
+      const deniedReplay = await handleWebhookTrigger(
+        request('wrong-token', 'http-event'), hookEnv, original.metadata.id, 'incoming'
+      );
+      expect(deniedReplay.status).toBe(401);
+      const historical = await handleWebhookTrigger(
+        request('valid-token', 'http-event'), hookEnv, original.metadata.id, 'incoming'
+      );
+      expect(historical.status).toBe(202);
+      expect(await historical.json()).toMatchObject({
+        definitionDigest: digest, alreadyAdmitted: true
+      });
       expect((f.sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_runs')
         .get() as { count: number }).count).toBe(2);
       expect(f.starts()).toBe(2);
