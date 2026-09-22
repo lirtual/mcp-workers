@@ -478,6 +478,12 @@ describe('T07 transactional webhook authorization', () => {
       const first = await run('event-1');
       expect(first).toMatchObject({ definitionDigest: digest, alreadyAdmitted: false });
       expect(await run('event-1')).toMatchObject({ runId: first.runId, alreadyAdmitted: true });
+      // Even with the same event key, a token validated for a different
+      // digest cannot learn or recover an earlier credential's Run.
+      await expect(admitVersionedWebhookWorkflow(
+        f.env, original.metadata.id, 'incoming', input, 'event-1',
+        { ...selected, definitionDigest: 'd'.repeat(64) }
+      )).rejects.toMatchObject({ code: 'REGISTRY_CONFLICT' });
       // The signed token was already validated, but the trusted scope can be
       // revoked before D1's admission transaction. No stale authorization.
       const baseBatch = f.db.batch.bind(f.db);
