@@ -279,6 +279,7 @@ describe('authenticated immutable definition staging', () => {
     plan: definition.plan,
     metadata: definition.metadata,
     policyRevision: 1,
+    manifestVersion: 1,
     sourcePath: definition.sourcePath,
     sourceSha: 'a'.repeat(40)
   });
