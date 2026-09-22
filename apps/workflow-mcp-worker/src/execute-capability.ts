@@ -1,7 +1,9 @@
+import { resolveRunConnectionPin } from './connection-revocation.js';
 import { httpRead } from './http-read.js';
 import {
   callMcpTool,
-  McpToolCallTransportError
+  McpToolCallTransportError,
+  McpConnectionDeniedError
 } from './mcp-client.js';
 import type { EffectiveOperationPolicy } from './effective-policy.js';
 import type { Env } from './types.js';
@@ -9,6 +11,7 @@ import type { Env } from './types.js';
 export interface CapabilityExecutionContext {
   env: Env;
   operationId: string;
+  runId?: string;
   effectivePolicy: EffectiveOperationPolicy;
   dependencySnapshot?: Record<string, unknown>;
   timeoutMs?: number;
@@ -123,13 +126,26 @@ async function executeMcpCall(
   }
 
   try {
-    const result = await callMcpTool(context.env, connection, tool, argumentsWithIdempotency);
+    const pinned = context.runId
+      ? await resolveRunConnectionPin(context.env.DB, context.runId, connection, tool, context.effectivePolicy.effect)
+      : undefined;
+    const result = await callMcpTool(
+      context.env, connection, tool, argumentsWithIdempotency, fetch,
+      pinned ? { db: context.env.DB, pinned } : undefined
+    );
     return {
       state: 'succeeded',
       output: { result: result.result },
       dependencySnapshot: result.dependencySnapshot
     };
   } catch (error) {
+    if (error instanceof McpConnectionDeniedError) {
+      return {
+        state: 'failed',
+        errorCode: 'MCP_CONNECTION_REVOKED',
+        errorSummary: 'Current Connection authority denies this external attempt.'
+      };
+    }
     if (error instanceof McpToolCallTransportError) {
       if (
         context.effectivePolicy.effect === 'unsafe_write' ||
