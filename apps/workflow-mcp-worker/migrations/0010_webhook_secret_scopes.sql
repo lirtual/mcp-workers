@@ -13,10 +13,14 @@ CREATE TABLE IF NOT EXISTS workflow_webhook_secret_scopes (
   CHECK (length(workflow_id) > 0 AND length(trigger_id) > 0),
   CHECK (length(secret_name) > 0 AND length(secret_name) <= 128),
   -- Protected platform credentials must never be usable as webhook tokens.
-  CHECK (secret_name NOT IN (
-    'MCP_ACCESS_TOKEN', 'EXECUTOR_LEASE_SECRET', 'GITHUB_ACTIONS_TOKEN',
-    'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY'
-  ))
+  CHECK (secret_name NOT IN ('DB', 'WORKFLOW', 'ARTIFACTS')
+    AND secret_name NOT GLOB 'MCP_*'
+    AND secret_name NOT GLOB 'EXECUTOR_*'
+    AND secret_name NOT GLOB 'GITHUB_*'
+    AND secret_name NOT GLOB 'ADMIN_*'
+    AND secret_name NOT GLOB 'R2_*'
+    AND secret_name NOT GLOB 'CF_*'
+    AND secret_name NOT GLOB 'DYNAMIC_WORKFLOW_*')
 );
 CREATE INDEX IF NOT EXISTS idx_webhook_secret_scopes_digest
   ON workflow_webhook_secret_scopes(definition_digest, enabled);
