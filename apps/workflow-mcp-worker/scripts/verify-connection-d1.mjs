@@ -223,7 +223,7 @@ const stage = {
   plan: entry.plan
 };
 const staged = await admin('/admin/definitions/stage', stage);
-assert.equal(staged.status, 200, await staged.text());
+assert.equal(staged.status, 200, await staged.clone().text());
 const stagedReply = await staged.json();
 assert.equal(stagedReply.staged, true);
 assert.equal(stagedReply.alreadyStaged, false);
