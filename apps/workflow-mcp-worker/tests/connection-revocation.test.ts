@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { getConnection } from '../src/connections.js';
 import { authorizePinnedConnectionAttempt, readLiveConnectionControl, resolveRunConnectionPin, captureConnectionPins, type PinnedConnectionAuthority } from '../src/connection-revocation.js';
 
 const pinned: PinnedConnectionAuthority = {
@@ -79,13 +80,23 @@ describe('Run-scoped Connection pin resolution', () => {
   });
 
   it('resolves a pinned revision without silently retargeting', async () => {
+    const approved = getConnection('raindrop')!;
+    const config = {
+      endpoint: approved.endpoint, transport: approved.transport,
+      protocolVersion: approved.protocolVersion, authSecret: approved.auth.secret,
+      trustAnnotations: false, tools: approved.tools
+    };
     expect(await resolveRunConnectionPin(
-      db('{"raindrop":2}', '{"endpoint":"https://example.invalid/mcp"}'),
+      db('{"raindrop":2}', JSON.stringify(config)),
       'new-run', 'raindrop', 'list_raindrops', 'read'
     )).toEqual({
-      connectionId: 'raindrop', version: 2, endpoint: 'https://example.invalid/mcp',
-      toolName: 'list_raindrops', effect: 'read'
+      connectionId: 'raindrop', version: 2, endpoint: approved.endpoint,
+      toolName: 'list_raindrops', effect: 'read', connection: approved
     });
+    await expect(resolveRunConnectionPin(
+      db('{"raindrop":2}', JSON.stringify({ ...config, endpoint: 'https://attacker.invalid/mcp' })),
+      'new-run', 'raindrop', 'list_raindrops', 'read'
+    )).rejects.toThrow('not approved');
   });
 
   it('fails closed on missing revision and malformed pin map', async () => {
