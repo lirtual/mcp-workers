@@ -347,6 +347,74 @@ export class D1WorkflowStore {
     return { runId: existing.run_id, alreadyAdmitted: true };
   }
 
+  /**
+   * T06: the admission claim reads the authoritative active pointer in the
+   * same D1 batch transaction as the Run insert. A stale digest or global
+   * Connection-policy revision cannot claim a new admission key.
+   */
+  async admitVersionPinnedRun(input: AdmissionRequest & {
+    expectedRegistryRevision: number;
+    expectedPolicyRevision: number;
+  }): Promise<AdmissionResult | null> {
+    const createdAt = nowIso();
+    const results = await this.db.batch([
+      this.db.prepare(
+        `INSERT OR IGNORE INTO run_admissions
+         (admission_key, run_id, workflow_id, source_type, source_key, created_at)
+         SELECT ?, ?, ?, ?, ?, ?
+         WHERE EXISTS (
+           SELECT 1 FROM workflow_active_definitions
+           WHERE workflow_id = ? AND state = 'enabled'
+             AND active_digest = ? AND registry_revision = ?
+         ) AND EXISTS (
+           SELECT 1 FROM connection_policy_revision WHERE singleton = 1 AND revision = ?
+         )`
+      ).bind(
+        input.admissionKey, input.proposedRunId, input.workflowId, input.sourceType,
+        input.sourceKey ?? null, createdAt, input.workflowId, input.definitionDigest,
+        input.expectedRegistryRevision, input.expectedPolicyRevision
+      ),
+      this.db.prepare(
+        `INSERT OR IGNORE INTO workflow_runs
+         (run_id, workflow_id, definition_digest, input_json, trigger_json, state,
+          engine_version, cf_workflow_instance_id, created_at, connection_versions_json)
+         SELECT ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?
+         WHERE EXISTS (
+           SELECT 1 FROM run_admissions WHERE admission_key = ? AND run_id = ?
+         )`
+      ).bind(
+        input.proposedRunId, input.workflowId, input.definitionDigest,
+        JSON.stringify(input.input), JSON.stringify(input.trigger), input.engineVersion,
+        input.proposedRunId, createdAt,
+        input.connectionVersions ? JSON.stringify(input.connectionVersions) : null,
+        input.admissionKey, input.proposedRunId
+      )
+    ]);
+    const inserted = (results[0]?.meta.changes ?? 0) === 1;
+    if (inserted) {
+      if (results[1]?.meta.changes !== 1) {
+        throw new Error('Version-pinned Run could not be recorded.');
+      }
+      await this.appendEvent(input.proposedRunId, 'run.admitted', {
+        workflowId: input.workflowId,
+        definitionDigest: input.definitionDigest,
+        sourceType: input.sourceType
+      });
+      return { runId: input.proposedRunId, alreadyAdmitted: false };
+    }
+    const existing = await this.getAdmissionRun(input.admissionKey);
+    if (!existing) return null;
+    return { runId: existing.runId, alreadyAdmitted: true };
+  }
+
+  /** Always recover the original digest, never the currently active pointer. */
+  async getAdmissionRun(admissionKey: string): Promise<StoredRun | null> {
+    const row = await this.db.prepare(
+      'SELECT run_id FROM run_admissions WHERE admission_key = ?'
+    ).bind(admissionKey).first<{ run_id: string }>();
+    return row ? this.getRun(row.run_id) : null;
+  }
+
   async getRun(runId: string): Promise<StoredRun | null> {
     const row = await this.db
       .prepare(
