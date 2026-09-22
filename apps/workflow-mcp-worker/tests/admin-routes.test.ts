@@ -97,6 +97,20 @@ describe('protected publisher admin boundary', () => {
     }
   });
 
+  it('protects webhook scope registration with publisher OIDC, not the MCP bearer', async () => {
+    const post = (authorization: string) => handleAdminRoute(
+      new Request('https://example.test/admin/webhooks/scopes/register', {
+        method: 'POST', headers: { authorization },
+        body: JSON.stringify({ invalidField: true })
+      }), env, options
+    );
+    expect((await post('Bearer ordinary-mcp-secret'))?.status).toBe(401);
+    expect((await post('Bearer ' + await token({ repository_id: '999' })))?.status).toBe(403);
+    const trusted = await post('Bearer ' + await token());
+    expect(trusted?.status).toBe(400);
+    expect(await trusted?.json()).toEqual({ error: 'invalid_body' });
+  });
+
   it('exposes no admin mutation or MCP fallthrough', async () => {
     expect((await invoke('Bearer ' + await token(), env, 'POST')).status).toBe(405);
     expect(await handleAdminRoute(new Request('https://example.test/mcp'), env, options)).toBeNull();
