@@ -11,7 +11,7 @@ function endpointAllowed(endpoint) {
     (url.protocol === "ws:" && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname));
 }
 
-export async function connectSandboxBridge({ endpoint, token, sandboxRoot }) {
+export async function connectSandboxBridge({ endpoint, token, sandboxRoot, directoryReader = null }) {
   if (!endpointAllowed(endpoint)) throw new Error("secure_websocket_required");
   if (typeof token !== "string" || token.length < 24) throw new Error("missing_device_token");
   // Canonicalize once; the MCP request never accepts a path or a command.
@@ -36,12 +36,18 @@ export async function connectSandboxBridge({ endpoint, token, sandboxRoot }) {
                typeof call.arguments === "object" && !Array.isArray(call.arguments) &&
                Object.keys(call.arguments).length === 0) {
       try {
-        const entries = (await readdir(root, { withFileTypes: true }))
-          .filter((entry) => !entry.isSymbolicLink())
-          .map((entry) => entry.name)
-          .sort()
-          .slice(0, MAX_ENTRIES);
-        result = { entries };
+        if (directoryReader) {
+          // Caller-supplied path is NEVER passed to the executor: root is
+          // canonicalized once at bridge startup and arguments must be {}.
+          result = await directoryReader(root);
+        } else {
+          const entries = (await readdir(root, { withFileTypes: true }))
+            .filter((entry) => !entry.isSymbolicLink())
+            .map((entry) => entry.name)
+            .sort()
+            .slice(0, MAX_ENTRIES);
+          result = { entries };
+        }
       } catch {
         result = { error: "sandbox_unavailable" };
       }
