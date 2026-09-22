@@ -7,7 +7,8 @@ import type { LegacyImportState } from '../src/legacy-import.js';
 const scheduleKey = 'raindrop-daily-snapshot:daily-nine';
 function fixture() {
   const sqlite = new DatabaseSync(':memory:');
-  for (const migration of ['0001_core.sql', '0002_scheduler.sql', '0007_connection_versions.sql']) {
+  for (const migration of ['0001_core.sql', '0002_scheduler.sql', '0007_connection_versions.sql',
+    '0008_definition_publications.sql', '0009_active_definitions.sql']) {
     sqlite.exec(readFileSync('migrations/' + migration, 'utf8'));
   }
   sqlite.prepare(
