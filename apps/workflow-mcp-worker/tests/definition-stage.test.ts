@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import type { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { stageDefinition } from '../src/definition-stage.js';
 import { getWorkflowRegistry } from '../src/registry.js';
@@ -23,11 +24,11 @@ const envelope = () => ({
 });
 
 async function openStore(): Promise<D1Database | null> {
-  let module: typeof import('node:sqlite');
+  let sqlite: DatabaseSync;
   try {
-    module = await import('node:sqlite');
+    const module = await import('node:sqlite');
+    sqlite = new module.DatabaseSync(':memory:');
   } catch { return null; }
-  const sqlite = new module.DatabaseSync(':memory:');
   sqlite.exec(readFileSync('migrations/0001_core.sql', 'utf8'));
   for (const migration of ['0002_scheduler.sql', '0003_mcp_dependencies.sql',
     '0004_remote_executor.sql', '0005_artifacts.sql', '0006_provenance.sql',
