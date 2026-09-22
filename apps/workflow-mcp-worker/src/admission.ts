@@ -1,14 +1,15 @@
 import { captureConnectionPins } from './connection-revocation.js';
 import { currentEngineVersion } from './provenance.js';
 import { findWorkflow } from './registry.js';
+import { validateVersionedWorkflowPlan } from './runtime-plan-validation.js';
 import type { RuntimeInputDefinition, RuntimePlan } from './runtime-plan.js';
 import { asRuntimePlan } from './runtime-plan.js';
-import { D1WorkflowStore, type AdmissionResult } from './storage.js';
+import { D1WorkflowStore, type AdmissionResult, type StoredRun } from './storage.js';
 import type { Env, WorkflowRegistryEntry } from './types.js';
 
 export interface WorkflowAdmissionResult extends AdmissionResult {
   definitionDigest: string;
-  state: 'queued';
+  state: StoredRun['state'];
 }
 
 interface AdmissionSource {
@@ -34,7 +35,7 @@ export async function admitManualWorkflow(
 
   const randomPart = crypto.randomUUID();
   const sourceKey = idempotencyKey ?? randomPart;
-  return admitCompiledWorkflow(env, workflowId, rawInput, {
+  const source: AdmissionSource = {
     admissionKey:
       idempotencyKey === undefined
         ? `manual:${workflowId}:run:${randomPart}`
@@ -43,7 +44,11 @@ export async function admitManualWorkflow(
     sourceKey,
     trigger: { type: 'manual' },
     deterministicRunId: idempotencyKey !== undefined
-  });
+  };
+  if (env.DYNAMIC_WORKFLOW_ADMISSION_ENABLED === 'true') {
+    return admitDynamicManualWorkflow(env, workflowId, rawInput, source);
+  }
+  return admitCompiledWorkflow(env, workflowId, rawInput, source);
 }
 
 export async function admitWebhookWorkflow(
@@ -83,6 +88,88 @@ export async function admitScheduledWorkflow(
     trigger: { type: 'schedule', triggerId, scheduledTime },
     deterministicRunId: true
   });
+}
+
+/**
+ * T06: manual-only, gated D1 admission. Duplicates resolve from the existing
+ * admission key before consulting any newer/disabled active definition.
+ */
+async function admitDynamicManualWorkflow(
+  env: Env,
+  workflowId: string,
+  rawInput: unknown,
+  source: AdmissionSource
+): Promise<WorkflowAdmissionResult> {
+  if (env.DYNAMIC_WORKFLOW_REGISTRY_ENABLED !== 'true' || !env.DB) {
+    throw new PublicWorkflowError('RUNTIME_NOT_CONFIGURED', 'Dynamic admission requires the D1 registry.');
+  }
+  const store = new D1WorkflowStore(env.DB);
+  const original = await store.getAdmissionRun(source.admissionKey);
+  if (original) {
+    // createBatch is idempotent for an existing custom instance ID. Repair
+    // uncertain starts without consulting the new active registry.
+    await env.WORKFLOW.createBatch([{ id: original.runId, params: { runId: original.runId } }]);
+    return {
+      runId: original.runId, alreadyAdmitted: true,
+      definitionDigest: original.definitionDigest, state: original.state
+    };
+  }
+
+  const active = await env.DB.prepare(
+    `SELECT a.active_digest, a.registry_revision, d.normalized_plan_json
+     FROM workflow_active_definitions a
+     JOIN workflow_definition_versions d ON d.definition_digest = a.active_digest
+     WHERE a.workflow_id = ? AND a.state = 'enabled' AND d.workflow_id = a.workflow_id`
+  ).bind(workflowId).first<{
+    active_digest: string; registry_revision: number; normalized_plan_json: string
+  }>();
+  if (!active) {
+    throw new PublicWorkflowError('WORKFLOW_NOT_FOUND', 'Workflow definition was not found.');
+  }
+  if (!Number.isSafeInteger(active.registry_revision) || active.registry_revision < 1 ||
+      !/^[0-9a-f]{64}$/.test(active.active_digest)) {
+    throw new PublicWorkflowError('REGISTRY_UNAVAILABLE', 'Active workflow registry is invalid.');
+  }
+  let plan: RuntimePlan;
+  try {
+    plan = asRuntimePlan(validateVersionedWorkflowPlan(JSON.parse(active.normalized_plan_json)));
+    if (plan.id !== workflowId) throw new Error('Workflow mismatch');
+  } catch {
+    throw new PublicWorkflowError('REGISTRY_UNAVAILABLE', 'Active workflow registry is invalid.');
+  }
+  const input = validateWorkflowInput(plan.inputs, rawInput);
+  const policy = await env.DB.prepare(
+    'SELECT revision FROM connection_policy_revision WHERE singleton = 1'
+  ).first<{ revision: number }>();
+  if (!policy || !Number.isSafeInteger(policy.revision) || policy.revision < 1) {
+    throw new PublicWorkflowError('POLICY_UNAVAILABLE', 'Approved Connection policy is unavailable.');
+  }
+  const connectionIds = Object.values(plan.steps)
+    .filter(step => step.uses === 'mcp.call')
+    .map(step => step.with.connection)
+    .filter((value): value is string => typeof value === 'string');
+  const connectionVersions = await captureConnectionPins(env.DB, connectionIds);
+  const proposedRunId = source.deterministicRunId
+    ? `run_${(await sha256Hex(source.admissionKey)).slice(0, 40)}`
+    : `run_${crypto.randomUUID()}`;
+  const admitted = await store.admitVersionPinnedRun({
+    connectionVersions, admissionKey: source.admissionKey, proposedRunId,
+    workflowId, definitionDigest: active.active_digest, input,
+    trigger: source.trigger, sourceType: source.sourceType, sourceKey: source.sourceKey,
+    engineVersion: currentEngineVersion(env), expectedRegistryRevision: active.registry_revision,
+    expectedPolicyRevision: policy.revision
+  });
+  if (!admitted) {
+    throw new PublicWorkflowError('REGISTRY_CONFLICT', 'Active workflow changed during admission; retry.');
+  }
+  const recorded = await store.getRun(admitted.runId);
+  if (!recorded) {
+    throw new PublicWorkflowError('ADMISSION_UNAVAILABLE', 'Durable admission record is unavailable.');
+  }
+  await env.WORKFLOW.createBatch([{ id: admitted.runId, params: { runId: admitted.runId } }]);
+  return {
+    ...admitted, definitionDigest: recorded.definitionDigest, state: recorded.state
+  };
 }
 
 async function admitCompiledWorkflow(
