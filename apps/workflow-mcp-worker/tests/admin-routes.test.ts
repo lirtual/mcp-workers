@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { handleAdminRoute } from '../src/admin-routes.js';
 import { GITHUB_EXECUTOR_CONFIG } from '../src/platform-config.js';
+import { getWorkflowRegistry } from '../src/registry.js';
 import type { Env } from '../src/types.js';
 
 const now = 1_800_000_000;
@@ -266,5 +267,64 @@ describe('concurrent admin action replay reconciliation', () => {
     const response = (await handleAdminRoute(request, { ...env, DB: db }, options))!;
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ version: 1, revision: 1 });
+  });
+});
+
+describe('authenticated immutable definition staging', () => {
+  const definition = getWorkflowRegistry().find(item => item.metadata.id === 'local-http-smoke')!;
+  const envelope = () => ({
+    publicationId: 'http-staging-001',
+    workflowId: definition.metadata.id,
+    definitionDigest: definition.definitionDigest,
+    plan: definition.plan,
+    policyRevision: 1,
+    sourcePath: definition.sourcePath,
+    sourceSha: 'a'.repeat(40)
+  });
+  function database(): D1Database {
+    const statement = (sql: string) => ({
+      bind: (..._values: unknown[]) => statement(sql),
+      first: async () => sql.includes('connection_policy_revision') ? { revision: 1 } : null
+    });
+    return {
+      prepare: statement,
+      batch: async (queries: unknown[]) => {
+        expect(queries).toHaveLength(2);
+        return [{ meta: { changes: 1 } }, { meta: { changes: 1 } }];
+      }
+    } as unknown as D1Database;
+  }
+  async function invokeStage(payload: unknown, jwt?: string): Promise<Response> {
+    const request = new Request('https://example.test/admin/definitions/stage', {
+      method: 'POST',
+      headers: { authorization: jwt ?? 'Bearer ' + await token() },
+      body: JSON.stringify(payload)
+    });
+    return (await handleAdminRoute(request, { ...env, DB: database() }, options))!;
+  }
+
+  it('rejects ordinary MCP credentials, forged publisher identity and a corrupted digest', async () => {
+    expect((await invokeStage(envelope(), 'Bearer ordinary-mcp-secret')).status).toBe(401);
+    expect((await invokeStage(envelope(), 'Bearer ' + await token({ repository_id: '999' }))).status).toBe(403);
+    const forged = { ...envelope(), definitionDigest: 'f'.repeat(64) };
+    expect((await invokeStage(forged)).status).toBe(422);
+  });
+
+  it('stages a bounded, signed, unactivated definition with no secret data in reply', async () => {
+    const response = await invokeStage(envelope());
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      workflowId: definition.metadata.id,
+      definitionDigest: definition.definitionDigest,
+      publicationId: 'http-staging-001',
+      staged: true
+    });
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+  });
+
+  it('rejects an unknown body field and malformed or oversized requests', async () => {
+    expect((await invokeStage({ ...envelope(), secret: 'arbitrary' })).status).toBe(400);
+    expect((await invokeStage({ ...envelope(), sourceSha: 'not-a-sha' })).status).toBe(400);
+    expect((await invokeStage({ ...envelope(), publicationId: 'x'.repeat(400_000) })).status).toBe(413);
   });
 });
