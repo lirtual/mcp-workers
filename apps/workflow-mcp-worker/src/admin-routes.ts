@@ -1,6 +1,7 @@
+import { stageDefinition } from './stage-definition.js';
 import { registerApprovedConnection } from './connection-admin.js';
 import { getConnection } from './connections.js';
-import { verifyGitHubOidcToken, type GitHubOidcVerificationConfig } from './oidc.js';
+import { verifyGitHubOidcToken, type GitHubJobIdentity, type GitHubOidcVerificationConfig } from './oidc.js';
 import { GITHUB_EXECUTOR_CONFIG } from './platform-config.js';
 import { getWorkflowRegistry } from './registry.js';
 import type { Env } from './types.js';
@@ -120,7 +121,8 @@ export async function handleAdminRoute(
   const snapshotRoute = url.pathname === '/admin/connections/snapshot';
   const disableRoute = url.pathname === '/admin/connections/disable';
   const registerRoute = url.pathname === '/admin/connections/register';
-  if (!snapshotRoute && !disableRoute && !registerRoute) return reply(404, 'not_found');
+  const stageRoute = url.pathname === '/admin/definitions/stage';
+  if (!snapshotRoute && !disableRoute && !registerRoute && !stageRoute) return reply(404, 'not_found');
   if (request.method !== (snapshotRoute ? 'GET' : 'POST')) return reply(405, 'method_not_allowed');
 
   const repositoryId = required(env.ADMIN_PUBLISHER_REPOSITORY_ID);
@@ -134,11 +136,13 @@ export async function handleAdminRoute(
   if (!authorization?.startsWith('Bearer ') || authorization.length <= 7) {
     return reply(401, 'unauthorized');
   }
+  let publisher: GitHubJobIdentity;
   try {
     const oidc: GitHubOidcVerificationConfig = { ...GITHUB_EXECUTOR_CONFIG.oidc, audience: ADMIN_AUDIENCE };
     const identity = await verifyGitHubOidcToken(
       authorization.slice(7), oidc, options.fetchImpl ?? fetch, options.nowSeconds
     );
+    publisher = identity;
     if (identity.repositoryId !== repositoryId || identity.workflowRef !== workflowRef ||
         identity.ref !== ref || (env.ADMIN_PUBLISHER_WORKFLOW_SHA &&
         identity.workflowSha !== env.ADMIN_PUBLISHER_WORKFLOW_SHA)) {
@@ -150,6 +154,7 @@ export async function handleAdminRoute(
   }
   if (disableRoute) return disableConnection(request, env);
   if (registerRoute) return registerApprovedConnection(request, env.DB);
+  if (stageRoute) return stageDefinition(request, env, publisher);
   try {
     return Response.json(await policySnapshot(env), { headers: { 'Cache-Control': 'no-store' } });
   } catch {
