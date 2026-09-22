@@ -26,7 +26,10 @@ export interface LegacyImportState {
     definitionDigest: string; workflowId: string; dslVersion: number;
     normalizedPlanJson: string; sourcePath: string
   }[];
-  readonly active: readonly { workflowId: string; activeDigest: string | null }[];
+  readonly active: readonly {
+    workflowId: string; activeDigest: string | null;
+    registryRevision: number; state: 'enabled' | 'disabled'
+  }[];
   readonly scheduler: readonly {
     scheduleKey: string; lastEvaluatedAt: number;
     lastAdmittedScheduledTime?: number | null; nextDueOccurrence?: number | null
@@ -75,6 +78,13 @@ export function prepareLegacyImport(state: LegacyImportState,
       throw new Error('Existing pinned legacy definition cannot be overwritten.');
     }
     const active = state.active.find(a => a.workflowId === entry.metadata.id);
+    if (active && (!Number.isSafeInteger(active.registryRevision) ||
+        active.registryRevision < 1 ||
+        (active.state !== 'enabled' && active.state !== 'disabled') ||
+        (active.state === 'enabled' && active.activeDigest === null) ||
+        (active.state === 'disabled' && active.activeDigest !== null))) {
+      throw new Error('Legacy active pointer revision/state is invalid.');
+    }
     if (active && active.activeDigest !== null && active.activeDigest !== digest) {
       throw new Error('Already-active definition requires a separate approved CAS cutover.');
     }
