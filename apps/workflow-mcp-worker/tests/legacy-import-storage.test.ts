@@ -3,6 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { seedLegacyDefinitions } from '../src/legacy-import-storage.js';
 import { prepareLegacyImport, type LegacyImportState } from '../src/legacy-import.js';
+import { verifyLegacyPublicationReadiness } from '../src/legacy-cutover.js';
 
 const scheduleKey = 'raindrop-daily-snapshot:daily-nine';
 function fixture() {
@@ -126,6 +127,52 @@ describe('T10 additive isolated D1 legacy definition seeding', () => {
         .get('run_legacy_waiting')).toEqual(before);
       expect((sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_events')
         .get() as { count: number }).count).toBe(0);
+    } finally { sqlite.close(); }
+  });
+
+  it('blocks activation until an exact trusted source SHA is published at the approved revision', async () => {
+    const { sqlite, db, state } = fixture();
+    try {
+      await seedLegacyDefinitions(db, state, 1);
+      const options = {
+        workflowId: 'local-http-smoke' as const,
+        approvedSourceSha: 'a'.repeat(40),
+        trustedPublisherRepositoryId: '123456789',
+        expectedPolicyRevision: 1
+      };
+      await expect(verifyLegacyPublicationReadiness(db, options))
+        .rejects.toThrow(/no matching trusted publication/);
+      const original = prepareLegacyImport(state).definitions.find(row =>
+        row.workflowId === options.workflowId)!;
+      // This row simulates an already independently verified T09 OIDC stage:
+      // no production or real GitHub publisher authority is exercised here.
+      sqlite.prepare(
+        `INSERT INTO definition_publications
+         (publication_id, workflow_id, definition_digest, source_sha, repository_id,
+          publisher_run_id, publisher_run_attempt, publisher_workflow_sha, policy_revision, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run('legacy-published', options.workflowId, original.definitionDigest,
+        options.approvedSourceSha, options.trustedPublisherRepositoryId,
+        '10001', 1, 'b'.repeat(40), 1, '2026-09-23');
+      expect(await verifyLegacyPublicationReadiness(db, options)).toEqual({
+        workflowId: options.workflowId, definitionDigest: original.definitionDigest,
+        publicationId: 'legacy-published', sourceSha: options.approvedSourceSha
+      });
+      await expect(verifyLegacyPublicationReadiness(db, {
+        ...options, approvedSourceSha: 'c'.repeat(40)
+      })).rejects.toThrow(/no matching trusted publication/);
+      await expect(verifyLegacyPublicationReadiness(db, {
+        ...options, trustedPublisherRepositoryId: '987654321'
+      })).rejects.toThrow(/no matching trusted publication/);
+      await expect(verifyLegacyPublicationReadiness(db, {
+        ...options, expectedPolicyRevision: 2
+      })).rejects.toThrow(/policy changed/);
+      // A matching digest alone cannot rescue a stored plan that was modified.
+      sqlite.prepare(
+        'UPDATE workflow_definition_versions SET normalized_plan_json = ? WHERE definition_digest = ?'
+      ).run('{}', original.definitionDigest);
+      await expect(verifyLegacyPublicationReadiness(db, options))
+        .rejects.toThrow(/differs from the original pinned plan/);
     } finally { sqlite.close(); }
   });
 
