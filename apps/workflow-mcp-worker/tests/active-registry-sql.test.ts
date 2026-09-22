@@ -112,6 +112,75 @@ describe('real SQLite active pointer and rollback contract', () => {
     ]);
   });
 
+  it('switches between two independently staged approved digests and rolls back to the first', async () => {
+    const db = await store();
+    if (!db) throw new Error('node:sqlite is required for real CAS validation');
+    const env = { DB: db, DYNAMIC_WORKFLOW_REGISTRY_ENABLED: 'true' } as Env;
+    const alternatePlan = JSON.parse(JSON.stringify(entry.plan)) as Record<string, unknown>;
+    alternatePlan.name = 'Local HTTP smoke revision two';
+    const canonical = (value: unknown): unknown => {
+      if (Array.isArray(value)) return value.map(canonical);
+      if (value !== null && typeof value === 'object') {
+        return Object.fromEntries(Object.keys(value as Record<string, unknown>).sort()
+          .map(key => [key, canonical((value as Record<string, unknown>)[key])]));
+      }
+      return value;
+    };
+    const serialized = JSON.stringify(canonical(alternatePlan));
+    const digestBytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(serialized));
+    const alternateDigest = [...new Uint8Array(digestBytes)]
+      .map(byte => byte.toString(16).padStart(2, '0')).join('');
+    expect(alternateDigest).not.toBe(entry.definitionDigest);
+    await db.prepare(
+      `INSERT INTO workflow_definition_versions
+       (definition_digest, workflow_id, dsl_version, normalized_plan_json, source_path, created_at)
+       VALUES (?, ?, 1, ?, ?, ?)`
+    ).bind(alternateDigest, entry.metadata.id, serialized, entry.sourcePath, '2026-09-22').run();
+    await db.prepare(
+      `INSERT INTO definition_publications
+       (publication_id, workflow_id, definition_digest, source_sha, repository_id,
+        publisher_run_id, publisher_run_attempt, publisher_workflow_sha, policy_revision, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`
+    ).bind('stage-second', entry.metadata.id, alternateDigest, 'c'.repeat(40),
+      publisher.repositoryId, publisher.runId, publisher.runAttempt,
+      publisher.workflowSha, '2026-09-22').run();
+
+    // Immutable staging itself must not affect discovery.
+    expect(await listVisibleWorkflows(env)).toEqual([]);
+    const first = await updateActiveDefinition(
+      request('two-version-first', null, entry.definitionDigest, 0), env, publisher, 'activate');
+    expect(first.status).toBe(200);
+    expect((await listVisibleWorkflows(env)).map(item => item.definitionDigest))
+      .toEqual([entry.definitionDigest]);
+    const second = await updateActiveDefinition(
+      request('two-version-second', entry.definitionDigest, alternateDigest, 1),
+      env, publisher, 'activate');
+    expect(second.status).toBe(200);
+    expect((await listVisibleWorkflows(env)).map(item => [item.definitionDigest, item.metadata.name]))
+      .toEqual([[alternateDigest, 'Local HTTP smoke revision two']]);
+
+    const rollback = await updateActiveDefinition(
+      request('two-version-rollback', alternateDigest, entry.definitionDigest, 2),
+      env, publisher, 'activate');
+    expect(rollback.status).toBe(200);
+    expect((await listVisibleWorkflows(env)).map(item => item.definitionDigest))
+      .toEqual([entry.definitionDigest]);
+    const actions = await db.prepare(
+      'SELECT previous_digest, next_digest, resulting_revision FROM workflow_registry_actions ORDER BY resulting_revision'
+    ).all<{ previous_digest: string | null; next_digest: string; resulting_revision: number }>();
+    expect(actions.results).toMatchObject([
+      { previous_digest: null, next_digest: entry.definitionDigest, resulting_revision: 1 },
+      { previous_digest: entry.definitionDigest, next_digest: alternateDigest, resulting_revision: 2 },
+      { previous_digest: alternateDigest, next_digest: entry.definitionDigest, resulting_revision: 3 }
+    ]);
+    const pointer = await db.prepare(
+      'SELECT active_digest, registry_revision, state FROM workflow_active_definitions WHERE workflow_id = ?'
+    ).bind(entry.metadata.id).first<{ active_digest: string; registry_revision: number; state: string }>();
+    expect(pointer).toMatchObject({
+      active_digest: entry.definitionDigest, registry_revision: 3, state: 'enabled'
+    });
+  });
+
   it('rejects stale expected revision without changing pointer or recording misleading audit', async () => {
     const db = await store();
     if (!db) throw new Error('node:sqlite is required for real CAS validation');
