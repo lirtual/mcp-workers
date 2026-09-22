@@ -331,3 +331,61 @@ describe('authenticated immutable definition staging', () => {
     expect((await invokeStage({ ...envelope(), publicationId: 'x'.repeat(400_000) })).status).toBe(413);
   });
 });
+
+
+describe('signed definition activation HTTP boundary', () => {
+  const workflow = getWorkflowRegistry().find(item => item.metadata.id === 'local-http-smoke')!;
+  const payload = {
+    actionId: 'http-activate-1', workflowId: workflow.metadata.id,
+    expectedDigest: null, targetDigest: workflow.definitionDigest, expectedRevision: 0
+  };
+  function db(changes = 1): D1Database {
+    const statement = (sql: string) => ({
+      bind: (..._values: unknown[]) => statement(sql),
+      first: async () => {
+        if (sql.includes('workflow_registry_actions')) return null;
+        if (sql.includes('workflow_active_definitions')) return null;
+        if (sql.includes('connection_policy_revision')) return { revision: 1 };
+        if (sql.includes('workflow_definition_versions')) return {
+          workflow_id: workflow.metadata.id, normalized_plan_json: JSON.stringify(workflow.plan)
+        };
+        return null;
+      }
+    });
+    return {
+      prepare: statement,
+      batch: async (queries: unknown[]) => {
+        expect(queries).toHaveLength(2);
+        return [{ meta: { changes } }, { meta: { changes } }];
+      }
+    } as unknown as D1Database;
+  }
+  async function post(path: string, body: unknown, bearer: string, database: D1Database): Promise<Response> {
+    return (await handleAdminRoute(new Request('https://example.test' + path, {
+      method: 'POST',
+      headers: { authorization: bearer, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    }), { ...env, DB: database }, options))!;
+  }
+
+  it('only accepts publisher OIDC, not the ordinary MCP access token', async () => {
+    const path = '/admin/definitions/activate';
+    expect((await post(path, payload, 'Bearer ordinary-mcp-secret', db())).status).toBe(401);
+    expect((await post(path, payload, 'Bearer ' + await token({ repository_id: '999' }), db())).status).toBe(403);
+    const accepted = await post(path, payload, 'Bearer ' + await token(), db());
+    expect(accepted.status).toBe(200);
+    expect(await accepted.json()).toMatchObject({
+      workflowId: workflow.metadata.id, activeDigest: workflow.definitionDigest, revision: 1
+    });
+    expect(accepted.headers.get('Cache-Control')).toBe('no-store');
+  });
+
+  it('rejects stale CAS, malformed body and unauthenticated deactivation', async () => {
+    const signed = 'Bearer ' + await token();
+    expect((await post('/admin/definitions/activate', payload, signed, db(0))).status).toBe(409);
+    expect((await post('/admin/definitions/activate', { ...payload, credential: 'secret' }, signed, db())).status).toBe(400);
+    expect((await post('/admin/definitions/deactivate', {
+      ...payload, expectedRevision: 1, expectedDigest: workflow.definitionDigest, targetDigest: null
+    }, 'Bearer ordinary-mcp-secret', db())).status).toBe(401);
+  });
+});
