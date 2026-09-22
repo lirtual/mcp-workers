@@ -165,6 +165,32 @@ steps:
     ).toThrow(/Invalid cron field/);
   });
 
+  it('refuses a disabled Connection in the trusted external policy', () => {
+    const text = `version: 1
+id: external-connection
+name: External connection
+triggers:
+  - type: manual
+steps:
+  call:
+    uses: mcp.call
+    with:
+      connection: raindrop
+      tool: list_raindrops
+`;
+    const trusted = {
+      revision: 1,
+      connections: { raindrop: {
+        enabled: false, version: 1,
+        tools: { list_raindrops: { effect: 'read' as const } }
+      } }
+    };
+    expect(() => compileWorkflowText(text, 'workflows/external.yaml', trusted))
+      .toThrow(/disabled MCP connection/i);
+    trusted.connections.raindrop.enabled = true;
+    expect(() => compileWorkflowText(text, 'workflows/external.yaml', trusted)).not.toThrow();
+  });
+
   it('emits generated registry entries in workflow-id order', () => {
     const b = compileWorkflowText(base.replaceAll('compile-smoke', 'z-workflow'), 'z.yaml');
     const a = compileWorkflowText(base.replaceAll('compile-smoke', 'a-workflow'), 'a.yaml');

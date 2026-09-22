@@ -97,6 +97,20 @@ describe('protected publisher admin boundary', () => {
     }
   });
 
+  it('protects webhook scope registration with publisher OIDC, not the MCP bearer', async () => {
+    const post = (authorization: string) => handleAdminRoute(
+      new Request('https://example.test/admin/webhooks/scopes/register', {
+        method: 'POST', headers: { authorization },
+        body: JSON.stringify({ invalidField: true })
+      }), env, options
+    );
+    expect((await post('Bearer ordinary-mcp-secret'))?.status).toBe(401);
+    expect((await post('Bearer ' + await token({ repository_id: '999' })))?.status).toBe(403);
+    const trusted = await post('Bearer ' + await token());
+    expect(trusted?.status).toBe(400);
+    expect(await trusted?.json()).toEqual({ error: 'invalid_body' });
+  });
+
   it('exposes no admin mutation or MCP fallthrough', async () => {
     expect((await invoke('Bearer ' + await token(), env, 'POST')).status).toBe(405);
     expect(await handleAdminRoute(new Request('https://example.test/mcp'), env, options)).toBeNull();
@@ -188,13 +202,41 @@ describe('protected bounded Connection registration', () => {
 });
 
 describe('D1-backed approved Connection snapshot', () => {
+  it('exposes only enabled, provisioned current D1 webhook scopes', async () => {
+    const makeDb = (revision: number) => ({
+      prepare: (sql: string) => ({
+        first: async () => ({ revision }),
+        all: async () => ({
+          results: sql.includes('workflow_webhook_secret_scopes')
+            ? [{ workflow_id: 'new-workflow', trigger_id: 'incoming',
+                secret_name: 'APPROVED_HOOK_TOKEN', policy_revision: revision }]
+            : []
+        })
+      })
+    }) as unknown as D1Database;
+    const scopedEnv = { ...env, DB: makeDb(3),
+      WEBHOOK_SECRET_ALLOWLIST: '["APPROVED_HOOK_TOKEN"]',
+      APPROVED_HOOK_TOKEN: 'never-serialize-me' } as Env;
+    const response = await invoke('Bearer ' + await token(), scopedEnv);
+    expect(response.status).toBe(200);
+    const body = await response.json() as Record<string, unknown>;
+    expect(body.webhookBindings).toEqual([{
+      workflowId: 'new-workflow', triggerId: 'incoming', referenceId: 'APPROVED_HOOK_TOKEN'
+    }]);
+    expect(JSON.stringify(body)).not.toContain('never-serialize-me');
+    const revoked = await invoke('Bearer ' + await token(),
+      { ...scopedEnv, WEBHOOK_SECRET_ALLOWLIST: '[]' });
+    expect(revoked.status).toBe(503);
+  });
+
   it('reflects current version and global revision without credential or endpoint exposure', async () => {
     const db = {
       prepare: (sql: string) => ({
         first: async () => sql.includes('connection_policy_revision') ? { revision: 7 } : null,
         all: async () => ({
-          results: [{ connection_id: 'raindrop', current_version: 3, disabled: 1,
-            allowed_tools_json: '{"list_raindrops":["read"]}' }]
+          results: sql.includes('workflow_webhook_secret_scopes') ? [] :
+            [{ connection_id: 'raindrop', current_version: 3, disabled: 1,
+              allowed_tools_json: '{"list_raindrops":["read"]}' }]
         })
       })
     } as unknown as D1Database;
@@ -355,8 +397,8 @@ describe('signed definition activation HTTP boundary', () => {
     return {
       prepare: statement,
       batch: async (queries: unknown[]) => {
-        expect(queries).toHaveLength(2);
-        return [{ meta: { changes } }, { meta: { changes } }];
+        expect(queries).toHaveLength(3);
+        return [{ meta: { changes } }, { meta: { changes } }, { meta: { changes: 0 } }];
       }
     } as unknown as D1Database;
   }

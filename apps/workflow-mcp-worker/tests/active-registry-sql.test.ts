@@ -24,7 +24,7 @@ async function store(): Promise<D1Database | null> {
   for (const name of ['0001_core.sql', '0002_scheduler.sql', '0003_mcp_dependencies.sql',
     '0004_remote_executor.sql', '0005_artifacts.sql', '0006_provenance.sql',
     '0007_connection_versions.sql', '0008_definition_publications.sql',
-    '0009_active_definitions.sql']) {
+    '0009_active_definitions.sql', '0010_webhook_secret_scopes.sql']) {
     sqlite.exec(readFileSync('migrations/' + name, 'utf8'));
   }
   sqlite.prepare(
@@ -179,6 +179,100 @@ describe('real SQLite active pointer and rollback contract', () => {
     expect(pointer).toMatchObject({
       active_digest: entry.definitionDigest, registry_revision: 3, state: 'enabled'
     });
+  });
+
+  it('commits a schedule cutover with activation without rewinding admitted history', async () => {
+    const db = await store();
+    if (!db) throw new Error('node:sqlite is required for the cutover transaction test');
+    const env = { DB: db, DYNAMIC_WORKFLOW_REGISTRY_ENABLED: 'true' } as Env;
+    const scheduledPlan = JSON.parse(JSON.stringify(entry.plan)) as Record<string, unknown>;
+    scheduledPlan.triggers = [
+      { type: 'manual' },
+      { type: 'schedule', id: 'daily-nine', cron: '0 9 * * *', timezone: 'UTC', misfire: 'latest' }
+    ];
+    const digest = 'c'.repeat(64);
+    await db.prepare(
+      `INSERT INTO workflow_definition_versions
+       (definition_digest, workflow_id, dsl_version, normalized_plan_json, source_path, created_at)
+       VALUES (?, ?, 1, ?, ?, ?)`
+    ).bind(digest, entry.metadata.id, JSON.stringify(scheduledPlan), entry.sourcePath, '2026-09-22').run();
+    await db.prepare(
+      `INSERT INTO definition_publications
+       (publication_id, workflow_id, definition_digest, source_sha, repository_id,
+        publisher_run_id, publisher_run_attempt, publisher_workflow_sha, policy_revision, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`
+    ).bind('stage-scheduled', entry.metadata.id, digest, 'd'.repeat(40),
+      publisher.repositoryId, publisher.runId, publisher.runAttempt,
+      publisher.workflowSha, '2026-09-22').run();
+    const scheduleKey = entry.metadata.id + ':daily-nine';
+    await db.prepare(
+      `INSERT INTO scheduler_state
+       (schedule_key, last_evaluated_at, last_admitted_scheduled_time, next_due_occurrence)
+       VALUES (?, 60000, 60000, 120000)`
+    ).bind(scheduleKey).run();
+    const activated = await updateActiveDefinition(
+      request('scheduled-cutover', null, digest, 0), env, publisher, 'activate');
+    expect(activated.status).toBe(200);
+    const state = await new D1WorkflowStore(db).getSchedulerState(scheduleKey);
+    const pointer = await db.prepare(
+      'SELECT activated_at FROM workflow_active_definitions WHERE workflow_id = ?'
+    ).bind(entry.metadata.id).first<{ activated_at: string }>();
+    const activationMinute = Math.floor(Date.parse(pointer!.activated_at) / 60_000) * 60_000;
+    expect(state).toMatchObject({
+      lastEvaluatedAt: activationMinute, lastAdmittedScheduledTime: 60000
+    });
+    expect(state?.nextDueOccurrence).toBeUndefined();
+    // Replays of the same trusted action cannot advance the cutover again.
+    expect((await updateActiveDefinition(
+      request('scheduled-cutover', null, digest, 0), env, publisher, 'activate')).status).toBe(200);
+    expect(await new D1WorkflowStore(db).getSchedulerState(scheduleKey)).toEqual(state);
+    // A rejected stale activation must not mutate the active cursor.
+    expect((await updateActiveDefinition(
+      request('stale-cutover', null, digest, 0), env, publisher, 'activate')).status).toBe(409);
+    expect(await new D1WorkflowStore(db).getSchedulerState(scheduleKey)).toEqual(state);
+
+    // An edited cron/timezone and later removal/re-addition share one durable
+    // cursor. No activation may reset the admitted high-water mark.
+    const editedPlan = JSON.parse(JSON.stringify(scheduledPlan)) as Record<string, unknown>;
+    editedPlan.triggers = [
+      { type: 'manual' },
+      { type: 'schedule', id: 'daily-nine', cron: '15 10 * * *',
+        timezone: 'Asia/Shanghai', misfire: 'latest' }
+    ];
+    const editedDigest = 'e'.repeat(64);
+    await db.prepare(
+      `INSERT INTO workflow_definition_versions
+       (definition_digest, workflow_id, dsl_version, normalized_plan_json, source_path, created_at)
+       VALUES (?, ?, 1, ?, ?, ?)`
+    ).bind(editedDigest, entry.metadata.id, JSON.stringify(editedPlan),
+      entry.sourcePath, '2026-09-22').run();
+    await db.prepare(
+      `INSERT INTO definition_publications
+       (publication_id, workflow_id, definition_digest, source_sha, repository_id,
+        publisher_run_id, publisher_run_attempt, publisher_workflow_sha, policy_revision, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`
+    ).bind('stage-edited-schedule', entry.metadata.id, editedDigest, 'e'.repeat(40),
+      publisher.repositoryId, publisher.runId, publisher.runAttempt,
+      publisher.workflowSha, '2026-09-22').run();
+    const edited = await updateActiveDefinition(
+      request('edit-schedule', digest, editedDigest, 1), env, publisher, 'activate');
+    expect(edited.status).toBe(200);
+    const afterEdit = await new D1WorkflowStore(db).getSchedulerState(scheduleKey);
+    expect(afterEdit?.lastAdmittedScheduledTime).toBe(60000);
+    expect(afterEdit?.lastEvaluatedAt).toBeGreaterThanOrEqual(activationMinute);
+    expect(afterEdit?.nextDueOccurrence).toBeUndefined();
+
+    const removed = await updateActiveDefinition(
+      request('remove-schedule', editedDigest, null, 2), env, publisher, 'deactivate');
+    expect(removed.status).toBe(200);
+    expect(await new D1WorkflowStore(db).getSchedulerState(scheduleKey)).toEqual(afterEdit);
+    const readded = await updateActiveDefinition(
+      request('readd-schedule', null, digest, 3), env, publisher, 'activate');
+    expect(readded.status).toBe(200);
+    const afterReadd = await new D1WorkflowStore(db).getSchedulerState(scheduleKey);
+    expect(afterReadd?.lastAdmittedScheduledTime).toBe(60000);
+    expect(afterReadd?.lastEvaluatedAt).toBeGreaterThanOrEqual(afterEdit!.lastEvaluatedAt);
+    expect(afterReadd?.nextDueOccurrence).toBeUndefined();
   });
 
   it('rejects stale expected revision without changing pointer or recording misleading audit', async () => {
@@ -388,6 +482,71 @@ describe('real SQLite active pointer and rollback contract', () => {
     expect((await call('workflow_status', { runId })).structuredContent).toMatchObject({
       state: 'succeeded', definitionDigest: entry.definitionDigest
     });
+  });
+
+  it('requires a separately approved scoped webhook before activating a new independent definition', async () => {
+    const db = await store();
+    if (!db) throw new Error('node:sqlite is required for real CAS validation');
+    const plan = JSON.parse(JSON.stringify(entry.plan)) as {
+      id: string; triggers: Array<Record<string, unknown>>
+    };
+    plan.triggers.push({ type: 'webhook', id: 'incoming', secret: 'NEW_HOOK_TOKEN' });
+    const digest = 'f'.repeat(64);
+    await db.prepare(`INSERT INTO workflow_definition_versions
+      (definition_digest, workflow_id, dsl_version, normalized_plan_json, source_path, created_at)
+      VALUES (?, ?, 1, ?, ?, '2026-09-22')`
+    ).bind(digest, entry.metadata.id, JSON.stringify(plan), entry.sourcePath).run();
+    await db.prepare(`INSERT INTO definition_publications
+      (publication_id, workflow_id, definition_digest, source_sha, repository_id, publisher_run_id,
+       publisher_run_attempt, publisher_workflow_sha, policy_revision, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, '2026-09-22')`
+    ).bind('independent-webhook-stage', entry.metadata.id, digest, 'c'.repeat(40),
+      publisher.repositoryId, publisher.runId, publisher.runAttempt, publisher.workflowSha).run();
+    const env = { DB: db, WEBHOOK_SECRET_ALLOWLIST: '["NEW_HOOK_TOKEN"]',
+      NEW_HOOK_TOKEN: 'configured-token' } as unknown as Env;
+    const activate = (id: string, before: string | null, target: string | null, revision: number) =>
+      updateActiveDefinition(request(id, before, target, revision), env, publisher,
+        target ? 'activate' : 'deactivate');
+    expect((await activate('before-scope', null, digest, 0)).status).toBe(422);
+    const policy = await db.prepare('SELECT revision FROM connection_policy_revision WHERE singleton = 1')
+      .first<{ revision: number }>();
+    await db.prepare(`INSERT INTO workflow_webhook_secret_scopes
+      (workflow_id, trigger_id, definition_digest, secret_name, policy_revision, enabled, approved_at)
+      VALUES (?, 'incoming', ?, 'NEW_HOOK_TOKEN', ?, 1, '2026-09-22')`
+    ).bind(entry.metadata.id, digest, policy!.revision).run();
+    // The separate scope lookup succeeded, but an emergency disable wins
+    // before the D1 activation transaction claims its first action.
+    const originalBatch = db.batch.bind(db);
+    let revokeBeforeCommit = true;
+    const racingEnv = {
+      ...env,
+      DB: {
+        prepare: db.prepare.bind(db),
+        batch: async (commands: Parameters<D1Database['batch']>[0]) => {
+          if (revokeBeforeCommit) {
+            revokeBeforeCommit = false;
+            await db.prepare(`UPDATE workflow_webhook_secret_scopes SET enabled = 0
+              WHERE definition_digest = ?`).bind(digest).run();
+          }
+          return originalBatch(commands);
+        }
+      } as D1Database
+    } as Env;
+    const race = await updateActiveDefinition(
+      request('revocation-race', null, digest, 0), racingEnv, publisher, 'activate'
+    );
+    expect(race.status).toBe(409);
+    expect((await db.prepare('SELECT COUNT(*) AS count FROM workflow_registry_actions')
+      .first<{ count: number }>())?.count).toBe(0);
+    await db.prepare(`UPDATE workflow_webhook_secret_scopes SET enabled = 1
+      WHERE definition_digest = ?`).bind(digest).run();
+    expect((await activate('approved-hook', null, digest, 0)).status).toBe(200);
+    expect((await activate('disable-hook', digest, null, 1)).status).toBe(200);
+    await db.prepare(`UPDATE workflow_webhook_secret_scopes SET enabled = 0
+      WHERE definition_digest = ?`).bind(digest).run();
+    expect((await activate('revoked-rollback', null, digest, 2)).status).toBe(422);
+    expect((await db.prepare('SELECT state FROM workflow_active_definitions WHERE workflow_id = ?')
+      .bind(entry.metadata.id).first<{ state: string }>())?.state).toBe('disabled');
   });
 
   it('rejects an unstaged target without creating a pointer or audit event', async () => {

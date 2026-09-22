@@ -1,7 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
-import { admitManualWorkflow } from '../src/admission.js';
+import { admitManualWorkflow, admitScheduledWorkflow, admitVersionedWebhookWorkflow } from '../src/admission.js';
+import { handleWebhookTrigger } from '../src/triggers.js';
+import { runSchedulerTick } from '../src/scheduler.js';
 import { registerWorkflowTools } from '../src/mcp.js';
 import type { PublicWorkflowError } from '../src/admission.js';
 import { getWorkflowRegistry } from '../src/registry.js';
@@ -13,7 +15,7 @@ function fixture() {
   const sqlite = new DatabaseSync(':memory:');
   for (const migration of ['0001_core.sql', '0002_scheduler.sql', '0003_mcp_dependencies.sql',
     '0004_remote_executor.sql', '0005_artifacts.sql', '0006_provenance.sql',
-    '0007_connection_versions.sql', '0008_definition_publications.sql', '0009_active_definitions.sql']) {
+    '0007_connection_versions.sql', '0008_definition_publications.sql', '0009_active_definitions.sql', '0010_webhook_secret_scopes.sql']) {
     sqlite.exec(readFileSync('migrations/' + migration, 'utf8'));
   }
   const statement = (sql: string, args: unknown[] = []) => ({
@@ -129,6 +131,256 @@ function fixture() {
 }
 
 const input = { url: 'https://example.test/' };
+
+describe('T08 dynamic scheduler runtime', () => {
+  it('fails closed for schedule overflow or registry outage but continues maintenance', async () => {
+    const f = fixture();
+    try {
+      const plan = JSON.parse(JSON.stringify(original.plan)) as Record<string, unknown>;
+      plan.inputs = {};
+      plan.triggers = [
+        { type: 'manual' },
+        { type: 'schedule', id: 'minute', cron: '* * * * *', timezone: 'UTC', misfire: 'latest' }
+      ];
+      const digest = 'b'.repeat(64);
+      f.save(digest, plan);
+      f.change(digest, 2);
+      const capped = await runSchedulerTick(f.env, Date.now(),
+        { maxSchedules: 0, maintenanceLimit: 1 });
+      expect(capped).toEqual({
+        evaluatedSchedules: 0, admittedRuns: 0, maintenanceProcessed: 0, errors: 1
+      });
+      const base = f.env.DB;
+      const unavailable = {
+        prepare: (sql: string) => {
+          if (sql.includes('FROM workflow_active_definitions a')) throw new Error('registry unavailable');
+          return base.prepare(sql);
+        },
+        batch: base.batch.bind(base)
+      } as D1Database;
+      const degraded = await runSchedulerTick({ ...f.env, DB: unavailable }, Date.now(),
+        { maintenanceLimit: 1 });
+      expect(degraded).toEqual({
+        evaluatedSchedules: 0, admittedRuns: 0, maintenanceProcessed: 0, errors: 1
+      });
+      const dangling = {
+        prepare: (sql: string) => {
+          if (sql.includes('LEFT JOIN workflow_definition_versions')) {
+            return { all: async () => ({ results: [{
+              workflow_id: original.metadata.id, active_digest: digest,
+              registry_revision: 2, normalized_plan_json: null
+            }] }) };
+          }
+          return base.prepare(sql);
+        },
+        batch: base.batch.bind(base)
+      } as unknown as D1Database;
+      const missing = await runSchedulerTick({ ...f.env, DB: dangling }, Date.now(),
+        { maintenanceLimit: 1 });
+      expect(missing).toEqual({
+        evaluatedSchedules: 0, admittedRuns: 0, maintenanceProcessed: 0, errors: 1
+      });
+      expect((f.sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_runs')
+        .get() as { count: number }).count).toBe(0);
+    } finally { f.sqlite.close(); }
+  });
+
+  it('recovers a queued original Run after a failed external start without another admission', async () => {
+    const f = fixture();
+    try {
+      const plan = JSON.parse(JSON.stringify(original.plan)) as Record<string, unknown>;
+      plan.inputs = {};
+      plan.triggers = [
+        { type: 'manual' },
+        { type: 'schedule', id: 'minute', cron: '* * * * *', timezone: 'UTC', misfire: 'latest' }
+      ];
+      const digest = 'f'.repeat(64);
+      f.save(digest, plan);
+      f.change(digest, 2);
+      const minute = Math.floor(Date.now() / 60_000) * 60_000;
+      const key = original.metadata.id + ':minute';
+      f.sqlite.prepare('INSERT INTO scheduler_state (schedule_key, last_evaluated_at) VALUES (?, ?)')
+        .run(key, minute - 60_000);
+      f.failNextCreateBeforePersistence();
+      const failed = await runSchedulerTick(f.env, minute, { maintenanceLimit: 1 });
+      expect(failed).toMatchObject({ evaluatedSchedules: 1, admittedRuns: 0, errors: 1 });
+      expect(f.starts()).toBe(0);
+      const admitted = f.sqlite.prepare(
+        'SELECT run_id, definition_digest FROM workflow_runs'
+      ).get() as { run_id: string; definition_digest: string };
+      expect(admitted.definition_digest).toBe(digest);
+      const recovered = await runSchedulerTick(f.env, minute, { maintenanceLimit: 1 });
+      expect(recovered).toMatchObject({ evaluatedSchedules: 1, admittedRuns: 0, errors: 0 });
+      expect(f.starts()).toBe(1);
+      expect((f.sqlite.prepare('SELECT run_id FROM workflow_runs')
+        .all() as Array<{ run_id: string }>)).toEqual([{ run_id: admitted.run_id }]);
+      expect((f.sqlite.prepare(
+        "SELECT COUNT(*) AS total FROM workflow_events WHERE event_type = 'run.admitted'"
+      ).get() as { total: number }).total).toBe(1);
+    } finally { f.sqlite.close(); }
+  });
+});
+
+describe('T08 schedule edit, removal and rollback', () => {
+  it('does not replay a previous cron or trigger after activation and re-addition', async () => {
+    const f = fixture();
+    try {
+      const plan = JSON.parse(JSON.stringify(original.plan)) as Record<string, unknown>;
+      plan.inputs = {};
+      plan.triggers = [
+        { type: 'manual' },
+        { type: 'schedule', id: 'minute', cron: '* * * * *', timezone: 'UTC', misfire: 'latest' }
+      ];
+      const oldDigest = '1'.repeat(64);
+      const newDigest = '2'.repeat(64);
+      const manualDigest = '3'.repeat(64);
+      f.save(oldDigest, plan);
+      const edited = JSON.parse(JSON.stringify(plan)) as Record<string, unknown>;
+      edited.triggers = [
+        { type: 'manual' },
+        { type: 'schedule', id: 'minute', cron: '* * * * *',
+          timezone: 'Asia/Shanghai', misfire: 'latest' }
+      ];
+      f.save(newDigest, edited);
+      const manual = JSON.parse(JSON.stringify(plan)) as Record<string, unknown>;
+      manual.triggers = [{ type: 'manual' }];
+      f.save(manualDigest, manual);
+
+      const minute = Math.floor(Date.now() / 60_000) * 60_000;
+      const key = original.metadata.id + ':minute';
+      f.change(oldDigest, 2);
+      f.sqlite.prepare('INSERT INTO scheduler_state (schedule_key, last_evaluated_at) VALUES (?, ?)')
+        .run(key, minute - 2 * 60_000);
+      const first = await runSchedulerTick(f.env, minute - 60_000, { maintenanceLimit: 1 });
+      expect(first).toMatchObject({ admittedRuns: 1, errors: 0 });
+
+      // A new timezone is activated at the current minute. An already-due
+      // occurrence from the old version cannot be evaluated under the new one.
+      f.change(newDigest, 3);
+      f.sqlite.prepare('UPDATE scheduler_state SET last_evaluated_at = ? WHERE schedule_key = ?')
+        .run(minute, key);
+      const sameMinute = await runSchedulerTick(f.env, minute, { maintenanceLimit: 1 });
+      expect(sameMinute).toMatchObject({ admittedRuns: 0, errors: 0 });
+      const next = await runSchedulerTick(f.env, minute + 60_000, { maintenanceLimit: 1 });
+      expect(next).toMatchObject({ admittedRuns: 1, errors: 0 });
+      expect((f.sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_runs')
+        .get() as { count: number }).count).toBe(2);
+      const replay = await runSchedulerTick(f.env, minute + 60_000, { maintenanceLimit: 1 });
+      expect(replay).toMatchObject({ admittedRuns: 0, errors: 0 });
+
+      // Removing the trigger stops new starts but retains its durable cursor.
+      f.change(manualDigest, 4);
+      const removed = await runSchedulerTick(f.env, minute + 2 * 60_000,
+        { maintenanceLimit: 1 });
+      expect(removed).toMatchObject({ evaluatedSchedules: 0, admittedRuns: 0, errors: 0 });
+
+      // Re-add/rollback starts strictly after the new activation minute.
+      f.change(oldDigest, 5);
+      f.sqlite.prepare('UPDATE scheduler_state SET last_evaluated_at = ? WHERE schedule_key = ?')
+        .run(minute + 2 * 60_000, key);
+      const restored = await runSchedulerTick(f.env, minute + 2 * 60_000,
+        { maintenanceLimit: 1 });
+      expect(restored).toMatchObject({ admittedRuns: 0, errors: 0 });
+      const later = await runSchedulerTick(f.env, minute + 3 * 60_000,
+        { maintenanceLimit: 1 });
+      expect(later).toMatchObject({ admittedRuns: 1, errors: 0 });
+      const rows = f.sqlite.prepare(
+        "SELECT a.source_key, r.definition_digest FROM workflow_runs r JOIN run_admissions a ON a.run_id = r.run_id ORDER BY CAST(json_extract(r.trigger_json, '$.scheduledTime') AS INTEGER)"
+      ).all() as Array<{ source_key: string; definition_digest: string }>;
+      expect(rows).toEqual([
+        { source_key: String(minute - 60_000), definition_digest: oldDigest },
+        { source_key: String(minute + 60_000), definition_digest: newDigest },
+        { source_key: String(minute + 3 * 60_000), definition_digest: oldDigest }
+      ]);
+      expect(f.starts()).toBe(3);
+    } finally { f.sqlite.close(); }
+  });
+});
+
+describe('T08 atomic versioned schedule admission', () => {
+  it('claims one occurrence in D1 and never admits a stale activation version', async () => {
+    const f = fixture();
+    try {
+      const plan = JSON.parse(JSON.stringify(original.plan)) as Record<string, unknown>;
+      plan.inputs = {};
+      plan.triggers = [
+        { type: 'manual' },
+        { type: 'schedule', id: 'minute', cron: '* * * * *', timezone: 'UTC', misfire: 'latest' }
+      ];
+      const digest = 'd'.repeat(64);
+      f.save(digest, plan);
+      f.change(digest, 2);
+      const scheduledTime = Math.floor(Date.now() / 60_000) * 60_000;
+      const key = original.metadata.id + ':minute';
+      f.sqlite.prepare(
+        `INSERT INTO scheduler_state
+         (schedule_key, last_evaluated_at, last_admitted_scheduled_time)
+         VALUES (?, ?, NULL)`
+      ).run(key, scheduledTime - 60_000);
+      const select = { definitionDigest: digest, registryRevision: 2 };
+      const first = await admitScheduledWorkflow(f.env, original.metadata.id, 'minute', scheduledTime, select);
+      expect(first).toMatchObject({ definitionDigest: digest, alreadyAdmitted: false });
+      expect((f.sqlite.prepare(
+        'SELECT last_admitted_scheduled_time FROM scheduler_state WHERE schedule_key = ?'
+      ).get(key) as { last_admitted_scheduled_time: number }).last_admitted_scheduled_time)
+        .toBe(scheduledTime);
+      const replay = await admitScheduledWorkflow(f.env, original.metadata.id, 'minute', scheduledTime, select);
+      expect(replay).toMatchObject({ runId: first.runId, alreadyAdmitted: true });
+      expect(f.starts()).toBe(1);
+
+      f.change(null, 3);
+      const historical = await admitScheduledWorkflow(f.env, original.metadata.id, 'minute', scheduledTime, select);
+      expect(historical).toMatchObject({
+        runId: first.runId, definitionDigest: digest, alreadyAdmitted: true
+      });
+      await expect(admitScheduledWorkflow(f.env, original.metadata.id, 'minute',
+        scheduledTime + 60_000, select)).rejects.toMatchObject({ code: 'WORKFLOW_NOT_FOUND' });
+      expect((f.sqlite.prepare('SELECT COUNT(*) AS total FROM workflow_runs')
+        .get() as { total: number }).total).toBe(1);
+    } finally { f.sqlite.close(); }
+  });
+
+  it('rejects a stale tick when activation moves the cursor before its D1 batch', async () => {
+    const f = fixture();
+    try {
+      const plan = JSON.parse(JSON.stringify(original.plan)) as Record<string, unknown>;
+      plan.inputs = {};
+      plan.triggers = [
+        { type: 'manual' },
+        { type: 'schedule', id: 'minute', cron: '* * * * *', timezone: 'UTC', misfire: 'latest' }
+      ];
+      const digest = 'e'.repeat(64);
+      f.save(digest, plan);
+      f.change(digest, 2);
+      const scheduledTime = Math.floor(Date.now() / 60_000) * 60_000;
+      const key = original.metadata.id + ':minute';
+      f.sqlite.prepare(
+        'INSERT INTO scheduler_state (schedule_key, last_evaluated_at) VALUES (?, ?)'
+      ).run(key, scheduledTime - 60_000);
+      const baseBatch = f.db.batch.bind(f.db);
+      let cutover = false;
+      const racing = {
+        prepare: f.db.prepare.bind(f.db),
+        batch: async (commands: Parameters<D1Database['batch']>[0]) => {
+          if (!cutover) {
+            cutover = true;
+            f.sqlite.prepare(
+              'UPDATE scheduler_state SET last_evaluated_at = ? WHERE schedule_key = ?'
+            ).run(scheduledTime, key);
+          }
+          return baseBatch(commands);
+        }
+      } as D1Database;
+      await expect(admitScheduledWorkflow({ ...f.env, DB: racing },
+        original.metadata.id, 'minute', scheduledTime, {
+          definitionDigest: digest, registryRevision: 2
+        })).rejects.toMatchObject({ code: 'REGISTRY_CONFLICT' });
+      expect((f.sqlite.prepare('SELECT COUNT(*) AS total FROM run_admissions')
+        .get() as { total: number }).total).toBe(0);
+      expect(f.starts()).toBe(0);
+    } finally { f.sqlite.close(); }
+  });
+});
 
 describe('T06 gated, immutable D1 manual admission', () => {
   it('returns original Run and digest on the same key after an update, disable and rollback', async () => {
@@ -546,4 +798,181 @@ describe('T06 gated, immutable D1 manual admission', () => {
       expect(f.starts()).toBe(1);
     } finally { f.sqlite.close(); }
   });
+  it('rotates to the new trigger credential without granting it the previous Run', async () => {
+    const f = fixture();
+    try {
+      const firstPlan = JSON.parse(JSON.stringify(original.plan)) as {
+        triggers: Array<Record<string, unknown>>
+      };
+      firstPlan.triggers.push({ type: 'webhook', id: 'incoming', secret: 'OLD_HOOK_TOKEN' });
+      const secondPlan = JSON.parse(JSON.stringify(firstPlan)) as typeof firstPlan;
+      secondPlan.triggers[secondPlan.triggers.length - 1]!.secret = 'NEW_HOOK_TOKEN';
+      const firstDigest = 'd'.repeat(64);
+      const secondDigest = 'e'.repeat(64);
+      f.save(firstDigest, firstPlan);
+      f.save(secondDigest, secondPlan);
+      const policy = (f.sqlite.prepare(
+        'SELECT revision FROM connection_policy_revision WHERE singleton = 1'
+      ).get() as { revision: number }).revision;
+      for (const [digest, secret] of [
+        [firstDigest, 'OLD_HOOK_TOKEN'], [secondDigest, 'NEW_HOOK_TOKEN']
+      ] as const) {
+        f.sqlite.prepare(`INSERT INTO workflow_webhook_secret_scopes
+          (workflow_id, trigger_id, definition_digest, secret_name, policy_revision, enabled, approved_at)
+          VALUES (?, 'incoming', ?, ?, ?, 1, '2026-09-22')`)
+          .run(original.metadata.id, digest, secret, policy);
+      }
+      const env = {
+        ...f.env, OLD_HOOK_TOKEN: 'old-token', NEW_HOOK_TOKEN: 'new-token',
+        WEBHOOK_SECRET_ALLOWLIST: JSON.stringify(['OLD_HOOK_TOKEN', 'NEW_HOOK_TOKEN'])
+      } as Env;
+      const request = (token: string, key: string) => new Request(
+        `https://workflow.example/hooks/${original.metadata.id}/incoming`, {
+          method: 'POST', headers: {
+            Authorization: `Bearer ${token}`, 'X-Workflow-Event-Key': key
+          }, body: JSON.stringify({ input })
+        }
+      );
+      const invoke = (token: string, key: string) =>
+        handleWebhookTrigger(request(token, key), env, original.metadata.id, 'incoming');
+      f.change(firstDigest, 2);
+      const initial = await invoke('old-token', 'original-event');
+      expect(initial.status).toBe(202);
+      const originalResponse = await initial.json() as { runId: string };
+      f.change(secondDigest, 3);
+      expect((await invoke('old-token', 'fresh-event')).status).toBe(401);
+      const rotated = await invoke('new-token', 'fresh-event');
+      expect(rotated.status).toBe(202);
+      expect(await rotated.json()).toMatchObject({
+        definitionDigest: secondDigest, alreadyAdmitted: false
+      });
+      expect((await invoke('new-token', 'original-event')).status).toBe(401);
+      const historical = await invoke('old-token', 'original-event');
+      expect(historical.status).toBe(202);
+      expect(await historical.json()).toMatchObject({
+        runId: originalResponse.runId, definitionDigest: firstDigest, alreadyAdmitted: true
+      });
+      expect((f.sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_runs')
+        .get() as { count: number }).count).toBe(2);
+      expect(f.starts()).toBe(2);
+    } finally { f.sqlite.close(); }
+  });
+
+  it('pins the authenticated digest and fails closed after deactivation or scope revocation', async () => {
+    const f = fixture();
+    try {
+      const plan = JSON.parse(JSON.stringify(original.plan)) as {
+        triggers: Array<Record<string, unknown>>
+      };
+      plan.triggers.push({ type: 'webhook', id: 'incoming', secret: 'TEST_WEBHOOK_TOKEN' });
+      const digest = 'c'.repeat(64);
+      f.save(digest, plan);
+      f.change(digest, 2);
+      const revision = (f.sqlite.prepare(
+        'SELECT revision FROM connection_policy_revision WHERE singleton = 1'
+      ).get() as { revision: number }).revision;
+      f.sqlite.prepare(`INSERT INTO workflow_webhook_secret_scopes
+        (workflow_id, trigger_id, definition_digest, secret_name, policy_revision, enabled, approved_at)
+        VALUES (?, 'incoming', ?, 'TEST_WEBHOOK_TOKEN', ?, 1, '2026-09-22')`)
+        .run(original.metadata.id, digest, revision);
+      const selected = { definitionDigest: digest, registryRevision: 2, secretName: 'TEST_WEBHOOK_TOKEN' };
+      const run = (key: string, env = f.env) =>
+        admitVersionedWebhookWorkflow(env, original.metadata.id, 'incoming', input, key, selected);
+      const hookEnv = { ...f.env, TEST_WEBHOOK_TOKEN: 'valid-token',
+        WEBHOOK_SECRET_ALLOWLIST: JSON.stringify(['TEST_WEBHOOK_TOKEN']) } as Env;
+      const request = (token: string, eventKey: string) => new Request(
+        `https://workflow.example/hooks/${original.metadata.id}/incoming`, {
+          method: 'POST', headers: {
+            Authorization: `Bearer ${token}`, 'X-Workflow-Event-Key': eventKey
+          }, body: JSON.stringify({ input })
+        }
+      );
+      const invalid = await handleWebhookTrigger(
+        request('wrong-token', 'invalid-1'), hookEnv, original.metadata.id, 'incoming'
+      );
+      expect(invalid.status).toBe(401);
+      const accepted = await handleWebhookTrigger(
+        request('valid-token', 'http-event'), hookEnv, original.metadata.id, 'incoming'
+      );
+      expect(accepted.status).toBe(202);
+      expect(await accepted.json()).toMatchObject({ definitionDigest: digest, alreadyAdmitted: false });
+      const first = await run('event-1');
+      expect(first).toMatchObject({ definitionDigest: digest, alreadyAdmitted: false });
+      expect(await run('event-1')).toMatchObject({ runId: first.runId, alreadyAdmitted: true });
+      // Even with the same event key, a token validated for a different
+      // digest cannot learn or recover an earlier credential's Run.
+      await expect(admitVersionedWebhookWorkflow(
+        f.env, original.metadata.id, 'incoming', input, 'event-1',
+        { ...selected, definitionDigest: 'd'.repeat(64) }
+      )).rejects.toMatchObject({ code: 'REGISTRY_CONFLICT' });
+      // The signed token was already validated, but the trusted scope can be
+      // revoked before D1's admission transaction. No stale authorization.
+      const baseBatch = f.db.batch.bind(f.db);
+      let revokeAtCommit = true;
+      const racingDb = {
+        prepare: f.db.prepare.bind(f.db),
+        batch: async (commands: Parameters<D1Database['batch']>[0]) => {
+          if (revokeAtCommit) {
+            revokeAtCommit = false;
+            f.sqlite.exec("UPDATE workflow_webhook_secret_scopes SET enabled = 0");
+          }
+          return baseBatch(commands);
+        }
+      } as D1Database;
+      await expect(run('event-race', { ...f.env, DB: racingDb })).rejects
+        .toMatchObject({ code: 'REGISTRY_CONFLICT' });
+      expect((f.sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_runs')
+        .get() as { count: number }).count).toBe(2);
+      f.sqlite.exec("UPDATE workflow_webhook_secret_scopes SET enabled = 1");
+      // A concurrent activation that changes only the registry revision must
+      // also invalidate the already authenticated version before Run insert.
+      let activationAtCommit = true;
+      const activationDb = {
+        prepare: f.db.prepare.bind(f.db),
+        batch: async (commands: Parameters<D1Database['batch']>[0]) => {
+          if (activationAtCommit) {
+            activationAtCommit = false;
+            f.change(digest, 3);
+          }
+          return baseBatch(commands);
+        }
+      } as D1Database;
+      await expect(run('event-activation-race', { ...f.env, DB: activationDb }))
+        .rejects.toMatchObject({ code: 'REGISTRY_CONFLICT' });
+      f.change(digest, 2);
+      expect((f.sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_runs')
+        .get() as { count: number }).count).toBe(2);
+      f.sqlite.exec("UPDATE workflow_webhook_secret_scopes SET enabled = 0");
+      await expect(run('event-2')).rejects.toMatchObject({ code: 'REGISTRY_CONFLICT' });
+      f.sqlite.exec("UPDATE workflow_webhook_secret_scopes SET enabled = 1");
+      f.change(null, 3);
+      await expect(run('event-3')).rejects.toMatchObject({ code: 'WORKFLOW_NOT_FOUND' });
+      const deniedReplay = await handleWebhookTrigger(
+        request('wrong-token', 'http-event'), hookEnv, original.metadata.id, 'incoming'
+      );
+      expect(deniedReplay.status).toBe(401);
+      const historical = await handleWebhookTrigger(
+        request('valid-token', 'http-event'), hookEnv, original.metadata.id, 'incoming'
+      );
+      expect(historical.status).toBe(202);
+      expect(await historical.json()).toMatchObject({
+        definitionDigest: digest, alreadyAdmitted: true
+      });
+      // Historical results remain durable, but their webhook token loses
+      // authorization immediately when the original scope is revoked.
+      f.sqlite.exec("UPDATE workflow_webhook_secret_scopes SET enabled = 0");
+      const revokedReplay = await handleWebhookTrigger(
+        request('valid-token', 'http-event'), hookEnv, original.metadata.id, 'incoming'
+      );
+      expect(revokedReplay.status).toBe(503);
+      await expect(revokedReplay.json()).resolves.toMatchObject({
+        error: { code: 'TRIGGER_AUTH_NOT_CONFIGURED' }
+      });
+      expect((f.sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_runs')
+        .get() as { count: number }).count).toBe(2);
+      expect(f.starts()).toBe(2);
+    } finally { f.sqlite.close(); }
+  });
+
+
 });

@@ -1,7 +1,7 @@
 import { validateVersionedWorkflowPlan } from './runtime-plan-validation.js';
 import { getCapabilityDescriptor } from './capabilities.js';
 import { getConnection } from './connections.js';
-import { getWorkflowRegistry } from './registry.js';
+import { hasApprovedWebhookBinding } from './webhook-secret-policy.js';
 import type { GitHubJobIdentity } from './oidc.js';
 import type { Env } from './types.js';
 
@@ -43,10 +43,11 @@ async function sha256(value: string): Promise<string> {
 }
 
 async function verifyActivationCandidate(
-  db: D1Database,
+  env: Env,
   workflowId: string,
   digest: string
 ): Promise<number | null> {
+  const db = env.DB;
   const version = await db.prepare(
     `SELECT d.normalized_plan_json, d.workflow_id
      FROM workflow_definition_versions d
@@ -83,10 +84,15 @@ async function verifyActivationCandidate(
   }
   for (const trigger of plan.triggers) {
     if (trigger.type !== 'webhook') continue;
-    if (!getWorkflowRegistry().some(entry => entry.metadata.id === workflowId &&
-        (entry.plan as { triggers?: Array<{ type: string; id?: string; secret?: string }> })
-          .triggers?.some(t => t.type === 'webhook' && t.id === trigger.id &&
-            t.secret === trigger.secret))) return null;
+    if (typeof trigger.id !== 'string' || typeof trigger.secret !== 'string' ||
+        !hasApprovedWebhookBinding(env as unknown as Record<string, unknown>, trigger.secret)) return null;
+    const scope = await db.prepare(
+      `SELECT 1 AS approved FROM workflow_webhook_secret_scopes s
+       JOIN connection_policy_revision p ON p.singleton = 1
+       WHERE s.workflow_id = ? AND s.trigger_id = ? AND s.definition_digest = ?
+         AND s.secret_name = ? AND s.enabled = 1 AND s.policy_revision = p.revision`
+    ).bind(workflowId, trigger.id, digest, trigger.secret).first<{ approved: number }>();
+    if (!scope) return null;
   }
   return plan.triggers.filter(trigger => trigger.type === 'schedule').length;
 }
@@ -142,10 +148,13 @@ export async function updateActiveDefinition(
     ).first<{ revision: number }>();
     if (!policy || !Number.isSafeInteger(policy.revision)) return error(503, 'policy_unavailable');
     const targetSchedules = action.targetDigest
-      ? await verifyActivationCandidate(env.DB, action.workflowId, action.targetDigest)
+      ? await verifyActivationCandidate(env, action.workflowId, action.targetDigest)
       : 0;
     if (targetSchedules === null) return error(422, 'definition_not_approved');
     const now = new Date().toISOString();
+    // Activation starts new cron/timezone evaluation strictly after its UTC minute.
+    // Align this timestamp with the active pointer in the SAME D1 transaction.
+    const cutoverMinute = Math.floor(Date.parse(now) / 60_000) * 60_000;
     const results = await env.DB.batch([
       env.DB.prepare(
         `INSERT INTO workflow_registry_actions
@@ -153,6 +162,21 @@ export async function updateActiveDefinition(
           resulting_revision, repository_id, publisher_run_id, publisher_run_attempt, request_digest, created_at)
          SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
          WHERE (SELECT revision FROM connection_policy_revision WHERE singleton = 1) = ?
+           AND (? IS NULL OR NOT EXISTS (
+             SELECT 1 FROM workflow_definition_versions d
+             JOIN json_each(d.normalized_plan_json, '$.triggers') t
+             WHERE d.definition_digest = ? AND d.workflow_id = ?
+               AND json_extract(t.value, '$.type') = 'webhook'
+               AND NOT EXISTS (
+                 SELECT 1 FROM workflow_webhook_secret_scopes s
+                 WHERE s.workflow_id = d.workflow_id
+                   AND s.definition_digest = d.definition_digest
+                   AND s.trigger_id = json_extract(t.value, '$.id')
+                   AND s.secret_name = json_extract(t.value, '$.secret')
+                   AND s.enabled = 1
+                   AND s.policy_revision = ?
+               )
+           ))
            AND ((? = 0 AND NOT EXISTS (
              SELECT 1 FROM workflow_active_definitions WHERE workflow_id = ?
            )) OR EXISTS (
@@ -170,11 +194,12 @@ export async function updateActiveDefinition(
                FROM workflow_active_definitions a
                JOIN workflow_definition_versions d ON d.definition_digest = a.active_digest
                WHERE a.state = 'enabled' AND a.workflow_id != ?
-             ) + ? <= 64
+             ) + ? <= 50
            ))`
       ).bind(action.actionId, action.workflowId, kind, action.expectedDigest, action.targetDigest,
         action.expectedRevision, nextRevision, publisher.repositoryId, publisher.runId,
         publisher.runAttempt, signature, now, policy.revision,
+        action.targetDigest, action.targetDigest, action.workflowId, policy.revision,
         action.expectedRevision, action.workflowId, action.workflowId,
         action.expectedRevision, action.expectedDigest,
         action.targetDigest, action.workflowId, action.workflowId, targetSchedules),
@@ -191,7 +216,28 @@ export async function updateActiveDefinition(
       ).bind(action.workflowId, action.targetDigest, nextRevision,
         action.targetDigest ? 'enabled' : 'disabled',
         action.targetDigest ? now : null, now, action.actionId, signature,
-        action.expectedRevision, action.expectedDigest)
+        action.expectedRevision, action.expectedDigest),
+      // Retain historical admitted-minute high-water marks on update/rollback.
+      // A removed trigger keeps its durable cursor; only the newly enabled
+      // plan's schedule triggers receive a cutover. The active pointer, audit
+      // and cursor are committed together, without a separate scheduler lock.
+      env.DB.prepare(
+        `INSERT INTO scheduler_state
+         (schedule_key, last_evaluated_at, last_admitted_scheduled_time, next_due_occurrence)
+         SELECT ? || ':' || json_extract(t.value, '$.id'), ?, NULL, NULL
+         FROM workflow_definition_versions d, json_each(d.normalized_plan_json, '$.triggers') t
+         WHERE d.workflow_id = ? AND d.definition_digest = ?
+           AND json_extract(t.value, '$.type') = 'schedule'
+           AND EXISTS (SELECT 1 FROM workflow_registry_actions
+                       WHERE action_id = ? AND request_digest = ?)
+           AND EXISTS (SELECT 1 FROM workflow_active_definitions
+                       WHERE workflow_id = ? AND active_digest = ?
+                         AND registry_revision = ? AND state = 'enabled')
+         ON CONFLICT(schedule_key) DO UPDATE SET
+           last_evaluated_at = MAX(scheduler_state.last_evaluated_at, excluded.last_evaluated_at),
+           next_due_occurrence = NULL`
+      ).bind(action.workflowId, cutoverMinute, action.workflowId, action.targetDigest,
+        action.actionId, signature, action.workflowId, action.targetDigest, nextRevision)
     ]);
     if (results[0]?.meta.changes !== 1 || results[1]?.meta.changes !== 1) {
       return error(409, 'revision_conflict');

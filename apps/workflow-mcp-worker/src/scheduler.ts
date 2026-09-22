@@ -3,6 +3,7 @@ import { latestDueOccurrence } from './cron.js';
 import { runMaintenanceBatch } from './maintenance.js';
 import { getWorkflowRegistry } from './registry.js';
 import { asRuntimePlan } from './runtime-plan.js';
+import { validateVersionedWorkflowPlan } from './runtime-plan-validation.js';
 import { D1WorkflowStore } from './storage.js';
 import type { Env } from './types.js';
 
@@ -34,8 +35,66 @@ export async function runSchedulerTick(
   let admittedRuns = 0;
   let errors = 0;
 
-  for (const entry of getWorkflowRegistry()) {
-    const plan = asRuntimePlan(entry.plan);
+  // The new path is enabled only when both existing v0.2 gates are explicitly
+  // enabled. Legacy production Cron and maintenance continue unchanged.
+  const registryEnabled = env.DYNAMIC_WORKFLOW_REGISTRY_ENABLED === 'true';
+  const admissionEnabled = env.DYNAMIC_WORKFLOW_ADMISSION_ENABLED === 'true';
+  if (registryEnabled !== admissionEnabled) {
+    // Never execute a bundled schedule while only one D1 gate is enabled.
+    const maintenanceProcessed = await runMaintenanceBatch(env, maintenanceLimit);
+    return { evaluatedSchedules: 0, admittedRuns: 0, maintenanceProcessed, errors: 1 };
+  }
+  const dynamic = registryEnabled && admissionEnabled;
+  const entries: Array<{
+    plan: ReturnType<typeof asRuntimePlan>;
+    selected?: { definitionDigest: string; registryRevision: number };
+  }> = [];
+  if (dynamic) {
+    // Never silently truncate active schedules or fall back to bundled YAML
+    // after a D1 failure: this would restart an obsolete version.
+    try {
+    const rows = await env.DB.prepare(
+      `SELECT a.workflow_id, a.active_digest, a.registry_revision, d.normalized_plan_json
+       FROM workflow_active_definitions a
+       LEFT JOIN workflow_definition_versions d
+         ON d.definition_digest = a.active_digest AND d.workflow_id = a.workflow_id
+       WHERE a.state = 'enabled' AND a.active_digest IS NOT NULL
+       ORDER BY a.workflow_id`
+    ).all<{
+      workflow_id: string; active_digest: string; registry_revision: number; normalized_plan_json: string | null
+    }>();
+    for (const row of rows.results) {
+      if (!/^[0-9a-f]{64}$/.test(row.active_digest) ||
+          !Number.isSafeInteger(row.registry_revision) || row.registry_revision < 1) {
+        throw new Error('Invalid active schedule version.');
+      }
+      // A dangling active pointer must invalidate the entire D1 schedule
+      // snapshot rather than silently dropping one workflow from evaluation.
+      if (!row.normalized_plan_json) throw new Error('Active schedule definition is missing.');
+      const plan = asRuntimePlan(validateVersionedWorkflowPlan(JSON.parse(row.normalized_plan_json)));
+      if (plan.id !== row.workflow_id) throw new Error('Active schedule workflow mismatch.');
+      entries.push({ plan, selected: {
+        definitionDigest: row.active_digest, registryRevision: row.registry_revision
+      } });
+    }
+    } catch {
+      // Do not run only a partial active set or switch back to bundled YAML.
+      // Preserve scheduled callback and cancellation maintenance on the same Cron.
+      const maintenanceProcessed = await runMaintenanceBatch(env, maintenanceLimit);
+      return { evaluatedSchedules: 0, admittedRuns: 0, maintenanceProcessed, errors: 1 };
+    }
+    const activeScheduleCount = entries.reduce(
+      (count, entry) => count + entry.plan.triggers.filter(isScheduleTrigger).length, 0
+    );
+    if (activeScheduleCount > maxSchedules) {
+      const maintenanceProcessed = await runMaintenanceBatch(env, maintenanceLimit);
+      return { evaluatedSchedules: 0, admittedRuns: 0, maintenanceProcessed, errors: 1 };
+    }
+  } else {
+    for (const entry of getWorkflowRegistry()) entries.push({ plan: asRuntimePlan(entry.plan) });
+  }
+
+  for (const { plan, selected } of entries) {
     for (const candidate of plan.triggers) {
       if (!isScheduleTrigger(candidate)) continue;
       if (evaluatedSchedules >= maxSchedules) break;
@@ -44,6 +103,20 @@ export async function runSchedulerTick(
       const scheduleKey = `${plan.id}:${candidate.id}`;
       try {
         const state = await store.getSchedulerState(scheduleKey);
+        // Missing dynamic cutover is a broken registry invariant. Never
+        // backfill from an arbitrary previous minute in that situation.
+        if (selected && !state) throw new Error('Schedule cutover cursor is missing.');
+        if (selected && state?.lastAdmittedScheduledTime !== undefined) {
+          // D1 may have committed admission and cursor before createBatch lost
+          // its response. Diagnose the original queued Run by the same key,
+          // even when there is no new due minute. Never create a second ID.
+          const lastKey = `schedule:${plan.id}:${candidate.id}:${state.lastAdmittedScheduledTime}`;
+          const original = await store.getAdmissionRun(lastKey);
+          if (original?.state === 'queued') {
+            await admitScheduledWorkflow(env, plan.id, candidate.id,
+              state.lastAdmittedScheduledTime, selected);
+          }
+        }
         const previousEvaluation = state?.lastEvaluatedAt ?? currentMinute - 60_000;
         const due = latestDueOccurrence({
           cron: candidate.cron,
@@ -54,9 +127,9 @@ export async function runSchedulerTick(
 
         let lastAdmitted = state?.lastAdmittedScheduledTime;
         if (due !== null && (lastAdmitted === undefined || due > lastAdmitted)) {
-          await admitScheduledWorkflow(env, plan.id, candidate.id, due);
+          const result = await admitScheduledWorkflow(env, plan.id, candidate.id, due, selected);
           lastAdmitted = due;
-          admittedRuns += 1;
+          if (!result.alreadyAdmitted) admittedRuns += 1;
         }
 
         await store.saveSchedulerState({
@@ -68,7 +141,7 @@ export async function runSchedulerTick(
         errors += 1;
       }
     }
-    if (evaluatedSchedules >= maxSchedules) break;
+    if (!dynamic && evaluatedSchedules >= maxSchedules) break;
   }
 
   const maintenanceProcessed = await runMaintenanceBatch(env, maintenanceLimit);

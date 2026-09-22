@@ -355,6 +355,8 @@ export class D1WorkflowStore {
   async admitVersionPinnedRun(input: AdmissionRequest & {
     expectedRegistryRevision: number;
     expectedPolicyRevision: number;
+    schedulerClaim?: { scheduleKey: string; scheduledTime: number };
+    webhookScope?: { triggerId: string; secretName: string };
   }): Promise<AdmissionResult | null> {
     const createdAt = nowIso();
     const results = await this.db.batch([
@@ -368,11 +370,27 @@ export class D1WorkflowStore {
              AND active_digest = ? AND registry_revision = ?
          ) AND EXISTS (
            SELECT 1 FROM connection_policy_revision WHERE singleton = 1 AND revision = ?
-         )`
+         ) AND (? = 0 OR EXISTS (
+           SELECT 1 FROM workflow_webhook_secret_scopes s
+           WHERE s.workflow_id = ? AND s.trigger_id = ?
+             AND s.definition_digest = ? AND s.secret_name = ?
+             AND s.policy_revision = ? AND s.enabled = 1
+         ))${input.schedulerClaim ? `
+           AND EXISTS (SELECT 1 FROM scheduler_state
+             WHERE schedule_key = ? AND last_evaluated_at < ?
+               AND (last_admitted_scheduled_time IS NULL
+                    OR last_admitted_scheduled_time < ?))` : ''}`
       ).bind(
         input.admissionKey, input.proposedRunId, input.workflowId, input.sourceType,
         input.sourceKey ?? null, createdAt, input.workflowId, input.definitionDigest,
-        input.expectedRegistryRevision, input.expectedPolicyRevision
+        input.expectedRegistryRevision, input.expectedPolicyRevision,
+        input.webhookScope ? 1 : 0, input.workflowId,
+        input.webhookScope?.triggerId ?? '', input.definitionDigest,
+        input.webhookScope?.secretName ?? '', input.expectedPolicyRevision,
+        ...(input.schedulerClaim ? [
+          input.schedulerClaim.scheduleKey, input.schedulerClaim.scheduledTime,
+          input.schedulerClaim.scheduledTime
+        ] : [])
       ),
       this.db.prepare(
         `INSERT OR IGNORE INTO workflow_runs
@@ -408,12 +426,29 @@ export class D1WorkflowStore {
           sourceType: input.sourceType
         }),
         createdAt, input.admissionKey, input.proposedRunId, input.proposedRunId, input.proposedRunId
-      )
+      ),
+      // Claim the scheduled occurrence in the SAME atomic batch as the Run.
+      // An activation's cutover cursor or another tick can veto the first
+      // statement, so a stale tick never advances a new active schedule.
+      ...(input.schedulerClaim ? [
+        this.db.prepare(
+          `UPDATE scheduler_state
+           SET last_admitted_scheduled_time = ?
+           WHERE schedule_key = ? AND last_evaluated_at < ?
+             AND (last_admitted_scheduled_time IS NULL
+                  OR last_admitted_scheduled_time < ?)
+             AND EXISTS (SELECT 1 FROM run_admissions
+               WHERE admission_key = ? AND run_id = ?)`
+        ).bind(input.schedulerClaim.scheduledTime, input.schedulerClaim.scheduleKey,
+          input.schedulerClaim.scheduledTime, input.schedulerClaim.scheduledTime,
+          input.admissionKey, input.proposedRunId)
+      ] : [])
     ]);
     const inserted = (results[0]?.meta.changes ?? 0) === 1;
     if (inserted) {
-      if (results[1]?.meta.changes !== 1 || results[2]?.meta.changes !== 1) {
-        throw new Error('Version-pinned Run and event could not be recorded.');
+      if (results[1]?.meta.changes !== 1 || results[2]?.meta.changes !== 1 ||
+          (input.schedulerClaim && results[3]?.meta.changes !== 1)) {
+        throw new Error('Version-pinned Run, event and schedule claim could not be recorded.');
       }
       return { runId: input.proposedRunId, alreadyAdmitted: false };
     }
@@ -1356,8 +1391,15 @@ export class D1WorkflowStore {
          (schedule_key, last_evaluated_at, last_admitted_scheduled_time, next_due_occurrence)
          VALUES (?, ?, ?, ?)
          ON CONFLICT(schedule_key) DO UPDATE SET
-           last_evaluated_at = excluded.last_evaluated_at,
-           last_admitted_scheduled_time = excluded.last_admitted_scheduled_time,
+           -- Concurrent ticks must never move an existing schedule cursor back.
+           last_evaluated_at = MAX(scheduler_state.last_evaluated_at, excluded.last_evaluated_at),
+           last_admitted_scheduled_time = CASE
+             WHEN excluded.last_admitted_scheduled_time IS NULL
+               THEN scheduler_state.last_admitted_scheduled_time
+             WHEN scheduler_state.last_admitted_scheduled_time IS NULL
+               THEN excluded.last_admitted_scheduled_time
+             ELSE MAX(scheduler_state.last_admitted_scheduled_time, excluded.last_admitted_scheduled_time)
+           END,
            next_due_occurrence = excluded.next_due_occurrence`
       )
       .bind(
