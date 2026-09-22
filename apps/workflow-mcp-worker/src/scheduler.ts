@@ -52,6 +52,7 @@ export async function runSchedulerTick(
   if (dynamic) {
     // Never silently truncate active schedules or fall back to bundled YAML
     // after a D1 failure: this would restart an obsolete version.
+    try {
     const rows = await env.DB.prepare(
       `SELECT a.workflow_id, a.active_digest, a.registry_revision, d.normalized_plan_json
        FROM workflow_active_definitions a
@@ -73,6 +74,19 @@ export async function runSchedulerTick(
         definitionDigest: row.active_digest, registryRevision: row.registry_revision
       } });
     }
+    } catch {
+      // Do not run only a partial active set or switch back to bundled YAML.
+      // Preserve scheduled callback and cancellation maintenance on the same Cron.
+      const maintenanceProcessed = await runMaintenanceBatch(env, maintenanceLimit);
+      return { evaluatedSchedules: 0, admittedRuns: 0, maintenanceProcessed, errors: 1 };
+    }
+    const activeScheduleCount = entries.reduce(
+      (count, entry) => count + entry.plan.triggers.filter(isScheduleTrigger).length, 0
+    );
+    if (activeScheduleCount > maxSchedules) {
+      const maintenanceProcessed = await runMaintenanceBatch(env, maintenanceLimit);
+      return { evaluatedSchedules: 0, admittedRuns: 0, maintenanceProcessed, errors: 1 };
+    }
   } else {
     for (const entry of getWorkflowRegistry()) entries.push({ plan: asRuntimePlan(entry.plan) });
   }
@@ -80,10 +94,7 @@ export async function runSchedulerTick(
   for (const { plan, selected } of entries) {
     for (const candidate of plan.triggers) {
       if (!isScheduleTrigger(candidate)) continue;
-      if (evaluatedSchedules >= maxSchedules) {
-        if (dynamic) throw new Error('Active schedule limit exceeded.');
-        break;
-      }
+      if (evaluatedSchedules >= maxSchedules) break;
 
       evaluatedSchedules += 1;
       const scheduleKey = `${plan.id}:${candidate.id}`;
