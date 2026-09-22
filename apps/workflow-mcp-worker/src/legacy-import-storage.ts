@@ -105,6 +105,12 @@ export async function seedLegacyDefinitions(
   if (!afterPolicy || afterPolicy.revision !== expectedPolicyRevision) {
     throw new Error('Legacy import policy changed; reader gate remains OFF.');
   }
+  // A concurrent Cron tick, Registry action or Run transition after the
+  // preflight must not be misreported as an accepted unchanged cutover baseline.
+  // The additive definitions may already be committed, but the reader remains
+  // OFF; an owner must obtain a new snapshot before any later activation.
+  const after = await readLegacyImportState(db);
+  assertLegacyImportSnapshot({ ...state, definitions: after.definitions }, after);
   return {
     definitionsVerified: prepared.definitions.length,
     inserted: results.reduce((sum, result) => sum + (result.meta.changes ?? 0), 0),
