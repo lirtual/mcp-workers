@@ -106,9 +106,13 @@ async function admitDynamicManualWorkflow(
   const store = new D1WorkflowStore(env.DB);
   const original = await store.getAdmissionRun(source.admissionKey);
   if (original) {
-    // createBatch is idempotent for an existing custom instance ID. Repair
-    // uncertain starts without consulting the new active registry.
-    await env.WORKFLOW.createBatch([{ id: original.runId, params: { runId: original.runId } }]);
+    // Never recreate a terminal historical Run. Only an unfinished Run may
+    // need repair after an uncertain initial createBatch response.
+    if (!new Set<StoredRun['state']>([
+      'succeeded', 'failed', 'cancelled', 'timed_out', 'indeterminate'
+    ]).has(original.state)) {
+      await env.WORKFLOW.createBatch([{ id: original.runId, params: { runId: original.runId } }]);
+    }
     return {
       runId: original.runId, alreadyAdmitted: true,
       definitionDigest: original.definitionDigest, state: original.state
