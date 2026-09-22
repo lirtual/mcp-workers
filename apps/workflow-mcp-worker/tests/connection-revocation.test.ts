@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { authorizePinnedConnectionAttempt, readLiveConnectionControl, resolveRunConnectionPin, type PinnedConnectionAuthority } from '../src/connection-revocation.js';
+import { authorizePinnedConnectionAttempt, readLiveConnectionControl, resolveRunConnectionPin, captureConnectionPins, type PinnedConnectionAuthority } from '../src/connection-revocation.js';
 
 const pinned: PinnedConnectionAuthority = {
   connectionId: 'raindrop',
@@ -93,5 +93,31 @@ describe('Run-scoped Connection pin resolution', () => {
       .rejects.toThrow('unavailable');
     await expect(resolveRunConnectionPin(db('[]', null), 'new-run', 'raindrop', 'list_raindrops', 'read'))
       .rejects.toThrow('invalid');
+  });
+});
+
+describe('Connection pins at admission', () => {
+  function db(rows: Record<string, { current_version: number; disabled: number } | null>): D1Database {
+    return {
+      prepare: () => ({
+        bind: (connectionId: string) => ({ first: async () => rows[connectionId] ?? null })
+      })
+    } as unknown as D1Database;
+  }
+
+  it('pins approved revisions and rejects disabled Connections', async () => {
+    expect(await captureConnectionPins(db({ raindrop: { current_version: 3, disabled: 0 } }), ['raindrop']))
+      .toEqual({ raindrop: 3 });
+    await expect(captureConnectionPins(db({ raindrop: { current_version: 3, disabled: 1 } }), ['raindrop']))
+      .rejects.toThrow('disabled');
+  });
+
+  it('preserves legacy-only admission but rejects mixed or unknown configurations', async () => {
+    expect(await captureConnectionPins(db({}), ['raindrop'])).toBeNull();
+    await expect(captureConnectionPins(db({}), ['unapproved'])).rejects.toThrow('not approved');
+    await expect(captureConnectionPins(
+      db({ raindrop: { current_version: 3, disabled: 0 } }),
+      ['raindrop', 'workflow-self']
+    )).rejects.toThrow('Mixed');
   });
 });
