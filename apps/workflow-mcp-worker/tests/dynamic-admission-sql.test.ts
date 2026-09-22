@@ -294,8 +294,10 @@ describe('T06 gated, immutable D1 manual admission', () => {
       f.sqlite.prepare('UPDATE workflow_runs SET created_at = ? WHERE run_id = ?')
         .run('2020-01-01T00:00:00.000Z', first.runId);
       f.loseInstance(first.runId);
-      await expect(admitManualWorkflow(f.env, original.metadata.id, input, 'expired-recovery'))
-        .rejects.toMatchObject({ code: 'WORKFLOW_RECOVERY_EXPIRED' });
+      const replay = await admitManualWorkflow(f.env, original.metadata.id, input, 'expired-recovery');
+      expect(replay).toMatchObject({
+        runId: first.runId, definitionDigest: first.definitionDigest, alreadyAdmitted: true
+      });
       expect(f.starts()).toBe(1);
     } finally { f.sqlite.close(); }
   });
@@ -315,13 +317,15 @@ describe('T06 gated, immutable D1 manual admission', () => {
     } finally { f.sqlite.close(); }
   });
 
-  it('fails closed on an uncertain instance lookup without another external start', async () => {
+  it('returns original Run on uncertain instance lookup without another external start', async () => {
     const f = fixture();
     try {
       const first = await admitManualWorkflow(f.env, original.metadata.id, input, 'uncertain-lookup');
       f.failLookup(true);
-      await expect(admitManualWorkflow(f.env, original.metadata.id, input, 'uncertain-lookup'))
-        .rejects.toMatchObject({ code: 'WORKFLOW_RECOVERY_UNCERTAIN' });
+      const replay = await admitManualWorkflow(f.env, original.metadata.id, input, 'uncertain-lookup');
+      expect(replay).toMatchObject({
+        runId: first.runId, definitionDigest: first.definitionDigest, alreadyAdmitted: true
+      });
       expect(f.starts()).toBe(1);
       expect((f.sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_runs')
         .get() as { count: number }).count).toBe(1);
