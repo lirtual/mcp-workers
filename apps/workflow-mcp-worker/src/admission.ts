@@ -78,16 +78,28 @@ export async function admitScheduledWorkflow(
   env: Env,
   workflowId: string,
   triggerId: string,
-  scheduledTime: number
+  scheduledTime: number,
+  selected?: { definitionDigest: string; registryRevision: number }
 ): Promise<WorkflowAdmissionResult> {
   const sourceKey = String(scheduledTime);
-  return admitCompiledWorkflow(env, workflowId, {}, {
+  const source: AdmissionSource = {
     admissionKey: `schedule:${workflowId}:${triggerId}:${sourceKey}`,
     sourceType: 'schedule',
     sourceKey,
     trigger: { type: 'schedule', triggerId, scheduledTime },
     deterministicRunId: true
-  });
+  };
+  if (selected) {
+    if (env.DYNAMIC_WORKFLOW_ADMISSION_ENABLED !== 'true' ||
+        env.DYNAMIC_WORKFLOW_REGISTRY_ENABLED !== 'true') {
+      throw new PublicWorkflowError('RUNTIME_NOT_CONFIGURED', 'Versioned schedule admission is disabled.');
+    }
+    return admitDynamicManualWorkflow(env, workflowId, {}, source, {
+      ...selected, triggerId, scheduledTime
+    });
+  }
+  // Retain the v0.1 behavior until the isolated dynamic scheduler is enabled.
+  return admitCompiledWorkflow(env, workflowId, {}, source);
 }
 
 /**
@@ -98,7 +110,8 @@ async function admitDynamicManualWorkflow(
   env: Env,
   workflowId: string,
   rawInput: unknown,
-  source: AdmissionSource
+  source: AdmissionSource,
+  selectedSchedule?: { definitionDigest: string; registryRevision: number; triggerId: string; scheduledTime: number }
 ): Promise<WorkflowAdmissionResult> {
   if (env.DYNAMIC_WORKFLOW_REGISTRY_ENABLED !== 'true' || !env.DB) {
     throw new PublicWorkflowError('RUNTIME_NOT_CONFIGURED', 'Dynamic admission requires the D1 registry.');
@@ -147,6 +160,17 @@ async function admitDynamicManualWorkflow(
     if (plan.id !== workflowId) throw new Error('Workflow mismatch');
   } catch {
     throw new PublicWorkflowError('REGISTRY_UNAVAILABLE', 'Active workflow registry is invalid.');
+  }
+  if (selectedSchedule) {
+    // An activation between scheduler selection and admission cannot authorize
+    // the new version with a stale cron/timezone evaluation.
+    if (active.active_digest !== selectedSchedule.definitionDigest ||
+        active.registry_revision !== selectedSchedule.registryRevision ||
+        !plan.triggers.some(trigger => trigger.type === 'schedule' &&
+          trigger.id === selectedSchedule.triggerId) ||
+        source.trigger.scheduledTime !== selectedSchedule.scheduledTime) {
+      throw new PublicWorkflowError('REGISTRY_CONFLICT', 'Scheduled workflow version changed; retry.');
+    }
   }
   const input = validateWorkflowInput(plan.inputs, rawInput);
   const policy = await env.DB.prepare(
