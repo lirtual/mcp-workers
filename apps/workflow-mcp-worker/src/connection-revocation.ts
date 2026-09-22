@@ -1,4 +1,5 @@
 import type { EffectClass } from './capabilities.js';
+import { getConnection, type McpConnection } from './connections.js';
 
 /**
  * Connection authorization for a single external attempt.
@@ -17,6 +18,7 @@ export interface PinnedConnectionAuthority {
   endpoint: string;
   toolName: string;
   effect: EffectClass;
+  connection?: McpConnection;
 }
 
 export interface LiveConnectionControl {
@@ -121,16 +123,43 @@ export async function resolveRunConnectionPin(
   if (!config || typeof config !== 'object' || Array.isArray(config)) {
     throw new Error('Pinned Connection configuration is invalid.');
   }
-  const endpoint = (config as Record<string, unknown>).endpoint;
-  if (typeof endpoint !== 'string' || !endpoint.startsWith('https://')) {
-    throw new Error('Pinned Connection endpoint is invalid.');
+  // v0.2's first tracer uses a separately approved revision of one of the
+  // bundled endpoints. This explicit allowlist prevents an admin payload or D1
+  // corruption from turning an arbitrary URL into an authenticated fetch.
+  const approved = getConnection(connectionId);
+  const candidate = config as Record<string, unknown>;
+  if (!approved || candidate.endpoint !== approved.endpoint ||
+      candidate.protocolVersion !== approved.protocolVersion ||
+      candidate.transport !== 'streamable-http' ||
+      candidate.authSecret !== approved.auth.secret ||
+      candidate.trustAnnotations !== false) {
+    throw new Error('Pinned Connection configuration is not approved.');
   }
+  const rawTools = candidate.tools;
+  if (!rawTools || typeof rawTools !== 'object' || Array.isArray(rawTools)) {
+    throw new Error('Pinned Connection tool policy is invalid.');
+  }
+  const tools: Record<string, { effect: EffectClass; operationIdArgument?: string }> = {};
+  for (const [name, value] of Object.entries(rawTools)) {
+    const original = approved.tools[name];
+    if (!original || !value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('Pinned Connection tool policy is not approved.');
+    }
+    const tool = value as Record<string, unknown>;
+    if (tool.effect !== original.effect || tool.operationIdArgument !== original.operationIdArgument) {
+      throw new Error('Pinned Connection tool policy is not approved.');
+    }
+    tools[name] = original;
+  }
+  if (Object.keys(tools).length === 0) throw new Error('Pinned Connection has no approved tools.');
+  const connection: McpConnection = { ...approved, tools };
   return {
     connectionId,
     version: version as number,
-    endpoint,
+    endpoint: connection.endpoint,
     toolName,
-    effect
+    effect,
+    connection
   };
 }
 
