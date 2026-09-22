@@ -138,7 +138,7 @@ export async function changeActiveDefinition(
       ? [workflowId, expectedRevision, expectedDigest]
       : [workflowId];
     const extra = kind === 'activate'
-      ? [nextDigest, workflowId, workflowId, identity.repositoryId, policyRevision] : [];
+      ? [nextDigest, workflowId, workflowId, identity.repositoryId, policyRevision!] : [];
     const claim = env.DB.prepare(
       `INSERT INTO workflow_registry_actions
        (action_id, workflow_id, action_kind, previous_digest, next_digest,
