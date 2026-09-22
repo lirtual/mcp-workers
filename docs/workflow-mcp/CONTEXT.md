@@ -25,6 +25,18 @@ The mapping of available Workflow IDs to versions currently eligible for new Run
 ### Connection Configuration Version
 A recorded revision of administratively approved, non-secret Connection metadata and operation policy. It is distinct from the secret value and from a Workflow Definition Version.
 
+### Definition Catalog
+A version-controlled collection of independently deliverable Workflow Definition Packages under an approved authoring authority. A catalog is not itself an executable runtime or a credential source.
+
+### Publication Evidence
+Verifiable proof associating a reviewed source revision, canonical definition digest, validation outcome, and authorized publication decision.
+
+### Activation Point
+The logical boundary at which a selected Workflow Definition Version becomes eligible for new Run admission and corresponding schedule evaluation.
+
+### Connection Revocation
+An administratively controlled prohibition on new operations against a Connection or operation. Revocation applies even when a Run has pinned an earlier configuration version.
+
 ### Workflow Definition Version
 An immutable revision of a Workflow Definition identified by the canonical content of that definition rather than by the storage system that happened to contain it. Every Workflow Run is associated with exactly one definition version so later edits cannot change the meaning of an existing run.
 
@@ -220,7 +232,11 @@ A restricted declarative expression that reads workflow data and computes condit
 - A change to the Active Registry affects future admission only; nonterminal Runs retain immutable Pinned Plans, and deactivation never silently cancels them.
 - Git-authored definition content is authoritative; registry persistence is the approved runtime projection, not an unrestricted second authoring source.
 - Connection Configuration Versions are non-secret; their associated credentials remain protected and are not supplied in a Workflow Definition Package.
-
+- Definition Catalog membership does not itself authorize execution; publication evidence and activation are separate decisions.
+- The Active Registry and scheduler handoff preserve one logical admission per scheduled occurrence across definition version changes.
+- Connection revocation blocks new external operations even for a Run using an older Connection Configuration Version; secrets are never copied into its Pinned Plan.
+- Validation of a definition package does not itself authorize production activation, and rollback preserves historical plans and audit records.
+- Historical definition versions referenced by admitted Runs remain available for recovery.
 - Trigger, Workflow, Capability, and Executor are distinct concepts and must not be conflated.
 - Trigger Events are normalized before workflow logic consumes them.
 - Repeated delivery of one event can resolve to one admitted Workflow Run without implying exactly-once downstream side effects.
