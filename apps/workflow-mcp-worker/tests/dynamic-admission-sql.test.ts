@@ -41,6 +41,7 @@ function fixture() {
   let lostResponse = false;
   let uncertainLookup = false;
   let uncertainStatus = false;
+  let missingOnStatus = false;
   const instances = new Set<string>();
   const env = {
     DB: db,
@@ -49,13 +50,18 @@ function fixture() {
     WORKFLOW: {
       get: async (id: string) => {
         if (uncertainLookup) throw new Error('simulated upstream timeout');
-        if (!instances.has(id)) throw Object.assign(new Error('Instance does not exist'), {
+        if (!instances.has(id) && !missingOnStatus) throw Object.assign(new Error('Instance does not exist'), {
           code: 'instance.not_found'
         });
         return {
           id,
           status: async () => {
             if (uncertainStatus) throw new Error('simulated status RPC timeout');
+            if (missingOnStatus) {
+              throw Object.assign(new Error('Instance missing on status'), {
+                code: 'instance.not_found'
+              });
+            }
             return { status: 'queued' };
           }
         };
@@ -106,7 +112,8 @@ function fixture() {
     loseNextResponse: () => { lostResponse = true; },
     loseInstance: (id: string) => { instances.delete(id); },
     failLookup: (fail: boolean) => { uncertainLookup = fail; },
-    failStatus: (fail: boolean) => { uncertainStatus = fail; }
+    failStatus: (fail: boolean) => { uncertainStatus = fail; },
+    missOnStatus: (missing: boolean) => { missingOnStatus = missing; }
   };
 }
 
@@ -382,6 +389,24 @@ describe('T06 gated, immutable D1 manual admission', () => {
         runId: first.runId, definitionDigest: first.definitionDigest, alreadyAdmitted: true
       });
       expect(f.starts()).toBe(1);
+    } finally { f.sqlite.close(); }
+  });
+
+  it('reuses the original ID when the handle exists but status confirms missing instance', async () => {
+    const f = fixture();
+    try {
+      const first = await admitManualWorkflow(f.env, original.metadata.id, input, 'status-missing');
+      f.loseInstance(first.runId);
+      // A binding may return a handle from get() and report absence at status().
+      // Only the positively identified not-found status permits same-ID repair.
+      f.missOnStatus(true);
+      const replay = await admitManualWorkflow(f.env, original.metadata.id, input, 'status-missing');
+      expect(replay).toMatchObject({
+        runId: first.runId, definitionDigest: first.definitionDigest, alreadyAdmitted: true
+      });
+      expect(f.starts()).toBe(2);
+      expect((f.sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_runs')
+        .get() as { count: number }).count).toBe(1);
     } finally { f.sqlite.close(); }
   });
 
