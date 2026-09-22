@@ -71,6 +71,23 @@ const planSchema = z.object({
       }
     }
   }
+
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const visit = (step: string): void => {
+    if (visited.has(step)) return;
+    if (visiting.has(step)) {
+      context.addIssue({ code: 'custom', message: 'Normalized workflow DAG contains a cycle.' });
+      return;
+    }
+    visiting.add(step);
+    for (const dependency of plan.steps[step]?.needs ?? []) {
+      if (names.has(dependency)) visit(dependency);
+    }
+    visiting.delete(step);
+    visited.add(step);
+  };
+  for (const step of names) visit(step);
 });
 
 /** Validate external/stored plans without parsing YAML or importing node:crypto. */
