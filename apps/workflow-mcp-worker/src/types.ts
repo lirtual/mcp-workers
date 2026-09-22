@@ -9,6 +9,8 @@ export interface Env {
     timestamp?: string;
   };
   MCP_ACCESS_TOKEN?: string;
+  /** Explicit OFF-by-default gate for isolated D1-backed list/get only. */
+  DYNAMIC_WORKFLOW_REGISTRY_ENABLED?: string;
   EXECUTOR_LEASE_SECRET?: string;
   GITHUB_ACTIONS_TOKEN?: string;
   GITHUB_REPOSITORY?: string;
