@@ -209,7 +209,10 @@ async function recoverDynamicInstance(env: Env, run: StoredRun): Promise<void> {
   // Existing instances are safe to read at any age. The recovery window
   // restricts recreation only, not access to an original admitted Run.
   try {
-    await env.WORKFLOW.get(run.runId);
+    const instance = await env.WORKFLOW.get(run.runId);
+    // A handle alone is insufficient evidence of a persisted instance on
+    // every binding implementation. Confirm status before claiming recovery.
+    await instance.status();
     return;
   } catch (error) {
     const code = error && typeof error === 'object' && 'code' in error
