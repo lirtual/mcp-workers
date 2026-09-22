@@ -158,8 +158,9 @@ export async function stageDefinition(
       env.DB.prepare(
         `INSERT OR IGNORE INTO workflow_definition_versions
          (definition_digest, workflow_id, dsl_version, normalized_plan_json, source_path, source_commit, created_at)
-         VALUES (?, ?, 1, ?, ?, ?, ?)`
-      ).bind(definitionDigest, workflowId, serialized, sourcePath, sourceSha, now),
+         SELECT ?, ?, 1, ?, ?, ?, ?
+         WHERE (SELECT revision FROM connection_policy_revision WHERE singleton = 1) = ?`
+      ).bind(definitionDigest, workflowId, serialized, sourcePath, sourceSha, now, policyRevision),
       env.DB.prepare(
         `INSERT OR IGNORE INTO definition_publications
          (publication_id, workflow_id, definition_digest, source_sha, repository_id,
