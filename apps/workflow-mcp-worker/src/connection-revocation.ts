@@ -87,3 +87,49 @@ export async function readLiveConnectionControl(
     allowedTools: tools
   };
 }
+
+/**
+ * Resolve the immutable revision selected at Run admission. NULL is reserved
+ * solely for pre-v0.2 Runs. A non-null malformed map or missing revision
+ * fails closed instead of silently falling back to the static connection.
+ */
+export async function resolveRunConnectionPin(
+  db: D1Database,
+  runId: string,
+  connectionId: string,
+  toolName: string,
+  effect: EffectClass
+): Promise<PinnedConnectionAuthority | undefined> {
+  const run = await db.prepare(
+    'SELECT connection_versions_json FROM workflow_runs WHERE run_id = ?'
+  ).bind(runId).first<{ connection_versions_json: string | null }>();
+  if (!run) throw new Error('Pinned Run is unavailable.');
+  if (run.connection_versions_json === null) return undefined;
+  const versions: unknown = JSON.parse(run.connection_versions_json);
+  if (!versions || typeof versions !== 'object' || Array.isArray(versions)) {
+    throw new Error('Run Connection pins are invalid.');
+  }
+  const version = (versions as Record<string, unknown>)[connectionId];
+  if (!Number.isSafeInteger(version) || (version as number) < 1) {
+    throw new Error('Run Connection revision is unavailable.');
+  }
+  const row = await db.prepare(
+    'SELECT config_json FROM connection_config_versions WHERE connection_id = ? AND version = ?'
+  ).bind(connectionId, version).first<{ config_json: string }>();
+  if (!row) throw new Error('Pinned Connection revision is unavailable.');
+  const config: unknown = JSON.parse(row.config_json);
+  if (!config || typeof config !== 'object' || Array.isArray(config)) {
+    throw new Error('Pinned Connection configuration is invalid.');
+  }
+  const endpoint = (config as Record<string, unknown>).endpoint;
+  if (typeof endpoint !== 'string' || !endpoint.startsWith('https://')) {
+    throw new Error('Pinned Connection endpoint is invalid.');
+  }
+  return {
+    connectionId,
+    version: version as number,
+    endpoint,
+    toolName,
+    effect
+  };
+}
