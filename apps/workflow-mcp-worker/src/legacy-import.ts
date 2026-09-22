@@ -43,9 +43,17 @@ export function prepareLegacyImport(state: LegacyImportState,
   // No D1 mutation or change of read/admission gates happens in this phase.
   assertReleaseCompatibility(state.nonterminal);
   const expected = Object.entries(LEGACY_DEFINITIONS);
+  const knownIds = new Set(expected.map(([id]) => id));
   if (entries.length !== expected.length || new Set(entries.map(e => e.metadata.id)).size !== expected.length ||
       state.definitions.length !== new Set(state.definitions.map(d => d.definitionDigest)).size) {
     throw new Error('Legacy definition inventory is incomplete or duplicated.');
+  }
+  // The static v0.1 reader only exposes four workflows. A separately
+  // activated workflow would become visible at cutover, so it requires an
+  // independent approved migration rather than being silently adopted here.
+  if (new Set(state.active.map(row => row.workflowId)).size !== state.active.length ||
+      state.active.some(row => !knownIds.has(row.workflowId))) {
+    throw new Error('Unexpected or duplicate active workflow blocks legacy cutover.');
   }
   const approved = new Set(state.approvedConnectionIds);
   const rows = entries.map(entry => {
