@@ -132,6 +132,41 @@ function fixture() {
 const input = { url: 'https://example.test/' };
 
 describe('T08 dynamic scheduler runtime', () => {
+  it('fails closed for schedule overflow or registry outage but continues maintenance', async () => {
+    const f = fixture();
+    try {
+      const plan = JSON.parse(JSON.stringify(original.plan)) as Record<string, unknown>;
+      plan.inputs = {};
+      plan.triggers = [
+        { type: 'manual' },
+        { type: 'schedule', id: 'minute', cron: '* * * * *', timezone: 'UTC', misfire: 'latest' }
+      ];
+      const digest = 'b'.repeat(64);
+      f.save(digest, plan);
+      f.change(digest, 2);
+      const capped = await runSchedulerTick(f.env, Date.now(),
+        { maxSchedules: 0, maintenanceLimit: 1 });
+      expect(capped).toEqual({
+        evaluatedSchedules: 0, admittedRuns: 0, maintenanceProcessed: 0, errors: 1
+      });
+      const base = f.env.DB;
+      const unavailable = {
+        prepare: (sql: string) => {
+          if (sql.includes('FROM workflow_active_definitions a')) throw new Error('registry unavailable');
+          return base.prepare(sql);
+        },
+        batch: base.batch.bind(base)
+      } as D1Database;
+      const degraded = await runSchedulerTick({ ...f.env, DB: unavailable }, Date.now(),
+        { maintenanceLimit: 1 });
+      expect(degraded).toEqual({
+        evaluatedSchedules: 0, admittedRuns: 0, maintenanceProcessed: 0, errors: 1
+      });
+      expect((f.sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_runs')
+        .get() as { count: number }).count).toBe(0);
+    } finally { f.sqlite.close(); }
+  });
+
   it('recovers a queued original Run after a failed external start without another admission', async () => {
     const f = fixture();
     try {
