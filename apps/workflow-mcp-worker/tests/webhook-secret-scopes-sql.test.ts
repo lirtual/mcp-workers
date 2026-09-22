@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 function fixture() {
   const db = new DatabaseSync(':memory:');
+  db.exec('PRAGMA foreign_keys = ON');
   try {
     for (const migration of [
       '0001_core.sql', '0002_scheduler.sql', '0003_mcp_dependencies.sql',
