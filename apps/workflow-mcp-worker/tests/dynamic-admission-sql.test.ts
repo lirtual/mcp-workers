@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
-import { admitManualWorkflow, PublicWorkflowError } from '../src/admission.js';
+import { admitManualWorkflow } from '../src/admission.js';
+import type { PublicWorkflowError } from '../src/admission.js';
 import { getWorkflowRegistry } from '../src/registry.js';
 import type { Env } from '../src/types.js';
 
