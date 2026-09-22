@@ -1,6 +1,7 @@
 import type { LegacyImportState } from './legacy-import.js';
 import { prepareLegacyImport } from './legacy-import.js';
 import { getConnection } from './connections.js';
+import { assertLegacyImportSnapshot, readLegacyImportState } from './legacy-import-snapshot.js';
 
 /**
  * Additive, fail-closed v0.1 definition seed. The caller must supply a fresh
@@ -69,6 +70,9 @@ export async function seedLegacyDefinitions(
       }
     }
   }
+  // A trusted caller cannot suppress incompatible historical Runs or claim an
+  // empty registry when D1 holds a different authoritative snapshot.
+  assertLegacyImportSnapshot(state, await readLegacyImportState(db));
   const now = new Date().toISOString();
   const results = await db.batch(prepared.definitions.map(row => db.prepare(
     `INSERT OR IGNORE INTO workflow_definition_versions
