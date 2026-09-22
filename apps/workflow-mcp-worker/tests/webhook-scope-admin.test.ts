@@ -72,6 +72,14 @@ describe('T07 protected webhook secret registration', () => {
       expect(f.sqlite.prepare('SELECT count(*) AS n FROM workflow_webhook_secret_scopes').get()).toEqual({n: 1});
     } finally { f.sqlite.close(); }
   });
+  it('does not report a revoked or stale scope as successfully replayed', async () => {
+    const f = fixture();
+    try {
+      expect((await f.register(f.body('action-one'))).status).toBe(200);
+      f.sqlite.exec('UPDATE workflow_webhook_secret_scopes SET enabled = 0');
+      expect((await f.register(f.body('action-one'))).status).toBe(409);
+    } finally { f.sqlite.close(); }
+  });
   it('rejects undeclared or protected tokens, stale policy and conflicting action', async () => {
     const f = fixture();
     try {
