@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { admitManualWorkflow, admitScheduledWorkflow } from '../src/admission.js';
+import { runSchedulerTick } from '../src/scheduler.js';
 import { registerWorkflowTools } from '../src/mcp.js';
 import type { PublicWorkflowError } from '../src/admission.js';
 import { getWorkflowRegistry } from '../src/registry.js';
@@ -129,6 +130,43 @@ function fixture() {
 }
 
 const input = { url: 'https://example.test/' };
+
+describe('T08 dynamic scheduler runtime', () => {
+  it('recovers a queued original Run after a failed external start without another admission', async () => {
+    const f = fixture();
+    try {
+      const plan = JSON.parse(JSON.stringify(original.plan)) as Record<string, unknown>;
+      plan.inputs = {};
+      plan.triggers = [
+        { type: 'manual' },
+        { type: 'schedule', id: 'minute', cron: '* * * * *', timezone: 'UTC', misfire: 'latest' }
+      ];
+      const digest = 'f'.repeat(64);
+      f.save(digest, plan);
+      f.change(digest, 2);
+      const minute = Math.floor(Date.now() / 60_000) * 60_000;
+      const key = original.metadata.id + ':minute';
+      f.sqlite.prepare('INSERT INTO scheduler_state (schedule_key, last_evaluated_at) VALUES (?, ?)')
+        .run(key, minute - 60_000);
+      f.failNextCreateBeforePersistence();
+      const failed = await runSchedulerTick(f.env, minute, { maintenanceLimit: 1 });
+      expect(failed).toMatchObject({ evaluatedSchedules: 1, admittedRuns: 0, errors: 1 });
+      expect(f.starts()).toBe(0);
+      const admitted = f.sqlite.prepare(
+        'SELECT run_id, definition_digest FROM workflow_runs'
+      ).get() as { run_id: string; definition_digest: string };
+      expect(admitted.definition_digest).toBe(digest);
+      const recovered = await runSchedulerTick(f.env, minute, { maintenanceLimit: 1 });
+      expect(recovered).toMatchObject({ evaluatedSchedules: 1, admittedRuns: 0, errors: 0 });
+      expect(f.starts()).toBe(1);
+      expect((f.sqlite.prepare('SELECT run_id FROM workflow_runs')
+        .all() as Array<{ run_id: string }>)).toEqual([{ run_id: admitted.run_id }]);
+      expect((f.sqlite.prepare(
+        "SELECT COUNT(*) AS total FROM workflow_events WHERE event_type = 'run.admitted'"
+      ).get() as { total: number }).total).toBe(1);
+    } finally { f.sqlite.close(); }
+  });
+});
 
 describe('T08 atomic versioned schedule admission', () => {
   it('claims one occurrence in D1 and never admits a stale activation version', async () => {
