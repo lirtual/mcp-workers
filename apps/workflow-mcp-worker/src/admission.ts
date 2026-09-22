@@ -1,14 +1,15 @@
 import { captureConnectionPins } from './connection-revocation.js';
 import { currentEngineVersion } from './provenance.js';
 import { findWorkflow } from './registry.js';
+import { validateVersionedWorkflowPlan } from './runtime-plan-validation.js';
 import type { RuntimeInputDefinition, RuntimePlan } from './runtime-plan.js';
 import { asRuntimePlan } from './runtime-plan.js';
-import { D1WorkflowStore, type AdmissionResult } from './storage.js';
+import { D1WorkflowStore, type AdmissionResult, type StoredRun } from './storage.js';
 import type { Env, WorkflowRegistryEntry } from './types.js';
 
 export interface WorkflowAdmissionResult extends AdmissionResult {
   definitionDigest: string;
-  state: 'queued';
+  state: StoredRun['state'];
 }
 
 interface AdmissionSource {
@@ -34,7 +35,7 @@ export async function admitManualWorkflow(
 
   const randomPart = crypto.randomUUID();
   const sourceKey = idempotencyKey ?? randomPart;
-  return admitCompiledWorkflow(env, workflowId, rawInput, {
+  const source: AdmissionSource = {
     admissionKey:
       idempotencyKey === undefined
         ? `manual:${workflowId}:run:${randomPart}`
@@ -43,7 +44,11 @@ export async function admitManualWorkflow(
     sourceKey,
     trigger: { type: 'manual' },
     deterministicRunId: idempotencyKey !== undefined
-  });
+  };
+  if (env.DYNAMIC_WORKFLOW_ADMISSION_ENABLED === 'true') {
+    return admitDynamicManualWorkflow(env, workflowId, rawInput, source);
+  }
+  return admitCompiledWorkflow(env, workflowId, rawInput, source);
 }
 
 export async function admitWebhookWorkflow(
@@ -83,6 +88,159 @@ export async function admitScheduledWorkflow(
     trigger: { type: 'schedule', triggerId, scheduledTime },
     deterministicRunId: true
   });
+}
+
+/**
+ * T06: manual-only, gated D1 admission. Duplicates resolve from the existing
+ * admission key before consulting any newer/disabled active definition.
+ */
+async function admitDynamicManualWorkflow(
+  env: Env,
+  workflowId: string,
+  rawInput: unknown,
+  source: AdmissionSource
+): Promise<WorkflowAdmissionResult> {
+  if (env.DYNAMIC_WORKFLOW_REGISTRY_ENABLED !== 'true' || !env.DB) {
+    throw new PublicWorkflowError('RUNTIME_NOT_CONFIGURED', 'Dynamic admission requires the D1 registry.');
+  }
+  const store = new D1WorkflowStore(env.DB);
+  const original = await store.getAdmissionRun(source.admissionKey);
+  if (original) {
+    // Never recreate a terminal historical Run. Only an unfinished Run may
+    // need repair after an uncertain initial createBatch response.
+    await recoverDynamicInstance(env, original);
+    return {
+      runId: original.runId, alreadyAdmitted: true,
+      definitionDigest: original.definitionDigest, state: original.state
+    };
+  }
+
+  const active = await env.DB.prepare(
+    `SELECT a.active_digest, a.registry_revision, d.normalized_plan_json
+     FROM workflow_active_definitions a
+     JOIN workflow_definition_versions d ON d.definition_digest = a.active_digest
+     WHERE a.workflow_id = ? AND a.state = 'enabled' AND d.workflow_id = a.workflow_id`
+  ).bind(workflowId).first<{
+    active_digest: string; registry_revision: number; normalized_plan_json: string
+  }>();
+  if (!active) {
+    // Another request can win this Admission Key between our initial lookup
+    // and the active-pointer read. Resolve that durable winner even if the
+    // definition was deactivated in the meantime.
+    const winner = await store.getAdmissionRun(source.admissionKey);
+    if (winner) {
+      await recoverDynamicInstance(env, winner);
+      return {
+        runId: winner.runId, alreadyAdmitted: true,
+        definitionDigest: winner.definitionDigest, state: winner.state
+      };
+    }
+    throw new PublicWorkflowError('WORKFLOW_NOT_FOUND', 'Workflow definition was not found.');
+  }
+  if (!Number.isSafeInteger(active.registry_revision) || active.registry_revision < 1 ||
+      !/^[0-9a-f]{64}$/.test(active.active_digest)) {
+    throw new PublicWorkflowError('REGISTRY_UNAVAILABLE', 'Active workflow registry is invalid.');
+  }
+  let plan: RuntimePlan;
+  try {
+    plan = asRuntimePlan(validateVersionedWorkflowPlan(JSON.parse(active.normalized_plan_json)));
+    if (plan.id !== workflowId) throw new Error('Workflow mismatch');
+  } catch {
+    throw new PublicWorkflowError('REGISTRY_UNAVAILABLE', 'Active workflow registry is invalid.');
+  }
+  const input = validateWorkflowInput(plan.inputs, rawInput);
+  const policy = await env.DB.prepare(
+    'SELECT revision FROM connection_policy_revision WHERE singleton = 1'
+  ).first<{ revision: number }>();
+  if (!policy || !Number.isSafeInteger(policy.revision) || policy.revision < 1) {
+    throw new PublicWorkflowError('POLICY_UNAVAILABLE', 'Approved Connection policy is unavailable.');
+  }
+  const connectionIds = Object.values(plan.steps)
+    .filter(step => step.uses === 'mcp.call')
+    .map(step => step.with.connection)
+    .filter((value): value is string => typeof value === 'string');
+  const connectionVersions = await captureConnectionPins(env.DB, connectionIds);
+  const proposedRunId = source.deterministicRunId
+    ? `run_${(await sha256Hex(source.admissionKey)).slice(0, 40)}`
+    : `run_${crypto.randomUUID()}`;
+  const admitted = await store.admitVersionPinnedRun({
+    connectionVersions, admissionKey: source.admissionKey, proposedRunId,
+    workflowId, definitionDigest: active.active_digest, input,
+    trigger: source.trigger, sourceType: source.sourceType, sourceKey: source.sourceKey,
+    engineVersion: currentEngineVersion(env), expectedRegistryRevision: active.registry_revision,
+    expectedPolicyRevision: policy.revision
+  });
+  if (!admitted) {
+    // The active revision may have changed while a same-key rival admitted.
+    // Return the existing immutable Run rather than a spurious conflict.
+    const winner = await store.getAdmissionRun(source.admissionKey);
+    if (winner) {
+      await recoverDynamicInstance(env, winner);
+      return {
+        runId: winner.runId, alreadyAdmitted: true,
+        definitionDigest: winner.definitionDigest, state: winner.state
+      };
+    }
+    throw new PublicWorkflowError('REGISTRY_CONFLICT', 'Active workflow changed during admission; retry.');
+  }
+  const recorded = await store.getRun(admitted.runId);
+  if (!recorded) {
+    throw new PublicWorkflowError('ADMISSION_UNAVAILABLE', 'Durable admission record is unavailable.');
+  }
+  // A concurrent request may have won the key. Never restart a terminal Run.
+  if (admitted.alreadyAdmitted) {
+    await recoverDynamicInstance(env, recorded);
+  } else {
+    await env.WORKFLOW.createBatch([{ id: admitted.runId, params: { runId: admitted.runId } }]);
+  }
+  return {
+    ...admitted, definitionDigest: recorded.definitionDigest, state: recorded.state
+  };
+}
+
+/**
+ * Only repair a queued, already-admitted Run. Inspect the external instance
+ * first; an uncertain lookup is not evidence of absence. A specifically
+ * reported not-found instance is recreated with the original ID, never a
+ * different ID or a new definition. Do not restart running/terminal history.
+ */
+async function recoverDynamicInstance(env: Env, run: StoredRun): Promise<void> {
+  if (run.state !== 'queued') return;
+  // Existing instances are safe to read at any age. The recovery window
+  // restricts recreation only, not access to an original admitted Run.
+  try {
+    const instance = await env.WORKFLOW.get(run.runId);
+    // A handle alone is insufficient evidence of a persisted instance on
+    // every binding implementation. Confirm status before claiming recovery.
+    await instance.status();
+    return;
+  } catch (error) {
+    const code = error && typeof error === 'object' && 'code' in error
+      ? String(error.code) : '';
+    if (code !== 'instance.not_found') {
+      // Lookup failures are not evidence that an instance is absent. Return
+      // the durable original Run instead of creating a second instance.
+      console.warn('workflow.recovery.uncertain', { runId: run.runId });
+      return;
+    }
+  }
+  // Only a positively identified missing instance can be reconsidered. An
+  // unknown Cloudflare error is handled above as uncertain (fail closed).
+  const admittedAt = Date.parse(run.createdAt);
+  const ageMs = Date.now() - admittedAt;
+  if (!Number.isFinite(admittedAt) || ageMs < 0 || ageMs > 60 * 60 * 1000) {
+    // An expired repair window must not invalidate a durable Admission Key.
+    console.warn('workflow.recovery.expired', { runId: run.runId });
+    return;
+  }
+  // Cloudflare createBatch skips an existing custom ID within retention. An
+  // uncertain create response must never erase an already admitted Run or
+  // prompt another instance ID; a later duplicate diagnoses the same ID.
+  try {
+    await env.WORKFLOW.createBatch([{ id: run.runId, params: { runId: run.runId } }]);
+  } catch {
+    console.warn('workflow.recovery.create_uncertain', { runId: run.runId });
+  }
 }
 
 async function admitCompiledWorkflow(
