@@ -99,6 +99,9 @@ export async function stageDefinition(
     for (const step of Object.values(plan.steps)) {
       const descriptor = getCapabilityDescriptor(step.uses);
       if (!descriptor || descriptor.executor !== step.executor) return failure(400, 'unsupported_capability');
+      if (Object.keys(step.with).some(name => !descriptor.allowedInputs.has(name))) {
+        return failure(400, 'invalid_capability_input');
+      }
       if (step.uses !== 'mcp.call') {
         if (step.retryMaxAttempts && step.retryMaxAttempts > descriptor.maxAutomaticAttempts) {
           return failure(400, 'unsafe_retry');
@@ -142,13 +145,14 @@ export async function stageDefinition(
     for (const existing of getWorkflowRegistry()) {
       const candidate = existing.plan as { triggers?: Array<Record<string, unknown>> };
       for (const trigger of candidate.triggers ?? []) {
-        if (trigger.type === 'webhook' && typeof trigger.secret === 'string') {
-          webhookRefs.add(trigger.secret);
+        if (trigger.type === 'webhook' && typeof trigger.secret === 'string' &&
+            typeof trigger.id === 'string') {
+          webhookRefs.add(existing.metadata.id + ':' + trigger.id + ':' + trigger.secret);
         }
       }
     }
     for (const trigger of plan.triggers) {
-      if (trigger.type === 'webhook' && (typeof trigger.secret !== 'string' || !webhookRefs.has(trigger.secret))) {
+      if (trigger.type === 'webhook' && (typeof trigger.secret !== 'string' || !webhookRefs.has(plan.id + ':' + String(trigger.id) + ':' + trigger.secret))) {
         return failure(403, 'unapproved_webhook_reference');
       }
     }
