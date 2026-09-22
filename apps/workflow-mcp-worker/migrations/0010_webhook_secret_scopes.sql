@@ -30,6 +30,6 @@ CREATE TABLE IF NOT EXISTS webhook_secret_scope_actions (
   definition_digest TEXT NOT NULL,
   secret_name TEXT NOT NULL,
   expected_policy_revision INTEGER NOT NULL CHECK (expected_policy_revision > 0),
-  resulting_policy_revision INTEGER NOT NULL CHECK (resulting_policy_revision > expected_policy_revision),
+  resulting_policy_revision INTEGER NOT NULL CHECK (resulting_policy_revision = expected_policy_revision),
   created_at TEXT NOT NULL
 );
