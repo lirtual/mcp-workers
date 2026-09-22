@@ -1,3 +1,4 @@
+/* global URL, Request, Response, Buffer, TextEncoder, console */
 // Node 24 / GitHub Actions: real SQLite verification of the exact D1 migration
 // and admin SQL, without connecting to any remote Cloudflare environment.
 import assert from 'node:assert/strict';
