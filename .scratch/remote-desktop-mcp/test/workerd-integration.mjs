@@ -1,7 +1,8 @@
 // THROWAWAY local workerd integration test for #173; upstream runs in a no-network Docker sandbox, never on the real host.
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { spawn } from "node:child_process";
+import { spawn, execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { randomBytes } from "node:crypto";
 import { writeFile, rm, mkdtemp, chmod } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -19,6 +20,24 @@ const base = "http://127.0.0.1:18773";
 let child, socket, fixtureRoot;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const auth = (value) => ({ authorization: `Bearer ${value}` });
+const execFileAsync = promisify(execFile);
+const inspectorBin = resolve(root, "node_modules/@modelcontextprotocol/inspector/clients/launcher/build/index.js");
+async function inspector(method, extra = []) {
+  // Do not print the process argv or its ephemeral Authorization header to CI.
+  let stdout;
+  try {
+    ({ stdout } = await execFileAsync(process.execPath, [
+      inspectorBin, "--cli", base + "/mcp",
+      "--transport", "http", "--protocol-era", "legacy",
+      "--method", method, "--header", `Authorization: Bearer ${mcpToken}`,
+      "--format", "json", ...extra,
+    ], { cwd: root, timeout: 30000, maxBuffer: 65536 }));
+  } catch (e) {
+    throw new Error(`inspector_${method.replace("/", "_")}_failed_${e.code ?? "unknown"}`);
+  }
+  try { return JSON.parse(stdout).result; }
+  catch { throw new Error("inspector_invalid_json_result"); }
+}
 
 async function call(method, params, id = 1, credential = mcpToken) {
   const response = await fetch(base + "/mcp", {
@@ -66,6 +85,11 @@ try {
     "throwaway-remote-desktop-prototype");
   const list = await call("tools/list", {});
   assert.deepEqual(list.data.result.tools.map((x) => x.name), ["sandbox_ping", "sandbox_list_directory"]);
+  // Official MCP Inspector CLI, not a hand-crafted JSON-RPC client.
+  // The prototype deliberately negotiates the pre-2026-07 legacy protocol.
+  const inspected = await inspector("tools/list", ["--strict"]);
+  assert.deepEqual(inspected.tools.map((tool) => tool.name),
+    ["sandbox_ping", "sandbox_list_directory"]);
   assert.equal((await call("tools/call", { name: "sandbox_list_directory", arguments: { path: "/" } }, 6)).data.error.code, -32602);
   assert.equal((await call("tools/call", { name: "sandbox_list_directory", arguments: {} }, 7)).data.error.message, "offline");
   assert.equal((await call("tools/list", {}, 5, "wrong-token")).status, 401);
@@ -119,6 +143,10 @@ try {
   });
   const echoed = await call("tools/call", { name: "sandbox_ping", arguments: { echo: "hello" } }, 10);
   assert.deepEqual(JSON.parse(echoed.data.result.content[0].text), { echo: "hello" });
+  const inspectedPing = await inspector("tools/call", [
+    "--tool-name", "sandbox_ping", "--tool-args-json", '{"echo":"inspector"}',
+  ]);
+  assert.deepEqual(JSON.parse(inspectedPing.content[0].text), { echo: "inspector" });
   const listed = await call("tools/call", { name: "sandbox_list_directory", arguments: {} }, 17);
   assert.deepEqual(JSON.parse(listed.data.result.content[0].text), { entries: ["test-only.txt"] });
 
@@ -194,7 +222,7 @@ try {
   const response = await once(forbidden, "unexpected-response");
   assert.equal(response[1].statusCode, 403);
   forbidden.terminate();
-  console.log("PASS local workerd: MCP initialize/list, real isolated upstream stdio round trip, fixed directory read, invalid path, unauthorized admin/device, oversized HTTP/WebSocket UTF-8, malformed WebSocket/JSON, forbidden tools, auth, offline, WebSocket echo, concurrency, timeout, disconnect, reconnect, revoke");
+  console.log("PASS local workerd: official MCP Inspector legacy tool listing/call, MCP initialize/list, real isolated upstream stdio round trip, fixed directory read, invalid path, unauthorized admin/device, oversized HTTP/WebSocket UTF-8, malformed WebSocket/JSON, forbidden tools, auth, offline, WebSocket echo, concurrency, timeout, disconnect, reconnect, revoke");
 } finally {
   socket?.terminate();
   if (child && child.exitCode === null) {
