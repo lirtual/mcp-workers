@@ -107,8 +107,8 @@ describe('protected Connection disable CAS', () => {
     return {
       prepare,
       batch: async (statements: unknown[]) => {
-        expect(statements).toHaveLength(2);
-        return [{ meta: { changes } }, { meta: { changes } }];
+        expect(statements).toHaveLength(3);
+        return [{ meta: { changes } }, { meta: { changes } }, { meta: { changes } }];
       }
     } as unknown as D1Database;
   }
@@ -148,8 +148,8 @@ describe('protected bounded Connection registration', () => {
         bind: () => ({ first: async () => null })
       }),
       batch: async (statements: unknown[]) => {
-        expect(statements).toHaveLength(3);
-        return [{ meta: { changes: 1 } }, { meta: { changes } }, { meta: { changes } }];
+        expect(statements).toHaveLength(4);
+        return [{ meta: { changes: 1 } }, { meta: { changes } }, { meta: { changes } }, { meta: { changes } }];
       }
     } as unknown as D1Database;
   }
