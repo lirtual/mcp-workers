@@ -94,3 +94,47 @@ describe('protected publisher admin boundary', () => {
     expect(await handleAdminRoute(new Request('https://example.test/mcp'), env, options)).toBeNull();
   });
 });
+
+describe('protected Connection disable CAS', () => {
+  function db(changes: number): D1Database {
+    const prepare = (sql: string) => ({
+      bind: (..._args: unknown[]) => ({
+        first: async () => null,
+        run: async () => ({ meta: { changes: 1 } }),
+        sql
+      })
+    });
+    return {
+      prepare,
+      batch: async (statements: unknown[]) => {
+        expect(statements).toHaveLength(2);
+        return [{ meta: { changes } }, { meta: { changes } }];
+      }
+    } as unknown as D1Database;
+  }
+  async function disable(database: D1Database, body: unknown, bearer?: string): Promise<Response> {
+    const request = new Request('https://example.test/admin/connections/disable', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', authorization: bearer ?? 'Bearer ' + await token() },
+      body: JSON.stringify(body)
+    });
+    return (await handleAdminRoute(request, { ...env, DB: database }, options))!;
+  }
+
+  it('requires valid publisher identity and strict action shape', async () => {
+    const body = { actionId: 'disable-1', connectionId: 'raindrop', expectedRevision: 1 };
+    expect((await disable(db(1), body, 'Bearer ordinary-mcp-secret')).status).toBe(401);
+    expect((await disable(db(1), { ...body, credential: 'must-not-persist' })).status).toBe(400);
+    expect((await disable(db(1), { ...body, expectedRevision: -1 })).status).toBe(400);
+  });
+
+  it('atomically claims CAS or rejects stale revision without leaking credentials', async () => {
+    const body = { actionId: 'disable-1', connectionId: 'raindrop', expectedRevision: 1 };
+    const accepted = await disable(db(1), body);
+    expect(accepted.status).toBe(200);
+    expect(await accepted.json()).toEqual({ connectionId: 'raindrop', revision: 2, disabled: true });
+    const stale = await disable(db(0), body);
+    expect(stale.status).toBe(409);
+    expect(await stale.text()).not.toContain('ordinary-mcp-secret');
+  });
+});
