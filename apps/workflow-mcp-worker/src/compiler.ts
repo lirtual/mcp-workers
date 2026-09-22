@@ -68,7 +68,7 @@ type RawWorkflowDefinition = z.infer<typeof workflowDefinitionSchema>;
 export interface TrustedCompilePolicy {
   readonly revision: number;
   readonly connections: Readonly<
-    Record<string, { readonly tools: Readonly<Record<string, { readonly effect: EffectClass }>> }>
+    Record<string, { readonly tools: Readonly<Record<string, { readonly effect: EffectClass }>>; readonly enabled?: boolean; readonly version?: number }>
   >;
 }
 
@@ -440,7 +440,9 @@ function normalizeWorkflow(raw: RawWorkflowDefinition, policy?: TrustedCompilePo
       }
       if (policy) {
         const approvedConnection = policy.connections[connection];
-        if (!approvedConnection) fail('Unapproved MCP connection in step "' + stepId + '".');
+        if (!approvedConnection || approvedConnection.enabled === false) {
+          fail('Unapproved or disabled MCP connection in step "' + stepId + '".');
+        }
         const approvedTool = approvedConnection.tools[tool];
         if (!approvedTool) fail('Unapproved MCP tool in step "' + stepId + '".');
         operationMaxAttempts = compileTimeMcpRetryLimitForApprovedTool(approvedTool.effect);
