@@ -72,7 +72,7 @@ function request(actionId: string, expectedDigest: string | null, targetDigest: 
 describe('real SQLite active pointer and rollback contract', () => {
   it('activates exact staged digest, hides on deactivation and rolls back using activate', async () => {
     const db = await store();
-    if (!db) return;
+    if (!db) throw new Error('node:sqlite is required for real CAS validation');
     const env = { DB: db, DYNAMIC_WORKFLOW_REGISTRY_ENABLED: 'true' } as Env;
     expect(await listVisibleWorkflows(env)).toEqual([]);
     const first = await updateActiveDefinition(
@@ -98,7 +98,7 @@ describe('real SQLite active pointer and rollback contract', () => {
 
   it('rejects stale expected revision without changing pointer or recording misleading audit', async () => {
     const db = await store();
-    if (!db) return;
+    if (!db) throw new Error('node:sqlite is required for real CAS validation');
     const env = { DB: db } as Env;
     expect((await updateActiveDefinition(request('first', null, entry.definitionDigest, 0),
       env, publisher, 'activate')).status).toBe(200);
