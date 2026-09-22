@@ -20,6 +20,7 @@ const envelope = () => ({
   sourceSha,
   sourcePath: entry.sourcePath,
   policyRevision: 1,
+  manifestVersion: 1,
   plan: entry.plan,
   metadata: entry.metadata
 });
@@ -90,6 +91,7 @@ describe('immutable staged definition with real SQLite', () => {
     expect((await stageDefinition(send({ ...envelope(), definitionDigest: 'b'.repeat(64) }), env, publisher)).status).toBe(422);
     expect((await stageDefinition(send({ ...envelope(), metadata: { ...entry.metadata, name: 'forged' } }), env, publisher)).status).toBe(422);
     expect((await stageDefinition(send({ ...envelope(), policyRevision: 100 }), env, publisher)).status).toBe(409);
+    expect((await stageDefinition(send({ ...envelope(), manifestVersion: 99 }), env, publisher)).status).toBe(422);
     expect((await stageDefinition(send(envelope()), env, publisher)).status).toBe(200);
     const changed = { ...envelope(), sourceSha: 'b'.repeat(40) };
     expect((await stageDefinition(send(changed), env, publisher)).status).toBe(409);
