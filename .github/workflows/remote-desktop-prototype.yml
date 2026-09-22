@@ -44,8 +44,15 @@ jobs:
             @wonderwhy-er/desktop-commander@0.2.51
       - name: Exercise local workerd WebSocket + synthetic MCP (no deploy)
         run: node .scratch/remote-desktop-mcp/test/workerd-integration.mjs
-      - name: Verify real pinned Desktop Commander stdio (fixed fixture only)
-        run: node .scratch/remote-desktop-mcp/test/upstream-stdio-proof.mjs
+      - name: Verify real pinned Desktop Commander stdio in locked-down test container
+        run: |
+          docker run --rm --network none --read-only \
+            --cap-drop ALL --security-opt no-new-privileges \
+            --pids-limit 128 --memory 1g --cpus 1 \
+            --user 1000:1000 --tmpfs /tmp:rw,nosuid,nodev,size=64m \
+            --volume "$PWD/.scratch/remote-desktop-mcp:/prototype:ro" \
+            --workdir /prototype node:24-bookworm-slim \
+            node test/upstream-stdio-proof.mjs
       - name: Force Durable Object eviction and verify hibernated WebSocket
         working-directory: .scratch/remote-desktop-mcp
         run: ./node_modules/.bin/vitest run --config vitest.config.mjs
