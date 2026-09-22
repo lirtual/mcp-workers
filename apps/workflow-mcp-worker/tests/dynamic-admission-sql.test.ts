@@ -42,6 +42,7 @@ function fixture() {
   let uncertainLookup = false;
   let uncertainStatus = false;
   let missingOnStatus = false;
+  let restShapedMissing = false;
   const instances = new Set<string>();
   const env = {
     DB: db,
@@ -50,6 +51,9 @@ function fixture() {
     WORKFLOW: {
       get: async (id: string) => {
         if (uncertainLookup) throw new Error('simulated upstream timeout');
+        if (restShapedMissing && !instances.has(id)) {
+          throw Object.assign(new Error('workflows.api.error.instance.not_found'), { code: 10400 });
+        }
         if (!instances.has(id) && !missingOnStatus) throw Object.assign(new Error('Instance does not exist'), {
           code: 'instance.not_found'
         });
@@ -113,7 +117,8 @@ function fixture() {
     loseInstance: (id: string) => { instances.delete(id); },
     failLookup: (fail: boolean) => { uncertainLookup = fail; },
     failStatus: (fail: boolean) => { uncertainStatus = fail; },
-    missOnStatus: (missing: boolean) => { missingOnStatus = missing; }
+    missOnStatus: (missing: boolean) => { missingOnStatus = missing; },
+    useRestShapedMissing: (enabled: boolean) => { restShapedMissing = enabled; }
   };
 }
 
@@ -439,6 +444,23 @@ describe('T06 gated, immutable D1 manual admission', () => {
         runId: first.runId, definitionDigest: first.definitionDigest, alreadyAdmitted: true
       });
       expect(f.starts()).toBe(2);
+      expect((f.sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_runs')
+        .get() as { count: number }).count).toBe(1);
+    } finally { f.sqlite.close(); }
+  });
+
+  it('does not mistake REST API 10400 for verified Workflow binding absence', async () => {
+    const f = fixture();
+    try {
+      const first = await admitManualWorkflow(f.env, original.metadata.id, input, 'rest-10400');
+      f.loseInstance(first.runId);
+      f.useRestShapedMissing(true);
+      const replay = await admitManualWorkflow(f.env, original.metadata.id, input, 'rest-10400');
+      expect(replay).toMatchObject({
+        runId: first.runId, definitionDigest: first.definitionDigest, alreadyAdmitted: true
+      });
+      // REST evidence alone must not authorize recreation of an external instance.
+      expect(f.starts()).toBe(1);
       expect((f.sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_runs')
         .get() as { count: number }).count).toBe(1);
     } finally { f.sqlite.close(); }
