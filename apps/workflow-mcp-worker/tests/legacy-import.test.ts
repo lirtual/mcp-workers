@@ -79,6 +79,26 @@ describe('T10 v0.1 import preflight (no D1 writes)', () => {
       .toThrow(/explicit compatible approval/);
   });
 
+  it('blocks unexpected or duplicate active workflows before static-to-D1 cutover', () => {
+    const active = {
+      workflowId: 'local-http-smoke',
+      activeDigest: LEGACY_DEFINITIONS['local-http-smoke'],
+      registryRevision: 1,
+      state: 'enabled' as const
+    };
+    expect(() => prepareLegacyImport({
+      ...state(), active: [active, { ...active }]
+    })).toThrow(/Unexpected or duplicate active workflow/);
+    expect(() => prepareLegacyImport({
+      ...state(), active: [{
+        ...active, workflowId: 'unexpected-catalog-definition'
+      }]
+    })).toThrow(/Unexpected or duplicate active workflow/);
+    expect(() => prepareLegacyImport({
+      ...state(), active: [active]
+    }).definitions).toHaveLength(4);
+  });
+
   it('fails closed for missing or inconsistent historical daily-nine high-water mark', () => {
     expect(() => prepareLegacyImport({ ...state(), scheduler: [] })).toThrow(/high-water mark/);
     expect(() => prepareLegacyImport({ ...state(), scheduler: [
