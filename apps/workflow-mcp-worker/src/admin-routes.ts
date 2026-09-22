@@ -158,7 +158,7 @@ export async function handleAdminRoute(
   if (disableRoute) return disableConnection(request, env);
   if (registerRoute) return registerApprovedConnection(request, env.DB);
   if (stageRoute) return stageDefinition(request, env, publisher);
-  if (webhookScopeRoute) return registerApprovedWebhookScope(request, env.DB);
+  if (webhookScopeRoute) return registerApprovedWebhookScope(request, env);
   if (activateRoute || deactivateRoute) {
     return updateActiveDefinition(request, env, publisher, activateRoute ? 'activate' : 'deactivate');
   }
