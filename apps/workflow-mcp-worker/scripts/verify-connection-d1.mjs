@@ -236,6 +236,39 @@ assert.equal((await admin('/admin/definitions/stage',
   { ...stage, policyRevision: 3 })).status, 409);
 assert.equal((await admin('/admin/definitions/stage',
   { ...stage, sourceSha: 'invalid' })).status, 400);
+const ordinary = await handleAdminRoute(request('/admin/definitions/stage', stage, env.MCP_ACCESS_TOKEN), env, opts);
+assert.equal(ordinary.status, 401);
+assert.equal((await handleAdminRoute(new Request('https://example.test/admin/definitions/activate', {
+  method: 'POST', headers: { Authorization: 'Bearer ' + bearer },
+  body: JSON.stringify(stage)
+}), env, opts)).status, 404);
+const malformed = { ...stage, plan: { ...entry.plan, steps: {} } };
+assert.equal((await admin('/admin/definitions/stage', malformed)).status, 400);
+const oversized = { ...stage, padding: 'X'.repeat(330 * 1024) };
+assert.equal((await admin('/admin/definitions/stage', oversized)).status, 413);
+async function withPlan(plan) {
+  const canonical = value => {
+    if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']';
+    if (value && typeof value === 'object') return '{' + Object.keys(value).sort()
+      .map(k => JSON.stringify(k) + ':' + canonical(value[k])).join(',') + '}';
+    return JSON.stringify(value);
+  };
+  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(canonical(plan)));
+  const definitionDigest = [...new Uint8Array(hash)].map(b => b.toString(16).padStart(2, '0')).join('');
+  return { ...stage, plan, definitionDigest };
+}
+const unknownCapability = structuredClone(entry.plan);
+unknownCapability.steps.fetch.uses = 'not.approved';
+assert.equal((await admin('/admin/definitions/stage', await withPlan(unknownCapability))).status, 400);
+const unsafeRetry = structuredClone(entry.plan);
+unsafeRetry.steps.fetch.retryMaxAttempts = 4;
+assert.equal((await admin('/admin/definitions/stage', await withPlan(unsafeRetry))).status, 400);
+const unknownWebhook = structuredClone(entry.plan);
+unknownWebhook.triggers.push({ type: 'webhook', id: 'unknown', secret: 'UNAPPROVED_REF' });
+assert.equal((await admin('/admin/definitions/stage', await withPlan(unknownWebhook))).status, 403);
+assert.equal((await admin('/admin/definitions/stage', {
+  ...stage, connectionVersions: { notApproved: 1 }
+})).status, 400);
 const differingSource = await admin('/admin/definitions/stage',
   { ...stage, sourceSha: 'b'.repeat(40) });
 assert.equal(differingSource.status, 200);
