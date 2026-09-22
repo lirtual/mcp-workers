@@ -1,10 +1,11 @@
 import { updateActiveDefinition } from './active-registry-admin.js';
+import { registerApprovedWebhookScope } from './webhook-scope-admin.js';
 import { stageDefinition } from './definition-stage.js';
 import { registerApprovedConnection } from './connection-admin.js';
 import { getConnection } from './connections.js';
 import { verifyGitHubOidcToken, type GitHubOidcVerificationConfig } from './oidc.js';
 import { GITHUB_EXECUTOR_CONFIG } from './platform-config.js';
-import { getWorkflowRegistry } from './registry.js';
+import { hasApprovedWebhookBinding } from './webhook-secret-policy.js';
 import type { Env } from './types.js';
 
 const ADMIN_AUDIENCE = 'workflow-mcp-publisher';
@@ -44,19 +45,6 @@ async function policySnapshot(env: AdminEnv): Promise<Record<string, unknown>> {
       ]))
     };
   }
-  const webhookBindings: Array<{ workflowId: string; triggerId: string; referenceId: string }> = [];
-  for (const entry of getWorkflowRegistry()) {
-    const plan = entry.plan as { triggers?: Array<Record<string, unknown>> };
-    for (const trigger of plan.triggers ?? []) {
-      if (trigger.type === 'webhook' && typeof trigger.id === 'string' && typeof trigger.secret === 'string') {
-        webhookBindings.push({
-          workflowId: entry.metadata.id,
-          triggerId: trigger.id,
-          referenceId: trigger.secret
-        });
-      }
-    }
-  }
   // A missing D1 binding is a configuration failure, never an approval of
   // synthetic bootstrap data from an unverified static policy.
   if (!env.DB) throw new Error('Approved policy store is unavailable.');
@@ -65,6 +53,31 @@ async function policySnapshot(env: AdminEnv): Promise<Record<string, unknown>> {
   ).first<{ revision: number }>();
   if (!revision || !Number.isSafeInteger(revision.revision) || revision.revision < 1) {
     throw new Error('Approved policy revision is unavailable.');
+  }
+  // Only durable scopes at this precise approved revision are publisher-visible.
+  // A bundled YAML trigger is never itself permission to use a Worker Secret.
+  const scopes = await env.DB.prepare(
+    `SELECT DISTINCT workflow_id, trigger_id, secret_name, policy_revision
+     FROM workflow_webhook_secret_scopes
+     WHERE enabled = 1
+       AND policy_revision = (SELECT revision FROM connection_policy_revision WHERE singleton = 1)
+     ORDER BY workflow_id, trigger_id, secret_name LIMIT 65`
+  ).all<{
+    workflow_id: string; trigger_id: string; secret_name: string; policy_revision: number
+  }>();
+  if (scopes.results.length > 64) throw new Error('Approved webhook binding snapshot exceeds bound.');
+  const webhookBindings: Array<{ workflowId: string; triggerId: string; referenceId: string }> = [];
+  for (const scope of scopes.results) {
+    if (scope.policy_revision !== revision.revision ||
+        !hasApprovedWebhookBinding(env as unknown as Record<string, unknown>, scope.secret_name)) {
+      throw new Error('Approved webhook binding snapshot is invalid.');
+    }
+    if (!webhookBindings.some(binding => binding.workflowId === scope.workflow_id &&
+        binding.triggerId === scope.trigger_id && binding.referenceId === scope.secret_name)) {
+      webhookBindings.push({
+        workflowId: scope.workflow_id, triggerId: scope.trigger_id, referenceId: scope.secret_name
+      });
+    }
   }
   const listed = await env.DB.prepare(
     'SELECT connection_id, current_version, disabled, allowed_tools_json FROM connection_controls ORDER BY connection_id LIMIT 33'
@@ -121,9 +134,10 @@ export async function handleAdminRoute(
   const disableRoute = url.pathname === '/admin/connections/disable';
   const registerRoute = url.pathname === '/admin/connections/register';
   const stageRoute = url.pathname === '/admin/definitions/stage';
+  const webhookScopeRoute = url.pathname === '/admin/webhooks/scopes/register';
   const activateRoute = url.pathname === '/admin/definitions/activate';
   const deactivateRoute = url.pathname === '/admin/definitions/deactivate';
-  if (!snapshotRoute && !disableRoute && !registerRoute && !stageRoute && !activateRoute && !deactivateRoute) return reply(404, 'not_found');
+  if (!snapshotRoute && !disableRoute && !registerRoute && !stageRoute && !activateRoute && !deactivateRoute && !webhookScopeRoute) return reply(404, 'not_found');
   if (request.method !== (snapshotRoute ? 'GET' : 'POST')) return reply(405, 'method_not_allowed');
 
   const repositoryId = required(env.ADMIN_PUBLISHER_REPOSITORY_ID);
@@ -156,6 +170,7 @@ export async function handleAdminRoute(
   if (disableRoute) return disableConnection(request, env);
   if (registerRoute) return registerApprovedConnection(request, env.DB);
   if (stageRoute) return stageDefinition(request, env, publisher);
+  if (webhookScopeRoute) return registerApprovedWebhookScope(request, env);
   if (activateRoute || deactivateRoute) {
     return updateActiveDefinition(request, env, publisher, activateRoute ? 'activate' : 'deactivate');
   }

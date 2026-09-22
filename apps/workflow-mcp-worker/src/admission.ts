@@ -74,6 +74,27 @@ export async function admitWebhookWorkflow(
   });
 }
 
+/** Admit only the immutable webhook version that authenticated this caller. */
+export async function admitVersionedWebhookWorkflow(
+  env: Env, workflowId: string, triggerId: string, rawInput: unknown,
+  eventKey: string, authenticated: {
+    definitionDigest: string; registryRevision: number; secretName: string
+  }
+): Promise<WorkflowAdmissionResult> {
+  if (eventKey.length < 1 || eventKey.length > 256) {
+    throw new PublicWorkflowError('INVALID_EVENT_KEY', 'Webhook event key must contain 1 to 256 characters.');
+  }
+  if (env.DYNAMIC_WORKFLOW_REGISTRY_ENABLED !== 'true' ||
+      env.DYNAMIC_WORKFLOW_ADMISSION_ENABLED !== 'true') {
+    throw new PublicWorkflowError('RUNTIME_NOT_CONFIGURED', 'Versioned webhook admission is not configured.');
+  }
+  return admitDynamicManualWorkflow(env, workflowId, rawInput, {
+    admissionKey: `webhook:${workflowId}:${triggerId}:${eventKey}`,
+    sourceType: 'webhook', sourceKey: eventKey,
+    trigger: { type: 'webhook', triggerId, eventKey }, deterministicRunId: true
+  }, authenticated);
+}
+
 export async function admitScheduledWorkflow(
   env: Env,
   workflowId: string,
@@ -94,7 +115,7 @@ export async function admitScheduledWorkflow(
         env.DYNAMIC_WORKFLOW_REGISTRY_ENABLED !== 'true') {
       throw new PublicWorkflowError('RUNTIME_NOT_CONFIGURED', 'Versioned schedule admission is disabled.');
     }
-    return admitDynamicManualWorkflow(env, workflowId, {}, source, {
+    return admitDynamicManualWorkflow(env, workflowId, {}, source, undefined, {
       ...selected, triggerId, scheduledTime
     });
   }
@@ -111,6 +132,7 @@ async function admitDynamicManualWorkflow(
   workflowId: string,
   rawInput: unknown,
   source: AdmissionSource,
+  authenticated?: { definitionDigest: string; registryRevision: number; secretName: string },
   selectedSchedule?: { definitionDigest: string; registryRevision: number; triggerId: string; scheduledTime: number }
 ): Promise<WorkflowAdmissionResult> {
   if (env.DYNAMIC_WORKFLOW_REGISTRY_ENABLED !== 'true' || !env.DB) {
@@ -119,6 +141,12 @@ async function admitDynamicManualWorkflow(
   const store = new D1WorkflowStore(env.DB);
   const original = await store.getAdmissionRun(source.admissionKey);
   if (original) {
+    // A caller authorized against a different active webhook version must
+    // never inherit a same-key Run admitted under another credential.
+    if (authenticated && original.definitionDigest !== authenticated.definitionDigest) {
+      throw new PublicWorkflowError('REGISTRY_CONFLICT',
+        'Webhook admission belongs to another definition version; retry.');
+    }
     // Never recreate a terminal historical Run. Only an unfinished Run may
     // need repair after an uncertain initial createBatch response.
     await recoverDynamicInstance(env, original);
@@ -142,6 +170,10 @@ async function admitDynamicManualWorkflow(
     // definition was deactivated in the meantime.
     const winner = await store.getAdmissionRun(source.admissionKey);
     if (winner) {
+      if (authenticated && winner.definitionDigest !== authenticated.definitionDigest) {
+        throw new PublicWorkflowError('REGISTRY_CONFLICT',
+          'Webhook admission belongs to another definition version; retry.');
+      }
       await recoverDynamicInstance(env, winner);
       return {
         runId: winner.runId, alreadyAdmitted: true,
@@ -161,9 +193,13 @@ async function admitDynamicManualWorkflow(
   } catch {
     throw new PublicWorkflowError('REGISTRY_UNAVAILABLE', 'Active workflow registry is invalid.');
   }
+  if (authenticated && (active.active_digest !== authenticated.definitionDigest ||
+      active.registry_revision !== authenticated.registryRevision ||
+      !plan.triggers.some(t => t.type === 'webhook' &&
+        t.id === source.trigger.triggerId && t.secret === authenticated.secretName))) {
+    throw new PublicWorkflowError('REGISTRY_CONFLICT', 'Webhook version changed during authorization; retry.');
+  }
   if (selectedSchedule) {
-    // An activation between scheduler selection and admission cannot authorize
-    // the new version with a stale cron/timezone evaluation.
     if (active.active_digest !== selectedSchedule.definitionDigest ||
         active.registry_revision !== selectedSchedule.registryRevision ||
         !plan.triggers.some(trigger => trigger.type === 'schedule' &&
@@ -193,6 +229,7 @@ async function admitDynamicManualWorkflow(
     trigger: source.trigger, sourceType: source.sourceType, sourceKey: source.sourceKey,
     engineVersion: currentEngineVersion(env), expectedRegistryRevision: active.registry_revision,
     expectedPolicyRevision: policy.revision,
+    ...(authenticated ? { webhookScope: { triggerId: String(source.trigger.triggerId), secretName: authenticated.secretName } } : {}),
     ...(selectedSchedule ? { schedulerClaim: {
       scheduleKey: `${workflowId}:${selectedSchedule.triggerId}`,
       scheduledTime: selectedSchedule.scheduledTime
@@ -203,6 +240,10 @@ async function admitDynamicManualWorkflow(
     // Return the existing immutable Run rather than a spurious conflict.
     const winner = await store.getAdmissionRun(source.admissionKey);
     if (winner) {
+      if (authenticated && winner.definitionDigest !== authenticated.definitionDigest) {
+        throw new PublicWorkflowError('REGISTRY_CONFLICT',
+          'Webhook admission belongs to another definition version; retry.');
+      }
       await recoverDynamicInstance(env, winner);
       return {
         runId: winner.runId, alreadyAdmitted: true,
@@ -217,6 +258,10 @@ async function admitDynamicManualWorkflow(
   }
   // A concurrent request may have won the key. Never restart a terminal Run.
   if (admitted.alreadyAdmitted) {
+    if (authenticated && recorded.definitionDigest !== authenticated.definitionDigest) {
+      throw new PublicWorkflowError('REGISTRY_CONFLICT',
+        'Webhook admission belongs to another definition version; retry.');
+    }
     await recoverDynamicInstance(env, recorded);
   } else {
     await env.WORKFLOW.createBatch([{ id: admitted.runId, params: { runId: admitted.runId } }]);
