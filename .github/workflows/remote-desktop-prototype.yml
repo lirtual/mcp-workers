@@ -40,9 +40,12 @@ jobs:
       - name: Install isolated pinned scratch test tooling (CI only)
         run: |
           npm install --prefix .scratch/remote-desktop-mcp --no-save --no-package-lock --ignore-scripts \
-            ws@8.18.3 vitest@4.1.0 @cloudflare/vitest-plugin@1.0.0
+            ws@8.18.3 vitest@4.1.0 @cloudflare/vitest-plugin@1.0.0 \
+            @wonderwhy-er/desktop-commander@0.2.51
       - name: Exercise local workerd WebSocket + synthetic MCP (no deploy)
         run: node .scratch/remote-desktop-mcp/test/workerd-integration.mjs
+      - name: Verify real pinned Desktop Commander stdio (fixed fixture only)
+        run: node .scratch/remote-desktop-mcp/test/upstream-stdio-proof.mjs
       - name: Force Durable Object eviction and verify hibernated WebSocket
         working-directory: .scratch/remote-desktop-mcp
         run: ./node_modules/.bin/vitest run --config vitest.config.mjs
