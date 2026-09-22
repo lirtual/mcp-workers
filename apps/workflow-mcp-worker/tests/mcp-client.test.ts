@@ -303,3 +303,29 @@ describe('legacy Run live revocation compatibility', () => {
     expect(outgoing).toHaveBeenCalledTimes(2);
   });
 });
+
+
+describe('pre-send D1 failure classification', () => {
+  it('rejects a failed revocation read without transmitting an external write', async () => {
+    const db = {
+      prepare: () => ({
+        bind: () => ({
+          first: async () => { throw new Error('D1 temporarily unavailable'); }
+        })
+      })
+    } as unknown as D1Database;
+    const outgoing = vi.fn();
+    await expect(callMcpTool(
+      env, 'workflow-self', 'workflow_list', {},
+      outgoing as typeof fetch, {
+        db,
+        pinned: {
+          connectionId: 'workflow-self', version: 1,
+          endpoint: 'https://workflow-mcp-worker.aiyaya.workers.dev/mcp',
+          toolName: 'workflow_list', effect: 'read'
+        }
+      }
+    )).rejects.toBeInstanceOf(McpConnectionDeniedError);
+    expect(outgoing).not.toHaveBeenCalled();
+  });
+});
