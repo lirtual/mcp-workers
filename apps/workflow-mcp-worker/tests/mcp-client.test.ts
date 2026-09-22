@@ -265,3 +265,41 @@ describe('pinned MCP external boundary', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
+
+
+describe('legacy Run live revocation compatibility', () => {
+  const pin = {
+    connectionId: 'workflow-self', version: 0,
+    endpoint: 'https://workflow-mcp-worker.aiyaya.workers.dev/mcp',
+    toolName: 'workflow_list', effect: 'read' as const
+  };
+  it('rejects a disabled static Connection before any external request', async () => {
+    const db = {
+      prepare: () => ({ bind: () => ({ first: async () => ({
+        connection_id: 'workflow-self', disabled: 1,
+        allowed_tools_json: '{"workflow_list":["read"]}'
+      }) }) })
+    } as unknown as D1Database;
+    const outgoing = vi.fn();
+    await expect(callMcpTool(env, 'workflow-self', 'workflow_list', {},
+      outgoing as typeof fetch, { db, pinned: pin, legacy: true }
+    )).rejects.toBeInstanceOf(McpConnectionDeniedError);
+    expect(outgoing).not.toHaveBeenCalled();
+  });
+  it('permits the legacy static lookup when there is no versioned control', async () => {
+    const db = {
+      prepare: () => ({ bind: () => ({ first: async () => null }) })
+    } as unknown as D1Database;
+    const outgoing = vi.fn(async (_resource: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { method: string; id: string };
+      if (body.method === 'tools/list') return jsonResponse({
+        jsonrpc: '2.0', id: body.id,
+        result: { tools: [{ name: 'workflow_list', inputSchema: { type: 'object', properties: {} } }] }
+      });
+      return jsonResponse({ jsonrpc: '2.0', id: body.id, result: { content: [] } });
+    });
+    await callMcpTool(env, 'workflow-self', 'workflow_list', {},
+      outgoing as typeof fetch, { db, pinned: pin, legacy: true });
+    expect(outgoing).toHaveBeenCalledTimes(2);
+  });
+});
