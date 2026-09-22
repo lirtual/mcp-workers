@@ -112,4 +112,37 @@ describe('real SQLite active pointer and rollback contract', () => {
       .first<{ count: number }>();
     expect(count?.count).toBe(1);
   });
+  it('rejects action-ID reuse with a changed request without altering the durable audit', async () => {
+    const db = await store();
+    if (!db) throw new Error('node:sqlite is required for real CAS validation');
+    const env = { DB: db } as Env;
+    expect((await updateActiveDefinition(request('same-action', null, entry.definitionDigest, 0),
+      env, publisher, 'activate')).status).toBe(200);
+    const conflicting = await updateActiveDefinition(
+      request('same-action', entry.definitionDigest, null, 1), env, publisher, 'deactivate');
+    expect(conflicting.status).toBe(409);
+    expect(await conflicting.json()).toEqual({ error: 'action_conflict' });
+    const pointer = await db.prepare(
+      'SELECT state, active_digest, registry_revision FROM workflow_active_definitions WHERE workflow_id = ?'
+    ).bind(entry.metadata.id).first<{ state: string; active_digest: string; registry_revision: number }>();
+    expect(pointer).toMatchObject({
+      state: 'enabled', active_digest: entry.definitionDigest, registry_revision: 1
+    });
+    expect((await db.prepare('SELECT COUNT(*) AS count FROM workflow_registry_actions')
+      .first<{ count: number }>())?.count).toBe(1);
+  });
+
+  it('rejects an unstaged target without creating a pointer or audit event', async () => {
+    const db = await store();
+    if (!db) throw new Error('node:sqlite is required for real CAS validation');
+    const env = { DB: db } as Env;
+    const response = await updateActiveDefinition(
+      request('not-staged', null, 'f'.repeat(64), 0), env, publisher, 'activate');
+    expect(response.status).toBe(422);
+    expect((await db.prepare('SELECT COUNT(*) AS count FROM workflow_active_definitions')
+      .first<{ count: number }>())?.count).toBe(0);
+    expect((await db.prepare('SELECT COUNT(*) AS count FROM workflow_registry_actions')
+      .first<{ count: number }>())?.count).toBe(0);
+  });
+
 });
