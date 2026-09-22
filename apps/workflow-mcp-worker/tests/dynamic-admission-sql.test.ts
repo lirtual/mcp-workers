@@ -478,6 +478,24 @@ describe('T07 transactional webhook authorization', () => {
       const first = await run('event-1');
       expect(first).toMatchObject({ definitionDigest: digest, alreadyAdmitted: false });
       expect(await run('event-1')).toMatchObject({ runId: first.runId, alreadyAdmitted: true });
+      // The signed token was already validated, but the trusted scope can be
+      // revoked before D1's admission transaction. No stale authorization.
+      const baseBatch = f.db.batch.bind(f.db);
+      let revokeAtCommit = true;
+      const racingDb = {
+        prepare: f.db.prepare.bind(f.db),
+        batch: async (commands: Parameters<D1Database['batch']>[0]) => {
+          if (revokeAtCommit) {
+            revokeAtCommit = false;
+            f.sqlite.exec("UPDATE workflow_webhook_secret_scopes SET enabled = 0");
+          }
+          return baseBatch(commands);
+        }
+      } as D1Database;
+      await expect(run('event-race', { ...f.env, DB: racingDb })).rejects
+        .toMatchObject({ code: 'REGISTRY_CONFLICT' });
+      expect((f.sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_runs')
+        .get() as { count: number }).count).toBe(2);
       f.sqlite.exec("UPDATE workflow_webhook_secret_scopes SET enabled = 0");
       await expect(run('event-2')).rejects.toMatchObject({ code: 'REGISTRY_CONFLICT' });
       f.sqlite.exec("UPDATE workflow_webhook_secret_scopes SET enabled = 1");
@@ -493,6 +511,16 @@ describe('T07 transactional webhook authorization', () => {
       expect(historical.status).toBe(202);
       expect(await historical.json()).toMatchObject({
         definitionDigest: digest, alreadyAdmitted: true
+      });
+      // Historical results remain durable, but their webhook token loses
+      // authorization immediately when the original scope is revoked.
+      f.sqlite.exec("UPDATE workflow_webhook_secret_scopes SET enabled = 0");
+      const revokedReplay = await handleWebhookTrigger(
+        request('valid-token', 'http-event'), hookEnv, original.metadata.id, 'incoming'
+      );
+      expect(revokedReplay.status).toBe(503);
+      await expect(revokedReplay.json()).resolves.toMatchObject({
+        error: { code: 'TRIGGER_AUTH_NOT_CONFIGURED' }
       });
       expect((f.sqlite.prepare('SELECT COUNT(*) AS count FROM workflow_runs')
         .get() as { count: number }).count).toBe(2);
