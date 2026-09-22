@@ -1,3 +1,4 @@
+import { registerApprovedConnection } from './connection-admin.js';
 import { getConnection } from './connections.js';
 import { verifyGitHubOidcToken, type GitHubOidcVerificationConfig } from './oidc.js';
 import { GITHUB_EXECUTOR_CONFIG } from './platform-config.js';
@@ -67,7 +68,8 @@ export async function handleAdminRoute(
   if (!url.pathname.startsWith('/admin/')) return null;
   const snapshotRoute = url.pathname === '/admin/connections/snapshot';
   const disableRoute = url.pathname === '/admin/connections/disable';
-  if (!snapshotRoute && !disableRoute) return reply(404, 'not_found');
+  const registerRoute = url.pathname === '/admin/connections/register';
+  if (!snapshotRoute && !disableRoute && !registerRoute) return reply(404, 'not_found');
   if (request.method !== (snapshotRoute ? 'GET' : 'POST')) return reply(405, 'method_not_allowed');
 
   const repositoryId = required(env.ADMIN_PUBLISHER_REPOSITORY_ID);
@@ -96,6 +98,7 @@ export async function handleAdminRoute(
     return reply(401, 'unauthorized');
   }
   if (disableRoute) return disableConnection(request, env);
+  if (registerRoute) return registerApprovedConnection(request, env.DB);
   return Response.json(policySnapshot(), { headers: { 'Cache-Control': 'no-store' } });
 }
 
