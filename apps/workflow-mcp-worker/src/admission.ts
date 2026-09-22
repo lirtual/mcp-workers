@@ -185,6 +185,16 @@ async function admitDynamicManualWorkflow(
  */
 async function recoverDynamicInstance(env: Env, run: StoredRun): Promise<void> {
   if (run.state !== 'queued') return;
+  // Workflows instance IDs are idempotent only while retained. Never attempt
+  // repair of stale D1 history after the retention horizon may have elapsed.
+  const admittedAt = Date.parse(run.createdAt);
+  const ageMs = Date.now() - admittedAt;
+  if (!Number.isFinite(admittedAt) || ageMs < 0 || ageMs > 60 * 60 * 1000) {
+    throw new PublicWorkflowError(
+      'WORKFLOW_RECOVERY_EXPIRED',
+      'Original admission is too old for automatic instance recovery.'
+    );
+  }
   try {
     await env.WORKFLOW.get(run.runId);
     return;
