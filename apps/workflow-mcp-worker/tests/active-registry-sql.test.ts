@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs';
 import type { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { updateActiveDefinition } from '../src/active-registry-admin.js';
+import { registerWorkflowTools } from '../src/mcp.js';
+import { D1WorkflowStore } from '../src/storage.js';
 import { listVisibleWorkflows } from '../src/registry.js';
 import { getWorkflowRegistry } from '../src/registry.js';
 import type { GitHubJobIdentity } from '../src/oidc.js';
@@ -266,6 +268,57 @@ describe('real SQLite active pointer and rollback contract', () => {
       'SELECT COUNT(*) AS count FROM workflow_registry_actions WHERE workflow_id = ?'
     ).bind(connected.metadata.id).first<{ count: number }>())?.count).toBe(2);
     expect(await listVisibleWorkflows(env)).toEqual([]);
+  });
+
+
+  it('keeps preexisting run status, result, logs and cancellation accessible after deactivation', async () => {
+    const db = await store();
+    if (!db) throw new Error('node:sqlite is required for real CAS validation');
+    const env = { DB: db, DYNAMIC_WORKFLOW_REGISTRY_ENABLED: 'true' } as Env;
+    expect((await updateActiveDefinition(
+      request('legacy-activate', null, entry.definitionDigest, 0), env, publisher, 'activate'
+    )).status).toBe(200);
+    const store = new D1WorkflowStore(db);
+    const runId = 'legacy-before-deactivate';
+    await store.admitRun({
+      admissionKey: 'legacy-admission',
+      proposedRunId: runId,
+      workflowId: entry.metadata.id,
+      definitionDigest: entry.definitionDigest,
+      input: { url: 'https://example.test/' },
+      trigger: { type: 'manual' },
+      sourceType: 'manual',
+      engineVersion: 'test-engine'
+    });
+    await store.finishRun({ runId, state: 'succeeded', output: { answer: 42 } });
+    expect((await updateActiveDefinition(
+      request('legacy-deactivate', entry.definitionDigest, null, 1),
+      env, publisher, 'deactivate'
+    )).status).toBe(200);
+
+    type Reply = { structuredContent?: unknown; isError?: boolean };
+    const handlers = new Map<string, (args: unknown) => Promise<Reply>>();
+    const server = { registerTool: (name: string, _config: unknown,
+      handler: (args: unknown) => Promise<Reply>) => { handlers.set(name, handler); } };
+    registerWorkflowTools(server as unknown as Parameters<typeof registerWorkflowTools>[0], env);
+    const call = (name: string, args: unknown) => handlers.get(name)!(args);
+
+    expect((await call('workflow_list', {})).structuredContent).toEqual({ workflows: [] });
+    expect((await call('workflow_get', { workflow: entry.metadata.id })).isError).toBe(true);
+    expect((await call('workflow_status', { runId })).structuredContent).toMatchObject({
+      runId, state: 'succeeded', definitionDigest: entry.definitionDigest
+    });
+    expect((await call('workflow_result', { runId })).structuredContent).toMatchObject({
+      runId, ready: true, state: 'succeeded', outputs: { answer: 42 }, artifacts: []
+    });
+    const logs = await call('workflow_logs', { runId });
+    expect(logs.isError).not.toBe(true);
+    expect(logs.structuredContent).toMatchObject({ runId });
+    const cancelled = await call('workflow_cancel', { runId });
+    expect(cancelled.isError).not.toBe(true);
+    expect((await call('workflow_status', { runId })).structuredContent).toMatchObject({
+      state: 'succeeded', definitionDigest: entry.definitionDigest
+    });
   });
 
   it('rejects an unstaged target without creating a pointer or audit event', async () => {
