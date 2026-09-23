@@ -103,6 +103,39 @@ describe('T07 protected webhook secret registration', () => {
     } finally { f.sqlite.close(); }
   });
 
+  it.each(['wrong-workflow', 'removed-trigger'])(
+    'rejects a concurrent immutable definition mismatch during registration: %s',
+    async scenario => {
+      const f = fixture();
+      try {
+        const base = f.env.DB;
+        f.env.DB = {
+          prepare: base.prepare.bind(base),
+          batch: async (statements: Parameters<D1Database['batch']>[0]) => {
+            // A competing writer corrupts the durable definition after pre-read
+            // but before the action + scope transaction. Both rows must remain absent.
+            if (scenario === 'wrong-workflow') {
+              await base.prepare(
+                'UPDATE workflow_definition_versions SET workflow_id = ? WHERE definition_digest = ?'
+              ).bind('other-workflow', compiled.definitionDigest).run();
+            } else {
+              await base.prepare(
+                'UPDATE workflow_definition_versions SET normalized_plan_json = ? WHERE definition_digest = ?'
+              ).bind(JSON.stringify({ ...plan, triggers: [] }), compiled.definitionDigest).run();
+            }
+            return base.batch(statements);
+          }
+        } as D1Database;
+        const response = await f.register(f.body('concurrent-scope'));
+        expect(response.status).toBe(409);
+        expect(f.sqlite.prepare('SELECT COUNT(*) AS n FROM webhook_secret_scope_actions').get())
+          .toEqual({ n: 0 });
+        expect(f.sqlite.prepare('SELECT COUNT(*) AS n FROM workflow_webhook_secret_scopes').get())
+          .toEqual({ n: 0 });
+      } finally { f.sqlite.close(); }
+    }
+  );
+
   it('rolls back the action claim if the second D1 batch statement fails', async () => {
     const f = fixture();
     try {
