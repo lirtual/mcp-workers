@@ -30,7 +30,7 @@ const sortValues = [
   "-created", "created", "score", "-sort",
   "title", "-title", "domain", "-domain",
 ] as const;
-const listInput = z.object({
+export const raindropV3ListInputSchema = z.object({
   collectionId: collectionId.default(0),
   search: z.string().max(8192).optional(),
   sort: z.enum(sortValues).default("-created"),
@@ -73,13 +73,12 @@ const summary = (item: Record<string, unknown>) => {
   return result;
 };
 
-export const raindropV3Tools = [
-  defineTool({
+export const raindropV3ListTool = defineTool({
     name: "raindrop_list",
     description: "Read one official page of bookmark summaries. Use the official search expression.",
-    inputSchema: listInput,
+    inputSchema: raindropV3ListInputSchema,
     annotations: { readOnlyHint: true, openWorldHint: true },
-    handler: async (args: z.infer<typeof listInput>, { raindropService }: ToolHandlerContext) => {
+    handler: async (args: z.infer<typeof raindropV3ListInputSchema>, { raindropService }: ToolHandlerContext) => {
       const { items, count } = await raindropService.listRaindropsV3(args);
       const hasMore = count === null
         ? items.length < args.perpage ? false : items.length === 0 ? false : null
@@ -95,7 +94,10 @@ export const raindropV3Tools = [
         `Retrieved ${items.length} bookmarks`,
       );
     },
-  }),
+  });
+
+export const raindropV3Tools = [
+  raindropV3ListTool,
   defineTool({
     name: "raindrop_get",
     description: "Read a complete bookmark, including note, highlights and reminder.",
