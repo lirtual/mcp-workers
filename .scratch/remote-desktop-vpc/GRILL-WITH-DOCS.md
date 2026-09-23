@@ -1,37 +1,57 @@
-# #170 Remote Desktop MCP — grill-with-docs, round 1 (PROVISIONAL)
+# #170 Remote Desktop MCP — grill-with-docs decision log
 
-Date: 2026-09-23. **Interview in progress, not an approved Spec, ADR, or production permission.** Source issue [#170](https://github.com/lirtual/mcp-workers/issues/170); one active transport decision [#178](https://github.com/lirtual/mcp-workers/issues/178), throwaway Draft [#179](https://github.com/lirtual/mcp-workers/pull/179). The separate legacy DO/WS proof [#173](https://github.com/lirtual/mcp-workers/issues/173) / Draft [#177](https://github.com/lirtual/mcp-workers/pull/177) remains available.
+Date: 2026-09-23. **Round 1 accepted; round 2 questions OPEN.** Not a production Spec, transport decision, high-privilege test authorization, or permission to merge/deploy. [#170 root](https://github.com/lirtual/mcp-workers/issues/170) · [#178 transport frontier](https://github.com/lirtual/mcp-workers/issues/178) · [Draft PR #179](https://github.com/lirtual/mcp-workers/pull/179). [#173](https://github.com/lirtual/mcp-workers/issues/173) and [Draft PR #177](https://github.com/lirtual/mcp-workers/pull/177) remain isolated DO/WS fallback evidence.
 
-## Actively settled requirement
-The user requires **Shell and write actions and full applicable local Desktop Commander MCP capability**, rather than shipping a permanently read-only two-tool service. The prior `sandbox_ping` / fixed-root `sandbox_list_directory` CI is a deliberately narrow **transport feasibility gate**, and must not be treated as the final tool contract. This requirement does not authorize executing high-privilege tools before an isolation and approval strategy is agreed and tested.
+## Round 1 — accepted user decisions (2026-09-23)
 
-## Primary-source recon
-1. [Desktop Commander upstream README/tool catalog](https://github.com/wonderwhy-er/DesktopCommanderMCP/blob/main/README.md): interactive terminal/session management, process listing and termination, file read/write/move/search, editing, configuration, usage/history. Upstream evolves; the pinned `@wonderwhy-er/desktop-commander@0.2.51` fixture is not proof of the current latest tool catalog. Its Claude-specific preview UI, if any, cannot be promised in ChatGPT.
-2. [Upstream SECURITY.md](https://github.com/wonderwhy-er/DesktopCommanderMCP/blob/main/SECURITY.md): `allowedDirectories` and blocked command lists are not hard isolation against arbitrary Shell. Restrict by dedicated OS account, container mounts, VM, or dedicated device. `set_config_value` and any process-wide `kill_process` demand their own policy review.
-3. [OpenAI full MCP support and permissions](https://help.openai.com/en/articles/12584461-developer-mode-and-mcp-apps-in-chatgpt): full modify/write beta for Business/Enterprise/Edu; Pro is read/fetch; do not assume personal Plus has arbitrary remote Shell permission. Real client validation is a separate gate. OAuth refresh/offline access and client confirmation requirements are independent of private VPC.
-4. [Workers VPC Service](https://developers.cloudflare.com/workers-vpc/configuration/vpc-services/) and [Tunnel](https://developers.cloudflare.com/workers-vpc/configuration/tunnel/): VPC service is transport limited to configured host/port, **not a tool authorization policy**. Free during beta only. QUIC and actual device connectivity still need proof.
+| ID | Choice | Decided contract | Residual qualification |
+| --- | --- | --- | --- |
+| Q1 | C | Execute under the user's **ordinary Linux/WSL2 login account** with that account's actual rights, not an obligatory dedicated account. | A configured project directory does not contain arbitrary Shell. Account rights and network access remain real. Root/sudo escalation is **not** implicitly granted. |
+| Q2 | A | Aim for version-pinned upstream **complete applicable core tool coverage**. Apply additional authorization gates to sensitive configuration, global PID/process manipulation and privileged actions. | Exact catalog/schema and individual risk classes need an inventory; no unconditional bypass via upstream config changes. |
+| Q3 | A | Allow normal reads, policy-scoped routine project writes; require local approval or time-limited scope for sensitive Shell, destructive or privileged actions. | The local enforcement/approval channel and what happens if unavailable are **unresolved**; ChatGPT dialog alone is not proof of local approval. A Shell granted to ordinary account may reach resources outside a project scope. |
+| Q4 | C | Initial execution target **Linux and Linux within WSL2**. Native Windows executor is excluded from initial acceptance. | WSL2 interop and `/mnt/c` can still reach Windows-host assets; whether to disable/limit them is a second-round decision. |
+| Q5 | A | Support local long-running sessions with bounded logs, status, explicit termination and disconnected/reconnected queries. | State ownership, process identity, hard-kill and retry semantics not settled. |
+| Q6 | A | Deliver full-capability MCP for actually compatible clients; validate ChatGPT separately under actual plan/tool permissions. | No assumption that personal Plus permits unrestricted Shell/write. |
+| Q7 | A | Include minimal health, audit, revoke, operation receipts/results and bounded output; do not build a scheduler or a second workflow engine. | Audit retention and operation identity semantics not settled. |
 
-## Target capability inventory — check exact pinned upstream names/schemas before Spec
-- File: read/write/append/edit/move/create/list/metadata; search files and content; supported format-specific PDF/Excel/DOCX operations as provided by selected upstream release.
-- Terminal: start, interact, read paged output, list sessions, stop sessions.
-- Process: inspect/list; terminate managed process; arbitrary PID termination is a distinct privilege.
-- Configuration and diagnostics: inspect config and bounded tool-call history. Changing security-sensitive settings is not ordinary task execution.
-- Device operations beyond upstream: health/capability inventory, disconnect/revoke, operation receipts/correlation, status after reconnect, bounded outputs and artifact retrieval, audit and credential rotation. These are candidate supporting features, not yet agreed standalone products.
-- GUI desktop capture, cursor/mouse/keyboard automation, proprietary cloud dashboard and all-Supabase emulation are **not implied** by upstream's terminal/file tools; separate scope decision needed.
+The initial `sandbox_ping` / fixed-root `sandbox_list_directory` CI remains a **transport-only proof**. This round neither changes [#178](https://github.com/lirtual/mcp-workers/issues/178)'s transport status nor authorizes host execution. See [CONTEXT.md](./CONTEXT.md) and [local execution policy ADR](./docs/adr/0001-ordinary-account-with-local-authorization.md).
 
-## Unresolved round-1 choices (defaults are proposals, not decisions)
-Q1 Execution scope: A dedicated low-privilege OS account with user-selected writable project directories (proposed); B strictly mounted container/VM workspace; C ordinary desktop login with broad host permissions.
-Q2 Tool parity: A expose upstream core tool catalog with locally gated privileged configuration/global PID actions (proposed); B transparently proxy every tool including security config by default; C fixed reduced subset.
-Q3 Approval: A automatic read, configured project-write policy, confirmation for Shell/destructive/privileged actions with time-limited scope (proposed); B approval for each write/Shell; C one-time broad approval.
-Q4 Device scope: A Windows-first and Linux parity later (proposed); B Windows and Linux both on initial release; C one OS only.
-Q5 Process/lifecycle: A local long-running interactive sessions, explicit stop/status, scoped resource and output quotas (proposed); B only one-shot commands.
-Q6 Client acceptance: A insist on personal ChatGPT Plus Shell/write as a hard gate despite current restriction; B deliver secure remote MCP to permitted clients, separately validate ChatGPT read-only or future Full MCP (proposed); C require switching to a plan/workspace that supports Full MCP before calling product accepted.
-Q7 Capability extras: A add minimal device health, audit, revoke and safe operation receipts without turning into an orchestration platform (proposed); B full custom GUI/remote desktop/scheduling; C no supporting extras.
+## Primary-source/security cross-check
 
-## Gates that cannot be inferred from read-only CI
-- Real Windows/Linux privileged tool use and hard kill, unrestricted-path/symlink escape, config mutation, secret access and PID control negative tests.
-- Large result / long-running session protocol, reconnect exactly-once/retry semantics; old 8192-byte proof does not define final file/command size.
-- Cloudflare VPC/Tunnel real routing and beta/Free operations; OAuth discovery/refresh; actual ChatGPT user entitlement and action confirmation.
-- Final selection VPC versus DO, version strategy, native host/VM and approval architecture must await decisions and evidence.
+- [Upstream tool inventory](https://github.com/wonderwhy-er/DesktopCommanderMCP/blob/main/README.md): terminal, interactive processes, file read/write/search and config. The existing pinned Docker `@wonderwhy-er/desktop-commander@0.2.51` is **not** an audited full-tool matrix. Avoid promising unavailable host GUI/private cloud features.
+- [Upstream Security Policy](https://github.com/wonderwhy-er/DesktopCommanderMCP/security): allowed directories, blocked commands and symlink guardrails **are not a sandbox** for arbitrary Shell. The user's Q1=C is an explicit broader risk choice; if strict exclusion of other host files/secrets is required, revisit Q1 or impose OS isolation. Never call the Q3 policy a hard confinement guarantee.
+- [OpenAI developer mode](https://help.openai.com/en/articles/12584461-developer-mode-and-mcp-apps-in-chatgpt): Full MCP modification support is restricted by current client plan/permissions. Client integration acceptance remains separate from server capability.
+- [Workers VPC](https://developers.cloudflare.com/workers-vpc/configuration/vpc-services/) / [Tunnel](https://developers.cloudflare.com/workers-vpc/configuration/tunnel/): network privacy is not device-tool authorization; actual VPC and WSL networking remain unverified.
 
-No ADR issued at this stage: transport, privileges, approval and exact tool-surface decisions remain open. Keep #178 frontier single; avoid mixing feature-scope grilling with a premature transport verdict.
+## Conflict audit: original #170/#173/#178 vs round 1
+
+1. **Old prototype rule vs final product:** #173/#178 prohibit unrestricted host privileges and test only read-only Docker fixture. KEEP that rule for existing prototypes. It is **not the settled final execution identity** (Q1=C), and does not imply read-only final tools.
+2. **Old OS scope:** #170/#178 mention Windows/Linux in initial goals. Q4=C narrows **initial** executor acceptance to Linux/WSL2. Update candidate validation plans accordingly, not past evidence. Windows-native is a possible later enhancement.
+3. **Q1=C ↔ Q3=A security tension:** unrestricted account + arbitrary Shell defeats directory restrictions. Local approval, TTL and an OS identity may reduce accidents but cannot guarantee project-only effects. Second round must determine the user-accepted security guarantee and whether Shell needs local per-call approval.
+4. **Q5=A ↔ stateless VPC assumption:** interactive session and receipt state must live on the device; DO/D1 is NOT automatically required just for session status. Offline replay and cancellation still need protocol semantics and tests.
+5. **Q6=A ↔ ChatGPT-first phrasing:** full-capability remote MCP may be accepted using compatible clients while personal ChatGPT remains read-only/unavailable for specific operations. No fabricated Plus acceptance.
+6. **Q7=A ↔ keep it minimal:** minimum local audit/receipts/health is in scope; no need for Queue/D1/Workflow scheduler without separate evidence.
+7. **Q2=A ↔ 'full features':** implement complete applicable upstream catalog behind policy, not an unrestricted raw proxy for security config or arbitrary PID. Exact pinned-version tool compatibility needs a separate evidence table.
+8. **Old `8192` limit ↔ writing/large outputs:** 8 KiB is a prototype transport cap, not the final file/terminal size; streaming, chunking, pagination and artifact controls require decisions.
+
+## Round 2 — frontier questions, all undecided (proposed defaults do NOT mean approval)
+
+**Q8 · Trust boundary and WSL reach.** A = accept ordinary WSL/Linux account scope as broad host trust, keep `/mnt/c` / Windows interop available but require explicit per-operation approval for Windows-side paths and privileged bridging (default candidate); B = disable Windows interop and unmount/restrict Windows drives at OS boundary, accepting narrower full features; C = explicitly allow all assets reachable by ordinary account, with the same general policy as Linux paths. Clarify that A/C cannot guarantee against Shell indirect reach once authorized.
+
+**Q9 · Local approval mechanism.** A = approval issued by separate local device UI/CLI, bound to device, exact action digest, short expiry; fail closed if unreachable (default); B = solely remote ChatGPT/client confirmation; C = no approval, only general scope/token. Note that an action running when the user is absent cannot be approved interactively; timed pre-grants require exact boundaries.
+
+**Q10 · Shell authority.** A = explicit approval for **every new arbitrary Shell launch**; separately policy-gate interactive input, scripts and dangerous escalation (default); B = time-limited broad Shell grant for a selected project/session; C = automatically allow Shell inside a named working directory. C is only an advisory scope unless OS isolation is added.
+
+**Q11 · Persistent session/revoke.** A = local registry with stable session IDs, distinguish queued/running/completed/unknown; after disconnect, query status and never auto-replay side effects; revoke blocks new calls, explicit policy decides existing process handling (default); B = always terminate running sessions on network disconnect/revoke; C = transparently retry any ambiguous calls. Do not treat C as safe for writes or commands.
+
+**Q12 · Large content and output.** A = bounded per-request control plane, paginated output and file chunk transfer with explicit quotas; no raw secrets in logs (default); B = direct large request/response across MCP/VPC; C = introduce R2 artifact storage immediately. Actual tool and host constraints must be measured before limits are frozen.
+
+**Q13 · Authorization/session/token lifetime.** A = distinct OAuth client and device credential, device-local approval receipt and time-limited grant; rotate/revoke credentials without reusing cloud OAuth as local authority (default); B = single permanent shared token for Worker + adapter + approvals; C = rely on VPC private routing alone.
+
+**Q14 · Sensitive tools and permissions.** A = configuration affecting security, arbitrary PID kill, sudo/root/network exfiltration treated as separately gated or unsupported until reviewed (default); B = full raw pass-through, unconditionally; C = remove all sensitive categories from final tool catalog. Clarify whether 'complete' means advertised-with-gate or unconditional capability.
+
+**Q15 · Device management minimalism.** A = Linux/WSL2 single-device first; local health/audit receipts and startup/reconnect; use no additional DO/D1/Queue unless measured need (default); B = design multi-device dynamic registry and cloud-persisted audit from v1; C = no local audit or identity tracking.
+
+**Q16 · Acceptance contract.** A = separate gates for real VPC (if selected), actual Linux/WSL2 restricted tests, policy-negative tests and compatible client; record ChatGPT eligibility independently (default); B = call project done on simulated CI; C = full feature acceptance requires personal ChatGPT Plus Shell/write even if unsupported by client.
+
+**Do not create implementation tickets or make a transport verdict until this round and actual #178 evidence are complete.**
