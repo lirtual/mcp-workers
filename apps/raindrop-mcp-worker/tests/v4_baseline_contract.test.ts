@@ -517,7 +517,10 @@ export const V3_TOOL_CONTRACT_MATRIX: readonly V3ToolContract[] = [
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Raindrop v4 T01 contract baseline (v3 source cc05fc9)", () => {
-  const tools = buildToolConfigs({ serverVersion: "3.0.0" }).toolConfigs;
+  // Historical T01 matrix stays pinned exclusively to the frozen 26 v3 tools.
+  const tools = buildToolConfigs({ serverVersion: "3.0.0" }).toolConfigs.filter(
+    (tool) => tool.name !== "diagnostics_read" && tool.name !== "raindrop_read",
+  );
   const byName = new Map(tools.map((tool) => [tool.name, tool]));
   const readTargets = Object.values(V4_READ_ACTION_BASELINE).flatMap(
     (actions) => Object.values(actions),
@@ -678,7 +681,7 @@ describe("Raindrop v4 T01 contract baseline (v3 source cc05fc9)", () => {
       ]);
       const discovered = (await client.listTools()).tools;
       expect(discovered.map((tool) => tool.name).sort()).toEqual(
-        tools.map((tool) => tool.name).sort(),
+        [...tools.map((tool) => tool.name), "diagnostics_read", "raindrop_read"].sort(),
       );
       // Assert the public wire-level SDK schema, not an always-defined local fallback.
       // Every v3 tool deliberately uses the same structured success/error envelope.
