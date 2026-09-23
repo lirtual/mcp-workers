@@ -192,7 +192,7 @@ describe('immutable staged definition with real SQLite', () => {
            (definition_digest, workflow_id, dsl_version, normalized_plan_json, source_path, created_at)
            VALUES (?, ?, 1, ?, ?, ?)`
         ).bind(entry.definitionDigest, entry.metadata.id,
-          JSON.stringify({ ...entry.plan, name: 'unapproved racing plan' }),
+          JSON.stringify({ ...(entry.plan as Record<string, unknown>), name: 'unapproved racing plan' }),
           entry.sourcePath, '2026-09-23').run();
         return db.batch(commands);
       }
