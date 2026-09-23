@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import process from "node:process";
 import {
   CPU_KEY,
   OPERATIONS,
