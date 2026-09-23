@@ -124,7 +124,7 @@ describe("T03 (#130) SDK-backed read-only vertical tracer", () => {
         data: { items: [{ _id: 17, link: "https://example.test", title: "Example" }] },
         meta: { page: 0, perpage: 1, returned: 1, total: 2, hasMore: true, nextPage: 1, requestCount: 1 },
       });
-      expect(v4.structuredContent?.data).not.toHaveProperty("note");
+      expect(v4.structuredContent).not.toHaveProperty("data.items.0.note");
       expect(upstream).toHaveBeenCalledTimes(1);
       const v3 = await makeService().callTool("raindrop_list", { perpage: 1 });
       expect(v4.structuredContent).toEqual(v3.structuredContent);
