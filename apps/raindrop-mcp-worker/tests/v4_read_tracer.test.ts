@@ -194,7 +194,8 @@ describe("T03 (#130) SDK-backed read-only vertical tracer", () => {
       name: "raindrop_read", arguments: { action: "delete", id: 17 },
     });
     expect(invalid.response.status).toBe(200);
-    expect(invalid.body).toContain("VALIDATION_ERROR");
+    expect(invalid.body).toContain("Input validation error");
+    expect(invalid.body).toContain('"isError":true');
     expect(upstream).toHaveBeenCalledTimes(1);
   });
 
