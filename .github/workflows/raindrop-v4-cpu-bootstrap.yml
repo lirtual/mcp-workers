@@ -74,11 +74,11 @@ jobs:
       RAINDROP_EVIDENCE_SOURCE_SHA: 36e6864a7378ef20cdb97d52d4877972d888a2df
       RAINDROP_EVIDENCE_WORKFLOW_SHA: 36e6864a7378ef20cdb97d52d4877972d888a2df
       RAINDROP_EVIDENCE_RUN: gh-${{ github.run_id }}-${{ github.run_attempt }}
-      ROLLBACK_PATH: ${{ runner.temp }}/raindrop-v4-rollback.json
-      DEPLOYED_PATH: ${{ runner.temp }}/raindrop-v4-deployed.json
-      JOURNAL_PATH: ${{ runner.temp }}/raindrop-v4-readonly-journal.json
-      EVIDENCE_PATH: ${{ runner.temp }}/raindrop-v4-cpu-evidence.json
-      CLEANUP_PATH: ${{ runner.temp }}/raindrop-v4-cleanup.json
+      ROLLBACK_PATH: ${{ github.workspace }}/raindrop-v4-rollback.json
+      DEPLOYED_PATH: ${{ github.workspace }}/raindrop-v4-deployed.json
+      JOURNAL_PATH: ${{ github.workspace }}/raindrop-v4-readonly-journal.json
+      EVIDENCE_PATH: ${{ github.workspace }}/raindrop-v4-cpu-evidence.json
+      CLEANUP_PATH: ${{ github.workspace }}/raindrop-v4-cleanup.json
     steps:
       - name: Validate pinned source and explicit production confirmation
         shell: bash
@@ -249,7 +249,7 @@ jobs:
       RAINDROP_EVIDENCE_SOURCE_SHA: 36e6864a7378ef20cdb97d52d4877972d888a2df
       RAINDROP_EVIDENCE_ROLLBACK_DEPLOYMENT_ID: ${{ inputs.expected_rollback_deployment }}
       RAINDROP_EVIDENCE_ROLLBACK_VERSION_ID: ${{ inputs.expected_rollback_version }}
-      CLEANUP_PATH: ${{ runner.temp }}/raindrop-v4-safety-net-cleanup.json
+      CLEANUP_PATH: ${{ github.workspace }}/raindrop-v4-safety-net-cleanup.json
     steps:
       - uses: actions/checkout@v4
         with:
