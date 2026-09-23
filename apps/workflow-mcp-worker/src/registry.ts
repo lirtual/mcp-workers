@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { validateVersionedWorkflowPlan } from './runtime-plan-validation.js';
 import type { Env } from './types.js';
 import { workflowRegistry } from './generated/workflow-registry.js';
@@ -5,6 +6,25 @@ import type { WorkflowRegistryEntry } from './types.js';
 
 const entries = workflowRegistry as unknown as readonly WorkflowRegistryEntry[];
 const byId = new Map(entries.map(entry => [entry.metadata.id, entry] as const));
+
+// Match the compile-time canonical JSON hash, without importing the YAML
+// compiler into the Worker hot path. A syntactically valid stored digest alone
+// must never allow a different plan to be exposed as an active definition.
+function canonicalJson(value: unknown): string {
+  const normalize = (current: unknown): unknown => {
+    if (Array.isArray(current)) return current.map(normalize);
+    if (current && typeof current === 'object') {
+      return Object.fromEntries(
+        Object.keys(current as Record<string, unknown>).sort().map(key => [
+          key, normalize((current as Record<string, unknown>)[key])
+        ])
+      );
+    }
+    return current;
+  };
+  return JSON.stringify(normalize(value));
+}
+
 
 export function getWorkflowRegistry(): readonly WorkflowRegistryEntry[] {
   return entries;
@@ -41,7 +61,8 @@ export async function listVisibleWorkflows(env?: Env): Promise<readonly Workflow
       throw new Error('Active workflow is missing its pinned definition.');
     }
     const plan = validateVersionedWorkflowPlan(JSON.parse(row.normalized_plan_json));
-    if (plan.id !== row.workflow_id || !/^[0-9a-f]{64}$/.test(row.active_digest)) {
+    if (plan.id !== row.workflow_id || !/^[0-9a-f]{64}$/.test(row.active_digest) ||
+        createHash('sha256').update(canonicalJson(plan)).digest('hex') !== row.active_digest) {
       throw new Error('Active workflow definition is inconsistent.');
     }
     scheduleCount += plan.triggers.filter(trigger => trigger.type === 'schedule').length;
