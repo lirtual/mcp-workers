@@ -28,7 +28,7 @@ YAML must not require deploying the Engine.
   and protected Engine-side publisher authorization as compensating controls.
   An open Draft PR is **not** a publishable approved source revision.
 
-## Platform setup (no implicit production migration)
+## Owner-authorized validation on the existing Worker
 
 1. Record the current Worker deployment, D1 schema, active registry, schedule
    cursor, nonterminal Runs and Workflows instance state. Export a verifiable
@@ -43,9 +43,14 @@ YAML must not require deploying the Engine.
    `https://workflow-mcp-worker.aiyaya.workers.dev`. Its D1 and Workflows
    bindings must be inspected, not assumed to be v0.2-compatible. The Worker
    must actually expose protected admin endpoints and approved schema before
-   any dry-run can succeed. Do not apply D1 migrations, change Worker Secrets,
-   deploy the Engine, trigger an external write, or change live Cron based on
-   this document alone. Those changes require a separate specific authorization.
+   any dry-run can succeed. The owner has **already authorized** using this
+   currently unused Worker and its existing D1/Workflows for v0.2 validation,
+   including necessary controlled test deployments, schema migrations and
+   reversible test writes. Do not request another per-step permission for
+   those validation operations. First verify the live baseline and a usable
+   backup; stop on incompatible schema, missing credentials or unexpected
+   existing business data. Actual external writes, changing production Cron,
+   and final go-live remain outside this testing authorization.
 3. Owner-configured Cloudflare admin publisher identity must trust the Engine,
    **not the catalog**: `ADMIN_PUBLISHER_REPOSITORY_ID=1371085786`,
    `ADMIN_PUBLISHER_WORKFLOW_REF=lirtual/mcp-workers/.github/workflows/workflow-mcp-publisher.yml@refs/heads/main`,
@@ -62,16 +67,19 @@ YAML must not require deploying the Engine.
    - `WORKFLOW_MCP_TARGET_URL=https://workflow-mcp-worker.aiyaya.workers.dev`
    - `WORKFLOW_MCP_ALLOW_LIVE_TEST_TARGET=true` to allow **read-only dry-run**
      against this exact known live hostname. Leave this unset/false otherwise.
-   - `WORKFLOW_MCP_ALLOW_LIVE_TEST_MUTATIONS=false` initially. Set to
-     `true` **only after backup, verified compatible schema and separate
-     live-test mutation authorization**; this permits stage/activate, but
-     does not itself provide GitHub environment review or a production release.
+   - `WORKFLOW_MCP_ALLOW_LIVE_TEST_MUTATIONS=false` initially. Change to
+     `true` after baseline backup and schema compatibility checks to execute
+     the **already owner-authorized** stage/activate tests. This flag is a
+     technical safety gate, not a request for another owner decision. Retain
+     any GitHub workflow-enforced approval and do not equate test activation
+     with authorization to run live business schedules or final go-live.
 5. The current publisher is a Draft PR based on an unmerged v0.2 chain. Its
    workflow is intentionally `main`-only, and the Engine's deploy workflow
    automatically deploys changes under `apps/workflow-mcp-worker/**` when
-   pushed to `main`. Plan an explicitly authorized integration/deployment
-   gate before expecting a real `main` publication; never bypass the trusted
-   ref check or treat Draft-branch CI as live publisher evidence.
+   pushed to `main`. Testing on the existing Worker is already authorized;
+   still verify the exact deployed SHA, migrations and recovery controls when
+   integrating. Do not bypass the trusted ref check or treat Draft-branch CI
+   as live publisher evidence. The final release decision remains separate.
 
 ## Ordered test protocol
 
@@ -83,14 +91,16 @@ YAML must not require deploying the Engine.
   approved Engine `main`; confirm its exact source SHA, policy revision,
   canonical digest and trusted GitHub run identity. An unavailable or
   incompatible live admin endpoint is **Blocked**, not Pass.
-- After backup and a *separate* permission decision for D1 writes, require
-  actual GitHub approval and request `mode=stage`. Verify immutable D1
+- After verified backup and D1 compatibility checks, satisfy any configured
+  GitHub publisher gate and request `mode=stage` under the existing owner
+  test authorization. Verify immutable D1
   provenance, idempotent retry and unchanged active registry.
 - Require actual approval before `mode=activate` with exact
   `expected_revision` and `expected_digest`. Check CAS failure, normal
   MCP/HTTP admission, old pinned Run recovery and rollback. Do not activate a
-  scheduled Raindrop change until the schedule transition is independently
-  safe and specifically authorized.
+  scheduled Raindrop business change until the schedule transition is
+  independently verified; testing authorization does not imply enabling a
+  real recurring production job.
 - Change only reviewed Catalog YAML, publish with a new exact SHA, and compare
   Engine deployment SHA before/after to prove definition-only updates need no
   Engine redeployment. Preserve sanitized Actions and managed D1/Workflow
