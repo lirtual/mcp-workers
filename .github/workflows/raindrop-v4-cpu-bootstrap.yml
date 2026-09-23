@@ -36,7 +36,7 @@ permissions:
 
 env:
   # Reviewed immutable #141 T03 source; do not derive from dispatch or default-branch github.sha.
-  RAINDROP_EVIDENCE_PINNED_SHA: 36e6864a7378ef20cdb97d52d4877972d888a2df
+  RAINDROP_EVIDENCE_PINNED_SHA: 852ace324b0db7ef58d89172ce4896d623a304f1
 
 concurrency:
   group: raindrop-v4-native-cpu-production
@@ -71,8 +71,8 @@ jobs:
       MCP_ACCESS_TOKEN: ${{ secrets.RAINDROP_PRODUCTION_MCP_ACCESS_TOKEN }}
       RAINDROP_EVIDENCE_WORKER: raindrop-mcp-worker
       RAINDROP_EVIDENCE_URL: https://raindrop-mcp-worker.aiyaya.workers.dev
-      RAINDROP_EVIDENCE_SOURCE_SHA: 36e6864a7378ef20cdb97d52d4877972d888a2df
-      RAINDROP_EVIDENCE_WORKFLOW_SHA: 36e6864a7378ef20cdb97d52d4877972d888a2df
+      RAINDROP_EVIDENCE_SOURCE_SHA: 852ace324b0db7ef58d89172ce4896d623a304f1
+      RAINDROP_EVIDENCE_WORKFLOW_SHA: 852ace324b0db7ef58d89172ce4896d623a304f1
       RAINDROP_EVIDENCE_RUN: gh-${{ github.run_id }}-${{ github.run_attempt }}
       ROLLBACK_PATH: ${{ github.workspace }}/raindrop-v4-rollback.json
       DEPLOYED_PATH: ${{ github.workspace }}/raindrop-v4-deployed.json
@@ -246,7 +246,7 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       RAINDROP_EVIDENCE_WORKER: raindrop-mcp-worker
       RAINDROP_EVIDENCE_URL: https://raindrop-mcp-worker.aiyaya.workers.dev
-      RAINDROP_EVIDENCE_SOURCE_SHA: 36e6864a7378ef20cdb97d52d4877972d888a2df
+      RAINDROP_EVIDENCE_SOURCE_SHA: 852ace324b0db7ef58d89172ce4896d623a304f1
       RAINDROP_EVIDENCE_ROLLBACK_DEPLOYMENT_ID: ${{ inputs.expected_rollback_deployment }}
       RAINDROP_EVIDENCE_ROLLBACK_VERSION_ID: ${{ inputs.expected_rollback_version }}
       CLEANUP_PATH: ${{ github.workspace }}/raindrop-v4-safety-net-cleanup.json
