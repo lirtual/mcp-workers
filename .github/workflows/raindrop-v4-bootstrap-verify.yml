@@ -38,3 +38,25 @@ jobs:
           "$RUNNER_TEMP/actionlint" .github/workflows/raindrop-v4-cpu-bootstrap.yml
       - name: Verify bootstrap security contract
         run: node --test .github/tests/raindrop-v4-cpu-bootstrap.test.mjs
+      - name: Check out immutable reviewed T03 source (no credentials retained)
+        uses: actions/checkout@v4
+        with:
+          ref: 852ace324b0db7ef58d89172ce4896d623a304f1
+          path: reviewed-source
+          persist-credentials: false
+      - name: Verify pinned source and original evidence workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(git -C reviewed-source rev-parse HEAD)" == "852ace324b0db7ef58d89172ce4896d623a304f1" ]]
+          "$RUNNER_TEMP/actionlint" reviewed-source/.github/workflows/raindrop-v4-cpu-evidence.yml
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+      - name: Install reviewed source dependencies
+        working-directory: reviewed-source
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Check exact reviewed T03 application and CPU harness (offline)
+        working-directory: reviewed-source
+        run: pnpm --filter raindrop-mcp-worker check
