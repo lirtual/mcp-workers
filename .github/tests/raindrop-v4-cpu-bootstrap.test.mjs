@@ -98,3 +98,20 @@ test("restores the recorded production version even when evidence collection suc
   const cleanup = file.slice(file.indexOf("  cleanup:\n"));
   assert.match(cleanup, /needs\.evidence\.result != 'success'/);
 });
+
+test("emits a final non-secret outcome only after collected telemetry and freshly rechecked v3 restoration", () => {
+  const evidence = block("  evidence:\n", "  cleanup:\n");
+  const finalize = block(
+    "Finalize temporary evidence after verified v3 restoration",
+    "Upload sanitized evidence",
+  );
+  assert(finalize.includes("if: ${{ success() }}"));
+  assert.match(finalize, /v4-cpu-evidence\.mjs snapshot/);
+  assert.match(finalize, /current\.versionId, rollback\.versionId/);
+  assert.match(finalize, /restored\.status, "restored"/);
+  assert.match(finalize, /measured\.status, "complete"/);
+  assert.match(finalize, /provenance\.sourceSha, measured\.sourceSha/);
+  assert.match(finalize, /telemetry-collected-and-restored/);
+  assert(evidence.includes("${{ runner.temp }}/raindrop-v4-run-outcome.json"));
+  assert.doesNotMatch(finalize, /RAINDROP_ACCESS_TOKEN|MCP_ACCESS_TOKEN|raindrop_create|raindrop_delete/);
+});
