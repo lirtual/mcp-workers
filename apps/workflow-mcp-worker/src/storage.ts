@@ -355,6 +355,7 @@ export class D1WorkflowStore {
   async admitVersionPinnedRun(input: AdmissionRequest & {
     expectedRegistryRevision: number;
     expectedPolicyRevision: number;
+    expectedNormalizedPlanJson: string;
     schedulerClaim?: { scheduleKey: string; scheduledTime: number };
     webhookScope?: { triggerId: string; secretName: string };
   }): Promise<AdmissionResult | null> {
@@ -365,9 +366,11 @@ export class D1WorkflowStore {
          (admission_key, run_id, workflow_id, source_type, source_key, created_at)
          SELECT ?, ?, ?, ?, ?, ?
          WHERE EXISTS (
-           SELECT 1 FROM workflow_active_definitions
-           WHERE workflow_id = ? AND state = 'enabled'
-             AND active_digest = ? AND registry_revision = ?
+           SELECT 1 FROM workflow_active_definitions a
+           JOIN workflow_definition_versions d ON d.definition_digest = a.active_digest
+           WHERE a.workflow_id = ? AND a.state = 'enabled'
+             AND a.active_digest = ? AND a.registry_revision = ?
+             AND d.workflow_id = a.workflow_id AND d.normalized_plan_json = ?
          ) AND EXISTS (
            SELECT 1 FROM connection_policy_revision WHERE singleton = 1 AND revision = ?
          ) AND (? = 0 OR EXISTS (
@@ -383,7 +386,8 @@ export class D1WorkflowStore {
       ).bind(
         input.admissionKey, input.proposedRunId, input.workflowId, input.sourceType,
         input.sourceKey ?? null, createdAt, input.workflowId, input.definitionDigest,
-        input.expectedRegistryRevision, input.expectedPolicyRevision,
+        input.expectedRegistryRevision, input.expectedNormalizedPlanJson,
+        input.expectedPolicyRevision,
         input.webhookScope ? 1 : 0, input.workflowId,
         input.webhookScope?.triggerId ?? '', input.definitionDigest,
         input.webhookScope?.secretName ?? '', input.expectedPolicyRevision,

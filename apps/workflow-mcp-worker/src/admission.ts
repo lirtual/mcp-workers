@@ -228,6 +228,7 @@ async function admitDynamicManualWorkflow(
     workflowId, definitionDigest: active.active_digest, input,
     trigger: source.trigger, sourceType: source.sourceType, sourceKey: source.sourceKey,
     engineVersion: currentEngineVersion(env), expectedRegistryRevision: active.registry_revision,
+    expectedNormalizedPlanJson: active.normalized_plan_json,
     expectedPolicyRevision: policy.revision,
     ...(authenticated ? { webhookScope: { triggerId: String(source.trigger.triggerId), secretName: authenticated.secretName } } : {}),
     ...(selectedSchedule ? { schedulerClaim: {
