@@ -14,12 +14,15 @@ The owner permits testing the existing, not-yet-in-service
 `workflow-mcp-worker` and its current D1/Workflows resources, rather than
 creating another Worker. This is a **shared live-target test**, not independently
 isolated acceptance under the original AC15; report that variance explicitly.
-The owner has **not** approved an automatic D1 migration, production cutover,
-Cron change, live upstream write, Secret rotation or final release. Before any
-write, verify the exact deployed Worker HEAD and D1 schema, take an independently
-recoverable D1 export, inventory nonterminal Runs/instances and scheduler cursor,
-and obtain separate authorization for the specific mutation. Do not use a
-locally simulated SQLite result as Cloudflare managed-D1 evidence.
+The owner **has already authorized** v0.2 testing on this unused live target,
+including necessary controlled deployment, schema migration and reversible D1
+writes. No additional per-step owner permission is required for these tests.
+Before mutations, verify the exact deployed Worker HEAD and D1 schema, take a
+recoverable D1 export and inventory nonterminal Runs/instances and scheduler
+cursor. Stop on unexpected pre-existing business data or incompatible schema.
+Final go-live, real upstream business writes and enabling a real production
+Cron schedule remain separate decisions. Do not use a locally simulated SQLite
+result as Cloudflare managed-D1 evidence.
 
 ## Import prerequisites
 
@@ -28,9 +31,10 @@ locally simulated SQLite result as Cloudflare managed-D1 evidence.
    baseline. Do not treat the current checked-in Registry as proof of what an
    unknown production SHA is running.
 2. Use only the explicitly approved test target and verify its actual D1 and
-   Workflows bindings and approved v0.2 schema before an authorized test. If
-   required migrations are missing, **stop** rather than silently applying
-   them. Keep both dynamic feature gates OFF.
+   Workflows bindings. After baseline backup, apply any required approved
+   additive v0.2 migrations as part of this authorized test (without dropping
+   existing data); verify resulting schema. Stop on unexpected drift or failed
+   migration. Keep both dynamic feature gates OFF until cutover tests.
    Take a read-only snapshot of immutable definitions, active pointers,
    Connection policy revision and controls, *all* nonterminal Run/manifest
    records, and the `raindrop-daily-snapshot:daily-nine` scheduler row.
@@ -42,8 +46,8 @@ locally simulated SQLite result as Cloudflare managed-D1 evidence.
 4. Obtain the *fresh* authoritative snapshot with `readLegacyImportState(db)`
    immediately before import, including all nonterminal Run/manifest rows.
    Pass it and the exact policy revision to `prepareLegacyImport` /
-   `seedLegacyDefinitions` in an isolated test
-   harness only after authorization. Verify all four original digests/source paths and exact normalized
+   `seedLegacyDefinitions` in the approved test target after the backup and
+   preflight checks. Verify all four original digests/source paths and exact normalized
    plans, current D1 tool approval and unchanged `daily-nine` values. An
    identical seed is idempotent; a collision on the same digest must fail.
    Re-read the D1 snapshot and nonterminal Run records after the operation.
@@ -58,9 +62,9 @@ locally simulated SQLite result as Cloudflare managed-D1 evidence.
    Catalog SHA and the Engine repository's numeric publisher ID. A matching
    immutable D1 digest alone is not proof of an authorized publication.
    If the protected publisher/catalog is unavailable, stop before cutover.
-6. Separately approve active Registry CAS and reader gate cutover **only after**
+6. Perform controlled Registry CAS and reader-gate cutover tests **only after**
    required managed D1/Workflows, manual/webhook/scheduled and old-Run continuation
-   acceptance. The import must not implicitly activate anything. Preserve
+   compatibility checks. The import must not implicitly activate anything. Preserve
    the old static read path until the switch is authorized.
 
 ## Fallback and release gate
@@ -70,12 +74,14 @@ v0.2 active definitions, do **not** blindly deploy an older engine binary: it
 may ignore new active records, pinned Connection scopes or the updated
 scheduler semantics. A rollback requires an explicit compatible target
 engine, saved active definition revision/digest, durable Run/manifest
-compatibility evidence and a separately authorized reverse cutover. Do not
+compatibility evidence and a controlled reverse cutover during tests. Do not
 delete historical definitions, Runs or scheduler rows to make a rollback pass.
 
-For production, a separate owner authorization is required for exact-SHA D1
-migration, feature gate change and deployment. Do not treat CI SQLite results
-or this runbook as such authorization. Real platform acceptance remains Open
+The owner has authorized test migrations, test deployment and feature-gate
+validation on the currently unused existing Worker; do not repeat a blanket
+permission request for those operations. Final go-live and enabling actual
+production business traffic remain separate. Do not treat CI SQLite results
+or this runbook as evidence that those live tests were completed. Real platform acceptance remains Open
 until captured with managed D1 and Workflows binding. Successful live-target
 results cannot be labeled independent-isolation PASS; record the deviation
 and obtain a separate acceptance decision.
