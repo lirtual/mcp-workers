@@ -1,0 +1,235 @@
+name: Raindrop v4 Native CPU Evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Full immutable commit SHA to deploy and measure
+        required: true
+        type: string
+      production_confirmation:
+        description: Type raindrop-mcp-worker to confirm the exact production target
+        required: true
+        type: string
+      expected_rollback_deployment:
+        description: Deployment that must be active immediately before this run
+        required: true
+        default: 367c8e27-eb45-4959-949b-49d883917720
+        type: string
+      expected_rollback_version:
+        description: Version that must be 100% active immediately before this run
+        required: true
+        default: 52a58648-1f94-4f7c-81da-d58face037f0
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: raindrop-v4-native-cpu-production
+  cancel-in-progress: false
+
+jobs:
+  evidence:
+    name: Deploy immutable SHA and collect read-only native CPU evidence
+    environment: workflow-mcp-worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CLOUDFLARE_ACCOUNT_ID: 8bb496011403552e785ea1b834daffdf
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      MCP_ACCESS_TOKEN: ${{ secrets.RAINDROP_PRODUCTION_MCP_ACCESS_TOKEN }}
+      RAINDROP_EVIDENCE_WORKER: raindrop-mcp-worker
+      RAINDROP_EVIDENCE_URL: https://raindrop-mcp-worker.aiyaya.workers.dev
+      RAINDROP_EVIDENCE_SOURCE_SHA: ${{ inputs.source_sha }}
+      RAINDROP_EVIDENCE_WORKFLOW_SHA: ${{ github.sha }}
+      RAINDROP_EVIDENCE_RUN: gh-${{ github.run_id }}-${{ github.run_attempt }}
+      ROLLBACK_PATH: ${{ runner.temp }}/raindrop-v4-rollback.json
+      DEPLOYED_PATH: ${{ runner.temp }}/raindrop-v4-deployed.json
+      JOURNAL_PATH: ${{ runner.temp }}/raindrop-v4-readonly-journal.json
+      EVIDENCE_PATH: ${{ runner.temp }}/raindrop-v4-cpu-evidence.json
+      CLEANUP_PATH: ${{ runner.temp }}/raindrop-v4-cleanup.json
+    steps:
+      - name: Validate explicit production confirmation
+        shell: bash
+        env:
+          PRODUCTION_CONFIRMATION: ${{ inputs.production_confirmation }}
+        run: |
+          set -euo pipefail
+          if [[ "$PRODUCTION_CONFIRMATION" != "$RAINDROP_EVIDENCE_WORKER" ]]; then
+            echo "::error::Production target confirmation did not exactly match $RAINDROP_EVIDENCE_WORKER"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Verify immutable clean source
+        run: node apps/raindrop-mcp-worker/scripts/v4-cpu-evidence.mjs verify-source
+
+      - name: Install workspace
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Check application and evidence guards
+        run: pnpm --filter raindrop-mcp-worker check
+
+      - name: Validate credentials without exposing them
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]]; then
+            echo "::error::Missing Cloudflare API token"
+            exit 1
+          fi
+          if [[ -z "${MCP_ACCESS_TOKEN:-}" ]]; then
+            echo "::error::Missing existing production MCP read credential"
+            exit 1
+          fi
+
+      - name: Record and verify pre-deploy rollback point
+        shell: bash
+        env:
+          RAINDROP_EVIDENCE_OUTPUT: ${{ env.ROLLBACK_PATH }}
+          EXPECTED_DEPLOYMENT: ${{ inputs.expected_rollback_deployment }}
+          EXPECTED_VERSION: ${{ inputs.expected_rollback_version }}
+        run: |
+          set -euo pipefail
+          node apps/raindrop-mcp-worker/scripts/v4-cpu-evidence.mjs snapshot
+          node --input-type=module <<'NODE'
+          import assert from "node:assert/strict";
+          import { readFile } from "node:fs/promises";
+          const snapshot = JSON.parse(await readFile(process.env.RAINDROP_EVIDENCE_OUTPUT, "utf8"));
+          assert.equal(snapshot.deploymentId, process.env.EXPECTED_DEPLOYMENT, "Active deployment differs from approved rollback point");
+          assert.equal(snapshot.versionId, process.env.EXPECTED_VERSION, "Active version differs from approved rollback point");
+          NODE
+
+      - name: Deploy exact SHA without changing secrets
+        id: deploy
+        working-directory: apps/raindrop-mcp-worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd ../..
+          node apps/raindrop-mcp-worker/scripts/v4-cpu-evidence.mjs verify-source
+          cd apps/raindrop-mcp-worker
+          # No --secrets-file and no secret upload/rotation: existing production
+          # MCP_ACCESS_TOKEN and RAINDROP_ACCESS_TOKEN bindings are preserved.
+          pnpm exec wrangler deploy \
+            --name "$RAINDROP_EVIDENCE_WORKER" \
+            --keep-vars \
+            --message "issue-129 source=$RAINDROP_EVIDENCE_SOURCE_SHA"
+
+      - name: Record deployment failure as sanitized Blocked evidence
+        if: ${{ always() && steps.deploy.outcome != 'success' && steps.deploy.outcome != 'skipped' }}
+        env:
+          RAINDROP_EVIDENCE_OUTPUT: ${{ env.EVIDENCE_PATH }}
+          RAINDROP_EVIDENCE_STAGE: deploy
+          RAINDROP_EVIDENCE_REASON: Deployment command did not complete successfully; rollback required
+        run: node apps/raindrop-mcp-worker/scripts/v4-cpu-evidence.mjs record-blocked
+
+      - name: Verify deployed version provenance
+        id: deployed
+        shell: bash
+        env:
+          RAINDROP_EVIDENCE_OUTPUT: ${{ env.DEPLOYED_PATH }}
+          RAINDROP_EVIDENCE_BLOCKED_OUTPUT: ${{ env.EVIDENCE_PATH }}
+        run: |
+          set -euo pipefail
+          node apps/raindrop-mcp-worker/scripts/v4-cpu-evidence.mjs snapshot-deployed
+          node --input-type=module <<'NODE'
+          import assert from "node:assert/strict";
+          import { appendFile, readFile } from "node:fs/promises";
+          const rollback = JSON.parse(await readFile(process.env.ROLLBACK_PATH, "utf8"));
+          const deployed = JSON.parse(await readFile(process.env.DEPLOYED_PATH, "utf8"));
+          assert.notEqual(deployed.deploymentId, rollback.deploymentId, "Deploy did not create a new deployment");
+          assert.notEqual(deployed.versionId, rollback.versionId, "Deploy did not create a new version");
+          await appendFile(process.env.GITHUB_ENV, [
+            `RAINDROP_EVIDENCE_DEPLOYMENT_ID=${deployed.deploymentId}`,
+            `RAINDROP_EVIDENCE_VERSION_ID=${deployed.versionId}`,
+            `RAINDROP_EVIDENCE_ROLLBACK_DEPLOYMENT_ID=${rollback.deploymentId}`,
+            `RAINDROP_EVIDENCE_ROLLBACK_VERSION_ID=${rollback.versionId}`,
+            "",
+          ].join("\n"));
+          NODE
+
+      - name: Run fixed read-only observations
+        env:
+          RAINDROP_EVIDENCE_OUTPUT: ${{ env.JOURNAL_PATH }}
+          RAINDROP_EVIDENCE_BLOCKED_OUTPUT: ${{ env.EVIDENCE_PATH }}
+        run: node apps/raindrop-mcp-worker/scripts/v4-cpu-evidence.mjs probe
+
+      - name: Collect exact native CPU telemetry
+        env:
+          RAINDROP_EVIDENCE_JOURNAL: ${{ env.JOURNAL_PATH }}
+          RAINDROP_EVIDENCE_OUTPUT: ${{ env.EVIDENCE_PATH }}
+        run: node apps/raindrop-mcp-worker/scripts/v4-cpu-evidence.mjs collect
+
+      - name: Restore recorded production version after failure
+        if: ${{ always() && steps.deploy.outcome != 'skipped' && (failure() || cancelled()) }}
+        env:
+          RAINDROP_EVIDENCE_ROLLBACK_PATH: ${{ env.ROLLBACK_PATH }}
+          RAINDROP_EVIDENCE_OUTPUT: ${{ env.CLEANUP_PATH }}
+        run: node apps/raindrop-mcp-worker/scripts/v4-cpu-evidence.mjs rollback
+
+      - name: Upload sanitized evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: raindrop-v4-native-cpu-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.ROLLBACK_PATH }}
+            ${{ env.DEPLOYED_PATH }}
+            ${{ env.JOURNAL_PATH }}
+            ${{ env.EVIDENCE_PATH }}
+            ${{ env.CLEANUP_PATH }}
+          if-no-files-found: error
+          retention-days: 14
+
+  cleanup:
+    name: Safety-net rollback after evidence job failure or timeout
+    needs: evidence
+    if: ${{ always() && needs.evidence.result != 'success' }}
+    environment: workflow-mcp-worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CLOUDFLARE_ACCOUNT_ID: 8bb496011403552e785ea1b834daffdf
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      RAINDROP_EVIDENCE_WORKER: raindrop-mcp-worker
+      RAINDROP_EVIDENCE_URL: https://raindrop-mcp-worker.aiyaya.workers.dev
+      RAINDROP_EVIDENCE_SOURCE_SHA: ${{ inputs.source_sha }}
+      RAINDROP_EVIDENCE_ROLLBACK_DEPLOYMENT_ID: ${{ inputs.expected_rollback_deployment }}
+      RAINDROP_EVIDENCE_ROLLBACK_VERSION_ID: ${{ inputs.expected_rollback_version }}
+      CLEANUP_PATH: ${{ runner.temp }}/raindrop-v4-safety-net-cleanup.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Restore recorded production version with compare-and-set guard
+        env:
+          RAINDROP_EVIDENCE_OUTPUT: ${{ env.CLEANUP_PATH }}
+        run: node apps/raindrop-mcp-worker/scripts/v4-cpu-evidence.mjs rollback
+
+      - name: Upload safety-net cleanup evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: raindrop-v4-native-cpu-cleanup-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.CLEANUP_PATH }}
+          if-no-files-found: error
+          retention-days: 14
