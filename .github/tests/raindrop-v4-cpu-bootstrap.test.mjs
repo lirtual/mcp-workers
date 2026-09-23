@@ -31,8 +31,8 @@ test("source is frozen before any checkout or privileged step", () => {
   assert.match(gate, /\$SOURCE_SHA_INPUT" != "\$PINNED_SHA/);
   assert.match(gate, /\$PRODUCTION_CONFIRMATION" != "\$RAINDROP_EVIDENCE_WORKER/);
   assert.match(file, new RegExp(`RAINDROP_EVIDENCE_PINNED_SHA: ${pinned}`));
-  assert.match(evidence, /RAINDROP_EVIDENCE_SOURCE_SHA: \$\{\{ env.RAINDROP_EVIDENCE_PINNED_SHA \}\}/);
-  assert.match(evidence, /RAINDROP_EVIDENCE_WORKFLOW_SHA: \$\{\{ env.RAINDROP_EVIDENCE_PINNED_SHA \}\}/);
+  assert.match(evidence, new RegExp(`RAINDROP_EVIDENCE_SOURCE_SHA: ${pinned}`));
+  assert.match(evidence, new RegExp(`RAINDROP_EVIDENCE_WORKFLOW_SHA: ${pinned}`));
   assert.match(evidence, /ref: \$\{\{ env.RAINDROP_EVIDENCE_PINNED_SHA \}\}/);
   assert.doesNotMatch(evidence, /ref: \$\{\{ inputs.source_sha \}\}/);
   assert.match(evidence, /v4-cpu-evidence\.mjs verify-source/g);
@@ -42,7 +42,7 @@ test("cleanup independently checks out the same frozen source after timeout and 
   const cleanup = file.slice(file.indexOf("  cleanup:\n"));
   assert.match(cleanup, /needs: evidence/);
   assert.match(cleanup, /always\(\).*github.event_name == 'workflow_dispatch'.*needs.evidence.result != 'success'/);
-  assert.match(cleanup, /RAINDROP_EVIDENCE_SOURCE_SHA: \$\{\{ env.RAINDROP_EVIDENCE_PINNED_SHA \}\}/);
+  assert.match(cleanup, new RegExp(`RAINDROP_EVIDENCE_SOURCE_SHA: ${pinned}`));
   assert.match(cleanup, /ref: \$\{\{ env.RAINDROP_EVIDENCE_PINNED_SHA \}\}/);
   assert.match(cleanup, /v4-cpu-evidence\.mjs rollback/);
   assert.doesNotMatch(cleanup, /ref: \$\{\{ github.sha \}\}|ref: \$\{\{ inputs.source_sha \}\}/);
