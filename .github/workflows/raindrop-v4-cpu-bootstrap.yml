@@ -242,8 +242,10 @@ jobs:
           RAINDROP_EVIDENCE_OUTPUT: ${{ env.EVIDENCE_PATH }}
         run: node apps/raindrop-mcp-worker/scripts/v4-cpu-evidence.mjs collect
 
-      - name: Restore recorded production version after failure
-        if: ${{ always() && steps.deploy.outcome != 'skipped' && (failure() || cancelled()) }}
+      # CPU evidence is a temporary acceptance run, never an implicit v4 cutover.
+      # A failure of this restore step causes the independent cleanup job to retry.
+      - name: Restore recorded production version after evidence or failure
+        if: ${{ always() && steps.deploy.outcome != 'skipped' }}
         env:
           RAINDROP_EVIDENCE_ROLLBACK_PATH: ${{ env.ROLLBACK_PATH }}
           RAINDROP_EVIDENCE_OUTPUT: ${{ env.CLEANUP_PATH }}
