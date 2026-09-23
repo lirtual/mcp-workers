@@ -22,3 +22,54 @@ jobs:
     if: github.repository == 'lirtual/mcp-workers' && github.ref == 'refs/heads/feat/workflow-v02-t10-legacy-import-preflight'
     uses: ./.github/workflows/workflow-mcp-deploy.yml
     secrets: inherit
+
+  authenticated-smoke:
+    needs: authorized-live-test
+    if: github.repository == 'lirtual/mcp-workers' && github.ref == 'refs/heads/feat/workflow-v02-t10-legacy-import-preflight'
+    environment: workflow-mcp-worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: 8bb496011403552e785ea1b834daffdf
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
+      GITHUB_TOKEN: ${{ github.token }}
+      WORKFLOW_MCP_D1_DATABASE_ID: 238891f8-4007-4436-890d-819d54e3e01b
+      WORKFLOW_MCP_D1_DATABASE_NAME: workflow-mcp
+      WORKFLOW_MCP_WORKER_NAME: workflow-mcp-worker
+      WORKFLOW_MCP_R2_BUCKET: workflow-mcp-artifacts
+      WORKFLOW_MCP_URL: https://workflow-mcp-worker.aiyaya.workers.dev
+      WORKFLOW_MCP_SOURCE_URL: https://example.com/
+      WORKFLOW_MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
+      WORKFLOW_MCP_EVIDENCE_PATH: ${{ github.workspace }}/workflow-mcp-evidence.json
+      R2_ACCESS_KEY_ID: ${{ vars.R2_ACCESS_KEY_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install pinned workspace
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.17.1 --activate
+          pnpm install --frozen-lockfile --ignore-scripts
+      - name: Build existing deployment config for read-only verification
+        run: |
+          config="$GITHUB_WORKSPACE/apps/workflow-mcp-worker/wrangler.generated.json"
+          pnpm --filter workflow-mcp-worker exec tsx scripts/build-deploy-config.ts "$config"
+          echo "WORKFLOW_MCP_WRANGLER_CONFIG=$config" >> "$GITHUB_ENV"
+      - name: Verify authenticated MCP, safe example.com heavy Run and Artifact
+        working-directory: apps/workflow-mcp-worker
+        run: pnpm exec tsx scripts/run-deploy-tracer.ts
+      - name: Verify actual GitHub executor identity and terminal evidence
+        working-directory: apps/workflow-mcp-worker
+        run: pnpm exec tsx scripts/verify-deploy-executor.ts
+      - name: Upload sanitized live acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow-mcp-v02-live-acceptance-${{ github.run_id }}
+          path: workflow-mcp-evidence.json
+          if-no-files-found: warn
+          retention-days: 14
