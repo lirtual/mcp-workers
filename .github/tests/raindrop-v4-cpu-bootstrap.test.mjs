@@ -72,3 +72,18 @@ test("pull_request checks are unauthenticated; deploy and rollback require manua
   assert.match(evidence, /status:.*blocked|record-blocked/);
   assert.match(evidence, /RAINDROP_EVIDENCE_WORKER: raindrop-mcp-worker/);
 });
+
+test("recorded evidence distinguishes default-branch runner SHA from reviewed source SHA", () => {
+  const metadata = block(
+    "Record distinct bootstrap and immutable source identities (non-secret)",
+    "uses: actions/checkout@v4",
+  );
+  assert.match(metadata, /BOOTSTRAP_SHA: \\$\\{\\{ github\\.sha \\}\\}/);
+  assert.match(metadata, /PINNED_SOURCE_SHA: \\$\\{\\{ env\\.RAINDROP_EVIDENCE_PINNED_SHA \\}\\}/);
+  assert.match(metadata, /bootstrapSha,/);
+  assert.match(metadata, /sourceSha,/);
+  assert.match(metadata, /RUNNER_TEMP.*raindrop-v4-bootstrap-provenance\\.json/);
+  const evidence = block("  evidence:\\n", "  cleanup:\\n");
+  assert.match(evidence, /runner\\.temp \\}\\}\\/raindrop-v4-bootstrap-provenance\\.json/);
+  assert.doesNotMatch(metadata, /CLOUDFLARE_API_TOKEN|MCP_ACCESS_TOKEN|RAINDROP_ACCESS_TOKEN/);
+});

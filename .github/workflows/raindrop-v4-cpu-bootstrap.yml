@@ -72,6 +72,8 @@ jobs:
       RAINDROP_EVIDENCE_WORKER: raindrop-mcp-worker
       RAINDROP_EVIDENCE_URL: https://raindrop-mcp-worker.aiyaya.workers.dev
       RAINDROP_EVIDENCE_SOURCE_SHA: 852ace324b0db7ef58d89172ce4896d623a304f1
+      # The underlying source checker compares the reviewed code to its pinned
+      # source identity. Actual default-branch runner SHA is recorded separately.
       RAINDROP_EVIDENCE_WORKFLOW_SHA: 852ace324b0db7ef58d89172ce4896d623a304f1
       RAINDROP_EVIDENCE_RUN: gh-${{ github.run_id }}-${{ github.run_attempt }}
       ROLLBACK_PATH: ${{ github.workspace }}/raindrop-v4-rollback.json
@@ -96,6 +98,33 @@ jobs:
             echo "::error::Production target confirmation did not exactly match $RAINDROP_EVIDENCE_WORKER"
             exit 1
           fi
+
+      - name: Record distinct bootstrap and immutable source identities (non-secret)
+        shell: bash
+        env:
+          BOOTSTRAP_SHA: ${{ github.sha }}
+          PINNED_SOURCE_SHA: ${{ env.RAINDROP_EVIDENCE_PINNED_SHA }}
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import assert from "node:assert/strict";
+          import { writeFile } from "node:fs/promises";
+          const fullSha = /^[0-9a-f]{40}$/;
+          const bootstrapSha = process.env.BOOTSTRAP_SHA;
+          const sourceSha = process.env.PINNED_SOURCE_SHA;
+          assert(fullSha.test(bootstrapSha), "Bootstrap commit SHA must be immutable");
+          assert(fullSha.test(sourceSha), "Reviewed source SHA must be immutable");
+          await writeFile(
+            `${process.env.RUNNER_TEMP}/raindrop-v4-bootstrap-provenance.json`,
+            JSON.stringify({
+              schemaVersion: 1,
+              bootstrapSha,
+              sourceSha,
+              run: `gh-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}`,
+            }) + "\n",
+            { mode: 0o600 },
+          );
+          NODE
 
       - uses: actions/checkout@v4
         with:
@@ -231,6 +260,7 @@ jobs:
             ${{ env.JOURNAL_PATH }}
             ${{ env.EVIDENCE_PATH }}
             ${{ env.CLEANUP_PATH }}
+            ${{ runner.temp }}/raindrop-v4-bootstrap-provenance.json
           if-no-files-found: error
           retention-days: 14
 
