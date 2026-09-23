@@ -31,6 +31,8 @@ const EXPECTED_TOOL_NAMES = [
   "duplicates_delete",
   "trash_empty",
   "diagnostics",
+  "diagnostics_read",
+  "raindrop_read",
 ].sort();
 
 describe("Raindrop MCP v3 public contract", () => {
@@ -74,14 +76,14 @@ describe("Raindrop MCP v3 public contract", () => {
     expect(await transformed["~standard"].validate({ ids: [1, 1, 2] }))
       .toEqual({ value: { ids: [1, 2] } });
   });
-  it("exposes exactly the approved 26 tools with no legacy alias", async () => {
+  it("exposes the frozen 26 v3 tools plus the two v4 read-only tracers", async () => {
     const service = new RaindropMCPService({ accessToken: "test-token" });
     try {
       const tools = await service.listTools();
       const actual = tools.map((tool) => tool.id).sort();
       expect(actual).toEqual(EXPECTED_TOOL_NAMES);
-      expect(new Set(actual).size).toBe(26);
-      expect(actual).toHaveLength(26);
+      expect(new Set(actual).size).toBe(28);
+      expect(actual).toHaveLength(28);
       expect(actual).toContain("diagnostics");
       for (const tool of tools) {
         expect(tool.inputSchema).toBeDefined();
@@ -91,7 +93,7 @@ describe("Raindrop MCP v3 public contract", () => {
       await service.cleanup();
     }
   });
-  it("rejects unknown fields for every one of the 26 tools through MCP Client", async () => {
+  it("rejects unknown fields for all 28 SDK tools through MCP Client", async () => {
     const fetchSpy = vi.fn(() => {
       throw new Error("Schema must reject inputs before any upstream request");
     });
