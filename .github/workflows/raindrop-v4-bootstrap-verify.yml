@@ -30,5 +30,11 @@ jobs:
           node-version: 24
       - name: Parse bootstrap YAML offline
         run: ruby -e 'require "yaml"; YAML.load_file(".github/workflows/raindrop-v4-cpu-bootstrap.yml")'
+      - name: Verify GitHub Actions expressions and runner syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          GOBIN="$RUNNER_TEMP" go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          "$RUNNER_TEMP/actionlint" .github/workflows/raindrop-v4-cpu-bootstrap.yml
       - name: Verify bootstrap security contract
         run: node --test .github/tests/raindrop-v4-cpu-bootstrap.test.mjs
