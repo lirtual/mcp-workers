@@ -219,15 +219,23 @@ describe("T03 (#130) SDK-backed read-only vertical tracer", () => {
     await service.cleanup();
   });
 
-  it("cancels an authenticated in-flight v4 HTTP read without starting another upstream request", async () => {
+  it("propagates an in-flight HTTP disconnect to the upstream fetch and never returns a successful read", async () => {
     const controller = new AbortController();
-    const upstream = vi.fn(async (request: Request) => {
+    let upstreamSawAbort = false;
+    const upstream = vi.fn((request: Request) => new Promise<Response>((_resolve, reject) => {
       expect(request.method).toBe("GET");
+      expect(request.signal.aborted).toBe(false);
+      const onAbort = () => {
+        upstreamSawAbort = true;
+        reject(new DOMException("Synthetic upstream aborted", "AbortError"));
+      };
+      request.signal.addEventListener("abort", onAbort, { once: true });
+      // Disconnect after the upstream request actually starts, not before ingress.
       controller.abort();
-      return Response.json({ result: true, items: [] });
-    });
+      if (request.signal.aborted && !upstreamSawAbort) onAbort();
+    }));
     vi.stubGlobal("fetch", upstream);
-    const response = await worker.fetch(new Request(workerUrl, {
+    const request = new Request(workerUrl, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${portalToken}`,
@@ -239,11 +247,17 @@ describe("T03 (#130) SDK-backed read-only vertical tracer", () => {
         params: { name: "raindrop_read", arguments: { action: "list", perpage: 1 } },
       }),
       signal: controller.signal,
-    }), { ...workerEnv, RAINDROP_RATE_LIMIT_MAX_RETRIES: "0" });
-    await response.text();
-    // The HTTP transport may resolve before its disconnected handler finishes.
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    // Stateless MCP may either return an error envelope or terminate on disconnect.
+    const outcome = await worker.fetch(request, {
+      ...workerEnv, RAINDROP_RATE_LIMIT_MAX_RETRIES: "0",
+    }).then(async (response) => ({ status: response.status, body: await response.text() }));
     expect(upstream).toHaveBeenCalledTimes(1);
+    expect(upstreamSawAbort).toBe(true);
+    expect(outcome.body).not.toContain('"ok":true');
+    if (outcome.status === 200) {
+      expect(outcome.body).toContain('"isError":true');
+    }
   });
 
   it("keeps Portal auth and 128 KiB ingress limits before SDK tool execution", async () => {
