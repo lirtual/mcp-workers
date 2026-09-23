@@ -171,6 +171,33 @@ describe("T03 (#130) SDK-backed read-only vertical tracer", () => {
     expect(upstream).not.toHaveBeenCalled();
   });
 
+  it("executes one v4 bookmark page over authenticated worker.fetch and rejects invalid action before upstream", async () => {
+    const upstream = vi.fn((request: Request) => {
+      expect(request.method).toBe("GET");
+      expect(new URL(request.url).pathname).toBe("/rest/v1/raindrops/0");
+      return Response.json({
+        result: true,
+        items: [{ _id: 17, title: "Read-only tracer", link: "https://example.test" }],
+        count: 1,
+      });
+    });
+    vi.stubGlobal("fetch", upstream);
+    const valid = await callWorker(8, "tools/call", {
+      name: "raindrop_read", arguments: { action: "list", perpage: 1 },
+    });
+    expect(valid.response.status).toBe(200);
+    expect(valid.body).toContain('"requestCount":1');
+    expect(valid.body).toContain("Read-only tracer");
+    expect(upstream).toHaveBeenCalledTimes(1);
+
+    const invalid = await callWorker(9, "tools/call", {
+      name: "raindrop_read", arguments: { action: "delete", id: 17 },
+    });
+    expect(invalid.response.status).toBe(200);
+    expect(invalid.body).toContain("VALIDATION_ERROR");
+    expect(upstream).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps Portal auth and 128 KiB ingress limits before SDK tool execution", async () => {
     const noAuth = await worker.fetch(new Request(workerUrl, {
       method: "POST", headers: { "Content-Type": "application/json" },
