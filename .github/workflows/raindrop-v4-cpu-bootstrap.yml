@@ -24,6 +24,12 @@ on:
     paths:
       - .github/workflows/raindrop-v4-cpu-bootstrap.yml
       - .github/tests/raindrop-v4-cpu-bootstrap.test.mjs
+  push:
+    branches:
+      - feat/raindrop-v4-cpu-bootstrap
+    paths:
+      - .github/workflows/raindrop-v4-cpu-bootstrap.yml
+      - .github/tests/raindrop-v4-cpu-bootstrap.test.mjs
 
 permissions:
   contents: read
@@ -39,7 +45,7 @@ concurrency:
 jobs:
   validate:
     name: Offline CPU bootstrap security contract (no credentials)
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: read
