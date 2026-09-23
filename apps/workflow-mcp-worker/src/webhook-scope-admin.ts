@@ -94,6 +94,14 @@ export async function registerApprovedWebhookScope(
          SELECT ?, ?, ?, ?, ?, ?, ?, ?
          WHERE EXISTS (SELECT 1 FROM connection_policy_revision
                        WHERE singleton = 1 AND revision = ?)
+           AND EXISTS (
+             SELECT 1 FROM workflow_definition_versions d,
+               json_each(d.normalized_plan_json, '$.triggers') t
+             WHERE d.definition_digest = ? AND d.workflow_id = ?
+               AND json_extract(t.value, '$.type') = 'webhook'
+               AND json_extract(t.value, '$.id') = ?
+               AND json_extract(t.value, '$.secret') = ?
+           )
            AND (
              NOT EXISTS (SELECT 1 FROM workflow_webhook_secret_scopes
                WHERE workflow_id = ? AND trigger_id = ? AND definition_digest = ?)
@@ -103,6 +111,7 @@ export async function registerApprovedWebhookScope(
            )`
       ).bind(actionId, workflowId, triggerId, definitionDigest, secretName,
         expectedPolicyRevision, expectedPolicyRevision, now, expectedPolicyRevision,
+        definitionDigest, workflowId, triggerId, secretName,
         workflowId, triggerId, definitionDigest,
         workflowId, triggerId, definitionDigest, secretName, expectedPolicyRevision),
       db.prepare(

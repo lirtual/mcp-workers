@@ -151,6 +151,34 @@ describe('immutable staged definition with real SQLite', () => {
     expect(stored?.count).toBe(0);
   });
 
+  it('rejects a concurrent conflicting digest row during the D1 batch without publishing it', async () => {
+    const db = await openStore();
+    if (!db) return;
+    const altered = {
+      prepare: db.prepare.bind(db),
+      batch: async (commands: Parameters<D1Database['batch']>[0]) => {
+        // Competing writer commits after staging read but before its transaction.
+        await db.prepare(
+          `INSERT INTO workflow_definition_versions
+           (definition_digest, workflow_id, dsl_version, normalized_plan_json, source_path, created_at)
+           VALUES (?, ?, 1, ?, ?, ?)`
+        ).bind(entry.definitionDigest, 'unrelated-workflow', JSON.stringify(entry.plan),
+          entry.sourcePath, '2026-09-23').run();
+        return db.batch(commands);
+      }
+    } as D1Database;
+    const response = await stageDefinition(send(envelope()), { DB: altered } as Env, publisher);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: 'publication_conflict' });
+    expect(await db.prepare('SELECT COUNT(*) AS count FROM definition_publications')
+      .first<{ count: number }>()).toEqual({ count: 0 });
+    expect(await db.prepare(
+      'SELECT workflow_id FROM workflow_definition_versions WHERE definition_digest = ?'
+    ).bind(entry.definitionDigest).first<{ workflow_id: string }>()).toEqual({
+      workflow_id: 'unrelated-workflow'
+    });
+  });
+
   it('rejects unknown capability, unsafe retry and unapproved webhook Secret with valid digests', async () => {
     const db = await openStore();
     if (!db) return;

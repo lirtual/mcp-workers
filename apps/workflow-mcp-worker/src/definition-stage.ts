@@ -165,9 +165,14 @@ export async function stageDefinition(
          (publication_id, workflow_id, definition_digest, source_sha, repository_id,
           publisher_run_id, publisher_run_attempt, publisher_workflow_sha, policy_revision, created_at)
          SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-         WHERE (SELECT revision FROM connection_policy_revision WHERE singleton = 1) = ?`
+         WHERE (SELECT revision FROM connection_policy_revision WHERE singleton = 1) = ?
+           AND EXISTS (
+             SELECT 1 FROM workflow_definition_versions d
+             WHERE d.definition_digest = ? AND d.workflow_id = ?
+           )`
       ).bind(publicationId, workflowId, definitionDigest, sourceSha, identity.repositoryId,
-        identity.runId, identity.runAttempt, identity.workflowSha, policyRevision, now, policyRevision)
+        identity.runId, identity.runAttempt, identity.workflowSha, policyRevision, now, policyRevision,
+        definitionDigest, workflowId)
     ]);
     if (results[1]?.meta.changes !== 1) return reject(409, 'publication_conflict');
     return Response.json({ workflowId, definitionDigest, publicationId, staged: true }, {
