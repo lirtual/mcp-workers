@@ -1,5 +1,5 @@
 # TEMPORARY: v0.2 owner-authorized live test of an as-yet unused Worker.
-# Do not merge this file to main. Reuse the existing production deploy gate,
+# Do not merge this file to main. Retry after bounding contract test update. Reuse the existing production deploy gate,
 # including persistent-secret validation and release compatibility check.
 name: Workflow MCP v0.2 live target validation
 on:
