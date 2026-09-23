@@ -8,7 +8,7 @@ const wranglerConfig = process.env.WORKFLOW_MCP_WRANGLER_CONFIG;
 const query = `
 SELECT wr.run_id, wr.definition_digest, wdv.dsl_version, wdv.normalized_plan_json, sa.execution_manifest_json
 FROM workflow_runs wr
-JOIN workflow_definition_versions wdv
+LEFT JOIN workflow_definition_versions wdv
   ON wdv.definition_digest = wr.definition_digest
 LEFT JOIN step_runs sr ON sr.run_id = wr.run_id
 LEFT JOIN step_attempts sa
@@ -66,7 +66,9 @@ for (const row of rows) {
     record = {
       runId,
       definitionDigest: String(row.definition_digest),
-      dslVersion: Number(row.dsl_version),
+      // A missing pinned definition must remain visible to the compatibility
+      // gate; INNER JOIN would silently omit the nonterminal Run.
+      dslVersion: row.dsl_version == null ? -1 : Number(row.dsl_version),
       manifestVersions: [],
       hasInvalidManifest: false,
       normalizedPlanJson: typeof row.normalized_plan_json === 'string' ? row.normalized_plan_json : ''

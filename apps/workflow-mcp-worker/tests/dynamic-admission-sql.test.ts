@@ -503,6 +503,36 @@ describe('T06 gated, immutable D1 manual admission', () => {
     } finally { f.sqlite.close(); }
   });
 
+  it('rejects a concurrent immutable-plan change between validation and the atomic admission claim', async () => {
+    const f = fixture();
+    try {
+      const originalBatch = f.db.batch.bind(f.db);
+      let changed = false;
+      const racing = {
+        prepare: f.db.prepare.bind(f.db),
+        batch: async (commands: Parameters<D1Database['batch']>[0]) => {
+          if (!changed) {
+            changed = true;
+            const modified = { ...(original.plan as object), name: 'racing unapproved version' };
+            f.sqlite.prepare(
+              'UPDATE workflow_definition_versions SET normalized_plan_json = ? WHERE definition_digest = ?'
+            ).run(JSON.stringify(modified), original.definitionDigest);
+          }
+          return originalBatch(commands);
+        }
+      } as D1Database;
+      await expect(admitManualWorkflow({ ...f.env, DB: racing },
+        original.metadata.id, input, 'immutable-plan-race')).rejects.toMatchObject({
+          code: 'REGISTRY_CONFLICT'
+        });
+      expect((f.sqlite.prepare('SELECT COUNT(*) AS n FROM workflow_runs')
+        .get() as { n: number }).n).toBe(0);
+      expect((f.sqlite.prepare('SELECT COUNT(*) AS n FROM run_admissions')
+        .get() as { n: number }).n).toBe(0);
+      expect(f.starts()).toBe(0);
+    } finally { f.sqlite.close(); }
+  });
+
   it('rejects an activation race without writing an admission or starting an instance', async () => {
     const f = fixture();
     try {

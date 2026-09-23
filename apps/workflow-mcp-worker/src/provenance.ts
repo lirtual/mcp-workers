@@ -1,4 +1,5 @@
 import { asRuntimePlan, type RuntimePlan } from './runtime-plan.js';
+import { getConnection } from './connections.js';
 import type {
   StoredDefinition,
   StoredRun
@@ -96,16 +97,24 @@ export function assertReleaseCompatibility(
     if (record.hasInvalidManifest) {
       failures.push(`${record.runId}:invalid-execution-manifest`);
     }
-    if (record.normalizedPlanJson) {
-      try {
-        const removedConnections = referencedConnectionIds(record.normalizedPlanJson).filter(
-          connection => connection === 'smoke-modern' || connection === 'smoke-readonly'
-        );
-        if (removedConnections.length > 0) {
-          failures.push(`${record.runId}:removed-smoke-connection`);
+    if (record.normalizedPlanJson !== undefined) {
+      if (!record.normalizedPlanJson) {
+        failures.push(`${record.runId}:missing-pinned-plan`);
+      } else {
+        try {
+          const connectionIds = referencedConnectionIds(record.normalizedPlanJson);
+          if (connectionIds.some(connection =>
+            connection === 'smoke-modern' || connection === 'smoke-readonly')) {
+            failures.push(`${record.runId}:removed-smoke-connection`);
+          }
+          if (connectionIds.some(connection =>
+            connection !== 'smoke-modern' && connection !== 'smoke-readonly' &&
+            !getConnection(connection))) {
+            failures.push(`${record.runId}:unknown-connection-mapping`);
+          }
+        } catch {
+          failures.push(`${record.runId}:invalid-normalized-plan`);
         }
-      } catch {
-        failures.push(`${record.runId}:invalid-normalized-plan`);
       }
     }
     for (const version of record.manifestVersions) {
