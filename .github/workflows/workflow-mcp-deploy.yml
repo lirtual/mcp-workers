@@ -1,9 +1,6 @@
 name: Workflow MCP Deploy
 
 on:
-  # Temporary reusable entrypoint used only for owner-authorized v0.2 live validation.
-  # Remove workflow_call and the branch-only caller before merging to main.
-  workflow_call:
   push:
     branches:
       - main

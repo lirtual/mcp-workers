@@ -15,17 +15,7 @@ describe('Workflow MCP deploy gate contract', () => {
   it('keeps the release path bounded and preserves persistent Worker credentials', async () => {
     const value = await workflow('workflow-mcp-deploy.yml');
     const triggers = value.on as Record<string, unknown>;
-    // Temporary approved live-test caller; remove it before merging to main.
-    expect(Object.keys(triggers).sort()).toEqual(['push', 'workflow_call', 'workflow_dispatch']);
-    const liveTest = await workflow('workflow-mcp-v02-live-test.yml');
-    expect((liveTest.on as Record<string, unknown>).push).toMatchObject({
-      branches: ['feat/workflow-v02-t10-legacy-import-preflight'],
-      paths: ['.github/workflows/workflow-mcp-v02-live-test.yml']
-    });
-    const caller = (liveTest.jobs as Record<string, unknown>)['authorized-live-test'] as Record<string, unknown>;
-    expect(caller.uses).toBe('./.github/workflows/workflow-mcp-deploy.yml');
-    expect(caller.if).toContain("github.repository == 'lirtual/mcp-workers'");
-    expect(caller.if).toContain("github.ref == 'refs/heads/feat/workflow-v02-t10-legacy-import-preflight'");
+    expect(Object.keys(triggers).sort()).toEqual(['push', 'workflow_dispatch']);
     expect(triggers).not.toHaveProperty('pull_request');
     expect(Object.keys((triggers.workflow_dispatch as Record<string, unknown>).inputs as object).sort()).toEqual([
       'full_acceptance',
