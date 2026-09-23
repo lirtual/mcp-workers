@@ -6,7 +6,7 @@ const file = readFileSync(
   new URL("../workflows/raindrop-v4-cpu-bootstrap.yml", import.meta.url),
   "utf8",
 );
-const pinned = "36e6864a7378ef20cdb97d52d4877972d888a2df";
+const pinned = "852ace324b0db7ef58d89172ce4896d623a304f1";
 const block = (from, to) => {
   const start = file.indexOf(from);
   const end = file.indexOf(to, start + from.length);
@@ -57,6 +57,8 @@ test("production rollback preflight requires two explicit identities with no sta
   assert.match(file, /Active deployment differs from approved rollback point/);
   assert.match(file, /Active version differs from approved rollback point/);
   assert.match(file, /--keep-vars/);
+  assert.doesNotMatch(file, /\$\{\{ runner\.temp \}\}/, "runner context is invalid in job-level env");
+  assert.match(file, /ROLLBACK_PATH: \$\{\{ github\.workspace \}\}\/raindrop-v4-rollback\.json/);
   assert.match(file, /issue-129 source=\$RAINDROP_EVIDENCE_SOURCE_SHA/);
 });
 
