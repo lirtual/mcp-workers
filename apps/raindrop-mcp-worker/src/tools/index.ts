@@ -6,6 +6,7 @@ import { raindropV3CollectionTools } from "./raindrop-v3-collections.js";
 import { raindropV3CleanupTools } from "./raindrop-v3-cleanup.js";
 import { raindropV3AuditTools } from "./raindrop-v3-audit.js";
 import { createDiagnosticsTool } from "./diagnostics.js";
+import { createV4ReadTracerTools } from "./raindrop-v4-read.js";
 import type { ToolConfig } from "./common.js";
 
 export type { ToolConfig, ToolHandlerContext, McpContent } from "./common.js";
@@ -16,6 +17,7 @@ export const buildToolConfigs = (options: { serverVersion: string }) => {
 
   toolConfigs = [
     createDiagnosticsTool(options.serverVersion, getEnabledToolNames),
+    ...createV4ReadTracerTools(options.serverVersion, getEnabledToolNames),
     ...raindropV3Tools,
     ...raindropV3MutationTools,
     ...raindropV3CollectionTools,
