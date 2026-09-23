@@ -14,11 +14,15 @@ Domain language for [#170](https://github.com/lirtual/mcp-workers/issues/170). *
 | Execution scope | Resources actually reachable by the executor's account (files, processes, network and credentials). A configured project directory or command blocklist cannot constrain an unrestricted Shell. |
 | Authorized project scope | A user-selected working directory or class of ordinary file operations that can be performed without per-call confirmation. This is a policy/guardrail, NOT a host security boundary for Shell. |
 | Authorization | A decision about who may invoke an operation, on which device, under which scope and conditions. Private routing alone does not grant authorization. |
-| Approval | An explicit local user decision or time-limited authorization for an operation. A client UI's generic confirmation is insufficient evidence of device-side approval. |
+| Approval | A local user decision tied to a specific device and exact operation, with a short expiry. If approval is unavailable the sensitive operation is rejected; a client UI's generic confirmation is insufficient evidence. |
 | Execution session | A locally held interactive or background process with an independently queryable lifetime, output and stop behavior. It may outlive one remote request. |
-| Execution receipt | Stable operation identity and recorded state used to reconcile a request, its execution and result after retries/disconnections without blindly re-executing side effects. |
-| Revocation | Removing authority for future dispatch and preventing stale credentials/results from regaining authority. Treatment of already-running processes is separately defined. |
+| Execution receipt | Stable operation identity and recorded state (including an unknown outcome) used to reconcile a request, its execution and result after retries/disconnections without blindly re-executing side effects. |
+| Revocation | Removing authority for future dispatch and preventing stale credentials/results from regaining authority. A running process remains identifiable; the separate stop/terminate policy is unresolved. |
 | Audit record | Bounded local metadata about an operation, approval, outcome and timing, without recording unredacted credentials or arbitrary file contents by default. |
+| Private connectivity | A network path limited to approved private destinations. It is distinct from the identity of a calling client, local approval, and authority to execute a tool. |
+| Client authentication | Establishing which remote client may send requests to the remote MCP; distinguish this from network privacy and local user confirmation. |
+| Local approval channel | An independent on-device interface for granting or refusing specific sensitive operations; it does not implicitly grant a remote caller access to all files or processes. |
+| File transfer | Bounded, resumable or chunked movement of file content with integrity and resource limits, distinct from small control requests. |
 | Full-capability target | Provide the applicable upstream Shell, file read/write/edit/search, process/session, configuration and format-specific operations through approved policy; not proprietary hosted services or unconditional remote host control. |
 
 ## Settled requirements — round 1, 2026-09-23
@@ -33,4 +37,4 @@ Domain language for [#170](https://github.com/lirtual/mcp-workers/issues/170). *
 - Local upstream is MIT-licensed; reimplementing the proprietary Remote Desktop Commander cloud backend is out of scope.
 
 ## Open boundary questions (not decisions)
-Exact approval channel, identity/renewal, session kill and revocation semantics; handling arbitrary Shell's inability to honor directory boundaries; WSL2 Windows-mounted-drive/interop reachability; operation/result size and large-file flow; multi-device scale; upstream version compatibility and transport selection (#178). No automatic expansion of permissions or production deployment follows from these requirements.
+Q13 trust-boundary reconciliation (client OAuth versus Worker-to-device credential and private routing); how the local verifier authenticates an approved action and protects against replay; policy for sending additional input to an already-approved interactive Shell; hard-stop and revocation semantics for running processes; defensible handling of direct Windows paths versus authorized Shell's indirect reach; concrete size/retention/timeout quotas and chunk integrity; selected upstream version/tool compatibility and real transport (#178). No automatic expansion of permissions or production deployment follows from these requirements.
