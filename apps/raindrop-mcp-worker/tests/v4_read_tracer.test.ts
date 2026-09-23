@@ -255,7 +255,9 @@ describe("T03 (#130) SDK-backed read-only vertical tracer", () => {
     expect(upstream).toHaveBeenCalledTimes(1);
     expect(upstreamSawAbort).toBe(true);
     expect(outcome.body).not.toContain('"ok":true');
-    if (outcome.status === 200) {
+    // A disconnected stateless transport may terminate with a 200/empty body.
+    // Only an actual MCP payload must carry the structured error envelope.
+    if (outcome.status === 200 && outcome.body.length > 0) {
       expect(outcome.body).toContain('"isError":true');
     }
   });
