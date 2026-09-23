@@ -251,6 +251,55 @@ jobs:
           RAINDROP_EVIDENCE_OUTPUT: ${{ env.CLEANUP_PATH }}
         run: node apps/raindrop-mcp-worker/scripts/v4-cpu-evidence.mjs rollback
 
+      # Telemetry collection alone does not establish a safe completed run.
+      # A complete outcome requires the explicit v3 restore and a fresh API read.
+      - name: Finalize temporary evidence after verified v3 restoration
+        if: ${{ success() }}
+        shell: bash
+        env:
+          POST_RESTORE_PATH: ${{ runner.temp }}/raindrop-v4-post-restore.json
+          OUTCOME_PATH: ${{ runner.temp }}/raindrop-v4-run-outcome.json
+        run: |
+          set -euo pipefail
+          RAINDROP_EVIDENCE_OUTPUT="$POST_RESTORE_PATH" node apps/raindrop-mcp-worker/scripts/v4-cpu-evidence.mjs snapshot
+          node --input-type=module <<'NODE'
+          import assert from "node:assert/strict";
+          import { readFile, writeFile } from "node:fs/promises";
+          const read = async (path) => JSON.parse(await readFile(path, "utf8"));
+          const [measured, restored, current, rollback, provenance] = await Promise.all([
+            read(process.env.EVIDENCE_PATH),
+            read(process.env.CLEANUP_PATH),
+            read(process.env.POST_RESTORE_PATH),
+            read(process.env.ROLLBACK_PATH),
+            read(process.env.RUNNER_TEMP + "/raindrop-v4-bootstrap-provenance.json"),
+          ]);
+          assert.equal(measured.status, "complete", "Native telemetry collection is incomplete");
+          assert.equal(restored.status, "restored", "Original production version was not restored");
+          assert.equal(current.versionId, rollback.versionId, "Current Worker version is not the recorded v3 version");
+          assert.equal(restored.versionId, rollback.versionId, "Rollback record does not match the original version");
+          assert.equal(measured.rollback.versionId, rollback.versionId, "Telemetry rollback identity mismatch");
+          assert.equal(measured.target.versionId, process.env.RAINDROP_EVIDENCE_VERSION_ID, "Measured version mismatch");
+          assert.equal(measured.target.deploymentId, process.env.RAINDROP_EVIDENCE_DEPLOYMENT_ID, "Measured deployment mismatch");
+          assert.equal(provenance.sourceSha, measured.sourceSha, "Reviewed source does not match measurement");
+          assert.equal(provenance.run, measured.run, "GitHub run identity does not match measurement");
+          assert.match(provenance.bootstrapSha, /^[0-9a-f]{40}$/, "Missing actual bootstrap SHA");
+          await writeFile(
+            process.env.OUTCOME_PATH,
+            JSON.stringify({
+              schemaVersion: 1,
+              status: "telemetry-collected-and-restored",
+              run: provenance.run,
+              bootstrapSha: provenance.bootstrapSha,
+              sourceSha: provenance.sourceSha,
+              measuredDeploymentId: measured.target.deploymentId,
+              measuredVersionId: measured.target.versionId,
+              restoredDeploymentId: current.deploymentId,
+              restoredVersionId: current.versionId,
+            }) + "\n",
+            { mode: 0o600 },
+          );
+          NODE
+
       - name: Upload sanitized evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
@@ -263,6 +312,8 @@ jobs:
             ${{ env.EVIDENCE_PATH }}
             ${{ env.CLEANUP_PATH }}
             ${{ runner.temp }}/raindrop-v4-bootstrap-provenance.json
+            ${{ runner.temp }}/raindrop-v4-post-restore.json
+            ${{ runner.temp }}/raindrop-v4-run-outcome.json
           if-no-files-found: error
           retention-days: 14
 
