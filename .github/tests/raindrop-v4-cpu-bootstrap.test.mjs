@@ -88,3 +88,13 @@ test("recorded evidence distinguishes default-branch runner SHA from reviewed so
   assert(evidence.includes("${{ runner.temp }}/raindrop-v4-bootstrap-provenance.json"));
   assert.doesNotMatch(metadata, /CLOUDFLARE_API_TOKEN|MCP_ACCESS_TOKEN|RAINDROP_ACCESS_TOKEN/);
 });
+
+test("restores the recorded production version even when evidence collection succeeds", () => {
+  const evidence = block("  evidence:\n", "  cleanup:\n");
+  const restore = block("      - name: Restore recorded production version", "      - name: Upload sanitized evidence");
+  assert(restore.includes("if: ${{ always() && steps.deploy.outcome != 'skipped' }}"));
+  assert.match(restore, /v4-cpu-evidence\.mjs rollback/);
+  assert.match(evidence, /RAINDROP_EVIDENCE_ROLLBACK_PATH: \$\{\{ env\.ROLLBACK_PATH \}\}/);
+  const cleanup = file.slice(file.indexOf("  cleanup:\n"));
+  assert.match(cleanup, /needs\.evidence\.result != 'success'/);
+});
