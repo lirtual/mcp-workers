@@ -1,0 +1,134 @@
+name: Workflow MCP Catalog Publisher
+
+on:
+  workflow_dispatch:
+    inputs:
+      catalog_sha:
+        description: Approved immutable commit SHA in the separate catalog repository
+        required: true
+        type: string
+      definition_path:
+        description: Single YAML definition path, e.g. workflows/example.yaml
+        required: true
+        type: string
+      mode:
+        description: Isolated dry-run, stage, or CAS activate (owner approval required)
+        required: true
+        default: dry-run
+        type: choice
+        options:
+          - dry-run
+          - stage
+          - activate
+      expected_revision:
+        description: Required exact D1 registry revision for CAS activation
+        required: false
+        default: '0'
+        type: string
+      expected_digest:
+        description: Current exact active digest (empty on first activation)
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: workflow-mcp-catalog-publisher
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    # Publisher must run from the trusted ENGINE main ref, not catalog code.
+    if: github.ref == 'refs/heads/main'
+    environment: workflow-mcp-publisher-live-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      WORKFLOW_CATALOG_REPOSITORY: ${{ vars.WORKFLOW_CATALOG_REPOSITORY }}
+      WORKFLOW_CATALOG_REPOSITORY_ID: ${{ vars.WORKFLOW_CATALOG_REPOSITORY_ID }}
+      WORKFLOW_MCP_TARGET_URL: ${{ vars.WORKFLOW_MCP_TARGET_URL }}
+      WORKFLOW_MCP_ALLOW_LIVE_TEST_TARGET: ${{ vars.WORKFLOW_MCP_ALLOW_LIVE_TEST_TARGET || 'false' }}
+      WORKFLOW_MCP_ALLOW_LIVE_TEST_MUTATIONS: ${{ vars.WORKFLOW_MCP_ALLOW_LIVE_TEST_MUTATIONS || 'false' }}
+      WORKFLOW_CATALOG_MODE: ${{ inputs.mode }}
+      CATALOG_REQUESTED_SHA: ${{ inputs.catalog_sha }}
+      CATALOG_SOURCE_PATH: ${{ inputs.definition_path }}
+      PUBLISHER_EXPECTED_REVISION: ${{ inputs.expected_revision }}
+      PUBLISHER_EXPECTED_DIGEST: ${{ inputs.expected_digest }}
+      CATALOG_CHECKOUT_DIR: ${{ github.workspace }}/publisher-catalog
+    steps:
+      - name: Validate authorized isolated publisher configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$CATALOG_REQUESTED_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$WORKFLOW_CATALOG_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || exit 1
+          [[ "$WORKFLOW_CATALOG_REPOSITORY_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
+          [[ -n "$WORKFLOW_MCP_TARGET_URL" ]] || exit 1
+
+      - name: Checkout trusted engine code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Checkout only approved catalog YAML at exact commit
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.WORKFLOW_CATALOG_REPOSITORY }}
+          ref: ${{ inputs.catalog_sha }}
+          path: publisher-catalog
+          sparse-checkout: workflows
+          persist-credentials: false
+
+      - name: Verify checkout and authoritative GitHub repository ID
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          actual_sha="$(git -C publisher-catalog rev-parse HEAD)"
+          [[ "$actual_sha" == "$CATALOG_REQUESTED_SHA" ]] || exit 1
+          response="$(curl --fail --silent --show-error \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$WORKFLOW_CATALOG_REPOSITORY")"
+          actual_id="$(jq -er '.id | tostring' <<< "$response")"
+          actual_name="$(jq -er '.full_name' <<< "$response")"
+          [[ "$actual_name" == "$WORKFLOW_CATALOG_REPOSITORY" ]] || exit 1
+          [[ "$actual_id" == "$WORKFLOW_CATALOG_REPOSITORY_ID" ]] || exit 1
+          echo "CATALOG_CHECKED_OUT_SHA=$actual_sha" >> "$GITHUB_ENV"
+          echo "CATALOG_CHECKED_REPOSITORY_ID=$actual_id" >> "$GITHUB_ENV"
+          echo "CATALOG_CHECKED_REPOSITORY=$actual_name" >> "$GITHUB_ENV"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install trusted engine dependencies only
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Compile against target approved policy and publish if authorized
+        working-directory: apps/workflow-mcp-worker
+        run: pnpm exec tsx scripts/publish-catalog.ts
+
+      - name: Record sanitized publication evidence
+        if: success()
+        shell: bash
+        run: |
+          {
+            echo '## Protected definition-only catalog publisher'
+            echo "- Engine HEAD: \`$GITHUB_SHA\`"
+            echo "- Catalog SHA: \`$CATALOG_REQUESTED_SHA\`"
+            echo "- Definition: \`$CATALOG_SOURCE_PATH\`"
+            echo "- Mode: \`$WORKFLOW_CATALOG_MODE\`"
+            echo 'No engine deployment, Cloudflare migrations or Secrets were changed by this job.'
+          } >> "$GITHUB_STEP_SUMMARY"
