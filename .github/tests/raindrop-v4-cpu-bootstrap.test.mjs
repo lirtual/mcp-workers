@@ -14,13 +14,14 @@ const block = (from, to) => {
   return file.slice(start, end);
 };
 
-test("separate main-discoverable workflow is manually dispatched and PR validation remains offline", () => {
+test("main manual dispatch and narrowly scoped branch/PR validation remain isolated", () => {
   assert.match(file, /^name: Raindrop v4 Pinned CPU Bootstrap/m);
   assert.match(file, /^on:\n  workflow_dispatch:/m);
   assert.match(file, /^  pull_request:\n    paths:/m);
-  assert.match(file, /\n  validate:\n[\s\S]*?if: github.event_name == 'pull_request'/);
+  assert.match(file, /^  push:\n    branches:\n      - feat\/raindrop-v4-cpu-bootstrap\n    paths:/m);
+  assert.match(file, /\n  validate:\n[\s\S]*?if: github.event_name == 'pull_request' \|\| github.event_name == 'push'/);
   assert.match(file, /\n  evidence:\n[\s\S]*?if: github.event_name == 'workflow_dispatch' && github.ref == 'refs\/heads\/main'/);
-  assert.doesNotMatch(file, /^  push:/m);
+  assert.doesNotMatch(file, /^      - main$/m);
 });
 
 test("source is frozen before any checkout or privileged step", () => {
