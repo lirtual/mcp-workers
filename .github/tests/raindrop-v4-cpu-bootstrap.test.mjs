@@ -78,12 +78,12 @@ test("recorded evidence distinguishes default-branch runner SHA from reviewed so
     "Record distinct bootstrap and immutable source identities (non-secret)",
     "uses: actions/checkout@v4",
   );
-  assert.match(metadata, /BOOTSTRAP_SHA: \\$\\{\\{ github\\.sha \\}\\}/);
-  assert.match(metadata, /PINNED_SOURCE_SHA: \\$\\{\\{ env\\.RAINDROP_EVIDENCE_PINNED_SHA \\}\\}/);
-  assert.match(metadata, /bootstrapSha,/);
-  assert.match(metadata, /sourceSha,/);
-  assert.match(metadata, /RUNNER_TEMP.*raindrop-v4-bootstrap-provenance\\.json/);
-  const evidence = block("  evidence:\\n", "  cleanup:\\n");
-  assert.match(evidence, /runner\\.temp \\}\\}\\/raindrop-v4-bootstrap-provenance\\.json/);
+  assert(metadata.includes("BOOTSTRAP_SHA: ${{ github.sha }}"));
+  assert(metadata.includes("PINNED_SOURCE_SHA: ${{ env.RAINDROP_EVIDENCE_PINNED_SHA }}"));
+  assert(metadata.includes("bootstrapSha,"));
+  assert(metadata.includes("sourceSha,"));
+  assert(metadata.includes("RUNNER_TEMP}/raindrop-v4-bootstrap-provenance.json"));
+  const evidence = block("  evidence:\n", "  cleanup:\n");
+  assert(evidence.includes("${{ runner.temp }}/raindrop-v4-bootstrap-provenance.json"));
   assert.doesNotMatch(metadata, /CLOUDFLARE_API_TOKEN|MCP_ACCESS_TOKEN|RAINDROP_ACCESS_TOKEN/);
 });
