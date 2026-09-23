@@ -80,3 +80,24 @@ Worker 做 MCP 入口、OAuth、工具策略、短请求路由及上限；本地
 5. **VPC / ChatGPT：仍无真实证据。** 上次只读 Cloudflare 查询是 0 VPC Services、两个旧 Tunnel 均 down；本轮未创建资源或部署。个人 ChatGPT 能调用哪些工具必须独立确认。
 
 **结论：决策已收敛，文档级架构可行；真实 VPC 和客户端仍未验收，最佳方案未定。当前严格冻结部署、合并和高权限工具。**
+
+## G0 执行记录（2026-09-23）
+
+**Owner 同意按 G0–G5 继续，但不取消部署/合并/高权限冻结。** 这一轮已实际重新读取 GitHub 文档分支的精确 HEAD `980d4ef19a0e50ba83ff3896dc1088e7d8789483`，并再次确认 #170/#178 为 `closed/not_planned`、PR #179 为 `closed/unmerged`；保留既有证据，不恢复工单或原型部署。原型 `wrangler.jsonc` 的 `service_id=00000000-0000-4000-8000-000000000000` 为无效占位符，`workers_dev=false`，`preview_urls=false`，不可当作真实 Cloudflare VPC。
+
+通过 Cloudflare 官方页面重新核查（2026-09-23）：
+- [Pricing](https://developers.cloudflare.com/workers-vpc/platform/pricing/)：Open Beta 期间 VPC 免费，常规 Workers 请求/CPU 仍计入计划；不可承诺 GA 后永久免费。
+- [VPC Services](https://developers.cloudflare.com/workers-vpc/configuration/vpc-services/)：`Connectivity Directory Admin` 用于创建，`Connectivity Directory Bind` 用于绑定；是否具备权限**必须由本账号实际验证**。
+- [Tunnel](https://developers.cloudflare.com/workers-vpc/configuration/tunnel/) / [Troubleshooting](https://developers.cloudflare.com/workers-vpc/reference/troubleshooting/)：设备需兼容的 `cloudflared`、QUIC、出站 UDP 7844，且实际服务地址/端口可被同一网络命名空间中的连接器访问。
+- [Binding API](https://developers.cloudflare.com/workers-vpc/api/)：登记的 host:port 才是实际路由目标；不可凭 Worker `fetch` 的 URL 假定变更目标。
+
+**当前阻塞项：本轮运行环境没有可调用的 Cloudflare 账号连接工具，也没有设备侧执行工具。** 通过插件目录查询未找到可用的 Cloudflare 连接。此处不能据上一轮账号快照（0 Service、两条 Tunnel down）声称“最新仍为 0”，也不能验证 Create/Bind 权限，更不能创建独立 Tunnel、Service 或执行真实设备回环。未请求账号密钥、未做修改。
+
+### G0 剩余检查（可直接交给设备侧 agent 或恢复 Cloudflare 连接后执行）
+
+1. 先只读确认当前 Cloudflare 账号、Workers Free 状态、Connectivity Directory 的 Admin/Bind 权限及 Beta 功能入口；如角色未知，明确记录为 `unknown` 而不是用创建 API 试权限。不能获得授权/确认 Free 时停止。
+2. 再只读列出现有 VPC Services 和 Tunnels，记录是否存在已经被其他应用占用的资源。旧 `grokbot`/`tsvc` 不得重用/删除/改变。
+3. 设备侧只读收集 `uname -a`、`cloudflared --version`、`node --version`（若已安装）、`ss -lnt` 与出站 UDP 7844 网络是否允许；输出只保留必要的版本、命名空间和端口信息，不回传 Tunnel token 或主机私密文件。
+4. 确定独立测试命名和只读目录之后，**经过独立授权**才允许创建专属 Tunnel 与 VPC Service；不能直接部署旧 #179 的占位配置。G2 如需真正运行一个隔离探针 Worker，必须先核对 Q23 的非公开入口与单独授权；本轮未运行任何探针。
+
+**G0 状态：官方条款和 GitHub 证据已核查；账号实时资源/权限与设备实况未验证，G1–G5 未开始。**
