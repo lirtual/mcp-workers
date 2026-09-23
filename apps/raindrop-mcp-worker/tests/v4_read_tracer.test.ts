@@ -1,10 +1,37 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { RaindropMCPService } from "../src/services/raindropmcp.service.js";
+import worker from "../src/worker.js";
+
+const makeService = () => new RaindropMCPService({ accessToken: "offline-token", maxReadRetries: 0 });
+const portalToken = "test-portal-token";
+const workerEnv = {
+  MCP_ACCESS_TOKEN: portalToken,
+  RAINDROP_ACCESS_TOKEN: "test-raindrop-token",
+};
+const workerUrl = "https://raindrop-mcp-worker.example.test/mcp";
+
+async function callWorker(id: number, method: string, params?: Record<string, unknown>) {
+  const response = await worker.fetch(new Request(workerUrl, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${portalToken}`,
+      Accept: "application/json, text/event-stream",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0", id, method,
+      ...(params ? { params } : {}),
+    }),
+  }), workerEnv);
+  return { response, body: await response.text() };
+}
+
+afterEach(() => vi.unstubAllGlobals());
 
 describe("T03 (#130) SDK-backed read-only vertical tracer", () => {
   it("discovers only the two new v4 tracer tools alongside the frozen 26 v3 tools", async () => {
-    const service = new RaindropMCPService({ accessToken: "offline-token", maxReadRetries: 0 });
+    const service = makeService();
     const client = new Client({ name: "v4-tracer-contract", version: "1" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     try {
@@ -12,16 +39,167 @@ describe("T03 (#130) SDK-backed read-only vertical tracer", () => {
         service.getServer().connect(serverTransport),
         client.connect(clientTransport),
       ]);
-      const names = (await client.listTools()).tools.map((tool) => tool.name);
+      const tools = (await client.listTools()).tools;
+      const names = tools.map((tool) => tool.name);
       expect(names).toContain("diagnostics_read");
       expect(names).toContain("raindrop_read");
       expect(names).toHaveLength(28);
       expect(new Set(names).size).toBe(28);
       expect(names).toContain("diagnostics");
       expect(names).toContain("raindrop_list");
+
+      for (const name of ["diagnostics_read", "raindrop_read"]) {
+        const tool = tools.find((candidate) => candidate.name === name);
+        expect(tool?.annotations?.readOnlyHint).toBe(true);
+        expect(tool?.outputSchema).toMatchObject({
+          type: "object",
+          properties: { ok: { type: "boolean" }, meta: { type: "object" } },
+        });
+        expect(tool?.inputSchema).toMatchObject({
+          type: "object",
+          additionalProperties: false,
+          required: ["action"],
+        });
+      }
     } finally {
       await client.close();
       await service.cleanup();
     }
+  });
+
+  it("local diagnostics makes zero upstream calls, and SDK validation rejects unknown actions and fields", async () => {
+    const upstream = vi.fn(() => { throw Error("Unexpected upstream network request"); });
+    vi.stubGlobal("fetch", upstream);
+    const service = makeService();
+    const client = new Client({ name: "v4-diagnostics", version: "1" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    try {
+      await Promise.all([service.getServer().connect(serverTransport), client.connect(clientTransport)]);
+      const good = await client.callTool({ name: "diagnostics_read", arguments: { action: "local" } });
+      expect(good.structuredContent).toMatchObject({
+        ok: true, data: { runtime: "cloudflare-workers", protocolVersion: null },
+        meta: { requestCount: 0 },
+      });
+      for (const [name, args] of [
+        ["diagnostics_read", { action: "upstream" }],
+        ["diagnostics_read", { action: "local", includeUpstream: true }],
+        ["raindrop_read", { action: "get", id: 17 }],
+        ["raindrop_read", { action: "list", perpage: 51 }],
+        ["raindrop_read", { action: "list", unexpected: true }],
+        ["raindrop_read", { action: "list", sort: "score" }],
+      ] as const) {
+        const result = await client.callTool({ name, arguments: args });
+        expect(result.isError, name).toBe(true);
+      }
+      expect(upstream).not.toHaveBeenCalled();
+    } finally {
+      await client.close();
+      await service.cleanup();
+    }
+  });
+
+  it("list uses exactly the frozen v3 domain service, field projection and pagination envelope", async () => {
+    const upstream = vi.fn((request: Request) => {
+      const url = new URL(request.url);
+      expect(request.method).toBe("GET");
+      expect(url.pathname).toBe("/rest/v1/raindrops/0");
+      expect(url.searchParams.get("page")).toBe("0");
+      expect(url.searchParams.get("perpage")).toBe("1");
+      expect(url.searchParams.get("sort")).toBe("-created");
+      return Response.json({
+        result: true,
+        items: [{ _id: 17, link: "https://example.test", title: "Example", note: "do-not-expose" }],
+        count: 2,
+      });
+    });
+    vi.stubGlobal("fetch", upstream);
+    const service = makeService();
+    const client = new Client({ name: "v4-list", version: "1" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    try {
+      await Promise.all([service.getServer().connect(serverTransport), client.connect(clientTransport)]);
+      const v4 = await client.callTool({ name: "raindrop_read", arguments: { action: "list", perpage: 1 } });
+      expect(v4.structuredContent).toMatchObject({
+        ok: true,
+        data: { items: [{ _id: 17, link: "https://example.test", title: "Example" }] },
+        meta: { page: 0, perpage: 1, returned: 1, total: 2, hasMore: true, nextPage: 1, requestCount: 1 },
+      });
+      expect(v4.structuredContent?.data).not.toHaveProperty("note");
+      expect(upstream).toHaveBeenCalledTimes(1);
+      const v3 = await makeService().callTool("raindrop_list", { perpage: 1 });
+      expect(v4.structuredContent).toEqual(v3.structuredContent);
+      expect(upstream).toHaveBeenCalledTimes(2);
+    } finally {
+      await client.close();
+      await service.cleanup();
+    }
+  });
+
+  it("uses authenticated bounded worker.fetch for initialize, tools, resources and prompts", async () => {
+    const upstream = vi.fn(() => { throw Error("No upstream expected for fixture"); });
+    vi.stubGlobal("fetch", upstream);
+    const init = await callWorker(1, "initialize", {
+      protocolVersion: "2025-11-25", capabilities: {},
+      clientInfo: { name: "v4-http-test", version: "1" },
+    });
+    expect(init.response.status).toBe(200);
+    expect(init.body).toContain('"serverInfo"');
+
+    const tools = await callWorker(2, "tools/list");
+    expect(tools.response.status).toBe(200);
+    expect(tools.body).toContain('"diagnostics_read"');
+    expect(tools.body).toContain('"raindrop_read"');
+    expect(tools.body).toContain('"raindrop_list"');
+
+    const local = await callWorker(3, "tools/call", { name: "diagnostics_read", arguments: { action: "local" } });
+    expect(local.response.status).toBe(200);
+    expect(local.body).toContain('"requestCount":0');
+
+    const resources = await callWorker(4, "resources/list");
+    expect(resources.response.status).toBe(200);
+    expect(resources.body).toContain("diagnostics://server");
+    const resource = await callWorker(5, "resources/read", { uri: "diagnostics://server" });
+    expect(resource.response.status).toBe(200);
+    expect(resource.body).toContain("Server diagnostics");
+
+    const prompts = await callWorker(6, "prompts/list");
+    expect(prompts.response.status).toBe(200);
+    expect(prompts.body).toContain("export_markdown");
+    const prompt = await callWorker(7, "prompts/get", { name: "export_markdown" });
+    expect(prompt.response.status).toBe(200);
+    expect(prompt.body).toContain("Format bookmarks");
+    expect(upstream).not.toHaveBeenCalled();
+  });
+
+  it("keeps Portal auth and 128 KiB ingress limits before SDK tool execution", async () => {
+    const noAuth = await worker.fetch(new Request(workerUrl, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    }), workerEnv);
+    expect(noAuth.status).toBe(401);
+    const oversized = await worker.fetch(new Request(workerUrl, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${portalToken}`, "Content-Type": "application/json" },
+      body: "x".repeat(131073),
+    }), workerEnv);
+    expect(oversized.status).toBe(413);
+  });
+
+  it("cancellation is request-local and never submits a v4 read after abort", async () => {
+    const upstream = vi.fn(() => Response.json({ result: true, items: [] }));
+    vi.stubGlobal("fetch", upstream);
+    const controller = new AbortController();
+    const cancelled = new RaindropMCPService({
+      accessToken: "cancelled", maxReadRetries: 0, signal: controller.signal,
+    });
+    const other = makeService();
+    controller.abort();
+    const first = await cancelled.callTool("raindrop_read", { action: "list", perpage: 1 });
+    expect(first.structuredContent).toMatchObject({ ok: false, meta: { requestCount: 0 } });
+    const second = await other.callTool("raindrop_read", { action: "list", perpage: 1 });
+    expect(second.structuredContent).toMatchObject({ ok: true, meta: { requestCount: 1 } });
+    expect(upstream).toHaveBeenCalledTimes(1);
+    await cancelled.cleanup();
+    await other.cleanup();
   });
 });
