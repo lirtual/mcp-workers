@@ -101,3 +101,24 @@ Worker 做 MCP 入口、OAuth、工具策略、短请求路由及上限；本地
 4. 确定独立测试命名和只读目录之后，**经过独立授权**才允许创建专属 Tunnel 与 VPC Service；不能直接部署旧 #179 的占位配置。G2 如需真正运行一个隔离探针 Worker，必须先核对 Q23 的非公开入口与单独授权；本轮未运行任何探针。
 
 **G0 状态：官方条款和 GitHub 证据已核查；账号实时资源/权限与设备实况未验证，G1–G5 未开始。**
+
+## G0 复核：Cloudflare 连接恢复（2026-09-23 09:51 +08:00 后）
+
+本节是上一轮 G0 记录的**后续进展**，取代上文“本轮没有可调用的 Cloudflare 连接”的当前阻塞判断；保留原记录作为时间线。使用用户明确 @Cloudflare 授权的连接器，仅执行 `GET`，没有创建/修改资源、部署 Worker、启用高权限工具或读取敏感凭证。
+
+| 只读接口 | HTTP/API 结果 | 可采信事实 |
+| --- | --- | --- |
+| `GET /accounts/{account_id}/connectivity/directory/services` | 200 / success | VPC Services **0**；因此没有可绑定的真实 Service。 |
+| `GET /accounts/{account_id}/tunnels` | 200 / success | 2 条：`grokbot` / `tsvc`，均 `down`，不复用和不修改。 |
+| `GET /accounts/{account_id}/members` | 200 / success | 两个成员均为 `Super Administrator - All Privileges`；无法从成员角色推断**当前连接器的 API 凭证**必定具有 VPC Admin/Bind。 |
+| `GET /accounts/{account_id}/workers/scripts` | 200 / success | 没有名字匹配 `desktop` 或 `vpc` 的 Worker；仅为名字筛选，不表示不存在其他相关部署。 |
+| `GET /accounts/{account_id}` | 200 / success | 账号类型为 `standard`，**不是 Workers 的付费层级证据**。 |
+| `GET /accounts/{account_id}/workers/account-settings` | 200 / success | `default_usage_model=standard`，**不是订阅计划证明**。 |
+| `GET /accounts/{account_id}/subscriptions` | API 10000 | 认证错误；无法核实计划。 |
+| `GET /user/tokens/verify` / `GET /user/tokens/permission_groups` | API 1000 / 9109 | 本连接器凭证不支持这些读取路径，不能据此推断 VPC 写入权限或断言全部 Cloudflare API 失效。 |
+
+[Cloudflare 官方 VPC Services](https://developers.cloudflare.com/workers-vpc/configuration/vpc-services/) 确认 Open Beta 期间 Free 和 Paid Workers 计划均可使用，创建需 `Connectivity Directory Admin`、绑定需 `Connectivity Directory Bind`；[VPC Networks](https://developers.cloudflare.com/workers-vpc/configuration/vpc-networks/) 可绑定整个 Tunnel/网络，比固定 host:port 的 Service 范围宽。**单台敏感设备坚持优先验证固定目的地 VPC Service**，不因 Network 的灵活性扩大可访问网段。
+
+**更新后的 G0 判定：** 账号与服务的只读可见性已通过；VPC Admin/Bind 对当前连接器凭证仍为 **unknown**，实际 Workers 计费计划未证实，专属测试 Tunnel/Service 均不存在，设备上的 `cloudflared`/adapter/UDP 7844 未核验。因此 **G0 未全部通过，G1/G2 尚不能声明完成**。
+
+**下一步：** 在 Linux/WSL2 设备进行不含凭证的只读环境检查；明确计划与 Create/Bind 权限（不要通过无效创建请求试错）；设备侧只读 Adapter 准备好并单独授权隔离资源创建后，才能建立专属 Tunnel 和 VPC Service。不要以当前 0 Services、旧 Tunnel down 代替真实网络失败结论；也不要因 G0 已可读就解除部署/合并/高权限冻结。
