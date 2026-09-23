@@ -199,6 +199,53 @@ describe("T03 (#130) SDK-backed read-only vertical tracer", () => {
     expect(upstream).toHaveBeenCalledTimes(1);
   });
 
+  it("preserves the v3 upstream error envelope and never retries a failed read beyond its budget", async () => {
+    const upstream = vi.fn((request: Request) => {
+      expect(request.method).toBe("GET");
+      expect(new URL(request.url).pathname).toBe("/rest/v1/raindrops/0");
+      return new Response("unauthorized", { status: 401 });
+    });
+    vi.stubGlobal("fetch", upstream);
+    const service = makeService();
+    const v4 = await service.callTool("raindrop_read", { action: "list", perpage: 1 });
+    const v3 = await makeService().callTool("raindrop_list", { perpage: 1 });
+    expect(v4.structuredContent).toEqual(v3.structuredContent);
+    expect(v4.isError).toBe(true);
+    expect(v4.structuredContent).toMatchObject({
+      ok: false,
+      meta: { requestCount: 1, status: "not_executed" },
+    });
+    expect(upstream).toHaveBeenCalledTimes(2);
+    await service.cleanup();
+  });
+
+  it("cancels an authenticated in-flight v4 HTTP read without starting another upstream request", async () => {
+    const controller = new AbortController();
+    const upstream = vi.fn(async (request: Request) => {
+      expect(request.method).toBe("GET");
+      controller.abort();
+      return Response.json({ result: true, items: [] });
+    });
+    vi.stubGlobal("fetch", upstream);
+    const response = await worker.fetch(new Request(workerUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${portalToken}`,
+        Accept: "application/json, text/event-stream",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0", id: 12, method: "tools/call",
+        params: { name: "raindrop_read", arguments: { action: "list", perpage: 1 } },
+      }),
+      signal: controller.signal,
+    }), { ...workerEnv, RAINDROP_RATE_LIMIT_MAX_RETRIES: "0" });
+    await response.text();
+    // The HTTP transport may resolve before its disconnected handler finishes.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(upstream).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps Portal auth and 128 KiB ingress limits before SDK tool execution", async () => {
     const noAuth = await worker.fetch(new Request(workerUrl, {
       method: "POST", headers: { "Content-Type": "application/json" },
