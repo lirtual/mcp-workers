@@ -1,0 +1,34 @@
+name: Raindrop v4 Bootstrap Offline Validation
+
+on:
+  push:
+    branches:
+      - feat/raindrop-v4-cpu-bootstrap
+    paths:
+      - .github/workflows/raindrop-v4-cpu-bootstrap.yml
+      - .github/workflows/raindrop-v4-bootstrap-verify.yml
+      - .github/tests/raindrop-v4-cpu-bootstrap.test.mjs
+  pull_request:
+    paths:
+      - .github/workflows/raindrop-v4-cpu-bootstrap.yml
+      - .github/workflows/raindrop-v4-bootstrap-verify.yml
+      - .github/tests/raindrop-v4-cpu-bootstrap.test.mjs
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Offline pinned-source and cleanup contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Parse bootstrap YAML offline
+        run: ruby -e 'require "yaml"; YAML.load_file(".github/workflows/raindrop-v4-cpu-bootstrap.yml")'
+      - name: Verify bootstrap security contract
+        run: node --test .github/tests/raindrop-v4-cpu-bootstrap.test.mjs
