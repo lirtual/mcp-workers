@@ -57,7 +57,8 @@ test("production rollback preflight requires two explicit identities with no sta
   assert.match(file, /Active deployment differs from approved rollback point/);
   assert.match(file, /Active version differs from approved rollback point/);
   assert.match(file, /--keep-vars/);
-  assert.doesNotMatch(file, /\$\{\{ runner\.temp \}\}/, "runner context is invalid in job-level env");
+  const evidenceJobEnv = block("  evidence:\n", "    steps:\n");
+  assert.doesNotMatch(evidenceJobEnv, /\$\{\{ runner\.temp \}\}/, "runner context is invalid in job-level env");
   assert.match(file, /ROLLBACK_PATH: \$\{\{ github\.workspace \}\}\/raindrop-v4-rollback\.json/);
   assert.match(file, /issue-129 source=\$RAINDROP_EVIDENCE_SOURCE_SHA/);
 });
