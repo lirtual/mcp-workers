@@ -1,6 +1,6 @@
 # Remote Control MCP — research draft and grilling frontier
 
-> Status: **Research; revised 2026-10-12**. Docker and project-directory allowlists were explicitly rejected in ADR-0011. Independent OAuth vs existing Portal Bearer ingress is reopened, not decided. Implementation and deployment remain unapproved.
+> Status: **Research draft; latest accepted direction 2026-10-12: existing MCP Portal static Bearer (ADR-0012), independently generated token; no OAuth, no Docker, no project path allowlist (ADR-0011).** Integration and production rollout NOT approved.
 > This is not an implementation specification or deployment authorization. Accepted decisions live in linked ADRs; all uncited implementation patterns below remain proposals.
 > Baseline: user-provided `Remote-Desktop-MCP-Spec-VPC-only(1).md` (R03 research contract, based on commit `e9764b73f9ce8894ccda6e4427bfd5ad3ee16fb5`). The old branch was not located in current branch search; the user's supplied copy is the source for that baseline.
 > No existing production worker, secret, tunnel, or GitHub Actions workflow is changed.
@@ -10,9 +10,9 @@
 - Product name: **Remote Control MCP**; proposed Worker/app id: `remote-control-mcp-worker`.
 - Target execution model: **Linux-first** (WSL2 is a deployment variant, not a prerequisite).
 - V1 file/search/Shell/managed-process categories and no GUI remain. Original workspace scoping (ADR-0002) was **superseded** by OS-user permission reach (ADR-0011); no root/admin privileges were approved.
-- Prior OAuth decisions (ADRs 0003, 0010) are under review: operator asks about reusing existing Portal static Bearer. No authentication replacement has yet been approved.
+- **Authentication accepted**: existing `@mcp-workers/portal-auth` static Bearer authentication and a separate high-entropy `MCP_ACCESS_TOKEN` **value** for Remote Control MCP. No OAuth provider or OAuth KV. The former OAuth ADRs 0003 and 0010 are superseded by [ADR-0012](./adr/0012-reuse-portal-bearer-auth-with-independent-secret.md).
 - VPC-only private transport via exact VPC Service target and outbound Tunnel, no publicly published device endpoint or public fallback (F4=A). [ADR-0004](./adr/0004-vpc-only-private-device-transport.md).
-- H1 curated tools (ADR-0008) and H2 managed sessions (ADR-0009) remain accepted. H3 combined OAuth Worker (ADR-0010) is conditional on retaining OAuth, currently under review.
+- H1 curated tools (ADR-0008) and H2 managed sessions (ADR-0009) remain accepted. H3 OAuth topology (ADR-0010) is superseded by ADR-0012; the product still uses a single MCP Worker.
 - Domain vocabulary: [CONTEXT.md](./CONTEXT.md); platform choice: [ADR-0001](./adr/0001-linux-first.md).
 - G1 container isolation in ADR-0005 was **superseded by ADR-0011**; G2 unattended development and G3 local receipts/no blind replay remain, with wider OS-user filesystem reach.
 
@@ -41,10 +41,10 @@
 ```text
 ChatGPT or compatible MCP client
    |
-   | HTTPS, authenticated MCP ingress (Portal static Bearer or OAuth TBD)
+   | HTTPS, MCP Portal Bearer auth (Remote Control-only token; ADR-0012)
    v
-one Remote Control MCP Worker (OAuth and/or Portal auth pending decision)
-   |-- if OAuth: OAuth grant store; if Portal: static Bearer validation, no OAuth KV
+one Remote Control MCP Worker (/mcp, existing portal-auth validation)
+   |-- MCP_ACCESS_TOKEN name; unique value for this Worker; no OAuth KV
    |-- narrow VPC Service binding to fixed adapter target
    |-- never forwards client token to device
    v
@@ -61,10 +61,10 @@ Linux executor running as ordinary OS user; no container/path allowlist (ADR-001
 
 ### Simplicity budget
 
-- Proposed minimal topology: one MCP Worker, one local agent, one private Tunnel, one fixed VPC Service. Reuse existing portal-auth middleware with a distinct high-entropy token if the user chooses and actual Portal compatibility passes; otherwise retain independently authorized OAuth with its required KV.
+- Accepted minimal topology: one MCP Worker with existing Portal Bearer middleware, one local agent + pinned Desktop Commander stdio engine, one private Tunnel and one fixed VPC Service. The Remote Control Worker secret has a **different value** from the Database/IMA/Raindrop shared entry secret. No OAuth KV, GitHub OAuth app or separate auth Worker.
 - No D1/R2/DO/Queues/Workflows, dashboard, pairing flow, multi-device router, video GUI, unrestricted HTTP proxy, custom upstream execution engine, scheduled CI, or new reusable auth framework.
 - The original R03 **read-only fixture** has no persistent process state. V1 state-changing operations require minimal durable local receipts, operation IDs, status reconciliation and no blind retries (ADR-0007); concrete retention and process-session APIs remain to be defined.
-- Combined one-Worker OAuth was accepted in ADR-0010 but is now under review due to the operator's Portal-auth question; the authentication replacement is not yet settled.
+- Earlier OAuth ADR-0010 is superseded by ADR-0012. The required client integration is the **existing MCP Portal Bearer path**, not generic OAuth client support. End-to-end compatibility must be proven; no unauthenticated fallback.
 - Pin upstream distribution including dependency audit, consider `get_config` read-only only after scrutiny, always deny `set_config_value` / config mutation / arbitrary process kill and unrestricted host paths by default.
 - Linux-first implementation; WSL2 Ubuntu is an optional early test platform, not a product requirement. If the loopback VPC target is used, cloudflared and the adapter must be reachable in the same relevant network namespace (for containers, verify explicit host-loopback publication). Test Hosted VPC routing, Service registration, Host header and failure behavior with a disposable fixture.
 - Compatibility acceptance separately verifies real ChatGPT/plugin connection and scope-dependent tool availability.
@@ -74,7 +74,7 @@ Linux executor running as ordinary OS user; no container/path allowlist (ADR-001
 | ID | Agreed choice | Architecture record |
 | --- | --- | --- |
 | F1=A (revised) | File/search/Shell/process types remain; project-root scoping superseded by Linux account reach | [ADR-0002](./adr/0002-v1-workspace-control-scope.md), [ADR-0011](./adr/0011-direct-linux-user-no-path-allowlist.md) |
-| F2=A (under review) | Direct OAuth was agreed earlier; existing Portal Bearer now proposed | [ADR-0003](./adr/0003-independent-oauth-for-direct-mcp-clients.md) |
+| F2=A (superseded) | Original direct OAuth decision replaced by existing MCP Portal static Bearer with a separate Remote Control token value | [ADR-0012](./adr/0012-reuse-portal-bearer-auth-with-independent-secret.md) |
 | F3=A | No GUI, screen, mouse, keyboard or native Windows toolchain in v1 | [ADR-0002](./adr/0002-v1-workspace-control-scope.md) |
 | F4=A | Strict Cloudflare VPC Service + private outbound Tunnel | [ADR-0004](./adr/0004-vpc-only-private-device-transport.md) |
 
@@ -94,25 +94,38 @@ Direct ordinary Linux-account execution is now accepted in ADR-0011; root privil
 | --- | --- | --- |
 | H1=A | Explicit, curated client-visible tools; no automatic upstream catalogue exposure | [ADR-0008](./adr/0008-curated-mcp-tool-surface.md) |
 | H2=A | Owned development sessions may outlive tool requests, with local state/output/status/stop; no ambiguous relaunch | [ADR-0009](./adr/0009-owned-managed-process-sessions.md) |
-| H3=A (under review) | Combined OAuth Worker accepted if OAuth retained; Portal Bearer is now being evaluated | [ADR-0010](./adr/0010-single-worker-oauth-and-mcp.md) |
+| H3=A (superseded) | No OAuth provider needed; one MCP Worker validates Portal Bearer, with no OAuth KV | [ADR-0012](./adr/0012-reuse-portal-bearer-auth-with-independent-secret.md) |
 
 H3 was confirmed separately, after a plain-language explanation. The combined OAuth Worker is **not** approval of a homegrown OAuth implementation.
 
-## Operator revision: simplify host access — 2026-10-12
+## Operator revision: simplify host access and ingress — 2026-10-12
 
 - **Accepted**: no Docker or container isolation and no project directory allowlist. Files and commands use the Linux Agent account's ordinary OS permissions, not a repository allowlist. This explicitly supersedes the previous G1/ADR-0005 decision; see [ADR-0011](./adr/0011-direct-linux-user-no-path-allowlist.md).
 - **Retained**: Linux-first, no GUI, curated file/search/Shell/managed-session tools, unattended operation goal, local receipts, no blind retries, one-device private VPC Service + Tunnel.
-- **Reopened, not accepted yet**: the operator asks whether the existing MCP Portal approach may replace OAuth/GitHub sign-in. Current `main` has `packages/portal-auth/src/index.ts` which validates a static `Authorization: Bearer` token, not OAuth, and the other three MCP Workers share a `MCP_ACCESS_TOKEN` value. Recommend **reusing middleware and configuration patterns but with a different high-entropy token value** for this high-impact remote execution worker, if the actual Portal/ChatGPT connection can carry it.
-- **Compatibility caveat**: OpenAI custom-plugin direct connection UI documents OAuth/no-auth/mixed, not arbitrary bearer entry. Reuse existing Portal routing only after verified authorized read-only end-to-end calls. Do not deploy unauthenticated remote Shell.
-- **Operator decision still open**: K1 choose existing Portal Bearer versus direct OAuth. If choosing Portal, ADR-0003/0010 need to be superseded; if keeping OAuth, H3 combined Worker stays active. GitHub OAuth as the sign-in provider was only a recommendation, never approved.
+- **Accepted after explicit confirmation**: existing Portal Bearer replaces GitHub/direct OAuth. Current `main` has `packages/portal-auth/src/index.ts` which validates `Authorization: Bearer` against `MCP_ACCESS_TOKEN`. Reuse the middleware and secret **name**, but never the token **value** shared by the other three MCP Workers.
+- **Compatibility gate (mandatory)**: a standalone ChatGPT custom-plugin direct connector is not assumed to allow manual static Bearer input. Verify the existing MCP Portal route really forwards the separate Bearer token through actual ChatGPT initialization, tool discovery and a safe read-only call. Deny bad/missing Bearer and do not enable Shell if the path fails. Do not deploy anonymous remote Shell.
+- **K1 settled**: existing Portal Bearer with a different high-entropy secret (ADR-0012). ADR-0003 and ADR-0010 are historical/superseded. Direct standards-based OAuth access is not promised in v1.
 - **Other implementation details**: choose the Linux run account and necessary system permissions, exact tool schemas/limits, local receipt cleanup and session shutdown/restart defaults. Avoid new workflows or complex infrastructure.
+
+## Read-only acceptance gate before remote Shell
+
+The user has selected a **simple auth mechanism**, but the tool's presence in ChatGPT does not on its own prove the selected Portal route can send a static Bearer to this new Worker.
+
+1. Check only the required secret **name** `MCP_ACCESS_TOKEN` in the new Worker configuration. Provision a new **value** through runtime secrets outside Git, never copy the existing three-app value or paste it into logs.
+2. Check the real Portal configuration can connect to `/mcp` with this value and can initialize, list the curated tools and call one safe read-only fixture in a controlled test environment.
+3. Confirm missing/wrong credentials fail closed before MCP handler or any device request. No fallback public/anonymous endpoint.
+4. Confirm the Worker uses a separate device/adapter secret, never forwards the Portal Bearer to the device, and has only a fixed VPC Service host/port target.
+5. Only after separate local authorization and Linux-account-risk acceptance, test writable tools/Shell. Confirm no root escalation and explain that user-readable secrets are in scope without container/path isolation.
+6. On network failure after writes/process starts, local receipts/unknown outcome protect against blind duplicate execution.
+
+This is a **verification plan**, not an already successful E2E test or permission to create cloud resources.
 
 ## Architecture review addendum — 2026-10-12 (NOT YET AN ADR)
 
 - **ADR-0001/0011: Linux-first without containers or path constraints**. WSL2 remains a deployment variant, but no container or project-root whitelist is required. Account privilege selection is pending.
 - **Do not claim our VPC design matches the proprietary hosted product.** The [Remote Desktop Commander README](https://github.com/desktop-commander/remote-desktop-commander) describes a hosted OAuth MCP service, device authorization/pairing and a managed relay; it does **not** disclose the hosted server's network transport or backend implementation. The self-hosted design instead uses published Cloudflare VPC Service + tunnel APIs and the upstream **local stdio MCP engine**, not the vendor's `remote` command.
 - **Accepted in ADR-0004: private VPC-only routing**. VPC was consciously chosen over a publicly published Tunnel application, but it is not universally optimal. Cloudflare Workers VPC beta/pricing terms must be rechecked before launch. A public fallback is not permitted.
-- **OAuth choice reopened**: ADR-0003/0010 apply if OAuth retained. Existing portal-auth uses static Bearer, which may be simpler but is not verified end to end with a ChatGPT custom plugin. Do not share existing three-worker bearer secret value.
+- **Authentication accepted in ADR-0012: static Portal Bearer**, replacing OAuth ADR-0003/0010. Confirm actual Portal-to-ChatGPT delivery and valid/invalid token behavior before enabling remote writes or Shell. Never share the three-app token value; never allow anonymous MCP Shell.
 - **A thin adapter is still justified** because the reusable open-source Desktop Commander engine speaks local stdio MCP, while the hosted vendor's remote agent requires its own proprietary service. Keep exactly one local authority for execution state and policy rather than creating competing cloud queues and sessions.
 - **ADR-0011 + ADR-0006/0007**: no container/path sandbox; unattended curated tools and minimal local receipts remain. Remote Shell can access Linux-account-accessible secrets, so review privileged account selection and token theft risk.
 - **Client compatibility and offline/timeout behavior must be measured**, including end-to-end availability of ChatGPT tool actions and whether the chosen transport supports realistic file/terminal outputs before promoting the R03 fixed read-only probe to a general product.
