@@ -2,7 +2,7 @@
 
 Status: retained with a revised execution boundary. Date: 2026-10-12. Decision input: Round 2 G2=A; isolation and workspace-root restrictions later superseded by [ADR-0011](./0011-direct-linux-user-no-path-allowlist.md).
 
-> The unattended workflow decision remains, but the previous claims that operations are container-contained are no longer true. Actual exposure must be re-reviewed for an ordinary Linux user's accessible filesystem and secrets. This historical decision is not a production go-ahead.
+> The unattended workflow decision remains, but the previous claims that operations are container-contained are no longer true. Actual exposure must be re-reviewed for an ordinary Linux user's accessible filesystem and secrets. This historical decision is not a production go-ahead. Client ingress for the revised ordinary Linux account security boundary is now the separately secreted Portal Bearer model in [ADR-0012](./0012-reuse-portal-bearer-auth-with-independent-secret.md), subject to end-to-end credential-delivery checks.
 
 ## Context
 
