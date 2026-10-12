@@ -1,9 +1,11 @@
 # Remote Control MCP — research draft and grilling frontier
 
-> Status: **Historical research and decision provenance; 2026-10-12 direction confirmed.** The authoritative formalized design is now [SPEC.md](./SPEC.md), pending final approval. Earlier [SPEC-DRAFT.md](./SPEC-DRAFT.md) and the original VPC-only R03 proposal are not concurrent implementation contracts; no implementation or deployment is authorized.
+> Status: **Historical research and decision provenance; 2026-10-12 direction revised again in [ADR-0013](./adr/0013-native-nodejs-linux-agent.md): native Node.js Agent, no Desktop Commander dependency.** The authoritative current implementation plan is [SPEC.md](./SPEC.md). This research log contains superseded topology alternatives and is not a parallel contract; no deployment is authorized.
 > This is not an implementation specification or deployment authorization. Accepted decisions live in linked ADRs; all uncited implementation patterns below remain proposals.
 > Baseline: user-provided `Remote-Desktop-MCP-Spec-VPC-only(1).md` (R03 research contract, based on commit `e9764b73f9ce8894ccda6e4427bfd5ad3ee16fb5`). The old branch was not located in current branch search; the user's supplied copy is the source for that baseline.
 > No existing production worker, secret, tunnel, or GitHub Actions workflow is changed.
+
+> **Implementation change note (ADR-0013):** The previously researched Remote Desktop Commander/stdio engine is **reference-only**. The operator selected a native Node.js Agent on 2026-10-12 after T01 #3 was merged. Keep the Worker/Portal/VPC transport and replace only the local execution engine. See [SPEC.md](./SPEC.md) and [ADR-0013](./adr/0013-native-nodejs-linux-agent.md) for the current decision. Historical diagrams below may still depict the superseded pinned stdio child.
 
 ## Settled decisions and records
 
