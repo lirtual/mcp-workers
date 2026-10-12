@@ -18,7 +18,7 @@ The existing `mcp-workers` repository operates MCP applications that share a Por
 - Positive: supports standards-based direct external MCP clients and avoids coupling privileged host access to a token shared with less-privileged services.
 - Positive: preserves a clear revocation and resource boundary.
 - Cost: compliant OAuth discovery, login/consent, redirect safety, audience/scope validation and real-client end-to-end acceptance are required.
-- **Unresolved design choice**: authorization server topology (combined in one Worker versus separate Worker), exact user identity provider, token storage, client registration and the actual ChatGPT integration behavior. Do not mistake the decision for approval of an implementation pattern.
+- **Subsequent accepted decision:** [ADR-0010](./0010-single-worker-oauth-and-mcp.md) selects a combined OAuth authorization and MCP resource **in one Cloudflare Worker**. The exact user identity provider, OAuth framework/version, token storage and client registration/ChatGPT compatibility remain unresolved.
 - A future Portal connection, if added, must satisfy this product's independent client authorization; it cannot implicitly bypass OAuth and local checks.
 - No actual authentication endpoint, secret or deployment is approved by this ADR.
 
