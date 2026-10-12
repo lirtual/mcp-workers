@@ -1,6 +1,6 @@
 # ADR-0003 — Independent OAuth for direct remote MCP clients
 
-Status: accepted but **authentication approach reopened for review** on 2026-10-12 after the operator asked whether the existing MCP Portal bearer-token pattern would be simpler. Decision input: Round 1 F2=A. No reversal or new authentication choice is accepted yet.
+Status: **superseded by [ADR-0012](./0012-reuse-portal-bearer-auth-with-independent-secret.md)** on 2026-10-12. Historical OAuth option; do not implement for v1. Previously accepted as F2=A and subsequently reversed by explicit operator confirmation.
 
 ## Context
 
