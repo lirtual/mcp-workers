@@ -74,7 +74,7 @@ _Avoid_: Relabeling an uncertain operation as failed or safe to retry.
 8. The **Execution Boundary is the Linux Agent's ordinary OS user privileges**. Containers and project-root path allowlists were explicitly dropped; see ADR-0011, which supersedes ADR-0005.
 9. **Unattended Remote Operations** remain required for permitted development activities. With direct OS-account execution, their reachable files and secrets are broader than originally planned; see ADR-0006 as amended by ADR-0011.
 10. State-changing operations must have stable **Operation IDs** and minimal local **Operation Receipts**. An **Unknown Outcome** cannot be blindly replayed. See ADR-0007.
-11. The client sees a **Curated Tool Surface**, restricted to necessary workspace file, search, development Shell and managed-process operations. See ADR-0008.
+11. The client sees a **Curated Tool Surface**, restricted to necessary file, search, development Shell and managed-process tool categories, **not** to a project-root path allowlist. See ADR-0008 and ADR-0011.
 12. **Managed Sessions** may outlive the originating MCP request; support status, bounded output and explicit stop, without affecting unrelated host processes. See ADR-0009.
 13. One Remote Control MCP Worker uses the existing Portal Bearer validation pattern rather than OAuth. ADR-0012 supersedes the OAuth decisions in ADR-0003 and ADR-0010.
 
