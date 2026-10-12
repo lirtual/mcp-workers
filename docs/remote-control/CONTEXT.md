@@ -1,6 +1,6 @@
 # Remote Control MCP — Domain Context
 
-> Status: Earlier design rounds are recorded with an explicit revision on 2026-10-12: no container and no project directory allowlist (ADR-0011). OAuth versus existing MCP Portal bearer-token ingress is reopened, **not yet decided**. Detailed authorization, process lifecycle and implementation remain under discussion.
+> Status: Product decisions revised and settled on 2026-10-12: ordinary Linux-user execution without container/path allowlist (ADR-0011) and existing MCP Portal static Bearer ingress with an independent token value (ADR-0012). Technical implementation, real-client acceptance and lifecycle details remain undecided.
 
 ## Language
 
@@ -33,9 +33,13 @@ _Avoid_: Treating a remote HTTP request as the lifetime of the managed process.
 **Curated Tool Surface**:
 The reviewed set of client-visible development operations, rather than all capabilities supported by an upstream engine.
 
-**Remote MCP Client**:
-A client that directly communicates with this product using MCP and has its own authenticated authorization relationship.
-_Avoid_: Treating possession of a different MCP app's shared token as permission to control this Linux Host.
+**MCP Portal Caller**:
+A remote MCP request source that supplies the Remote Control MCP-specific Bearer credential through the existing Portal integration. This token proves possession of the credential, not a separately logged-in end-user identity.
+_Avoid_: Assuming that arbitrary direct remote MCP clients support static Bearer setup, or that a token shared by other MCP Workers is valid here.
+
+**Portal Bearer Credential**:
+A static, independently generated high-entropy secret recognized by only the Remote Control MCP ingress. It grants access to curated remote operations under the Agent's OS-user permissions.
+_Avoid_: Confusing a static Bearer credential with OAuth authorization or sharing it with lower-privilege MCP Workers.
 
 **Graphical Desktop Control**:
 Remote viewing or manipulation of a desktop screen, mouse or keyboard. This is excluded from the first release.
@@ -64,7 +68,7 @@ _Avoid_: Relabeling an uncertain operation as failed or safe to retry.
 2. The system is **Linux-first**. WSL2 is a deployment variant and is not required for core execution.
 3. This is a separate MCP application context, independent of the existing Database, IMA and Raindrop contexts.
 4. First-release tool categories remain **file read/write, search, development Shell and managed processes**. There is no project directory allowlist; filesystem reach is defined by the Agent's Linux account (ADR-0011). Root-level administration and arbitrary unrelated process control remain out of scope.
-5. **Authentication is under active reconsideration**: earlier direct MCP OAuth choice (ADRs 0003 and 0010) versus the repository's existing MCP Portal static-bearer pattern. No final replacement has been approved. An unauthenticated remote terminal is not acceptable.
+5. **MCP Portal static Bearer ingress with a Remote Control-only secret value is accepted**; do not use OAuth for v1, and do not reuse the token value shared by other MCP apps. Actual Portal/ChatGPT header delivery must be proven before write/Shell activation (ADR-0012). Unauthenticated remote Shell is forbidden.
 6. **Graphical desktop, mouse, keyboard and native Windows execution** are not first-release product capabilities.
 7. **VPC-only private network connection** is a first-release constraint, without publicly publishing the device endpoint. See ADR-0004.
 8. The **Execution Boundary is the Linux Agent's ordinary OS user privileges**. Containers and project-root path allowlists were explicitly dropped; see ADR-0011, which supersedes ADR-0005.
@@ -72,14 +76,14 @@ _Avoid_: Relabeling an uncertain operation as failed or safe to retry.
 10. State-changing operations must have stable **Operation IDs** and minimal local **Operation Receipts**. An **Unknown Outcome** cannot be blindly replayed. See ADR-0007.
 11. The client sees a **Curated Tool Surface**, restricted to necessary workspace file, search, development Shell and managed-process operations. See ADR-0008.
 12. **Managed Sessions** may outlive the originating MCP request; support status, bounded output and explicit stop, without affecting unrelated host processes. See ADR-0009.
-13. Direct Remote MCP Client OAuth and the MCP resource share one product endpoint/deployment boundary for the single-user first release; see ADR-0010 for the combined Worker implementation decision.
+13. One Remote Control MCP Worker uses the existing Portal Bearer validation pattern rather than OAuth. ADR-0012 supersedes the OAuth decisions in ADR-0003 and ADR-0010.
 
 ## Unsettled boundaries — not approved yet
 
 - The exact allowed tools and parameters; how destructive workspace writes, interactive process inputs and secret handling are authorized.
 - Managed-session lifecycle details: stopping/canceling, output paging, quotas and behavior after device restart.
 - Exact local receipt retention/storage, crash recovery, token revocation and cleanup rules.
-- Authenticate via existing Portal Bearer versus direct OAuth: actual ChatGPT plugin/Portal compatibility, independent secret boundary, rotation and client compatibility.
+- Actual ChatGPT/MCP Portal delivery of the separate static Bearer credential, token provisioning/rotation and denied-request acceptance; compatibility with arbitrary non-Portal MCP clients is not guaranteed.
 - Linux account/privilege selection, secret exposure and ingress compromise risk, limits (payload, output, time), supported tool shapes and rollout/monitoring policy.
 
 Architecture and deployment implementation details belong in the research draft and ADRs, not in this vocabulary document.
