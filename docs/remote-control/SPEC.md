@@ -1,6 +1,6 @@
 # Remote Control MCP — v1 Technical Specification
 
-> **Status:** Spec synthesized using Matt Skills Curated `to-spec`, 2026-10-12. **Ready for final operator approval; not yet implemented, deployed or production-accepted.**
+> **Status:** Spec synthesized using Matt Skills Curated `to-spec`, 2026-10-12, tracked in [GitHub spec Issue #2](https://github.com/lirtual/mcp-workers/issues/2). **Ready for final operator approval; not yet implemented, deployed or production-accepted.**
 >
 > **Scope of authority:** This spec consolidates previously accepted decisions, especially [CONTEXT](./CONTEXT.md), [ADR-0011](./adr/0011-direct-linux-user-no-path-allowlist.md) (no container/path allowlist, existing Linux user) and [ADR-0012](./adr/0012-reuse-portal-bearer-auth-with-independent-secret.md) (Portal static Bearer with a separate token value). Superseded OAuth and container ADRs are historical only. [Research notes](./RESEARCH-DRAFT.md) and [earlier draft](./SPEC-DRAFT.md) are reference material, **not competing current specs**.
 >
