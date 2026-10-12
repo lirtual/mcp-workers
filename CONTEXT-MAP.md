@@ -10,4 +10,4 @@ Each context maintains its own application contract, upstream credentials, deplo
 
 ## Contexts under design
 
-- [Remote Control MCP](./docs/remote-control/CONTEXT.md): proposed single-user, Linux-first remote host control MCP. Research is recorded in [RESEARCH-DRAFT.md](./docs/remote-control/RESEARCH-DRAFT.md). It is **not yet an active app**, and no execution privileges, ingress changes, or production deployment are approved.
+- [Remote Control MCP](./docs/remote-control/CONTEXT.md): proposed single-user, Linux-first remote host control MCP. Formal specification: [SPEC.md](./docs/remote-control/SPEC.md), research provenance: [RESEARCH-DRAFT.md](./docs/remote-control/RESEARCH-DRAFT.md). It is **not yet an active app**, and no execution privileges, ingress changes, or production deployment are approved.
