@@ -1,5 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
+import { appendFile, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import path from "node:path";
 import { listLocalDirectory, readLocalFileInfo, readMultipleLocalFiles, BrowseFailed } from "./browse.ts";
 import {
   parseFileInfo,
@@ -8,7 +10,10 @@ import {
   parseReadMultiple,
   parseSearchSessionId,
   parseSearchStart,
+  parseLocalWriteFile,
+  parseOperationId,
 } from "./local-read.ts";
+import { operationDigest, ReceiptStore, type OperationReceipt } from "./operations.ts";
 import { readLocalFile, ReadFailed } from "./read-file.ts";
 import { SearchFailed, SearchSessions } from "./search.ts";
 
@@ -31,6 +36,10 @@ const SAFE_EVENTS = new Set([
   "not_found",
   "health",
   "status",
+  "write_completed",
+  "write_failed",
+  "operation_conflict",
+  "operation_admitted",
 ]);
 
 export type AgentLog = (event: string) => void;
@@ -42,6 +51,8 @@ export interface StartAgentOptions {
   log?: AgentLog;
   /** Process-local startup setting; production uses the fixed default. */
   searchSessionTtlMs?: number;
+  /** Test seam; production uses the fixed per-user local state directory. */
+  receiptDirectory?: string;
 }
 
 export interface RunningAgent {
@@ -111,8 +122,9 @@ function deviceCredential(request: IncomingMessage): string | null {
 function operationId(pathname: string): string | null {
   const prefix = "/internal/operations/";
   if (!pathname.startsWith(prefix)) return null;
-  const id = pathname.slice(prefix.length);
-  if (!/^[A-Za-z0-9._:-]{1,128}$/.test(id)) return null;
+  let id: string;
+  try { id = decodeURIComponent(pathname.slice(prefix.length)); } catch { return null; }
+  if (!/^(?!\.{1,2}$)[A-Za-z0-9._:-]{1,128}$/.test(id)) return null;
   return id;
 }
 
@@ -219,6 +231,28 @@ export async function startAgent(options: StartAgentOptions): Promise<RunningAge
 
   const log = options.log;
   const searches = new SearchSessions(options.searchSessionTtlMs);
+  const receipts = new ReceiptStore(options.receiptDirectory);
+  let receiptsReady: Promise<void> | undefined;
+  const ensureReceipts = () => (receiptsReady ??= receipts.open());
+  const inFlight = new Map<string, Promise<OperationReceipt | undefined>>();
+
+  async function performWrite(id: string, write: NonNullable<ReturnType<typeof parseLocalWriteFile>>): Promise<OperationReceipt | undefined> {
+    await receipts.update(id, "running", "Write is in progress.");
+    try {
+      if (write.mode === "append") await appendFile(write.path, write.content, "utf8");
+      else await writeFile(write.path, write.content, "utf8");
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      const knownNoEffect = code === "EACCES" || code === "EPERM" || code === "ENOENT" || code === "EISDIR";
+      emit(log, "write_failed");
+      try {
+        return await receipts.update(id, knownNoEffect ? "failed" : "unknown", "Write did not complete.");
+      } catch { return undefined; }
+    }
+    emit(log, "write_completed");
+    try { return await receipts.update(id, "completed", "File updated."); }
+    catch { return undefined; }
+  }
 
   const server: Server = createServer((request, response) => {
     void handleRequest(request, response).catch(() => {
@@ -275,11 +309,21 @@ export async function startAgent(options: StartAgentOptions): Promise<RunningAge
         });
         return;
       }
+      let receipt: OperationReceipt | null;
+      try {
+        await ensureReceipts();
+        receipt = await receipts.get(id);
+      } catch {
+        sendJson(response, 503, { operation_id: id, status: "unavailable", error: "unavailable", message: "The receipt store is unavailable." });
+        return;
+      }
+      if (!receipt) {
+        emit(log, "status");
+        sendJson(response, 404, { error: "not_found", message: "The operation was not found." });
+        return;
+      }
       emit(log, "status");
-      sendJson(response, 404, {
-        error: "not_found",
-        message: "The operation was not found.",
-      });
+      sendJson(response, 200, receipt);
       return;
     }
 
@@ -315,7 +359,73 @@ export async function startAgent(options: StartAgentOptions): Promise<RunningAge
         return;
       }
 
-      const body = parsed as { tool?: unknown; arguments?: unknown };
+      const body = parsed as { tool?: unknown; arguments?: unknown; operation_id?: unknown };
+      if (body.tool === "write_file") {
+        const id = typeof body.operation_id === "string" ? body.operation_id : null;
+        if (!id || !parseOperationId({ operation_id: id })) {
+          emit(log, "rejected");
+          sendJson(response, 400, { error: "bad_request", message: "A valid operation id is required." });
+          return;
+        }
+        const write = parseLocalWriteFile(body.arguments);
+        if (!write) {
+          emit(log, "rejected");
+          sendJson(response, 400, { operation_id: id, error: "bad_request", message: "The write request was rejected." });
+          return;
+        }
+        const normalized = { path: path.resolve(write.path), content: write.content, mode: write.mode };
+        const digest = operationDigest("write_file", normalized);
+        let admitted: Awaited<ReturnType<typeof receipts.admit>>;
+        try {
+          await ensureReceipts();
+          admitted = await receipts.admit(id, digest);
+        } catch {
+          sendJson(response, 503, { operation_id: id, status: "unavailable", error: "unavailable", message: "The operation could not be admitted." });
+          return;
+        }
+        if (admitted.kind === "conflict") {
+          emit(log, "operation_conflict");
+          sendJson(response, 409, { operation_id: id, error: "conflict", message: "The operation id is already used for different parameters." });
+          return;
+        }
+        if (admitted.kind === "full") {
+          sendJson(response, 503, { operation_id: id, status: "unavailable", error: "unavailable", message: "Operation receipts are at capacity." });
+          return;
+        }
+        let pending = inFlight.get(id);
+        if (admitted.kind === "new") {
+          emit(log, "operation_admitted");
+          pending = performWrite(id, normalized);
+          inFlight.set(id, pending);
+          void pending.then(() => inFlight.delete(id), () => inFlight.delete(id));
+        }
+        if (!pending && admitted.receipt && (admitted.receipt.state === "admitted" || admitted.receipt.state === "running")) {
+          const unknown = await receipts.update(id, "unknown", "Effect cannot be established.");
+          sendJson(response, 200, { operation_id: id, status: "unknown", receipt: unknown });
+          return;
+        }
+        let receipt: OperationReceipt | undefined;
+        try {
+          receipt = pending ? await pending : admitted.receipt;
+        } catch {
+          sendJson(response, 200, {
+            operation_id: id,
+            status: "unknown",
+            error: { code: "timeout_unknown", message: "The write outcome is unknown." },
+          });
+          return;
+        }
+        if (requestAbort.signal.aborted) return;
+        const state = receipt?.state ?? "unknown";
+        if (state === "failed") {
+          sendJson(response, 200, { operation_id: id, status: "failed", error: { code: "bad_request", message: "The file write failed." }, receipt });
+        } else if (state === "unknown") {
+          sendJson(response, 200, { operation_id: id, status: "unknown", error: { code: "timeout_unknown", message: "The write outcome is unknown." }, receipt });
+        } else {
+          sendJson(response, 200, { operation_id: id, status: state, result: { content: [{ type: "text", text: "File updated." }] }, receipt });
+        }
+        return;
+      }
       const outcome = await runTool(body.tool, body.arguments, searches, requestAbort.signal, log);
       if (requestAbort.signal.aborted) return;
       if (outcome.kind === "rejected") {
@@ -375,6 +485,7 @@ export async function startAgent(options: StartAgentOptions): Promise<RunningAge
     port: address.port,
     close: async () => {
       await searches.close();
+      if (receiptsReady) await receipts.close();
       await new Promise<void>((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));
       });

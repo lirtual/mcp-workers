@@ -75,6 +75,37 @@ export interface SearchSessionId {
   sessionId: string;
 }
 
+export interface LocalWriteFile {
+  path: string;
+  content: string;
+  mode: "rewrite" | "append";
+}
+
+export interface OperationId {
+  operationId: string;
+}
+
+const MAX_WRITE_CONTENT_BYTES = 49_152;
+const OPERATION_ID = /^(?!\.{1,2}$)[A-Za-z0-9._:-]{1,128}$/;
+
+export function parseLocalWriteFile(input: unknown): LocalWriteFile | null {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) return null;
+  const record = input as Record<string, unknown>;
+  if (Object.keys(record).some((key) => !["path", "content", "mode"].includes(key))) return null;
+  const filePath = parsePath(record.path);
+  if (!filePath || typeof record.content !== "string" || Buffer.byteLength(record.content, "utf8") > MAX_WRITE_CONTENT_BYTES) return null;
+  if (record.content.includes("\0") || (record.mode !== "rewrite" && record.mode !== "append")) return null;
+  return { path: filePath, content: record.content, mode: record.mode };
+}
+
+export function parseOperationId(input: unknown): OperationId | null {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) return null;
+  const record = input as Record<string, unknown>;
+  if (Object.keys(record).length !== 1 || Object.keys(record)[0] !== "operation_id") return null;
+  if (typeof record.operation_id !== "string" || !OPERATION_ID.test(record.operation_id)) return null;
+  return { operationId: record.operation_id };
+}
+
 const MAX_SEARCH_PATTERN_LENGTH = 256;
 const SEARCH_SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 

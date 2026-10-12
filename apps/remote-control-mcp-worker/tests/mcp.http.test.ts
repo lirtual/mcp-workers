@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -213,6 +213,8 @@ test("lists only the local read tool and rejects anything that could retarget th
       "start_search",
       "get_more_search_results",
       "stop_search",
+      "write_file",
+      "get_operation_status",
     ],
   );
   const annotations = tools[0]?.annotations as {
@@ -413,6 +415,98 @@ test("reads a fixed fixture through the worker and the native agent", async () =
   }
 });
 
+test("write_file and get_operation_status preserve a stable receipt across a lost response", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-worker-receipt-"));
+  const receiptDirectory = path.join(root, "receipts");
+  const fixture = path.join(root, "fixture.txt");
+  await writeFile(fixture, "start", "utf8");
+  const originalFetch = globalThis.fetch;
+  const calls: ObservedCall[] = [];
+  let agent: RunningAgent | undefined;
+  let loseFirstWriteReply = true;
+  try {
+    agent = await startAgent({ deviceToken, receiptDirectory });
+    const runningAgent = agent;
+    const binding = recordingBinding(calls, async (input, init) => {
+      const url = input instanceof Request ? input.url : input instanceof URL ? input.href : String(input);
+      const forwarded = new URL(url);
+      const response = await originalFetch(`${runningAgent.baseUrl}${forwarded.pathname}`, {
+        method: init?.method,
+        headers: init?.headers,
+        body: init?.body,
+      });
+      if (forwarded.pathname === "/internal/call" && loseFirstWriteReply) {
+        loseFirstWriteReply = false;
+        await response.text();
+        throw new Error("synthetic reply loss after dispatch");
+      }
+      return response;
+    });
+    globalThis.fetch = (async () => { throw new Error("Worker must use the fixed device binding"); }) as typeof fetch;
+    const target = env({ REMOTE_CONTROL_DEVICE: binding });
+    const auth = { authorization: `Bearer ${portalToken}` };
+    const invoke = (name: string, args: unknown, id: number) => postMcp(target, {
+      jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args },
+    }, auth);
+
+    const first = await invoke("write_file", {
+      operation_id: "stable:write.17", path: fixture, content: "+once", mode: "append",
+    }, 1);
+    assert.equal((first.json as { result: { content: Array<{ text: string }> } }).result.content[0]?.text,
+      JSON.stringify({ operation_id: "stable:write.17", status: "timeout_unknown" }));
+    assert.equal(await readFile(fixture, "utf8"), "start+once");
+
+    const status = await invoke("get_operation_status", { operation_id: "stable:write.17" }, 2);
+    const statusText = (status.json as { result: { content: Array<{ text: string }> } }).result.content[0]?.text ?? "";
+    assert.equal((JSON.parse(statusText) as { state: string }).state, "completed");
+    assert.equal(statusText.includes("argument_digest"), false);
+
+    const same = await invoke("write_file", {
+      operation_id: "stable:write.17", path: fixture, content: "+once", mode: "append",
+    }, 3);
+    assert.equal((same.json as { result: { content: Array<{ text: string }> } }).result.content[0]?.text
+      ? JSON.parse((same.json as { result: { content: Array<{ text: string }> } }).result.content[0]!.text).status
+      : undefined, "completed");
+    assert.equal(await readFile(fixture, "utf8"), "start+once");
+
+    const conflict = await invoke("write_file", {
+      operation_id: "stable:write.17", path: fixture, content: "+different", mode: "append",
+    }, 4);
+    const conflictText = (conflict.json as { result: { content: Array<{ text: string }> } }).result.content[0]?.text ?? "";
+    assert.deepEqual(JSON.parse(conflictText), { operation_id: "stable:write.17", status: "conflict" });
+    assert.equal(await readFile(fixture, "utf8"), "start+once");
+
+    const failed = await invoke("write_file", {
+      operation_id: "known-failure", path: path.join(root, "missing", "fixture.txt"), content: "x", mode: "rewrite",
+    }, 5);
+    const failedText = (failed.json as { result: { content: Array<{ text: string }> } }).result.content[0]?.text ?? "";
+    const failedResult = JSON.parse(failedText) as { operation_id: string; status: string; receipt: { state: string } };
+    assert.equal(failedResult.operation_id, "known-failure");
+    assert.equal(failedResult.status, "failed");
+    assert.equal(failedResult.receipt.state, "failed");
+
+    const badRequest = await invoke("write_file", {
+      operation_id: "valid-but-invalid-args", path: fixture, content: "x", mode: "replace",
+    }, 6);
+    const badRequestText = (badRequest.json as { result: { content: Array<{ text: string }> } }).result.content[0]?.text ?? "";
+    assert.deepEqual(JSON.parse(badRequestText), { operation_id: "valid-but-invalid-args", status: "bad_request" });
+
+    const beforeInvalidId = calls.length;
+    const invalidId = await invoke("get_operation_status", { operation_id: ".." }, 7);
+    assert.equal((invalidId.json as { result: { isError: boolean } }).result.isError, true);
+    assert.equal(calls.length, beforeInvalidId);
+
+    const statusCall = calls.find((call) => call.method === "GET");
+    assert.equal(statusCall?.url, "http://remote-control-device.invalid/internal/operations/stable%3Awrite.17");
+    assert.equal(calls.every((call) => call.headers.get("x-device-credential") === deviceToken), true);
+    assert.equal(calls.every((call) => call.headers.get("authorization") === null), true);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await agent?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("lists a disposable directory through the worker and the native agent", async () => {
   const fixtureDir = await mkdtemp(path.join(os.tmpdir(), "remote-control-worker-list-"));
   await mkdir(path.join(fixtureDir, "child"));
@@ -495,13 +589,16 @@ test("lists and pages bounded filename and content searches through the worker a
     const tools = (list.json as { result: { tools: Array<Record<string, unknown>> } }).result.tools;
     assert.deepEqual(
       tools.map((tool) => tool.name),
-      ["read_file", "read_multiple_files", "list_directory", "get_file_info", "start_search", "get_more_search_results", "stop_search"],
+      ["read_file", "read_multiple_files", "list_directory", "get_file_info", "start_search", "get_more_search_results", "stop_search", "write_file", "get_operation_status"],
     );
-    for (const tool of tools.slice(-3)) {
+    for (const tool of tools.slice(4, 7).concat(tools.slice(8))) {
       const annotations = tool.annotations as { readOnlyHint: boolean; destructiveHint: boolean };
-      assert.equal(annotations.readOnlyHint, true);
-      assert.equal(annotations.destructiveHint, false);
+      assert.equal(annotations.readOnlyHint, tool.name !== "write_file");
+      assert.equal(annotations.destructiveHint, tool.name === "write_file");
     }
+    const writeTool = tools[7];
+    assert.equal(JSON.stringify(writeTool?.description).includes("new ID"), true);
+    assert.equal((writeTool?.inputSchema as { required: string[] }).required.includes("operation_id"), true);
 
     const started = await postMcp(
       target,
