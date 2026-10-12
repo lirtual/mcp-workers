@@ -1,6 +1,6 @@
 # Remote Control MCP — research draft and grilling frontier
 
-> Status: **Research draft; 2026-10-12 direction confirmed: existing Portal Bearer (ADR-0012), existing ordinary Linux login user (ADR-0011), no Docker/project directory allowlist.** A consolidated [minimal v1 Spec draft](./SPEC-DRAFT.md) awaits final approval; no implementation or deployment is authorized.
+> Status: **Historical research and decision provenance; 2026-10-12 direction confirmed.** The authoritative formalized design is now [SPEC.md](./SPEC.md), pending final approval. Earlier [SPEC-DRAFT.md](./SPEC-DRAFT.md) and the original VPC-only R03 proposal are not concurrent implementation contracts; no implementation or deployment is authorized.
 > This is not an implementation specification or deployment authorization. Accepted decisions live in linked ADRs; all uncited implementation patterns below remain proposals.
 > Baseline: user-provided `Remote-Desktop-MCP-Spec-VPC-only(1).md` (R03 research contract, based on commit `e9764b73f9ce8894ccda6e4427bfd5ad3ee16fb5`). The old branch was not located in current branch search; the user's supplied copy is the source for that baseline.
 > No existing production worker, secret, tunnel, or GitHub Actions workflow is changed.
