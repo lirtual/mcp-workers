@@ -396,7 +396,7 @@ function completedText(body: unknown): string | null {
   return parts.join("");
 }
 
-async function callDevice(env: Env, call: LocalCall, id: unknown): Promise<Response> {
+async function callDevice(env: Env, call: LocalCall, id: unknown, signal: AbortSignal): Promise<Response> {
   const deviceToken = env.REMOTE_CONTROL_DEVICE_TOKEN;
   const binding = env.REMOTE_CONTROL_DEVICE;
   if (!deviceToken || !binding) {
@@ -408,6 +408,7 @@ async function callDevice(env: Env, call: LocalCall, id: unknown): Promise<Respo
   try {
     response = await binding.fetch(DEVICE_CALL_URL, {
       method: "POST",
+      signal,
       headers: {
         "content-type": "application/json",
         "x-device-credential": deviceToken,
@@ -520,7 +521,7 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
       log("rejected");
       return toolError(rpcMessage.id, "The requested tool call was rejected.");
     }
-    return callDevice(env, localCall, rpcMessage.id);
+    return callDevice(env, localCall, rpcMessage.id, request.signal);
   }
 
   return rpcError(rpcMessage.id, -32601, "Method not found.");

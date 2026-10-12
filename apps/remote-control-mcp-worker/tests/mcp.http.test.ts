@@ -17,6 +17,7 @@ interface ObservedCall {
   method: string;
   headers: Headers;
   body: string;
+  signal?: AbortSignal;
 }
 
 function fetcher(
@@ -56,6 +57,7 @@ function recordingBinding(
         method: init?.method ?? request?.method ?? "GET",
         headers,
         body,
+        ...(init?.signal ? { signal: init.signal } : {}),
       });
       if (!impl) throw new Error("device binding must not be called");
       return impl(input, init);
@@ -66,6 +68,7 @@ async function postMcp(
   target: Env,
   body: unknown,
   headers: Record<string, string> = {},
+  signal?: AbortSignal,
 ): Promise<{ status: number; text: string; json: unknown }> {
   const response = await worker.fetch(
     new Request(workerUrl, {
@@ -76,12 +79,50 @@ async function postMcp(
         ...headers,
       },
       body: JSON.stringify(body),
+      signal,
     }),
     target,
   );
   const text = await response.text();
   return { status: response.status, text, json: text ? (JSON.parse(text) as unknown) : null };
 }
+
+test("forwards a disconnected MCP request signal to the device binding", async () => {
+  const calls: ObservedCall[] = [];
+  let resolveCallStarted!: () => void;
+  const callStarted = new Promise<void>((resolve) => {
+    resolveCallStarted = resolve;
+  });
+  const binding = recordingBinding(calls, async (_input, init) => {
+    resolveCallStarted();
+    return await new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), {
+        once: true,
+      });
+    });
+  });
+  const controller = new AbortController();
+  const responsePromise = postMcp(
+    env({ REMOTE_CONTROL_DEVICE: binding }),
+    {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "start_search",
+        arguments: { path: "/tmp/search-fixture", pattern: "match", search_type: "filename" },
+      },
+    },
+    { authorization: `Bearer ${portalToken}` },
+    controller.signal,
+  );
+
+  await callStarted;
+  controller.abort();
+  await responsePromise;
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.signal?.aborted, true);
+});
 
 async function withConsole(run: () => Promise<void>): Promise<string> {
   const lines: string[] = [];
