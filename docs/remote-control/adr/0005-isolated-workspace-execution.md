@@ -1,6 +1,8 @@
 # ADR-0005 — Isolate v1 execution to a containerized workspace
 
-Status: accepted. Date: 2026-10-12. Decision input: Round 2 G1=A.
+Status: superseded by [ADR-0011](./0011-direct-linux-user-no-path-allowlist.md). Originally accepted 2026-10-12 as G1=A; explicitly reversed by the operator later the same day.
+
+> Historical record only: do not implement this container boundary for v1.
 
 ## Context
 
