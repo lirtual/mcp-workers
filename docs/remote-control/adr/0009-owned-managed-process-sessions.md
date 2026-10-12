@@ -8,7 +8,7 @@ Development servers and longer jobs need to keep running after an MCP tool call 
 
 ## Decision
 
-Support locally tracked processes belonging to the authorized workspace that may continue beyond an individual MCP request. Provide session identities, status checks, bounded output retrieval and explicit session stop operations. Do not automatically restart a process when its outcome is uncertain, and do not manage unrelated host processes.
+Support locally tracked **Agent-owned development processes under the operator's existing Linux login account** that may continue beyond an individual MCP request. The earlier workspace-directory isolation assumption was superseded by [ADR-0011](./0011-direct-linux-user-no-path-allowlist.md); session ownership is about process identity, not filesystem path. Provide session identities, status checks, bounded output retrieval and explicit session stop operations. Do not automatically restart a process when its outcome is uncertain, and do not manage unrelated host processes.
 
 ## Consequences
 
