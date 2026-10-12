@@ -1,6 +1,8 @@
 # ADR-0006 — Allow unattended operations inside an authorized workspace
 
-Status: accepted. Date: 2026-10-12. Decision input: Round 2 G2=A.
+Status: retained with a revised execution boundary. Date: 2026-10-12. Decision input: Round 2 G2=A; isolation and workspace-root restrictions later superseded by [ADR-0011](./0011-direct-linux-user-no-path-allowlist.md).
+
+> The unattended workflow decision remains, but the previous claims that operations are container-contained are no longer true. Actual exposure must be re-reviewed for an ordinary Linux user's accessible filesystem and secrets. This historical decision is not a production go-ahead.
 
 ## Context
 
