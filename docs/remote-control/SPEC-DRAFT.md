@@ -8,7 +8,7 @@
 
 One person controls **one Linux host** through an authorized MCP client. WSL2 Linux is a possible deployment environment, not a core dependency. V1 supports file reads/edits, directory listing, file/content search, development Shell and managed long-running process sessions. No screen sharing/GUI, native Windows control, multi-device routing, host administration framework or bespoke execution engine.
 
-**Operator-approved simplification:** the local Agent runs as the operator's **existing ordinary non-root Linux login user**. There is **no Docker requirement, no dedicated service account and no project-directory allowlist**. Working directories are convenience hints, not security boundaries. File/Shell reach equals the user's actual OS permissions, including any credentials, mounted filesystems and privilege-escalation paths the user already possesses.
+**Operator-approved simplification:** the local Agent runs as the operator's **existing ordinary non-root Linux login user**. There is **no Docker requirement, no dedicated service account and no project-directory allowlist**. Working directories are convenience hints, not security boundaries. File/Shell reach equals the user's actual OS permissions, including credentials, mounted filesystems and any existing privilege-escalation paths. A promise of no host administration **cannot be enforced by a tool allowlist** once arbitrary Shell is exposed; implementation must accurately disclose and test that risk.
 
 ## 2. Accepted minimal topology
 
@@ -41,8 +41,8 @@ One Worker, one Linux Agent, one VPC Service fixed to one host/port and one dedi
 - **No** GitHub OAuth login, OAuth authorization endpoint, OAUTH_KV, consent UI or custom identity platform in v1. Portal static Bearer proves token possession; it is not individual-user OAuth authorization.
 - Worker-to-device requests use a **different dedicated secret**, verified by the Linux Agent; strip/never propagate Portal credentials. Tool and argument validation occurs at the device too.
 - Token values never go in Git, logs, trace metadata or tool output. Rotation is an operator task. No anonymous fallback.
-- **Blocking compatibility condition:** validate the *actual* ChatGPT/MCP Portal path supplies the static Bearer. A direct custom ChatGPT plugin flow is **not assumed** to allow static Bearer configuration. If it does not work, halt rollout and reopen the ingress decision, never silently disable authentication.
-- Treat this token as highly privileged: once stolen, it can expose the existing Linux user's accessible files via allowed remote tools.
+- **Blocking compatibility condition:** validate the *actual* ChatGPT/MCP Portal path supplies the static Bearer. The current ChatGPT custom-plugin instructions list OAuth, no authentication and mixed authentication, **not** a general manual static-Bearer field. This design relies on the existing Portal route; it must pass authenticated initialization, tools/list, a safe fixed read-only fixture, and negative authentication cases. If it cannot provide the header, halt and reopen the ingress decision; never disable authentication.
+- Treat this token as highly privileged: once stolen, it can expose the existing Linux user's accessible files via allowed remote tools. The repository's current portal-auth defaults to rejecting requests with an Origin header unless the Origin is explicitly allowed; verify whether this client's ingress carries Origin, and configure exact trusted origins if needed instead of globally permitting unknown origins.
 
 ## 4. MCP tool contract — proposed initial allowlist
 
@@ -59,34 +59,34 @@ Use upstream Desktop Commander local stdio tools rather than reimplementing them
 - **Do not expose** `set_config_value`, `kill_process` by arbitrary PID, `list_processes` of the whole host, upstream telemetry/feedback tools or unreviewed new upstream tools in v1.
 - Tool names and schemas presented to the remote client may be narrow wrappers rather than raw upstream capabilities. An upstream version upgrade must not automatically expand the remote tool surface.
 - **No project directory allowlist.** All path-based operations inherit ordinary Unix file permissions. Symbolic links or a working directory must not be presented as stronger isolation.
-- Tool-list selection does **not** restrict what a permitted arbitrary Shell command can do. Never promise denial of `sudo`, Docker socket operations or access to account-readable secrets unless the OS actually denies them.
+- Tool-list selection does **not** restrict what permitted arbitrary Shell or stdin into an interactive Shell can execute. Never promise denial of `sudo`, container-runtime/socket access or account-readable secrets unless the **operating system** actually denies them. If this login account has effective administrator capabilities, record and explicitly accept that consequence before unattended Shell; otherwise stop activation.
 
 ## 5. Local execution and session semantics
 
-- Run Agent and locally supervised pinned Desktop Commander subprocess as the existing user, without `sudo`/root launcher. Do not create a duplicate remote command executor.
+- Run Agent and locally supervised pinned Desktop Commander subprocess as the existing user, without a `sudo`/root launcher. Do not create a duplicate remote command executor. Review upstream local configuration explicitly: the inspected upstream default `allowedDirectories: []` permits all filesystem paths for file tools; an existing nonempty upstream configuration can still unintentionally restrict access, so verify its actual state rather than assuming our lack of a separate allowlist is enough.
 - The local Agent exposes only a fixed, privately reachable endpoint and rejects unauthorized device calls or unrecognized tool names/arguments.
-- Managed processes may outlive the MCP request that started them. Device owns session IDs and enforces that session input/read/stop apply only to its own tracked processes.
+- Managed processes may outlive the MCP request that started them. Device owns session IDs and enforces that session input/read/stop apply only to its own tracked processes. Do not use a raw PID alone as proof of ownership after restart or PID reuse; a remote session handle must map to a verified tracked process instance.
 - On Agent restart, **proposed default:** do not relaunch prior processes automatically. Reconcile what can be proven; mark uncertain sessions `stale`/`unknown`. Do not terminate unrelated host processes.
 - Bound request sizes, returned text, concurrent sessions and stored output. Large results need explicit pagination/truncation, not unbounded Worker responses. Concrete numeric limits should be validated using a real dev workload, not inherited blindly from the tiny R03 read-only probe.
 
 ## 6. Failure behavior and minimal local records
 
-- Each state-changing operation, including file edits, process launch, process input and stop, has a stable ID. Persist a minimal **device-local durable receipt before side effects**.
+- Each state-changing operation, including file edits, process launch, process input and stop, has a stable ID carried consistently across transport retries. Persist a minimal **device-local durable receipt before side effects** and associate the ID with the exact operation/arguments; the Agent must reject reuse of one ID with different arguments.
 - On duplicate ID, return the known result/status instead of running the effect twice. A timeout/disconnect after possible execution yields `unknown` or status lookup; do **not** blindly retry.
-- Maintain only necessary local operation metadata (ID, type, started/finished times, status and optional safe result reference). No cloud queue, DO, R2, D1, central job scheduler or long-term sensitive output archive. **Proposed default:** bounded local cleanup and redacted stdout/logs; exact retention is an implementation detail.
+- Maintain only necessary local operation metadata (ID, type/argument digest, started/finished times, status and optional safe result reference). No cloud queue, DO, R2, D1, central job scheduler or long-term sensitive output archive. **Proposed default:** bounded receipt cleanup and redacted Agent/Worker logs; exact retention is an implementation detail. **Important upstream exception:** the pinned Desktop Commander subprocess writes tool arguments without redaction to `~/.claude-server-commander/claude_tool_call.log` and saves limited outputs in `tool-history.jsonl`. Inspect upstream log settings, ownership, permissions and retention and prevent secrets in tool arguments before production. The upstream default telemetry setting is enabled; choose/verify the desired privacy setting explicitly, rather than assuming it is off.
 - Underlying process and files may not be transactionally recoverable. **No exactly-once execution claim.**
 
 ## 7. No-go conditions and acceptance checks
 
 A read-only fixture must pass **before** enabling file writes or Shell:
 
-1. Portal-to-Worker-to-device authenticated MCP initialize, tool listing and a harmless read-only call; verify actual ChatGPT usability rather than only a curl probe.
+1. Portal-to-Worker-to-device authenticated MCP initialize, tool listing and a **fixed harmless, non-secret read-only fixture**; verify actual ChatGPT usability rather than only a curl probe. A general-purpose `read_file` pointing to arbitrary user paths is **not** a safe security probe.
 2. Missing/wrong Portal Bearer is denied; leaked/incorrect device credential is denied; no upstream token is forwarded; no public device URL or arbitrary destination routing.
-3. Linux process runs as the **chosen ordinary existing login user** and **not root**. Inspect effective `id`, `sudo -n`/sudoers behavior, container-runtime group/socket permissions, accessible SSH/service credentials and WSL2 interop/mounts if relevant. **If existing account is effectively administrative without consent, do not claim host isolation or enable unattended Shell without a new explicit risk decision.**
+3. Linux process runs as the **chosen ordinary existing login user**, not root. Inspect effective `id`, `sudo -n`/sudoers behavior, container-runtime group/socket permissions, reachable SSH/service credentials and WSL2 interop/mounts if relevant. If that existing account effectively has administrator privileges, **unattended Shell would share those abilities regardless of excluding administrative MCP tools**. Require explicit risk acceptance or adjust OS rights before activation; do not claim host isolation.
 4. Review pinned upstream package version, install integrity and its file/Shell semantics. Check unreviewed tools are unavailable remotely; command-level directory blacklists are never treated as a sandbox.
-5. Confirm the private Tunnel/VPC Service has a single restricted listener, offline failure is closed, and there is no public fallback.
+5. Confirm the private Tunnel/VPC Service has a single restricted listener, offline failure is closed, and there is no public fallback. Current Cloudflare guidance requires a supported `cloudflared` version (2025.7.0+) and QUIC connectivity (outbound UDP 7844); test VPC Service host/port binding and Linux network namespace. Workers VPC is still beta and currently free during beta; recheck limits/pricing before rollout.
 6. Confirm side-effect request timeout/repeat leads to status/`unknown`, not duplicated writes or launches; restart does not silently respawn sessions; session stop cannot affect an unrelated PID.
-7. Verify secret redaction, bounded stdout/output, no plaintext token storage in logs, and safe token rotation/revocation.
+7. Verify secrets are excluded from Worker/Agent logging and exception messages, and account for upstream Desktop Commander **unredacted local argument history and bounded result history** separately. Confirm owner-only filesystem permissions, explicit local history retention/cleanup, telemetry setting, bounded output, safe token rotation/revocation, and no diagnostic leakage of client/device credentials.
 
 ## 8. Delivery boundaries and explicit non-goals
 
