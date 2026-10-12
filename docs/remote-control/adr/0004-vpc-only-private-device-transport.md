@@ -11,7 +11,7 @@ The source research specification proposed a Cloudflare Worker reaching one Linu
 - Use **Cloudflare Workers VPC Service** scoped to a specific registered host/port, with an **outbound private Cloudflare Tunnel** to the Linux-side endpoint.
 - Keep the device execution/adapter endpoint non-public. Do **not** publish it as a public Tunnel application or supply an automatic public fallback.
 - Prefer an exact `vpc_services` binding rather than a broad `vpc_networks` reachability grant; clients may not choose a downstream host, port or arbitrary URL.
-- Network privacy does not replace independent OAuth, device identity validation and device-side execution policy.
+- Network privacy does not replace **authenticated MCP ingress**, device identity validation and device-side execution policy. The original OAuth decision has since been superseded by [ADR-0012](./0012-reuse-portal-bearer-auth-with-independent-secret.md), which selects independently secreted Portal static Bearer.
 - Remain single-device for the first release; do not add a generic multi-device router, application-layer WebSocket relay, DO, D1, R2 or queue for routing merely in anticipation of scale.
 
 ## Consequences and trade-offs
