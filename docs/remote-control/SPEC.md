@@ -91,6 +91,22 @@ The existing application contexts and shared ingress token value for Database, I
 - Use a small stable error taxonomy: `unauthorized`, `forbidden`, `bad_request`, `unavailable`, `timeout_unknown`, `not_found`, `conflict`, `internal_error`. Do not return stack traces, credentials or raw private request bodies.
 - Worker/device timeout does **not** imply the operation was not executed. Never auto-retry mutation after an ambiguous transport outcome.
 
+### Minimal private Agent HTTP interface
+
+The Worker invokes only these **internal fixed-route operations** over its VPC Service binding; this is **not a public REST API**:
+
+| Method and route | Required input | Response semantics |
+| --- | --- | --- |
+| `POST /internal/call` | `tool`, validated tool `arguments`, and `operation_id` for mutations | `{ operation_id?, status, result?, session_id?, error? }`. Status indicates `completed`, `running`, `failed` or `unknown`; large results must be paged/capped |
+| `GET /internal/operations/{operation_id}` | Existing operation ID | Known receipt state / safe metadata, no implicit execution |
+| `GET /internal/healthz` | Device credential | Minimal fixed health status; never expose user account name, paths, secrets, full runtime config or tool arguments |
+
+The Agent authenticates all three routes before parsing or dispatching. The Worker **constructs** each internal request from the curated public MCP tool input; it never forwards arbitrary client HTTP headers, especially the Portal Bearer, caller-chosen URL or `Host`. Use the device-only authentication header accepted by the Agent and never expose that header as an MCP tool parameter.
+
+If the response from a submitted mutation is lost, the Worker's output is `timeout_unknown` together with the **same known operation ID**, and an authenticated status lookup can reconcile it. A missing record is not evidence that a command never ran. No automatic Worker retry for mutations on network errors.
+
+The exact internal header name and numeric limits are **implementation-local constants**, not new environment variables for every threshold. Choose bounded values in a single small config module and verify them using the S0/S2 cases; do not increase complexity with a remotely editable policy engine.
+
 ### Client compatibility blocking gate
 
 The existing MCP Portal + ChatGPT client integration **must be empirically confirmed** to transmit the independent static Bearer credential. Current ChatGPT custom MCP connection screens do not supply a generic manual Bearer input; API-key declaration support in a plugin manifest is **not evidence that the submission UI will inject this token**. An unauthenticated direct-ChatGPT workaround is explicitly forbidden.
