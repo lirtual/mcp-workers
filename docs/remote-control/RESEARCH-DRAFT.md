@@ -64,19 +64,25 @@ unprivileged Linux user or isolated workload (DECISION PENDING)
 - Linux-first implementation; WSL2 Ubuntu is an optional early test platform, not a product requirement. If the loopback VPC target is used, cloudflared and the adapter must be reachable in the same relevant network namespace (for containers, verify explicit host-loopback publication). Test Hosted VPC routing, Service registration, Host header and failure behavior with a disposable fixture.
 - Compatibility acceptance separately verifies real ChatGPT/plugin connection and scope-dependent tool availability.
 
-## Unresolved decision frontier — Round 1
+## Unresolved decision frontier — Round 1 (independent choices)
 
-**Q1 — target operational capabilities:** recommend workspace-scoped read + write + development Shell (after read-only probe), not automatic whole-machine administration. Does the product need Linux host-wide control at launch?
+**F1 — initial product scope:** Option A (recommended): workspace-scoped Linux file read/write, search, development Shell and managed process sessions; no host-wide administration. Option B: Linux host administration also required, including system configuration and privileged operations. The choice governs execution privilege, approvals, containment and operation receipts.
 
-**Q2 — OS privilege boundary:** recommend isolated workspace/container with only approved project mounts, no Docker socket/privileged mode/host PID/mounts outside the workspace, unless host administration is the explicit goal. Is an ordinary Linux account (with local approvals for privileged actions) a requirement?
+**F2 — external client ingress:** Option A (recommended): direct ChatGPT/compatible remote MCP clients via an independent OAuth-protected Worker; never share the existing high-blast-radius `MCP_ACCESS_TOKEN`. Option B: use only the existing MCP Portal with separately validated client authorization and dedicated device authorization. The choice governs OAuth server, state and onboarding.
 
-**Q3 — client authentication:** recommend direct ChatGPT-compatible OAuth with one Worker + OAuth KV and one dedicated GitHub OAuth identity source; avoid reusing the shared `MCP_ACCESS_TOKEN`. This differs from split Auth/Resource of old Spec. Is direct ChatGPT/other external client connection the intended ingress, or must the existing MCP Portal be the sole entry?
+**F3 — GUI scope:** Option A (recommended): Linux file, terminal and process operations only for v1. Option B: include Linux graphical desktop/screen/mouse/keyboard control in v1, which needs a different execution and streaming subsystem. Do not call the product "remote desktop" in either case.
 
-**Q4 — remote unattended use:** recommend unattended commands **only inside isolated, preapproved workspace scope**; host-wide and destructive actions remain denied rather than pending an unavailable on-device click. Is local interactive approval acceptable/available when the user is away?
+**F4 — networking contract:** Option A (recommended): retain strict private Cloudflare VPC Service + dedicated Tunnel (the prior research baseline). Option B: explicitly reconsider a simpler published Tunnel application with additional authorization and a different public attack surface. This question addresses whether the **VPC-only** label is a binding product requirement.
 
-**Q5 — scope of 'desktop':** recommend Linux files/terminal/processes only, no Windows desktop screen/mouse/keyboard or Windows-native PowerShell in v1. Are GUI and native Windows operations required?
+### Questions deliberately deferred until scope is resolved
 
-Do not create ADRs until the corresponding user decisions are explicit. Once settled, write an app-local CONTEXT.md and a minimal ADR only for hard-to-reverse transport/privilege/auth choices. Existing `main` is untouched.
+- Constrained container vs non-privileged Linux system account; actual file mounts and secrets.
+- Unattended vs per-operation local authorization; which actions can run without someone at the host.
+- Safe side effects and unknown outcome: local receipts, process recovery, retries, bounded output and cancel/stop.
+- Which tools to surface from pinned local Desktop Commander and whether their shape is compatible with real ChatGPT app permissions.
+- Accepted registration, deployment and cost envelope after the OAuth/VPC topology is chosen.
+
+**None of the Round 1 recommendations are user-approved yet.** Proceed to Round 2 only after the user answers Round 1; record accepted terms and ADRs as each decision settles.
 
 ## Architecture review addendum — 2026-10-12 (NOT YET AN ADR)
 
