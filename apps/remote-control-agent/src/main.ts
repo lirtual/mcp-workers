@@ -1,6 +1,3 @@
-import { mkdtemp } from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import { startAgent, type RunningAgent } from "./server.ts";
 
 const token = process.env.REMOTE_CONTROL_DEVICE_TOKEN;
@@ -17,17 +14,10 @@ if (!Number.isInteger(port) || port < 0 || port > 65535) {
   process.exit(1);
 }
 
-const configuredHome = process.env.REMOTE_CONTROL_CHILD_HOME;
-const childHome =
-  configuredHome && configuredHome.length > 0
-    ? configuredHome
-    : await mkdtemp(path.join(os.tmpdir(), "remote-control-home-"));
-
 const agent: RunningAgent = await startAgent({
   deviceToken: token,
   host,
   port,
-  childHome,
   log: (event) => {
     process.stderr.write(`${JSON.stringify({ service: "remote-control-agent", event })}\n`);
   },

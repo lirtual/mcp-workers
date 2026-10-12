@@ -1,7 +1,5 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import os from "node:os";
-import path from "node:path";
 import { parseLocalRead } from "./local-read.ts";
 import { readLocalFile, ReadFailed } from "./read-file.ts";
 
@@ -22,7 +20,6 @@ export type AgentLog = (event: string) => void;
 
 export interface StartAgentOptions {
   deviceToken: string;
-  childHome: string;
   host?: string;
   port?: number;
   log?: AgentLog;
@@ -110,10 +107,6 @@ export async function startAgent(options: StartAgentOptions): Promise<RunningAge
     throw new Error("Agent listens on loopback only.");
   }
 
-  const childHome = path.resolve(options.childHome);
-  if (childHome === path.resolve(os.homedir())) {
-    throw new Error("Refusing to use the login home.");
-  }
   const log = options.log;
 
   const server: Server = createServer((request, response) => {

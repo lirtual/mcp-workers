@@ -77,24 +77,12 @@ test("agent package does not depend on Desktop Commander or an MCP client", asyn
   assert.equal(agentSection.includes("desktop-commander"), false);
 });
 
-test("listens on loopback only and refuses the login home", async () => {
-  const home = await temporaryHome();
-  try {
-    await assert.rejects(
-      () => startAgent({ deviceToken: DEVICE_TOKEN, childHome: home, host: "0.0.0.0" }),
-      /loopback/,
-    );
-    await assert.rejects(
-      () => startAgent({ deviceToken: "", childHome: home }),
-      /not configured/,
-    );
-    await assert.rejects(
-      () => startAgent({ deviceToken: DEVICE_TOKEN, childHome: os.homedir() }),
-      /login home/,
-    );
-  } finally {
-    await rm(home, { recursive: true, force: true });
-  }
+test("listens on loopback only and requires a device credential", async () => {
+  await assert.rejects(
+    () => startAgent({ deviceToken: DEVICE_TOKEN, host: "0.0.0.0" }),
+    /loopback/,
+  );
+  await assert.rejects(() => startAgent({ deviceToken: "" }), /not configured/);
 });
 
 test("device routes reject an invalid credential before any file read", async () => {
@@ -102,7 +90,6 @@ test("device routes reject an invalid credential before any file read", async ()
   const events: string[] = [];
   const agent = await startAgent({
     deviceToken: DEVICE_TOKEN,
-    childHome: home,
     log: (event) => events.push(event),
   });
   const vendorHistory = path.join(os.homedir(), VENDOR_DIR);
@@ -150,7 +137,6 @@ test("health and operation status do not execute work or expose host details", a
   const events: string[] = [];
   const agent = await startAgent({
     deviceToken: DEVICE_TOKEN,
-    childHome: home,
     log: (event) => events.push(event),
   });
 
@@ -193,7 +179,7 @@ test("health and operation status do not execute work or expose host details", a
 
 test("rejects URL reads, admin tools, and write or shell calls before opening a file", async () => {
   const home = await temporaryHome();
-  const agent = await startAgent({ deviceToken: DEVICE_TOKEN, childHome: home });
+  const agent = await startAgent({ deviceToken: DEVICE_TOKEN });
   const secretUrl = "http://203.0.113.9/secret-file";
 
   try {
@@ -252,7 +238,6 @@ test("reads a disposable fixture through node:fs without vendor history or secre
   const vendorHistoryBefore = existsSync(vendorHistory);
   const agent = await startAgent({
     deviceToken: DEVICE_TOKEN,
-    childHome: home,
     log: (event) => events.push(event),
   });
 

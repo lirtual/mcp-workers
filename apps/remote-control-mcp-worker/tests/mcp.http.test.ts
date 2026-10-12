@@ -250,7 +250,6 @@ test("an offline device returns a safe unavailable error", async () => {
 });
 
 test("reads a fixed fixture through the worker and the native agent", async () => {
-  const home = await mkdtemp(path.join(os.tmpdir(), "remote-control-worker-home-"));
   const fixtureDir = await mkdtemp(path.join(os.tmpdir(), "remote-control-worker-fixture-"));
   const fixturePath = path.join(fixtureDir, "fixture.txt");
   await writeFile(fixturePath, `${FIXTURE_TEXT}\n`, "utf8");
@@ -260,9 +259,10 @@ test("reads a fixed fixture through the worker and the native agent", async () =
   const originalFetch = globalThis.fetch;
 
   try {
+    const vendorHistory = path.join(os.homedir(), ".claude-server-commander");
+    const vendorHistoryBefore = existsSync(vendorHistory);
     agent = await startAgent({
       deviceToken: deviceToken,
-      childHome: home,
       log: (event) => agentEvents.push(event),
     });
     const runningAgent = agent;
@@ -354,11 +354,10 @@ test("reads a fixed fixture through the worker and the native agent", async () =
     assert.equal(logs.includes(fixturePath), false);
     assert.equal(agentEvents.join("\n").includes(FIXTURE_TEXT), false);
     assert.equal(agentEvents.join("\n").includes(fixturePath), false);
-    assert.equal(existsSync(path.join(home, ".claude-server-commander")), false);
+    assert.equal(existsSync(vendorHistory), vendorHistoryBefore);
   } finally {
     globalThis.fetch = originalFetch;
     await agent?.close();
-    await rm(home, { recursive: true, force: true });
     await rm(fixtureDir, { recursive: true, force: true });
   }
 });
