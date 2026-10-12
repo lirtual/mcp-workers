@@ -7,6 +7,9 @@ import {
   parseSearchSessionId,
   parseSearchStart,
   parseLocalWriteFile,
+  parseLocalCreateDirectory,
+  parseLocalEditBlock,
+  parseLocalMoveFile,
   parseOperationId,
   type LocalFileInfo,
   type LocalListDirectory,
@@ -14,6 +17,9 @@ import {
   type LocalReadMultiple,
   type LocalSearch,
   type LocalWriteFile,
+  type LocalCreateDirectory,
+  type LocalEditBlock,
+  type LocalMoveFile,
   type OperationId,
   type SearchSessionId,
 } from "./local-read.ts";
@@ -217,6 +223,27 @@ const WRITE_FILE_TOOL = {
   annotations: { title: "Write local file", readOnlyHint: false, destructiveHint: true, openWorldHint: false },
 } as const;
 
+const CREATE_DIRECTORY_TOOL = {
+  name: "create_directory", title: "Create local directory",
+  description: "Create one local directory. Use a stable operation_id for this exact intent and query get_operation_status after an uncertain response.",
+  inputSchema: { type: "object", properties: { operation_id: { type: "string", minLength: 1, maxLength: 128 }, path: { type: "string" } }, required: ["operation_id", "path"], additionalProperties: false },
+  annotations: { title: "Create local directory", readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+} as const;
+
+const EDIT_BLOCK_TOOL = {
+  name: "edit_block", title: "Replace text in local file",
+  description: "Replace exact text occurrences in a local UTF-8 file. expected_replacements defaults to 1; the file is unchanged if the count differs. Use a stable operation_id and query status after an uncertain response.",
+  inputSchema: { type: "object", properties: { operation_id: { type: "string", minLength: 1, maxLength: 128 }, file_path: { type: "string" }, old_string: { type: "string", minLength: 1, maxLength: 49152 }, new_string: { type: "string", maxLength: 49152 }, expected_replacements: { type: "integer", minimum: 1, maximum: 1000 } }, required: ["operation_id", "file_path", "old_string", "new_string"], additionalProperties: false },
+  annotations: { title: "Replace text in local file", readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+} as const;
+
+const MOVE_FILE_TOOL = {
+  name: "move_file", title: "Move or rename local file",
+  description: "Move or rename a local regular file on the same filesystem to a destination that does not already exist. Use a stable operation_id and query status after an uncertain response.",
+  inputSchema: { type: "object", properties: { operation_id: { type: "string", minLength: 1, maxLength: 128 }, source: { type: "string" }, destination: { type: "string" } }, required: ["operation_id", "source", "destination"], additionalProperties: false },
+  annotations: { title: "Move or rename local file", readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+} as const;
+
 const GET_OPERATION_STATUS_TOOL = {
   name: "get_operation_status",
   title: "Get operation status",
@@ -239,6 +266,9 @@ const LOCAL_TOOLS = [
   GET_MORE_SEARCH_RESULTS_TOOL,
   STOP_SEARCH_TOOL,
   WRITE_FILE_TOOL,
+  CREATE_DIRECTORY_TOOL,
+  EDIT_BLOCK_TOOL,
+  MOVE_FILE_TOOL,
   GET_OPERATION_STATUS_TOOL,
 ];
 
@@ -260,6 +290,12 @@ const SAFE_EVENTS = new Set([
   "search_stopped",
   "write_completed",
   "write_failed",
+  "directory_completed",
+  "directory_failed",
+  "edit_completed",
+  "edit_failed",
+  "move_completed",
+  "move_failed",
   "operation_conflict",
 ]);
 
@@ -353,7 +389,20 @@ type LocalCall =
   | { tool: "start_search"; arguments: LocalSearch }
   | { tool: "get_more_search_results" | "stop_search"; arguments: SearchSessionId }
   | { tool: "write_file"; arguments: LocalWriteFile }
+  | { tool: "create_directory"; arguments: LocalCreateDirectory }
+  | { tool: "edit_block"; arguments: LocalEditBlock }
+  | { tool: "move_file"; arguments: LocalMoveFile }
   | { tool: "get_operation_status"; arguments: OperationId };
+
+function mutationTool(call: LocalCall): boolean {
+  return call.tool === "write_file" || call.tool === "create_directory" || call.tool === "edit_block" || call.tool === "move_file";
+}
+
+function callOperationId(call: LocalCall): string | undefined {
+  if (call.tool === "get_operation_status") return call.arguments.operationId;
+  if (call.tool === "write_file" || call.tool === "create_directory" || call.tool === "edit_block" || call.tool === "move_file") return call.arguments.operationId;
+  return undefined;
+}
 
 function upstreamArguments(call: LocalCall): Record<string, unknown> {
   if (call.tool === "read_file") {
@@ -375,6 +424,9 @@ function upstreamArguments(call: LocalCall): Record<string, unknown> {
       mode: call.arguments.mode,
     };
   }
+  if (call.tool === "create_directory") return { path: call.arguments.path };
+  if (call.tool === "edit_block") return { file_path: call.arguments.filePath, old_string: call.arguments.oldString, new_string: call.arguments.newString, expected_replacements: call.arguments.expectedReplacements };
+  if (call.tool === "move_file") return { source: call.arguments.source, destination: call.arguments.destination };
   if (call.tool === "get_operation_status") return { operation_id: call.arguments.operationId };
   return { session_id: call.arguments.sessionId };
 }
@@ -414,6 +466,18 @@ function parseLocalCall(name: unknown, args: unknown): LocalCall | null {
   if (name === "write_file") {
     const write = parseLocalWriteFile(args);
     return write ? { tool: "write_file", arguments: write } : null;
+  }
+  if (name === "create_directory") {
+    const operation = parseLocalCreateDirectory(args);
+    return operation ? { tool: "create_directory", arguments: operation } : null;
+  }
+  if (name === "edit_block") {
+    const operation = parseLocalEditBlock(args);
+    return operation ? { tool: "edit_block", arguments: operation } : null;
+  }
+  if (name === "move_file") {
+    const operation = parseLocalMoveFile(args);
+    return operation ? { tool: "move_file", arguments: operation } : null;
   }
   if (name === "get_operation_status") {
     const operation = parseOperationId(args);
@@ -473,10 +537,8 @@ function publicReceipt(value: unknown): Record<string, unknown> | null {
 }
 
 async function callDevice(env: Env, call: LocalCall, id: unknown, signal: AbortSignal): Promise<Response> {
-  const operationId = call.tool === "write_file" || call.tool === "get_operation_status"
-    ? call.arguments.operationId
-    : undefined;
-  const isMutation = call.tool === "write_file";
+  const operationId = callOperationId(call);
+  const isMutation = mutationTool(call);
   const deviceToken = env.REMOTE_CONTROL_DEVICE_TOKEN;
   const binding = env.REMOTE_CONTROL_DEVICE;
   if (!deviceToken || !binding) {
@@ -568,9 +630,9 @@ async function callDevice(env: Env, call: LocalCall, id: unknown, signal: AbortS
   }
 
   const text = completedText(parsed);
-  if (call.tool === "write_file" && parsed !== null && typeof parsed === "object") {
+  if (isMutation && parsed !== null && typeof parsed === "object") {
     const operation = parsed as { operation_id?: unknown; status?: unknown; receipt?: unknown };
-    log(operation.status === "failed" ? "write_failed" : "write_completed");
+    log(operation.status === "failed" ? `${call.tool === "create_directory" ? "directory" : call.tool === "edit_block" ? "edit" : call.tool === "move_file" ? "move" : "write"}_failed` : `${call.tool === "create_directory" ? "directory" : call.tool === "edit_block" ? "edit" : call.tool === "move_file" ? "move" : "write"}_completed`);
     return toolText(id, JSON.stringify({ operation_id: operationId, status: operation.status, receipt: publicReceipt(operation.receipt) }));
   }
   if (call.tool === "get_operation_status") {
@@ -631,7 +693,7 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
       capabilities: { tools: { listChanged: false } },
       serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
       instructions:
-        "Read, search, and write local files. Writes require a stable operation ID; query the original ID after an uncertain response and use a new ID only for a new intent. Shell commands are not available.",
+        "Read, search, and change local files. Every mutation requires a stable operation ID; query the original ID after an uncertain response and use a new ID only for a new intent. Shell commands are not available.",
     });
   }
 
@@ -646,16 +708,16 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
       return toolError(rpcMessage.id, "The requested tool call was rejected.");
     }
     const call = params as { name?: unknown; arguments?: unknown };
-    if (call.name === "write_file") {
+    if (["write_file", "create_directory", "edit_block", "move_file"].includes(String(call.name))) {
       const candidate = call.arguments !== null && typeof call.arguments === "object"
         ? (call.arguments as Record<string, unknown>).operation_id
         : undefined;
       const validId = parseOperationId({ operation_id: candidate });
       if (!validId) {
         log("rejected");
-        return toolError(rpcMessage.id, "The write requires a valid operation_id.");
+        return toolError(rpcMessage.id, "The mutation requires a valid operation_id.");
       }
-      if (!parseLocalWriteFile(call.arguments)) {
+      if (!parseLocalCall(call.name, call.arguments)) {
         log("rejected");
         return toolError(rpcMessage.id, JSON.stringify({ operation_id: validId.operationId, status: "bad_request" }));
       }

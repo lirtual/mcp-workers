@@ -85,6 +85,10 @@ export interface OperationId {
   operationId: string;
 }
 
+export interface LocalCreateDirectory { operationId: string; path: string }
+export interface LocalEditBlock { operationId: string; filePath: string; oldString: string; newString: string; expectedReplacements: number }
+export interface LocalMoveFile { operationId: string; source: string; destination: string }
+
 const OPERATION_ID = /^(?!\.{1,2}$)[A-Za-z0-9._:-]{1,128}$/;
 const MAX_WRITE_CONTENT_BYTES = 49_152;
 
@@ -97,6 +101,36 @@ export function parseLocalWriteFile(input: unknown): LocalWriteFile | null {
   if (!filePath || typeof record.content !== "string" || new TextEncoder().encode(record.content).byteLength > MAX_WRITE_CONTENT_BYTES) return null;
   if (record.content.includes("\0") || (record.mode !== "rewrite" && record.mode !== "append")) return null;
   return { operationId: record.operation_id, path: filePath, content: record.content, mode: record.mode };
+}
+
+export function parseLocalCreateDirectory(input: unknown): LocalCreateDirectory | null {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) return null;
+  const record = input as Record<string, unknown>;
+  if (Object.keys(record).some((key) => !["operation_id", "path"].includes(key))) return null;
+  const filePath = parsePath(record.path);
+  if (typeof record.operation_id !== "string" || !OPERATION_ID.test(record.operation_id) || !filePath) return null;
+  return { operationId: record.operation_id, path: filePath };
+}
+
+export function parseLocalEditBlock(input: unknown): LocalEditBlock | null {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) return null;
+  const record = input as Record<string, unknown>;
+  if (Object.keys(record).some((key) => !["operation_id", "file_path", "old_string", "new_string", "expected_replacements"].includes(key))) return null;
+  const filePath = parsePath(record.file_path);
+  if (typeof record.operation_id !== "string" || !OPERATION_ID.test(record.operation_id) || !filePath || typeof record.old_string !== "string" || record.old_string.length === 0 || typeof record.new_string !== "string") return null;
+  if (record.old_string.includes("\0") || record.new_string.includes("\0") || new TextEncoder().encode(record.old_string).byteLength > MAX_WRITE_CONTENT_BYTES || new TextEncoder().encode(record.new_string).byteLength > MAX_WRITE_CONTENT_BYTES) return null;
+  const expected = record.expected_replacements === undefined ? 1 : record.expected_replacements;
+  if (typeof expected !== "number" || !Number.isSafeInteger(expected) || expected < 1 || expected > 1000) return null;
+  return { operationId: record.operation_id, filePath, oldString: record.old_string, newString: record.new_string, expectedReplacements: expected };
+}
+
+export function parseLocalMoveFile(input: unknown): LocalMoveFile | null {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) return null;
+  const record = input as Record<string, unknown>;
+  if (Object.keys(record).some((key) => !["operation_id", "source", "destination"].includes(key))) return null;
+  const source = parsePath(record.source); const destination = parsePath(record.destination);
+  if (typeof record.operation_id !== "string" || !OPERATION_ID.test(record.operation_id) || !source || !destination || source === destination) return null;
+  return { operationId: record.operation_id, source, destination };
 }
 
 export function parseOperationId(input: unknown): OperationId | null {

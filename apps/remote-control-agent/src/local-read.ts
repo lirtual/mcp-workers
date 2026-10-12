@@ -85,8 +85,41 @@ export interface OperationId {
   operationId: string;
 }
 
+export interface LocalCreateDirectory { path: string }
+export interface LocalEditBlock { filePath: string; oldString: string; newString: string; expectedReplacements: number }
+export interface LocalMoveFile { source: string; destination: string }
+
 const MAX_WRITE_CONTENT_BYTES = 49_152;
 const OPERATION_ID = /^(?!\.{1,2}$)[A-Za-z0-9._:-]{1,128}$/;
+
+export function parseLocalCreateDirectory(input: unknown): LocalCreateDirectory | null {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) return null;
+  const record = input as Record<string, unknown>;
+  if (Object.keys(record).some((key) => key !== "path")) return null;
+  const directory = parsePath(record.path);
+  return directory ? { path: directory } : null;
+}
+
+export function parseLocalEditBlock(input: unknown): LocalEditBlock | null {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) return null;
+  const record = input as Record<string, unknown>;
+  if (Object.keys(record).some((key) => !["file_path", "old_string", "new_string", "expected_replacements"].includes(key))) return null;
+  const filePath = parsePath(record.file_path);
+  if (!filePath || typeof record.old_string !== "string" || record.old_string.length === 0 || typeof record.new_string !== "string") return null;
+  if (record.old_string.includes("\0") || record.new_string.includes("\0") || Buffer.byteLength(record.old_string, "utf8") > MAX_WRITE_CONTENT_BYTES || Buffer.byteLength(record.new_string, "utf8") > MAX_WRITE_CONTENT_BYTES) return null;
+  const expected = record.expected_replacements === undefined ? 1 : record.expected_replacements;
+  if (typeof expected !== "number" || !Number.isSafeInteger(expected) || expected < 1 || expected > 1000) return null;
+  return { filePath, oldString: record.old_string, newString: record.new_string, expectedReplacements: expected };
+}
+
+export function parseLocalMoveFile(input: unknown): LocalMoveFile | null {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) return null;
+  const record = input as Record<string, unknown>;
+  if (Object.keys(record).some((key) => !["source", "destination"].includes(key))) return null;
+  const source = parsePath(record.source); const destination = parsePath(record.destination);
+  if (!source || !destination || source === destination) return null;
+  return { source, destination };
+}
 
 export function parseLocalWriteFile(input: unknown): LocalWriteFile | null {
   if (input === null || typeof input !== "object" || Array.isArray(input)) return null;

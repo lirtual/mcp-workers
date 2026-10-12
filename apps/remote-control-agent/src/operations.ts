@@ -7,7 +7,7 @@ export type OperationState = "admitted" | "running" | "completed" | "failed" | "
 
 export interface OperationReceipt {
   operation_id: string;
-  tool_name: "write_file";
+  tool_name: "write_file" | "create_directory" | "edit_block" | "move_file";
   argument_digest: string;
   state: OperationState;
   created_at: string;
@@ -105,20 +105,20 @@ export class ReceiptStore {
     try { await dir.sync(); } finally { await dir.close(); }
   }
 
-  async admit(operationId: string, digest: string): Promise<{ kind: "new" | "same" | "conflict" | "full"; receipt?: OperationReceipt }> {
+  async admit(operationId: string, toolName: OperationReceipt["tool_name"], digest: string): Promise<{ kind: "new" | "same" | "conflict" | "full"; receipt?: OperationReceipt }> {
     return this.serialize(async () => {
       const now = new Date().toISOString();
       const cutoff = Date.now() - RECEIPT_TTL_MS;
       this.data.receipts = this.data.receipts.filter((r) =>
         !(["completed", "failed", "unknown"].includes(r.state) && Date.parse(r.created_at) < cutoff));
       const existing = this.data.receipts.find((r) => r.operation_id === operationId);
-      if (existing) return { kind: existing.argument_digest === digest ? "same" : "conflict", receipt: { ...existing } };
+      if (existing) return { kind: existing.tool_name === toolName && existing.argument_digest === digest ? "same" : "conflict", receipt: { ...existing } };
       if (this.data.receipts.length >= MAX_RECEIPTS) {
         return { kind: "full" };
       }
       const receipt: OperationReceipt = {
         operation_id: operationId,
-        tool_name: "write_file",
+        tool_name: toolName,
         argument_digest: digest,
         state: "admitted",
         created_at: now,

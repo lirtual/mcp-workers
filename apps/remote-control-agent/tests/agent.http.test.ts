@@ -175,6 +175,77 @@ test("write_file persists an operation receipt that can be queried after restart
   }
 });
 
+test("directory creation, text edits, and moves share operation receipts without leaking arguments", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-t06-"));
+  const receiptDirectory = path.join(root, "receipts");
+  const fixture = path.join(root, "notes.txt");
+  await writeFile(fixture, "alpha beta alpha\n", "utf8");
+  const agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory });
+  const mutate = (tool: string, operationId: string, args: unknown) => call(agent, { tool, operation_id: operationId, arguments: args });
+  const status = async (id: string) => fetch(`${agent.baseUrl}/internal/operations/${id}`, { headers: { "x-device-credential": DEVICE_TOKEN } });
+  try {
+    const directory = path.join(root, "created");
+    const created = await mutate("create_directory", "mkdir-once", { path: directory });
+    assert.equal((created.json as { status: string }).status, "completed");
+    assert.equal((await status("mkdir-once")).status, 200);
+    const repeated = await mutate("create_directory", "mkdir-once", { path: directory });
+    assert.equal((repeated.json as { status: string }).status, "completed");
+    assert.equal((await status("mkdir-once")).status, 200);
+
+    const edited = await mutate("edit_block", "edit-once", {
+      file_path: fixture, old_string: "alpha", new_string: "omega", expected_replacements: 2,
+    });
+    assert.equal((edited.json as { status: string }).status, "completed");
+    assert.equal(await readFile(fixture, "utf8"), "omega beta omega\n");
+    const editReceipt = await (await status("edit-once")).text();
+    assert.equal(editReceipt.includes("omega"), false);
+    assert.equal(editReceipt.includes(fixture), false);
+
+    const mismatch = await mutate("edit_block", "edit-mismatch", {
+      file_path: fixture, old_string: "omega", new_string: "secret-replacement", expected_replacements: 1,
+    });
+    assert.equal((mismatch.json as { status: string }).status, "failed");
+    assert.equal(await readFile(fixture, "utf8"), "omega beta omega\n");
+    const missing = await mutate("edit_block", "edit-no-match", {
+      file_path: fixture, old_string: "absent", new_string: "replacement",
+    });
+    assert.equal((missing.json as { status: string }).status, "failed");
+    assert.equal(await readFile(fixture, "utf8"), "omega beta omega\n");
+
+    const occupiedDestination = path.join(root, "occupied.txt");
+    await writeFile(occupiedDestination, "keep this file", "utf8");
+    const rejectedMove = await mutate("move_file", "move-occupied", { source: fixture, destination: occupiedDestination });
+    assert.equal((rejectedMove.json as { status: string }).status, "failed");
+    assert.equal(await readFile(fixture, "utf8"), "omega beta omega\n");
+    assert.equal(await readFile(occupiedDestination, "utf8"), "keep this file");
+
+    const movedTo = path.join(root, "renamed.txt");
+    const moved = await mutate("move_file", "move-once", { source: fixture, destination: movedTo });
+    assert.equal((moved.json as { status: string }).status, "completed");
+    assert.equal(await readFile(movedTo, "utf8"), "omega beta omega\n");
+    assert.equal((await status("move-once")).status, 200);
+    const changedIdReuse = await mutate("move_file", "move-once", { source: movedTo, destination: fixture });
+    assert.equal(changedIdReuse.status, 409);
+    assert.equal(existsSync(fixture), false);
+
+    const permissions = path.join(root, "locked");
+    await mkdir(permissions);
+    await chmod(permissions, 0o500);
+    if (typeof process.getuid === "function" && process.getuid() !== 0) {
+      const denied = await mutate("create_directory", "mkdir-denied", { path: path.join(permissions, "denied") });
+      assert.equal((denied.json as { status: string }).status, "failed");
+      assert.equal(existsSync(path.join(permissions, "denied")), false);
+    }
+    const rawReceipts = await readFile(path.join(receiptDirectory, "operation-receipts.json"), "utf8");
+    assert.equal(rawReceipts.includes("secret-replacement"), false);
+    assert.equal(rawReceipts.includes(fixture), false);
+  } finally {
+    await agent.close();
+    await chmod(root, 0o700);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("write_file appends once for concurrent duplicate IDs and rejects changed parameters", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-write-idempotency-"));
   const receiptDirectory = path.join(root, "receipts");

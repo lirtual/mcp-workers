@@ -214,6 +214,9 @@ test("lists only the local read tool and rejects anything that could retarget th
       "get_more_search_results",
       "stop_search",
       "write_file",
+      "create_directory",
+      "edit_block",
+      "move_file",
       "get_operation_status",
     ],
   );
@@ -507,6 +510,69 @@ test("write_file and get_operation_status preserve a stable receipt across a los
   }
 });
 
+test("T06 mutation tools validate at the Worker and reach the native Agent receipts", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-worker-t06-"));
+  const receiptDirectory = path.join(root, "receipts");
+  const fixture = path.join(root, "before.txt");
+  await writeFile(fixture, "one two one\n", "utf8");
+  const calls: ObservedCall[] = [];
+  const originalFetch = globalThis.fetch;
+  let agent: RunningAgent | undefined;
+  try {
+    agent = await startAgent({ deviceToken, receiptDirectory });
+    const runningAgent = agent;
+    globalThis.fetch = (async () => { throw new Error("Worker must use the fixed device binding"); }) as typeof fetch;
+    const binding = recordingBinding(calls, async (input, init) => {
+      const url = input instanceof Request ? input.url : input instanceof URL ? input.href : String(input);
+      const forwarded = new URL(url);
+      return originalFetch(`${runningAgent.baseUrl}${forwarded.pathname}`, { method: init?.method, headers: init?.headers, body: init?.body });
+    });
+    const target = env({ REMOTE_CONTROL_DEVICE: binding });
+    const auth = { authorization: `Bearer ${portalToken}` };
+    const invoke = async (name: string, args: unknown, id: number) => postMcp(target, {
+      jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args },
+    }, auth);
+
+    const directory = path.join(root, "new-dir");
+    const created = await invoke("create_directory", { operation_id: "t06-mkdir", path: directory }, 1);
+    assert.equal((created.json as { result: { isError: boolean } }).result.isError, false);
+    const edited = await invoke("edit_block", {
+      operation_id: "t06-edit", file_path: fixture, old_string: "one", new_string: "three", expected_replacements: 2,
+    }, 2);
+    assert.equal((edited.json as { result: { isError: boolean } }).result.isError, false);
+    assert.equal(await readFile(fixture, "utf8"), "three two three\n");
+    const failed = await invoke("edit_block", {
+      operation_id: "t06-mismatch", file_path: fixture, old_string: "three", new_string: "four", expected_replacements: 1,
+    }, 3);
+    assert.equal((failed.json as { result: { isError: boolean } }).result.isError, false);
+    const failedText = (failed.json as { result: { content: Array<{ text: string }> } }).result.content[0]?.text ?? "";
+    assert.equal((JSON.parse(failedText) as { status: string }).status, "failed");
+    assert.equal(await readFile(fixture, "utf8"), "three two three\n");
+    const movedTo = path.join(root, "after.txt");
+    const moved = await invoke("move_file", { operation_id: "t06-move", source: fixture, destination: movedTo }, 4);
+    assert.equal((moved.json as { result: { isError: boolean } }).result.isError, false);
+    assert.equal(await readFile(movedTo, "utf8"), "three two three\n");
+    const status = await invoke("get_operation_status", { operation_id: "t06-edit" }, 5);
+    const statusText = (status.json as { result: { content: Array<{ text: string }> } }).result.content[0]?.text ?? "";
+    assert.equal((JSON.parse(statusText) as { tool_name: string; state: string }).tool_name, "edit_block");
+    assert.equal((JSON.parse(statusText) as { state: string }).state, "completed");
+
+    const beforeInvalid = calls.length;
+    const arbitraryOptions = await invoke("edit_block", {
+      operation_id: "t06-options", file_path: movedTo, old_string: "x", new_string: "y", options: { regex: true },
+    }, 6);
+    assert.equal((arbitraryOptions.json as { result: { isError: boolean } }).result.isError, true);
+    assert.equal(calls.length, beforeInvalid);
+    assert.equal(calls.filter((call) => call.method === "POST").every((call) => call.url === DEVICE_CALL_URL), true);
+    assert.equal(calls.every((call) => call.headers.get("authorization") === null), true);
+    assert.equal(calls.every((call) => call.headers.get("x-device-credential") === deviceToken), true);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await agent?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("lists a disposable directory through the worker and the native agent", async () => {
   const fixtureDir = await mkdtemp(path.join(os.tmpdir(), "remote-control-worker-list-"));
   await mkdir(path.join(fixtureDir, "child"));
@@ -589,12 +655,12 @@ test("lists and pages bounded filename and content searches through the worker a
     const tools = (list.json as { result: { tools: Array<Record<string, unknown>> } }).result.tools;
     assert.deepEqual(
       tools.map((tool) => tool.name),
-      ["read_file", "read_multiple_files", "list_directory", "get_file_info", "start_search", "get_more_search_results", "stop_search", "write_file", "get_operation_status"],
+      ["read_file", "read_multiple_files", "list_directory", "get_file_info", "start_search", "get_more_search_results", "stop_search", "write_file", "create_directory", "edit_block", "move_file", "get_operation_status"],
     );
-    for (const tool of tools.slice(4, 7).concat(tools.slice(8))) {
+    for (const tool of tools.slice(4, 7).concat(tools.slice(11))) {
       const annotations = tool.annotations as { readOnlyHint: boolean; destructiveHint: boolean };
-      assert.equal(annotations.readOnlyHint, tool.name !== "write_file");
-      assert.equal(annotations.destructiveHint, tool.name === "write_file");
+      assert.equal(annotations.readOnlyHint, !["write_file", "create_directory", "edit_block", "move_file"].includes(String(tool.name)));
+      assert.equal(annotations.destructiveHint, ["write_file", "create_directory", "edit_block", "move_file"].includes(String(tool.name)));
     }
     const writeTool = tools[7];
     assert.equal(JSON.stringify(writeTool?.description).includes("new ID"), true);

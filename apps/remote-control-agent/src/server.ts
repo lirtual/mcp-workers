@@ -1,5 +1,5 @@
 import { createHash, timingSafeEqual } from "node:crypto";
-import { appendFile, writeFile } from "node:fs/promises";
+import { appendFile, link, lstat, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import path from "node:path";
 import { listLocalDirectory, readLocalFileInfo, readMultipleLocalFiles, BrowseFailed } from "./browse.ts";
@@ -11,6 +11,9 @@ import {
   parseSearchSessionId,
   parseSearchStart,
   parseLocalWriteFile,
+  parseLocalCreateDirectory,
+  parseLocalEditBlock,
+  parseLocalMoveFile,
   parseOperationId,
 } from "./local-read.ts";
 import { operationDigest, ReceiptStore, type OperationReceipt } from "./operations.ts";
@@ -38,6 +41,12 @@ const SAFE_EVENTS = new Set([
   "status",
   "write_completed",
   "write_failed",
+  "directory_completed",
+  "directory_failed",
+  "edit_completed",
+  "edit_failed",
+  "move_completed",
+  "move_failed",
   "operation_conflict",
   "operation_admitted",
 ]);
@@ -236,21 +245,77 @@ export async function startAgent(options: StartAgentOptions): Promise<RunningAge
   const ensureReceipts = () => (receiptsReady ??= receipts.open());
   const inFlight = new Map<string, Promise<OperationReceipt | undefined>>();
 
-  async function performWrite(id: string, write: NonNullable<ReturnType<typeof parseLocalWriteFile>>): Promise<OperationReceipt | undefined> {
-    await receipts.update(id, "running", "Write is in progress.");
+  type MutationTool = "write_file" | "create_directory" | "edit_block" | "move_file";
+  type MutationArgs =
+    | NonNullable<ReturnType<typeof parseLocalWriteFile>>
+    | NonNullable<ReturnType<typeof parseLocalCreateDirectory>>
+    | NonNullable<ReturnType<typeof parseLocalEditBlock>>
+    | NonNullable<ReturnType<typeof parseLocalMoveFile>>;
+
+  async function performMutation(id: string, tool: MutationTool, args: MutationArgs): Promise<OperationReceipt | undefined> {
+    await receipts.update(id, "running", "Operation is in progress.");
     try {
-      if (write.mode === "append") await appendFile(write.path, write.content, "utf8");
-      else await writeFile(write.path, write.content, "utf8");
+      if (tool === "write_file") {
+        const write = args as NonNullable<ReturnType<typeof parseLocalWriteFile>>;
+        if (write.mode === "append") await appendFile(write.path, write.content, "utf8");
+        else await writeFile(write.path, write.content, "utf8");
+      } else if (tool === "create_directory") {
+        await mkdir((args as NonNullable<ReturnType<typeof parseLocalCreateDirectory>>).path);
+      } else if (tool === "edit_block") {
+        const edit = args as NonNullable<ReturnType<typeof parseLocalEditBlock>>;
+        const originalBytes = await readFile(edit.filePath);
+        const original = Buffer.from(originalBytes).toString("utf8");
+        if (!Buffer.from(original, "utf8").equals(originalBytes)) {
+          await receipts.update(id, "failed", "The file is not valid UTF-8 text.");
+          emit(log, "edit_failed");
+          return await receipts.get(id) ?? undefined;
+        }
+        let count = 0;
+        for (let offset = 0; (offset = original.indexOf(edit.oldString, offset)) !== -1; offset += edit.oldString.length) count += 1;
+        if (count !== edit.expectedReplacements) {
+          await receipts.update(id, "failed", "Expected text replacement count did not match.");
+          emit(log, "edit_failed");
+          return await receipts.get(id) ?? undefined;
+        }
+        await writeFile(edit.filePath, original.split(edit.oldString).join(edit.newString), "utf8");
+      } else {
+        const move = args as NonNullable<ReturnType<typeof parseLocalMoveFile>>;
+        const source = path.resolve(move.source);
+        const destination = path.resolve(move.destination);
+        if (source === destination) {
+          await receipts.update(id, "failed", "Source and destination must differ.");
+          emit(log, "move_failed");
+          return await receipts.get(id) ?? undefined;
+        }
+        const sourceInfo = await lstat(source);
+        if (!sourceInfo.isFile()) {
+          await receipts.update(id, "failed", "The source is not a regular file.");
+          emit(log, "move_failed");
+          return await receipts.get(id) ?? undefined;
+        }
+        await link(source, destination);
+        try {
+          await unlink(source);
+        } catch {
+          try {
+            await unlink(destination);
+          } catch {
+            return await receipts.update(id, "unknown", "Move outcome cannot be established.");
+          }
+          emit(log, "move_failed");
+          return await receipts.update(id, "failed", "Move did not complete.");
+        }
+      }
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
-      const knownNoEffect = code === "EACCES" || code === "EPERM" || code === "ENOENT" || code === "EISDIR";
-      emit(log, "write_failed");
+      const knownNoEffect = ["EACCES", "EPERM", "ENOENT", "EISDIR", "ENOTDIR", "EEXIST", "EINVAL", "EXDEV", "EOPNOTSUPP", "ENOTSUP"].includes(code ?? "");
+      emit(log, tool === "write_file" ? "write_failed" : tool === "create_directory" ? "directory_failed" : tool === "edit_block" ? "edit_failed" : "move_failed");
       try {
-        return await receipts.update(id, knownNoEffect ? "failed" : "unknown", "Write did not complete.");
+        return await receipts.update(id, knownNoEffect ? "failed" : "unknown", "Operation did not complete.");
       } catch { return undefined; }
     }
-    emit(log, "write_completed");
-    try { return await receipts.update(id, "completed", "File updated."); }
+    emit(log, tool === "write_file" ? "write_completed" : tool === "create_directory" ? "directory_completed" : tool === "edit_block" ? "edit_completed" : "move_completed");
+    try { return await receipts.update(id, "completed", "Operation completed."); }
     catch { return undefined; }
   }
 
@@ -360,25 +425,34 @@ export async function startAgent(options: StartAgentOptions): Promise<RunningAge
       }
 
       const body = parsed as { tool?: unknown; arguments?: unknown; operation_id?: unknown };
-      if (body.tool === "write_file") {
+      if (body.tool === "write_file" || body.tool === "create_directory" || body.tool === "edit_block" || body.tool === "move_file") {
         const id = typeof body.operation_id === "string" ? body.operation_id : null;
         if (!id || !parseOperationId({ operation_id: id })) {
           emit(log, "rejected");
           sendJson(response, 400, { error: "bad_request", message: "A valid operation id is required." });
           return;
         }
-        const write = parseLocalWriteFile(body.arguments);
-        if (!write) {
+        const mutation = body.tool === "write_file" ? parseLocalWriteFile(body.arguments)
+          : body.tool === "create_directory" ? parseLocalCreateDirectory(body.arguments)
+            : body.tool === "edit_block" ? parseLocalEditBlock(body.arguments)
+              : parseLocalMoveFile(body.arguments);
+        if (!mutation) {
           emit(log, "rejected");
-          sendJson(response, 400, { operation_id: id, error: "bad_request", message: "The write request was rejected." });
+          sendJson(response, 400, { operation_id: id, error: "bad_request", message: "The operation request was rejected." });
           return;
         }
-        const normalized = { path: path.resolve(write.path), content: write.content, mode: write.mode };
-        const digest = operationDigest("write_file", normalized);
+        const normalized = body.tool === "write_file"
+          ? { ...(mutation as NonNullable<ReturnType<typeof parseLocalWriteFile>>), path: path.resolve((mutation as NonNullable<ReturnType<typeof parseLocalWriteFile>>).path) }
+          : body.tool === "create_directory"
+            ? { path: path.resolve((mutation as NonNullable<ReturnType<typeof parseLocalCreateDirectory>>).path) }
+            : body.tool === "edit_block"
+              ? { ...(mutation as NonNullable<ReturnType<typeof parseLocalEditBlock>>), filePath: path.resolve((mutation as NonNullable<ReturnType<typeof parseLocalEditBlock>>).filePath) }
+              : { source: path.resolve((mutation as NonNullable<ReturnType<typeof parseLocalMoveFile>>).source), destination: path.resolve((mutation as NonNullable<ReturnType<typeof parseLocalMoveFile>>).destination) };
+        const digest = operationDigest(body.tool, normalized);
         let admitted: Awaited<ReturnType<typeof receipts.admit>>;
         try {
           await ensureReceipts();
-          admitted = await receipts.admit(id, digest);
+          admitted = await receipts.admit(id, body.tool, digest);
         } catch {
           sendJson(response, 503, { operation_id: id, status: "unavailable", error: "unavailable", message: "The operation could not be admitted." });
           return;
@@ -395,7 +469,7 @@ export async function startAgent(options: StartAgentOptions): Promise<RunningAge
         let pending = inFlight.get(id);
         if (admitted.kind === "new") {
           emit(log, "operation_admitted");
-          pending = performWrite(id, normalized);
+          pending = performMutation(id, body.tool, normalized);
           inFlight.set(id, pending);
           void pending.then(() => inFlight.delete(id), () => inFlight.delete(id));
         }
@@ -418,11 +492,11 @@ export async function startAgent(options: StartAgentOptions): Promise<RunningAge
         if (requestAbort.signal.aborted) return;
         const state = receipt?.state ?? "unknown";
         if (state === "failed") {
-          sendJson(response, 200, { operation_id: id, status: "failed", error: { code: "bad_request", message: "The file write failed." }, receipt });
+          sendJson(response, 200, { operation_id: id, status: "failed", error: { code: "bad_request", message: "The operation failed." }, receipt });
         } else if (state === "unknown") {
-          sendJson(response, 200, { operation_id: id, status: "unknown", error: { code: "timeout_unknown", message: "The write outcome is unknown." }, receipt });
+          sendJson(response, 200, { operation_id: id, status: "unknown", error: { code: "timeout_unknown", message: "The operation outcome is unknown." }, receipt });
         } else {
-          sendJson(response, 200, { operation_id: id, status: state, result: { content: [{ type: "text", text: "File updated." }] }, receipt });
+          sendJson(response, 200, { operation_id: id, status: state, result: { content: [{ type: "text", text: "Operation completed." }] }, receipt });
         }
         return;
       }
