@@ -18,7 +18,7 @@ The original Remote Desktop MCP VPC-only research document used WSL2 as its firs
 - Positive: a single Linux execution model can serve workstations, servers, and WSL2 without maintaining a WSL-only core.
 - Positive: avoids misleading remote-desktop/GUI branding when the product's initial control surface is being defined.
 - Cost: Linux distribution/service-manager differences and the WSL2 network namespace need integration tests or deployment instructions.
-- Excluded from this ADR: deciding whether the first release supports host-wide Shell, Windows-native commands, GUI input, containers, direct OAuth, or a particular tunnel endpoint. These are unresolved frontier decisions, not implied approvals.
+- This ADR does not decide the v1 tool scope, authentication or transport. Those **later** decisions are now recorded separately in [ADR-0002](./0002-v1-workspace-control-scope.md), [ADR-0003](./0003-independent-oauth-for-direct-mcp-clients.md), and [ADR-0004](./0004-vpc-only-private-device-transport.md). Container isolation, unattended approvals and failure recovery remain unresolved.
 - This ADR **does not authorize implementation, host-control privileges, deployment, or changes to existing production Workers**.
 
 ## Rejected option
