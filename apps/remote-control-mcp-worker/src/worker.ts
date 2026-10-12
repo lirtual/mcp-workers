@@ -6,11 +6,15 @@ import {
   parseReadMultiple,
   parseSearchSessionId,
   parseSearchStart,
+  parseLocalWriteFile,
+  parseOperationId,
   type LocalFileInfo,
   type LocalListDirectory,
   type LocalRead,
   type LocalReadMultiple,
   type LocalSearch,
+  type LocalWriteFile,
+  type OperationId,
   type SearchSessionId,
 } from "./local-read.ts";
 
@@ -19,6 +23,7 @@ export const DEVICE_CALL_URL = "http://remote-control-device.invalid/internal/ca
 
 const MAX_MCP_BODY_BYTES = 65_536;
 const MAX_DEVICE_BODY_BYTES = 512_000;
+const MAX_DEVICE_REQUEST_BYTES = 65_536;
 const SERVER_NAME = "remote-control-mcp-worker";
 const SERVER_VERSION = "0.0.0";
 const PROTOCOL_VERSION = "2025-11-25";
@@ -193,6 +198,38 @@ const STOP_SEARCH_TOOL = {
   },
 } as const;
 
+const WRITE_FILE_TOOL = {
+  name: "write_file",
+  title: "Write local file",
+  description:
+    "Rewrite or append a local file. Supply a stable operation_id and reuse it only for the same intent after a lost response; use a new ID for a new intent. Query get_operation_status with the same ID before considering a retry.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      operation_id: { type: "string", minLength: 1, maxLength: 128, description: "Stable ID for this exact write intent." },
+      path: { type: "string" },
+      content: { type: "string", maxLength: 49152, description: "UTF-8 text up to the bounded internal request size." },
+      mode: { type: "string", enum: ["rewrite", "append"] },
+    },
+    required: ["operation_id", "path", "content", "mode"],
+    additionalProperties: false,
+  },
+  annotations: { title: "Write local file", readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+} as const;
+
+const GET_OPERATION_STATUS_TOOL = {
+  name: "get_operation_status",
+  title: "Get operation status",
+  description: "Query a previously submitted operation by its stable operation_id. This only reads the local receipt and never dispatches work.",
+  inputSchema: {
+    type: "object",
+    properties: { operation_id: { type: "string", minLength: 1, maxLength: 128 } },
+    required: ["operation_id"],
+    additionalProperties: false,
+  },
+  annotations: { title: "Get operation status", readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+} as const;
+
 const LOCAL_TOOLS = [
   READ_FILE_TOOL,
   READ_MULTIPLE_TOOL,
@@ -201,6 +238,8 @@ const LOCAL_TOOLS = [
   START_SEARCH_TOOL,
   GET_MORE_SEARCH_RESULTS_TOOL,
   STOP_SEARCH_TOOL,
+  WRITE_FILE_TOOL,
+  GET_OPERATION_STATUS_TOOL,
 ];
 
 const SAFE_EVENTS = new Set([
@@ -219,6 +258,9 @@ const SAFE_EVENTS = new Set([
   "search_completed",
   "search_failed",
   "search_stopped",
+  "write_completed",
+  "write_failed",
+  "operation_conflict",
 ]);
 
 function log(event: string): void {
@@ -309,7 +351,9 @@ type LocalCall =
   | { tool: "list_directory"; arguments: LocalListDirectory }
   | { tool: "get_file_info"; arguments: LocalFileInfo }
   | { tool: "start_search"; arguments: LocalSearch }
-  | { tool: "get_more_search_results" | "stop_search"; arguments: SearchSessionId };
+  | { tool: "get_more_search_results" | "stop_search"; arguments: SearchSessionId }
+  | { tool: "write_file"; arguments: LocalWriteFile }
+  | { tool: "get_operation_status"; arguments: OperationId };
 
 function upstreamArguments(call: LocalCall): Record<string, unknown> {
   if (call.tool === "read_file") {
@@ -324,7 +368,22 @@ function upstreamArguments(call: LocalCall): Record<string, unknown> {
   if (call.tool === "start_search") {
     return { path: call.arguments.path, pattern: call.arguments.pattern, search_type: call.arguments.searchType };
   }
+  if (call.tool === "write_file") {
+    return {
+      path: call.arguments.path,
+      content: call.arguments.content,
+      mode: call.arguments.mode,
+    };
+  }
+  if (call.tool === "get_operation_status") return { operation_id: call.arguments.operationId };
   return { session_id: call.arguments.sessionId };
+}
+
+function deviceUrl(call: LocalCall): string {
+  if (call.tool === "get_operation_status") {
+    return `http://remote-control-device.invalid/internal/operations/${encodeURIComponent(call.arguments.operationId)}`;
+  }
+  return DEVICE_CALL_URL;
 }
 
 function parseLocalCall(name: unknown, args: unknown): LocalCall | null {
@@ -351,6 +410,14 @@ function parseLocalCall(name: unknown, args: unknown): LocalCall | null {
   if (name === "get_more_search_results" || name === "stop_search") {
     const session = parseSearchSessionId(args);
     return session ? { tool: name, arguments: session } : null;
+  }
+  if (name === "write_file") {
+    const write = parseLocalWriteFile(args);
+    return write ? { tool: "write_file", arguments: write } : null;
+  }
+  if (name === "get_operation_status") {
+    const operation = parseOperationId(args);
+    return operation ? { tool: "get_operation_status", arguments: operation } : null;
   }
   return null;
 }
@@ -396,40 +463,92 @@ function completedText(body: unknown): string | null {
   return parts.join("");
 }
 
+function publicReceipt(value: unknown): Record<string, unknown> | null {
+  if (value === null || typeof value !== "object") return null;
+  const receipt = value as Record<string, unknown>;
+  const allowed = ["operation_id", "tool_name", "state", "created_at", "updated_at", "safe_result_summary"];
+  const projection: Record<string, unknown> = {};
+  for (const key of allowed) if (receipt[key] !== undefined) projection[key] = receipt[key];
+  return projection.operation_id && projection.state ? projection : null;
+}
+
 async function callDevice(env: Env, call: LocalCall, id: unknown, signal: AbortSignal): Promise<Response> {
+  const operationId = call.tool === "write_file" || call.tool === "get_operation_status"
+    ? call.arguments.operationId
+    : undefined;
+  const isMutation = call.tool === "write_file";
   const deviceToken = env.REMOTE_CONTROL_DEVICE_TOKEN;
   const binding = env.REMOTE_CONTROL_DEVICE;
   if (!deviceToken || !binding) {
     log("device_not_configured");
-    return toolError(id, "The remote device is unavailable.");
+    return operationId
+      ? toolText(id, JSON.stringify({ operation_id: operationId, status: "unavailable" }))
+      : toolError(id, "The remote device is unavailable.");
   }
 
   let response: Response;
+  const requestBody = call.tool === "get_operation_status"
+    ? undefined
+    : JSON.stringify({
+        tool: call.tool,
+        ...(operationId ? { operation_id: operationId } : {}),
+        arguments: upstreamArguments(call),
+      });
+  if (requestBody !== undefined && new TextEncoder().encode(requestBody).byteLength > MAX_DEVICE_REQUEST_BYTES) {
+    return operationId
+      ? toolError(id, JSON.stringify({ operation_id: operationId, status: "bad_request" }))
+      : toolError(id, "The requested tool call was rejected.");
+  }
   try {
-    response = await binding.fetch(DEVICE_CALL_URL, {
-      method: "POST",
+    response = await binding.fetch(deviceUrl(call), {
+      method: call.tool === "get_operation_status" ? "GET" : "POST",
       signal,
       headers: {
         "content-type": "application/json",
         "x-device-credential": deviceToken,
       },
-      body: JSON.stringify({
-        tool: call.tool,
-        arguments: upstreamArguments(call),
-      }),
+      ...(requestBody === undefined ? {} : { body: requestBody }),
     });
   } catch {
     log("device_unavailable");
-    return toolError(id, "The remote device is unavailable.");
+    return operationId
+      ? toolText(id, JSON.stringify({ operation_id: operationId, status: isMutation ? "timeout_unknown" : "unavailable" }))
+      : toolError(id, "The remote device is unavailable.");
   }
 
   const raw = await readResponseText(response);
   if (raw === null) {
     log("device_unavailable");
-    return toolError(id, "The remote device is unavailable.");
+    return operationId
+      ? toolText(id, JSON.stringify({ operation_id: operationId, status: isMutation ? "timeout_unknown" : "unavailable" }))
+      : toolError(id, "The remote device is unavailable.");
   }
 
   if (!response.ok) {
+    if (isMutation && operationId && response.status === 409) {
+      log("operation_conflict");
+      return toolError(id, JSON.stringify({ operation_id: operationId, status: "conflict" }));
+    }
+    if (call.tool === "get_operation_status" && response.status === 404) {
+      return toolText(id, JSON.stringify({ operation_id: call.arguments.operationId, status: "not_found" }));
+    }
+    if (operationId && response.status === 503) {
+      let knownUnavailable = false;
+      try {
+        const failed = JSON.parse(raw) as { status?: unknown };
+        knownUnavailable = failed.status === "unavailable";
+      } catch { /* An unreadable submitted-write response has an unknown outcome. */ }
+      return toolText(id, JSON.stringify({
+        operation_id: operationId,
+        status: knownUnavailable || !isMutation ? "unavailable" : "timeout_unknown",
+      }));
+    }
+    if (operationId) {
+      const status = response.status === 400 ? "bad_request" : "unavailable";
+      return isMutation
+        ? toolError(id, JSON.stringify({ operation_id: operationId, status }))
+        : toolText(id, JSON.stringify({ operation_id: operationId, status }));
+    }
     log(response.status === 400 ? "rejected" : "device_unavailable");
     const message =
       response.status === 400
@@ -443,10 +562,21 @@ async function callDevice(env: Env, call: LocalCall, id: unknown, signal: AbortS
     parsed = JSON.parse(raw) as unknown;
   } catch {
     log("device_unavailable");
-    return toolError(id, "The remote device is unavailable.");
+    return operationId
+      ? toolText(id, JSON.stringify({ operation_id: operationId, status: "timeout_unknown" }))
+      : toolError(id, "The remote device is unavailable.");
   }
 
   const text = completedText(parsed);
+  if (call.tool === "write_file" && parsed !== null && typeof parsed === "object") {
+    const operation = parsed as { operation_id?: unknown; status?: unknown; receipt?: unknown };
+    log(operation.status === "failed" ? "write_failed" : "write_completed");
+    return toolText(id, JSON.stringify({ operation_id: operationId, status: operation.status, receipt: publicReceipt(operation.receipt) }));
+  }
+  if (call.tool === "get_operation_status") {
+    const record = parsed as Record<string, unknown>;
+    return toolText(id, JSON.stringify(publicReceipt(record)));
+  }
   if (text !== null) {
     log(successEvent(call.tool));
     return toolText(id, text);
@@ -501,7 +631,7 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
       capabilities: { tools: { listChanged: false } },
       serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
       instructions:
-        "Read local files, list directories, inspect file metadata, and search file names or contents. URL reads, shell commands, and file modifications are not available.",
+        "Read, search, and write local files. Writes require a stable operation ID; query the original ID after an uncertain response and use a new ID only for a new intent. Shell commands are not available.",
     });
   }
 
@@ -516,6 +646,20 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
       return toolError(rpcMessage.id, "The requested tool call was rejected.");
     }
     const call = params as { name?: unknown; arguments?: unknown };
+    if (call.name === "write_file") {
+      const candidate = call.arguments !== null && typeof call.arguments === "object"
+        ? (call.arguments as Record<string, unknown>).operation_id
+        : undefined;
+      const validId = parseOperationId({ operation_id: candidate });
+      if (!validId) {
+        log("rejected");
+        return toolError(rpcMessage.id, "The write requires a valid operation_id.");
+      }
+      if (!parseLocalWriteFile(call.arguments)) {
+        log("rejected");
+        return toolError(rpcMessage.id, JSON.stringify({ operation_id: validId.operationId, status: "bad_request" }));
+      }
+    }
     const localCall = parseLocalCall(call.name, call.arguments);
     if (!localCall) {
       log("rejected");
