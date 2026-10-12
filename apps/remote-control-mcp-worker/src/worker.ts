@@ -1,5 +1,14 @@
 import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
-import { parseLocalRead, type LocalRead } from "./local-read.ts";
+import {
+  parseFileInfo,
+  parseListDirectory,
+  parseLocalRead,
+  parseReadMultiple,
+  type LocalFileInfo,
+  type LocalListDirectory,
+  type LocalRead,
+  type LocalReadMultiple,
+} from "./local-read.ts";
 
 /** Fixed VPC Service target. Tool arguments cannot change this URL. */
 export const DEVICE_CALL_URL = "http://remote-control-device.invalid/internal/call";
@@ -52,6 +61,77 @@ const READ_FILE_TOOL = {
   },
 } as const;
 
+const READ_MULTIPLE_TOOL = {
+  name: "read_multiple_files",
+  title: "Read local files",
+  description:
+    "Read up to 8 local files. Combined output is capped. URL fetches, shell commands, and file modifications are not available.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      paths: {
+        type: "array",
+        minItems: 1,
+        maxItems: 8,
+        items: { type: "string" },
+        description: "Local filesystem paths. URL schemes are rejected.",
+      },
+    },
+    required: ["paths"],
+    additionalProperties: false,
+  },
+  annotations: {
+    title: "Read local files",
+    readOnlyHint: true,
+    destructiveHint: false,
+    openWorldHint: false,
+  },
+} as const;
+
+const LIST_DIRECTORY_TOOL = {
+  name: "list_directory",
+  title: "List local directory",
+  description:
+    "List a local directory. Depth 1 returns immediate entries. Depth may be at most 3. Symbolic links are not followed. Output is capped.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      path: { type: "string", description: "Local directory path. URL schemes are rejected." },
+      depth: { type: "integer", minimum: 1, maximum: 3, description: "Optional directory depth, from 1 to 3." },
+    },
+    required: ["path"],
+    additionalProperties: false,
+  },
+  annotations: {
+    title: "List local directory",
+    readOnlyHint: true,
+    destructiveHint: false,
+    openWorldHint: false,
+  },
+} as const;
+
+const FILE_INFO_TOOL = {
+  name: "get_file_info",
+  title: "Read local file info",
+  description: "Return type, size, mode, and modification time for a local path. File contents are not returned.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      path: { type: "string", description: "Local filesystem path. URL schemes are rejected." },
+    },
+    required: ["path"],
+    additionalProperties: false,
+  },
+  annotations: {
+    title: "Read local file info",
+    readOnlyHint: true,
+    destructiveHint: false,
+    openWorldHint: false,
+  },
+} as const;
+
+const LOCAL_TOOLS = [READ_FILE_TOOL, READ_MULTIPLE_TOOL, LIST_DIRECTORY_TOOL, FILE_INFO_TOOL];
+
 const SAFE_EVENTS = new Set([
   "portal_auth_not_configured",
   "invalid_origin",
@@ -61,6 +141,10 @@ const SAFE_EVENTS = new Set([
   "device_unavailable",
   "read_completed",
   "read_failed",
+  "list_completed",
+  "list_failed",
+  "info_completed",
+  "info_failed",
 ]);
 
 function log(event: string): void {
@@ -145,11 +229,60 @@ async function readResponseText(response: Response): Promise<string | null> {
   return readBounded(response, MAX_DEVICE_BODY_BYTES);
 }
 
-function upstreamArguments(read: LocalRead): Record<string, string | number> {
-  const args: Record<string, string | number> = { path: read.path };
-  if (read.offset !== undefined) args.offset = read.offset;
-  if (read.length !== undefined) args.length = read.length;
-  return args;
+type LocalCall =
+  | { tool: "read_file"; arguments: LocalRead }
+  | { tool: "read_multiple_files"; arguments: LocalReadMultiple }
+  | { tool: "list_directory"; arguments: LocalListDirectory }
+  | { tool: "get_file_info"; arguments: LocalFileInfo };
+
+function upstreamArguments(call: LocalCall): Record<string, unknown> {
+  if (call.tool === "read_file") {
+    const args: Record<string, string | number> = { path: call.arguments.path };
+    if (call.arguments.offset !== undefined) args.offset = call.arguments.offset;
+    if (call.arguments.length !== undefined) args.length = call.arguments.length;
+    return args;
+  }
+  if (call.tool === "read_multiple_files") return { paths: call.arguments.paths };
+  if (call.tool === "list_directory") return { path: call.arguments.path, depth: call.arguments.depth };
+  return { path: call.arguments.path };
+}
+
+function parseLocalCall(name: unknown, args: unknown): LocalCall | null {
+  if (name === "read_file") {
+    const read = parseLocalRead(args);
+    return read ? { tool: "read_file", arguments: read } : null;
+  }
+  if (name === "read_multiple_files") {
+    const read = parseReadMultiple(args);
+    return read ? { tool: "read_multiple_files", arguments: read } : null;
+  }
+  if (name === "list_directory") {
+    const list = parseListDirectory(args);
+    return list ? { tool: "list_directory", arguments: list } : null;
+  }
+  if (name === "get_file_info") {
+    const info = parseFileInfo(args);
+    return info ? { tool: "get_file_info", arguments: info } : null;
+  }
+  return null;
+}
+
+function failureMessage(tool: LocalCall["tool"]): string {
+  if (tool === "list_directory") return "The directory list failed.";
+  if (tool === "get_file_info") return "The file info request failed.";
+  return "The file read failed.";
+}
+
+function successEvent(tool: LocalCall["tool"]): string {
+  if (tool === "list_directory") return "list_completed";
+  if (tool === "get_file_info") return "info_completed";
+  return "read_completed";
+}
+
+function failureEvent(tool: LocalCall["tool"]): string {
+  if (tool === "list_directory") return "list_failed";
+  if (tool === "get_file_info") return "info_failed";
+  return "read_failed";
 }
 
 function completedText(body: unknown): string | null {
@@ -170,7 +303,7 @@ function completedText(body: unknown): string | null {
   return parts.join("");
 }
 
-async function callDevice(env: Env, read: LocalRead, id: unknown): Promise<Response> {
+async function callDevice(env: Env, call: LocalCall, id: unknown): Promise<Response> {
   const deviceToken = env.REMOTE_CONTROL_DEVICE_TOKEN;
   const binding = env.REMOTE_CONTROL_DEVICE;
   if (!deviceToken || !binding) {
@@ -187,8 +320,8 @@ async function callDevice(env: Env, read: LocalRead, id: unknown): Promise<Respo
         "x-device-credential": deviceToken,
       },
       body: JSON.stringify({
-        tool: "read_file",
-        arguments: upstreamArguments(read),
+        tool: call.tool,
+        arguments: upstreamArguments(call),
       }),
     });
   } catch {
@@ -221,7 +354,7 @@ async function callDevice(env: Env, read: LocalRead, id: unknown): Promise<Respo
 
   const text = completedText(parsed);
   if (text !== null) {
-    log("read_completed");
+    log(successEvent(call.tool));
     return toolText(id, text);
   }
 
@@ -230,8 +363,8 @@ async function callDevice(env: Env, read: LocalRead, id: unknown): Promise<Respo
       ? (parsed as { status?: unknown }).status
       : undefined;
   if (status === "failed") {
-    log("read_failed");
-    return toolError(id, "The file read failed.");
+    log(failureEvent(call.tool));
+    return toolError(id, failureMessage(call.tool));
   }
 
   log("device_unavailable");
@@ -274,12 +407,12 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
       capabilities: { tools: { listChanged: false } },
       serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
       instructions:
-        "Read one local file with read_file. URL reads, shell commands, and file modifications are not available.",
+        "Read local files, list directories, and inspect file metadata. URL reads, shell commands, and file modifications are not available.",
     });
   }
 
   if (rpcMessage.method === "tools/list") {
-    return rpc(rpcMessage.id, { tools: [READ_FILE_TOOL] });
+    return rpc(rpcMessage.id, { tools: LOCAL_TOOLS });
   }
 
   if (rpcMessage.method === "tools/call") {
@@ -289,16 +422,12 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
       return toolError(rpcMessage.id, "The requested tool call was rejected.");
     }
     const call = params as { name?: unknown; arguments?: unknown };
-    if (call.name !== "read_file") {
+    const localCall = parseLocalCall(call.name, call.arguments);
+    if (!localCall) {
       log("rejected");
       return toolError(rpcMessage.id, "The requested tool call was rejected.");
     }
-    const read = parseLocalRead(call.arguments);
-    if (!read) {
-      log("rejected");
-      return toolError(rpcMessage.id, "The requested tool call was rejected.");
-    }
-    return callDevice(env, read, rpcMessage.id);
+    return callDevice(env, localCall, rpcMessage.id);
   }
 
   return rpcError(rpcMessage.id, -32601, "Method not found.");

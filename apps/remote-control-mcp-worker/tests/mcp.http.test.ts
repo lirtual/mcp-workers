@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -162,8 +162,10 @@ test("lists only the local read tool and rejects anything that could retarget th
   );
   assert.equal(listed.status, 200);
   const tools = (listed.json as { result: { tools: Array<Record<string, unknown>> } }).result.tools;
-  assert.equal(tools.length, 1);
-  assert.equal(tools[0]?.name, "read_file");
+  assert.deepEqual(
+    tools.map((tool) => tool.name),
+    ["read_file", "read_multiple_files", "list_directory", "get_file_info"],
+  );
   const annotations = tools[0]?.annotations as {
     readOnlyHint: boolean;
     destructiveHint: boolean;
@@ -355,6 +357,56 @@ test("reads a fixed fixture through the worker and the native agent", async () =
     assert.equal(agentEvents.join("\n").includes(FIXTURE_TEXT), false);
     assert.equal(agentEvents.join("\n").includes(fixturePath), false);
     assert.equal(existsSync(vendorHistory), vendorHistoryBefore);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await agent?.close();
+    await rm(fixtureDir, { recursive: true, force: true });
+  }
+});
+
+test("lists a disposable directory through the worker and the native agent", async () => {
+  const fixtureDir = await mkdtemp(path.join(os.tmpdir(), "remote-control-worker-list-"));
+  await mkdir(path.join(fixtureDir, "child"));
+  await writeFile(path.join(fixtureDir, "child", "note.txt"), "LIST_SENTINEL_remote_control_t03\n", "utf8");
+  const calls: ObservedCall[] = [];
+  const originalFetch = globalThis.fetch;
+  let agent: RunningAgent | undefined;
+
+  try {
+    agent = await startAgent({ deviceToken });
+    const runningAgent = agent;
+    globalThis.fetch = (async () => {
+      throw new Error("worker must not call global fetch");
+    }) as typeof fetch;
+    const binding = recordingBinding(calls, async (input, init) => {
+      const url = input instanceof Request ? input.url : input instanceof URL ? input.href : String(input);
+      const forwarded = new URL(url);
+      return originalFetch(`${runningAgent.baseUrl}${forwarded.pathname}`, {
+        method: init?.method,
+        headers: init?.headers,
+        body: init?.body,
+      });
+    });
+    const result = await postMcp(
+      env({ REMOTE_CONTROL_DEVICE: binding }),
+      {
+        jsonrpc: "2.0",
+        id: 8,
+        method: "tools/call",
+        params: { name: "list_directory", arguments: { path: fixtureDir, depth: 2 } },
+      },
+      { authorization: `Bearer ${portalToken}` },
+    );
+    assert.equal(result.status, 200);
+    const payload = result.json as { result: { isError: boolean; content: Array<{ text: string }> } };
+    assert.equal(payload.result.isError, false);
+    assert.equal(payload.result.content[0]?.text.includes("file child/note.txt"), true);
+    assert.equal(payload.result.content[0]?.text.includes("LIST_SENTINEL_remote_control_t03"), false);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]?.url, DEVICE_CALL_URL);
+    assert.equal(calls[0]?.body.includes("\"tool\":\"list_directory\""), true);
+    assert.equal(calls[0]?.headers.get("authorization"), null);
+    assert.equal(calls[0]?.headers.get("x-device-credential"), deviceToken);
   } finally {
     globalThis.fetch = originalFetch;
     await agent?.close();

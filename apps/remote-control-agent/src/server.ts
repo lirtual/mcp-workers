@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { parseLocalRead } from "./local-read.ts";
+import { listLocalDirectory, readLocalFileInfo, readMultipleLocalFiles, BrowseFailed } from "./browse.ts";
+import { parseFileInfo, parseListDirectory, parseLocalRead, parseReadMultiple } from "./local-read.ts";
 import { readLocalFile, ReadFailed } from "./read-file.ts";
 
 const MAX_BODY_BYTES = 65_536;
@@ -10,6 +11,10 @@ const SAFE_EVENTS = new Set([
   "rejected",
   "read_completed",
   "read_failed",
+  "list_completed",
+  "list_failed",
+  "info_completed",
+  "info_failed",
   "unavailable",
   "not_found",
   "health",
@@ -95,6 +100,51 @@ function operationId(pathname: string): string | null {
   const id = pathname.slice(prefix.length);
   if (!/^[A-Za-z0-9._:-]{1,128}$/.test(id)) return null;
   return id;
+}
+
+type ToolOutcome =
+  | { kind: "rejected"; message: string }
+  | { kind: "failed"; event: "read_failed" | "list_failed" | "info_failed"; message: string }
+  | { kind: "unavailable" }
+  | { kind: "completed"; event: "read_completed" | "list_completed" | "info_completed"; text: string };
+
+async function runTool(tool: unknown, args: unknown): Promise<ToolOutcome> {
+  try {
+    if (tool === "read_file") {
+      const read = parseLocalRead(args);
+      if (!read) return { kind: "rejected", message: "The requested tool call was rejected." };
+      return { kind: "completed", event: "read_completed", text: await readLocalFile(read) };
+    }
+    if (tool === "read_multiple_files") {
+      const read = parseReadMultiple(args);
+      if (!read) return { kind: "rejected", message: "The requested tool call was rejected." };
+      return { kind: "completed", event: "read_completed", text: await readMultipleLocalFiles(read) };
+    }
+    if (tool === "list_directory") {
+      const list = parseListDirectory(args);
+      if (!list) return { kind: "rejected", message: "The requested tool call was rejected." };
+      return { kind: "completed", event: "list_completed", text: await listLocalDirectory(list) };
+    }
+    if (tool === "get_file_info") {
+      const info = parseFileInfo(args);
+      if (!info) return { kind: "rejected", message: "The requested tool call was rejected." };
+      return { kind: "completed", event: "info_completed", text: await readLocalFileInfo(info) };
+    }
+    return { kind: "rejected", message: "The requested tool is not available." };
+  } catch (error) {
+    if (error instanceof ReadFailed) {
+      return { kind: "failed", event: "read_failed", message: "The file read failed." };
+    }
+    if (error instanceof BrowseFailed) {
+      const event = error.message.startsWith("The directory")
+        ? "list_failed"
+        : error.message.startsWith("The file info")
+          ? "info_failed"
+          : "read_failed";
+      return { kind: "failed", event, message: error.message };
+    }
+    return { kind: "unavailable" };
+  }
 }
 
 export async function startAgent(options: StartAgentOptions): Promise<RunningAgent> {
@@ -197,47 +247,36 @@ export async function startAgent(options: StartAgentOptions): Promise<RunningAge
       }
 
       const body = parsed as { tool?: unknown; arguments?: unknown };
-      if (body.tool !== "read_file") {
+      const outcome = await runTool(body.tool, body.arguments);
+      if (outcome.kind === "rejected") {
         emit(log, "rejected");
         sendJson(response, 400, {
           error: "bad_request",
-          message: "The requested tool is not available.",
+          message: outcome.message,
         });
         return;
       }
-
-      const read = parseLocalRead(body.arguments);
-      if (!read) {
-        emit(log, "rejected");
-        sendJson(response, 400, {
-          error: "bad_request",
-          message: "The requested tool call was rejected.",
-        });
-        return;
-      }
-
-      try {
-        const text = await readLocalFile(read);
-        emit(log, "read_completed");
+      if (outcome.kind === "failed") {
+        emit(log, outcome.event);
         sendJson(response, 200, {
-          status: "completed",
-          result: { content: [{ type: "text", text }] },
+          status: "failed",
+          error: { code: "bad_request", message: outcome.message },
         });
-      } catch (error) {
-        if (error instanceof ReadFailed) {
-          emit(log, "read_failed");
-          sendJson(response, 200, {
-            status: "failed",
-            error: { code: "bad_request", message: "The file read failed." },
-          });
-          return;
-        }
+        return;
+      }
+      if (outcome.kind === "unavailable") {
         emit(log, "unavailable");
         sendJson(response, 503, {
           error: "unavailable",
           message: "The local file service is unavailable.",
         });
+        return;
       }
+      emit(log, outcome.event);
+      sendJson(response, 200, {
+        status: "completed",
+        result: { content: [{ type: "text", text: outcome.text }] },
+      });
       return;
     }
 

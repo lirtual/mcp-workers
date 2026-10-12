@@ -45,3 +45,64 @@ export function parseLocalRead(input: unknown): LocalRead | null {
   }
   return read;
 }
+
+export const MAX_BATCH_FILES = 8;
+export const MAX_DIRECTORY_DEPTH = 3;
+export const DEFAULT_DIRECTORY_DEPTH = 1;
+export const MAX_DIRECTORY_ENTRIES = 100;
+
+export interface LocalReadMultiple {
+  paths: string[];
+}
+
+export interface LocalListDirectory {
+  path: string;
+  depth: number;
+}
+
+export interface LocalFileInfo {
+  path: string;
+}
+
+function parsePath(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  if (value.length === 0 || value.length > MAX_PATH_LENGTH) return null;
+  if (value.includes("\0") || value.startsWith("//") || hasUriScheme(value)) return null;
+  return value;
+}
+
+export function parseReadMultiple(input: unknown): LocalReadMultiple | null {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) return null;
+  const record = input as Record<string, unknown>;
+  if (Object.keys(record).some((key) => key !== "paths")) return null;
+  if (!Array.isArray(record.paths) || record.paths.length === 0 || record.paths.length > MAX_BATCH_FILES) {
+    return null;
+  }
+  const paths: string[] = [];
+  for (const entry of record.paths) {
+    const filePath = parsePath(entry);
+    if (!filePath) return null;
+    paths.push(filePath);
+  }
+  return { paths };
+}
+
+export function parseListDirectory(input: unknown): LocalListDirectory | null {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) return null;
+  const record = input as Record<string, unknown>;
+  if (Object.keys(record).some((key) => key !== "path" && key !== "depth")) return null;
+  const directoryPath = parsePath(record.path);
+  if (!directoryPath) return null;
+  if (record.depth === undefined) return { path: directoryPath, depth: DEFAULT_DIRECTORY_DEPTH };
+  if (!isIntegerInRange(record.depth, 1, MAX_DIRECTORY_DEPTH)) return null;
+  return { path: directoryPath, depth: record.depth };
+}
+
+export function parseFileInfo(input: unknown): LocalFileInfo | null {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) return null;
+  const record = input as Record<string, unknown>;
+  if (Object.keys(record).some((key) => key !== "path")) return null;
+  const filePath = parsePath(record.path);
+  if (!filePath) return null;
+  return { path: filePath };
+}

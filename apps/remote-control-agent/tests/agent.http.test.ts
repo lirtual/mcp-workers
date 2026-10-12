@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -347,5 +347,82 @@ test("reads a disposable fixture through node:fs without vendor history or secre
     await agent.close();
     await rm(home, { recursive: true, force: true });
     await rm(fixtureDir, { recursive: true, force: true });
+  }
+});
+
+test("lists, describes, and batch-reads a disposable directory within fixed bounds", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-browse-"));
+  const nested = path.join(root, "keep", "nested");
+  await mkdir(nested, { recursive: true });
+  const visible = "VISIBLE_FIXTURE_LINE";
+  const hidden = "HIDDEN_SYMLINK_TARGET_SENTINEL";
+  await writeFile(path.join(root, "keep", "note.txt"), `${visible}\n`, "utf8");
+  await writeFile(path.join(nested, "deep.txt"), "deep\n", "utf8");
+  const secretDir = await mkdtemp(path.join(os.tmpdir(), "remote-control-secret-dir-"));
+  await writeFile(path.join(secretDir, "secret.txt"), `${hidden}\n`, "utf8");
+  await symlink(secretDir, path.join(root, "linked"));
+  const blocked = path.join(root, "blocked.txt");
+  await writeFile(blocked, "ACCESS_SENTINEL_must_not_leak\n", "utf8");
+  await chmod(blocked, 0o000);
+  const agent = await startAgent({ deviceToken: DEVICE_TOKEN });
+
+  try {
+    const shallow = await call(agent, { tool: "list_directory", arguments: { path: root, depth: 1 } });
+    assert.equal(shallow.status, 200);
+    const shallowText = (shallow.json as { result: { content: Array<{ text: string }> } }).result.content[0]?.text ?? "";
+    assert.equal(shallowText.includes("directory keep"), true);
+    assert.equal(shallowText.includes("symlink linked"), true);
+    assert.equal(shallowText.includes("file blocked.txt"), true);
+    assert.equal(shallowText.includes("deep.txt"), false);
+    assert.equal(shallowText.includes(hidden), false);
+    assert.equal(shallowText.includes("truncated: false"), true);
+
+    const deeper = await call(agent, { tool: "list_directory", arguments: { path: root, depth: 3 } });
+    const deeperText = (deeper.json as { result: { content: Array<{ text: string }> } }).result.content[0]?.text ?? "";
+    assert.equal(deeperText.includes("file keep/nested/deep.txt"), true);
+    assert.equal(deeperText.includes("secret.txt"), false);
+
+    const info = await call(agent, { tool: "get_file_info", arguments: { path: path.join(root, "keep", "note.txt") } });
+    const infoText = (info.json as { result: { content: Array<{ text: string }> } }).result.content[0]?.text ?? "";
+    assert.equal(infoText.includes("type: file"), true);
+    assert.equal(infoText.includes(`size: ${visible.length + 1}`), true);
+    assert.equal(infoText.includes(visible), false);
+
+    const batch = await call(agent, {
+      tool: "read_multiple_files",
+      arguments: { paths: [path.join(root, "keep", "note.txt"), blocked, path.join(root, "missing.txt")] },
+    });
+    const batchText = (batch.json as { result: { content: Array<{ text: string }> } }).result.content[0]?.text ?? "";
+    assert.equal(batchText.includes(visible), true);
+    assert.equal(batchText.includes("ACCESS_SENTINEL_must_not_leak"), false);
+    assert.equal(batchText.includes("The file read failed."), true);
+    assert.equal(batchText.includes("truncated: false"), true);
+
+    const tooMany = await call(agent, {
+      tool: "read_multiple_files",
+      arguments: { paths: Array.from({ length: 9 }, () => path.join(root, "keep", "note.txt")) },
+    });
+    assert.equal(tooMany.status, 400);
+
+    const many = path.join(root, "many");
+    await mkdir(many);
+    for (let index = 0; index < 101; index += 1) {
+      await writeFile(path.join(many, `f${String(index).padStart(3, "0")}.txt`), "x\n", "utf8");
+    }
+    const capped = await call(agent, { tool: "list_directory", arguments: { path: many, depth: 1 } });
+    const cappedText = (capped.json as { result: { content: Array<{ text: string }> } }).result.content[0]?.text ?? "";
+    assert.equal(cappedText.includes("truncated: true"), true);
+    assert.equal(cappedText.includes("f100.txt"), false);
+    assert.equal(cappedText.split("\n").filter((line) => line.startsWith("file ")).length, 100);
+
+    const denied = await call(agent, { tool: "list_directory", arguments: { path: path.join(root, "no-such") } });
+    assert.equal(denied.status, 200);
+    assert.equal(JSON.stringify(denied.json).includes("The directory list failed."), true);
+    assert.equal(JSON.stringify(denied.json).includes(hidden), false);
+  } finally {
+    await chmod(blocked, 0o600).catch(() => undefined);
+    await agent.close();
+    await rm(root, { recursive: true, force: true });
+    await rm(secretDir, { recursive: true, force: true });
   }
 });
