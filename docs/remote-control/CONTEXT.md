@@ -1,6 +1,6 @@
 # Remote Control MCP — Domain Context
 
-> Status: Product terminology and Round 1 (F1–F4) plus Round 2 (G1–G3) decisions accepted on 2026-10-12. Detailed authorization, process lifecycle and implementation remain under discussion.
+> Status: Product terminology and Round 1 (F1–F4) plus Round 2 (G1–G3) and Round 3 H1–H2 decisions accepted on 2026-10-12. Detailed authorization, process lifecycle and implementation remain under discussion.
 
 ## Language
 
@@ -23,8 +23,15 @@ _Avoid_: Equating a workspace with the entire host filesystem.
 A request from an authorized client to inspect or change workspace resources, run a development command, or interact with a managed process; each operation has a defined authorization boundary and outcome.
 
 **Managed Process**:
-A development process started or tracked through Remote Control MCP and distinguishable from unrelated host processes.
+A development process started or tracked through Remote Control MCP within the authorized workspace; it may continue beyond the originating tool call.
 _Avoid_: Assuming permission to manipulate every process on the Linux host.
+
+**Managed Session**:
+The locally identifiable lifecycle of a Managed Process with retrievable state, bounded output and explicit stop capability.
+_Avoid_: Treating a remote HTTP request as the lifetime of the managed process.
+
+**Curated Tool Surface**:
+The reviewed set of client-visible development operations, rather than all capabilities supported by an upstream engine.
 
 **Remote MCP Client**:
 A client that directly communicates with this product using MCP and has its own authenticated authorization relationship.
@@ -63,11 +70,13 @@ _Avoid_: Relabeling an uncertain operation as failed or safe to retry.
 8. The **Execution Boundary is an isolated Linux workspace environment**, not the entire host user's permissions; it must expose only authorized project resources. See ADR-0005.
 9. **Unattended Remote Operations** are required for permitted workspace activity, including authorized development commands. Out-of-scope activity is denied rather than escalated. See ADR-0006.
 10. State-changing operations must have stable **Operation IDs** and minimal local **Operation Receipts**. An **Unknown Outcome** cannot be blindly replayed. See ADR-0007.
+11. The client sees a **Curated Tool Surface**, restricted to necessary workspace file, search, development Shell and managed-process operations. See ADR-0008.
+12. **Managed Sessions** may outlive the originating MCP request; support status, bounded output and explicit stop, without affecting unrelated host processes. See ADR-0009.
 
 ## Unsettled boundaries — not approved yet
 
-- Which upstream tools and parameters become remote capabilities; how destructive workspace writes, interactive process inputs and secret handling are authorized.
-- Managed-process lifecycle: owned sessions, stopping/canceling, output paging, and behavior after device restart.
+- The exact allowed tools and parameters; how destructive workspace writes, interactive process inputs and secret handling are authorized.
+- Managed-session lifecycle details: stopping/canceling, output paging, quotas and behavior after device restart.
 - Exact local receipt retention/storage, crash recovery, token revocation and cleanup rules.
 - Specific identity provider, OAuth component layout, credential rotation and actual client compatibility.
 - Concrete isolation mount/network policy, limits (payload, output, time), supported tool shapes and rollout/monitoring policy.
