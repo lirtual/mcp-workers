@@ -533,7 +533,7 @@ test("searches fixture names and contents in pages, stops sessions, and rejects 
       tool: "get_more_search_results",
       arguments: { session_id: "00000000-0000-4000-8000-000000000000" },
     });
-    assert.equal((forgedButWellFormed.json as { status: string }).status, "failed");
+    assert.equal((forgedButWellFormed.json as { status: string; error: { code: string } }).error.code, "not_found");
 
     const capacitySessions: string[] = [];
     for (let index = 0; index < 4; index += 1) {
@@ -547,7 +547,7 @@ test("searches fixture names and contents in pages, stops sessions, and rejects 
       tool: "start_search",
       arguments: { path: root, pattern: "name-match-", search_type: "filename" },
     });
-    assert.equal((overCapacity.json as { status: string }).status, "failed");
+    assert.equal((overCapacity.json as { status: string; error: { code: string } }).error.code, "conflict");
     for (const session_id of capacitySessions) {
       await call(agent, { tool: "stop_search", arguments: { session_id } });
     }
@@ -564,7 +564,7 @@ test("searches fixture names and contents in pages, stops sessions, and rejects 
         tool: "get_more_search_results",
         arguments: { session_id: expiringSession.session_id },
       });
-      assert.equal((expired.json as { status: string }).status, "failed");
+      assert.equal((expired.json as { status: string; error: { code: string } }).error.code, "not_found");
       assert.equal(expired.text.includes(expiringSession.session_id), false);
     } finally {
       await expiringAgent.close();
@@ -583,7 +583,7 @@ test("searches fixture names and contents in pages, stops sessions, and rejects 
         tool: "get_more_search_results",
         arguments: { session_id: preRestartSession.session_id },
       });
-      assert.equal((stale.json as { status: string }).status, "failed");
+      assert.equal((stale.json as { status: string; error: { code: string } }).error.code, "not_found");
     } finally {
       await postRestartAgent.close();
     }

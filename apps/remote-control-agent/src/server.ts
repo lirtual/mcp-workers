@@ -121,6 +121,7 @@ type ToolOutcome =
   | {
       kind: "failed";
       event: "read_failed" | "list_failed" | "info_failed" | "search_failed";
+      code: "bad_request" | "failed" | "not_found" | "conflict";
       message: string;
     }
   | { kind: "unavailable" }
@@ -184,7 +185,7 @@ async function runTool(
     return { kind: "rejected", message: "The requested tool is not available." };
   } catch (error) {
     if (error instanceof ReadFailed) {
-      return { kind: "failed", event: "read_failed", message: "The file read failed." };
+      return { kind: "failed", event: "read_failed", code: "bad_request", message: "The file read failed." };
     }
     if (error instanceof BrowseFailed) {
       const event = error.message.startsWith("The directory")
@@ -192,12 +193,13 @@ async function runTool(
         : error.message.startsWith("The file info")
           ? "info_failed"
           : "read_failed";
-      return { kind: "failed", event, message: error.message };
+      return { kind: "failed", event, code: "bad_request", message: error.message };
     }
     if (error instanceof SearchFailed) {
       return {
         kind: "failed",
         event: "search_failed",
+        code: error.code,
         message: "The local search request could not be completed.",
       };
     }
@@ -328,7 +330,7 @@ export async function startAgent(options: StartAgentOptions): Promise<RunningAge
         emit(log, outcome.event);
         sendJson(response, 200, {
           status: "failed",
-          error: { code: "bad_request", message: outcome.message },
+          error: { code: outcome.code, message: outcome.message },
         });
         return;
       }

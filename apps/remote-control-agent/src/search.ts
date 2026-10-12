@@ -17,9 +17,12 @@ export interface SearchPage {
 }
 
 export class SearchFailed extends Error {
+  readonly code: "failed" | "not_found" | "conflict";
+
   constructor(code: "failed" | "not_found" | "conflict") {
     super(code);
     this.name = "SearchFailed";
+    this.code = code;
   }
 }
 
