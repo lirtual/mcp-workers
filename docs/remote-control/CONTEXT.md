@@ -1,6 +1,6 @@
 # Remote Control MCP — Domain Context
 
-> Status: Product decisions revised and settled on 2026-10-12: ordinary Linux-user execution without container/path allowlist (ADR-0011) and existing MCP Portal static Bearer ingress with an independent token value (ADR-0012). Technical implementation, real-client acceptance and lifecycle details remain undecided.
+> Status: Product decisions revised and settled on 2026-10-12: existing Linux user/no container/path allowlist (ADR-0011), existing Portal with independent Bearer secret (ADR-0012), and native Node.js Agent with **no Desktop Commander runtime dependency** (ADR-0013). Real-client acceptance and deployment remain gated.
 
 ## Language
 
@@ -31,7 +31,7 @@ The locally identifiable lifecycle of a Managed Process with retrievable state, 
 _Avoid_: Treating a remote HTTP request as the lifetime of the managed process.
 
 **Curated Tool Surface**:
-The reviewed set of client-visible development operations, rather than all capabilities supported by an upstream engine.
+The reviewed set of client-visible development operations natively implemented by the Agent. Their familiar names are a product contract, not a pass-through to Desktop Commander.
 
 **MCP Portal Caller**:
 A remote MCP request source that supplies the Remote Control MCP-specific Bearer credential through the existing Portal integration. This token proves possession of the credential, not a separately logged-in end-user identity.
