@@ -2,12 +2,7 @@ import { randomUUID } from "node:crypto";
 import { constants, createReadStream } from "node:fs";
 import { lstat, opendir, open, stat, type FileHandle } from "node:fs/promises";
 import path from "node:path";
-
-export interface LocalSearch {
-  path: string;
-  pattern: string;
-  searchType: "filename" | "content";
-}
+import type { LocalSearch } from "./local-read.ts";
 
 export type SearchResult =
   | { path: string }
@@ -252,7 +247,8 @@ export class SearchSessions {
     this.sessionTtlMs = Number.isFinite(sessionTtlMs) && sessionTtlMs > 0 ? sessionTtlMs : SEARCH_SESSION_TTL_MS;
   }
 
-  async start(input: LocalSearch): Promise<SearchPage> {
+  async start(input: LocalSearch, requestSignal?: AbortSignal): Promise<SearchPage> {
+    if (requestSignal?.aborted) throw new SearchFailed("failed");
     if (this.sessions.size >= MAX_ACTIVE_SEARCHES) throw new SearchFailed("conflict");
     const controller = new AbortController();
     const state: SearchState = {
@@ -275,17 +271,22 @@ export class SearchSessions {
       busy: false,
     };
     this.sessions.set(id, session);
+    const stopWatching = this.cancelOnAbort(session, requestSignal);
     try {
       const page = await this.page(session);
+      if (requestSignal?.aborted) throw new SearchFailed("failed");
       if (!page.has_more) await this.dispose(session, false);
       return { ...page, ...(page.has_more ? { session_id: id } : {}) };
     } catch (error) {
       await this.dispose(session, true);
       throw error;
+    } finally {
+      stopWatching();
     }
   }
 
-  async more(sessionId: string): Promise<SearchPage> {
+  async more(sessionId: string, requestSignal?: AbortSignal): Promise<SearchPage> {
+    if (requestSignal?.aborted) throw new SearchFailed("failed");
     const session = this.sessions.get(sessionId);
     if (!session) throw new SearchFailed("not_found");
     if (session.busy) throw new SearchFailed("conflict");
@@ -293,13 +294,17 @@ export class SearchSessions {
       await this.dispose(session, true);
       throw new SearchFailed("not_found");
     }
+    const stopWatching = this.cancelOnAbort(session, requestSignal);
     try {
       const page = await this.page(session);
+      if (requestSignal?.aborted) throw new SearchFailed("failed");
       if (!page.has_more) await this.dispose(session, false);
       return { ...page, ...(page.has_more ? { session_id: sessionId } : {}) };
     } catch (error) {
       await this.dispose(session, true);
       throw error;
+    } finally {
+      stopWatching();
     }
   }
 
@@ -312,6 +317,14 @@ export class SearchSessions {
 
   async close(): Promise<void> {
     await Promise.all([...this.sessions.values()].map((session) => this.dispose(session, true)));
+  }
+
+  private cancelOnAbort(session: SearchSession, signal?: AbortSignal): () => void {
+    if (!signal) return () => undefined;
+    const cancel = () => void this.dispose(session, true);
+    signal.addEventListener("abort", cancel, { once: true });
+    if (signal.aborted) cancel();
+    return () => signal.removeEventListener("abort", cancel);
   }
 
   private async page(session: SearchSession): Promise<SearchPage> {

@@ -620,3 +620,62 @@ test("search permission failures return a safe error", async (t) => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("a disconnected search releases its active session", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-search-disconnect-"));
+  const matchPrefix = Buffer.from("DISCONNECT_SEARCH_SENTINEL\n");
+  const largeFile = Buffer.concat([
+    matchPrefix,
+    Buffer.alloc(2 * 1024 * 1024 - matchPrefix.length, 0x78),
+  ]);
+  for (let index = 0; index < 16; index += 1) {
+    await writeFile(path.join(root, `content-${String(index).padStart(2, "0")}.txt`), largeFile);
+  }
+  for (let index = 0; index < 25; index += 1) {
+    await writeFile(path.join(root, `session-match-${String(index).padStart(2, "0")}.txt`), "x\n", "utf8");
+  }
+  const events: string[] = [];
+  const agent = await startAgent({ deviceToken: DEVICE_TOKEN, log: (event) => events.push(event) });
+
+  try {
+    const controller = new AbortController();
+    const request = fetch(`${agent.baseUrl}/internal/call`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-device-credential": DEVICE_TOKEN },
+      body: JSON.stringify({
+        tool: "start_search",
+        arguments: { path: root, pattern: "DISCONNECT_SEARCH_SENTINEL", search_type: "content" },
+      }),
+      signal: controller.signal,
+    });
+    const deadline = Date.now() + 5000;
+    while (!events.includes("search_started") && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(events.includes("search_started"), true);
+    controller.abort();
+    await assert.rejects(request, /abort/i);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const sessions: string[] = [];
+    for (let index = 0; index < 4; index += 1) {
+      const result = await call(agent, {
+        tool: "start_search",
+        arguments: { path: root, pattern: "session-match-", search_type: "filename" },
+      });
+      sessions.push((JSON.parse(completedText(result.json)) as { session_id: string }).session_id);
+    }
+    const overCapacity = await call(agent, {
+      tool: "start_search",
+      arguments: { path: root, pattern: "session-match-", search_type: "filename" },
+    });
+    assert.equal((overCapacity.json as { status: string }).status, "failed");
+
+    for (const session_id of sessions) {
+      await call(agent, { tool: "stop_search", arguments: { session_id } });
+    }
+  } finally {
+    await agent.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});

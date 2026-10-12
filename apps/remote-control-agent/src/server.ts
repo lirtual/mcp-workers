@@ -23,6 +23,7 @@ const SAFE_EVENTS = new Set([
   "list_failed",
   "info_completed",
   "info_failed",
+  "search_started",
   "search_completed",
   "search_failed",
   "search_stopped",
@@ -129,7 +130,13 @@ type ToolOutcome =
       text: string;
     };
 
-async function runTool(tool: unknown, args: unknown, searches: SearchSessions): Promise<ToolOutcome> {
+async function runTool(
+  tool: unknown,
+  args: unknown,
+  searches: SearchSessions,
+  requestSignal: AbortSignal,
+  log: AgentLog | undefined,
+): Promise<ToolOutcome> {
   try {
     if (tool === "read_file") {
       const read = parseLocalRead(args);
@@ -154,10 +161,11 @@ async function runTool(tool: unknown, args: unknown, searches: SearchSessions): 
     if (tool === "start_search") {
       const search = parseSearchStart(args);
       if (!search) return { kind: "rejected", message: "The requested tool call was rejected." };
+      emit(log, "search_started");
       return {
         kind: "completed",
         event: "search_completed",
-        text: JSON.stringify(await searches.start(search)),
+        text: JSON.stringify(await searches.start(search, requestSignal)),
       };
     }
     if (tool === "get_more_search_results" || tool === "stop_search") {
@@ -165,7 +173,7 @@ async function runTool(tool: unknown, args: unknown, searches: SearchSessions): 
       if (!session) return { kind: "rejected", message: "The requested tool call was rejected." };
       const result =
         tool === "get_more_search_results"
-          ? await searches.more(session.sessionId)
+          ? await searches.more(session.sessionId, requestSignal)
           : await searches.stop(session.sessionId);
       return {
         kind: "completed",
@@ -212,6 +220,7 @@ export async function startAgent(options: StartAgentOptions): Promise<RunningAge
 
   const server: Server = createServer((request, response) => {
     void handleRequest(request, response).catch(() => {
+      if (request.aborted || response.destroyed) return;
       if (response.headersSent) {
         response.destroy();
         return;
@@ -225,6 +234,13 @@ export async function startAgent(options: StartAgentOptions): Promise<RunningAge
   });
 
   async function handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    const requestAbort = new AbortController();
+    const abortIfDisconnected = () => {
+      if (!response.writableEnded) requestAbort.abort();
+    };
+    request.once("aborted", abortIfDisconnected);
+    response.once("close", abortIfDisconnected);
+
     const presented = deviceCredential(request);
     if (!presented || !credentialsMatch(presented, options.deviceToken)) {
       request.resume();
@@ -298,7 +314,8 @@ export async function startAgent(options: StartAgentOptions): Promise<RunningAge
       }
 
       const body = parsed as { tool?: unknown; arguments?: unknown };
-      const outcome = await runTool(body.tool, body.arguments, searches);
+      const outcome = await runTool(body.tool, body.arguments, searches, requestAbort.signal, log);
+      if (requestAbort.signal.aborted) return;
       if (outcome.kind === "rejected") {
         emit(log, "rejected");
         sendJson(response, 400, {
