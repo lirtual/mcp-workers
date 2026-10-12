@@ -1,6 +1,6 @@
 # Remote Control MCP — research draft and grilling frontier
 
-> Status: **Research draft; latest accepted direction 2026-10-12: existing MCP Portal static Bearer (ADR-0012), independently generated token; no OAuth, no Docker, no project path allowlist (ADR-0011).** Integration and production rollout NOT approved.
+> Status: **Research draft; 2026-10-12 direction confirmed: existing Portal Bearer (ADR-0012), existing ordinary Linux login user (ADR-0011), no Docker/project directory allowlist.** A consolidated [minimal v1 Spec draft](./SPEC-DRAFT.md) awaits final approval; no implementation or deployment is authorized.
 > This is not an implementation specification or deployment authorization. Accepted decisions live in linked ADRs; all uncited implementation patterns below remain proposals.
 > Baseline: user-provided `Remote-Desktop-MCP-Spec-VPC-only(1).md` (R03 research contract, based on commit `e9764b73f9ce8894ccda6e4427bfd5ad3ee16fb5`). The old branch was not located in current branch search; the user's supplied copy is the source for that baseline.
 > No existing production worker, secret, tunnel, or GitHub Actions workflow is changed.
@@ -105,7 +105,7 @@ H3 was confirmed separately, after a plain-language explanation. The combined OA
 - **Accepted after explicit confirmation**: existing Portal Bearer replaces GitHub/direct OAuth. Current `main` has `packages/portal-auth/src/index.ts` which validates `Authorization: Bearer` against `MCP_ACCESS_TOKEN`. Reuse the middleware and secret **name**, but never the token **value** shared by the other three MCP Workers.
 - **Compatibility gate (mandatory)**: a standalone ChatGPT custom-plugin direct connector is not assumed to allow manual static Bearer input. Verify the existing MCP Portal route really forwards the separate Bearer token through actual ChatGPT initialization, tool discovery and a safe read-only call. Deny bad/missing Bearer and do not enable Shell if the path fails. Do not deploy anonymous remote Shell.
 - **K1 settled**: existing Portal Bearer with a different high-entropy secret (ADR-0012). ADR-0003 and ADR-0010 are historical/superseded. Direct standards-based OAuth access is not promised in v1.
-- **Other implementation details**: choose the Linux run account and necessary system permissions, exact tool schemas/limits, local receipt cleanup and session shutdown/restart defaults. Avoid new workflows or complex infrastructure.
+- **Runtime account settled**: the operator explicitly chose the **existing ordinary Linux login user**, not a dedicated account. Inspect its real sudo/container-runtime/credential permissions before activating unattended Shell. Remaining spec details: exact tool schemas/limits, local receipt cleanup and session restart/stop behavior. Avoid new workflows or complex infrastructure.
 
 ## Read-only acceptance gate before remote Shell
 
@@ -122,7 +122,7 @@ This is a **verification plan**, not an already successful E2E test or permissio
 
 ## Architecture review addendum — 2026-10-12 (NOT YET AN ADR)
 
-- **ADR-0001/0011: Linux-first without containers or path constraints**. WSL2 remains a deployment variant, but no container or project-root whitelist is required. Account privilege selection is pending.
+- **ADR-0001/0011: Linux-first as the operator's existing ordinary Linux login user**, without containers or application project-root restrictions. WSL2 remains a deployment variant. Actual privilege pathways still need inspection, not guessing.
 - **Do not claim our VPC design matches the proprietary hosted product.** The [Remote Desktop Commander README](https://github.com/desktop-commander/remote-desktop-commander) describes a hosted OAuth MCP service, device authorization/pairing and a managed relay; it does **not** disclose the hosted server's network transport or backend implementation. The self-hosted design instead uses published Cloudflare VPC Service + tunnel APIs and the upstream **local stdio MCP engine**, not the vendor's `remote` command.
 - **Accepted in ADR-0004: private VPC-only routing**. VPC was consciously chosen over a publicly published Tunnel application, but it is not universally optimal. Cloudflare Workers VPC beta/pricing terms must be rechecked before launch. A public fallback is not permitted.
 - **Authentication accepted in ADR-0012: static Portal Bearer**, replacing OAuth ADR-0003/0010. Confirm actual Portal-to-ChatGPT delivery and valid/invalid token behavior before enabling remote writes or Shell. Never share the three-app token value; never allow anonymous MCP Shell.
