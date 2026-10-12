@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Loopback agent that reads one local file with Node.js fs.",
+  "description": "Loopback agent for bounded native file operations and durable operation receipts.",
   "exports": {
     ".": "./src/server.ts"
   },

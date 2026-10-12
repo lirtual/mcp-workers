@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Portal-authenticated MCP worker that relays one local file read to a fixed VPC service.",
+  "description": "Portal-authenticated MCP worker for curated local file operations through a fixed private Agent target.",
   "scripts": {
     "dev": "wrangler dev",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",

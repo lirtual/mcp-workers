@@ -255,12 +255,19 @@ test("an admitted receipt found after restart is unknown and is never replayed",
   }
 });
 
-test("a known filesystem permission failure retains its operation ID without leaking the path", async () => {
+test("a known filesystem permission failure retains its operation ID without leaking the path", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-write-failure-"));
   const receiptDirectory = path.join(root, "receipts");
-  const privatePath = path.join(root, "missing-private", "fixture.txt");
+  const blockedDirectory = path.join(root, "blocked");
+  await mkdir(blockedDirectory);
+  await chmod(blockedDirectory, 0o500);
+  const privatePath = path.join(blockedDirectory, "fixture.txt");
   const agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory });
   try {
+    if (typeof process.getuid === "function" && process.getuid() === 0) {
+      t.skip("root bypasses directory write permissions");
+      return;
+    }
     const failed = await call(agent, {
       tool: "write_file",
       operation_id: "known-write-failure",
@@ -279,6 +286,7 @@ test("a known filesystem permission failure retains its operation ID without lea
     assert.equal(receipt.includes("secret-content"), false);
   } finally {
     await agent.close();
+    await chmod(blockedDirectory, 0o700);
     await rm(root, { recursive: true, force: true });
   }
 });
