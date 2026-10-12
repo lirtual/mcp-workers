@@ -3,12 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import os from "node:os";
 import path from "node:path";
 import { parseLocalRead } from "./local-read.ts";
-import {
-  DesktopCommanderSession,
-  DeviceUnavailable,
-  prepareChildHome,
-  ReadFailed,
-} from "./supervisor.ts";
+import { readLocalFile, ReadFailed } from "./read-file.ts";
 
 const MAX_BODY_BYTES = 65_536;
 const LOOPBACK_HOST = "127.0.0.1";
@@ -117,11 +112,8 @@ export async function startAgent(options: StartAgentOptions): Promise<RunningAge
 
   const childHome = path.resolve(options.childHome);
   if (childHome === path.resolve(os.homedir())) {
-    throw new Error("Refusing to use the login home for the supervised child.");
+    throw new Error("Refusing to use the login home.");
   }
-
-  prepareChildHome(childHome);
-  const session = new DesktopCommanderSession(childHome);
   const log = options.log;
 
   const server: Server = createServer((request, response) => {
@@ -232,7 +224,7 @@ export async function startAgent(options: StartAgentOptions): Promise<RunningAge
       }
 
       try {
-        const text = await session.readFile(read);
+        const text = await readLocalFile(read);
         emit(log, "read_completed");
         sendJson(response, 200, {
           status: "completed",
@@ -250,10 +242,7 @@ export async function startAgent(options: StartAgentOptions): Promise<RunningAge
         emit(log, "unavailable");
         sendJson(response, 503, {
           error: "unavailable",
-          message:
-            error instanceof DeviceUnavailable
-              ? "The local file service is unavailable."
-              : "The local file service is unavailable.",
+          message: "The local file service is unavailable.",
         });
       }
       return;
@@ -283,7 +272,6 @@ export async function startAgent(options: StartAgentOptions): Promise<RunningAge
     hostname: address.address,
     port: address.port,
     close: async () => {
-      await session.close();
       await new Promise<void>((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));
       });

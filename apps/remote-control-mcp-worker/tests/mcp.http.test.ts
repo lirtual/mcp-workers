@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -248,7 +249,7 @@ test("an offline device returns a safe unavailable error", async () => {
   assert.equal(lines.includes("at Worker.fetch"), false);
 });
 
-test("reads a fixed fixture through the worker, the local agent, and the real stdio child", { timeout: 90_000 }, async () => {
+test("reads a fixed fixture through the worker and the native agent", async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), "remote-control-worker-home-"));
   const fixtureDir = await mkdtemp(path.join(os.tmpdir(), "remote-control-worker-fixture-"));
   const fixturePath = path.join(fixtureDir, "fixture.txt");
@@ -353,6 +354,7 @@ test("reads a fixed fixture through the worker, the local agent, and the real st
     assert.equal(logs.includes(fixturePath), false);
     assert.equal(agentEvents.join("\n").includes(FIXTURE_TEXT), false);
     assert.equal(agentEvents.join("\n").includes(fixturePath), false);
+    assert.equal(existsSync(path.join(home, ".claude-server-commander")), false);
   } finally {
     globalThis.fetch = originalFetch;
     await agent?.close();
