@@ -1,6 +1,6 @@
 # ADR-0010 — Combined OAuth and MCP in one Cloudflare Worker
 
-Status: accepted conditionally on using OAuth, but **authentication approach reopened for review** on 2026-10-12. Decision input: Round 3 H3=A. If the owner chooses the existing MCP Portal bearer-token model instead, this OAuth topology record must be superseded; no Portal decision has yet been recorded.
+Status: **superseded by [ADR-0012](./0012-reuse-portal-bearer-auth-with-independent-secret.md)** on 2026-10-12. Historical single-Worker OAuth design; do not implement OAuth endpoints, OAuth KV or GitHub login for v1.
 
 ## Context
 
