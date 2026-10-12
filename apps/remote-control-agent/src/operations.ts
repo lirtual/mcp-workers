@@ -7,12 +7,13 @@ export type OperationState = "admitted" | "running" | "completed" | "failed" | "
 
 export interface OperationReceipt {
   operation_id: string;
-  tool_name: "write_file" | "create_directory" | "edit_block" | "move_file";
+  tool_name: "write_file" | "create_directory" | "edit_block" | "move_file" | "start_process";
   argument_digest: string;
   state: OperationState;
   created_at: string;
   updated_at: string;
   safe_result_summary?: string;
+  session_id?: string;
 }
 
 interface StoreData {
@@ -71,8 +72,13 @@ export class ReceiptStore {
       }
       if (receipt.state === "admitted" || receipt.state === "running") {
         receipt.state = "unknown";
+        delete receipt.session_id;
         receipt.safe_result_summary = "Effect cannot be established after restart.";
         receipt.updated_at = new Date().toISOString();
+        changed = true;
+      }
+      if (receipt.tool_name === "start_process" && receipt.session_id) {
+        delete receipt.session_id;
         changed = true;
       }
       return true;
@@ -130,13 +136,14 @@ export class ReceiptStore {
     });
   }
 
-  async update(operationId: string, state: OperationState, summary: string): Promise<OperationReceipt> {
+  async update(operationId: string, state: OperationState, summary: string, sessionId?: string): Promise<OperationReceipt> {
     return this.serialize(async () => {
       const receipt = this.data.receipts.find((r) => r.operation_id === operationId);
       if (!receipt) throw new Error("Receipt disappeared.");
       receipt.state = state;
       receipt.updated_at = new Date().toISOString();
       receipt.safe_result_summary = summary.slice(0, 128);
+      if (sessionId) receipt.session_id = sessionId;
       await this.persist();
       return { ...receipt };
     });

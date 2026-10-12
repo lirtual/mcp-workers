@@ -290,6 +290,147 @@ test("write_file appends once for concurrent duplicate IDs and rejects changed p
   }
 });
 
+test("start_process uses receipts once and managed sessions expose bounded output after the request ends", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-t08-"));
+  const events: string[] = [];
+  const agent = await startAgent({
+    deviceToken: DEVICE_TOKEN,
+    receiptDirectory: path.join(root, "receipts"),
+    shellPath: "/bin/sh",
+    log: (event) => events.push(event),
+  });
+  const callTool = (tool: string, args: unknown, operationId?: string) => call(agent, {
+    tool,
+    ...(operationId ? { operation_id: operationId } : {}),
+    arguments: args,
+  });
+  const output = async (sessionId: string, offset = 0, length = 16) => callTool("read_process_output", {
+    session_id: sessionId, offset, length,
+  });
+
+  try {
+    const crossToolPath = path.join(root, "cross-tool.txt");
+    const fileOperation = await callTool("write_file", { path: crossToolPath, content: "fixture", mode: "rewrite" }, "cross-tool-id");
+    assert.equal((fileOperation.json as { status: string }).status, "completed");
+    const crossToolCommand = `printf x >> ${path.join(root, "must-not-run.txt")}`;
+    const crossToolReuse = await callTool("start_process", { command: crossToolCommand }, "cross-tool-id");
+    assert.equal(crossToolReuse.status, 409);
+    assert.equal(existsSync(path.join(root, "must-not-run.txt")), false);
+
+    const short = await callTool("start_process", { command: "printf 'short-output'", timeout_ms: 500 }, "short-once");
+    const shortBody = short.json as { status: string; session_id: string };
+    assert.equal(shortBody.status, "completed");
+    assert.match(shortBody.session_id, /^[0-9a-f-]{36}$/);
+    const firstPage = JSON.parse(completedText((await output(shortBody.session_id, 0, 5)).json)) as { output: string; next_offset: number; eof: boolean };
+    assert.equal(firstPage.output, "short");
+    assert.equal(firstPage.next_offset, 5);
+    assert.equal(firstPage.eof, false);
+    const finalPage = JSON.parse(completedText((await output(shortBody.session_id, 5, 20)).json)) as { output: string; eof: boolean };
+    assert.equal(finalPage.output, "-output");
+    assert.equal(finalPage.eof, true);
+
+    const countFile = path.join(root, "count.txt");
+    const longCommand = `printf x >> ${countFile}; sleep 0.2; printf '%s' '-done'`;
+    const long = await callTool("start_process", { command: longCommand, timeout_ms: 5 }, "long-once");
+    const longBody = long.json as { status: string; session_id: string };
+    assert.equal(longBody.status, "running");
+    assert.deepEqual((JSON.parse(completedText((await callTool("list_sessions", {})).json)) as Array<{ session_id: string }>).map((item) => item.session_id).sort(), [longBody.session_id, shortBody.session_id].sort());
+
+    const duplicate = await callTool("start_process", { command: longCommand, timeout_ms: 5 }, "long-once");
+    assert.equal((duplicate.json as { session_id: string }).session_id, longBody.session_id);
+    const conflict = await callTool("start_process", { command: "printf different", timeout_ms: 5 }, "long-once");
+    assert.equal(conflict.status, 409);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    assert.equal(await readFile(countFile, "utf8"), "x");
+
+    const longOutput = JSON.parse(completedText((await output(longBody.session_id)).json)) as { output: string; state: string; eof: boolean };
+    assert.equal(longOutput.output, "-done");
+    assert.equal(longOutput.state, "completed");
+    assert.equal(longOutput.eof, true);
+
+    const receipt = await fetch(`${agent.baseUrl}/internal/operations/long-once`, { headers: { "x-device-credential": DEVICE_TOKEN } });
+    assert.equal((await receipt.json() as { state: string }).state, "completed");
+
+    const bounded = await callTool("start_process", { command: "printf '%300000s' x", timeout_ms: 1000 }, "bounded-output");
+    const boundedSessionId = (bounded.json as { session_id: string }).session_id;
+    const boundedPage = JSON.parse(completedText((await output(boundedSessionId, 0, 65_536)).json)) as { output: string; next_offset: number; truncated: boolean; eof: boolean };
+    assert.equal(boundedPage.output.length, 65_536);
+    assert.equal(boundedPage.next_offset, 65_536);
+    assert.equal(boundedPage.truncated, true);
+    assert.equal(boundedPage.eof, false);
+    const boundedLastPage = JSON.parse(completedText((await output(boundedSessionId, 196_608, 65_536)).json)) as { output: string; next_offset: number; truncated: boolean; eof: boolean };
+    assert.equal(boundedLastPage.output.length, 65_536);
+    assert.equal(boundedLastPage.next_offset, 262_144);
+    assert.equal(boundedLastPage.truncated, true);
+    assert.equal(boundedLastPage.eof, true);
+
+    const arbitraryShell = await callTool("start_process", { command: "true", shell: "/bin/bash" }, "shell-select");
+    assert.equal(arbitraryShell.status, 400);
+    const virtualCode = await callTool("node:local", { code: "process.exit(1)" });
+    assert.equal(virtualCode.status, 400);
+    const invalidSession = await output("00000000-0000-4000-8000-000000000000");
+    assert.equal(invalidSession.status, 404);
+    assert.equal(events.includes("process_started"), true);
+    assert.equal(events.includes("process_output_read"), true);
+    assert.equal(events.join(" ").includes("short-output"), false);
+    assert.equal(events.join(" ").includes(longCommand), false);
+  } finally {
+    await agent.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a process receipt never replays after Agent restart and stale session IDs are not restored", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-t08-restart-"));
+  const receiptDirectory = path.join(root, "receipts");
+  const countFile = path.join(root, "count.txt");
+  const request = { tool: "start_process", operation_id: "restart-no-replay", arguments: { command: `printf x >> ${countFile}; sleep 0.05`, timeout_ms: 1000 } };
+  let agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory, shellPath: "/bin/sh" });
+  try {
+    const started = await call(agent, request);
+    const originalSession = (started.json as { session_id: string }).session_id;
+    assert.match(originalSession, /^[0-9a-f-]{36}$/);
+    assert.equal(await readFile(countFile, "utf8"), "x");
+    await agent.close();
+
+    agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory, shellPath: "/bin/sh" });
+    const duplicate = await call(agent, request);
+    const duplicateBody = duplicate.json as Record<string, unknown>;
+    assert.equal(duplicateBody.status, "completed");
+    assert.equal("session_id" in duplicateBody, false);
+    assert.equal(await readFile(countFile, "utf8"), "x");
+    const stale = await call(agent, { tool: "read_process_output", arguments: { session_id: originalSession } });
+    assert.equal(stale.status, 404);
+  } finally {
+    await agent.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Agent shutdown terminates only its owned process group", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-t08-shutdown-"));
+  const sentinel = path.join(root, "survived.txt");
+  const agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: path.join(root, "receipts"), shellPath: "/bin/sh" });
+  let closed = false;
+  try {
+    const result = await call(agent, {
+      tool: "start_process",
+      operation_id: "shutdown-owned-group",
+      arguments: { command: `(sleep 0.5; printf x > ${sentinel}) & wait`, timeout_ms: 0 },
+    });
+    assert.equal((result.json as { status: string }).status, "running");
+    const startedAt = Date.now();
+    await agent.close();
+    closed = true;
+    assert.ok(Date.now() - startedAt < 1500);
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    assert.equal(existsSync(sentinel), false);
+  } finally {
+    if (!closed) await agent.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("an admitted receipt found after restart is unknown and is never replayed", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-write-recovery-"));
   const receiptDirectory = path.join(root, "receipts");

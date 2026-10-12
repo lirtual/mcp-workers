@@ -19,6 +19,7 @@ import {
 import { operationDigest, ReceiptStore, type OperationReceipt } from "./operations.ts";
 import { readLocalFile, ReadFailed } from "./read-file.ts";
 import { SearchFailed, SearchSessions } from "./search.ts";
+import { ManagedSessions, parseListSessions, parseReadProcessOutput, parseStartProcess } from "./sessions.ts";
 
 const MAX_BODY_BYTES = 65_536;
 const LOOPBACK_HOST = "127.0.0.1";
@@ -49,6 +50,10 @@ const SAFE_EVENTS = new Set([
   "move_failed",
   "operation_conflict",
   "operation_admitted",
+  "process_started",
+  "process_failed",
+  "process_listed",
+  "process_output_read",
 ]);
 
 export type AgentLog = (event: string) => void;
@@ -62,6 +67,8 @@ export interface StartAgentOptions {
   searchSessionTtlMs?: number;
   /** Test seam; production uses the fixed per-user local state directory. */
   receiptDirectory?: string;
+  /** Test seam; production uses the current account's configured shell. */
+  shellPath?: string;
 }
 
 export interface RunningAgent {
@@ -240,6 +247,7 @@ export async function startAgent(options: StartAgentOptions): Promise<RunningAge
 
   const log = options.log;
   const searches = new SearchSessions(options.searchSessionTtlMs);
+  const sessions = new ManagedSessions(options.shellPath ?? process.env.SHELL ?? "/bin/sh");
   const receipts = new ReceiptStore(options.receiptDirectory);
   let receiptsReady: Promise<void> | undefined;
   const ensureReceipts = () => (receiptsReady ??= receipts.open());
@@ -500,6 +508,103 @@ export async function startAgent(options: StartAgentOptions): Promise<RunningAge
         }
         return;
       }
+      if (body.tool === "start_process") {
+        const id = typeof body.operation_id === "string" ? body.operation_id : null;
+        const processArgs = parseStartProcess(body.arguments);
+        if (!id || !parseOperationId({ operation_id: id }) || !processArgs) {
+          emit(log, "rejected");
+          sendJson(response, 400, { error: "bad_request", message: "The process request was rejected." });
+          return;
+        }
+        const digest = operationDigest(body.tool, processArgs);
+        let admitted: Awaited<ReturnType<typeof receipts.admit>>;
+        try {
+          await ensureReceipts();
+          admitted = await receipts.admit(id, "start_process", digest);
+        } catch {
+          sendJson(response, 503, { operation_id: id, status: "unavailable", error: "unavailable", message: "The operation could not be admitted." });
+          return;
+        }
+        if (admitted.kind === "conflict") {
+          emit(log, "operation_conflict");
+          sendJson(response, 409, { operation_id: id, error: "conflict", message: "The operation id is already used for different parameters." });
+          return;
+        }
+        if (admitted.kind === "full") {
+          sendJson(response, 503, { operation_id: id, status: "unavailable", error: "unavailable", message: "Operation receipts are at capacity." });
+          return;
+        }
+        let pending = inFlight.get(id);
+        if (admitted.kind === "new") {
+          emit(log, "operation_admitted");
+          pending = (async () => {
+            await receipts.update(id, "running", "Development command is starting.");
+            try {
+              const session = await sessions.start(processArgs.command, processArgs.timeoutMs, async (exited) => {
+                await receipts.update(id, exited.state, "Development command session ended.", exited.session_id);
+              });
+              return await receipts.update(id, session.state, "Development command session recorded.", session.session_id);
+            } catch {
+              emit(log, "process_failed");
+              return await receipts.update(id, "failed", "Development command could not be started.");
+            }
+          })();
+          inFlight.set(id, pending);
+          void pending.then(() => inFlight.delete(id), () => inFlight.delete(id));
+        }
+        const existingSession = admitted.receipt?.session_id ? sessions.get(admitted.receipt.session_id) : null;
+        if (!pending && admitted.receipt && (admitted.receipt.state === "admitted" || admitted.receipt.state === "running") && !existingSession) {
+          const unknown = await receipts.update(id, "unknown", "Effect cannot be established.");
+          sendJson(response, 200, { operation_id: id, status: "unknown", receipt: unknown });
+          return;
+        }
+        let receipt: OperationReceipt | undefined;
+        try {
+          receipt = pending ? await pending : admitted.receipt;
+        } catch {
+          sendJson(response, 200, { operation_id: id, status: "unknown", error: { code: "timeout_unknown", message: "The command outcome is unknown." } });
+          return;
+        }
+        if (requestAbort.signal.aborted) return;
+        const state = existingSession?.state ?? receipt?.state ?? "unknown";
+        if (state === "failed") {
+          emit(log, "process_failed");
+          sendJson(response, 200, { operation_id: id, status: state, session_id: receipt?.session_id, error: { code: "bad_request", message: "The development command failed." } });
+        } else {
+          emit(log, "process_started");
+          sendJson(response, 200, { operation_id: id, status: state, session_id: receipt?.session_id });
+        }
+        return;
+      }
+
+      if (body.tool === "list_sessions") {
+        if (!parseListSessions(body.arguments)) {
+          emit(log, "rejected");
+          sendJson(response, 400, { error: "bad_request", message: "The session request was rejected." });
+          return;
+        }
+        emit(log, "process_listed");
+        sendJson(response, 200, { status: "completed", result: { content: [{ type: "text", text: JSON.stringify(sessions.list()) }] } });
+        return;
+      }
+
+      if (body.tool === "read_process_output") {
+        const outputRequest = parseReadProcessOutput(body.arguments);
+        if (!outputRequest) {
+          emit(log, "rejected");
+          sendJson(response, 400, { error: "bad_request", message: "The process output request was rejected." });
+          return;
+        }
+        const page = sessions.read(outputRequest.sessionId, outputRequest.offset, outputRequest.length);
+        if (!page) {
+          emit(log, "not_found");
+          sendJson(response, 404, { error: "not_found", message: "The session was not found." });
+          return;
+        }
+        emit(log, "process_output_read");
+        sendJson(response, 200, { status: "completed", result: { content: [{ type: "text", text: JSON.stringify(page) }] } });
+        return;
+      }
       const outcome = await runTool(body.tool, body.arguments, searches, requestAbort.signal, log);
       if (requestAbort.signal.aborted) return;
       if (outcome.kind === "rejected") {
@@ -559,6 +664,7 @@ export async function startAgent(options: StartAgentOptions): Promise<RunningAge
     port: address.port,
     close: async () => {
       await searches.close();
+      await sessions.close();
       if (receiptsReady) await receipts.close();
       await new Promise<void>((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));

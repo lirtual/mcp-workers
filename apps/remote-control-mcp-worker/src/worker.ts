@@ -11,6 +11,9 @@ import {
   parseLocalEditBlock,
   parseLocalMoveFile,
   parseOperationId,
+  parseStartProcess,
+  parseLocalProcessOutput,
+  parseListSessions,
   type LocalFileInfo,
   type LocalListDirectory,
   type LocalRead,
@@ -22,6 +25,8 @@ import {
   type LocalMoveFile,
   type OperationId,
   type SearchSessionId,
+  type LocalStartProcess,
+  type LocalProcessOutput,
 } from "./local-read.ts";
 
 /** Fixed VPC Service target. Tool arguments cannot change this URL. */
@@ -257,6 +262,27 @@ const GET_OPERATION_STATUS_TOOL = {
   annotations: { title: "Get operation status", readOnlyHint: true, destructiveHint: false, openWorldHint: false },
 } as const;
 
+const START_PROCESS_TOOL = {
+  name: "start_process", title: "Start development command",
+  description: "Start a development command with the Agent account's fixed local Shell. Commands run with that Linux account's full OS permissions. Every start requires a stable operation_id; after an uncertain response, query that ID before considering a new intent. A running command returns an Agent-owned session_id. Shell exposure remains separately gated by deployment authorization.",
+  inputSchema: { type: "object", properties: { operation_id: { type: "string", minLength: 1, maxLength: 128 }, command: { type: "string", minLength: 1, maxLength: 8192 }, timeout_ms: { type: "integer", minimum: 0, maximum: 30000, description: "Maximum time to wait before returning a running session; defaults to 1000 ms." } }, required: ["operation_id", "command"], additionalProperties: false },
+  annotations: { title: "Start development command", readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+} as const;
+
+const LIST_SESSIONS_TOOL = {
+  name: "list_sessions", title: "List managed sessions",
+  description: "List only development command sessions started and tracked by this Agent. Completed sessions are retained for a bounded period.",
+  inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  annotations: { title: "List managed sessions", readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+} as const;
+
+const READ_PROCESS_OUTPUT_TOOL = {
+  name: "read_process_output", title: "Read managed session output",
+  description: "Read a bounded byte page from a session started by this Agent. Includes session state, next offset, truncation, and EOF. Stale or unknown session IDs are rejected.",
+  inputSchema: { type: "object", properties: { session_id: { type: "string", format: "uuid" }, offset: { type: "integer", minimum: 0, maximum: 262144 }, length: { type: "integer", minimum: 1, maximum: 65536 } }, required: ["session_id"], additionalProperties: false },
+  annotations: { title: "Read managed session output", readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+} as const;
+
 const LOCAL_TOOLS = [
   READ_FILE_TOOL,
   READ_MULTIPLE_TOOL,
@@ -270,6 +296,9 @@ const LOCAL_TOOLS = [
   EDIT_BLOCK_TOOL,
   MOVE_FILE_TOOL,
   GET_OPERATION_STATUS_TOOL,
+  START_PROCESS_TOOL,
+  LIST_SESSIONS_TOOL,
+  READ_PROCESS_OUTPUT_TOOL,
 ];
 
 const SAFE_EVENTS = new Set([
@@ -297,6 +326,11 @@ const SAFE_EVENTS = new Set([
   "move_completed",
   "move_failed",
   "operation_conflict",
+  "not_found",
+  "process_started",
+  "process_failed",
+  "process_listed",
+  "process_output_read",
 ]);
 
 function log(event: string): void {
@@ -392,15 +426,19 @@ type LocalCall =
   | { tool: "create_directory"; arguments: LocalCreateDirectory }
   | { tool: "edit_block"; arguments: LocalEditBlock }
   | { tool: "move_file"; arguments: LocalMoveFile }
-  | { tool: "get_operation_status"; arguments: OperationId };
+  | { tool: "get_operation_status"; arguments: OperationId }
+  | { tool: "start_process"; arguments: LocalStartProcess }
+  | { tool: "list_sessions"; arguments: Record<string, never> }
+  | { tool: "read_process_output"; arguments: LocalProcessOutput };
 
 function mutationTool(call: LocalCall): boolean {
-  return call.tool === "write_file" || call.tool === "create_directory" || call.tool === "edit_block" || call.tool === "move_file";
+  return call.tool === "write_file" || call.tool === "create_directory" || call.tool === "edit_block" || call.tool === "move_file" || call.tool === "start_process";
 }
 
 function callOperationId(call: LocalCall): string | undefined {
   if (call.tool === "get_operation_status") return call.arguments.operationId;
   if (call.tool === "write_file" || call.tool === "create_directory" || call.tool === "edit_block" || call.tool === "move_file") return call.arguments.operationId;
+  if (call.tool === "start_process") return call.arguments.operationId;
   return undefined;
 }
 
@@ -428,6 +466,9 @@ function upstreamArguments(call: LocalCall): Record<string, unknown> {
   if (call.tool === "edit_block") return { file_path: call.arguments.filePath, old_string: call.arguments.oldString, new_string: call.arguments.newString, expected_replacements: call.arguments.expectedReplacements };
   if (call.tool === "move_file") return { source: call.arguments.source, destination: call.arguments.destination };
   if (call.tool === "get_operation_status") return { operation_id: call.arguments.operationId };
+  if (call.tool === "start_process") return { command: call.arguments.command, timeout_ms: call.arguments.timeoutMs };
+  if (call.tool === "list_sessions") return {};
+  if (call.tool === "read_process_output") return { session_id: call.arguments.sessionId, offset: call.arguments.offset, length: call.arguments.length };
   return { session_id: call.arguments.sessionId };
 }
 
@@ -483,6 +524,17 @@ function parseLocalCall(name: unknown, args: unknown): LocalCall | null {
     const operation = parseOperationId(args);
     return operation ? { tool: "get_operation_status", arguments: operation } : null;
   }
+  if (name === "start_process") {
+    const process = parseStartProcess(args);
+    return process ? { tool: "start_process", arguments: process } : null;
+  }
+  if (name === "list_sessions") {
+    return parseListSessions(args) ? { tool: "list_sessions", arguments: {} } : null;
+  }
+  if (name === "read_process_output") {
+    const output = parseLocalProcessOutput(args);
+    return output ? { tool: "read_process_output", arguments: output } : null;
+  }
   return null;
 }
 
@@ -491,6 +543,7 @@ function failureMessage(tool: LocalCall["tool"]): string {
   if (tool === "get_file_info") return "The file info request failed.";
   if (tool === "start_search") return "The search could not be completed.";
   if (tool === "get_more_search_results" || tool === "stop_search") return "The search session is unavailable.";
+  if (tool === "read_process_output") return "The managed session is unavailable.";
   return "The file read failed.";
 }
 
@@ -499,6 +552,9 @@ function successEvent(tool: LocalCall["tool"]): string {
   if (tool === "get_file_info") return "info_completed";
   if (tool === "start_search" || tool === "get_more_search_results") return "search_completed";
   if (tool === "stop_search") return "search_stopped";
+  if (tool === "start_process") return "process_started";
+  if (tool === "list_sessions") return "process_listed";
+  if (tool === "read_process_output") return "process_output_read";
   return "read_completed";
 }
 
@@ -530,7 +586,7 @@ function completedText(body: unknown): string | null {
 function publicReceipt(value: unknown): Record<string, unknown> | null {
   if (value === null || typeof value !== "object") return null;
   const receipt = value as Record<string, unknown>;
-  const allowed = ["operation_id", "tool_name", "state", "created_at", "updated_at", "safe_result_summary"];
+  const allowed = ["operation_id", "tool_name", "state", "created_at", "updated_at", "safe_result_summary", "session_id"];
   const projection: Record<string, unknown> = {};
   for (const key of allowed) if (receipt[key] !== undefined) projection[key] = receipt[key];
   return projection.operation_id && projection.state ? projection : null;
@@ -594,6 +650,10 @@ async function callDevice(env: Env, call: LocalCall, id: unknown, signal: AbortS
     if (call.tool === "get_operation_status" && response.status === 404) {
       return toolText(id, JSON.stringify({ operation_id: call.arguments.operationId, status: "not_found" }));
     }
+    if (call.tool === "read_process_output" && response.status === 404) {
+      log("not_found");
+      return toolError(id, "The managed session was not found.");
+    }
     if (operationId && response.status === 503) {
       let knownUnavailable = false;
       try {
@@ -631,8 +691,13 @@ async function callDevice(env: Env, call: LocalCall, id: unknown, signal: AbortS
 
   const text = completedText(parsed);
   if (isMutation && parsed !== null && typeof parsed === "object") {
-    const operation = parsed as { operation_id?: unknown; status?: unknown; receipt?: unknown };
-    log(operation.status === "failed" ? `${call.tool === "create_directory" ? "directory" : call.tool === "edit_block" ? "edit" : call.tool === "move_file" ? "move" : "write"}_failed` : `${call.tool === "create_directory" ? "directory" : call.tool === "edit_block" ? "edit" : call.tool === "move_file" ? "move" : "write"}_completed`);
+    const operation = parsed as { operation_id?: unknown; status?: unknown; receipt?: unknown; session_id?: unknown };
+    if (call.tool === "start_process") {
+      log(operation.status === "failed" ? "process_failed" : "process_started");
+      return toolText(id, JSON.stringify({ operation_id: operationId, status: operation.status, session_id: operation.session_id, receipt: publicReceipt(operation.receipt) }));
+    }
+    const category = call.tool === "create_directory" ? "directory" : call.tool === "edit_block" ? "edit" : call.tool === "move_file" ? "move" : "write";
+    log(operation.status === "failed" ? `${category}_failed` : `${category}_completed`);
     return toolText(id, JSON.stringify({ operation_id: operationId, status: operation.status, receipt: publicReceipt(operation.receipt) }));
   }
   if (call.tool === "get_operation_status") {
@@ -693,7 +758,7 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
       capabilities: { tools: { listChanged: false } },
       serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
       instructions:
-        "Read, search, and change local files. Every mutation requires a stable operation ID; query the original ID after an uncertain response and use a new ID only for a new intent. Shell commands are not available.",
+        "Read, search, and change local files. Every mutation requires a stable operation ID; query the original ID after an uncertain response and use a new ID only for a new intent. start_process runs commands with the Agent account's full Linux permissions and requires explicit user approval for the target and action. Managed sessions support listing and paged output only; stdin and stop are unavailable.",
     });
   }
 
@@ -708,7 +773,7 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
       return toolError(rpcMessage.id, "The requested tool call was rejected.");
     }
     const call = params as { name?: unknown; arguments?: unknown };
-    if (["write_file", "create_directory", "edit_block", "move_file"].includes(String(call.name))) {
+    if (["write_file", "create_directory", "edit_block", "move_file", "start_process"].includes(String(call.name))) {
       const candidate = call.arguments !== null && typeof call.arguments === "object"
         ? (call.arguments as Record<string, unknown>).operation_id
         : undefined;

@@ -218,6 +218,9 @@ test("lists only the local read tool and rejects anything that could retarget th
       "edit_block",
       "move_file",
       "get_operation_status",
+      "start_process",
+      "list_sessions",
+      "read_process_output",
     ],
   );
   const annotations = tools[0]?.annotations as {
@@ -232,6 +235,9 @@ test("lists only the local read tool and rejects anything that could retarget th
   assert.equal(schema.includes("\"path\""), true);
   assert.equal(schema.includes("isUrl"), false);
   assert.equal(schema.includes("host"), false);
+  const processTool = tools.find((tool) => tool.name === "start_process");
+  assert.equal((processTool?.annotations as { readOnlyHint: boolean }).readOnlyHint, false);
+  assert.equal(tools.some((tool) => ["interact_with_process", "force_terminate"].includes(String(tool.name))), false);
 
   const secretUrl = "http://203.0.113.9/private";
   const rejectedArguments = [
@@ -253,7 +259,7 @@ test("lists only the local read tool and rejects anything that could retarget th
     assert.equal(result.text.includes(portalToken), false);
   }
 
-  for (const name of ["write_file", "start_process", "set_config_value", "get_config", "kill_process"]) {
+  for (const name of ["write_file", "interact_with_process", "force_terminate", "node:local", "set_config_value", "get_config", "kill_process"]) {
     const result = await postMcp(
       target,
       { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name, arguments: { command: "id", path: secretUrl } } },
@@ -262,6 +268,16 @@ test("lists only the local read tool and rejects anything that could retarget th
     const payload = result.json as { result: { isError: boolean } };
     assert.equal(payload.result.isError, true);
     assert.equal(result.text.includes(secretUrl), false);
+  }
+
+  for (const argumentsValue of [
+    { command: "id" },
+    { operation_id: "shell-path", command: "id", shell: "/bin/bash" },
+  ]) {
+    const result = await postMcp(target, {
+      jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "start_process", arguments: argumentsValue },
+    }, headers);
+    assert.equal((result.json as { result: { isError: boolean } }).result.isError, true);
   }
 
   assert.equal(calls.length, 0);
@@ -582,7 +598,7 @@ test("lists a disposable directory through the worker and the native agent", asy
   let agent: RunningAgent | undefined;
 
   try {
-    agent = await startAgent({ deviceToken });
+    agent = await startAgent({ deviceToken, receiptDirectory: path.join(fixtureDir, "receipts") });
     const runningAgent = agent;
     globalThis.fetch = (async () => {
       throw new Error("worker must not call global fetch");
@@ -635,7 +651,7 @@ test("lists and pages bounded filename and content searches through the worker a
   let agent: RunningAgent | undefined;
 
   try {
-    agent = await startAgent({ deviceToken });
+    agent = await startAgent({ deviceToken, shellPath: "/bin/sh", receiptDirectory: path.join(fixtureDir, "receipts") });
     const runningAgent = agent;
     globalThis.fetch = (async () => {
       throw new Error("worker must not call global fetch");
@@ -655,12 +671,12 @@ test("lists and pages bounded filename and content searches through the worker a
     const tools = (list.json as { result: { tools: Array<Record<string, unknown>> } }).result.tools;
     assert.deepEqual(
       tools.map((tool) => tool.name),
-      ["read_file", "read_multiple_files", "list_directory", "get_file_info", "start_search", "get_more_search_results", "stop_search", "write_file", "create_directory", "edit_block", "move_file", "get_operation_status"],
+      ["read_file", "read_multiple_files", "list_directory", "get_file_info", "start_search", "get_more_search_results", "stop_search", "write_file", "create_directory", "edit_block", "move_file", "get_operation_status", "start_process", "list_sessions", "read_process_output"],
     );
     for (const tool of tools.slice(4, 7).concat(tools.slice(11))) {
       const annotations = tool.annotations as { readOnlyHint: boolean; destructiveHint: boolean };
-      assert.equal(annotations.readOnlyHint, !["write_file", "create_directory", "edit_block", "move_file"].includes(String(tool.name)));
-      assert.equal(annotations.destructiveHint, ["write_file", "create_directory", "edit_block", "move_file"].includes(String(tool.name)));
+      assert.equal(annotations.readOnlyHint, !["write_file", "create_directory", "edit_block", "move_file", "start_process"].includes(String(tool.name)));
+      assert.equal(annotations.destructiveHint, ["write_file", "create_directory", "edit_block", "move_file", "start_process"].includes(String(tool.name)));
     }
     const writeTool = tools[7];
     assert.equal(JSON.stringify(writeTool?.description).includes("new ID"), true);
@@ -698,6 +714,27 @@ test("lists and pages bounded filename and content searches through the worker a
       (next.json as { result: { content: Array<{ text: string }> } }).result.content[0]?.text ?? "{}",
     ) as { results: unknown[]; has_more: boolean };
     assert.equal(second.results.length, 5);
+
+    const processStarted = await postMcp(target, {
+      jsonrpc: "2.0", id: 4, method: "tools/call",
+      params: { name: "start_process", arguments: { operation_id: "worker-process-once", command: "printf '%s' 'worker-shell-fixture'", timeout_ms: 500 } },
+    }, auth);
+    const processInfo = JSON.parse((processStarted.json as { result: { content: Array<{ text: string }> } }).result.content[0]?.text ?? "{}") as { operation_id: string; status: string; session_id: string };
+    assert.equal(processInfo.operation_id, "worker-process-once");
+    assert.equal(processInfo.status, "completed");
+    assert.ok(processInfo.session_id, JSON.stringify(processInfo));
+    assert.match(processInfo.session_id, /^[0-9a-f-]{36}$/);
+    const processOutput = await postMcp(target, {
+      jsonrpc: "2.0", id: 5, method: "tools/call",
+      params: { name: "read_process_output", arguments: { session_id: processInfo.session_id, offset: 0, length: 64 } },
+    }, auth);
+    const outputPage = JSON.parse((processOutput.json as { result: { content: Array<{ text: string }> } }).result.content[0]?.text ?? "{}") as { output: string; eof: boolean };
+    assert.equal(outputPage.output, "worker-shell-fixture");
+    assert.equal(outputPage.eof, true);
+    const listedSessions = await postMcp(target, {
+      jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "list_sessions", arguments: {} },
+    }, auth);
+    assert.equal(JSON.parse((listedSessions.json as { result: { content: Array<{ text: string }> } }).result.content[0]?.text ?? "[]").length, 1);
     assert.equal(second.has_more, false);
 
     const content = await postMcp(

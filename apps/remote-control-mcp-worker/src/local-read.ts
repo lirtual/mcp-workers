@@ -84,6 +84,8 @@ export interface LocalWriteFile {
 export interface OperationId {
   operationId: string;
 }
+export interface LocalStartProcess { operationId: string; command: string; timeoutMs: number }
+export interface LocalProcessOutput { sessionId: string; offset: number; length: number }
 
 export interface LocalCreateDirectory { operationId: string; path: string }
 export interface LocalEditBlock { operationId: string; filePath: string; oldString: string; newString: string; expectedReplacements: number }
@@ -139,6 +141,33 @@ export function parseOperationId(input: unknown): OperationId | null {
   if (Object.keys(record).length !== 1 || Object.keys(record)[0] !== "operation_id") return null;
   if (typeof record.operation_id !== "string" || !OPERATION_ID.test(record.operation_id)) return null;
   return { operationId: record.operation_id };
+}
+
+export function parseStartProcess(input: unknown): LocalStartProcess | null {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) return null;
+  const record = input as Record<string, unknown>;
+  if (Object.keys(record).some((key) => !["operation_id", "command", "timeout_ms"].includes(key))) return null;
+  const operation = parseOperationId({ operation_id: record.operation_id });
+  if (!operation || typeof record.command !== "string" || record.command.length === 0 || record.command.length > 8192 || record.command.includes("\0")) return null;
+  const timeout = record.timeout_ms === undefined ? 1000 : record.timeout_ms;
+  if (typeof timeout !== "number" || !Number.isInteger(timeout) || timeout < 0 || timeout > 30_000) return null;
+  return { operationId: operation.operationId, command: record.command, timeoutMs: timeout };
+}
+
+export function parseLocalProcessOutput(input: unknown): LocalProcessOutput | null {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) return null;
+  const record = input as Record<string, unknown>;
+  if (Object.keys(record).some((key) => !["session_id", "offset", "length"].includes(key))) return null;
+  if (typeof record.session_id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(record.session_id)) return null;
+  const offset = record.offset === undefined ? 0 : record.offset;
+  const length = record.length === undefined ? 16_384 : record.length;
+  if (typeof offset !== "number" || !Number.isSafeInteger(offset) || offset < 0 || offset > 262_144) return null;
+  if (typeof length !== "number" || !Number.isInteger(length) || length < 1 || length > 65_536) return null;
+  return { sessionId: record.session_id, offset, length };
+}
+
+export function parseListSessions(input: unknown): boolean {
+  return input !== null && typeof input === "object" && !Array.isArray(input) && Object.keys(input).length === 0;
 }
 
 const MAX_SEARCH_PATTERN_LENGTH = 256;
