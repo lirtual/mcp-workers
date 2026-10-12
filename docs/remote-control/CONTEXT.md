@@ -1,6 +1,6 @@
 # Remote Control MCP — Domain Context
 
-> Status: Product terminology and Round 1 scope decisions accepted on 2026-10-12. Implementation design and permissions are still under discussion.
+> Status: Product terminology and Round 1 (F1–F4) plus Round 2 (G1–G3) decisions accepted on 2026-10-12. Detailed authorization, process lifecycle and implementation remain under discussion.
 
 ## Language
 
@@ -33,6 +33,24 @@ _Avoid_: Treating possession of a different MCP app's shared token as permission
 **Graphical Desktop Control**:
 Remote viewing or manipulation of a desktop screen, mouse or keyboard. This is excluded from the first release.
 
+**Execution Boundary**:
+The security boundary separating authorized workspace activity from unrelated host data, processes and capabilities.
+_Avoid_: Treating a directory filter or command blacklist by itself as the boundary.
+
+**Unattended Remote Operation**:
+An authorized workspace operation that may proceed while the device owner is not locally available to confirm each action.
+_Avoid_: Assuming unattended means host-wide or unrestricted authorization.
+
+**Operation ID**:
+A stable identity for one remote operation, reused when querying or reconciling that operation rather than creating a new execution intent.
+
+**Operation Receipt**:
+The authoritative minimal record of whether a state-changing operation was admitted and which execution state is known, allowing interrupted calls to be reconciled.
+
+**Unknown Outcome**:
+A state in which an operation may have reached execution but available evidence cannot establish its final effect.
+_Avoid_: Relabeling an uncertain operation as failed or safe to retry.
+
 ## Settled product boundaries
 
 1. The product name is **Remote Control MCP**; the prospective Worker identifier is `remote-control-mcp-worker`.
@@ -41,14 +59,17 @@ Remote viewing or manipulation of a desktop screen, mouse or keyboard. This is e
 4. First-release scope is **workspace file read/write, search, development Shell and managed processes**. Host-wide administration is out of scope.
 5. **Direct remote MCP client connection with independent OAuth authorization** is required; relying solely on the existing MCP Portal is not the agreed entrypoint.
 6. **Graphical desktop, mouse, keyboard and native Windows execution** are not first-release product capabilities.
-7. **VPC-only private network connection** is a first-release constraint, without publicly publishing the device endpoint. The technical record for that choice lives in ADR-0004.
+7. **VPC-only private network connection** is a first-release constraint, without publicly publishing the device endpoint. See ADR-0004.
+8. The **Execution Boundary is an isolated Linux workspace environment**, not the entire host user's permissions; it must expose only authorized project resources. See ADR-0005.
+9. **Unattended Remote Operations** are required for permitted workspace activity, including authorized development commands. Out-of-scope activity is denied rather than escalated. See ADR-0006.
+10. State-changing operations must have stable **Operation IDs** and minimal local **Operation Receipts**. An **Unknown Outcome** cannot be blindly replayed. See ADR-0007.
 
 ## Unsettled boundaries — not approved yet
 
-- How workspace confinement is enforced against arbitrary Shell commands: isolated execution environment versus host user identity and local policy.
-- When workspace operations may run unattended; what constitutes destructive or privileged activity and what to do when local approval cannot be given.
-- Operation identity, receipt persistence, timeout/unknown outcome handling, retries, process restart/cancel and revocation semantics.
+- Which upstream tools and parameters become remote capabilities; how destructive workspace writes, interactive process inputs and secret handling are authorized.
+- Managed-process lifecycle: owned sessions, stopping/canceling, output paging, and behavior after device restart.
+- Exact local receipt retention/storage, crash recovery, token revocation and cleanup rules.
 - Specific identity provider, OAuth component layout, credential rotation and actual client compatibility.
-- Concrete limits (payload, output, time), supported tool shapes and rollout/monitoring policy.
+- Concrete isolation mount/network policy, limits (payload, output, time), supported tool shapes and rollout/monitoring policy.
 
 Architecture and deployment implementation details belong in the research draft and ADRs, not in this vocabulary document.
