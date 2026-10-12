@@ -1,6 +1,6 @@
-# Remote Control MCP — Minimal v1 specification (approval draft)
+# Remote Control MCP — Historical minimal v1 draft (superseded by SPEC.md)
 
-> **Status: design draft for final operator approval (2026-10-12). Not implemented or deployed.**
+> **Status: Superseded by [SPEC.md](./SPEC.md) on 2026-10-12.** This draft remains for comparison only; do not implement from it. No code or deployment is authorized.
 > Accepted decisions are documented in [CONTEXT.md](./CONTEXT.md) and ADR-0001 through ADR-0012, with later ADRs superseding earlier ones. This specification consolidates those decisions; implementation details labeled **proposed default** still require verification, not presumed approval.
 > Baseline research: [RESEARCH-DRAFT.md](./RESEARCH-DRAFT.md). Unlike the original WSL2/VPC-only research probe, this v1 product is Linux-first and uses the existing MCP Portal Bearer pattern.
 
