@@ -45,7 +45,7 @@ _Avoid_: Confusing a static Bearer credential with OAuth authorization or sharin
 Remote viewing or manipulation of a desktop screen, mouse or keyboard. This is excluded from the first release.
 
 **Execution Boundary**:
-The Linux operating-system account and its effective filesystem/process privileges used by the Agent for local execution. No container or project-root isolation is required in v1.
+The operator's existing Linux login account and its effective filesystem/process privileges used by the Agent for local execution. No dedicated service account, container or project-root isolation is required in v1.
 _Avoid_: Treating a directory filter, current working directory or command blacklist as a security sandbox.
 
 **Unattended Remote Operation**:
@@ -71,7 +71,7 @@ _Avoid_: Relabeling an uncertain operation as failed or safe to retry.
 5. **MCP Portal static Bearer ingress with a Remote Control-only secret value is accepted**; do not use OAuth for v1, and do not reuse the token value shared by other MCP apps. Actual Portal/ChatGPT header delivery must be proven before write/Shell activation (ADR-0012). Unauthenticated remote Shell is forbidden.
 6. **Graphical desktop, mouse, keyboard and native Windows execution** are not first-release product capabilities.
 7. **VPC-only private network connection** is a first-release constraint, without publicly publishing the device endpoint. See ADR-0004.
-8. The **Execution Boundary is the Linux Agent's ordinary OS user privileges**. Containers and project-root path allowlists were explicitly dropped; see ADR-0011, which supersedes ADR-0005.
+8. The **Execution Boundary is the operator's existing ordinary Linux login account**, used directly by the Agent. No dedicated service account, container or project-root path allowlist; see ADR-0011, which supersedes ADR-0005.
 9. **Unattended Remote Operations** remain required for permitted development activities. With direct OS-account execution, their reachable files and secrets are broader than originally planned; see ADR-0006 as amended by ADR-0011.
 10. State-changing operations must have stable **Operation IDs** and minimal local **Operation Receipts**. An **Unknown Outcome** cannot be blindly replayed. See ADR-0007.
 11. The client sees a **Curated Tool Surface**, restricted to necessary file, search, development Shell and managed-process tool categories, **not** to a project-root path allowlist. See ADR-0008 and ADR-0011.
@@ -84,6 +84,6 @@ _Avoid_: Relabeling an uncertain operation as failed or safe to retry.
 - Managed-session lifecycle details: stopping/canceling, output paging, quotas and behavior after device restart.
 - Exact local receipt retention/storage, crash recovery, token revocation and cleanup rules.
 - Actual ChatGPT/MCP Portal delivery of the separate static Bearer credential, token provisioning/rotation and denied-request acceptance; compatibility with arbitrary non-Portal MCP clients is not guaranteed.
-- Linux account/privilege selection, secret exposure and ingress compromise risk, limits (payload, output, time), supported tool shapes and rollout/monitoring policy.
+- Actual permissions and secret exposure of the **confirmed existing normal Linux login account**, ingress compromise risk, limits (payload, output, time), supported tool shapes and rollout/monitoring policy.
 
 Architecture and deployment implementation details belong in the research draft and ADRs, not in this vocabulary document.
