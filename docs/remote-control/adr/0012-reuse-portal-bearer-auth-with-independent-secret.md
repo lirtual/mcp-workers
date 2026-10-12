@@ -24,7 +24,7 @@ The earlier Remote Control MCP proposal added GitHub OAuth, OAuth provider route
 - Positive: one MCP Worker ingress, no OAuth KV, GitHub OAuth app, login UI, callback management or new authorization component.
 - Positive: reuses existing tested authentication middleware and secret-management conventions.
 - Negative: a static Bearer token is a transferable secret; it has neither end-user scopes nor delegated OAuth consent, and access to independent third-party clients depends on their/Portal's header support.
-- Negative: because the Agent runs without a container or project directory isolation, compromise or misuse of this token can affect files and secrets readable by the Agent's Linux user. A dedicated non-root OS account with minimal accessible secrets is recommended; runtime account selection is not settled here.
+- Negative: because the Agent runs without a container or project directory isolation, compromise or misuse of this token can affect files and secrets readable by the Agent's Linux user. The operator confirmed running the Agent as the **existing normal Linux login account**; no dedicated account is required. Its broader accessible secrets and privilege pathways must be reviewed before enabling writes/Shell (ADR-0011).
 - The earlier requirement of direct **standards-based OAuth interoperability** is explicitly relinquished for v1. Do not present OAuth client compatibility as an accepted feature.
 - The accepted VPC Service + private Tunnel design (ADR-0004), curated tool surface (ADR-0008), managed sessions (ADR-0009) and local receipts (ADR-0007) remain unchanged.
 
