@@ -45,10 +45,12 @@ jobs:
           fi
 
           if [[ -z "$base_sha" || "$base_sha" =~ ^0+$ ]]; then
-            base_sha="$(git rev-parse HEAD^)"
+            # A new branch or the repository's first push has no previous commit.
+            # Treat every tracked file in the new revision as changed.
+            mapfile -t changed_files < <(git ls-tree -r --name-only "$GITHUB_SHA")
+          else
+            mapfile -t changed_files < <(git diff --name-only "$base_sha" "$GITHUB_SHA")
           fi
-
-          mapfile -t changed_files < <(git diff --name-only "$base_sha" "$GITHUB_SHA")
           printf 'Changed files:\n'
           printf '  %s\n' "${changed_files[@]}"
 
