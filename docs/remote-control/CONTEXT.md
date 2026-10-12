@@ -1,6 +1,6 @@
 # Remote Control MCP — Domain Context
 
-> Status: Product terminology and Round 1 (F1–F4) plus Round 2 (G1–G3) and Round 3 H1–H2 decisions accepted on 2026-10-12. Detailed authorization, process lifecycle and implementation remain under discussion.
+> Status: Product terminology and Round 1 (F1–F4) plus Round 2 (G1–G3) and Round 3 H1–H3 decisions accepted on 2026-10-12. Detailed authorization, process lifecycle and implementation remain under discussion.
 
 ## Language
 
@@ -72,13 +72,14 @@ _Avoid_: Relabeling an uncertain operation as failed or safe to retry.
 10. State-changing operations must have stable **Operation IDs** and minimal local **Operation Receipts**. An **Unknown Outcome** cannot be blindly replayed. See ADR-0007.
 11. The client sees a **Curated Tool Surface**, restricted to necessary workspace file, search, development Shell and managed-process operations. See ADR-0008.
 12. **Managed Sessions** may outlive the originating MCP request; support status, bounded output and explicit stop, without affecting unrelated host processes. See ADR-0009.
+13. Direct Remote MCP Client OAuth and the MCP resource share one product endpoint/deployment boundary for the single-user first release; see ADR-0010 for the combined Worker implementation decision.
 
 ## Unsettled boundaries — not approved yet
 
 - The exact allowed tools and parameters; how destructive workspace writes, interactive process inputs and secret handling are authorized.
 - Managed-session lifecycle details: stopping/canceling, output paging, quotas and behavior after device restart.
 - Exact local receipt retention/storage, crash recovery, token revocation and cleanup rules.
-- Specific identity provider, OAuth component layout, credential rotation and actual client compatibility.
+- Specific identity provider, single-user account binding, OAuth grant/scope policy, credential rotation and actual client compatibility.
 - Concrete isolation mount/network policy, limits (payload, output, time), supported tool shapes and rollout/monitoring policy.
 
 Architecture and deployment implementation details belong in the research draft and ADRs, not in this vocabulary document.
