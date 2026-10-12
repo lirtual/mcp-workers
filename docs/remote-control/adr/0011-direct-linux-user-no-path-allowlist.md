@@ -29,4 +29,4 @@ Container confinement and workspace-root mount allowlisting from ADR-0005 are su
 
 ## Deferred
 
-The operator asked whether the existing MCP Portal bearer-token pattern could replace the independent OAuth design. This is an **open authentication reconsideration**, not yet an acceptance of shared-token authorization. No OAuth or Portal implementation change is authorized by this record.
+The operator subsequently accepted the existing MCP Portal static Bearer pattern with a **new independent secret value** in [ADR-0012](./0012-reuse-portal-bearer-auth-with-independent-secret.md), superseding earlier OAuth ADRs. No Portal configuration or production changes are authorized by this historical execution-scope record.
