@@ -1,8 +1,16 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { listLocalDirectory, readLocalFileInfo, readMultipleLocalFiles, BrowseFailed } from "./browse.ts";
-import { parseFileInfo, parseListDirectory, parseLocalRead, parseReadMultiple } from "./local-read.ts";
+import {
+  parseFileInfo,
+  parseListDirectory,
+  parseLocalRead,
+  parseReadMultiple,
+  parseSearchSessionId,
+  parseSearchStart,
+} from "./local-read.ts";
 import { readLocalFile, ReadFailed } from "./read-file.ts";
+import { SearchFailed, SearchSessions } from "./search.ts";
 
 const MAX_BODY_BYTES = 65_536;
 const LOOPBACK_HOST = "127.0.0.1";
@@ -15,6 +23,9 @@ const SAFE_EVENTS = new Set([
   "list_failed",
   "info_completed",
   "info_failed",
+  "search_completed",
+  "search_failed",
+  "search_stopped",
   "unavailable",
   "not_found",
   "health",
@@ -28,6 +39,8 @@ export interface StartAgentOptions {
   host?: string;
   port?: number;
   log?: AgentLog;
+  /** Process-local startup setting; production uses the fixed default. */
+  searchSessionTtlMs?: number;
 }
 
 export interface RunningAgent {
@@ -104,11 +117,19 @@ function operationId(pathname: string): string | null {
 
 type ToolOutcome =
   | { kind: "rejected"; message: string }
-  | { kind: "failed"; event: "read_failed" | "list_failed" | "info_failed"; message: string }
+  | {
+      kind: "failed";
+      event: "read_failed" | "list_failed" | "info_failed" | "search_failed";
+      message: string;
+    }
   | { kind: "unavailable" }
-  | { kind: "completed"; event: "read_completed" | "list_completed" | "info_completed"; text: string };
+  | {
+      kind: "completed";
+      event: "read_completed" | "list_completed" | "info_completed" | "search_completed" | "search_stopped";
+      text: string;
+    };
 
-async function runTool(tool: unknown, args: unknown): Promise<ToolOutcome> {
+async function runTool(tool: unknown, args: unknown, searches: SearchSessions): Promise<ToolOutcome> {
   try {
     if (tool === "read_file") {
       const read = parseLocalRead(args);
@@ -130,6 +151,28 @@ async function runTool(tool: unknown, args: unknown): Promise<ToolOutcome> {
       if (!info) return { kind: "rejected", message: "The requested tool call was rejected." };
       return { kind: "completed", event: "info_completed", text: await readLocalFileInfo(info) };
     }
+    if (tool === "start_search") {
+      const search = parseSearchStart(args);
+      if (!search) return { kind: "rejected", message: "The requested tool call was rejected." };
+      return {
+        kind: "completed",
+        event: "search_completed",
+        text: JSON.stringify(await searches.start(search)),
+      };
+    }
+    if (tool === "get_more_search_results" || tool === "stop_search") {
+      const session = parseSearchSessionId(args);
+      if (!session) return { kind: "rejected", message: "The requested tool call was rejected." };
+      const result =
+        tool === "get_more_search_results"
+          ? await searches.more(session.sessionId)
+          : await searches.stop(session.sessionId);
+      return {
+        kind: "completed",
+        event: tool === "stop_search" ? "search_stopped" : "search_completed",
+        text: JSON.stringify(result),
+      };
+    }
     return { kind: "rejected", message: "The requested tool is not available." };
   } catch (error) {
     if (error instanceof ReadFailed) {
@@ -142,6 +185,13 @@ async function runTool(tool: unknown, args: unknown): Promise<ToolOutcome> {
           ? "info_failed"
           : "read_failed";
       return { kind: "failed", event, message: error.message };
+    }
+    if (error instanceof SearchFailed) {
+      return {
+        kind: "failed",
+        event: "search_failed",
+        message: "The local search request could not be completed.",
+      };
     }
     return { kind: "unavailable" };
   }
@@ -158,6 +208,7 @@ export async function startAgent(options: StartAgentOptions): Promise<RunningAge
   }
 
   const log = options.log;
+  const searches = new SearchSessions(options.searchSessionTtlMs);
 
   const server: Server = createServer((request, response) => {
     void handleRequest(request, response).catch(() => {
@@ -247,7 +298,7 @@ export async function startAgent(options: StartAgentOptions): Promise<RunningAge
       }
 
       const body = parsed as { tool?: unknown; arguments?: unknown };
-      const outcome = await runTool(body.tool, body.arguments);
+      const outcome = await runTool(body.tool, body.arguments, searches);
       if (outcome.kind === "rejected") {
         emit(log, "rejected");
         sendJson(response, 400, {
@@ -304,6 +355,7 @@ export async function startAgent(options: StartAgentOptions): Promise<RunningAge
     hostname: address.address,
     port: address.port,
     close: async () => {
+      await searches.close();
       await new Promise<void>((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));
       });

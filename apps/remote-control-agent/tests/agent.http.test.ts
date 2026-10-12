@@ -426,3 +426,197 @@ test("lists, describes, and batch-reads a disposable directory within fixed boun
     await rm(secretDir, { recursive: true, force: true });
   }
 });
+
+test("searches fixture names and contents in pages, stops sessions, and rejects stale ids", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-search-"));
+  const outside = await mkdtemp(path.join(os.tmpdir(), "remote-control-search-link-"));
+  await writeFile(path.join(root, "content-a.txt"), "first\nNEEDLE_CONTENT_SENTINEL here\nlast\n", "utf8");
+  await writeFile(path.join(root, "content-b.txt"), "NEEDLE_CONTENT_SENTINEL again\n", "utf8");
+  for (let index = 0; index < 25; index += 1) {
+    await writeFile(path.join(root, `name-match-${String(index).padStart(2, "0")}.txt`), "other\n", "utf8");
+  }
+  await writeFile(path.join(outside, "linked-secret.txt"), "NEEDLE_CONTENT_SENTINEL linked\n", "utf8");
+  await symlink(outside, path.join(root, "linked-outside"));
+  await symlink(root, path.join(root, "self-cycle"));
+  const agent = await startAgent({ deviceToken: DEVICE_TOKEN });
+
+  try {
+    const started = await call(agent, {
+      tool: "start_search",
+      arguments: { path: root, pattern: "name-match-", search_type: "filename" },
+    });
+    assert.equal(started.status, 200);
+    const first = JSON.parse(completedText(started.json)) as {
+      session_id: string;
+      results: Array<{ path: string }>;
+      has_more: boolean;
+    };
+    assert.equal(first.results.length, 20);
+    assert.equal(first.has_more, true);
+    assert.equal(typeof first.session_id, "string");
+
+    const next = await call(agent, {
+      tool: "get_more_search_results",
+      arguments: { session_id: first.session_id },
+    });
+    const second = JSON.parse(completedText(next.json)) as {
+      results: Array<{ path: string }>;
+      has_more: boolean;
+    };
+    assert.equal(second.results.length, 5);
+    assert.equal(second.has_more, false);
+    assert.equal(second.results.some((result) => result.path.includes("linked-outside")), false);
+
+    const content = await call(agent, {
+      tool: "start_search",
+      arguments: { path: root, pattern: "NEEDLE_CONTENT_SENTINEL", search_type: "content" },
+    });
+    const contentPage = JSON.parse(completedText(content.json)) as {
+      results: Array<{ path: string; line: number; text: string }>;
+      has_more: boolean;
+    };
+    assert.equal(contentPage.results.length, 2);
+    assert.equal(contentPage.results.every((result) => result.line === 2 || result.line === 1), true);
+    assert.equal(contentPage.has_more, false);
+    assert.equal(JSON.stringify(contentPage).includes("linked-secret"), false);
+
+    await writeFile(path.join(root, "long-line.txt"), `LONG_LINE_SENTINEL${"x".repeat(400)}\n`, "utf8");
+    const longLine = await call(agent, {
+      tool: "start_search",
+      arguments: { path: root, pattern: "LONG_LINE_SENTINEL", search_type: "content" },
+    });
+    const longLinePage = JSON.parse(completedText(longLine.json)) as {
+      results: Array<{ text: string }>;
+    };
+    assert.equal(longLinePage.results[0]?.text.length, 240);
+
+    const missingDirectory = await call(agent, {
+      tool: "start_search",
+      arguments: { path: path.join(root, "missing-directory-SENTINEL"), pattern: "secret", search_type: "filename" },
+    });
+    assert.equal((missingDirectory.json as { status: string }).status, "failed");
+    assert.equal(missingDirectory.text.includes("missing-directory-SENTINEL"), false);
+
+    const stoppable = await call(agent, {
+      tool: "start_search",
+      arguments: { path: root, pattern: "name-match-", search_type: "filename" },
+    });
+    const stoppablePage = JSON.parse(completedText(stoppable.json)) as { session_id: string; has_more: boolean };
+    assert.equal(stoppablePage.has_more, true);
+    const stopped = await call(agent, {
+      tool: "stop_search",
+      arguments: { session_id: stoppablePage.session_id },
+    });
+    assert.equal(JSON.parse(completedText(stopped.json)).status, "stopped");
+    const afterStop = await call(agent, {
+      tool: "get_more_search_results",
+      arguments: { session_id: stoppablePage.session_id },
+    });
+    assert.equal((afterStop.json as { status: string }).status, "failed");
+    assert.equal(afterStop.text.includes(stoppablePage.session_id), false);
+
+    for (const arguments_ of [
+      { path: root, pattern: "x", search_type: "content", session_id: "forged" },
+      { path: root, pattern: "", search_type: "filename" },
+      { path: root, pattern: "x", search_type: "process" },
+      { session_id: "process-session-id" },
+      { session_id: "../etc/passwd" },
+    ]) {
+      const tool = "path" in arguments_ ? "start_search" : "get_more_search_results";
+      const rejected = await call(agent, { tool, arguments: arguments_ });
+      assert.equal(rejected.status, 400);
+      assert.equal(rejected.text.includes(root), false);
+      assert.equal(rejected.text.includes("/etc/passwd"), false);
+    }
+
+    const forgedButWellFormed = await call(agent, {
+      tool: "get_more_search_results",
+      arguments: { session_id: "00000000-0000-4000-8000-000000000000" },
+    });
+    assert.equal((forgedButWellFormed.json as { status: string }).status, "failed");
+
+    const capacitySessions: string[] = [];
+    for (let index = 0; index < 4; index += 1) {
+      const active = await call(agent, {
+        tool: "start_search",
+        arguments: { path: root, pattern: "name-match-", search_type: "filename" },
+      });
+      capacitySessions.push((JSON.parse(completedText(active.json)) as { session_id: string }).session_id);
+    }
+    const overCapacity = await call(agent, {
+      tool: "start_search",
+      arguments: { path: root, pattern: "name-match-", search_type: "filename" },
+    });
+    assert.equal((overCapacity.json as { status: string }).status, "failed");
+    for (const session_id of capacitySessions) {
+      await call(agent, { tool: "stop_search", arguments: { session_id } });
+    }
+
+    const expiringAgent = await startAgent({ deviceToken: DEVICE_TOKEN, searchSessionTtlMs: 20 });
+    try {
+      const expiringStart = await call(expiringAgent, {
+        tool: "start_search",
+        arguments: { path: root, pattern: "name-match-", search_type: "filename" },
+      });
+      const expiringSession = JSON.parse(completedText(expiringStart.json)) as { session_id: string };
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      const expired = await call(expiringAgent, {
+        tool: "get_more_search_results",
+        arguments: { session_id: expiringSession.session_id },
+      });
+      assert.equal((expired.json as { status: string }).status, "failed");
+      assert.equal(expired.text.includes(expiringSession.session_id), false);
+    } finally {
+      await expiringAgent.close();
+    }
+
+    const preRestartAgent = await startAgent({ deviceToken: DEVICE_TOKEN });
+    const beforeRestart = await call(preRestartAgent, {
+      tool: "start_search",
+      arguments: { path: root, pattern: "name-match-", search_type: "filename" },
+    });
+    const preRestartSession = JSON.parse(completedText(beforeRestart.json)) as { session_id: string };
+    await preRestartAgent.close();
+    const postRestartAgent = await startAgent({ deviceToken: DEVICE_TOKEN });
+    try {
+      const stale = await call(postRestartAgent, {
+        tool: "get_more_search_results",
+        arguments: { session_id: preRestartSession.session_id },
+      });
+      assert.equal((stale.json as { status: string }).status, "failed");
+    } finally {
+      await postRestartAgent.close();
+    }
+  } finally {
+    await agent.close();
+    await rm(root, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("search permission failures return a safe error", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-search-permission-"));
+  const blocked = path.join(root, "blocked");
+  await mkdir(blocked);
+  await writeFile(path.join(blocked, "permission-SENTINEL.txt"), "PRIVATE_SEARCH_SENTINEL\n", "utf8");
+  await chmod(blocked, 0o000);
+  const agent = await startAgent({ deviceToken: DEVICE_TOKEN });
+
+  try {
+    if (typeof process.getuid === "function" && process.getuid() === 0) {
+      t.skip("root bypasses fixture directory permissions");
+    }
+    const result = await call(agent, {
+      tool: "start_search",
+      arguments: { path: root, pattern: "PRIVATE_SEARCH_SENTINEL", search_type: "content" },
+    });
+    assert.equal((result.json as { status: string }).status, "failed");
+    assert.equal(result.text.includes("permission-SENTINEL"), false);
+    assert.equal(result.text.includes("PRIVATE_SEARCH_SENTINEL"), false);
+    assert.equal(result.text.includes("EACCES"), false);
+  } finally {
+    await chmod(blocked, 0o700).catch(() => undefined);
+    await agent.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});

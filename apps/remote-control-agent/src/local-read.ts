@@ -65,6 +65,19 @@ export interface LocalFileInfo {
   path: string;
 }
 
+export interface LocalSearch {
+  path: string;
+  pattern: string;
+  searchType: "filename" | "content";
+}
+
+export interface SearchSessionId {
+  sessionId: string;
+}
+
+const MAX_SEARCH_PATTERN_LENGTH = 256;
+const SEARCH_SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
 function parsePath(value: unknown): string | null {
   if (typeof value !== "string") return null;
   if (value.length === 0 || value.length > MAX_PATH_LENGTH) return null;
@@ -106,4 +119,26 @@ export function parseFileInfo(input: unknown): LocalFileInfo | null {
   const filePath = parsePath(record.path);
   if (!filePath) return null;
   return { path: filePath };
+}
+
+export function parseSearchStart(input: unknown): LocalSearch | null {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) return null;
+  const record = input as Record<string, unknown>;
+  if (Object.keys(record).some((key) => !["path", "pattern", "search_type"].includes(key))) return null;
+  const searchPath = parsePath(record.path);
+  const pattern = record.pattern;
+  const searchType = record.search_type;
+  if (!searchPath || typeof pattern !== "string" || pattern.length === 0 || pattern.length > MAX_SEARCH_PATTERN_LENGTH) {
+    return null;
+  }
+  if (pattern.includes("\0") || (searchType !== "filename" && searchType !== "content")) return null;
+  return { path: searchPath, pattern, searchType };
+}
+
+export function parseSearchSessionId(input: unknown): SearchSessionId | null {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) return null;
+  const record = input as Record<string, unknown>;
+  if (Object.keys(record).length !== 1 || Object.keys(record)[0] !== "session_id") return null;
+  if (typeof record.session_id !== "string" || !SEARCH_SESSION_ID.test(record.session_id)) return null;
+  return { sessionId: record.session_id };
 }

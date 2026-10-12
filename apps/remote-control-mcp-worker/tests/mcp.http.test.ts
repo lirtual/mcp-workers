@@ -164,7 +164,15 @@ test("lists only the local read tool and rejects anything that could retarget th
   const tools = (listed.json as { result: { tools: Array<Record<string, unknown>> } }).result.tools;
   assert.deepEqual(
     tools.map((tool) => tool.name),
-    ["read_file", "read_multiple_files", "list_directory", "get_file_info"],
+    [
+      "read_file",
+      "read_multiple_files",
+      "list_directory",
+      "get_file_info",
+      "start_search",
+      "get_more_search_results",
+      "stop_search",
+    ],
   );
   const annotations = tools[0]?.annotations as {
     readOnlyHint: boolean;
@@ -407,6 +415,152 @@ test("lists a disposable directory through the worker and the native agent", asy
     assert.equal(calls[0]?.body.includes("\"tool\":\"list_directory\""), true);
     assert.equal(calls[0]?.headers.get("authorization"), null);
     assert.equal(calls[0]?.headers.get("x-device-credential"), deviceToken);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await agent?.close();
+    await rm(fixtureDir, { recursive: true, force: true });
+  }
+});
+
+test("lists and pages bounded filename and content searches through the worker and agent", async () => {
+  const fixtureDir = await mkdtemp(path.join(os.tmpdir(), "remote-control-worker-search-"));
+  await writeFile(path.join(fixtureDir, "content-a.txt"), "SEARCH_FIXTURE_SENTINEL\n", "utf8");
+  await writeFile(path.join(fixtureDir, "content-b.txt"), "SEARCH_FIXTURE_SENTINEL\n", "utf8");
+  for (let index = 0; index < 25; index += 1) {
+    await writeFile(path.join(fixtureDir, `worker-match-${String(index).padStart(2, "0")}.txt`), "safe\n", "utf8");
+  }
+  const calls: ObservedCall[] = [];
+  const originalFetch = globalThis.fetch;
+  let agent: RunningAgent | undefined;
+
+  try {
+    agent = await startAgent({ deviceToken });
+    const runningAgent = agent;
+    globalThis.fetch = (async () => {
+      throw new Error("worker must not call global fetch");
+    }) as typeof fetch;
+    const binding = recordingBinding(calls, async (input, init) => {
+      const url = input instanceof Request ? input.url : input instanceof URL ? input.href : String(input);
+      const forwarded = new URL(url);
+      return originalFetch(`${runningAgent.baseUrl}${forwarded.pathname}`, {
+        method: init?.method,
+        headers: init?.headers,
+        body: init?.body,
+      });
+    });
+    const target = env({ REMOTE_CONTROL_DEVICE: binding });
+    const auth = { authorization: `Bearer ${portalToken}` };
+    const list = await postMcp(target, { jsonrpc: "2.0", id: 1, method: "tools/list" }, auth);
+    const tools = (list.json as { result: { tools: Array<Record<string, unknown>> } }).result.tools;
+    assert.deepEqual(
+      tools.map((tool) => tool.name),
+      ["read_file", "read_multiple_files", "list_directory", "get_file_info", "start_search", "get_more_search_results", "stop_search"],
+    );
+    for (const tool of tools.slice(-3)) {
+      const annotations = tool.annotations as { readOnlyHint: boolean; destructiveHint: boolean };
+      assert.equal(annotations.readOnlyHint, true);
+      assert.equal(annotations.destructiveHint, false);
+    }
+
+    const started = await postMcp(
+      target,
+      {
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: {
+          name: "start_search",
+          arguments: { path: fixtureDir, pattern: "worker-match-", search_type: "filename" },
+        },
+      },
+      auth,
+    );
+    const firstText = (started.json as { result: { content: Array<{ text: string }> } }).result.content[0]?.text ?? "";
+    const first = JSON.parse(firstText) as { session_id: string; results: unknown[]; has_more: boolean };
+    assert.equal(first.results.length, 20);
+    assert.equal(first.has_more, true);
+
+    const next = await postMcp(
+      target,
+      {
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: { name: "get_more_search_results", arguments: { session_id: first.session_id } },
+      },
+      auth,
+    );
+    const second = JSON.parse(
+      (next.json as { result: { content: Array<{ text: string }> } }).result.content[0]?.text ?? "{}",
+    ) as { results: unknown[]; has_more: boolean };
+    assert.equal(second.results.length, 5);
+    assert.equal(second.has_more, false);
+
+    const content = await postMcp(
+      target,
+      {
+        jsonrpc: "2.0",
+        id: 4,
+        method: "tools/call",
+        params: {
+          name: "start_search",
+          arguments: { path: fixtureDir, pattern: "SEARCH_FIXTURE_SENTINEL", search_type: "content" },
+        },
+      },
+      auth,
+    );
+    const contentText = (content.json as { result: { content: Array<{ text: string }> } }).result.content[0]?.text ?? "";
+    const contentPage = JSON.parse(contentText) as { results: unknown[]; has_more: boolean };
+    assert.equal(contentPage.results.length, 2);
+    assert.equal(contentPage.has_more, false);
+
+    const stoppedStart = await postMcp(
+      target,
+      {
+        jsonrpc: "2.0",
+        id: 5,
+        method: "tools/call",
+        params: {
+          name: "start_search",
+          arguments: { path: fixtureDir, pattern: "worker-match-", search_type: "filename" },
+        },
+      },
+      auth,
+    );
+    const stoppedPage = JSON.parse(
+      (stoppedStart.json as { result: { content: Array<{ text: string }> } }).result.content[0]?.text ?? "{}",
+    ) as { session_id: string };
+    const stopped = await postMcp(
+      target,
+      {
+        jsonrpc: "2.0",
+        id: 6,
+        method: "tools/call",
+        params: { name: "stop_search", arguments: { session_id: stoppedPage.session_id } },
+      },
+      auth,
+    );
+    assert.equal(JSON.parse((stopped.json as { result: { content: Array<{ text: string }> } }).result.content[0]?.text ?? "{}").status, "stopped");
+
+    const beforeRejected = calls.length;
+    const rejected = await postMcp(
+      target,
+      {
+        jsonrpc: "2.0",
+        id: 7,
+        method: "tools/call",
+        params: {
+          name: "start_search",
+          arguments: { path: fixtureDir, pattern: "secret", search_type: "filename", host: "203.0.113.9" },
+        },
+      },
+      auth,
+    );
+    assert.equal((rejected.json as { result: { isError: boolean } }).result.isError, true);
+    assert.equal(calls.length, beforeRejected);
+    assert.equal(calls.every((call) => call.url === DEVICE_CALL_URL), true);
+    assert.equal(calls.every((call) => call.headers.get("authorization") === null), true);
+    assert.equal(calls.every((call) => call.headers.get("x-device-credential") === deviceToken), true);
   } finally {
     globalThis.fetch = originalFetch;
     await agent?.close();

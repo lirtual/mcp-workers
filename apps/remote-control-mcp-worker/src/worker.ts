@@ -4,10 +4,14 @@ import {
   parseListDirectory,
   parseLocalRead,
   parseReadMultiple,
+  parseSearchSessionId,
+  parseSearchStart,
   type LocalFileInfo,
   type LocalListDirectory,
   type LocalRead,
   type LocalReadMultiple,
+  type LocalSearch,
+  type SearchSessionId,
 } from "./local-read.ts";
 
 /** Fixed VPC Service target. Tool arguments cannot change this URL. */
@@ -130,7 +134,74 @@ const FILE_INFO_TOOL = {
   },
 } as const;
 
-const LOCAL_TOOLS = [READ_FILE_TOOL, READ_MULTIPLE_TOOL, LIST_DIRECTORY_TOOL, FILE_INFO_TOOL];
+const START_SEARCH_TOOL = {
+  name: "start_search",
+  title: "Search local files",
+  description:
+    "Search local file and directory names or literal, case-sensitive text in files. Results are paged. The Agent bounds depth, files, bytes, results, active searches, and lifetime; symbolic links are not followed.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      path: { type: "string", description: "Local directory path to search. URL schemes are rejected." },
+      pattern: { type: "string", minLength: 1, maxLength: 256, description: "Literal case-sensitive substring." },
+      search_type: { type: "string", enum: ["filename", "content"] },
+    },
+    required: ["path", "pattern", "search_type"],
+    additionalProperties: false,
+  },
+  annotations: {
+    title: "Search local files",
+    readOnlyHint: true,
+    destructiveHint: false,
+    openWorldHint: false,
+  },
+} as const;
+
+const GET_MORE_SEARCH_RESULTS_TOOL = {
+  name: "get_more_search_results",
+  title: "Get more search results",
+  description: "Fetch the next fixed-size page from an active local search session.",
+  inputSchema: {
+    type: "object",
+    properties: { session_id: { type: "string", format: "uuid" } },
+    required: ["session_id"],
+    additionalProperties: false,
+  },
+  annotations: {
+    title: "Get more search results",
+    readOnlyHint: true,
+    destructiveHint: false,
+    openWorldHint: false,
+  },
+} as const;
+
+const STOP_SEARCH_TOOL = {
+  name: "stop_search",
+  title: "Stop local search",
+  description: "Stop an active local search and release its traversal resources.",
+  inputSchema: {
+    type: "object",
+    properties: { session_id: { type: "string", format: "uuid" } },
+    required: ["session_id"],
+    additionalProperties: false,
+  },
+  annotations: {
+    title: "Stop local search",
+    readOnlyHint: true,
+    destructiveHint: false,
+    openWorldHint: false,
+  },
+} as const;
+
+const LOCAL_TOOLS = [
+  READ_FILE_TOOL,
+  READ_MULTIPLE_TOOL,
+  LIST_DIRECTORY_TOOL,
+  FILE_INFO_TOOL,
+  START_SEARCH_TOOL,
+  GET_MORE_SEARCH_RESULTS_TOOL,
+  STOP_SEARCH_TOOL,
+];
 
 const SAFE_EVENTS = new Set([
   "portal_auth_not_configured",
@@ -145,6 +216,9 @@ const SAFE_EVENTS = new Set([
   "list_failed",
   "info_completed",
   "info_failed",
+  "search_completed",
+  "search_failed",
+  "search_stopped",
 ]);
 
 function log(event: string): void {
@@ -233,7 +307,9 @@ type LocalCall =
   | { tool: "read_file"; arguments: LocalRead }
   | { tool: "read_multiple_files"; arguments: LocalReadMultiple }
   | { tool: "list_directory"; arguments: LocalListDirectory }
-  | { tool: "get_file_info"; arguments: LocalFileInfo };
+  | { tool: "get_file_info"; arguments: LocalFileInfo }
+  | { tool: "start_search"; arguments: LocalSearch }
+  | { tool: "get_more_search_results" | "stop_search"; arguments: SearchSessionId };
 
 function upstreamArguments(call: LocalCall): Record<string, unknown> {
   if (call.tool === "read_file") {
@@ -244,7 +320,11 @@ function upstreamArguments(call: LocalCall): Record<string, unknown> {
   }
   if (call.tool === "read_multiple_files") return { paths: call.arguments.paths };
   if (call.tool === "list_directory") return { path: call.arguments.path, depth: call.arguments.depth };
-  return { path: call.arguments.path };
+  if (call.tool === "get_file_info") return { path: call.arguments.path };
+  if (call.tool === "start_search") {
+    return { path: call.arguments.path, pattern: call.arguments.pattern, search_type: call.arguments.searchType };
+  }
+  return { session_id: call.arguments.sessionId };
 }
 
 function parseLocalCall(name: unknown, args: unknown): LocalCall | null {
@@ -264,24 +344,37 @@ function parseLocalCall(name: unknown, args: unknown): LocalCall | null {
     const info = parseFileInfo(args);
     return info ? { tool: "get_file_info", arguments: info } : null;
   }
+  if (name === "start_search") {
+    const search = parseSearchStart(args);
+    return search ? { tool: "start_search", arguments: search } : null;
+  }
+  if (name === "get_more_search_results" || name === "stop_search") {
+    const session = parseSearchSessionId(args);
+    return session ? { tool: name, arguments: session } : null;
+  }
   return null;
 }
 
 function failureMessage(tool: LocalCall["tool"]): string {
   if (tool === "list_directory") return "The directory list failed.";
   if (tool === "get_file_info") return "The file info request failed.";
+  if (tool === "start_search") return "The search could not be completed.";
+  if (tool === "get_more_search_results" || tool === "stop_search") return "The search session is unavailable.";
   return "The file read failed.";
 }
 
 function successEvent(tool: LocalCall["tool"]): string {
   if (tool === "list_directory") return "list_completed";
   if (tool === "get_file_info") return "info_completed";
+  if (tool === "start_search" || tool === "get_more_search_results") return "search_completed";
+  if (tool === "stop_search") return "search_stopped";
   return "read_completed";
 }
 
 function failureEvent(tool: LocalCall["tool"]): string {
   if (tool === "list_directory") return "list_failed";
   if (tool === "get_file_info") return "info_failed";
+  if (tool === "start_search" || tool === "get_more_search_results" || tool === "stop_search") return "search_failed";
   return "read_failed";
 }
 
@@ -407,7 +500,7 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
       capabilities: { tools: { listChanged: false } },
       serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
       instructions:
-        "Read local files, list directories, and inspect file metadata. URL reads, shell commands, and file modifications are not available.",
+        "Read local files, list directories, inspect file metadata, and search file names or contents. URL reads, shell commands, and file modifications are not available.",
     });
   }
 
