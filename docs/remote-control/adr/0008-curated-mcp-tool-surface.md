@@ -8,7 +8,7 @@ The upstream Desktop Commander has more features than this application's v1 deve
 
 ## Decision
 
-Expose only the necessary workspace file, search, development command and managed session tools via an explicit reviewed list. Keep client-visible schemas stable and validate the same scope on the Linux device. Do not automatically publish every upstream tool or configuration-management feature.
+Expose only the necessary file, search, development command and managed session tool categories via an explicit reviewed list. This tool allowlist does **not** constitute a project-directory or filesystem path allowlist: [ADR-0011](./0011-direct-linux-user-no-path-allowlist.md) controls the Linux-user execution reach. Keep client-visible schemas stable and validate the same scope on the Linux device. Do not automatically publish every upstream tool or configuration-management feature.
 
 ## Consequences
 
