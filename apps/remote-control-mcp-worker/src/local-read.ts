@@ -86,6 +86,8 @@ export interface OperationId {
 }
 export interface LocalStartProcess { operationId: string; command: string; timeoutMs: number }
 export interface LocalProcessOutput { sessionId: string; offset: number; length: number }
+export interface LocalProcessInteraction { operationId: string; sessionId: string; input: string }
+export interface LocalProcessTermination { operationId: string; sessionId: string }
 
 export interface LocalCreateDirectory { operationId: string; path: string }
 export interface LocalEditBlock { operationId: string; filePath: string; oldString: string; newString: string; expectedReplacements: number }
@@ -164,6 +166,27 @@ export function parseLocalProcessOutput(input: unknown): LocalProcessOutput | nu
   if (typeof offset !== "number" || !Number.isSafeInteger(offset) || offset < 0 || offset > 262_144) return null;
   if (typeof length !== "number" || !Number.isInteger(length) || length < 1 || length > 65_536) return null;
   return { sessionId: record.session_id, offset, length };
+}
+
+const PROCESS_SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+export function parseLocalProcessInteraction(input: unknown): LocalProcessInteraction | null {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) return null;
+  const record = input as Record<string, unknown>;
+  if (Object.keys(record).some((key) => !["operation_id", "session_id", "input"].includes(key))) return null;
+  const operation = parseOperationId({ operation_id: record.operation_id });
+  if (!operation || typeof record.session_id !== "string" || !PROCESS_SESSION_ID.test(record.session_id)) return null;
+  if (typeof record.input !== "string" || record.input.length === 0 || Buffer.byteLength(record.input, "utf8") > 8192 || record.input.includes("\0")) return null;
+  return { operationId: operation.operationId, sessionId: record.session_id, input: record.input };
+}
+
+export function parseLocalProcessTermination(input: unknown): LocalProcessTermination | null {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) return null;
+  const record = input as Record<string, unknown>;
+  if (Object.keys(record).some((key) => !["operation_id", "session_id"].includes(key))) return null;
+  const operation = parseOperationId({ operation_id: record.operation_id });
+  if (!operation || typeof record.session_id !== "string" || !PROCESS_SESSION_ID.test(record.session_id)) return null;
+  return { operationId: operation.operationId, sessionId: record.session_id };
 }
 
 export function parseListSessions(input: unknown): boolean {

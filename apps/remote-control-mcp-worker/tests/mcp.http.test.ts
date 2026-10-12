@@ -191,7 +191,7 @@ test("portal authentication fails closed before any device call", async () => {
   assert.equal(calls.length, 0);
 });
 
-test("lists only the local read tool and rejects anything that could retarget the device", async () => {
+test("lists curated local tools and rejects calls that could retarget the device", async () => {
   const calls: ObservedCall[] = [];
   const target = env({ REMOTE_CONTROL_DEVICE: recordingBinding(calls) });
   const headers = { authorization: `Bearer ${portalToken}` };
@@ -221,6 +221,8 @@ test("lists only the local read tool and rejects anything that could retarget th
       "start_process",
       "list_sessions",
       "read_process_output",
+      "interact_with_process",
+      "force_terminate",
     ],
   );
   const annotations = tools[0]?.annotations as {
@@ -237,7 +239,7 @@ test("lists only the local read tool and rejects anything that could retarget th
   assert.equal(schema.includes("host"), false);
   const processTool = tools.find((tool) => tool.name === "start_process");
   assert.equal((processTool?.annotations as { readOnlyHint: boolean }).readOnlyHint, false);
-  assert.equal(tools.some((tool) => ["interact_with_process", "force_terminate"].includes(String(tool.name))), false);
+  assert.equal(tools.some((tool) => ["interact_with_process", "force_terminate"].includes(String(tool.name))), true);
 
   const secretUrl = "http://203.0.113.9/private";
   const rejectedArguments = [
@@ -259,7 +261,7 @@ test("lists only the local read tool and rejects anything that could retarget th
     assert.equal(result.text.includes(portalToken), false);
   }
 
-  for (const name of ["write_file", "interact_with_process", "force_terminate", "node:local", "set_config_value", "get_config", "kill_process"]) {
+  for (const name of ["write_file", "node:local", "set_config_value", "get_config", "kill_process"]) {
     const result = await postMcp(
       target,
       { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name, arguments: { command: "id", path: secretUrl } } },
@@ -276,6 +278,17 @@ test("lists only the local read tool and rejects anything that could retarget th
   ]) {
     const result = await postMcp(target, {
       jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "start_process", arguments: argumentsValue },
+    }, headers);
+    assert.equal((result.json as { result: { isError: boolean } }).result.isError, true);
+  }
+
+  for (const [name, argumentsValue] of [
+    ["interact_with_process", { session_id: "2b6ecbd9-a994-47dd-ae82-3a8c4cf1641e", input: "x" }],
+    ["interact_with_process", { operation_id: "stdin", session_id: "not-a-session", input: "x" }],
+    ["force_terminate", { operation_id: "stop", session_id: "2b6ecbd9-a994-47dd-ae82-3a8c4cf1641e", process_id: 1234 }],
+  ]) {
+    const result = await postMcp(target, {
+      jsonrpc: "2.0", id: 6, method: "tools/call", params: { name, arguments: argumentsValue },
     }, headers);
     assert.equal((result.json as { result: { isError: boolean } }).result.isError, true);
   }
@@ -671,12 +684,12 @@ test("lists and pages bounded filename and content searches through the worker a
     const tools = (list.json as { result: { tools: Array<Record<string, unknown>> } }).result.tools;
     assert.deepEqual(
       tools.map((tool) => tool.name),
-      ["read_file", "read_multiple_files", "list_directory", "get_file_info", "start_search", "get_more_search_results", "stop_search", "write_file", "create_directory", "edit_block", "move_file", "get_operation_status", "start_process", "list_sessions", "read_process_output"],
+      ["read_file", "read_multiple_files", "list_directory", "get_file_info", "start_search", "get_more_search_results", "stop_search", "write_file", "create_directory", "edit_block", "move_file", "get_operation_status", "start_process", "list_sessions", "read_process_output", "interact_with_process", "force_terminate"],
     );
     for (const tool of tools.slice(4, 7).concat(tools.slice(11))) {
       const annotations = tool.annotations as { readOnlyHint: boolean; destructiveHint: boolean };
-      assert.equal(annotations.readOnlyHint, !["write_file", "create_directory", "edit_block", "move_file", "start_process"].includes(String(tool.name)));
-      assert.equal(annotations.destructiveHint, ["write_file", "create_directory", "edit_block", "move_file", "start_process"].includes(String(tool.name)));
+      assert.equal(annotations.readOnlyHint, !["write_file", "create_directory", "edit_block", "move_file", "start_process", "interact_with_process", "force_terminate"].includes(String(tool.name)));
+      assert.equal(annotations.destructiveHint, ["write_file", "create_directory", "edit_block", "move_file", "start_process", "interact_with_process", "force_terminate"].includes(String(tool.name)));
     }
     const writeTool = tools[7];
     assert.equal(JSON.stringify(writeTool?.description).includes("new ID"), true);
@@ -735,6 +748,41 @@ test("lists and pages bounded filename and content searches through the worker a
       jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "list_sessions", arguments: {} },
     }, auth);
     assert.equal(JSON.parse((listedSessions.json as { result: { content: Array<{ text: string }> } }).result.content[0]?.text ?? "[]").length, 1);
+
+    const waiting = await postMcp(target, {
+      jsonrpc: "2.0", id: 7, method: "tools/call",
+      params: { name: "start_process", arguments: { operation_id: "worker-stdin-start", command: 'read value; printf "worker:%s" "$value"', timeout_ms: 0 } },
+    }, auth);
+    const waitingInfo = JSON.parse((waiting.json as { result: { content: Array<{ text: string }> } }).result.content[0]?.text ?? "{}") as { session_id: string; status: string };
+    assert.equal(waitingInfo.status, "running");
+    const inputArgs = { operation_id: "worker-stdin-once", session_id: waitingInfo.session_id, input: "input\n" };
+    const inputSent = await postMcp(target, {
+      jsonrpc: "2.0", id: 8, method: "tools/call",
+      params: { name: "interact_with_process", arguments: inputArgs },
+    }, auth);
+    assert.equal(JSON.parse((inputSent.json as { result: { content: Array<{ text: string }> } }).result.content[0]?.text ?? "{}").status, "completed");
+    const inputDuplicate = await postMcp(target, {
+      jsonrpc: "2.0", id: 9, method: "tools/call",
+      params: { name: "interact_with_process", arguments: inputArgs },
+    }, auth);
+    assert.equal(JSON.parse((inputDuplicate.json as { result: { content: Array<{ text: string }> } }).result.content[0]?.text ?? "{}").status, "completed");
+    const inputOutput = await postMcp(target, {
+      jsonrpc: "2.0", id: 10, method: "tools/call",
+      params: { name: "read_process_output", arguments: { session_id: waitingInfo.session_id } },
+    }, auth);
+    assert.equal(JSON.parse((inputOutput.json as { result: { content: Array<{ text: string }> } }).result.content[0]?.text ?? "{}").output, "worker:input");
+
+    const stoppable = await postMcp(target, {
+      jsonrpc: "2.0", id: 11, method: "tools/call",
+      params: { name: "start_process", arguments: { operation_id: "worker-stop-start", command: "sleep 30", timeout_ms: 0 } },
+    }, auth);
+    const stoppableInfo = JSON.parse((stoppable.json as { result: { content: Array<{ text: string }> } }).result.content[0]?.text ?? "{}") as { session_id: string; status: string };
+    assert.equal(stoppableInfo.status, "running");
+    const terminated = await postMcp(target, {
+      jsonrpc: "2.0", id: 12, method: "tools/call",
+      params: { name: "force_terminate", arguments: { operation_id: "worker-stop-once", session_id: stoppableInfo.session_id } },
+    }, auth);
+    assert.equal(JSON.parse((terminated.json as { result: { content: Array<{ text: string }> } }).result.content[0]?.text ?? "{}").status, "completed");
     assert.equal(second.has_more, false);
 
     const content = await postMcp(

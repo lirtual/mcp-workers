@@ -4,6 +4,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { operationDigest } from "../src/operations.ts";
 import { MAX_RESULT_CHARS, MAX_SCAN_BYTES } from "../src/read-file.ts";
 import { startAgent, type RunningAgent } from "../src/server.ts";
 
@@ -401,6 +402,132 @@ test("a process receipt never replays after Agent restart and stale session IDs 
     assert.equal(await readFile(countFile, "utf8"), "x");
     const stale = await call(agent, { tool: "read_process_output", arguments: { session_id: originalSession } });
     assert.equal(stale.status, 404);
+  } finally {
+    await agent.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("managed sessions accept idempotent stdin and terminate only verified owned sessions", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-t09-session-actions-"));
+  const agent = await startAgent({
+    deviceToken: DEVICE_TOKEN,
+    receiptDirectory: path.join(root, "receipts"),
+    shellPath: "/bin/sh",
+  });
+  const action = (tool: string, operationId: string, argumentsValue: unknown) => call(agent, {
+    tool,
+    operation_id: operationId,
+    arguments: argumentsValue,
+  });
+  try {
+    const started = await call(agent, {
+      tool: "start_process",
+      operation_id: "stdin-reader",
+      arguments: { command: 'read first; read second; printf "%s:%s" "$first" "$second"', timeout_ms: 0 },
+    });
+    const sessionId = (started.json as { session_id: string }).session_id;
+    assert.equal((started.json as { status: string }).status, "running");
+
+    const firstInput = { session_id: sessionId, input: "alpha\n" };
+    const sent = await action("interact_with_process", "stdin-first", firstInput);
+    assert.equal((sent.json as { status: string }).status, "completed");
+    const duplicate = await action("interact_with_process", "stdin-first", firstInput);
+    assert.equal((duplicate.json as { status: string }).status, "completed");
+    const changed = await action("interact_with_process", "stdin-first", { session_id: sessionId, input: "different\n" });
+    assert.equal(changed.status, 409);
+    const crossActionReuse = await action("force_terminate", "stdin-first", { session_id: sessionId });
+    assert.equal(crossActionReuse.status, 409);
+
+    const second = await action("interact_with_process", "stdin-second", { session_id: sessionId, input: "omega\n" });
+    assert.equal((second.json as { status: string }).status, "completed");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const output = await call(agent, { tool: "read_process_output", arguments: { session_id: sessionId } });
+    const page = JSON.parse(completedText(output.json)) as { output: string; state: string };
+    assert.equal(page.output, "alpha:omega");
+    assert.equal(page.state, "completed");
+
+    const long = await call(agent, {
+      tool: "start_process",
+      operation_id: "terminate-fixture",
+      arguments: { command: "sleep 30", timeout_ms: 0 },
+    });
+    const longSession = (long.json as { session_id: string }).session_id;
+    const barePid = await action("force_terminate", "terminate-bare-pid", { session_id: longSession, pid: process.pid });
+    assert.equal(barePid.status, 400);
+    const unrelated = await call(agent, {
+      tool: "start_process",
+      operation_id: "unrelated-fixture",
+      arguments: { command: "sleep 0.3; printf unrelated-survived", timeout_ms: 0 },
+    });
+    const unrelatedSession = (unrelated.json as { session_id: string }).session_id;
+    const stopped = await action("force_terminate", "terminate-once", { session_id: longSession });
+    assert.equal((stopped.json as { status: string }).status, "completed");
+    const stopDuplicate = await action("force_terminate", "terminate-once", { session_id: longSession });
+    assert.equal((stopDuplicate.json as { status: string }).status, "completed");
+    const stale = await action("force_terminate", "terminate-stale", { session_id: "00000000-0000-4000-8000-000000000000" });
+    assert.equal(stale.status, 404);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const unrelatedOutput = await call(agent, { tool: "read_process_output", arguments: { session_id: unrelatedSession } });
+    const unrelatedPage = JSON.parse(completedText(unrelatedOutput.json)) as { output: string };
+    assert.equal(unrelatedPage.output, "unrelated-survived");
+
+    const stubborn = await call(agent, {
+      tool: "start_process",
+      operation_id: "terminate-escalation-fixture",
+      arguments: { command: "trap '' TERM; sleep 30", timeout_ms: 0 },
+    });
+    const stubbornSession = (stubborn.json as { session_id: string }).session_id;
+    const startedAt = Date.now();
+    const escalated = await action("force_terminate", "terminate-escalation-once", { session_id: stubbornSession });
+    assert.equal((escalated.json as { status: string }).status, "completed");
+    assert.ok(Date.now() - startedAt < 1800);
+  } finally {
+    await agent.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("uncertain stdin receipts become unknown after restart and stale session input is rejected", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-t09-restart-"));
+  const receiptDirectory = path.join(root, "receipts");
+  await mkdir(receiptDirectory);
+  const sessionId = "2b6ecbd9-a994-47dd-ae82-3a8c4cf1641e";
+  const inputArgs = { session_id: sessionId, input: "must-not-replay\n" };
+  const now = new Date().toISOString();
+  await writeFile(path.join(receiptDirectory, "operation-receipts.json"), JSON.stringify({
+    version: 1,
+    receipts: [{
+      operation_id: "uncertain-stdin",
+      tool_name: "interact_with_process",
+      argument_digest: operationDigest("interact_with_process", inputArgs),
+      state: "running",
+      created_at: now,
+      updated_at: now,
+      session_id: sessionId,
+    }],
+  }), "utf8");
+  const agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory, shellPath: "/bin/sh" });
+  try {
+    const retry = await call(agent, { tool: "interact_with_process", operation_id: "uncertain-stdin", arguments: inputArgs });
+    assert.equal((retry.json as { status: string }).status, "unknown");
+    const receipt = await fetch(agent.baseUrl + "/internal/operations/uncertain-stdin", { headers: { "x-device-credential": DEVICE_TOKEN } });
+    const value = await receipt.json() as { state: string; session_id?: string };
+    assert.equal(value.state, "unknown");
+    assert.equal("session_id" in value, false);
+
+    const stale = await call(agent, {
+      tool: "interact_with_process",
+      operation_id: "new-stale-input",
+      arguments: inputArgs,
+    });
+    assert.equal(stale.status, 404);
+    const staleStop = await call(agent, {
+      tool: "force_terminate",
+      operation_id: "new-stale-stop",
+      arguments: { session_id: sessionId },
+    });
+    assert.equal(staleStop.status, 404);
   } finally {
     await agent.close();
     await rm(root, { recursive: true, force: true });

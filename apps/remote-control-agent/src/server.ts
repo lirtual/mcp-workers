@@ -19,7 +19,14 @@ import {
 import { operationDigest, ReceiptStore, type OperationReceipt } from "./operations.ts";
 import { readLocalFile, ReadFailed } from "./read-file.ts";
 import { SearchFailed, SearchSessions } from "./search.ts";
-import { ManagedSessions, parseListSessions, parseReadProcessOutput, parseStartProcess } from "./sessions.ts";
+import {
+  ManagedSessions,
+  parseForceTerminate,
+  parseInteractWithProcess,
+  parseListSessions,
+  parseReadProcessOutput,
+  parseStartProcess,
+} from "./sessions.ts";
 
 const MAX_BODY_BYTES = 65_536;
 const LOOPBACK_HOST = "127.0.0.1";
@@ -54,6 +61,9 @@ const SAFE_EVENTS = new Set([
   "process_failed",
   "process_listed",
   "process_output_read",
+  "process_input_sent",
+  "process_terminated",
+  "process_action_failed",
 ]);
 
 export type AgentLog = (event: string) => void;
@@ -327,6 +337,58 @@ export async function startAgent(options: StartAgentOptions): Promise<RunningAge
     catch { return undefined; }
   }
 
+  async function performSessionAction(
+    id: string,
+    tool: "interact_with_process" | "force_terminate",
+    sessionId: string,
+    args: unknown,
+    action: () => Promise<"completed" | "failed" | "unknown" | "not_found">,
+  ): Promise<{ statusCode: number; status: string; receipt?: OperationReceipt }> {
+    const digest = operationDigest(tool, args);
+    let admitted: Awaited<ReturnType<typeof receipts.admit>>;
+    try {
+      await ensureReceipts();
+      const existing = await receipts.get(id);
+      if (!existing && !sessions.get(sessionId)) return { statusCode: 404, status: "not_found" };
+      admitted = await receipts.admit(id, tool, digest);
+    } catch {
+      return { statusCode: 503, status: "unavailable" };
+    }
+    if (admitted.kind === "conflict") {
+      emit(log, "operation_conflict");
+      return { statusCode: 409, status: "conflict" };
+    }
+    if (admitted.kind === "full") return { statusCode: 503, status: "unavailable" };
+
+    let pending = inFlight.get(id);
+    if (admitted.kind === "new") {
+      emit(log, "operation_admitted");
+      pending = (async () => {
+        await receipts.update(id, "running", "Session action is in progress.", sessionId);
+        let outcome: "completed" | "failed" | "unknown" | "not_found";
+        try { outcome = await action(); }
+        catch { outcome = "unknown"; }
+        const state = outcome === "not_found" ? "failed" : outcome;
+        const summary = outcome === "completed" ? "Session action completed."
+          : outcome === "failed" || outcome === "not_found" ? "Session action was rejected."
+            : "Session action outcome is unknown.";
+        return await receipts.update(id, state, summary, sessionId);
+      })();
+      inFlight.set(id, pending);
+      void pending.then(() => inFlight.delete(id), () => inFlight.delete(id));
+    }
+    if (!pending && admitted.receipt && (admitted.receipt.state === "admitted" || admitted.receipt.state === "running")) {
+      const unknown = await receipts.update(id, "unknown", "Effect cannot be established.", sessionId);
+      return { statusCode: 200, status: "unknown", receipt: unknown };
+    }
+    try {
+      const receipt = pending ? await pending : admitted.receipt;
+      return { statusCode: 200, status: receipt?.state ?? "unknown", receipt };
+    } catch {
+      return { statusCode: 200, status: "unknown" };
+    }
+  }
+
   const server: Server = createServer((request, response) => {
     void handleRequest(request, response).catch(() => {
       if (request.aborted || response.destroyed) return;
@@ -573,6 +635,55 @@ export async function startAgent(options: StartAgentOptions): Promise<RunningAge
         } else {
           emit(log, "process_started");
           sendJson(response, 200, { operation_id: id, status: state, session_id: receipt?.session_id });
+        }
+        return;
+      }
+
+      if (body.tool === "interact_with_process" || body.tool === "force_terminate") {
+        const id = typeof body.operation_id === "string" ? body.operation_id : null;
+        const interaction = body.tool === "interact_with_process" ? parseInteractWithProcess(body.arguments) : null;
+        const termination = body.tool === "force_terminate" ? parseForceTerminate(body.arguments) : null;
+        const operation = interaction ?? termination;
+        if (!id || !parseOperationId({ operation_id: id }) || !operation) {
+          emit(log, "rejected");
+          sendJson(response, 400, { error: "bad_request", message: "The session action was rejected." });
+          return;
+        }
+        const sessionId = operation.sessionId;
+        const args = body.tool === "interact_with_process"
+          ? { session_id: sessionId, input: interaction?.input }
+          : { session_id: sessionId };
+        const outcome = await performSessionAction(
+          id,
+          body.tool,
+          sessionId,
+          args,
+          () => body.tool === "interact_with_process"
+            ? sessions.writeInput(sessionId, interaction?.input ?? "")
+            : sessions.terminate(sessionId),
+        );
+        if (requestAbort.signal.aborted) return;
+        if (outcome.statusCode !== 200) {
+          const message = outcome.status === "conflict"
+            ? "The operation id is already used for different parameters."
+            : outcome.status === "not_found" ? "The session was not found."
+              : "The session action could not be admitted.";
+          sendJson(response, outcome.statusCode, {
+            operation_id: id,
+            status: outcome.status,
+            error: outcome.status === "conflict" ? "conflict" : outcome.status === "not_found" ? "not_found" : "unavailable",
+            message,
+          });
+          return;
+        }
+        if (outcome.status === "failed") {
+          emit(log, "process_action_failed");
+          sendJson(response, 200, { operation_id: id, status: "failed", error: { code: "bad_request", message: "The session action could not be completed." }, receipt: outcome.receipt });
+        } else if (outcome.status === "unknown") {
+          sendJson(response, 200, { operation_id: id, status: "unknown", error: { code: "timeout_unknown", message: "The session action outcome is unknown." }, receipt: outcome.receipt });
+        } else {
+          emit(log, body.tool === "force_terminate" ? "process_terminated" : "process_input_sent");
+          sendJson(response, 200, { operation_id: id, status: "completed", session_id: sessionId, receipt: outcome.receipt });
         }
         return;
       }

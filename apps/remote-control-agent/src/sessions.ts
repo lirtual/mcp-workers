@@ -23,8 +23,11 @@ interface ManagedSession {
   chunks: Buffer[];
   outputBytes: number;
   truncated: boolean;
+  exited: Promise<void>;
   closed: Promise<void>;
 }
+
+export type SessionActionResult = "completed" | "failed" | "unknown" | "not_found";
 
 export interface SessionSnapshot {
   session_id: string;
@@ -53,6 +56,16 @@ function snapshot(session: ManagedSession): SessionSnapshot {
   };
 }
 
+export function ownsProcessGroup(
+  child: Pick<ChildProcess, "pid" | "exitCode" | "signalCode">,
+  processGroupId: number | undefined,
+): boolean {
+  return processGroupId !== undefined
+    && child.pid === processGroupId
+    && child.exitCode === null
+    && child.signalCode === null;
+}
+
 export class ManagedSessions {
   private readonly sessions = new Map<string, ManagedSession>();
   private readonly shellPath: string;
@@ -77,7 +90,7 @@ export class ManagedSessions {
     let child: ChildProcess;
     try {
       child = spawn(this.shellPath, ["-c", command], {
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: ["pipe", "pipe", "pipe"],
         detached: process.platform !== "win32",
       });
     } catch {
@@ -95,6 +108,7 @@ export class ManagedSessions {
       chunks: [],
       outputBytes: 0,
       truncated: false,
+      exited: Promise.resolve(),
       closed: Promise.resolve(),
     };
     this.sessions.set(sessionId, session);
@@ -112,7 +126,12 @@ export class ManagedSessions {
     };
     child.stdout?.on("data", capture);
     child.stderr?.on("data", capture);
+    child.stdin?.on("error", () => { /* A closed process input is reported through write callbacks. */ });
 
+    session.exited = new Promise<void>((resolve) => {
+      child.once("exit", () => resolve());
+      child.once("error", () => resolve());
+    });
     session.closed = new Promise<void>((resolve) => {
       let settled = false;
       const finish = async (state: SessionState, exitCode: number | null) => {
@@ -135,6 +154,76 @@ export class ManagedSessions {
       if (timer) clearTimeout(timer);
     }
     return snapshot(session);
+  }
+
+  private ownsRunningProcess(session: ManagedSession): boolean {
+    return session.state === "running" && session.child.exitCode === null && session.child.signalCode === null;
+  }
+
+  private processExited(session: ManagedSession): boolean {
+    return session.child.exitCode !== null || session.child.signalCode !== null;
+  }
+
+  private signalOwnedProcess(session: ManagedSession, signal: NodeJS.Signals): boolean {
+    if (!this.ownsRunningProcess(session)) return false;
+    try {
+      if (session.processGroupId !== undefined) {
+        if (!ownsProcessGroup(session.child, session.processGroupId)) return false;
+        process.kill(-session.processGroupId, signal);
+      } else {
+        session.child.kill(signal);
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async writeInput(sessionId: string, input: string): Promise<SessionActionResult> {
+    this.prune();
+    const session = this.sessions.get(sessionId);
+    if (!session) return "not_found";
+    const stdin = session.child.stdin;
+    if (!this.ownsRunningProcess(session) || !stdin?.writable) return "failed";
+    return await new Promise<SessionActionResult>((resolve) => {
+      let settled = false;
+      const finish = (result: SessionActionResult) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(result);
+      };
+      const timer = setTimeout(() => finish("unknown"), 1000);
+      try {
+        stdin.write(input, "utf8", (error) => finish(error ? "unknown" : "completed"));
+      } catch {
+        finish("failed");
+      }
+    });
+  }
+
+  async terminate(sessionId: string): Promise<SessionActionResult> {
+    this.prune();
+    const session = this.sessions.get(sessionId);
+    if (!session) return "not_found";
+    if (session.state !== "running") return "completed";
+    if (!this.signalOwnedProcess(session, "SIGTERM")) return "unknown";
+    const waitForExit = async (timeoutMs: number) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        session.exited,
+        new Promise<void>((resolve) => { timer = setTimeout(resolve, timeoutMs); }),
+      ]);
+      if (timer) clearTimeout(timer);
+    };
+    await waitForExit(500);
+    if (!this.processExited(session)) this.signalOwnedProcess(session, "SIGKILL");
+    await waitForExit(500);
+    if (!this.processExited(session)) return "unknown";
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([session.closed, new Promise<void>((resolve) => { timer = setTimeout(resolve, 500); })]);
+    if (timer) clearTimeout(timer);
+    return session.state === "running" ? "unknown" : "completed";
   }
 
   list(): SessionSnapshot[] {
@@ -166,15 +255,6 @@ export class ManagedSessions {
 
   async close(): Promise<void> {
     const running = [...this.sessions.values()].filter((session) => session.state === "running");
-    const signal = (session: ManagedSession, value: NodeJS.Signals) => {
-      if (session.child.exitCode !== null) return;
-      try {
-        if (session.processGroupId !== undefined && session.child.pid === session.processGroupId) {
-          process.kill(-session.processGroupId, value);
-        }
-        else session.child.kill(value);
-      } catch { /* The owned process group may have exited already. */ }
-    };
     const waitForClose = async (timeoutMs: number) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       await Promise.race([
@@ -183,9 +263,9 @@ export class ManagedSessions {
       ]);
       if (timer) clearTimeout(timer);
     };
-    for (const session of running) signal(session, "SIGTERM");
+    for (const session of running) this.signalOwnedProcess(session, "SIGTERM");
     await waitForClose(500);
-    for (const session of running) if (session.state === "running") signal(session, "SIGKILL");
+    for (const session of running) if (session.state === "running") this.signalOwnedProcess(session, "SIGKILL");
     await waitForClose(500);
     for (const session of running) {
       if (session.state === "running") {
@@ -221,4 +301,21 @@ export function parseReadProcessOutput(input: unknown): { sessionId: string; off
 
 export function parseListSessions(input: unknown): boolean {
   return input !== null && typeof input === "object" && !Array.isArray(input) && Object.keys(input).length === 0;
+}
+
+export function parseInteractWithProcess(input: unknown): { sessionId: string; input: string } | null {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) return null;
+  const record = input as Record<string, unknown>;
+  if (Object.keys(record).some((key) => key !== "session_id" && key !== "input")) return null;
+  if (typeof record.session_id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(record.session_id)) return null;
+  if (typeof record.input !== "string" || record.input.length === 0 || Buffer.byteLength(record.input, "utf8") > 8192 || record.input.includes("\0")) return null;
+  return { sessionId: record.session_id, input: record.input };
+}
+
+export function parseForceTerminate(input: unknown): { sessionId: string } | null {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) return null;
+  const record = input as Record<string, unknown>;
+  if (Object.keys(record).some((key) => key !== "session_id")) return null;
+  if (typeof record.session_id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(record.session_id)) return null;
+  return { sessionId: record.session_id };
 }

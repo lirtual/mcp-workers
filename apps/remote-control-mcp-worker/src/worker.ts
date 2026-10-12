@@ -14,6 +14,8 @@ import {
   parseStartProcess,
   parseLocalProcessOutput,
   parseListSessions,
+  parseLocalProcessInteraction,
+  parseLocalProcessTermination,
   type LocalFileInfo,
   type LocalListDirectory,
   type LocalRead,
@@ -27,6 +29,8 @@ import {
   type SearchSessionId,
   type LocalStartProcess,
   type LocalProcessOutput,
+  type LocalProcessInteraction,
+  type LocalProcessTermination,
 } from "./local-read.ts";
 
 /** Fixed VPC Service target. Tool arguments cannot change this URL. */
@@ -283,6 +287,20 @@ const READ_PROCESS_OUTPUT_TOOL = {
   annotations: { title: "Read managed session output", readOnlyHint: true, destructiveHint: false, openWorldHint: false },
 } as const;
 
+const INTERACT_WITH_PROCESS_TOOL = {
+  name: "interact_with_process", title: "Send input to managed session",
+  description: "Send a bounded UTF-8 input page to a session started by this Agent. Each input requires a stable operation_id; uncertain input is never replayed. Only a currently tracked session can receive input.",
+  inputSchema: { type: "object", properties: { operation_id: { type: "string", minLength: 1, maxLength: 128 }, session_id: { type: "string", format: "uuid" }, input: { type: "string", minLength: 1, maxLength: 8192 } }, required: ["operation_id", "session_id", "input"], additionalProperties: false },
+  annotations: { title: "Send input to managed session", readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+} as const;
+
+const FORCE_TERMINATE_TOOL = {
+  name: "force_terminate", title: "Stop managed session",
+  description: "Stop only a session started and still owned by this Agent. Uses a graceful signal followed by bounded escalation after rechecking the same process identity. A stale or unverified session is rejected.",
+  inputSchema: { type: "object", properties: { operation_id: { type: "string", minLength: 1, maxLength: 128 }, session_id: { type: "string", format: "uuid" } }, required: ["operation_id", "session_id"], additionalProperties: false },
+  annotations: { title: "Stop managed session", readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+} as const;
+
 const LOCAL_TOOLS = [
   READ_FILE_TOOL,
   READ_MULTIPLE_TOOL,
@@ -299,6 +317,8 @@ const LOCAL_TOOLS = [
   START_PROCESS_TOOL,
   LIST_SESSIONS_TOOL,
   READ_PROCESS_OUTPUT_TOOL,
+  INTERACT_WITH_PROCESS_TOOL,
+  FORCE_TERMINATE_TOOL,
 ];
 
 const SAFE_EVENTS = new Set([
@@ -331,6 +351,9 @@ const SAFE_EVENTS = new Set([
   "process_failed",
   "process_listed",
   "process_output_read",
+  "process_input_sent",
+  "process_terminated",
+  "process_action_failed",
 ]);
 
 function log(event: string): void {
@@ -429,16 +452,19 @@ type LocalCall =
   | { tool: "get_operation_status"; arguments: OperationId }
   | { tool: "start_process"; arguments: LocalStartProcess }
   | { tool: "list_sessions"; arguments: Record<string, never> }
-  | { tool: "read_process_output"; arguments: LocalProcessOutput };
+  | { tool: "read_process_output"; arguments: LocalProcessOutput }
+  | { tool: "interact_with_process"; arguments: LocalProcessInteraction }
+  | { tool: "force_terminate"; arguments: LocalProcessTermination };
 
 function mutationTool(call: LocalCall): boolean {
-  return call.tool === "write_file" || call.tool === "create_directory" || call.tool === "edit_block" || call.tool === "move_file" || call.tool === "start_process";
+  return call.tool === "write_file" || call.tool === "create_directory" || call.tool === "edit_block" || call.tool === "move_file" || call.tool === "start_process" || call.tool === "interact_with_process" || call.tool === "force_terminate";
 }
 
 function callOperationId(call: LocalCall): string | undefined {
   if (call.tool === "get_operation_status") return call.arguments.operationId;
   if (call.tool === "write_file" || call.tool === "create_directory" || call.tool === "edit_block" || call.tool === "move_file") return call.arguments.operationId;
   if (call.tool === "start_process") return call.arguments.operationId;
+  if (call.tool === "interact_with_process" || call.tool === "force_terminate") return call.arguments.operationId;
   return undefined;
 }
 
@@ -469,6 +495,8 @@ function upstreamArguments(call: LocalCall): Record<string, unknown> {
   if (call.tool === "start_process") return { command: call.arguments.command, timeout_ms: call.arguments.timeoutMs };
   if (call.tool === "list_sessions") return {};
   if (call.tool === "read_process_output") return { session_id: call.arguments.sessionId, offset: call.arguments.offset, length: call.arguments.length };
+  if (call.tool === "interact_with_process") return { session_id: call.arguments.sessionId, input: call.arguments.input };
+  if (call.tool === "force_terminate") return { session_id: call.arguments.sessionId };
   return { session_id: call.arguments.sessionId };
 }
 
@@ -535,6 +563,14 @@ function parseLocalCall(name: unknown, args: unknown): LocalCall | null {
     const output = parseLocalProcessOutput(args);
     return output ? { tool: "read_process_output", arguments: output } : null;
   }
+  if (name === "interact_with_process") {
+    const interaction = parseLocalProcessInteraction(args);
+    return interaction ? { tool: "interact_with_process", arguments: interaction } : null;
+  }
+  if (name === "force_terminate") {
+    const termination = parseLocalProcessTermination(args);
+    return termination ? { tool: "force_terminate", arguments: termination } : null;
+  }
   return null;
 }
 
@@ -544,6 +580,7 @@ function failureMessage(tool: LocalCall["tool"]): string {
   if (tool === "start_search") return "The search could not be completed.";
   if (tool === "get_more_search_results" || tool === "stop_search") return "The search session is unavailable.";
   if (tool === "read_process_output") return "The managed session is unavailable.";
+  if (tool === "interact_with_process" || tool === "force_terminate") return "The managed session action failed.";
   return "The file read failed.";
 }
 
@@ -555,6 +592,8 @@ function successEvent(tool: LocalCall["tool"]): string {
   if (tool === "start_process") return "process_started";
   if (tool === "list_sessions") return "process_listed";
   if (tool === "read_process_output") return "process_output_read";
+  if (tool === "interact_with_process") return "process_input_sent";
+  if (tool === "force_terminate") return "process_terminated";
   return "read_completed";
 }
 
@@ -654,6 +693,10 @@ async function callDevice(env: Env, call: LocalCall, id: unknown, signal: AbortS
       log("not_found");
       return toolError(id, "The managed session was not found.");
     }
+    if ((call.tool === "interact_with_process" || call.tool === "force_terminate") && response.status === 404) {
+      log("not_found");
+      return toolError(id, "The managed session was not found.");
+    }
     if (operationId && response.status === 503) {
       let knownUnavailable = false;
       try {
@@ -695,6 +738,11 @@ async function callDevice(env: Env, call: LocalCall, id: unknown, signal: AbortS
     if (call.tool === "start_process") {
       log(operation.status === "failed" ? "process_failed" : "process_started");
       return toolText(id, JSON.stringify({ operation_id: operationId, status: operation.status, session_id: operation.session_id, receipt: publicReceipt(operation.receipt) }));
+    }
+    if (call.tool === "interact_with_process" || call.tool === "force_terminate") {
+      const event = call.tool === "force_terminate" ? "process_terminated" : "process_input_sent";
+      log(operation.status === "failed" ? "process_action_failed" : event);
+      return toolText(id, JSON.stringify({ operation_id: operationId, status: operation.status, session_id: call.arguments.sessionId, receipt: publicReceipt(operation.receipt) }));
     }
     const category = call.tool === "create_directory" ? "directory" : call.tool === "edit_block" ? "edit" : call.tool === "move_file" ? "move" : "write";
     log(operation.status === "failed" ? `${category}_failed` : `${category}_completed`);
@@ -758,7 +806,7 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
       capabilities: { tools: { listChanged: false } },
       serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
       instructions:
-        "Read, search, and change local files. Every mutation requires a stable operation ID; query the original ID after an uncertain response and use a new ID only for a new intent. start_process runs commands with the Agent account's full Linux permissions and requires explicit user approval for the target and action. Managed sessions support listing and paged output only; stdin and stop are unavailable.",
+        "Read, search, and change local files. Every mutation requires a stable operation ID; query the original ID after an uncertain response and use a new ID only for a new intent. start_process runs commands with the Agent account's full Linux permissions and requires explicit user approval for the target and action. Managed sessions accept bounded stdin and stop requests only while the Agent can verify ownership; after restart, stale session actions are rejected and uncertain operations are never replayed.",
     });
   }
 
@@ -773,7 +821,7 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
       return toolError(rpcMessage.id, "The requested tool call was rejected.");
     }
     const call = params as { name?: unknown; arguments?: unknown };
-    if (["write_file", "create_directory", "edit_block", "move_file", "start_process"].includes(String(call.name))) {
+    if (["write_file", "create_directory", "edit_block", "move_file", "start_process", "interact_with_process", "force_terminate"].includes(String(call.name))) {
       const candidate = call.arguments !== null && typeof call.arguments === "object"
         ? (call.arguments as Record<string, unknown>).operation_id
         : undefined;
