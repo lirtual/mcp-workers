@@ -1,6 +1,8 @@
 # ADR-0002 — Workspace-scoped Linux control for v1
 
-Status: accepted. Date: 2026-10-12. Decision inputs: Round 1 F1=A and F3=A.
+Status: partially superseded by [ADR-0011](./0011-direct-linux-user-no-path-allowlist.md). Originally accepted 2026-10-12 as F1=A and F3=A. The tool categories and GUI exclusion remain accepted, but project-root filesystem confinement no longer applies.
+
+> Historical workspace assumptions below must be read with ADR-0011; do not enforce a repository directory whitelist.
 
 ## Context
 
@@ -18,7 +20,7 @@ The Remote Control MCP product could either expose a whole Linux host administra
 - Positive: one coherent developer-oriented product, without a second GUI/video transport or a general system administration framework.
 - Positive: fewer privileged operations and a smaller client-visible tool contract.
 - Trade-off: this initial product cannot be assumed to manage the entire machine, privileged system settings or unowned background processes.
-- Critical limitation: **a workspace pathname allowlist alone cannot constrain arbitrary Shell**. [ADR-0005](./0005-isolated-workspace-execution.md) now fixes the isolated container boundary and [ADR-0006](./0006-unattended-authorized-workspace-operations.md) approves unattended authorized workspace operations. The exact tool policy, mounts, secrets and validation remain unresolved before Shell can be enabled in production.
+- Critical limitation: **a workspace pathname allowlist alone cannot constrain arbitrary Shell**. The original [ADR-0005](./0005-isolated-workspace-execution.md) confinement decision was **superseded** by [ADR-0011](./0011-direct-linux-user-no-path-allowlist.md); [ADR-0006](./0006-unattended-authorized-workspace-operations.md) still expresses the unattended workflow goal, subject to the enlarged Linux user-permission blast radius. The exact tool policy, mounts, secrets and validation remain unresolved before Shell can be enabled in production.
 - This ADR does **not** determine the specific tools, command permissions, mounts or deployment authorization. [ADR-0007](./0007-local-receipts-and-no-blind-replay.md) records the separate no-blind-retry decision.
 
 ## Rejected options
