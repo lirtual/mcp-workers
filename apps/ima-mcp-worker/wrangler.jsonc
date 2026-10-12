@@ -1,0 +1,43 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "ima-mcp-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-11",
+  "workers_dev": true,
+  "preview_urls": false,
+  "keep_vars": true,
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "invocation_logs": true,
+      "head_sampling_rate": 1
+    }
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "IMA_IMAGE_REFRESH_SHARD",
+        "class_name": "ImaImageRefreshShard"
+      }
+    ]
+  },
+  "exports": {
+    "ImaImageRefreshShard": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
+  },
+  "secrets": {
+    "required": [
+      "MCP_ACCESS_TOKEN",
+      "API_KEY",
+      "CLIENT_ID"
+    ]
+  },
+  "r2_buckets": [
+    {
+      "binding": "R2_BUCKET",
+      "bucket_name": "ima-mcp-worker"
+    }
+  ]
+}

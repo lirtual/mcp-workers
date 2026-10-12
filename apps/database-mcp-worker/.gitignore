@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.wrangler/
+.dev.vars
+.env
+coverage/
+worker-configuration.d.ts
+*.log
+
+.verify/
+.verify-dist/
+.verify-full/
