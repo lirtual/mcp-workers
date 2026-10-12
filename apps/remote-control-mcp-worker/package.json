@@ -1,0 +1,22 @@
+{
+  "name": "remote-control-mcp-worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Portal-authenticated MCP worker that relays one local file read to a fixed VPC service.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "types": "wrangler types"
+  },
+  "dependencies": {
+    "@mcp-workers/portal-auth": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260911.1",
+    "@types/node": "24.19.2",
+    "typescript": "6.0.3",
+    "wrangler": "4.130.0"
+  }
+}

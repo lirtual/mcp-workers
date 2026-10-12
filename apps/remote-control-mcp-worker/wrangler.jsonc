@@ -1,0 +1,28 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "remote-control-mcp-worker",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-10-12",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "keep_vars": true,
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "invocation_logs": true,
+      "head_sampling_rate": 1
+    }
+  },
+  "secrets": {
+    "required": ["MCP_ACCESS_TOKEN", "REMOTE_CONTROL_DEVICE_TOKEN"]
+  },
+  // Placeholder only. The real VPC service id is provisioned later and is not a secret value,
+  // but this repository must not contain a live service id or tunnel token.
+  "vpc_services": [
+    {
+      "binding": "REMOTE_CONTROL_DEVICE",
+      "service_id": "00000000-0000-4000-8000-000000000000"
+    }
+  ]
+}
