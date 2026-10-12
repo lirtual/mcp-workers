@@ -18,8 +18,8 @@ The Remote Control MCP product could either expose a whole Linux host administra
 - Positive: one coherent developer-oriented product, without a second GUI/video transport or a general system administration framework.
 - Positive: fewer privileged operations and a smaller client-visible tool contract.
 - Trade-off: this initial product cannot be assumed to manage the entire machine, privileged system settings or unowned background processes.
-- Critical limitation: **a workspace pathname allowlist alone cannot constrain arbitrary Shell**. A separate decision must establish the real execution/OS isolation boundary, unattended authority and writable mounts before enabling Shell in production.
-- This ADR does **not** determine the runtime isolation method, specific tools, command permissions, approvals, retries, or deployment authorization.
+- Critical limitation: **a workspace pathname allowlist alone cannot constrain arbitrary Shell**. [ADR-0005](./0005-isolated-workspace-execution.md) now fixes the isolated container boundary and [ADR-0006](./0006-unattended-authorized-workspace-operations.md) approves unattended authorized workspace operations. The exact tool policy, mounts, secrets and validation remain unresolved before Shell can be enabled in production.
+- This ADR does **not** determine the specific tools, command permissions, mounts or deployment authorization. [ADR-0007](./0007-local-receipts-and-no-blind-replay.md) records the separate no-blind-retry decision.
 
 ## Rejected options
 
