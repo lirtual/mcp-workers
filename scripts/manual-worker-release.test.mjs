@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { activeVersion, verifyBindings } from "./manual-worker-release.mjs";
+import { activeVersion, verifyBindings, parseWranglerVersion } from "./manual-worker-release.mjs";
 
 const required = [
   { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
@@ -87,4 +87,10 @@ test("Remote VPC identity and approved independent write and Shell gates must re
   assert.throws(() => verifyBindings(worker,
     { ...settings, observability: { enabled: true, logs: { invocation_logs: true } } },
     secrets, { vpcId }), /Invocation Logs/);
+});
+
+test("Wrangler output requires a parseable release id, not upload-only success", () => {
+  const id = "12345678-1234-4234-8234-123456789abc";
+  assert.equal(parseWranglerVersion("Current Version ID: " + id), id);
+  assert.throws(() => parseWranglerVersion("Uploaded script"), /verifiable version ID/);
 });
