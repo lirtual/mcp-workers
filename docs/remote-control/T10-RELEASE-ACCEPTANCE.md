@@ -1,10 +1,33 @@
 # Remote Control MCP — T10 离线发布验收材料
 
-**状态：2026-10-13 只读线上验收已通过，但 T10 整体发布验收尚未完成。下方历史离线材料保留原始证据边界。**
+**状态：2026-10-13 只读功能线上验收已通过，但 Invocation Logs 认证头风险构成 T10 安全阻断，整体发布验收未通过。下方历史离线材料保留原始证据边界。**
 **历史离线核对基准：** `main` 提交 `caf10c36745ee2d03f24851e89541ea2d343d8d3`，日期 2026-10-12；线上只读验收基准见下文增量记录。
 **Issue：** [T10 #12](https://github.com/lirtual/mcp-workers/issues/12)（保持 Open）；父规格 [#2](https://github.com/lirtual/mcp-workers/issues/2)（保持 Open）。
 
 本文整理代码交付证据、发布前检查、回滚和撤销步骤。没有 Cloudflare、Portal 或真实主机访问授权；表中的真实环境项均为待验收，不得据此声称生产可用。T07 的账户风险接受也不等于 T09 进程停止竞态已获准。
+
+## 2026-10-13 安全阻断：Invocation Logs 与认证头
+
+**T10 日志/隐私验收：未通过（blocker）。** 仅代表发现潜在凭证持久化暴露路径；不代表已证明第三方获取或滥用凭证。此前“Worker 级和 ChatGPT 只读功能验收通过”仍有效，但**不能代替完整的安全发布验收**。
+
+### 证据分层（不记录任何凭证值）
+
+- 本轮授权只读核查报告：查询到的 Worker Invocation 记录中有 **2 条包含 `authorization` 字段**；仅在内存中进行了一次非空布尔判断，未显示、复制、提交该字段内容。这里不对字段值作进一步断言。
+- 本轮再由 Cloudflare Worker Settings API **只读复核**：`observability.enabled=true`、`head_sampling_rate=1`、`observability.logs.enabled=true`、`invocation_logs=true`、`persist=true`。`logpush=false`，`tail_consumers=[]`；按本轮核查报告，未发现 Observability 外送 destination。**“未发现外送”并不等于凭证安全或平台无可访问记录。**
+- `apps/remote-control-mcp-worker/wrangler.jsonc` 当前同样设置 `observability.logs.invocation_logs=true`，应用源码 `console.log` 的事件白名单**不控制平台自动 Invocation 日志**。本次未核对 Worker 应用日志实际内容，因此此前的源码白名单只能视为实现检查。
+- Cloudflare 官方 [Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/) 文档确认 Invocation Logs 自动包含请求、响应与关联元数据，可独立通过 `observability.logs.invocation_logs=false` 关闭。官方列出 Workers Logs 最长保留 7 天，Workers Free 3 天、Workers Paid 7 天；**账户当前计划、此账户实际保留时间和既有记录清理/撤销能力均未核实**。
+- 本地回执目录权限 `0700`、文件 `0600`、大小 340 字节，文件修改时间报告为 `2026-10-12T10:08:13Z`。代码中终态回执在启动、操作或状态查询时惰性清理，**非定时任务**；没有读取正文、创建记录或实测历史清理。
+- Cloudflare Observability 查询的首次调用因未设置 `dry:true` 而生成一条查询运行记录；后续查询设置 `dry:true`。没有发现同名保存查询，未执行日志或查询记录删除，不能把该运行记录当作已清理。
+
+### 风险处置门槛与独立授权
+
+1. **优先阻止今后的敏感 Invocation 日志产生**：在明确授权后评审并部署 `observability.logs.invocation_logs=false`（保留受控的应用事件日志），考虑 Wrangler 配置与线上配置一致性、部署对绑定/版本的影响。**本轮没有修改线上或仓库配置**。单纯下调 `head_sampling_rate` 不能当作敏感头清洗方案。
+2. 变更完成后，使用**不包含真实密钥值**的元数据查询核对日志设置；如需证明没有新敏感字段，仅在另行许可下使用合成/非敏感探针，不能为了取证再次读取旧的真实认证头。
+3. **历史已持久化的日志**不能由改配置自动证明被删除；需单独评估现有记录可见范围、保留/过期情况及账号访问权限。不要猜测或执行未获授权的日志删除。
+4. 处置日志风险后，**单独授权轮换 Remote Control 专属 ingress token 并验证旧值失效、其他 MCP Workers 不受影响**；device token 的撤销/轮换按独立范围决定。任何完整凭证值不得进入 GitHub、聊天、命令行参数、日志或验收截图。
+5. 维持 `REMOTE_CONTROL_ENABLE_FILE_WRITES=false` 和 `REMOTE_CONTROL_ENABLE_SHELL=false`，且 T09 PID/PGID TOCTOU 仍未裁决。Owner 重新确认隐私与发布决定前，**T10 #12 / 父规格 #2 保持 Open**。
+
+**本轮授权边界：** 仅核查配置与书面登记；不触发 Worker 重新部署、Cloudflare Observability 更改、密钥轮换/撤销、Portal Sync、Agent/Tunnel 操作或 Shell。
 
 ## 2026-10-13 线上只读验收增量
 
