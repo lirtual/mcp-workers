@@ -561,6 +561,52 @@ test("reads a fixed fixture through the worker and the native agent", async () =
   }
 });
 
+test("all 18 public tool names are unambiguous in receipts while Agent names remain compatible", async () => {
+  const mapping: Array<[string, string]> = [
+    ["read_file", "read_file"],
+    ["read_files", "read_multiple_files"],
+    ["list_directory", "list_directory"],
+    ["stat_file", "get_file_info"],
+    ["search_files", "start_search"],
+    ["search_next", "get_more_search_results"],
+    ["stop_search", "stop_search"],
+    ["write_file", "write_file"],
+    ["create_directory", "create_directory"],
+    ["replace_text", "edit_block"],
+    ["move_file", "move_file"],
+    ["delete_file", "delete_file"],
+    ["get_operation_status", "get_operation_status"],
+    ["run_command", "start_process"],
+    ["list_sessions", "list_sessions"],
+    ["read_session_output", "read_process_output"],
+    ["send_input", "interact_with_process"],
+    ["stop_session", "force_terminate"],
+  ];
+  const calls: ObservedCall[] = [];
+  let current: [string, string] = mapping[0]!;
+  const binding = recordingBinding(calls, async () => new Response(
+    JSON.stringify({ operation_id: "audit", tool_name: current[1], state: "completed" }),
+    { status: 200, headers: { "content-type": "application/json" } },
+  ));
+  const target = env({ REMOTE_CONTROL_DEVICE: binding, REMOTE_CONTROL_ENABLE_FILE_WRITES: "true", REMOTE_CONTROL_ENABLE_SHELL: "true" });
+  const auth = { authorization: `Bearer ${portalToken}` };
+  const listed = await postMcp(target, { jsonrpc: "2.0", id: "list", method: "tools/list" }, auth);
+  const names = (listed.json as { result: { tools: Array<{ name: string }> } }).result.tools.map((tool) => tool.name);
+  assert.deepEqual(names, mapping.map(([name]) => name));
+  assert.equal(new Set(mapping.map(([, agentName]) => agentName)).size, mapping.length);
+  for (const pair of mapping) {
+    current = pair;
+    const status = await postMcp(target, {
+      jsonrpc: "2.0", id: pair[0], method: "tools/call",
+      params: { name: "get_operation_status", arguments: { operation_id: "audit" } },
+    }, auth);
+    const response = status.json as { result: { content: Array<{ text: string }> } };
+    const receipt = JSON.parse(response.result.content[0]!.text) as { tool_name: string; public_tool_name: string };
+    assert.equal(receipt.tool_name, pair[1]);
+    assert.equal(receipt.public_tool_name, pair[0]);
+  }
+});
+
 test("write_file and get_operation_status preserve a stable receipt across a lost response", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-worker-receipt-"));
   const receiptDirectory = path.join(root, "receipts");
@@ -705,6 +751,7 @@ test("T06 mutation tools validate at the Worker and reach the native Agent recei
     const statusText = (status.json as { result: { content: Array<{ text: string }> } }).result.content[0]?.text ?? "";
     // Existing Agent receipt names remain stable across public MCP renames.
     assert.equal((JSON.parse(statusText) as { tool_name: string; state: string }).tool_name, "edit_block");
+    assert.equal((JSON.parse(statusText) as { public_tool_name: string }).public_tool_name, "replace_text");
     assert.equal((JSON.parse(statusText) as { state: string }).state, "completed");
 
     const deleted = await invoke("delete_file", { operation_id: "t06-delete", path: movedTo }, 7);

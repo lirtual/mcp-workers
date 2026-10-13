@@ -38,6 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       database_changed: ${{ steps.scope.outputs.database_changed }}
+      remote_control_changed: ${{ steps.scope.outputs.remote_control_changed }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -121,6 +122,17 @@ jobs:
             fi
           fi
 
+          remote_control_changed="$check_all"
+          if [[ "$remote_control_changed" != "true" ]]; then
+            for file in "${changed_files[@]}"; do
+              if [[ "$file" == apps/remote-control-agent/* || "$file" == apps/remote-control-mcp-worker/* ]]; then
+                remote_control_changed=true
+                break
+              fi
+            done
+          fi
+          echo "remote_control_changed=$remote_control_changed" >> "$GITHUB_OUTPUT"
+
           selected_text="${selected[*]-}"
           echo "apps=$selected_text" >> "$GITHUB_OUTPUT"
           echo "portal_auth_changed=$portal_auth_changed" >> "$GITHUB_OUTPUT"
@@ -142,30 +154,30 @@ jobs:
           echo "Portal auth package changed: $portal_auth_changed"
 
       - name: No application checks required
-        if: steps.scope.outputs.apps == ''
+        if: steps.scope.outputs.apps == '' && steps.scope.outputs.remote_control_changed != 'true'
         run: echo "No application checks are required for this change set."
 
       - uses: pnpm/action-setup@v4
-        if: steps.scope.outputs.apps != ''
+        if: steps.scope.outputs.apps != '' || steps.scope.outputs.remote_control_changed == 'true'
         with:
           version: 10.17.1
           run_install: false
 
       - uses: actions/setup-node@v4
-        if: steps.scope.outputs.apps != ''
+        if: steps.scope.outputs.apps != '' || steps.scope.outputs.remote_control_changed == 'true'
         with:
           node-version: 24
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
 
       - name: Verify toolchain
-        if: steps.scope.outputs.apps != ''
+        if: steps.scope.outputs.apps != '' || steps.scope.outputs.remote_control_changed == 'true'
         run: |
           node --version
           pnpm --version
 
       - name: Install workspace
-        if: steps.scope.outputs.apps != ''
+        if: steps.scope.outputs.apps != '' || steps.scope.outputs.remote_control_changed == 'true'
         run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Check manual release safeguards offline
@@ -175,6 +187,15 @@ jobs:
       - name: Check shared portal-auth package
         if: steps.scope.outputs.portal_auth_changed == 'true'
         run: pnpm --filter @mcp-workers/portal-auth check
+
+      - name: Check Remote Control Agent and Worker
+        if: steps.scope.outputs.remote_control_changed == 'true'
+        run: |
+          set -euo pipefail
+          pnpm --filter @mcp-workers/remote-control-agent typecheck
+          pnpm --filter @mcp-workers/remote-control-agent test
+          pnpm --filter remote-control-mcp-worker typecheck
+          pnpm --filter remote-control-mcp-worker test
 
       - name: Run affected application checks
         if: steps.scope.outputs.apps != ''
