@@ -31,9 +31,9 @@ _Avoid_: IMA API key, OAuth access token
 `CLIENT_ID` + `API_KEY` 是单用户 Worker Secrets，只用于 Worker -> IMA OpenAPI。旧名称 `IMA_OPENAPI_CLIENTID`、`IMA_OPENAPI_APIKEY`、`CLIENTID`、`APIKEY` 均不再受支持。
 _Avoid_: Portal credential, per-user BYOK database
 
-**R2 Runtime Binding**:
-应用只依赖 `R2_BUCKET` binding；生产 bucket 为 `ima-mcp-worker`。对象 key、下载语义与已有导出契约保持不变。
-_Avoid_: 在业务代码里按 bucket 名分支
+**Temporary export storage**:
+用户选择 Litterbox 替代 R2。只有显式的文件导出才把 IMA 数据上传到公共第三方文件托管；默认二进制读取保持分块。上传上限 32 MiB，Litterbox 保存 24h。
+_Avoid_: 隐式上传, 自建下载代理, 长期存储
 
 ## Authentication invariant
 
@@ -43,7 +43,7 @@ Portal/client 身份、`MCP_ACCESS_TOKEN`、`CLIENT_ID` / `API_KEY` 是三个独
 
 - Cloudflare Worker service name: `ima-mcp-worker`.
 - GitHub repository name: `ima-mcp-worker`.
-- R2 bucket: `ima-mcp-worker`, binding `R2_BUCKET`.
+- No object storage binding; explicit exports use public Litterbox.
 - `/health` is stateless liveness.
 - `/ready` validates required secrets/bindings without D1.
 - Existing domain safety checks remain authoritative for write-capable tools.
