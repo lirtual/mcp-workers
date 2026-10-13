@@ -83,6 +83,17 @@ export function activeVersion(deployments) {
   return { deployment_id: deployment.id, version_id: versions[0].version_id };
 }
 
+export function verifyPublishedVersion(previous, observed, expected) {
+  invariant(typeof expected === "string" &&
+    /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(expected),
+    "Expected Wrangler version ID missing or malformed");
+  invariant(observed.version_id.toLowerCase() === expected.toLowerCase(),
+    "Active Worker version does not match the Wrangler-published version");
+  invariant(previous.version_id !== observed.version_id &&
+    previous.deployment_id !== observed.deployment_id, "Active Worker version did not change");
+  return true;
+}
+
 function readConfiguration(worker, content) {
   const conf = JSON.parse(content.replace(/^\s*\/\/.*$/gm, ""));
   invariant(conf.name === worker && !!conf.main, "Worker name or entry differs from selection");
@@ -183,11 +194,7 @@ async function main() {
   } else {
     const previous = JSON.parse(await readFile(statePath, "utf8"));
     invariant(previous.worker === worker && previous.sourceSha === sourceSha, "Release source changed");
-    const expected = process.env.EXPECTED_VERSION_ID?.toLowerCase();
-    invariant(!!expected && expected === observed.version_id.toLowerCase(),
-      "Active Worker version does not match the Wrangler-published version");
-    invariant(previous.version_id !== observed.version_id &&
-      previous.deployment_id !== observed.deployment_id, "Active Worker version did not change");
+    verifyPublishedVersion(previous, observed, process.env.EXPECTED_VERSION_ID);
     console.log("Release verified: " + worker + " version " + observed.version_id +
       " source " + sourceSha.slice(0, 12));
   }
