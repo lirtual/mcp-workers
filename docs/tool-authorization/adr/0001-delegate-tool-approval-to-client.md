@@ -29,11 +29,17 @@ MCP tool annotations describe risk but do not enforce authorization. Different M
 - **Q3=A — User-facing confirmation ownership.** Client-side policy owns user-facing confirmation, including destructive DDL; the intended design removes the Worker's duplicate MCP protocol-level confirmation step for such operations. The Worker retains truthful risk annotations and execution safety contracts. Client implementations may approve calls without prompting; this is an accepted architectural trade-off, not a guarantee of a prompt or 'always allow' control.
 - **Q2=B — Database connection principal.** Each logical database connection will use **one configured upstream database credential/principal** for its supported query, mutation and schema operations. The upstream database's actual grants remain authoritative; the client approval neither confers privileges nor silently promotes the account. This does **not** decide whether to keep distinct MCP tools for read/write/admin operations or accept arbitrary SQL. See [Database ADR-0001](../../../apps/database-mcp-worker/docs/adr/0001-single-database-principal.md).
 
+## Decisions confirmed in interview round 2
+
+- **Q4=A (Database):** Retain distinct query, structured data mutation, and schema tools with accurate tool risk metadata, SQL validation, execution limits, and result reporting. Each logical connection uses the one database principal already decided; these are tool contracts, not separate Worker permissions.
+- **Q5=A (Raindrop):** Retain optional preview/dry-run functionality for cleanup. Remove redundant Worker-required confirmation: the client is responsible for presenting consent to its user. A preview is not a guarantee that the target remains unchanged.
+- **Q6=A (Rollout):** Implement and verify one Worker at a time in this order: IMA, Raindrop, Database, Remote Control. Each stage needs regression tests and real-client tool discovery/invocation acceptance. Merge, deployment, and production activation remain separate steps needing the operator's approval.
+
 ## Unresolved decision frontier
 
-1. **Database tool contract**: maintain distinct query and structured mutation/DDL tool contracts to provide accurate MCP risk metadata, or simplify to a general SQL execution interface with explicit limitations? Single DB principal is already decided; tool behavior is not.
-2. **Raindrop destructive cleanup**: distinguish preview/dry-run capability from redundant server-side approval (`confirm:true`); clarify which remains as functional behavior.
-3. **Remote Control and rollout**: decide how unconditional tool visibility interacts with existing production privilege reviews, real ChatGPT client approval testing, and a staged release. No production activation follows automatically from this decision.
+1. **Q7:** Single-database-credential configuration migration: deliberate breaking change with a validation error for legacy shapes, or temporary dual-schema support?
+2. **Q8:** Raindrop optional preview interface: required preview/execute mode on each cleanup tool, or separate preview and execute tools?
+3. **Q9:** Remote Control: pre-release verification and explicit approval criteria before changing its production tool availability.
 
 ## Consequences to assess
 
