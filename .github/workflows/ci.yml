@@ -17,10 +17,6 @@ on:
           - raindrop-mcp-worker
           - remote-control-mcp-worker
 
-concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
 permissions:
   contents: read
 
@@ -31,6 +27,9 @@ env:
 jobs:
   checks:
     name: Application checks
+    concurrency:
+      group: ci-checks-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     outputs:
       database_changed: ${{ steps.scope.outputs.database_changed }}
@@ -93,7 +92,7 @@ jobs:
               portal_auth_changed=true
             fi
             case "$file" in
-              package.json|pnpm-lock.yaml|pnpm-workspace.yaml|.npmrc|packages/*|.github/workflows/ci.yml)
+              package.json|pnpm-lock.yaml|pnpm-workspace.yaml|.npmrc|packages/*|.github/workflows/ci.yml|scripts/manual-worker-release*)
                 check_all=true
                 ;;
             esac
@@ -161,6 +160,10 @@ jobs:
       - name: Install workspace
         if: steps.scope.outputs.apps != ''
         run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Check manual release safeguards offline
+        if: steps.scope.outputs.apps != ''
+        run: node --test scripts/manual-worker-release.test.mjs
 
       - name: Check shared portal-auth package
         if: steps.scope.outputs.portal_auth_changed == 'true'
@@ -251,3 +254,76 @@ jobs:
 
       - name: Run database integration tests
         run: pnpm --filter database-mcp-worker run test:integration
+
+  deploy:
+    name: Manual Raindrop release (no auto deploy)
+    needs: [checks, database-integration]
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.worker == 'raindrop-mcp-worker' && needs.checks.result == 'success' && needs.database-integration.result == 'skipped' }}
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: release-${{ inputs.worker }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    env:
+      RELEASE_WORKER: raindrop-mcp-worker
+      RELEASE_STATE_FILE: ${{ runner.temp }}/worker-release-state.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate trusted current main (no deployment credentials)
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "$GITHUB_REF" == "refs/heads/main" ]] || exit 1
+          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]] || exit 1
+          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]] || {
+            echo "Dispatch revision is no longer main HEAD" >&2
+            exit 1
+          }
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install pinned dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Cloudflare release preflight (read-only)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: node scripts/manual-worker-release.mjs preflight "$RELEASE_WORKER"
+
+      - name: Recheck main immediately before publication
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/main" && "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]] || {
+            echo "Source became stale; nothing published" >&2
+            exit 1
+          }
+
+      - name: Publish selected Raindrop Worker
+        working-directory: apps/raindrop-mcp-worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: pnpm exec wrangler deploy
+
+      - name: Verify active release and required bindings
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: node scripts/manual-worker-release.mjs readback "$RELEASE_WORKER"
+
