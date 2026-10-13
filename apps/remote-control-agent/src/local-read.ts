@@ -88,6 +88,7 @@ export interface OperationId {
 export interface LocalCreateDirectory { path: string }
 export interface LocalEditBlock { filePath: string; oldString: string; newString: string; expectedReplacements: number }
 export interface LocalMoveFile { source: string; destination: string }
+export interface LocalDeleteFile { path: string }
 
 const MAX_WRITE_CONTENT_BYTES = 49_152;
 const OPERATION_ID = /^(?!\.{1,2}$)[A-Za-z0-9._:-]{1,128}$/;
@@ -119,6 +120,10 @@ export function parseLocalMoveFile(input: unknown): LocalMoveFile | null {
   const source = parsePath(record.source); const destination = parsePath(record.destination);
   if (!source || !destination || source === destination) return null;
   return { source, destination };
+}
+
+export function parseLocalDeleteFile(input: unknown): LocalDeleteFile | null {
+  return parseLocalCreateDirectory(input);
 }
 
 export function parseLocalWriteFile(input: unknown): LocalWriteFile | null {

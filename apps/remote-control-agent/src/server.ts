@@ -14,6 +14,7 @@ import {
   parseLocalCreateDirectory,
   parseLocalEditBlock,
   parseLocalMoveFile,
+  parseLocalDeleteFile,
   parseOperationId,
 } from "./local-read.ts";
 import { operationDigest, ReceiptStore, type OperationReceipt } from "./operations.ts";
@@ -55,6 +56,8 @@ const SAFE_EVENTS = new Set([
   "edit_failed",
   "move_completed",
   "move_failed",
+  "delete_completed",
+  "delete_failed",
   "operation_conflict",
   "operation_admitted",
   "process_started",
@@ -263,12 +266,13 @@ export async function startAgent(options: StartAgentOptions): Promise<RunningAge
   const ensureReceipts = () => (receiptsReady ??= receipts.open());
   const inFlight = new Map<string, Promise<OperationReceipt | undefined>>();
 
-  type MutationTool = "write_file" | "create_directory" | "edit_block" | "move_file";
+  type MutationTool = "write_file" | "create_directory" | "edit_block" | "move_file" | "delete_file";
   type MutationArgs =
     | NonNullable<ReturnType<typeof parseLocalWriteFile>>
     | NonNullable<ReturnType<typeof parseLocalCreateDirectory>>
     | NonNullable<ReturnType<typeof parseLocalEditBlock>>
-    | NonNullable<ReturnType<typeof parseLocalMoveFile>>;
+    | NonNullable<ReturnType<typeof parseLocalMoveFile>>
+    | NonNullable<ReturnType<typeof parseLocalDeleteFile>>;
 
   async function performMutation(id: string, tool: MutationTool, args: MutationArgs): Promise<OperationReceipt | undefined> {
     await receipts.update(id, "running", "Operation is in progress.");
@@ -296,6 +300,15 @@ export async function startAgent(options: StartAgentOptions): Promise<RunningAge
           return await receipts.get(id) ?? undefined;
         }
         await writeFile(edit.filePath, original.split(edit.oldString).join(edit.newString), "utf8");
+      } else if (tool === "delete_file") {
+        const target = (args as NonNullable<ReturnType<typeof parseLocalDeleteFile>>).path;
+        const info = await lstat(target);
+        if (!info.isFile()) {
+          await receipts.update(id, "failed", "The target is not a regular file.");
+          emit(log, "delete_failed");
+          return await receipts.get(id) ?? undefined;
+        }
+        await unlink(target);
       } else {
         const move = args as NonNullable<ReturnType<typeof parseLocalMoveFile>>;
         const source = path.resolve(move.source);
@@ -327,12 +340,12 @@ export async function startAgent(options: StartAgentOptions): Promise<RunningAge
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       const knownNoEffect = ["EACCES", "EPERM", "ENOENT", "EISDIR", "ENOTDIR", "EEXIST", "EINVAL", "EXDEV", "EOPNOTSUPP", "ENOTSUP"].includes(code ?? "");
-      emit(log, tool === "write_file" ? "write_failed" : tool === "create_directory" ? "directory_failed" : tool === "edit_block" ? "edit_failed" : "move_failed");
+      emit(log, tool === "write_file" ? "write_failed" : tool === "create_directory" ? "directory_failed" : tool === "edit_block" ? "edit_failed" : tool === "delete_file" ? "delete_failed" : "move_failed");
       try {
         return await receipts.update(id, knownNoEffect ? "failed" : "unknown", "Operation did not complete.");
       } catch { return undefined; }
     }
-    emit(log, tool === "write_file" ? "write_completed" : tool === "create_directory" ? "directory_completed" : tool === "edit_block" ? "edit_completed" : "move_completed");
+    emit(log, tool === "write_file" ? "write_completed" : tool === "create_directory" ? "directory_completed" : tool === "edit_block" ? "edit_completed" : tool === "delete_file" ? "delete_completed" : "move_completed");
     try { return await receipts.update(id, "completed", "Operation completed."); }
     catch { return undefined; }
   }
@@ -495,7 +508,7 @@ export async function startAgent(options: StartAgentOptions): Promise<RunningAge
       }
 
       const body = parsed as { tool?: unknown; arguments?: unknown; operation_id?: unknown };
-      if (body.tool === "write_file" || body.tool === "create_directory" || body.tool === "edit_block" || body.tool === "move_file") {
+      if (body.tool === "write_file" || body.tool === "create_directory" || body.tool === "edit_block" || body.tool === "move_file" || body.tool === "delete_file") {
         const id = typeof body.operation_id === "string" ? body.operation_id : null;
         if (!id || !parseOperationId({ operation_id: id })) {
           emit(log, "rejected");
@@ -505,7 +518,8 @@ export async function startAgent(options: StartAgentOptions): Promise<RunningAge
         const mutation = body.tool === "write_file" ? parseLocalWriteFile(body.arguments)
           : body.tool === "create_directory" ? parseLocalCreateDirectory(body.arguments)
             : body.tool === "edit_block" ? parseLocalEditBlock(body.arguments)
-              : parseLocalMoveFile(body.arguments);
+              : body.tool === "move_file" ? parseLocalMoveFile(body.arguments)
+                : parseLocalDeleteFile(body.arguments);
         if (!mutation) {
           emit(log, "rejected");
           sendJson(response, 400, { operation_id: id, error: "bad_request", message: "The operation request was rejected." });
@@ -517,7 +531,9 @@ export async function startAgent(options: StartAgentOptions): Promise<RunningAge
             ? { path: path.resolve((mutation as NonNullable<ReturnType<typeof parseLocalCreateDirectory>>).path) }
             : body.tool === "edit_block"
               ? { ...(mutation as NonNullable<ReturnType<typeof parseLocalEditBlock>>), filePath: path.resolve((mutation as NonNullable<ReturnType<typeof parseLocalEditBlock>>).filePath) }
-              : { source: path.resolve((mutation as NonNullable<ReturnType<typeof parseLocalMoveFile>>).source), destination: path.resolve((mutation as NonNullable<ReturnType<typeof parseLocalMoveFile>>).destination) };
+              : body.tool === "move_file"
+                ? { source: path.resolve((mutation as NonNullable<ReturnType<typeof parseLocalMoveFile>>).source), destination: path.resolve((mutation as NonNullable<ReturnType<typeof parseLocalMoveFile>>).destination) }
+                : { path: path.resolve((mutation as NonNullable<ReturnType<typeof parseLocalDeleteFile>>).path) };
         const digest = operationDigest(body.tool, normalized);
         let admitted: Awaited<ReturnType<typeof receipts.admit>>;
         try {
