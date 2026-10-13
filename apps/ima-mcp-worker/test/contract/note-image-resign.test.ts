@@ -9,22 +9,28 @@ import {
   type ImageRefreshBatchResult,
 } from "../../src/note-image-resign.ts";
 import type { Env, ImaCredentials } from "../../src/types.ts";
-import { setupMockFetch } from "../helpers/mock-fetch.ts";
+import { setupMockFetch, type MockFetchHandler } from "../helpers/mock-fetch.ts";
 
 const credentials: ImaCredentials = {
   clientId: "test_client_id",
   apiKey: "test_api_key",
 };
 
-function createMockR2Bucket() {
-  const store = new Map<string, Uint8Array>();
-  return {
-    store,
-    async put(key: string, value: Uint8Array) {
-      store.set(key, value);
-      return { key, size: value.byteLength };
-    },
-  };
+const LITTERBOX_API = "https://litterbox.catbox.moe/resources/internals/api.php";
+
+function setupExportFetch(handler: MockFetchHandler) {
+  const uploaded: File[] = [];
+  const mock = setupMockFetch((request) => {
+    if (request.url === LITTERBOX_API) {
+      const file = (request.body as FormData).get("fileToUpload");
+      assert.ok(file instanceof File);
+      assert.strictEqual((request.body as FormData).get("time"), "24h");
+      uploaded.push(file);
+      return new Response("https://litter.catbox.moe/mock-note.md", { status: 200 });
+    }
+    return handler(request);
+  });
+  return { ...mock, uploaded };
 }
 
 function createShardNamespace(
@@ -51,13 +57,8 @@ function createShardNamespace(
   };
 }
 
-function envWithR2(
-  bucket: ReturnType<typeof createMockR2Bucket>,
-  shard?: ReturnType<typeof createShardNamespace>["namespace"],
-): Env {
+function envForExport(shard?: ReturnType<typeof createShardNamespace>["namespace"]): Env {
   return {
-    R2_BUCKET: bucket as any,
-    R2_PUBLIC_BASE_URL: "https://cdn.example.com",
     IMA_BASE_URL: "https://ima.qq.com",
     ...(shard ? { IMA_IMAGE_REFRESH_SHARD: shard } : {}),
   };
@@ -71,11 +72,6 @@ function imaUrl(path: string, start: number, end: number, signature: string) {
   return `https://ima-notebook-prod.image.myqcloud.com${path}?q-sign-algorithm=sha1&q-ak=test&q-sign-time=${start}%3B${end}&q-key-time=${start}%3B${end}&q-header-list=&q-url-param-list=&q-signature=${signature}`;
 }
 
-function storedText(bucket: ReturnType<typeof createMockR2Bucket>) {
-  const bytes = [...bucket.store.values()][0];
-  assert.ok(bytes);
-  return new TextDecoder().decode(bytes);
-}
 
 function mediaInfoResponse(url: string) {
   return new Response(JSON.stringify({ code: 0, data: { media_type: 9, url_info: { url } } }), {
@@ -94,9 +90,8 @@ function format2Response(entries: Array<{ mediaId: string; cosKey: string }>) {
 }
 
 test("note export keeps fresh signatures without format=2 or shard RPC", async () => {
-  const bucket = createMockR2Bucket();
-  const url = imaUrl("/2/user/hash-fresh", 4_102_444_800, 4_102_473_600, "fresh-existing");
-  const { restore, captured } = setupMockFetch((req) => {
+    const url = imaUrl("/2/user/hash-fresh", 4_102_444_800, 4_102_473_600, "fresh-existing");
+  const { restore, captured, uploaded } = setupExportFetch((req) => {
     if (req.url.endsWith("get_doc_content")) {
       assert.strictEqual(req.body.target_content_format, 1);
       return new Response(JSON.stringify({ code: 0, data: { content: `# Note\n\n![img](${url})` } }), {
@@ -108,18 +103,17 @@ test("note export keeps fresh signatures without format=2 or shard RPC", async (
   });
 
   try {
-    const notes = new RefreshingImaNotes(new ImaClient(envWithR2(bucket), credentials));
+    const notes = new RefreshingImaNotes(new ImaClient(envForExport(), credentials));
     await notes.exportNote("note_fresh");
     assert.strictEqual(captured.filter((x) => x.url.endsWith("get_doc_content")).length, 1);
-    assert.match(storedText(bucket), /fresh-existing/);
+    assert.match(await uploaded[0].text(), /fresh-existing/);
   } finally {
     restore();
   }
 });
 
 test("note export partitions 112 expired images into 13 bounded shard batches", async () => {
-  const bucket = createMockR2Bucket();
-  const entries = Array.from({ length: 112 }, (_, index) => {
+    const entries = Array.from({ length: 112 }, (_, index) => {
     const path = `/2/user/hash-${index}`;
     return {
       path,
@@ -134,7 +128,7 @@ test("note export partitions 112 expired images into 13 bounded shard batches", 
     return { sourceUrl: item.sourceUrl, freshUrl: entry.freshUrl, preserved: false };
   }));
 
-  const { restore, captured } = setupMockFetch((req) => {
+  const { restore, captured, uploaded } = setupExportFetch((req) => {
     if (req.url.endsWith("get_doc_content") && req.body.target_content_format === 1) {
       const markdown = entries.map((entry) => `![img](${entry.oldUrl})`).join("\n");
       return new Response(JSON.stringify({ code: 0, data: { content: markdown } }), {
@@ -149,12 +143,12 @@ test("note export partitions 112 expired images into 13 bounded shard batches", 
   });
 
   try {
-    const notes = new RefreshingImaNotes(new ImaClient(envWithR2(bucket, namespace), credentials));
+    const notes = new RefreshingImaNotes(new ImaClient(envForExport(namespace), credentials));
     await notes.exportNote("note_large");
     assert.strictEqual(batches.length, 13);
     assert.deepStrictEqual(batches.map((batch) => batch.items.length), [...Array(12).fill(9), 4]);
     assert.ok(batches.every((batch) => batch.items.length <= MAX_IMAGE_REFRESH_BATCH_SIZE));
-    assert.strictEqual(captured.length, 2);
+    assert.strictEqual(captured.filter((x) => x.url !== LITTERBOX_API).length, 2);
     assert.strictEqual(captured.filter((x) => x.method === "HEAD").length, 0);
     assert.strictEqual(captured.filter((x) => x.url.endsWith("get_media_info")).length, 0);
   } finally {
@@ -163,15 +157,14 @@ test("note export partitions 112 expired images into 13 bounded shard batches", 
 });
 
 test("note export deduplicates repeated images and only replaces image destinations", async () => {
-  const bucket = createMockR2Bucket();
-  const path = "/2/user/hash-scoped";
+    const path = "/2/user/hash-scoped";
   const expired = imaUrl(path, 1, 2, "old-scoped");
   const refreshed = imaUrl(path, 4_102_444_800, 4_102_473_600, "new-scoped");
   const { namespace, batches } = createShardNamespace((request) => [
     { sourceUrl: request.items[0].sourceUrl, freshUrl: refreshed, preserved: false },
   ]);
 
-  const { restore } = setupMockFetch((req) => {
+  const { restore, uploaded } = setupExportFetch((req) => {
     if (req.url.endsWith("get_doc_content") && req.body.target_content_format === 1) {
       return new Response(JSON.stringify({
         code: 0,
@@ -185,11 +178,11 @@ test("note export deduplicates repeated images and only replaces image destinati
   });
 
   try {
-    const notes = new RefreshingImaNotes(new ImaClient(envWithR2(bucket, namespace), credentials));
+    const notes = new RefreshingImaNotes(new ImaClient(envForExport(namespace), credentials));
     await notes.exportNote("note_scoped");
     assert.strictEqual(batches.length, 1);
     assert.strictEqual(batches[0].items.length, 1);
-    const text = storedText(bucket);
+    const text = await uploaded[0].text();
     assert.strictEqual(text.split(refreshed).length - 1, 2);
     assert.ok(text.includes(`[link](${expired})`));
   } finally {
@@ -197,15 +190,14 @@ test("note export deduplicates repeated images and only replaces image destinati
   }
 });
 
-test("note export fails before R2 write when a shard fails", async () => {
-  const bucket = createMockR2Bucket();
-  const path = "/2/user/hash-fail";
+test("note export fails before temporary upload when a shard fails", async () => {
+    const path = "/2/user/hash-fail";
   const expired = imaUrl(path, 1, 2, "old-fail");
   const { namespace } = createShardNamespace(() => {
     throw new Error("shard failed");
   });
 
-  const { restore } = setupMockFetch((req) => {
+  const { restore, uploaded } = setupExportFetch((req) => {
     if (req.url.endsWith("get_doc_content") && req.body.target_content_format === 1) {
       return new Response(JSON.stringify({ code: 0, data: { content: `![img](${expired})` } }), {
         status: 200,
@@ -219,9 +211,9 @@ test("note export fails before R2 write when a shard fails", async () => {
   });
 
   try {
-    const notes = new RefreshingImaNotes(new ImaClient(envWithR2(bucket, namespace), credentials));
+    const notes = new RefreshingImaNotes(new ImaClient(envForExport(namespace), credentials));
     await assert.rejects(() => notes.exportNote("note_fail"), /shard failed/);
-    assert.strictEqual(bucket.store.size, 0);
+    assert.strictEqual(uploaded.length, 0);
   } finally {
     restore();
   }
@@ -229,7 +221,7 @@ test("note export fails before R2 write when a shard fails", async () => {
 
 test("image shard rejects batches over 9 before any network request", async () => {
   let fetchCalls = 0;
-  const { restore } = setupMockFetch(() => {
+  const { restore, uploaded } = setupExportFetch(() => {
     fetchCalls += 1;
     return new Response("unexpected", { status: 500 });
   });
@@ -253,7 +245,7 @@ test("image shard refreshes and HEAD-validates a known-expired image", async () 
   const freshUrl = imaUrl(path, 4_102_444_800, 4_102_473_600, "fresh");
   let mediaCalls = 0;
   let headCalls = 0;
-  const { restore } = setupMockFetch((req) => {
+  const { restore, uploaded } = setupExportFetch((req) => {
     if (req.url.endsWith("get_media_info")) {
       mediaCalls += 1;
       assert.deepStrictEqual(req.body, { media_id: "media_1" });
@@ -281,7 +273,7 @@ test("image shard refreshes and HEAD-validates a known-expired image", async () 
 test("image shard preserves an unparseable signature when old URL still works", async () => {
   const sourceUrl = "https://ima-notebook-prod.image.myqcloud.com/2/user/hash-probe?q-signature=unknown";
   let mediaCalls = 0;
-  const { restore } = setupMockFetch((req) => {
+  const { restore, uploaded } = setupExportFetch((req) => {
     if (req.method === "HEAD" && req.url === sourceUrl) return new Response(null, { status: 200 });
     if (req.url.endsWith("get_media_info")) mediaCalls += 1;
     return new Response("Not found", { status: 404 });
@@ -308,7 +300,7 @@ test("worst-case nine-item shard stays at 45 external fetches", async () => {
   let fetchCalls = 0;
   const originalSetTimeout = globalThis.setTimeout;
   (globalThis as any).setTimeout = (fn: () => void) => { fn(); return 0; };
-  const { restore } = setupMockFetch((req) => {
+  const { restore, uploaded } = setupExportFetch((req) => {
     fetchCalls += 1;
     if (req.method === "HEAD" && req.url.includes("q-signature=unknown")) {
       return new Response(null, { status: 403 });
