@@ -68,6 +68,12 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
   return true;
 }
 
+export function parseWranglerVersion(output) {
+  const match = output.match(/(?:Current )?Version ID:\s*([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i);
+  invariant(!!match, "Wrangler did not report a release Version ID");
+  return match[1].toLowerCase();
+}
+
 export function activeVersion(deployments) {
   const deployment = deployments?.deployments?.[0];
   const versions = deployment?.versions;
@@ -171,6 +177,9 @@ async function main() {
   } else {
     const previous = JSON.parse(await readFile(statePath, "utf8"));
     invariant(previous.worker === worker && previous.sourceSha === sourceSha, "Release source changed");
+    const expected = process.env.EXPECTED_VERSION_ID?.toLowerCase();
+    invariant(!!expected && expected === observed.version_id.toLowerCase(),
+      "Active Worker version does not match the Wrangler-published version");
     invariant(previous.version_id !== observed.version_id &&
       previous.deployment_id !== observed.deployment_id, "Active Worker version did not change");
     console.log("Release verified: " + worker + " version " + observed.version_id +
