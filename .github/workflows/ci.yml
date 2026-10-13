@@ -120,7 +120,7 @@ jobs:
           echo "Portal auth package changed: $portal_auth_changed"
 
       - name: No application checks required
-        if: steps.scope.outputs.apps == ''
+        if: steps.scope.outputs.apps == '' && steps.scope.outputs.remote_control_changed != 'true'
         run: echo "No application checks are required for this change set."
 
       - uses: pnpm/action-setup@v4
@@ -160,7 +160,7 @@ jobs:
           pnpm --filter remote-control-mcp-worker test
 
       - name: Run affected application checks
-        if: steps.scope.outputs.apps != '' || steps.scope.outputs.remote_control_changed == 'true'
+        if: steps.scope.outputs.apps != ''
         env:
           APPS: ${{ steps.scope.outputs.apps }}
         run: |
