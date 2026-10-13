@@ -10,6 +10,12 @@ const REQUIRED_SECRETS = {
   "database-mcp-worker": ["MCP_ACCESS_TOKEN", "DATABASE_CONFIG"],
   "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN", "REMOTE_CONTROL_DEVICE_TOKEN"],
 };
+const WORKER_ENTRIES = {
+  "raindrop-mcp-worker": "src/worker.ts",
+  "ima-mcp-worker": "src/index.ts",
+  "database-mcp-worker": "src/index.ts",
+  "remote-control-mcp-worker": "src/worker.ts",
+};
 
 function invariant(value, message) {
   if (!value) throw new Error(message);
@@ -35,7 +41,8 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     invariant(settings.observability?.traces?.enabled === true, "IMA tracing drift");
     if (options.mode === "readback") {
       invariant(!bindings.some((x) => x.name === "R2_BUCKET"), "Legacy IMA R2 binding remains after cutover");
-    } else if (find("R2_BUCKET", "r2_bucket")) {
+    } else if (bindings.some((x) => x.name === "R2_BUCKET")) {
+      invariant(!!find("R2_BUCKET", "r2_bucket"), "IMA legacy R2 binding has an unexpected type");
       invariant(options.ackIma === true, "IMA public Litterbox cutover needs explicit acknowledgement");
     }
   }
@@ -96,7 +103,8 @@ export function verifyPublishedVersion(previous, observed, expected) {
 
 function readConfiguration(worker, content) {
   const conf = JSON.parse(content.replace(/^\s*\/\/.*$/gm, ""));
-  invariant(conf.name === worker && !!conf.main, "Worker name or entry differs from selection");
+  invariant(conf.name === worker && conf.main === WORKER_ENTRIES[worker],
+    "Worker script name or entry differs from selected target");
   invariant(conf.keep_vars === true, "Runtime variable/Secret preservation must stay enabled");
   const logs = worker === "remote-control-mcp-worker" ? false : true;
   invariant(conf.observability?.logs?.invocation_logs === logs,
@@ -128,7 +136,10 @@ function readConfiguration(worker, content) {
 async function cfGet(account, worker, token, endpoint) {
   const url = "https://api.cloudflare.com/client/v4/accounts/" +
     encodeURIComponent(account) + "/workers/scripts/" + encodeURIComponent(worker) + endpoint;
-  const response = await fetch(url, { headers: { Authorization: "Bearer " + token, Accept: "application/json" } });
+  const response = await fetch(url, {
+    headers: { Authorization: "Bearer " + token, Accept: "application/json" },
+    signal: AbortSignal.timeout(15_000),
+  });
   invariant(response.ok, "Cloudflare read-only " + endpoint + " HTTP " + response.status);
   const document = await response.json();
   invariant(document?.success === true && document?.result != null,
@@ -144,6 +155,14 @@ async function current(account, worker, token, options) {
     cfGet(account, worker, token, "/script-settings"),
   ]);
   verifyBindings(worker, settings, secrets, options);
+  if (options.sourceConfig) {
+    invariant(settings.compatibility_date === options.sourceConfig.compatibility_date,
+      "Compatibility date drift");
+    const actualFlags = [...(settings.compatibility_flags || [])].sort();
+    const expectedFlags = [...(options.sourceConfig.compatibility_flags || [])].sort();
+    invariant(JSON.stringify(actualFlags) === JSON.stringify(expectedFlags),
+      "Compatibility flag drift");
+  }
   invariant(scriptSettings?.observability?.logs?.invocation_logs ===
     (worker === "remote-control-mcp-worker" ? false : true),
     "Script-level Invocation Logs drift");
@@ -169,7 +188,7 @@ async function main() {
   const sourceSha = process.env.GITHUB_SHA;
   const configPath = join(process.cwd(), "apps", worker, "wrangler.jsonc");
   const rawConfig = await readFile(configPath, "utf8");
-  readConfiguration(worker, rawConfig);
+  const sourceConfig = readConfiguration(worker, rawConfig);
   if (mode === "prepare-remote") {
     invariant(worker === "remote-control-mcp-worker", "Temporary config is Remote-only");
     const placeholder = "00000000-0000-4000-8000-000000000000";
@@ -187,6 +206,7 @@ async function main() {
     mode,
     vpcId: process.env.REMOTE_CONTROL_VPC_SERVICE_ID,
     ackIma: process.env.IMA_PUBLIC_UPLOAD_ACK === "true",
+    sourceConfig,
   });
   if (mode === "preflight") {
     await writeFile(statePath, JSON.stringify({ worker, sourceSha, ...observed }), { mode: 0o600 });
