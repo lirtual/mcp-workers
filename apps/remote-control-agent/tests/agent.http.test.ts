@@ -415,25 +415,33 @@ test("start_process uses receipts once and managed sessions expose bounded outpu
   }
 });
 
-test("failed Shell startup keeps a classified, credential-free receipt", async () => {
+test("session capacity failure keeps a classified, credential-free receipt", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-start-failure-"));
   const agent = await startAgent({
     deviceToken: DEVICE_TOKEN,
     receiptDirectory: path.join(root, "receipts"),
-    shellPath: "/nonexistent/remote-control-shell",
+    shellPath: "/bin/sh",
   });
   try {
+    for (let index = 0; index < 10; index++) {
+      const started = await call(agent, {
+        tool: "start_process",
+        operation_id: `capacity-fill-${index}`,
+        arguments: { command: "true", timeout_ms: 500 },
+      });
+      assert.equal((started.json as { status: string }).status, "completed");
+    }
     const result = await call(agent, {
       tool: "start_process",
-      operation_id: "missing-shell-start",
+      operation_id: "capacity-overflow",
       arguments: { command: "printf secret-sentinel", timeout_ms: 500 },
     });
     const body = result.json as { status: string; error: { code: string }; receipt: { safe_result_summary: string } };
     assert.equal(body.status, "failed");
     assert.equal(body.error.code, "process_start_failed");
-    assert.match(body.receipt.safe_result_summary, /supervisor_unavailable|process_spawn_failed/);
+    assert.equal(body.receipt.safe_result_summary, "Development command start failed: session_capacity");
     assert.equal(JSON.stringify(body).includes("secret-sentinel"), false);
-    const lookup = await fetch(`${agent.baseUrl}/internal/operations/missing-shell-start`, {
+    const lookup = await fetch(`${agent.baseUrl}/internal/operations/capacity-overflow`, {
       headers: { "x-device-credential": DEVICE_TOKEN },
     });
     assert.equal((await lookup.json() as { safe_result_summary: string }).safe_result_summary,
