@@ -1,7 +1,7 @@
 # ADR-0002 — Optional destructive-action preview; approval belongs to client
 
-Status: **Accepted in principle, interface shape pending**. Date: 2026-10-13.
-Decision input: cross-Worker grilling Q3=A and Q5=A.
+Status: **Accepted; exact tool names pending**. Date: 2026-10-13.
+Decision input: cross-Worker grilling Q3=A, Q5=A and Q8=A.
 Related: [cross-Worker approval ADR](../../../../docs/tool-authorization/adr/0001-delegate-tool-approval-to-client.md).
 
 ## Context
@@ -14,9 +14,10 @@ A preview is useful domain functionality. It is not a security permission, not a
 
 1. Preserve **optional, non-mutating preview** for destructive cleanup where meaningful. Requesting an actual cleanup need not first invoke preview.
 2. Remove compulsory `confirm: true` / repeat-the-call approval gates from the Worker tool protocol. Client UX and client policy own user-facing confirmation.
-3. Keep clear distinctions between preview and execute intent, explicit targets, and truthful risk annotations. Do not silently treat an omitted mode as authorization for an irreversible operation.
+3. **Q8=A:** Implement preview and execute as **separate MCP tool contracts** (distinct names and schemas), not as one overloaded tool with a `mode` or `confirm`/`dryRun` flag. Preview is explicitly read-only; execution is explicitly mutation-capable/destructive. The preview tool is optional and is not a prerequisite for executing.
 4. Retain official upstream API semantics, batch scope limits, conservative duplicate detection, partial-outcome reporting, and no blind retry when the result of a write is unknown.
-5. The exact public interface for expressing preview versus execute remains unresolved in the next design round: a required mode on one tool versus separate operations. No change to production or current tool behavior is authorized by this document.
+5. Avoid any change in which a legacy invocation that used to return a preview now silently mutates data. Decide the exact replacement tool names and legacy-name migration in Q11. Reuse current upstream service operations; avoid building a second approval service or new stateful preview token.
+6. No change to production or current tool behavior is authorized by this document.
 
 ## Consequences
 
