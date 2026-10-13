@@ -144,7 +144,6 @@ async function main() {
   const token = process.env.CLOUDFLARE_API_TOKEN;
   const statePath = process.env.RELEASE_STATE_FILE;
   const sourceSha = process.env.GITHUB_SHA;
-  invariant(account && token && statePath && sourceSha, "Required release environment missing");
   const configPath = join(process.cwd(), "apps", worker, "wrangler.jsonc");
   const rawConfig = await readFile(configPath, "utf8");
   readConfiguration(worker, rawConfig);
@@ -160,6 +159,7 @@ async function main() {
     console.log("Temporary Remote VPC deploy configuration ready");
     return;
   }
+  invariant(account && token && statePath && sourceSha, "Required release environment missing");
   const observed = await current(account, worker, token, {
     mode,
     vpcId: process.env.REMOTE_CONTROL_VPC_SERVICE_ID,
