@@ -1,10 +1,57 @@
 # Remote Control MCP — T10 离线发布验收材料
 
-**状态：2026-10-13 只读链路、入口与设备凭证轮换、Agent/Tunnel 受控故障及人工恢复已通过；Invocation Logs 已关闭。历史日志、旧凭据直接拒绝、自动恢复与安全回滚等仍未完成，T10 整体验收保持 Open。下文保留历史证据边界。**
+**状态：2026-10-13 只读链路、入口与设备凭证轮换、Agent/Tunnel 受控故障及人工恢复、回执只读核查和安全回滚方案审查已完成；Invocation Logs 已关闭。历史日志核销、旧凭据直接拒绝、回执过期删除实测、T07/T09 风险决定及 owner 最终发布决定仍未完成；无人值守自动恢复未验收且不属于已通过项。T10 整体验收保持 Open。下文保留证据边界。**
 **历史离线核对基准：** `main` 提交 `caf10c36745ee2d03f24851e89541ea2d343d8d3`，日期 2026-10-12；线上只读验收基准见下文增量记录。
 **Issue：** [T10 #12](https://github.com/lirtual/mcp-workers/issues/12)（保持 Open）；父规格 [#2](https://github.com/lirtual/mcp-workers/issues/2)（保持 Open）。
 
-本文整理代码交付证据、发布前检查、回滚和撤销步骤。没有 Cloudflare、Portal 或真实主机访问授权；表中的真实环境项均为待验收，不得据此声称生产可用。T07 的账户风险接受也不等于 T09 进程停止竞态已获准。
+本文整理离线实现证据、分日期的真实环境核查、发布前检查、回滚和撤销步骤。每项结论按报告、只读 API、真实插件调用或代码证据注明边界；未验证项不得推定通过。T07 的账户风险接受也不等于 T09 进程停止竞态已获准。
+
+## 2026-10-13 回执生命周期只读核查与安全回滚审查
+
+**范围：** 读取回执文件元数据和一条现存回执状态；Cloudflare 日志只使用 `dry=true` 聚合查询和字段名发现；检查 Worker 版本绑定元数据与仓库配置。未读历史日志正文或任何 Secret 值，未删除数据、生成测试回执、修改线上配置、轮换凭证或执行 Worker 回滚。
+
+### 回执与会话
+
+- 真实回执文件为 340 字节，模式 `0600`；目录模式 `0700`。只读统计显示 1 条 `completed` 的 `start_process` 回执，创建时间 `2026-10-12T10:07:42Z`；`get_operation_status` 返回 `completed`。操作 ID、参数摘要和结果摘要未在交付记录或对话中展示。
+- Agent 实现对终态回执使用 30 天 TTL，在 Agent 打开存储、接纳操作或查询状态时惰性清理，不运行后台定时清理。启动时，`admitted` / `running` 会被改为 `unknown` 并清除关联 session ID；过期状态查询也会删除对应记录。
+- 当前唯一回执未过期，因此此次只核实了现存状态和保留边界，没有实测过期删除。真实清理会改写回执文件；不伪造过期时间或创建/删除线上记录来声称通过。
+- Managed Process sessions 仅保存在 Agent 内存，终态 session 30 分钟后惰性清理；每个 session 最多保留 256 KiB 输出，最多 10 个 session。Agent 重启后不恢复旧 session；受控重启期间的回执/会话未知状态按实现中的规则处理，不自动重放命令。
+
+### Cloudflare 历史日志
+
+- 官方 Workers Logs 文档（2026-10-12 更新）列明最大保留 7 天，Workers Free 为 3 天、Workers Paid 为 7 天。订阅列表 API 返回认证错误，因此账户实际套餐和适用保留周期未能确认。
+- 只读 `dry=true` 元数据查询在最近 7 天范围内统计到 264 条该 Worker 的 `cf-worker-event` invocation 记录。分段查询显示，`2026-10-13T05:03Z` 之后计数为 0；`05:32Z` 之后计数仍为 0，同时有 15 条非 invocation 日志事件。字段名发现未返回包含 `authorization` 的字段名，但这不证明历史 invocation 记录已经删除，也不证明嵌套请求头不再可见。
+- 先前审计发现的 2 条带 `authorization` 字段的记录没有再次读取。当前设置仍是 `invocation_logs=false`、应用日志启用且持久化开启；Worker Logs 查询中的记录数量不能证明那两条记录已过期或删除。
+- Account Members API 当前列出 2 名账户级 `Super Administrator`。Cloudflare 官方 Worker 权限文档还定义了可查看 logs/traces 的 Worker 级 `Metadata Read-Only` 角色；本次只读 API 无法枚举该 Worker 的所有 scoped grants 或访问审计历史，故不能把可见范围收窄为仅这两名账户成员。
+- 未发现当前配置的 Logpush、Tail Consumer 或 Observability 外送目标（既有只读核查）。这不能证明历史上从未外送，也不代替对第三方副本的审计。Workers Logs 的自然保留期是当前可支持的到期路径；没有证据表明可单独删除其历史 invocation 行。
+
+### Worker 回滚评审
+
+- 当前 `2cd50f42-7290-4a90-9cde-28474389980a` 为 100% active。Cloudflare Versions API 对 `2cd50f42`、`f9c88002` 和 `4161e117` 均只显示 `MCP_ACCESS_TOKEN` 与 `REMOTE_CONTROL_DEVICE_TOKEN` Secret 绑定名称，不返回值；所有版本都包含同一个 VPC Service `01a12f13-7963-7241-bc38-3efba612d17e`，并显示文件写入和 Shell 门控为 `false`。版本详情没有返回可核实的 `invocation_logs` 字段。
+- 按版本创建时间和已记录的轮换顺序，`f9c88002` 早于设备凭证轮换，`4161e117` 早于入口凭证轮换；Secret 绑定值不可见，因此不能证明直接回滚不会恢复旧值。不能直接回滚至这两个版本。
+- 当前仓库 `apps/remote-control-mcp-worker/wrangler.jsonc` 中 VPC Service ID 是全零占位符。直接用此配置部署并不能保留线上 VPC 绑定。
+- **安全回退方案（仅审查，未执行）：** 紧急代码恢复时先保持 ChatGPT 入口 fail closed；不调用 Cloudflare 历史版本 Rollback。基于当前审过的源代码制作新的恢复版本，从受控 Secret 管理器重新注入当时仍有效的 ingress/device Secret，并显式绑定当前 VPC Service ID；确认 `invocation_logs=false`、应用日志策略、写入/Shell 门控后再发布。发布后 GET 核实 active Version、绑定和门控，并通过新凭证及固定只读 marker 做回归；错误凭证只能用合成值验收。Cloudflare 官方说明 Rollback 会立即为指定历史版本创建 deployment 并在已部署路由/域名上激活，因此任何直接 Rollback 仍须另行审批及逐项核验。
+- 在当前已轮换的凭证与安全设置下，没有找到可直接从仓库部署的可回退包：本地配置 VPC ID 为占位值；安全恢复版本需先构建并审阅，不能把“方案已审查”表述成“回滚已演练通过”。
+
+**本节判定：** 回执当前状态与实现保留规则已核查；安全回退流程已审查。回执过期删除未实测，历史认证头记录未核销，旧凭证未直接验证拒绝，自动恢复未验收。T10 整体仍未通过，T10 #12 与父规格 #2 继续 Open；不据本节作最终发布决定。
+
+参考：[Cloudflare Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/)、[Workers roles and permissions](https://developers.cloudflare.com/workers/authorization/workers/)、[Cloudflare Worker Rollbacks](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/)。
+
+## 2026-10-13 只读版本发布门槛判定
+
+本判定只针对当前固定工具面、文件写入/Shell 均关闭的只读版本。它是剩余证据的风险分类，不是 owner 的最终发布批准，也不把 T10 的完整验收标准改写成只读版本标准。
+
+| 剩余项 | 对受限只读发布的判定 | 依据与关闭条件 |
+| --- | --- | --- |
+| 已知历史 Invocation Logs 中的认证头记录 | **隐私发布阻断，须先核销或由 owner 明确接受残余风险** | 已知存在 2 条 `authorization` 字段记录；关闭后续采集并轮换入口/设备凭证降低了旧值继续使用风险，但没有证明记录已过期、删除或访问范围受限。安全路径是等到适用保留期后用元数据重新核验；账户实际套餐未确认，不能直接假定 3 天或 7 天到期。若仍未能核销，应由 owner 明确接受历史日志可能保留认证信息及当前访问边界不完整的风险，不能记录成“日志已清除”。 |
+| T07 普通 Linux 用户权限边界 | **目标身份/主机确认与明确风险决定是发布阻断** | 已有 T07 对特定 WSL2 `ray` 用户的风险接受记录，但该账户不是隔离环境；只读 `read_file` 可访问该用户有权读取的文件。发布决定必须确认当前 Agent 仍运行在已核查的目标身份/主机，并明确接受这一读取边界。该接受不扩展到其他设备、身份或 Shell。 |
+| 旧入口/设备凭证直接拒绝证据 | **不是当前只读调用的操作阻断；作为凭证撤销证明仍未完成** | 新 Secret 配置下真实只读调用通过，设备认证轮换也有报告；旧凭证没有 Worker 层 401 证据。不得恢复、导出或猜测旧凭证。若未来需要更强撤销证据，只能使用此前安全记录或服务端撤销/轮换证据，不以重放旧密钥为条件。 |
+| 其他 MCP Workers 未受入口凭证轮换影响 | **完整 T10 验收阻断；当前只读功能已通但影响范围证据未闭合** | T10 验收标准要求确认 Remote Control 专属入口轮换不改变其他 Worker 的 token 与可用性。当前证据没有提供对照核验。可以用只读配置/健康信息完成，不需重启或改动其他 Worker。 |
+| 无人值守 Agent/Tunnel 自动恢复 | **不阻断受限只读发布，前提是接受人工恢复和可用性边界** | 已通过的只是受控故障下失败关闭及人工恢复；首轮 Tunnel 控制器未自动恢复。若产品承诺无人值守/主机重启自愈，则在相应承诺发布前构成阻断；本次不得描述为自动恢复通过。 |
+| 回执过期清理实测、生产 Worker 回滚演练 | **不是本只读版本的直接阻断项；是完整生命周期/变更恢复验收缺口** | 当前工具面关闭所有产生写回执的能力，现存唯一回执未到期；不应制造线上记录或改时间补证。历史 Worker 回滚存在恢复旧 Secret/日志设置的风险，且仓库 VPC ID 是占位值；不得直接回滚。若要宣称具备生产回滚能力，先构建并审阅带当前有效 Secret 与真实 VPC 绑定的新恢复版本，再另行授权演练。 |
+| T09 PID/PGID 停止竞态 | **不阻断当前只读工具面；Shell 发布的硬阻断** | 风险针对进程停止工具；Shell 门控仍为 `false`。启用 Shell 前须专项裁决，T07 接受不能覆盖此风险。 |
+
+**发布判断：** 线上只读链路与当前门控已有证据，故没有理由为了关闭 T10 再做生产故障或回滚演练。但“只读功能运行成功”不等于“可不经决定地对外发布”：历史认证头风险、当前主机/身份是否落在 T07 接受范围，以及其他 Worker 影响范围核验，仍是正式发布记录的门槛。取得这些只读证据并由 owner 作出明确的受限只读发布决定后，可将无人值守恢复、回执过期删除和回滚演练保留为 T10 生命周期剩余项；在此之前 T10 #12 与父规格 #2 均保持 Open。文件修改和 Shell 仍关闭。
 
 ## 2026-10-13 设备轮换与故障恢复增量验收
 
@@ -32,7 +79,7 @@
 | 日志外送 | Worker 无 Logpush、Tail Consumer 或 Observability 外送 destination | 当前配置层面未发现这些外送路径；不能证明过去从未外送 |
 | 账户级 Log Explorer | 数据集列表为空 | **不等于** Workers Logs 中历史记录不存在，且 Log Explorer dataset 删除不等同 Workers Logs 单条日志删除 |
 | 历史日志删除 | 当前工具与官方材料未提供 Workers Logs 单条历史记录可用删除证据 | 不执行/不推断可以删除；保留为待自然到期或官方支持方案进一步核对的风险 |
-| 当前活动 Worker | `f9c88002-1e8f-46a1-b25c-14d936dd09d4` 100% active（先前 Cloudflare 独立复核） | 最新已轮换入口凭证的版本有效，Invocation Logs 保持关闭 |
+| 当前活动 Worker | `2cd50f42-7290-4a90-9cde-28474389980a` 100% active（Cloudflare Deployments API 复核） | 当前线上入口与设备凭证版本有效，Invocation Logs 保持关闭 |
 | 历史 Worker 回滚 | 轮换前版本 `4161e117-4f04-48db-aad6-6daf68b17981` 的版本元数据仍有 `MCP_ACCESS_TOKEN` Secret 绑定；版本 API 不返回 Secret 明文 | **存在可能恢复旧入口凭证的回滚风险**；旧绑定存在不构成“回滚一定恢复旧值”的证明 |
 | 回滚日志开关 | 历史版本元数据不足以说明回滚会否改变 `invocation_logs` | **未知**，任何回滚必须事先审批并在回滚后复核日志设置；不能把历史版本当成天然安全的恢复点 |
 
