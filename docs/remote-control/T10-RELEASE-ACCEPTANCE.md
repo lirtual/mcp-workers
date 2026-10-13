@@ -6,6 +6,30 @@
 
 本文整理代码交付证据、发布前检查、回滚和撤销步骤。没有 Cloudflare、Portal 或真实主机访问授权；表中的真实环境项均为待验收，不得据此声称生产可用。T07 的账户风险接受也不等于 T09 进程停止竞态已获准。
 
+## 2026-10-13 历史日志访问边界与安全回滚只读复核
+
+**复核范围：只读，不读取历史日志正文或任何 Secret、不删除数据、不轮换 device token、不执行回滚。** 本节根据本轮只读审计报告登记，不把未返回的控制面信息推断为已验证通过。
+
+| 主题 | 审计观察 | T10 结论 |
+| --- | --- | --- |
+| Worker 账号套餐/实际保留期 | Cloudflare 订阅查询出现认证错误，当前套餐未确认。官方 Workers Logs 文档写明 Workers Free 保留 3 天、Paid 保留 7 天，Workers Logs 最长 7 天 | **实际保留期未知**；2026-10-13 带 `authorization` 字段的旧日志不能认为已经到期或删除 |
+| 访问主体 | 账户当前列出 **2 名 Super Administrator**；未在本轮记录成员身份或凭证 | 只确认可见账户级高权限成员，不代表历史日志访问权仅限两人、也未验证审计访问历史 |
+| 日志外送 | Worker 无 Logpush、Tail Consumer 或 Observability 外送 destination | 当前配置层面未发现这些外送路径；不能证明过去从未外送 |
+| 账户级 Log Explorer | 数据集列表为空 | **不等于** Workers Logs 中历史记录不存在，且 Log Explorer dataset 删除不等同 Workers Logs 单条日志删除 |
+| 历史日志删除 | 当前工具与官方材料未提供 Workers Logs 单条历史记录可用删除证据 | 不执行/不推断可以删除；保留为待自然到期或官方支持方案进一步核对的风险 |
+| 当前活动 Worker | `f9c88002-1e8f-46a1-b25c-14d936dd09d4` 100% active（先前 Cloudflare 独立复核） | 最新已轮换入口凭证的版本有效，Invocation Logs 保持关闭 |
+| 历史 Worker 回滚 | 轮换前版本 `4161e117-4f04-48db-aad6-6daf68b17981` 的版本元数据仍有 `MCP_ACCESS_TOKEN` Secret 绑定；版本 API 不返回 Secret 明文 | **存在可能恢复旧入口凭证的回滚风险**；旧绑定存在不构成“回滚一定恢复旧值”的证明 |
+| 回滚日志开关 | 历史版本元数据不足以说明回滚会否改变 `invocation_logs` | **未知**，任何回滚必须事先审批并在回滚后复核日志设置；不能把历史版本当成天然安全的恢复点 |
+
+### 后续操作门槛
+
+1. **历史日志风险保留为未核销**，禁止声称既有含 `authorization` 字段的 2026-10-13 日志已经被删除。需要时仅查询记录数量/元数据、套餐/保留期及平台访问面，不能再次读取原始敏感头内容；账户权限问题可另外查官方支持。
+2. **回滚实行单独审批**：任何回滚前记录候选 Version ID、Secret 继承/绑定策略、VPC Service ID、`invocation_logs`、`REMOTE_CONTROL_ENABLE_FILE_WRITES`、`REMOTE_CONTROL_ENABLE_SHELL` 与恢复方案；不能直接回滚到凭证轮换前版本。轮换本身的旧值直接拒绝仍未完成实测。
+3. **设备端凭证未获准轮换**：`REMOTE_CONTROL_DEVICE_TOKEN` 未改动。若单独决定轮换，须先确认 Linux 设备上 Token 的真实注入来源、目标文件/服务管理方式，并分别授权设备侧配置写入与受控 Agent 重启；同时同步 Worker 端 Secret，设计一致性和中断恢复验证。**当前 ChatGPT Remote Control 插件只读，不能通过它完成设备端写入/重启；不能以开启面向 ChatGPT 的 Shell/文件修改门控来绕过这个审批。**
+4. 本轮未开展额外的日志正文审计、历史记录删除、设备凭证轮换、服务重启或回滚。T10 #12、父规格 #2 保持 Open，文件修改及 Shell 门控继续为 `false`。
+
+**参考：** [Cloudflare Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/)、[Workers Pricing](https://developers.cloudflare.com/workers/platform/pricing/)、[Log Explorer 数据集管理](https://developers.cloudflare.com/log-explorer/manage-datasets/)、[Worker 回滚](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/)。
+
 ## 2026-10-13 专属入口凭证轮换验收增量
 
 **结论：Remote Control ingress 凭证已更换，新值调用成功；未直接证明旧值触达 Worker 后被拒绝。** 此状态不等价于 T10 全部认证安全验收通过。
