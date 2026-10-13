@@ -415,7 +415,7 @@ test("start_process uses receipts once and managed sessions expose bounded outpu
   }
 });
 
-test("session capacity failure keeps a classified, credential-free receipt", async () => {
+test("completed sessions do not exhaust the running capacity, while live sessions still do", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-start-failure-"));
   const agent = await startAgent({
     deviceToken: DEVICE_TOKEN,
@@ -423,13 +423,26 @@ test("session capacity failure keeps a classified, credential-free receipt", asy
     shellPath: "/bin/sh",
   });
   try {
-    for (let index = 0; index < 10; index++) {
+    for (let index = 0; index < 12; index++) {
       const started = await call(agent, {
         tool: "start_process",
-        operation_id: `capacity-fill-${index}`,
+        operation_id: `history-${index}`,
         arguments: { command: "true", timeout_ms: 500 },
       });
       assert.equal((started.json as { status: string }).status, "completed");
+    }
+    const listed = await call(agent, { tool: "list_sessions", arguments: {} });
+    const history = JSON.parse(completedText(listed.json)) as Array<{ state: string }>;
+    assert.equal(history.length, 10);
+    assert.equal(history.every((session) => session.state === "completed"), true);
+
+    for (let index = 0; index < 10; index++) {
+      const started = await call(agent, {
+        tool: "start_process",
+        operation_id: `active-${index}`,
+        arguments: { command: "sleep 30", timeout_ms: 0 },
+      });
+      assert.equal((started.json as { status: string }).status, "running");
     }
     const result = await call(agent, {
       tool: "start_process",

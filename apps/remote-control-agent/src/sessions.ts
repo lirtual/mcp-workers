@@ -4,7 +4,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Readable, Writable } from "node:stream";
 
-const MAX_SESSIONS = 10;
+const MAX_SESSIONS = 10; // Active and starting commands, not completed history.
+const MAX_SESSION_HISTORY = 10;
 const SESSION_TTL_MS = 30 * 60 * 1000;
 const MAX_OUTPUT_BYTES = 256 * 1024;
 const DEFAULT_PAGE_BYTES = 16 * 1024;
@@ -120,6 +121,7 @@ function snapshot(session: ManagedSession): SessionSnapshot {
 
 export class ManagedSessions {
   private readonly sessions = new Map<string, ManagedSession>();
+  private readonly starting = new Set<string>();
   private readonly shellPath: string;
 
   constructor(shellPath: string) {
@@ -129,16 +131,25 @@ export class ManagedSessions {
 
   private prune(): void {
     const cutoff = Date.now() - SESSION_TTL_MS;
+    const history: Array<[string, ManagedSession]> = [];
     for (const [id, session] of this.sessions) {
-      if (session.state !== "running" && session.endedAt !== undefined && session.endedAt < cutoff) this.sessions.delete(id);
+      if (session.state === "running") continue;
+      if (session.endedAt !== undefined && session.endedAt < cutoff) this.sessions.delete(id);
+      else history.push([id, session]);
     }
+    // Keep recent output readable without allowing completed sessions to exhaust command capacity.
+    history.sort((a, b) => (a[1].endedAt ?? 0) - (b[1].endedAt ?? 0));
+    for (const [id] of history.slice(0, Math.max(0, history.length - MAX_SESSION_HISTORY))) this.sessions.delete(id);
   }
 
   async start(command: string, waitMs: number, onExit?: (session: SessionSnapshot) => Promise<void>): Promise<SessionSnapshot> {
     this.prune();
-    if (this.sessions.size >= MAX_SESSIONS) throw new Error("Session capacity reached.");
+    const active = [...this.sessions.values()].filter((session) => session.state === "running").length;
+    if (active + this.starting.size >= MAX_SESSIONS) throw new Error("Session capacity reached.");
 
     const sessionId = randomUUID();
+    this.starting.add(sessionId);
+    try {
     let child: ChildProcess;
     try {
       child = spawn(supervisorPath, [this.shellPath, command], {
@@ -223,6 +234,7 @@ export class ManagedSessions {
       throw new Error("The managed Shell supervisor is unavailable on this Linux kernel.");
     }
     this.sessions.set(sessionId, session);
+    this.starting.delete(sessionId);
 
     if (waitMs > 0 && session.state === "running") {
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -230,6 +242,9 @@ export class ManagedSessions {
       if (timer) clearTimeout(timer);
     }
     return snapshot(session);
+    } finally {
+      this.starting.delete(sessionId);
+    }
   }
 
   private ownsRunningProcess(session: ManagedSession): boolean {

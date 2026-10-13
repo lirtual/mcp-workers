@@ -565,6 +565,10 @@ const PUBLIC_TO_AGENT_TOOL: Record<string, string> = {
   "send_input": "interact_with_process",
   "stop_session": "force_terminate",
 };
+// The Agent protocol and persisted tool_name stay stable across public MCP renames.
+const AGENT_TO_PUBLIC_TOOL: Record<string, string> = Object.fromEntries(
+  Object.entries(PUBLIC_TO_AGENT_TOOL).map(([publicName, agentName]) => [agentName, publicName]),
+);
 
 function parseLocalCall(name: unknown, args: unknown): LocalCall | null {
   // Keep the private Agent protocol and existing receipt names stable.
@@ -693,6 +697,10 @@ function publicReceipt(value: unknown): Record<string, unknown> | null {
   const allowed = ["operation_id", "tool_name", "state", "created_at", "updated_at", "safe_result_summary", "session_id"];
   const projection: Record<string, unknown> = {};
   for (const key of allowed) if (receipt[key] !== undefined) projection[key] = receipt[key];
+  if (typeof projection.tool_name === "string") {
+    const publicName = AGENT_TO_PUBLIC_TOOL[projection.tool_name] ?? projection.tool_name;
+    if (LOCAL_TOOLS.some((tool) => tool.name === publicName)) projection.public_tool_name = publicName;
+  }
   return projection.operation_id && projection.state ? projection : null;
 }
 
