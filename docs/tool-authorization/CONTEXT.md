@@ -1,6 +1,6 @@
 # MCP Tool Authorization — Domain Context
 
-> Status: Active design terminology, 2026-10-13. Interview Q1–Q10 and Q12 confirmed; Q11 single-call direct deletion confirmed with legacy naming unresolved. Implementation and production release remain pending.
+> Status: Active design terminology, 2026-10-13. Q1–Q16 design decisions settled, with Q14 superseding earlier Raindrop preview decisions. Implementation and production release remain pending.
 
 ## Language
 
@@ -32,13 +32,13 @@ _Avoid_: Confusing a logical connection with one global account used for all dat
 The single upstream identity through which a logical database connection performs its supported operations, subject to the database's own grants.
 _Avoid_: Treating a client's consent or a tool's classification as a grant of database authority.
 
-**Preview Operation**:
-An optional, separate read-only action that estimates the possible impact of an operation. It does not mutate, lock, grant permission, or require a following execution call.
-_Avoid_: A mandatory approval step or a guaranteed snapshot.
+**Direct Cleanup Operation**:
+An existing, destructive Raindrop tool name whose single invocation performs the requested cleanup without a preview or Worker-side confirmation stage.
+_Avoid_: Calling it a read-only preview, or assuming retaining the old name guarantees compatible behavior.
 
-**Execute Operation**:
-A separate client-visible action that directly performs a requested change in a single invocation, without a prerequisite preview or Worker-side confirmation; it truthfully reports risk and execution outcome.
-_Avoid_: An implicit side effect hidden behind a former preview-only invocation.
+**Semantic Breaking Change**:
+A public tool's meaning or side effects change even though its name remains unchanged. For example a previously preview-default cleanup call will now mutate data.
+_Avoid_: Treating name stability as behavioral compatibility or presuming the client refreshed its cached tool contract.
 
 **Breaking Connection Migration**:
 A deliberate transition from an outdated connection contract to its replacement, requiring operator action rather than silently guessing a compatible interpretation.
@@ -62,4 +62,8 @@ _Avoid_: Treating metadata as an enforceable security policy.
 
 ## Settled boundaries and remaining interview scope
 
-Tool approval belongs to the MCP client; extra Worker tool gates and duplicate user-facing confirmations are targeted for removal, while ingress and resource authorization remain. Each logical database connection uses one upstream principal, while read, structured write and schema tool contracts stay distinct. Raindrop destructive operations retain optional preview. Migration proceeds per Worker (IMA, Raindrop, Database, Remote Control) with separate production approval. A breaking database credential migration is chosen; Raindrop preview and execute operations are separate tools; Remote Control release requires actual-client acceptance. Database DDL remains direct-only pending separate transport validation. Raindrop destructive actions execute in one call; optional preview never forces a second step. Existing-environment real-client acceptance is chosen for Remote Control, subject to separate authorization for state-changing tests. Remaining decisions cover exact database config schema, safe Raindrop legacy-name migration, Remote Control test authorization, and release-runbook sequencing.
+The client owns user-facing tool invocation approval. Worker-specific tool permission gates and duplicate confirmations are targeted for removal; ingress authentication, database/OS privileges, SQL validation, operation integrity and truthful risk metadata remain. Each logical Database connection has one `connection` field / upstream principal and distinct safe read, structured write and direct-only schema-management tools. Legacy `read/write/admin` config shapes are intentionally rejected after the separately authorized migration.
+
+**Q14=B overrides Q5=A and Q8=A:** Raindrop retains existing cleanup tool names, removes both optional and mandatory preview behavior, and runs destructive cleanup in one call. Such same-name changed semantics require an explicit release/real-client cache refresh review.
+
+The release order is IMA → Raindrop → Database → Remote Control using the existing manually approved GitHub Actions publisher. Remote Control acceptance uses the existing real ChatGPT/Portal/Worker/Agent path, begins with read-only review and needs separate owner permission before any write/Shell testing. Implementation, merge, actual cloud configuration and production release are not approved by these design records.
