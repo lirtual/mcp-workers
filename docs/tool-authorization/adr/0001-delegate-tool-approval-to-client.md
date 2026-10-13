@@ -52,5 +52,5 @@ MCP tool annotations describe risk but do not enforce authorization. Different M
 
 - No production gates, credentials, policies, or deployments are changed by this ADR.
 - No claim that client approval can replace authentication or database/OS permission enforcement.
-- No decision yet to remove query bounds, input validation, idempotency/receipt logic, log redaction, or capability risk annotations.
+- Q4 retains query bounds, input validation and tool risk annotations; operation receipts, uncertain-result handling and secret-safe logging also remain, unless explicitly addressed by a separate future decision.
 - Older app-specific ADRs remain authoritative until explicitly revised by an accepted decision.
