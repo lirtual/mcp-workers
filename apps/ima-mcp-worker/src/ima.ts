@@ -20,7 +20,7 @@ import { hmacSha1Hex, sha1Hex } from "./crypto.ts";
 import { classifyUrl, classifyUrlWithProbe, fetchWithSafeRedirects, inferRemoteFileName } from "./url.ts";
 import { DEFAULT_SIZE_LIMIT, MEDIA_TYPE_DEFAULT_EXT, resolveUploadMetadata } from "./preflight.ts";
 import { bufferToBase64, readBinaryChunk, readBoundedBuffer, readBoundedText } from "./stream.ts";
-import { buildContentDisposition, buildDownloadUrl, buildR2Key, sanitizeFileName } from "./r2.ts";
+import { MAX_TEMP_UPLOAD_BYTES, TEMP_UPLOAD_RETENTION, sanitizeFileName, uploadTemporaryFile } from "./temporary-upload.ts";
 
 export const DEFAULT_IMA_BASE_URL = "https://ima.qq.com";
 export const DEFAULT_FILE_DOWNLOAD_TIMEOUT_MS = 30_000;
@@ -138,52 +138,22 @@ export class ImaNotes {
     return res;
   }
   async exportNote(note_id: string, options: { file_name?: string } = {}): Promise<ExportFileResult> {
-    if (!this.api.env.R2_BUCKET) {
-      throw new ImaApiError("R2 bucket 未配置，无法导出文件", 110002);
-    }
     const cleanNoteId = (note_id || "").trim();
-    if (!cleanNoteId) {
-      throw new ImaApiError("note_id 不能为空", 110001);
-    }
+    if (!cleanNoteId) throw new ImaApiError("note_id 不能为空", 110001);
     const noteData = await this.get(cleanNoteId, 1);
     const content = noteData?.content ?? "";
-
-    let derivedName = options.file_name?.trim();
-    if (!derivedName) {
-      const headerMatch = content.match(/^#+\s+([^\r\n]+)/m);
-      if (headerMatch?.[1]) {
-        derivedName = headerMatch[1].trim();
-      } else {
-        derivedName = `Note_${cleanNoteId}`;
-      }
-    }
+    const derivedName = options.file_name?.trim() || content.match(/^#+\s+([^\r\n]+)/m)?.[1]?.trim() || `Note_${cleanNoteId}`;
     const fileName = sanitizeFileName(derivedName, "md");
-    const key = buildR2Key("notes", cleanNoteId, fileName);
     const contentType = "text/markdown; charset=utf-8";
-    const contentDisposition = buildContentDisposition(fileName);
-
-    const encoder = new TextEncoder();
-    const encodedBytes = encoder.encode(content);
-
-    await this.api.env.R2_BUCKET.put(key, encodedBytes, {
-      httpMetadata: {
-        contentType,
-        contentDisposition,
-      },
-      customMetadata: {
-        note_id: cleanNoteId,
-        exported_at: new Date().toISOString(),
-      },
-    });
-
-    const download_url = await buildDownloadUrl(this.api.env, key);
+    const bytes = new TextEncoder().encode(content);
+    const download_url = await uploadTemporaryFile(fileName, contentType, bytes);
     return {
       download_url,
       file_name: fileName,
-      file_size: encodedBytes.byteLength,
+      file_size: bytes.byteLength,
       content_type: contentType,
       note_id: cleanNoteId,
-      key,
+      expires_in: TEMP_UPLOAD_RETENTION,
     };
   }
 }
@@ -347,9 +317,6 @@ export class ImaKnowledge {
     notes: ImaNotes,
     options: { file_name?: string } = {}
   ): Promise<ExportFileResult> {
-    if (!this.env.R2_BUCKET) {
-      throw new ImaApiError("R2 bucket 未配置，无法导出文件", 110002);
-    }
     const cleanMediaId = (media_id || "").trim();
     if (!cleanMediaId) {
       throw new ImaApiError("media_id 不能为空", 110001);
@@ -393,47 +360,35 @@ export class ImaKnowledge {
     }
     const fallbackExt = MEDIA_TYPE_DEFAULT_EXT[media_type];
     const fileName = sanitizeFileName(derivedName, fallbackExt);
-    const key = buildR2Key("media", cleanMediaId, fileName);
-    const contentDisposition = buildContentDisposition(fileName);
-
-    if (!res.body) {
-      throw new ImaApiError("拉取媒体原文响应体为空", 110010);
+    if (!res.body) throw new ImaApiError("拉取媒体原文响应体为空", 110010);
+    const contentLength = Number(res.headers.get("content-length"));
+    if (Number.isFinite(contentLength) && contentLength > MAX_TEMP_UPLOAD_BYTES) {
+      await res.body.cancel();
+      throw new ImaApiError("临时文件超过 Worker 上传上限 32 MiB", 110013);
     }
-
-    // Stream directly into R2
-    await this.env.R2_BUCKET.put(key, res.body, {
-      httpMetadata: {
-        contentType,
-        contentDisposition,
-      },
-      customMetadata: {
-        media_id: cleanMediaId,
-        media_type: String(media_type),
-        exported_at: new Date().toISOString(),
-      },
-    });
-
-    const download_url = await buildDownloadUrl(this.env, key);
+    const bytes = await readBoundedBuffer(res, MAX_TEMP_UPLOAD_BYTES);
+    const download_url = await uploadTemporaryFile(fileName, contentType, bytes);
     return {
       download_url,
       file_name: fileName,
-      file_size: Number.isSafeInteger(fileSize) ? fileSize : undefined,
+      file_size: bytes.byteLength,
       content_type: contentType,
       media_id: cleanMediaId,
-      key,
+      expires_in: TEMP_UPLOAD_RETENTION,
     };
   }
 
   async readSource(
     media_id: string,
     notes: ImaNotes,
-    options: { offset?: number; max_bytes?: number; target_content_format?: 0 | 1 | 2; export_to_r2?: boolean } = {}
+    options: { offset?: number; max_bytes?: number; target_content_format?: 0 | 1 | 2; export_to_temporary?: boolean } = {}
   ): Promise<{
     media_id: string;
     media_type: number;
     content?: string;
     url?: string;
     download_url?: string;
+    expires_in?: string;
     file_name?: string;
     content_type?: string;
     fallback_message?: string;
@@ -442,12 +397,13 @@ export class ImaKnowledge {
     next_offset?: number;
     is_end?: boolean;
   }> {
-    if (options.export_to_r2) {
+    if (options.export_to_temporary) {
       const exported = await this.exportSource(media_id, notes);
       return {
         media_id,
         media_type: 0,
         download_url: exported.download_url,
+        expires_in: exported.expires_in,
         file_name: exported.file_name,
         content_type: exported.content_type,
         bytes_returned: exported.file_size,
@@ -502,18 +458,6 @@ export class ImaKnowledge {
             ct.includes("xml") ||
             ct.includes("javascript");
 
-          if (this.env.R2_BUCKET && !isText && options.export_to_r2 !== false && options.offset === undefined && options.max_bytes === undefined) {
-            const exported = await this.exportSource(media_id, notes);
-            return {
-              media_id,
-              media_type,
-              download_url: exported.download_url,
-              file_name: exported.file_name,
-              content_type: exported.content_type,
-              bytes_returned: exported.file_size,
-              is_end: true,
-            };
-          }
 
           const rangeMatch = res.headers.get("content-range")?.match(/^bytes\s+(\d+)-(\d+)\/(\d+|\*)$/i);
           const rangeHonored = res.status === 206 && Boolean(rangeMatch);
