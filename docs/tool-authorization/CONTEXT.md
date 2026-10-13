@@ -1,6 +1,6 @@
 # MCP Tool Authorization — Domain Context
 
-> Status: Active design terminology, 2026-10-13. Q1=A (remove tool gates, retain boundary auth), Q2=B (one database principal per logical connection), Q3=A (client owns tool confirmation). Implementation and rollout remain undecided.
+> Status: Active design terminology, 2026-10-13. Interview Q1–Q6 confirmed; implementation and production release remain pending.
 
 ## Language
 
@@ -32,6 +32,10 @@ _Avoid_: Confusing a logical connection with one global account used for all dat
 The single upstream identity through which a logical database connection performs its supported operations, subject to the database's own grants.
 _Avoid_: Treating a client's consent or a tool's classification as a grant of database authority.
 
+**Optional Operation Preview**:
+A non-mutating assessment of the likely impact of a proposed operation. A client can use it before an operation but is not obliged to do so; it is not an authorization request or a guarantee about future state.
+_Avoid_: Confirmation prompt, locking the target, permission grant.
+
 **Operation Safety Contract**:
 Behavioral guarantees about valid input, bounded effects, repeatability, uncertainty, and truthful reporting of operation outcomes.
 _Avoid_: Calling validation or unknown-result reconciliation an extra client tool approval.
@@ -42,4 +46,4 @@ _Avoid_: Treating metadata as an enforceable security policy.
 
 ## Settled boundaries and remaining interview scope
 
-Tool approval belongs to the MCP client, extra Worker tool gates and duplicate user-facing confirmations are targeted for removal, and the ingress and resource-authorization boundaries remain. Each logical database connection has one database principal; different logical connections may use different principals. The design interview is still determining the database tool surface, the role of destructive-operation previews, and the release/acceptance plan.
+Tool approval belongs to the MCP client; extra Worker tool gates and duplicate user-facing confirmations are targeted for removal, while ingress and resource authorization remain. Each logical database connection uses one upstream principal, while read, structured write and schema tool contracts stay distinct. Raindrop destructive operations retain optional preview. Migration proceeds per Worker (IMA, Raindrop, Database, Remote Control) with separate production approval. The outstanding design questions are database configuration migration, preview API shape, and real-client Remote Control release acceptance.
