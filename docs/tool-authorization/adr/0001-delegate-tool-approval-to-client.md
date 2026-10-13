@@ -1,6 +1,6 @@
 # ADR-0001 — Delegate MCP tool invocation approval to the client
 
-Status: **Architecture decisions accepted; implementation and release pending**. Date: 2026-10-13. Q1=A Q2=B Q3=A Q4=A Q5=A (superseded by Q14) Q6=A Q7=A Q8=A (superseded by Q14) Q9=A Q10=A Q11=direct single-call delete Q12=B Q13=A Q14=B (no preview) Q15=A Q16=A.
+Status: **Accepted for implementation planning; production authorization pending**. Date: 2026-10-13. Q1–Q19 decided (Q5 and Q8 superseded by Q14); Q20 is an operational test-approval artifact, not an architecture blocker.
 
 This is an interview record, **not** authorization to deploy or remove production safeguards. The accepted decisions are recorded. User choices Q14 and Q16 supersede earlier Raindrop-preview and rollout-order assumptions. Execution tests, deployment and production changes remain separately authorized.
 
@@ -55,12 +55,20 @@ MCP tool annotations describe risk but do not enforce authorization. Different M
 - **Q15=A — Remote Control in-place, separately authorized test.** Acceptance on the existing Linux/Portal/ChatGPT path is required, with **read-only preflight first**, then a separately approved, narrowly scoped fixture write and harmless Shell test after identity, privilege paths, T07/T09/T10 blockers, safe recovery plan, and client-tool exposure are assessed. Choosing a test method does not approve gate changes, command execution, credentials, deployment or production cutover.
 - **Q16=A — Unified rollout order in runbook.** Update the proposed manual release runbook order to **IMA → Raindrop → Database → Remote Control**. The GitHub Actions workflow remains `workflow_dispatch`-only for actual publication, and each release retains its own approval and verification. Changing a document on this design branch does not modify production.
 
-## Unresolved decision frontier
+## Decisions confirmed in interview round 6
 
-1. **Q17 — Raindrop execution scope and safeguards:** confirm that `remove_duplicates` retains its existing conservative skip/partial-result safeguards even though preview disappears; decide any explicit source/target requirement for broad cleanup.
-2. **Q18 — Breaking client-tool refresh:** choose an explicit reconnect/re-discovery acceptance gate for changed destructive Raindrop tool semantics versus no operational refresh requirement.
-3. **Q19 — Database one-time configuration cutover:** decide whether a separately approved short fail-closed maintenance interval is acceptable or zero-downtime migration is mandatory (which may require additional deployment coordination).
-4. **Q20 — Remote Control authorization record:** define what constitutes the later explicit, bounded owner approval for temporary in-place writes/Shell testing, without granting it in this design round.
+- **Q17=A — Retain Raindrop deletion safety contracts.** Eliminate preview/confirmation stages only. Preserve existing deduplication eligibility (including conservative skipping of duplicates with notes or highlights where implemented), scope limitations, batch bounds, fail-fast behavior, per-scope succeeded/failed/unknown reporting, and no blind retry of ambiguous mutations. No new destructive reach or algorithm rewrite is authorized. Broad operations retain their documented original meaning but must describe their scope honestly.
+- **Q18=A — Real client tool refresh is a release acceptance gate.** The `empty_trash`, `cleanup_collections`, and `remove_duplicates` names intentionally remain the same while their default side effects change. Before separately approving release, reconnect or refresh the actual ChatGPT MCP integration, verify `tools/list` and input schemas describe **direct deletion**, confirm destructive/non-read-only annotations are accurate, and record whether the actual client requests consent. Do not assert a prompt will always appear; an observed stale contract or tool cache blocks acceptance. Never perform a real cleanup just to prove metadata.
+- **Q19=A — Allow separately approved short fail-closed Database maintenance.** The one-time `DATABASE_CONFIG` schema migration does not need a zero-downtime dual-parser design. A bounded interruption in which requests fail closed is acceptable during an independently authorized coordinated config/Worker release. Prepare the new secret out of GitHub, validate fixture connections and a recovery plan, verify the new active Worker and safe read after cutover; never silently choose legacy credentials or grant privileges. This decision does **not** authorize the interruption or Secret write now.
+
+## Design interview exit criteria and residual release decisions
+
+The core architectural design is **sufficient to proceed to implementation specification and isolated code PRs**: tool/ingress/resource boundaries, database config/transport/cutover, Raindrop single-call side effects, client refresh, Remote Control test method and release sequence are settled. No further open architectural question requires another grilling round.
+
+- **Q20 (operational gate, not architecture):** The owner must separately grant explicit scoped permission for any future in-place Remote Control write/Shell test. The approval record must name the active Worker/host and scope, fixture path, harmless command, expected effects, gate or deployment change, readiness checks, stop/recovery plan and revocation/cleanup. This ADR supplies a proposed template in the implementation plan, **not the approval itself**.
+- Per-Worker CI, static/live non-destructive acceptance, observed client approvals, credentials, source SHA, and actual active-version readback remain release evidence to gather, **not presumed results**.
+- Independent approval is still required for implementation-PR merge, production Cloudflare Secret changes, each manual Worker deployment, Raindrop destructive live use and Remote Control gated test/exposure.
+- The ordered, operator-controlled plan is maintained at [IMPLEMENTATION-PLAN.md](../IMPLEMENTATION-PLAN.md).
 
 ## Consequences to assess
 
