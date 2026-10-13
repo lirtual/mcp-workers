@@ -622,9 +622,19 @@ export async function startAgent(options: StartAgentOptions): Promise<RunningAge
                 await receipts.update(id, exited.state, "Development command session ended.", exited.session_id);
               });
               return await receipts.update(id, session.state, "Development command session recorded.", session.session_id);
-            } catch {
+            } catch (error) {
+              // Only classify known Agent-generated failures: never persist arbitrary
+              // exception messages, commands, file paths, or environment values.
+              const message = error instanceof Error ? error.message : "";
+              const reason = message === "Session capacity reached."
+                ? "session_capacity"
+                : message === "The managed Shell supervisor is unavailable on this Linux kernel."
+                  ? "supervisor_unavailable"
+                  : message === "The development command could not be started."
+                    ? "process_spawn_failed"
+                    : "process_start_internal";
               emit(log, "process_failed");
-              return await receipts.update(id, "failed", "Development command could not be started.");
+              return await receipts.update(id, "failed", "Development command start failed: " + reason);
             }
           })();
           inFlight.set(id, pending);
@@ -647,7 +657,7 @@ export async function startAgent(options: StartAgentOptions): Promise<RunningAge
         const state = existingSession?.state ?? receipt?.state ?? "unknown";
         if (state === "failed") {
           emit(log, "process_failed");
-          sendJson(response, 200, { operation_id: id, status: state, session_id: receipt?.session_id, error: { code: "bad_request", message: "The development command failed." } });
+          sendJson(response, 200, { operation_id: id, status: state, session_id: receipt?.session_id, error: { code: "process_start_failed", message: "The development command failed. Check the operation receipt for a safe failure reason." }, receipt });
         } else {
           emit(log, "process_started");
           sendJson(response, 200, { operation_id: id, status: state, session_id: receipt?.session_id });
