@@ -522,6 +522,88 @@ test("managed sessions accept idempotent stdin and terminate only verified owned
   }
 });
 
+test("force_terminate does not target an unrelated process when a numeric process-group target is reused", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-t09-pgid-reuse-"));
+  const agent = await startAgent({
+    deviceToken: DEVICE_TOKEN,
+    receiptDirectory: path.join(root, "receipts"),
+    shellPath: "/bin/sh",
+  });
+  const targetGroupFile = path.join(root, "target-pgid");
+  const unrelatedGroupFile = path.join(root, "unrelated-pgid");
+  const action = (tool: string, operationId: string, argumentsValue: unknown) => call(agent, {
+    tool,
+    operation_id: operationId,
+    arguments: argumentsValue,
+  });
+  let originalKill: typeof process.kill | undefined;
+  try {
+    const target = await call(agent, {
+      tool: "start_process",
+      operation_id: "pgid-reuse-target",
+      arguments: {
+        command: `echo $ > '${targetGroupFile}'; trap '' TERM; while :; do sleep 0.05; done`,
+        timeout_ms: 0,
+      },
+    });
+    assert.equal((target.json as { status: string }).status, "running");
+    const targetSession = (target.json as { session_id: string }).session_id;
+
+    const unrelated = await call(agent, {
+      tool: "start_process",
+      operation_id: "pgid-reuse-unrelated",
+      arguments: {
+        command: `echo $ > '${unrelatedGroupFile}'; trap 'printf unrelated-was-signaled; exit 0' TERM; while :; do sleep 0.05; done`,
+        timeout_ms: 0,
+      },
+    });
+    assert.equal((unrelated.json as { status: string }).status, "running");
+    const unrelatedSession = (unrelated.json as { session_id: string }).session_id;
+
+    const readGroupId = async (file: string): Promise<number> => {
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        try {
+          const value = Number((await readFile(file, "utf8")).trim());
+          if (Number.isSafeInteger(value) && value > 1) return value;
+        } catch { /* Wait for the disposable shell fixture to start. */ }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      throw new Error("The process-group fixture did not start.");
+    };
+    const targetGroupId = await readGroupId(targetGroupFile);
+    const unrelatedGroupId = await readGroupId(unrelatedGroupFile);
+    assert.notEqual(targetGroupId, unrelatedGroupId);
+
+    // Simulate the kernel resolving the already-checked numeric PGID to a
+    // different live group by the time kill(2) runs. The new pidfd path must
+    // never issue this numeric group signal.
+    originalKill = process.kill;
+    Object.defineProperty(process, "kill", {
+      configurable: true,
+      value: (pid: number, signal?: NodeJS.Signals | number) => {
+        if (pid === -targetGroupId) return originalKill?.(-unrelatedGroupId, signal);
+        return originalKill?.(pid, signal);
+      },
+    });
+    const stopped = await action("force_terminate", "pgid-reuse-stop", { session_id: targetSession });
+    Object.defineProperty(process, "kill", { configurable: true, value: originalKill });
+    originalKill = undefined;
+
+    const unrelatedOutput = await call(agent, { tool: "read_process_output", arguments: { session_id: unrelatedSession } });
+    const unrelatedPage = JSON.parse(completedText(unrelatedOutput.json)) as { output: string; state: string };
+    assert.equal(unrelatedPage.output.includes("unrelated-was-signaled"), false);
+    assert.equal(unrelatedPage.state, "running");
+    assert.equal((stopped.json as { status: string }).status, "completed");
+    const targetOutput = await call(agent, { tool: "read_process_output", arguments: { session_id: targetSession } });
+    const targetPage = JSON.parse(completedText(targetOutput.json)) as { state: string };
+    assert.equal(targetPage.state, "completed");
+  } finally {
+    if (originalKill) Object.defineProperty(process, "kill", { configurable: true, value: originalKill });
+    await agent.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("uncertain stdin receipts become unknown after restart and stale session input is rejected", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-t09-restart-"));
   const receiptDirectory = path.join(root, "receipts");

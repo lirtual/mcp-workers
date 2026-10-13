@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import type { Readable, Writable } from "node:stream";
 
 const MAX_SESSIONS = 10;
 const SESSION_TTL_MS = 30 * 60 * 1000;
@@ -14,12 +16,13 @@ export type SessionState = "running" | "completed" | "failed" | "unknown";
 interface ManagedSession {
   sessionId: string;
   child: ChildProcess;
-  processGroupId?: number;
+  control: SessionSupervisorControl;
   startedAt: string;
   lastObservedAt: number;
   endedAt?: number;
   state: SessionState;
   exitCode: number | null;
+  terminationRequested: boolean;
   chunks: Buffer[];
   outputBytes: number;
   truncated: boolean;
@@ -45,6 +48,65 @@ export interface OutputPage extends SessionSnapshot {
   output: string;
 }
 
+class SessionSupervisorControl {
+  private readonly pending: Array<(value: string | null) => void> = [];
+  private readonly buffered: string[] = [];
+  private closed = false;
+  readonly ready: Promise<boolean>;
+  private readonly requests: Writable;
+
+  constructor(requests: Writable, responses: Readable) {
+    this.requests = requests;
+    responses.on("data", (chunk: Buffer | string) => {
+      for (const value of Buffer.from(chunk).toString("ascii")) {
+        const waiter = this.pending.shift();
+        if (waiter) waiter(value);
+        else this.buffered.push(value);
+      }
+    });
+    responses.on("end", () => this.finish());
+    responses.on("error", () => this.finish());
+    responses.on("close", () => this.finish());
+    requests.on("error", () => this.finish());
+    this.ready = this.next().then((value) => value === "R");
+  }
+
+  private finish(): void {
+    this.closed = true;
+    for (const waiter of this.pending.splice(0)) waiter(null);
+  }
+
+  private next(): Promise<string | null> {
+    const buffered = this.buffered.shift();
+    if (buffered !== undefined) return Promise.resolve(buffered);
+    if (this.closed) return Promise.resolve(null);
+    return new Promise((resolve) => this.pending.push(resolve));
+  }
+
+  async signal(signal: "SIGTERM" | "SIGKILL"): Promise<boolean> {
+    const request = signal === "SIGTERM" ? "T" : "K";
+    if (signal === "SIGKILL") {
+      return await new Promise<boolean>((resolve) => {
+        this.requests.write(request, "ascii", (error) => resolve(!error));
+      });
+    }
+    const response = this.next();
+    const written = await new Promise<boolean>((resolve) => {
+      this.requests.write(request, "ascii", (error) => resolve(!error));
+    });
+    return written && (await response) === "O";
+  }
+
+  close(): void {
+    this.requests.end();
+  }
+}
+
+const supervisorPath = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../.build/session-supervisor",
+);
+
 function snapshot(session: ManagedSession): SessionSnapshot {
   session.lastObservedAt = Date.now();
   return {
@@ -54,16 +116,6 @@ function snapshot(session: ManagedSession): SessionSnapshot {
     last_observed_at: new Date(session.lastObservedAt).toISOString(),
     exit_code: session.exitCode,
   };
-}
-
-export function ownsProcessGroup(
-  child: Pick<ChildProcess, "pid" | "exitCode" | "signalCode">,
-  processGroupId: number | undefined,
-): boolean {
-  return processGroupId !== undefined
-    && child.pid === processGroupId
-    && child.exitCode === null
-    && child.signalCode === null;
 }
 
 export class ManagedSessions {
@@ -89,29 +141,34 @@ export class ManagedSessions {
     const sessionId = randomUUID();
     let child: ChildProcess;
     try {
-      child = spawn(this.shellPath, ["-c", command], {
-        stdio: ["pipe", "pipe", "pipe"],
-        detached: process.platform !== "win32",
+      child = spawn(supervisorPath, [this.shellPath, command], {
+        stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"],
+        detached: true,
       });
     } catch {
       throw new Error("The development command could not be started.");
     }
 
+    const requestStream = child.stdio[3] as Writable | null;
+    const responseStream = child.stdio[4] as Readable | null;
+    if (!requestStream || !responseStream) throw new Error("The development command could not be started.");
+    const control = new SessionSupervisorControl(requestStream, responseStream);
+
     const session: ManagedSession = {
       sessionId,
       child,
-      ...(process.platform !== "win32" && child.pid !== undefined ? { processGroupId: child.pid } : {}),
+      control,
       startedAt: new Date().toISOString(),
       lastObservedAt: Date.now(),
       state: "running",
       exitCode: null,
+      terminationRequested: false,
       chunks: [],
       outputBytes: 0,
       truncated: false,
       exited: Promise.resolve(),
       closed: Promise.resolve(),
     };
-    this.sessions.set(sessionId, session);
 
     const capture = (chunk: Buffer) => {
       const remaining = MAX_OUTPUT_BYTES - session.outputBytes;
@@ -145,8 +202,27 @@ export class ManagedSessions {
         resolve();
       };
       child.once("error", () => { void finish("failed", null); });
-      child.once("close", (code) => { void finish(code === 0 ? "completed" : "failed", code); });
+      child.once("close", (code) => {
+        const stopped = session.terminationRequested;
+        void finish(code === 0 || stopped ? "completed" : "failed", code);
+      });
     });
+
+    let readyTimer: ReturnType<typeof setTimeout> | undefined;
+    const ready = await Promise.race([
+      control.ready,
+      session.closed.then(() => false),
+      new Promise<boolean>((resolve) => { readyTimer = setTimeout(() => resolve(false), 2000); }),
+    ]);
+    if (readyTimer) clearTimeout(readyTimer);
+    if (!ready) {
+      await control.signal("SIGTERM");
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      await control.signal("SIGKILL");
+      await Promise.race([session.closed, new Promise<void>((resolve) => setTimeout(resolve, 500))]);
+      throw new Error("The managed Shell supervisor is unavailable on this Linux kernel.");
+    }
+    this.sessions.set(sessionId, session);
 
     if (waitMs > 0 && session.state === "running") {
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -164,19 +240,9 @@ export class ManagedSessions {
     return session.child.exitCode !== null || session.child.signalCode !== null;
   }
 
-  private signalOwnedProcess(session: ManagedSession, signal: NodeJS.Signals): boolean {
-    if (!this.ownsRunningProcess(session)) return false;
-    try {
-      if (session.processGroupId !== undefined) {
-        if (!ownsProcessGroup(session.child, session.processGroupId)) return false;
-        process.kill(-session.processGroupId, signal);
-      } else {
-        session.child.kill(signal);
-      }
-      return true;
-    } catch {
-      return false;
-    }
+  private signalOwnedProcess(session: ManagedSession, signal: "SIGTERM" | "SIGKILL"): Promise<boolean> {
+    if (!this.ownsRunningProcess(session)) return Promise.resolve(false);
+    return session.control.signal(signal);
   }
 
   async writeInput(sessionId: string, input: string): Promise<SessionActionResult> {
@@ -207,7 +273,8 @@ export class ManagedSessions {
     const session = this.sessions.get(sessionId);
     if (!session) return "not_found";
     if (session.state !== "running") return "completed";
-    if (!this.signalOwnedProcess(session, "SIGTERM")) return "unknown";
+    if (!await this.signalOwnedProcess(session, "SIGTERM")) return "unknown";
+    session.terminationRequested = true;
     const waitForExit = async (timeoutMs: number) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       await Promise.race([
@@ -217,7 +284,7 @@ export class ManagedSessions {
       if (timer) clearTimeout(timer);
     };
     await waitForExit(500);
-    if (!this.processExited(session)) this.signalOwnedProcess(session, "SIGKILL");
+    if (!this.processExited(session) && !await this.signalOwnedProcess(session, "SIGKILL")) return "unknown";
     await waitForExit(500);
     if (!this.processExited(session)) return "unknown";
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -263,9 +330,9 @@ export class ManagedSessions {
       ]);
       if (timer) clearTimeout(timer);
     };
-    for (const session of running) this.signalOwnedProcess(session, "SIGTERM");
+    await Promise.all(running.map((session) => this.signalOwnedProcess(session, "SIGTERM")));
     await waitForClose(500);
-    for (const session of running) if (session.state === "running") this.signalOwnedProcess(session, "SIGKILL");
+    await Promise.all(running.filter((session) => session.state === "running").map((session) => this.signalOwnedProcess(session, "SIGKILL")));
     await waitForClose(500);
     for (const session of running) {
       if (session.state === "running") {
