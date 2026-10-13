@@ -174,7 +174,17 @@ async function current(account, worker, token, options) {
 
 async function main() {
   const [mode, worker] = process.argv.slice(2);
-  invariant(["preflight", "readback", "prepare-remote", "version"].includes(mode), "Unknown release validation mode");
+  invariant(["preflight", "readback", "prepare-remote", "version", "diagnostic"].includes(mode), "Unknown release validation mode");
+  if (mode === "diagnostic") {
+    invariant(worker, "Wrangler log path missing");
+    const log = await readFile(worker, "utf8");
+    const codes = [...log.matchAll(/\b(?:error\s+code|code)\s*[:=]?\s*(\d{4,6})\b/gi)]
+      .map((match) => match[1]).slice(0, 3);
+    console.error("Wrangler diagnostic: stage=deploy; code=" +
+      (codes.length ? [...new Set(codes)].join(",") : "unavailable") +
+      "; summary=Wrangler CLI exited unsuccessfully (details withheld)");
+    return;
+  }
   if (mode === "version") {
     const file = worker;
     invariant(file, "Wrangler log path missing");
