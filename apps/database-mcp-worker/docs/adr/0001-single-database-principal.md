@@ -1,6 +1,6 @@
 # ADR-0001 — One database principal per logical connection
 
-Status: **Accepted as an architectural direction; implementation pending**. Date: 2026-10-13. Q2=B, Q4=A, Q7=A, Q10=A and Q13=A confirmed.
+Status: **Accepted as an architectural direction; implementation pending**. Date: 2026-10-13. Q2=B, Q4=A, Q7=A, Q10=A, Q13=A and Q19=A confirmed.
 Decision input: cross-Worker grilling round 1 Q2=B. Related: [cross-Worker approval ADR](../../../../docs/tool-authorization/adr/0001-delegate-tool-approval-to-client.md).
 
 ## Context
@@ -22,6 +22,7 @@ Separate database principals are a resource-level privilege boundary rather than
 9. **Q10=A:** Preserve the currently verified **direct-only** execution restriction for schema-management tools. A logical connection using Hyperdrive may continue supported read/structured data operations, but requests for unverified DDL must fail with an explicit unsupported-transport result. The one-principal model does not imply transport compatibility; do not fall back silently to a separate direct/admin account or automatically grant DDL privileges.
 10. **Q13=A:** Use **one canonical `connection` field per logical connection** containing a direct SQL URL or a Hyperdrive reference. The field is not named `read`, `write`, or `admin`; all tool categories use the same resolved principal. Keep existing optional connection settings such as `enabled`, `defaultSchema`, `maxRows`, `maxResultBytes`, `maxSchemaBytes`, `queryTimeoutMs`, and `maxAffectedRows` in the new format.
 11. Explicitly reject old role-separated connection fields (including old nested `read`, `write` or `admin`) instead of guessing an account from any of them. Missing or invalid canonical connection syntax fails closed with a migration error. Limit disclosure in logs and validation messages to connection IDs and field names, never credentials.
+12. **Q19=A — Short, explicit fail-closed maintenance is acceptable.** A separately authorized production migration may briefly refuse Database MCP requests while the Cloudflare `DATABASE_CONFIG` Secret is updated and the new Worker version is activated. No dual parser or zero-downtime choreography is required. Validate schema and credentials safely off production, record old/new version identifiers and a reviewed recovery path, then confirm new-version activation, supported queries and grants. Do not intentionally change the live Secret, publish or interrupt service in this design phase.
 
 
 ## Proposed canonical configuration representation
@@ -52,7 +53,7 @@ The example is **not** the production configuration and must not be copied with 
 
 **Negative:** the one configured account may now hold powerful permissions; token compromise, prompt injection or an over-authorized client can cause changes formerly blocked by a separate read-only principal. A mistaken destructive operation could affect live data. Client-level confirmation is not guaranteed for every request or across MCP clients.
 
-**Operational:** existing READ/WRITE/ADMIN configurations require deliberate one-time migration; there is no transitional dual-schema parser. Previously separate credential values must not be silently selected or merged. Until the operator updates the Cloudflare secret and authorizes a release, the current production implementation and configuration are unchanged. Deployment, grant changes and secret rotation are separate actions.
+**Operational:** existing READ/WRITE/ADMIN configurations require deliberate one-time migration; there is no transitional dual-schema parser. Previously separate credential values must not be silently selected or merged. A bounded maintenance window is a permitted future strategy, not an instruction to modify the running service. Until the operator updates the Cloudflare secret and authorizes a release, the current production implementation and configuration are unchanged. Deployment, grant changes and secret rotation are separate actions.
 
 ## Supersession scope
 
