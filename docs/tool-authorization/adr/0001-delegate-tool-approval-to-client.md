@@ -1,6 +1,6 @@
 # ADR-0001 — Delegate MCP tool invocation approval to the client
 
-Status: **Proposed, partially decided**. Date: 2026-10-13.
+Status: **Proposed, partially decided**. Date: 2026-10-13. Interview round 1 Q1=A, Q2=B, Q3=A confirmed.
 
 This is an interview record, **not** authorization to deploy or remove production safeguards. The operator's desired direction is recorded; the specific removal scope and migration contracts remain unresolved.
 
@@ -27,12 +27,13 @@ MCP tool annotations describe risk but do not enforce authorization. Different M
 
 - **Q1=A — Scope of removal.** Remove Worker-maintained tool visibility/enablement gates and duplicated per-call tool approval; **retain** MCP ingress authentication, target-resource authority (database / OS privileges), request validation, operation integrity and failure handling. This does not authorize unauthenticated access.
 - **Q3=A — User-facing confirmation ownership.** Client-side policy owns user-facing confirmation, including destructive DDL; the intended design removes the Worker's duplicate MCP protocol-level confirmation step for such operations. The Worker retains truthful risk annotations and execution safety contracts. Client implementations may approve calls without prompting; this is an accepted architectural trade-off, not a guarantee of a prompt or 'always allow' control.
+- **Q2=B — Database connection principal.** Each logical database connection will use **one configured upstream database credential/principal** for its supported query, mutation and schema operations. The upstream database's actual grants remain authoritative; the client approval neither confers privileges nor silently promotes the account. This does **not** decide whether to keep distinct MCP tools for read/write/admin operations or accept arbitrary SQL. See [Database ADR-0001](../../../apps/database-mcp-worker/docs/adr/0001-single-database-principal.md).
 
 ## Unresolved decision frontier
 
-1. **Q2 — Database credential model.** Keep distinct READ / WRITE / ADMIN configured credentials and structured SQL guardrails, or simplify to a single DB principal whose actual database grants define all available capabilities? The operator requested a plain-language explanation before deciding.
-2. After Q2, decide the exact tool contract / capability exposure implications and any validation or limits that remain necessary for correctness versus permission management.
-3. Decide how to stage the four-Worker behavior change and verify each client's real tool exposure and approval behavior before production cutover.
+1. **Database tool contract**: maintain distinct query and structured mutation/DDL tool contracts to provide accurate MCP risk metadata, or simplify to a general SQL execution interface with explicit limitations? Single DB principal is already decided; tool behavior is not.
+2. **Raindrop destructive cleanup**: distinguish preview/dry-run capability from redundant server-side approval (`confirm:true`); clarify which remains as functional behavior.
+3. **Remote Control and rollout**: decide how unconditional tool visibility interacts with existing production privilege reviews, real ChatGPT client approval testing, and a staged release. No production activation follows automatically from this decision.
 
 ## Consequences to assess
 
