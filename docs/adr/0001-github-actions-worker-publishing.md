@@ -4,6 +4,7 @@
 - **Date:** 2026-10-13
 - **Repository:** `lirtual/mcp-workers`
 - **Design branch:** `design/github-actions-worker-deploy-20261013`
+- **Implementation specification:** [GitHub Issue #19](https://github.com/lirtual/mcp-workers/issues/19) — generated with Matt Skills Curated `to-spec`; specifications ready for planning, not authority to deploy.
 
 ## Context
 
