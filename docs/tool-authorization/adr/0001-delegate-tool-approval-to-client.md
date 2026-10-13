@@ -34,6 +34,7 @@ MCP tool annotations describe risk but do not enforce authorization. Different M
 - **Q4=A (Database):** Retain distinct query, structured data mutation, and schema tools with accurate tool risk metadata, SQL validation, execution limits, and result reporting. Each logical connection uses the one database principal already decided; these are tool contracts, not separate Worker permissions.
 - **Q5=A (Raindrop):** Retain optional preview/dry-run functionality for cleanup. Remove redundant Worker-required confirmation: the client is responsible for presenting consent to its user. A preview is not a guarantee that the target remains unchanged.
 - **Q6=A (Rollout):** Implement and verify one Worker at a time in this order: IMA, Raindrop, Database, Remote Control. Each stage needs regression tests and real-client tool discovery/invocation acceptance. Merge, deployment, and production activation remain separate steps needing the operator's approval.
+  - **Existing release-contract mismatch:** `docs/manual-worker-release.md` currently lists Raindrop before IMA and uses **manual `workflow_dispatch`** as the only publisher. The confirmed Q6 rollout order is IMA before Raindrop. Reconcile the operational runbook as part of implementation planning **before** any production release; this ADR does not change the active release runbook or authorize a new publishing trigger.
 
 ## Unresolved decision frontier
 
