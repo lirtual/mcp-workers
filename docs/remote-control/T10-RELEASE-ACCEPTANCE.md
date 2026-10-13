@@ -1,6 +1,6 @@
 # Remote Control MCP — T10 离线发布验收材料
 
-**状态：2026-10-13 只读功能已通过，Invocation Logs 已关闭且专属入口凭证已轮换；旧值直接拒绝、历史日志、Device 凭证及其他 T10 门槛仍未核销，完整发布验收未通过。下方保留历史证据边界。**
+**状态：2026-10-13 只读链路、入口与设备凭证轮换、Agent/Tunnel 受控故障及人工恢复已通过；Invocation Logs 已关闭。历史日志、旧凭据直接拒绝、自动恢复与安全回滚等仍未完成，T10 整体验收保持 Open。下文保留历史证据边界。**
 **历史离线核对基准：** `main` 提交 `caf10c36745ee2d03f24851e89541ea2d343d8d3`，日期 2026-10-12；线上只读验收基准见下文增量记录。
 **Issue：** [T10 #12](https://github.com/lirtual/mcp-workers/issues/12)（保持 Open）；父规格 [#2](https://github.com/lirtual/mcp-workers/issues/2)（保持 Open）。
 
