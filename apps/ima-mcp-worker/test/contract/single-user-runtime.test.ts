@@ -4,15 +4,13 @@ import worker from "../../src/index.ts";
 import type { Env } from "../../src/types.ts";
 
 const ctx = {} as ExecutionContext;
-type RuntimeEnv = Env & { R2_PUBLIC_BASE_URL?: string };
+type RuntimeEnv = Env;
 
 function baseEnv(overrides: Partial<RuntimeEnv> = {}): RuntimeEnv {
   return {
     MCP_ACCESS_TOKEN: "portal-secret",
     CLIENT_ID: "client-id",
     API_KEY: "api-key",
-    R2_BUCKET: {} as R2Bucket,
-    R2_PUBLIC_BASE_URL: "https://temp.example.com",
     ...overrides,
   } as RuntimeEnv;
 }
@@ -30,7 +28,7 @@ test("/health reports single-user liveness without OAuth mode", async () => {
   assert.equal("auth_mode" in body, false);
 });
 
-test("/ready succeeds with required single-user config and R2 binding", async () => {
+test("/ready succeeds with required single-user config", async () => {
   const response = await worker.fetch(new Request("https://worker.example/ready"), baseEnv(), ctx);
   assert.equal(response.status, 200);
   assert.deepEqual(await json(response), { ready: true });
@@ -43,8 +41,6 @@ test("/ready reports missing capabilities without secret values", async () => {
       MCP_ACCESS_TOKEN: undefined,
       CLIENT_ID: undefined,
       API_KEY: undefined,
-      R2_BUCKET: undefined,
-      R2_PUBLIC_BASE_URL: undefined,
     }),
     ctx,
   );
@@ -55,13 +51,10 @@ test("/ready reports missing capabilities without secret values", async () => {
     "MCP_ACCESS_TOKEN",
     "CLIENT_ID",
     "API_KEY",
-    "R2_BUCKET",
-    "R2_PUBLIC_BASE_URL",
   ]);
   assert.equal(JSON.stringify(body).includes("portal-secret"), false);
   assert.equal(JSON.stringify(body).includes("client-id"), false);
   assert.equal(JSON.stringify(body).includes("api-key"), false);
-  assert.equal(JSON.stringify(body).includes("temp.example.com"), false);
 });
 
 test("/mcp fails closed when MCP_ACCESS_TOKEN is not configured", async () => {
@@ -115,8 +108,6 @@ test("retired IMA secret names do not satisfy the runtime contract", async () =>
     MCP_ACCESS_TOKEN: "portal-secret",
     IMA_OPENAPI_CLIENTID: "legacy-client",
     IMA_OPENAPI_APIKEY: "legacy-key",
-    R2_BUCKET: {} as R2Bucket,
-    R2_PUBLIC_BASE_URL: "https://temp.example.com",
   } as unknown as Env;
   const response = await worker.fetch(
     new Request("https://worker.example/mcp", {
