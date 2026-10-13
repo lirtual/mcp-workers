@@ -37,12 +37,27 @@ These are settled design requirements, not authorization to cut over production 
 - Never silently skip a failed test or claim production verification before observing the actual deployed version and runtime behavior.
 - No unrelated framework, new CI infrastructure, new Worker, or secret-management platform is required by this migration.
 
-## Decision frontier (round 2 — not yet confirmed)
+## Decisions confirmed by maintainer — round 2
 
-- **Q3: CI-to-deployment gate.** Extend the current `ci.yml` with deployment jobs after all applicable checks (and add Remote Control checks), or use a second production workflow with a demonstrably equivalent gate.
-- **Q4: deployment credential storage and authorization.** Select how a separate account-scoped Cloudflare deployment token and account ID are stored and which GitHub environment controls apply.
-- **Q5: Remote Control VPC source and safety boundary.** Choose an ephemeral deployment-time VPC Service ID with explicit preflight/binding and feature-gate verification, or another independently reviewed preservation strategy.
-- **Q6 (later):** precise auto/manual selection, same-SHA verification, ordering/race prevention, production cutover sequence, post-deploy validation and safe recovery strategy; record after the necessary upstream decisions resolve.
+3. **CI and deployment gate (Q3=A): extend the existing `.github/workflows/ci.yml`.** Deployment jobs are allowed only after the corresponding existing checks pass. Extend affected-app selection and test coverage to `remote-control-mcp-worker`. Preserve the existing Database integration job and make its actual success a hard prerequisite for any Database production deploy. When a non-Database Worker deploys, an intentionally skipped Database-only integration job must not accidentally block unrelated releases or be interpreted as a passed Database test. This is a single workflow, not a second `deploy.yml` with duplicated verification.
+4. **Deployment credentials (Q4=A): use GitHub `production` Environment.** Store a dedicated, least-privileged Cloudflare deployment API token as an **Environment Secret**. Use an Environment Variable for the non-secret Cloudflare Account ID as appropriate. Preserve `MCP_ACCESS_TOKEN` and upstream runtime Secrets in Cloudflare only; do not copy them into GitHub. Production jobs must be restricted by workflow guards to trusted `main`, and the Environment should be restricted to `main` as defense in depth. An approval rule that disables automatic deployment is not part of this accepted trigger requirement.
+5. **Remote Control VPC configuration (Q5=B): store its real VPC Service ID as a `production` Environment Variable.** Before Remote Control deploy, confirm it is non-empty, non-placeholder and exactly matches the **currently active** Cloudflare binding for `REMOTE_CONTROL_DEVICE` (and its type); fail closed on mismatch. Inject the approved ID only into a transient, ignored Wrangler configuration at deployment time; never commit the live ID, copy it to public output, or print the resolved file. Ensure the existing Secrets, `invocation_logs=false`, file-write/Shell switches and other live bindings do not regress; verify them again after deploy. This selection deliberately accepts a maintained GitHub-to-Cloudflare non-secret ID value, unlike a dynamic lookup-only design.
+
+### Implementation prerequisites — not additional user decisions
+
+- Current `ci.yml` has workflow-level `concurrency.cancel-in-progress: true` on the `main` group. As currently written, a new push can cancel an in-progress deployment. The implementation must change or isolate this behavior before adding production jobs. The exact policy is the third-round decision Q7.
+- This is a **private** GitHub repository. Per GitHub docs, Environment Secrets and deployment-branch restrictions for private repositories require an eligible GitHub Pro, Team or Enterprise plan; verify actual repository eligibility before cutover. Do not silently fall back to Repository Secrets contrary to Q4.
+- Remote Control lacks a `check` or deploy dry-run npm script and is not selected by current `ci.yml`. Add a minimal equivalent application check before enabling its release gate, retaining existing test behavior. Do not deploy the committed all-zero VPC placeholder.
+- GitHub production deployment permissions must be scoped to the Cloudflare deployment function and target account; do not grant to PR checks or expose to fork-origin code.
+
+## Decision frontier (round 3 — not yet confirmed)
+
+- **Q6: automatic changed-Worker selection.** Prefer path-based affected Worker deployment: direct app changes target that app; shared `packages/*` or dependency/toolchain changes target every affected consumer; docs-only/agent-only changes do not publish a Cloudflare Worker. Manual dispatch explicitly selects exactly one Worker and validates it against an allowlist and `main`.
+- **Q7: concurrent releases / ordering.** Choose per-Worker serialization and safe handling of obsolete runs vs repository-wide serial releases. Must handle the pre-existing workflow-level cancellation setting, concurrent manual and push releases, GitHub concurrency queue semantics, and stale commits.
+- **Q8: production publisher cutover.** Choose a staged, explicitly authorized pilot-to-four rollout vs activating all four at once, including verification that no competing automatic publisher is active.
+- **Q9: recovery/rollback strategy.** Choose controlled re-deploy of a known-good commit with current checked production resources and credentials vs an automatic `wrangler rollback` to an older Cloudflare version. Remote Control's documented credential/binding rotation hazard means historic version rollback is not automatically safe.
+
+Exact smoke checks, evidence and failure conditions can be finalized once Q6–Q9 are decided.
 
 ## Consequences and trade-offs
 
@@ -50,7 +65,7 @@ Benefits: production publishing becomes reproducible from the same repository an
 
 ## Status and traceability
 
-- Settled: scope Q1=B, trigger mode Q2=C.
-- Pending: Q3–Q6 above and final explicit design acceptance.
+- Settled: Q1=B four Workers; Q2=C auto on main and manual single Worker; Q3=A reuse CI; Q4=A production Environment; Q5=B Environment Variable with live VPC verification.
+- Pending: Q6–Q9 and subsequent safe implementation/verification details; final design acceptance not yet granted.
 - Implementation: **not started**; only this proposed ADR is maintained on `design/github-actions-worker-deploy-20261013`. No `main` changes and no Cloudflare mutations authorized.
 - Sources: repo `.github/workflows/ci.yml`, application package files and `wrangler.jsonc`; Cloudflare read-only Worker settings, Secrets-name, deployment and build-trigger queries; [Cloudflare GitHub Actions](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/), [Wrangler deployment behavior](https://developers.cloudflare.com/workers/wrangler/commands/workers/), and [Workers Builds disconnect](https://developers.cloudflare.com/workers/ci-cd/builds/).
