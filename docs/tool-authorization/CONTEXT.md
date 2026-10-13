@@ -1,6 +1,6 @@
 # MCP Tool Authorization — Domain Context
 
-> Status: Terminology baseline for cross-Worker design interview, 2026-10-13. Tool-gate removal scope is not yet finalized.
+> Status: Active design terminology, 2026-10-13. Q1=A (remove tool gates, retain boundary auth), Q2=B (one database principal per logical connection), Q3=A (client owns tool confirmation). Implementation and rollout remain undecided.
 
 ## Language
 
@@ -24,6 +24,14 @@ _Avoid_: Treating a user-facing approval dialogue as caller authentication.
 The permissions possessed by the credentials or operating-system identity through which an operation actually reaches its target.
 _Avoid_: Assuming the client's decision can confer privileges not held by that identity.
 
+**Logical Database Connection**:
+A named target database access relationship exposed by a database MCP service; separate logical connections may have different target identities and access levels.
+_Avoid_: Confusing a logical connection with one global account used for all databases.
+
+**Database Principal**:
+The single upstream identity through which a logical database connection performs its supported operations, subject to the database's own grants.
+_Avoid_: Treating a client's consent or a tool's classification as a grant of database authority.
+
 **Operation Safety Contract**:
 Behavioral guarantees about valid input, bounded effects, repeatability, uncertainty, and truthful reporting of operation outcomes.
 _Avoid_: Calling validation or unknown-result reconciliation an extra client tool approval.
@@ -32,6 +40,6 @@ _Avoid_: Calling validation or unknown-result reconciliation an extra client too
 Advisory metadata describing whether an operation is read-only, destructive, idempotent, or interacts with external resources.
 _Avoid_: Treating metadata as an enforceable security policy.
 
-## Scope of the interview
+## Settled boundaries and remaining interview scope
 
-The requested cross-Worker direction is to transfer tool invocation approval to MCP clients such as ChatGPT and avoid redundant Worker-level read/write tool gates. The distinction between gates, authentication, resource authority, and operation safety must be maintained while the exact migration scope is agreed.
+Tool approval belongs to the MCP client, extra Worker tool gates and duplicate user-facing confirmations are targeted for removal, and the ingress and resource-authorization boundaries remain. Each logical database connection has one database principal; different logical connections may use different principals. The design interview is still determining the database tool surface, the role of destructive-operation previews, and the release/acceptance plan.
