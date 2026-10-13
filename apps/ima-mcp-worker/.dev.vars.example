@@ -1,11 +1,7 @@
-# Local development only. Copy to .dev.vars; never commit secrets.
+# Local development only. Copy to .dev.vars; never commit actual credentials.
 CLIENT_ID=
 API_KEY=
 MCP_ACCESS_TOKEN=
 
-# Public custom domain bound directly to the R2 bucket used for exported files.
-# Production currently uses https://temp.lirtual.dpdns.org.
-R2_PUBLIC_BASE_URL=http://localhost:8787
-
-# Configure R2 object lifecycle separately for the exports/ prefix when automatic
-# cleanup is desired. Export downloads do not pass through the Worker.
+# Temporary exports use public Litterbox directly with fixed 24h retention.
+# No R2 storage binding or download domain is required.
