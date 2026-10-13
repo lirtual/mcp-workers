@@ -1,105 +1,128 @@
-# ADR-0001: Move Worker production publishing to GitHub Actions
+# ADR-0001: Manual GitHub Actions publishing for four MCP Workers
 
-Status: proposed — design interview in progress. Date: 2026-10-13.
+- **Status:** Proposed — design decisions settled; final maintainer sign-off pending. **Not implementation or production authorization.**
+- **Date:** 2026-10-13
+- **Repository:** `lirtual/mcp-workers`
+- **Design branch:** `design/github-actions-worker-deploy-20261013`
 
-## Context and previous policy
+## Context
 
-The private `mcp-workers` monorepo has an existing `.github/workflows/ci.yml` for affected-app checks and Database integration tests, not deployment. The previous `docs/mcp-workers-spec.md`, `docs/runtime-configuration.md`, and application deployment guides prescribe Cloudflare Workers Builds as the sole production publisher. This architecture decision will replace that policy when implementation is approved; existing source and production deployments are unchanged in this design branch.
+Four independent MCP Workers already run in Cloudflare: `raindrop-mcp-worker`, `ima-mcp-worker`, `database-mcp-worker`, and `remote-control-mcp-worker`. The existing `.github/workflows/ci.yml` checks some affected apps on pull requests and `main` pushes, but does not publish Workers. Existing documentation describes Cloudflare Workers Builds as the publisher. The desired publisher is GitHub Actions, **without introducing a second deployment workflow or an automatic production trigger**.
 
-## Decisions confirmed by maintainer — round 1
+Read-only production reconnaissance on 2026-10-13 found four deployed Workers and **no Workers Builds triggers** for them, but did not establish that no other manual/API publisher exists. Current deployment source metadata was `wrangler` for Database/IMA and `api` for Raindrop/Remote Control. Secrets could be inventoried by **name only**, not value. Production has a real `REMOTE_CONTROL_DEVICE` VPC binding; the checked-in Remote Control Wrangler config has an all-zero placeholder. It must never be deployed unchanged.
 
-1. **Scope (Q1=B): all four Cloudflare MCP Workers** — `database-mcp-worker`, `ima-mcp-worker`, `raindrop-mcp-worker`, and `remote-control-mcp-worker` — will migrate to GitHub Actions publishing. The local `remote-control-agent` is not itself a Cloudflare Worker, and is not made a Cloudflare deploy target by this decision.
-2. **Trigger mode (Q2=C, superseded by Q12):** the original design proposed automatic publishing on relevant `main` changes plus `workflow_dispatch`. **This option is withdrawn.** See the latest, authoritative Q12 decision below.
+The maintainer made decisions in four grilling rounds. The later **Q12 manual-only decision supersedes Q2's earlier automatic-push proposal**. This ADR is the consolidated intended design, not an approval to change production.
 
-These are settled design requirements, not authorization to cut over production now.
+## Decision
 
-## Read-only reconnaissance (2026-10-13)
+### 1. One existing CI workflow, explicit release only
 
-- The sole checked-in workflow is `.github/workflows/ci.yml`. It selectively checks Database, IMA, and Raindrop but not Remote Control, and it has no deployment job. The Remote Control package currently lacks a `check` or `deploy:dry-run` script; it exposes separate typecheck and test scripts.
-- All four Worker scripts already exist in the target Cloudflare account. Cloudflare read-only API returned no Workers Builds triggers for these four Workers. This finding does **not** exclude manual or other out-of-band API deployments.
-- Latest active deployment source metadata returned `wrangler` for Database/IMA and `api` for Raindrop/Remote Control.
-- Actual runtime Secrets exist (names only were checked, not values):
-  - Database: `MCP_ACCESS_TOKEN`, `DATABASE_CONFIG`.
-  - IMA: `MCP_ACCESS_TOKEN`, `API_KEY`, `CLIENT_ID`.
-  - Raindrop: `MCP_ACCESS_TOKEN`, `RAINDROP_ACCESS_TOKEN`.
-  - Remote Control: `MCP_ACCESS_TOKEN`, `REMOTE_CONTROL_DEVICE_TOKEN`.
-- Production resource binding names/types were found: Database `RATE_LIMITER`; IMA `IMA_IMAGE_REFRESH_SHARD` Durable Object, `R2_BUCKET` and `R2_PUBLIC_BASE_URL`; Remote Control `REMOTE_CONTROL_DEVICE` VPC service and the `REMOTE_CONTROL_ENABLE_FILE_WRITES`/`REMOTE_CONTROL_ENABLE_SHELL` runtime switches.
-- Remote Control checked-in `wrangler.jsonc` uses all-zero VPC Service ID placeholder. Never deploy that configuration unmodified to production. Its production VPC identifier must be supplied via a controlled deployment-time input and binding compatibility must be verified before release.
-- Each checked-in Wrangler configuration sets `keep_vars: true`, `workers_dev: true`, and `preview_urls: false`. Secrets and resource bindings must remain intact. Per Cloudflare Wrangler documentation, existing Secret values survive a normal deploy, while dashboard-managed plain vars require `keep_vars` to avoid removal.
-- Do not expose real production tokens, VPC identity, SQL URLs or private responses in code, logs, or ADRs.
+- Extend **only** `.github/workflows/ci.yml` with `workflow_dispatch` and an allowlisted, **exactly-one-Worker** input. The allowed targets are precisely the four Workers above. No new `deploy.yml`, deploy service, state database, queue, or automatic publisher.
+- `pull_request` and `push(main)` run **checks only**; neither may publish or access production Cloudflare credentials. Reuse existing changed-path selection for PR/main **checks**. Add Remote Control to the checks and ensure shared `packages/*`, lockfile/workspace/toolchain, and relevant protocol changes cannot skip affected checks. Docs-only changes do not publish anything.
+- An explicit `workflow_dispatch` is the **sole GitHub Actions production publication trigger**. Validate selected Worker and require trusted `main` at both dispatch and deploy time. Dispatch from another branch, a detached/old SHA, or an unknown Worker must fail closed. The manual run checks its selected Worker even when the changed-path detector otherwise finds no change.
+- Application checks must actually pass on the same checked-out commit that is to be deployed. Database additionally requires its existing PostgreSQL/MySQL integration tests to **succeed**, not `skipped`. Remote Control must gain a minimal application `check` contract using its existing typecheck and tests; do not bypass tests just because the package currently lacks a `check` command. A deliberately skipped Database integration job must not block other Workers or be mistaken for success on a Database deploy.
+- Runtime publishing uses the Worker's existing pinned Wrangler toolchain/scripts, plus the smallest necessary Remote Control deployment-config handling. The deployment must not implicitly modify independent production Secret values.
 
-## Constraints to carry into implementation
+**Actual release flow:** manually choose a Worker in GitHub Actions → validate `main`/input → install pinned workspace dependencies → selected app checks (and Database integration where applicable) → enter `production` Environment → preflight and Wrangler deployment → read-only post-deploy validation → record result.
 
-- **No active automatic production publisher** for these four Workers under the target operating model. Disable or disconnect any active Cloudflare Builds trigger before the relevant manual Actions cutover; seeing zero observed triggers does not prove the absence of other external publishers.
-- A deployment must preserve Worker name and URL, secrets, resource bindings, compatibility settings, and Remote Control's restrictive logging and tool-access flags.
-- The GitHub Actions deployment authorization must not reuse or copy the `MCP_ACCESS_TOKEN` or upstream runtime credentials. Use a distinct constrained Cloudflare deployment token and Account ID.
-- No PR-originated code or ordinary `main` push job may access production credentials. Only an explicitly invoked, allowlisted `workflow_dispatch` deployment on the trusted `main` ref may deploy.
-- Never silently skip a failed test or claim production verification before observing the actual deployed version and runtime behavior.
-- No unrelated framework, new CI infrastructure, new Worker, or secret-management platform is required by this migration.
+### 2. GitHub Environment and credential isolation
 
-## Decisions confirmed by maintainer — round 2
+- Use the GitHub **`production` Environment**. Put a distinct, least-privileged `CLOUDFLARE_API_TOKEN` in an **Environment Secret** and the account ID in an Environment Variable. Restrict access to the intended Cloudflare account/resources and trusted `main` branch.
+- Check actual GitHub plan/repository support for Environment Secrets, variables, and deployment branch policy **before merging/enabling**. Do not silently weaken the architecture to ordinary Repository Secrets if unavailable.
+- The automatic PR/main check jobs never enter `production`; use `permissions: contents: read` unless a particular step demonstrably needs more. Production credentials reach only the explicitly selected manual deploy job, after checks and guards pass.
+- `MCP_ACCESS_TOKEN` is **runtime ingress authentication**, unrelated to `CLOUDFLARE_API_TOKEN` deployment authorization. No MCP ingress Token, upstream credential, Agent/device Token, Cloudflare API response containing secret material, or real request authorization header may be copied to GitHub secrets for smoke testing, exposed in logs, or committed to code.
 
-3. **CI and deployment gate (Q3=A): extend the existing `.github/workflows/ci.yml`.** Deployment jobs are allowed only after the corresponding existing checks pass. Extend affected-app selection and test coverage to `remote-control-mcp-worker`. Preserve the existing Database integration job and make its actual success a hard prerequisite for any Database production deploy. When a non-Database Worker deploys, an intentionally skipped Database-only integration job must not accidentally block unrelated releases or be interpreted as a passed Database test. This is a single workflow, not a second `deploy.yml` with duplicated verification.
-4. **Deployment credentials (Q4=A): use GitHub `production` Environment.** Store a dedicated, least-privileged Cloudflare deployment API token as an **Environment Secret**. Use an Environment Variable for the non-secret Cloudflare Account ID as appropriate. Preserve `MCP_ACCESS_TOKEN` and upstream runtime Secrets in Cloudflare only; do not copy them into GitHub. Only the manually dispatched deploy job on trusted `main` may enter the `production` Environment; branch restrictions and optional approvals may add defense in depth, provided actual private-repository feature availability is confirmed.
-5. **Remote Control VPC configuration (Q5=B): store its real VPC Service ID as a `production` Environment Variable.** Before Remote Control deploy, confirm it is non-empty, non-placeholder and exactly matches the **currently active** Cloudflare binding for `REMOTE_CONTROL_DEVICE` (and its type); fail closed on mismatch. Inject the approved ID only into a transient, ignored Wrangler configuration at deployment time; never commit the live ID, copy it to public output, or print the resolved file. Ensure the existing Secrets, `invocation_logs=false`, file-write/Shell switches and other live bindings do not regress; verify them again after deploy. This selection deliberately accepts a maintained GitHub-to-Cloudflare non-secret ID value, unlike a dynamic lookup-only design.
+### 3. Per-Worker serialization and safe source selection
 
-### Additional target requirement — one shared MCP ingress Token across all four Workers
+- One deploy per Worker at a time; different Workers can deploy concurrently. Use a stable Worker-scoped concurrency group for manual release jobs with `cancel-in-progress: false`.
+- Existing workflow-wide `cancel-in-progress: true` must **not** cancel running manual deployments when an unrelated PR/main push arrives. Preserve cancellation for check-only workloads separately if desired.
+- GitHub concurrency pending runs are neither guaranteed FIFO nor guaranteed to preserve every queued request. Fail stale dispatches by verifying trusted `main` HEAD **again inside the acquired deploy job**, just before publication; do not automatically publish older commits. A later `main` push may require a fresh manual dispatch; no auto-reconciliation or automatic deployment exists. Record the exact source commit and deployed active version in non-secret evidence.
+- Prevent a manual deploy of the same Worker from silently overriding a newer authorized deployment with an old SHA. Recovery from an older source follows the reviewed-commit procedure below instead of an arbitrary-SHA dispatch.
 
-**Maintainer request (2026-10-13):** make all four deployed MCP Workers use one common **runtime Secret value**, bound under the same Secret name `MCP_ACCESS_TOKEN` on each Worker. This is an **entry authentication** credential, **not** the `CLOUDFLARE_API_TOKEN` used by GitHub Actions to deploy code, and **not** any of the separate upstream/application credentials (`DATABASE_CONFIG`, IMA API credentials, Raindrop token, or `REMOTE_CONTROL_DEVICE_TOKEN`). A single shared value is the desired target, not a statement verified true in production.
+### 4. Runtime configuration preservation
 
-**Existing evidence and conflict:**
+- Keep the existing Worker names, endpoints, supported bindings and compatibility configuration. Respect `keep_vars: true` and preserve Cloudflare runtime Secrets without copying values to GitHub.
+- Before deployment, compare non-secret required bindings/settings against the currently active Worker; do not accidentally drop Database `RATE_LIMITER`, IMA `R2_BUCKET`/`IMA_IMAGE_REFRESH_SHARD`, or other required bindings/vars. An intentional resource/config migration is **outside this ADR** and requires separate review.
+- For Remote Control, keep the real `REMOTE_CONTROL_DEVICE` VPC Service ID in a `production` **Environment Variable** (Q5=B). It must be a non-placeholder and **equal the currently active Cloudflare binding ID and type**. Produce a temporary untracked Wrangler config for only the deployment; do not commit its live value or print the substituted config.
+- Explicitly keep Remote Control `observability.logs.invocation_logs=false`, its `REMOTE_CONTROL_ENABLE_FILE_WRITES` and `REMOTE_CONTROL_ENABLE_SHELL` access gates disabled, and its runtime `REMOTE_CONTROL_DEVICE_TOKEN` untouched. Both before and after deploy, verify resource bindings and these security settings; a mismatch aborts preflight or fails post-deploy acceptance.
+- Merely adding a deployment pipeline **does not authorize Remote Control T10 production release, feature enablement, agent changes, credential rotation or risk acceptance**.
 
-- `docs/mcp-shared-token-runbook.md` and `docs/runtime-configuration.md` explicitly describe the shared **value** across **Database, IMA and Raindrop**, but not Remote Control. This contract already exists for the first three Workers.
-- `docs/remote-control/T10-RELEASE-ACCEPTANCE.md` records an independent 2026-10-13 rotation of **Remote Control's own** `MCP_ACCESS_TOKEN` with other Workers deliberately unchanged; it has separate, still-open release/security gates. The live Worker has the same Secret **name** but we cannot verify a matching **value** through Cloudflare's Secret listing. Therefore never claim the four production values already match.
-- Sharing the ingress token with Remote Control broadens the impact of any compromise of one MCP entry point. A token previously exposed in its historical invocation logs must **not** be adopted as the new four-Worker shared value. The risk and the T10 owner approval must remain explicit.
-- The same Secret value, if adopted, still lives in **four separate Cloudflare runtime Secret bindings** plus the affected authorized clients; there is no single Cloudflare global Secret binding and no need to give the value to GitHub Actions. Keep source/config/logs free of values and do not add shared token synchronization to CI/CD.
-- Normal Wrangler publishing must **preserve** all existing Secrets, including `MCP_ACCESS_TOKEN`. Merely migrating deployment tooling does not require changing any Token value. A future unification/rotation requires a separate coordinated, non-atomic, owner-approved change and client verification (authorized initialization, denied unauthenticated access) for all four Workers; preserve the Remote Control private-device credential and disable unsafe logging.
-- Whether the coordinated token unification is included in the same implementation scope or performed as a **separate follow-up change** is an unresolved sequencing decision (Q14). **No live Secret update is authorized by this ADR.**
+### 5. Deployment acceptance (Q10=A)
 
-### Implementation prerequisites — not additional user decisions
+Automated checks run with **no shared MCP ingress Token in GitHub**:
 
-- Current `ci.yml` has workflow-level `concurrency.cancel-in-progress: true` on the `main` group. Manual production jobs must **not share a cancellable workflow-level group** with ordinary push/PR checks. Give manual releases safe isolation and a per-Worker deploy lock; preserve check-only cancellation independently where desired.
-- This is a **private** GitHub repository. Per GitHub docs, Environment Secrets and deployment-branch restrictions for private repositories require an eligible GitHub Pro, Team or Enterprise plan; verify actual repository eligibility before cutover. Do not silently fall back to Repository Secrets contrary to Q4.
-- Remote Control lacks a `check` or deploy dry-run npm script and is not selected by current `ci.yml`. Add a minimal equivalent application check before enabling its release gate, retaining existing test behavior. Do not deploy the committed all-zero VPC placeholder.
-- GitHub production deployment permissions must be scoped to the Cloudflare deployment function and target account; do not grant to PR checks or expose to fork-origin code.
+| Layer | Minimum acceptance evidence | Failure result |
+| --- | --- | --- |
+| Before deploy | Chosen Worker/branch/SHA allowlisted; tests green; required existing resource/Secret **names** and Cloudflare configuration present; Remote Control VPC/logging/feature gates match | Do not deploy |
+| After deploy | Cloudflare active deployment/version and intended Worker name; required non-secret bindings/security configuration remain correct | Mark manual run failed; stop that Worker's rollout |
+| Public entry surface | Use the Worker's existing public health endpoint **where available**; otherwise do not invent a health endpoint; verify unauthenticated/invalid-token `/mcp` is denied without leaking private data (do not assume every denial must be HTTP 401 rather than an expected 403) | Mark failed; require operator review |
+| First production cutover of each Worker | Human-led authenticated MCP initialize/tools-list and an explicitly safe read-only operation from the existing Portal/client; record outcome only, not token/response-sensitive material | Do not declare cutover accepted |
+| Remote Control specifically | Above plus current VPC Service identity, `invocation_logs=false`, read-only/write-and-Shell gates, existing T07/T09/T10 release controls, known-good fixed read-only marker when separately authorized | Keep release/rollout blocked until owner acceptance |
 
-## Decisions confirmed by maintainer — round 3
+A Cloudflare script upload, green CI, or deploy API success by itself is **not** production acceptance. Do not perform a credentialed production test from CI, run write/Shell operations, re-read historically logged headers, or claim a missing T10 result passed.
 
-6. **Affected-app selection (Q6=A, narrowed by Q12): use change scope for CI checks, not deployment.** On PR and `main` pushes, direct `apps/<worker>/` changes check that Worker, while shared source and relevant workspace dependency/toolchain changes check affected consumers (all four is an acceptable conservative fallback). Pure documentation does not require a Worker check. This mechanism **never triggers production deployment**. A manual `workflow_dispatch` selects exactly one allowlisted Worker and **always checks that selected Worker**, regardless of which files have changed. The Remote Control Worker/Agent protocol or shared-package impact must not be wrongly omitted from checks.
-7. **Per-Worker deployment serialization (Q7=A, retained): one active manual deploy for each Worker, while different Workers may deploy concurrently.** An in-progress deployment must not be cancelled by a push, another dispatch or CI check. Deploy job concurrency uses a per-Worker key with `cancel-in-progress: false`; the workflow-level cancellation setting must not override that guarantee. Manual pending runs are not FIFO-guaranteed; recheck the authorized source ref/revision at execution time and block stale, conflicting or out-of-order releases. Do not build a general-purpose deployment scheduler. The source revision and recovery exception remain open under Q11.
-8. **Staged publisher migration (Q8=A, retained with manual cutover): migrate and verify one Worker at a time** in this order: **Raindrop → IMA → Database → Remote Control**. Record current active deployment and non-secret binding baseline before each transition; verify no competing automatic publisher remains; run an explicitly authorized manual Actions deployment for the selected Worker, then its acceptance checks. **There is no step to enable automatic publishing.** Remote Control is last and must satisfy existing Remote Control safety/owner approval criteria and the VPC Service ID match. This publisher migration does not approve unresolved Remote Control security/T10 release issues.
-9. **Known-good source recovery (Q9=A): restore from reviewed GitHub source, rebuild, recheck, and publish as a new safe release.** No automatic `wrangler rollback` to an older Cloudflare Worker version. Recovery must use the currently authorized Secrets and compatible resource bindings. Particularly for Remote Control, do not reuse historical rotated credentials, stale VPC binding, changed invocation logging, or write/Shell flags from an older Cloudflare version. Exact mechanics for selecting the source revision are still open (Q11).
+### 6. Failed acceptance and safe recovery (Q13=A; Q9=A; Q11=A)
 
-### Decision revision — Q12 (latest maintainer instruction, authoritative)
+- A failed post-deployment verification makes the manual job **red** and records non-secret diagnostic/commit/version information. **Pause that Worker's further rollout** until the operator reviews the failure; do not block healthy unrelated Workers as a blanket rule. This is an operational hold, **not an extra persistent release-control database**.
+- There is **no automatic redeployment, automatic source revert, or Cloudflare historical-version rollback** on failure.
+- Restore a known-good source through a **reviewed revert/recovery commit on `main`**, rerun its applicable CI checks, then explicitly dispatch the affected Worker from the new `main` HEAD. Ensure today's correct Secrets, VPC binding, security switches and other resources survive. No arbitrary historical SHA input to normal manual deploy.
+- Especially for Remote Control, historical Worker versions may contain old credentials/bindings or uncertain logging configuration. The existing T10 records explicitly prohibit treating a previous Cloudflare Version ID as a guaranteed safe rollback target.
 
-12. **Manual-only production publishing (Q12; overrides Q2 and the deployment-trigger interpretation of Q6):** four Workers deploy **only** through an explicit GitHub Actions `workflow_dispatch` selecting one allowlisted Worker. A merge/push to `main` or a pull request runs checks only and must never deploy a production Worker, regardless of changed files or shared dependencies. The earlier proposal for automatic `main` deployment, staged auto-enablement, and a production auto-deploy allowlist is **cancelled**.
+### 7. Staged publisher cutover (Q8=A, now manual-only)
 
-### Confirmed implementation implications after Q12
+Use this order, **one separately authorized and accepted Worker at a time**:
 
-- Keep **one existing** `.github/workflows/ci.yml`: `push(main)` and `pull_request` run affected-app checks only; `workflow_dispatch` validates an explicit Worker selection, executes its checks (including Database integration when selected), then and only then enters the protected `production` Environment and deploys that Worker.
-- No Cloudflare deployment credential is made available to check-only jobs. The workflow must explicitly reject deploys invoked on any non-`main` ref and invalid Worker choices, even if GitHub UI allows selecting a different branch.
-- Keep per-Worker serialization for manual deploy jobs only. GitHub job concurrency does not guarantee FIFO or preservation of every pending run; stale or conflicting pending deployments must not silently roll back a newer authorized release. No push-triggered deployment exists to reconcile.
-- A post-deploy verification failure **must not trigger automatic rollback or another production deployment**. Mark the run failed, retain non-secret diagnostic evidence, and require an explicit manual response; whether to pause subsequent staged cutover is part of the acceptance contract.
-- Use only a bounded amount of GitHub Actions and Wrangler orchestration; avoid a new durable queue, shared release database, custom deploy service, additional CI workflow or unrelated refactor.
-- These requirements are architectural constraints only, not a claim that current `ci.yml` already implements them.
+1. Raindrop
+2. IMA (R2 and Durable Object)
+3. Database (Database integration and Rate Limiter)
+4. Remote Control **last**, conditional on its independent owner/security acceptance
 
-## Remaining decision frontier (round 4)
+For each Worker: inventory active version/non-secret bindings → confirm no competing automatic publisher or active Builds trigger (disconnect if present, after authorization) → prepare GitHub `production` credential/environment access → manually dispatch only that Worker → perform automated and human cutover acceptance → record release evidence. There is **no stage enabling automatic publishing**. GitHub branch merges and PRs continue to run checks only, before and after the cutover.
 
-- **Q10 — Acceptance depth (open):** after manual deployment, either (A, recommended) perform safe active-version/binding readback, shallow health, and unauthenticated rejection checks without giving GitHub the shared Token, plus human-led Portal read-only verification during first cutover, or (B) equip Actions with live MCP credentials for authenticated end-to-end checks. No authenticated request is allowed to leak headers into Invocation Logs.
-- **Q11 — Reviewed source recovery (open):** either (A, recommended) revert/create a reviewed recovery commit on `main` then manually publish the selected Worker following its tests, or (B) add a separately authorized old immutable SHA selection with current Secret/VPC checks. Normal manual publishing continues to select one Worker on trusted `main`.
-- **Q13 — Post-deploy failure handling (open):** no automatic recovery deploy. Either (A, recommended) report failed acceptance, stop the **affected Worker's** staged migration and require operator review before any new publish, or (B) report failure without a separate pause rule. No historic Cloudflare version rollback without separate approval.
-- **Q14 — Shared ingress Token cutover scope (open):** either (A, recommended) build and verify manual-only GitHub Actions deployment first **without rotating any runtime Secret**, then independently authorize/perform a four-Worker shared Token alignment, or (B) make Token alignment part of the same production cutover. In either case, the user's **target** is one value shared by all four; Remote Control's existing separate credential/T10 approval boundary must be explicitly reconciled first.
+### 8. One shared `MCP_ACCESS_TOKEN` target — separate operation (Q14=A)
 
-Once Q10/Q11/Q13/Q14 are resolved, consolidate a final implementation/production acceptance contract and seek explicit design signoff before changing code or production. No production cutover or runtime Secret modification is authorized by this draft.
+The maintainer's desired **target** is one and the same `MCP_ACCESS_TOKEN` runtime Secret **value** across **all four** independent Workers and their authorized MCP clients, not merely a common Secret name. Each Worker has a separate Cloudflare Secret binding. The upstream secrets remain separate:
 
-## Consequences and trade-offs
+| Worker | Shared ingress Secret name | Independent production credentials |
+| --- | --- | --- |
+| Raindrop | `MCP_ACCESS_TOKEN` | `RAINDROP_ACCESS_TOKEN` |
+| IMA | `MCP_ACCESS_TOKEN` | `API_KEY`, `CLIENT_ID` |
+| Database | `MCP_ACCESS_TOKEN` | `DATABASE_CONFIG` |
+| Remote Control | `MCP_ACCESS_TOKEN` | `REMOTE_CONTROL_DEVICE_TOKEN` |
 
-Benefits: production publishing becomes reproducible from the same repository and commit as source checks; developers can deploy one Worker without a separate Cloudflare Builds source. Costs/risks: GitHub Actions credentials obtain production deployment authority; checks must guard the actual deployment job, not merely run in a parallel workflow; a mistaken Remote Control binding or flag can create a security/regression incident. Migrations and rollback are explicit safety-sensitive releases.
+**Q14=A (settled): first finish GitHub Actions manual-only publishing migration without changing any runtime Secret; then undertake a separate, explicitly authorized coordinated four-Worker token alignment/rotation.** Cloudflare Secret enumeration cannot prove values are currently the same. The existing runbook documents sharing across the first three Workers only, while Remote Control T10 documents its independent recent ingress-token rotation. No claim that all four production values already match is warranted.
 
-## Status and traceability
+Do **not** reuse a credential potentially present in prior Remote Control Invocation Logs as the common Token. The final shared value creates a larger compromise/blast radius; all four Workers and clients would require coordinated revocation/rotation following any compromise. Token alignment is non-atomic: plan controlled operator-side generation/storage, staged per-Worker updates, corresponding client updates, authorized and denied-access checks, failure recovery, and explicit Remote Control T10 owner/security acceptance. Do not implement secret-value synchronization in CI and do not write Secret values into the repository, ADR, chat or logs. This decision **does not authorize any rotation**.
 
-- Settled: Q1=B four Workers; **Q2=C superseded by Q12: manual-only**, no `main` auto deploy; Q3=A reuse CI; Q4=A production Environment; Q5=B Environment Variable plus live VPC check; Q6=A affected-app CI checks only; Q7=A per-Worker manual deploy serialization; Q8=A staged **manual** cutover (Raindrop → IMA → Database → Remote Control); Q9=A recovery from reviewed GitHub source; Q12=manual-only production publishing.
-- New target requirement: shared runtime `MCP_ACCESS_TOKEN` **value** across all four Workers; current Remote Control value alignment cannot be verified by Cloudflare read APIs and its T10 documents an independent rotation. No new runtime Secret write approved.
-- Pending: Q10 acceptance depth, Q11 precise recovery source workflow, Q13 failure-response rule, Q14 secret-alignment sequencing, and final explicit design acceptance.
-- Implementation: **not started**; only this proposed ADR is maintained on `design/github-actions-worker-deploy-20261013`. No `main` changes and no Cloudflare mutations authorized.
-- Sources: repo `.github/workflows/ci.yml`, application package files and `wrangler.jsonc`; Cloudflare read-only Worker settings, Secrets-name, deployment and build-trigger queries; [Cloudflare GitHub Actions](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/), [Wrangler deployment behavior](https://developers.cloudflare.com/workers/wrangler/commands/workers/), and [Workers Builds disconnect](https://developers.cloudflare.com/workers/ci-cd/builds/).
+## Scope, evidence and consequences
+
+**Implementation-in-scope, after explicit sign-off:** extend existing `ci.yml` to support manual single-Worker deploy and Remote Control checks; use the existing/pinned Wrangler toolchain and conditional Database integration; implement safe manual-release concurrency/preflight/readback checks and temporary VPC config for Remote Control; update old Cloudflare Builds-only and three-Worker deployment docs to reflect the final operating model; perform offline/PR checks without production credentials.
+
+**Out-of-scope:** a second GitHub Actions workflow, automatic deploy on `main` or PR, multiple Workers in one manual dispatch, arbitrary SHA publishing, new release database/queue, new worker infrastructure, automatic rollback, secret rotation/token unification execution, remote-agent/Shell/write capability changes, Remote Control T10 closure, or a production cutover without separately granted approval.
+
+**Benefits:** a single CI and publishing interface; no unintended release on merge; independent Worker deployment with proven checks; preserves runtime Secret ownership; minimal new infrastructure.
+
+**Risks/costs:** manual releases can lag behind `main`; Environment feature/credential setup must be verified for this private repository; Cloudflare configuration drift can still cause unintended changes without explicit pre/post comparison; recovery requires a new reviewed `main` commit and dispatch; a shared ingress Token increases the security impact of exposure; Remote Control retains unresolved independent release risks.
+
+## Decision register and status
+
+| Decision | Confirmed disposition |
+| --- | --- |
+| Q1 | B — migrate all four Workers |
+| Q2 | Earlier C (auto + manual), **superseded by Q12** |
+| Q3 | A — reuse existing `ci.yml` and gate deploy on checks |
+| Q4 | A — GitHub `production` Environment for dedicated deployment token |
+| Q5 | B — GitHub Environment Variable for VPC Service ID with live-binding comparison |
+| Q6 | A — check affected Worker(s) on push/PR; **not** an automatic deployment selection |
+| Q7 | A — per-Worker serialized manual releases; unrelated Workers parallel |
+| Q8 | A — staged **manual** cutover, Remote Control last |
+| Q9 | A — rebuild from reviewed GitHub source, no direct historical Cloudflare rollback |
+| Q10 | A — automated safe readback/unauthorized/health checks; human first-cutover Portal verification |
+| Q11 | A — reviewed revert/recovery commit on `main`, then manual deploy |
+| Q12 | **Manual-only** production dispatch; no push/PR deployment |
+| Q13 | A — failed check halts affected Worker's rollout, human review, no automatic rollback |
+| Q14 | A — complete publisher migration first; token unification is a separate approved change |
+
+**Design decisions are settled; final maintainer acceptance and explicit implementation authorization are still pending.** Implementation must remain on an isolated branch until reviewed. **No `main` change, Cloudflare deploy, Cloudflare binding write, GitHub production credential configuration, or runtime Secret rotation is authorized by this ADR.**
+
+Reference evidence: current `.github/workflows/ci.yml`; `apps/*-mcp-worker/wrangler.jsonc`; `docs/runtime-configuration.md`; `docs/mcp-shared-token-runbook.md`; `docs/remote-control/T10-RELEASE-ACCEPTANCE.md`; read-only Cloudflare deployment/binding/Secret-name inventory (2026-10-13); [Cloudflare GitHub Actions](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/); [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/); [Wrangler commands](https://developers.cloudflare.com/workers/wrangler/commands/workers/).
