@@ -1,12 +1,37 @@
 # Remote Control MCP — T10 离线发布验收材料
 
-**状态：离线验收材料草案；不代表真实环境验收或发布通过。**
-**核对基准：** `main` 提交 `caf10c36745ee2d03f24851e89541ea2d343d8d3`，日期 2026-10-12。
+**状态：2026-10-13 只读线上验收已通过，但 T10 整体发布验收尚未完成。下方历史离线材料保留原始证据边界。**
+**历史离线核对基准：** `main` 提交 `caf10c36745ee2d03f24851e89541ea2d343d8d3`，日期 2026-10-12；线上只读验收基准见下文增量记录。
 **Issue：** [T10 #12](https://github.com/lirtual/mcp-workers/issues/12)（保持 Open）；父规格 [#2](https://github.com/lirtual/mcp-workers/issues/2)（保持 Open）。
 
 本文整理代码交付证据、发布前检查、回滚和撤销步骤。没有 Cloudflare、Portal 或真实主机访问授权；表中的真实环境项均为待验收，不得据此声称生产可用。T07 的账户风险接受也不等于 T09 进程停止竞态已获准。
 
-## 结论与当前门槛
+## 2026-10-13 线上只读验收增量
+
+**状态：只读版本已完成真实 Worker 级和 ChatGPT/Portal 端到端验收；T10 整体验收尚未通过，#12 / #2 继续 Open。**
+
+本节证据晚于下文 2026-10-12 的**历史离线材料**。下文“未部署/未核对”等表述描述当时状态，不能再用作当前环境现状。
+
+| 核查对象 | 已确认结果 | 证据边界 |
+| --- | --- | --- |
+| 发布代码 | Git SHA `1c24572e43e05ab8b6f40375651e6fb5cf7d6a97` | GitHub main |
+| 线上 Worker | `remote-control-mcp-worker` Version ID `4161e117-4f04-48db-aad6-6daf68b17981`，100% 流量 | Cloudflare 部署 API |
+| 原生 Agent | Node.js `24.21.0`、loopback `127.0.0.1:9477`、UID 1000 | 设备发布记录；无 Shell 实际执行授权 |
+| 私有连接 | VPC Service `01a12f13-7963-7241-bc38-3efba612d17e` 指向新 Tunnel `c1faea11-7194-4d20-a71d-97acd9555e6f`，新 Tunnel healthy、2 连接 | 发布记录与 Cloudflare Tunnel API |
+| 离线/线上检查 | Agent `23/23`、Worker `12/12`、类型检查通过；Worker 线上 `25/25` | 设备上的 `release-20261013/RELEASE.md`，验证时间 `2026-10-13T03:17:05Z`，已使用真实插件只读读取 |
+| Portal / ChatGPT | Portal 中 `remote-control` 已启用；当前可见设备操作仅 `read_file`；真实 ChatGPT 调用读取 `/tmp/remote-control-t02-fixture/marker.txt`，返回 **`remote-control-t02-marker`** 且无 HTTP/工具错误 | 2026-10-13 实际连接器调用；见 [T10 增量验收评论](https://github.com/lirtual/mcp-workers/issues/12#issuecomment-6137873423) |
+| 只读保护 | `REMOTE_CONTROL_ENABLE_FILE_WRITES=false`、`REMOTE_CONTROL_ENABLE_SHELL=false`；直接调用隐藏能力被拒绝 | 设备发布记录中的 Worker 线上验收及真实插件可见工具范围 |
+
+**未核销的 T10 门槛（不可据此关闭 #12）：**
+
+1. 独立 ingress / device 凭证的实际轮换、撤销和旧凭证失效测试，及其他 MCP Workers 不受影响的验证；需要单独授权，严禁记录凭证值。
+2. Agent 日志、回执持久化目录和文件权限、保留策略、session 输出以及基础设施日志的完整核对。当前发布报告明确未完成全量基础设施日志审查。
+3. 停服、重启自动恢复及已知版本回滚的真实操作验收。当前 Agent 与 Tunnel 是独立用户进程，尚无新安装的开机服务管理器；`before.json` 保存了变更前配置，**回滚未执行或测试**。
+4. owner 的最终发布决定，T07 账户风险的上线复核，以及 T09 PID/PGID 复用 TOCTOU 风险专项裁决；上述只读验收**不授权**文件修改或 Shell。
+
+本轮 T10 文档更新只登记可验证的只读发布事实与未完成项，**不**触发凭证更改、Worker/Agent/Tunnel 重启、Portal Sync、文件修改或 Shell 授权。
+
+## 历史离线结论与当时门槛（2026-10-12）
 
 离线代码验收证据已经覆盖 T01R–T09 的实现切片；历史真实联调只证明早期只读版本。当前 `main` 中的 Worker、Agent、Tunnel、VPC Service 和 Portal capabilities 是否与生产一致尚未核实。Worker 的 Wrangler 配置仍含占位 VPC Service ID，不能直接部署。T10 不得因本文件或票据状态关闭。
 
