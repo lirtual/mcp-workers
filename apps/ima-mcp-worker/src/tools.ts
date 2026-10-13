@@ -33,19 +33,19 @@ export function registerTools(server:McpServer, notes:ImaNotes, kb:ImaKnowledge,
   server.registerTool("list_knowledge",{description:"Browse entries in an IMA knowledge base.",annotations:{readOnlyHint:true},inputSchema:z.object({knowledge_base_id:z.string(),folder_id:z.string().optional(),cursor:z.string().optional(),limit:z.number().int().min(1).max(50).optional()})},async a=>{try{return ok(await kb.list(a.knowledge_base_id,a.cursor,a.limit,a.folder_id))}catch(e){return fail(e)}});
   server.registerTool("search_knowledge",{description:"Search inside an IMA knowledge base.",annotations:{readOnlyHint:true},inputSchema:z.object({knowledge_base_id:z.string(),query:z.string().min(1),cursor:z.string().optional()})},async a=>{try{return ok(await kb.search(a.knowledge_base_id,a.query,a.cursor))}catch(e){return fail(e)}});
   server.registerTool("read_knowledge_source",{
-    description:"Read an IMA knowledge item. Notes return directly (same target_content_format as get_note; default Markdown). URL text returns bounded chunks. Binary files return a direct download_url when R2 storage is configured, or bounded chunks otherwise.",
+    description:"Read an IMA knowledge item. Notes return directly (same target_content_format as get_note; default Markdown). URL text returns bounded chunks. Binary files return bounded chunks by default; set export_to_temporary=true to upload to public Litterbox for a temporary download link.",
     annotations:{readOnlyHint:true},
     inputSchema:z.object({
       media_id:z.string(),
       offset:z.number().int().min(0).optional(),
       max_bytes:z.number().int().min(1).max(2*1024*1024).optional(),
       target_content_format:z.union([z.literal(0),z.literal(1),z.literal(2)]).optional().describe("Notes only. 0: plaintext, 1: Markdown with images (default), 2: JSON blocks"),
-      export_to_r2:z.boolean().optional().describe("If true, exports file to R2 storage and returns download_url")
+      export_to_temporary:z.boolean().optional().describe("If true, uploads file to public Litterbox for a 24h download URL")
     })
-  },async a=>{try{return ok(await kb.readSource(a.media_id,notes,{offset:a.offset,max_bytes:a.max_bytes,target_content_format:a.target_content_format,export_to_r2:a.export_to_r2}))}catch(e){return fail(e)}});
+  },async a=>{try{return ok(await kb.readSource(a.media_id,notes,{offset:a.offset,max_bytes:a.max_bytes,target_content_format:a.target_content_format,export_to_temporary:a.export_to_temporary}))}catch(e){return fail(e)}});
 
   server.registerTool("export_file",{
-    description:"Export an IMA knowledge item (media_id) or note (note_id) to R2 storage and return a direct download URL. Provide exactly one of media_id or note_id.",
+    description:"Upload an IMA knowledge item (media_id) or note (note_id) to public Litterbox for a 24h temporary download URL. Use only when external sharing is acceptable. Provide exactly one of media_id or note_id.",
     annotations:{readOnlyHint:true},
     inputSchema:z.object({
       media_id:z.string().optional().describe("IMA knowledge base media ID to export"),
