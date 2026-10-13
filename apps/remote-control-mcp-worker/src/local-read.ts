@@ -92,6 +92,7 @@ export interface LocalProcessTermination { operationId: string; sessionId: strin
 export interface LocalCreateDirectory { operationId: string; path: string }
 export interface LocalEditBlock { operationId: string; filePath: string; oldString: string; newString: string; expectedReplacements: number }
 export interface LocalMoveFile { operationId: string; source: string; destination: string }
+export interface LocalDeleteFile { operationId: string; path: string }
 
 const OPERATION_ID = /^(?!\.{1,2}$)[A-Za-z0-9._:-]{1,128}$/;
 const MAX_WRITE_CONTENT_BYTES = 49_152;
@@ -114,6 +115,10 @@ export function parseLocalCreateDirectory(input: unknown): LocalCreateDirectory 
   const filePath = parsePath(record.path);
   if (typeof record.operation_id !== "string" || !OPERATION_ID.test(record.operation_id) || !filePath) return null;
   return { operationId: record.operation_id, path: filePath };
+}
+
+export function parseLocalDeleteFile(input: unknown): LocalDeleteFile | null {
+  return parseLocalCreateDirectory(input);
 }
 
 export function parseLocalEditBlock(input: unknown): LocalEditBlock | null {

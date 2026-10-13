@@ -247,6 +247,40 @@ test("directory creation, text edits, and moves share operation receipts without
   }
 });
 
+test("delete_file deletes only regular files and persists its receipt", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-agent-delete-"));
+  const receiptDirectory = path.join(root, "receipts");
+  const fixture = path.join(root, "delete-me.txt");
+  const directory = path.join(root, "keep-dir");
+  const linked = path.join(root, "link");
+  await writeFile(fixture, "fixture");
+  await mkdir(directory);
+  await symlink(fixture, linked);
+  const agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory });
+  try {
+    const remove = (id: string, path: string) => call(agent, { tool: "delete_file", operation_id: id, arguments: { path } });
+    const deniedDirectory = await remove("delete-directory", directory);
+    assert.equal((deniedDirectory.json as { status: string }).status, "failed");
+    const deniedLink = await remove("delete-symlink", linked);
+    assert.equal((deniedLink.json as { status: string }).status, "failed");
+    assert.equal(await readFile(fixture, "utf8"), "fixture");
+    const deleted = await remove("delete-fixture", fixture);
+    assert.equal((deleted.json as { status: string }).status, "completed");
+    const duplicate = await remove("delete-fixture", fixture);
+    assert.equal((duplicate.json as { status: string }).status, "completed");
+    const missing = await remove("delete-missing", fixture);
+    assert.equal((missing.json as { status: string }).status, "failed");
+    const receipt = await fetch(`${agent.baseUrl}/internal/operations/delete-fixture`, {
+      headers: { "x-device-credential": DEVICE_TOKEN },
+    });
+    assert.equal((await receipt.json() as { state: string }).state, "completed");
+    assert.equal(await readFile(linked, "utf8").then(() => true, () => false), false);
+  } finally {
+    await agent.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("write_file appends once for concurrent duplicate IDs and rejects changed parameters", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-write-idempotency-"));
   const receiptDirectory = path.join(root, "receipts");
