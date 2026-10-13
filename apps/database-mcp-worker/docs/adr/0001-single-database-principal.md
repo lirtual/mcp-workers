@@ -1,6 +1,6 @@
 # ADR-0001 — One database principal per logical connection
 
-Status: **Accepted as an architectural direction; implementation pending**. Date: 2026-10-13. Q2=B, Q4=A and Q7=A confirmed.
+Status: **Accepted as an architectural direction; implementation pending**. Date: 2026-10-13. Q2=B, Q4=A, Q7=A and Q10=A confirmed.
 Decision input: cross-Worker grilling round 1 Q2=B. Related: [cross-Worker approval ADR](../../../../docs/tool-authorization/adr/0001-delegate-tool-approval-to-client.md).
 
 ## Context
@@ -19,6 +19,7 @@ Separate database principals are a resource-level privilege boundary rather than
 6. **Q3=A:** Remove the separate MCP elicitation confirmation step for destructive DDL, retaining truthful destructive tool annotations. Any end-user confirmation is owned by the MCP client; the Worker must not assume that all clients display a dialog.
 7. **Q7=A — One-time breaking configuration migration.** Replace the legacy `read`/`write`/`admin` credential schema with a single, explicitly supplied credential for each logical connection. Once the new parser is deployed, legacy credential keys are invalid with a clear migration error. Do **not** support dual schemas, silently select a legacy credential, or automatically alter database grants. The concrete field names, direct/Hyperdrive shape and migration examples are implementation-spec details still to be decided.
 8. Migrate the operator-controlled `DATABASE_CONFIG` outside GitHub, and validate new-format configuration, required bindings, connection health, safe read, structured mutation and supported DDL against test databases before any separately authorized production release. Fail closed when the format or credential is missing. Secret values must never be copied into documentation, code, tests, CI variables or logs.
+9. **Q10=A:** Preserve the currently verified **direct-only** execution restriction for schema-management tools. A logical connection using Hyperdrive may continue supported read/structured data operations, but requests for unverified DDL must fail with an explicit unsupported-transport result. The one-principal model does not imply transport compatibility; do not fall back silently to a separate direct/admin account or automatically grant DDL privileges.
 
 ## Consequences
 
@@ -35,6 +36,6 @@ This decision supersedes the *credential separation* aspect of `apps/database-mc
 ## Non-decisions
 
 - No current database user or permission is changed.
-- No migration code, production Worker, runtime secret or database schema has been modified. Q7 determines migration behavior; the exact replacement schema and the current direct-only Admin/DDL transport limitation still need detailed specification.
+- No migration code, production Worker, runtime secret or database schema has been modified. Q7 determines migration behavior; the exact replacement schema still needs detailed specification. The direct-only Admin/DDL transport boundary is now a settled Q10 decision.
 - No decision that one credential implies superuser or administrator access.
 - No assumption that all connected MCP clients require user confirmation.
