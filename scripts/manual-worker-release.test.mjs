@@ -1,13 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { activeVersion, verifyBindings, parseWranglerVersion } from "./manual-worker-release.mjs";
+import { activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion } from "./manual-worker-release.mjs";
 
 const required = [
   { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
   { name: "RAINDROP_ACCESS_TOKEN", type: "secret_text" },
 ];
 const secretList = [{ name: "MCP_ACCESS_TOKEN" }, { name: "RAINDROP_ACCESS_TOKEN" }];
-const goodSettings = { bindings: required, observability: { logs: { invocation_logs: true } } };
+const goodSettings = { bindings: required, observability: { enabled: true, logs: { invocation_logs: true } } };
 
 test("Raindrop required Secret names and bindings are preserved", () => {
   assert.equal(verifyBindings("raindrop-mcp-worker", goodSettings, secretList), true);
@@ -92,5 +92,16 @@ test("Remote VPC identity and approved independent write and Shell gates must re
 test("Wrangler output requires a parseable release id, not upload-only success", () => {
   const id = "12345678-1234-4234-8234-123456789abc";
   assert.equal(parseWranglerVersion("Current Version ID: " + id), id);
-  assert.throws(() => parseWranglerVersion("Uploaded script"), /verifiable version ID/);
+  assert.throws(() => parseWranglerVersion("Uploaded script"), /release Version ID/);
+});
+
+test("readback must match exact newly published Wrangler version", () => {
+  const old = { version_id: "00000000-0000-4000-8000-000000000000", deployment_id: "old" };
+  const id = "12345678-1234-4234-8234-123456789abc";
+  const current = { version_id: id, deployment_id: "new" };
+  assert.equal(verifyPublishedVersion(old, current, id), true);
+  assert.throws(() => verifyPublishedVersion(old, current, "22222222-2222-4222-8222-222222222222"), /does not match/);
+  assert.throws(() => verifyPublishedVersion(old, current, ""), /missing or malformed/);
+  assert.throws(() => verifyPublishedVersion(old, current, undefined), /missing or malformed/);
+  assert.throws(() => verifyPublishedVersion(old, old, old.version_id), /did not change/);
 });
