@@ -1,6 +1,6 @@
 # ADR-0001 — One database principal per logical connection
 
-Status: **Accepted as an architectural direction; implementation pending**. Date: 2026-10-13.
+Status: **Accepted as an architectural direction; implementation pending**. Date: 2026-10-13. Q2=B and Q4=A confirmed.
 Decision input: cross-Worker grilling round 1 Q2=B. Related: [cross-Worker approval ADR](../../../../docs/tool-authorization/adr/0001-delegate-tool-approval-to-client.md).
 
 ## Context
@@ -14,8 +14,9 @@ Separate database principals are a resource-level privilege boundary rather than
 1. Model each **logical database connection** with **one upstream database principal/credential**, regardless of the type of SQL operation requested. Multiple logical connections may continue to point to different databases with different credentials; there is no global credential shared across unrelated databases.
 2. Eliminate the distinct `read` / `write` / `admin` credential configuration and resolution paths once the migration design is approved and implemented. The single credential's **actual MySQL/PostgreSQL grants** determine which statements can run; do not auto-grant privileges, substitute elevated credentials or provide an escalation fallback.
 3. Do not turn client approval into server-issued database privileges. Continue to authenticate MCP access at ingress.
-4. The choice of **MCP tool surface** (separate read/write/DDL tools versus general SQL execution) remains an explicit next-round decision; this ADR does not authorize unrestricted SQL, multi-statement queries, stored procedures, or bypassing execution bounds.
-5. Preserve standard input validation, resource limits, failure reporting, non-replay of uncertain mutations and secret-safe observability unless separately agreed. The exact contract is to be decided later.
+4. **Q4=A:** Retain separate read/query, structured insert/update/delete and schema-management MCP tools with their input schemas and accurate read-only/destructive metadata. All tools resolve the one configured principal for the chosen logical connection. Tool classification does not grant additional privilege; do not add arbitrary general-SQL execution as part of this simplification.
+5. Preserve SQL/read-query guards, structured mutation bounds and transaction safeguards, query timeouts, result limits, failure reporting, non-replay of uncertain mutations and secret-safe observability. These protect operation semantics and availability rather than requiring client approval.
+6. **Q3=A:** Remove the separate MCP elicitation confirmation step for destructive DDL, retaining truthful destructive tool annotations. Any end-user confirmation is owned by the MCP client; the Worker must not assume that all clients display a dialog.
 
 ## Consequences
 
@@ -32,6 +33,6 @@ This decision supersedes the *credential separation* aspect of `apps/database-mc
 ## Non-decisions
 
 - No current database user or permission is changed.
-- No migration code, production Worker, runtime secret or database schema has been modified.
+- No migration code, production Worker, runtime secret or database schema has been modified. The legacy read/write/admin config migration format and its compatibility behavior are the next unresolved design question.
 - No decision that one credential implies superuser or administrator access.
 - No assumption that all connected MCP clients require user confirmation.
