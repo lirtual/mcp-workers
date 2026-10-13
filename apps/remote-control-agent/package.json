@@ -8,9 +8,9 @@
     ".": "./src/server.ts"
   },
   "scripts": {
-    "start": "node --experimental-strip-types src/main.ts",
+    "start": "node scripts/build-session-supervisor.mjs && node --experimental-strip-types src/main.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
-    "test": "node --experimental-strip-types --test tests/*.test.ts"
+    "test": "node scripts/build-session-supervisor.mjs && node --experimental-strip-types --test tests/*.test.ts"
   },
   "devDependencies": {
     "@types/node": "24.19.2",
