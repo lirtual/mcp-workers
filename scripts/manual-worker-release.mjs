@@ -148,7 +148,7 @@ async function main() {
   if (mode === "version") {
     const file = worker;
     invariant(file, "Wrangler log path missing");
-    console.log("EXPECTED_VERSION_ID=" + parseWranglerVersion(await readFile(file, "utf8")));
+    console.log(parseWranglerVersion(await readFile(file, "utf8")));
     return;
   }
   invariant(WORKERS.has(worker), "Unsupported Worker target");
@@ -188,8 +188,6 @@ async function main() {
       "Active Worker version does not match the Wrangler-published version");
     invariant(previous.version_id !== observed.version_id &&
       previous.deployment_id !== observed.deployment_id, "Active Worker version did not change");
-    invariant(observed.version_id.toLowerCase() === process.env.EXPECTED_VERSION_ID?.toLowerCase(),
-      "Active Cloudflare Worker version does not match this Wrangler upload");
     console.log("Release verified: " + worker + " version " + observed.version_id +
       " source " + sourceSha.slice(0, 12));
   }
