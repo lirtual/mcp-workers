@@ -43,6 +43,9 @@ export function setupMockFetch(handler: MockFetchHandler) {
           body = init.body;
         }
       }
+      if (init.body instanceof FormData) {
+        body = init.body;
+      }
     }
 
     const capturedReq: CapturedRequest = {

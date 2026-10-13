@@ -1,95 +1,35 @@
-# IMA MCP for Cloudflare Workers — v0.5.0
+# IMA MCP for Cloudflare Workers
 
-Cloudflare-native MCP server for Tencent IMA notes and knowledge bases.
+Single-user MCP for Tencent IMA notes and knowledge bases.
 
 ## Architecture
 
-```text
-ChatGPT / MCP client
-       ↓
-Cloudflare MCP Portal
-       ↓ Authorization: Bearer <MCP_ACCESS_TOKEN>
-Cloudflare Worker: ima-mcp-worker
-       ↓ Worker Secrets: CLIENT_ID + API_KEY
-IMA OpenAPI
+ChatGPT / MCP client → Cloudflare MCP Portal → ima-mcp-worker → IMA OpenAPI.
 
-ima-mcp-worker Worker
-       ↓ R2 binding: R2_BUCKET
-R2 bucket: ima-mcp-worker
-       ↓ R2 custom domain
-https://temp.lirtual.dpdns.org/exports/...
-```
-
-This deployment is intentionally **single-user**. The Worker is stateless for authentication and does not use D1 or host its own OAuth provider.
-
-Credential boundaries are independent:
-
-- Client-facing authentication is owned by Cloudflare MCP Portal.
-- Portal-to-Worker authentication uses this Worker's dedicated `MCP_ACCESS_TOKEN` through `@mcp-workers/portal-auth`.
-- IMA business authentication uses `CLIENT_ID` and `API_KEY`.
-- Exported files are stored in R2 and downloaded directly from the configured R2 custom domain; the Worker is not in the download path.
+Portal authentication and IMA credentials remain separated. The Worker has no database or object-storage dependency.
 
 ## Features
 
-- Notes: search/list/read/create/append/export
-- Knowledge bases: search/list/read/search/import URL/link note/upload file/export
-- File export to Cloudflare R2 with direct custom-domain download URLs
-- Unique per-export R2 keys so repeated exports do not overwrite earlier objects
-- Streamable HTTP `/mcp`
-- `/health` and `/ready`
-- HTTPS-only remote file ingestion with redirect and private-network filtering
+- Search, list, read, create, append, and export notes
+- Search, list, and read knowledge bases; import URLs, link notes, and upload HTTPS files to IMA COS
+- Export notes and knowledge files to **public Litterbox** with temporary 24-hour download URLs
+- Read binary knowledge files in bounded chunks without automatically uploading to a third party
+- Refresh expired embedded-image URLs using existing Durable Object execution shards
 
-## Required runtime configuration
+## Temporary exports
 
-Worker Secrets:
+The explicit `export_file` tool or `read_knowledge_source(export_to_temporary=true)` uploads via
+`POST https://litterbox.catbox.moe/resources/internals/api.php`, using multipart fields
+`reqtype=fileupload`, `time=24h`, and `fileToUpload`. A validated download URL and `expires_in: "24h"` are returned.
 
-- `CLIENT_ID`
-- `API_KEY`
-- `MCP_ACCESS_TOKEN`
+**Privacy:** Uploaded files are hosted by a third-party, publicly accessible service. Anyone with the URL can access the file before expiry. Do not export confidential material.
 
-R2:
+The Worker limits temporary uploads to **32 MiB** to manage its memory footprint. Litterbox may apply stricter content restrictions or be temporarily unavailable.
 
-- binding: `R2_BUCKET`
-- production bucket: `ima-mcp-worker`
-- public/custom domain: `https://temp.lirtual.dpdns.org`
+## Required configuration
 
-Required non-secret Worker variable:
+Worker secrets: `MCP_ACCESS_TOKEN`, `CLIENT_ID`, and `API_KEY`.
 
-- `R2_PUBLIC_BASE_URL` — public base URL of the R2 bucket custom domain, for example `https://temp.lirtual.dpdns.org`
+Optional: `IMA_BASE_URL` and existing timeout/size limits. No R2, D1, public download domain, or download-signing key is needed. The `IMA_IMAGE_REFRESH_SHARD` Durable Object remains.
 
-Optional variables include `IMA_BASE_URL` and the existing transfer size/timeout limits.
-
-`wrangler.jsonc` uses `keep_vars: true`, so Dashboard-managed non-secret variables such as `R2_PUBLIC_BASE_URL` are preserved across deployments. Secrets remain managed as Cloudflare Worker Secrets.
-
-## Export downloads
-
-`export_file` and R2-backed reads return URLs shaped like:
-
-```text
-https://temp.lirtual.dpdns.org/exports/<type>/<id>/<export-id>/<filename>
-```
-
-Every export receives a generated UUID in its R2 key. Re-exporting the same note/media filename therefore creates a new object instead of overwriting an older export.
-
-If automatic cleanup is desired, configure an R2 Object Lifecycle Rule for the `exports/` prefix. No Worker `/download` proxy, signing key, Cron, Queue, or download-session store is required.
-
-## Cloudflare runtime defaults
-
-The production Worker configuration keeps:
-
-- `workers_dev: true`
-- `preview_urls: false`
-- `keep_vars: true`
-- Workers Observability enabled with invocation logs
-
-## Deploy
-
-See [DEPLOY_CLOUDFLARE.md](./DEPLOY_CLOUDFLARE.md).
-
-For MCP Portal configuration, see [docs/mcp-portal.md](./docs/mcp-portal.md).
-
-## Naming
-
-- GitHub app directory: `ima-mcp-worker`
-- Cloudflare Worker service: `ima-mcp-worker`
-- R2 bucket: `ima-mcp-worker`
+See [DEPLOY_CLOUDFLARE.md](./DEPLOY_CLOUDFLARE.md) and [docs/mcp-portal.md](./docs/mcp-portal.md).

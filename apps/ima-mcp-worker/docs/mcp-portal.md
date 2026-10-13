@@ -12,9 +12,8 @@ MCP client
   -> Worker Secrets CLIENT_ID + API_KEY
   -> IMA OpenAPI
 
-ima-mcp-worker Worker
-  -> R2_BUCKET
-  -> R2 bucket ima-mcp-worker
+Explicit export_file
+  -> public Litterbox temporary upload (24h)
 ```
 
 There is no Worker-owned OAuth provider and no D1 credential vault.
@@ -39,11 +38,7 @@ API_KEY
 MCP_ACCESS_TOKEN
 ```
 
-Required R2 binding:
-
-```text
-R2_BUCKET -> ima-mcp-worker
-```
+No R2 binding or public export domain is required.
 
 The old `IMA_OPENAPI_CLIENTID`, `IMA_OPENAPI_APIKEY`, `CLIENTID`, `APIKEY`, `AUTH_MODE`, `OAUTH_MASTER_KEY`, and D1 bindings are not supported by the runtime.
 
@@ -86,14 +81,13 @@ Checks the required runtime capabilities:
 - `MCP_ACCESS_TOKEN`;
 - `CLIENT_ID`;
 - `API_KEY`;
-- `R2_BUCKET`;
 - any required image-refresh Durable Object binding if that feature is present.
 
 A failure lists only missing capability names.
 
 ### `/download/*`
 
-The existing R2 download behavior is unchanged by this ingress ticket. Signed/expiring download hardening is handled separately by the dedicated download-security ticket.
+The Worker does not provide a download proxy. Explicit exports go to public Litterbox and expire after approximately 24h. Never upload confidential material.
 
 ## Acceptance checks
 
@@ -103,7 +97,7 @@ The existing R2 download behavior is unchanged by this ingress ticket. Signed/ex
 4. Portal lists the expected IMA tools.
 5. A representative read tool succeeds.
 6. A representative safe write tool succeeds.
-7. An export succeeds through `R2_BUCKET` and lands in the `ima-mcp-worker` bucket.
+7. An explicit export succeeds via Litterbox and returns a temporary download URL.
 8. Logs do not contain `MCP_ACCESS_TOKEN`, `CLIENT_ID`, `API_KEY`, or client authentication tokens.
 
 ## Cloudflare reference
