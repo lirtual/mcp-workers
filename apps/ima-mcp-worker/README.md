@@ -14,7 +14,7 @@ Portal authentication and IMA credentials remain separated. The Worker has no da
 - Search, list, and read knowledge bases; import URLs, link notes, and upload HTTPS files to IMA COS
 - Export notes and knowledge files to **public Litterbox** with temporary 24-hour download URLs
 - Read binary knowledge files in bounded chunks without automatically uploading to a third party
-- Refresh expired embedded-image URLs using existing Durable Object execution shards
+- Refresh up to 8 expired/unknown embedded-image URLs per note export directly inside the Worker (no Durable Objects)
 
 ## Temporary exports
 
@@ -24,12 +24,12 @@ The explicit `export_file` tool or `read_knowledge_source(export_to_temporary=tr
 
 **Privacy:** Uploaded files are hosted by a third-party, publicly accessible service. Anyone with the URL can access the file before expiry. Do not export confidential material.
 
-The Worker limits temporary uploads to **32 MiB** to manage its memory footprint. Litterbox may apply stricter content restrictions or be temporarily unavailable.
+A note export needing more than **8 image URL refreshes** fails before any public upload. The bound reserves room for retries within the Workers Free 50-subrequest limit.\n\nThe Worker limits temporary uploads to **32 MiB** to manage its memory footprint. Litterbox may apply stricter content restrictions or be temporarily unavailable.
 
 ## Required configuration
 
 Worker secrets: `MCP_ACCESS_TOKEN`, `CLIENT_ID`, and `API_KEY`.
 
-Optional: `IMA_BASE_URL` and existing timeout/size limits. No R2, D1, public download domain, or download-signing key is needed. The `IMA_IMAGE_REFRESH_SHARD` Durable Object remains.
+Optional: `IMA_BASE_URL` and existing timeout/size limits. No R2, D1, public download domain, or download-signing key is needed. No Durable Objects are used. Existing namespace retirement requires a one-time deletion tombstone deployment.
 
 See [DEPLOY_CLOUDFLARE.md](./DEPLOY_CLOUDFLARE.md) and [docs/mcp-portal.md](./docs/mcp-portal.md).

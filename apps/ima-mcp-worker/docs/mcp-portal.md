@@ -81,7 +81,7 @@ Checks the required runtime capabilities:
 - `MCP_ACCESS_TOKEN`;
 - `CLIENT_ID`;
 - `API_KEY`;
-- any required image-refresh Durable Object binding if that feature is present.
+- no storage or Durable Object binding is required; image URL refresh runs directly within the Worker.
 
 A failure lists only missing capability names.
 

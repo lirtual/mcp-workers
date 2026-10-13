@@ -47,4 +47,4 @@ Portal/client 身份、`MCP_ACCESS_TOKEN`、`CLIENT_ID` / `API_KEY` 是三个独
 - `/health` is stateless liveness.
 - `/ready` validates required secrets/bindings without D1.
 - Existing domain safety checks remain authoritative for write-capable tools.
-- Durable Objects, when used by image refresh, are execution shards rather than authentication or credential persistence.
+- No Durable Objects are needed: image signature refresh runs directly in Worker, at most 8 pending unique image URLs per export. Larger exports fail closed before public upload.\n- Current `exports.ImaImageRefreshShard` deleted tombstone is a one-time Cloudflare namespace retirement step; remove it only after production deploy confirms deletion.

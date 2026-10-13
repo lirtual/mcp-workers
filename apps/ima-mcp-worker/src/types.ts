@@ -1,5 +1,4 @@
 export interface Env {
-  IMA_IMAGE_REFRESH_SHARD?: DurableObjectNamespace<import("./image-refresh-shard.ts").ImaImageRefreshShard>;
   IMA_BASE_URL?: string;
   CLIENT_ID?: string;
   API_KEY?: string;
