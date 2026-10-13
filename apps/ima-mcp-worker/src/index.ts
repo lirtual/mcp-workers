@@ -7,6 +7,8 @@ import { RefreshingImaNotes } from "./exporting-notes.ts";
 import { registerTools } from "./tools.ts";
 import { IMA_SERVER_INSTRUCTIONS } from "./instructions.ts";
 
+export { ImaImageRefreshShard } from "./image-refresh-shard.ts";
+
 const VERSION = "0.5.0";
 
 function missingRuntimeConfig(env: Env): string[] {

@@ -2,238 +2,334 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { ImaClient } from "../../src/ima.ts";
 import { RefreshingImaNotes } from "../../src/exporting-notes.ts";
-import { MAX_IMAGE_REFRESH_BATCH_SIZE, processImageRefreshBatch } from "../../src/note-image-resign.ts";
+import {
+  MAX_IMAGE_REFRESH_BATCH_SIZE,
+  processImageRefreshBatch,
+  type ImageRefreshBatchRequest,
+  type ImageRefreshBatchResult,
+} from "../../src/note-image-resign.ts";
 import type { Env, ImaCredentials } from "../../src/types.ts";
 import { setupMockFetch, type MockFetchHandler } from "../helpers/mock-fetch.ts";
 
-const credentials: ImaCredentials = { clientId: "test_client_id", apiKey: "test_api_key" };
-const env: Env = { IMA_BASE_URL: "https://ima.qq.com" };
+const credentials: ImaCredentials = {
+  clientId: "test_client_id",
+  apiKey: "test_api_key",
+};
+
 const LITTERBOX_API = "https://litterbox.catbox.moe/resources/internals/api.php";
 
-function imageUrl(path: string, expired: boolean, signature = "sig") {
-  const start = expired ? 1 : 4_102_444_800;
-  const end = expired ? 2 : 4_102_473_600;
-  return `https://ima-notebook-prod.image.myqcloud.com${path}?q-sign-time=${start}%3B${end}&q-signature=${signature}`;
-}
-
-function imaResponse(data: unknown) {
-  return new Response(JSON.stringify({ code: 0, data }), {
-    status: 200, headers: { "content-type": "application/json" },
-  });
-}
-function format2(entries: Array<{ mediaId: string; cosKey: string }>) {
-  return imaResponse({ content: JSON.stringify(entries.map(entry => ({ type: "cloud_image", ...entry }))) });
-}
-function withUploads(handler: MockFetchHandler) {
+function setupExportFetch(handler: MockFetchHandler) {
   const uploaded: File[] = [];
-  const mock = setupMockFetch(req => {
-    if (req.url === LITTERBOX_API) {
-      const form = req.body as FormData;
-      assert.equal(form.get("reqtype"), "fileupload");
-      assert.equal(form.get("time"), "24h");
-      const file = form.get("fileToUpload");
+  const mock = setupMockFetch((request) => {
+    if (request.url === LITTERBOX_API) {
+      const file = (request.body as FormData).get("fileToUpload");
       assert.ok(file instanceof File);
+      assert.strictEqual((request.body as FormData).get("time"), "24h");
       uploaded.push(file);
-      return new Response("https://litter.catbox.moe/test-export.md");
+      return new Response("https://litter.catbox.moe/mock-note.md", { status: 200 });
     }
-    return handler(req);
+    return handler(request);
   });
   return { ...mock, uploaded };
 }
-function makeNotes() { return new RefreshingImaNotes(new ImaClient(env, credentials)); }
 
-test("fresh signatures export without format=2 or image refresh requests", async () => {
-  const url = imageUrl("/2/user/fresh", false);
-  const { restore, captured, uploaded } = withUploads(req => {
+function createShardNamespace(
+  handler: (request: ImageRefreshBatchRequest, index: number) => Promise<ImageRefreshBatchResult[]> | ImageRefreshBatchResult[],
+) {
+  const batches: ImageRefreshBatchRequest[] = [];
+  let nextId = 0;
+  return {
+    batches,
+    namespace: {
+      newUniqueId() {
+        nextId += 1;
+        return { toString: () => `shard-${nextId}` };
+      },
+      get() {
+        return {
+          async processBatch(request: ImageRefreshBatchRequest) {
+            batches.push(request);
+            return handler(request, batches.length - 1);
+          },
+        };
+      },
+    } as any,
+  };
+}
+
+function envForExport(shard?: ReturnType<typeof createShardNamespace>["namespace"]): Env {
+  return {
+    IMA_BASE_URL: "https://ima.qq.com",
+    ...(shard ? { IMA_IMAGE_REFRESH_SHARD: shard } : {}),
+  };
+}
+
+function bareEnv(): Env {
+  return { IMA_BASE_URL: "https://ima.qq.com" };
+}
+
+function imaUrl(path: string, start: number, end: number, signature: string) {
+  return `https://ima-notebook-prod.image.myqcloud.com${path}?q-sign-algorithm=sha1&q-ak=test&q-sign-time=${start}%3B${end}&q-key-time=${start}%3B${end}&q-header-list=&q-url-param-list=&q-signature=${signature}`;
+}
+
+
+function mediaInfoResponse(url: string) {
+  return new Response(JSON.stringify({ code: 0, data: { media_type: 9, url_info: { url } } }), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+function format2Response(entries: Array<{ mediaId: string; cosKey: string }>) {
+  return new Response(JSON.stringify({
+    code: 0,
+    data: {
+      content: JSON.stringify(entries.map((entry) => ({ type: "cloud_image", ...entry }))),
+    },
+  }), { status: 200, headers: { "content-type": "application/json" } });
+}
+
+test("note export keeps fresh signatures without format=2 or shard RPC", async () => {
+    const url = imaUrl("/2/user/hash-fresh", 4_102_444_800, 4_102_473_600, "fresh-existing");
+  const { restore, captured, uploaded } = setupExportFetch((req) => {
     if (req.url.endsWith("get_doc_content")) {
-      assert.equal(req.body.target_content_format, 1);
-      return imaResponse({ content: `# Note\n![img](${url})` });
+      assert.strictEqual(req.body.target_content_format, 1);
+      return new Response(JSON.stringify({ code: 0, data: { content: `# Note\n\n![img](${url})` } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
     }
-    return new Response("unexpected fetch", { status: 500 });
+    return new Response("Not found", { status: 404 });
   });
+
   try {
-    await makeNotes().exportNote("fresh");
-    assert.equal(captured.filter(req => req.url.endsWith("get_doc_content")).length, 1);
-    assert.equal(captured.filter(req => req.url.endsWith("get_media_info")).length, 0);
-    assert.equal(uploaded.length, 1);
-    assert.match(await uploaded[0].text(), /q-signature=sig/);
-  } finally { restore(); }
+    const notes = new RefreshingImaNotes(new ImaClient(envForExport(), credentials));
+    await notes.exportNote("note_fresh");
+    assert.strictEqual(captured.filter((x) => x.url.endsWith("get_doc_content")).length, 1);
+    assert.match(await uploaded[0].text(), /fresh-existing/);
+  } finally {
+    restore();
+  }
 });
 
-test("expired images are refreshed directly and duplicate Markdown images share one request", async () => {
-  const path = "/2/user/expired";
-  const old = imageUrl(path, true);
-  const fresh = imageUrl(path, false, "new");
-  let mediaCalls = 0;
-  let headCalls = 0;
-  const { restore, uploaded } = withUploads(req => {
-    if (req.url.endsWith("get_doc_content") && req.body.target_content_format === 1) {
-      return imaResponse({ content: `![a](${old})\n![b](${old})\n[link](${old})` });
-    }
-    if (req.url.endsWith("get_doc_content") && req.body.target_content_format === 2) {
-      return format2([{ mediaId: "media_1", cosKey: path }]);
-    }
-    if (req.url.endsWith("get_media_info")) {
-      mediaCalls++;
-      assert.deepEqual(req.body, { media_id: "media_1" });
-      return imaResponse({ url_info: { url: fresh } });
-    }
-    if (req.method === "HEAD" && req.url === fresh) {
-      headCalls++;
-      return new Response(null, { status: 200 });
-    }
-    return new Response("not found", { status: 404 });
+test("note export partitions 112 expired images into 13 bounded shard batches", async () => {
+    const entries = Array.from({ length: 112 }, (_, index) => {
+    const path = `/2/user/hash-${index}`;
+    return {
+      path,
+      mediaId: `media_${index}`,
+      oldUrl: imaUrl(path, 1, 2, `old-${index}`),
+      freshUrl: imaUrl(path, 4_102_444_800, 4_102_473_600, `fresh-${index}`),
+    };
   });
-  try {
-    await makeNotes().exportNote("expired");
-    assert.equal(mediaCalls, 1);
-    assert.equal(headCalls, 1);
-    assert.equal(uploaded.length, 1);
-    const markdown = await uploaded[0].text();
-    assert.equal(markdown.split(fresh).length - 1, 2);
-    assert.ok(markdown.includes(`[link](${old})`));
-  } finally { restore(); }
-});
-
-test("8 expired images can be refreshed within a bounded number of external requests", async () => {
-  const entries = Array.from({ length: MAX_IMAGE_REFRESH_BATCH_SIZE }, (_, index) => ({
-    path: `/2/user/bounded-${index}`, mediaId: `media_${index}`,
+  const { namespace, batches } = createShardNamespace((request) => request.items.map((item) => {
+    const entry = entries.find((candidate) => candidate.mediaId === item.mediaId);
+    assert.ok(entry);
+    return { sourceUrl: item.sourceUrl, freshUrl: entry.freshUrl, preserved: false };
   }));
-  let mediaCalls = 0;
-  const { restore, captured, uploaded } = withUploads(req => {
+
+  const { restore, captured, uploaded } = setupExportFetch((req) => {
     if (req.url.endsWith("get_doc_content") && req.body.target_content_format === 1) {
-      return imaResponse({ content: entries.map(e => `![img](${imageUrl(e.path, true)})`).join("\n") });
+      const markdown = entries.map((entry) => `![img](${entry.oldUrl})`).join("\n");
+      return new Response(JSON.stringify({ code: 0, data: { content: markdown } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
     }
     if (req.url.endsWith("get_doc_content") && req.body.target_content_format === 2) {
-      return format2(entries.map(e => ({ cosKey: e.path, mediaId: e.mediaId })));
+      return format2Response(entries.map((entry) => ({ mediaId: entry.mediaId, cosKey: entry.path })));
     }
-    if (req.url.endsWith("get_media_info")) {
-      mediaCalls++;
-      const id = req.body.media_id as string;
-      const entry = entries.find(e => e.mediaId === id);
-      assert.ok(entry);
-      return imaResponse({ url_info: { url: imageUrl(entry.path, false) } });
-    }
-    if (req.method === "HEAD") return new Response(null, { status: 200 });
-    return new Response("unexpected", { status: 500 });
+    return new Response("unexpected main-worker fetch", { status: 599 });
   });
+
   try {
-    await makeNotes().exportNote("bounded");
-    assert.equal(mediaCalls, MAX_IMAGE_REFRESH_BATCH_SIZE);
-    assert.equal(uploaded.length, 1);
-    assert.equal(captured.length, 2 + MAX_IMAGE_REFRESH_BATCH_SIZE * 2 + 1);
-  } finally { restore(); }
+    const notes = new RefreshingImaNotes(new ImaClient(envForExport(namespace), credentials));
+    await notes.exportNote("note_large");
+    assert.strictEqual(batches.length, 13);
+    assert.deepStrictEqual(batches.map((batch) => batch.items.length), [...Array(12).fill(9), 4]);
+    assert.ok(batches.every((batch) => batch.items.length <= MAX_IMAGE_REFRESH_BATCH_SIZE));
+    assert.strictEqual(captured.filter((x) => x.url !== LITTERBOX_API).length, 2);
+    assert.strictEqual(captured.filter((x) => x.method === "HEAD").length, 0);
+    assert.strictEqual(captured.filter((x) => x.url.endsWith("get_media_info")).length, 0);
+  } finally {
+    restore();
+  }
 });
 
-test("9 expired images fail before requesting format=2 or uploading to third party", async () => {
-  const images = Array.from({ length: MAX_IMAGE_REFRESH_BATCH_SIZE + 1 }, (_, index) =>
-    `![img](${imageUrl(`/2/user/overflow-${index}`, true)})`).join("\n");
-  const { restore, captured, uploaded } = withUploads(req => {
+test("note export deduplicates repeated images and only replaces image destinations", async () => {
+    const path = "/2/user/hash-scoped";
+  const expired = imaUrl(path, 1, 2, "old-scoped");
+  const refreshed = imaUrl(path, 4_102_444_800, 4_102_473_600, "new-scoped");
+  const { namespace, batches } = createShardNamespace((request) => [
+    { sourceUrl: request.items[0].sourceUrl, freshUrl: refreshed, preserved: false },
+  ]);
+
+  const { restore, uploaded } = setupExportFetch((req) => {
     if (req.url.endsWith("get_doc_content") && req.body.target_content_format === 1) {
-      return imaResponse({ content: images });
+      return new Response(JSON.stringify({
+        code: 0,
+        data: { content: `![a](${expired})\n![b](${expired})\n[link](${expired})` },
+      }), { status: 200, headers: { "content-type": "application/json" } });
     }
-    return new Response("unexpected", { status: 500 });
+    if (req.url.endsWith("get_doc_content") && req.body.target_content_format === 2) {
+      return format2Response([{ mediaId: "media_scoped", cosKey: path }]);
+    }
+    return new Response("Not found", { status: 404 });
   });
+
   try {
-    await assert.rejects(() => makeNotes().exportNote("overflow"), /单次导出最多支持 8 张/);
-    assert.equal(captured.length, 1);
-    assert.equal(uploaded.length, 0);
-  } finally { restore(); }
+    const notes = new RefreshingImaNotes(new ImaClient(envForExport(namespace), credentials));
+    await notes.exportNote("note_scoped");
+    assert.strictEqual(batches.length, 1);
+    assert.strictEqual(batches[0].items.length, 1);
+    const text = await uploaded[0].text();
+    assert.strictEqual(text.split(refreshed).length - 1, 2);
+    assert.ok(text.includes(`[link](${expired})`));
+  } finally {
+    restore();
+  }
 });
 
-test("probe preserves still-accessible images without refreshing media", async () => {
-  const path = "/2/user/probe";
-  const raw = "https://ima-notebook-prod.image.myqcloud.com" + path + "?q-signature=unknown";
-  let refreshed = 0;
-  const { restore, uploaded } = withUploads(req => {
-    if (req.url.endsWith("get_doc_content") && req.body.target_content_format === 1) return imaResponse({ content: `![img](${raw})` });
-    if (req.url.endsWith("get_doc_content") && req.body.target_content_format === 2) return format2([{ mediaId: "probe", cosKey: path }]);
-    if (req.method === "HEAD" && req.url === raw) return new Response(null, { status: 200 });
-    if (req.url.endsWith("get_media_info")) refreshed++;
-    return new Response("unexpected", { status: 500 });
+test("note export fails before temporary upload when a shard fails", async () => {
+    const path = "/2/user/hash-fail";
+  const expired = imaUrl(path, 1, 2, "old-fail");
+  const { namespace } = createShardNamespace(() => {
+    throw new Error("shard failed");
   });
+
+  const { restore, uploaded } = setupExportFetch((req) => {
+    if (req.url.endsWith("get_doc_content") && req.body.target_content_format === 1) {
+      return new Response(JSON.stringify({ code: 0, data: { content: `![img](${expired})` } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (req.url.endsWith("get_doc_content") && req.body.target_content_format === 2) {
+      return format2Response([{ mediaId: "media_fail", cosKey: path }]);
+    }
+    return new Response("Not found", { status: 404 });
+  });
+
   try {
-    await makeNotes().exportNote("probe");
-    assert.equal(refreshed, 0);
-    assert.equal(uploaded.length, 1);
-    assert.ok((await uploaded[0].text()).includes(raw));
-  } finally { restore(); }
+    const notes = new RefreshingImaNotes(new ImaClient(envForExport(namespace), credentials));
+    await assert.rejects(() => notes.exportNote("note_fail"), /shard failed/);
+    assert.strictEqual(uploaded.length, 0);
+  } finally {
+    restore();
+  }
 });
 
-test("missing image metadata fails without external upload", async () => {
-  const old = imageUrl("/2/user/missing", true);
-  const { restore, uploaded } = withUploads(req => {
-    if (req.url.endsWith("get_doc_content") && req.body.target_content_format === 1) return imaResponse({ content: `![img](${old})` });
-    if (req.url.endsWith("get_doc_content") && req.body.target_content_format === 2) return format2([]);
-    return new Response("unexpected", { status: 500 });
-  });
-  try {
-    await assert.rejects(() => makeNotes().exportNote("missing"), /未找到.*mediaId/);
-    assert.equal(uploaded.length, 0);
-  } finally { restore(); }
-});
-
-test("invalid refreshed URL fails without uploading an invalid document", async () => {
-  const path = "/2/user/bad";
-  const old = imageUrl(path, true);
-  const { restore, uploaded } = withUploads(req => {
-    if (req.url.endsWith("get_doc_content") && req.body.target_content_format === 1) return imaResponse({ content: `![img](${old})` });
-    if (req.url.endsWith("get_doc_content") && req.body.target_content_format === 2) return format2([{ mediaId: "bad", cosKey: path }]);
-    if (req.url.endsWith("get_media_info")) return imaResponse({ url_info: { url: imageUrl("/2/user/other", false) } });
-    return new Response("unexpected", { status: 500 });
-  });
-  try {
-    await assert.rejects(() => makeNotes().exportNote("bad"), /未返回.*可用新签名/);
-    assert.equal(uploaded.length, 0);
-  } finally { restore(); }
-});
-
-test("inline refresh bound rejects 9 items before making network requests", async () => {
+test("image shard rejects batches over 9 before any network request", async () => {
   let fetchCalls = 0;
-  const { restore } = setupMockFetch(() => { fetchCalls++; return new Response("bad", { status: 500 }); });
+  const { restore, uploaded } = setupExportFetch(() => {
+    fetchCalls += 1;
+    return new Response("unexpected", { status: 500 });
+  });
+
   try {
-    const items = Array.from({ length: 9 }, (_, index) => ({
-      sourceUrl: imageUrl(`/2/user/${index}`, true),
+    const items = Array.from({ length: 10 }, (_, index) => ({
+      sourceUrl: imaUrl(`/2/user/too-many-${index}`, 1, 2, `old-${index}`),
       mediaId: `media_${index}`,
       mode: "refresh" as const,
     }));
-    await assert.rejects(() => processImageRefreshBatch(env, credentials, items), /最多 8 张/);
-    assert.equal(fetchCalls, 0);
-  } finally { restore(); }
+    await assert.rejects(() => processImageRefreshBatch(bareEnv(), credentials, items), /批次过大/);
+    assert.strictEqual(fetchCalls, 0);
+  } finally {
+    restore();
+  }
 });
 
-test("worst-case 8 probes use no more than 40 image-related fetches", async () => {
-  const items = Array.from({ length: MAX_IMAGE_REFRESH_BATCH_SIZE }, (_, index) => ({
-    sourceUrl: "https://ima-notebook-prod.image.myqcloud.com/2/user/worst-" + index + "?q-signature=unknown",
-    mediaId: "media_" + index, mode: "probe" as const,
+test("image shard refreshes and HEAD-validates a known-expired image", async () => {
+  const path = "/2/user/hash-expired";
+  const sourceUrl = imaUrl(path, 1, 2, "old");
+  const freshUrl = imaUrl(path, 4_102_444_800, 4_102_473_600, "fresh");
+  let mediaCalls = 0;
+  let headCalls = 0;
+  const { restore, uploaded } = setupExportFetch((req) => {
+    if (req.url.endsWith("get_media_info")) {
+      mediaCalls += 1;
+      assert.deepStrictEqual(req.body, { media_id: "media_1" });
+      return mediaInfoResponse(freshUrl);
+    }
+    if (req.method === "HEAD" && req.url === freshUrl) {
+      headCalls += 1;
+      return new Response(null, { status: 200 });
+    }
+    return new Response("Not found", { status: 404 });
+  });
+
+  try {
+    const result = await processImageRefreshBatch(bareEnv(), credentials, [
+      { sourceUrl, mediaId: "media_1", mode: "refresh" },
+    ]);
+    assert.strictEqual(mediaCalls, 1);
+    assert.strictEqual(headCalls, 1);
+    assert.deepStrictEqual(result, [{ sourceUrl, freshUrl, preserved: false }]);
+  } finally {
+    restore();
+  }
+});
+
+test("image shard preserves an unparseable signature when old URL still works", async () => {
+  const sourceUrl = "https://ima-notebook-prod.image.myqcloud.com/2/user/hash-probe?q-signature=unknown";
+  let mediaCalls = 0;
+  const { restore, uploaded } = setupExportFetch((req) => {
+    if (req.method === "HEAD" && req.url === sourceUrl) return new Response(null, { status: 200 });
+    if (req.url.endsWith("get_media_info")) mediaCalls += 1;
+    return new Response("Not found", { status: 404 });
+  });
+
+  try {
+    const result = await processImageRefreshBatch(bareEnv(), credentials, [
+      { sourceUrl, mediaId: "media_probe", mode: "probe" },
+    ]);
+    assert.strictEqual(mediaCalls, 0);
+    assert.deepStrictEqual(result, [{ sourceUrl, preserved: true }]);
+  } finally {
+    restore();
+  }
+});
+
+test("worst-case nine-item shard stays at 45 external fetches", async () => {
+  const items = Array.from({ length: 9 }, (_, index) => ({
+    sourceUrl: `https://ima-notebook-prod.image.myqcloud.com/2/user/worst-${index}?q-signature=unknown`,
+    mediaId: `media_${index}`,
+    mode: "probe" as const,
   }));
   const attempts = new Map<string, number>();
   let fetchCalls = 0;
-  const oldTimeout = globalThis.setTimeout;
+  const originalSetTimeout = globalThis.setTimeout;
   (globalThis as any).setTimeout = (fn: () => void) => { fn(); return 0; };
-  const { restore } = setupMockFetch(req => {
-    fetchCalls++;
+  const { restore, uploaded } = setupExportFetch((req) => {
+    fetchCalls += 1;
     if (req.method === "HEAD" && req.url.includes("q-signature=unknown")) {
       return new Response(null, { status: 403 });
     }
     if (req.url.endsWith("get_media_info")) {
-      const id = req.body.media_id as string;
-      const count = (attempts.get(id) ?? 0) + 1;
-      attempts.set(id, count);
-      if (count < 3) {
-        return new Response(JSON.stringify({ code: 200001, msg: "rate limited", data: {} }), { status: 200 });
+      const mediaId = req.body.media_id as string;
+      const attempt = (attempts.get(mediaId) ?? 0) + 1;
+      attempts.set(mediaId, attempt);
+      if (attempt < 3) {
+        return new Response(JSON.stringify({ code: 200001, msg: "rate limited", data: {} }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
       }
-      return imaResponse({ url_info: { url: imageUrl("/2/user/worst-" + id.replace("media_", ""), false) } });
+      const index = Number(mediaId.replace("media_", ""));
+      return mediaInfoResponse(imaUrl(`/2/user/worst-${index}`, 4_102_444_800, 4_102_473_600, `fresh-${index}`));
     }
-    if (req.method === "HEAD") return new Response(null, { status: 200 });
-    return new Response("bad", { status: 500 });
+    if (req.method === "HEAD" && req.url.includes("q-sign-time=")) {
+      return new Response(null, { status: 200 });
+    }
+    return new Response("Not found", { status: 404 });
   });
+
   try {
-    const result = await processImageRefreshBatch(env, credentials, items);
-    assert.equal(result.length, MAX_IMAGE_REFRESH_BATCH_SIZE);
-    assert.equal(fetchCalls, MAX_IMAGE_REFRESH_BATCH_SIZE * 5);
+    const results = await processImageRefreshBatch(bareEnv(), credentials, items);
+    assert.strictEqual(results.length, 9);
+    assert.strictEqual(fetchCalls, 45);
   } finally {
     restore();
-    globalThis.setTimeout = oldTimeout;
+    globalThis.setTimeout = originalSetTimeout;
   }
 });

@@ -9,15 +9,17 @@ const MAX_RESIGN_ATTEMPTS = 3;
 const DEFAULT_IMA_RESPONSE_MAX_BYTES = 5 * 1024 * 1024;
 const IMA_MARKDOWN_IMAGE_PATTERN = /(!\[[^\]]*\]\(\s*)(https:\/\/ima-notebook-prod\.image\.myqcloud\.com\/[^\s)]+)([^)]*\))/g;
 
-// At most 8 candidates: each may need HEAD + 3 IMA attempts + HEAD (5 fetches).
-// Together with note read, format=2, and upload this stays below the
-// Workers Free limit of 50 external subrequests per invocation.
-export const MAX_IMAGE_REFRESH_BATCH_SIZE = 8;
+export const MAX_IMAGE_REFRESH_BATCH_SIZE = 9;
 
 export type ImageRefreshWorkItem = {
   sourceUrl: string;
   mediaId: string;
   mode: "refresh" | "probe";
+};
+
+export type ImageRefreshBatchRequest = {
+  credentials: ImaCredentials;
+  items: ImageRefreshWorkItem[];
 };
 
 export type ImageRefreshBatchResult = {
@@ -54,13 +56,6 @@ export async function refreshExpiredImaImageUrls(
   });
   if (pending.length === 0) return markdown;
 
-  if (pending.length > MAX_IMAGE_REFRESH_BATCH_SIZE) {
-    throw new ImaApiError(
-      `IMA 笔记需要刷新 ${pending.length} 张图片，单次导出最多支持 ${MAX_IMAGE_REFRESH_BATCH_SIZE} 张；为避免超出 Cloudflare 免费计划请求限制，已取消导出且未上传文件`,
-      110013,
-    );
-  }
-
   const format2 = await api.post<{ content?: unknown }>("openapi/note/v1/get_doc_content", {
     note_id: noteId,
     target_content_format: 2,
@@ -76,10 +71,17 @@ export async function refreshExpiredImaImageUrls(
     return { ...item, mediaId };
   });
 
-  const results = await processImageRefreshBatch(api.env, api.credentials, workItems);
+  const namespace = api.env.IMA_IMAGE_REFRESH_SHARD;
+  if (!namespace) {
+    throw new ImaApiError("IMA 图片重签失败：Durable Object binding 未配置", 110012);
+  }
+
   const replacements = new Map<string, string>();
-  for (const result of results) {
-    if (result.freshUrl) replacements.set(result.sourceUrl, result.freshUrl);
+  for (let start = 0; start < workItems.length; start += MAX_IMAGE_REFRESH_BATCH_SIZE) {
+    const items = workItems.slice(start, start + MAX_IMAGE_REFRESH_BATCH_SIZE);
+    const stub = namespace.get(namespace.newUniqueId());
+    const results = await stub.processBatch({ credentials: api.credentials, items });
+    mergeShardResults(items, results, replacements);
   }
 
   return replaceImaMarkdownImageUrls(markdown, replacements);
@@ -91,7 +93,7 @@ export async function processImageRefreshBatch(
   items: ImageRefreshWorkItem[]
 ): Promise<ImageRefreshBatchResult[]> {
   if (items.length > MAX_IMAGE_REFRESH_BATCH_SIZE) {
-    throw new ImaApiError(`IMA 图片刷新数量过多：单次最多 ${MAX_IMAGE_REFRESH_BATCH_SIZE} 张`, 110013);
+    throw new ImaApiError(`IMA 图片重签批次过大：最多 ${MAX_IMAGE_REFRESH_BATCH_SIZE} 张`, 110013);
   }
 
   const results: ImageRefreshBatchResult[] = [];
@@ -109,6 +111,40 @@ export async function processImageRefreshBatch(
     results.push({ sourceUrl: item.sourceUrl, freshUrl, preserved: false });
   }
   return results;
+}
+
+function mergeShardResults(
+  items: ImageRefreshWorkItem[],
+  results: ImageRefreshBatchResult[],
+  replacements: Map<string, string>
+): void {
+  const bySource = new Map<string, ImageRefreshBatchResult>();
+  for (const result of results) {
+    if (bySource.has(result.sourceUrl)) {
+      throw new ImaApiError(`IMA 图片重签失败：shard 返回重复结果 ${new URL(result.sourceUrl).pathname}`, 110014);
+    }
+    bySource.set(result.sourceUrl, result);
+  }
+  if (results.length !== items.length || bySource.size !== items.length) {
+    throw new ImaApiError("IMA 图片重签失败：shard 返回结果数量不完整", 110014);
+  }
+
+  for (const item of items) {
+    const result = bySource.get(item.sourceUrl);
+    if (!result) {
+      throw new ImaApiError(`IMA 图片重签失败：shard 缺少 ${new URL(item.sourceUrl).pathname} 的结果`, 110014);
+    }
+    if (result.preserved) {
+      if (item.mode !== "probe" || result.freshUrl) {
+        throw new ImaApiError(`IMA 图片重签失败：shard 返回无效 preserve 结果 ${new URL(item.sourceUrl).pathname}`, 110014);
+      }
+      continue;
+    }
+    if (!result.freshUrl) {
+      throw new ImaApiError(`IMA 图片重签失败：shard 未返回 ${new URL(item.sourceUrl).pathname} 的新 URL`, 110014);
+    }
+    replacements.set(item.sourceUrl, result.freshUrl);
+  }
 }
 
 function extractImaMarkdownImageUrls(markdown: string): string[] {
