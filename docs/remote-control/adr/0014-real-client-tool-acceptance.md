@@ -1,6 +1,6 @@
 # ADR-0014 — Require real-client acceptance before exposing Remote Control writes and Shell
 
-Status: **Accepted real-client requirement and existing-environment test topology; authorization pending**. Date: 2026-10-13.
+Status: **Accepted real-client requirement, existing-environment topology and separately approved staged test plan; authorization pending**. Date: 2026-10-13.
 Decision input: cross-Worker grilling Q9=A and Q12=B. Related: [cross-Worker approval ADR](../../tool-authorization/adr/0001-delegate-tool-approval-to-client.md), [ADR-0011](./0011-direct-linux-user-no-path-allowlist.md), [ADR-0012](./0012-reuse-portal-bearer-auth-with-independent-secret.md), and [T10 release evidence](../T10-RELEASE-ACCEPTANCE.md).
 
 ## Context
@@ -35,6 +35,15 @@ A static Bearer credential and MCP metadata cannot guarantee that ChatGPT or eve
 - **This ADR is NOT a deployment or testing authorization.** Current production file-write and Shell gates remain unchanged. Future in-place tests needing a gate, Worker version, connected plugin or Agent configuration change must be separately and explicitly approved first; do not bypass the gates to perform tests.
 - Once permitted, record only redacted, non-secret pass/fail evidence with the active version and verified environment state, then separately seek the production release decision.
 
+## Q15=A — Staged, separately approved in-place acceptance
+
+The operator selected **A**, a separate authorization for bounded in-place write and Shell acceptance **after** read-only risk review. This is a choice of process, **not permission to test now**.
+
+1. **Read-only preflight:** verify the active Worker version, both current gating states, separate ingress and device credentials by name only, real Portal initialization and read-only fixture access, Agent Linux UID, relevant privilege pathways (sudo, Docker socket, mounted host filesystems), current logging policy, and T07/T09/T10 blockers. Do not read secret values or sensitive files as proof.
+2. **Pre-test approval:** present the exact safe fixture path, harmless bounded command, expected file/process effects, temporary gate or build changes if needed, active version/identity, backup/recovery process and stop conditions; get a new, explicit owner authorization before **any** write/Shell enablement or execution on the existing connected environment.
+3. **Controlled client validation:** after that permission, verify actual ChatGPT tool discovery, declared risk labels, one disposable write, readback, the operation receipt and the harmless Shell session lifecycle only if the stop-race blocker is resolved. Record failures honestly; do not automatically retry uncertain operations, touch unrelated processes or imply a client confirmation was displayed if it was not.
+4. **Post-test:** verify intended gate/release state and residual operation effects. A later, separate explicit production cutover decision is still required. Nothing here authorizes turning the feature on by default before that decision.
+
 ## Pending next decision
 
-**Q15:** concrete minimal test matrix, allowed fixtures and staged authorization/recovery process for in-place testing on the existing Linux host. Neither Shell nor file-write enabling or execution has been approved in this design round.
+**Next design frontier:** determine the concrete minimal approval artifact and whether the existing Shell process-stop race can be resolved using offline evidence before a separately authorized real-client test. Neither Shell nor file-write enabling or execution has been approved in this design round.
