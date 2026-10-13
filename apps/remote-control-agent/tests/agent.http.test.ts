@@ -415,6 +415,35 @@ test("start_process uses receipts once and managed sessions expose bounded outpu
   }
 });
 
+test("failed Shell startup keeps a classified, credential-free receipt", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-start-failure-"));
+  const agent = await startAgent({
+    deviceToken: DEVICE_TOKEN,
+    receiptDirectory: path.join(root, "receipts"),
+    shellPath: "/nonexistent/remote-control-shell",
+  });
+  try {
+    const result = await call(agent, {
+      tool: "start_process",
+      operation_id: "missing-shell-start",
+      arguments: { command: "printf secret-sentinel", timeout_ms: 500 },
+    });
+    const body = result.json as { status: string; error: { code: string }; receipt: { safe_result_summary: string } };
+    assert.equal(body.status, "failed");
+    assert.equal(body.error.code, "process_start_failed");
+    assert.match(body.receipt.safe_result_summary, /supervisor_unavailable|process_spawn_failed/);
+    assert.equal(JSON.stringify(body).includes("secret-sentinel"), false);
+    const lookup = await fetch(`${agent.baseUrl}/internal/operations/missing-shell-start`, {
+      headers: { "x-device-credential": DEVICE_TOKEN },
+    });
+    assert.equal((await lookup.json() as { safe_result_summary: string }).safe_result_summary,
+      body.receipt.safe_result_summary);
+  } finally {
+    await agent.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("a process receipt never replays after Agent restart and stale session IDs are not restored", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-t08-restart-"));
   const receiptDirectory = path.join(root, "receipts");
