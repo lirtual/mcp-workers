@@ -2,6 +2,8 @@
 
 Status: **Architecture interview complete; implementation plan proposed** (2026-10-13). The source decisions are [ADR-0001](./adr/0001-delegate-tool-approval-to-client.md) and the relevant Database, Raindrop, and Remote Control ADRs. **No implementation, deployment, production configuration, credential, or live mutation has been authorized by this plan.**
 
+> **Independent architecture review:** See [ARCHITECTURE-REVIEW.md](./ARCHITECTURE-REVIEW.md). Findings P0-R1/R2/R3 and P0-R4 mean the Raindrop and Remote Control stages are **not production-ready** simply because grilling is complete; Database Cloudflare Secret cutover requires an independently tested sequence. Start code-only PRs, but close review findings before any release authorization.
+
 ## Goal and definition of success
 
 Four existing Workers (IMA, Raindrop, Database, Remote Control) expose their supported read and mutation tools consistently. The MCP client, such as ChatGPT, owns interactive tool-call approval rather than each Worker hiding capabilities behind extra read/write toggles or demanding duplicate confirmations.
