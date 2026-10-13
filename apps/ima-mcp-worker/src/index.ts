@@ -11,15 +11,11 @@ export { ImaImageRefreshShard } from "./image-refresh-shard.ts";
 
 const VERSION = "0.5.0";
 
-type RuntimeEnv = Env & { R2_PUBLIC_BASE_URL?: string };
-
-function missingRuntimeConfig(env: RuntimeEnv): string[] {
+function missingRuntimeConfig(env: Env): string[] {
   const missing: string[] = [];
   if (!env.MCP_ACCESS_TOKEN) missing.push("MCP_ACCESS_TOKEN");
   if (!env.CLIENT_ID) missing.push("CLIENT_ID");
   if (!env.API_KEY) missing.push("API_KEY");
-  if (!env.R2_BUCKET) missing.push("R2_BUCKET");
-  if (!env.R2_PUBLIC_BASE_URL) missing.push("R2_PUBLIC_BASE_URL");
   return missing;
 }
 
@@ -43,7 +39,7 @@ function authError(status: number, code: string, message: string): Response {
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
-    const runtimeEnv = env as RuntimeEnv;
+    const runtimeEnv = env;
 
     if (url.pathname === "/health") {
       return Response.json({ ok: true, name: "ima-cloudflare-mcp", version: VERSION, mode: "single-user" });
@@ -83,8 +79,6 @@ export default {
     const missingIma = [
       !env.CLIENT_ID ? "CLIENT_ID" : null,
       !env.API_KEY ? "API_KEY" : null,
-      !env.R2_BUCKET ? "R2_BUCKET" : null,
-      !runtimeEnv.R2_PUBLIC_BASE_URL ? "R2_PUBLIC_BASE_URL" : null,
     ].filter((value): value is string => value !== null);
     if (missingIma.length) return configurationError(missingIma);
 
