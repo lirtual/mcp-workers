@@ -17,8 +17,9 @@ The client-visible tool name, input, output, side effects, and error behavior. T
 **Capability acceptance state**:
 The independently recorded states of implementation complete, contract tests passed, and live invocation accepted. Local tests never substitute for live acceptance.
 
-**Preview**:
-A read-only description of the current destructive target and expected impact. It is not a lock, transaction, approval system, or guarantee that upstream state will remain unchanged.
+**Direct cleanup**:
+An existing Raindrop cleanup tool name that executes its requested destructive operation on a single call, with no mandatory or optional preview in the target design.
+_Avoid_: Treating the same name as guaranteeing compatibility with the old preview-default behavior.
 
 **Unknown write result**:
 A write that reached the upstream request boundary but did not return enough evidence to determine whether it took effect. Such writes are never automatically replayed.
@@ -30,8 +31,8 @@ A write that reached the upstream request boundary but did not return enough evi
 3. Existing tool names and invocation shapes are not compatibility constraints. The public contract may be replaced with resource/action tools grounded in official semantics and Worker limits.
 4. List operations are paginated and bounded. Batch writes require one explicit source collection and a non-empty explicit ID list; they never imply an entire collection or cross-collection server-side scan.
 5. Writes are not automatically retried or rolled back. Multi-request operations distinguish succeeded, failed, unknown, and not-executed scopes using available upstream evidence.
-6. Cleanup retains a non-mutating preview capability and explicit target selection. The target design makes preview optional through a **separate read-only preview tool**, while a distinct mutation/execution tool performs a requested deletion **in one call without a mandatory preceding preview or secondary Worker confirmation**; it delegates user-facing approval to the MCP client (ADR-0002). The current implemented contract remains preview-first until migration. Official duplicate detection is reused; custom fuzzy or URL-normalization deduplication is out of scope. Duplicate copies with notes or highlights are skipped by automated cleanup.
+6. **Q14=B supersedes earlier preview proposals:** Keep the established tool names `empty_trash`, `cleanup_collections`, `remove_duplicates`, but after separately authorized migration each invokes the destructive operation immediately; remove `confirm` and `dryRun` preview paths and do not expose optional preview tools. This is an intentional breaking semantic change and requires client tool refresh and explicit release review. The current implemented version still has default preview behavior until deployed. Preserve official duplicate detection, conservative skips for annotated/highlighted copies, explicit supported scope and bounded effects.
 7. The Worker retains official Raindrop suggestions but does not orchestrate MCP Sampling or provide a pure AI tag tool. The conversation model owns inference; the Worker owns upstream query and mutation.
 8. Live writes are accepted only against dedicated test collections and disposable test data. Account, sharing, import/export, backup, upload, and permanent-copy APIs remain out of scope until separately requested.
 
-The approved specification is published as a GitHub specification issue rather than committed as a repository spec file. Application ADR-0001 records the tool-contract decision, and ADR-0002 records the new optional-preview direction. Implementation tickets own concrete tool schemas, limits, tests, and rollout work.
+The approved specification is published as a GitHub specification issue rather than committed as a repository spec file. Application ADR-0001 records the resource/action tool-contract direction; ADR-0002 is superseded historical optional-preview context; **ADR-0003** is the binding target for direct cleanup under the original tool names. Implementation tickets own concrete tool schemas, limits, tests, and rollout work.
