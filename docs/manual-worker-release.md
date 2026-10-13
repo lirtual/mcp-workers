@@ -9,7 +9,11 @@ Implements the code-only publishing contract in [Spec #19](https://github.com/li
 - Separately authorize the Cloudflare deploy token and configure **only** `CLOUDFLARE_API_TOKEN` (Environment Secret), `CLOUDFLARE_ACCOUNT_ID` (Environment Variable) and `REMOTE_CONTROL_VPC_SERVICE_ID` (Environment Variable for Remote Control). Limit token scope to the account and needed Worker edit/read operations.
 - Keep `MCP_ACCESS_TOKEN`, upstream credentials, device credentials and Database configuration **only in Cloudflare**; never copy their values to GitHub.
 - For the selected Worker, record current active version, required binding/Secret **names**, live observability and any competing automatic publisher. Disable an actual competing publishing trigger only with separate approval.
-- Authorize **one Worker at a time** in this order: Raindrop → IMA → Database → Remote Control. The current GitHub workflow cannot itself grant production or token-rotation permission.
+- Authorize **one Worker at a time** in this order: IMA → Raindrop → Database → Remote Control. The current GitHub workflow cannot itself grant production or token-rotation permission.
+
+## Design-branch sequencing note (cross-Worker Q16=A)
+
+This proposed runbook update aligns sequencing with [client-owned tool approval ADR](./tool-authorization/adr/0001-delegate-tool-approval-to-client.md). It changes **only the sequence for later independently authorized rollouts**, not the currently deployed Worker, tool permissions, credential grants, or GitHub Actions trigger. For Raindrop, future cleanup tool calls retaining old names will become immediately destructive (ADR-0003); require a separate breaking-change review and client tool refresh before that Worker is released. For Database, the new single-connection format is a breaking Cloudflare Secret migration requiring separate authorization. Remote Control write/Shell gating and existing T07/T09/T10 acceptance requirements remain in force until a separate production decision. This branch document is not operationally active until reviewed and merged.
 
 ## Each separately authorized release
 
