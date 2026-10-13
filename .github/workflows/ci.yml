@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       worker:
-        description: Worker to check
+        description: Select Worker to deploy to production
         required: true
         type: choice
         options:
@@ -367,7 +367,10 @@ jobs:
             exit 1
           }
           if ! (cd "apps/$SELECTED_WORKER" && pnpm exec wrangler deploy "${config_args[@]}") >"$log" 2>&1; then
-            echo "Wrangler deploy failed; no automated rollback attempted" >&2
+            echo "Wrangler deploy failed (stage=deploy); no automated rollback attempted" >&2
+            # Report only a whitelisted error code and a bounded, sanitized summary.
+            # Never print raw Wrangler output (may contain secrets or configuration).
+            node scripts/manual-worker-release.mjs diagnostic "$log"
             exit 1
           fi
           deployed_version="$(node scripts/manual-worker-release.mjs version "$log")"
@@ -381,6 +384,23 @@ jobs:
           REMOTE_CONTROL_VPC_SERVICE_ID: ${{ vars.REMOTE_CONTROL_VPC_SERVICE_ID }}
           EXPECTED_VERSION_ID: ${{ steps.publish.outputs.version_id }}
         run: node scripts/manual-worker-release.mjs readback "$SELECTED_WORKER"
+
+      - name: Check existing public health endpoint
+        if: inputs.worker == 'ima-mcp-worker' || inputs.worker == 'raindrop-mcp-worker'
+        shell: bash
+        run: |
+          set -euo pipefail
+          response="$(mktemp)"
+          trap 'rm -f "$response"' EXIT
+          status="$(curl --silent --show-error --max-time 12 --output "$response" --write-out '%{http_code}' "https://${SELECTED_WORKER}.aiyaya.workers.dev/health")"
+          [[ "$status" == "200" ]] || { echo "Health check failed (HTTP $status)" >&2; exit 1; }
+          node -e '
+            const fs = require("node:fs");
+            const body = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            const worker = process.argv[2];
+            if (!body || (worker === "ima-mcp-worker" ? body.ok !== true : body.status !== "healthy")) process.exit(1);
+          ' "$response" "$SELECTED_WORKER" || { echo "Health check failed (invalid response)" >&2; exit 1; }
+          echo "Existing health endpoint verified (HTTP 200)"
 
       - name: Check unauthenticated MCP surface without credentials
         shell: bash
