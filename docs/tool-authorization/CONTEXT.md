@@ -1,6 +1,6 @@
 # MCP Tool Authorization — Domain Context
 
-> Status: Active design terminology, 2026-10-13. Interview Q1–Q6 confirmed; implementation and production release remain pending.
+> Status: Active design terminology, 2026-10-13. Interview Q1–Q9 confirmed; implementation and production release remain pending.
 
 ## Language
 
@@ -36,6 +36,22 @@ _Avoid_: Treating a client's consent or a tool's classification as a grant of da
 A non-mutating assessment of the likely impact of a proposed operation. A client can use it before an operation but is not obliged to do so; it is not an authorization request or a guarantee about future state.
 _Avoid_: Confirmation prompt, locking the target, permission grant.
 
+**Preview Operation**:
+A separate client-visible read-only action that estimates the impact of an action without modifying the target.
+_Avoid_: A mandatory approval step or permission grant.
+
+**Execute Operation**:
+A separate client-visible action that explicitly carries out a requested change and must accurately describe its potential side effects.
+_Avoid_: An implicit side effect hidden behind a former preview-only invocation.
+
+**Breaking Connection Migration**:
+A deliberate transition from an outdated connection contract to its replacement, requiring operator action rather than silently guessing a compatible interpretation.
+_Avoid_: Automatic credential promotion or compatibility aliases.
+
+**Real Client Acceptance**:
+Verification of the behavior observed through the intended MCP client's actual connected execution path, not just a simulated protocol test.
+_Avoid_: Assuming a passing unit test or tool risk annotation proves that a particular approval dialog appeared.
+
 **Operation Safety Contract**:
 Behavioral guarantees about valid input, bounded effects, repeatability, uncertainty, and truthful reporting of operation outcomes.
 _Avoid_: Calling validation or unknown-result reconciliation an extra client tool approval.
@@ -46,4 +62,4 @@ _Avoid_: Treating metadata as an enforceable security policy.
 
 ## Settled boundaries and remaining interview scope
 
-Tool approval belongs to the MCP client; extra Worker tool gates and duplicate user-facing confirmations are targeted for removal, while ingress and resource authorization remain. Each logical database connection uses one upstream principal, while read, structured write and schema tool contracts stay distinct. Raindrop destructive operations retain optional preview. Migration proceeds per Worker (IMA, Raindrop, Database, Remote Control) with separate production approval. The outstanding design questions are database configuration migration, preview API shape, and real-client Remote Control release acceptance.
+Tool approval belongs to the MCP client; extra Worker tool gates and duplicate user-facing confirmations are targeted for removal, while ingress and resource authorization remain. Each logical database connection uses one upstream principal, while read, structured write and schema tool contracts stay distinct. Raindrop destructive operations retain optional preview. Migration proceeds per Worker (IMA, Raindrop, Database, Remote Control) with separate production approval. A breaking database credential migration is chosen; Raindrop preview and execute operations are separate tools; Remote Control release requires actual-client acceptance. Remaining choices are the database transport boundary, safe legacy Raindrop name replacement, and the Remote Control acceptance environment.
