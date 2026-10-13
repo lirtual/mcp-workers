@@ -1,12 +1,34 @@
 # Remote Control MCP — T10 离线发布验收材料
 
-**状态：2026-10-13 只读功能线上验收已通过，但 Invocation Logs 认证头风险构成 T10 安全阻断，整体发布验收未通过。下方历史离线材料保留原始证据边界。**
+**状态：2026-10-13 只读功能线上验收已通过，Invocation Logs 已关闭；历史日志凭证风险及其他 T10 门槛仍未核销，完整发布验收未通过。下方保留历史证据边界。**
 **历史离线核对基准：** `main` 提交 `caf10c36745ee2d03f24851e89541ea2d343d8d3`，日期 2026-10-12；线上只读验收基准见下文增量记录。
 **Issue：** [T10 #12](https://github.com/lirtual/mcp-workers/issues/12)（保持 Open）；父规格 [#2](https://github.com/lirtual/mcp-workers/issues/2)（保持 Open）。
 
 本文整理代码交付证据、发布前检查、回滚和撤销步骤。没有 Cloudflare、Portal 或真实主机访问授权；表中的真实环境项均为待验收，不得据此声称生产可用。T07 的账户风险接受也不等于 T09 进程停止竞态已获准。
 
-## 2026-10-13 安全阻断：Invocation Logs 与认证头
+## 2026-10-13 Invocation Logs 止血执行记录（已获授权）
+
+**处置已完成：** 仅对 Cloudflare `remote-control-mcp-worker` 关闭平台自动 Invocation Logs，保留 Worker Observability 与应用事件日志。此项是**未来日志止血**，不是历史日志的删除/完整凭证风险结案。
+
+| 核查项 | 结果 | 验证方式 |
+| --- | --- | --- |
+| 线上设置变更 | `observability.logs.invocation_logs: true → false` | Cloudflare `PATCH /accounts/{account_id}/workers/scripts/remote-control-mcp-worker/script-settings` 返回 HTTP 200；随后单独 GET 复核 |
+| 应用日志 | `observability.enabled=true`、`logs.enabled=true`、`logs.persist=true`、采样率 `1`，保持不变 | Cloudflare Script Settings 与 Version Settings 独立读取 |
+| Worker 运行版本 | `4161e117-4f04-48db-aad6-6daf68b17981`，仍占 100% | Worker Deployments API；本轮未重新上传/部署代码 |
+| 私有绑定与权限门控 | VPC Service 绑定仍为 1 个；`REMOTE_CONTROL_ENABLE_FILE_WRITES=false`、`REMOTE_CONTROL_ENABLE_SHELL=false` | Worker Version Settings API，只读取绑定类别和门控值，未读取 Secret |
+| 真实只读回归 | 通过 ChatGPT 刷新后的 `remote-control` 插件再次读取 `/tmp/remote-control-t02-fixture/marker.txt`，响应完全等于 `remote-control-t02-marker` | 当前 ChatGPT MCP 工具调用；无文件修改或 Shell |
+| 部署配置持久化 | `apps/remote-control-mcp-worker/wrangler.jsonc` 唯一变更为 `invocation_logs: false` | GitHub 提交 [`e54c191`](https://github.com/lirtual/mcp-workers/commit/e54c191d8b646c5f5b9bf2028bb3b1f7ba67952e) |
+
+**仍未核销的风险：**
+
+- 变更不会自动删除已生成的 Invocation 日志；历史记录可见范围、真实保留期限及是否需要单独撤销仍未知。本轮没有读取旧 `authorization` 值、创建新 Observability 查询或清除查询记录。
+- **Remote Control 专属 ingress token** 尚未轮换、旧值失效尚未验证；device credential 如需轮换也应单独批准。不能由于日志采集已关闭就假定旧 token 安全。
+- 实际 Worker 应用日志仍未完成独立内容核查；代码白名单不能单独证明平台上所有其他日志或痕迹没有敏感字段。
+- Agent/Tunnel 的重启恢复、生产回滚、receipt 生命周期实测，以及 owner 最终发布决定仍待 T10 收尾。
+
+**判定：** “Invocation Logs 继续产生敏感元数据”的当前配置缺陷已止血；T10 整体安全/发布验收仍是**未通过**。Issue #12 和父规格 #2 必须保持 Open；只读功能继续可用，写入与 Shell 继续关闭。
+
+## 2026-10-13 历史风险发现：Invocation Logs 与认证头（处置前快照）
 
 **T10 日志/隐私验收：未通过（blocker）。** 仅代表发现潜在凭证持久化暴露路径；不代表已证明第三方获取或滥用凭证。此前“Worker 级和 ChatGPT 只读功能验收通过”仍有效，但**不能代替完整的安全发布验收**。
 
