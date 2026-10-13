@@ -15,6 +15,16 @@ Implements the code-only publishing contract in [Spec #19](https://github.com/li
 
 This proposed runbook update aligns sequencing with [client-owned tool approval ADR](./tool-authorization/adr/0001-delegate-tool-approval-to-client.md). It changes **only the sequence for later independently authorized rollouts**, not the currently deployed Worker, tool permissions, credential grants, or GitHub Actions trigger. For Raindrop, future cleanup tool calls retaining old names will become immediately destructive (ADR-0003); require a separate breaking-change review and client tool refresh before that Worker is released. For Database, the new single-connection format is a breaking Cloudflare Secret migration requiring separate authorization. Remote Control write/Shell gating and existing T07/T09/T10 acceptance requirements remain in force until a separate production decision. This branch document is not operationally active until reviewed and merged.
 
+## Design decisions for future tool-approval migration (Q17–Q19)
+
+These acceptance requirements apply **only after** the relevant code has been reviewed and separately approved for deployment; this design-branch runbook does not authorize any publish or runtime configuration change.
+
+- **Raindrop Q17=A:** verify conservative duplicate selection, annotated/highlighted-item skip rules where implemented, bounded batch/partial results, and no blind retry. The existing `empty_trash`, `cleanup_collections`, and `remove_duplicates` names become immediately destructive after migration. No preview smoke test or actual production delete is authorized.
+- **Raindrop Q18=A:** require a real ChatGPT MCP reconnect/refresh and observe a new tool list with direct-destructive semantics, correct input schemas and risk annotations. If the client keeps preview-era definitions, **do not accept the cutover**; investigate the client connection/cache rather than invoking deletion for evidence.
+- **Database Q19=A:** a future separately authorized one-time `DATABASE_CONFIG` migration may include a short fail-closed maintenance interruption. No zero-downtime dual-format parser. Preserve `MCP_ACCESS_TOKEN` and `DATABASE_CONFIG` Secret **names**, existing RATE_LIMITER policy, and separate review of any target-database grants. Do not copy Secret values to GitHub Actions, commits or acceptance logs.
+- **Remote Control Q15=A:** an in-place test plan for the existing Agent requires read-only preflight and a *new explicit owner approval* before any production gate change, fixture file write or Shell invocation. A documentation merge is not test permission. Preserve the independent ingress credential, private VPC link, safe logging and outstanding T07/T09/T10 release blockers. Gate-removal source must not be deployed to the live Remote Control endpoint without its special acceptance and approval.
+- Use [the scoped implementation plan](./tool-authorization/IMPLEMENTATION-PLAN.md) to track code-only PRs and per-stage release evidence; `workflow_dispatch` remains the only publisher.
+
 ## Each separately authorized release
 
 1. In GitHub Actions, open the existing **CI** workflow → **Run workflow**, select current `main` and exactly one allowlisted Worker. The run must reject a stale commit, branch other than `main`, invalid target, failed application checks, or Database integration not `success`.
