@@ -1,6 +1,6 @@
 # MCP Tool Authorization — Domain Context
 
-> Status: Active design terminology, 2026-10-13. Q1–Q16 design decisions settled, with Q14 superseding earlier Raindrop preview decisions. Implementation and production release remain pending.
+> Status: Active design terminology, 2026-10-13. Q1–Q19 design decisions settled (with Q14 superseding the earlier Raindrop preview decisions); architecture interview closed, implementation planning ready, release approvals outstanding.
 
 ## Language
 
@@ -52,6 +52,14 @@ _Avoid_: Assuming a passing unit test or tool risk annotation proves that a part
 Real-client validation through the existing connected service and target environment after separately approved test steps, rather than through a standalone test deployment.
 _Avoid_: Treating selection of the environment as authorization to enable capabilities or manipulate production data.
 
+**Client Tool Rediscovery**:
+An observed fresh `tools/list` and client reconnect/refresh that presents the new tool schema and destructive metadata following a semantic breaking change.
+_Avoid_: Assuming a stable tool name, server deployment or an SDK unit test proves that the user-facing client has updated.
+
+**Fail-closed Maintenance Window**:
+A separately authorized interval during a breaking Database Worker and Cloudflare Secret cutover in which unsupported/mismatched configurations reject requests instead of falling back to old credentials.
+_Avoid_: Assuming a temporary error means credential migration can be skipped or a broader database privilege may be inferred.
+
 **Operation Safety Contract**:
 Behavioral guarantees about valid input, bounded effects, repeatability, uncertainty, and truthful reporting of operation outcomes.
 _Avoid_: Calling validation or unknown-result reconciliation an extra client tool approval.
@@ -66,4 +74,6 @@ The client owns user-facing tool invocation approval. Worker-specific tool permi
 
 **Q14=B overrides Q5=A and Q8=A:** Raindrop retains existing cleanup tool names, removes both optional and mandatory preview behavior, and runs destructive cleanup in one call. Such same-name changed semantics require an explicit release/real-client cache refresh review.
 
-The release order is IMA → Raindrop → Database → Remote Control using the existing manually approved GitHub Actions publisher. Remote Control acceptance uses the existing real ChatGPT/Portal/Worker/Agent path, begins with read-only review and needs separate owner permission before any write/Shell testing. Implementation, merge, actual cloud configuration and production release are not approved by these design records.
+**Q17=A:** Raindrop conservative duplicate eligibility, batch/scope limits, partial-result accounting and no blind retries remain despite removal of previews. **Q18=A:** client tool rediscovery is a hard release-acceptance gate. **Q19=A:** a separately approved short fail-closed Database configuration migration is permitted instead of maintaining parallel parsers.
+
+The release order is IMA → Raindrop → Database → Remote Control using the existing manually approved GitHub Actions publisher. Remote Control acceptance uses the existing real ChatGPT/Portal/Worker/Agent path, begins with read-only review and needs separate owner permission before any write/Shell testing. The accepted architecture can proceed to [the implementation plan](./IMPLEMENTATION-PLAN.md), but implementation, merge, actual cloud configuration and production release are not approved by these design records.
