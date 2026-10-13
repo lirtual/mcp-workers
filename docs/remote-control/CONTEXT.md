@@ -48,6 +48,10 @@ Remote viewing or manipulation of a desktop screen, mouse or keyboard. This is e
 The operator's existing Linux login account and its effective filesystem/process privileges used by the Agent for local execution. No dedicated service account, container or project-root isolation is required in v1.
 _Avoid_: Treating a directory filter, current working directory or command blacklist as a security sandbox.
 
+**Actual-client acceptance**:
+Evidence that the intended MCP client can discover and invoke the intended tool operations through its real Portal connection while the actual authentication and target-device boundaries remain in effect.
+_Avoid_: Treating an offline test, a mock client, or the presence of a tool risk annotation as proof of ChatGPT approval behavior.
+
 **Unattended Remote Operation**:
 A permitted remote operation that may proceed while the device owner is not locally available to confirm each action.
 _Avoid_: Assuming unattended implies root privileges or arbitrary process ownership.
@@ -77,6 +81,8 @@ _Avoid_: Relabeling an uncertain operation as failed or safe to retry.
 11. The client sees a **Curated Tool Surface**, restricted to necessary file, search, development Shell and managed-process tool categories, **not** to a project-root path allowlist. See ADR-0008 and ADR-0011.
 12. **Managed Sessions** may outlive the originating MCP request; support status, bounded output and explicit stop, without affecting unrelated host processes. See ADR-0009.
 13. One Remote Control MCP Worker uses the existing Portal Bearer validation pattern rather than OAuth. ADR-0012 supersedes the OAuth decisions in ADR-0003 and ADR-0010.
+
+Cross-Worker design interview Q9=A requires real ChatGPT/Portal acceptance before any later, separately authorized release that removes Worker-level file/Shell enablement gates; see [ADR-0014](./adr/0014-real-client-tool-acceptance.md). Existing production gates remain unchanged. This acceptance decision does not supersede the independent Linux privilege and existing T07/T09/T10 risk review requirements.
 
 ## Unsettled boundaries — not approved yet
 
