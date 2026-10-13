@@ -321,6 +321,27 @@ const LOCAL_TOOLS = [
   FORCE_TERMINATE_TOOL,
 ];
 
+const FILE_MUTATION_TOOL_NAMES = new Set([
+  "write_file",
+  "create_directory",
+  "edit_block",
+  "move_file",
+]);
+const SHELL_TOOL_NAMES = new Set([
+  "start_process",
+  "list_sessions",
+  "read_process_output",
+  "interact_with_process",
+  "force_terminate",
+]);
+
+function isToolEnabled(name: unknown, env: Env): boolean {
+  if (typeof name !== "string") return false;
+  if (FILE_MUTATION_TOOL_NAMES.has(name)) return env.REMOTE_CONTROL_ENABLE_FILE_WRITES === "true";
+  if (SHELL_TOOL_NAMES.has(name)) return env.REMOTE_CONTROL_ENABLE_SHELL === "true";
+  return true;
+}
+
 const SAFE_EVENTS = new Set([
   "portal_auth_not_configured",
   "invalid_origin",
@@ -806,12 +827,12 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
       capabilities: { tools: { listChanged: false } },
       serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
       instructions:
-        "Read, search, and change local files. Every mutation requires a stable operation ID; query the original ID after an uncertain response and use a new ID only for a new intent. start_process runs commands with the Agent account's full Linux permissions and requires explicit user approval for the target and action. Managed sessions accept bounded stdin and stop requests only while the Agent can verify ownership; after restart, stale session actions are rejected and uncertain operations are never replayed.",
+        "Read-only local tools are available by default. File mutation and Shell tools are disabled unless their separate deployment gates are explicitly set to true. When enabled, every mutation requires a stable operation ID; query the original ID after an uncertain response and use a new ID only for a new intent. Shell commands run with the Agent account's full Linux permissions. Managed sessions accept bounded stdin and stop requests only while the Agent can verify ownership; after restart, stale session actions are rejected and uncertain operations are never replayed.",
     });
   }
 
   if (rpcMessage.method === "tools/list") {
-    return rpc(rpcMessage.id, { tools: LOCAL_TOOLS });
+    return rpc(rpcMessage.id, { tools: LOCAL_TOOLS.filter((tool) => isToolEnabled(tool.name, env)) });
   }
 
   if (rpcMessage.method === "tools/call") {
@@ -821,6 +842,10 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
       return toolError(rpcMessage.id, "The requested tool call was rejected.");
     }
     const call = params as { name?: unknown; arguments?: unknown };
+    if (!isToolEnabled(call.name, env)) {
+      log("rejected");
+      return toolError(rpcMessage.id, "This capability is not enabled for this deployment.");
+    }
     if (["write_file", "create_directory", "edit_block", "move_file", "start_process", "interact_with_process", "force_terminate"].includes(String(call.name))) {
       const candidate = call.arguments !== null && typeof call.arguments === "object"
         ? (call.arguments as Record<string, unknown>).operation_id

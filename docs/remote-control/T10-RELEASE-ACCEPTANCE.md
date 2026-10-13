@@ -17,6 +17,12 @@
 - 文件写入需要单独的目标与操作授权。Shell 启用需要单独发布决定；T07 风险接受不覆盖 T09 的 PID/PGID 复用 TOCTOU 风险。
 - 记录验证日期、操作者、目标、代码 SHA、Worker Version ID、Agent Node.js/runtime 版本、测试和结果；失败或未验证项保持显式。
 
+## Worker 默认只读门控
+
+Worker 保留全部离线文件修改和 Managed Session 实现，但线上工具默认只公开只读能力。文件修改仅在 `REMOTE_CONTROL_ENABLE_FILE_WRITES` 精确设为 `true` 时公开；Shell 会话工具仅在独立的 `REMOTE_CONTROL_ENABLE_SHELL` 精确设为 `true` 时公开。缺失、`false` 或其他值均保持关闭；即使调用方直接提交隐藏工具名，Worker 也会拒绝并且不转发给 Agent。离线测试只有在一次性 fixture 中显式打开所需门控。
+
+这两个门控是独立部署开关，不代替具体文件目标/操作授权、T07 账户复核或 T09 PID/PGID TOCTOU 风险裁决。只读联调不得设置任一开关；启用任一门控须作为对应能力的单独发布决定记录。
+
 ## T01–T09 证据矩阵
 
 证据来源是各 GitHub Issue 的交付评论和当前仓库代码；这是一份离线汇总，不是对旧测试的复跑。较早评论没有记录 Node.js 版本时标为“未记录”。

@@ -191,9 +191,106 @@ test("portal authentication fails closed before any device call", async () => {
   assert.equal(calls.length, 0);
 });
 
-test("lists curated local tools and rejects calls that could retarget the device", async () => {
+test("defaults to read-only tools and rejects file mutations and shell requests", async () => {
   const calls: ObservedCall[] = [];
   const target = env({ REMOTE_CONTROL_DEVICE: recordingBinding(calls) });
+  const headers = { authorization: `Bearer ${portalToken}` };
+
+  const listed = await postMcp(target, { jsonrpc: "2.0", id: 1, method: "tools/list" }, headers);
+  const tools = (listed.json as { result: { tools: Array<{ name: string }> } }).result.tools;
+  assert.deepEqual(tools.map((tool) => tool.name), [
+    "read_file",
+    "read_multiple_files",
+    "list_directory",
+    "get_file_info",
+    "start_search",
+    "get_more_search_results",
+    "stop_search",
+    "get_operation_status",
+  ]);
+
+  for (const name of [
+    "write_file",
+    "create_directory",
+    "edit_block",
+    "move_file",
+    "start_process",
+    "list_sessions",
+    "read_process_output",
+    "interact_with_process",
+    "force_terminate",
+  ]) {
+    const result = await postMcp(target, {
+      jsonrpc: "2.0",
+      id: name,
+      method: "tools/call",
+      params: { name, arguments: {} },
+    }, headers);
+    const payload = result.json as { result: { isError: boolean } };
+    assert.equal(payload.result.isError, true, `${name} should be rejected by default`);
+  }
+
+  assert.equal(calls.length, 0);
+});
+
+test("file mutation and shell deployment gates are independent", async () => {
+  const headers = { authorization: `Bearer ${portalToken}` };
+  for (const [target, visible, hidden] of [
+    [env({ REMOTE_CONTROL_ENABLE_FILE_WRITES: "true" }), "write_file", "start_process"],
+    [env({ REMOTE_CONTROL_ENABLE_SHELL: "true" }), "start_process", "write_file"],
+  ] as const) {
+    const listed = await postMcp(target, { jsonrpc: "2.0", id: 1, method: "tools/list" }, headers);
+    const tools = (listed.json as { result: { tools: Array<{ name: string }> } }).result.tools;
+    assert.equal(tools.some((tool) => tool.name === visible), true);
+    assert.equal(tools.some((tool) => tool.name === hidden), false);
+  }
+});
+
+test("deployment gates remain closed for values other than the exact string true", async () => {
+  const headers = { authorization: `Bearer ${portalToken}` };
+  const cases = [
+    {
+      flag: "REMOTE_CONTROL_ENABLE_FILE_WRITES",
+      name: "write_file",
+      arguments: { operation_id: "non-true-write", path: "/tmp/fixture", content: "x", mode: "rewrite" },
+    },
+    {
+      flag: "REMOTE_CONTROL_ENABLE_SHELL",
+      name: "start_process",
+      arguments: { operation_id: "non-true-shell", command: "true" },
+    },
+  ] as const;
+
+  for (const value of ["false", "TRUE", "1", " true "]) {
+    for (const item of cases) {
+      const calls: ObservedCall[] = [];
+      const gate = item.flag === "REMOTE_CONTROL_ENABLE_FILE_WRITES"
+        ? { REMOTE_CONTROL_ENABLE_FILE_WRITES: value }
+        : { REMOTE_CONTROL_ENABLE_SHELL: value };
+      const target = env({ ...gate, REMOTE_CONTROL_DEVICE: recordingBinding(calls) });
+      const listed = await postMcp(target, { jsonrpc: "2.0", id: 1, method: "tools/list" }, headers);
+      const tools = (listed.json as { result: { tools: Array<{ name: string }> } }).result.tools;
+      assert.equal(tools.some((tool) => tool.name === item.name), false, `${item.flag}=${value}`);
+
+      const result = await postMcp(target, {
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: { name: item.name, arguments: item.arguments },
+      }, headers);
+      assert.equal((result.json as { result: { isError: boolean } }).result.isError, true);
+      assert.equal(calls.length, 0, `${item.flag}=${value} must not reach Agent`);
+    }
+  }
+});
+
+test("lists curated local tools and rejects calls that could retarget the device", async () => {
+  const calls: ObservedCall[] = [];
+  const target = env({
+    REMOTE_CONTROL_DEVICE: recordingBinding(calls),
+    REMOTE_CONTROL_ENABLE_FILE_WRITES: "true",
+    REMOTE_CONTROL_ENABLE_SHELL: "true",
+  });
   const headers = { authorization: `Bearer ${portalToken}` };
 
   const listed = await postMcp(
@@ -475,7 +572,10 @@ test("write_file and get_operation_status preserve a stable receipt across a los
       return response;
     });
     globalThis.fetch = (async () => { throw new Error("Worker must use the fixed device binding"); }) as typeof fetch;
-    const target = env({ REMOTE_CONTROL_DEVICE: binding });
+    const target = env({
+      REMOTE_CONTROL_DEVICE: binding,
+      REMOTE_CONTROL_ENABLE_FILE_WRITES: "true",
+    });
     const auth = { authorization: `Bearer ${portalToken}` };
     const invoke = (name: string, args: unknown, id: number) => postMcp(target, {
       jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args },
@@ -556,7 +656,10 @@ test("T06 mutation tools validate at the Worker and reach the native Agent recei
       const forwarded = new URL(url);
       return originalFetch(`${runningAgent.baseUrl}${forwarded.pathname}`, { method: init?.method, headers: init?.headers, body: init?.body });
     });
-    const target = env({ REMOTE_CONTROL_DEVICE: binding });
+    const target = env({
+      REMOTE_CONTROL_DEVICE: binding,
+      REMOTE_CONTROL_ENABLE_FILE_WRITES: "true",
+    });
     const auth = { authorization: `Bearer ${portalToken}` };
     const invoke = async (name: string, args: unknown, id: number) => postMcp(target, {
       jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args },
@@ -678,7 +781,11 @@ test("lists and pages bounded filename and content searches through the worker a
         body: init?.body,
       });
     });
-    const target = env({ REMOTE_CONTROL_DEVICE: binding });
+    const target = env({
+      REMOTE_CONTROL_DEVICE: binding,
+      REMOTE_CONTROL_ENABLE_FILE_WRITES: "true",
+      REMOTE_CONTROL_ENABLE_SHELL: "true",
+    });
     const auth = { authorization: `Bearer ${portalToken}` };
     const list = await postMcp(target, { jsonrpc: "2.0", id: 1, method: "tools/list" }, auth);
     const tools = (list.json as { result: { tools: Array<Record<string, unknown>> } }).result.tools;
