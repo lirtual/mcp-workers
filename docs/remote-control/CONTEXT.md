@@ -86,7 +86,7 @@ _Avoid_: Relabeling an uncertain operation as failed or safe to retry.
 12. **Managed Sessions** may outlive the originating MCP request; support status, bounded output and explicit stop, without affecting unrelated host processes. See ADR-0009.
 13. One Remote Control MCP Worker uses the existing Portal Bearer validation pattern rather than OAuth. ADR-0012 supersedes the OAuth decisions in ADR-0003 and ADR-0010.
 
-Cross-Worker design decisions Q9=A and Q12=B require real ChatGPT/Portal acceptance on the **existing connected Worker and Linux Agent** before any later, separately authorized release that removes Worker-level file/Shell enablement gates; see [ADR-0014](./adr/0014-real-client-tool-acceptance.md). Choosing the existing environment does not authorize enabling gates or executing mutation/Shell tests. Existing production gates remain unchanged. This acceptance decision does not supersede the independent Linux privilege and existing T07/T09/T10 risk review requirements.
+Cross-Worker decisions Q9=A, Q12=B and Q15=A require real ChatGPT/Portal acceptance on the **existing Worker and Linux Agent**, using a **read-only preflight followed by separately approved bounded fixture-write/Shell tests**, before any later, independently authorized removal of Worker-level file/Shell enablement gates; see [ADR-0014](./adr/0014-real-client-tool-acceptance.md). This does not approve any gate toggle, production publish, fixture mutation or Shell invocation now. Existing production gates remain unchanged. This acceptance decision does not supersede the independent Linux privilege and existing T07/T09/T10 risk review requirements.
 
 ## Unsettled boundaries — not approved yet
 
