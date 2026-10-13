@@ -555,15 +555,15 @@ function deviceUrl(call: LocalCall): string {
 }
 
 const PUBLIC_TO_AGENT_TOOL: Record<string, string> = {
-  "read_multiple_files": "read_files",
-  "get_file_info": "stat_file",
-  "start_search": "search_files",
-  "get_more_search_results": "search_next",
-  "edit_block": "replace_text",
-  "start_process": "run_command",
-  "read_process_output": "read_session_output",
-  "interact_with_process": "send_input",
-  "force_terminate": "stop_session"
+  "read_files": "read_multiple_files",
+  "stat_file": "get_file_info",
+  "search_files": "start_search",
+  "search_next": "get_more_search_results",
+  "replace_text": "edit_block",
+  "run_command": "start_process",
+  "read_session_output": "read_process_output",
+  "send_input": "interact_with_process",
+  "stop_session": "force_terminate",
 };
 
 function parseLocalCall(name: unknown, args: unknown): LocalCall | null {
