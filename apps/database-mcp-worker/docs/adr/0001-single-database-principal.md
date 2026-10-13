@@ -1,6 +1,6 @@
 # ADR-0001 — One database principal per logical connection
 
-Status: **Accepted as an architectural direction; implementation pending**. Date: 2026-10-13. Q2=B, Q4=A, Q7=A and Q10=A confirmed.
+Status: **Accepted as an architectural direction; implementation pending**. Date: 2026-10-13. Q2=B, Q4=A, Q7=A, Q10=A and Q13=A confirmed.
 Decision input: cross-Worker grilling round 1 Q2=B. Related: [cross-Worker approval ADR](../../../../docs/tool-authorization/adr/0001-delegate-tool-approval-to-client.md).
 
 ## Context
@@ -20,6 +20,31 @@ Separate database principals are a resource-level privilege boundary rather than
 7. **Q7=A — One-time breaking configuration migration.** Replace the legacy `read`/`write`/`admin` credential schema with a single, explicitly supplied credential for each logical connection. Once the new parser is deployed, legacy credential keys are invalid with a clear migration error. Do **not** support dual schemas, silently select a legacy credential, or automatically alter database grants. The concrete field names, direct/Hyperdrive shape and migration examples are implementation-spec details still to be decided.
 8. Migrate the operator-controlled `DATABASE_CONFIG` outside GitHub, and validate new-format configuration, required bindings, connection health, safe read, structured mutation and supported DDL against test databases before any separately authorized production release. Fail closed when the format or credential is missing. Secret values must never be copied into documentation, code, tests, CI variables or logs.
 9. **Q10=A:** Preserve the currently verified **direct-only** execution restriction for schema-management tools. A logical connection using Hyperdrive may continue supported read/structured data operations, but requests for unverified DDL must fail with an explicit unsupported-transport result. The one-principal model does not imply transport compatibility; do not fall back silently to a separate direct/admin account or automatically grant DDL privileges.
+10. **Q13=A:** Use **one canonical `connection` field per logical connection** containing a direct SQL URL or a Hyperdrive reference. The field is not named `read`, `write`, or `admin`; all tool categories use the same resolved principal. Keep existing optional connection settings such as `enabled`, `defaultSchema`, `maxRows`, `maxResultBytes`, `maxSchemaBytes`, `queryTimeoutMs`, and `maxAffectedRows` in the new format.
+11. Explicitly reject old role-separated connection fields (including old nested `read`, `write` or `admin`) instead of guessing an account from any of them. Missing or invalid canonical connection syntax fails closed with a migration error. Limit disclosure in logs and validation messages to connection IDs and field names, never credentials.
+
+
+## Proposed canonical configuration representation
+
+The user has selected the single `connection` field (Q13=A). One compact **implementation illustration**, subject to parser test approval, is:
+
+```json
+{
+  "development": {
+    "connection": "mysql://example-user:REDACTED@example.invalid/sample",
+    "maxRows": 500,
+    "maxAffectedRows": 20
+  },
+  "analytics": {
+    "connection": {
+      "hyperdrive": "ANALYTICS_HYPERDRIVE",
+      "dialect": "postgres"
+    }
+  }
+}
+```
+
+The example is **not** the production configuration and must not be copied with a real password into source control. Preserve `DATABASE_CONFIG` as a Cloudflare secret, and Hyperdrive binding lookup as the existing Cloudflare environment capability. The exact parser discriminator for direct vs Hyperdrive is a spec/test detail; no change is implemented in this ADR. Hyperdrive DDL remains unsupported per Q10=A.
 
 ## Consequences
 
@@ -36,6 +61,6 @@ This decision supersedes the *credential separation* aspect of `apps/database-mc
 ## Non-decisions
 
 - No current database user or permission is changed.
-- No migration code, production Worker, runtime secret or database schema has been modified. Q7 determines migration behavior; the exact replacement schema still needs detailed specification. The direct-only Admin/DDL transport boundary is now a settled Q10 decision.
+- No migration code, production Worker, runtime secret or database schema has been modified. Q7 determines migration behavior; the field-level design is now selected, while canonical parser details still require contract tests. The direct-only Admin/DDL transport boundary is now a settled Q10 decision.
 - No decision that one credential implies superuser or administrator access.
 - No assumption that all connected MCP clients require user confirmation.
