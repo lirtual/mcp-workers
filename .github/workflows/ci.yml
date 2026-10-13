@@ -5,6 +5,17 @@ on:
     branches:
       - main
   pull_request:
+  workflow_dispatch:
+    inputs:
+      worker:
+        description: Worker to check
+        required: true
+        type: choice
+        options:
+          - database-mcp-worker
+          - ima-mcp-worker
+          - raindrop-mcp-worker
+          - remote-control-mcp-worker
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -35,21 +46,35 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           BEFORE_SHA: ${{ github.event.before }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          MANUAL_WORKER: ${{ inputs.worker }}
         run: |
           set -euo pipefail
 
-          if [[ "$EVENT_NAME" == "pull_request" ]]; then
-            base_sha="$PR_BASE_SHA"
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            case "$MANUAL_WORKER" in
+              database-mcp-worker|ima-mcp-worker|raindrop-mcp-worker|remote-control-mcp-worker)
+                selected=("$MANUAL_WORKER")
+                ;;
+              *)
+                echo "Unsupported manual worker: $MANUAL_WORKER" >&2
+                exit 1
+                ;;
+            esac
+            changed_files=()
           else
-            base_sha="$BEFORE_SHA"
-          fi
+            if [[ "$EVENT_NAME" == "pull_request" ]]; then
+              base_sha="$PR_BASE_SHA"
+            else
+              base_sha="$BEFORE_SHA"
+            fi
 
-          if [[ -z "$base_sha" || "$base_sha" =~ ^0+$ ]]; then
-            # A new branch or the repository's first push has no previous commit.
-            # Treat every tracked file in the new revision as changed.
-            mapfile -t changed_files < <(git ls-tree -r --name-only "$GITHUB_SHA")
-          else
-            mapfile -t changed_files < <(git diff --name-only "$base_sha" "$GITHUB_SHA")
+            if [[ -z "$base_sha" || "$base_sha" =~ ^0+$ ]]; then
+              # A new branch or the repository's first push has no previous commit.
+              # Treat every tracked file in the new revision as changed.
+              mapfile -t changed_files < <(git ls-tree -r --name-only "$GITHUB_SHA")
+            else
+              mapfile -t changed_files < <(git diff --name-only "$base_sha" "$GITHUB_SHA")
+            fi
           fi
           printf 'Changed files:\n'
           printf '  %s\n' "${changed_files[@]}"
@@ -58,6 +83,7 @@ jobs:
             database-mcp-worker
             ima-mcp-worker
             raindrop-mcp-worker
+            remote-control-mcp-worker
           )
 
           check_all=false
@@ -73,18 +99,20 @@ jobs:
             esac
           done
 
-          selected=()
-          if [[ "$check_all" == "true" ]]; then
-            selected=("${apps[@]}")
-          else
-            for app in "${apps[@]}"; do
-              for file in "${changed_files[@]}"; do
-                if [[ "$file" == "apps/$app/"* ]]; then
-                  selected+=("$app")
-                  break
-                fi
+          if [[ "$EVENT_NAME" != "workflow_dispatch" ]]; then
+            selected=()
+            if [[ "$check_all" == "true" ]]; then
+              selected=("${apps[@]}")
+            else
+              for app in "${apps[@]}"; do
+                for file in "${changed_files[@]}"; do
+                  if [[ "$file" == "apps/$app/"* ]]; then
+                    selected+=("$app")
+                    break
+                  fi
+                done
               done
-            done
+            fi
           fi
 
           selected_text="${selected[*]-}"
