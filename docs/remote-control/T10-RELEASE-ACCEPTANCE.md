@@ -1,10 +1,33 @@
 # Remote Control MCP — T10 离线发布验收材料
 
-**状态：2026-10-13 只读功能线上验收已通过，Invocation Logs 已关闭；历史日志凭证风险及其他 T10 门槛仍未核销，完整发布验收未通过。下方保留历史证据边界。**
+**状态：2026-10-13 只读功能已通过，Invocation Logs 已关闭且专属入口凭证已轮换；旧值直接拒绝、历史日志、Device 凭证及其他 T10 门槛仍未核销，完整发布验收未通过。下方保留历史证据边界。**
 **历史离线核对基准：** `main` 提交 `caf10c36745ee2d03f24851e89541ea2d343d8d3`，日期 2026-10-12；线上只读验收基准见下文增量记录。
 **Issue：** [T10 #12](https://github.com/lirtual/mcp-workers/issues/12)（保持 Open）；父规格 [#2](https://github.com/lirtual/mcp-workers/issues/2)（保持 Open）。
 
 本文整理代码交付证据、发布前检查、回滚和撤销步骤。没有 Cloudflare、Portal 或真实主机访问授权；表中的真实环境项均为待验收，不得据此声称生产可用。T07 的账户风险接受也不等于 T09 进程停止竞态已获准。
+
+## 2026-10-13 专属入口凭证轮换验收增量
+
+**结论：Remote Control ingress 凭证已更换，新值调用成功；未直接证明旧值触达 Worker 后被拒绝。** 此状态不等价于 T10 全部认证安全验收通过。
+
+| 核查点 | 结果 | 证据等级 |
+| --- | --- | --- |
+| Cloudflare ingress token 更新 | 操作者报告仅 `remote-control-mcp-worker` 的 `MCP_ACCESS_TOKEN` 已以新随机值替换，Cloudflare 写接口 HTTP 200 | **执行报告**；Cloudflare GET 不返回 Secret 的旧值/新值 |
+| Portal / One-MCP 同步 | 操作者报告对应 Bearer 更新 HTTP 200，capability sync HTTP 200 | **执行报告**；后续真实 ChatGPT 读取成功提供链路佐证，不替代管理接口回执 |
+| 新配置部署 | Worker Version ID `f9c88002-1e8f-46a1-b25c-14d936dd09d4`，Cloudflare Deployments API 复核为 **100% active**；2026-10-13T05:02:50Z 创建部署记录 | **Cloudflare 独立只读核实** |
+| 安全配置保留 | `observability.logs.invocation_logs=false`、应用日志保持启用、VPC Service 绑定数量仍为 1、`REMOTE_CONTROL_ENABLE_FILE_WRITES=false`、`REMOTE_CONTROL_ENABLE_SHELL=false` | **Cloudflare Script/Version Settings 独立只读核实** |
+| 当前 ChatGPT 只读回归 | ChatGPT 真实插件 `read_file` 再次读取 `/tmp/remote-control-t02-fixture/marker.txt`，精确返回 `remote-control-t02-marker` | **本次真实 MCP 调用** |
+| 旧 token 直接拒绝 | **未执行、未通过**。不保存也不恢复旧值；现有报告的伪造 token 直连请求在 Cloudflare 边缘收到 HTTP 403，无法证明到达 Worker、无法将其记为 Worker 401 | **证据缺口** |
+| 其他 MCP Workers | 操作者确认没有修改其他 Worker 的凭证 | **操作范围报告**；没有独立复跑其他 Worker 的可用性 |
+| Device 凭证 | `REMOTE_CONTROL_DEVICE_TOKEN` 未轮换 | **明确未实施** |
+
+### 上线安全边界及剩余任务
+
+- 旧值不是当前配置中预期的 ingress token，但**不等于旧值失效已由真实请求直接证实**；GitHub、Cloudflare、Portal 日志均不得记录/导出完整旧值或新值。
+- 历史 Invocation 日志若包含此前认证请求头，仍需基于实际保留与访问边界处理；新的 ingress token 降低了继续使用旧 Secret 的风险，但**不会清除旧日志**。
+- **回滚风险门槛：** Cloudflare Worker 回滚会使指定历史版本成为当前部署。回滚任何凭证轮换前版本前，必须核对待恢复版本的 Secret 绑定、只读门控和 Invocation Logs 配置，避免恢复已废弃的凭证或之前的危险日志设置。未授权或未验证时不执行旧版本回滚。[Cloudflare Rollbacks](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/)。
+- 尚需单独授权并执行：旧凭证失效的可行独立证明方案（如存在合法保存的旧值且可通过不受 Edge 403 混淆的路径完成；不得重新获取或输出旧凭证）、其他 Workers 不中断证据、Device 凭证轮换/撤销、日志与回执的剩余实测、Agent/Tunnel 生命周期和回滚、最终 owner 决定。
+- T07 不代表 Shell 批准；T09 PID/PGID TOCTOU 尚未裁决；文件修改与 Shell 继续保持关闭。**T10 #12 与父规格 #2 继续 Open**。
 
 ## 2026-10-13 Invocation Logs 止血执行记录（已获授权）
 
