@@ -5,10 +5,22 @@ on:
     branches:
       - main
   pull_request:
-
-concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  workflow_dispatch:
+    inputs:
+      worker:
+        description: Worker to check
+        required: true
+        type: choice
+        options:
+          - database-mcp-worker
+          - ima-mcp-worker
+          - raindrop-mcp-worker
+          - remote-control-mcp-worker
+      ima_public_upload_ack:
+        description: Acknowledge public 24-hour Litterbox upload cutover for IMA
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -20,6 +32,9 @@ env:
 jobs:
   checks:
     name: Application checks
+    concurrency:
+      group: ci-checks-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     outputs:
       database_changed: ${{ steps.scope.outputs.database_changed }}
@@ -35,21 +50,37 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           BEFORE_SHA: ${{ github.event.before }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          MANUAL_WORKER: ${{ inputs.worker }}
+          MANUAL_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
 
-          if [[ "$EVENT_NAME" == "pull_request" ]]; then
-            base_sha="$PR_BASE_SHA"
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            [[ "$MANUAL_REF" == "refs/heads/main" ]] || { echo "Manual runs require main" >&2; exit 1; }
+            case "$MANUAL_WORKER" in
+              database-mcp-worker|ima-mcp-worker|raindrop-mcp-worker|remote-control-mcp-worker)
+                selected=("$MANUAL_WORKER")
+                ;;
+              *)
+                echo "Unsupported manual worker: $MANUAL_WORKER" >&2
+                exit 1
+                ;;
+            esac
+            changed_files=()
           else
-            base_sha="$BEFORE_SHA"
-          fi
+            if [[ "$EVENT_NAME" == "pull_request" ]]; then
+              base_sha="$PR_BASE_SHA"
+            else
+              base_sha="$BEFORE_SHA"
+            fi
 
-          if [[ -z "$base_sha" || "$base_sha" =~ ^0+$ ]]; then
-            # A new branch or the repository's first push has no previous commit.
-            # Treat every tracked file in the new revision as changed.
-            mapfile -t changed_files < <(git ls-tree -r --name-only "$GITHUB_SHA")
-          else
-            mapfile -t changed_files < <(git diff --name-only "$base_sha" "$GITHUB_SHA")
+            if [[ -z "$base_sha" || "$base_sha" =~ ^0+$ ]]; then
+              # A new branch or the repository's first push has no previous commit.
+              # Treat every tracked file in the new revision as changed.
+              mapfile -t changed_files < <(git ls-tree -r --name-only "$GITHUB_SHA")
+            else
+              mapfile -t changed_files < <(git diff --name-only "$base_sha" "$GITHUB_SHA")
+            fi
           fi
           printf 'Changed files:\n'
           printf '  %s\n' "${changed_files[@]}"
@@ -58,6 +89,7 @@ jobs:
             database-mcp-worker
             ima-mcp-worker
             raindrop-mcp-worker
+            remote-control-mcp-worker
           )
 
           check_all=false
@@ -67,24 +99,26 @@ jobs:
               portal_auth_changed=true
             fi
             case "$file" in
-              package.json|pnpm-lock.yaml|pnpm-workspace.yaml|.npmrc|packages/*|.github/workflows/ci.yml)
+              package.json|pnpm-lock.yaml|pnpm-workspace.yaml|.npmrc|packages/*|.github/workflows/ci.yml|scripts/manual-worker-release*)
                 check_all=true
                 ;;
             esac
           done
 
-          selected=()
-          if [[ "$check_all" == "true" ]]; then
-            selected=("${apps[@]}")
-          else
-            for app in "${apps[@]}"; do
-              for file in "${changed_files[@]}"; do
-                if [[ "$file" == "apps/$app/"* ]]; then
-                  selected+=("$app")
-                  break
-                fi
+          if [[ "$EVENT_NAME" != "workflow_dispatch" ]]; then
+            selected=()
+            if [[ "$check_all" == "true" ]]; then
+              selected=("${apps[@]}")
+            else
+              for app in "${apps[@]}"; do
+                for file in "${changed_files[@]}"; do
+                  if [[ "$file" == "apps/$app/"* ]]; then
+                    selected+=("$app")
+                    break
+                  fi
+                done
               done
-            done
+            fi
           fi
 
           selected_text="${selected[*]-}"
@@ -134,6 +168,10 @@ jobs:
         if: steps.scope.outputs.apps != ''
         run: pnpm install --frozen-lockfile --ignore-scripts
 
+      - name: Check manual release safeguards offline
+        if: steps.scope.outputs.apps != ''
+        run: node --test scripts/manual-worker-release.test.mjs
+
       - name: Check shared portal-auth package
         if: steps.scope.outputs.portal_auth_changed == 'true'
         run: pnpm --filter @mcp-workers/portal-auth check
@@ -162,7 +200,7 @@ jobs:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: testdb
         ports:
-          - 55432:5432
+          - 5432
         options: >-
           --health-cmd "pg_isready -U postgres -d testdb"
           --health-interval 10s
@@ -174,19 +212,12 @@ jobs:
           MYSQL_ROOT_PASSWORD: root
           MYSQL_DATABASE: testdb
         ports:
-          - 53306:3306
+          - 3306
         options: >-
           --health-cmd "mysqladmin ping -h 127.0.0.1 -proot"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
-    env:
-      TEST_POSTGRES_ADMIN_URL: postgres://postgres:postgres@127.0.0.1:55432/testdb
-      TEST_POSTGRES_READ_URL: postgres://mcp_reader:reader@127.0.0.1:55432/testdb
-      TEST_POSTGRES_WRITE_URL: postgres://mcp_writer:writer@127.0.0.1:55432/testdb
-      TEST_MYSQL_ADMIN_URL: mysql://root:root@127.0.0.1:53306/testdb
-      TEST_MYSQL_READ_URL: mysql://mcp_reader:reader@127.0.0.1:53306/testdb
-      TEST_MYSQL_WRITE_URL: mysql://mcp_writer:writer@127.0.0.1:53306/testdb
     steps:
       - uses: actions/checkout@v4
 
@@ -209,8 +240,156 @@ jobs:
       - name: Install workspace
         run: pnpm install --frozen-lockfile --ignore-scripts
 
+      - name: Configure ephemeral database ports
+        env:
+          POSTGRES_PORT: ${{ job.services.postgres.ports[5432] }}
+          MYSQL_PORT: ${{ job.services.mysql.ports[3306] }}
+        run: |
+          set -euo pipefail
+          [[ "$POSTGRES_PORT" =~ ^[0-9]+$ && "$MYSQL_PORT" =~ ^[0-9]+$ ]]
+          {
+            echo "TEST_POSTGRES_ADMIN_URL=postgres://postgres:postgres@127.0.0.1:${POSTGRES_PORT}/testdb"
+            echo "TEST_POSTGRES_READ_URL=postgres://mcp_reader:reader@127.0.0.1:${POSTGRES_PORT}/testdb"
+            echo "TEST_POSTGRES_WRITE_URL=postgres://mcp_writer:writer@127.0.0.1:${POSTGRES_PORT}/testdb"
+            echo "TEST_MYSQL_ADMIN_URL=mysql://root:root@127.0.0.1:${MYSQL_PORT}/testdb"
+            echo "TEST_MYSQL_READ_URL=mysql://mcp_reader:reader@127.0.0.1:${MYSQL_PORT}/testdb"
+            echo "TEST_MYSQL_WRITE_URL=mysql://mcp_writer:writer@127.0.0.1:${MYSQL_PORT}/testdb"
+          } >> "$GITHUB_ENV"
+
       - name: Prepare integration databases
         run: pnpm --filter database-mcp-worker exec node scripts/setup-integration.mjs
 
       - name: Run database integration tests
         run: pnpm --filter database-mcp-worker run test:integration
+
+  deploy:
+    name: Manual selected Worker release
+    needs: [checks, database-integration]
+    if: >-
+      ${{ always() &&
+          github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/main' &&
+          needs.checks.result == 'success' &&
+          ((inputs.worker == 'database-mcp-worker' && needs.database-integration.result == 'success') ||
+           (inputs.worker != 'database-mcp-worker' && needs.database-integration.result == 'skipped')) &&
+          (inputs.worker == 'raindrop-mcp-worker' ||
+           inputs.worker == 'ima-mcp-worker' ||
+           inputs.worker == 'database-mcp-worker' ||
+           inputs.worker == 'remote-control-mcp-worker') }}
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: worker-release-${{ inputs.worker }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    env:
+      SELECTED_WORKER: ${{ inputs.worker }}
+      RELEASE_STATE_FILE: /tmp/worker-release-state.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate current trusted main without deployment credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "$GITHUB_REF" == "refs/heads/main" ]]
+          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
+          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]] || {
+            echo "Manual dispatch source no longer matches main HEAD" >&2
+            exit 1
+          }
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install pinned dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Cloudflare release preflight (read-only)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          REMOTE_CONTROL_VPC_SERVICE_ID: ${{ vars.REMOTE_CONTROL_VPC_SERVICE_ID }}
+          IMA_PUBLIC_UPLOAD_ACK: ${{ inputs.ima_public_upload_ack }}
+        run: node scripts/manual-worker-release.mjs preflight "$SELECTED_WORKER"
+
+      - name: Recheck current main inside acquired release lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/main" ]]
+          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
+          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]] || {
+            echo "Source became stale; nothing published" >&2
+            exit 1
+          }
+
+      - name: Publish exactly selected Worker
+        id: publish
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          REMOTE_CONTROL_VPC_SERVICE_ID: ${{ vars.REMOTE_CONTROL_VPC_SERVICE_ID }}
+        run: |
+          set -euo pipefail
+          case "$SELECTED_WORKER" in
+            raindrop-mcp-worker|ima-mcp-worker|database-mcp-worker|remote-control-mcp-worker) ;;
+            *) echo "Invalid Worker target" >&2; exit 1 ;;
+          esac
+          log="$(mktemp)"
+          chmod 600 "$log"
+          cleanup() {
+            rm -f "$log"
+            if [[ "$SELECTED_WORKER" == "remote-control-mcp-worker" ]]; then
+              rm -f apps/remote-control-mcp-worker/.wrangler-release.jsonc
+            fi
+          }
+          trap cleanup EXIT
+          config_args=()
+          if [[ "$SELECTED_WORKER" == "remote-control-mcp-worker" ]]; then
+            node scripts/manual-worker-release.mjs prepare-remote "$SELECTED_WORKER"
+            config_args=(--config .wrangler-release.jsonc)
+          fi
+          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]] || {
+            echo "Source became stale immediately before publication" >&2
+            exit 1
+          }
+          if ! (cd "apps/$SELECTED_WORKER" && pnpm exec wrangler deploy "${config_args[@]}") >"$log" 2>&1; then
+            echo "Wrangler deploy failed; no automated rollback attempted" >&2
+            exit 1
+          fi
+          deployed_version="$(node scripts/manual-worker-release.mjs version "$log")"
+          echo "version_id=$deployed_version" >> "$GITHUB_OUTPUT"
+          echo "Wrangler reported a version ID; verifying Cloudflare active deployment next"
+
+      - name: Verify exact active version and required production bindings
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          REMOTE_CONTROL_VPC_SERVICE_ID: ${{ vars.REMOTE_CONTROL_VPC_SERVICE_ID }}
+          EXPECTED_VERSION_ID: ${{ steps.publish.outputs.version_id }}
+        run: node scripts/manual-worker-release.mjs readback "$SELECTED_WORKER"
+
+      - name: Check unauthenticated MCP surface without credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          response="$(mktemp)"
+          trap 'rm -f "$response"' EXIT
+          status="$(curl --silent --show-error --max-time 12 --output "$response" --write-out '%{http_code}'             --header 'Content-Type: application/json'             --data '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'             "https://${SELECTED_WORKER}.aiyaya.workers.dev/mcp")"
+          case "$status" in
+            401|403) echo "Unauthenticated MCP request denied (HTTP $status); human Portal acceptance still required" ;;
+            *) echo "Unexpected unauthenticated MCP status: $status" >&2; exit 1 ;;
+          esac
