@@ -190,7 +190,7 @@ jobs:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: testdb
         ports:
-          - 55432:5432
+          - 5432
         options: >-
           --health-cmd "pg_isready -U postgres -d testdb"
           --health-interval 10s
@@ -202,19 +202,12 @@ jobs:
           MYSQL_ROOT_PASSWORD: root
           MYSQL_DATABASE: testdb
         ports:
-          - 53306:3306
+          - 3306
         options: >-
           --health-cmd "mysqladmin ping -h 127.0.0.1 -proot"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
-    env:
-      TEST_POSTGRES_ADMIN_URL: postgres://postgres:postgres@127.0.0.1:55432/testdb
-      TEST_POSTGRES_READ_URL: postgres://mcp_reader:reader@127.0.0.1:55432/testdb
-      TEST_POSTGRES_WRITE_URL: postgres://mcp_writer:writer@127.0.0.1:55432/testdb
-      TEST_MYSQL_ADMIN_URL: mysql://root:root@127.0.0.1:53306/testdb
-      TEST_MYSQL_READ_URL: mysql://mcp_reader:reader@127.0.0.1:53306/testdb
-      TEST_MYSQL_WRITE_URL: mysql://mcp_writer:writer@127.0.0.1:53306/testdb
     steps:
       - uses: actions/checkout@v4
 
@@ -236,6 +229,22 @@ jobs:
 
       - name: Install workspace
         run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Configure ephemeral database ports
+        env:
+          POSTGRES_PORT: ${{ job.services.postgres.ports[5432] }}
+          MYSQL_PORT: ${{ job.services.mysql.ports[3306] }}
+        run: |
+          set -euo pipefail
+          [[ "$POSTGRES_PORT" =~ ^[0-9]+$ && "$MYSQL_PORT" =~ ^[0-9]+$ ]]
+          {
+            echo "TEST_POSTGRES_ADMIN_URL=postgres://postgres:postgres@127.0.0.1:${POSTGRES_PORT}/testdb"
+            echo "TEST_POSTGRES_READ_URL=postgres://mcp_reader:reader@127.0.0.1:${POSTGRES_PORT}/testdb"
+            echo "TEST_POSTGRES_WRITE_URL=postgres://mcp_writer:writer@127.0.0.1:${POSTGRES_PORT}/testdb"
+            echo "TEST_MYSQL_ADMIN_URL=mysql://root:root@127.0.0.1:${MYSQL_PORT}/testdb"
+            echo "TEST_MYSQL_READ_URL=mysql://mcp_reader:reader@127.0.0.1:${MYSQL_PORT}/testdb"
+            echo "TEST_MYSQL_WRITE_URL=mysql://mcp_writer:writer@127.0.0.1:${MYSQL_PORT}/testdb"
+          } >> "$GITHUB_ENV"
 
       - name: Prepare integration databases
         run: pnpm --filter database-mcp-worker exec node scripts/setup-integration.mjs
