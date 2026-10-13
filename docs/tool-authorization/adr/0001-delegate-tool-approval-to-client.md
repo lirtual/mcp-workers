@@ -1,6 +1,6 @@
 # ADR-0001 — Delegate MCP tool invocation approval to the client
 
-Status: **Proposed, partially decided**. Date: 2026-10-13. Interview round 1 Q1=A, Q2=B, Q3=A confirmed.
+Status: **Proposed, partially decided**. Date: 2026-10-13. Interview rounds 1 and 2: Q1=A Q2=B Q3=A Q4=A Q5=A Q6=A.
 
 This is an interview record, **not** authorization to deploy or remove production safeguards. The operator's desired direction is recorded; the specific removal scope and migration contracts remain unresolved.
 
