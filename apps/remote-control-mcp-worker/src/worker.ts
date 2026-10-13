@@ -10,6 +10,7 @@ import {
   parseLocalCreateDirectory,
   parseLocalEditBlock,
   parseLocalMoveFile,
+  parseLocalDeleteFile,
   parseOperationId,
   parseStartProcess,
   parseLocalProcessOutput,
@@ -25,6 +26,7 @@ import {
   type LocalCreateDirectory,
   type LocalEditBlock,
   type LocalMoveFile,
+  type LocalDeleteFile,
   type OperationId,
   type SearchSessionId,
   type LocalStartProcess,
@@ -53,7 +55,7 @@ const READ_FILE_TOOL = {
   name: "read_file",
   title: "Read local file",
   description:
-    "Read a local file on the authorized Linux device. Only a filesystem path is accepted. URL fetches, shell commands, and file modifications are not available.",
+    "Read a local file on the authorized Linux device. Only a filesystem path is accepted. URL fetches are not supported.",
   inputSchema: {
     type: "object",
     properties: {
@@ -86,10 +88,10 @@ const READ_FILE_TOOL = {
 } as const;
 
 const READ_MULTIPLE_TOOL = {
-  name: "read_multiple_files",
+  name: "read_files",
   title: "Read local files",
   description:
-    "Read up to 8 local files. Combined output is capped. URL fetches, shell commands, and file modifications are not available.",
+    "Read up to 8 local files. Combined output is capped. URL fetches are not supported.",
   inputSchema: {
     type: "object",
     properties: {
@@ -135,7 +137,7 @@ const LIST_DIRECTORY_TOOL = {
 } as const;
 
 const FILE_INFO_TOOL = {
-  name: "get_file_info",
+  name: "stat_file",
   title: "Read local file info",
   description: "Return type, size, mode, and modification time for a local path. File contents are not returned.",
   inputSchema: {
@@ -155,7 +157,7 @@ const FILE_INFO_TOOL = {
 } as const;
 
 const START_SEARCH_TOOL = {
-  name: "start_search",
+  name: "search_files",
   title: "Search local files",
   description:
     "Search local file and directory names or literal, case-sensitive text in files. Results are paged. The Agent bounds depth, files, bytes, results, active searches, and lifetime; symbolic links are not followed.",
@@ -178,7 +180,7 @@ const START_SEARCH_TOOL = {
 } as const;
 
 const GET_MORE_SEARCH_RESULTS_TOOL = {
-  name: "get_more_search_results",
+  name: "search_next",
   title: "Get more search results",
   description: "Fetch the next fixed-size page from an active local search session.",
   inputSchema: {
@@ -240,7 +242,7 @@ const CREATE_DIRECTORY_TOOL = {
 } as const;
 
 const EDIT_BLOCK_TOOL = {
-  name: "edit_block", title: "Replace text in local file",
+  name: "replace_text", title: "Replace text in local file",
   description: "Replace exact text occurrences in a local UTF-8 file. expected_replacements defaults to 1; the file is unchanged if the count differs. Use a stable operation_id and query status after an uncertain response.",
   inputSchema: { type: "object", properties: { operation_id: { type: "string", minLength: 1, maxLength: 128 }, file_path: { type: "string" }, old_string: { type: "string", minLength: 1, maxLength: 49152 }, new_string: { type: "string", maxLength: 49152 }, expected_replacements: { type: "integer", minimum: 1, maximum: 1000 } }, required: ["operation_id", "file_path", "old_string", "new_string"], additionalProperties: false },
   annotations: { title: "Replace text in local file", readOnlyHint: false, destructiveHint: true, openWorldHint: false },
@@ -251,6 +253,22 @@ const MOVE_FILE_TOOL = {
   description: "Move or rename a local regular file on the same filesystem to a destination that does not already exist. Use a stable operation_id and query status after an uncertain response.",
   inputSchema: { type: "object", properties: { operation_id: { type: "string", minLength: 1, maxLength: 128 }, source: { type: "string" }, destination: { type: "string" } }, required: ["operation_id", "source", "destination"], additionalProperties: false },
   annotations: { title: "Move or rename local file", readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+} as const;
+
+const DELETE_FILE_TOOL = {
+  name: "delete_file",
+  title: "Delete local file",
+  description: "Delete a regular file only (not a directory or symlink). Requires operation_id; query get_operation_status if the response is uncertain.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      operation_id: { type: "string", minLength: 1, maxLength: 128 },
+      path: { type: "string" },
+    },
+    required: ["operation_id", "path"],
+    additionalProperties: false,
+  },
+  annotations: { title: "Delete local file", readOnlyHint: false, destructiveHint: true, openWorldHint: false },
 } as const;
 
 const GET_OPERATION_STATUS_TOOL = {
@@ -267,7 +285,7 @@ const GET_OPERATION_STATUS_TOOL = {
 } as const;
 
 const START_PROCESS_TOOL = {
-  name: "start_process", title: "Start development command",
+  name: "run_command", title: "Start development command",
   description: "Start a development command with the Agent account's fixed local Shell. Commands run with that Linux account's full OS permissions. Every start requires a stable operation_id; after an uncertain response, query that ID before considering a new intent. A running command returns an Agent-owned session_id. Shell exposure remains separately gated by deployment authorization.",
   inputSchema: { type: "object", properties: { operation_id: { type: "string", minLength: 1, maxLength: 128 }, command: { type: "string", minLength: 1, maxLength: 8192 }, timeout_ms: { type: "integer", minimum: 0, maximum: 30000, description: "Maximum time to wait before returning a running session; defaults to 1000 ms." } }, required: ["operation_id", "command"], additionalProperties: false },
   annotations: { title: "Start development command", readOnlyHint: false, destructiveHint: true, openWorldHint: true },
@@ -281,21 +299,21 @@ const LIST_SESSIONS_TOOL = {
 } as const;
 
 const READ_PROCESS_OUTPUT_TOOL = {
-  name: "read_process_output", title: "Read managed session output",
+  name: "read_session_output", title: "Read managed session output",
   description: "Read a bounded byte page from a session started by this Agent. Includes session state, next offset, truncation, and EOF. Stale or unknown session IDs are rejected.",
   inputSchema: { type: "object", properties: { session_id: { type: "string", format: "uuid" }, offset: { type: "integer", minimum: 0, maximum: 262144 }, length: { type: "integer", minimum: 1, maximum: 65536 } }, required: ["session_id"], additionalProperties: false },
   annotations: { title: "Read managed session output", readOnlyHint: true, destructiveHint: false, openWorldHint: false },
 } as const;
 
 const INTERACT_WITH_PROCESS_TOOL = {
-  name: "interact_with_process", title: "Send input to managed session",
+  name: "send_input", title: "Send input to managed session",
   description: "Send a bounded UTF-8 input page to a session started by this Agent. Each input requires a stable operation_id; uncertain input is never replayed. Only a currently tracked session can receive input.",
   inputSchema: { type: "object", properties: { operation_id: { type: "string", minLength: 1, maxLength: 128 }, session_id: { type: "string", format: "uuid" }, input: { type: "string", minLength: 1, maxLength: 8192 } }, required: ["operation_id", "session_id", "input"], additionalProperties: false },
   annotations: { title: "Send input to managed session", readOnlyHint: false, destructiveHint: true, openWorldHint: true },
 } as const;
 
 const FORCE_TERMINATE_TOOL = {
-  name: "force_terminate", title: "Stop managed session",
+  name: "stop_session", title: "Stop managed session",
   description: "Stop only a session started and still owned by this Agent. Uses a graceful signal followed by bounded escalation after rechecking the same process identity. A stale or unverified session is rejected.",
   inputSchema: { type: "object", properties: { operation_id: { type: "string", minLength: 1, maxLength: 128 }, session_id: { type: "string", format: "uuid" } }, required: ["operation_id", "session_id"], additionalProperties: false },
   annotations: { title: "Stop managed session", readOnlyHint: false, destructiveHint: true, openWorldHint: true },
@@ -313,6 +331,7 @@ const LOCAL_TOOLS = [
   CREATE_DIRECTORY_TOOL,
   EDIT_BLOCK_TOOL,
   MOVE_FILE_TOOL,
+  DELETE_FILE_TOOL,
   GET_OPERATION_STATUS_TOOL,
   START_PROCESS_TOOL,
   LIST_SESSIONS_TOOL,
@@ -324,19 +343,22 @@ const LOCAL_TOOLS = [
 const FILE_MUTATION_TOOL_NAMES = new Set([
   "write_file",
   "create_directory",
-  "edit_block",
+  "replace_text",
   "move_file",
+  "delete_file",
 ]);
 const SHELL_TOOL_NAMES = new Set([
-  "start_process",
+  "run_command",
   "list_sessions",
-  "read_process_output",
-  "interact_with_process",
-  "force_terminate",
+  "read_session_output",
+  "send_input",
+  "stop_session",
 ]);
 
 function isToolEnabled(name: unknown, env: Env): boolean {
   if (typeof name !== "string") return false;
+  // Reject hidden legacy names; only the public tool catalog is callable.
+  if (!LOCAL_TOOLS.some((tool) => tool.name === name)) return false;
   if (FILE_MUTATION_TOOL_NAMES.has(name)) return env.REMOTE_CONTROL_ENABLE_FILE_WRITES === "true";
   if (SHELL_TOOL_NAMES.has(name)) return env.REMOTE_CONTROL_ENABLE_SHELL === "true";
   return true;
@@ -366,6 +388,8 @@ const SAFE_EVENTS = new Set([
   "edit_failed",
   "move_completed",
   "move_failed",
+  "delete_completed",
+  "delete_failed",
   "operation_conflict",
   "not_found",
   "process_started",
@@ -470,6 +494,7 @@ type LocalCall =
   | { tool: "create_directory"; arguments: LocalCreateDirectory }
   | { tool: "edit_block"; arguments: LocalEditBlock }
   | { tool: "move_file"; arguments: LocalMoveFile }
+  | { tool: "delete_file"; arguments: LocalDeleteFile }
   | { tool: "get_operation_status"; arguments: OperationId }
   | { tool: "start_process"; arguments: LocalStartProcess }
   | { tool: "list_sessions"; arguments: Record<string, never> }
@@ -478,12 +503,12 @@ type LocalCall =
   | { tool: "force_terminate"; arguments: LocalProcessTermination };
 
 function mutationTool(call: LocalCall): boolean {
-  return call.tool === "write_file" || call.tool === "create_directory" || call.tool === "edit_block" || call.tool === "move_file" || call.tool === "start_process" || call.tool === "interact_with_process" || call.tool === "force_terminate";
+  return call.tool === "write_file" || call.tool === "create_directory" || call.tool === "edit_block" || call.tool === "move_file" || call.tool === "delete_file" || call.tool === "start_process" || call.tool === "interact_with_process" || call.tool === "force_terminate";
 }
 
 function callOperationId(call: LocalCall): string | undefined {
   if (call.tool === "get_operation_status") return call.arguments.operationId;
-  if (call.tool === "write_file" || call.tool === "create_directory" || call.tool === "edit_block" || call.tool === "move_file") return call.arguments.operationId;
+  if (call.tool === "write_file" || call.tool === "create_directory" || call.tool === "edit_block" || call.tool === "move_file" || call.tool === "delete_file") return call.arguments.operationId;
   if (call.tool === "start_process") return call.arguments.operationId;
   if (call.tool === "interact_with_process" || call.tool === "force_terminate") return call.arguments.operationId;
   return undefined;
@@ -512,6 +537,7 @@ function upstreamArguments(call: LocalCall): Record<string, unknown> {
   if (call.tool === "create_directory") return { path: call.arguments.path };
   if (call.tool === "edit_block") return { file_path: call.arguments.filePath, old_string: call.arguments.oldString, new_string: call.arguments.newString, expected_replacements: call.arguments.expectedReplacements };
   if (call.tool === "move_file") return { source: call.arguments.source, destination: call.arguments.destination };
+  if (call.tool === "delete_file") return { path: call.arguments.path };
   if (call.tool === "get_operation_status") return { operation_id: call.arguments.operationId };
   if (call.tool === "start_process") return { command: call.arguments.command, timeout_ms: call.arguments.timeoutMs };
   if (call.tool === "list_sessions") return {};
@@ -528,7 +554,21 @@ function deviceUrl(call: LocalCall): string {
   return DEVICE_CALL_URL;
 }
 
+const PUBLIC_TO_AGENT_TOOL: Record<string, string> = {
+  "read_files": "read_multiple_files",
+  "stat_file": "get_file_info",
+  "search_files": "start_search",
+  "search_next": "get_more_search_results",
+  "replace_text": "edit_block",
+  "run_command": "start_process",
+  "read_session_output": "read_process_output",
+  "send_input": "interact_with_process",
+  "stop_session": "force_terminate",
+};
+
 function parseLocalCall(name: unknown, args: unknown): LocalCall | null {
+  // Keep the private Agent protocol and existing receipt names stable.
+  if (typeof name === "string") name = PUBLIC_TO_AGENT_TOOL[name] ?? name;
   if (name === "read_file") {
     const read = parseLocalRead(args);
     return read ? { tool: "read_file", arguments: read } : null;
@@ -568,6 +608,10 @@ function parseLocalCall(name: unknown, args: unknown): LocalCall | null {
   if (name === "move_file") {
     const operation = parseLocalMoveFile(args);
     return operation ? { tool: "move_file", arguments: operation } : null;
+  }
+  if (name === "delete_file") {
+    const operation = parseLocalDeleteFile(args);
+    return operation ? { tool: "delete_file", arguments: operation } : null;
   }
   if (name === "get_operation_status") {
     const operation = parseOperationId(args);
@@ -846,7 +890,7 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
       log("rejected");
       return toolError(rpcMessage.id, "This capability is not enabled for this deployment.");
     }
-    if (["write_file", "create_directory", "edit_block", "move_file", "start_process", "interact_with_process", "force_terminate"].includes(String(call.name))) {
+    if (["write_file", "create_directory", "replace_text", "move_file", "delete_file", "run_command", "send_input", "stop_session"].includes(String(call.name))) {
       const candidate = call.arguments !== null && typeof call.arguments === "object"
         ? (call.arguments as Record<string, unknown>).operation_id
         : undefined;

@@ -7,7 +7,7 @@ export type OperationState = "admitted" | "running" | "completed" | "failed" | "
 
 export interface OperationReceipt {
   operation_id: string;
-  tool_name: "write_file" | "create_directory" | "edit_block" | "move_file" | "start_process" | "interact_with_process" | "force_terminate";
+  tool_name: "write_file" | "create_directory" | "edit_block" | "move_file" | "delete_file" | "start_process" | "interact_with_process" | "force_terminate";
   argument_digest: string;
   state: OperationState;
   created_at: string;
