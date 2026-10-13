@@ -1,8 +1,10 @@
 # ADR-0002 — Optional destructive-action preview; approval belongs to client
 
-Status: **Accepted one-call behavior; exact replacement tool names pending**. Date: 2026-10-13.
+Status: **Superseded by ADR-0003 (Q14=B)**. Historical record dated 2026-10-13; this optional-preview proposal is NOT the current target.
 Decision input: cross-Worker grilling Q3=A, Q5=A, Q8=A and Q11 operator clarification (one-call direct deletion).
 Related: [cross-Worker approval ADR](../../../../docs/tool-authorization/adr/0001-delegate-tool-approval-to-client.md).
+
+> **Supersession notice:** The operator's later round-5 decision Q14=B retains the existing Raindrop cleanup tool names, removes all optional previews, and makes a single invocation execute directly. It explicitly overrides this ADR's optional-preview recommendations (including its separate preview and execute tools). The accepted current target is [ADR-0003](./0003-direct-cleanup-with-existing-tool-names.md). This file remains as an interview history and must not be used as the implementation specification.
 
 ## Context
 
