@@ -23,12 +23,16 @@ MCP tool annotations describe risk but do not enforce authorization. Different M
 2. Treat the **MCP client** as the owner of the user-facing tool invocation approval policy.
 3. Avoid increasing code and configuration complexity with a centralized tool permission manager.
 
+## Decisions confirmed in interview round 1
+
+- **Q1=A — Scope of removal.** Remove Worker-maintained tool visibility/enablement gates and duplicated per-call tool approval; **retain** MCP ingress authentication, target-resource authority (database / OS privileges), request validation, operation integrity and failure handling. This does not authorize unauthenticated access.
+- **Q3=A — User-facing confirmation ownership.** Client-side policy owns user-facing confirmation, including destructive DDL; the intended design removes the Worker's duplicate MCP protocol-level confirmation step for such operations. The Worker retains truthful risk annotations and execution safety contracts. Client implementations may approve calls without prompting; this is an accepted architectural trade-off, not a guarantee of a prompt or 'always allow' control.
+
 ## Unresolved decision frontier
 
-1. Precisely distinguish removable tool feature toggles and secondary confirmation flows from non-removable ingress authentication, target-resource credentials, request validation, and operation integrity.
-2. Determine whether Database's separately configured read/write/admin credentials and bounded structured SQL operations stay, or whether the requested simplification changes those capability boundaries.
-3. Determine whether the Database destructive-DDL protocol confirmation is removed, and whether unusually destructive Remote Control or Raindrop operations have any remaining server-mediated user approval.
-4. Decide how to stage a four-Worker behavior change and verify each client's real tool exposure and approvals before production cutover.
+1. **Q2 — Database credential model.** Keep distinct READ / WRITE / ADMIN configured credentials and structured SQL guardrails, or simplify to a single DB principal whose actual database grants define all available capabilities? The operator requested a plain-language explanation before deciding.
+2. After Q2, decide the exact tool contract / capability exposure implications and any validation or limits that remain necessary for correctness versus permission management.
+3. Decide how to stage the four-Worker behavior change and verify each client's real tool exposure and approval behavior before production cutover.
 
 ## Consequences to assess
 
