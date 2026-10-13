@@ -542,7 +542,7 @@ test("force_terminate does not target an unrelated process when a numeric proces
       tool: "start_process",
       operation_id: "pgid-reuse-target",
       arguments: {
-        command: `ps -o pgid= -p "$" > '${targetGroupFile}'; trap '' TERM; while :; do sleep 0.05; done`,
+        command: `ps -o pgid= -p "$$" > '${targetGroupFile}'; trap '' TERM; while :; do sleep 0.05; done`,
         timeout_ms: 0,
       },
     });
@@ -553,7 +553,7 @@ test("force_terminate does not target an unrelated process when a numeric proces
       tool: "start_process",
       operation_id: "pgid-reuse-unrelated",
       arguments: {
-        command: `ps -o pgid= -p "$" > '${unrelatedGroupFile}'; trap 'printf unrelated-was-signaled; exit 0' TERM; while :; do sleep 0.05; done`,
+        command: `ps -o pgid= -p "$$" > '${unrelatedGroupFile}'; trap 'printf unrelated-was-signaled; exit 0' TERM; while :; do sleep 0.05; done`,
         timeout_ms: 0,
       },
     });
