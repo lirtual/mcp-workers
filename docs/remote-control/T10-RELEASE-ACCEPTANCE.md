@@ -31,6 +31,23 @@
 
 本轮 T10 文档更新只登记可验证的只读发布事实与未完成项，**不**触发凭证更改、Worker/Agent/Tunnel 重启、Portal Sync、文件修改或 Shell 授权。
 
+## 2026-10-13 无中断元数据与配置复核
+
+本轮仅通过已授权的只读 Remote Control MCP 工具与 Cloudflare/GitHub 只读 API 核验，**未访问任何真实凭证值、回执正文或敏感业务文件**，也未停止进程、切换代理/隧道、轮换凭证或执行 Shell。
+
+| 检查项 | 实际观测 | 验收归类 |
+| --- | --- | --- |
+| Agent 实时进程元数据 | 通过 Agent `read_file(/proc/self/status)` 返回 `Tgid/Pid=495681`、`Uid=1000/1000/1000/1000`、`Gid=1000/1000/1000/1000`；与发布记录的 Agent PID 495681 一致 | **已核实**：当前 Agent 以非 root 身份运行；不能由 UID 推出其 Linux 权限隔离充分 |
+| 回执目录 | `/home/ray/.local/state/mcp-workers/remote-control-agent`，设备 `get_file_info` 返回目录、`mode=0700` | **已核实**：权限位；工具未返回文件所有者 UID |
+| 回执文件 | 上述目录中的 `operation-receipts.json`，设备 `get_file_info` 返回常规文件、`mode=0600`、大小 340 字节；目录列表只有该文件 | **已核实**：权限位、文件存在；没有读取回执内容，不能推断记录数量、状态或实际清理历史 |
+| 发布证据目录与文件 | `release-20261013` 目录 `0700`；`remote-control-agent-test.log` 和 `acceptance-online.json` 元数据均为 `0600` | **已核实**：本次证据文件权限位；未读取具体测试日志或线上日志内容 |
+| Worker 线上只读门控 | Cloudflare Worker Settings API 中 `REMOTE_CONTROL_ENABLE_FILE_WRITES` 和 `REMOTE_CONTROL_ENABLE_SHELL` 均为 `plain_text: false` | **已核实**：当前配置仍维持只读 |
+| Worker 观测配置 | Cloudflare Settings API 返回 `observability.enabled=true`、`head_sampling_rate=1` | **配置已核实**：未读取实际 Cloudflare 日志事件、内容、保留时间或日志投递路径 |
+| Agent 日志契约 | 当前源码 `main.ts` 只将 `service/event` 写入 stderr；`server.ts` 调用固定事件名；Worker `worker.ts` 仅记录白名单事件 | **源码审计**：不能代替对所有真实 stderr、Cloudflare 平台日志或外部转发日志的内容检查 |
+| 回执与 Session 有界性 | 当前源码 `operations.ts`：最多 1000 条、终态 30 天、未知结果不自动重放；`sessions.ts`：最多 10 Session、每个输出 256 KiB、结束后 30 分钟缓存 | **源码审计**：策略在代码中存在，未做长期真实保留/清理行为测试 |
+
+本轮明确剩余的安全与生命周期验收缺口：文件所有者 UID（当前工具仅返回 mode）、Agent stderr 和 Cloudflare 平台的实际日志与投递/保留、回执生命周期的实测清理、独立 ingress/device 凭证的撤销与旧值失效、独立用户进程重启后的自动恢复安排、生产回滚演练和 owner 最终发布决定。上述未验证项不应因权限位符合设计而标记为通过。T10 #12、父规格 #2 仍保持 Open，真实文件修改及 Shell 均未获授权。
+
 ## 历史离线结论与当时门槛（2026-10-12）
 
 离线代码验收证据已经覆盖 T01R–T09 的实现切片；历史真实联调只证明早期只读版本。当前 `main` 中的 Worker、Agent、Tunnel、VPC Service 和 Portal capabilities 是否与生产一致尚未核实。Worker 的 Wrangler 配置仍含占位 VPC Service ID，不能直接部署。T10 不得因本文件或票据状态关闭。
