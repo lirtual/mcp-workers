@@ -1,6 +1,6 @@
 # Remote Control MCP — Domain Context
 
-> Status (2026-10-13): architecture accepted (ADR-0011/0012/0013); real-client Bearer read-only path validated (T02), **restricted read-only** release accepted (T10 #12). Writes/Shell remain disabled in production. Shell requires separately tracked #14 and explicit authorization; lifecycle and historical-log limitations are detailed in T10.
+> v1 status: ADR-0011/0012/0013 accepted. T02/T10 established the historical read-only path; subsequent T11 #14 approved file writes and Shell as independently controlled capabilities. Current *live* enablement must be checked against Cloudflare configuration, not inferred from the earlier T10 snapshot. v2 multi-device is design-only and is not deployed.
 
 ## Language
 
@@ -88,129 +88,28 @@ _Avoid_: Relabeling an uncertain operation as failed or safe to retry.
 
 Architecture and deployment implementation details belong in the research draft and ADRs, not in this vocabulary document.
 
-## Future product goal — multi-device onboarding (discovery, 2026-10-14)
+## Future v2 multi-device context — chosen design, not deployed (2026-10-15)
 
-The owner wants to install Remote Control MCP support on additional owned devices with minimal manual setup, then control a selected installed device through the **same** Remote Control MCP experience. This is a **product goal**, not an approved change to the v1 architecture, transport or production configuration.
+**Product goal:** one Remote Control MCP explicitly controls multiple individually approved Linux/WSL2 Agent installations across independent home, office and cloud networks; native Windows/macOS remote execution is deferred. Each new device should be convenient to install without a public IP, firewall inbound rule or manual Cloudflare resource/credential management.
 
-**Managed Device (candidate term)**:
-A device deliberately connected to the owner's Remote Control MCP for remote operations. It is distinct from the AI client, the human owner, and an individual managed process.
+**Transport:** selected v2 is an Agent-initiated outbound TLS WebSocket to one owner-scoped SQLite-backed Durable Object using WebSocket Hibernation; **no Cloudflare One Client, Mesh, VPC Network, separate site Tunnel or per-device DO** is required. Earlier consideration of One Client was contingent on using the now-rejected Mesh transport. Existing v1's fixed VPC Service + private Tunnel and independent Portal token remain authoritative **for current production**, which is not migrated by this decision.
 
-**Device Onboarding (candidate term)**:
-The owner-initiated process of installing and making an additional device available for remote operations, without requiring the owner to repeat the existing manual setup on every device.
-_Avoid_: Equating easy installation with anonymous or automatically trusted remote access.
+**Device Identity:** a server-issued opaque `device_id` uniquely identifies an approved installation, not its display label, hostname, IP or current socket.
 
-**Device Selection (candidate term)**:
-The intent to direct a remote operation at a particular managed device rather than implicitly treating all devices as the same host.
+**Pairing Code:** exactly 10 cryptographically random Base32 characters shown locally by a fresh Agent installation, single-use and expiring after 10 minutes. It identifies a pending pairing but is never a long-lived device credential.
 
-**Device Enrollment**:
-The act of admitting a device to the owner's private connectivity environment. Enrollment does not by itself permit Remote Control MCP operations.
-_Avoid_: Treating an enrolled device as an approved remote Shell target.
+**Device Pairing:** a Remote-Control-specific Portal Bearer-authenticated `pairing_lookup` shows one pending device and public-key fingerprint; a separate explicit `pairing_confirm` approves the same immutable request. Existing Portal Bearer proves token possession **only**, not genuine human presence. Verify deliberate owner review in the actual client before live enrollment.
 
-**Device Pairing**:
-The separate owner-approved act of granting one device an independently revocable Remote Control MCP identity.
-_Avoid_: A single shared device credential or assuming all enrolled devices may execute operations.
+**Device Credential:** a per-installation private/public keypair generated locally (prefer standard Ed25519 after interoperability validation); the Agent retains the private key and proves possession via fresh signed server challenge. Reinstall means a new key, new `device_id`, new pairing.
 
-**Device Identity**:
-A stable identity for one paired installation; changing the device's display name or network address does not change this identity.
-_Avoid_: Using a hostname, transient IP, or human-friendly device label as authorization identity.
+**Device Selection:** one MCP lists known devices with `list_devices` and every v2 operation explicitly specifies a trusted `device_id`; never default silently to another device or accept a client-selected private IP/URL.
 
-**Device Revocation**:
-The owner-authorized transition after which the device cannot be used for new Remote Control MCP operations and, where it was enrolled in Cloudflare networking, its Cloudflare access is also withdrawn. A network registration that can be automatically re-created is not considered durably revoked.
-_Avoid_: Describing a hidden or partially removed device as fully revoked.
+**Device Availability:** a currently approved Agent connection observed usable by the service. Known disconnects immediately become offline; silent partitions require a bounded measured detection delay. Reconnect is automatic, with **no offline command queue**.
 
-**Device Availability**:
-The observed state indicating whether the paired device can currently be reached for remote operations. Availability is distinct from pairing approval, and going offline does not automatically revoke identity.
+**Operation Outcome:** existing local `operation_id` receipts remain authoritative for state-changing operations. During ordinary disconnection, running Agent-owned commands may continue; when outcome is uncertain, do not blindly replay.
 
-**Device Reconnection**:
-The return of a previously approved but temporarily unavailable device to a reachable state. Reconnection is not an authorization event and does not authorize replay of past remote operations.
+**Device Revocation:** persistently deny the device key before all other actions, reject new commands/connections, close the socket, and request **best-effort** termination of online Agent-owned sessions. Offline/compromised local processes cannot be certified stopped. Re-pairing requires fresh deliberate owner approval. Because v2 never issues Cloudflare One device registration, there is no Cloudflare One permission to remove.
 
-**Reinstallation**:
-A new installation lifecycle that requires fresh owner-approved pairing and a new device identity, even on a previously used physical host.
+**Free and testing gate:** five simulated Agent connections for 72 continuous nonproduction hours, with demonstrated actual Hibernation/recovery, DO and Workers Free shared quota headroom, replay/steal/revoke tests, Linux+WSL2 network/lifecycle proof, and non-disruptive v1 migration. No test or production change is authorized by these design decisions.
 
-**Revocation Cleanup**:
-The follow-up process that withdraws the specific device's external network/enrollment permissions after MCP authorization is already denied. It can remain incomplete and must be visible to the owner.
-_Avoid_: Treating a failed or retrying external cleanup as a completed full revocation.
-
-**Pairing Code**:
-A short-lived, single-use value displayed on the physical device during installation so the owner can identify a specific pending enrollment. It is never the device's long-lived control credential.
-_Avoid_: Treating the pairing code alone as a durable permission to execute operations.
-
-**Pairing Approval**:
-The explicit owner decision to trust one identified pending device for Remote Control MCP operations, distinct from the Agent's installation and network connection.
-_Avoid_: Assuming possession of a generic MCP Bearer automatically proves an in-person approval or that an AI tool call alone implies owner consent.
-
-**Device Credential**:
-The installation-specific identity material that permits a paired device to authenticate on later connections and that can be revoked independently from other devices and the Portal caller.
-_Avoid_: A shared per-fleet device token or a device display name as proof of identity.
-
-### Confirmed network requirement — 2026-10-14
-
-The owner intends to connect managed devices located on **independent home, office and cloud-provider networks**, not only devices on one LAN. Adding a device must not depend on the device obtaining a public IP, a manually opened inbound port, or direct reachability from an existing single-site Tunnel.
-
-This settles **network reachability scope only**. It does not choose Cloudflare Mesh versus an Agent-initiated WebSocket relay, approve replacing the existing VPC Service, or promise that device onboarding is already automated.
-
-### Confirmed installation scope — grilling round 2 (2026-10-14)
-
-- **Q1=A**: The installer is allowed to automate installation and initial configuration of required supporting device software (including Cloudflare One Client) so that the owner does not repeat manual infrastructure steps on every device. This **does not** mean unattended, unauthenticated enrollment or implicit permission to distribute organization-wide secrets.
-- **Q2=A**: The **initial target is Linux and WSL2 Linux environments**; native Windows and macOS execution is deferred. This is the target for future installer work, not a claim that those installers already exist or an approval to modify the running host.
-- A device located on a separate home, office or cloud-provider network must be able to participate without a public device IP or manual inbound port forwarding.
-- See [ADR-0014](./adr/0014-linux-first-one-client-onboarding.md) for the installation trade-off. This ADR does **not** select Mesh over WebSocket + DO, change v1's transport, or approve automatic Cloudflare resource creation.
-
-### Confirmed authentication, pairing, revocation and targeting — grilling round 3 (2026-10-14)
-
-- **Q3=A**: A device with an interactive UI joins through Cloudflare login when Cloudflare networking is used; a headless Linux server uses a separately authorized automated enrollment. Installation alone does not approve remote command execution.
-- **Q4=A**: Every device needs owner-approved initial pairing and an independently revocable device identity, retained for subsequent operations without the owner manually copying a shared token.
-- **Q5=B**: The first multi-device release must offer **one authorized removal action** that automatically revokes both Remote Control MCP control and the specific device's Cloudflare network access when that transport is used. Partial or recoverable revocation must never be reported as complete.
-- **Q6=A**: One MCP endpoint must support `list_devices`, and operations in multi-device mode must explicitly identify their intended stable `device_id`.
-- See [ADR-0015](./adr/0015-per-device-pairing-and-revocation.md) for the security and product decision trade-offs. In particular, deleting a Cloudflare device registration without preventing automatic re-enrollment does not satisfy Q5=B. This round **does not select the transport or authorize rollout**.
-
-### Confirmed offline recovery, reinstall and cleanup — grilling round 4 (2026-10-14)
-
-- **Q7=A**: Agents should reconnect automatically; offline devices immediately become unavailable when the disconnected state is known. No new offline commands may be stored, queued or delivered after reconnect.
-- **Q8=A**: A normal connection loss does not terminate already-running Agent-owned commands. Local operation receipts and session state remain authoritative and are queried on reconnect; no unknown mutation may be blindly retried.
-- **Q9=A**: Reinstalling creates a fresh device identity requiring new explicit pairing. The previous identity is processed through the ordinary removal/revocation workflow; matching hostname or IP is not proof of identity.
-- **Q10=A**: Removing a device first denies new MCP operations immediately. If Cloudflare cleanup fails, retry safely and expose incomplete revocation until all required permissions are withdrawn and re-enrollment is prevented.
-- The behavior of *already-running jobs under explicit device revocation* is a separate unresolved decision; Q8 only resolves ordinary disconnection.
-- See [ADR-0016](./adr/0016-device-lifecycle-and-recovery.md). None of these decisions changes today's single-device runtime.
-
-### Historical transport assessment — before round 6 (superseded by ADR-0018)
-
-- Cloudflare documents cross-network Mesh routing through one VPC Network binding (`cf1:network`).
-- Cloudflare documents automatic device re-registration after deletion if the same user/service identity remains eligible, so per-interactive-device durable network removal without affecting other devices is **not yet demonstrated**. This is a blocker for accepting Mesh as-is under Q5=B.
-- Agent-initiated WebSocket + hibernating Durable Objects can manage device revocation without Cloudflare One network enrollment, but Q3/Q5's intended Cloudflare permission semantics for this alternate transport must be clarified before choosing it.
-- See [multi-device architecture evaluation](./MULTI-DEVICE-ARCHITECTURE-EVALUATION.md) for fact-backed trade-offs, gaps and the next proof gates.
-
-### Confirmed revocation semantics, production coexistence and explicit removal — grilling round 5 (2026-10-14)
-
-- **Q11=A**: Revoke **every permission actually issued** to an individual device. Mesh devices must have both MCP device authorization and their **own** Cloudflare One network enrollment permanently invalidated; WS + DO devices without Mesh enrollment must have their device-specific app credential invalidated, currently attached WebSocket closed, and reconnection/command denied. No fictional Cloudflare One registration must be created just to delete it.
-- **Q12=A**: Keep the currently deployed single-device VPC Service + private Tunnel in production unchanged. Design and verify v2 separately and opt-in; cut over only after explicit acceptance and rollback-safe migration.
-- **Q13=A**: Explicit removal immediately blocks all new operations; if the device is online, request best-effort termination of Agent-owned managed processes. If offline/untrusted, process termination is **not** guaranteed and must not be reported as confirmed. Under normal disconnection (Q8=A), processes may continue.
-- **Q3 conditional on transport**: Interactive Cloudflare login/headless Service Auth apply to **Mesh/Cloudflare One enrollment**. If WS+DO is selected, these are not performed for device networking and a separate owner-approved pairing UX must be decided. Neither Cloudflare One authentication nor OAuth magically transfers to WS.
-- [ADR-0017](./adr/0017-multi-device-revocation-semantics-and-transport-gates.md) records these accepted requirements and a **provisional WS + DO Hibernation preference, not a final transport decision**. Workers Free + DO Free budget and 24–72h hibernation verification are required before acceptance.
-
-### Confirmed v2 transport and pairing experience — grilling round 6 (2026-10-15)
-
-- **Q14=A**: Select Agent-initiated outbound **WebSocket + SQLite-backed Durable Objects WebSocket Hibernation API** as the **future multi-device v2 design**. It is selected for design, **not implemented or authorized for production**. Existing single-device VPC Service + private Tunnel v1 is untouched; do not reinterpret ADR-0004 as superseded for production.
-- **Q15=A**: Reuse the existing Remote Control-only `MCP_ACCESS_TOKEN` and Portal Bearer middleware at the authenticated MCP-side **pairing-approval** boundary. The owner must explicitly approve one pending device. Bearer possession alone is **not equivalent to a proved logged-in human identity**, and the ChatGPT tool-permission UI is not assumed to supply approval.
-- **Q16=A**: The installer displays a **short-lived one-time pairing code locally**. Owner enters the code into the MCP approval flow and explicitly confirms; after an atomic, one-use activation, Agent automatically saves an **independent, revocable device credential**. Do not distribute the Portal Bearer, admin Cloudflare key or shared static `REMOTE_CONTROL_DEVICE_TOKEN` to installed devices.
-- This selected v2 architecture **does not create a Cloudflare One/Mesh enrollment**. Q3's interactive Cloudflare login applies only to the previously considered Mesh transport, not to v2. The owner approves v2 device pairing via the independently authenticated MCP entrypoint instead.
-- Q7–Q13 continue to govern reconnection, identity, no blind replay, all actually granted permissions revoked, and best-effort Agent-owned session stop on explicit removal.
-- [ADR-0018](./adr/0018-v2-websocket-do-transport-and-portal-pairing.md) is the accepted v2 architecture decision; [v2 pairing/security/hibernation acceptance plan](./V2-PAIRING-AND-HIBERNATION-ACCEPTANCE.md) is a **candidate protocol and required test matrix**, not a finished implementation.
-
-### Confirmed pairing protocol and 72-hour validation — grilling round 7 (2026-10-15)
-
-- **Q17=A**: A valid Remote Control-specific Portal Bearer allows the owner to **look up/review** one pending device and then separately **confirm** that exact pending public-key fingerprint. Valid Bearer alone does not cryptographically prove human presence, and a model-only tool call is not automatic approval.
-- **Q18=A**: Device installer shows **10 random Base32 characters** (50 entropy bits), expiring after **10 minutes** and consumed exactly once. Pending approval state, fingerprint and code verifier must not be logged or misused as permanent device access.
-- **Q19=A**: Every fresh installation generates a locally retained **asymmetric private/public keypair**; the Agent proves key possession with fresh challenge-response, and the server binds its public key to a revocable device identity. No single fleet-wide device token.
-- **Q20=A**: **Five simulated Agents for 72 hours** must be tested in nonproduction with observed DO Hibernation/wake, Workers and DO request/duration/storage quotas, existing account DO load and forced failure/recovery. The test has not been executed merely by approving this design.
-- See [ADR-0019](./adr/0019-pairing-code-device-keys-and-72-hour-gate.md), [v2 technical Spec](./V2-MULTI-DEVICE-SPEC.md), and [pairing/hibernation acceptance](./V2-PAIRING-AND-HIBERNATION-ACCEPTANCE.md). Current production v1 remains unchanged.
-
-### Remaining open design decisions and verification
-
-- Verify the **accepted two-stage Portal-authenticated review/confirm** with the actual ChatGPT client. A model-only confirm call cannot be assumed to prove a separate human user; if the real client cannot reliably enforce deliberate review, a new out-of-band approval decision is required.
-- Pairing code entropy (50 bits), 10-minute lifetime, one use and keypair proof are **approved**; determine implementation constants for attempt limits, key algorithm/encoding, safe storage/rotation and replay-resistant authorization.
-- Finalize the narrow DO SQLite coordinator/hibernation event and storage contract, bounded pending RPC correlation, offline-detection policy, and best-effort stop outcome reporting; avoid application heartbeats that prevent DO hibernation.
-- Validate Linux + WSL2 installation in separate networks, revocation of a stolen credential, no replay after disconnect, **72h × 5-device** Hibernation/Workers Free budget including shared IMA DO consumption, and v1 rollback safety.
-- Future code/installer implementation, nonproduction Cloudflare resources, security testing, production rollout and v1 cutover require separately authorized steps.
-
-Do not modify the accepted v1 ADRs solely on the basis of this product goal. Record a new architecture decision after the trade-offs above have been resolved.
+**Canonical v2 design sources:** [ADR-0014 — v2 transport](./adr/0014-v2-multi-device-ws-do.md), [ADR-0015 — owner pairing/identity](./adr/0015-v2-pairing-and-identity.md), [v2 technical Spec](./V2-MULTI-DEVICE-SPEC.md). Grilling Q1–Q20 and competing-transport exploration remain retrievable in the [Draft PR #45 discussion](https://github.com/lirtual/mcp-workers/pull/45) and Git history, not as active implementation instructions.
