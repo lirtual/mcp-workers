@@ -102,6 +102,25 @@ _Avoid_: Equating easy installation with anonymous or automatically trusted remo
 **Device Selection (candidate term)**:
 The intent to direct a remote operation at a particular managed device rather than implicitly treating all devices as the same host.
 
+**Device Enrollment**:
+The act of admitting a device to the owner's private connectivity environment. Enrollment does not by itself permit Remote Control MCP operations.
+_Avoid_: Treating an enrolled device as an approved remote Shell target.
+
+**Device Pairing**:
+The separate owner-approved act of granting one device an independently revocable Remote Control MCP identity.
+_Avoid_: A single shared device credential or assuming all enrolled devices may execute operations.
+
+**Device Identity**:
+A stable identity for one paired installation; changing the device's display name or network address does not change this identity.
+_Avoid_: Using a hostname, transient IP, or human-friendly device label as authorization identity.
+
+**Device Revocation**:
+The owner-authorized transition after which the device cannot be used for new Remote Control MCP operations and, where it was enrolled in Cloudflare networking, its Cloudflare access is also withdrawn. A network registration that can be automatically re-created is not considered durably revoked.
+_Avoid_: Describing a hidden or partially removed device as fully revoked.
+
+**Device Availability**:
+The observed state indicating whether the paired device can currently be reached for remote operations. Availability is distinct from pairing approval, and going offline does not automatically revoke identity.
+
 ### Confirmed network requirement — 2026-10-14
 
 The owner intends to connect managed devices located on **independent home, office and cloud-provider networks**, not only devices on one LAN. Adding a device must not depend on the device obtaining a public IP, a manually opened inbound port, or direct reachability from an existing single-site Tunnel.
@@ -115,13 +134,21 @@ This settles **network reachability scope only**. It does not choose Cloudflare 
 - A device located on a separate home, office or cloud-provider network must be able to participate without a public device IP or manual inbound port forwarding.
 - See [ADR-0014](./adr/0014-linux-first-one-client-onboarding.md) for the installation trade-off. This ADR does **not** select Mesh over WebSocket + DO, change v1's transport, or approve automatic Cloudflare resource creation.
 
-### Design questions not yet settled
+### Confirmed authentication, pairing, revocation and targeting — grilling round 3 (2026-10-14)
 
-- What user action is required to authorize device enrollment (interactive versus unattended servers), and what counts as successful paired installation?
-- Which transport is acceptable after a real Linux + WSL2 proof (Cloudflare Mesh/One Client versus Agent-initiated WebSocket), and how will offline/reconnect behavior work?
-- Does joining the private network also authorize remote Shell, or is separate MCP-to-device pairing required?
-- How are individual device identities created, scoped, revoked and cleaned up without distributing long-lived shared credentials?
-- How should the owner select, rename, remove or revoke a device?
-- How to evolve single-device v1 without disrupting its working installation or falsely claiming that production already supports multi-device control?
+- **Q3=A**: A device with an interactive UI joins through Cloudflare login when Cloudflare networking is used; a headless Linux server uses a separately authorized automated enrollment. Installation alone does not approve remote command execution.
+- **Q4=A**: Every device needs owner-approved initial pairing and an independently revocable device identity, retained for subsequent operations without the owner manually copying a shared token.
+- **Q5=B**: The first multi-device release must offer **one authorized removal action** that automatically revokes both Remote Control MCP control and the specific device's Cloudflare network access when that transport is used. Partial or recoverable revocation must never be reported as complete.
+- **Q6=A**: One MCP endpoint must support `list_devices`, and operations in multi-device mode must explicitly identify their intended stable `device_id`.
+- See [ADR-0015](./adr/0015-per-device-pairing-and-revocation.md) for the security and product decision trade-offs. In particular, deleting a Cloudflare device registration without preventing automatic re-enrollment does not satisfy Q5=B. This round **does not select the transport or authorize rollout**.
+
+### Design questions not yet settled — next frontier
+
+- How should offline detection, automatic reconnect and restart recovery work, including Windows-host/WSL2 boundaries?
+- What should happen to already-running commands, process sessions and unknown outcomes when a device disconnects or is revoked?
+- How should rename, reinstall, identity rotation, local uninstall, lost hardware and Cloudflare API failure affect device lifecycle?
+- Can Cloudflare interactive and headless enrollment meet **per-device, durable automatic removal without blocking other devices**? If not, revisit the network architecture before implementation.
+- How should the existing single-device installation be migrated or left untouched until a verified rollback-safe transition?
+- Which transport is accepted after proof of Cloudflare Mesh + VPC Network versus Agent-initiated WebSocket + Durable Objects, including operational/free-tier constraints?
 
 Do not modify the accepted v1 ADRs solely on the basis of this product goal. Record a new architecture decision after the trade-offs above have been resolved.
