@@ -9,8 +9,8 @@ const message = (content: McpContent[] | undefined): string => {
 };
 
 describe("directly destructive cleanup contracts", () => {
-  const emptyTrash = cleanupTools.find((tool) => tool.name === "empty_trash")!;
-  const cleanupCollections = cleanupTools.find((tool) => tool.name === "cleanup_collections")!;
+  const emptyTrash = cleanupTools.find((tool) => tool.name === "empty_trash")! as any;
+  const cleanupCollections = cleanupTools.find((tool) => tool.name === "cleanup_collections")! as any;
   let service: {
     getUserStats: ReturnType<typeof vi.fn>;
     emptyTrash: ReturnType<typeof vi.fn>;
