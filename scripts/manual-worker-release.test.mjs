@@ -61,24 +61,34 @@ test("Database RATE_LIMITER and required runtime Secret names are a strict gate"
     secrets), /RATE_LIMITER/);
 });
 
-test("Remote VPC identity and approved independent write and Shell gates must remain intact", () => {
+test("Remote VPC and Secret bindings remain strict without obsolete file/Shell gates", () => {
   const worker = "remote-control-mcp-worker";
   const vpcId = "11111111-1111-4111-8111-111111111111";
   const names = ["MCP_ACCESS_TOKEN", "REMOTE_CONTROL_DEVICE_TOKEN"];
   const secrets = names.map((name) => ({ name }));
-  const gates = ["REMOTE_CONTROL_ENABLE_FILE_WRITES", "REMOTE_CONTROL_ENABLE_SHELL"]
-    .map((name) => ({ name, type: "plain_text", text: "true" }));
   const settings = {
     bindings: [...names.map((name) => ({ name, type: "secret_text" })),
-      { name: "REMOTE_CONTROL_DEVICE", type: "vpc_service", service_id: vpcId }, ...gates],
+      { name: "REMOTE_CONTROL_DEVICE", type: "vpc_service", service_id: vpcId }],
     observability: { enabled: true, logs: { invocation_logs: false } },
   };
-  assert.equal(verifyBindings(worker, settings, secrets, { vpcId }), true);
-  assert.throws(() => verifyBindings(worker, settings, secrets, { vpcId: "22222222-2222-4222-8222-222222222222" }),
-    /VPC Service/);
+  // New deployments no longer require these plain-text legacy bindings.
+  assert.equal(verifyBindings(worker, settings, secrets, { vpcId, mode: "preflight" }), true);
+  assert.equal(verifyBindings(worker, settings, secrets, { vpcId, mode: "readback" }), true);
+  // keep_vars=true may retain old variables temporarily; their values have
+  // no effect on the new Worker and must not block a safe release.
+  const withOldVars = {
+    ...settings,
+    bindings: [...settings.bindings,
+      { name: "REMOTE_CONTROL_ENABLE_FILE_WRITES", type: "plain_text", text: "false" },
+      { name: "REMOTE_CONTROL_ENABLE_SHELL", type: "plain_text", text: "true" }],
+  };
+  assert.equal(verifyBindings(worker, withOldVars, secrets, { vpcId }), true);
+  assert.throws(() => verifyBindings(worker, settings, secrets,
+    { vpcId: "22222222-2222-4222-8222-222222222222" }), /VPC Service/);
   assert.throws(() => verifyBindings(worker,
-    { ...settings, bindings: settings.bindings.filter((x) => x.name !== "REMOTE_CONTROL_ENABLE_FILE_WRITES") },
-    secrets, { vpcId }), /permission gate/);
+    { ...settings, bindings: settings.bindings.filter((x) => x.name !== "REMOTE_CONTROL_DEVICE") },
+    secrets, { vpcId }), /VPC Service/);
+  assert.throws(() => verifyBindings(worker, settings, [], { vpcId }), /Secret missing/);
   assert.throws(() => verifyBindings(worker,
     { ...settings, observability: { enabled: true, logs: { invocation_logs: true } } },
     secrets, { vpcId }), /Invocation Logs/);
