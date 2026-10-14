@@ -199,7 +199,7 @@ test("expired legacy images with missing mediaId fail before any HEAD probe or p
     const notes = new RefreshingImaNotes(new ImaClient(envForExport(namespace), credentials));
     await assert.rejects(
       () => notes.exportNote("note_expired_no_media"),
-      /原签名已过期且 format=2 缺少 mediaId/,
+      /签名已过期、即将过期或格式无效且 format=2 缺少 mediaId/,
     );
     assert.equal(headCalls, 0);
     assert.equal(shardCalls, 0);
@@ -221,9 +221,48 @@ test("DO rejects probe_only for a signed legacy URL without making a HEAD reques
       () => processImageRefreshBatch(bareEnv(), credentials, [
         { sourceUrl: url, mediaId: "", mode: "probe_only" },
       ]),
-      /有签名的图片不能使用 probe_only 模式/,
+      /包含 COS 签名参数的图片不能使用 probe_only 模式/,
     );
     assert.equal(headCalls, 0);
+  } finally {
+    restore();
+  }
+});
+
+test("malformed COS signature never passes as unsigned legacy image", async () => {
+  const url = "https://ima-notebook-prod.image.myqcloud.com/2/user/malformed?q-sign-time=bad&q-signature=wrong";
+  let headCalls = 0;
+  let shardCalls = 0;
+  const { namespace } = createShardNamespace(() => {
+    shardCalls++;
+    return [];
+  });
+  const { restore, uploaded } = setupExportFetch((req) => {
+    if (req.url.endsWith("get_doc_content") && req.body.target_content_format === 1) {
+      return new Response(JSON.stringify({ code: 0, data: { content: `![img](${url})` } }), {
+        status: 200, headers: { "content-type": "application/json" },
+      });
+    }
+    if (req.url.endsWith("get_doc_content") && req.body.target_content_format === 2) {
+      return new Response(JSON.stringify({
+        code: 0, data: { content: JSON.stringify([{ type: "cloud_image", url }]) },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (req.method === "HEAD") {
+      headCalls++;
+      return new Response(null, { status: 200 });
+    }
+    return new Response("Not found", { status: 404 });
+  });
+  try {
+    const notes = new RefreshingImaNotes(new ImaClient(envForExport(namespace), credentials));
+    await assert.rejects(
+      () => notes.exportNote("note_malformed_sign"),
+      /签名已过期、即将过期或格式无效且 format=2 缺少 mediaId/,
+    );
+    assert.equal(headCalls, 0);
+    assert.equal(shardCalls, 0);
+    assert.equal(uploaded.length, 0);
   } finally {
     restore();
   }
