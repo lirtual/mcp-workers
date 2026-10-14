@@ -17,7 +17,7 @@ test("IMA tool registry exposes no public export or temporary-upload capability"
 
 test("IMA has no note or knowledge export implementation and no public uploader", () => {
   const impl = file("../../src/ima.ts");
-  assert.doesNotMatch(impl, /exportNote\\(|exportSource\\(|uploadTemporaryFile|export_to_temporary|Litterbox/);
+  assert.doesNotMatch(impl, /exportNote|exportSource|uploadTemporaryFile|export_to_temporary|Litterbox/);
   for (const path of ["../../src/temporary-upload.ts", "../../src/exporting-notes.ts", "../../src/note-image-resign.ts"]) {
     assert.equal(existsSync(new URL(path, import.meta.url)), false, path);
   }
