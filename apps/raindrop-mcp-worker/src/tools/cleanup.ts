@@ -196,25 +196,20 @@ const removeDuplicatesTool = defineTool({
     // Raindrop's 0 means ALL bookmarks, not Unsorted, and cannot be used
     // for bulk deletion. -1 is Unsorted; positive IDs are real collections.
     const roots = await raindropService.getCollections(args.skipCache);
+    const children = await raindropService.getAllChildCollections(args.skipCache);
+    if (!Array.isArray(roots) || !Array.isArray(children)) {
+      throw new Error("Cannot enumerate all collections; nothing deleted.");
+    }
     const knownIds = new Set<number>([-1]);
-    const pending = [...roots];
-    while (pending.length > 0) {
-      const collection = pending.shift()!;
+    for (const collection of [...roots, ...children]) {
       const id = collection._id;
       if (!Number.isSafeInteger(id) || id <= 0) {
         throw new Error("Invalid collection id in duplicate scan; nothing deleted.");
       }
-      if (knownIds.has(id)) continue;
       if (knownIds.size >= 10_000) {
         throw new Error("Too many collections for a safe duplicate scan; nothing deleted.");
       }
       knownIds.add(id);
-      // /collections returns roots only; discover descendants recursively.
-      const children = await raindropService.getChildCollections(id, args.skipCache);
-      if (!Array.isArray(children)) {
-        throw new Error("Cannot verify nested collections; nothing deleted.");
-      }
-      pending.push(...children);
     }
     const uniqueCollectionIds = [...knownIds];
     const candidates = new Map<number, number[]>();
