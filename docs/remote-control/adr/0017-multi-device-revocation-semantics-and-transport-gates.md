@@ -4,6 +4,10 @@ Status: **Q11/Q12/Q13 accepted as requirements; transport is PROPOSED ONLY, not 
 Date: 2026-10-14. Grilling decisions: Q11=A, Q12=A, Q13=A.
 Scope: future Remote Control MCP multi-device v2; not the currently deployed v1 Worker/Agent.
 
+## Follow-up decision — 2026-10-15
+
+The owner has explicitly accepted **Q14=A, Q15=A and Q16=A** in [ADR-0018](./0018-v2-websocket-do-transport-and-portal-pairing.md). WS + SQLite-backed DO WebSocket Hibernation is now the **selected v2 design**, with owner-approved pairing through the existing MCP Portal-authenticated interface and a device-local, short-lived one-time pairing code. The discussions below calling WS+DO “provisional” are historical as of this ADR; they are **superseded for transport selection only** by ADR-0018. Q11/Q12/Q13 from this ADR remain accepted, while real-world pairing security and production acceptance gates remain unverified.
+
 ## Context
 
 ADR-0014 establishes Linux/WSL2-first easy installation and permits automated Cloudflare One Client setup. ADR-0015 requires owner-approved, individually revocable device credentials, `list_devices`, explicit `device_id`, and single-action first-release removal of every access permission actually granted. ADR-0016 requires fail-closed removal, no offline command queue, local operation receipts, no blind replay and new identity on reinstall.
