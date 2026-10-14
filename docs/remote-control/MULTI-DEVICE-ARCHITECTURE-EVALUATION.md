@@ -2,7 +2,7 @@
 
 Status: **discovery / proposed architecture, not accepted**. Evaluated: 2026-10-14.
 Links: [Domain context](./CONTEXT.md), [ADR-0014](./adr/0014-linux-first-one-client-onboarding.md), [ADR-0015](./adr/0015-per-device-pairing-and-revocation.md), [ADR-0016](./adr/0016-device-lifecycle-and-recovery.md).
-**This is a documentation-only comparison, not a Cloudflare account/prototype test.**
+**This is a documentation-only comparison, not a Cloudflare account/prototype test.** Q11/Q12/Q13 accepted, transport not yet accepted; see [ADR-0017](./adr/0017-multi-device-revocation-semantics-and-transport-gates.md).
 
 ## Fixed owner requirements
 
@@ -47,12 +47,42 @@ Recommended next step is a **small evidence-driven transport decision**, not a m
 - **Decision interpretation:** if Q5=B is literally “revoke a Cloudflare One client/registration for every device” even when not using Mesh, WS/DO alone **does not satisfy it**; clarify the acceptance condition instead of silently dropping Q5. If Q5=B is “revoke all Cloudflare-related permissions actually granted to the device,” with no Cloudflare One network grant in the WS design, WS/DO becomes the stronger **provisional preferred candidate** for simple installation and durable device-scoped application authorization.
 - **Migration:** preserve the current v1 single VPC Service + Tunnel until a tested installation, explicit owner transport decision, rollback and production cutover authorization. No blind rewriting of earlier accepted ADRs.
 
-## Outstanding decisions for next grilling
+## Accepted round-five convergence — 2026-10-14
 
-1. **Q11 / authorization semantics:** Does Q5=B require per-device deletion of a Cloudflare One Mesh registration even for a non-Mesh transport, or only revocation of all permissions actually granted by the selected architecture? This changes whether WS/DO is eligible.
-2. **Q12 / evidence threshold:** Will the owner accept an official-document-based Mesh disqualification absent a device-scale proof, or insist on isolated disposable end-to-end tests first? Current documentation does not validate permanent device-specific re-enrollment denial.
-3. **Q13 / transport migration:** Continue single-device VPC in production while developing next generation as a separate opt-in path, or require an immediate in-place migration (not recommended)?
-4. **Q14 / explicit revocation behavior:** On device removal, do already-running local jobs continue (as Q8 says for disconnect) or should an online Agent stop owned sessions on best-effort signal? Neither option can guarantee termination of offline commands.
+**Q11=A:** Every device must lose all credentials/network access **actually granted by the selected architecture**. For WS+DO there is no Mesh registration to delete, so require permanent application-credential denial, immediate rejection of any new messages/reconnect, and close any attached WS. For Mesh, remove the Cloudflare One device's enrollment and permanently prevent re-registration without touching other devices. This resolves the previous Q11 question; do not require Cloudflare One installation for WS+DO.
+
+**Q12=A:** Leave the existing production single-device VPC Service + Tunnel and its Agent unchanged. Build the v2 path separately, test and obtain explicit migration/cutover approval.
+
+**Q13=A:** Immediate deny on explicit device revocation, plus authenticated **best-effort** cancellation of Agent-owned sessions when online. Offline/compromised hosts may continue existing local processes; do not falsely state all jobs stopped. Ordinary network loss remains Q8=A (keep local operations running; reconcile by receipts).
+
+### Cloudflare One login/pairing compatibility
+
+- Q3=A is specifically the **Cloudflare One/Mesh device-network enrollment option**: interactive owner login where a UI exists, authorized headless Service Auth otherwise. Installation is not permission to execute commands; separately pair each Agent (Q4=A).
+- WS+DO does not enroll the device in Cloudflare One and does **not** provide Cloudflare One login or ChatGPT OAuth by itself. It needs an **owner-approved application pairing mechanism**. Candidate design, **not accepted yet**: device obtains a time-limited one-time pairing challenge; owner approves through a separately authorized management surface; Agent receives its own bound credential/key (not MCP ingress token), persists it in OS-protected storage; server enforces identity on WS upgrade and every operation and refuses an old key immediately after revocation. Rate-limit pairing and prevent bootstrap replay and token leakage.
+- Keep existing ingress `MCP_ACCESS_TOKEN` scope at the MCP Worker and separate it from Agent pairing; neither an administrator Cloudflare API token nor that MCP ingress token goes into a public install command. A Cloudflare Access identity/login screen could be added to a pairing UI, but doing so is a **new** choice with extra deployment prerequisites, not assumed.
+
+### Cloudflare Free budget / constraints — official pricing as of 2026-10-14
+
+Source: https://developers.cloudflare.com/durable-objects/platform/pricing/
+
+- Workers Free supports **SQLite-backed DO only**; free allocation **100,000 DO requests/day; 13,000 GB-s/day** duration. It also includes SQLite storage **5,000,000 rows read/day; 100,000 rows written/day; 5 GB stored**. Exceeding any dimension on Free errors out rather than automatically charging extra. Daily quotas reset at 00:00 UTC.
+- Inbound **application WebSocket messages are billed at a 20:1 ratio** for DO compute requests; connection creations, RPCs, alarms and HTTP requests also count. Outbound WS messages and incoming protocol ping frames are not charged as DO compute requests. Workers frontend requests use their own separate Free quota.
+- DO's duration is wall-clock while active/non-hibernation-eligible, at a **128 MiB** allocation. A single DO stuck awake for 24 hours is ~10,800 GB-s, or ~83% of the daily Free duration; two such DOs already exceed 13,000 GB-s. Correct `ctx.acceptWebSocket()` Hibernation keeps idle connections open without duration charges; avoid `ws.accept()`, persistent timers or unresolved I/O/pending promises keeping the object active.
+- Reference workload: **5 agents × 1 application inbound message/30 s × 86400s = 14,400 incoming messages/day ≈ 720 DO billable requests/day** from messages only. Connection establishment, MCP/DO RPC, rows read/written, application work duration and other app DO usage are additional. Protocol-level ping/pong can avoid processing application heartbeats.
+- These are **shared account ceilings**; include IMA Durable Object usage. No evidence yet of actual 24–72h hibernation or total monthly/day consumption for this proposed service; the availability of a Free tier is not a proof the deployed design will remain within it.
+
+### Provisional recommendation
+
+WS+DO Hibernation is currently the **preferred candidate** because it avoids the Mesh-specific interactive device no-reenrollment blocker while preserving per-device identity and the desired simple Linux Agent installation. This is **not an approved transport ADR or release authorization**. Mesh+VPC remains a valid contender if an isolated same-user two-device re-enrollment experiment demonstrates the strict Q5=B guarantee, as well as secure WSL2 routing.
+
+**No account-level provisioning, device enrolment, API mutation, WebSocket soak test or Free-usage measurement has been executed in this review.** The comparison is official-doc-supported research, not a deployed validation.
+
+## Pending decisions for next grilling
+
+1. **Transport acceptance:** confirm WS+DO Hibernation v2 as the selected *design* (still subject to gated offline/security/Free usage tests), or explicitly require Mesh proof before selection.
+2. **Pairing/owner approval:** determine exact owner authentication for the v2 pairing approval surface (reuse independently authorized Portal/Bearer admin flow, or deploy a separate authenticated browser identity flow) and interactive vs headless UX.
+3. **Release proof:** set an acceptance/test plan for two independent networks, Linux+WSL2, offline/unknown outcome/reinstall, explicit revoke, online session stop attempt, stolen-key reconnect denial and at least 24–72h DO idle quota evidence.
+4. **Operation lifecycle:** settle implementation details for bounded wait/timeout, durable tiny device registry and revocation tombstones without unnecessary general-purpose queues.
 
 ## Primary sources (2026-10-14 consultation)
 
