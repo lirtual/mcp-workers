@@ -74,91 +74,67 @@ const libraryAuditTool = defineTool({
 });
 
 /**
- * Tool to permanently empty the trash.
+ * The cleanup tool names are deliberately retained. Their new contract is
+ * immediately destructive; strict input schemas reject old preview flags.
  */
 const emptyTrashTool = defineTool({
   name: "empty_trash",
   description:
-    "Permanently delete all bookmarks currently in the trash collection. Requires 'confirm: true' to execute.",
-  inputSchema: z.object({
-    confirm: z
-      .boolean()
-      .optional()
-      .describe(
-        "Set to true to actually perform the deletion. If false or omitted, returns counts of items to be deleted.",
-      ),
-  }),
+    "Permanently delete ALL bookmarks in the trash immediately. This action is irreversible; there is no preview or server-side confirmation.",
+  annotations: {
+    readOnlyHint: false,
+    destructiveHint: true,
+    idempotentHint: false,
+    openWorldHint: true,
+  },
+  inputSchema: z.object({}).strict(),
   handler: async (
-    args: { confirm?: boolean },
+    _args: Record<string, never>,
     { raindropService }: ToolHandlerContext,
   ) => {
     const stats = await raindropService.getUserStats();
-    const trashCount = stats?.trash || 0;
-
-    if (!args.confirm) {
-      return {
-        content: [
-          textContent(
-            `Trash contains ${trashCount} items. To permanently empty it, call this tool again with 'confirm: true'.`,
-          ),
-        ],
-      };
+    const trashCount = stats?.trash;
+    if (typeof trashCount !== "number" || !Number.isSafeInteger(trashCount) || trashCount < 0) {
+      throw new Error("Cannot verify trash count; deletion was not attempted.");
     }
-
     if (trashCount === 0) {
-      return {
-        content: [textContent("Trash is already empty.")],
-      };
+      return { content: [textContent("Trash is already empty.")] };
     }
-
     const success = await raindropService.emptyTrash();
     return {
       content: [
         textContent(
           success
             ? `Successfully emptied trash (${trashCount} items removed).`
-            : "Failed to empty trash.",
+            : "Trash deletion was not confirmed by Raindrop; outcome may be uncertain. Do not retry blindly.",
         ),
       ],
     };
   },
 });
 
-/**
- * Tool to remove empty collections.
- */
 const cleanupCollectionsTool = defineTool({
   name: "cleanup_collections",
   description:
-    "Remove all collections that do not contain any bookmarks. Requires 'confirm: true' to execute.",
-  inputSchema: z.object({
-    confirm: z
-      .boolean()
-      .optional()
-      .describe("Set to true to actually perform the cleanup."),
-  }),
+    "Immediately remove ALL empty collections throughout the library. This changes the user's collection structure; no preview or repeat confirmation.",
+  annotations: {
+    readOnlyHint: false,
+    destructiveHint: true,
+    idempotentHint: false,
+    openWorldHint: true,
+  },
+  inputSchema: z.object({}).strict(),
   handler: async (
-    args: { confirm?: boolean },
+    _args: Record<string, never>,
     { raindropService }: ToolHandlerContext,
   ) => {
-    if (!args.confirm) {
-      const stats = await raindropService.getUserStats();
-      return {
-        content: [
-          textContent(
-            `Are you sure you want to remove all empty collections? You currently have ${stats?.collections} total collections. Call this tool again with 'confirm: true' to proceed.`,
-          ),
-        ],
-      };
-    }
-
     const success = await raindropService.removeEmptyCollections();
     return {
       content: [
         textContent(
           success
             ? "Empty collections removed successfully."
-            : "Failed to remove empty collections.",
+            : "Empty-collection cleanup was not confirmed by Raindrop; outcome may be uncertain. Do not retry blindly.",
         ),
       ],
     };
@@ -166,198 +142,238 @@ const cleanupCollectionsTool = defineTool({
 });
 
 /**
- * Tool to remove duplicate bookmarks using an optimized pattern.
+ * Candidate eligibility is intentionally fail-closed. The duplicate search
+ * returns candidates, not evidence that annotations are safe to discard.
+ * Re-fetch every candidate and require explicit empty note/highlight fields.
  */
+function safeDuplicateCandidate(
+  bookmark: {
+    _id?: number;
+    link?: unknown;
+    note?: unknown;
+    highlights?: unknown;
+    tags?: unknown;
+    important?: unknown;
+    reminder?: unknown;
+    collection?: { $id?: number };
+  },
+  id: number,
+  collectionId: number,
+): boolean {
+  return (
+    bookmark._id === id &&
+    bookmark.collection?.$id === collectionId &&
+    typeof bookmark.link === "string" &&
+    bookmark.link.length > 0 &&
+    bookmark.note === "" &&
+    Array.isArray(bookmark.highlights) &&
+    bookmark.highlights.length === 0 &&
+    Array.isArray(bookmark.tags) &&
+    bookmark.tags.length === 0 &&
+    bookmark.important === false &&
+    bookmark.reminder == null
+  );
+}
+
 const removeDuplicatesTool = defineTool({
   name: "remove_duplicates",
   description:
-    "Optimized duplicate deletion pattern. Scans all collections and removes duplicates in batches of 50 to minimize round-trips. Supports dry run to report counts without deleting.",
-  inputSchema: z.object({
-    dryRun: z
-      .boolean()
-      .optional()
-      .default(true)
-      .describe(
-        "If true, only reports the number of duplicates found without deleting them.",
-      ),
-    skipCache: z
-      .boolean()
-      .optional()
-      .describe("Force a fresh fetch from the API, bypassing the local cache"),
-  }),
+    "Immediately delete verified unannotated duplicate bookmarks across all user collections and Unsorted. Within EACH collection, retain at least one copy of each exact URL; never deduplicate across different collections. Only candidates with explicitly empty notes, highlights and tags, important=false, no reminder and confirmed collection membership may be removed. Recheck before deletion. Deletes in batches of at most 50; no preview or automatic retries.",
+  annotations: {
+    readOnlyHint: false,
+    destructiveHint: true,
+    idempotentHint: false,
+    openWorldHint: true,
+  },
+  inputSchema: z
+    .object({
+      skipCache: z.boolean().optional().describe("Bypass the read cache when discovering duplicate candidates."),
+    })
+    .strict(),
   handler: async (
-    args: { dryRun?: boolean; skipCache?: boolean },
+    args: { skipCache?: boolean },
     { raindropService, reportProgress }: ToolHandlerContext,
   ) => {
     const progress =
       typeof reportProgress === "function" ? reportProgress : () => {};
     progress({ progress: 0, total: 100 });
 
-    // Step 1: Global Search for Count (Initial Estimation)
+    // Query the official duplicate filter; use fresh details below regardless
+    // of the caller's skipCache choice.
     const globalDuplicates = await raindropService.getBookmarks(
-      {
-        duplicates: true,
-        perPage: 1,
-      },
+      { duplicates: true, perPage: 1 },
       args.skipCache,
     );
-    const totalEstimated = globalDuplicates.count;
-
-    if (totalEstimated === 0) {
-      return {
-        content: [textContent("No duplicates found in the entire library.")],
-      };
+    if (globalDuplicates.count === 0) {
+      return { content: [textContent("No duplicates found in the library.")] };
     }
 
-    // Step 2: Per-Collection Discovery
-    const collections = await raindropService.getCollections(args.skipCache);
-    const collectionDuplicatesMap = new Map<number, number[]>();
-    let totalFound = 0;
+    // Raindrop's 0 means ALL bookmarks, not Unsorted, and cannot be used
+    // for bulk deletion. -1 is Unsorted; positive IDs are real collections.
+    const roots = await raindropService.getCollections(args.skipCache);
+    const children = await raindropService.getAllChildCollections(args.skipCache);
+    if (!Array.isArray(roots) || !Array.isArray(children)) {
+      throw new Error("Cannot enumerate all collections; nothing deleted.");
+    }
+    const knownIds = new Set<number>([-1]);
+    for (const collection of [...roots, ...children]) {
+      const id = collection._id;
+      if (!Number.isSafeInteger(id) || id <= 0) {
+        throw new Error("Invalid collection id in duplicate scan; nothing deleted.");
+      }
+      if (knownIds.size >= 10_000) {
+        throw new Error("Too many collections for a safe duplicate scan; nothing deleted.");
+      }
+      knownIds.add(id);
+    }
+    const uniqueCollectionIds = [...knownIds];
+    const candidates = new Map<number, number[]>();
 
-    // Add "Unsorted" (0) and "Trash" (-99) if needed, but getCollections usually returns user collections
-    // The pattern says "Iterate through all user collections"
-    const allCollectionIds = [
-      0,
-      ...collections
-        .map((c) => c._id)
-        .filter((id): id is number => id !== undefined),
-    ];
-
-    for (let i = 0; i < allCollectionIds.length; i++) {
-      const colId = allCollectionIds[i];
-      if (colId === undefined) continue; // Should not happen with filter
+    // Discover and validate the full candidate set BEFORE deleting anything.
+    for (const [index, collectionId] of uniqueCollectionIds.entries()) {
       progress({
-        progress: 10 + (i / allCollectionIds.length) * 40,
+        progress: 10 + (index / uniqueCollectionIds.length) * 35,
         total: 100,
       });
-
-      const colDuplicates = await raindropService.getBookmarks(
-        {
-          collection: colId,
-          duplicates: true,
-          perPage: 50, // Get first batch to see if any exist
-        },
+      const first = await raindropService.getBookmarks(
+        { collection: collectionId, duplicates: true, perPage: 50, page: 0 },
         args.skipCache,
       );
-
-      if (colDuplicates.count > 0) {
-        // Fetch all duplicate IDs for this collection if more than one page
-        let allIds = colDuplicates.items
-          .map((item) => item._id)
-          .filter((id): id is number => id !== undefined);
-        if (colDuplicates.count > 50) {
-          const totalPages = Math.ceil(colDuplicates.count / 50);
-          for (let p = 1; p < totalPages; p++) {
-            const nextBatch = await raindropService.getBookmarks(
-              {
-                collection: colId,
-                duplicates: true,
-                perPage: 50,
-                page: p,
-              },
-              args.skipCache,
-            );
-            allIds = allIds.concat(
-              nextBatch.items
-                .map((item) => item._id)
-                .filter((id): id is number => id !== undefined),
-            );
-          }
+      if (!Number.isSafeInteger(first.count) || first.count < 0) {
+        throw new Error("Duplicate scan returned an invalid count; nothing deleted.");
+      }
+      if (first.count === 0) continue;
+      const ids: number[] = [];
+      const pages = Math.ceil(first.count / 50);
+      for (let page = 0; page < pages; page++) {
+        const batch =
+          page === 0
+            ? first
+            : await raindropService.getBookmarks(
+                { collection: collectionId, duplicates: true, perPage: 50, page },
+                args.skipCache,
+              );
+        // Changing pagination counts or missing IDs make deletion unsafe.
+        if (batch.count !== first.count || !Array.isArray(batch.items)) {
+          throw new Error("Duplicate scan changed during pagination; nothing deleted.");
         }
-        collectionDuplicatesMap.set(colId, allIds);
-        totalFound += allIds.length;
+        const pageIds = batch.items.map((item) => item._id);
+        if (pageIds.some((id) => !Number.isSafeInteger(id) || id <= 0)) {
+          throw new Error("Duplicate scan returned unknown IDs; nothing deleted.");
+        }
+        ids.push(...(pageIds as number[]));
+      }
+      if (ids.length !== first.count || new Set(ids).size !== ids.length) {
+        throw new Error("Duplicate scan was incomplete or overlapping; nothing deleted.");
+      }
+      candidates.set(collectionId, ids);
+    }
+
+    let protectedCount = 0;
+    let unverifiedCount = 0;
+    // Keep at least one verified copy of every exact URL. The official
+    // duplicate search does not specify which hit (if any) is canonical.
+    const safe = new Map<number, number[]>();
+    const verifiedLinks = new Map<number, string>();
+    let preservedCopies = 0;
+    for (const [collectionId, ids] of candidates) {
+      // Cross-collection bookmarks are intentional organization, not disposable duplicates.
+      const keptLinks = new Set<string>();
+      for (const id of ids) {
+        // Always bypass cached responses for deletion eligibility checks.
+        const item = await raindropService.getBookmark(id, true);
+        if (
+          item._id !== id ||
+          typeof item.note !== "string" ||
+          !Array.isArray(item.highlights) ||
+          !Array.isArray(item.tags) ||
+          typeof item.important !== "boolean" ||
+          typeof item.link !== "string" ||
+          item.link.length === 0 ||
+          item.collection?.$id !== collectionId
+        ) {
+          unverifiedCount++;
+        } else if (!safeDuplicateCandidate(item, id, collectionId)) {
+          protectedCount++;
+        } else if (!keptLinks.has(item.link)) {
+          keptLinks.add(item.link);
+          preservedCopies++;
+        } else {
+          const entry = safe.get(collectionId) ?? [];
+          entry.push(id);
+          safe.set(collectionId, entry);
+          verifiedLinks.set(id, item.link);
+        }
       }
     }
 
-    if (totalFound === 0) {
+    const safeCount = [...safe.values()].reduce((sum, ids) => sum + ids.length, 0);
+    if (safeCount === 0) {
       return {
-        content: [
-          textContent(
-            `Global search estimated ${totalEstimated} duplicates, but per-collection scan found none. This may be due to cross-collection duplicates which cannot be safely bulk-deleted.`,
-          ),
-        ],
+        content: [textContent(
+          `No safely deletable duplicates. Retained collection-local copies: ${preservedCopies}, protected: ${protectedCount}, unverifiable: ${unverifiedCount}; nothing deleted.`,
+        )],
       };
     }
 
-    if (args.dryRun) {
-      let report = `Dry Run: Found ${totalFound} duplicates across ${collectionDuplicatesMap.size} collections.\n`;
-      collectionDuplicatesMap.forEach((ids, colId) => {
-        const colName =
-          colId === 0
-            ? "Unsorted"
-            : collections.find((c) => c._id === colId)?.title || `ID: ${colId}`;
-        report += `- ${colName}: ${ids.length} duplicates\n`;
-      });
-      report +=
-        "\nTo delete these items, call this tool again with 'dryRun: false'.";
-      return { content: [textContent(report)] };
-    }
-
-    // Step 3: Optimized Bulk Deletion
-    let totalDeleted = 0;
-    const errors: { collectionId: number; ids: number[]; message: string }[] =
-      [];
-
-    const collectionEntries = Array.from(collectionDuplicatesMap.entries());
-    for (let i = 0; i < collectionEntries.length; i++) {
-      const entry = collectionEntries[i];
-      if (!entry) continue;
-      const [colId, ids] = entry;
+    let deleted = 0;
+    const entries = [...safe.entries()];
+    for (const [index, [collectionId, ids]] of entries.entries()) {
       progress({
-        progress: 50 + (i / collectionEntries.length) * 50,
+        progress: 50 + (index / entries.length) * 50,
         total: 100,
       });
-
-      // Batch in groups of 50
-      for (let j = 0; j < ids.length; j += 50) {
-        const batch = ids.slice(j, j + 50);
+      for (let offset = 0; offset < ids.length; offset += 50) {
+        const batch = ids.slice(offset, offset + 50);
+        // The library may change while a large scan is running. Recheck each
+        // target immediately before the batch, and stop if any detail changed.
         try {
-          const success =
-            await raindropService.batchDeleteBookmarksInCollection(
-              colId,
-              batch,
-            );
-          if (success) {
-            totalDeleted += batch.length;
-          } else {
-            errors.push({
-              collectionId: colId,
-              ids: batch,
-              message: "API returned failure",
-            });
-            // Fail Fast policy
+          for (const id of batch) {
+            const latest = await raindropService.getBookmark(id, true);
+            if (
+              !safeDuplicateCandidate(latest, id, collectionId) ||
+              latest.link !== verifiedLinks.get(id)
+            ) {
+              return {
+                content: [textContent(
+                  `Stopped before a deletion batch in collection ${collectionId}: candidate metadata changed; ${deleted} items previously acknowledged, current batch not sent.`,
+                )],
+              };
+            }
+          }
+        } catch {
+          return {
+            content: [textContent(
+              `Stopped before a deletion batch in collection ${collectionId}: recheck failed; ${deleted} items previously acknowledged, current batch not sent.`,
+            )],
+          };
+        }
+        try {
+          const acknowledged = await raindropService.batchDeleteBookmarksInCollection(
+            collectionId,
+            batch,
+          );
+          if (!acknowledged) {
             return {
-              content: [
-                textContent(
-                  `Fail Fast: Stopped after error in collection ${colId}. Total deleted so far: ${totalDeleted}.\nErrors: ${JSON.stringify(errors)}`,
-                ),
-              ],
+              content: [textContent(
+                `Stopped after an unconfirmed deletion batch in collection ${collectionId}; ${deleted} items previously acknowledged. The latest batch outcome is uncertain; do not retry blindly.`,
+              )],
             };
           }
-        } catch (error: any) {
-          errors.push({
-            collectionId: colId,
-            ids: batch,
-            message: error.message,
-          });
-          // Fail Fast policy
+          deleted += batch.length;
+        } catch {
           return {
-            content: [
-              textContent(
-                `Fail Fast: Stopped after exception in collection ${colId}: ${error.message}. Total deleted so far: ${totalDeleted}.\nErrors: ${JSON.stringify(errors)}`,
-              ),
-            ],
+            content: [textContent(
+              `Stopped after a deletion error in collection ${collectionId}; ${deleted} items previously acknowledged. The latest batch outcome is unknown; do not retry blindly.`,
+            )],
           };
         }
       }
     }
-
     return {
-      content: [
-        textContent(
-          `Successfully deleted ${totalDeleted} duplicates across ${collectionDuplicatesMap.size} collections.`,
-        ),
-      ],
+      content: [textContent(
+        `Deleted ${deleted} verified duplicates across ${safe.size} collections. Retained collection-local copies: ${preservedCopies}, protected: ${protectedCount}, unverifiable: ${unverifiedCount}.`,
+      )],
     };
   },
 });

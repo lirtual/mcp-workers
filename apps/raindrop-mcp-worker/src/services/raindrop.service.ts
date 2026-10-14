@@ -253,6 +253,28 @@ export default class RaindropService {
   }
 
   /**
+   * Fetch all nested collections. Official Raindrop API exposes one global
+   * /collections/childrens endpoint (not the parent-specific legacy route).
+   * The current generated OpenAPI types do not include this endpoint.
+   */
+  async getAllChildCollections(skipCache = false): Promise<Collection[]> {
+    const key = "all-children";
+    if (!skipCache) {
+      const cached = await this.cacheCollections.get(key);
+      if (cached) return cached as Collection[];
+    }
+    const children = await this.withRateLimit(async () => {
+      const { data } = await (this.client as any).GET("/collections/childrens");
+      if (!Array.isArray(data?.items)) {
+        throw new UpstreamError("Unable to enumerate nested collections");
+      }
+      return data.items as Collection[];
+    });
+    this.cacheCollections.set(key, children);
+    return children;
+  }
+
+  /**
    * Fetch a single collection by ID
    * Raindrop.io API: GET /collection/{id}
    */

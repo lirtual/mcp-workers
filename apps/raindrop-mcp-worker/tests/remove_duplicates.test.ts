@@ -1,173 +1,212 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupTools } from "../src/tools/cleanup.js";
 
-describe("remove_duplicates tool", () => {
-  let mockService: {
+type Candidate = {
+  _id: number; link?: string; note?: string; highlights?: unknown[];
+  tags?: string[]; important?: boolean; reminder?: unknown;
+  collection?: { $id: number };
+};
+const verified = (id: number, collectionId = 123): Candidate => ({
+  _id: id, link: "https://example.test/duplicate", note: "", highlights: [],
+  tags: [], important: false, collection: { $id: collectionId },
+});
+
+describe("remove_duplicates — direct execution and safe eligibility", () => {
+  const tool = cleanupTools.find((item) => item.name === "remove_duplicates")! as any;
+  let service: {
     getBookmarks: ReturnType<typeof vi.fn>;
     getCollections: ReturnType<typeof vi.fn>;
+    getAllChildCollections: ReturnType<typeof vi.fn>;
+    getBookmark: ReturnType<typeof vi.fn>;
     batchDeleteBookmarksInCollection: ReturnType<typeof vi.fn>;
   };
-  const removeDuplicates = cleanupTools.find(
-    (t) => t.name === "remove_duplicates",
-  )!;
-
   beforeEach(() => {
-    mockService = {
+    service = {
       getBookmarks: vi.fn(),
-      getCollections: vi.fn(),
-      batchDeleteBookmarksInCollection: vi.fn(),
+      getCollections: vi.fn().mockResolvedValue([{ _id: 123, title: "A" }]),
+      getAllChildCollections: vi.fn().mockResolvedValue([]),
+      getBookmark: vi.fn().mockImplementation(async (id: number) => verified(id)),
+      batchDeleteBookmarksInCollection: vi.fn().mockResolvedValue(true),
     };
   });
+  const ctx = () => ({ raindropService: service }) as any;
+  const textOf = (result: { content: unknown[] }): string =>
+    (result.content[0] as { text: string }).text;
+  function mockDuplicates(ids: number[], extras: Record<number, Candidate> = {}) {
+    service.getBookmarks.mockImplementation(async (params: {
+      collection?: number; duplicates?: boolean; page?: number; perPage?: number
+    }) => {
+      if (params.collection === undefined) return { count: ids.length, items: [] };
+      if (params.collection === -1) return { count: 0, items: [] };
+      if (params.collection !== 123) throw new Error("Unexpected collection");
+      return {
+        count: ids.length,
+        items: ids.slice((params.page ?? 0) * 50, (params.page ?? 0) * 50 + 50)
+          .map(id => extras[id] ?? { _id: id }),
+      };
+    });
+  }
 
-  it("returns 'No duplicates found' if global count is 0", async () => {
-    mockService.getBookmarks.mockResolvedValueOnce({ count: 0, items: [] });
-
-    const result = await removeDuplicates.handler({ dryRun: true }, {
-      raindropService: mockService,
-    } as any);
-
-    const firstContent = result.content[0] as { type: "text"; text: string };
-    expect(firstContent.text).toContain("No duplicates found");
-    expect(mockService.getBookmarks).toHaveBeenCalledWith(
-      expect.objectContaining({ duplicates: true, perPage: 1 }),
-      undefined,
-    );
+  it("rejects old dryRun and any extra argument, without upstream calls", () => {
+    for (const old of [{ dryRun: true }, { dryRun: false }, { other: 1 }]) {
+      expect(tool.inputSchema.safeParse(old).success).toBe(false);
+    }
+    expect(tool.inputSchema.safeParse({ skipCache: true }).success).toBe(true);
+    expect(service.getBookmarks).not.toHaveBeenCalled();
   });
 
-  it("performs dry run and reports counts per collection", async () => {
-    // 1. Global search
-    mockService.getBookmarks.mockResolvedValueOnce({ count: 2, items: [] });
-    // 2. Get collections
-    mockService.getCollections.mockResolvedValueOnce([
-      { _id: 123, title: "Test Collection" },
-    ]);
-    // 3. Per-collection search (Unsorted)
-    mockService.getBookmarks.mockResolvedValueOnce({ count: 0, items: [] });
-    // 4. Per-collection search (Test Collection)
-    mockService.getBookmarks.mockResolvedValueOnce({
-      count: 2,
-      items: [{ _id: 1 }, { _id: 2 }],
-    });
-
-    const result = await removeDuplicates.handler({ dryRun: true }, {
-      raindropService: mockService,
-    } as any);
-
-    const firstContent = result.content[0] as { type: "text"; text: string };
-    expect(firstContent.text).toContain("Dry Run: Found 2 duplicates");
-    expect(firstContent.text).toContain("Test Collection: 2 duplicates");
-    expect(mockService.batchDeleteBookmarksInCollection).not.toHaveBeenCalled();
+  it("reports an empty library without deletion", async () => {
+    mockDuplicates([]);
+    const response = await tool.handler({}, ctx());
+    expect(textOf(response)).toContain("No duplicates found");
+    expect(service.batchDeleteBookmarksInCollection).not.toHaveBeenCalled();
   });
 
-  it("deletes duplicates in batches of 50 and handles Fail Fast", async () => {
-    // 1. Global search
-    mockService.getBookmarks.mockResolvedValueOnce({ count: 1, items: [] });
-    // 2. Get collections
-    mockService.getCollections.mockResolvedValueOnce([
-      { _id: 123, title: "Test Collection" },
-    ]);
-    // 3. Per-collection search (Unsorted)
-    mockService.getBookmarks.mockResolvedValueOnce({ count: 0, items: [] });
-    // 4. Per-collection search (Test Collection)
-    mockService.getBookmarks.mockResolvedValueOnce({
-      count: 1,
-      items: [{ _id: 99 }],
-    });
-    // 5. Batch delete (fails)
-    mockService.batchDeleteBookmarksInCollection.mockResolvedValueOnce(false);
-
-    const result = await removeDuplicates.handler({ dryRun: false }, {
-      raindropService: mockService,
-    } as any);
-
-    const firstContent = result.content[0] as { type: "text"; text: string };
-    expect(firstContent.text).toContain("Fail Fast: Stopped after error");
-    expect(mockService.batchDeleteBookmarksInCollection).toHaveBeenCalledWith(
-      123,
-      [99],
-    );
+  it("deletes only freshly verified unannotated candidates, skipping notes and highlights", async () => {
+    mockDuplicates([1, 2, 3, 4, 5]);
+    service.getBookmark.mockImplementation(async (id: number) => ({
+      1: verified(1),
+      2: { ...verified(2), note: "valuable note" },
+      3: { ...verified(3), highlights: [{ text: "highlight" }] },
+      4: { _id: 4 }, // missing metadata is NOT proof of safety
+      5: verified(5),
+    })[id]);
+    const response = await tool.handler({}, ctx());
+    expect(textOf(response)).toContain("Deleted 1 verified");
+    expect(textOf(response)).toContain("protected: 2, unverifiable: 1");
+    expect(service.getBookmark).toHaveBeenCalledWith(1, true);
+    expect(service.batchDeleteBookmarksInCollection).toHaveBeenCalledExactlyOnceWith(123, [5]);
   });
 
-  it("successfully deletes duplicates across multiple collections", async () => {
-    // 1. Global search
-    mockService.getBookmarks.mockResolvedValueOnce({ count: 2, items: [] });
-    // 2. Get collections
-    mockService.getCollections.mockResolvedValueOnce([
-      { _id: 123, title: "Col A" },
-      { _id: 456, title: "Col B" },
-    ]);
-    // 3. Unsorted
-    mockService.getBookmarks.mockResolvedValueOnce({ count: 0, items: [] });
-    // 4. Col A
-    mockService.getBookmarks.mockResolvedValueOnce({
-      count: 1,
-      items: [{ _id: 1 }],
-    });
-    // 5. Col B
-    mockService.getBookmarks.mockResolvedValueOnce({
-      count: 1,
-      items: [{ _id: 2 }],
-    });
-    // 6. Delete A
-    mockService.batchDeleteBookmarksInCollection.mockResolvedValueOnce(true);
-    // 7. Delete B
-    mockService.batchDeleteBookmarksInCollection.mockResolvedValueOnce(true);
-
-    const result = await removeDuplicates.handler({ dryRun: false }, {
-      raindropService: mockService,
-    } as any);
-
-    const firstContent = result.content[0] as { type: "text"; text: string };
-    expect(firstContent.text).toContain("Successfully deleted 2 duplicates");
-    expect(mockService.batchDeleteBookmarksInCollection).toHaveBeenCalledTimes(
-      2,
+  it("uses -1 for Unsorted and never sends a deletion to all-bookmarks id 0", async () => {
+    service.getCollections.mockResolvedValueOnce([]);
+    service.getBookmark.mockImplementation(async (id: number) => verified(id, -1));
+    service.getBookmarks.mockImplementation(async (params: { collection?: number }) =>
+      params.collection === undefined ? { count: 2, items: [] } :
+      params.collection === -1 ? { count: 2, items: [{ _id: 77 }, { _id: 78 }] } :
+      (() => { throw new Error("Unexpected collection"); })(),
     );
+    const response = await tool.handler({}, ctx());
+    expect(textOf(response)).toContain("Deleted 1 verified");
+    expect(service.batchDeleteBookmarksInCollection).toHaveBeenCalledWith(-1, [78]);
+    expect(service.batchDeleteBookmarksInCollection).not.toHaveBeenCalledWith(0, expect.anything());
   });
 
-  it("batches deletions in groups of 50", async () => {
-    const manyIds = Array.from({ length: 120 }, (_, i) => i + 1);
-    const manyItems = manyIds.map((id) => ({ _id: id }));
-    // 1. Global search
-    mockService.getBookmarks.mockResolvedValueOnce({ count: 120, items: [] });
-    // 2. Get collections
-    mockService.getCollections.mockResolvedValueOnce([
-      { _id: 123, title: "Test" },
-    ]);
-    // 3. Unsorted
-    mockService.getBookmarks.mockResolvedValueOnce({ count: 0, items: [] });
-    // 4. Test Collection (Discovery)
-    mockService.getBookmarks.mockResolvedValueOnce({
-      count: 120,
-      items: manyItems.slice(0, 50),
+  it("scans nested child collections rather than only root collections", async () => {
+    service.getAllChildCollections.mockResolvedValueOnce([{ _id: 456, title: "Nested" }]);
+    service.getBookmark.mockImplementation(async (id: number) => verified(id, 456));
+    service.getBookmarks.mockImplementation(async (params: { collection?: number }) => {
+      if (params.collection === undefined) return { count: 2, items: [] };
+      if (params.collection === 456) return { count: 2, items: [{ _id: 88 }, { _id: 89 }] };
+      return { count: 0, items: [] };
     });
-    mockService.getBookmarks.mockResolvedValueOnce({
-      count: 120,
-      items: manyItems.slice(50, 100),
-    });
-    mockService.getBookmarks.mockResolvedValueOnce({
-      count: 120,
-      items: manyItems.slice(100, 120),
-    });
-    // 5. Deletions (3 batches: 50, 50, 20)
-    mockService.batchDeleteBookmarksInCollection.mockResolvedValue(true);
+    const response = await tool.handler({}, ctx());
+    expect(textOf(response)).toContain("Deleted 1 verified");
+    expect(service.getAllChildCollections).toHaveBeenCalledExactlyOnceWith(undefined);
+    expect(service.batchDeleteBookmarksInCollection).toHaveBeenCalledWith(456, [89]);
+  });
 
-    const result = await removeDuplicates.handler({ dryRun: false }, {
-      raindropService: mockService,
-    } as any);
+  it("fails closed when all candidates lack complete metadata", async () => {
+    mockDuplicates([1, 2]);
+    service.getBookmark.mockResolvedValue({ _id: 1, note: "" });
+    const response = await tool.handler({}, ctx());
+    expect(textOf(response)).toContain("nothing deleted");
+    expect(service.batchDeleteBookmarksInCollection).not.toHaveBeenCalled();
+  });
 
-    const firstContent = result.content[0] as { type: "text"; text: string };
-    expect(firstContent.text).toContain("Successfully deleted 120 duplicates");
-    expect(mockService.batchDeleteBookmarksInCollection).toHaveBeenCalledTimes(
-      3,
+  it("paginates and deletes in upstream batches of 50, not a global 50 cap", async () => {
+    const ids = Array.from({ length: 120 }, (_, i) => i + 1);
+    mockDuplicates(ids);
+    const response = await tool.handler({ skipCache: true }, ctx());
+    expect(textOf(response)).toContain("Deleted 119 verified");
+    expect(service.batchDeleteBookmarksInCollection).toHaveBeenCalledTimes(3);
+    expect(service.batchDeleteBookmarksInCollection).toHaveBeenNthCalledWith(1, 123, ids.slice(1, 51));
+    expect(service.batchDeleteBookmarksInCollection).toHaveBeenNthCalledWith(2, 123, ids.slice(51, 101));
+    expect(service.batchDeleteBookmarksInCollection).toHaveBeenNthCalledWith(3, 123, ids.slice(101));
+  });
+
+  it("preserves the only verified copy of each distinct URL", async () => {
+    mockDuplicates([10, 11]);
+    service.getBookmark.mockImplementation(async (id: number) => ({
+      ...verified(id), link: `https://example.test/item-${id}`,
+    }));
+    const response = await tool.handler({}, ctx());
+    expect(textOf(response)).toContain("Retained collection-local copies: 2");
+    expect(service.batchDeleteBookmarksInCollection).not.toHaveBeenCalled();
+  });
+
+  it("keeps the same link in different collections instead of erasing organization", async () => {
+    service.getCollections.mockResolvedValueOnce([{ _id: 123 }, { _id: 456 }]);
+    service.getBookmarks.mockImplementation(async (params: { collection?: number }) => {
+      if (params.collection === undefined) return { count: 2, items: [] };
+      if (params.collection === -1) return { count: 0, items: [] };
+      return { count: 1, items: [{ _id: params.collection === 123 ? 51 : 52 }] };
+    });
+    service.getBookmark.mockImplementation(async (id: number) =>
+      verified(id, id === 51 ? 123 : 456),
     );
-    expect(
-      mockService.batchDeleteBookmarksInCollection,
-    ).toHaveBeenNthCalledWith(1, 123, manyIds.slice(0, 50));
-    expect(
-      mockService.batchDeleteBookmarksInCollection,
-    ).toHaveBeenNthCalledWith(2, 123, manyIds.slice(50, 100));
-    expect(
-      mockService.batchDeleteBookmarksInCollection,
-    ).toHaveBeenNthCalledWith(3, 123, manyIds.slice(100, 120));
+    const result = await tool.handler({}, ctx());
+    expect(textOf(result)).toContain("Retained collection-local copies: 2");
+    expect(service.batchDeleteBookmarksInCollection).not.toHaveBeenCalled();
+  });
+
+  it("protects tags, favorites and reminders even when notes and highlights are empty", async () => {
+    mockDuplicates([1, 2, 3, 4, 5]);
+    service.getBookmark.mockImplementation(async (id: number) => ({
+      1: verified(1),
+      2: { ...verified(2), tags: ["important"] },
+      3: { ...verified(3), important: true },
+      4: { ...verified(4), reminder: { date: "2026-12-01T00:00:00Z" } },
+      5: { ...verified(5), tags: undefined },
+    })[id]);
+    const result = await tool.handler({}, ctx());
+    expect(textOf(result)).toContain("nothing deleted");
+    expect(textOf(result)).toContain("protected: 3, unverifiable: 1");
+    expect(service.batchDeleteBookmarksInCollection).not.toHaveBeenCalled();
+  });
+
+  it("stops before sending a batch if the candidate gains metadata after discovery", async () => {
+    mockDuplicates([1, 2, 3]);
+    let secondRead = 0;
+    service.getBookmark.mockImplementation(async (id: number) => {
+      if (id !== 2) return verified(id);
+      secondRead++;
+      return secondRead === 1 ? verified(2) : { ...verified(2), note: "new note" };
+    });
+    const result = await tool.handler({}, ctx());
+    expect(textOf(result)).toContain("current batch not sent");
+    expect(service.batchDeleteBookmarksInCollection).not.toHaveBeenCalled();
+  });
+
+  it("aborts before any deletion when pagination is inconsistent", async () => {
+    const ids = Array.from({ length: 60 }, (_, i) => i + 1);
+    mockDuplicates(ids);
+    service.getBookmarks.mockImplementation(async (p: {collection?: number; page?: number}) =>
+      p.collection === undefined ? { count: 60, items: [] } :
+      p.collection === -1 ? { count: 0, items: [] } :
+      p.page === 1 ? { count: 59, items: ids.slice(50).map(_id => ({_id})) } :
+      { count: 60, items: ids.slice(0, 50).map(_id => ({_id})) }
+    );
+    await expect(tool.handler({}, ctx())).rejects.toThrow(/pagination/);
+    expect(service.batchDeleteBookmarksInCollection).not.toHaveBeenCalled();
+  });
+
+  it("stops after an uncertain batch failure without retrying", async () => {
+    const ids = Array.from({ length: 75 }, (_, i) => i + 1);
+    mockDuplicates(ids);
+    service.batchDeleteBookmarksInCollection
+      .mockResolvedValueOnce(true).mockRejectedValueOnce(new Error("upstream timeout"));
+    const response = await tool.handler({}, ctx());
+    expect(textOf(response)).toContain("outcome is unknown");
+    expect(textOf(response)).toContain("50 items previously acknowledged");
+    expect(service.batchDeleteBookmarksInCollection).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns a bounded uncertain outcome on false instead of continuing", async () => {
+    mockDuplicates([7, 8]);
+    service.batchDeleteBookmarksInCollection.mockResolvedValueOnce(false);
+    const response = await tool.handler({}, ctx());
+    expect(textOf(response)).toContain("outcome is uncertain");
+    expect(service.batchDeleteBookmarksInCollection).toHaveBeenCalledTimes(1);
   });
 });
