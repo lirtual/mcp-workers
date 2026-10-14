@@ -3,6 +3,9 @@ const PAIRING_DOMAIN = "remote-control:v2:pending:";
 const MAX_BOOTSTRAP_BODY = 4096;
 const MAX_PENDING = 24;
 const TTL_MS = 600_000;
+const BUDGET_WINDOW_MS = 60_000;
+const MAX_REGISTRATIONS_PER_MINUTE = 12;
+const MAX_LOOKUPS_PER_MINUTE = 30;
 const te = new TextEncoder();
 
 export interface PendingDevice {
@@ -16,6 +19,26 @@ export interface PendingDevice {
 
 type PendingStorage = Pick<DurableObjectStorage, "get" | "put" | "list" | "delete" | "transaction">;
 type Registration = { name: string; public_key: string; code_verifier: string; proof: string; issued_at: number };
+type AttemptBudget = { reset_at: number; count: number };
+
+/**
+ * Limits preapproval abuse using one tiny durable counter per operation, without
+ * adding a KV/R2 service, an always-on alarm, or IP-based device tracking.
+ * A sustained hostile flood can still deny service; this gate bounds DO work.
+ */
+async function consumeBudget(storage: PendingStorage, action: "register" | "lookup", max: number): Promise<boolean> {
+  const key = "budget:" + action;
+  return storage.transaction(async (txn) => {
+    const now = Date.now();
+    const current = await txn.get<AttemptBudget>(key);
+    if (current && current.reset_at > now && current.count >= max) return false;
+    const next = current && current.reset_at > now
+      ? { reset_at: current.reset_at, count: current.count + 1 }
+      : { reset_at: now + BUDGET_WINDOW_MS, count: 1 };
+    await txn.put(key, next);
+    return true;
+  });
+}
 
 function asBytes(base64: string): Uint8Array {
   if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(base64)) {
@@ -57,6 +80,10 @@ export async function verifyRegistration(payload: unknown): Promise<{ record: Pe
 }
 
 export async function registerPending(storage: PendingStorage, payload: unknown): Promise<{ status: number; body: object }> {
+  // Charge even invalid requests before performing public-key signature work.
+  if (!await consumeBudget(storage, "register", MAX_REGISTRATIONS_PER_MINUTE)) {
+    return { status: 429, body: { error: "rate_limited" } };
+  }
   const verified = await verifyRegistration(payload);
   if (!verified) return { status: 400, body: { error: "invalid_request" } };
   return storage.transaction(async (txn) => {
@@ -76,6 +103,9 @@ export async function registerPending(storage: PendingStorage, payload: unknown)
 
 export async function lookupPending(storage: PendingStorage, verifier: string): Promise<{ status: number; body: object }> {
   if (!/^[a-f0-9]{64}$/.test(verifier)) return { status: 400, body: { error: "invalid_code" } };
+  if (!await consumeBudget(storage, "lookup", MAX_LOOKUPS_PER_MINUTE)) {
+    return { status: 429, body: { error: "rate_limited" } };
+  }
   const record = await storage.get<PendingDevice>("pending:" + verifier);
   if (!record || record.expires_at <= Date.now()) return { status: 404, body: { error: "not_found" } };
   // Public key only appears as an immutable fingerprint to the authenticated MCP owner.
