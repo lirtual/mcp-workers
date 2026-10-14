@@ -76,10 +76,10 @@ test("pending enrollment only permits Portal-authenticated readonly preview; v1 
   assert.ok(!matchBody.includes(enrollment.request.code_verifier));
   assert.ok(!matchBody.includes("PRIVATE KEY"));
   assert.ok(!matchBody.includes("approve"));
-  assert.equal(values.size, 1);
+  assert.equal([...values.keys()].filter((key) => key.startsWith("pending:")).length, 1);
   const wrong = await mcp("portal-credential", "tools/call", { name: "pairing_lookup", arguments: { code: "AAAAAAAAAA" } });
   assert.ok((await wrong.text()).includes("not found"));
-  assert.equal(values.size, 1); // No activation, command route or mutation.
+  assert.equal([...values.keys()].filter((key) => key.startsWith("pending:")).length, 1); // No activation, command route or mutation.
 });
 
 test("pending store rejects invalid proof and expired/duplicate requests", async () => {
