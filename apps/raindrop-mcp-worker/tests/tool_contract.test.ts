@@ -166,12 +166,14 @@ describe("preview-first cleanup MCP tools/list and tools/call entry contract", (
         ["remove_duplicates", { confirm: true }],
         ["remove_duplicates", { unknown: 1 }],
       ] as const) {
+        let rejected = false;
         try {
           const result = await client.callTool({ name, arguments: args });
-          expect(result.isError).toBe(true);
-        } catch (error) {
-          expect(error).toBeDefined();
+          rejected = result.isError === true;
+        } catch {
+          rejected = true;
         }
+        expect(rejected).toBe(true);
       }
       expect(getStats).toHaveBeenCalled();
       expect(roots).toHaveBeenCalled();
