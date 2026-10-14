@@ -87,3 +87,27 @@ _Avoid_: Relabeling an uncertain operation as failed or safe to retry.
 - Actual permissions and secret exposure of the **confirmed existing normal Linux login account**, ingress compromise risk, limits (payload, output, time), supported tool shapes and rollout/monitoring policy.
 
 Architecture and deployment implementation details belong in the research draft and ADRs, not in this vocabulary document.
+
+## Future product goal — multi-device onboarding (discovery, 2026-10-14)
+
+The owner wants to install Remote Control MCP support on additional owned devices with minimal manual setup, then control a selected installed device through the **same** Remote Control MCP experience. This is a **product goal**, not an approved change to the v1 architecture, transport or production configuration.
+
+**Managed Device (candidate term)**:
+A device deliberately connected to the owner's Remote Control MCP for remote operations. It is distinct from the AI client, the human owner, and an individual managed process.
+
+**Device Onboarding (candidate term)**:
+The owner-initiated process of installing and making an additional device available for remote operations, without requiring the owner to repeat the existing manual setup on every device.
+_Avoid_: Equating easy installation with anonymous or automatically trusted remote access.
+
+**Device Selection (candidate term)**:
+The intent to direct a remote operation at a particular managed device rather than implicitly treating all devices as the same host.
+
+### Design questions not yet settled
+
+- Which operating systems and environments must the first installer support?
+- What user action counts as “one-click” or near-one-click installation and approval?
+- How should each device establish connectivity, prove identity, and recover after reboot or disconnection?
+- How should the owner select, rename, remove, or revoke a device?
+- How to evolve single-device v1 without disrupting its working installation or falsely claiming that production already supports multi-device control?
+
+Do not modify the accepted v1 ADRs solely on the basis of this product goal. Record a new architecture decision after the trade-offs above have been resolved.
