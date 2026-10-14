@@ -65,12 +65,21 @@ export async function refreshExpiredImaImageUrls(
   const workItems = pending.map((item) => {
     const expectedPath = new URL(item.sourceUrl).pathname;
     const mediaId = mediaByCosKey.get(expectedPath);
-    // Legacy IMA documents may expose an image URL but no cosKey/mediaId.
-    // Allow the shard to verify that the original URL is still reachable, but
-    // never silently export an inaccessible (typically expired) image link.
-    return mediaId
-      ? { ...item, mediaId }
-      : { ...item, mediaId: "", mode: "probe_only" as const };
+    if (mediaId) return { ...item, mediaId };
+
+    // A known-expired (or nearly expired) COS signature cannot safely be
+    // preserved, even if a cache or HEAD probe temporarily returns 200.
+    // Without mediaId there is no supported way to obtain a fresh signature.
+    if (item.mode === "refresh") {
+      throw new ImaApiError(
+        `IMA 图片无法完整导出：原签名已过期且 format=2 缺少 mediaId，无法重签 ${expectedPath}`,
+        110011,
+      );
+    }
+
+    // Legacy links without a parseable signature may still be public.
+    // Verify reachability before preserving the original URL.
+    return { ...item, mediaId: "", mode: "probe_only" as const };
   });
 
   const namespace = api.env.IMA_IMAGE_REFRESH_SHARD;
@@ -101,6 +110,14 @@ export async function processImageRefreshBatch(
   const results: ImageRefreshBatchResult[] = [];
   for (const item of items) {
     if (item.mode === "probe_only") {
+      // Fail closed if called directly with a signed URL (the coordinator
+      // should only issue this mode for unparseable/unsigned legacy links).
+      if (parseSignEnd(item.sourceUrl) !== undefined) {
+        throw new ImaApiError(
+          "IMA 图片无法完整导出：有签名的图片不能使用 probe_only 模式",
+          110011,
+        );
+      }
       if (await headDirect(env, item.sourceUrl)) {
         results.push({ sourceUrl: item.sourceUrl, preserved: true });
         continue;
