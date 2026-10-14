@@ -19,6 +19,17 @@ Prior research found Cloudflare Mesh + Workers VPC Network supports cross-networ
 5. **Q12 — v1 isolation:** Develop and test v2 separately; v1 remains operational and unchanged until the owner independently authorizes a rollback-safe production cutover. Maintaining two versions during transition must not require registering a second permanent user-facing MCP plugin.
 6. **Release gating:** This ADR accepts the **architecture choice**, not the safety or availability claims of an unbuilt system. Implementing new public pairing endpoints, test deployments, production Worker/Agent modifications and new Secrets each require their own approved phase. No production rollout is permitted until the explicit proof gates below pass.
 
+## Protocol decisions accepted afterward — 2026-10-15
+
+[ADR-0019](./0019-pairing-code-device-keys-and-72-hour-gate.md) settles the seventh-round defaults that were open when this document was written:
+
+- **Q17=A:** separate Portal-authenticated lookup/review and explicit approve of the same pending device fingerprint; real-client confirmation/human-intent proof remains a blocking acceptance test.
+- **Q18=A:** a single-use **10-character random Base32 (50-bit) code**, expiring after **10 minutes**, never reused or treated as a long-lived credential.
+- **Q19=A:** the fresh installation creates its own private/public keypair and authenticates with a fresh signed challenge, not a shared per-device Bearer.
+- **Q20=A:** five simulated Agents for **72 continuous hours** in nonproduction with Hibernation, quota, reconnect and recovery evidence required for release.
+
+The [lean v2 technical Spec](../V2-MULTI-DEVICE-SPEC.md) records minimal interfaces and test seams. Any earlier mention of an unchosen pairing duration, device-credential type or 24–72h soak in this ADR is now historical and subordinate to ADR-0019. No v2 code, Cloudflare resources, CI or production change is authorized.
+
 ## Essential security invariants — protocol specifics still to be agreed
 
 - Separate caller/MCP ingress token, pairing bootstrap code and long-lived device key. Never send the Portal Bearer to Agent or log it, and never treat the one-time code as a permanent device secret.
