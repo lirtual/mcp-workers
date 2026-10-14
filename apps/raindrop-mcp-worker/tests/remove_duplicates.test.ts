@@ -1,9 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupTools } from "../src/tools/cleanup.js";
 
-type Candidate = { _id: number; link?: string; note?: string; highlights?: unknown[] };
-const verified = (id: number): Candidate => ({
+type Candidate = {
+  _id: number; link?: string; note?: string; highlights?: unknown[];
+  tags?: string[]; important?: boolean; reminder?: unknown;
+  collection?: { $id: number };
+};
+const verified = (id: number, collectionId = 123): Candidate => ({
   _id: id, link: "https://example.test/duplicate", note: "", highlights: [],
+  tags: [], important: false, collection: { $id: collectionId },
 });
 
 describe("remove_duplicates — direct execution and safe eligibility", () => {
@@ -61,8 +66,8 @@ describe("remove_duplicates — direct execution and safe eligibility", () => {
     mockDuplicates([1, 2, 3, 4, 5]);
     service.getBookmark.mockImplementation(async (id: number) => ({
       1: verified(1),
-      2: { _id: 2, link: "https://example.test/duplicate", note: "valuable note", highlights: [] },
-      3: { _id: 3, link: "https://example.test/duplicate", note: "", highlights: [{ text: "highlight" }] },
+      2: { ...verified(2), note: "valuable note" },
+      3: { ...verified(3), highlights: [{ text: "highlight" }] },
       4: { _id: 4 }, // missing metadata is NOT proof of safety
       5: verified(5),
     })[id]);
@@ -75,6 +80,7 @@ describe("remove_duplicates — direct execution and safe eligibility", () => {
 
   it("uses -1 for Unsorted and never sends a deletion to all-bookmarks id 0", async () => {
     service.getCollections.mockResolvedValueOnce([]);
+    service.getBookmark.mockImplementation(async (id: number) => verified(id, -1));
     service.getBookmarks.mockImplementation(async (params: { collection?: number }) =>
       params.collection === undefined ? { count: 2, items: [] } :
       params.collection === -1 ? { count: 2, items: [{ _id: 77 }, { _id: 78 }] } :
@@ -88,6 +94,7 @@ describe("remove_duplicates — direct execution and safe eligibility", () => {
 
   it("scans nested child collections rather than only root collections", async () => {
     service.getAllChildCollections.mockResolvedValueOnce([{ _id: 456, title: "Nested" }]);
+    service.getBookmark.mockImplementation(async (id: number) => verified(id, 456));
     service.getBookmarks.mockImplementation(async (params: { collection?: number }) => {
       if (params.collection === undefined) return { count: 2, items: [] };
       if (params.collection === 456) return { count: 2, items: [{ _id: 88 }, { _id: 89 }] };
@@ -124,7 +131,50 @@ describe("remove_duplicates — direct execution and safe eligibility", () => {
       ...verified(id), link: `https://example.test/item-${id}`,
     }));
     const response = await tool.handler({}, ctx());
-    expect(textOf(response)).toContain("Kept canonical copies: 2");
+    expect(textOf(response)).toContain("Retained collection-local copies: 2");
+    expect(service.batchDeleteBookmarksInCollection).not.toHaveBeenCalled();
+  });
+
+  it("keeps the same link in different collections instead of erasing organization", async () => {
+    service.getCollections.mockResolvedValueOnce([{ _id: 123 }, { _id: 456 }]);
+    service.getBookmarks.mockImplementation(async (params: { collection?: number }) => {
+      if (params.collection === undefined) return { count: 2, items: [] };
+      if (params.collection === -1) return { count: 0, items: [] };
+      return { count: 1, items: [{ _id: params.collection === 123 ? 51 : 52 }] };
+    });
+    service.getBookmark.mockImplementation(async (id: number) =>
+      verified(id, id === 51 ? 123 : 456),
+    );
+    const result = await tool.handler({}, ctx());
+    expect(textOf(result)).toContain("Retained collection-local copies: 2");
+    expect(service.batchDeleteBookmarksInCollection).not.toHaveBeenCalled();
+  });
+
+  it("protects tags, favorites and reminders even when notes and highlights are empty", async () => {
+    mockDuplicates([1, 2, 3, 4, 5]);
+    service.getBookmark.mockImplementation(async (id: number) => ({
+      1: verified(1),
+      2: { ...verified(2), tags: ["important"] },
+      3: { ...verified(3), important: true },
+      4: { ...verified(4), reminder: { date: "2026-12-01T00:00:00Z" } },
+      5: { ...verified(5), tags: undefined },
+    })[id]);
+    const result = await tool.handler({}, ctx());
+    expect(textOf(result)).toContain("nothing deleted");
+    expect(textOf(result)).toContain("protected: 3, unverifiable: 1");
+    expect(service.batchDeleteBookmarksInCollection).not.toHaveBeenCalled();
+  });
+
+  it("stops before sending a batch if the candidate gains metadata after discovery", async () => {
+    mockDuplicates([1, 2, 3]);
+    let secondRead = 0;
+    service.getBookmark.mockImplementation(async (id: number) => {
+      if (id !== 2) return verified(id);
+      secondRead++;
+      return secondRead === 1 ? verified(2) : { ...verified(2), note: "new note" };
+    });
+    const result = await tool.handler({}, ctx());
+    expect(textOf(result)).toContain("current batch not sent");
     expect(service.batchDeleteBookmarksInCollection).not.toHaveBeenCalled();
   });
 
