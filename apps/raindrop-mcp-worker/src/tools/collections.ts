@@ -88,7 +88,7 @@ const collectionListTool = defineTool({
               (collection) =>
                 `- ${collection.title} (ID: ${collection.id}, Items: ${collection.count})`,
             ),
-          ].join("\\n"),
+          ].join("\n"),
         ),
       ],
       structuredContent: {
