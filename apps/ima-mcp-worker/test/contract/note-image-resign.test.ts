@@ -89,6 +89,86 @@ function format2Response(entries: Array<{ mediaId: string; cosKey: string }>) {
   }), { status: 200, headers: { "content-type": "application/json" } });
 }
 
+test("note export preserves a reachable legacy image without media metadata", async () => {
+  const path = "/2/user/legacy-readable";
+  const url = imaUrl(path, 1, 2, "old-but-reachable");
+  const { namespace, batches } = createShardNamespace((request) =>
+    processImageRefreshBatch(bareEnv(), credentials, request.items));
+  let headCalls = 0;
+  let mediaCalls = 0;
+  const { restore, uploaded } = setupExportFetch((req) => {
+    if (req.url.endsWith("get_doc_content") && req.body.target_content_format === 1) {
+      return new Response(JSON.stringify({ code: 0, data: { content: `# Legacy\\n![img](${url})` } }), {
+        status: 200, headers: { "content-type": "application/json" },
+      });
+    }
+    if (req.url.endsWith("get_doc_content") && req.body.target_content_format === 2) {
+      // Production legacy image nodes contain a URL but no cosKey/mediaId.
+      return new Response(JSON.stringify({
+        code: 0, data: { content: JSON.stringify([{ type: "cloud_image", url }]) },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (req.method === "HEAD" && req.url === url) {
+      headCalls++;
+      return new Response(null, { status: 200 });
+    }
+    if (req.url.endsWith("get_media_info")) mediaCalls++;
+    return new Response("Not found", { status: 404 });
+  });
+
+  try {
+    const notes = new RefreshingImaNotes(new ImaClient(envForExport(namespace), credentials));
+    const result = await notes.exportNote("note_legacy_reachable");
+    assert.equal(result.expires_in, "24h");
+    assert.equal(headCalls, 1);
+    assert.equal(mediaCalls, 0);
+    assert.equal(batches.length, 1);
+    assert.equal(batches[0].items[0].mode, "probe_only");
+    assert.equal(batches[0].items[0].mediaId, "");
+    assert.equal(uploaded.length, 1);
+    assert.match(await uploaded[0].text(), /old-but-reachable/);
+  } finally {
+    restore();
+  }
+});
+
+test("note export fails before public upload if a legacy image is inaccessible and has no mediaId", async () => {
+  const path = "/2/user/legacy-unavailable";
+  const url = imaUrl(path, 1, 2, "expired");
+  const { namespace } = createShardNamespace((request) =>
+    processImageRefreshBatch(bareEnv(), credentials, request.items));
+  let headCalls = 0;
+  const { restore, uploaded } = setupExportFetch((req) => {
+    if (req.url.endsWith("get_doc_content") && req.body.target_content_format === 1) {
+      return new Response(JSON.stringify({ code: 0, data: { content: `![img](${url})` } }), {
+        status: 200, headers: { "content-type": "application/json" },
+      });
+    }
+    if (req.url.endsWith("get_doc_content") && req.body.target_content_format === 2) {
+      return new Response(JSON.stringify({
+        code: 0, data: { content: JSON.stringify([{ type: "cloud_image", url }]) },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (req.method === "HEAD" && req.url === url) {
+      headCalls++;
+      return new Response(null, { status: 403 });
+    }
+    return new Response("Not found", { status: 404 });
+  });
+
+  try {
+    const notes = new RefreshingImaNotes(new ImaClient(envForExport(namespace), credentials));
+    await assert.rejects(
+      () => notes.exportNote("note_legacy_unavailable"),
+      /原链接不可访问且 format=2 缺少 mediaId/,
+    );
+    assert.equal(headCalls, 1);
+    assert.equal(uploaded.length, 0);
+  } finally {
+    restore();
+  }
+});
+
 test("note export keeps fresh signatures without format=2 or shard RPC", async () => {
     const url = imaUrl("/2/user/hash-fresh", 4_102_444_800, 4_102_473_600, "fresh-existing");
   const { restore, captured, uploaded } = setupExportFetch((req) => {
