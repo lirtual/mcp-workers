@@ -15,7 +15,7 @@ Retain these **independent boundaries**: `MCP_ACCESS_TOKEN` and upstream/device 
 ## Decisions fixed by grilling
 
 - Q1=A, Q3=A: eliminate duplicated tool-permission switches and server-side user confirmations, not ingress auth or target privileges.
-- Q2=B, Q4=A, Q7=A, Q10=A, Q13=A, Q19=A: one explicit `connection` field/principal per logical Database connection, separate safe tool categories, no old read/write/admin parser compatibility; DDL direct-only; future separately approved short fail-closed maintenance is permissible.
+- Q2=B, Q4=A, Q7=A, Q10=A, Q13=A, Q19=A, refined 2026-10-14: one upstream principal per named Database connection; **flat multi-connection `DATABASE_CONFIG`** maps each ID directly to a SQL URL string or strictly shaped Hyperdrive reference `{hyperdrive,dialect}` (no nested `connection`, enabled/display flags, or per-connection overrides). Retain safe tool categories and global limits; no old read/write/admin parser compatibility; DDL direct-only; future separately approved short fail-closed maintenance is permissible.
 - Q5=A and Q8=A **superseded by Q14=B**; Q11: Raindrop keeps existing cleanup names and executes immediately with no `confirm`, `dryRun` or preview tools.
 - Q17=A: Raindrop existing conservative destructive selection, batch/scope limits and partial/unknown-result safeguards stay.
 - Q18=A: reconnect/rediscover Raindrop tools in the **real ChatGPT** client and verify new same-name destructive semantics before declaring that Worker's release accepted.
@@ -48,10 +48,10 @@ Retain these **independent boundaries**: `MCP_ACCESS_TOKEN` and upstream/device 
 
 ### I3 — Database: single principal, retained safe tools
 
-- Change `DATABASE_CONFIG` parser and types to one `connection` entry per logical database ID: a direct connection URL or Hyperdrive reference, with existing optional bounds. Reject old `read`/`write`/`admin` role-shaped fields with a non-secret migration error; no dual parser or guess of the preferred credential.
-- Replace separate `resolveWriteConnection` / `resolveAdminConnection` credential lookups with a shared principal resolution plus operation-specific limits. Preserve distinct MCP tools for read/structured insert-update-delete/safe DDL, input validation, parameterization, max-affected rollback and query bounds.
+- Change `DATABASE_CONFIG` parser and types to one **flat map** of 1–50 named logical connections. Each value is a SQL URL string or strict `{hyperdrive,dialect}` reference. Do **not** require or accept nested `connection` or `read`/`write`/`admin`, `enabled`, `displayName`, `defaultSchema` or per-connection-limit flags. Reject old/unknown schemas with non-secret migration errors; no dual parser or guessing credentials. Keep global safe query/write limits.
+- Replace separate `resolveWriteConnection` / `resolveAdminConnection` credential lookups with shared per-ID principal resolution plus operation-specific limits. Preserve `list_connections` and existing tool `connection` inputs: omit only if catalog contains exactly one entry; require explicit ID for multiple; reject unknown IDs. Preserve read/structured insert-update-delete/safe DDL tools, `schema` inputs, input validation, parameterization, max-affected rollback and query bounds.
 - Remove duplicate protocol `input_required` destructive-DDL confirmation, preserving accurate `destructiveHint`. Keep Safe Admin operations direct-only for DDL; reject Hyperdrive DDL without silent direct fallback.
-- Offline: `pnpm ... check` and **actual MySQL 8.4/PostgreSQL 17** integration must pass, including read-only server-grant denials, write-affected limits, direct DDL, Hyperdrive DDL refusal, old-config rejection and secret-safe error formatting.
+- Offline: `pnpm ... check` and **actual MySQL 8.4/PostgreSQL 17** integration must pass, including multiple named connections, direct URL and strict Hyperdrive object, one-connection implicit selection, multi-connection omission failure, invalid ID and legacy/unknown-key rejection, read-only server-grant denials, write-affected limits, direct DDL, Hyperdrive DDL refusal and secret-safe error formatting.
 - Configuration migration is a **future operator-controlled Cloudflare Secret change**, not a GitHub Actions variable or repository fixture with real credentials. Q19=A permits a separately approved short fail-closed interruption; no production Secret mutation or service disruption in the code stage.
 
 ### I4 — Remote Control: remove tool gates but not execution boundaries
