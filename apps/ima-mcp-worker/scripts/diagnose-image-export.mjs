@@ -13,9 +13,9 @@ const MAX_CONTENT_BYTES = 8 * 1024 * 1024;
 function extractMarkdownPaths(markdown) {
   if (typeof markdown !== "string") throw Object.assign(new Error("bad Markdown"), { code: "invalid_markdown" });
   const paths = new Set();
-  const pattern = /!\\[[^\\]]*\\]\\(\\s*(https:\\/\\/ima-notebook-prod\\.image\\.myqcloud\\.com\\/[^\\s)]+)[^)]*\\)/g;
+  const pattern = /!\[[^\]]*\]\(\s*(https:\/\/ima-notebook-prod\.image\.myqcloud\.com\/[^\s)]+)[^)]*\)/g;
   for (const match of markdown.matchAll(pattern)) {
-    try { paths.add(new URL(match[1].replace(/\\\\&/g, "&")).pathname); } catch {}
+    try { paths.add(new URL(match[1].replace(/\\&/g, "&")).pathname); } catch {}
   }
   return paths;
 }
