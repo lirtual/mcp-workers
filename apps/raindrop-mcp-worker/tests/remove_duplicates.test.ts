@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupTools } from "../src/tools/cleanup.js";
 
-type Candidate = { _id: number; note?: string; highlights?: unknown[] };
-const verified = (id: number): Candidate => ({ _id: id, note: "", highlights: [] });
+type Candidate = { _id: number; link?: string; note?: string; highlights?: unknown[] };
+const verified = (id: number): Candidate => ({
+  _id: id, link: "https://example.test/duplicate", note: "", highlights: [],
+});
 
 describe("remove_duplicates — direct execution and safe eligibility", () => {
   const tool = cleanupTools.find((item) => item.name === "remove_duplicates")! as any;
@@ -59,28 +61,28 @@ describe("remove_duplicates — direct execution and safe eligibility", () => {
     mockDuplicates([1, 2, 3, 4, 5]);
     service.getBookmark.mockImplementation(async (id: number) => ({
       1: verified(1),
-      2: { _id: 2, note: "valuable note", highlights: [] },
-      3: { _id: 3, note: "", highlights: [{ text: "highlight" }] },
+      2: { _id: 2, link: "https://example.test/duplicate", note: "valuable note", highlights: [] },
+      3: { _id: 3, link: "https://example.test/duplicate", note: "", highlights: [{ text: "highlight" }] },
       4: { _id: 4 }, // missing metadata is NOT proof of safety
       5: { _id: 5, note: "", highlights: [] },
     })[id]);
     const response = await tool.handler({}, ctx());
-    expect(textOf(response)).toContain("Deleted 2 verified");
-    expect(textOf(response)).toContain("Protected: 2, unverifiable: 1");
+    expect(textOf(response)).toContain("Deleted 1 verified");
+    expect(textOf(response)).toContain("protected: 2, unverifiable: 1");
     expect(service.getBookmark).toHaveBeenCalledWith(1, true);
-    expect(service.batchDeleteBookmarksInCollection).toHaveBeenCalledExactlyOnceWith(123, [1, 5]);
+    expect(service.batchDeleteBookmarksInCollection).toHaveBeenCalledExactlyOnceWith(123, [5]);
   });
 
   it("uses -1 for Unsorted and never sends a deletion to all-bookmarks id 0", async () => {
     service.getCollections.mockResolvedValueOnce([]);
     service.getBookmarks.mockImplementation(async (params: { collection?: number }) =>
-      params.collection === undefined ? { count: 1, items: [] } :
-      params.collection === -1 ? { count: 1, items: [{ _id: 77 }] } :
+      params.collection === undefined ? { count: 2, items: [] } :
+      params.collection === -1 ? { count: 2, items: [{ _id: 77 }, { _id: 78 }] } :
       (() => { throw new Error("Unexpected collection"); })(),
     );
     const response = await tool.handler({}, ctx());
     expect(textOf(response)).toContain("Deleted 1 verified");
-    expect(service.batchDeleteBookmarksInCollection).toHaveBeenCalledWith(-1, [77]);
+    expect(service.batchDeleteBookmarksInCollection).toHaveBeenCalledWith(-1, [78]);
     expect(service.batchDeleteBookmarksInCollection).not.toHaveBeenCalledWith(0, expect.anything());
   });
 
@@ -89,15 +91,15 @@ describe("remove_duplicates — direct execution and safe eligibility", () => {
       id === 123 ? [{ _id: 456, title: "Nested" }] : [],
     );
     service.getBookmarks.mockImplementation(async (params: { collection?: number }) => {
-      if (params.collection === undefined) return { count: 1, items: [] };
-      if (params.collection === 456) return { count: 1, items: [{ _id: 88 }] };
+      if (params.collection === undefined) return { count: 2, items: [] };
+      if (params.collection === 456) return { count: 2, items: [{ _id: 88 }, { _id: 89 }] };
       return { count: 0, items: [] };
     });
     const response = await tool.handler({}, ctx());
     expect(textOf(response)).toContain("Deleted 1 verified");
     expect(service.getChildCollections).toHaveBeenCalledWith(123, undefined);
     expect(service.getChildCollections).toHaveBeenCalledWith(456, undefined);
-    expect(service.batchDeleteBookmarksInCollection).toHaveBeenCalledWith(456, [88]);
+    expect(service.batchDeleteBookmarksInCollection).toHaveBeenCalledWith(456, [89]);
   });
 
   it("fails closed when all candidates lack complete metadata", async () => {
@@ -112,11 +114,21 @@ describe("remove_duplicates — direct execution and safe eligibility", () => {
     const ids = Array.from({ length: 120 }, (_, i) => i + 1);
     mockDuplicates(ids);
     const response = await tool.handler({ skipCache: true }, ctx());
-    expect(textOf(response)).toContain("Deleted 120 verified");
+    expect(textOf(response)).toContain("Deleted 119 verified");
     expect(service.batchDeleteBookmarksInCollection).toHaveBeenCalledTimes(3);
-    expect(service.batchDeleteBookmarksInCollection).toHaveBeenNthCalledWith(1, 123, ids.slice(0, 50));
-    expect(service.batchDeleteBookmarksInCollection).toHaveBeenNthCalledWith(2, 123, ids.slice(50, 100));
-    expect(service.batchDeleteBookmarksInCollection).toHaveBeenNthCalledWith(3, 123, ids.slice(100));
+    expect(service.batchDeleteBookmarksInCollection).toHaveBeenNthCalledWith(1, 123, ids.slice(1, 51));
+    expect(service.batchDeleteBookmarksInCollection).toHaveBeenNthCalledWith(2, 123, ids.slice(51, 101));
+    expect(service.batchDeleteBookmarksInCollection).toHaveBeenNthCalledWith(3, 123, ids.slice(101));
+  });
+
+  it("preserves the only verified copy of each distinct URL", async () => {
+    mockDuplicates([10, 11]);
+    service.getBookmark.mockImplementation(async (id: number) => ({
+      ...verified(id), link: `https://example.test/item-${id}`,
+    }));
+    const response = await tool.handler({}, ctx());
+    expect(textOf(response)).toContain("Kept canonical copies: 2");
+    expect(service.batchDeleteBookmarksInCollection).not.toHaveBeenCalled();
   });
 
   it("aborts before any deletion when pagination is inconsistent", async () => {
@@ -144,7 +156,7 @@ describe("remove_duplicates — direct execution and safe eligibility", () => {
   });
 
   it("returns a bounded uncertain outcome on false instead of continuing", async () => {
-    mockDuplicates([7]);
+    mockDuplicates([7, 8]);
     service.batchDeleteBookmarksInCollection.mockResolvedValueOnce(false);
     const response = await tool.handler({}, ctx());
     expect(textOf(response)).toContain("outcome is uncertain");
