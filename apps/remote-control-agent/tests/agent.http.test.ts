@@ -378,10 +378,22 @@ test("start_process uses receipts once and managed sessions expose bounded outpu
     await new Promise((resolve) => setTimeout(resolve, 250));
     assert.equal(await readFile(countFile, "utf8"), "x");
 
-    const longOutput = JSON.parse(completedText((await output(longBody.session_id)).json)) as { output: string; state: string; eof: boolean };
-    assert.equal(longOutput.output, "-done");
-    assert.equal(longOutput.state, "completed");
-    assert.equal(longOutput.eof, true);
+    // The session and captured-output streams can settle in separate event-loop
+    // turns on busy CI runners. Wait for the bounded final state instead of
+    // assuming the 200 ms child has completed after a fixed 250 ms sleep.
+    let longOutput: { output: string; state: string; eof: boolean } | undefined;
+    for (let attempt = 0; attempt < 30; attempt++) {
+      longOutput = JSON.parse(completedText((await output(longBody.session_id)).json)) as {
+        output: string; state: string; eof: boolean;
+      };
+      if (longOutput.output === "-done" && longOutput.state === "completed" && longOutput.eof) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal(longOutput?.output, "-done");
+    assert.equal(longOutput?.state, "completed");
+    assert.equal(longOutput?.eof, true);
 
     const receipt = await fetch(`${agent.baseUrl}/internal/operations/long-once`, { headers: { "x-device-credential": DEVICE_TOKEN } });
     assert.equal((await receipt.json() as { state: string }).state, "completed");

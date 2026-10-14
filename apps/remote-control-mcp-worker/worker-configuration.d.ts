@@ -4,8 +4,6 @@ interface __BaseEnv_Env {
 	REMOTE_CONTROL_DEVICE: Fetcher;
 	MCP_ACCESS_TOKEN: string;
 	REMOTE_CONTROL_DEVICE_TOKEN: string;
-	REMOTE_CONTROL_ENABLE_FILE_WRITES?: string;
-	REMOTE_CONTROL_ENABLE_SHELL?: string;
 }
 declare namespace Cloudflare {
 	interface GlobalProps {

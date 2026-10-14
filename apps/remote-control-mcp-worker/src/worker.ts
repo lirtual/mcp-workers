@@ -286,7 +286,7 @@ const GET_OPERATION_STATUS_TOOL = {
 
 const START_PROCESS_TOOL = {
   name: "run_command", title: "Start development command",
-  description: "Start a development command with the Agent account's fixed local Shell. Commands run with that Linux account's full OS permissions. Every start requires a stable operation_id; after an uncertain response, query that ID before considering a new intent. A running command returns an Agent-owned session_id. Shell exposure remains separately gated by deployment authorization.",
+  description: "Start a development command with the Agent account's fixed local Shell. Commands run with that Linux account's full OS permissions. Every start requires a stable operation_id; after an uncertain response, query that ID before considering a new intent. A running command returns an Agent-owned session_id. Shell commands use the authorized Linux Agent account's current OS permissions.",
   inputSchema: { type: "object", properties: { operation_id: { type: "string", minLength: 1, maxLength: 128 }, command: { type: "string", minLength: 1, maxLength: 8192 }, timeout_ms: { type: "integer", minimum: 0, maximum: 30000, description: "Maximum time to wait before returning a running session; defaults to 1000 ms." } }, required: ["operation_id", "command"], additionalProperties: false },
   annotations: { title: "Start development command", readOnlyHint: false, destructiveHint: true, openWorldHint: true },
 } as const;
@@ -340,28 +340,10 @@ const LOCAL_TOOLS = [
   FORCE_TERMINATE_TOOL,
 ];
 
-const FILE_MUTATION_TOOL_NAMES = new Set([
-  "write_file",
-  "create_directory",
-  "replace_text",
-  "move_file",
-  "delete_file",
-]);
-const SHELL_TOOL_NAMES = new Set([
-  "run_command",
-  "list_sessions",
-  "read_session_output",
-  "send_input",
-  "stop_session",
-]);
-
-function isToolEnabled(name: unknown, env: Env): boolean {
-  if (typeof name !== "string") return false;
-  // Reject hidden legacy names; only the public tool catalog is callable.
-  if (!LOCAL_TOOLS.some((tool) => tool.name === name)) return false;
-  if (FILE_MUTATION_TOOL_NAMES.has(name)) return env.REMOTE_CONTROL_ENABLE_FILE_WRITES === "true";
-  if (SHELL_TOOL_NAMES.has(name)) return env.REMOTE_CONTROL_ENABLE_SHELL === "true";
-  return true;
+function isKnownTool(name: unknown): boolean {
+  // Only the curated public names are reachable. Private Agent method names
+  // cannot be supplied directly to bypass argument validation or authorization.
+  return typeof name === "string" && LOCAL_TOOLS.some((tool) => tool.name === name);
 }
 
 const SAFE_EVENTS = new Set([
@@ -879,12 +861,12 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
       capabilities: { tools: { listChanged: false } },
       serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
       instructions:
-        "Read-only local tools are available by default. File mutation and Shell tools are disabled unless their separate deployment gates are explicitly set to true. When enabled, every mutation requires a stable operation ID; query the original ID after an uncertain response and use a new ID only for a new intent. Shell commands run with the Agent account's full Linux permissions. Managed sessions accept bounded stdin and stop requests only while the Agent can verify ownership; after restart, stale session actions are rejected and uncertain operations are never replayed.",
+        "File and Shell tools execute with the authorized Linux Agent account's actual OS permissions. Each mutation requires a stable operation ID; query the original ID after an uncertain response, and use a new ID only for a new intent. Managed sessions accept bounded stdin and stop requests only while the Agent can verify ownership; after restart, stale session actions are rejected and uncertain operations are never replayed.",
     });
   }
 
   if (rpcMessage.method === "tools/list") {
-    return rpc(rpcMessage.id, { tools: LOCAL_TOOLS.filter((tool) => isToolEnabled(tool.name, env)) });
+    return rpc(rpcMessage.id, { tools: LOCAL_TOOLS });
   }
 
   if (rpcMessage.method === "tools/call") {
@@ -894,9 +876,9 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
       return toolError(rpcMessage.id, "The requested tool call was rejected.");
     }
     const call = params as { name?: unknown; arguments?: unknown };
-    if (!isToolEnabled(call.name, env)) {
+    if (!isKnownTool(call.name)) {
       log("rejected");
-      return toolError(rpcMessage.id, "This capability is not enabled for this deployment.");
+      return toolError(rpcMessage.id, "The requested tool call was rejected.");
     }
     if (["write_file", "create_directory", "replace_text", "move_file", "delete_file", "run_command", "send_input", "stop_session"].includes(String(call.name))) {
       const candidate = call.arguments !== null && typeof call.arguments === "object"
