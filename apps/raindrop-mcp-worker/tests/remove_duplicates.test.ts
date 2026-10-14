@@ -64,7 +64,7 @@ describe("remove_duplicates — direct execution and safe eligibility", () => {
       2: { _id: 2, link: "https://example.test/duplicate", note: "valuable note", highlights: [] },
       3: { _id: 3, link: "https://example.test/duplicate", note: "", highlights: [{ text: "highlight" }] },
       4: { _id: 4 }, // missing metadata is NOT proof of safety
-      5: { _id: 5, note: "", highlights: [] },
+      5: verified(5),
     })[id]);
     const response = await tool.handler({}, ctx());
     expect(textOf(response)).toContain("Deleted 1 verified");
