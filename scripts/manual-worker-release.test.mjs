@@ -28,25 +28,20 @@ test("Active-version readback requires exactly one 100 percent version", () => {
   ] }] }), /unambiguous/);
 });
 
-test("IMA cutover keeps the image-refresh DO but permits only acknowledged legacy R2 removal", () => {
+test("IMA requires retained inert DO and rejects legacy R2 bindings", () => {
   const worker = "ima-mcp-worker";
   const secretNames = ["MCP_ACCESS_TOKEN", "CLIENT_ID", "API_KEY"];
   const secrets = secretNames.map((name) => ({ name }));
   const durable = { name: "IMA_IMAGE_REFRESH_SHARD", type: "durable_object_namespace", class_name: "ImaImageRefreshShard" };
-  const legacy = { name: "R2_BUCKET", type: "r2_bucket" };
   const settings = {
-    bindings: [...secretNames.map((name) => ({ name, type: "secret_text" })), durable, legacy],
+    bindings: [...secretNames.map((name) => ({ name, type: "secret_text" })), durable],
     observability: { enabled: true, logs: { invocation_logs: true }, traces: { enabled: true } },
   };
-  assert.throws(() => verifyBindings(worker, settings, secrets, { mode: "preflight" }), /acknowledgement/);
-  assert.equal(verifyBindings(worker, settings, secrets, { mode: "preflight", ackIma: true }), true);
-  assert.throws(() => verifyBindings(worker, settings, secrets, { mode: "readback" }), /Legacy IMA R2/);
-  const withoutR2 = { ...settings, bindings: settings.bindings.filter((x) => x.name !== "R2_BUCKET") };
-  assert.equal(verifyBindings(worker, withoutR2, secrets, { mode: "readback" }), true);
-  assert.throws(() => verifyBindings(worker, { ...settings, bindings: settings.bindings.filter((x) => x.name !== "IMA_IMAGE_REFRESH_SHARD") },
-    secrets, { mode: "preflight", ackIma: true }), /Durable Object/);
-  assert.throws(() => verifyBindings(worker, { ...withoutR2, observability: { enabled: true, logs: { invocation_logs: true } } },
-    secrets, { mode: "readback" }), /tracing drift/);
+  assert.equal(verifyBindings(worker, settings, secrets, { mode: "preflight" }), true);
+  assert.equal(verifyBindings(worker, settings, secrets, { mode: "readback" }), true);
+  assert.throws(() => verifyBindings(worker, { ...settings, bindings: [...settings.bindings, { name: "R2_BUCKET", type: "r2_bucket" }] }, secrets, { mode: "preflight" }), /Legacy IMA R2/);
+  assert.throws(() => verifyBindings(worker, { ...settings, bindings: settings.bindings.filter((x) => x.name !== "IMA_IMAGE_REFRESH_SHARD") }, secrets), /Durable Object/);
+  assert.throws(() => verifyBindings(worker, { ...settings, observability: { enabled: true, logs: { invocation_logs: true } } }, secrets), /tracing drift/);
 });
 
 test("Database RATE_LIMITER and required runtime Secret names are a strict gate", () => {

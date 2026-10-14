@@ -176,13 +176,3 @@ export interface CheckRepeatedNamesResult {
 export interface CheckRepeatedNamesResponse {
   results: CheckRepeatedNamesResult[];
 }
-
-export interface ExportFileResult {
-  download_url: string;
-  file_name: string;
-  file_size?: number;
-  content_type?: string;
-  media_id?: string;
-  note_id?: string;
-  expires_in: "24h";
-}

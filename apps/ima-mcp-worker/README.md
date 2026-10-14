@@ -10,26 +10,16 @@ Portal authentication and IMA credentials remain separated. The Worker has no da
 
 ## Features
 
-- Search, list, read, create, append, and export notes
-- Search, list, and read knowledge bases; import URLs, link notes, and upload HTTPS files to IMA COS
-- Export notes and knowledge files to **public Litterbox** with temporary 24-hour download URLs
-- Read binary knowledge files in bounded chunks without automatically uploading to a third party
-- Refresh expired embedded-image URLs using existing Durable Object execution shards
+- Search, list, read, create, and append notes
+- Search, list, and read knowledge bases; import URLs, link notes, and upload HTTPS files **into IMA COS**
+- Read binary knowledge files in bounded chunks without uploading them to a third-party host
 
-## Temporary exports
-
-The explicit `export_file` tool or `read_knowledge_source(export_to_temporary=true)` uploads via
-`POST https://litterbox.catbox.moe/resources/internals/api.php`, using multipart fields
-`reqtype=fileupload`, `time=24h`, and `fileToUpload`. A validated download URL and `expires_in: "24h"` are returned.
-
-**Privacy:** Uploaded files are hosted by a third-party, publicly accessible service. Anyone with the URL can access the file before expiry. Do not export confidential material.
-
-The Worker limits temporary uploads to **32 MiB** to manage its memory footprint. Litterbox may apply stricter content restrictions or be temporarily unavailable.
+**Export is intentionally unsupported.** There is no `export_file` tool, `export_to_temporary` flag, Litterbox client, public download proxy, or image-refresh RPC. Import/upload **to** the IMA knowledge base remains supported and is not an export.
 
 ## Required configuration
 
-Worker secrets: `MCP_ACCESS_TOKEN`, `CLIENT_ID`, and `API_KEY`.
+Worker Secrets: `MCP_ACCESS_TOKEN`, `CLIENT_ID`, and `API_KEY`.
 
-Optional: `IMA_BASE_URL` and existing timeout/size limits. No R2, D1, public download domain, or download-signing key is needed. The `IMA_IMAGE_REFRESH_SHARD` Durable Object remains.
+Optional: `IMA_BASE_URL` and existing timeout/size limits. No R2, D1, public download domain, or download-signing key is needed. The already-deployed `IMA_IMAGE_REFRESH_SHARD` SQLite Durable Object class and binding are retained **inert** solely for backward-compatible deployment; no code invokes them. Existing DO storage and old R2 buckets are not deleted.
 
 See [DEPLOY_CLOUDFLARE.md](./DEPLOY_CLOUDFLARE.md) and [docs/mcp-portal.md](./docs/mcp-portal.md).
