@@ -163,7 +163,7 @@ function safeDuplicateCandidate(
 const removeDuplicatesTool = defineTool({
   name: "remove_duplicates",
   description:
-    "Immediately delete verified unannotated duplicate bookmarks across ALL user collections and Unsorted (NOT just one collection). Metadata must explicitly prove empty note and highlights; unknown or annotated bookmarks are skipped. Deletes in upstream batches of at most 50, with no global invocation cap. No preview or automatic retry of uncertain deletions.",
+    "Immediately delete verified unannotated duplicate bookmarks across ALL user collections and Unsorted (NOT just one collection). Metadata must explicitly prove empty note and highlights, and one verified copy of each exact URL is always retained; unknown or annotated bookmarks are skipped. Deletes in upstream batches of at most 50, with no global invocation cap. No preview or automatic retry of uncertain deletions.",
   annotations: {
     readOnlyHint: false,
     destructiveHint: true,
