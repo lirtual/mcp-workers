@@ -70,9 +70,9 @@ export async function refreshExpiredImaImageUrls(
     // A known-expired (or nearly expired) COS signature cannot safely be
     // preserved, even if a cache or HEAD probe temporarily returns 200.
     // Without mediaId there is no supported way to obtain a fresh signature.
-    if (item.mode === "refresh") {
+    if (item.mode === "refresh" || hasCosSigningParams(item.sourceUrl)) {
       throw new ImaApiError(
-        `IMA 图片无法完整导出：原签名已过期且 format=2 缺少 mediaId，无法重签 ${expectedPath}`,
+        `IMA 图片无法完整导出：签名已过期、即将过期或格式无效且 format=2 缺少 mediaId，无法重签 ${expectedPath}`,
         110011,
       );
     }
@@ -112,9 +112,9 @@ export async function processImageRefreshBatch(
     if (item.mode === "probe_only") {
       // Fail closed if called directly with a signed URL (the coordinator
       // should only issue this mode for unparseable/unsigned legacy links).
-      if (parseSignEnd(item.sourceUrl) !== undefined) {
+      if (hasCosSigningParams(item.sourceUrl)) {
         throw new ImaApiError(
-          "IMA 图片无法完整导出：有签名的图片不能使用 probe_only 模式",
+          "IMA 图片无法完整导出：包含 COS 签名参数的图片不能使用 probe_only 模式",
           110011,
         );
       }
@@ -222,6 +222,16 @@ function parseSignEnd(rawUrl: string): number | undefined {
     return Number.isSafeInteger(end) && end > 0 ? end : undefined;
   } catch {
     return undefined;
+  }
+}
+
+function hasCosSigningParams(rawUrl: string): boolean {
+  try {
+    const params = new URL(rawUrl).searchParams;
+    return ["q-sign-time", "q-key-time", "q-signature", "q-sign-algorithm", "q-ak"]
+      .some((key) => params.has(key));
+  } catch {
+    return true;
   }
 }
 
