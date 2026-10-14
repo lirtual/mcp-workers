@@ -1,5 +1,7 @@
 # Client-owned MCP tool approval — implementation and acceptance plan
 
+**Canonical to-spec:** [GitHub Spec #32](https://github.com/lirtual/mcp-workers/issues/32) (label: `ready-for-agent`). This plan supplies context; implementers should use the issue's numbered acceptance criteria and the latest approved ADRs. Spec publication does not authorize live mutation, production configuration changes, merge, or deployment.
+
 Status: **Architecture interview complete; implementation plan proposed** (2026-10-13). The source decisions are [ADR-0001](./adr/0001-delegate-tool-approval-to-client.md) and the relevant Database, Raindrop, and Remote Control ADRs. **No implementation, deployment, production configuration, credential, or live mutation has been authorized by this plan.**
 
 > **Independent architecture review:** See [ARCHITECTURE-REVIEW.md](./ARCHITECTURE-REVIEW.md). Findings P0-R1/R2/R3 and P0-R4 mean the Raindrop and Remote Control stages are **not production-ready** simply because grilling is complete; Database Cloudflare Secret cutover requires an independently tested sequence. Start code-only PRs, but close review findings before any release authorization.
