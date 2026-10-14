@@ -129,13 +129,6 @@ export class RaindropMCPService {
             resources: { subscribe: false, listChanged: false },
             prompts: { listChanged: false },
             tools: { listChanged: false },
-            experimental: {
-              elicitation: {
-                supported: true,
-                description:
-                  "Destructive and ambiguous actions require confirmation or clarification.",
-              },
-            },
           },
         },
       );
@@ -172,6 +165,7 @@ export class RaindropMCPService {
           description: config.description,
           inputSchema: config.inputSchema,
           outputSchema: config.outputSchema,
+          ...(config.annotations ? { annotations: config.annotations } : {}),
         },
         this.asyncHandler(async (args: any, extra: any) =>
           config.handler(args, {
@@ -273,6 +267,12 @@ export class RaindropMCPService {
       description: string;
       inputSchema: unknown;
       outputSchema: unknown;
+      annotations?: {
+        readOnlyHint?: boolean;
+        destructiveHint?: boolean;
+        idempotentHint?: boolean;
+        openWorldHint?: boolean;
+      };
     }>
   > {
     return toolConfigs.map((config) => ({
@@ -281,6 +281,7 @@ export class RaindropMCPService {
       description: config.description,
       inputSchema: config.inputSchema,
       outputSchema: config.outputSchema || {},
+      ...(config.annotations ? { annotations: config.annotations } : {}),
     }));
   }
 
@@ -295,7 +296,13 @@ export class RaindropMCPService {
     if (!config) {
       throw new Error(`Tool with id "${toolId}" not found.`);
     }
-    return await config.handler(input ?? {}, {
+    const args =
+      config.name === "empty_trash" ||
+      config.name === "cleanup_collections" ||
+      config.name === "remove_duplicates"
+        ? config.inputSchema.parse(input ?? {})
+        : input ?? {};
+    return await config.handler(args, {
       raindropService: this.raindropService,
       mcpServer: this.server.server,
     });
