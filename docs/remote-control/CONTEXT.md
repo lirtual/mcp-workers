@@ -168,12 +168,20 @@ This settles **network reachability scope only**. It does not choose Cloudflare 
 - Agent-initiated WebSocket + hibernating Durable Objects can manage device revocation without Cloudflare One network enrollment, but Q3/Q5's intended Cloudflare permission semantics for this alternate transport must be clarified before choosing it.
 - See [multi-device architecture evaluation](./MULTI-DEVICE-ARCHITECTURE-EVALUATION.md) for fact-backed trade-offs, gaps and the next proof gates.
 
+### Confirmed revocation semantics, production coexistence and explicit removal — grilling round 5 (2026-10-14)
+
+- **Q11=A**: Revoke **every permission actually issued** to an individual device. Mesh devices must have both MCP device authorization and their **own** Cloudflare One network enrollment permanently invalidated; WS + DO devices without Mesh enrollment must have their device-specific app credential invalidated, currently attached WebSocket closed, and reconnection/command denied. No fictional Cloudflare One registration must be created just to delete it.
+- **Q12=A**: Keep the currently deployed single-device VPC Service + private Tunnel in production unchanged. Design and verify v2 separately and opt-in; cut over only after explicit acceptance and rollback-safe migration.
+- **Q13=A**: Explicit removal immediately blocks all new operations; if the device is online, request best-effort termination of Agent-owned managed processes. If offline/untrusted, process termination is **not** guaranteed and must not be reported as confirmed. Under normal disconnection (Q8=A), processes may continue.
+- **Q3 conditional on transport**: Interactive Cloudflare login/headless Service Auth apply to **Mesh/Cloudflare One enrollment**. If WS+DO is selected, these are not performed for device networking and a separate owner-approved pairing UX must be decided. Neither Cloudflare One authentication nor OAuth magically transfers to WS.
+- [ADR-0017](./adr/0017-multi-device-revocation-semantics-and-transport-gates.md) records these accepted requirements and a **provisional WS + DO Hibernation preference, not a final transport decision**. Workers Free + DO Free budget and 24–72h hibernation verification are required before acceptance.
+
 ### Remaining design questions
 
-- Decide whether Q5=B means revoking **Cloudflare One registration itself** for every device, or revoking all Cloudflare permissions actually granted under the chosen transport.
-- Verify device-scoped prevention of *interactive* Cloudflare re-enrollment (without blocking other devices), or disqualify Mesh under the mandatory first-release Q5=B requirement.
-- Decide transport only after an explicit owner choice and small nonproduction proof of the selected mechanism; retain single-device v1 until safe cutover.
-- Define exact heartbeat/offline time bounds, cleanup retry budgets, secure storage and pairing UX after transport choice.
-- Decide cancellation semantics of owned processes when device access is explicitly revoked, separate from normal network disconnection.
+- Choose the v2 transport explicitly after confirming owner pairing UX, cross-network Linux/WSL2 connectivity, revocation/reconnect tests and realistic Free-tier consumption.
+- Establish whether Cloudflare interactive login is still desired as an explicit owner sign-in/pairing feature if the non-Mesh WS+DO transport is selected; do not infer OAuth/Cloudflare One login exists from current Portal Bearer auth.
+- If Mesh remains a candidate, prove a **device-specific permanent no-reenrollment** mechanism for interactive login, without blocking the owner's other devices; otherwise disqualify Mesh under Q5=B.
+- Specify pairing token exchange and secure storage, online/offline detection bounds, operation receipt recovery, owner-visible cleanup failure and best-effort stop reporting.
+- Preserve v1 single-device service while separately proving v2, with explicit production cutover approval.
 
 Do not modify the accepted v1 ADRs solely on the basis of this product goal. Record a new architecture decision after the trade-offs above have been resolved.
