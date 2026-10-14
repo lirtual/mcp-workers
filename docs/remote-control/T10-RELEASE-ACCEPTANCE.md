@@ -6,6 +6,20 @@
 
 本文整理离线实现证据、分日期的真实环境核查、发布前检查、回滚和撤销步骤。每项结论按报告、只读 API、真实插件调用或代码证据注明边界；未验证项不得推定通过。T07 的账户风险接受也不等于 T09 进程停止竞态已获准。
 
+## 2026-10-14 I4 取消 Worker 权限开关：受控发布前检查（待授权）
+
+**代码目标：** `main@c74d7a9a8e557d3ec46115c8e28d3a45f7155392` 合入 [#40](https://github.com/lirtual/mcp-workers/pull/40)，两个 Worker 侧开关 `REMOTE_CONTROL_ENABLE_FILE_WRITES`、`REMOTE_CONTROL_ENABLE_SHELL` 不再决定工具是否列出或调用。[#41](https://github.com/lirtual/mcp-workers/pull/41) 修正手动发布的旧开关断言；发布前须先合入并验证最终 `main`。**此节是待执行的操作手册，不证明生产已发布、主机重新验收或恢复方案已演练。**
+
+1. **记录基线：** Cloudflare 旧生产活动版本 `0d20de83-2033-40b5-a179-c608ddeb3890`（2026-10-14 只读核查为 100%）、固定 VPC Service 绑定名、独立 Portal/设备 Secret **名称**、Invocation Logs=false、Portal 当前工具数量 18；不读取 Secret 值。现有旧开关均为 `true`。新版本发布后这两个变量即使还存在也**不再具有熔断效果**；不得把其值改为 false 当作紧急制动。
+2. **目标身份与链路：** 由操作者只读复核实际 Linux Agent 所在 WSL2/主机、当前运行用户/UID、Shell 路径、sudo/Docker socket/WSL 挂载访问边界、Tunnel/VPC 在线状态和 Agent 版本。先前已接受的 `ray` / UID 1000、pidfd/进程脱组残余风险仅适用于当时已核实的设备/身份；任何身份漂移先停止发布。#29 的历史 `run_command` 失败尚需真实插件回归，不能以已合并代码或 CI 代替。
+3. **准备恢复：** 保留最后可信源提交、当前绑定/环境设置清单与有效 Secret 的**受控存放方式**，私下核对 GitHub Actions `REMOTE_CONTROL_VPC_SERVICE_ID` 与当前 VPC ID；仓库 `wrangler.jsonc` 仍使用全零占位符，必须走已有受控发布脚本的临时 VPC 配置路径。**不得直接回滚至未知 Secret/Invocation Logs 状态的历史 Cloudflare Version。** 紧急隔离选项是经授权切断 MCP Portal 入口或停止 Agent/Tunnel；代码恢复须从已审查的受限 Worker 源重新发布，并复核现行 Token、VPC、日志设置。恢复步骤仍未演练，不得宣称可自动回滚。
+4. **独立发布授权：** 指定当前源 SHA、唯一目标 `remote-control-mcp-worker`、操作时段、维护影响及停止条件。仅在获准后从 `main` 执行已有 `ci.yml` 的 `workflow_dispatch`；不能用 PR/push 事件代替生产发布。等待 Application checks、真实活动 Version 与 VPC/Secret/日志只读回读均通过，且确认其他三个 Worker 未被部署。
+5. **先无副作用验收：** Cloudflare MCP Portal 同步后，刷新真实 ChatGPT Remote Control 客户端，核实 `initialize`/18 个公开工具、`run_command` 命名、声明的危险性与参数契约；检查缺失/合成错误 Bearer 拒绝，**不要泄露或复用旧真实凭据**。针对指定已存在的非敏感只读 fixture 执行 `read_file`；Portal ready 本身不能证明 Agent 在线。
+6. **单独授权的受控操作验收：** 仅当操作者再次批准**准确设备/用户、一次性测试路径、无害命令和 operation_id、退出/清理方式**，才允许通过真实 ChatGPT MCP 做一次性 fixture 写入和受限 Shell 输出/回执测试，并用全新意图 ID；结果未知先查原 ID 的回执，禁止盲目重放；验证 #29 的真实命令启动错误分类，且不触及其他真实主机数据或进程。
+7. **止损与完成定义：** 若 Agent 身份漂移、Portal 工具描述未刷新、Auth 失败打开、VPC/日志/Secret 绑定异常、#29 无法完成安全调用、出现敏感日志或回执不明，则停止验收，**不得自动重试写入或 Shell**，按已批准的隔离/新恢复版本方案处置。只有实际 ChatGPT 端工具/安全/回执验收及回滚路径由负责人明确接受后，才可标记 I4 生产阶段完成。
+
+**状态：** 目前只读 Cloudflare/Portal 检查和离线 CI 有证据，未重新访问真实 Agent；未获得此 I4 新版本的单独生产部署与真实操作测试授权。禁止为了“验证开关删除”而提前删除生产变量或执行 Command。
+
 ## 2026-10-13 回执生命周期只读核查与安全回滚审查
 
 **范围：** 读取回执文件元数据和一条现存回执状态；Cloudflare 日志只使用 `dry=true` 聚合查询和字段名发现；检查 Worker 版本绑定元数据与仓库配置。未读历史日志正文或任何 Secret 值，未删除数据、生成测试回执、修改线上配置、轮换凭证或执行 Worker 回滚。
