@@ -121,6 +121,16 @@ _Avoid_: Describing a hidden or partially removed device as fully revoked.
 **Device Availability**:
 The observed state indicating whether the paired device can currently be reached for remote operations. Availability is distinct from pairing approval, and going offline does not automatically revoke identity.
 
+**Device Reconnection**:
+The return of a previously approved but temporarily unavailable device to a reachable state. Reconnection is not an authorization event and does not authorize replay of past remote operations.
+
+**Reinstallation**:
+A new installation lifecycle that requires fresh owner-approved pairing and a new device identity, even on a previously used physical host.
+
+**Revocation Cleanup**:
+The follow-up process that withdraws the specific device's external network/enrollment permissions after MCP authorization is already denied. It can remain incomplete and must be visible to the owner.
+_Avoid_: Treating a failed or retrying external cleanup as a completed full revocation.
+
 ### Confirmed network requirement — 2026-10-14
 
 The owner intends to connect managed devices located on **independent home, office and cloud-provider networks**, not only devices on one LAN. Adding a device must not depend on the device obtaining a public IP, a manually opened inbound port, or direct reachability from an existing single-site Tunnel.
@@ -142,13 +152,28 @@ This settles **network reachability scope only**. It does not choose Cloudflare 
 - **Q6=A**: One MCP endpoint must support `list_devices`, and operations in multi-device mode must explicitly identify their intended stable `device_id`.
 - See [ADR-0015](./adr/0015-per-device-pairing-and-revocation.md) for the security and product decision trade-offs. In particular, deleting a Cloudflare device registration without preventing automatic re-enrollment does not satisfy Q5=B. This round **does not select the transport or authorize rollout**.
 
-### Design questions not yet settled — next frontier
+### Confirmed offline recovery, reinstall and cleanup — grilling round 4 (2026-10-14)
 
-- How should offline detection, automatic reconnect and restart recovery work, including Windows-host/WSL2 boundaries?
-- What should happen to already-running commands, process sessions and unknown outcomes when a device disconnects or is revoked?
-- How should rename, reinstall, identity rotation, local uninstall, lost hardware and Cloudflare API failure affect device lifecycle?
-- Can Cloudflare interactive and headless enrollment meet **per-device, durable automatic removal without blocking other devices**? If not, revisit the network architecture before implementation.
-- How should the existing single-device installation be migrated or left untouched until a verified rollback-safe transition?
-- Which transport is accepted after proof of Cloudflare Mesh + VPC Network versus Agent-initiated WebSocket + Durable Objects, including operational/free-tier constraints?
+- **Q7=A**: Agents should reconnect automatically; offline devices immediately become unavailable when the disconnected state is known. No new offline commands may be stored, queued or delivered after reconnect.
+- **Q8=A**: A normal connection loss does not terminate already-running Agent-owned commands. Local operation receipts and session state remain authoritative and are queried on reconnect; no unknown mutation may be blindly retried.
+- **Q9=A**: Reinstalling creates a fresh device identity requiring new explicit pairing. The previous identity is processed through the ordinary removal/revocation workflow; matching hostname or IP is not proof of identity.
+- **Q10=A**: Removing a device first denies new MCP operations immediately. If Cloudflare cleanup fails, retry safely and expose incomplete revocation until all required permissions are withdrawn and re-enrollment is prevented.
+- The behavior of *already-running jobs under explicit device revocation* is a separate unresolved decision; Q8 only resolves ordinary disconnection.
+- See [ADR-0016](./adr/0016-device-lifecycle-and-recovery.md). None of these decisions changes today's single-device runtime.
+
+### Evidence assessment — transport remains under design
+
+- Cloudflare documents cross-network Mesh routing through one VPC Network binding (`cf1:network`).
+- Cloudflare documents automatic device re-registration after deletion if the same user/service identity remains eligible, so per-interactive-device durable network removal without affecting other devices is **not yet demonstrated**. This is a blocker for accepting Mesh as-is under Q5=B.
+- Agent-initiated WebSocket + hibernating Durable Objects can manage device revocation without Cloudflare One network enrollment, but Q3/Q5's intended Cloudflare permission semantics for this alternate transport must be clarified before choosing it.
+- See [multi-device architecture evaluation](./MULTI-DEVICE-ARCHITECTURE-EVALUATION.md) for fact-backed trade-offs, gaps and the next proof gates.
+
+### Remaining design questions
+
+- Decide whether Q5=B means revoking **Cloudflare One registration itself** for every device, or revoking all Cloudflare permissions actually granted under the chosen transport.
+- Verify device-scoped prevention of *interactive* Cloudflare re-enrollment (without blocking other devices), or disqualify Mesh under the mandatory first-release Q5=B requirement.
+- Decide transport only after an explicit owner choice and small nonproduction proof of the selected mechanism; retain single-device v1 until safe cutover.
+- Define exact heartbeat/offline time bounds, cleanup retry budgets, secure storage and pairing UX after transport choice.
+- Decide cancellation semantics of owned processes when device access is explicitly revoked, separate from normal network disconnection.
 
 Do not modify the accepted v1 ADRs solely on the basis of this product goal. Record a new architecture decision after the trade-offs above have been resolved.
