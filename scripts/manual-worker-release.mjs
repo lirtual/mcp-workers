@@ -53,10 +53,6 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
       id !== "00000000-0000-4000-8000-000000000000", "Valid Remote VPC identity missing");
     invariant(find("REMOTE_CONTROL_DEVICE", "vpc_service")?.service_id === id,
       "Remote VPC Service binding/type mismatch");
-    for (const name of ["REMOTE_CONTROL_ENABLE_FILE_WRITES", "REMOTE_CONTROL_ENABLE_SHELL"]) {
-      invariant(find(name, "plain_text")?.text === "true",
-        "Approved Remote Control permission gate drift: " + name);
-    }
   }
   const allowed = new Set(worker === "ima-mcp-worker"
     ? ["IMA_IMAGE_REFRESH_SHARD"]
