@@ -3,7 +3,6 @@ import type {
   CheckRepeatedNamesResponse,
   CreateMediaResponse,
   Env,
-  ExportFileResult,
   GetDocContentResponse,
   GetMediaInfoResponse,
   ImaCredentials,
@@ -18,9 +17,8 @@ import type {
 import { ImaApiError, MediaType } from "./types.ts";
 import { hmacSha1Hex, sha1Hex } from "./crypto.ts";
 import { classifyUrl, classifyUrlWithProbe, fetchWithSafeRedirects, inferRemoteFileName } from "./url.ts";
-import { DEFAULT_SIZE_LIMIT, MEDIA_TYPE_DEFAULT_EXT, resolveUploadMetadata } from "./preflight.ts";
+import { DEFAULT_SIZE_LIMIT, resolveUploadMetadata } from "./preflight.ts";
 import { bufferToBase64, readBinaryChunk, readBoundedBuffer, readBoundedText } from "./stream.ts";
-import { MAX_TEMP_UPLOAD_BYTES, TEMP_UPLOAD_RETENTION, sanitizeFileName, uploadTemporaryFile } from "./temporary-upload.ts";
 
 export const DEFAULT_IMA_BASE_URL = "https://ima.qq.com";
 export const DEFAULT_FILE_DOWNLOAD_TIMEOUT_MS = 30_000;
@@ -136,25 +134,6 @@ export class ImaNotes {
     });
     if (!res?.note_id) throw new ImaApiError("IMA 未返回有效的 note_id", 210003);
     return res;
-  }
-  async exportNote(note_id: string, options: { file_name?: string } = {}): Promise<ExportFileResult> {
-    const cleanNoteId = (note_id || "").trim();
-    if (!cleanNoteId) throw new ImaApiError("note_id 不能为空", 110001);
-    const noteData = await this.get(cleanNoteId, 1);
-    const content = noteData?.content ?? "";
-    const derivedName = options.file_name?.trim() || content.match(/^#+\s+([^\r\n]+)/m)?.[1]?.trim() || `Note_${cleanNoteId}`;
-    const fileName = sanitizeFileName(derivedName, "md");
-    const contentType = "text/markdown; charset=utf-8";
-    const bytes = new TextEncoder().encode(content);
-    const download_url = await uploadTemporaryFile(fileName, contentType, bytes);
-    return {
-      download_url,
-      file_name: fileName,
-      file_size: bytes.byteLength,
-      content_type: contentType,
-      note_id: cleanNoteId,
-      expires_in: TEMP_UPLOAD_RETENTION,
-    };
   }
 }
 
@@ -312,84 +291,15 @@ export class ImaKnowledge {
       ...(info.notebook_ext_info ? { notebook_ext_info: info.notebook_ext_info } : {}),
     };
   }
-  async exportSource(
-    media_id: string,
-    notes: ImaNotes,
-    options: { file_name?: string } = {}
-  ): Promise<ExportFileResult> {
-    const cleanMediaId = (media_id || "").trim();
-    if (!cleanMediaId) {
-      throw new ImaApiError("media_id 不能为空", 110001);
-    }
-
-    const info = await this.api.post<GetMediaInfoResponse>("openapi/wiki/v1/get_media_info", { media_id: cleanMediaId });
-    const media_type = Number(info?.media_type ?? 0);
-
-    // Scenario 1: Note type in knowledge base (media_type = 11)
-    if (media_type === MediaType.Note) {
-      const noteId = info?.notebook_ext_info?.notebook_id;
-      if (!noteId) {
-        throw new ImaApiError("该知识库条目为笔记类型，但未获取到关联的 notebook_id", 110011);
-      }
-      return notes.exportNote(noteId, options);
-    }
-
-    // Scenario 2: URL accessible media
-    const urlInfo = info?.url_info;
-    if (!urlInfo?.url) {
-      throw new ImaApiError("该知识库条目无法直接通过链接获取原文，请使用 IMA 客户端查看", 110011);
-    }
-
-    const timeoutMs = Number(this.env.FILE_DOWNLOAD_TIMEOUT_MS || DEFAULT_FILE_DOWNLOAD_TIMEOUT_MS);
-    const reqHeaders: Record<string, string> = {
-      ...(urlInfo.headers || {}),
-    };
-    const res = await fetchWithSafeRedirects(urlInfo.url, { headers: reqHeaders }, timeoutMs);
-    if (!res.ok) {
-      throw new ImaApiError(`拉取媒体原文失败 HTTP ${res.status}`, 110010);
-    }
-
-    const contentType = (res.headers.get("content-type") || "application/octet-stream").split(";")[0].trim().toLowerCase();
-    const lengthHeader = res.headers.get("content-length");
-    const fileSize = lengthHeader ? Number(lengthHeader) : undefined;
-
-    // Determine filename
-    let derivedName = options.file_name?.trim();
-    if (!derivedName) {
-      derivedName = inferRemoteFileName(urlInfo.url, contentType, res.headers.get("content-disposition"));
-    }
-    const fallbackExt = MEDIA_TYPE_DEFAULT_EXT[media_type];
-    const fileName = sanitizeFileName(derivedName, fallbackExt);
-    if (!res.body) throw new ImaApiError("拉取媒体原文响应体为空", 110010);
-    const contentLength = Number(res.headers.get("content-length"));
-    if (Number.isFinite(contentLength) && contentLength > MAX_TEMP_UPLOAD_BYTES) {
-      await res.body.cancel();
-      throw new ImaApiError("临时文件超过 Worker 上传上限 32 MiB", 110013);
-    }
-    const bytes = await readBoundedBuffer(res, MAX_TEMP_UPLOAD_BYTES);
-    const download_url = await uploadTemporaryFile(fileName, contentType, bytes);
-    return {
-      download_url,
-      file_name: fileName,
-      file_size: bytes.byteLength,
-      content_type: contentType,
-      media_id: cleanMediaId,
-      expires_in: TEMP_UPLOAD_RETENTION,
-    };
-  }
-
   async readSource(
     media_id: string,
     notes: ImaNotes,
-    options: { offset?: number; max_bytes?: number; target_content_format?: 0 | 1 | 2; export_to_temporary?: boolean } = {}
+    options: { offset?: number; max_bytes?: number; target_content_format?: 0 | 1 | 2 } = {}
   ): Promise<{
     media_id: string;
     media_type: number;
     content?: string;
     url?: string;
-    download_url?: string;
-    expires_in?: string;
-    file_name?: string;
     content_type?: string;
     fallback_message?: string;
     offset?: number;
@@ -397,20 +307,6 @@ export class ImaKnowledge {
     next_offset?: number;
     is_end?: boolean;
   }> {
-    if (options.export_to_temporary) {
-      const exported = await this.exportSource(media_id, notes);
-      return {
-        media_id,
-        media_type: 0,
-        download_url: exported.download_url,
-        expires_in: exported.expires_in,
-        file_name: exported.file_name,
-        content_type: exported.content_type,
-        bytes_returned: exported.file_size,
-        is_end: true,
-      };
-    }
-
     const info = await this.api.post<GetMediaInfoResponse>("openapi/wiki/v1/get_media_info", { media_id });
     const media_type = Number(info?.media_type ?? 0);
 

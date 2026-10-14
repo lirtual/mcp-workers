@@ -31,9 +31,9 @@ _Avoid_: IMA API key, OAuth access token
 `CLIENT_ID` + `API_KEY` 是单用户 Worker Secrets，只用于 Worker -> IMA OpenAPI。旧名称 `IMA_OPENAPI_CLIENTID`、`IMA_OPENAPI_APIKEY`、`CLIENTID`、`APIKEY` 均不再受支持。
 _Avoid_: Portal credential, per-user BYOK database
 
-**Temporary export storage**:
-用户选择 Litterbox 替代 R2。只有显式的文件导出才把 IMA 数据上传到公共第三方文件托管；默认二进制读取保持分块。上传上限 32 MiB，Litterbox 保存 24h。
-_Avoid_: 隐式上传, 自建下载代理, 长期存储
+**Export removed**:
+IMA MCP 不提供对外文件导出、临时上传、Litterbox 链接或图片重签能力；`read_knowledge_source` 保留分块读取，`upload_file_to_knowledge_base` 是导入 IMA，不属于导出。
+_Avoid_: `export_file`, `export_to_temporary`, Litterbox, 公开导出 URL
 
 ## Authentication invariant
 
@@ -43,8 +43,8 @@ Portal/client 身份、`MCP_ACCESS_TOKEN`、`CLIENT_ID` / `API_KEY` 是三个独
 
 - Cloudflare Worker service name: `ima-mcp-worker`.
 - GitHub repository name: `ima-mcp-worker`.
-- No object storage binding; explicit exports use public Litterbox.
+- No object storage binding or third-party public export flow.
 - `/health` is stateless liveness.
 - `/ready` validates required secrets/bindings without D1.
 - Existing domain safety checks remain authoritative for write-capable tools.
-- Durable Objects, when used by image refresh, are execution shards rather than authentication or credential persistence.
+- The historical SQLite Durable Object class/binding is retained inert for deployment compatibility, not for export or authentication.

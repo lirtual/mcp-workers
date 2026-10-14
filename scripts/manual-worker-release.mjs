@@ -39,12 +39,7 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     const durable = find("IMA_IMAGE_REFRESH_SHARD", "durable_object_namespace");
     invariant(durable?.class_name === "ImaImageRefreshShard", "IMA Durable Object missing or class drift");
     invariant(settings.observability?.traces?.enabled === true, "IMA tracing drift");
-    if (options.mode === "readback") {
-      invariant(!bindings.some((x) => x.name === "R2_BUCKET"), "Legacy IMA R2 binding remains after cutover");
-    } else if (bindings.some((x) => x.name === "R2_BUCKET")) {
-      invariant(!!find("R2_BUCKET", "r2_bucket"), "IMA legacy R2 binding has an unexpected type");
-      invariant(options.ackIma === true, "IMA public Litterbox cutover needs explicit acknowledgement");
-    }
+    invariant(!bindings.some((x) => x.name === "R2_BUCKET"), "Legacy IMA R2 Worker binding remains");
   }
   if (worker === "database-mcp-worker") {
     const limiter = find("RATE_LIMITER", "ratelimit");
@@ -64,7 +59,7 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     }
   }
   const allowed = new Set(worker === "ima-mcp-worker"
-    ? ["IMA_IMAGE_REFRESH_SHARD", ...(options.mode === "preflight" ? ["R2_BUCKET"] : [])]
+    ? ["IMA_IMAGE_REFRESH_SHARD"]
     : worker === "database-mcp-worker" ? ["RATE_LIMITER"]
       : worker === "remote-control-mcp-worker" ? ["REMOTE_CONTROL_DEVICE"] : []);
   for (const item of bindings) {
@@ -215,7 +210,6 @@ async function main() {
   const observed = await current(account, worker, token, {
     mode,
     vpcId: process.env.REMOTE_CONTROL_VPC_SERVICE_ID,
-    ackIma: process.env.IMA_PUBLIC_UPLOAD_ACK === "true",
     sourceConfig,
   });
   if (mode === "preflight") {

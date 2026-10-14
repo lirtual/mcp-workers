@@ -2,7 +2,7 @@
 
 ## Architecture
 
-Cloudflare MCP Portal → ima-mcp-worker → IMA OpenAPI. Explicit exports upload to public Litterbox for temporary 24-hour download URLs. The Durable Object image-refresh binding is retained.
+Cloudflare MCP Portal → ima-mcp-worker → IMA OpenAPI. The Worker does not export notes/media to public file hosts. The historical SQLite Durable Object class and binding are preserved inert for compatibility.
 
 ## Build and deploy
 
@@ -13,27 +13,24 @@ pnpm install --frozen-lockfile
 pnpm --filter ima-mcp-worker run check
 ```
 
-Deploy using the repository's established workflow or `pnpm --filter ima-mcp-worker run deploy`.
+Deploy only through the separately authorized manual Worker release workflow.
 
-Required Worker secrets:
+Required Worker Secrets:
 
-```bash
-pnpm --filter ima-mcp-worker exec wrangler secret put CLIENT_ID
-pnpm --filter ima-mcp-worker exec wrangler secret put API_KEY
-pnpm --filter ima-mcp-worker exec wrangler secret put MCP_ACCESS_TOKEN
+```text
+CLIENT_ID
+API_KEY
+MCP_ACCESS_TOKEN
 ```
 
-No R2 storage binding, public download custom domain, or other export credential is required. Check existing files and other consumers before separately deleting the former Cloudflare R2 bucket.
+No R2 storage binding, Litterbox configuration, public download domain, or other export credential is required. Do not delete the old R2 bucket/domain/objects or the historical Durable Object in this change.
 
 ## Verify
 
 - `GET /health` returns `ok: true`.
 - `GET /ready` returns `ready: true` when the three required secrets are set.
 - Unauthenticated `POST /mcp` returns 401.
-- `export_file(note_id)` and `export_file(media_id)` return Litterbox URLs with `expires_in: "24h"`.
-- Default `read_knowledge_source` returns bounded chunks without a third-party upload.
-- `read_knowledge_source(export_to_temporary=true)` performs an explicit upload.
-- Oversized exports, upload errors, and unexpected response URLs fail without fabricating download links.
-- Expired image URL refresh failures abort note export before upload.
-
-Temporary URLs are publicly reachable by anyone holding them. Verify Worker connectivity and service acceptance with an authorized, non-sensitive sample file before depending on production exports.
+- Portal `tools/list` no longer advertises `export_file` or an `export_to_temporary` argument.
+- `get_note` and `read_knowledge_source` still return bounded data, and importing files into IMA remains available.
+- The Worker has no code path for Litterbox uploads, note export, knowledge-file export, or image-refresh RPC.
+- Required Secrets, observability, and the inert Durable Object binding remain unchanged.

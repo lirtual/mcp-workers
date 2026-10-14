@@ -16,11 +16,6 @@ on:
           - ima-mcp-worker
           - raindrop-mcp-worker
           - remote-control-mcp-worker
-      ima_public_upload_ack:
-        description: Acknowledge public 24-hour Litterbox upload cutover for IMA
-        required: false
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -342,7 +337,6 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           REMOTE_CONTROL_VPC_SERVICE_ID: ${{ vars.REMOTE_CONTROL_VPC_SERVICE_ID }}
-          IMA_PUBLIC_UPLOAD_ACK: ${{ inputs.ima_public_upload_ack }}
         run: node scripts/manual-worker-release.mjs preflight "$SELECTED_WORKER"
 
       - name: Recheck current main inside acquired release lock

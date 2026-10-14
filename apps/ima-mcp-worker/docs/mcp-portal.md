@@ -12,8 +12,6 @@ MCP client
   -> Worker Secrets CLIENT_ID + API_KEY
   -> IMA OpenAPI
 
-Explicit export_file
-  -> public Litterbox temporary upload (24h)
 ```
 
 There is no Worker-owned OAuth provider and no D1 credential vault.
@@ -38,7 +36,7 @@ API_KEY
 MCP_ACCESS_TOKEN
 ```
 
-No R2 binding or public export domain is required.
+No R2 binding or public export domain is required. The Worker does not provide file-export tools or public Litterbox uploads.
 
 The old `IMA_OPENAPI_CLIENTID`, `IMA_OPENAPI_APIKEY`, `CLIENTID`, `APIKEY`, `AUTH_MODE`, `OAUTH_MASTER_KEY`, and D1 bindings are not supported by the runtime.
 
@@ -81,13 +79,13 @@ Checks the required runtime capabilities:
 - `MCP_ACCESS_TOKEN`;
 - `CLIENT_ID`;
 - `API_KEY`;
-- any required image-refresh Durable Object binding if that feature is present.
+- required runtime configuration without accessing data or a third-party file host.
 
 A failure lists only missing capability names.
 
 ### `/download/*`
 
-The Worker does not provide a download proxy. Explicit exports go to public Litterbox and expire after approximately 24h. Never upload confidential material.
+The Worker does not provide a download proxy, Litterbox uploader, or file-export capability. Knowledge media may still be read in bounded chunks.
 
 ## Acceptance checks
 
@@ -97,7 +95,7 @@ The Worker does not provide a download proxy. Explicit exports go to public Litt
 4. Portal lists the expected IMA tools.
 5. A representative read tool succeeds.
 6. A representative safe write tool succeeds.
-7. An explicit export succeeds via Litterbox and returns a temporary download URL.
+7. No `export_file` tool or `export_to_temporary` argument is advertised; no public upload occurs on reads.
 8. Logs do not contain `MCP_ACCESS_TOKEN`, `CLIENT_ID`, `API_KEY`, or client authentication tokens.
 
 ## Cloudflare reference
