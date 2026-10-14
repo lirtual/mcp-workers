@@ -131,6 +131,18 @@ A new installation lifecycle that requires fresh owner-approved pairing and a ne
 The follow-up process that withdraws the specific device's external network/enrollment permissions after MCP authorization is already denied. It can remain incomplete and must be visible to the owner.
 _Avoid_: Treating a failed or retrying external cleanup as a completed full revocation.
 
+**Pairing Code**:
+A short-lived, single-use value displayed on the physical device during installation so the owner can identify a specific pending enrollment. It is never the device's long-lived control credential.
+_Avoid_: Treating the pairing code alone as a durable permission to execute operations.
+
+**Pairing Approval**:
+The explicit owner decision to trust one identified pending device for Remote Control MCP operations, distinct from the Agent's installation and network connection.
+_Avoid_: Assuming possession of a generic MCP Bearer automatically proves an in-person approval or that an AI tool call alone implies owner consent.
+
+**Device Credential**:
+The installation-specific identity material that permits a paired device to authenticate on later connections and that can be revoked independently from other devices and the Portal caller.
+_Avoid_: A shared per-fleet device token or a device display name as proof of identity.
+
 ### Confirmed network requirement — 2026-10-14
 
 The owner intends to connect managed devices located on **independent home, office and cloud-provider networks**, not only devices on one LAN. Adding a device must not depend on the device obtaining a public IP, a manually opened inbound port, or direct reachability from an existing single-site Tunnel.
@@ -161,7 +173,7 @@ This settles **network reachability scope only**. It does not choose Cloudflare 
 - The behavior of *already-running jobs under explicit device revocation* is a separate unresolved decision; Q8 only resolves ordinary disconnection.
 - See [ADR-0016](./adr/0016-device-lifecycle-and-recovery.md). None of these decisions changes today's single-device runtime.
 
-### Evidence assessment — transport remains under design
+### Historical transport assessment — before round 6 (superseded by ADR-0018)
 
 - Cloudflare documents cross-network Mesh routing through one VPC Network binding (`cf1:network`).
 - Cloudflare documents automatic device re-registration after deletion if the same user/service identity remains eligible, so per-interactive-device durable network removal without affecting other devices is **not yet demonstrated**. This is a blocker for accepting Mesh as-is under Q5=B.
@@ -176,12 +188,21 @@ This settles **network reachability scope only**. It does not choose Cloudflare 
 - **Q3 conditional on transport**: Interactive Cloudflare login/headless Service Auth apply to **Mesh/Cloudflare One enrollment**. If WS+DO is selected, these are not performed for device networking and a separate owner-approved pairing UX must be decided. Neither Cloudflare One authentication nor OAuth magically transfers to WS.
 - [ADR-0017](./adr/0017-multi-device-revocation-semantics-and-transport-gates.md) records these accepted requirements and a **provisional WS + DO Hibernation preference, not a final transport decision**. Workers Free + DO Free budget and 24–72h hibernation verification are required before acceptance.
 
-### Remaining design questions
+### Confirmed v2 transport and pairing experience — grilling round 6 (2026-10-15)
 
-- Choose the v2 transport explicitly after confirming owner pairing UX, cross-network Linux/WSL2 connectivity, revocation/reconnect tests and realistic Free-tier consumption.
-- Establish whether Cloudflare interactive login is still desired as an explicit owner sign-in/pairing feature if the non-Mesh WS+DO transport is selected; do not infer OAuth/Cloudflare One login exists from current Portal Bearer auth.
-- If Mesh remains a candidate, prove a **device-specific permanent no-reenrollment** mechanism for interactive login, without blocking the owner's other devices; otherwise disqualify Mesh under Q5=B.
-- Specify pairing token exchange and secure storage, online/offline detection bounds, operation receipt recovery, owner-visible cleanup failure and best-effort stop reporting.
-- Preserve v1 single-device service while separately proving v2, with explicit production cutover approval.
+- **Q14=A**: Select Agent-initiated outbound **WebSocket + SQLite-backed Durable Objects WebSocket Hibernation API** as the **future multi-device v2 design**. It is selected for design, **not implemented or authorized for production**. Existing single-device VPC Service + private Tunnel v1 is untouched; do not reinterpret ADR-0004 as superseded for production.
+- **Q15=A**: Reuse the existing Remote Control-only `MCP_ACCESS_TOKEN` and Portal Bearer middleware at the authenticated MCP-side **pairing-approval** boundary. The owner must explicitly approve one pending device. Bearer possession alone is **not equivalent to a proved logged-in human identity**, and the ChatGPT tool-permission UI is not assumed to supply approval.
+- **Q16=A**: The installer displays a **short-lived one-time pairing code locally**. Owner enters the code into the MCP approval flow and explicitly confirms; after an atomic, one-use activation, Agent automatically saves an **independent, revocable device credential**. Do not distribute the Portal Bearer, admin Cloudflare key or shared static `REMOTE_CONTROL_DEVICE_TOKEN` to installed devices.
+- This selected v2 architecture **does not create a Cloudflare One/Mesh enrollment**. Q3's interactive Cloudflare login applies only to the previously considered Mesh transport, not to v2. The owner approves v2 device pairing via the independently authenticated MCP entrypoint instead.
+- Q7–Q13 continue to govern reconnection, identity, no blind replay, all actually granted permissions revoked, and best-effort Agent-owned session stop on explicit removal.
+- [ADR-0018](./adr/0018-v2-websocket-do-transport-and-portal-pairing.md) is the accepted v2 architecture decision; [v2 pairing/security/hibernation acceptance plan](./V2-PAIRING-AND-HIBERNATION-ACCEPTANCE.md) is a **candidate protocol and required test matrix**, not a finished implementation.
+
+### Remaining open design decisions and verification
+
+- Determine how Portal-authenticated approval proves a real owner-initiated **specific** device confirmation with the actual ChatGPT client; an untrusted model making a tool call must not silently authorize an Agent.
+- Approve pairing-code entropy, expiry, attempt limits, on-device proof-of-possession and persistent credential format/rotation; protect bootstrap from abuse without weakening MCP ingress auth.
+- Agree on DO SQLite coordinator/hibernation event and storage contract, bounded pending RPC correlation, offline-detection policy, and best-effort stop outcome reporting.
+- Validate Linux + WSL2 installation in separate networks, revocation of a stolen credential, no replay after disconnect, 24–72h 5-device idle Hibernation/Workers Free budget including shared IMA DO consumption, and v1 rollback safety.
+- Future code/installer implementation, nonproduction Cloudflare resources, security testing, production rollout and v1 cutover require separately authorized steps.
 
 Do not modify the accepted v1 ADRs solely on the basis of this product goal. Record a new architecture decision after the trade-offs above have been resolved.
