@@ -1,128 +1,96 @@
-# Remote Control MCP v2 — Minimal multi-device technical specification
+# Remote Control MCP v2 — One authoritative multi-device Spec
 
-Status: **draft, ready for design review; NOT an implementation or deployment authorization**.
-Last updated: 2026-10-15. Owner-approved choices Q1–Q20 are captured in [ADRs 0014–0019](./adr/); particularly [ADR-0018](./adr/0018-v2-websocket-do-transport-and-portal-pairing.md) and [ADR-0019](./adr/0019-pairing-code-device-keys-and-72-hour-gate.md).
-Current production v1 (single VPC Service + Cloudflare Tunnel + Linux Agent) is **untouched**. This spec describes a separately tested, opt-in v2.
+**Status:** design accepted; implementation and deployment not authorized. Updated 2026-10-15.
+Authority: [ADR-0014 — transport](./adr/0014-v2-multi-device-ws-do.md), [ADR-0015 — pairing](./adr/0015-v2-pairing-and-identity.md). Existing [v1 Spec](./SPEC.md) continues to govern the deployed single-device path.
 
-## 1. Problem and proposed solution
+## Goal
 
-The owner wants to install an Agent on Linux or WSL2 hosts in unrelated home, office and cloud networks, explicitly pair each installation once, then use **one existing authenticated MCP endpoint** to list and remotely control a chosen device. No public device address, inbound port, per-device Tunnel, manual Cloudflare secret copying or Cloudflare One/Mesh registration is required in v2.
+One Remote Control MCP controls separately paired Linux/WSL2 Agents across unrelated networks, with near-one-command installation, explicit per-operation device selection and independent revocation. Reuse the existing native Node.js file/Shell/managed-process implementation and **Agent-local operation receipts**. The v2 Agent opens outbound WSS to one **SQLite-backed Durable Object using WebSocket Hibernation**. No device public IP, port forwarding, Tunnel, Cloudflare One Client or Mesh enrolment for v2.
 
-Reuse existing Linux execution operations, argument validation, Agent-local operation receipts and managed sessions. Add minimal device-owned key identity, a short-term pairing protocol and an **Agent-initiated WSS ↔ one SQLite-backed Hibernating Durable Object** control connection. Keep Portal's `MCP_ACCESS_TOKEN` isolated to the MCP front door. Never turn a short pairing code or anonymous registration into Shell authorization.
+## User stories
 
-## 2. User stories
+1. As an owner, I want one straightforward install on Linux/WSL2, so that devices on other networks can join without Cloudflare account setup.
+2. As an owner, I want a short locally displayed pairing code, so that I can identify an installation before approving it.
+3. As an owner, I want to inspect the device's name and key fingerprint and **separately confirm** it through my authenticated MCP, so that a code alone cannot grant control.
+4. As an owner, I want `list_devices` with stable IDs and observed status, so that I can target the correct host.
+5. As an owner, I want every v2 file/Shell/process command to name its target device, so that concurrent clients cannot redirect actions by changing a default.
+6. As an owner, I want disconnected hosts to reject commands, reconnect automatically and reconcile local receipts, so that stale or uncertain mutations are not replayed.
+7. As an owner, I want to remove a lost device without harming others, so that its identity and access remain revoked.
+8. As an owner, I want online removal to attempt stopping only Agent-owned managed processes, so that the result is accurate without claiming to control an offline host.
+9. As an owner, I want reinstallation to require new pairing, so that copied labels/old keys do not inherit authority.
+10. As a maintainer, I want 72-hour five-Agent Hibernation and quota evidence and an independent v1 deployment, so that Free costs and rollback are verified before any cutover.
 
-1. As an owner, I want to install an Agent on Linux with a straightforward command, so that a home or cloud device can be added without Cloudflare dashboard setup.
-2. As an owner, I want to install an Agent in WSL2, so that it can control my Linux environment without installing Cloudflare One Client.
-3. As an owner, I want to see a ten-character pairing code on the device itself, so that I can identify a specific fresh installation.
-4. As an owner, I want to inspect a pending device using my Portal-authenticated MCP, so that I can review its label and public-key fingerprint before approving it.
-5. As an owner, I want to explicitly confirm one inspected pairing, so that a one-time code alone does not grant remote execution.
-6. As an owner, I want to list only paired devices and their observed availability, so that I can select the correct target.
-7. As an owner, I want remote commands to require the target `device_id`, so that parallel chats cannot redirect commands by modifying a global default.
-8. As an owner, I want offline devices to reject new commands rather than queue them, so that old Shell instructions cannot run unexpectedly.
-9. As an owner, I want already-running commands to continue after an ordinary disconnection and have their status queried after reconnection, so that I can safely reconcile uncertain results without a replay.
-10. As an owner, I want one device's credentials revoked and its connection rejected without affecting others, so that lost or retired devices cannot accept new operations.
-11. As an owner, I want online Agent-owned processes to receive a best-effort stop request on explicit device revocation, so that I get an accurate report of what could and could not be stopped.
-12. As an owner, I want a reinstalled device to require fresh pairing, so that old credentials cannot be silently inherited.
-13. As an owner, I want automatic Agent reconnect after service/network restarts, so that control recovers without manual reconfiguration.
-14. As an owner, I want bounded device, pairing and error outputs, so that logs and MCP responses do not leak private key material, command payloads or credentials.
-15. As a maintainer, I want an observed 72-hour five-Agent Hibernation and Free-quota soak, so that v2 does not silently exhaust the shared Cloudflare Free plan.
-16. As a maintainer, I want v1 production unchanged throughout v2 testing, so that an incomplete design cannot interrupt the existing connection.
+## Minimal changes to existing modules
 
-## 3. Component boundaries and existing seams
-
-| Component | Owns | Explicitly does not own |
+| Module | v2 work | Reuse |
 | --- | --- | --- |
-| `apps/remote-control-mcp-worker` | One `/mcp` authenticated ingress, curated tools, argument/body bounds, owner review/confirmation and device-targeted RPC to DO | Device runtime, Shell, arbitrary private-IP proxy, anonymous approval |
-| SQLite-backed owner DO | Pending pairings, stable `device_id`, public keys, deny/revoke state, authenticated hibernating WS connections, bounded request/response dispatch | Arbitrary command execution, long-term process logs, durable job queue |
-| `apps/remote-control-agent` (v2 entry/transport) | Local key generation and secret storage, local pairing code display, outbound WSS/reconnect, existing Node file/Shell/process implementation and receipts | MCP Server or Portal credential, Cloudflare control-plane administration |
-| `packages/portal-auth` (existing) | Same independent static Bearer verification for the **MCP ingress** | Agent credential, human identity attestation |
+| `apps/remote-control-mcp-worker` | Keep one authenticated `/mcp`, add `list_devices`, `pairing_lookup`, `pairing_confirm`, `revoke_device`, and explicit `device_id` on v2 tool calls; route to DO | Existing Portal auth, curated `LOCAL_TOOLS` schema/validation, error/redaction, operation IDs |
+| New v2 owner DO module | Minimal SQLite `pending_pairing` and `device` records; bounded WS dispatch/correlation; revoke tombstones | Cloudflare DO Hibernation and SQLite; **one DO**, not a fleet platform |
+| `apps/remote-control-agent` v2 transport entry | Device-local Ed25519 key, 10-symbol pairing code, outbound WSS, automatic reconnect, local service startup | Existing Linux tool handlers and loopback server can act as v2 execution adapter initially; no duplicated file/Shell engine or new cloud-side receipt storage |
+| Existing v1 | **No change in production**; isolated preview/testing until approved cutover | Fixed VPC Service, Tunnel, current credential and worker semantics |
 
-Use a single coordinator DO for the personal owner, selected internally from trusted server configuration; **never** use a caller/Agent-supplied owner ID to create unlimited objects. Preserve current tool implementations and reuse the highest-level MCP→Worker→Agent execution seam in tests. No new CI workflow or platform service required by this spec.
+The existing Agent build invokes **`cc`** for its C session-supervisor helper; one-command onboarding must account for supported Node runtime, compiler or version-pinned prebuilt helper, Linux permissions and WSL2 startup. Installing an Agent without handling those prerequisites does **not** satisfy the UX goal. Do not add a new CI workflow merely to package it.
 
-## 4. Minimal public/API contracts
+## Stable identities and MCP contracts
 
-### 4.1 MCP surface — authenticated with existing `MCP_ACCESS_TOKEN`
+- `device_id`: opaque server-issued per-installation identifier; public to authenticated MCP, never based on hostname/IP or user-provided URL. Friendly `name` is untrusted presentation only. Reinstallation creates a new ID/key.
+- `operation_id`: existing Agent-local stable mutation identity and receipt; never substitute a WSS correlation identifier. Unknown outcome is `timeout_unknown`, not “failed / safe to retry”.
+- `list_devices()` returns bounded `[{device_id,name,status,last_seen_at?}]`; availability means observed Agent connectivity, not merely network/host state.
+- `pairing_lookup({code})`: Portal-authenticated **read-only** pending device lookup returning `pairing_id`, `name`, `fingerprint`, `expires_at`. Never approves a device.
+- `pairing_confirm({pairing_id,expected_fingerprint,approve})`: separate authenticated owner action; rejects stale/uninspected, different-key, expired or concurrently claimed request, and atomically consumes its code. **A Bearer or model-generated `approve:true` alone does not prove human presence.** Actual client review/confirmation must be tested before rollout.
+- `revoke_device({device_id})`: durably deny before any other effect, reject fresh connections/dispatch and close live socket. Attempt an authenticated internal best-effort stop of owned managed sessions if online, reporting `stop_confirmed`, `stop_unconfirmed` or `offline` honestly. No Cloudflare One registration exists to delete.
+- Every v2 existing curated tool adds a validated `device_id` while retaining original tool names/arguments and mutation IDs. No global mutable default. The single-device v1 compatibility route cannot silently pick a v2 target.
 
-- `list_devices()` → bounded list of `{device_id, name, status, last_seen_at?}`, no private network address, public key, pairing code or sensitive metadata.
-- `pairing_lookup({code})` → `{pairing_id, sanitized_name, public_key_fingerprint, expires_at, status:"pending"}`. **Read-only**. May not grant a key. This call must be available only through the existing Portal-authenticated MCP entrypoint.
-- `pairing_confirm({pairing_id, expected_fingerprint, approve})` → `{status:"approved"|"denied"|"expired", device_id?}`. **Distinct** from lookup; compare fingerprint to immutable pending key; a request cannot approve an uninspected/stale lookup. The actual ChatGPT/Portal UI's human-review guarantee is a **blocking client validation**, not an implied property of a Bearer.
-- `revoke_device({device_id})` → `{status:"revoked"|"revocation_pending", stop_result:"confirmed"|"best_effort"|"unavailable"}` with truthful remote-process status. For WS+DO, deny device identity and close socket; no Cloudflare One enrollment exists to delete.
-- All v2 remote operations add explicit **`device_id`** to existing arguments and retain stable `operation_id` on mutations. A `get_operation_status` query also targets a specific `device_id`. Do not expose caller-provided URLs, IPs, ports or a writable global selected device.
+## Agent-only pairing and authentication (separate from MCP)
 
-For v1 coexistence, use an explicit v1 path or unambiguous compatibility layer; **never silently route a call without `device_id` to an arbitrary v2 device**. Exact client-visible names and compatibility compatibility checks should be tested against existing `LOCAL_TOOLS` before implementation.
+1. Installer generates a new **Ed25519** pair locally and a cryptographically uniform **10-character Base32 code (50 random bits)**; displays it locally with **10-minute** expiry. The private key remains device-local with restricted OS permissions.
+2. A **bounded public, tool-less Agent bootstrap endpoint** registers a pending code verifier + exact public key/fingerprint in the fixed owner DO. It receives no Shell/file authority. Rate-limit submissions and code guesses, cap outstanding pending requests, expire and clean on access; no general queue or always-on alarm.
+3. Owner supplies the code via Portal-authenticated `pairing_lookup`, inspects one immutable device identity, and explicitly performs `pairing_confirm`. Atomic state change prevents double approvals, replay and swapping a public key after lookup.
+4. Agent learns approval through a bounded status check, obtains a fresh, short-lived server challenge, signs a versioned, domain-separated transcript binding `device_id`, nonce and connection context, and opens its authenticated outbound `wss` channel. The DO consumes the nonce once **before promoting the socket to an operational connection**. Never put long-lived keys, code or Portal Bearer into query strings/logs.
+5. Every subsequent WSS reconnect uses a new challenge and the same approved local private key. Verify current SQLite authorization at connection and before **each command dispatch**, including after Hibernation wake. Use a deterministic per-device connection epoch to fence duplicate old sockets. Revoke permanently blocks the old key until a *new owner-approved pairing*.
 
-### 4.2 Narrow Agent network surface — no Portal Bearer
+**Security gate:** static Portal Bearer authenticates caller possession, not an actual human. Two automated MCP tool calls can imitate two “steps”. If the real ChatGPT/Portal flow cannot demonstrate deliberate user confirmation, **do not enable live pairing**; a minimal independent confirmation step must then be separately approved. Do not add speculative OAuth, per-device Cloudflare Access or a dashboard now.
 
-- `POST /agent/pair/start` (or equivalent authenticated-by-proof bootstrap): accepts bounded public key, key-possession proof, locally generated code verifier/challenge metadata; stores one pending pairing with a 10-minute deadline. Creates **no execution capability**. A public endpoint must not enumerate owners or resolve a user-supplied DO scope.
-- `GET /agent/connect` WSS upgrade: unauthenticated connection receives **no commands**. Require a fresh server challenge signed by the device's private key and bounded authentication deadline; verify against the approved `device_id` public key and a durable non-revoked record before promoting this socket to an operational Agent. Only the server sends commands; unpaired/revoked/unknown keys rejected.
-- Per-message envelope is versioned and bounded: `{type, request_id, device_id, operation_id?, tool?, arguments?, result?}`. Route only to a server-authorized destination; signatures/fresh challenges bind session scope to prevent cross-device replay. A correlation `request_id` is not a substitute for `operation_id` idempotency.
-- Response after ambiguous disconnection: `{device_id, operation_id, status:"timeout_unknown"}` for submitted mutations; **never** silently resend the mutating request. Query existing local receipt when the specific Agent is reachable again.
-- WSS bootstrap/auth expiry, frame size and concurrency caps remain server-side constants, not individually configurable environment variables.
+## Device control and failure model
 
-**Security note:** an Agent-initiated code is not automatically safe. The pending registration must be bound to **the same local key**, code and owner-visible fingerprint; guesses, stolen codes, wrong-key claims, duplicate pending IDs and concurrent confirmations are denied. A single bearer/code entry cannot execute Shell. Pairing code, Portal bearer and device private key are three distinct materials.
+- Only authenticated MCP can request curated operations; only an approved, currently authorized Agent socket receives them. Agent independently validates operations and its OS permissions. Public bootstrap never executes tools.
+- One short-lived WSS message envelope: `{version,type,request_id,device_id,operation_id?,tool?,arguments?,result?}`. Validate size/tool/schema and bind device identity on both ends; responses must match the initiating request ID and connection epoch. No arbitrary target host/URL, generic proxy, or cloud file/command-output archive.
+- Short/read calls and acknowledgement of long-running `start_process` use **bounded RPC deadlines**. Extended processes run only under the Agent's existing managed-session contract. Do not await a multi-minute Shell command inside a DO request/promise: it prevents Hibernation.
+- A known disconnection immediately marks offline; a silent partition has a bounded detection delay (must be measured, not claimed instantaneous). Auto reconnects with backoff, no queued commands and **no resubmission of uncertain mutations**. Status can be reconciled with the same `device_id + operation_id` after reconnection.
+- An ordinary network loss **does not stop** an Agent-owned running process. Explicit removal denies new work first, attempts stopping *owned* sessions via a narrow internal control when possible and then closes the connection; an offline/compromised device's process may continue.
+- WSL2 may be stopped while its Windows host is online; only actual Linux Agent reachability counts as “online.” Automatic start across Windows host reboot/WSL2 shutdown must be tested and must not be asserted by design alone.
 
-## 5. Pairing/credential lifecycle — accepted fixed requirements
+## Hibernation, persistent state and Free quota
 
-States: `unpaired → pending (10 min) → owner_reviewed → approved → connected/offline → revoked`; `expired` and `denied` terminate pending pairing. Reinstall creates a **different** identity and passes through pairing again.
+- The **SQLite-backed owner DO** stores minimal `pending_pairing` (code verifier, public key, expiry, status, attempts) and `device` (opaque ID, key, label, approval, revoked tombstone) records. No separate D1/KV/R2 or cloud-side operation-receipts.
+- Use `ctx.acceptWebSocket()`, connection `serializeAttachment()`/`deserializeAttachment()` and `getWebSockets()`; attachments hold **nonsecret** `device_id`/epoch, but **SQLite** remains authoritative after DO eviction or code deployment.
+- DO Hibernation requires *no scheduled `setInterval`/`setTimeout`*, no unbounded `waitUntil` or held-open outgoing I/O. Prefer protocol ping/pong or Cloudflare automatic WS responses; **frequent application-layer heartbeats on multiple devices can keep the one DO awake**. Read auto-response timestamps when requested and use measured offline detection, not a busy poller.
+- Verified official Workers Free SQLite-DO limits: **100,000 DO request-billing units/day**, **13,000 GB-s/day**, **5 million rows read/day**, **100,000 rows written/day**, **5 GB stored total**. WebSocket application messages bill 20:1 for DO requests; Workers requests are an additional quota. Duration for a continually non-hibernating DO allocated 128 MiB for 24h is ~**10,800 GB-s**. Free limits are shared with other account DOs, including IMA; crossing a limit causes errors, not automatic paid usage.
 
-- Generate exactly **10 uniformly random Base32 symbols** from secure randomness (50 entropy bits), case-folded on input; separators are not counted in 10 symbols. Only one successful redemption/approval. Pending state has an expiry, bounded request/attempt budget and replay-resistant atomic transition.
-- For each fresh installation generate an independent device private/public keypair **locally**, protect private key with OS-user file permissions, never upload it. Choose a standard signature algorithm implemented by both Node and Cloudflare WebCrypto (candidate: Ed25519, subject to cross-runtime verification) and version wire encodings for later key rotation; no bespoke cryptography.
-- Sign a **fresh, short-lived server challenge** with context binding (protocol version, domain, owner-scoped installation identity, `device_id`, unique challenge). Reject stale/duplicate proofs. Upgrade and every command dispatch must check current non-revoked durable device state; a socket attachment or old handshake does not supersede a revocation.
-- A fingerprint identifies the exact pending public key to the owner, not the OS hostname or merely a ten-character code. The approval protocol must retain **proof that the pending request was previously looked up**. The actual Portal client must display details and obtain an explicit second owner confirmation; an LLM-only pair of tool calls is **not** a proven human-presence signal. Escalate to a separate user-verifiable confirmation channel if the real client does not satisfy this acceptance gate.
-- On revoke: commit a deny/tombstone first, reject new upgrades/messages/commands, best-effort stop online Agent-owned sessions, close existing socket. Offline execution already started cannot be forcibly terminated and must not be reported as stopped. No device enrollment cleanup is needed in Cloudflare One for this WS+DO-only design.
+## Required acceptance gates (do not claim passed)
 
-## 6. Durable state, online status and Hibernation
+| Gate | Observable check |
+| --- | --- |
+| Pairing | missing/wrong Bearer, lookup-only, model-only approval, code substitution, expired/replayed/guessed code, duplicate approve and immutable fingerprint binding; **real-client explicit consent** |
+| Identity | Ed25519 Node/Workers interoperability; stolen, wrong or revoked key, replayed challenge, duplicate sockets and failed identity swap; owner and device isolation |
+| Operations | original Worker/Agent curated tool contracts, no arbitrary URL, offline rejection, no blind retry, local receipts, bounded file/output and long process sessions |
+| Device lifecycle | revoke one device while others run, online best-effort process stop, offline no false termination, reinstall and reconnect with old key denied |
+| Linux/WSL2 installer | different home/cloud networks, Node/compiled helper prerequisites, WSL2 startup, restart and network outage |
+| Cost and sleep | **5 simulated independent Agents continuously connected 72h in nonproduction**, actual DO hibernation and wake, daily DO request/GB-s/SQLite/Workers usage and other DO load, traffic bursts and fail/reconnect |
+| v1 safety | existing VPC/Tunnel unchanged, explicit v2 opt-in, rollback and separate authorization before changing production |
 
-**Minimal DO SQLite records (conceptual, no separate database):**
-- `pending_pairing`: request ID, normalized code verifier (never raw code), public key and fingerprint, pending-state timestamps, attempt counters, approval view reference.
-- `device`: opaque `device_id`, unique public key, friendly label, approved/revoked status, creation/revocation timestamps; a tombstone must survive reconnect and hibernation.
-- No cloud-side `operation_receipt` table: the existing Agent store owns actual mutation outcomes. Only short-lived in-flight RPC correlation can reside in DO memory during a **bounded** active call.
+Prefer behavior tests at existing MCP→Worker→Agent seams plus disposable Agent bootstrap/WSS integration; use existing CI **if already available**, but **do not add a CI workflow**.
 
-Use `ctx.acceptWebSocket()`, `webSocketMessage()`/`webSocketClose()`, `serializeAttachment()`/`deserializeAttachment()`, `getWebSockets()` to rebuild ephemeral connection handles following hibernation. Socket attachment contains only minimum nonsecret `device_id`/connection epoch; authorization is looked up from durable SQLite on every dispatch and upgrade.
+## Out of scope and deployment controls
 
-**Hibernation vs liveness:** Do **not** send frequent application-layer heartbeats for each device: five staggered 30-second heartbeats can prevent a shared DO ever reaching the inactivity window for hibernation. Prefer Cloudflare `setWebSocketAutoResponse()` (which does not run handler JS) and, where appropriate, `getWebSocketAutoResponseTimestamp()` for observed liveness when `list_devices` is called. Close events and bounded command timeouts also indicate unavailability. Actual detection latency for silent network failure must be measured and documented; "immediately unavailable" means immediately **once failure is known**, not instantaneous knowledge of every partition.
+No native Windows/macOS Shell, GUI/mouse/screen, general fleet dashboard, OAuth server, Cloudflare One/Mesh/Tunnel per v2 device, multi-tenant DO routing, per-device DO shard, D1/KV/R2, offline queue, forced termination of offline processes, auto-waking sleeping hosts, fake sandbox claims, new CI or changes to live secrets/configuration.
 
-Bound each RPC's connected wait, then return `timeout_unknown` or known receipt state, rather than holding a DO event/Promise alive for a multi-minute Shell command. Never keep per-socket activity timers, unbounded `waitUntil` or open outbound WebSockets that prevent hibernation. Treat DO isolate hibernation/restart as routine and restore only durable/authenticated state.
+**This spec is design-only.** Do not create Cloudflare resources, provision secrets, install on the real production device, deploy v2 or cut over the working v1 without a separate explicit authorization.
 
-## 7. Acceptance and rollout (no new CI)
+## Official sources
 
-Run at the highest external seams: authenticated MCP request → Worker/DO → disposable native Agent; separate malicious bootstrap/WS tests. Use existing tests and local scripts; **do not add GitHub Actions workflows**.
-
-1. **Portal approval:** wrong/missing Bearer, lookup-only, changed fingerprint, expired code, duplicate/replayed confirmation and fake "owner-confirmed" arguments must never grant access. Test actual ChatGPT client two-step confirmation; automatic model tool calls without verifiable user consent remain a release **blocker**.
-2. **Device identity:** stolen old key, mismatched signature, replayed challenge, forged device ID, duplicate WS, and revoked/reinstalled identity must fail closed; other paired devices remain available.
-3. **Offline/mutation:** Linux + WSL2 in at least two distinct networks, service and host restart, silent partition, stale socket replacement, uncertain mutation receipt and command non-replay; existing Agent process ownership retained.
-4. **Revoke:** new commands refused immediately; online owned-process best-effort stop outcome reported; offline/compromised Agent processes never falsely certified stopped.
-5. **Cloudflare Free soak: 5 simulated clients × 72 continuous hours (not yet run).** Include idle and bounded active tests, disconnection, re-auth, DO wake after idle, Worker/DO restart and current IMA DO shared-account load. Record hourly: WS connection count, hibernation/wake evidence, DO billed requests, GB-s, SQLite rows read/written/storage, Workers requests, failed/429/5xx counts and peak backpressure. Use observed account quota headroom rather than simulated numbers to decide whether Free tier is sustainable.
-6. **Published quotas (as of 2026-10-15):** SQLite-backed DO Free allows **100,000 DO requests/day, 13,000 GB-s/day, 5 million SQLite rows read/day, 100,000 rows written/day and 5 GB stored** account-wide. Incoming WS application messages count 20:1 for DO request billing; frontend Worker quotas are separate. One DO kept non-hibernating for 24 hours is roughly **10,800 GB-s**. Free excess operations fail; paid tier migration is neither assumed nor authorized.
-7. **Release control:** v1 remains unchanged and continuously usable throughout development and nonproduction proof. Any v2 Worker binding/Secret, hosted test Cloudflare resource, real device install and production cutover require an independently authorized step and rollback plan. Successful documentation/CI tests alone do not authorize a production deployment.
-
-## 8. Non-goals
-
-- Native Windows/macOS Shell execution, graphical desktop, mouse/keyboard/PTY.
-- Automatic Agent registration without explicit owner review; OAuth/Cloudflare Access or reusable Cloudflare One Client/Mesh enrollment.
-- Shared `REMOTE_CONTROL_DEVICE_TOKEN`, Portal Bearer in Agent, Cloudflare admin token in installer.
-- Device-wide file/shell sandbox claim: Agent executes under existing OS account's privileges, same as current v1.
-- Offline job queue, cron/workflow engine, DO-side command receipts, D1/KV/R2, autoscaling/fleet tenant controls, dashboard or auto-wake of sleeping WSL2/PC.
-- New CI workflows or modification of production credentials and live Worker/Tunnel/Agent.
-
-## 9. Decision closure and remaining risks
-
-**Confirmed:** Q1–Q20 decisions, ADR-0019 code/key/proof and 72h soak requirements, WS+DO v2 design and independent v1 production.
-
-**Still needs a proof or a small follow-up decision (NOT secretly assumed approved):**
-- Can an actual MCP Portal/ChatGPT UI make two separate tool calls correspond to verifiable **human review and deliberate confirmation**? If not, use a separate confirmation channel; do not substitute an LLM-generated `approve: true`.
-- Finalized signature algorithm / trust bootstrap and replay boundaries; exact pairing attempt/throttle policy, use of keyed verifier salt, and duplicate socket fencing.
-- Narrow implementation constants for silent-partition offline threshold, per-call active wait, resource limits, retention/cleanup and key rotation.
-- Nonproduction environment and 72h soak evidence, account-wide DO headroom, WSL2 auto-start feasibility and production rollback plan.
-
-## References
-
-- [Domain context](./CONTEXT.md)
-- [ADR-0019](./adr/0019-pairing-code-device-keys-and-72-hour-gate.md)
-- [Pairing security and Hibernation acceptance](./V2-PAIRING-AND-HIBERNATION-ACCEPTANCE.md)
-- [Existing native v1 Spec](./SPEC.md)
 - https://developers.cloudflare.com/durable-objects/best-practices/websockets/
+- https://developers.cloudflare.com/durable-objects/concepts/durable-object-lifecycle/
 - https://developers.cloudflare.com/durable-objects/api/state/
 - https://developers.cloudflare.com/durable-objects/platform/pricing/
-- https://developers.cloudflare.com/durable-objects/concepts/durable-object-lifecycle/
+- https://developers.cloudflare.com/workers/runtime-apis/web-crypto/
