@@ -375,6 +375,7 @@ test("start_process uses receipts once and managed sessions expose bounded outpu
     assert.equal((duplicate.json as { session_id: string }).session_id, longBody.session_id);
     const conflict = await callTool("start_process", { command: "printf different", timeout_ms: 5 }, "long-once");
     assert.equal(conflict.status, 409);
+    await new Promise((resolve) => setTimeout(resolve, 250));
     assert.equal(await readFile(countFile, "utf8"), "x");
 
     // The session and captured-output streams can settle in separate event-loop
