@@ -53,7 +53,7 @@ The exact supported tool-name contract is regression-tested and currently contai
 - `cleanup_collections`
 - `remove_duplicates`
 
-Destructive tools keep their explicit confirmation requirements. Tests and acceptance checks must not mutate a real Raindrop library unless a task explicitly authorizes that action.
+Cleanup tools use preview-first semantics: `empty_trash({})` and `cleanup_collections({})` do not delete anything; only `confirm: true` executes. `remove_duplicates({})` and `dryRun: true` preview verified candidates; only `dryRun: false` deletes. All three retain `destructiveHint: true` and the existing safe-candidate, batch, fail-closed and no-blind-retry protections. A preview is not a transaction lock: recheck the target state before confirmed operations. Tests and acceptance checks must not mutate a real Raindrop library without separate explicit authorization.
 
 ## Configuration
 

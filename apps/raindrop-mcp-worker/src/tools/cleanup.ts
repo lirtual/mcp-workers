@@ -74,22 +74,24 @@ const libraryAuditTool = defineTool({
 });
 
 /**
- * The cleanup tool names are deliberately retained. Their new contract is
- * immediately destructive; strict input schemas reject old preview flags.
+ * The cleanup tool names are deliberately retained. Empty input must never
+ * mutate data: show a preview first, then require explicit execution intent.
  */
 const emptyTrashTool = defineTool({
   name: "empty_trash",
   description:
-    "Permanently delete ALL bookmarks in the trash immediately. This action is irreversible; there is no preview or server-side confirmation.",
+    "Preview the trash count by default; permanently empty the trash only with confirm: true. Deletion is irreversible.",
   annotations: {
     readOnlyHint: false,
     destructiveHint: true,
     idempotentHint: false,
     openWorldHint: true,
   },
-  inputSchema: z.object({}).strict(),
+  inputSchema: z.object({
+    confirm: z.boolean().optional().describe("Default false: preview only. Set true to permanently empty trash."),
+  }).strict(),
   handler: async (
-    _args: Record<string, never>,
+    args: { confirm?: boolean },
     { raindropService }: ToolHandlerContext,
   ) => {
     const stats = await raindropService.getUserStats();
@@ -99,6 +101,11 @@ const emptyTrashTool = defineTool({
     }
     if (trashCount === 0) {
       return { content: [textContent("Trash is already empty.")] };
+    }
+    if (args.confirm !== true) {
+      return { content: [textContent(
+        `Preview only: trash contains ${trashCount} items. Nothing deleted. To permanently empty it, call again with confirm: true.`,
+      )] };
     }
     const success = await raindropService.emptyTrash();
     return {
@@ -116,18 +123,47 @@ const emptyTrashTool = defineTool({
 const cleanupCollectionsTool = defineTool({
   name: "cleanup_collections",
   description:
-    "Immediately remove ALL empty collections throughout the library. This changes the user's collection structure; no preview or repeat confirmation.",
+    "Preview collections reporting zero bookmarks by default; remove empty collections only with confirm: true. Actual upstream cleanup may also consider nested collections.",
   annotations: {
     readOnlyHint: false,
     destructiveHint: true,
     idempotentHint: false,
     openWorldHint: true,
   },
-  inputSchema: z.object({}).strict(),
+  inputSchema: z.object({
+    confirm: z.boolean().optional().describe("Default false: preview only. Set true to remove empty collections."),
+  }).strict(),
   handler: async (
-    _args: Record<string, never>,
+    args: { confirm?: boolean },
     { raindropService }: ToolHandlerContext,
   ) => {
+    if (args.confirm !== true) {
+      // Read both endpoints: /collections excludes nested child collections.
+      const [roots, children] = await Promise.all([
+        raindropService.getCollections(true),
+        raindropService.getAllChildCollections(true),
+      ]);
+      if (!Array.isArray(roots) || !Array.isArray(children)) {
+        throw new Error("Cannot enumerate collections for preview; nothing deleted.");
+      }
+      const empty = new Map<number, string>();
+      let unknown = 0;
+      for (const collection of [...roots, ...children]) {
+        if (!Number.isSafeInteger(collection._id) || collection._id <= 0) {
+          throw new Error("Invalid collection in preview; nothing deleted.");
+        }
+        if (collection.count === 0) {
+          empty.set(collection._id, collection.title);
+        } else if (typeof collection.count !== "number" || !Number.isSafeInteger(collection.count) || collection.count < 0) {
+          unknown++;
+        }
+      }
+      const lines = [...empty].slice(0, 20).map(([id, title]) => `- ${title} (ID: ${id})`);
+      const suffix = empty.size > 20 ? `\n... and ${empty.size - 20} more.` : "";
+      return { content: [textContent(
+        `Preview only: ${empty.size} collections report zero direct bookmarks; ${unknown} have unverified counts. Nothing deleted.\n${lines.join("\n")}${suffix}\nUpstream cleanup determines the final deletion set, which may differ. To remove empty collections, call again with confirm: true.`,
+      )] };
+    }
     const success = await raindropService.removeEmptyCollections();
     return {
       content: [
@@ -178,7 +214,7 @@ function safeDuplicateCandidate(
 const removeDuplicatesTool = defineTool({
   name: "remove_duplicates",
   description:
-    "Immediately delete verified unannotated duplicate bookmarks across all user collections and Unsorted. Within EACH collection, retain at least one copy of each exact URL; never deduplicate across different collections. Only candidates with explicitly empty notes, highlights and tags, important=false, no reminder and confirmed collection membership may be removed. Recheck before deletion. Deletes in batches of at most 50; no preview or automatic retries.",
+    "Preview verified unannotated duplicates by default (dryRun: true). Set dryRun: false to delete. Within EACH collection, retain at least one copy of each exact URL; never deduplicate across collections. Only candidates with explicitly empty notes, highlights and tags, important=false, no reminder and confirmed collection membership may be removed. Recheck before deletion, batches of at most 50, and no automatic retries.",
   annotations: {
     readOnlyHint: false,
     destructiveHint: true,
@@ -187,11 +223,12 @@ const removeDuplicatesTool = defineTool({
   },
   inputSchema: z
     .object({
+      dryRun: z.boolean().optional().describe("Default true: preview only. Set false to delete verified duplicates."),
       skipCache: z.boolean().optional().describe("Bypass the read cache when discovering duplicate candidates."),
     })
     .strict(),
   handler: async (
-    args: { skipCache?: boolean },
+    args: { dryRun?: boolean; skipCache?: boolean },
     { raindropService, reportProgress }: ToolHandlerContext,
   ) => {
     const progress =
@@ -314,6 +351,12 @@ const removeDuplicatesTool = defineTool({
           `No safely deletable duplicates. Retained collection-local copies: ${preservedCopies}, protected: ${protectedCount}, unverifiable: ${unverifiedCount}; nothing deleted.`,
         )],
       };
+    }
+
+    if (args.dryRun !== false) {
+      return { content: [textContent(
+        `Preview only (dryRun): ${safeCount} verified duplicates would be deleted across ${safe.size} collections. Retained collection-local copies: ${preservedCopies}, protected: ${protectedCount}, unverifiable: ${unverifiedCount}. Nothing deleted. To execute, call again with dryRun: false.`,
+      )] };
     }
 
     let deleted = 0;

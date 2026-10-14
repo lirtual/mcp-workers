@@ -116,9 +116,17 @@ describe("collection_list over MCP tools/call", () => {
   });
 });
 
-describe("destructive cleanup MCP tools/list and tools/call entry contract", () => {
-  it("exposes truthful annotations and rejects stale arguments before upstream deletion", async () => {
+describe("preview-first cleanup MCP tools/list and tools/call entry contract", () => {
+  it("advertises explicit confirmation, keeps {} read-only, and rejects unknown arguments", async () => {
     const service = new RaindropMCPService({ accessToken: "test-token" });
+    const getStats = vi.spyOn(service.raindropService, "getUserStats")
+      .mockResolvedValue({ trash: 7, collections: 5 } as Awaited<ReturnType<typeof service.raindropService.getUserStats>>);
+    const roots = vi.spyOn(service.raindropService, "getCollections")
+      .mockResolvedValue([{ _id: 11, title: "Empty", count: 0 }] as Awaited<ReturnType<typeof service.raindropService.getCollections>>);
+    const children = vi.spyOn(service.raindropService, "getAllChildCollections")
+      .mockResolvedValue([] as Awaited<ReturnType<typeof service.raindropService.getAllChildCollections>>);
+    const getBookmarks = vi.spyOn(service.raindropService, "getBookmarks")
+      .mockResolvedValue({ count: 0, items: [] } as Awaited<ReturnType<typeof service.raindropService.getBookmarks>>);
     const trashDelete = vi.spyOn(service.raindropService, "emptyTrash");
     const collectionDelete = vi.spyOn(service.raindropService, "removeEmptyCollections");
     const duplicateDelete = vi.spyOn(
@@ -134,29 +142,53 @@ describe("destructive cleanup MCP tools/list and tools/call entry contract", () 
         expect(tool?.annotations).toMatchObject({
           readOnlyHint: false, destructiveHint: true,
         });
+        expect(tool?.description).toMatch(/preview/i);
+        const argsProperty = name === "remove_duplicates" ? "dryRun" : "confirm";
+        expect((tool?.inputSchema as { properties?: Record<string, unknown> })?.properties?.[argsProperty]).toBeDefined();
+        const preview = await client.callTool({ name, arguments: {} });
+        expect(preview.isError).not.toBe(true);
+        expect(preview.content?.[0]).toMatchObject({ type: "text" });
       }
+      // Non-executing flags must also be safe at protocol boundary.
+      for (const name of ["empty_trash", "cleanup_collections"]) {
+        const preview = await client.callTool({ name, arguments: { confirm: false } });
+        expect(preview.isError).not.toBe(true);
+      }
+      const duplicatePreview = await client.callTool({
+        name: "remove_duplicates", arguments: { dryRun: true },
+      });
+      expect(duplicatePreview.isError).not.toBe(true);
       for (const [name, args] of [
-        ["empty_trash", { confirm: false }],
-        ["empty_trash", { confirm: true }],
-        ["cleanup_collections", { confirm: true }],
-        ["cleanup_collections", { confirm: false }],
-        ["remove_duplicates", { dryRun: true }],
-        ["remove_duplicates", { dryRun: false }],
-        ["remove_duplicates", { unknown: 0 }],
+        ["empty_trash", { dryRun: false }],
+        ["empty_trash", { unknown: 1 }],
+        ["cleanup_collections", { dryRun: true }],
+        ["cleanup_collections", { unknown: 1 }],
+        ["remove_duplicates", { confirm: true }],
+        ["remove_duplicates", { unknown: 1 }],
       ] as const) {
+        let rejected = false;
         try {
           const result = await client.callTool({ name, arguments: args });
-          expect(result.isError).toBe(true);
-        } catch (error) {
-          expect(error).toBeDefined();
+          rejected = result.isError === true;
+        } catch {
+          rejected = true;
         }
+        expect(rejected).toBe(true);
       }
+      expect(getStats).toHaveBeenCalled();
+      expect(roots).toHaveBeenCalled();
+      expect(children).toHaveBeenCalled();
+      expect(getBookmarks).toHaveBeenCalled();
       expect(trashDelete).not.toHaveBeenCalled();
       expect(collectionDelete).not.toHaveBeenCalled();
       expect(duplicateDelete).not.toHaveBeenCalled();
     } finally {
       await client.close();
       await service.cleanup();
+      getStats.mockRestore();
+      roots.mockRestore();
+      children.mockRestore();
+      getBookmarks.mockRestore();
       trashDelete.mockRestore();
       collectionDelete.mockRestore();
       duplicateDelete.mockRestore();
