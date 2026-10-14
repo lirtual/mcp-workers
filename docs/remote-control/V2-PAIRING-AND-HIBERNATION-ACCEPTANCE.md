@@ -3,6 +3,15 @@
 Status: **engineering candidate / not a finalized protocol or completed verification**. Date: 2026-10-15.
 Authority: [ADR-0018](./adr/0018-v2-websocket-do-transport-and-portal-pairing.md) (accepted architecture, Q14=A/Q15=A/Q16=A). This note distinguishes required outcomes from proposed implementation defaults, all of which still need explicit grilling acceptance.
 
+## Accepted round-seven decisions — 2026-10-15
+
+- **Q17=A:** Portal Bearer-authenticated **lookup/review** followed by a **distinct, explicit approval** for the same immutable pending Agent/public-key fingerprint. The real client confirmation UX must be tested: static Bearer possession and an autonomous LLM tool invocation are not proof of human presence.
+- **Q18=A:** exactly **10 cryptographically random Base32 symbols** (50 bits entropy), **10-minute** lifetime, **single-use** atomic redemption, strict bounded attempts and no code logging.
+- **Q19=A:** each installation generates an independent **private/public keypair** locally; private key never leaves Agent. Use nonce-based, fresh challenge-response proof of key possession on connection and a durable revocation check before every dispatch.
+- **Q20=A:** **five simulated devices continuously connected for 72 hours** in nonproduction; record DO hibernation/wake, DO requests and GB-s, SQLite rows/storage, Workers quota, mixed activity and failure recovery including the account's other DO consumers.
+- These requirements and the lean end-to-end contracts now live in [ADR-0019](./adr/0019-pairing-code-device-keys-and-72-hour-gate.md) and [V2 Spec](./V2-MULTI-DEVICE-SPEC.md). **No hosted verification has been performed yet**.
+- **Hibernateable heartbeat warning:** use `setWebSocketAutoResponse()` and `getWebSocketAutoResponseTimestamp()` as candidates instead of frequent per-device application events; otherwise staggered heartbeats can prevent an owner-scoped DO from becoming idle. Platform docs: https://developers.cloudflare.com/durable-objects/api/state/.
+
 ## 1. Trust boundaries and security model
 
 | Principal or component | Has or may receive | MUST NOT receive |
@@ -24,7 +33,7 @@ A `MCP_ACCESS_TOKEN` check is **bearer possession**, not a verifiable human-in-t
 5. **Operational connection:** validate the bound identity at WebSocket upgrade, associate authenticated connection metadata using Hibernation attachments, and check current durable authorization again before dispatching *each* command. Duplicate connections must have a deterministic replacement/reject policy. Only approved device IDs are visible through `list_devices`.
 6. **Revoke / reinstall:** persist a deny/tombstone, reject upgrades/dispatches, request best-effort stop of reachable Agent-owned managed sessions, close any attached WebSockets. Reinstall uses new identity/code and re-pairing; old identity cannot silently regain authorization. The owner must receive an accurate result for process termination attempts. No Cloudflare One network registration exists in this transport.
 
-**Candidate security defaults — NOT ACCEPTED:** expiry 10 minutes; >= 50 bits of unpredictable pairing-code entropy (e.g., 10 Crockford base32 symbols), one-time redemption, per-origin/device/code rate limits with bounded attempts, distinct credential per installation, hashed challenge/code storage, cryptographic proof of possession by the Agent, account-scoped pairing approval. Precise numeric thresholds/algorithm/security UI need an approval and explicit abuse-case tests. Never use only a guessable six-digit code without a robust additional verification and attempt budget.
+**Accepted Q18/Q19 protocol boundary:** expiry is **10 minutes**, code is **10 random Base32 characters (50 entropy bits)**, approval is one-use, and Agent has a device-generated **asymmetric keypair** with signed challenge proof. Use cryptographic randomness, a server-side verifier, rate limits and bound approvals atomically. **Still implementation details:** exact alphabet normalization, attempt budgets, signature algorithm/wire encoding, key storage/rotation and human-review UI verification. Never use a guessable six-digit code as a substitute.
 
 ## 3. Protocol and hibernation invariants
 
@@ -46,7 +55,7 @@ A `MCP_ACCESS_TOKEN` check is **bearer possession**, not a verifiable human-in-t
 | P4 / lifecycle | Linux install/restart, WSL2 host reboot/shutdown and restart, home vs office/cloud networks | Outbound WSS works; offline reflected without stale commands; reconnect restores identity safely |
 | P5 / receipts | network cut after start or write, duplicate `operation_id`, slow command, Agent crash | No blind replay; authoritative receipt reconciles if present, otherwise `timeout_unknown` |
 | P6 / revoke | revoke one online device and one offline device, request process stop, retry reconnect using old key | New commands always refused; online owned session stop best effort with actual outcome; other devices unaffected |
-| P7 / Hibernation | at least 5 idle WS Agents, >=24h and preferably 72h, mix idle and active RPC, Worker/DO restart/wake | Objects demonstrably hibernate, sockets/wake state restored, device revocation persists across wake |
+| P7 / Hibernation | at least 5 idle WS Agents, **72h required**, mix idle and active RPC, Worker/DO restart/wake | Objects demonstrably hibernate, sockets/wake state restored, device revocation persists across wake |
 | P8 / Free quota | DO requests, billable GB-s, SQLite rows read/write/storage, Worker calls, existing IMA DO shared account usage | All below Free limits with margin in both idle and realistic burst tests; no hidden perpetual duration |
 | P9 / rollback | v1 remains production-valid during disposable v2 validation; v2 opt-in and tool metadata | No v1 regressions or unauthorised deployment; explicit safe cutover and rollback proven |
 
@@ -75,10 +84,10 @@ Official sources:
 
 ## 6. Remaining frontier for grilling (no implementation approval yet)
 
-- Q17: Owner confirmation assurance level: authenticated two-step MCP confirmation with code displayed locally, or a separate out-of-band approval surface if genuine human presence is non-negotiable?
-- Q18: Pairing code entropy/expiry and maximum concurrent pending attempts vs setup convenience, adopting tested candidate defaults.
-- Q19: Credential choice and rotation: per-device asymmetric key proof versus an independent high-entropy bearer; revocation and secure local storage.
-- Q20: Free/hibernation soak test gate and recovery thresholds for first implementation/rollout.
+- Q17 was settled **A**: Portal-authenticated two-step review and explicit approval; **verify on the real client** that human review is not bypassed by autonomous tool calls. A separate confirmation surface is only a fallback if this gate fails.
+- Q18 was settled **A**: 10 random Base32 chars, 10-minute expiry, one use; finalize rate limits and pending-record cap as server-side constants.
+- Q19 was settled **A**: per-device asymmetric key proof; finalize algorithm, challenge transcript and safe key rotation/storage.
+- Q20 was settled **A**: five simulated Agents for continuous 72-hour nonproduction soak; define measurable failure thresholds and report shared account quota headroom.
 - Q21: Device-scoped active connection replacement policy, offline detection bound, and how to surface lifecycle outcomes in tool responses.
 
 ## Safety and non-deployment notice
