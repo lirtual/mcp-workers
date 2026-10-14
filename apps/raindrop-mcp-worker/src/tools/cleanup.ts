@@ -147,23 +147,38 @@ const cleanupCollectionsTool = defineTool({
  * Re-fetch every candidate and require explicit empty note/highlight fields.
  */
 function safeDuplicateCandidate(
-  bookmark: { _id?: number; link?: unknown; note?: unknown; highlights?: unknown },
+  bookmark: {
+    _id?: number;
+    link?: unknown;
+    note?: unknown;
+    highlights?: unknown;
+    tags?: unknown;
+    important?: unknown;
+    reminder?: unknown;
+    collection?: { $id?: number };
+  },
   id: number,
+  collectionId: number,
 ): boolean {
   return (
     bookmark._id === id &&
+    bookmark.collection?.$id === collectionId &&
     typeof bookmark.link === "string" &&
     bookmark.link.length > 0 &&
     bookmark.note === "" &&
     Array.isArray(bookmark.highlights) &&
-    bookmark.highlights.length === 0
+    bookmark.highlights.length === 0 &&
+    Array.isArray(bookmark.tags) &&
+    bookmark.tags.length === 0 &&
+    bookmark.important === false &&
+    bookmark.reminder == null
   );
 }
 
 const removeDuplicatesTool = defineTool({
   name: "remove_duplicates",
   description:
-    "Immediately delete verified unannotated duplicate bookmarks across ALL user collections and Unsorted (NOT just one collection). Metadata must explicitly prove empty note and highlights, and one verified copy of each exact URL is always retained; unknown or annotated bookmarks are skipped. Deletes in upstream batches of at most 50, with no global invocation cap. No preview or automatic retry of uncertain deletions.",
+    "Immediately delete verified unannotated duplicate bookmarks across all user collections and Unsorted. Within EACH collection, retain at least one copy of each exact URL; never deduplicate across different collections. Only candidates with explicitly empty notes, highlights and tags, important=false, no reminder and confirmed collection membership may be removed. Recheck before deletion. Deletes in batches of at most 50; no preview or automatic retries.",
   annotations: {
     readOnlyHint: false,
     destructiveHint: true,
@@ -259,9 +274,11 @@ const removeDuplicatesTool = defineTool({
     // Keep at least one verified copy of every exact URL. The official
     // duplicate search does not specify which hit (if any) is canonical.
     const safe = new Map<number, number[]>();
-    const keptLinks = new Set<string>();
+    const verifiedLinks = new Map<number, string>();
     let preservedCopies = 0;
     for (const [collectionId, ids] of candidates) {
+      // Cross-collection bookmarks are intentional organization, not disposable duplicates.
+      const keptLinks = new Set<string>();
       for (const id of ids) {
         // Always bypass cached responses for deletion eligibility checks.
         const item = await raindropService.getBookmark(id, true);
@@ -269,11 +286,14 @@ const removeDuplicatesTool = defineTool({
           item._id !== id ||
           typeof item.note !== "string" ||
           !Array.isArray(item.highlights) ||
+          !Array.isArray(item.tags) ||
+          typeof item.important !== "boolean" ||
           typeof item.link !== "string" ||
-          item.link.length === 0
+          item.link.length === 0 ||
+          item.collection?.$id !== collectionId
         ) {
           unverifiedCount++;
-        } else if (!safeDuplicateCandidate(item, id)) {
+        } else if (!safeDuplicateCandidate(item, id, collectionId)) {
           protectedCount++;
         } else if (!keptLinks.has(item.link)) {
           keptLinks.add(item.link);
@@ -282,6 +302,7 @@ const removeDuplicatesTool = defineTool({
           const entry = safe.get(collectionId) ?? [];
           entry.push(id);
           safe.set(collectionId, entry);
+          verifiedLinks.set(id, item.link);
         }
       }
     }
@@ -290,7 +311,7 @@ const removeDuplicatesTool = defineTool({
     if (safeCount === 0) {
       return {
         content: [textContent(
-          `No safely deletable duplicates. Kept canonical copies: ${preservedCopies}, protected: ${protectedCount}, unverifiable: ${unverifiedCount}; nothing deleted.`,
+          `No safely deletable duplicates. Retained collection-local copies: ${preservedCopies}, protected: ${protectedCount}, unverifiable: ${unverifiedCount}; nothing deleted.`,
         )],
       };
     }
@@ -304,6 +325,29 @@ const removeDuplicatesTool = defineTool({
       });
       for (let offset = 0; offset < ids.length; offset += 50) {
         const batch = ids.slice(offset, offset + 50);
+        // The library may change while a large scan is running. Recheck each
+        // target immediately before the batch, and stop if any detail changed.
+        try {
+          for (const id of batch) {
+            const latest = await raindropService.getBookmark(id, true);
+            if (
+              !safeDuplicateCandidate(latest, id, collectionId) ||
+              latest.link !== verifiedLinks.get(id)
+            ) {
+              return {
+                content: [textContent(
+                  `Stopped before a deletion batch in collection ${collectionId}: candidate metadata changed; ${deleted} items previously acknowledged, current batch not sent.`,
+                )],
+              };
+            }
+          }
+        } catch {
+          return {
+            content: [textContent(
+              `Stopped before a deletion batch in collection ${collectionId}: recheck failed; ${deleted} items previously acknowledged, current batch not sent.`,
+            )],
+          };
+        }
         try {
           const acknowledged = await raindropService.batchDeleteBookmarksInCollection(
             collectionId,
@@ -328,7 +372,7 @@ const removeDuplicatesTool = defineTool({
     }
     return {
       content: [textContent(
-        `Deleted ${deleted} verified duplicates across ${safe.size} collections. Kept canonical copies: ${preservedCopies}, protected: ${protectedCount}, unverifiable: ${unverifiedCount}.`,
+        `Deleted ${deleted} verified duplicates across ${safe.size} collections. Retained collection-local copies: ${preservedCopies}, protected: ${protectedCount}, unverifiable: ${unverifiedCount}.`,
       )],
     };
   },
