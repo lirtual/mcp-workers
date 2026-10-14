@@ -154,7 +154,7 @@ const cleanupCollectionsTool = defineTool({
         }
         if (collection.count === 0) {
           empty.set(collection._id, collection.title);
-        } else if (!Number.isSafeInteger(collection.count) || collection.count < 0) {
+        } else if (typeof collection.count !== "number" || !Number.isSafeInteger(collection.count) || collection.count < 0) {
           unknown++;
         }
       }
