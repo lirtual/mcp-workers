@@ -10,7 +10,7 @@ const fail=(e:unknown)=>({
   isError:true
 });
 
-export function registerTools(server:McpServer, notes:ImaNotes, kb:ImaKnowledge, allowWrite:boolean){
+export function registerTools(server:McpServer, notes:ImaNotes, kb:ImaKnowledge){
   server.registerTool("search_notes",{
     description:"Search IMA notes by title or body. search_type: 0=DOC_TITLE (default), 1=DOC_CONTENT. sort_type: 0=modify_time, 1=create_time, 2=title, 3=size. Paginate with start/end (max 20 per page).",
     annotations:{readOnlyHint:true},
@@ -43,47 +43,45 @@ export function registerTools(server:McpServer, notes:ImaNotes, kb:ImaKnowledge,
     })
   },async a=>{try{return ok(await kb.readSource(a.media_id,notes,{offset:a.offset,max_bytes:a.max_bytes,target_content_format:a.target_content_format}))}catch(e){return fail(e)}});
 
-  if(allowWrite){
-    server.registerTool("create_note",{description:"Create a new IMA note from Markdown. Use only when user explicitly intends to create a new note.",annotations:{readOnlyHint:false,destructiveHint:false},inputSchema:z.object({content:z.string().min(1),folder_id:z.string().optional(),folder_name:z.string().optional()})},async a=>{try{return ok(await notes.create(a))}catch(e){return fail(e)}});
-    server.registerTool("append_note",{description:"Append Markdown to an existing IMA note. Ensure note_id is uniquely resolved first.",annotations:{readOnlyHint:false,destructiveHint:false},inputSchema:z.object({note_id:z.string(),content:z.string().min(1)})},async a=>{try{return ok(await notes.append(a.note_id,a.content))}catch(e){return fail(e)}});
-    server.registerTool("add_urls_to_knowledge_base",{description:"Import 1-10 web URLs into an IMA knowledge base. Supports web pages and WeChat articles. File URLs must use upload_file_to_knowledge_base.",annotations:{readOnlyHint:false,destructiveHint:false,openWorldHint:true},inputSchema:z.object({knowledge_base_id:z.string(),folder_id:z.string().optional(),urls:z.array(z.url()).min(1).max(10)})},async a=>{try{return ok(await kb.importUrls(a.knowledge_base_id,a.urls,a.folder_id))}catch(e){return fail(e)}});
-    server.registerTool("add_note_to_knowledge_base",{description:"Associate an existing IMA note with a knowledge base.",annotations:{readOnlyHint:false,destructiveHint:false},inputSchema:z.object({knowledge_base_id:z.string(),note_id:z.string(),title:z.string().min(1),folder_id:z.string().optional()})},async a=>{try{return ok(await kb.addNote(a.knowledge_base_id,a.note_id,a.title,a.folder_id))}catch(e){return fail(e)}});
-    server.registerTool("upload_file_to_knowledge_base",{
-      description:"Upload single file or batch of 1-10 files to IMA knowledge base. Downloads from publicly reachable HTTPS URLs, performs preflight type/size checks, uploads to COS, and registers in the knowledge base. Set keep_both=true to auto-rename duplicates.",
-      annotations:{readOnlyHint:false,destructiveHint:false,openWorldHint:true},
-      inputSchema:z.object({
-        knowledge_base_id:z.string().describe("Target knowledge base ID"),
-        folder_id:z.string().optional().describe("Target folder ID within the knowledge base"),
-        file_url:z.url().optional().describe("Single file upload: HTTPS URL to download"),
-        file_name:z.string().min(1).optional().describe("Single file upload: filename"),
-        content_type:z.string().optional().describe("Single file upload: optional MIME type override"),
-        keep_both:z.boolean().optional().describe("Single file upload: set true to auto-rename if duplicate exists"),
-        files:z.array(z.object({
-          file_url:z.url(),
-          file_name:z.string().min(1).optional(),
-          content_type:z.string().optional(),
-          keep_both:z.boolean().optional(),
-        })).min(1).max(10).optional().describe("Batch upload: array of 1-10 files to upload")
-      }).refine(a=>Boolean(a.file_url)!==Boolean(a.files?.length),{
-        message:"Provide exactly one of file_url or files",
-      })
-    },async a=>{
-      try{
-        if(a.files&&a.files.length>0){
-          return ok(await kb.uploadBatch(a.knowledge_base_id,a.files,a.folder_id));
-        }
-        if(a.file_url){
-          return ok(await kb.upload({
-            knowledge_base_id:a.knowledge_base_id,
-            file_url:a.file_url,
-            file_name:a.file_name,
-            folder_id:a.folder_id,
-            content_type:a.content_type,
-            keep_both:a.keep_both,
-          }));
-        }
-        throw new Error("Must provide either file_url for single upload, or files array for batch upload");
-      }catch(e){return fail(e)}
-    });
-  }
+  server.registerTool("create_note",{description:"Create a new IMA note from Markdown. Use only when user explicitly intends to create a new note.",annotations:{readOnlyHint:false,destructiveHint:false},inputSchema:z.object({content:z.string().min(1),folder_id:z.string().optional(),folder_name:z.string().optional()})},async a=>{try{return ok(await notes.create(a))}catch(e){return fail(e)}});
+  server.registerTool("append_note",{description:"Append Markdown to an existing IMA note. Ensure note_id is uniquely resolved first.",annotations:{readOnlyHint:false,destructiveHint:false},inputSchema:z.object({note_id:z.string(),content:z.string().min(1)})},async a=>{try{return ok(await notes.append(a.note_id,a.content))}catch(e){return fail(e)}});
+  server.registerTool("add_urls_to_knowledge_base",{description:"Import 1-10 web URLs into an IMA knowledge base. Supports web pages and WeChat articles. File URLs must use upload_file_to_knowledge_base.",annotations:{readOnlyHint:false,destructiveHint:false,openWorldHint:true},inputSchema:z.object({knowledge_base_id:z.string(),folder_id:z.string().optional(),urls:z.array(z.url()).min(1).max(10)})},async a=>{try{return ok(await kb.importUrls(a.knowledge_base_id,a.urls,a.folder_id))}catch(e){return fail(e)}});
+  server.registerTool("add_note_to_knowledge_base",{description:"Associate an existing IMA note with a knowledge base.",annotations:{readOnlyHint:false,destructiveHint:false},inputSchema:z.object({knowledge_base_id:z.string(),note_id:z.string(),title:z.string().min(1),folder_id:z.string().optional()})},async a=>{try{return ok(await kb.addNote(a.knowledge_base_id,a.note_id,a.title,a.folder_id))}catch(e){return fail(e)}});
+  server.registerTool("upload_file_to_knowledge_base",{
+    description:"Upload single file or batch of 1-10 files to IMA knowledge base. Downloads from publicly reachable HTTPS URLs, performs preflight type/size checks, uploads to COS, and registers in the knowledge base. Set keep_both=true to auto-rename duplicates.",
+    annotations:{readOnlyHint:false,destructiveHint:false,openWorldHint:true},
+    inputSchema:z.object({
+      knowledge_base_id:z.string().describe("Target knowledge base ID"),
+      folder_id:z.string().optional().describe("Target folder ID within the knowledge base"),
+      file_url:z.url().optional().describe("Single file upload: HTTPS URL to download"),
+      file_name:z.string().min(1).optional().describe("Single file upload: filename"),
+      content_type:z.string().optional().describe("Single file upload: optional MIME type override"),
+      keep_both:z.boolean().optional().describe("Single file upload: set true to auto-rename if duplicate exists"),
+      files:z.array(z.object({
+        file_url:z.url(),
+        file_name:z.string().min(1).optional(),
+        content_type:z.string().optional(),
+        keep_both:z.boolean().optional(),
+      })).min(1).max(10).optional().describe("Batch upload: array of 1-10 files to upload")
+    }).refine(a=>Boolean(a.file_url)!==Boolean(a.files?.length),{
+      message:"Provide exactly one of file_url or files",
+    })
+  },async a=>{
+    try{
+      if(a.files&&a.files.length>0){
+        return ok(await kb.uploadBatch(a.knowledge_base_id,a.files,a.folder_id));
+      }
+      if(a.file_url){
+        return ok(await kb.upload({
+          knowledge_base_id:a.knowledge_base_id,
+          file_url:a.file_url,
+          file_name:a.file_name,
+          folder_id:a.folder_id,
+          content_type:a.content_type,
+          keep_both:a.keep_both,
+        }));
+      }
+      throw new Error("Must provide either file_url for single upload, or files array for batch upload");
+    }catch(e){return fail(e)}
+  });
 }

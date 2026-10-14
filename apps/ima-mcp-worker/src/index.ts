@@ -93,7 +93,7 @@ export default {
         { name: "ima", version: VERSION },
         { instructions: IMA_SERVER_INSTRUCTIONS },
       );
-      registerTools(server, notes, new ImaKnowledge(runtimeEnv, api), true);
+      registerTools(server, notes, new ImaKnowledge(runtimeEnv, api));
       return server;
     }, {
       route: "/mcp",

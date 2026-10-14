@@ -15,6 +15,20 @@ test("IMA tool registry exposes no public export or temporary-upload capability"
   assert.ok(tools.includes('registerTool("upload_file_to_knowledge_base"'));
 });
 
+test("IMA registers all 15 read and write tools without a Worker-side allowWrite gate", () => {
+  const registry = file("../../src/tools.ts");
+  const entry = file("../../src/index.ts");
+  const toolNames = [...registry.matchAll(/server\.registerTool\("([^"]+)"/g)].map(match => match[1]);
+  assert.equal(toolNames.length, 15);
+  for (const name of [
+    "search_notes", "get_note", "read_knowledge_source",
+    "create_note", "append_note", "add_urls_to_knowledge_base",
+    "add_note_to_knowledge_base", "upload_file_to_knowledge_base"
+  ]) assert.ok(toolNames.includes(name), name);
+  assert.doesNotMatch(registry, /allowWrite|if\s*\(\s*allowWrite\s*\)/);
+  assert.match(entry, /registerTools\(server, notes, new ImaKnowledge\(runtimeEnv, api\)\)/);
+});
+
 test("IMA has no note or knowledge export implementation and no public uploader", () => {
   const impl = file("../../src/ima.ts");
   assert.doesNotMatch(impl, /exportNote|exportSource|uploadTemporaryFile|export_to_temporary|Litterbox/);
