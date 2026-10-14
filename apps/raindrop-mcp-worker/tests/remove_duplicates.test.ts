@@ -9,6 +9,7 @@ describe("remove_duplicates — direct execution and safe eligibility", () => {
   let service: {
     getBookmarks: ReturnType<typeof vi.fn>;
     getCollections: ReturnType<typeof vi.fn>;
+    getChildCollections: ReturnType<typeof vi.fn>;
     getBookmark: ReturnType<typeof vi.fn>;
     batchDeleteBookmarksInCollection: ReturnType<typeof vi.fn>;
   };
@@ -16,6 +17,7 @@ describe("remove_duplicates — direct execution and safe eligibility", () => {
     service = {
       getBookmarks: vi.fn(),
       getCollections: vi.fn().mockResolvedValue([{ _id: 123, title: "A" }]),
+      getChildCollections: vi.fn().mockResolvedValue([]),
       getBookmark: vi.fn().mockImplementation(async (id: number) => verified(id)),
       batchDeleteBookmarksInCollection: vi.fn().mockResolvedValue(true),
     };
@@ -28,7 +30,7 @@ describe("remove_duplicates — direct execution and safe eligibility", () => {
       collection?: number; duplicates?: boolean; page?: number; perPage?: number
     }) => {
       if (params.collection === undefined) return { count: ids.length, items: [] };
-      if (params.collection === 0) return { count: 0, items: [] };
+      if (params.collection === -1) return { count: 0, items: [] };
       if (params.collection !== 123) throw new Error("Unexpected collection");
       return {
         count: ids.length,
@@ -69,6 +71,35 @@ describe("remove_duplicates — direct execution and safe eligibility", () => {
     expect(service.batchDeleteBookmarksInCollection).toHaveBeenCalledExactlyOnceWith(123, [1, 5]);
   });
 
+  it("uses -1 for Unsorted and never sends a deletion to all-bookmarks id 0", async () => {
+    service.getCollections.mockResolvedValueOnce([]);
+    service.getBookmarks.mockImplementation(async (params: { collection?: number }) =>
+      params.collection === undefined ? { count: 1, items: [] } :
+      params.collection === -1 ? { count: 1, items: [{ _id: 77 }] } :
+      (() => { throw new Error("Unexpected collection"); })(),
+    );
+    const response = await tool.handler({}, ctx());
+    expect(textOf(response)).toContain("Deleted 1 verified");
+    expect(service.batchDeleteBookmarksInCollection).toHaveBeenCalledWith(-1, [77]);
+    expect(service.batchDeleteBookmarksInCollection).not.toHaveBeenCalledWith(0, expect.anything());
+  });
+
+  it("scans nested child collections rather than only root collections", async () => {
+    service.getChildCollections.mockImplementation(async (id: number) =>
+      id === 123 ? [{ _id: 456, title: "Nested" }] : [],
+    );
+    service.getBookmarks.mockImplementation(async (params: { collection?: number }) => {
+      if (params.collection === undefined) return { count: 1, items: [] };
+      if (params.collection === 456) return { count: 1, items: [{ _id: 88 }] };
+      return { count: 0, items: [] };
+    });
+    const response = await tool.handler({}, ctx());
+    expect(textOf(response)).toContain("Deleted 1 verified");
+    expect(service.getChildCollections).toHaveBeenCalledWith(123, undefined);
+    expect(service.getChildCollections).toHaveBeenCalledWith(456, undefined);
+    expect(service.batchDeleteBookmarksInCollection).toHaveBeenCalledWith(456, [88]);
+  });
+
   it("fails closed when all candidates lack complete metadata", async () => {
     mockDuplicates([1, 2]);
     service.getBookmark.mockResolvedValue({ _id: 1, note: "" });
@@ -93,7 +124,7 @@ describe("remove_duplicates — direct execution and safe eligibility", () => {
     mockDuplicates(ids);
     service.getBookmarks.mockImplementation(async (p: {collection?: number; page?: number}) =>
       p.collection === undefined ? { count: 60, items: [] } :
-      p.collection === 0 ? { count: 0, items: [] } :
+      p.collection === -1 ? { count: 0, items: [] } :
       p.page === 1 ? { count: 59, items: ids.slice(50).map(_id => ({_id})) } :
       { count: 60, items: ids.slice(0, 50).map(_id => ({_id})) }
     );
