@@ -1,10 +1,5 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
-import {
-  adminConfirmation,
-  createAdminConfirmationCodec,
-  type AdminConfirmationState
-} from './admin-confirmation.js';
 import { resolveAdminConnection } from './admin-config.js';
 import { resolveConnection, resolveConnectionDialect, resolveWriteConnection } from './config.js';
 import {
@@ -75,7 +70,7 @@ interface ToolRunOptions<T> {
   env: Env;
   ctx: ToolContextLike;
   tool: string;
-  connectionId?: string;
+  connectionId?: string | undefined;
   sql?: string;
   run: () => Promise<T>;
   summarize?: (value: T) => Record<string, unknown>;
@@ -178,29 +173,20 @@ const alterOperationSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('rename_table'), newName: databaseIdentifierSchema }).strict()
 ]);
 
-function confirmationFailure(message: string): ToolResult {
-  return failure(new PublicError('ADMIN_CONFIRMATION_REQUIRED', message));
-}
-
 export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer {
-  if (typeof env.MCP_ACCESS_TOKEN !== 'string' || env.MCP_ACCESS_TOKEN.length === 0) {
-    throw new PublicError('AUTH_REQUIRED', 'MCP Portal authentication is required to initialize Admin confirmation state.');
-  }
-  const confirmationCodec = createAdminConfirmationCodec(env.MCP_ACCESS_TOKEN);
   const server = new McpServer(
     { name: 'database-mcp-worker', version: '0.3.0' },
     {
       capabilities: { tools: {} },
-      requestState: { verify: confirmationCodec.verify },
       instructions:
-        'Database access with bounded reads, optional structured Safe Write, and optional structured Safe Admin/DDL. READ, WRITE, and ADMIN credentials are separate. No tool accepts arbitrary write/admin SQL. Destructive DDL requires MCP protocol-level user confirmation bound to signed request state.'
+        'Database access with bounded reads and structured writes/DDL. Each named connection uses one database principal; database grants control its permissions. Omit connection only when one connection is configured; specify an id when multiple connections exist. No tool accepts arbitrary write/admin SQL.'
     }
   );
 
   server.registerTool(
     'list_connections',
     {
-      description: 'List statically configured logical database connections and non-secret read/write/admin capabilities.',
+      description: 'List configured logical connection ids, dialects, and transports.',
       inputSchema: z.object({}),
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false }
     },
@@ -212,15 +198,8 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
         run: async () => ({
           connections: catalog.map(connection => ({
             id: connection.id,
-            displayName: connection.displayName,
             dialect: resolveConnectionDialect(env, connection),
             transport: connection.transport,
-            enabled: connection.enabled,
-            writeEnabled: connection.write !== undefined,
-            ...(connection.write ? { writeTransport: connection.write.transport } : {}),
-            adminEnabled: connection.admin !== undefined,
-            ...(connection.admin ? { adminTransport: connection.admin.transport } : {}),
-            ...(connection.defaultSchema ? { defaultSchema: connection.defaultSchema } : {})
           }))
         }),
         summarize: value => ({ connectionCount: value.connections.length })
@@ -233,7 +212,7 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
       description:
         'Inspect schemas, tables/views, or one table\'s columns, keys, foreign keys, and indexes. No routine source code is returned.',
       inputSchema: z.object({
-        connection: connectionIdSchema,
+        connection: connectionIdSchema.optional(),
         schema: databaseIdentifierSchema.optional(),
         table: databaseIdentifierSchema.optional()
       }),
@@ -244,7 +223,7 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
         env,
         ctx,
         tool: 'inspect_schema',
-        connectionId: connection,
+        connectionId: connection ?? (catalog.length === 1 ? catalog[0]?.id : undefined),
         run: async () => {
           const resolved = resolveConnection(env, catalog, connection);
           return inspectSchema(resolved, schema, table);
@@ -258,7 +237,7 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
       description:
         'Return compact, token-efficient schema context for up to 100 tables: columns, primary keys, and foreign-key relationships. Use inspect_schema for detailed indexes and defaults.',
       inputSchema: z.object({
-        connection: connectionIdSchema,
+        connection: connectionIdSchema.optional(),
         schema: databaseIdentifierSchema.optional(),
         tableLimit: z.number().int().min(1).max(100).default(50)
       }),
@@ -269,7 +248,7 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
         env,
         ctx,
         tool: 'get_schema_context',
-        connectionId: connection,
+        connectionId: connection ?? (catalog.length === 1 ? catalog[0]?.id : undefined),
         run: async () => getSchemaContext(resolveConnection(env, catalog, connection), schema, tableLimit),
         summarize: value => ({
           tableCount: value.tableCount,
@@ -283,9 +262,9 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
     'query_read',
     {
       description:
-        'Execute exactly one bounded read query using a dedicated read-only database credential. Writes, locking reads, multi-statements, and dangerous MySQL read side effects are rejected.',
+        'Execute exactly one bounded read query using the configured database principal; database grants determine whether the requested read succeeds. Writes, locking reads, multi-statements, and dangerous MySQL read side effects are rejected.',
       inputSchema: z.object({
-        connection: connectionIdSchema,
+        connection: connectionIdSchema.optional(),
         sql: sqlSchema,
         params: paramsSchema,
         rowLimit: z.number().int().positive().max(5_000).optional()
@@ -297,7 +276,7 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
         env,
         ctx,
         tool: 'query_read',
-        connectionId: connection,
+        connectionId: connection ?? (catalog.length === 1 ? catalog[0]?.id : undefined),
         sql,
         run: async () => {
           const resolved = resolveConnection(env, catalog, connection);
@@ -312,7 +291,7 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
     'explain',
     {
       description: 'Return a non-ANALYZE execution plan for one read query. The underlying statement is not intentionally executed.',
-      inputSchema: z.object({ connection: connectionIdSchema, sql: sqlSchema, params: paramsSchema }),
+      inputSchema: z.object({ connection: connectionIdSchema.optional(), sql: sqlSchema, params: paramsSchema }),
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false }
     },
     async ({ connection, sql, params }, ctx) =>
@@ -320,7 +299,7 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
         env,
         ctx,
         tool: 'explain',
-        connectionId: connection,
+        connectionId: connection ?? (catalog.length === 1 ? catalog[0]?.id : undefined),
         sql,
         run: async () => explainRead(resolveConnection(env, catalog, connection), sql, params)
       })
@@ -330,7 +309,7 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
     'health_check',
     {
       description: 'Check whether one logical connection can establish a usable read path without exposing network details.',
-      inputSchema: z.object({ connection: connectionIdSchema }),
+      inputSchema: z.object({ connection: connectionIdSchema.optional() }),
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false }
     },
     async ({ connection }, ctx) =>
@@ -338,11 +317,11 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
         env,
         ctx,
         tool: 'health_check',
-        connectionId: connection,
+        connectionId: connection ?? (catalog.length === 1 ? catalog[0]?.id : undefined),
         run: async () => {
           const resolved = resolveConnection(env, catalog, connection);
           const health = await healthCheck(resolved);
-          return { connection, dialect: resolved.dialect, transport: resolved.transport, ...health };
+          return { connection: resolved.config.id, dialect: resolved.dialect, transport: resolved.transport, ...health };
         },
         summarize: value => ({ latencyMs: value.latencyMs })
       })
@@ -352,9 +331,9 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
     'insert_rows',
     {
       description:
-        'Insert 1 to 100 rows into one table using a separately configured writer credential and internally parameterized SQL. Raw SQL, UPSERT, and client-supplied RETURNING expressions are not accepted.',
+        'Insert 1 to 100 rows into one table using a configured database principal and internally parameterized SQL. Raw SQL, UPSERT, and client-supplied RETURNING expressions are not accepted.',
       inputSchema: z.object({
-        connection: connectionIdSchema,
+        connection: connectionIdSchema.optional(),
         schema: databaseIdentifierSchema.optional(),
         table: databaseIdentifierSchema,
         rows: z.array(writeRecordSchema).min(1).max(100)
@@ -366,7 +345,7 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
         env,
         ctx,
         tool: 'insert_rows',
-        connectionId: connection,
+        connectionId: connection ?? (catalog.length === 1 ? catalog[0]?.id : undefined),
         run: async () => insertRows(resolveWriteConnection(env, catalog, connection), schema, table, rows),
         summarize: value => ({ affectedRows: value.affectedRows })
       })
@@ -378,7 +357,7 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
       description:
         'Update targeted rows through structured AND-only eq/in/isNull predicates. The mutation is rolled back when its affected-row count exceeds the configured safety limit.',
       inputSchema: z.object({
-        connection: connectionIdSchema,
+        connection: connectionIdSchema.optional(),
         schema: databaseIdentifierSchema.optional(),
         table: databaseIdentifierSchema,
         set: writeRecordSchema,
@@ -391,7 +370,7 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
         env,
         ctx,
         tool: 'update_rows',
-        connectionId: connection,
+        connectionId: connection ?? (catalog.length === 1 ? catalog[0]?.id : undefined),
         run: async () => updateRows(resolveWriteConnection(env, catalog, connection), schema, table, set, where),
         summarize: value => ({ affectedRows: value.affectedRows })
       })
@@ -403,7 +382,7 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
       description:
         'Delete targeted rows through structured AND-only eq/in/isNull predicates. The mutation is rolled back when its affected-row count exceeds the configured safety limit.',
       inputSchema: z.object({
-        connection: connectionIdSchema,
+        connection: connectionIdSchema.optional(),
         schema: databaseIdentifierSchema.optional(),
         table: databaseIdentifierSchema,
         where: whereSchema
@@ -415,7 +394,7 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
         env,
         ctx,
         tool: 'delete_rows',
-        connectionId: connection,
+        connectionId: connection ?? (catalog.length === 1 ? catalog[0]?.id : undefined),
         run: async () => deleteRows(resolveWriteConnection(env, catalog, connection), schema, table, where),
         summarize: value => ({ affectedRows: value.affectedRows })
       })
@@ -425,9 +404,9 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
     'create_table',
     {
       description:
-        'Create one table through a bounded structured column definition using the separately configured ADMIN credential. Arbitrary type strings, defaults, constraints, and raw DDL are rejected.',
+        'Create one table through a bounded structured column definition using the configured database principal. Arbitrary type strings, defaults, constraints, and raw DDL are rejected.',
       inputSchema: z.object({
-        connection: connectionIdSchema,
+        connection: connectionIdSchema.optional(),
         schema: databaseIdentifierSchema.optional(),
         table: databaseIdentifierSchema,
         columns: z.array(adminColumnSchema).min(1).max(100)
@@ -439,7 +418,7 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
         env,
         ctx,
         tool: 'create_table',
-        connectionId: connection,
+        connectionId: connection ?? (catalog.length === 1 ? catalog[0]?.id : undefined),
         run: async () => createTable(resolveAdminConnection(env, catalog, connection), schema, table, columns),
         summarize: value => ({ adminOperation: value.operation })
       })
@@ -449,9 +428,9 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
     'alter_table',
     {
       description:
-        'Perform one structured table alteration with the ADMIN credential: add/drop/rename a column or rename the table. Dropping a column requires MCP protocol-level user confirmation.',
+        'Perform one structured table alteration with the configured database principal: add/drop/rename a column or rename the table. Dropping a column changes schema and may destroy data.',
       inputSchema: z.object({
-        connection: connectionIdSchema,
+        connection: connectionIdSchema.optional(),
         schema: databaseIdentifierSchema.optional(),
         table: databaseIdentifierSchema,
         operation: alterOperationSchema
@@ -459,26 +438,11 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
       annotations: { readOnlyHint: false, idempotentHint: false, destructiveHint: true, openWorldHint: false }
     },
     async ({ connection, schema, table, operation }, ctx) => {
-      if (operation.action === 'drop_column') {
-        const expected: AdminConfirmationState = {
-          operation: 'drop_column',
-          target: `${connection}:${schema ?? ''}:${table}:${operation.column}`
-        };
-        const decision = await adminConfirmation(
-          confirmationCodec,
-          ctx.mcpReq.inputResponses,
-          ctx.mcpReq.requestState<AdminConfirmationState>(),
-          expected,
-          `Drop column ${operation.column} from ${schema ? `${schema}.` : ''}${table}? This can permanently destroy data.`
-        );
-        if (decision.kind === 'input_required') return decision.result;
-        if (decision.kind === 'denied') return confirmationFailure(decision.message);
-      }
       return runTool({
         env,
         ctx,
         tool: 'alter_table',
-        connectionId: connection,
+        connectionId: connection ?? (catalog.length === 1 ? catalog[0]?.id : undefined),
         run: async () => alterTable(resolveAdminConnection(env, catalog, connection), schema, table, operation),
         summarize: value => ({ adminOperation: value.operation })
       });
@@ -489,9 +453,9 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
     'create_index',
     {
       description:
-        'Create a simple column index through structured input using the ADMIN credential. Expression, partial, fulltext, spatial, and operator-class indexes are not accepted.',
+        'Create a simple column index through structured input using the configured database principal. Expression, partial, fulltext, spatial, and operator-class indexes are not accepted.',
       inputSchema: z.object({
-        connection: connectionIdSchema,
+        connection: connectionIdSchema.optional(),
         schema: databaseIdentifierSchema.optional(),
         table: databaseIdentifierSchema,
         columns: z.array(databaseIdentifierSchema).min(1).max(16),
@@ -505,7 +469,7 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
         env,
         ctx,
         tool: 'create_index',
-        connectionId: connection,
+        connectionId: connection ?? (catalog.length === 1 ? catalog[0]?.id : undefined),
         run: async () => createIndex(resolveAdminConnection(env, catalog, connection), schema, table, columns, unique, name),
         summarize: value => ({ adminOperation: value.operation })
       })
@@ -515,9 +479,9 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
     'drop_index',
     {
       description:
-        'Drop one explicitly named index using the ADMIN credential. Requires MCP protocol-level user confirmation and is never automatically retried.',
+        'Drop one explicitly named index using the configured database principal. Schema change; never automatically retried.',
       inputSchema: z.object({
-        connection: connectionIdSchema,
+        connection: connectionIdSchema.optional(),
         schema: databaseIdentifierSchema.optional(),
         table: databaseIdentifierSchema,
         name: databaseIdentifierSchema
@@ -525,24 +489,11 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
       annotations: { readOnlyHint: false, idempotentHint: false, destructiveHint: true, openWorldHint: false }
     },
     async ({ connection, schema, table, name }, ctx) => {
-      const expected: AdminConfirmationState = {
-        operation: 'drop_index',
-        target: `${connection}:${schema ?? ''}:${table}:${name}`
-      };
-      const decision = await adminConfirmation(
-        confirmationCodec,
-        ctx.mcpReq.inputResponses,
-        ctx.mcpReq.requestState<AdminConfirmationState>(),
-        expected,
-        `Drop index ${name} from ${schema ? `${schema}.` : ''}${table}? This schema change cannot be automatically undone.`
-      );
-      if (decision.kind === 'input_required') return decision.result;
-      if (decision.kind === 'denied') return confirmationFailure(decision.message);
       return runTool({
         env,
         ctx,
         tool: 'drop_index',
-        connectionId: connection,
+        connectionId: connection ?? (catalog.length === 1 ? catalog[0]?.id : undefined),
         run: async () => dropIndex(resolveAdminConnection(env, catalog, connection), schema, table, name),
         summarize: value => ({ adminOperation: value.operation })
       });
@@ -553,33 +504,20 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
     'drop_table',
     {
       description:
-        'Drop one explicitly named table using the ADMIN credential. Requires MCP protocol-level user confirmation and is never automatically retried.',
+        'Drop one explicitly named table using the configured database principal. Schema change; never automatically retried.',
       inputSchema: z.object({
-        connection: connectionIdSchema,
+        connection: connectionIdSchema.optional(),
         schema: databaseIdentifierSchema.optional(),
         table: databaseIdentifierSchema
       }),
       annotations: { readOnlyHint: false, idempotentHint: false, destructiveHint: true, openWorldHint: false }
     },
     async ({ connection, schema, table }, ctx) => {
-      const expected: AdminConfirmationState = {
-        operation: 'drop_table',
-        target: `${connection}:${schema ?? ''}:${table}`
-      };
-      const decision = await adminConfirmation(
-        confirmationCodec,
-        ctx.mcpReq.inputResponses,
-        ctx.mcpReq.requestState<AdminConfirmationState>(),
-        expected,
-        `Drop table ${schema ? `${schema}.` : ''}${table}? This permanently deletes the table and its data.`
-      );
-      if (decision.kind === 'input_required') return decision.result;
-      if (decision.kind === 'denied') return confirmationFailure(decision.message);
       return runTool({
         env,
         ctx,
         tool: 'drop_table',
-        connectionId: connection,
+        connectionId: connection ?? (catalog.length === 1 ? catalog[0]?.id : undefined),
         run: async () => dropTable(resolveAdminConnection(env, catalog, connection), schema, table),
         summarize: value => ({ adminOperation: value.operation })
       });

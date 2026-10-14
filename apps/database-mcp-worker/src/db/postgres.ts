@@ -118,7 +118,7 @@ export async function postgresInspectSchema(
 ): Promise<SchemaInspection> {
   return withClient(connection, async client => {
     if (table !== undefined) {
-      const selectedSchema = schema ?? connection.config.defaultSchema ?? 'public';
+      const selectedSchema = schema ?? 'public';
       const [columnsResult, constraintsResult, indexesResult] = await Promise.all([
         client.query<PgColumnRow>(
           `SELECT column_name, data_type, is_nullable, column_default, ordinal_position

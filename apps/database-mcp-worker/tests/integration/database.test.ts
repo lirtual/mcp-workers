@@ -1,55 +1,29 @@
 import { Client as PgClient } from 'pg';
 import { createConnection } from 'mysql2/promise';
 import { describe, expect, it } from 'vitest';
-import { parseConnectionCatalog, resolveConnection, resolveWriteConnection } from '../../src/config.js';
+import { parseDatabaseConfig, resolveConnection, resolveWriteConnection } from '../../src/config.js';
 import { deleteRows, explainRead, insertRows, inspectSchema, queryRead, updateRows } from '../../src/db/index.js';
 import type { EffectiveConnection, EffectiveWriteConnection, Env } from '../../src/types.js';
 
 function directConnection(id: string, raw: string): EffectiveConnection {
-  const secretName = 'TEST_DATABASE_URL';
   const env: Env = {
-    CONNECTIONS_JSON: '[]',
     RATE_LIMITER: { async limit() { return { success: true }; } },
-    [secretName]: raw
   };
-  const catalog = parseConnectionCatalog(JSON.stringify([
-    {
-      id,
-      displayName: id,
-      transport: 'direct',
-      urlSecret: secretName,
-      enabled: true
-    }
-  ]));
+  const catalog = parseDatabaseConfig(JSON.stringify({ [id]: raw }));
   return resolveConnection(env, catalog, id);
 }
 
 function directWritableConnection(
   id: string,
-  readRaw: string,
-  writeRaw: string,
+  connectionUrl: string,
   maxAffectedRows = 20
 ): { read: EffectiveConnection; write: EffectiveWriteConnection } {
   const env: Env = {
-    CONNECTIONS_JSON: '[]',
     RATE_LIMITER: { async limit() { return { success: true }; } },
-    TEST_READ_URL: readRaw,
-    TEST_WRITE_URL: writeRaw,
+
     MAX_WRITE_AFFECTED_ROWS: String(maxAffectedRows)
   };
-  const catalog = parseConnectionCatalog(JSON.stringify([
-    {
-      id,
-      displayName: id,
-      transport: 'direct',
-      urlSecret: 'TEST_READ_URL',
-      enabled: true,
-      write: {
-        transport: 'direct',
-        urlSecret: 'TEST_WRITE_URL'
-      }
-    }
-  ]));
+  const catalog = parseDatabaseConfig(JSON.stringify({ [id]: connectionUrl }));
   return {
     read: resolveConnection(env, catalog, id),
     write: resolveWriteConnection(env, catalog, id)
@@ -61,7 +35,7 @@ const pgWriteUrl = process.env.TEST_POSTGRES_WRITE_URL;
 const mysqlReadUrl = process.env.TEST_MYSQL_READ_URL;
 const mysqlWriteUrl = process.env.TEST_MYSQL_WRITE_URL;
 const describeReadIntegration = pgReadUrl && mysqlReadUrl ? describe : describe.skip;
-const describeWriteIntegration = pgReadUrl && pgWriteUrl && mysqlReadUrl && mysqlWriteUrl ? describe : describe.skip;
+const describeWriteIntegration = pgWriteUrl && mysqlWriteUrl ? describe : describe.skip;
 
 describeReadIntegration('real database read-only integration', () => {
   const pg = directConnection('pg', pgReadUrl!);
@@ -126,10 +100,10 @@ describeReadIntegration('real database read-only integration', () => {
 });
 
 describeWriteIntegration('real database safe write integration', () => {
-  const pg = directWritableConnection('pg_write', pgReadUrl!, pgWriteUrl!);
-  const mysql = directWritableConnection('mysql_write', mysqlReadUrl!, mysqlWriteUrl!);
+  const pg = directWritableConnection('pg_write', pgWriteUrl!);
+  const mysql = directWritableConnection('mysql_write', mysqlWriteUrl!);
 
-  it('resolves separate direct writer credentials for both dialects', () => {
+  it('uses the selected connection principal for both dialects', () => {
     expect(pg.write).toMatchObject({ transport: 'direct', dialect: 'postgres', maxAffectedRows: 20 });
     expect(mysql.write).toMatchObject({ transport: 'direct', dialect: 'mysql', maxAffectedRows: 20 });
   });
@@ -173,8 +147,8 @@ describeWriteIntegration('real database safe write integration', () => {
   });
 
   it('rolls back PostgreSQL and MySQL mutations that exceed the affected-row limit', async () => {
-    const guardedPg = directWritableConnection('pg_guarded', pgReadUrl!, pgWriteUrl!, 1);
-    const guardedMysql = directWritableConnection('mysql_guarded', mysqlReadUrl!, mysqlWriteUrl!, 1);
+    const guardedPg = directWritableConnection('pg_guarded', pgWriteUrl!, 1);
+    const guardedMysql = directWritableConnection('mysql_guarded', mysqlWriteUrl!, 1);
     await insertRows(guardedPg.write, 'public', 'write_items', [
       { id: 401, value: 'before' },
       { id: 402, value: 'before' }

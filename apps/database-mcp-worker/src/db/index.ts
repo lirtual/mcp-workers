@@ -68,7 +68,7 @@ function resolveMutationSchema(
   capability: 'write' | 'admin'
 ): string {
   if (connection.dialect === 'postgres') {
-    return requested ?? connection.config.defaultSchema ?? 'public';
+    return requested ?? 'public';
   }
 
   const configured = connection.database.length === 0 ? undefined : connection.database;
@@ -79,7 +79,7 @@ function resolveMutationSchema(
     return configured;
   }
 
-  const selected = requested ?? connection.config.defaultSchema;
+  const selected = requested;
   if (selected === undefined) {
     throw new PublicError(
       'INVALID_INPUT',

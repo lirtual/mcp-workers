@@ -1,7 +1,8 @@
 import { Client as PgClient } from 'pg';
 import { createConnection } from 'mysql2/promise';
 import { describe, expect, it } from 'vitest';
-import { parseDatabaseConfigWithAdmin, resolveAdminConnection } from '../../src/admin-config.js';
+import { resolveAdminConnection } from '../../src/admin-config.js';
+import { parseDatabaseConfig } from '../../src/config.js';
 import {
   alterTable,
   createIndex,
@@ -22,26 +23,22 @@ function limitedUrl(adminUrl: string, username: string, password: string): strin
   return url.toString();
 }
 
-function adminConnection(id: string, readUrl: string, adminUrl: string): EffectiveAdminConnection {
-  const catalog = parseDatabaseConfigWithAdmin(JSON.stringify({
-    [id]: { read: readUrl, admin: adminUrl }
-  }));
+function adminConnection(id: string, url: string): EffectiveAdminConnection {
+  const catalog = parseDatabaseConfig(JSON.stringify({ [id]: url }));
   return resolveAdminConnection(env(), catalog, id);
 }
 
 const pgRootUrl = process.env.TEST_POSTGRES_ADMIN_URL;
-const pgReadUrl = process.env.TEST_POSTGRES_READ_URL;
 const mysqlRootUrl = process.env.TEST_MYSQL_ADMIN_URL;
-const mysqlReadUrl = process.env.TEST_MYSQL_READ_URL;
-const enabled = pgRootUrl && pgReadUrl && mysqlRootUrl && mysqlReadUrl ? describe : describe.skip;
+const enabled = pgRootUrl && mysqlRootUrl ? describe : describe.skip;
 
 enabled('real database Safe Admin/DDL integration', () => {
   const pgAdminUrl = limitedUrl(pgRootUrl!, 'mcp_admin', 'admin');
   const mysqlAdminUrl = limitedUrl(mysqlRootUrl!, 'mcp_admin', 'admin');
-  const pg = adminConnection('pg_admin', pgReadUrl!, pgAdminUrl);
-  const mysql = adminConnection('mysql_admin', mysqlReadUrl!, mysqlAdminUrl);
+  const pg = adminConnection('pg_admin', pgAdminUrl);
+  const mysql = adminConnection('mysql_admin', mysqlAdminUrl);
 
-  it('resolves dedicated ADMIN credentials without promoting read credentials', () => {
+  it('resolves the selected principal for DDL', () => {
     expect(pg).toMatchObject({ dialect: 'postgres', user: 'mcp_admin', transport: 'direct' });
     expect(mysql).toMatchObject({ dialect: 'mysql', user: 'mcp_admin', transport: 'direct' });
   });

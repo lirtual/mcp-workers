@@ -26,53 +26,11 @@ export interface Env {
   [key: string]: unknown;
 }
 
-interface BaseWriteConnectionConfig {
-  maxAffectedRows?: number;
-}
-
-export interface DirectWriteConnectionConfig extends BaseWriteConnectionConfig {
-  transport: 'direct';
-  url?: string;
-  urlSecret?: string;
-}
-
-export interface HyperdriveWriteConnectionConfig extends BaseWriteConnectionConfig {
-  transport: 'hyperdrive';
-  binding: string;
-}
-
-export type WriteConnectionConfig = DirectWriteConnectionConfig | HyperdriveWriteConnectionConfig;
-
-export interface DirectAdminConnectionConfig {
-  transport: 'direct';
-  url?: string;
-  urlSecret?: string;
-}
-
-export interface HyperdriveAdminConnectionConfig {
-  transport: 'hyperdrive';
-  binding: string;
-}
-
-export type AdminConnectionConfig = DirectAdminConnectionConfig | HyperdriveAdminConnectionConfig;
-
-interface BaseConnectionConfig {
-  id: string;
-  displayName: string;
-  enabled: boolean;
-  defaultSchema?: string;
-  maxRows?: number;
-  maxResultBytes?: number;
-  maxSchemaBytes?: number;
-  queryTimeoutMs?: number;
-  write?: WriteConnectionConfig;
-  admin?: AdminConnectionConfig;
-}
+interface BaseConnectionConfig { id: string; }
 
 export interface DirectConnectionConfig extends BaseConnectionConfig {
   transport: 'direct';
-  url?: string;
-  urlSecret?: string;
+  url: string;
 }
 
 export interface HyperdriveConnectionConfig extends BaseConnectionConfig {

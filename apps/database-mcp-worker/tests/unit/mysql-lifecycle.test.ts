@@ -16,11 +16,9 @@ import { mysqlHealthCheck } from '../../src/db/mysql.js';
 const connection: EffectiveConnection = {
   config: {
     id: 'test-mysql',
-    displayName: 'Test MySQL',
     transport: 'hyperdrive',
     dialect: 'mysql',
     binding: 'READ_DB',
-    enabled: true
   },
   transport: 'hyperdrive',
   dialect: 'mysql',
