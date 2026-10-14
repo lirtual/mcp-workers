@@ -11,7 +11,8 @@
     "deploy:dry-run": "wrangler deploy --dry-run",
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types --experimental-loader ./test/helpers/cloudflare-workers-loader.mjs --test \"test/**/*.test.ts\"",
-    "check": "pnpm run typecheck && pnpm test && pnpm run deploy:dry-run"
+    "check": "pnpm run typecheck && pnpm test && pnpm run test:diagnostics && pnpm run deploy:dry-run",
+    "test:diagnostics": "node --test scripts/diagnose-image-export.test.mjs"
   },
   "dependencies": {
     "@mcp-workers/portal-auth": "workspace:*",
