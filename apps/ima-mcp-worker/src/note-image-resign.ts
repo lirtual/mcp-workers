@@ -14,7 +14,7 @@ export const MAX_IMAGE_REFRESH_BATCH_SIZE = 9;
 export type ImageRefreshWorkItem = {
   sourceUrl: string;
   mediaId: string;
-  mode: "refresh" | "probe";
+  mode: "refresh" | "probe" | "probe_only";
 };
 
 export type ImageRefreshBatchRequest = {
@@ -65,10 +65,12 @@ export async function refreshExpiredImaImageUrls(
   const workItems = pending.map((item) => {
     const expectedPath = new URL(item.sourceUrl).pathname;
     const mediaId = mediaByCosKey.get(expectedPath);
-    if (!mediaId) {
-      throw new ImaApiError(`IMA 图片重签失败：format=2 未找到 ${expectedPath} 对应的 mediaId`, 110011);
-    }
-    return { ...item, mediaId };
+    // Legacy IMA documents may expose an image URL but no cosKey/mediaId.
+    // Allow the shard to verify that the original URL is still reachable, but
+    // never silently export an inaccessible (typically expired) image link.
+    return mediaId
+      ? { ...item, mediaId }
+      : { ...item, mediaId: "", mode: "probe_only" as const };
   });
 
   const namespace = api.env.IMA_IMAGE_REFRESH_SHARD;
@@ -98,6 +100,19 @@ export async function processImageRefreshBatch(
 
   const results: ImageRefreshBatchResult[] = [];
   for (const item of items) {
+    if (item.mode === "probe_only") {
+      if (await headDirect(env, item.sourceUrl)) {
+        results.push({ sourceUrl: item.sourceUrl, preserved: true });
+        continue;
+      }
+      throw new ImaApiError(
+        `IMA 图片无法完整导出：原链接不可访问且 format=2 缺少 mediaId，无法重签 ${new URL(item.sourceUrl).pathname}`,
+        110011,
+      );
+    }
+    if (!item.mediaId) {
+      throw new ImaApiError("IMA 图片重签失败：缺少 mediaId", 110011);
+    }
     if (item.mode === "probe" && await headDirect(env, item.sourceUrl)) {
       results.push({ sourceUrl: item.sourceUrl, preserved: true });
       continue;
@@ -135,7 +150,7 @@ function mergeShardResults(
       throw new ImaApiError(`IMA 图片重签失败：shard 缺少 ${new URL(item.sourceUrl).pathname} 的结果`, 110014);
     }
     if (result.preserved) {
-      if (item.mode !== "probe" || result.freshUrl) {
+      if ((item.mode !== "probe" && item.mode !== "probe_only") || result.freshUrl) {
         throw new ImaApiError(`IMA 图片重签失败：shard 返回无效 preserve 结果 ${new URL(item.sourceUrl).pathname}`, 110014);
       }
       continue;
