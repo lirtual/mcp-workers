@@ -91,14 +91,14 @@ function format2Response(entries: Array<{ mediaId: string; cosKey: string }>) {
 
 test("note export preserves a reachable legacy image without media metadata", async () => {
   const path = "/2/user/legacy-readable";
-  const url = imaUrl(path, 1, 2, "old-but-reachable");
+  const url = `https://ima-notebook-prod.image.myqcloud.com${path}`;
   const { namespace, batches } = createShardNamespace((request) =>
     processImageRefreshBatch(bareEnv(), credentials, request.items));
   let headCalls = 0;
   let mediaCalls = 0;
   const { restore, uploaded } = setupExportFetch((req) => {
     if (req.url.endsWith("get_doc_content") && req.body.target_content_format === 1) {
-      return new Response(JSON.stringify({ code: 0, data: { content: `# Legacy\\n![img](${url})` } }), {
+      return new Response(JSON.stringify({ code: 0, data: { content: `# Legacy\n![img](${url})` } }), {
         status: 200, headers: { "content-type": "application/json" },
       });
     }
@@ -126,15 +126,15 @@ test("note export preserves a reachable legacy image without media metadata", as
     assert.equal(batches[0].items[0].mode, "probe_only");
     assert.equal(batches[0].items[0].mediaId, "");
     assert.equal(uploaded.length, 1);
-    assert.match(await uploaded[0].text(), /old-but-reachable/);
+    assert.match(await uploaded[0].text(), /legacy-readable/);
   } finally {
     restore();
   }
 });
 
-test("note export fails before public upload if a legacy image is inaccessible and has no mediaId", async () => {
+test("note export fails before public upload if an unsigned legacy image is inaccessible", async () => {
   const path = "/2/user/legacy-unavailable";
-  const url = imaUrl(path, 1, 2, "expired");
+  const url = `https://ima-notebook-prod.image.myqcloud.com${path}`;
   const { namespace } = createShardNamespace((request) =>
     processImageRefreshBatch(bareEnv(), credentials, request.items));
   let headCalls = 0;
@@ -164,6 +164,66 @@ test("note export fails before public upload if a legacy image is inaccessible a
     );
     assert.equal(headCalls, 1);
     assert.equal(uploaded.length, 0);
+  } finally {
+    restore();
+  }
+});
+
+test("expired legacy images with missing mediaId fail before any HEAD probe or public upload", async () => {
+  const url = imaUrl("/2/user/expired-but-head200", 1, 2, "already-expired");
+  let headCalls = 0;
+  let shardCalls = 0;
+  const { namespace } = createShardNamespace(() => {
+    shardCalls++;
+    return [];
+  });
+  const { restore, uploaded } = setupExportFetch((req) => {
+    if (req.url.endsWith("get_doc_content") && req.body.target_content_format === 1) {
+      return new Response(JSON.stringify({ code: 0, data: { content: `![img](${url})` } }), {
+        status: 200, headers: { "content-type": "application/json" },
+      });
+    }
+    if (req.url.endsWith("get_doc_content") && req.body.target_content_format === 2) {
+      return new Response(JSON.stringify({
+        code: 0, data: { content: JSON.stringify([{ type: "cloud_image", url }]) },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (req.method === "HEAD" && req.url === url) {
+      headCalls++;
+      return new Response(null, { status: 200 });
+    }
+    return new Response("Not found", { status: 404 });
+  });
+
+  try {
+    const notes = new RefreshingImaNotes(new ImaClient(envForExport(namespace), credentials));
+    await assert.rejects(
+      () => notes.exportNote("note_expired_no_media"),
+      /原签名已过期且 format=2 缺少 mediaId/,
+    );
+    assert.equal(headCalls, 0);
+    assert.equal(shardCalls, 0);
+    assert.equal(uploaded.length, 0);
+  } finally {
+    restore();
+  }
+});
+
+test("DO rejects probe_only for a signed legacy URL without making a HEAD request", async () => {
+  const url = imaUrl("/2/user/forged-probe", 1, 2, "expired");
+  let headCalls = 0;
+  const { restore } = setupMockFetch((req) => {
+    if (req.method === "HEAD") headCalls++;
+    return new Response(null, { status: 200 });
+  });
+  try {
+    await assert.rejects(
+      () => processImageRefreshBatch(bareEnv(), credentials, [
+        { sourceUrl: url, mediaId: "", mode: "probe_only" },
+      ]),
+      /有签名的图片不能使用 probe_only 模式/,
+    );
+    assert.equal(headCalls, 0);
   } finally {
     restore();
   }
