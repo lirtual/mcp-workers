@@ -86,7 +86,7 @@ const collectionListTool = defineTool({
             `Found ${summaries.length} collections`,
             ...summaries.map(
               (collection) =>
-                `- ${collection.title} (ID: ${collection.id}, Items: ${collection.count})`,
+                `- ${collection.title} (ID: ${collection.id}, Items: ${collection.count}) — mcp://collection/${collection.id}`,
             ),
           ].join("\n"),
         ),
