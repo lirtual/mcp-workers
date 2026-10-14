@@ -10,12 +10,24 @@ const API = "https://ima.qq.com/";
 const IMAGE_HOST = "ima-notebook-prod.image.myqcloud.com";
 const MAX_CONTENT_BYTES = 8 * 1024 * 1024;
 
-function countImages(input) {
+function extractMarkdownPaths(markdown) {
+  if (typeof markdown !== "string") throw Object.assign(new Error("bad Markdown"), { code: "invalid_markdown" });
+  const paths = new Set();
+  const pattern = /!\\[[^\\]]*\\]\\(\\s*(https:\\/\\/ima-notebook-prod\\.image\\.myqcloud\\.com\\/[^\\s)]+)[^)]*\\)/g;
+  for (const match of markdown.matchAll(pattern)) {
+    try { paths.add(new URL(match[1].replace(/\\\\&/g, "&")).pathname); } catch {}
+  }
+  return paths;
+}
+
+function countImages(input, markdownPaths) {
   let value = input;
   if (typeof value === "string") {
     try { value = JSON.parse(value); } catch { return { parseable: false }; }
   }
+  if (!value || typeof value !== "object") return { parseable: false };
   const seen = { parseable: true, total: 0, withMediaIdAndCosKey: 0, missingBoth: 0, legacyHostMissingBoth: 0 };
+  const resolved = new Set();
   function walk(v) {
     if (!v || typeof v !== "object") return;
     if (Array.isArray(v)) { for (const item of v) walk(item); return; }
@@ -23,7 +35,10 @@ function countImages(input) {
       seen.total++;
       const hasId = typeof v.mediaId === "string" && v.mediaId.length > 0;
       const hasKey = typeof v.cosKey === "string" && v.cosKey.length > 0;
-      if (hasId && hasKey) seen.withMediaIdAndCosKey++;
+      if (hasId && hasKey) {
+        seen.withMediaIdAndCosKey++;
+        resolved.add(v.cosKey.startsWith("/") ? v.cosKey : "/" + v.cosKey);
+      }
       if (!hasId && !hasKey) {
         seen.missingBoth++;
         if (typeof v.url === "string") {
@@ -34,6 +49,12 @@ function countImages(input) {
     for (const child of Object.values(v)) walk(child);
   }
   walk(value);
+  if (markdownPaths) {
+    const mapped = [...markdownPaths].filter(path => resolved.has(path)).length;
+    seen.markdownImagePaths = markdownPaths.size;
+    seen.mappedMarkdownPaths = mapped;
+    seen.unmappedMarkdownPaths = markdownPaths.size - mapped;
+  }
   return seen;
 }
 
@@ -90,12 +111,22 @@ async function post(apiPath, payload, credentials, transport) {
 export async function diagnose(noteId, credentials, transport = fetch) {
   assert.match(noteId, /^[0-9]{8,30}$/);
   const output = { noteId, operations: {} };
+  // Compare coverage against actual Markdown image paths, not total node counts.
+  let markdownPaths;
+  try {
+    const data = await post("openapi/note/v1/get_doc_content",
+      { note_id: noteId, target_content_format: 1 }, credentials, transport);
+    markdownPaths = extractMarkdownPaths(data.content);
+    output.operations.markdown_references = { status: "ok", distinctImagePaths: markdownPaths.size };
+  } catch (error) { output.operations.markdown_references = errorSummary(error); }
+
   let baseline;
   try {
     const data = await post("openapi/note/v1/get_doc_content",
       { note_id: noteId, target_content_format: 2 }, credentials, transport);
     baseline = data.content;
-    output.operations.get_doc_content = { status: "ok", ...countImages(baseline) };
+    const summary = countImages(baseline, markdownPaths);
+    output.operations.get_doc_content = { status: summary.parseable ? "ok" : "invalid_format", ...summary };
   } catch (error) { output.operations.get_doc_content = errorSummary(error); }
 
   try {
@@ -104,7 +135,7 @@ export async function diagnose(noteId, credentials, transport = fetch) {
     const raw = data.content;
     const url = data.content_url;
     if (raw !== undefined) {
-      output.operations.export_note = { status: "ok", delivery: "inline", ...countImages(raw) };
+      output.operations.export_note = { delivery: "inline", ...countImages(raw, markdownPaths) };
     } else if (typeof url === "string") {
       if (!exportDownloadAllowed(url)) {
         output.operations.export_note = { status: "blocked", reason: "unrecognized_export_host", keys: Object.keys(data).sort() };
@@ -112,12 +143,17 @@ export async function diagnose(noteId, credentials, transport = fetch) {
         const res = await transport(new URL(url), { method: "GET", redirect: "manual", signal: AbortSignal.timeout(18000) });
         if (!res.ok) throw Object.assign(new Error("download HTTP status"), { code: res.status });
         const downloaded = await limitedText(res);
-        output.operations.export_note = { status: "ok", delivery: "content_url", ...countImages(downloaded) };
+        output.operations.export_note = { delivery: "content_url", ...countImages(downloaded, markdownPaths) };
       }
     } else {
       output.operations.export_note = { status: "unknown_contract", keys: Object.keys(data).sort() };
     }
   } catch (error) { output.operations.export_note = errorSummary(error); }
+
+  if (output.operations.export_note?.delivery) {
+    const summary = output.operations.export_note;
+    summary.status = summary.parseable ? "ok" : "invalid_format";
+  }
 
   // Probe one known-good media ID; never expose or log its value / signed URL.
   let mediaId;
