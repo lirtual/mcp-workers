@@ -108,12 +108,20 @@ The owner intends to connect managed devices located on **independent home, offi
 
 This settles **network reachability scope only**. It does not choose Cloudflare Mesh versus an Agent-initiated WebSocket relay, approve replacing the existing VPC Service, or promise that device onboarding is already automated.
 
+### Confirmed installation scope — grilling round 2 (2026-10-14)
+
+- **Q1=A**: The installer is allowed to automate installation and initial configuration of required supporting device software (including Cloudflare One Client) so that the owner does not repeat manual infrastructure steps on every device. This **does not** mean unattended, unauthenticated enrollment or implicit permission to distribute organization-wide secrets.
+- **Q2=A**: The **initial target is Linux and WSL2 Linux environments**; native Windows and macOS execution is deferred. This is the target for future installer work, not a claim that those installers already exist or an approval to modify the running host.
+- A device located on a separate home, office or cloud-provider network must be able to participate without a public device IP or manual inbound port forwarding.
+- See [ADR-0014](./adr/0014-linux-first-one-client-onboarding.md) for the installation trade-off. This ADR does **not** select Mesh over WebSocket + DO, change v1's transport, or approve automatic Cloudflare resource creation.
+
 ### Design questions not yet settled
 
-- Which operating systems and environments must the first installer support?
-- What user action counts as “one-click” or near-one-click installation and approval?
-- How should each device establish connectivity across independent networks (Cloudflare Mesh/One Client versus Agent-initiated WebSocket), prove identity, and recover after reboot or disconnection?
-- How should the owner select, rename, remove, or revoke a device?
+- What user action is required to authorize device enrollment (interactive versus unattended servers), and what counts as successful paired installation?
+- Which transport is acceptable after a real Linux + WSL2 proof (Cloudflare Mesh/One Client versus Agent-initiated WebSocket), and how will offline/reconnect behavior work?
+- Does joining the private network also authorize remote Shell, or is separate MCP-to-device pairing required?
+- How are individual device identities created, scoped, revoked and cleaned up without distributing long-lived shared credentials?
+- How should the owner select, rename, remove or revoke a device?
 - How to evolve single-device v1 without disrupting its working installation or falsely claiming that production already supports multi-device control?
 
 Do not modify the accepted v1 ADRs solely on the basis of this product goal. Record a new architecture decision after the trade-offs above have been resolved.
