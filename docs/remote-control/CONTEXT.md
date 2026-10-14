@@ -197,12 +197,20 @@ This settles **network reachability scope only**. It does not choose Cloudflare 
 - Q7–Q13 continue to govern reconnection, identity, no blind replay, all actually granted permissions revoked, and best-effort Agent-owned session stop on explicit removal.
 - [ADR-0018](./adr/0018-v2-websocket-do-transport-and-portal-pairing.md) is the accepted v2 architecture decision; [v2 pairing/security/hibernation acceptance plan](./V2-PAIRING-AND-HIBERNATION-ACCEPTANCE.md) is a **candidate protocol and required test matrix**, not a finished implementation.
 
+### Confirmed pairing protocol and 72-hour validation — grilling round 7 (2026-10-15)
+
+- **Q17=A**: A valid Remote Control-specific Portal Bearer allows the owner to **look up/review** one pending device and then separately **confirm** that exact pending public-key fingerprint. Valid Bearer alone does not cryptographically prove human presence, and a model-only tool call is not automatic approval.
+- **Q18=A**: Device installer shows **10 random Base32 characters** (50 entropy bits), expiring after **10 minutes** and consumed exactly once. Pending approval state, fingerprint and code verifier must not be logged or misused as permanent device access.
+- **Q19=A**: Every fresh installation generates a locally retained **asymmetric private/public keypair**; the Agent proves key possession with fresh challenge-response, and the server binds its public key to a revocable device identity. No single fleet-wide device token.
+- **Q20=A**: **Five simulated Agents for 72 hours** must be tested in nonproduction with observed DO Hibernation/wake, Workers and DO request/duration/storage quotas, existing account DO load and forced failure/recovery. The test has not been executed merely by approving this design.
+- See [ADR-0019](./adr/0019-pairing-code-device-keys-and-72-hour-gate.md), [v2 technical Spec](./V2-MULTI-DEVICE-SPEC.md), and [pairing/hibernation acceptance](./V2-PAIRING-AND-HIBERNATION-ACCEPTANCE.md). Current production v1 remains unchanged.
+
 ### Remaining open design decisions and verification
 
-- Determine how Portal-authenticated approval proves a real owner-initiated **specific** device confirmation with the actual ChatGPT client; an untrusted model making a tool call must not silently authorize an Agent.
-- Approve pairing-code entropy, expiry, attempt limits, on-device proof-of-possession and persistent credential format/rotation; protect bootstrap from abuse without weakening MCP ingress auth.
-- Agree on DO SQLite coordinator/hibernation event and storage contract, bounded pending RPC correlation, offline-detection policy, and best-effort stop outcome reporting.
-- Validate Linux + WSL2 installation in separate networks, revocation of a stolen credential, no replay after disconnect, 24–72h 5-device idle Hibernation/Workers Free budget including shared IMA DO consumption, and v1 rollback safety.
+- Verify the **accepted two-stage Portal-authenticated review/confirm** with the actual ChatGPT client. A model-only confirm call cannot be assumed to prove a separate human user; if the real client cannot reliably enforce deliberate review, a new out-of-band approval decision is required.
+- Pairing code entropy (50 bits), 10-minute lifetime, one use and keypair proof are **approved**; determine implementation constants for attempt limits, key algorithm/encoding, safe storage/rotation and replay-resistant authorization.
+- Finalize the narrow DO SQLite coordinator/hibernation event and storage contract, bounded pending RPC correlation, offline-detection policy, and best-effort stop outcome reporting; avoid application heartbeats that prevent DO hibernation.
+- Validate Linux + WSL2 installation in separate networks, revocation of a stolen credential, no replay after disconnect, **72h × 5-device** Hibernation/Workers Free budget including shared IMA DO consumption, and v1 rollback safety.
 - Future code/installer implementation, nonproduction Cloudflare resources, security testing, production rollout and v1 cutover require separately authorized steps.
 
 Do not modify the accepted v1 ADRs solely on the basis of this product goal. Record a new architecture decision after the trade-offs above have been resolved.
