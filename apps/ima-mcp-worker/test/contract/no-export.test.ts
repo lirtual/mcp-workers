@@ -8,11 +8,11 @@ function file(path: string): string {
 
 test("IMA tool registry exposes no public export or temporary-upload capability", () => {
   const tools = file("../../src/tools.ts");
-  assert.doesNotMatch(tools, /registerTool\\("export_file"/);
+  assert.ok(!tools.includes('registerTool("export_file"'));
   assert.doesNotMatch(tools, /export_to_temporary/);
-  assert.doesNotMatch(tools, /Litterbox|litterbox\\.catbox/);
-  assert.match(tools, /registerTool\\("read_knowledge_source"/);
-  assert.match(tools, /registerTool\\("upload_file_to_knowledge_base"/);
+  assert.doesNotMatch(tools, /Litterbox|litterbox/);
+  assert.ok(tools.includes('registerTool("read_knowledge_source"'));
+  assert.ok(tools.includes('registerTool("upload_file_to_knowledge_base"'));
 });
 
 test("IMA has no note or knowledge export implementation and no public uploader", () => {
