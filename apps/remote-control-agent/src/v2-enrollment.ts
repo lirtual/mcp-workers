@@ -13,6 +13,7 @@ export interface EnrollmentRequest {
   public_key: string;
   code_verifier: string;
   proof: string;
+  issued_at: number;
 }
 
 export function pairingVerifier(code: string): string {
@@ -33,12 +34,13 @@ export function newEnrollment(name: string): {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
   const publicSpki = Buffer.from(publicKey.export({ type: "spki", format: "der" }) as Buffer).toString("base64");
   const verifier = pairingVerifier(code);
-  const transcript = Buffer.from(ENROLLMENT_DOMAIN + verifier + ":" + publicSpki + ":" + name);
+  const issuedAt = Date.now();
+  const transcript = Buffer.from(ENROLLMENT_DOMAIN + verifier + ":" + publicSpki + ":" + name + ":" + issuedAt);
   const proof = Buffer.from(sign(null, transcript, privateKey)).toString("base64");
   return {
     code,
     privateKeyPem: String(privateKey.export({ type: "pkcs8", format: "pem" })),
-    request: { name, public_key: publicSpki, code_verifier: verifier, proof },
+    request: { name, public_key: publicSpki, code_verifier: verifier, proof, issued_at: issuedAt },
   };
 }
 

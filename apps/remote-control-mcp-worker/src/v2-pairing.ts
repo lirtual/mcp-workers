@@ -8,13 +8,14 @@ const te = new TextEncoder();
 export interface PendingDevice {
   name: string;
   public_key: string;
+  pairing_id: string;
   fingerprint: string;
   expires_at: number;
   created_at: number;
 }
 
 type PendingStorage = Pick<DurableObjectStorage, "get" | "put" | "list" | "delete" | "transaction">;
-type Registration = { name: string; public_key: string; code_verifier: string; proof: string };
+type Registration = { name: string; public_key: string; code_verifier: string; proof: string; issued_at: number };
 
 function asBytes(base64: string): Uint8Array {
   if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(base64)) {
@@ -31,14 +32,16 @@ export async function verifyRegistration(payload: unknown): Promise<{ record: Pe
   if (typeof p.name !== "string" || p.name.length < 1 || p.name.length > 64 ||
       /[\x00-\x1f]/.test(p.name) || typeof p.code_verifier !== "string" ||
       !/^[a-f0-9]{64}$/.test(p.code_verifier) || typeof p.public_key !== "string" ||
-      p.public_key.length > 96 || typeof p.proof !== "string" || p.proof.length > 128) return null;
+      p.public_key.length > 96 || typeof p.proof !== "string" || p.proof.length > 128 ||
+      typeof p.issued_at !== "number" || !Number.isSafeInteger(p.issued_at) ||
+      Date.now() - p.issued_at > 60_000 || p.issued_at - Date.now() > 30_000) return null;
   try {
     const keyBytes = asBytes(p.public_key);
     if (keyBytes.byteLength !== 44) return null; // DER SPKI wrapper of Ed25519 key.
     const signature = asBytes(p.proof);
     if (signature.length !== 64) return null;
     const key = await crypto.subtle.importKey("spki", Uint8Array.from(keyBytes).buffer as ArrayBuffer, { name: "Ed25519" }, false, ["verify"]);
-    const challenge = te.encode(PAIRING_DOMAIN + p.code_verifier + ":" + p.public_key + ":" + p.name);
+    const challenge = te.encode(PAIRING_DOMAIN + p.code_verifier + ":" + p.public_key + ":" + p.name + ":" + p.issued_at);
     const ok = await crypto.subtle.verify("Ed25519", key, Uint8Array.from(signature).buffer as ArrayBuffer, Uint8Array.from(challenge).buffer as ArrayBuffer);
     if (!ok) return null;
     const digest = await crypto.subtle.digest("SHA-256", Uint8Array.from(keyBytes).buffer as ArrayBuffer);
@@ -46,7 +49,7 @@ export async function verifyRegistration(payload: unknown): Promise<{ record: Pe
     const time = Date.now();
     return {
       verifier: p.code_verifier,
-      record: { name: p.name, public_key: p.public_key, fingerprint, expires_at: time + TTL_MS, created_at: time },
+      record: { name: p.name, public_key: p.public_key, pairing_id: crypto.randomUUID(), fingerprint, expires_at: time + TTL_MS, created_at: time },
     };
   } catch {
     return null;
@@ -76,7 +79,7 @@ export async function lookupPending(storage: PendingStorage, verifier: string): 
   const record = await storage.get<PendingDevice>("pending:" + verifier);
   if (!record || record.expires_at <= Date.now()) return { status: 404, body: { error: "not_found" } };
   // Public key only appears as an immutable fingerprint to the authenticated MCP owner.
-  return { status: 200, body: { pairing_id: verifier, name: record.name, fingerprint: record.fingerprint, expires_at: record.expires_at } };
+  return { status: 200, body: { pairing_id: record.pairing_id, name: record.name, fingerprint: record.fingerprint, expires_at: record.expires_at } };
 }
 
 async function limitedJson(request: Request): Promise<unknown> {

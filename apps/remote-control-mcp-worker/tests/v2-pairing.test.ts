@@ -28,6 +28,8 @@ test("v2 Agent code and Ed25519 public proof are bounded; private key stays loca
   assert.equal((await verifyRegistration(request))?.verifier, request.code_verifier);
   assert.equal(await verifyRegistration({ ...request, name: "tampered" }), null === null ? (await verifyRegistration({ ...request, proof: "invalid" })) : null); // see separate invalid proof assertion
   assert.equal(await verifyRegistration({ ...request, proof: "invalid" }), null);
+  assert.equal(await verifyRegistration({ ...request, name: "tampered" }), null);
+  assert.equal(await verifyRegistration({ ...request, issued_at: request.issued_at - 65_000 }), null);
   const dir = await mkdtemp(path.join(os.tmpdir(), "remote-v2-pair-"));
   const keyPath = path.join(dir, "device-key.pem");
   try {
@@ -71,6 +73,7 @@ test("pending enrollment only permits Portal-authenticated readonly preview; v1 
   assert.match(matchBody, /test-cloud/);
   assert.ok(!matchBody.includes(enrollment.code));
   assert.ok(!matchBody.includes(enrollment.request.public_key));
+  assert.ok(!matchBody.includes(enrollment.request.code_verifier));
   assert.ok(!matchBody.includes("PRIVATE KEY"));
   assert.ok(!matchBody.includes("approve"));
   assert.equal(values.size, 1);
