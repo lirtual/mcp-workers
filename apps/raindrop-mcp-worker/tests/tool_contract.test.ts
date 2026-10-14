@@ -120,13 +120,13 @@ describe("preview-first cleanup MCP tools/list and tools/call entry contract", (
   it("advertises explicit confirmation, keeps {} read-only, and rejects unknown arguments", async () => {
     const service = new RaindropMCPService({ accessToken: "test-token" });
     const getStats = vi.spyOn(service.raindropService, "getUserStats")
-      .mockResolvedValue({ trash: 7, collections: 5 } as any);
+      .mockResolvedValue({ trash: 7, collections: 5 } as Awaited<ReturnType<typeof service.raindropService.getUserStats>>);
     const roots = vi.spyOn(service.raindropService, "getCollections")
-      .mockResolvedValue([{ _id: 11, title: "Empty", count: 0 }] as any);
+      .mockResolvedValue([{ _id: 11, title: "Empty", count: 0 }] as Awaited<ReturnType<typeof service.raindropService.getCollections>>);
     const children = vi.spyOn(service.raindropService, "getAllChildCollections")
-      .mockResolvedValue([] as any);
+      .mockResolvedValue([] as Awaited<ReturnType<typeof service.raindropService.getAllChildCollections>>);
     const getBookmarks = vi.spyOn(service.raindropService, "getBookmarks")
-      .mockResolvedValue({ count: 0, items: [] } as any);
+      .mockResolvedValue({ count: 0, items: [] } as Awaited<ReturnType<typeof service.raindropService.getBookmarks>>);
     const trashDelete = vi.spyOn(service.raindropService, "emptyTrash");
     const collectionDelete = vi.spyOn(service.raindropService, "removeEmptyCollections");
     const duplicateDelete = vi.spyOn(
@@ -144,7 +144,7 @@ describe("preview-first cleanup MCP tools/list and tools/call entry contract", (
         });
         expect(tool?.description).toMatch(/preview/i);
         const argsProperty = name === "remove_duplicates" ? "dryRun" : "confirm";
-        expect((tool?.inputSchema as any)?.properties?.[argsProperty]).toBeDefined();
+        expect((tool?.inputSchema as { properties?: Record<string, unknown> })?.properties?.[argsProperty]).toBeDefined();
         const preview = await client.callTool({ name, arguments: {} });
         expect(preview.isError).not.toBe(true);
         expect(preview.content?.[0]).toMatchObject({ type: "text" });
