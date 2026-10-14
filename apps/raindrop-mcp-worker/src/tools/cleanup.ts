@@ -147,11 +147,13 @@ const cleanupCollectionsTool = defineTool({
  * Re-fetch every candidate and require explicit empty note/highlight fields.
  */
 function safeDuplicateCandidate(
-  bookmark: { _id?: number; note?: unknown; highlights?: unknown },
+  bookmark: { _id?: number; link?: unknown; note?: unknown; highlights?: unknown },
   id: number,
 ): boolean {
   return (
     bookmark._id === id &&
+    typeof bookmark.link === "string" &&
+    bookmark.link.length > 0 &&
     bookmark.note === "" &&
     Array.isArray(bookmark.highlights) &&
     bookmark.highlights.length === 0
@@ -259,32 +261,41 @@ const removeDuplicatesTool = defineTool({
 
     let protectedCount = 0;
     let unverifiedCount = 0;
+    // Keep at least one verified copy of every exact URL. The official
+    // duplicate search does not specify which hit (if any) is canonical.
     const safe = new Map<number, number[]>();
+    const keptLinks = new Set<string>();
+    let preservedCopies = 0;
     for (const [collectionId, ids] of candidates) {
-      const verified: number[] = [];
       for (const id of ids) {
         // Always bypass cached responses for deletion eligibility checks.
         const item = await raindropService.getBookmark(id, true);
         if (
           item._id !== id ||
           typeof item.note !== "string" ||
-          !Array.isArray(item.highlights)
+          !Array.isArray(item.highlights) ||
+          typeof item.link !== "string" ||
+          item.link.length === 0
         ) {
           unverifiedCount++;
         } else if (!safeDuplicateCandidate(item, id)) {
           protectedCount++;
+        } else if (!keptLinks.has(item.link)) {
+          keptLinks.add(item.link);
+          preservedCopies++;
         } else {
-          verified.push(id);
+          const entry = safe.get(collectionId) ?? [];
+          entry.push(id);
+          safe.set(collectionId, entry);
         }
       }
-      if (verified.length > 0) safe.set(collectionId, verified);
     }
 
     const safeCount = [...safe.values()].reduce((sum, ids) => sum + ids.length, 0);
     if (safeCount === 0) {
       return {
         content: [textContent(
-          `No safely deletable duplicates. Protected: ${protectedCount}, unverifiable: ${unverifiedCount}; nothing deleted.`,
+          `No safely deletable duplicates. Kept canonical copies: ${preservedCopies}, protected: ${protectedCount}, unverifiable: ${unverifiedCount}; nothing deleted.`,
         )],
       };
     }
@@ -322,7 +333,7 @@ const removeDuplicatesTool = defineTool({
     }
     return {
       content: [textContent(
-        `Deleted ${deleted} verified duplicates across ${safe.size} collections. Protected: ${protectedCount}, unverifiable: ${unverifiedCount}.`,
+        `Deleted ${deleted} verified duplicates across ${safe.size} collections. Kept canonical copies: ${preservedCopies}, protected: ${protectedCount}, unverifiable: ${unverifiedCount}.`,
       )],
     };
   },
