@@ -1,4 +1,46 @@
 import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
+export { V2OwnerCoordinator } from "./v2-pairing.ts";
+
+type V2Env = Env & { V2_OWNER?: DurableObjectNamespace };
+function pendingOwner(env: Env): DurableObjectStub | null {
+  const ns = (env as V2Env).V2_OWNER;
+  return ns ? ns.get(ns.idFromName("single-owner-v2")) : null;
+}
+
+const PAIRING_LOOKUP_TOOL = {
+  name: "pairing_lookup",
+  title: "Inspect pending local device",
+  description: "Read a pending Agent label and key fingerprint. Never approves or activates a device.",
+  inputSchema: {
+    type: "object",
+    properties: { code: { type: "string", minLength: 10, maxLength: 10 } },
+    required: ["code"],
+    additionalProperties: false,
+  },
+  annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+} as const;
+
+async function lookupPendingDevice(env: Env, code: unknown, id: unknown): Promise<Response> {
+  if (typeof code !== "string" || !/^[A-Z2-7]{10}$/.test(code)) return toolError(id, "The pairing code was rejected.");
+  const owner = pendingOwner(env);
+  if (!owner) return toolError(id, "Device enrollment is disabled.");
+  const value = new TextEncoder().encode("remote-control:v2:pending:" + code);
+  const bytes = new Uint8Array(await crypto.subtle.digest("SHA-256", value));
+  const verifier = [...bytes].map((x) => x.toString(16).padStart(2, "0")).join("");
+  try {
+    const response = await owner.fetch("https://v2.internal/lookup", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ verifier }),
+    });
+    if (!response.ok) return toolError(id, "The pairing code was not found or expired.");
+    const detail = await response.json() as unknown;
+    return toolText(id, JSON.stringify(detail));
+  } catch {
+    return toolError(id, "Pending device lookup is unavailable.");
+  }
+}
+
 import {
   parseFileInfo,
   parseListDirectory,
@@ -866,7 +908,7 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
   }
 
   if (rpcMessage.method === "tools/list") {
-    return rpc(rpcMessage.id, { tools: LOCAL_TOOLS });
+    return rpc(rpcMessage.id, { tools: pendingOwner(env) ? [...LOCAL_TOOLS, PAIRING_LOOKUP_TOOL] : LOCAL_TOOLS });
   }
 
   if (rpcMessage.method === "tools/call") {
@@ -876,6 +918,14 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
       return toolError(rpcMessage.id, "The requested tool call was rejected.");
     }
     const call = params as { name?: unknown; arguments?: unknown };
+    if (call.name === "pairing_lookup" && pendingOwner(env)) {
+      const args = call.arguments;
+      if (!args || typeof args !== "object" || Array.isArray(args) ||
+          Object.keys(args).length !== 1 || !Object.hasOwn(args, "code")) {
+        return toolError(rpcMessage.id, "The pairing lookup was rejected.");
+      }
+      return lookupPendingDevice(env, (args as { code?: unknown }).code, rpcMessage.id);
+    }
     if (!isKnownTool(call.name)) {
       log("rejected");
       return toolError(rpcMessage.id, "The requested tool call was rejected.");
@@ -908,6 +958,22 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+    if (url.pathname === "/agent/pair/start" && pendingOwner(env)) {
+      if (request.method !== "POST" || request.headers.has("origin")) {
+        return jsonError(405, "method_not_allowed", "The request was rejected.");
+      }
+      try {
+        const raw = await readBounded(request, 4096);
+        if (raw === null) return jsonError(400, "bad_request", "The request was rejected.");
+        return await pendingOwner(env)!.fetch("https://v2.internal/register", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: raw,
+        });
+      } catch {
+        return jsonError(503, "unavailable", "Pending enrollment is unavailable.");
+      }
+    }
     if (url.pathname !== "/mcp") {
       return jsonError(404, "not_found", "The route was not found.");
     }
