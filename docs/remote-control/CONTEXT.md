@@ -102,11 +102,17 @@ _Avoid_: Equating easy installation with anonymous or automatically trusted remo
 **Device Selection (candidate term)**:
 The intent to direct a remote operation at a particular managed device rather than implicitly treating all devices as the same host.
 
+### Confirmed network requirement — 2026-10-14
+
+The owner intends to connect managed devices located on **independent home, office and cloud-provider networks**, not only devices on one LAN. Adding a device must not depend on the device obtaining a public IP, a manually opened inbound port, or direct reachability from an existing single-site Tunnel.
+
+This settles **network reachability scope only**. It does not choose Cloudflare Mesh versus an Agent-initiated WebSocket relay, approve replacing the existing VPC Service, or promise that device onboarding is already automated.
+
 ### Design questions not yet settled
 
 - Which operating systems and environments must the first installer support?
 - What user action counts as “one-click” or near-one-click installation and approval?
-- How should each device establish connectivity, prove identity, and recover after reboot or disconnection?
+- How should each device establish connectivity across independent networks (Cloudflare Mesh/One Client versus Agent-initiated WebSocket), prove identity, and recover after reboot or disconnection?
 - How should the owner select, rename, remove, or revoke a device?
 - How to evolve single-device v1 without disrupting its working installation or falsely claiming that production already supports multi-device control?
 
