@@ -1,0 +1,20 @@
+# Example only: replace __REPO_ROOT__ and __NODE_BIN__ before installing.
+# Do not check in a populated EnvironmentFile.
+[Unit]
+Description=Remote Control native Agent (loopback, user service)
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=__REPO_ROOT__/apps/remote-control-agent
+Environment=REMOTE_CONTROL_AGENT_HOST=127.0.0.1
+Environment=REMOTE_CONTROL_AGENT_PORT=9477
+EnvironmentFile=%h/.config/mcp-workers/remote-control-agent.env
+UMask=0077
+ExecStartPre=/usr/bin/test -x __REPO_ROOT__/apps/remote-control-agent/.build/session-supervisor
+ExecStart=__NODE_BIN__ --experimental-strip-types src/main.ts
+Restart=always
+RestartSec=15s
+
+[Install]
+WantedBy=default.target
