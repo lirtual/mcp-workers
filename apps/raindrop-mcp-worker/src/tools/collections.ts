@@ -4,7 +4,6 @@ import { CollectionManageInputSchema } from "../types/raindrop-zod.schemas.js";
 import type { ToolHandlerContext } from "./common.js";
 import {
   defineTool,
-  makeCollectionLink,
   setIfDefined,
   textContent,
 } from "./common.js";
@@ -67,18 +66,34 @@ const collectionListTool = defineTool({
     { raindropService }: ToolHandlerContext,
   ) => {
     const collections = await raindropService.getCollections(args.skipCache);
-    const content = [
-      textContent(`Found ${collections.length} collections`),
-      ...collections.map(makeCollectionLink),
-    ];
+    // Keep the list response text-only for MCP hosts. Resource links can be
+    // read separately via mcp://collection/{id}, but embedded resource content
+    // in a tools/call response is not accepted consistently by clients.
+    // Project upstream values into the declared output schema, avoiding
+    // undefined or non-numeric fields in structuredContent.
+    const summaries = collections.map((collection) => ({
+      id: collection._id,
+      title: collection.title || "Untitled Collection",
+      count: Number(collection.count ?? 0),
+      ...(typeof collection.description === "string"
+        ? { description: collection.description }
+        : {}),
+    }));
     return {
-      content,
+      content: [
+        textContent(
+          [
+            `Found ${summaries.length} collections`,
+            ...summaries.map(
+              (collection) =>
+                `- ${collection.title} (ID: ${collection.id}, Items: ${collection.count}) — mcp://collection/${collection.id}`,
+            ),
+          ].join("\n"),
+        ),
+      ],
       structuredContent: {
-        count: collections.length,
-        collections: collections.map((collection) => ({
-          ...collectionSummary(collection),
-          count: collection.count || 0,
-        })),
+        count: summaries.length,
+        collections: summaries,
       },
     };
   },

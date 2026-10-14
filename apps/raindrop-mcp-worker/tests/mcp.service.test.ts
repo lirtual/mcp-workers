@@ -21,6 +21,16 @@ const firstResourceUriByPrefix = (content: any[], prefix: string) => {
   return item?.resource?.uri as string | undefined;
 };
 
+// Collection lists expose discoverable IDs in structuredContent; the URI
+// remains readable as a separate MCP resource.
+const firstCollectionUri = (result: { structuredContent?: unknown }): string | undefined => {
+  const data = result.structuredContent as
+    | { collections?: Array<{ id?: number }> }
+    | undefined;
+  const id = data?.collections?.[0]?.id;
+  return typeof id === "number" ? `mcp://collection/${id}` : undefined;
+};
+
 const parseIdFromResourceUri = (uri: string) => {
   const id = Number.parseInt(uri.split("/").pop() || "", 10);
   if (!Number.isFinite(id)) {
@@ -162,10 +172,7 @@ describeLive("RaindropMCPService live API checks", () => {
 
   it("discovers a collection and reads it via resource URI", async () => {
     const listResult = await mcpService.callTool("collection_list", {});
-    const collectionUri = firstResourceUriByPrefix(
-      listResult.content,
-      "mcp://collection/",
-    );
+    const collectionUri = firstCollectionUri(listResult);
 
     if (!collectionUri) {
       throw new Error("No collection resource URI found from collection_list");
@@ -180,10 +187,7 @@ describeLive("RaindropMCPService live API checks", () => {
 
   it("discovers a bookmark and reads it via resource URI", async () => {
     const listCollections = await mcpService.callTool("collection_list", {});
-    const collectionUri = firstResourceUriByPrefix(
-      listCollections.content,
-      "mcp://collection/",
-    );
+    const collectionUri = firstCollectionUri(listCollections);
 
     if (!collectionUri) {
       throw new Error("No collection resource URI found from collection_list");
