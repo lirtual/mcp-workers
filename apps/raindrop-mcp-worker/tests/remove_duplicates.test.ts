@@ -5,7 +5,7 @@ type Candidate = { _id: number; note?: string; highlights?: unknown[] };
 const verified = (id: number): Candidate => ({ _id: id, note: "", highlights: [] });
 
 describe("remove_duplicates — direct execution and safe eligibility", () => {
-  const tool = cleanupTools.find((item) => item.name === "remove_duplicates")!;
+  const tool = cleanupTools.find((item) => item.name === "remove_duplicates")! as any;
   let service: {
     getBookmarks: ReturnType<typeof vi.fn>;
     getCollections: ReturnType<typeof vi.fn>;
