@@ -39,6 +39,12 @@ Relevant primary documentation:
 
 **Cost/risk:** enrollment and MCP pairing have separate lifecycles; the system must durably map trusted device IDs to specific Cloudflare identities/registrations without coupling identity to an ephemeral Mesh IP. Q5=B imposes an administrative control-plane integration and raises credential-scope, partial-failure and re-enrollment complexity. These are deliberate costs of first-release automatic dual-layer revocation rather than hidden future work.
 
+## Clarification from accepted grilling Q11=A and Q13=A (2026-10-14)
+
+[ADR-0017](./0017-multi-device-revocation-semantics-and-transport-gates.md) clarifies Q5=B without weakening it: revoke **all privileges actually granted** by the selected device transport. For Mesh, this includes permanent removal of the target's Cloudflare One enrollment and blocking re-registration; for WS+DO with no Cloudflare One device registration, it includes persistently denying that Agent's credential, closing its connected WebSocket, and refusing future upgrade/dispatch. Do not install Cloudflare One merely to satisfy a deletion ceremony.
+
+An **explicit removal** also requires immediate server-side denial and, for an online Agent, a best-effort authenticated stop of **Agent-owned** managed sessions. An offline or compromised Agent cannot be guaranteed to stop local jobs. This supersedes the earlier unresolved language below on the policy, but exact implementation and tested guarantees remain open.
+
 ## Next grilling frontier (unsettled)
 
 - **Q7** — Offline and reconnect: startup/host reboot, WSL2 host lifecycle, failure bounds, expiry and device-online presentation.
