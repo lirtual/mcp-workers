@@ -4,6 +4,12 @@ Status: **discovery / proposed architecture, not accepted**. Evaluated: 2026-10-
 Links: [Domain context](./CONTEXT.md), [ADR-0014](./adr/0014-linux-first-one-client-onboarding.md), [ADR-0015](./adr/0015-per-device-pairing-and-revocation.md), [ADR-0016](./adr/0016-device-lifecycle-and-recovery.md).
 **This is a documentation-only comparison, not a Cloudflare account/prototype test.** Q11/Q12/Q13 accepted, transport not yet accepted; see [ADR-0017](./adr/0017-multi-device-revocation-semantics-and-transport-gates.md).
 
+## Final design-direction update — 2026-10-15
+
+Owner-approved sixth-round decisions: **Q14=A** selects Agent-initiated WS + SQLite-backed DO Hibernation as v2's transport **design**, **Q15=A** reuses the existing MCP Portal Bearer for an explicit, device-specific owner pairing approval, and **Q16=A** has the installer display a short-lived one-use pairing code entered/confirmed through MCP. See [ADR-0018](./adr/0018-v2-websocket-do-transport-and-portal-pairing.md) and [pairing and Hibernation acceptance plan](./V2-PAIRING-AND-HIBERNATION-ACCEPTANCE.md).
+
+The following provisional comparisons and earlier unresolved Q11/Q14 questions are retained **as historical research**, not live decision blockers. Selected architecture is **not** the same as passing security, Free-tier or production validation. One existing production v1 VPC Service + Tunnel continues untouched. Cloudflare One login is not used by the chosen WS/DO network path and is not provided by existing static Portal Bearer authentication.
+
 ## Fixed owner requirements
 
 - Linux and WSL2 first; devices spread across home, office and cloud networks, one MCP endpoint and explicit `device_id`.
