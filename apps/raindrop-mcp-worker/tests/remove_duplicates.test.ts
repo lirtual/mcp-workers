@@ -11,7 +11,7 @@ const verified = (id: number, collectionId = 123): Candidate => ({
   tags: [], important: false, collection: { $id: collectionId },
 });
 
-describe("remove_duplicates — direct execution and safe eligibility", () => {
+describe("remove_duplicates — safe preview, explicit execution and eligibility", () => {
   const tool = cleanupTools.find((item) => item.name === "remove_duplicates")! as any;
   let service: {
     getBookmarks: ReturnType<typeof vi.fn>;
@@ -47,17 +47,32 @@ describe("remove_duplicates — direct execution and safe eligibility", () => {
     });
   }
 
-  it("rejects old dryRun and any extra argument, without upstream calls", () => {
-    for (const old of [{ dryRun: true }, { dryRun: false }, { other: 1 }]) {
-      expect(tool.inputSchema.safeParse(old).success).toBe(false);
+  it("accepts optional dryRun and rejects unknown/obsolete flags", () => {
+    for (const safe of [{}, { dryRun: true }, { dryRun: false }, { skipCache: true }]) {
+      expect(tool.inputSchema.safeParse(safe).success).toBe(true);
     }
-    expect(tool.inputSchema.safeParse({ skipCache: true }).success).toBe(true);
+    for (const rejected of [{ confirm: true }, { other: 1 }, { dryRun: "false" }]) {
+      expect(tool.inputSchema.safeParse(rejected).success).toBe(false);
+    }
     expect(service.getBookmarks).not.toHaveBeenCalled();
+  });
+
+  it("defaults to a verified read-only preview, and dryRun:true is also safe", async () => {
+    mockDuplicates([1, 2, 3]);
+    for (const args of [{}, { dryRun: true }]) {
+      const preview = await tool.handler(args, ctx());
+      expect(textOf(preview)).toContain("Preview only (dryRun)");
+      expect(textOf(preview)).toContain("2 verified duplicates");
+      expect(textOf(preview)).toContain("dryRun: false");
+    }
+    expect(service.getBookmark).toHaveBeenCalledWith(1, true);
+    expect(service.batchDeleteBookmarksInCollection).not.toHaveBeenCalled();
+    expect(tool.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true });
   });
 
   it("reports an empty library without deletion", async () => {
     mockDuplicates([]);
-    const response = await tool.handler({}, ctx());
+    const response = await tool.handler({ dryRun: false }, ctx());
     expect(textOf(response)).toContain("No duplicates found");
     expect(service.batchDeleteBookmarksInCollection).not.toHaveBeenCalled();
   });
@@ -71,7 +86,7 @@ describe("remove_duplicates — direct execution and safe eligibility", () => {
       4: { _id: 4 }, // missing metadata is NOT proof of safety
       5: verified(5),
     })[id]);
-    const response = await tool.handler({}, ctx());
+    const response = await tool.handler({ dryRun: false }, ctx());
     expect(textOf(response)).toContain("Deleted 1 verified");
     expect(textOf(response)).toContain("protected: 2, unverifiable: 1");
     expect(service.getBookmark).toHaveBeenCalledWith(1, true);
@@ -86,7 +101,7 @@ describe("remove_duplicates — direct execution and safe eligibility", () => {
       params.collection === -1 ? { count: 2, items: [{ _id: 77 }, { _id: 78 }] } :
       (() => { throw new Error("Unexpected collection"); })(),
     );
-    const response = await tool.handler({}, ctx());
+    const response = await tool.handler({ dryRun: false }, ctx());
     expect(textOf(response)).toContain("Deleted 1 verified");
     expect(service.batchDeleteBookmarksInCollection).toHaveBeenCalledWith(-1, [78]);
     expect(service.batchDeleteBookmarksInCollection).not.toHaveBeenCalledWith(0, expect.anything());
@@ -100,7 +115,7 @@ describe("remove_duplicates — direct execution and safe eligibility", () => {
       if (params.collection === 456) return { count: 2, items: [{ _id: 88 }, { _id: 89 }] };
       return { count: 0, items: [] };
     });
-    const response = await tool.handler({}, ctx());
+    const response = await tool.handler({ dryRun: false }, ctx());
     expect(textOf(response)).toContain("Deleted 1 verified");
     expect(service.getAllChildCollections).toHaveBeenCalledExactlyOnceWith(undefined);
     expect(service.batchDeleteBookmarksInCollection).toHaveBeenCalledWith(456, [89]);
@@ -109,7 +124,7 @@ describe("remove_duplicates — direct execution and safe eligibility", () => {
   it("fails closed when all candidates lack complete metadata", async () => {
     mockDuplicates([1, 2]);
     service.getBookmark.mockResolvedValue({ _id: 1, note: "" });
-    const response = await tool.handler({}, ctx());
+    const response = await tool.handler({ dryRun: false }, ctx());
     expect(textOf(response)).toContain("nothing deleted");
     expect(service.batchDeleteBookmarksInCollection).not.toHaveBeenCalled();
   });
@@ -117,7 +132,7 @@ describe("remove_duplicates — direct execution and safe eligibility", () => {
   it("paginates and deletes in upstream batches of 50, not a global 50 cap", async () => {
     const ids = Array.from({ length: 120 }, (_, i) => i + 1);
     mockDuplicates(ids);
-    const response = await tool.handler({ skipCache: true }, ctx());
+    const response = await tool.handler({ skipCache: true, dryRun: false }, ctx());
     expect(textOf(response)).toContain("Deleted 119 verified");
     expect(service.batchDeleteBookmarksInCollection).toHaveBeenCalledTimes(3);
     expect(service.batchDeleteBookmarksInCollection).toHaveBeenNthCalledWith(1, 123, ids.slice(1, 51));
@@ -130,7 +145,7 @@ describe("remove_duplicates — direct execution and safe eligibility", () => {
     service.getBookmark.mockImplementation(async (id: number) => ({
       ...verified(id), link: `https://example.test/item-${id}`,
     }));
-    const response = await tool.handler({}, ctx());
+    const response = await tool.handler({ dryRun: false }, ctx());
     expect(textOf(response)).toContain("Retained collection-local copies: 2");
     expect(service.batchDeleteBookmarksInCollection).not.toHaveBeenCalled();
   });
@@ -145,7 +160,7 @@ describe("remove_duplicates — direct execution and safe eligibility", () => {
     service.getBookmark.mockImplementation(async (id: number) =>
       verified(id, id === 51 ? 123 : 456),
     );
-    const result = await tool.handler({}, ctx());
+    const result = await tool.handler({ dryRun: false }, ctx());
     expect(textOf(result)).toContain("Retained collection-local copies: 2");
     expect(service.batchDeleteBookmarksInCollection).not.toHaveBeenCalled();
   });
@@ -159,7 +174,7 @@ describe("remove_duplicates — direct execution and safe eligibility", () => {
       4: { ...verified(4), reminder: { date: "2026-12-01T00:00:00Z" } },
       5: { ...verified(5), tags: undefined },
     })[id]);
-    const result = await tool.handler({}, ctx());
+    const result = await tool.handler({ dryRun: false }, ctx());
     expect(textOf(result)).toContain("nothing deleted");
     expect(textOf(result)).toContain("protected: 3, unverifiable: 1");
     expect(service.batchDeleteBookmarksInCollection).not.toHaveBeenCalled();
@@ -173,7 +188,7 @@ describe("remove_duplicates — direct execution and safe eligibility", () => {
       secondRead++;
       return secondRead === 1 ? verified(2) : { ...verified(2), note: "new note" };
     });
-    const result = await tool.handler({}, ctx());
+    const result = await tool.handler({ dryRun: false }, ctx());
     expect(textOf(result)).toContain("current batch not sent");
     expect(service.batchDeleteBookmarksInCollection).not.toHaveBeenCalled();
   });
@@ -187,7 +202,7 @@ describe("remove_duplicates — direct execution and safe eligibility", () => {
       p.page === 1 ? { count: 59, items: ids.slice(50).map(_id => ({_id})) } :
       { count: 60, items: ids.slice(0, 50).map(_id => ({_id})) }
     );
-    await expect(tool.handler({}, ctx())).rejects.toThrow(/pagination/);
+    await expect(tool.handler({ dryRun: false }, ctx())).rejects.toThrow(/pagination/);
     expect(service.batchDeleteBookmarksInCollection).not.toHaveBeenCalled();
   });
 
@@ -196,7 +211,7 @@ describe("remove_duplicates — direct execution and safe eligibility", () => {
     mockDuplicates(ids);
     service.batchDeleteBookmarksInCollection
       .mockResolvedValueOnce(true).mockRejectedValueOnce(new Error("upstream timeout"));
-    const response = await tool.handler({}, ctx());
+    const response = await tool.handler({ dryRun: false }, ctx());
     expect(textOf(response)).toContain("outcome is unknown");
     expect(textOf(response)).toContain("50 items previously acknowledged");
     expect(service.batchDeleteBookmarksInCollection).toHaveBeenCalledTimes(2);
@@ -205,7 +220,7 @@ describe("remove_duplicates — direct execution and safe eligibility", () => {
   it("returns a bounded uncertain outcome on false instead of continuing", async () => {
     mockDuplicates([7, 8]);
     service.batchDeleteBookmarksInCollection.mockResolvedValueOnce(false);
-    const response = await tool.handler({}, ctx());
+    const response = await tool.handler({ dryRun: false }, ctx());
     expect(textOf(response)).toContain("outcome is uncertain");
     expect(service.batchDeleteBookmarksInCollection).toHaveBeenCalledTimes(1);
   });
