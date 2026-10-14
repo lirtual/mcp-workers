@@ -3,6 +3,8 @@
 // Usage: IMA_OPENAPI_CLIENTID=... IMA_OPENAPI_APIKEY=... node scripts/diagnose-image-export.mjs <note_id>
 // Requires Node >= 20. No note writes and no Litterbox uploads.
 import assert from "node:assert/strict";
+import { pathToFileURL } from "node:url";
+import { resolve } from "node:path";
 
 const API = "https://ima.qq.com/";
 const IMAGE_HOST = "ima-notebook-prod.image.myqcloud.com";
@@ -144,7 +146,7 @@ export async function diagnose(noteId, credentials, transport = fetch) {
   return output;
 }
 
-if (process.argv[1] && import.meta.url === new URL("file://" + process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const [noteId] = process.argv.slice(2);
   const credentials = {
     clientId: process.env.IMA_OPENAPI_CLIENTID || "",
