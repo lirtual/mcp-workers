@@ -51,9 +51,31 @@ export function createLoopbackTransport(
       await response.body?.cancel();
       throw new Error("Local Agent response size exceeded.");
     }
-    const buffer = await response.arrayBuffer();
-    if (buffer.byteLength > MAX_RESPONSE_BYTES) throw new Error("Local Agent response size exceeded.");
-    const text = new TextDecoder().decode(buffer);
+    if (!response.body) throw new Error("The local Agent returned an empty response.");
+    const reader = response.body.getReader();
+    const parts: Uint8Array[] = [];
+    let size = 0;
+    try {
+      for (;;) {
+        const item = await reader.read();
+        if (item.done) break;
+        size += item.value.byteLength;
+        if (size > MAX_RESPONSE_BYTES) {
+          await reader.cancel();
+          throw new Error("Local Agent response size exceeded.");
+        }
+        parts.push(item.value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    const bytes = new Uint8Array(size);
+    let at = 0;
+    for (const part of parts) {
+      bytes.set(part, at);
+      at += part.byteLength;
+    }
+    const text = new TextDecoder().decode(bytes);
     try {
       return { status: response.status, body: JSON.parse(text) as unknown };
     } catch {
