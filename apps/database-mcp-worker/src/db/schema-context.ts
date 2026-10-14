@@ -29,7 +29,7 @@ export interface SchemaContextResult {
 
 function resolveContextSchema(connection: EffectiveConnection, requested: string | undefined): string {
   if (connection.dialect === 'postgres') {
-    return requested ?? connection.config.defaultSchema ?? 'public';
+    return requested ?? 'public';
   }
 
   const configured = connection.database.length === 0 ? undefined : connection.database;
@@ -37,7 +37,7 @@ function resolveContextSchema(connection: EffectiveConnection, requested: string
     throw new PublicError('ACCESS_DENIED', 'MySQL schema context is restricted to the configured database.');
   }
 
-  const selected = requested ?? configured ?? connection.config.defaultSchema;
+  const selected = requested ?? configured;
   if (selected === undefined) {
     throw new PublicError(
       'INVALID_INPUT',

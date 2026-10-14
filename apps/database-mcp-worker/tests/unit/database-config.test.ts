@@ -1,143 +1,61 @@
 import { describe, expect, it } from 'vitest';
-import {
-  parseDatabaseConfig,
-  resolveConnection,
-  resolveConnectionDialect,
-  resolveWriteConnection
-} from '../../src/config.js';
+import { parseDatabaseConfig, resolveConnection, resolveConnectionDialect, resolveWriteConnection } from '../../src/config.js';
+import { resolveAdminConnection } from '../../src/admin-config.js';
 import { PublicError } from '../../src/errors.js';
 import type { Env } from '../../src/types.js';
 
-function env(extra: Record<string, unknown> = {}): Env {
-  return {
-    RATE_LIMITER: { async limit() { return { success: true }; } },
-    ...extra
-  };
-}
+const baseEnv = (extra: Record<string, unknown> = {}): Env => ({
+  RATE_LIMITER: { async limit() { return { success: true }; } },
+  PG: { connectionString: 'postgres://role@host/db', host: 'host', user: 'role', password: 'secret', database: 'db', port: 5432 },
+  ...extra
+});
 
-describe('DATABASE_CONFIG', () => {
-  it('parses the minimal direct read configuration with id-derived display name', () => {
-    const catalog = parseDatabaseConfig(JSON.stringify({
-      main: {
-        read: 'mysql://reader:secret@db.example.com:3306/app'
-      }
-    }));
-
-    expect(catalog).toHaveLength(1);
-    expect(catalog[0]).toMatchObject({
-      id: 'main',
-      displayName: 'main',
-      enabled: true,
-      transport: 'direct'
-    });
-    expect(resolveConnectionDialect(env(), catalog[0]!)).toBe('mysql');
-    expect(resolveConnection(env(), catalog, 'main')).toMatchObject({
-      dialect: 'mysql',
-      user: 'reader',
-      database: 'app',
-      port: 3306
-    });
+describe('flat DATABASE_CONFIG', () => {
+  it('maps connection ids directly to URLs and uses one principal for read, write, and direct DDL', () => {
+    const catalog = parseDatabaseConfig(JSON.stringify({ primary: 'mysql://role:secret@db.example.com/app' }));
+    const read = resolveConnection(baseEnv(), catalog);
+    expect(read).toMatchObject({ dialect: 'mysql', user: 'role', database: 'app' });
+    expect(resolveWriteConnection(baseEnv(), catalog).user).toBe(read.user);
+    expect(resolveAdminConnection(baseEnv(), catalog).user).toBe(read.user);
+    expect(resolveConnectionDialect(baseEnv(), catalog[0]!)).toBe('mysql');
   });
 
-  it('supports MySQL server-level URLs while PostgreSQL still requires a database name', () => {
-    const catalog = parseDatabaseConfig(JSON.stringify({
-      mysql_server: {
-        read: 'mysql://reader:secret@db.example.com:3306',
-        write: 'mysql://writer:secret@db.example.com:3306'
-      }
-    }));
-
-    expect(resolveConnection(env(), catalog, 'mysql_server')).toMatchObject({
-      dialect: 'mysql',
-      database: '',
-      port: 3306
-    });
-    expect(resolveWriteConnection(env(), catalog, 'mysql_server')).toMatchObject({
-      dialect: 'mysql',
-      database: '',
-      port: 3306
-    });
-
-    expect(() => parseDatabaseConfig(JSON.stringify({
-      pg_server: { read: 'postgresql://reader:secret@db.example.com:5432' }
-    }))).toThrow(PublicError);
+  it('requires an explicit id for multiple connections and rejects unknown ids', () => {
+    const catalog = parseDatabaseConfig(JSON.stringify({ one: 'mysql://u:p@h/db', two: 'postgres://u:p@h/db' }));
+    expect(() => resolveConnection(baseEnv(), catalog)).toThrowError(expect.objectContaining({ code: 'INVALID_INPUT' }));
+    expect(resolveConnection(baseEnv(), catalog, 'two').dialect).toBe('postgres');
+    expect(() => resolveConnection(baseEnv(), catalog, 'missing')).toThrowError(expect.objectContaining({ code: 'CONNECTION_NOT_FOUND' }));
   });
 
-  it('enables Safe Write only when write is explicitly configured', () => {
-    const readOnly = parseDatabaseConfig(JSON.stringify({
-      main: { read: 'mysql://reader:secret@db.example.com/app' }
-    }));
-    expect(() => resolveWriteConnection(env(), readOnly, 'main')).toThrow(PublicError);
-
-    const writable = parseDatabaseConfig(JSON.stringify({
-      main: {
-        read: 'mysql://reader:secret@db.example.com/app',
-        write: 'mysql://writer:secret@db.example.com/app',
-        maxAffectedRows: 7
-      }
-    }));
-    expect(resolveWriteConnection(env(), writable, 'main')).toMatchObject({
-      dialect: 'mysql',
-      user: 'writer',
-      maxAffectedRows: 7
-    });
+  it('accepts strict Hyperdrive references for data tools and refuses DDL without fallback', () => {
+    const catalog = parseDatabaseConfig(JSON.stringify({ analytics: { hyperdrive: 'PG', dialect: 'postgres' } }));
+    expect(resolveConnection(baseEnv(), catalog, 'analytics')).toMatchObject({ transport: 'hyperdrive', dialect: 'postgres', user: 'role' });
+    expect(() => resolveAdminConnection(baseEnv(), catalog, 'analytics')).toThrowError(
+      expect.objectContaining({ code: 'ADMIN_OPERATION_NOT_SUPPORTED' })
+    );
+    expect(() => resolveConnection(baseEnv(), catalog, 'analytics')).not.toThrow();
   });
 
-  it('supports multiple databases without repeating an id field', () => {
-    const catalog = parseDatabaseConfig(JSON.stringify({
-      primary: { read: 'mysql://reader:secret@mysql.example.com/app' },
-      analytics: {
-        displayName: 'Analytics',
-        read: 'postgres://reader:secret@pg.example.com/analytics'
-      }
-    }));
-
-    expect(catalog.map(item => item.id)).toEqual(['primary', 'analytics']);
-    expect(catalog[1]?.displayName).toBe('Analytics');
-  });
-
-  it('supports Hyperdrive references while keeping the simple direct syntax', () => {
-    const target = env({
-      PG_READ: {
-        connectionString: 'postgres://reader@host/db',
-        host: 'host',
-        user: 'reader',
-        password: 'secret',
-        database: 'db',
-        port: 5432
-      },
-      PG_WRITE: {
-        connectionString: 'postgres://writer@host/db',
-        host: 'host',
-        user: 'writer',
-        password: 'secret',
-        database: 'db',
-        port: 5432
-      }
-    });
-    const catalog = parseDatabaseConfig(JSON.stringify({
-      prod: {
-        read: { hyperdrive: 'PG_READ', dialect: 'postgres' },
-        write: { hyperdrive: 'PG_WRITE' }
-      }
-    }));
-
-    expect(resolveConnection(target, catalog, 'prod')).toMatchObject({ transport: 'hyperdrive', dialect: 'postgres' });
-    expect(resolveWriteConnection(target, catalog, 'prod')).toMatchObject({ transport: 'hyperdrive', dialect: 'postgres' });
-  });
-
-  it('rejects invalid shapes, unknown fields, TLS direct URLs, and mismatched direct writer dialects', () => {
+  it('rejects legacy nested formats, speculative fields, malformed ids, and invalid URLs', () => {
+    for (const config of [
+      { primary: { connection: 'mysql://u:p@h/db' } },
+      { primary: { read: 'mysql://u:p@h/db', write: 'mysql://u:p@h/db' } },
+      { primary: { admin: 'mysql://u:p@h/db' } },
+      { primary: { hyperdrive: 'PG', dialect: 'postgres', displayName: 'primary' } },
+      { primary: { hyperdrive: 'PG', dialect: 'postgres', enabled: false } },
+      { primary: { hyperdrive: 'PG', dialect: 'postgres', maxRows: 10 } },
+      { 'bad id': 'mysql://u:p@h/db' },
+      { primary: 'ftp://u:p@h/db' },
+      { primary: 'mysql://u:p@h/db?ssl=true' }
+    ]) expect(() => parseDatabaseConfig(JSON.stringify(config))).toThrow(PublicError);
     expect(() => parseDatabaseConfig('[]')).toThrow(PublicError);
-    expect(() => parseDatabaseConfig(JSON.stringify({ main: {} }))).toThrow(PublicError);
-    expect(() => parseDatabaseConfig(JSON.stringify({ main: { read: 'mysql://u:p@h/db', nope: true } }))).toThrow(PublicError);
-    expect(() => parseDatabaseConfig(JSON.stringify({ main: { read: 'mysql://u:p@h/db?ssl=true' } }))).toThrow(PublicError);
+    expect(() => parseDatabaseConfig('{}')).toThrow(PublicError);
+  });
 
-    const mismatched = parseDatabaseConfig(JSON.stringify({
-      main: {
-        read: 'mysql://reader:secret@db.example.com/app',
-        write: 'postgres://writer:secret@db.example.com/app'
-      }
-    }));
-    expect(() => resolveWriteConnection(env(), mismatched, 'main')).toThrow(PublicError);
+  it('preserves global limits and affected-row caps', () => {
+    const env = baseEnv({ MAX_ROWS: '25', MAX_WRITE_AFFECTED_ROWS: '3' });
+    const catalog = parseDatabaseConfig(JSON.stringify({ primary: 'mysql://u:p@h/db' }));
+    expect(resolveConnection(env, catalog).limits.maxRows).toBe(25);
+    expect(resolveWriteConnection(env, catalog).maxAffectedRows).toBe(3);
   });
 });

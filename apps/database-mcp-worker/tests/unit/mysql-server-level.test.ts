@@ -25,11 +25,9 @@ function serverConnection(): EffectiveConnection {
   return {
     config: {
       id: 'mysql-server',
-      displayName: 'MySQL Server',
       transport: 'direct',
       url: 'mysql://reader:redacted@127.0.0.1:3306',
-      enabled: true
-    },
+      },
     transport: 'direct',
     dialect: 'mysql',
     connectionString: 'mysql://reader:redacted@127.0.0.1:3306',
@@ -66,7 +64,6 @@ describe('server-level MySQL connections', () => {
       ...read,
       config: {
         ...read.config,
-        write: { transport: 'direct', url: 'mysql://writer:redacted@127.0.0.1:3306' }
       },
       user: 'writer',
       maxAffectedRows: 20
