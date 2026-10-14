@@ -1,0 +1,17 @@
+# Example only: replace __CLOUDFLARED_BIN__ and __EXISTING_TOKEN_FILE__.
+# Use the already-authorized Tunnel token-file; NEVER paste token contents here.
+[Unit]
+Description=Remote Control Cloudflare Tunnel (user service)
+Wants=remote-control-agent.service
+After=remote-control-agent.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+UMask=0077
+ExecStart=__CLOUDFLARED_BIN__ tunnel run --token-file __EXISTING_TOKEN_FILE__
+Restart=always
+RestartSec=15s
+
+[Install]
+WantedBy=default.target
