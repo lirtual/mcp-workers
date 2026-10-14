@@ -94,7 +94,7 @@ const emptyTrashTool = defineTool({
   ) => {
     const stats = await raindropService.getUserStats();
     const trashCount = stats?.trash;
-    if (!Number.isSafeInteger(trashCount) || trashCount < 0) {
+    if (typeof trashCount !== "number" || !Number.isSafeInteger(trashCount) || trashCount < 0) {
       throw new Error("Cannot verify trash count; deletion was not attempted.");
     }
     if (trashCount === 0) {
