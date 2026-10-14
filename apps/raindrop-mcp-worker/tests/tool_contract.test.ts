@@ -115,3 +115,51 @@ describe("collection_list over MCP tools/call", () => {
     }
   });
 });
+
+describe("destructive cleanup MCP tools/list and tools/call entry contract", () => {
+  it("exposes truthful annotations and rejects stale arguments before upstream deletion", async () => {
+    const service = new RaindropMCPService({ accessToken: "test-token" });
+    const trashDelete = vi.spyOn(service.raindropService, "emptyTrash");
+    const collectionDelete = vi.spyOn(service.raindropService, "removeEmptyCollections");
+    const duplicateDelete = vi.spyOn(
+      service.raindropService, "batchDeleteBookmarksInCollection",
+    );
+    const client = new Client({ name: "cleanup-protocol-regression", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    try {
+      await Promise.all([service.getServer().connect(serverTransport), client.connect(clientTransport)]);
+      const { tools } = await client.listTools();
+      for (const name of ["empty_trash", "cleanup_collections", "remove_duplicates"]) {
+        const tool = tools.find(entry => entry.name === name);
+        expect(tool?.annotations).toMatchObject({
+          readOnlyHint: false, destructiveHint: true,
+        });
+      }
+      for (const [name, args] of [
+        ["empty_trash", { confirm: false }],
+        ["empty_trash", { confirm: true }],
+        ["cleanup_collections", { confirm: true }],
+        ["cleanup_collections", { confirm: false }],
+        ["remove_duplicates", { dryRun: true }],
+        ["remove_duplicates", { dryRun: false }],
+        ["remove_duplicates", { unknown: 0 }],
+      ] as const) {
+        try {
+          const result = await client.callTool({ name, arguments: args });
+          expect(result.isError).toBe(true);
+        } catch (error) {
+          expect(error).toBeDefined();
+        }
+      }
+      expect(trashDelete).not.toHaveBeenCalled();
+      expect(collectionDelete).not.toHaveBeenCalled();
+      expect(duplicateDelete).not.toHaveBeenCalled();
+    } finally {
+      await client.close();
+      await service.cleanup();
+      trashDelete.mockRestore();
+      collectionDelete.mockRestore();
+      duplicateDelete.mockRestore();
+    }
+  });
+});
