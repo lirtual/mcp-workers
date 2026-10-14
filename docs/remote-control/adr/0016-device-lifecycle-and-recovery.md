@@ -20,6 +20,13 @@ Disconnections must not create implicit new execution intent, and a failed Cloud
 6. **Previously running commands on explicit revocation**: Q8 decides that ordinary **disconnection** does not stop a running process. It does **not** grant a remote guarantee of stopping processes upon explicit device revocation while the host is disconnected or compromised. Any cancellation policy and its achievable guarantees require separate validation; removal must always prevent *new* MCP dispatch first.
 7. **WSL2 lifecycle**: The Windows host's Cloudflare One Client may be available while the WSL2 environment or Linux Agent is stopped. MCP availability must reflect Agent reachability, not only host Mesh status. Automatic resumption after a full host reboot/WSL2 shutdown is an explicit feasibility and operator-permission gate, not an assumed capability.
 
+## Accepted clarification — Q11=A/Q12=A/Q13=A (2026-10-14)
+
+See [ADR-0017](./0017-multi-device-revocation-semantics-and-transport-gates.md):
+- **Q11=A** scopes automatic revocation to the permissions actually issued by the selected transport. Where no Cloudflare One/Mesh enrollment exists, there is no Cloudflare One registration to delete; the WS+DO device credential, attached socket and subsequent authorization must instead be revoked. Cloudflare clean-up/retry applies only when the device actually received a Cloudflare enrollment identity.
+- **Q12=A** requires the current production v1 fixed VPC Service and private Tunnel to remain unchanged during optional v2 work.
+- **Q13=A** resolves explicit revocation policy: deny new work first; if reachable, ask the Agent to stop its **owned managed sessions** on a best-effort basis, then report stop outcome and revoke its connection. Offline hosts can continue processes and must not be described as remotely terminated. This does not change Q8=A for an ordinary disconnection.
+
 ## Consequences and trade-offs
 
 - **Positive:** avoids unattended delivery of stale Shell operations; preserves current local receipt/no-blind-replay safety; owner can revoke devices promptly even when Cloudflare's management API is down.
