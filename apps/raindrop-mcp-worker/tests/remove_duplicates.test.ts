@@ -11,7 +11,7 @@ describe("remove_duplicates — direct execution and safe eligibility", () => {
   let service: {
     getBookmarks: ReturnType<typeof vi.fn>;
     getCollections: ReturnType<typeof vi.fn>;
-    getChildCollections: ReturnType<typeof vi.fn>;
+    getAllChildCollections: ReturnType<typeof vi.fn>;
     getBookmark: ReturnType<typeof vi.fn>;
     batchDeleteBookmarksInCollection: ReturnType<typeof vi.fn>;
   };
@@ -19,7 +19,7 @@ describe("remove_duplicates — direct execution and safe eligibility", () => {
     service = {
       getBookmarks: vi.fn(),
       getCollections: vi.fn().mockResolvedValue([{ _id: 123, title: "A" }]),
-      getChildCollections: vi.fn().mockResolvedValue([]),
+      getAllChildCollections: vi.fn().mockResolvedValue([]),
       getBookmark: vi.fn().mockImplementation(async (id: number) => verified(id)),
       batchDeleteBookmarksInCollection: vi.fn().mockResolvedValue(true),
     };
@@ -87,9 +87,7 @@ describe("remove_duplicates — direct execution and safe eligibility", () => {
   });
 
   it("scans nested child collections rather than only root collections", async () => {
-    service.getChildCollections.mockImplementation(async (id: number) =>
-      id === 123 ? [{ _id: 456, title: "Nested" }] : [],
-    );
+    service.getAllChildCollections.mockResolvedValueOnce([{ _id: 456, title: "Nested" }]);
     service.getBookmarks.mockImplementation(async (params: { collection?: number }) => {
       if (params.collection === undefined) return { count: 2, items: [] };
       if (params.collection === 456) return { count: 2, items: [{ _id: 88 }, { _id: 89 }] };
@@ -97,8 +95,7 @@ describe("remove_duplicates — direct execution and safe eligibility", () => {
     });
     const response = await tool.handler({}, ctx());
     expect(textOf(response)).toContain("Deleted 1 verified");
-    expect(service.getChildCollections).toHaveBeenCalledWith(123, undefined);
-    expect(service.getChildCollections).toHaveBeenCalledWith(456, undefined);
+    expect(service.getAllChildCollections).toHaveBeenCalledExactlyOnceWith(undefined);
     expect(service.batchDeleteBookmarksInCollection).toHaveBeenCalledWith(456, [89]);
   });
 
