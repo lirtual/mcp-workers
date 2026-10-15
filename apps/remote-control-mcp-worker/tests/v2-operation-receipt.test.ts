@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createAgentExecutionEngine } from "../../remote-control-agent/src/execution.ts";
-import { monitorDeviceSocket, executeV2FileOperation } from "../../remote-control-agent/src/v2-connection-lifecycle.ts";
+import { monitorDeviceSocket, executeV2FileOperation, executeV2SessionRead } from "../../remote-control-agent/src/v2-connection-lifecycle.ts";
 import worker, { V2OwnerCoordinator } from "../src/worker.ts";
 
 class Client extends EventTarget {
@@ -55,7 +55,8 @@ test("v2 write_file preserves Agent receipt idempotency per device; no v1 fallba
       queueMicrotask(() => { void owner.webSocketMessage(server, frame); });
     });
     const monitor = monitorDeviceSocket(client as unknown as WebSocket, stops[index]!.signal,
-      { intervalMs: 60_000, timeoutMs: 10_000 }, undefined,
+      { intervalMs: 60_000, timeoutMs: 10_000 },
+      (tool, args, signal) => executeV2SessionRead(execution, tool, args, signal),
       (tool, args, operationId, signal) =>
         executeV2FileOperation(execution, tool, args, operationId, signal), true);
     monitors.push(monitor);

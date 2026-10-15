@@ -11,6 +11,23 @@ import { SearchSessions } from "./search.ts";
 import { createAgentExecutionEngine, type AgentExecutionEngine } from "./execution.ts";
 import { parseStartProcess, parseListSessions, parseReadProcessOutput, parseInteractWithProcess, parseForceTerminate } from "./sessions.ts";
 
+/** One bounded Session read adapter, shared by the Agent and MCP/WSS tests. */
+export async function executeV2SessionRead(
+  execution: AgentExecutionEngine,
+  tool: string,
+  args: unknown,
+  signal: AbortSignal,
+): Promise<string | null> {
+  if (tool !== "list_sessions" && tool !== "read_process_output") return null;
+  try {
+    const answer = await execution.executeTool({ tool, arguments: args }, signal);
+    if (answer?.status !== 200) return null;
+    const body = answer.body as { result?: { content?: Array<{ text?: unknown }> } };
+    const text = body?.result?.content?.[0]?.text;
+    return typeof text === "string" && text.length <= 65_536 ? text : null;
+  } catch { return null; }
+}
+
 type V2FileOperation = "write_file" | "create_directory" | "edit_block" | "move_file" | "delete_file" | "start_process" | "interact_with_process" | "force_terminate" | "get_operation_status";
 
 /** One adapter shared by production and tests; no new mutation executor. */
@@ -286,11 +303,7 @@ export async function maintainAuthenticatedDeviceSession(
           (options.readOnly || options.shell) ? async (tool, args, requestSignal) => {
             if (tool === "list_sessions" || tool === "read_process_output") {
               if (!options.shell || !execution) return null;
-              const answer = await execution.executeTool({ tool, arguments: args }, requestSignal);
-              if (answer?.status !== 200) return null;
-              const body = answer.body as { result?: { content?: Array<{ text?: unknown }> } };
-              const text = body?.result?.content?.[0]?.text;
-              return typeof text === "string" && text.length <= 65_536 ? text : null;
+              return executeV2SessionRead(execution, tool, args, requestSignal);
             }
             if (!options.readOnly || !searches) return null;
             // Reuse the original bounded file/search engine.
