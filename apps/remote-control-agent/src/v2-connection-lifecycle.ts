@@ -6,9 +6,10 @@
  */
 import { DeviceSessionRejectedError, openAuthenticatedDeviceSocket } from "./v2-session-client.ts";
 import { executeReadTool } from "./read-execution.ts";
-import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId, parseLocalWriteFile, parseLocalCreateDirectory, parseLocalEditBlock, parseLocalMoveFile, parseLocalDeleteFile, parseStartProcess, parseOperationId } from "./local-read.ts";
+import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId, parseLocalWriteFile, parseLocalCreateDirectory, parseLocalEditBlock, parseLocalMoveFile, parseLocalDeleteFile, parseOperationId } from "./local-read.ts";
 import { SearchSessions } from "./search.ts";
 import { createAgentExecutionEngine, type AgentExecutionEngine } from "./execution.ts";
+import { parseStartProcess } from "./sessions.ts";
 
 type V2FileOperation = "write_file" | "create_directory" | "edit_block" | "move_file" | "delete_file" | "start_process" | "get_operation_status";
 
@@ -58,6 +59,7 @@ export function monitorDeviceSocket(
   },
   readOnly?: (tool: string, args: unknown, signal: AbortSignal) => Promise<string | null>,
   operation?: (tool: V2FileOperation, args: unknown, operationId: string, signal: AbortSignal) => Promise<Record<string, unknown> | null>,
+  allowShell = false,
 ): Promise<SocketEnd> {
   const authEvery = timing.authIntervalMs ?? AUTH_INTERVAL_MS;
   if (!Number.isFinite(timing.intervalMs) || timing.intervalMs <= 0 ||
@@ -168,7 +170,9 @@ export function monitorDeviceSocket(
           delete_file: parseLocalDeleteFile, start_process: parseStartProcess,
         };
         if (operation && request?.kind === "operation" && typeof request.tool === "string" &&
-            (request.tool === "get_operation_status" || Object.hasOwn(mutationParsers, request.tool)) &&
+            (request.tool === "get_operation_status" ||
+              (Object.hasOwn(mutationParsers, request.tool) &&
+                (request.tool !== "start_process" || allowShell))) &&
             typeof request.operation_id === "string" &&
             parseOperationId({ operation_id: request.operation_id }) &&
             typeof request.request_id === "string" &&
@@ -244,8 +248,9 @@ export async function maintainAuthenticatedDeviceSession(
     heartbeat?: { intervalMs: number; timeoutMs: number; authIntervalMs?: number };
     // Explicit opt-in for isolated T05 tests. Default remains authentication only.
     readOnly?: boolean;
-    // Explicit T07 file/command capability; disabled in the shipped entrypoint.
+    // Independent T07 capabilities. Both disabled in the shipped entrypoint.
     writeFile?: boolean;
+    shell?: boolean;
     wait?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
     onState?: (status: "connected" | "disconnected" | "rejected") => void;
   } = {},
@@ -259,7 +264,7 @@ export async function maintainAuthenticatedDeviceSession(
     }));
   // One receipt engine for the Agent lifetime, not one per reconnect. The
   // original local receipt store owns idempotency; DO never stores/replays it.
-  const execution = options.writeFile ? createAgentExecutionEngine() : undefined;
+  const execution = (options.writeFile || options.shell) ? createAgentExecutionEngine() : undefined;
   let failures = 0;
   try {
   while (!signal.aborted) {
@@ -282,7 +287,10 @@ export async function maintainAuthenticatedDeviceSession(
             return reply.kind === "completed" ? reply.text : null;
           } : undefined,
           execution ? (tool, args, operationId, requestSignal) =>
-            executeV2FileOperation(execution, tool, args, operationId, requestSignal) : undefined);
+            (tool === "start_process" ? options.shell : options.writeFile)
+              ? executeV2FileOperation(execution, tool, args, operationId, requestSignal)
+              : Promise.resolve({ operation_id: operationId, status: "unavailable" }) : undefined,
+          options.shell === true);
       } finally {
         await searches?.close();
       }
