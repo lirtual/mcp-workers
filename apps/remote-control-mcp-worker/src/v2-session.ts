@@ -246,3 +246,35 @@ export async function handleIdleSocketMessage(state: DurableObjectState, socket:
     try { socket.close(1011, "authorization unavailable"); } catch { /* socket already closed */ }
   }
 }
+
+/** Bounded, observational device status. No heartbeat, session mutation or secret disclosure. */
+export async function listApprovedDevices(state: DurableObjectState):
+  Promise<{ status: number; body: object }> {
+  const stored = await state.storage.list<V2Device>({ prefix: "device:", limit: 65 });
+  if (stored.size > 64) return { status: 503, body: { error: "capacity" } };
+  const devices: Array<{ device_id: string; name: string; status: "online" | "offline" }> = [];
+  for (const [key, device] of stored) {
+    if (!device || !isId(device.device_id) || key !== "device:" + device.device_id ||
+        device.revoked !== false || typeof device.name !== "string") continue;
+    let online = false;
+    // Socket attachments can survive DO Hibernation, while JS Map state cannot.
+    // A socket alone does not establish current authority: check its stored epoch.
+    const sockets = state.getWebSockets?.("device:" + device.device_id) ?? [];
+    if (sockets.length) {
+      const currentEpoch = await state.storage.get<string>("session:epoch:" + device.device_id);
+      for (const socket of sockets) {
+        try {
+          const attachment = socket.deserializeAttachment() as { device_id?: unknown; epoch?: unknown } | null;
+          if (currentEpoch && attachment?.device_id === device.device_id &&
+              attachment.epoch === currentEpoch) {
+            online = true;
+            break;
+          }
+        } catch { /* Corrupt or unavailable socket is never considered online. */ }
+      }
+    }
+    devices.push({ device_id: device.device_id, name: device.name, status: online ? "online" : "offline" });
+  }
+  devices.sort((a, b) => a.device_id.localeCompare(b.device_id));
+  return { status: 200, body: devices };
+}

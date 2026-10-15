@@ -12,7 +12,7 @@ const CHALLENGE_TTL_MS = 300_000;
 const CONFIRM_DOMAIN = "remote-control:v2:local-confirm:";
 const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 const te = new TextEncoder();
-import { issueSessionChallenge, authorizeSession, acceptAuthenticatedSocket, handleIdleSocketMessage } from "./v2-session.ts";
+import { issueSessionChallenge, authorizeSession, acceptAuthenticatedSocket, handleIdleSocketMessage, listApprovedDevices } from "./v2-session.ts";
 
 export interface PendingDevice {
   name: string;
@@ -275,6 +275,14 @@ export class V2OwnerCoordinator {
     }
     if (request.method !== "POST") return new Response(null, { status: 405 });
     const path = new URL(request.url).pathname;
+    if (path === "/devices") {
+      try {
+        if (request.headers.get("content-type") !== "application/json" ||
+            await request.text() !== "{}") return new Response(null, { status: 400 });
+        const output = await listApprovedDevices(this.state);
+        return Response.json(output.body, { status: output.status, headers: { "cache-control": "no-store" } });
+      } catch { return Response.json({ error: "unavailable" }, { status: 503 }); }
+    }
     if (!["/register", "/lookup", "/prepare", "/complete", "/session/challenge", "/session/recover"].includes(path)) return new Response(null, { status: 404 });
     let payload: unknown;
     try { payload = await limitedJson(request); } catch { return Response.json({ error: "invalid_request" }, { status: 400 }); }

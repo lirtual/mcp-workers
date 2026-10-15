@@ -7,6 +7,29 @@ function pendingOwner(env: Env): DurableObjectStub | null {
   return ns ? ns.get(ns.idFromName("single-owner-v2")) : null;
 }
 
+const LIST_DEVICES_TOOL = {
+  name: "list_devices",
+  title: "List paired v2 devices",
+  description: "List approved v2 device IDs, labels and observed WSS status. Does not authorize a device or execute a remote command.",
+  inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+} as const;
+
+async function listPairedDevices(env: Env, id: unknown, args: unknown): Promise<Response> {
+  if (!args || typeof args !== "object" || Array.isArray(args) || Object.keys(args).length !== 0) {
+    return toolError(id, "The device list request was rejected.");
+  }
+  const owner = pendingOwner(env);
+  if (!owner) return toolError(id, "Device listing is disabled.");
+  try {
+    const response = await owner.fetch("https://v2.internal/devices", {
+      method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+    });
+    if (!response.ok) return toolError(id, "Device listing is unavailable.");
+    return toolText(id, JSON.stringify(await response.json()));
+  } catch { return toolError(id, "Device listing is unavailable."); }
+}
+
 const PAIRING_PREPARE_TOOL = {
   name: "pairing_prepare",
   title: "Prepare new device terminal confirmation",
@@ -947,7 +970,7 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
   }
 
   if (rpcMessage.method === "tools/list") {
-    return rpc(rpcMessage.id, { tools: pendingOwner(env) ? [...LOCAL_TOOLS, PAIRING_LOOKUP_TOOL, PAIRING_PREPARE_TOOL] : LOCAL_TOOLS });
+    return rpc(rpcMessage.id, { tools: pendingOwner(env) ? [...LOCAL_TOOLS, PAIRING_LOOKUP_TOOL, PAIRING_PREPARE_TOOL, LIST_DEVICES_TOOL] : LOCAL_TOOLS });
   }
 
   if (rpcMessage.method === "tools/call") {
@@ -957,6 +980,9 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
       return toolError(rpcMessage.id, "The requested tool call was rejected.");
     }
     const call = params as { name?: unknown; arguments?: unknown };
+    if (call.name === "list_devices" && pendingOwner(env)) {
+      return listPairedDevices(env, rpcMessage.id, call.arguments ?? {});
+    }
     if (call.name === "pairing_prepare" && pendingOwner(env)) {
       return prepareLocalDevice(env, rpcMessage.id, call.arguments);
     }
