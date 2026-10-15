@@ -13,7 +13,7 @@ const CONFIRM_DOMAIN = "remote-control:v2:local-confirm:";
 const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 const te = new TextEncoder();
 import { issueSessionChallenge, authorizeSession, acceptAuthenticatedSocket, handleIdleSocketMessage, listApprovedDevices, type V2Device } from "./v2-session.ts";
-import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo } from "./local-read.ts";
+import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId } from "./local-read.ts";
 
 export interface PendingDevice {
   name: string;
@@ -274,6 +274,8 @@ export class V2OwnerCoordinator {
     const parsers: Record<string, (args: unknown) => unknown> = {
       read_file: parseLocalRead, read_multiple_files: parseReadMultiple,
       list_directory: parseListDirectory, get_file_info: parseFileInfo,
+      start_search: parseSearchStart, get_more_search_results: parseSearchSessionId,
+      stop_search: parseSearchSessionId,
     };
     if (Object.keys(arg).length !== 3 || typeof arg.tool !== "string" ||
         !Object.hasOwn(parsers, arg.tool) ||

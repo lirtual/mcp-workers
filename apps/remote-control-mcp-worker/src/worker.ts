@@ -7,8 +7,8 @@ function pendingOwner(env: Env): DurableObjectStub | null {
   return ns ? ns.get(ns.idFromName("single-owner-v2")) : null;
 }
 
-const V2_READ_TOOLS = new Set(["read_file", "read_files", "list_directory", "stat_file"]);
-const V2_AGENT_READ_TOOLS = new Set(["read_file", "read_multiple_files", "list_directory", "get_file_info"]);
+const V2_READ_TOOLS = new Set(["read_file", "read_files", "list_directory", "stat_file", "search_files", "search_next", "stop_search"]);
+const V2_AGENT_READ_TOOLS = new Set(["read_file", "read_multiple_files", "list_directory", "get_file_info", "start_search", "get_more_search_results", "stop_search"]);
 
 async function callPairedDeviceRead(env: Env, id: unknown, name: string, args: unknown): Promise<Response> {
   if (!args || typeof args !== "object" || Array.isArray(args)) {
@@ -303,6 +303,7 @@ const START_SEARCH_TOOL = {
   inputSchema: {
     type: "object",
     properties: {
+      device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." },
       path: { type: "string", description: "Local directory path to search. URL schemes are rejected." },
       pattern: { type: "string", minLength: 1, maxLength: 256, description: "Literal case-sensitive substring." },
       search_type: { type: "string", enum: ["filename", "content"] },
@@ -324,7 +325,10 @@ const GET_MORE_SEARCH_RESULTS_TOOL = {
   description: "Fetch the next fixed-size page from an active local search session.",
   inputSchema: {
     type: "object",
-    properties: { session_id: { type: "string", format: "uuid" } },
+    properties: {
+      device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." },
+      session_id: { type: "string", format: "uuid" },
+    },
     required: ["session_id"],
     additionalProperties: false,
   },
@@ -342,7 +346,10 @@ const STOP_SEARCH_TOOL = {
   description: "Stop an active local search and release its traversal resources.",
   inputSchema: {
     type: "object",
-    properties: { session_id: { type: "string", format: "uuid" } },
+    properties: {
+      device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." },
+      session_id: { type: "string", format: "uuid" },
+    },
     required: ["session_id"],
     additionalProperties: false,
   },

@@ -7,7 +7,7 @@
  */
 import { DeviceSessionRejectedError, openAuthenticatedDeviceSocket } from "./v2-session-client.ts";
 import { executeReadTool } from "./read-execution.ts";
-import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo } from "./local-read.ts";
+import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId } from "./local-read.ts";
 import { SearchSessions } from "./search.ts";
 
 export type SocketEnd = "aborted" | "closed" | "offline" | "policy";
@@ -97,6 +97,8 @@ export function monitorDeviceSocket(
         const readParsers: Record<string, (args: unknown) => unknown> = {
           read_file: parseLocalRead, read_multiple_files: parseReadMultiple,
           list_directory: parseListDirectory, get_file_info: parseFileInfo,
+          start_search: parseSearchStart, get_more_search_results: parseSearchSessionId,
+          stop_search: parseSearchSessionId,
         };
         if (request?.kind === "read" && typeof request.tool === "string" &&
             Object.hasOwn(readParsers, request.tool) &&
@@ -189,15 +191,20 @@ export async function maintainAuthenticatedDeviceSession(
       if (signal.aborted) { connection.socket.close(); break; }
       const connectedAt = performance.now();
       options.onState?.("connected");
-      const outcome = await monitorDeviceSocket(connection.socket, signal, options.heartbeat,
-        options.readOnly ? async (tool, args, requestSignal) => {
-          const searches = new SearchSessions();
-          try {
-            // Reuse the existing v1 validated read engine, never the Shell/mutation dispatcher.
+      // Search cursors are scoped to one authenticated WSS incarnation.
+      // Reconnect never inherits a stale/other-device cursor or replays a call.
+      const searches = options.readOnly ? new SearchSessions() : undefined;
+      let outcome: SocketEnd;
+      try {
+        outcome = await monitorDeviceSocket(connection.socket, signal, options.heartbeat,
+          searches ? async (tool, args, requestSignal) => {
+            // Reuse the v1 read-only engine, not any file-write/Shell dispatcher.
             const reply = await executeReadTool(tool, args, searches, requestSignal);
             return reply.kind === "completed" ? reply.text : null;
-          } finally { await searches.close(); }
-        } : undefined);
+          } : undefined);
+      } finally {
+        await searches?.close();
+      }
       if (outcome === "aborted" || outcome === "closed") return;
       if (outcome === "policy") { options.onState?.("rejected"); return; }
       // Opening a socket is not evidence of stability. If an Agent loops

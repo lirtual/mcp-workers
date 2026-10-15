@@ -27,6 +27,8 @@ test("MCP read_file with explicit device_id routes through DO WSS only to the ap
   const dir = await mkdtemp(path.join(os.tmpdir(), "remote-v2-dispatch-"));
   const file = path.join(dir, "marker.txt");
   await writeFile(file, "private-A-marker\n", { mode: 0o600 });
+  await Promise.all(Array.from({ length: 45 }, (_, i) =>
+    writeFile(path.join(dir, `walk-${i.toString().padStart(2, "0")}.txt`), "match", { mode: 0o600 })));
   const a = randomUUID(), b = randomUUID(), unknown = randomUUID();
   const rows = new Map<string, unknown>([
     ["device:" + a, { device_id: a, name: "a", revoked: false }],
@@ -122,6 +124,27 @@ test("MCP read_file with explicit device_id routes through DO WSS only to the ap
     assert.match(onDeviceB.body, /size/);
     assert.deepEqual(fromServer, [a,a,a,a,b]);
     assert.deepEqual(sentToServer, [a,a,a,a,b]);
+    const search = await callTool("search_files", {
+      device_id: a, path: dir, pattern: "walk-", search_type: "filename",
+    });
+    assert.equal(search.http, 200);
+    const searchData = JSON.parse(JSON.parse(search.body).result.content[0].text) as {
+      session_id?: string; has_more: boolean; results: unknown[];
+    };
+    assert.equal(searchData.has_more, true);
+    assert.equal(searchData.results.length, 20);
+    assert.match(searchData.session_id!, /^[0-9a-f-]{36}$/);
+    const wrongNext = await callTool("search_next", { device_id: b, session_id: searchData.session_id });
+    assert.match(wrongNext.body, /unavailable|failed|rejected/);
+    assert.doesNotMatch(wrongNext.body, /walk-/);
+    const next = await callTool("search_next", { device_id: a, session_id: searchData.session_id });
+    const nextData = JSON.parse(JSON.parse(next.body).result.content[0].text) as { results: unknown[]; has_more: boolean };
+    assert.equal(nextData.results.length, 20);
+    assert.equal(nextData.has_more, true);
+    const stopped = await callTool("stop_search", { device_id: a, session_id: searchData.session_id });
+    assert.match(stopped.body, /stopped/);
+    assert.deepEqual(fromServer, [a,a,a,a,b,a,b,a,a]);
+    assert.deepEqual(sentToServer, [a,a,a,a,b,a,b,a,a]);
     const badPath = await callTool("read_files", { device_id: a, paths: ["https://example.invalid/"] });
     assert.match(badPath.body, /rejected/);
     const badDepth = await callTool("list_directory", { device_id: a, path: dir, depth: 100 });
@@ -134,7 +157,7 @@ test("MCP read_file with explicit device_id routes through DO WSS only to the ap
     const invalid = await call("../b");
     assert.match(invalid.body, /valid device_id/);
     assert.equal(legacyCalls, 0);
-    assert.equal(fromServer.length, 5, "bad arguments and unknown targets must not reach any Agent");
+    assert.equal(fromServer.length, 9, "bad arguments and unknown targets must not reach any Agent");
   } finally {
     controllers.forEach(c => c.abort());
     await Promise.all(monitors);
