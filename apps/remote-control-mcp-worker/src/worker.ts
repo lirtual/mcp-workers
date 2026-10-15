@@ -1000,14 +1000,32 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-    if ((url.pathname === "/agent/pair/start" || url.pathname === "/agent/pair/complete") && pendingOwner(env)) {
+    if (url.pathname.startsWith("/agent/connect/") && pendingOwner(env)) {
+      const deviceId = url.pathname.slice("/agent/connect/".length);
+      if (request.method !== "GET" || !/^[a-f0-9-]{36}$/.test(deviceId) ||
+          url.search || request.headers.has("origin") ||
+          request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
+        return jsonError(400, "bad_request", "The request was rejected.");
+      }
+      const protocols = request.headers.get("sec-websocket-protocol");
+      if (!protocols || protocols.length > 256) return jsonError(401, "unauthorized", "Invalid session proof.");
+      try {
+        return await pendingOwner(env)!.fetch("https://v2.internal/ws/" + deviceId, {
+          headers: { upgrade: "websocket", "sec-websocket-protocol": protocols },
+        });
+      } catch { return jsonError(503, "unavailable", "Device session is unavailable."); }
+    }
+    if ((url.pathname === "/agent/pair/start" || url.pathname === "/agent/pair/complete" ||
+         url.pathname === "/agent/session/challenge" || url.pathname === "/agent/session/recover") && pendingOwner(env)) {
       if (request.method !== "POST" || request.headers.has("origin")) {
         return jsonError(405, "method_not_allowed", "The request was rejected.");
       }
       try {
         const raw = await readBounded(request, 4096);
         if (raw === null) return jsonError(400, "bad_request", "The request was rejected.");
-        return await pendingOwner(env)!.fetch(url.pathname === "/agent/pair/complete" ? "https://v2.internal/complete" : "https://v2.internal/register", {
+        return await pendingOwner(env)!.fetch(url.pathname === "/agent/pair/complete" ? "https://v2.internal/complete" :
+          url.pathname === "/agent/session/challenge" ? "https://v2.internal/session/challenge" :
+          url.pathname === "/agent/session/recover" ? "https://v2.internal/session/recover" : "https://v2.internal/register", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: raw,

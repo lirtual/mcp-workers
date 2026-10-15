@@ -12,6 +12,7 @@ const CHALLENGE_TTL_MS = 300_000;
 const CONFIRM_DOMAIN = "remote-control:v2:local-confirm:";
 const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 const te = new TextEncoder();
+import { issueSessionChallenge, authorizeSession, acceptAuthenticatedSocket, handleIdleSocketMessage } from "./v2-session.ts";
 
 export interface PendingDevice {
   name: string;
@@ -251,15 +252,23 @@ async function limitedJson(request: Request): Promise<unknown> {
 export class V2OwnerCoordinator {
   private readonly state: DurableObjectState;
   constructor(state: DurableObjectState) { this.state = state; }
+  async webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    await handleIdleSocketMessage(this.state, socket, message);
+  }
   async fetch(request: Request): Promise<Response> {
+    if (new URL(request.url).pathname.startsWith("/ws/")) {
+      return acceptAuthenticatedSocket(this.state.storage, this.state, request);
+    }
     if (request.method !== "POST") return new Response(null, { status: 405 });
     const path = new URL(request.url).pathname;
-    if (!["/register", "/lookup", "/prepare", "/complete"].includes(path)) return new Response(null, { status: 404 });
+    if (!["/register", "/lookup", "/prepare", "/complete", "/session/challenge", "/session/recover"].includes(path)) return new Response(null, { status: 404 });
     let payload: unknown;
     try { payload = await limitedJson(request); } catch { return Response.json({ error: "invalid_request" }, { status: 400 }); }
     try {
       let output: { status: number; body: object };
-      if (path === "/register") output = await registerPending(this.state.storage, payload);
+      if (path === "/session/challenge") output = await issueSessionChallenge(this.state.storage, payload);
+      else if (path === "/session/recover") output = await authorizeSession(this.state.storage, payload);
+      else if (path === "/register") output = await registerPending(this.state.storage, payload);
       else if (path === "/lookup") output = await lookupPending(
         this.state.storage, (payload as { verifier?: unknown })?.verifier as string,
       );
