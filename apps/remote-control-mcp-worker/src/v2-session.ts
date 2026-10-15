@@ -180,8 +180,10 @@ export async function handleIdleSocketMessage(state: DurableObjectState, socket:
   // Unlike the automatic ping/pong, this intentionally wakes the DO and
   // rechecks persisted device approval + session epoch. A stale/revoked socket
   // therefore loses authority even when its earlier close frame was delayed.
-  if (message === "rc-v2:auth") {
-    socket.send("rc-v2:auth-ok");
+  if (typeof message === "string" && /^rc-v2:auth:[a-f0-9]{32}$/.test(message)) {
+    // Correlate to this exact authorization check; delayed ACKs cannot be
+    // reused for a subsequent check on the same WebSocket.
+    socket.send("rc-v2:auth-ok:" + message.slice("rc-v2:auth:".length));
     return;
   }
   socket.close(1008, "no remote operations enabled");
