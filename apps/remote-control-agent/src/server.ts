@@ -2,24 +2,13 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { appendFile, link, lstat, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import path from "node:path";
-import { listLocalDirectory, readLocalFileInfo, readMultipleLocalFiles, BrowseFailed } from "./browse.ts";
 import {
-  parseFileInfo,
-  parseListDirectory,
-  parseLocalRead,
-  parseReadMultiple,
-  parseSearchSessionId,
-  parseSearchStart,
-  parseLocalWriteFile,
-  parseLocalCreateDirectory,
-  parseLocalEditBlock,
-  parseLocalMoveFile,
-  parseLocalDeleteFile,
-  parseOperationId,
+  parseLocalWriteFile, parseLocalCreateDirectory, parseLocalEditBlock,
+  parseLocalMoveFile, parseLocalDeleteFile, parseOperationId,
 } from "./local-read.ts";
 import { operationDigest, ReceiptStore, type OperationReceipt } from "./operations.ts";
-import { readLocalFile, ReadFailed } from "./read-file.ts";
-import { SearchFailed, SearchSessions } from "./search.ts";
+import { executeReadTool } from "./read-execution.ts";
+import { SearchSessions } from "./search.ts";
 import {
   ManagedSessions,
   parseForceTerminate,
@@ -155,97 +144,6 @@ function operationId(pathname: string): string | null {
   try { id = decodeURIComponent(pathname.slice(prefix.length)); } catch { return null; }
   if (!/^(?!\.{1,2}$)[A-Za-z0-9._:-]{1,128}$/.test(id)) return null;
   return id;
-}
-
-type ToolOutcome =
-  | { kind: "rejected"; message: string }
-  | {
-      kind: "failed";
-      event: "read_failed" | "list_failed" | "info_failed" | "search_failed";
-      code: "bad_request" | "failed" | "not_found" | "conflict";
-      message: string;
-    }
-  | { kind: "unavailable" }
-  | {
-      kind: "completed";
-      event: "read_completed" | "list_completed" | "info_completed" | "search_completed" | "search_stopped";
-      text: string;
-    };
-
-async function runTool(
-  tool: unknown,
-  args: unknown,
-  searches: SearchSessions,
-  requestSignal: AbortSignal,
-  log: AgentLog | undefined,
-): Promise<ToolOutcome> {
-  try {
-    if (tool === "read_file") {
-      const read = parseLocalRead(args);
-      if (!read) return { kind: "rejected", message: "The requested tool call was rejected." };
-      return { kind: "completed", event: "read_completed", text: await readLocalFile(read) };
-    }
-    if (tool === "read_multiple_files") {
-      const read = parseReadMultiple(args);
-      if (!read) return { kind: "rejected", message: "The requested tool call was rejected." };
-      return { kind: "completed", event: "read_completed", text: await readMultipleLocalFiles(read) };
-    }
-    if (tool === "list_directory") {
-      const list = parseListDirectory(args);
-      if (!list) return { kind: "rejected", message: "The requested tool call was rejected." };
-      return { kind: "completed", event: "list_completed", text: await listLocalDirectory(list) };
-    }
-    if (tool === "get_file_info") {
-      const info = parseFileInfo(args);
-      if (!info) return { kind: "rejected", message: "The requested tool call was rejected." };
-      return { kind: "completed", event: "info_completed", text: await readLocalFileInfo(info) };
-    }
-    if (tool === "start_search") {
-      const search = parseSearchStart(args);
-      if (!search) return { kind: "rejected", message: "The requested tool call was rejected." };
-      emit(log, "search_started");
-      return {
-        kind: "completed",
-        event: "search_completed",
-        text: JSON.stringify(await searches.start(search, requestSignal)),
-      };
-    }
-    if (tool === "get_more_search_results" || tool === "stop_search") {
-      const session = parseSearchSessionId(args);
-      if (!session) return { kind: "rejected", message: "The requested tool call was rejected." };
-      const result =
-        tool === "get_more_search_results"
-          ? await searches.more(session.sessionId, requestSignal)
-          : await searches.stop(session.sessionId);
-      return {
-        kind: "completed",
-        event: tool === "stop_search" ? "search_stopped" : "search_completed",
-        text: JSON.stringify(result),
-      };
-    }
-    return { kind: "rejected", message: "The requested tool is not available." };
-  } catch (error) {
-    if (error instanceof ReadFailed) {
-      return { kind: "failed", event: "read_failed", code: "bad_request", message: "The file read failed." };
-    }
-    if (error instanceof BrowseFailed) {
-      const event = error.message.startsWith("The directory")
-        ? "list_failed"
-        : error.message.startsWith("The file info")
-          ? "info_failed"
-          : "read_failed";
-      return { kind: "failed", event, code: "bad_request", message: error.message };
-    }
-    if (error instanceof SearchFailed) {
-      return {
-        kind: "failed",
-        event: "search_failed",
-        code: error.code,
-        message: "The local search request could not be completed.",
-      };
-    }
-    return { kind: "unavailable" };
-  }
 }
 
 export async function startAgent(options: StartAgentOptions): Promise<RunningAgent> {
@@ -742,7 +640,9 @@ export async function startAgent(options: StartAgentOptions): Promise<RunningAge
         sendJson(response, 200, { status: "completed", result: { content: [{ type: "text", text: JSON.stringify(page) }] } });
         return;
       }
-      const outcome = await runTool(body.tool, body.arguments, searches, requestAbort.signal, log);
+      const outcome = await executeReadTool(
+        body.tool, body.arguments, searches, requestAbort.signal, () => emit(log, "search_started"),
+      );
       if (requestAbort.signal.aborted) return;
       if (outcome.kind === "rejected") {
         emit(log, "rejected");
