@@ -575,3 +575,50 @@ test("disconnect aborts in-flight read-only work without aborting the long-lived
   assert.equal(readSignal?.aborted, true, "the orphaned read must be cancelled on socket close");
   assert.equal(session.signal.aborted, false, "reconnect controller must remain reusable");
 });
+
+test("a signed-socket revocation closes policy after bounded owned-session cleanup ACK", async () => {
+  const socket = new FakeSocket();
+  const controller = new AbortController();
+  const requestId = randomUUID();
+  let cleaned = 0;
+  const monitor = monitorDeviceSocket(socket as unknown as WebSocket, controller.signal,
+    { intervalMs: 60_000, timeoutMs: 10_000 }, undefined, undefined, true,
+    async () => { cleaned++; return "confirmed"; });
+  socket.event("message", { data: JSON.stringify({
+    kind: "revoke_cleanup", request_id: requestId,
+  }) });
+  assert.equal(await monitor, "policy");
+  assert.equal(cleaned, 1);
+  assert.deepEqual(socket.sent.map(x => JSON.parse(x)), [{
+    kind: "revoke_cleanup_result", request_id: requestId, status: "confirmed",
+  }]);
+  assert.equal(controller.signal.aborted, false);
+  assert.equal(socket.closeCount, 1);
+
+  const withoutShell = new FakeSocket();
+  let unsupportedCalls = 0;
+  const noShell = monitorDeviceSocket(withoutShell as unknown as WebSocket,
+    new AbortController().signal, { intervalMs: 60_000, timeoutMs: 10_000 },
+    undefined, undefined, false, async () => { unsupportedCalls++; return "confirmed"; });
+  withoutShell.event("message", { data: JSON.stringify({
+    kind: "revoke_cleanup", request_id: randomUUID(),
+  }) });
+  assert.equal(await noShell, "policy");
+  assert.equal(unsupportedCalls, 0);
+  assert.deepEqual(withoutShell.sent, []);
+});
+
+test("revocation cleanup failure never acknowledges a confirmed stop", async () => {
+  const socket = new FakeSocket();
+  const requestId = randomUUID();
+  const task = monitorDeviceSocket(socket as unknown as WebSocket,
+    new AbortController().signal, { intervalMs: 60_000, timeoutMs: 10_000 },
+    undefined, undefined, true, async () => { throw new Error("stop unavailable"); });
+  socket.event("message", { data: JSON.stringify({
+    kind: "revoke_cleanup", request_id: requestId,
+  }) });
+  assert.equal(await task, "policy");
+  assert.deepEqual(socket.sent.map(x => JSON.parse(x)), [{
+    kind: "revoke_cleanup_result", request_id: requestId, status: "uncertain",
+  }]);
+});
