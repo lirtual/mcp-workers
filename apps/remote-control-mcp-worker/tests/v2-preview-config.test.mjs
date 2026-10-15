@@ -27,5 +27,9 @@ test("dedicated v2 preview cannot inherit the v1 VPC binding, token or DO namesp
   assert.ok(!("triggers" in preview));
   assert.equal(JSON.stringify(preview).includes("REMOTE_CONTROL_DEVICE_TOKEN"), false);
   assert.equal(JSON.stringify(preview).includes("REMOTE_CONTROL_DEVICE"), false);
+  const bootstrap = JSON.parse(await readFile(path.join(root, "wrangler.v2-preview-bootstrap.jsonc"), "utf8"));
+  const { secrets: _requiredPreviewSecret, ...releaseSettings } = preview;
+  assert.deepEqual(bootstrap, releaseSettings, "bootstrap differs only by omission of the required secret declaration");
+  assert.equal("secrets" in bootstrap, false);
   assert.ok(production.includes('"name": "remote-control-mcp-worker"'), "production configuration must remain independent");
 });
