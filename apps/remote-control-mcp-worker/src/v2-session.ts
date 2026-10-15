@@ -185,30 +185,56 @@ export async function acceptAuthenticatedSocket(
   } });
 }
 
+const AUTH_PROBE = /^rc-v2:auth:([a-f0-9]{32})$/;
+const AUTH_PROBE_MIN_INTERVAL_MS = 30_000;
+
 export async function handleIdleSocketMessage(state: DurableObjectState, socket: WebSocket, message: string | ArrayBuffer):
   Promise<void> {
-  // T04 has NO tool execution capability. Even authenticated sockets never dispatch commands.
-  const attachment = socket.deserializeAttachment() as { device_id?: unknown; epoch?: unknown } | null;
+  // T04 has NO remote tool execution capability. Reject binary/unknown frames
+  // *before* deserializing state or paying for durable device/epoch reads.
+  const probe = typeof message === "string" ? AUTH_PROBE.exec(message) : null;
+  if (!probe) {
+    socket.close(1008, "no remote operations enabled");
+    return;
+  }
+  let attachment: { device_id?: unknown; epoch?: unknown; last_auth_check_at?: unknown } | null;
+  try {
+    attachment = socket.deserializeAttachment() as typeof attachment;
+  } catch {
+    try { socket.close(1011, "authorization unavailable"); } catch { /* already closed */ }
+    return;
+  }
   if (!attachment || !isId(attachment.device_id) || typeof attachment.epoch !== "string") {
     socket.close(1008, "invalid session");
     return;
   }
-  const [device, epoch] = await Promise.all([
-    state.storage.get<V2Device>("device:" + attachment.device_id),
-    state.storage.get<string>("session:epoch:" + attachment.device_id),
-  ]);
-  if (!device || device.revoked !== false || epoch !== attachment.epoch) {
-    socket.close(1008, "revoked");
+  // The Agent sends an authorization probe every 15 minutes. Persist a tiny
+  // per-socket rate gate in the Hibernation attachment so a compromised Agent
+  // cannot repeatedly wake the DO and charge storage reads on every message.
+  // Record before yielding for storage I/O to also reject concurrent probes.
+  const now = Date.now();
+  if (typeof attachment.last_auth_check_at === "number" &&
+      now - attachment.last_auth_check_at < AUTH_PROBE_MIN_INTERVAL_MS) {
+    socket.close(1008, "authorization rate limited");
     return;
   }
-  // Unlike the automatic ping/pong, this intentionally wakes the DO and
-  // rechecks persisted device approval + session epoch. A stale/revoked socket
-  // therefore loses authority even when its earlier close frame was delayed.
-  if (typeof message === "string" && /^rc-v2:auth:[a-f0-9]{32}$/.test(message)) {
-    // Correlate to this exact authorization check; delayed ACKs cannot be
-    // reused for a subsequent check on the same WebSocket.
-    socket.send("rc-v2:auth-ok:" + message.slice("rc-v2:auth:".length));
-    return;
+  try {
+    socket.serializeAttachment({ ...attachment, last_auth_check_at: now });
+    const [device, epoch] = await Promise.all([
+      state.storage.get<V2Device>("device:" + attachment.device_id),
+      state.storage.get<string>("session:epoch:" + attachment.device_id),
+    ]);
+    if (!device || device.revoked !== false || epoch !== attachment.epoch) {
+      socket.close(1008, "revoked");
+      return;
+    }
+    // Transport pongs are not authorization. Only a persisted current device
+    // and current session epoch can answer this specifically tagged probe.
+    socket.send("rc-v2:auth-ok:" + probe[1]);
+  } catch {
+    // Temporary storage/socket failure is NOT a successful authorization.
+    // 1011 permits the Agent's bounded fresh-nonce recovery, unlike a
+    // permanent 1008 policy rejection. Never expose internal error details.
+    try { socket.close(1011, "authorization unavailable"); } catch { /* socket already closed */ }
   }
-  socket.close(1008, "no remote operations enabled");
 }
