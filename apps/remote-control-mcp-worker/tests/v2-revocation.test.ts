@@ -186,3 +186,45 @@ test("revocation cancels an in-flight A request before closing A, without cancel
   assert.equal((await read(f.a)).status, 503);
   assert.equal(pendingIds.has(f.a), true);
 });
+
+test("confirmed cleanup ACK requires durable tombstone and exact active-epoch socket", async () => {
+  const f = setup();
+  let checkedTombstone = false;
+  const matching = {
+    readyState: WebSocket.OPEN,
+    deserializeAttachment: () => ({ device_id: f.a, epoch: "epoch-a" }),
+    send(frame: string) {
+      const msg = JSON.parse(frame) as { kind: string; request_id: string };
+      assert.equal(msg.kind, "revoke_cleanup");
+      checkedTombstone = (f.entries.get("device:" + f.a) as V2Device).revoked === true &&
+        !f.entries.has("session:epoch:" + f.a);
+      queueMicrotask(() => { void f.owner.webSocketMessage(matching as unknown as WebSocket,
+        JSON.stringify({ kind: "revoke_cleanup_result", request_id: msg.request_id, status: "confirmed" })); });
+    },
+    close(code: number, reason: string) {
+      f.closes.set(f.a, [{ code, reason }]);
+    },
+  } as unknown as WebSocket;
+  f.sockets.set("device:" + f.a, [matching]);
+  const res = await f.call("revoke_device", { device_id: f.a });
+  assert.equal(res.json.result.isError, false);
+  assert.equal(checkedTombstone, true);
+  assert.equal(JSON.parse(res.json.result.content[0]!.text).process_cleanup, "confirmed");
+  assert.deepEqual(f.closes.get(f.a), [{ code: 1008, reason: "revoked" }]);
+  assert.equal(f.closes.has(f.b), false);
+});
+
+test("stale-epoch socket may not receive the privileged cleanup frame", async () => {
+  const f = setup();
+  let messages = 0;
+  const stale = {
+    readyState: WebSocket.OPEN,
+    deserializeAttachment: () => ({ device_id: f.a, epoch: "stale-epoch" }),
+    send() { messages++; },
+    close() { /* revoked */ },
+  } as unknown as WebSocket;
+  f.sockets.set("device:" + f.a, [stale]);
+  const res = await f.call("revoke_device", { device_id: f.a });
+  assert.equal(JSON.parse(res.json.result.content[0]!.text).process_cleanup, "unconfirmed");
+  assert.equal(messages, 0);
+});
