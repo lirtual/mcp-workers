@@ -170,6 +170,22 @@ test("v2 write_file preserves Agent receipt idempotency per device; no v1 fallba
     assert.equal(sessionReceipt.receipt.session_id, launched.session_id);
     const missingShellId = await call("run_command", { device_id: a, command: "date" });
     assert.equal(missingShellId.data.result?.isError, true);
+    const listedA = JSON.parse((await call("list_sessions", { device_id: a })).content) as
+      Array<{ session_id: string }>;
+    assert.ok(listedA.some(x => x.session_id === launched.session_id));
+    const listedB = JSON.parse((await call("list_sessions", { device_id: b })).content) as
+      Array<{ session_id: string }>;
+    assert.ok(!listedB.some(x => x.session_id === launched.session_id));
+    const outputA = JSON.parse((await call("read_session_output", {
+      device_id: a, session_id: launched.session_id, offset: 0, length: 1024,
+    })).content) as { session_id: string; output: string; next_offset: number };
+    assert.equal(outputA.session_id, launched.session_id);
+    assert.match(outputA.output, /mcp-v2-session-A/);
+    assert.ok(outputA.next_offset > 0);
+    const outputB = await call("read_session_output", {
+      device_id: b, session_id: launched.session_id,
+    });
+    assert.equal(outputB.data.result?.isError, true);
     assert.equal(legacy, 0);
   } finally {
     stops.forEach(stop => stop.abort());

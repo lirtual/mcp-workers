@@ -7,8 +7,8 @@ function pendingOwner(env: Env): DurableObjectStub | null {
   return ns ? ns.get(ns.idFromName("single-owner-v2")) : null;
 }
 
-const V2_READ_TOOLS = new Set(["read_file", "read_files", "list_directory", "stat_file", "search_files", "search_next", "stop_search"]);
-const V2_AGENT_READ_TOOLS = new Set(["read_file", "read_multiple_files", "list_directory", "get_file_info", "start_search", "get_more_search_results", "stop_search"]);
+const V2_READ_TOOLS = new Set(["read_file", "read_files", "list_directory", "stat_file", "search_files", "search_next", "stop_search", "list_sessions", "read_session_output"]);
+const V2_AGENT_READ_TOOLS = new Set(["read_file", "read_multiple_files", "list_directory", "get_file_info", "start_search", "get_more_search_results", "stop_search", "list_sessions", "read_process_output"]);
 
 async function callPairedDeviceRead(env: Env, id: unknown, name: string, args: unknown): Promise<Response> {
   if (!args || typeof args !== "object" || Array.isArray(args)) {
@@ -511,14 +511,14 @@ const START_PROCESS_TOOL = {
 const LIST_SESSIONS_TOOL = {
   name: "list_sessions", title: "List managed sessions",
   description: "List only development command sessions started and tracked by this Agent. Completed sessions are retained for a bounded period.",
-  inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." } }, additionalProperties: false },
   annotations: { title: "List managed sessions", readOnlyHint: true, destructiveHint: false, openWorldHint: false },
 } as const;
 
 const READ_PROCESS_OUTPUT_TOOL = {
   name: "read_session_output", title: "Read managed session output",
   description: "Read a bounded byte page from a session started by this Agent. Includes session state, next offset, truncation, and EOF. Stale or unknown session IDs are rejected.",
-  inputSchema: { type: "object", properties: { session_id: { type: "string", format: "uuid" }, offset: { type: "integer", minimum: 0, maximum: 262144 }, length: { type: "integer", minimum: 1, maximum: 65536 } }, required: ["session_id"], additionalProperties: false },
+  inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." }, session_id: { type: "string", format: "uuid" }, offset: { type: "integer", minimum: 0, maximum: 262144 }, length: { type: "integer", minimum: 1, maximum: 65536 } }, required: ["session_id"], additionalProperties: false },
   annotations: { title: "Read managed session output", readOnlyHint: true, destructiveHint: false, openWorldHint: false },
 } as const;
 

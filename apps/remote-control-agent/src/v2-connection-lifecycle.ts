@@ -9,7 +9,7 @@ import { executeReadTool } from "./read-execution.ts";
 import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId, parseLocalWriteFile, parseLocalCreateDirectory, parseLocalEditBlock, parseLocalMoveFile, parseLocalDeleteFile, parseOperationId } from "./local-read.ts";
 import { SearchSessions } from "./search.ts";
 import { createAgentExecutionEngine, type AgentExecutionEngine } from "./execution.ts";
-import { parseStartProcess } from "./sessions.ts";
+import { parseStartProcess, parseListSessions, parseReadProcessOutput } from "./sessions.ts";
 
 type V2FileOperation = "write_file" | "create_directory" | "edit_block" | "move_file" | "delete_file" | "start_process" | "get_operation_status";
 
@@ -137,6 +137,7 @@ export function monitorDeviceSocket(
           list_directory: parseListDirectory, get_file_info: parseFileInfo,
           start_search: parseSearchStart, get_more_search_results: parseSearchSessionId,
           stop_search: parseSearchSessionId,
+          list_sessions: parseListSessions, read_process_output: parseReadProcessOutput,
         };
         if (readOnly && request?.kind === "read" && typeof request.tool === "string" &&
             Object.hasOwn(readParsers, request.tool) &&
@@ -281,8 +282,17 @@ export async function maintainAuthenticatedDeviceSession(
       let outcome: SocketEnd;
       try {
         outcome = await monitorDeviceSocket(connection.socket, signal, options.heartbeat,
-          searches ? async (tool, args, requestSignal) => {
-            // Reuse the v1 read-only engine, not any file-write/Shell dispatcher.
+          (options.readOnly || options.shell) ? async (tool, args, requestSignal) => {
+            if (tool === "list_sessions" || tool === "read_process_output") {
+              if (!options.shell || !execution) return null;
+              const answer = await execution.executeTool({ tool, arguments: args }, requestSignal);
+              if (answer?.status !== 200) return null;
+              const body = answer.body as { result?: { content?: Array<{ text?: unknown }> } };
+              const text = body?.result?.content?.[0]?.text;
+              return typeof text === "string" && text.length <= 65_536 ? text : null;
+            }
+            if (!options.readOnly || !searches) return null;
+            // Reuse the original bounded file/search engine.
             const reply = await executeReadTool(tool, args, searches, requestSignal);
             return reply.kind === "completed" ? reply.text : null;
           } : undefined,
