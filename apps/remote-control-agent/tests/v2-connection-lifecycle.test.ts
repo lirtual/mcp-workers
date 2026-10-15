@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -404,5 +404,112 @@ test("a genuinely stable session resets the retry backoff to enable fast recover
     });
     assert.equal(handshakes, 4);
     assert.deepEqual(waits, [1000, 1000, 2000, 4000]);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+
+test("stopping Agent cancels an in-flight HTTP challenge and never opens a WSS socket", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "rc-v2-abort-fetch-"));
+  const keyPath = path.join(dir, "device.pem");
+  const deviceId = randomUUID();
+  const controller = new AbortController();
+  const status: string[] = [];
+  let requestStarted!: () => void;
+  const started = new Promise<void>(resolve => { requestStarted = resolve; });
+  let requestCanceled = false;
+  try {
+    await writeFile(keyPath, newEnrollment("cancel-http").privateKeyPem, { mode: 0o600 });
+    await writeFile(keyPath + ".device-id", deviceId + "\n", { mode: 0o600 });
+    const send: typeof fetch = async (_input, init) => new Promise<Response>((_resolve, reject) => {
+      const signal = init?.signal;
+      assert.ok(signal, "network request must receive a cancellation signal");
+      signal!.addEventListener("abort", () => {
+        requestCanceled = true;
+        reject(new DOMException("Aborted", "AbortError"));
+      }, { once: true });
+      requestStarted();
+    });
+    const pending = maintainAuthenticatedDeviceSession("https://trusted.test/", keyPath, controller.signal, {
+      send,
+      makeSocket: () => { assert.fail("Stopped Agent must never open WebSocket"); },
+      wait: async () => { assert.fail("Stopped Agent must never retry"); },
+      onState: value => status.push(value),
+    });
+    await started;
+    controller.abort();
+    await pending;
+    assert.equal(requestCanceled, true);
+    assert.deepEqual(status, []);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("stopping Agent during WSS handshake immediately closes the half-open socket", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "rc-v2-abort-handshake-"));
+  const keyPath = path.join(dir, "device.pem");
+  const deviceId = randomUUID();
+  const controller = new AbortController();
+  const statuses: string[] = [];
+  let socketCreated!: () => void;
+  const ready = new Promise<void>(resolve => { socketCreated = resolve; });
+  let openedSocket: FakeSocket | undefined;
+  try {
+    await writeFile(keyPath, newEnrollment("cancel-handshake").privateKeyPem, { mode: 0o600 });
+    await writeFile(keyPath + ".device-id", deviceId + "\n", { mode: 0o600 });
+    const pending = maintainAuthenticatedDeviceSession("https://trusted.test/", keyPath, controller.signal, {
+      send: async () => Response.json({ device_id: deviceId, nonce: "A".repeat(24) }),
+      makeSocket: () => {
+        openedSocket = new FakeSocket();
+        openedSocket.readyState = WebSocket.CONNECTING;
+        socketCreated();
+        return openedSocket as unknown as WebSocket;
+      },
+      wait: async () => { assert.fail("Aborted handshake must not retry"); },
+      onState: value => statuses.push(value),
+    });
+    await ready;
+    controller.abort();
+    await pending;
+    assert.equal(openedSocket?.closeCount, 1);
+    assert.equal(openedSocket?.readyState, WebSocket.CLOSED);
+    assert.deepEqual(statuses, []);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("pre-aborted Agent never accesses remote session challenge", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  await maintainAuthenticatedDeviceSession("https://trusted.test/", "/nonexistent/id", controller.signal, {
+    send: async () => { assert.fail("No fetch after shutdown"); },
+    makeSocket: () => { assert.fail("No WSS after shutdown"); },
+  });
+});
+
+
+test("stopping unknown-outcome identity recovery cannot create a local device ID", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "rc-v2-abort-recovery-"));
+  const keyPath = path.join(dir, "device.pem");
+  const controller = new AbortController();
+  let started!: () => void;
+  const ready = new Promise<void>(resolve => { started = resolve; });
+  let calls = 0;
+  try {
+    await writeFile(keyPath, newEnrollment("cancel-recovery").privateKeyPem, { mode: 0o600 });
+    const run = maintainAuthenticatedDeviceSession("https://trusted.test/", keyPath, controller.signal, {
+      send: async (_input, init) => {
+        calls++;
+        return new Promise<Response>((_resolve, reject) => {
+          assert.ok(init?.signal, "recovery must share the stop signal");
+          init!.signal!.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+          started();
+        });
+      },
+      makeSocket: () => { assert.fail("Identity recovery must finish before WSS"); },
+      wait: async () => { assert.fail("Stopped recovery must not retry"); },
+    });
+    await ready;
+    controller.abort();
+    await run;
+    assert.equal(calls, 1);
+    await assert.rejects(readFile(keyPath + ".device-id", "utf8"), { code: "ENOENT" });
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

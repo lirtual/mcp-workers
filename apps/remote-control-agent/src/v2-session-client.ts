@@ -45,10 +45,15 @@ export function signedSessionProof(pem: string, deviceId: string, nonce: string)
   return { proof: encode64url(Buffer.from(sign(null, body, privateKey))), public_key };
 }
 
-async function postJson(base: URL, path: string, body: object, send: typeof fetch): Promise<{ status: number; result: any }> {
+async function postJson(
+  base: URL, path: string, body: object, send: typeof fetch, signal?: AbortSignal,
+): Promise<{ status: number; result: any }> {
+  signal?.throwIfAborted();
+  const deadline = AbortSignal.timeout(10_000);
+  const requestSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
   const response = await send(new URL(path, base), {
     method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify(body), redirect: "error", signal: AbortSignal.timeout(10_000),
+    body: JSON.stringify(body), redirect: "error", signal: requestSignal,
   });
   if (response.status !== 200) return { status: response.status, result: {} };
   const result: unknown = await response.json();
@@ -58,11 +63,13 @@ async function postJson(base: URL, path: string, body: object, send: typeof fetc
 
 export async function recoverDeviceId(
   baseAddress: string, keyPath: string, send: typeof fetch = fetch,
+  signal?: AbortSignal,
 ): Promise<string> {
+  signal?.throwIfAborted();
   const base = endpoint(baseAddress);
   const privatePem = await readFile(keyPath, "utf8");
   const publicKey = Buffer.from(createPublicKey(createPrivateKey(privatePem)).export({ type: "spki", format: "der" })).toString("base64");
-  const challenged = await postJson(base, "/agent/session/challenge", { public_key: publicKey }, send);
+  const challenged = await postJson(base, "/agent/session/challenge", { public_key: publicKey }, send, signal);
   rejectPermanentStatus(challenged.status, "No approved device identity matches this key.");
   if (challenged.status !== 200 || !UUID.test(challenged.result.device_id) ||
       !/^[A-Za-z0-9_-]{24}$/.test(challenged.result.nonce)) {
@@ -71,12 +78,13 @@ export async function recoverDeviceId(
   const { proof } = signedSessionProof(privatePem, challenged.result.device_id, challenged.result.nonce);
   const result = await postJson(base, "/agent/session/recover", {
     device_id: challenged.result.device_id, nonce: challenged.result.nonce, proof,
-  }, send);
+  }, send, signal);
   rejectPermanentStatus(result.status);
   if (result.status !== 200 || result.result.status !== "verified" ||
       result.result.device_id !== challenged.result.device_id) {
     throw new Error("Signed device identity recovery failed.");
   }
+  signal?.throwIfAborted();
   // This is an identity recovery, NOT a replay of an uncertain Shell mutation.
   // A lost recovery response may be handled by a fresh nonce/challenge.
   try {
@@ -94,17 +102,19 @@ export async function recoverDeviceId(
 export async function openAuthenticatedDeviceSocket(
   baseAddress: string, keyPath: string, send: typeof fetch = fetch,
   makeSocket: (url: string, protocols: string[]) => WebSocket = (url, protocols) => new WebSocket(url, protocols),
+  signal?: AbortSignal,
 ): Promise<{ device_id: string; socket: WebSocket }> {
+  signal?.throwIfAborted();
   const base = endpoint(baseAddress);
   const privatePem = await readFile(keyPath, "utf8");
   let deviceId: string;
   try { deviceId = (await readFile(keyPath + ".device-id", "utf8")).trim(); }
   catch (e) {
     if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-    deviceId = await recoverDeviceId(baseAddress, keyPath, send);
+    deviceId = await recoverDeviceId(baseAddress, keyPath, send, signal);
   }
   if (!UUID.test(deviceId)) throw new DeviceSessionRejectedError("Invalid local device ID.");
-  const challenged = await postJson(base, "/agent/session/challenge", { device_id: deviceId }, send);
+  const challenged = await postJson(base, "/agent/session/challenge", { device_id: deviceId }, send, signal);
   rejectPermanentStatus(challenged.status);
   if (challenged.status !== 200 || challenged.result.device_id !== deviceId ||
       !/^[A-Za-z0-9_-]{24}$/.test(challenged.result.nonce)) {
@@ -113,6 +123,7 @@ export async function openAuthenticatedDeviceSocket(
   const { proof } = signedSessionProof(privatePem, deviceId, challenged.result.nonce);
   const wsUrl = new URL("/agent/connect/" + deviceId, base);
   wsUrl.protocol = base.protocol === "https:" ? "wss:" : "ws:";
+  signal?.throwIfAborted();
   const socket = makeSocket(wsUrl.toString(), ["rc-v2", "rcv2." + challenged.result.nonce + "." + proof]);
   await new Promise<void>((resolve, reject) => {
     let finished = false;
@@ -121,6 +132,7 @@ export async function openAuthenticatedDeviceSocket(
       socket.removeEventListener("open", onOpen);
       socket.removeEventListener("error", onError);
       socket.removeEventListener("close", onClose);
+      signal?.removeEventListener("abort", onAbort);
     };
     const fail = (message: string, permanent = false) => {
       if (finished) return;
@@ -145,12 +157,15 @@ export async function openAuthenticatedDeviceSocket(
       cleanup();
       resolve();
     };
+    const onAbort = () => fail("WSS login aborted.");
     const onError = () => fail("WSS authentication failed.");
     const onClose = () => fail("WSS authentication was rejected.");
     const timeout = setTimeout(() => fail("WSS login timed out."), 10_000);
     socket.addEventListener("open", onOpen);
     socket.addEventListener("error", onError);
     socket.addEventListener("close", onClose);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) { onAbort(); return; }
     // Protect the factory's extremely rare already-open/closed synchronous case.
     if (socket.readyState === WebSocket.OPEN) onOpen();
     else if (socket.readyState === WebSocket.CLOSED) onClose();
