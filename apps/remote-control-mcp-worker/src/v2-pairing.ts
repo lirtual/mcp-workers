@@ -251,7 +251,17 @@ async function limitedJson(request: Request): Promise<unknown> {
 
 export class V2OwnerCoordinator {
   private readonly state: DurableObjectState;
-  constructor(state: DurableObjectState) { this.state = state; }
+  constructor(state: DurableObjectState) {
+    this.state = state;
+    // Cloudflare replies to these liveness frames without waking a hibernating
+    // DO. The response is NOT proof of current authorization; every future
+    // application command must independently check the durable device/epoch.
+    if (typeof state.setWebSocketAutoResponse === "function") {
+      state.setWebSocketAutoResponse(
+        new WebSocketRequestResponsePair("rc-v2:ping", "rc-v2:pong"),
+      );
+    }
+  }
   async webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): Promise<void> {
     await handleIdleSocketMessage(this.state, socket, message);
   }
