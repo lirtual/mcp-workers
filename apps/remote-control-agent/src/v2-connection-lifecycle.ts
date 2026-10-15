@@ -9,9 +9,9 @@ import { executeReadTool } from "./read-execution.ts";
 import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId, parseLocalWriteFile, parseLocalCreateDirectory, parseLocalEditBlock, parseLocalMoveFile, parseLocalDeleteFile, parseOperationId } from "./local-read.ts";
 import { SearchSessions } from "./search.ts";
 import { createAgentExecutionEngine, type AgentExecutionEngine } from "./execution.ts";
-import { parseStartProcess, parseListSessions, parseReadProcessOutput } from "./sessions.ts";
+import { parseStartProcess, parseListSessions, parseReadProcessOutput, parseInteractWithProcess, parseForceTerminate } from "./sessions.ts";
 
-type V2FileOperation = "write_file" | "create_directory" | "edit_block" | "move_file" | "delete_file" | "start_process" | "get_operation_status";
+type V2FileOperation = "write_file" | "create_directory" | "edit_block" | "move_file" | "delete_file" | "start_process" | "interact_with_process" | "force_terminate" | "get_operation_status";
 
 /** One adapter shared by production and tests; no new mutation executor. */
 export async function executeV2FileOperation(
@@ -169,11 +169,12 @@ export function monitorDeviceSocket(
           write_file: parseLocalWriteFile, create_directory: parseLocalCreateDirectory,
           edit_block: parseLocalEditBlock, move_file: parseLocalMoveFile,
           delete_file: parseLocalDeleteFile, start_process: parseStartProcess,
+          interact_with_process: parseInteractWithProcess, force_terminate: parseForceTerminate,
         };
         if (operation && request?.kind === "operation" && typeof request.tool === "string" &&
             (request.tool === "get_operation_status" ||
               (Object.hasOwn(mutationParsers, request.tool) &&
-                (request.tool !== "start_process" || allowShell))) &&
+                (!["start_process", "interact_with_process", "force_terminate"].includes(request.tool) || allowShell))) &&
             typeof request.operation_id === "string" &&
             parseOperationId({ operation_id: request.operation_id }) &&
             typeof request.request_id === "string" &&
@@ -297,7 +298,7 @@ export async function maintainAuthenticatedDeviceSession(
             return reply.kind === "completed" ? reply.text : null;
           } : undefined,
           execution ? (tool, args, operationId, requestSignal) =>
-            (tool === "start_process" ? options.shell : options.writeFile)
+            (["start_process", "interact_with_process", "force_terminate"].includes(tool) ? options.shell : options.writeFile)
               ? executeV2FileOperation(execution, tool, args, operationId, requestSignal)
               : Promise.resolve({ operation_id: operationId, status: "unavailable" }) : undefined,
           options.shell === true);

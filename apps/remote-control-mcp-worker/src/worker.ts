@@ -69,8 +69,8 @@ async function revokePairedDevice(env: Env, id: unknown, args: unknown): Promise
 }
 
 // T07 staged file/command capability; managed-session actions remain disabled.
-const V2_OPERATION_TOOLS = new Set(["write_file", "create_directory", "replace_text", "move_file", "delete_file", "run_command", "get_operation_status"]);
-const V2_AGENT_OPERATION_TOOLS = new Set(["write_file", "create_directory", "edit_block", "move_file", "delete_file", "start_process", "get_operation_status"]);
+const V2_OPERATION_TOOLS = new Set(["write_file", "create_directory", "replace_text", "move_file", "delete_file", "run_command", "send_input", "stop_session", "get_operation_status"]);
+const V2_AGENT_OPERATION_TOOLS = new Set(["write_file", "create_directory", "edit_block", "move_file", "delete_file", "start_process", "interact_with_process", "force_terminate", "get_operation_status"]);
 async function callPairedDeviceOperation(env: Env, id: unknown, name: string, args: unknown): Promise<Response> {
   if (!args || typeof args !== "object" || Array.isArray(args)) {
     return toolError(id, "The requested v2 operation was rejected.");
@@ -525,14 +525,14 @@ const READ_PROCESS_OUTPUT_TOOL = {
 const INTERACT_WITH_PROCESS_TOOL = {
   name: "send_input", title: "Send input to managed session",
   description: "Send a bounded UTF-8 input page to a session started by this Agent. Each input requires a stable operation_id; uncertain input is never replayed. Only a currently tracked session can receive input.",
-  inputSchema: { type: "object", properties: { operation_id: { type: "string", minLength: 1, maxLength: 128 }, session_id: { type: "string", format: "uuid" }, input: { type: "string", minLength: 1, maxLength: 8192 } }, required: ["operation_id", "session_id", "input"], additionalProperties: false },
+  inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." }, operation_id: { type: "string", minLength: 1, maxLength: 128 }, session_id: { type: "string", format: "uuid" }, input: { type: "string", minLength: 1, maxLength: 8192 } }, required: ["operation_id", "session_id", "input"], additionalProperties: false },
   annotations: { title: "Send input to managed session", readOnlyHint: false, destructiveHint: true, openWorldHint: true },
 } as const;
 
 const FORCE_TERMINATE_TOOL = {
   name: "stop_session", title: "Stop managed session",
   description: "Stop only a session started and still owned by this Agent. Uses a graceful signal followed by bounded escalation after rechecking the same process identity. A stale or unverified session is rejected.",
-  inputSchema: { type: "object", properties: { operation_id: { type: "string", minLength: 1, maxLength: 128 }, session_id: { type: "string", format: "uuid" } }, required: ["operation_id", "session_id"], additionalProperties: false },
+  inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." }, operation_id: { type: "string", minLength: 1, maxLength: 128 }, session_id: { type: "string", format: "uuid" } }, required: ["operation_id", "session_id"], additionalProperties: false },
   annotations: { title: "Stop managed session", readOnlyHint: false, destructiveHint: true, openWorldHint: true },
 } as const;
 

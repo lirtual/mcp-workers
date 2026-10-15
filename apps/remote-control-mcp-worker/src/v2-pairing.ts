@@ -13,7 +13,7 @@ const CONFIRM_DOMAIN = "remote-control:v2:local-confirm:";
 const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 const te = new TextEncoder();
 import { issueSessionChallenge, authorizeSession, acceptAuthenticatedSocket, handleIdleSocketMessage, listApprovedDevices, type V2Device } from "./v2-session.ts";
-import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId, parseLocalWriteFile, parseLocalCreateDirectory, parseLocalEditBlock, parseLocalMoveFile, parseLocalDeleteFile, parseStartProcess, parseLocalProcessOutput, parseListSessions, parseOperationId } from "./local-read.ts";
+import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId, parseLocalWriteFile, parseLocalCreateDirectory, parseLocalEditBlock, parseLocalMoveFile, parseLocalDeleteFile, parseStartProcess, parseLocalProcessOutput, parseListSessions, parseLocalProcessInteraction, parseLocalProcessTermination, parseOperationId } from "./local-read.ts";
 
 export interface PendingDevice {
   name: string;
@@ -291,6 +291,7 @@ export class V2OwnerCoordinator {
       write_file: parseLocalWriteFile, create_directory: parseLocalCreateDirectory,
       edit_block: parseLocalEditBlock, move_file: parseLocalMoveFile,
       delete_file: parseLocalDeleteFile, start_process: parseStartProcess,
+      interact_with_process: parseLocalProcessInteraction, force_terminate: parseLocalProcessTermination,
     };
     const validOperation = typeof operationId === "string" &&
       Boolean(parseOperationId({ operation_id: operationId })) &&

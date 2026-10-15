@@ -147,7 +147,7 @@ test("v2 write_file preserves Agent receipt idempotency per device; no v1 fallba
     assert.equal(await readFile(markerB, "utf8"), "B\n");
     const launchId = "launch-" + randomUUID();
     const launchArgs = { device_id: a, operation_id: launchId,
-      command: "printf 'mcp-v2-session-A\\n'", timeout_ms: 0 };
+      command: "printf 'mcp-v2-session-A\\n'", timeout_ms: 1000 };
     const launched = JSON.parse((await call("run_command", launchArgs)).content) as {
       operation_id: string; status: string; session_id?: string;
     };
@@ -186,6 +186,33 @@ test("v2 write_file preserves Agent receipt idempotency per device; no v1 fallba
       device_id: b, session_id: launched.session_id,
     });
     assert.equal(outputB.data.result?.isError, true);
+    // A second process is owned by A only. Session actions share the same
+    // local Agent engine and receipt store; B cannot supply an arbitrary PID.
+    const interactiveId = "interactive-" + randomUUID();
+    const interactive = JSON.parse((await call("run_command", {
+      device_id: a, operation_id: interactiveId, command: "cat", timeout_ms: 0,
+    })).content) as { status: string; session_id?: string };
+    assert.equal(interactive.status, "running");
+    assert.match(interactive.session_id!, /^[a-f0-9-]{36}$/);
+    const inputArgs = { device_id: a, operation_id: "input-" + randomUUID(),
+      session_id: interactive.session_id, input: "hello-v2\\n" };
+    const writeInput = JSON.parse((await call("send_input", inputArgs)).content);
+    assert.equal(writeInput.status, "completed");
+    assert.equal(JSON.parse((await call("send_input", inputArgs)).content).status, "completed");
+    const deniedInput = JSON.parse((await call("send_input", {
+      device_id: b, operation_id: "foreign-" + randomUUID(),
+      session_id: interactive.session_id, input: "wrong-device\\n",
+    })).content);
+    assert.notEqual(deniedInput.status, "completed");
+    const stopArgs = { device_id: a, operation_id: "stop-" + randomUUID(),
+      session_id: interactive.session_id };
+    const stopped = JSON.parse((await call("stop_session", stopArgs)).content);
+    assert.equal(stopped.status, "completed");
+    assert.equal(JSON.parse((await call("stop_session", stopArgs)).content).status, "completed");
+    const falseStop = await call("stop_session", {
+      device_id: a, operation_id: "invalid-session", session_id: "123",
+    });
+    assert.equal(falseStop.data.result?.isError, true);
     assert.equal(legacy, 0);
   } finally {
     stops.forEach(stop => stop.abort());
