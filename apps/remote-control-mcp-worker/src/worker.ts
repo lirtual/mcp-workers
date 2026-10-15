@@ -1184,6 +1184,11 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    // A newly uploaded public preview must not expose even the bounded
+    // unauthenticated Agent bootstrap until its distinct owner key is set.
+    if (previewOnly(env) && !env.MCP_ACCESS_TOKEN) {
+      return jsonError(503, "preview_unconfigured", "The preview is not yet configured.");
+    }
     const url = new URL(request.url);
     if (url.pathname.startsWith("/agent/connect/") && pendingOwner(env)) {
       const deviceId = url.pathname.slice("/agent/connect/".length);

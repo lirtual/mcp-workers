@@ -133,6 +133,24 @@ test("preview-only MCP never lists Shell, file mutations or implicit v1 routes",
   assert.equal(v1Requests, 0);
   assert.equal((await rpc("tools/call", { name: "list_devices", arguments: {} })).status, 200);
 });
+test("preview lacks owner secret => even Agent bootstrap is blocked before any DO request", async () => {
+  let calls = 0;
+  const env = {
+    REMOTE_CONTROL_V2_PREVIEW_ONLY: "true",
+    MCP_ACCESS_TOKEN: undefined,
+    V2_OWNER: { idFromName: () => "isolated-preview", get: () => ({ fetch: () => {
+      calls++; throw new Error("preview should remain disabled");
+    } }) },
+  } as unknown as Env;
+  for (const uri of ["/mcp", "/agent/pair/start", "/agent/session/challenge",
+      "/agent/session/recover", "/agent/pair/complete", "/agent/connect/" + randomUUID()]) {
+    const res = await worker.fetch(new Request("https://preview.test" + uri, { method: "POST" }), env);
+    assert.equal(res.status, 503, uri);
+    assert.equal((await res.json() as { error: string }).error, "preview_unconfigured");
+  }
+  assert.equal(calls, 0);
+});
+
 test("device enumeration is bounded and fails closed when the small-owner limit is exceeded", async () => {
   const rows = new Map<string, unknown>();
   for (let i = 0; i < 65; i++) {
