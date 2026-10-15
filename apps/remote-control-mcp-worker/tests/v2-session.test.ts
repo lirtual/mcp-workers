@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { newEnrollment } from "../../remote-control-agent/src/v2-enrollment.ts";
 import { signedSessionProof } from "../../remote-control-agent/src/v2-session-client.ts";
-import { authorizeSession, issueSessionChallenge, readWebSocketProof } from "../src/v2-session.ts";
+import { authorizeSession, authorizeSocketSession, issueSessionChallenge, readWebSocketProof } from "../src/v2-session.ts";
 
 interface MockStore {
   get<T>(key: string): Promise<T | undefined>;
@@ -97,4 +97,59 @@ test("revoked key stays rejected, and no WebSocket protocol without signed nonce
     fingerprint: "0123456789abcdef01234567", approved_at: Date.now(), revoked: true,
   });
   assert.equal((await authorizeSession(store as never, { device_id: uuid, nonce: ch.nonce, proof })).status, 401);
+});
+
+
+test("socket upgrade commits the new durable epoch with nonce consumption, recovery never displaces it", async () => {
+  const { records, store } = testStore();
+  const trusted = newEnrollment("authorized-host");
+  records.set("device:" + uuid, {
+    device_id: uuid, name: "authorized-host", public_key: trusted.request.public_key,
+    fingerprint: "0123456789abcdef01234567", approved_at: Date.now(), revoked: false,
+  });
+  const first = (await issueSessionChallenge(store as never, { device_id: uuid })).body as { nonce: string };
+  const proof = { device_id: uuid, nonce: first.nonce,
+    proof: signedSessionProof(trusted.privateKeyPem, uuid, first.nonce).proof };
+  const upgrade = await authorizeSocketSession(store as never, proof);
+  assert.equal(upgrade?.device_id, uuid);
+  assert.match(upgrade?.epoch ?? "", /^[a-f0-9-]{36}$/);
+  assert.equal(records.get("session:epoch:" + uuid), upgrade?.epoch);
+  assert.equal(records.has("session:nonce:" + uuid), false);
+  assert.equal(await authorizeSocketSession(store as never, proof), null, "upgrade proof is one-use");
+
+  const recover = (await issueSessionChallenge(store as never, { device_id: uuid })).body as { nonce: string };
+  const recovery = await authorizeSession(store as never, {
+    device_id: uuid, nonce: recover.nonce,
+    proof: signedSessionProof(trusted.privateKeyPem, uuid, recover.nonce).proof,
+  });
+  assert.equal(recovery.status, 200);
+  assert.equal(records.get("session:epoch:" + uuid), upgrade?.epoch,
+    "recovering the same identity must not supersede an authenticated socket");
+
+  const next = (await issueSessionChallenge(store as never, { device_id: uuid })).body as { nonce: string };
+  const upgraded = await authorizeSocketSession(store as never, {
+    device_id: uuid, nonce: next.nonce,
+    proof: signedSessionProof(trusted.privateKeyPem, uuid, next.nonce).proof,
+  });
+  assert.ok(upgraded && upgraded.epoch !== upgrade?.epoch);
+  assert.equal(records.get("session:epoch:" + uuid), upgraded?.epoch);
+});
+
+test("revoked device with an otherwise correct signed nonce never commits socket epoch", async () => {
+  const { records, store } = testStore();
+  const identity = newEnrollment("revoked-host");
+  records.set("device:" + uuid, {
+    device_id: uuid, name: "revoked-host", public_key: identity.request.public_key,
+    fingerprint: "0123456789abcdef01234567", approved_at: Date.now(), revoked: false,
+  });
+  const pending = (await issueSessionChallenge(store as never, { device_id: uuid })).body as { nonce: string };
+  records.set("device:" + uuid, {
+    ...(records.get("device:" + uuid) as object), revoked: true,
+  });
+  const result = await authorizeSocketSession(store as never, {
+    device_id: uuid, nonce: pending.nonce,
+    proof: signedSessionProof(identity.privateKeyPem, uuid, pending.nonce).proof,
+  });
+  assert.equal(result, null);
+  assert.equal(records.has("session:epoch:" + uuid), false);
 });

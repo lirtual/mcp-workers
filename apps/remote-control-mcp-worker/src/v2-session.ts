@@ -97,15 +97,19 @@ async function verifyProof(store: DurableStore, deviceId: unknown, nonce: unknow
   } catch { return null; }
 }
 
-export async function authorizeSession(store: DurableStore, body: unknown):
-  Promise<{ status: number; body: object }> {
-  if (!body || typeof body !== "object" || Array.isArray(body)) {
-    return { status: 401, body: { error: "unauthorized" } };
-  }
+/**
+ * A signed nonce may be used either to recover a device ID or to activate a
+ * socket. For sockets, the new fencing epoch MUST be committed in the very
+ * same transaction as consuming the nonce and rechecking the device record.
+ */
+async function consumeAuthorizedProof(
+  store: DurableStore, body: unknown, activateSocket: boolean,
+): Promise<{ device_id: string; epoch?: string } | null> {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
   const p = body as Record<string, unknown>;
   const verified = await verifyProof(store, p.device_id, p.nonce, p.proof);
-  if (!verified) return { status: 401, body: { error: "unauthorized" } };
-  // The nonce and approval must be re-checked inside the same DO transaction.
+  if (!verified) return null;
+  const epoch = activateSocket ? crypto.randomUUID() : undefined;
   const success = await store.transaction(async tx => {
     const [nonce, current] = await Promise.all([
       tx.get<NonceRecord>(nonceKey(verified.device.device_id)),
@@ -114,11 +118,26 @@ export async function authorizeSession(store: DurableStore, body: unknown):
     if (!nonce || nonce.nonce !== verified.record.nonce || nonce.expires_at <= Date.now() ||
         !current || current.revoked !== false || current.public_key !== verified.device.public_key) return false;
     await tx.delete(nonceKey(verified.device.device_id));
+    if (epoch) await tx.put("session:epoch:" + verified.device.device_id, epoch);
     return true;
   });
-  return success
-    ? { status: 200, body: { device_id: verified.device.device_id, status: "verified" } }
+  return success ? { device_id: verified.device.device_id, ...(epoch ? { epoch } : {}) } : null;
+}
+
+/** Identity recovery verifies a key but does NOT displace an existing socket. */
+export async function authorizeSession(store: DurableStore, body: unknown):
+  Promise<{ status: number; body: object }> {
+  const result = await consumeAuthorizedProof(store, body, false);
+  return result
+    ? { status: 200, body: { device_id: result.device_id, status: "verified" } }
     : { status: 401, body: { error: "unauthorized" } };
+}
+
+/** A socket's epoch and proof consumption are an inseparable durable commit. */
+export async function authorizeSocketSession(store: DurableStore, body: unknown):
+  Promise<{ device_id: string; epoch: string } | null> {
+  const result = await consumeAuthorizedProof(store, body, true);
+  return result?.epoch ? { device_id: result.device_id, epoch: result.epoch } : null;
 }
 
 /** WSS proof belongs in a protocol header, not URL query strings or logs. */
@@ -139,20 +158,25 @@ export async function acceptAuthenticatedSocket(
   }
   const proof = readWebSocketProof(request);
   if (!proof) return new Response("Unauthorized.", { status: 401 });
-  const auth = await authorizeSession(store, proof);
-  if (auth.status !== 200) return new Response("Unauthorized.", { status: 401 });
-  // A newly established socket fences existing connections for the same device;
-  // only one currently authenticated idle socket per device is permitted.
-  const older = state.getWebSockets("device:" + proof.device_id);
-  // Durable epoch fences old sessions even when network close frames are delayed.
-  const epoch = crypto.randomUUID();
-  const currentDevice = await store.get<V2Device>("device:" + proof.device_id);
-  if (!currentDevice || currentDevice.revoked !== false) return new Response("Unauthorized.", { status: 401 });
-  await store.put("session:epoch:" + proof.device_id, epoch);
+  const auth = await authorizeSocketSession(store, proof);
+  if (!auth) return new Response("Unauthorized.", { status: 401 });
+  // Another signed connection, or a revocation, could have committed after
+  // this request's transaction completed. Recheck before accepting the socket.
+  // There are NO awaits between this read and acceptWebSocket, so the older
+  // login cannot attach after a newer epoch has superseded it.
+  const [currentEpoch, currentDevice] = await Promise.all([
+    store.get<string>("session:epoch:" + auth.device_id),
+    store.get<V2Device>("device:" + auth.device_id),
+  ]);
+  if (currentEpoch !== auth.epoch || !currentDevice || currentDevice.revoked !== false) {
+    return new Response("Unauthorized.", { status: 401 });
+  }
+  // Only the most recently committed signed session remains authorized.
+  const older = state.getWebSockets("device:" + auth.device_id);
   const pair = new WebSocketPair();
   const client = pair[0], server = pair[1];
   state.acceptWebSocket(server, ["device:" + proof.device_id]);
-  server.serializeAttachment({ device_id: proof.device_id, epoch });
+  server.serializeAttachment({ device_id: auth.device_id, epoch: auth.epoch });
   for (const socket of older) {
     try { socket.close(1000, "superseded"); } catch { /* already closed */ }
   }
