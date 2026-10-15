@@ -68,9 +68,9 @@ async function revokePairedDevice(env: Env, id: unknown, args: unknown): Promise
   } catch { return toolError(id, "Device revocation was not confirmed."); }
 }
 
-// T07 staged file-mutation capability; Shell and managed sessions remain disabled.
-const V2_OPERATION_TOOLS = new Set(["write_file", "create_directory", "replace_text", "move_file", "delete_file", "get_operation_status"]);
-const V2_AGENT_OPERATION_TOOLS = new Set(["write_file", "create_directory", "edit_block", "move_file", "delete_file", "get_operation_status"]);
+// T07 staged file/command capability; managed-session actions remain disabled.
+const V2_OPERATION_TOOLS = new Set(["write_file", "create_directory", "replace_text", "move_file", "delete_file", "run_command", "get_operation_status"]);
+const V2_AGENT_OPERATION_TOOLS = new Set(["write_file", "create_directory", "edit_block", "move_file", "delete_file", "start_process", "get_operation_status"]);
 async function callPairedDeviceOperation(env: Env, id: unknown, name: string, args: unknown): Promise<Response> {
   if (!args || typeof args !== "object" || Array.isArray(args)) {
     return toolError(id, "The requested v2 operation was rejected.");
@@ -504,7 +504,7 @@ const GET_OPERATION_STATUS_TOOL = {
 const START_PROCESS_TOOL = {
   name: "run_command", title: "Start development command",
   description: "Start a development command with the Agent account's fixed local Shell. Commands run with that Linux account's full OS permissions. Every start requires a stable operation_id; after an uncertain response, query that ID before considering a new intent. A running command returns an Agent-owned session_id. Shell commands use the authorized Linux Agent account's current OS permissions.",
-  inputSchema: { type: "object", properties: { operation_id: { type: "string", minLength: 1, maxLength: 128 }, command: { type: "string", minLength: 1, maxLength: 8192 }, timeout_ms: { type: "integer", minimum: 0, maximum: 30000, description: "Maximum time to wait before returning a running session; defaults to 1000 ms." } }, required: ["operation_id", "command"], additionalProperties: false },
+  inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." }, operation_id: { type: "string", minLength: 1, maxLength: 128 }, command: { type: "string", minLength: 1, maxLength: 8192 }, timeout_ms: { type: "integer", minimum: 0, maximum: 30000, description: "Maximum time to wait before returning a running session; defaults to 1000 ms." } }, required: ["operation_id", "command"], additionalProperties: false },
   annotations: { title: "Start development command", readOnlyHint: false, destructiveHint: true, openWorldHint: true },
 } as const;
 

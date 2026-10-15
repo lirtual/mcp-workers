@@ -6,11 +6,11 @@
  */
 import { DeviceSessionRejectedError, openAuthenticatedDeviceSocket } from "./v2-session-client.ts";
 import { executeReadTool } from "./read-execution.ts";
-import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId, parseLocalWriteFile, parseLocalCreateDirectory, parseLocalEditBlock, parseLocalMoveFile, parseLocalDeleteFile, parseOperationId } from "./local-read.ts";
+import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId, parseLocalWriteFile, parseLocalCreateDirectory, parseLocalEditBlock, parseLocalMoveFile, parseLocalDeleteFile, parseStartProcess, parseOperationId } from "./local-read.ts";
 import { SearchSessions } from "./search.ts";
 import { createAgentExecutionEngine, type AgentExecutionEngine } from "./execution.ts";
 
-type V2FileOperation = "write_file" | "create_directory" | "edit_block" | "move_file" | "delete_file" | "get_operation_status";
+type V2FileOperation = "write_file" | "create_directory" | "edit_block" | "move_file" | "delete_file" | "start_process" | "get_operation_status";
 
 /** One adapter shared by production and tests; no new mutation executor. */
 export async function executeV2FileOperation(
@@ -165,7 +165,7 @@ export function monitorDeviceSocket(
         const mutationParsers: Record<string, (input: unknown) => unknown> = {
           write_file: parseLocalWriteFile, create_directory: parseLocalCreateDirectory,
           edit_block: parseLocalEditBlock, move_file: parseLocalMoveFile,
-          delete_file: parseLocalDeleteFile,
+          delete_file: parseLocalDeleteFile, start_process: parseStartProcess,
         };
         if (operation && request?.kind === "operation" && typeof request.tool === "string" &&
             (request.tool === "get_operation_status" || Object.hasOwn(mutationParsers, request.tool)) &&
@@ -244,7 +244,7 @@ export async function maintainAuthenticatedDeviceSession(
     heartbeat?: { intervalMs: number; timeoutMs: number; authIntervalMs?: number };
     // Explicit opt-in for isolated T05 tests. Default remains authentication only.
     readOnly?: boolean;
-    // Explicit T07 file-mutation capability; disabled in the shipped entrypoint.
+    // Explicit T07 file/command capability; disabled in the shipped entrypoint.
     writeFile?: boolean;
     wait?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
     onState?: (status: "connected" | "disconnected" | "rejected") => void;

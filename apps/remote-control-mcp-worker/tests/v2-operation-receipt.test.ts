@@ -145,6 +145,31 @@ test("v2 write_file preserves Agent receipt idempotency per device; no v1 fallba
       path: markerB, content: "B\n", mode: "append" });
     assert.equal(JSON.parse(writeB.content).status, "completed");
     assert.equal(await readFile(markerB, "utf8"), "B\n");
+    const launchId = "launch-" + randomUUID();
+    const launchArgs = { device_id: a, operation_id: launchId,
+      command: "printf 'mcp-v2-session-A\\n'", timeout_ms: 0 };
+    const launched = JSON.parse((await call("run_command", launchArgs)).content) as {
+      operation_id: string; status: string; session_id?: string;
+    };
+    assert.equal(launched.operation_id, launchId);
+    assert.match(launched.status, /^(running|completed)$/);
+    assert.match(launched.session_id!, /^[a-f0-9-]{36}$/);
+    const duplicate = JSON.parse((await call("run_command", launchArgs)).content);
+    assert.equal(duplicate.session_id, launched.session_id);
+    const changedCommand = JSON.parse((await call("run_command", {
+      ...launchArgs, command: "printf 'DIFFERENT\\n'",
+    })).content);
+    assert.equal(changedCommand.status, "conflict");
+    const deviceBReceipt = JSON.parse((await call("get_operation_status", {
+      device_id: b, operation_id: launchId,
+    })).content);
+    assert.equal(deviceBReceipt.status, "not_found");
+    const sessionReceipt = JSON.parse((await call("get_operation_status", {
+      device_id: a, operation_id: launchId,
+    })).content);
+    assert.equal(sessionReceipt.receipt.session_id, launched.session_id);
+    const missingShellId = await call("run_command", { device_id: a, command: "date" });
+    assert.equal(missingShellId.data.result?.isError, true);
     assert.equal(legacy, 0);
   } finally {
     stops.forEach(stop => stop.abort());

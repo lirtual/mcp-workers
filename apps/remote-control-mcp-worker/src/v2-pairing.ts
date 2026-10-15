@@ -13,7 +13,7 @@ const CONFIRM_DOMAIN = "remote-control:v2:local-confirm:";
 const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 const te = new TextEncoder();
 import { issueSessionChallenge, authorizeSession, acceptAuthenticatedSocket, handleIdleSocketMessage, listApprovedDevices, type V2Device } from "./v2-session.ts";
-import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId, parseLocalWriteFile, parseLocalCreateDirectory, parseLocalEditBlock, parseLocalMoveFile, parseLocalDeleteFile, parseOperationId } from "./local-read.ts";
+import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId, parseLocalWriteFile, parseLocalCreateDirectory, parseLocalEditBlock, parseLocalMoveFile, parseLocalDeleteFile, parseStartProcess, parseOperationId } from "./local-read.ts";
 
 export interface PendingDevice {
   name: string;
@@ -289,7 +289,7 @@ export class V2OwnerCoordinator {
     const mutationParsers: Record<string, (input: unknown) => unknown> = {
       write_file: parseLocalWriteFile, create_directory: parseLocalCreateDirectory,
       edit_block: parseLocalEditBlock, move_file: parseLocalMoveFile,
-      delete_file: parseLocalDeleteFile,
+      delete_file: parseLocalDeleteFile, start_process: parseStartProcess,
     };
     const validOperation = typeof operationId === "string" &&
       Boolean(parseOperationId({ operation_id: operationId })) &&
@@ -400,8 +400,12 @@ export class V2OwnerCoordinator {
                 if (typeof r[key] === "string") publicReceipt[key] = r[key];
               }
             }
+            const sessionId = answer.session_id;
             pending.resolve(Response.json({
               operation_id: pending.operationId, status,
+              ...(typeof sessionId === "string" &&
+                /^[a-f0-9]{8}-[a-f0-9]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[a-f0-9]{12}$/.test(sessionId)
+                ? { session_id: sessionId } : {}),
               ...(Object.keys(publicReceipt).length ? { receipt: publicReceipt } : {}),
             }));
           }
