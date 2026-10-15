@@ -140,11 +140,16 @@ export async function maintainAuthenticatedDeviceSession(
         baseAddress, keyPath, options.send, options.makeSocket,
       );
       if (signal.aborted) { connection.socket.close(); break; }
-      failures = 0;
+      const connectedAt = performance.now();
       options.onState?.("connected");
       const outcome = await monitorDeviceSocket(connection.socket, signal, options.heartbeat);
       if (outcome === "aborted" || outcome === "closed") return;
       if (outcome === "policy") { options.onState?.("rejected"); return; }
+      // Opening a socket is not evidence of stability. If an Agent loops
+      // through brief successful handshakes, keep the escalating backoff.
+      // After two healthy heartbeat periods, reset for fast future recovery.
+      const intervalMs = options.heartbeat?.intervalMs ?? HEARTBEAT_INTERVAL_MS;
+      if (performance.now() - connectedAt >= intervalMs * 2) failures = 0;
     } catch (error) {
       if (signal.aborted) break;
       if (error instanceof DeviceSessionRejectedError) {

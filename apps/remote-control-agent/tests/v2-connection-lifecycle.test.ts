@@ -338,3 +338,71 @@ test("a stale ACK is ignored while the matching current ACK is accepted", async 
   stop.abort();
   assert.equal(await pending, "aborted");
 });
+
+
+test("rapidly flapping successful handshakes keep increasing backoff instead of always retrying after one second", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "rc-v2-flapping-"));
+  const keyPath = path.join(dir, "device.pem");
+  const deviceId = randomUUID();
+  const controller = new AbortController();
+  const waits: number[] = [];
+  let handshakes = 0;
+  try {
+    await writeFile(keyPath, newEnrollment("flapping-host").privateKeyPem, { mode: 0o600 });
+    await writeFile(keyPath + ".device-id", deviceId + "\n", { mode: 0o600 });
+    await maintainAuthenticatedDeviceSession("https://agent.example/", keyPath, controller.signal, {
+      send: async () => Response.json({ device_id: deviceId, nonce: "A".repeat(24) }),
+      makeSocket: () => {
+        handshakes++;
+        const socket = new FakeSocket();
+        socket.readyState = WebSocket.CONNECTING;
+        queueMicrotask(() => socket.emitOpen());
+        setTimeout(() => socket.emitClose(1006), 1);
+        return socket as unknown as WebSocket;
+      },
+      heartbeat: { intervalMs: 60, timeoutMs: 30, authIntervalMs: 300 },
+      wait: async ms => {
+        waits.push(ms);
+        if (waits.length === 6) controller.abort();
+      },
+    });
+    assert.equal(handshakes, 6);
+    assert.deepEqual(waits, [1000, 2000, 4000, 8000, 16000, 30000]);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a genuinely stable session resets the retry backoff to enable fast recovery", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "rc-v2-stable-reset-"));
+  const keyPath = path.join(dir, "device.pem");
+  const deviceId = randomUUID();
+  const controller = new AbortController();
+  const waits: number[] = [];
+  let handshakes = 0;
+  try {
+    await writeFile(keyPath, newEnrollment("healthy-host").privateKeyPem, { mode: 0o600 });
+    await writeFile(keyPath + ".device-id", deviceId + "\n", { mode: 0o600 });
+    await maintainAuthenticatedDeviceSession("https://agent.example/", keyPath, controller.signal, {
+      send: async () => Response.json({ device_id: deviceId, nonce: "A".repeat(24) }),
+      makeSocket: () => {
+        handshakes++;
+        const socket = new FakeSocket();
+        socket.readyState = WebSocket.CONNECTING;
+        if (handshakes === 2) {
+          socket.onSend = frame => {
+            if (frame === "rc-v2:ping") queueMicrotask(() => socket.pong());
+          };
+        }
+        queueMicrotask(() => socket.emitOpen());
+        setTimeout(() => socket.emitClose(1006), handshakes === 2 ? 180 : 1);
+        return socket as unknown as WebSocket;
+      },
+      heartbeat: { intervalMs: 30, timeoutMs: 20, authIntervalMs: 400 },
+      wait: async ms => {
+        waits.push(ms);
+        if (waits.length === 4) controller.abort();
+      },
+    });
+    assert.equal(handshakes, 4);
+    assert.deepEqual(waits, [1000, 1000, 2000, 4000]);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
