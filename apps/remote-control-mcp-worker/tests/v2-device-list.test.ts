@@ -131,3 +131,57 @@ test("device status fails closed for corrupt Hibernation attachment", async () =
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), [{ device_id: id, name: "damaged", status: "offline" }]);
 });
+
+test("WSL2 distro shutdown is offline after WSS close; restored signed epoch can come online again", async () => {
+  const id = randomUUID(), other = randomUUID();
+  const stateRows = new Map<string, unknown>([
+    ["device:" + id, { device_id: id, name: "wsl2", revoked: false }],
+    ["device:" + other, { device_id: other, name: "linux", revoked: false }],
+    ["session:epoch:" + id, "wsl-epoch-1"],
+    ["session:epoch:" + other, "linux-epoch"],
+  ]);
+  let wslReady: number = WebSocket.OPEN;
+  const wslSocket = (epoch: string) => ({
+    get readyState() { return wslReady; },
+    deserializeAttachment: () => ({ device_id: id, epoch }),
+  }) as unknown as WebSocket;
+  const nativeSocket = ({
+    readyState: WebSocket.OPEN,
+    deserializeAttachment: () => ({ device_id: other, epoch: "linux-epoch" }),
+  }) as unknown as WebSocket;
+  const sockets = new Map<string, WebSocket[]>([
+    ["device:" + id, [wslSocket("wsl-epoch-1")]],
+    ["device:" + other, [nativeSocket]],
+  ]);
+  const owner = new V2OwnerCoordinator({
+    storage: {
+      get: async <T>(key: string) => stateRows.get(key) as T | undefined,
+      list: async <T>({ prefix, limit }: { prefix: string; limit: number }) =>
+        new Map([...stateRows].filter(([key]) => key.startsWith(prefix)).slice(0, limit)) as Map<string, T>,
+    },
+    getWebSockets: (tag: string) => sockets.get(tag) ?? [],
+  } as unknown as DurableObjectState);
+  const statuses = async () => {
+    const answer = await owner.fetch(new Request("https://v2.internal/devices", {
+      method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+    }));
+    assert.equal(answer.status, 200);
+    return new Map((await answer.json() as Array<{ device_id: string; status: string }>)
+      .map(device => [device.device_id, device.status]));
+  };
+  assert.equal((await statuses()).get(id), "online");
+  wslReady = WebSocket.CLOSED; // WSL distro stopped; owner observed socket closure
+  assert.equal((await statuses()).get(id), "offline");
+  assert.equal((await statuses()).get(other), "online", "unrelated host remains available");
+  const denied = await owner.fetch(new Request("https://v2.internal/read", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ device_id: id, tool: "read_file", arguments: { path: "/tmp/fixture" } }),
+  }));
+  assert.equal(denied.status, 503, "no commands queue while WSL2 is stopped");
+  stateRows.set("session:epoch:" + id, "wsl-epoch-2");
+  sockets.set("device:" + id, [wslSocket("wsl-epoch-1")]);
+  wslReady = WebSocket.OPEN;
+  assert.equal((await statuses()).get(id), "offline", "stale socket is never proof of WSL recovery");
+  sockets.set("device:" + id, [wslSocket("wsl-epoch-2")]);
+  assert.equal((await statuses()).get(id), "online", "new signed WSS epoch restores availability");
+});

@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { MARKER, UNIT, parseInstallArgs, renderV2Service, trustedEndpoint } from "../scripts/install-v2.mjs";
+import { MARKER, UNIT, classifyLinuxKernel, parseInstallArgs, renderV2Service, trustedEndpoint } from "../scripts/install-v2.mjs";
 
 const example = {
   node: "/opt/node24/bin/node",
@@ -71,4 +71,26 @@ test("v2 startup opts into read-only but explicitly keeps file write/Shell off",
   assert.match(entry, /shell: false/);
   assert.ok(!entry.includes("REMOTE_CONTROL_DEVICE_TOKEN"));
   assert.ok(!entry.includes("MCP_ACCESS_TOKEN"));
+});
+
+test("WSL2 host detection keeps the Linux installer but rejects unsupported WSL1", () => {
+  assert.equal(classifyLinuxKernel("6.6.87.2-microsoft-standard-WSL2\n"), "wsl2");
+  assert.equal(classifyLinuxKernel("5.15.167.4-microsoft-standard-WSL2"), "wsl2");
+  assert.equal(classifyLinuxKernel("4.4.0-19041-Microsoft"), "wsl1");
+  assert.equal(classifyLinuxKernel("6.8.0-51-generic"), "linux");
+  assert.throws(() => classifyLinuxKernel(""), /Linux kernel/);
+});
+
+test("WSL2 shares the Linux-only Agent, with no Windows Shell or host auto-wakeup hooks", async () => {
+  const file = await readFile(path.join(path.dirname(fileURLToPath(import.meta.url)),
+    "..", "scripts", "install-v2.mjs"), "utf8");
+  assert.match(file, /cannot wake a stopped WSL distribution/);
+  assert.ok(!file.includes("schtasks"));
+  assert.ok(!file.includes("TaskScheduler"));
+  assert.ok(!file.includes("powershell.exe"));
+  assert.ok(!file.includes("cmd.exe"));
+  assert.ok(!file.includes("wsl.exe"));
+  const unit = renderV2Service(example);
+  assert.ok(!unit.includes("ExecStart=/mnt/c/"));
+  assert.ok(!unit.includes("REMOTE_CONTROL_DEVICE_TOKEN"));
 });

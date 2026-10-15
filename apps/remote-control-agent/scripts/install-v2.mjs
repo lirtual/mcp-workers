@@ -17,6 +17,16 @@ import { fileURLToPath } from "node:url";
 import { beginDeviceEnrollment } from "../src/pair-device.ts";
 import { confirmDeviceLocally } from "../src/confirm-device.ts";
 
+/** WSL2 runs the same Linux Agent; Windows is never an authentication peer. */
+export function classifyLinuxKernel(release) {
+  if (typeof release !== "string" || !release.trim()) {
+    throw new Error("Unable to identify the Linux kernel.");
+  }
+  if (!/microsoft/i.test(release)) return "linux";
+  // WSL1 cannot satisfy the Linux pidfd supervisor contract.
+  return /wsl2/i.test(release) ? "wsl2" : "wsl1";
+}
+
 export const UNIT = "remote-control-v2-agent.service";
 export const MARKER = "# Managed by mcp-workers v2 Linux installer; NOT the v1 Agent.";
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -132,18 +142,26 @@ async function ownerOnly(file, expectedMode) {
   }
 }
 
-function preflight(action) {
+async function preflight(action) {
   if (process.platform !== "linux" || process.getuid?.() === 0 ||
       Number(process.versions.node.split(".")[0]) !== 24) {
     throw new Error("Install as a non-root Linux user with Node.js 24.");
   }
   systemdLiteral(process.execPath);
   systemdLiteral(packageRoot);
+  const release = await readFile("/proc/sys/kernel/osrelease", "utf8");
+  const host = classifyLinuxKernel(release);
+  // Uninstall still works on a host that no longer supports the original
+  // C pidfd helper; do not strand the independent v2 user-service unit.
+  if (host === "wsl1" && action !== "uninstall") {
+    throw new Error("WSL1 is not supported; use WSL2 with systemd.");
+  }
   run("systemctl", ["--user", "show-environment"]);
-  if (action === "uninstall") return; // Removal must work even after compiler failure.
+  if (action === "uninstall") return host; // No compiler required for removal.
   run("systemd-analyze", ["--user", "--version"]);
   run("cc", ["--version"]);
   run(process.execPath, [compilerScript]);
+  return host;
 }
 
 async function readOwnedUnit(file) {
@@ -203,8 +221,13 @@ export async function runInstaller(args, { home = os.homedir(), stdin = process.
   const unitPath = path.join(home, ".config", "systemd", "user", UNIT);
   const keyPath = path.join(home, IDENTITY_REL);
   systemdLiteral(home);
-  preflight(options.action);
+  const host = await preflight(options.action);
   if (options.action !== "uninstall") trustedEndpoint(options.endpoint);
+  if (host === "wsl2" && options.action !== "uninstall") {
+    stdout.write("WSL2 detected. This systemd user service cannot wake a stopped WSL distribution. " +
+      "After Windows restart, open the distribution and verify the v2 service; " +
+      "while WSL is stopped, the device is unavailable. See docs/remote-control/WSL2-V2-LIFECYCLE.md.\n");
+  }
   const previous = await readOwnedUnit(unitPath);
 
   if (options.action === "uninstall") {
@@ -270,6 +293,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       "The systemd user manager or requested user service action is unavailable.",
       "Missing or unusable systemd-analyze.",
       "Could not compile the existing C session supervisor.",
+      "WSL1 is not supported; use WSL2 with systemd.",
     ];
     const reason = error instanceof Error && safeErrors.includes(error.message)
       ? error.message + " " : "";

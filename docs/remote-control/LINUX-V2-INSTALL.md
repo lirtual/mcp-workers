@@ -55,3 +55,6 @@ Only sanitized state names are written to the service journal, never private key
 ## Real-host acceptance still needed
 
 Before closing #55, obtain separately authorized nonproduction evidence from a clean Linux host: wrong Node/compiler/user-bus fails before pairing, key ownership/modes, one-use code and fingerprint review + terminal challenge, signed WSS first read, stop/start/reboot-session reconnect, failure after pairing + explicit resume, upgrade/uninstall rollback and unchanged v1 services. #47/#50/#52 also require Cloudflare-hosted WSS acceptance; #57 requires five devices and 72 hours. These tests have **not** been run by merely merging code or passing mocked CI. No automatic production deployment or secret/config mutation follows from this document.
+
+
+For Microsoft WSL2 installation, lifecycle caveats, and explicit manual startup after Windows reboot, see [WSL2 v2 lifecycle](./WSL2-V2-LIFECYCLE.md). The Linux installer automatically warns when it detects a WSL2 kernel; it does not register a Windows scheduled task or keep WSL running.
