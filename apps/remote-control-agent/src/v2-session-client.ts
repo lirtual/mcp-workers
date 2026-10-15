@@ -159,7 +159,12 @@ export async function openAuthenticatedDeviceSocket(
     };
     const onAbort = () => fail("WSS login aborted.");
     const onError = () => fail("WSS authentication failed.");
-    const onClose = () => fail("WSS authentication was rejected.");
+    const onClose = (event: Event) => {
+      // A policy close can race the browser/Node OPEN event. Treat an early
+      // 1008 exactly like a post-open policy rejection, not a retryable outage.
+      const policyDenied = (event as CloseEvent).code === 1008;
+      fail("WSS authentication was rejected.", policyDenied);
+    };
     const timeout = setTimeout(() => fail("WSS login timed out."), 10_000);
     socket.addEventListener("open", onOpen);
     socket.addEventListener("error", onError);
@@ -168,7 +173,7 @@ export async function openAuthenticatedDeviceSocket(
     if (signal?.aborted) { onAbort(); return; }
     // Protect the factory's extremely rare already-open/closed synchronous case.
     if (socket.readyState === WebSocket.OPEN) onOpen();
-    else if (socket.readyState === WebSocket.CLOSED) onClose();
+    else if (socket.readyState === WebSocket.CLOSED) onClose(new Event("close"));
   });
   return { device_id: deviceId, socket };
 }

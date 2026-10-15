@@ -513,3 +513,34 @@ test("stopping unknown-outcome identity recovery cannot create a local device ID
     await assert.rejects(readFile(keyPath + ".device-id", "utf8"), { code: "ENOENT" });
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+test("policy close 1008 during WSS handshake rejects the device without repeat challenges", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "rc-v2-preopen-policy-"));
+  const keyPath = path.join(dir, "device.pem");
+  const deviceId = randomUUID();
+  let challenges = 0;
+  let sockets = 0;
+  const states: string[] = [];
+  try {
+    await writeFile(keyPath, newEnrollment("preopen-policy").privateKeyPem, { mode: 0o600 });
+    await writeFile(keyPath + ".device-id", deviceId + "\n", { mode: 0o600 });
+    await maintainAuthenticatedDeviceSession("https://agent.example/", keyPath, new AbortController().signal, {
+      send: async () => {
+        challenges++;
+        return Response.json({ device_id: deviceId, nonce: "A".repeat(24) });
+      },
+      makeSocket: () => {
+        sockets++;
+        const socket = new FakeSocket();
+        socket.readyState = WebSocket.CONNECTING;
+        queueMicrotask(() => socket.emitClose(1008, "revoked"));
+        return socket as unknown as WebSocket;
+      },
+      wait: async () => { assert.fail("Policy denial must not reconnect after pre-open close"); },
+      onState: status => states.push(status),
+    });
+    assert.equal(challenges, 1);
+    assert.equal(sockets, 1);
+    assert.deepEqual(states, ["rejected"]);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
