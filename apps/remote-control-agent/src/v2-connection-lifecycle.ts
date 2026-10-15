@@ -1,5 +1,5 @@
 /**
- * v2 Agent lifecycle with an explicit, read_file-only test capability.
+ * v2 Agent lifecycle with an explicitly enabled, bounded read-only capability.
  *
  * Heartbeats are answered by the Durable Object Hibernation auto-response,
  * without waking the DO for normal liveness checks. Remote reads are disabled
@@ -7,7 +7,7 @@
  */
 import { DeviceSessionRejectedError, openAuthenticatedDeviceSocket } from "./v2-session-client.ts";
 import { executeReadTool } from "./read-execution.ts";
-import { parseLocalRead } from "./local-read.ts";
+import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo } from "./local-read.ts";
 import { SearchSessions } from "./search.ts";
 
 export type SocketEnd = "aborted" | "closed" | "offline" | "policy";
@@ -25,7 +25,7 @@ export function monitorDeviceSocket(
   timing: { intervalMs: number; timeoutMs: number; authIntervalMs?: number } = {
     intervalMs: HEARTBEAT_INTERVAL_MS, timeoutMs: HEARTBEAT_TIMEOUT_MS,
   },
-  readFile?: (args: unknown, signal: AbortSignal) => Promise<string | null>,
+  readOnly?: (tool: string, args: unknown, signal: AbortSignal) => Promise<string | null>,
 ): Promise<SocketEnd> {
   const authEvery = timing.authIntervalMs ?? AUTH_INTERVAL_MS;
   if (!Number.isFinite(timing.intervalMs) || timing.intervalMs <= 0 ||
@@ -85,8 +85,8 @@ export function monitorDeviceSocket(
         authWatchdog = undefined;
         return;
       }
-      if (typeof event.data === "string" && event.data.length <= 8192 &&
-          event.data.startsWith("{") && readFile) {
+      if (typeof event.data === "string" && event.data.length <= 65_536 &&
+          event.data.startsWith("{") && readOnly) {
         let request: Record<string, unknown> | undefined;
         try {
           const decoded = JSON.parse(event.data) as unknown;
@@ -94,14 +94,20 @@ export function monitorDeviceSocket(
             request = decoded as Record<string, unknown>;
           }
         } catch { /* Not an authorized read frame. */ }
-        if (request?.kind === "read" && request.tool === "read_file" &&
+        const readParsers: Record<string, (args: unknown) => unknown> = {
+          read_file: parseLocalRead, read_multiple_files: parseReadMultiple,
+          list_directory: parseListDirectory, get_file_info: parseFileInfo,
+        };
+        if (request?.kind === "read" && typeof request.tool === "string" &&
+            Object.hasOwn(readParsers, request.tool) &&
             typeof request.request_id === "string" &&
             /^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(request.request_id) &&
-            Object.keys(request).length === 4 && parseLocalRead(request.arguments) &&
+            Object.keys(request).length === 4 && readParsers[request.tool]?.(request.arguments) &&
             readsInFlight < 4) {
           readsInFlight++;
           const id = request.request_id;
-          void Promise.resolve().then(() => readFile(request.arguments, signal))
+          const tool = request.tool;
+          void Promise.resolve().then(() => readOnly(tool, request.arguments, signal))
             .then(text => {
               if (settled || signal.aborted || socket.readyState !== WebSocket.OPEN) return;
               const valid = typeof text === "string" && text.length <= 65_536;
@@ -184,11 +190,11 @@ export async function maintainAuthenticatedDeviceSession(
       const connectedAt = performance.now();
       options.onState?.("connected");
       const outcome = await monitorDeviceSocket(connection.socket, signal, options.heartbeat,
-        options.readOnly ? async (args, requestSignal) => {
+        options.readOnly ? async (tool, args, requestSignal) => {
           const searches = new SearchSessions();
           try {
             // Reuse the existing v1 validated read engine, never the Shell/mutation dispatcher.
-            const reply = await executeReadTool("read_file", args, searches, requestSignal);
+            const reply = await executeReadTool(tool, args, searches, requestSignal);
             return reply.kind === "completed" ? reply.text : null;
           } finally { await searches.close(); }
         } : undefined);

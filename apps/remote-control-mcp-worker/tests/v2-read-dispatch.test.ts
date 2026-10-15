@@ -57,8 +57,8 @@ test("MCP read_file with explicit device_id routes through DO WSS only to the ap
     const searches = new SearchSessions();
     const monitor = monitorDeviceSocket(client as unknown as WebSocket, controllers[index]!.signal,
       { intervalMs: 60_000, timeoutMs: 10_000 },
-      async (args, signal) => {
-        const reply = await executeReadTool("read_file", args, searches, signal);
+      async (tool, args, signal) => {
+        const reply = await executeReadTool(tool, args, searches, signal);
         return reply.kind === "completed" ? reply.text : null;
       });
     monitors.push(monitor.finally(() => searches.close()));
@@ -89,16 +89,18 @@ test("MCP read_file with explicit device_id routes through DO WSS only to the ap
     REMOTE_CONTROL_DEVICE: { fetch() { legacyCalls++; throw new Error("v1 must not be used"); } },
     V2_OWNER,
   } as unknown as Env;
-  async function call(device_id: unknown, token = "portal-test") {
+  async function callTool(name: string, args: Record<string, unknown>, token = "portal-test") {
     const res = await worker.fetch(new Request("https://mcp.test/mcp", {
       method: "POST",
       headers: { "content-type": "application/json", authorization: "Bearer " + token },
       body: JSON.stringify({ jsonrpc: "2.0", id: 4, method: "tools/call", params: {
-        name: "read_file", arguments: { device_id, path: file, offset: 0, length: 1 },
+        name, arguments: args,
       } }),
     }), env);
     return { http: res.status, body: await res.text() };
   }
+  const call = (device_id: unknown, token = "portal-test") =>
+    callTool("read_file", { device_id, path: file, offset: 0, length: 1 }, token);
   try {
     const forbidden = await call(a, "wrong");
     assert.equal(forbidden.http, 401);
@@ -108,13 +110,31 @@ test("MCP read_file with explicit device_id routes through DO WSS only to the ap
     assert.match(success.body, /private-A-marker/);
     assert.deepEqual(fromServer, [a]);
     assert.deepEqual(sentToServer, [a]);
+    const many = await callTool("read_files", { device_id: a, paths: [file] });
+    assert.match(many.body, /private-A-marker/);
+    const dirList = await callTool("list_directory", { device_id: a, path: dir, depth: 1 });
+    assert.match(dirList.body, /marker.txt/);
+    const statInfo = await callTool("stat_file", { device_id: a, path: file });
+    assert.match(statInfo.body, /marker.txt|size|regular/);
+    assert.deepEqual(fromServer, [a,a,a,a]);
+    assert.deepEqual(sentToServer, [a,a,a,a]);
+    const onDeviceB = await callTool("stat_file", { device_id: b, path: file });
+    assert.match(onDeviceB.body, /size/);
+    assert.deepEqual(fromServer, [a,a,a,a,b]);
+    assert.deepEqual(sentToServer, [a,a,a,a,b]);
+    const badPath = await callTool("read_files", { device_id: a, paths: ["https://example.invalid/"] });
+    assert.match(badPath.body, /rejected/);
+    const badDepth = await callTool("list_directory", { device_id: a, path: dir, depth: 100 });
+    assert.match(badDepth.body, /rejected/);
+    const badInfo = await callTool("stat_file", { device_id: a, path: file, command: "echo nope" });
+    assert.match(badInfo.body, /rejected/);
     const absent = await call(unknown);
     assert.doesNotMatch(absent.body, /private-A-marker/);
     assert.match(absent.body, /unavailable/);
     const invalid = await call("../b");
     assert.match(invalid.body, /valid device_id/);
     assert.equal(legacyCalls, 0);
-    assert.equal(fromServer.length, 1, "unknown and malformed device must not be dispatched");
+    assert.equal(fromServer.length, 5, "bad arguments and unknown targets must not reach any Agent");
   } finally {
     controllers.forEach(c => c.abort());
     await Promise.all(monitors);
@@ -122,7 +142,7 @@ test("MCP read_file with explicit device_id routes through DO WSS only to the ap
   }
 });
 
-test("Agent only accepts bounded read_file frames when explicitly enabled", async () => {
+test("Agent only accepts bounded read-only frames when explicitly enabled", async () => {
   const controller = new AbortController();
   const client = new ClientSocket(() => {});
   let called = 0;

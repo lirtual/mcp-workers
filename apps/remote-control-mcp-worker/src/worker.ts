@@ -7,7 +7,10 @@ function pendingOwner(env: Env): DurableObjectStub | null {
   return ns ? ns.get(ns.idFromName("single-owner-v2")) : null;
 }
 
-async function readPairedDeviceFile(env: Env, id: unknown, args: unknown): Promise<Response> {
+const V2_READ_TOOLS = new Set(["read_file", "read_files", "list_directory", "stat_file"]);
+const V2_AGENT_READ_TOOLS = new Set(["read_file", "read_multiple_files", "list_directory", "get_file_info"]);
+
+async function callPairedDeviceRead(env: Env, id: unknown, name: string, args: unknown): Promise<Response> {
   if (!args || typeof args !== "object" || Array.isArray(args)) {
     return toolError(id, "The requested tool call was rejected.");
   }
@@ -15,14 +18,16 @@ async function readPairedDeviceFile(env: Env, id: unknown, args: unknown): Promi
   if (typeof device_id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(device_id)) {
     return toolError(id, "An explicit valid device_id is required.");
   }
-  const read = parseLocalRead(readArgs);
-  if (!read) return toolError(id, "The requested tool call was rejected.");
+  const parsed = parseLocalCall(name, readArgs);
+  if (!parsed || !V2_AGENT_READ_TOOLS.has(parsed.tool)) {
+    return toolError(id, "The requested tool call was rejected.");
+  }
   const owner = pendingOwner(env);
   if (!owner) return toolError(id, "The requested v2 device is unavailable.");
   try {
     const response = await owner.fetch("https://v2.internal/read", {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ device_id, tool: "read_file", arguments: read }),
+      body: JSON.stringify({ device_id, tool: parsed.tool, arguments: upstreamArguments(parsed) }),
     });
     if (!response.ok) return toolError(id, "The requested v2 device is unavailable.");
     const result = await response.json() as { status?: unknown; text?: unknown };
@@ -226,6 +231,7 @@ const READ_MULTIPLE_TOOL = {
   inputSchema: {
     type: "object",
     properties: {
+      device_id: { type: "string", description: "Explicit v2 device ID; omit for v1." },
       paths: {
         type: "array",
         minItems: 1,
@@ -253,6 +259,7 @@ const LIST_DIRECTORY_TOOL = {
   inputSchema: {
     type: "object",
     properties: {
+      device_id: { type: "string", description: "Explicit v2 device ID; omit for v1." },
       path: { type: "string", description: "Local directory path. URL schemes are rejected." },
       depth: { type: "integer", minimum: 1, maximum: 3, description: "Optional directory depth, from 1 to 3." },
     },
@@ -274,6 +281,7 @@ const FILE_INFO_TOOL = {
   inputSchema: {
     type: "object",
     properties: {
+      device_id: { type: "string", description: "Explicit v2 device ID; omit for v1." },
       path: { type: "string", description: "Local filesystem path. URL schemes are rejected." },
     },
     required: ["path"],
@@ -1007,9 +1015,10 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
       return toolError(rpcMessage.id, "The requested tool call was rejected.");
     }
     const call = params as { name?: unknown; arguments?: unknown };
-    if (call.name === "read_file" && call.arguments && typeof call.arguments === "object" &&
-        !Array.isArray(call.arguments) && Object.hasOwn(call.arguments, "device_id")) {
-      return readPairedDeviceFile(env, rpcMessage.id, call.arguments);
+    if (typeof call.name === "string" && V2_READ_TOOLS.has(call.name) &&
+        call.arguments && typeof call.arguments === "object" && !Array.isArray(call.arguments) &&
+        Object.hasOwn(call.arguments, "device_id")) {
+      return callPairedDeviceRead(env, rpcMessage.id, call.name, call.arguments);
     }
     if (call.name === "list_devices" && pendingOwner(env)) {
       return listPairedDevices(env, rpcMessage.id, call.arguments ?? {});

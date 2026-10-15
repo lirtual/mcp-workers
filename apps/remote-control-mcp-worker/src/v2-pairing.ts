@@ -13,7 +13,7 @@ const CONFIRM_DOMAIN = "remote-control:v2:local-confirm:";
 const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 const te = new TextEncoder();
 import { issueSessionChallenge, authorizeSession, acceptAuthenticatedSocket, handleIdleSocketMessage, listApprovedDevices, type V2Device } from "./v2-session.ts";
-import { parseLocalRead } from "./local-read.ts";
+import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo } from "./local-read.ts";
 
 export interface PendingDevice {
   name: string;
@@ -232,9 +232,9 @@ export async function completeLocalConfirmation(storage: PendingStorage, data: u
   });
 }
 
-async function limitedJson(request: Request): Promise<unknown> {
+async function limitedJson(request: Request, maxBytes = MAX_BOOTSTRAP_BODY): Promise<unknown> {
   const length = Number(request.headers.get("content-length"));
-  if (Number.isFinite(length) && length > MAX_BOOTSTRAP_BODY) throw new Error("oversize");
+  if (Number.isFinite(length) && length > maxBytes) throw new Error("oversize");
   if (!request.body) throw new Error("missing");
   const reader = request.body.getReader();
   let bytes = 0;
@@ -244,7 +244,7 @@ async function limitedJson(request: Request): Promise<unknown> {
       const { done, value } = await reader.read();
       if (done) break;
       bytes += value.byteLength;
-      if (bytes > MAX_BOOTSTRAP_BODY) throw new Error("oversize");
+      if (bytes > maxBytes) throw new Error("oversize");
       parts.push(value);
     }
   } finally { reader.releaseLock(); }
@@ -264,16 +264,21 @@ export class V2OwnerCoordinator {
 
   private async readFile(request: Request): Promise<Response> {
     let body: unknown;
-    try { body = await limitedJson(request); }
+    try { body = await limitedJson(request, 65_536); }
     catch { return Response.json({ error: "bad_request" }, { status: 400 }); }
     if (!body || typeof body !== "object" || Array.isArray(body)) {
       return Response.json({ error: "bad_request" }, { status: 400 });
     }
     const arg = body as Record<string, unknown>;
     const deviceId = arg.device_id;
-    if (Object.keys(arg).length !== 3 || arg.tool !== "read_file" ||
+    const parsers: Record<string, (args: unknown) => unknown> = {
+      read_file: parseLocalRead, read_multiple_files: parseReadMultiple,
+      list_directory: parseListDirectory, get_file_info: parseFileInfo,
+    };
+    if (Object.keys(arg).length !== 3 || typeof arg.tool !== "string" ||
+        !Object.hasOwn(parsers, arg.tool) ||
         typeof deviceId !== "string" || !/^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(deviceId) ||
-        !parseLocalRead(arg.arguments)) {
+        !parsers[arg.tool]?.(arg.arguments)) {
       return Response.json({ error: "bad_request" }, { status: 400 });
     }
     if (this.pendingReads.size >= 4) return Response.json({ error: "busy" }, { status: 503 });
@@ -314,7 +319,7 @@ export class V2OwnerCoordinator {
       });
       try {
         selected.send(JSON.stringify({
-          kind: "read", request_id: requestId, tool: "read_file", arguments: arg.arguments,
+          kind: "read", request_id: requestId, tool: arg.tool, arguments: arg.arguments,
         }));
       } catch {
         this.pendingReads.get(requestId)?.resolve(Response.json({ error: "offline" }, { status: 503 }));
