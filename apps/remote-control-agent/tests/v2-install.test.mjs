@@ -15,7 +15,7 @@ const example = {
 
 test("minimal Linux v2 CLI supports install, explicit paired-key resume, upgrade, and safe uninstall", () => {
   assert.deepEqual(parseInstallArgs(["--endpoint", "https://rc.example.org", "--name", "office"]), {
-    action: "install", endpoint: "https://rc.example.org", name: "office",
+    action: "install", endpoint: "https://rc.example.org", name: "office", foreground: false,
   });
   assert.equal(parseInstallArgs(["--resume", "--endpoint", "https://rc.example.org"]).action, "resume");
   assert.equal(parseInstallArgs(["--upgrade", "--endpoint", "https://rc.example.org"]).action, "upgrade");
@@ -93,4 +93,32 @@ test("WSL2 shares the Linux-only Agent, with no Windows Shell or host auto-wakeu
   const unit = renderV2Service(example);
   assert.ok(!unit.includes("ExecStart=/mnt/c/"));
   assert.ok(!unit.includes("REMOTE_CONTROL_DEVICE_TOKEN"));
+});
+
+test("foreground is opt-in and cannot uninstall, upgrade, or duplicate flags", () => {
+  assert.deepEqual(parseInstallArgs([
+    "--foreground", "--endpoint", "https://rc.example.org", "--name", "grokbot",
+  ]), { action: "install", endpoint: "https://rc.example.org", name: "grokbot", foreground: true });
+  assert.equal(parseInstallArgs(["--resume", "--foreground", "--endpoint", "https://rc.example.org"]).action, "resume");
+  for (const args of [
+    ["--foreground", "--uninstall"],
+    ["--upgrade", "--foreground", "--endpoint", "https://rc.example.org"],
+    ["--foreground", "--foreground", "--endpoint", "https://rc.example.org"],
+    ["--foreground"],
+  ]) assert.throws(() => parseInstallArgs(args));
+});
+
+test("foreground reuses signed read-only v2 entrypoint and skips systemd preflight", async () => {
+  const src = await readFile(path.join(path.dirname(fileURLToPath(import.meta.url)),
+    "..", "scripts", "install-v2.mjs"), "utf8");
+  assert.match(src, /if \(!foreground\) run\("systemctl", \["--user", "show-environment"\]\)/);
+  assert.match(src, /if \(!foreground\) run\("systemd-analyze"/);
+  assert.match(src, /run\("cc", \["--version"\]\)/);
+  assert.match(src, /run\(process.execPath, \[compilerScript\]\)/);
+  assert.match(src, /if \(options.foreground\)/);
+  assert.match(src, /await startForeground\(\{ endpoint: trustedEndpoint\(options.endpoint\), keyPath \}\)/);
+  assert.match(src, /await import\("\.\.\/src\/v2-main\.ts"\)/);
+  assert.match(src, /Foreground refuses to compete with an existing v2 systemd unit/);
+  assert.match(src, /ownerOnly\(keyPath \+ "\.device-id", 0o600\)/);
+  assert.doesNotMatch(src, /nohup|supervisord|cron|pm2/);
 });

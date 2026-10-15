@@ -6,6 +6,8 @@
  * node apps/remote-control-agent/scripts/install-v2.mjs --resume --endpoint https://EXAMPLE/
  * node apps/remote-control-agent/scripts/install-v2.mjs --upgrade --endpoint https://EXAMPLE/
  * node apps/remote-control-agent/scripts/install-v2.mjs --uninstall
+ * node apps/remote-control-agent/scripts/install-v2.mjs --foreground --endpoint https://EXAMPLE/ --name TEST
+ * node apps/remote-control-agent/scripts/install-v2.mjs --foreground --resume --endpoint https://EXAMPLE/
  */
 import { spawnSync } from "node:child_process";
 import { constants } from "node:fs";
@@ -36,10 +38,13 @@ const IDENTITY_REL = path.join(".local", "share", "mcp-workers", "remote-control
 const UINT = /^[a-zA-Z0-9._/+-]+$/;
 
 export function parseInstallArgs(argv) {
-  const result = { action: "install", endpoint: undefined, name: undefined };
+  const result = { action: "install", endpoint: undefined, name: undefined, foreground: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === "--upgrade" || arg === "--uninstall" || arg === "--resume") {
+    if (arg === "--foreground") {
+      if (result.foreground) throw new Error("Duplicate foreground option.");
+      result.foreground = true;
+    } else if (arg === "--upgrade" || arg === "--uninstall" || arg === "--resume") {
       if (result.action !== "install") throw new Error("Choose one installer action.");
       result.action = arg.slice(2);
     } else if (arg === "--endpoint" || arg === "--name") {
@@ -48,6 +53,9 @@ export function parseInstallArgs(argv) {
     } else {
       throw new Error("Unknown installer option.");
     }
+  }
+  if (result.foreground && (result.action === "uninstall" || result.action === "upgrade")) {
+    throw new Error("Foreground supports first pairing or --resume only.");
   }
   if (result.action !== "uninstall" && !result.endpoint) {
     throw new Error("Provide --endpoint (a trusted HTTPS origin).");
@@ -142,7 +150,7 @@ async function ownerOnly(file, expectedMode) {
   }
 }
 
-async function preflight(action) {
+async function preflight(action, foreground) {
   if (process.platform !== "linux" || process.getuid?.() === 0 ||
       Number(process.versions.node.split(".")[0]) !== 24) {
     throw new Error("Install as a non-root Linux user with Node.js 24.");
@@ -156,9 +164,11 @@ async function preflight(action) {
   if (host === "wsl1" && action !== "uninstall") {
     throw new Error("WSL1 is not supported; use WSL2 with systemd.");
   }
-  run("systemctl", ["--user", "show-environment"]);
+  // Foreground testing is deliberately supervisor-free: same Node24/C
+  // helper and identity constraints, no user bus, unit or daemon required.
+  if (!foreground) run("systemctl", ["--user", "show-environment"]);
   if (action === "uninstall") return host; // No compiler required for removal.
-  run("systemd-analyze", ["--user", "--version"]);
+  if (!foreground) run("systemd-analyze", ["--user", "--version"]);
   run("cc", ["--version"]);
   run(process.execPath, [compilerScript]);
   return host;
@@ -216,19 +226,34 @@ async function installUnit(unitPath, content, previous) {
   }
 }
 
-export async function runInstaller(args, { home = os.homedir(), stdin = process.stdin, stdout = process.stdout } = {}) {
+async function launchForeground({ endpoint, keyPath }) {
+  // Reuse the exact same signed-WSS Agent entrypoint as the systemd unit.
+  // Import keeps SIGINT/SIGTERM handling in v2-main and no extra process,
+  // job runner, local port or unattended supervisor is installed.
+  process.env.REMOTE_CONTROL_V2_ENDPOINT = endpoint;
+  process.env.REMOTE_CONTROL_V2_KEY_PATH = keyPath;
+  await import("../src/v2-main.ts");
+}
+
+export async function runInstaller(args, {
+  home = os.homedir(), stdin = process.stdin, stdout = process.stdout,
+  startForeground = launchForeground,
+} = {}) {
   const options = parseInstallArgs(args);
   const unitPath = path.join(home, ".config", "systemd", "user", UNIT);
   const keyPath = path.join(home, IDENTITY_REL);
   systemdLiteral(home);
-  const host = await preflight(options.action);
+  const host = await preflight(options.action, options.foreground);
   if (options.action !== "uninstall") trustedEndpoint(options.endpoint);
-  if (host === "wsl2" && options.action !== "uninstall") {
+  if (host === "wsl2" && !options.foreground && options.action !== "uninstall") {
     stdout.write("WSL2 detected. This systemd user service cannot wake a stopped WSL distribution. " +
       "After Windows restart, open the distribution and verify the v2 service; " +
       "while WSL is stopped, the device is unavailable. See docs/remote-control/WSL2-V2-LIFECYCLE.md.\n");
   }
   const previous = await readOwnedUnit(unitPath);
+  if (options.foreground && previous) {
+    throw new Error("Foreground refuses to compete with an existing v2 systemd unit.");
+  }
 
   if (options.action === "uninstall") {
     if (!previous) throw new Error("The dedicated v2 service is not installed.");
@@ -274,6 +299,11 @@ export async function runInstaller(args, { home = os.homedir(), stdin = process.
   }
   await ownerOnly(keyPath, 0o600);
   await ownerOnly(keyPath + ".device-id", 0o600);
+  if (options.foreground) {
+    stdout.write("v2 identity ready. Starting foreground Agent; closing this terminal or suspending the container disconnects it. No systemd service is created.\n");
+    await startForeground({ endpoint: trustedEndpoint(options.endpoint), keyPath });
+    return;
+  }
   await mkdir(path.dirname(unitPath), { recursive: true, mode: 0o700 });
   const rendered = renderV2Service({
     node: process.execPath, home, repoRoot: path.resolve(packageRoot, "..", ".."),
@@ -294,6 +324,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       "Missing or unusable systemd-analyze.",
       "Could not compile the existing C session supervisor.",
       "WSL1 is not supported; use WSL2 with systemd.",
+      "Foreground supports first pairing or --resume only.",
     ];
     const reason = error instanceof Error && safeErrors.includes(error.message)
       ? error.message + " " : "";
