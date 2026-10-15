@@ -121,13 +121,14 @@ test("hibernation-style reconstruction checks durable epoch and forbids every re
     const closes: Array<{ code: number; reason: string }> = [];
     const obj = {
       deserializeAttachment() { return { device_id: id, epoch }; },
+      serializeAttachment(_attachment: unknown) { /* mocked Hibernation persistence */ },
       close(code: number, reason: string) { closes.push({ code, reason }); },
     } as unknown as WebSocket;
     return { obj, closes };
   }
   const state = { storage } as unknown as DurableObjectState;
   const old = socket("old-epoch");
-  await handleIdleSocketMessage(state, old.obj, JSON.stringify({ type: "execute", tool: "write_file" }));
+  await handleIdleSocketMessage(state, old.obj, "rc-v2:auth:" + "a".repeat(32));
   assert.deepEqual(old.closes, [{ code: 1008, reason: "revoked" }]);
   const current = socket("new-epoch");
   await handleIdleSocketMessage(state, current.obj, JSON.stringify({ type: "execute", tool: "start_process" }));
@@ -135,7 +136,7 @@ test("hibernation-style reconstruction checks durable epoch and forbids every re
   const revoked = entries.get("device:" + id) as Record<string, unknown>;
   entries.set("device:" + id, { ...revoked, revoked: true });
   const afterRevoke = socket("new-epoch");
-  await handleIdleSocketMessage(state, afterRevoke.obj, "{}");
+  await handleIdleSocketMessage(state, afterRevoke.obj, "rc-v2:auth:" + "b".repeat(32));
   assert.deepEqual(afterRevoke.closes, [{ code: 1008, reason: "revoked" }]);
 });
 
@@ -152,9 +153,11 @@ test("periodic authorization checks the persisted device and epoch after hiberna
   const createSocket = (epoch: string) => {
     const messages: string[] = [];
     const closes: Array<{ code: number; reason: string }> = [];
+    let attachment: object = { device_id: id, epoch };
     return {
       value: {
-        deserializeAttachment: () => ({ device_id: id, epoch }),
+        deserializeAttachment: () => attachment,
+        serializeAttachment: (next: object) => { attachment = next; },
         send: (value: string) => messages.push(value),
         close: (code: number, reason: string) => closes.push({ code, reason }),
       } as unknown as WebSocket,
@@ -183,4 +186,114 @@ test("periodic authorization checks the persisted device and epoch after hiberna
   await handleIdleSocketMessage(state, revoked.value, "rc-v2:auth:" + "c".repeat(32));
   assert.deepEqual(revoked.messages, []);
   assert.deepEqual(revoked.closes, [{ code: 1008, reason: "revoked" }]);
+});
+
+
+test("invalid or binary WSS frames never trigger durable storage reads or attachment access", async () => {
+  let storageReads = 0;
+  const state = {
+    storage: { get: async () => { storageReads++; throw new Error("must not read"); } },
+  } as unknown as DurableObjectState;
+  for (const message of [
+    "{}",
+    JSON.stringify({ tool: "start_process", arguments: {} }),
+    "rc-v2:auth",
+    "rc-v2:auth:invalid",
+    "rc-v2:auth:" + "b".repeat(2048),
+    new Uint8Array(2048).buffer,
+  ]) {
+    const closes: Array<{ code: number; reason: string }> = [];
+    const socket = {
+      deserializeAttachment: () => { throw new Error("must not deserialize"); },
+      close: (code: number, reason: string) => closes.push({ code, reason }),
+    } as unknown as WebSocket;
+    await handleIdleSocketMessage(state, socket, message);
+    assert.deepEqual(closes, [{ code: 1008, reason: "no remote operations enabled" }]);
+  }
+  assert.equal(storageReads, 0, "invalid frames must never consume SQLite reads");
+});
+
+test("rate-limited WSS authority probe is fenced by Hibernation socket attachment", async () => {
+  const id = randomUUID();
+  let reads = 0;
+  const state = {
+    storage: { get: async (key: string) => {
+      reads++;
+      if (key === "session:epoch:" + id) return "current";
+      if (key === "device:" + id) return { device_id: id, revoked: false };
+      return undefined;
+    } },
+  } as unknown as DurableObjectState;
+  let attachment: { device_id: string; epoch: string; last_auth_check_at?: number } = {
+    device_id: id, epoch: "current",
+  };
+  const messages: string[] = [];
+  const closes: Array<{ code: number; reason: string }> = [];
+  const socket = {
+    deserializeAttachment: () => attachment,
+    serializeAttachment: (next: typeof attachment) => { attachment = next; },
+    send: (value: string) => messages.push(value),
+    close: (code: number, reason: string) => closes.push({ code, reason }),
+  } as unknown as WebSocket;
+  await handleIdleSocketMessage(state, socket, "rc-v2:auth:" + "a".repeat(32));
+  assert.deepEqual(messages, ["rc-v2:auth-ok:" + "a".repeat(32)]);
+  assert.equal(reads, 2);
+  assert.equal(typeof attachment.last_auth_check_at, "number");
+
+  // Simulate a re-created DO reading the same persisted attachment. A second
+  // tag does not bypass the rate gate or cause any additional storage reads.
+  await handleIdleSocketMessage(state, socket, "rc-v2:auth:" + "b".repeat(32));
+  assert.deepEqual(closes, [{ code: 1008, reason: "authorization rate limited" }]);
+  assert.equal(reads, 2);
+  assert.equal(messages.length, 1);
+
+  // An auth check after the 30-second gate on a new socket remains valid.
+  attachment = { device_id: id, epoch: "current", last_auth_check_at: Date.now() - 31_000 };
+  await handleIdleSocketMessage(state, socket, "rc-v2:auth:" + "c".repeat(32));
+  assert.deepEqual(messages[1], "rc-v2:auth-ok:" + "c".repeat(32));
+  assert.equal(reads, 4);
+});
+
+test("DO storage outage fails closed with retryable 1011 instead of unhandled WSS event", async () => {
+  const id = randomUUID();
+  const state = {
+    storage: { get: async () => { throw new Error("private storage failure"); } },
+  } as unknown as DurableObjectState;
+  const sent: string[] = [];
+  const closes: Array<{ code: number; reason: string }> = [];
+  let checkpointed = false;
+  const socket = {
+    deserializeAttachment: () => ({ device_id: id, epoch: "current" }),
+    serializeAttachment: () => { checkpointed = true; },
+    send: (value: string) => sent.push(value),
+    close: (code: number, reason: string) => closes.push({ code, reason }),
+  } as unknown as WebSocket;
+  await handleIdleSocketMessage(state, socket, "rc-v2:auth:" + "d".repeat(32));
+  assert.equal(checkpointed, true);
+  assert.deepEqual(sent, []);
+  assert.deepEqual(closes, [{ code: 1011, reason: "authorization unavailable" }]);
+});
+
+
+test("corrupted Hibernation socket attachment fails closed without running the message handler", async () => {
+  const id = randomUUID();
+  let reads = 0;
+  const state = {
+    storage: { get: async () => { reads++; return undefined; } },
+  } as unknown as DurableObjectState;
+  for (const stage of ["deserialize", "serialize"] as const) {
+    const closes: Array<{ code: number; reason: string }> = [];
+    const socket = {
+      deserializeAttachment: () => {
+        if (stage === "deserialize") throw new Error("corrupted attachment");
+        return { device_id: id, epoch: "current" };
+      },
+      serializeAttachment: () => { throw new Error("cannot persist attachment"); },
+      send: () => { assert.fail("Invalid attachment must not authorize"); },
+      close: (code: number, reason: string) => closes.push({ code, reason }),
+    } as unknown as WebSocket;
+    await handleIdleSocketMessage(state, socket, "rc-v2:auth:" + "e".repeat(32));
+    assert.deepEqual(closes, [{ code: 1011, reason: "authorization unavailable" }]);
+  }
+  assert.equal(reads, 0);
 });
