@@ -67,3 +67,17 @@ test("fresh pending request cannot exhaust active slots forever after expiry", a
   assert.equal((await registerPending(api as never, newEnrollment("two").request)).status, 202);
   assert.equal(records.has("pending:" + first.code_verifier), false);
 });
+
+
+test("expired same-code verifier may be re-enrolled but active duplicate is refused", async () => {
+  const { api, records } = inMemoryStorage();
+  const request = newEnrollment("replace-expired").request;
+  assert.equal((await registerPending(api as never, request)).status, 202);
+  assert.equal((await registerPending(api as never, request)).status, 409);
+  const key = "pending:" + request.code_verifier;
+  records.set(key, { ...(records.get(key) as object), expires_at: Date.now() - 1 });
+  const newer = (await registerPending(api as never, request));
+  assert.equal(newer.status, 202);
+  assert.ok((records.get(key) as { expires_at: number }).expires_at > Date.now());
+  assert.equal([...records.keys()].filter(k => k.startsWith("pending:")).length, 1);
+});

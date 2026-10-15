@@ -112,7 +112,11 @@ export async function registerPending(storage: PendingStorage, payload: unknown)
     }
     if (active >= MAX_PENDING) return { status: 429, body: { error: "pending_capacity" } };
     const key = "pending:" + verified.verifier;
-    if (existing.has(key)) return { status: 409, body: { error: "already_pending" } };
+    // Expired entries were deleted above; permit reuse of their verifier.
+    // Reject only an active record so stale pending state cannot block retries.
+    if (existing.get(key)?.expires_at && existing.get(key)!.expires_at > Date.now()) {
+      return { status: 409, body: { error: "already_pending" } };
+    }
     await txn.put(key, verified.record);
     return { status: 202, body: { status: "pending", expires_at: verified.record.expires_at } };
   });
