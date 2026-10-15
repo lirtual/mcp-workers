@@ -544,3 +544,34 @@ test("policy close 1008 during WSS handshake rejects the device without repeat c
     assert.deepEqual(states, ["rejected"]);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+
+test("disconnect aborts in-flight read-only work without aborting the long-lived Agent", async () => {
+  const socket = new FakeSocket();
+  const session = new AbortController();
+  let readStarted!: () => void;
+  const started = new Promise<void>(resolve => { readStarted = resolve; });
+  let readSignal: AbortSignal | undefined;
+  const run = monitorDeviceSocket(
+    socket as unknown as WebSocket, session.signal,
+    { intervalMs: 60_000, timeoutMs: 10_000 },
+    async (_tool, _args, signal) => {
+      readSignal = signal;
+      readStarted();
+      await new Promise<void>(resolve => {
+        if (signal.aborted) { resolve(); return; }
+        signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+      return null;
+    },
+  );
+  socket.event("message", { data: JSON.stringify({
+    kind: "read", request_id: randomUUID(), tool: "read_file", arguments: { path: "/tmp/fixture" },
+  }) });
+  await started;
+  assert.equal(readSignal?.aborted, false);
+  socket.emitClose(1006, "network lost");
+  assert.equal(await run, "offline");
+  assert.equal(readSignal?.aborted, true, "the orphaned read must be cancelled on socket close");
+  assert.equal(session.signal.aborted, false, "reconnect controller must remain reusable");
+});

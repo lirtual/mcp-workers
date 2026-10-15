@@ -36,6 +36,9 @@ export function monitorDeviceSocket(
   }
   return new Promise((resolve) => {
     let settled = false;
+    // A socket incarnation owns its pending reads; a reconnect must not
+    // inherit their cancellation scope or keep them running after disconnect.
+    const socketWork = new AbortController();
     let awaitingPong = false;
     let readsInFlight = 0;
     let awaitingAuth: string | undefined;
@@ -56,6 +59,7 @@ export function monitorDeviceSocket(
     const finish = (why: SocketEnd) => {
       if (settled) return;
       settled = true;
+      socketWork.abort();
       cleanup();
       if (why !== "closed") {
         try { socket.close(); } catch { /* connection already gone */ }
@@ -109,7 +113,7 @@ export function monitorDeviceSocket(
           readsInFlight++;
           const id = request.request_id;
           const tool = request.tool;
-          void Promise.resolve().then(() => readOnly(tool, request.arguments, signal))
+          void Promise.resolve().then(() => readOnly(tool, request.arguments, socketWork.signal))
             .then(text => {
               if (settled || signal.aborted || socket.readyState !== WebSocket.OPEN) return;
               const valid = typeof text === "string" && text.length <= 65_536;
