@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { newEnrollment } from "../src/v2-enrollment.ts";
 import { maintainAuthenticatedDeviceSession, monitorDeviceSocket } from "../src/v2-connection-lifecycle.ts";
+import { createAgentExecutionEngine } from "../src/execution.ts";
 
 class FakeSocket extends EventTarget {
   readyState: number = WebSocket.OPEN;
@@ -621,4 +622,28 @@ test("revocation cleanup failure never acknowledges a confirmed stop", async () 
   assert.deepEqual(socket.sent.map(x => JSON.parse(x)), [{
     kind: "revoke_cleanup_result", request_id: requestId, status: "uncertain",
   }]);
+});
+
+test("revocation stops Agent-owned supervised Shell sessions and rejects later starts", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "rc-v2-revoke-owned-"));
+  const execution = createAgentExecutionEngine({ receiptDirectory: path.join(dir, "receipts"), shellPath: "/bin/sh" });
+  const signal = new AbortController().signal;
+  try {
+    const launch = await execution.executeTool({ tool: "start_process",
+      arguments: { command: "sleep 30", timeout_ms: 0 }, operation_id: "owned-" + randomUUID(),
+    }, signal);
+    assert.equal(launch?.status, 200);
+    const body = launch?.body as { status?: string; session_id?: string };
+    assert.equal(body?.status, "running");
+    assert.match(body.session_id!, /^[a-f0-9-]{36}$/);
+    assert.equal(await execution.stopOwnedForRevocation(), "confirmed");
+    const future = await execution.executeTool({ tool: "start_process",
+      arguments: { command: "printf 'SHOULD_NOT_RUN'", timeout_ms: 0 }, operation_id: "after-" + randomUUID(),
+    }, signal);
+    assert.equal((future?.body as { status: string }).status, "failed");
+    assert.equal(await execution.stopOwnedForRevocation(), "confirmed");
+  } finally {
+    await execution.close();
+    await rm(dir, { recursive: true, force: true });
+  }
 });
