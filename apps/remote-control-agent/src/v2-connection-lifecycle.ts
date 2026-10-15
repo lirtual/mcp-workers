@@ -5,7 +5,7 @@
  * without waking the DO for normal liveness checks. This deliberately does
  * not accept or execute remote commands.
  */
-import { openAuthenticatedDeviceSocket } from "./v2-session-client.ts";
+import { DeviceSessionRejectedError, openAuthenticatedDeviceSocket } from "./v2-session-client.ts";
 
 export type SocketEnd = "aborted" | "closed" | "offline" | "policy";
 const PING = "rc-v2:ping";
@@ -112,9 +112,14 @@ export async function maintainAuthenticatedDeviceSession(
       const outcome = await monitorDeviceSocket(connection.socket, signal, options.heartbeat);
       if (outcome === "aborted" || outcome === "closed") return;
       if (outcome === "policy") { options.onState?.("rejected"); return; }
-    } catch {
+    } catch (error) {
       if (signal.aborted) break;
-      // Do not expose credential material or exception objects in Agent logs.
+      if (error instanceof DeviceSessionRejectedError) {
+        options.onState?.("rejected");
+        return;
+      }
+      // Temporary transport faults remain retryable; no credential material or
+      // raw exception objects are written to logs.
     }
     if (signal.aborted) break;
     options.onState?.("disconnected");

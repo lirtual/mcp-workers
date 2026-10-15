@@ -3,6 +3,20 @@ import { createPrivateKey, createPublicKey, sign } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 
 const SESSION_DOMAIN = "remote-control:v2:session:";
+
+/** A permanent identity rejection: operator action is required, not retry/backoff. */
+export class DeviceSessionRejectedError extends Error {
+  constructor(message = "Device identity is not authorized.") {
+    super(message);
+    this.name = "DeviceSessionRejectedError";
+  }
+}
+
+function rejectPermanentStatus(status: number, message?: string): void {
+  if (status === 401 || status === 403 || status === 404) {
+    throw new DeviceSessionRejectedError(message);
+  }
+}
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 
 function endpoint(baseAddress: string): URL {
@@ -49,6 +63,7 @@ export async function recoverDeviceId(
   const privatePem = await readFile(keyPath, "utf8");
   const publicKey = Buffer.from(createPublicKey(createPrivateKey(privatePem)).export({ type: "spki", format: "der" })).toString("base64");
   const challenged = await postJson(base, "/agent/session/challenge", { public_key: publicKey }, send);
+  rejectPermanentStatus(challenged.status, "No approved device identity matches this key.");
   if (challenged.status !== 200 || !UUID.test(challenged.result.device_id) ||
       !/^[A-Za-z0-9_-]{24}$/.test(challenged.result.nonce)) {
     throw new Error("No approved device identity matches this key.");
@@ -57,6 +72,7 @@ export async function recoverDeviceId(
   const result = await postJson(base, "/agent/session/recover", {
     device_id: challenged.result.device_id, nonce: challenged.result.nonce, proof,
   }, send);
+  rejectPermanentStatus(result.status);
   if (result.status !== 200 || result.result.status !== "verified" ||
       result.result.device_id !== challenged.result.device_id) {
     throw new Error("Signed device identity recovery failed.");
@@ -68,7 +84,9 @@ export async function recoverDeviceId(
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
     const existing = (await readFile(keyPath + ".device-id", "utf8")).trim();
-    if (existing !== result.result.device_id) throw new Error("Device ID on disk does not match authenticated identity.");
+    if (existing !== result.result.device_id) {
+      throw new DeviceSessionRejectedError("Device ID on disk does not match authenticated identity.");
+    }
   }
   return result.result.device_id;
 }
@@ -85,8 +103,9 @@ export async function openAuthenticatedDeviceSocket(
     if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
     deviceId = await recoverDeviceId(baseAddress, keyPath, send);
   }
-  if (!UUID.test(deviceId)) throw new Error("Invalid local device ID.");
+  if (!UUID.test(deviceId)) throw new DeviceSessionRejectedError("Invalid local device ID.");
   const challenged = await postJson(base, "/agent/session/challenge", { device_id: deviceId }, send);
+  rejectPermanentStatus(challenged.status);
   if (challenged.status !== 200 || challenged.result.device_id !== deviceId ||
       !/^[A-Za-z0-9_-]{24}$/.test(challenged.result.nonce)) {
     throw new Error("Could not obtain a valid session challenge.");
@@ -103,19 +122,23 @@ export async function openAuthenticatedDeviceSocket(
       socket.removeEventListener("error", onError);
       socket.removeEventListener("close", onClose);
     };
-    const fail = (message: string) => {
+    const fail = (message: string, permanent = false) => {
       if (finished) return;
       finished = true;
       cleanup();
       try { socket.close(); } catch { /* already closed */ }
-      reject(new Error(message));
+      reject(permanent ? new DeviceSessionRejectedError(message) : new Error(message));
     };
     const onOpen = () => {
       if (finished) return;
       // WebSocket may negotiate any one of the offered subprotocols. Only the
       // non-credential rc-v2 marker is allowed as the server's selection.
-      if (socket.protocol !== "rc-v2" || socket.readyState !== WebSocket.OPEN) {
-        fail("WSS returned an unexpected protocol or state.");
+      if (socket.protocol !== "rc-v2") {
+        fail("WSS returned an unexpected protocol.", true);
+        return;
+      }
+      if (socket.readyState !== WebSocket.OPEN) {
+        fail("WSS returned an unexpected state.");
         return;
       }
       finished = true;

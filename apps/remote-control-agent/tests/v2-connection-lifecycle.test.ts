@@ -151,3 +151,94 @@ test("expected close and rejected policy stop retry loop", async () => {
     }
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+
+test("revoked or unrecognized device stops retrying instead of hammering auth endpoint", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "rc-v2-permanent-auth-"));
+  const keyPath = path.join(dir, "device.pem");
+  const enrollment = newEnrollment("denied-device");
+  const deviceId = randomUUID();
+  try {
+    await writeFile(keyPath, enrollment.privateKeyPem, { mode: 0o600 });
+    await writeFile(keyPath + ".device-id", deviceId + "\n", { mode: 0o600 });
+    for (const httpStatus of [401, 403, 404]) {
+      let calls = 0;
+      const states: string[] = [];
+      await maintainAuthenticatedDeviceSession("https://agent.example/", keyPath, new AbortController().signal, {
+        send: async () => {
+          calls++;
+          return new Response(null, { status: httpStatus });
+        },
+        makeSocket: () => { assert.fail("Denied identity must never attempt WSS"); },
+        wait: async () => { assert.fail("Permanent identity denial must never retry"); },
+        onState: value => states.push(value),
+      });
+      assert.equal(calls, 1);
+      assert.deepEqual(states, ["rejected"]);
+    }
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("identity recovery with an unknown approved key stops without creating a new pairing", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "rc-v2-recover-rejected-"));
+  const keyPath = path.join(dir, "device.pem");
+  try {
+    await writeFile(keyPath, newEnrollment("unknown-host").privateKeyPem, { mode: 0o600 });
+    let attempts = 0;
+    const states: string[] = [];
+    await maintainAuthenticatedDeviceSession("https://agent.example/", keyPath, new AbortController().signal, {
+      send: async () => { attempts++; return new Response(null, { status: 404 }); },
+      wait: async () => { assert.fail("Recovery rejection is permanent until re-paired"); },
+      onState: value => states.push(value),
+    });
+    assert.equal(attempts, 1);
+    assert.deepEqual(states, ["rejected"]);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("temporary 503 remains retryable and respects stop signal", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "rc-v2-temporary-auth-"));
+  const keyPath = path.join(dir, "device.pem");
+  const controller = new AbortController();
+  const states: string[] = [];
+  const waits: number[] = [];
+  const deviceId = randomUUID();
+  try {
+    await writeFile(keyPath, newEnrollment("retryable-host").privateKeyPem, { mode: 0o600 });
+    await writeFile(keyPath + ".device-id", deviceId + "\n", { mode: 0o600 });
+    await maintainAuthenticatedDeviceSession("https://agent.example/", keyPath, controller.signal, {
+      send: async () => new Response(null, { status: 503 }),
+      wait: async ms => { waits.push(ms); controller.abort(); },
+      onState: value => states.push(value),
+    });
+    assert.deepEqual(states, ["disconnected"]);
+    assert.deepEqual(waits, [1000]);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("unexpected negotiated WSS subprotocol is permanent, not an infinite reconnect", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "rc-v2-bad-protocol-"));
+  const keyPath = path.join(dir, "device.pem");
+  const deviceId = randomUUID();
+  let attempts = 0;
+  try {
+    await writeFile(keyPath, newEnrollment("protocol-host").privateKeyPem, { mode: 0o600 });
+    await writeFile(keyPath + ".device-id", deviceId + "\n", { mode: 0o600 });
+    const statuses: string[] = [];
+    await maintainAuthenticatedDeviceSession("https://agent.example/", keyPath, new AbortController().signal, {
+      send: async () => Response.json({ device_id: deviceId, nonce: "A".repeat(24) }),
+      makeSocket: () => {
+        attempts++;
+        const socket = new FakeSocket();
+        socket.protocol = "rc-v3";
+        socket.readyState = WebSocket.CONNECTING;
+        queueMicrotask(() => socket.emitOpen());
+        return socket as unknown as WebSocket;
+      },
+      wait: async () => { assert.fail("Protocol mismatch must never reconnect"); },
+      onState: value => statuses.push(value),
+    });
+    assert.equal(attempts, 1);
+    assert.deepEqual(statuses, ["rejected"]);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
