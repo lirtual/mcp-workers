@@ -228,3 +228,29 @@ test("stale-epoch socket may not receive the privileged cleanup frame", async ()
   assert.equal(JSON.parse(res.json.result.content[0]!.text).process_cleanup, "unconfirmed");
   assert.equal(messages, 0);
 });
+
+test("device B cannot forge device A's cleanup confirmation", async () => {
+  const f = setup();
+  let forged = false;
+  const target = {
+    readyState: WebSocket.OPEN,
+    deserializeAttachment: () => ({ device_id: f.a, epoch: "epoch-a" }),
+    send(frame: string) {
+      const requestId = (JSON.parse(frame) as { request_id: string }).request_id;
+      queueMicrotask(async () => {
+        await f.owner.webSocketMessage(f.bSocket, JSON.stringify({
+          kind: "revoke_cleanup_result", request_id: requestId, status: "confirmed",
+        }));
+        forged = true;
+        await f.owner.webSocketMessage(target as unknown as WebSocket, JSON.stringify({
+          kind: "revoke_cleanup_result", request_id: requestId, status: "uncertain",
+        }));
+      });
+    },
+    close() { /* revoked */ },
+  } as unknown as WebSocket;
+  f.sockets.set("device:" + f.a, [target]);
+  const r = await f.call("revoke_device", { device_id: f.a });
+  assert.equal(forged, true);
+  assert.equal(JSON.parse(r.json.result.content[0]!.text).process_cleanup, "unconfirmed");
+});
