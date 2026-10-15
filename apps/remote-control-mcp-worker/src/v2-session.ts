@@ -265,8 +265,8 @@ export async function listApprovedDevices(state: DurableObjectState):
       for (const socket of sockets) {
         try {
           const attachment = socket.deserializeAttachment() as { device_id?: unknown; epoch?: unknown } | null;
-          if (currentEpoch && attachment?.device_id === device.device_id &&
-              attachment.epoch === currentEpoch) {
+          if (socket.readyState === WebSocket.OPEN && currentEpoch &&
+              attachment?.device_id === device.device_id && attachment.epoch === currentEpoch) {
             online = true;
             break;
           }

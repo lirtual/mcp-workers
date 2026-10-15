@@ -358,6 +358,29 @@ export class V2OwnerCoordinator {
     } catch { pending.resolve(Response.json({ error: "unavailable" }, { status: 503 })); }
     return true;
   }
+  /** Hibernation callbacks run after close/error without relying on JS Map state. */
+  private rejectSocketReads(socket: WebSocket): void {
+    // Iterating in-flight callbacks is bounded to four; no storage I/O or
+    // persistent offline flag that could erase a newer signed epoch.
+    for (const pending of this.pendingReads.values()) {
+      if (pending.socket === socket) {
+        pending.resolve(Response.json({ error: "offline" }, { status: 503 }));
+      }
+    }
+  }
+
+  webSocketClose(socket: WebSocket, code: number, reason: string, _wasClean: boolean): void {
+    this.rejectSocketReads(socket);
+    // With newer compatibility dates Cloudflare already replies to close.
+    // For older dates this finishes the close handshake without a 1006.
+    try { socket.close(code, reason); } catch { /* Already disconnected. */ }
+  }
+
+  webSocketError(socket: WebSocket, _error: unknown): void {
+    this.rejectSocketReads(socket);
+    try { socket.close(1011, "connection unavailable"); } catch { /* Already disconnected. */ }
+  }
+
   constructor(state: DurableObjectState) {
     this.state = state;
     // Cloudflare replies to these liveness frames without waking a hibernating

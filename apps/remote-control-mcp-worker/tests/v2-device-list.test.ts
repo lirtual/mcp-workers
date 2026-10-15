@@ -18,6 +18,7 @@ test("list_devices requires Portal bearer and reports only current, approved WSS
   rows.set("session:epoch:" + onlineId, "new-epoch");
   rows.set("session:epoch:" + staleId, "new-epoch");
   const socket = (id: string, epoch: string): WebSocket => ({
+    readyState: WebSocket.OPEN,
     deserializeAttachment() { return { device_id: id, epoch }; },
   }) as unknown as WebSocket;
   const sockets = new Map([
