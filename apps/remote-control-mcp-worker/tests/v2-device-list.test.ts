@@ -90,6 +90,49 @@ test("list_devices requires Portal bearer and reports only current, approved WSS
   assert.equal((await tools.json() as {result:{tools:Array<{name:string}>}}).result.tools.some(t=>t.name==="list_devices"),true);
 });
 
+test("preview-only MCP never lists Shell, file mutations or implicit v1 routes", async () => {
+  let v1Requests = 0;
+  const v2Stub = {
+    fetch: async () => Response.json([]),
+  };
+  const env = {
+    MCP_ACCESS_TOKEN: "preview-owner-token",
+    REMOTE_CONTROL_V2_PREVIEW_ONLY: "true",
+    V2_OWNER: { idFromName: () => "preview-owner", get: () => v2Stub },
+    REMOTE_CONTROL_DEVICE: { fetch: () => { v1Requests++; throw new Error("v1 transport must not be used"); } },
+    REMOTE_CONTROL_DEVICE_TOKEN: "v1-not-used",
+  } as unknown as Env;
+  const rpc = (method: string, params?: unknown) => worker.fetch(new Request("https://preview.test/mcp", {
+    method: "POST", headers: { "authorization": "Bearer preview-owner-token", "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 51, method, ...(params ? { params } : {}) }),
+  }), env);
+
+  const list = await (await rpc("tools/list")).json() as { result: { tools: Array<{
+    name: string; inputSchema: { required?: string[] };
+  }> } };
+  const exposed = new Set(list.result.tools.map(x => x.name));
+  for (const denied of ["run_command", "write_file", "delete_file", "move_file",
+      "create_directory", "replace_text", "list_sessions", "read_session_output", "stop_session", "send_input"]) {
+    assert.equal(exposed.has(denied), false, denied);
+  }
+  for (const item of list.result.tools.filter(x => !["pairing_lookup", "pairing_prepare", "list_devices", "revoke_device"].includes(x.name))) {
+    assert.ok(item.inputSchema.required?.includes("device_id"), item.name);
+  }
+  for (const [name, args] of [
+    ["read_file", { path: "/tmp/test" }],
+    ["run_command", { device_id: randomUUID(), operation_id: "safe-1", command: "date" }],
+    ["write_file", { device_id: randomUUID(), operation_id: "safe-2", path: "/tmp/denied", content: "x" }],
+  ] as const) {
+    const response = await rpc("tools/call", { name, arguments: args });
+    const body = await response.json() as { result: { isError: boolean } };
+    assert.equal(body.result.isError, true, name);
+  }
+  assert.equal(v1Requests, 0);
+  const read = await rpc("tools/call", { name: "read_file", arguments: { device_id: randomUUID(), path: "/tmp/test" } });
+  assert.equal(read.status, 200);
+  assert.equal(v1Requests, 0);
+  assert.equal((await rpc("tools/call", { name: "list_devices", arguments: {} })).status, 200);
+});
 test("device enumeration is bounded and fails closed when the small-owner limit is exceeded", async () => {
   const rows = new Map<string, unknown>();
   for (let i = 0; i < 65; i++) {

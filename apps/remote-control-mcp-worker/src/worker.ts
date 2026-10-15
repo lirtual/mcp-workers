@@ -1,7 +1,10 @@
 import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
 export { V2OwnerCoordinator } from "./v2-pairing.ts";
 
-type V2Env = Env & { V2_OWNER?: DurableObjectNamespace };
+type V2Env = Env & { V2_OWNER?: DurableObjectNamespace; REMOTE_CONTROL_V2_PREVIEW_ONLY?: string };
+function previewOnly(env: Env): boolean {
+  return (env as V2Env).REMOTE_CONTROL_V2_PREVIEW_ONLY === "true";
+}
 function pendingOwner(env: Env): DurableObjectStub | null {
   const ns = (env as V2Env).V2_OWNER;
   return ns ? ns.get(ns.idFromName("single-owner-v2")) : null;
@@ -1083,6 +1086,22 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
   }
 
   if (rpcMessage.method === "tools/list") {
+    if (previewOnly(env)) {
+      // Preview never advertises v1 default routing, file writes, Shell, or sessions.
+      const allowed = new Set([
+        "read_file", "read_files", "list_directory", "stat_file",
+        "search_files", "search_next", "stop_search",
+      ]);
+      return rpc(rpcMessage.id, { tools: [
+        ...LOCAL_TOOLS.filter(tool => allowed.has(tool.name)).map(tool => ({
+          ...tool,
+          inputSchema: { ...tool.inputSchema,
+            required: [...("required" in tool.inputSchema ? tool.inputSchema.required : []), "device_id"],
+          },
+        })),
+        PAIRING_LOOKUP_TOOL, PAIRING_PREPARE_TOOL, LIST_DEVICES_TOOL, REVOKE_DEVICE_TOOL,
+      ] });
+    }
     return rpc(rpcMessage.id, { tools: pendingOwner(env) ? [...LOCAL_TOOLS, PAIRING_LOOKUP_TOOL, PAIRING_PREPARE_TOOL, LIST_DEVICES_TOOL, REVOKE_DEVICE_TOOL] : LOCAL_TOOLS });
   }
 
@@ -1093,6 +1112,20 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
       return toolError(rpcMessage.id, "The requested tool call was rejected.");
     }
     const call = params as { name?: unknown; arguments?: unknown };
+    if (previewOnly(env)) {
+      const previews = new Set([
+        "read_file", "read_files", "list_directory", "stat_file",
+        "search_files", "search_next", "stop_search",
+        "pairing_lookup", "pairing_prepare", "list_devices", "revoke_device",
+      ]);
+      const target = call.arguments && typeof call.arguments === "object" && !Array.isArray(call.arguments)
+        ? (call.arguments as Record<string, unknown>).device_id : undefined;
+      if (typeof call.name !== "string" || !previews.has(call.name) ||
+          (V2_READ_TOOLS.has(String(call.name)) && typeof target !== "string")) {
+        return toolError(rpcMessage.id,
+          "The preview permits only explicit-device read-only calls and owner pairing.");
+      }
+    }
     if (typeof call.name === "string" && V2_OPERATION_TOOLS.has(call.name) &&
         call.arguments && typeof call.arguments === "object" && !Array.isArray(call.arguments) &&
         Object.hasOwn(call.arguments, "device_id")) {
