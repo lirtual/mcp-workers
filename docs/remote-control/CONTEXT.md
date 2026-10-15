@@ -98,7 +98,7 @@ Architecture and deployment implementation details belong in the research draft 
 
 **Pairing Code:** exactly 10 cryptographically random Base32 characters shown locally by a fresh Agent installation, single-use and expiring after 10 minutes. It identifies a pending pairing but is never a long-lived device credential.
 
-**Device Pairing:** a Remote-Control-specific Portal Bearer-authenticated `pairing_lookup` shows one pending device and public-key fingerprint; a separate explicit `pairing_confirm` approves the same immutable request. Existing Portal Bearer proves token possession **only**, not genuine human presence. Verify deliberate owner review in the actual client before live enrollment.
+**Device Pairing:** the Remote-Control-specific Portal Bearer-authenticated `pairing_lookup` shows one pending device and fingerprint; `pairing_prepare` returns a single-use 12-character Base32 challenge (five minutes) but cannot approve. The owner manually enters the original 10-character device code and 12-character challenge in the **new Agent's own local terminal/SSH**, and the Agent signs them with its locally stored private key. Only the matching one-use DO proof can issue `device_id`. Portal Bearer by itself is **not** human-presence proof; this separate terminal requirement assumes the model cannot operate that host or obtain its private key. This is an explicitly owner-approved refinement (2026-10-15) and still requires nonproduction client/host verification.
 
 **Device Credential:** a per-installation private/public keypair generated locally (prefer standard Ed25519 after interoperability validation); the Agent retains the private key and proves possession via fresh signed server challenge. Reinstall means a new key, new `device_id`, new pairing.
 
