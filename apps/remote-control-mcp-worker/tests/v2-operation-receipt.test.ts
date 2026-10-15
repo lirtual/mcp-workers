@@ -57,7 +57,7 @@ test("v2 write_file preserves Agent receipt idempotency per device; no v1 fallba
     const monitor = monitorDeviceSocket(client as unknown as WebSocket, stops[index]!.signal,
       { intervalMs: 60_000, timeoutMs: 10_000 }, undefined,
       (tool, args, operationId, signal) =>
-        executeV2FileOperation(execution, tool, args, operationId, signal));
+        executeV2FileOperation(execution, tool, args, operationId, signal), true);
     monitors.push(monitor);
     serverSockets.set("device:" + device, [server]);
   }
