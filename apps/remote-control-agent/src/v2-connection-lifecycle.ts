@@ -137,7 +137,7 @@ export async function maintainAuthenticatedDeviceSession(
   while (!signal.aborted) {
     try {
       const connection = await openAuthenticatedDeviceSocket(
-        baseAddress, keyPath, options.send, options.makeSocket,
+        baseAddress, keyPath, options.send, options.makeSocket, signal,
       );
       if (signal.aborted) { connection.socket.close(); break; }
       const connectedAt = performance.now();
