@@ -7,6 +7,45 @@ function pendingOwner(env: Env): DurableObjectStub | null {
   return ns ? ns.get(ns.idFromName("single-owner-v2")) : null;
 }
 
+const PAIRING_PREPARE_TOOL = {
+  name: "pairing_prepare",
+  title: "Prepare new device terminal confirmation",
+  description: "Prepare a short-lived, one-use challenge for the NEW device's physical/SSH terminal. This tool cannot approve or activate a device. The owner must manually enter the challenge on that device.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      pairing_id: { type: "string" },
+      expected_fingerprint: { type: "string" },
+    },
+    required: ["pairing_id", "expected_fingerprint"],
+    additionalProperties: false,
+  },
+  annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+} as const;
+
+async function prepareLocalDevice(
+  env: Env, id: unknown, argumentsValue: unknown,
+): Promise<Response> {
+  if (!argumentsValue || typeof argumentsValue !== "object" || Array.isArray(argumentsValue)) {
+    return toolError(id, "The confirmation preparation was rejected.");
+  }
+  const args = argumentsValue as Record<string, unknown>;
+  if (Object.keys(args).length !== 2 ||
+      typeof args.pairing_id !== "string" || typeof args.expected_fingerprint !== "string") {
+    return toolError(id, "The confirmation preparation was rejected.");
+  }
+  const owner = pendingOwner(env);
+  if (!owner) return toolError(id, "Device enrollment is disabled.");
+  try {
+    const response = await owner.fetch("https://v2.internal/prepare", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pairing_id: args.pairing_id, expected_fingerprint: args.expected_fingerprint }),
+    });
+    if (!response.ok) return toolError(id, "The pending device was not found or cannot be confirmed.");
+    return toolText(id, JSON.stringify(await response.json()));
+  } catch { return toolError(id, "Confirmation preparation is unavailable."); }
+}
+
 const PAIRING_LOOKUP_TOOL = {
   name: "pairing_lookup",
   title: "Inspect pending local device",
@@ -908,7 +947,7 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
   }
 
   if (rpcMessage.method === "tools/list") {
-    return rpc(rpcMessage.id, { tools: pendingOwner(env) ? [...LOCAL_TOOLS, PAIRING_LOOKUP_TOOL] : LOCAL_TOOLS });
+    return rpc(rpcMessage.id, { tools: pendingOwner(env) ? [...LOCAL_TOOLS, PAIRING_LOOKUP_TOOL, PAIRING_PREPARE_TOOL] : LOCAL_TOOLS });
   }
 
   if (rpcMessage.method === "tools/call") {
@@ -918,6 +957,9 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
       return toolError(rpcMessage.id, "The requested tool call was rejected.");
     }
     const call = params as { name?: unknown; arguments?: unknown };
+    if (call.name === "pairing_prepare" && pendingOwner(env)) {
+      return prepareLocalDevice(env, rpcMessage.id, call.arguments);
+    }
     if (call.name === "pairing_lookup" && pendingOwner(env)) {
       const args = call.arguments;
       if (!args || typeof args !== "object" || Array.isArray(args) ||
@@ -958,14 +1000,14 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-    if (url.pathname === "/agent/pair/start" && pendingOwner(env)) {
+    if ((url.pathname === "/agent/pair/start" || url.pathname === "/agent/pair/complete") && pendingOwner(env)) {
       if (request.method !== "POST" || request.headers.has("origin")) {
         return jsonError(405, "method_not_allowed", "The request was rejected.");
       }
       try {
         const raw = await readBounded(request, 4096);
         if (raw === null) return jsonError(400, "bad_request", "The request was rejected.");
-        return await pendingOwner(env)!.fetch("https://v2.internal/register", {
+        return await pendingOwner(env)!.fetch(url.pathname === "/agent/pair/complete" ? "https://v2.internal/complete" : "https://v2.internal/register", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: raw,
