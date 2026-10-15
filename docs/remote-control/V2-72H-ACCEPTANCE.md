@@ -2,6 +2,27 @@
 
 **Status: planning and offline evidence checks only. No nonproduction Cloudflare deployment, real device pairing, 72h soak or production migration has been performed.** PR #58 remains Draft. An existing `remote-control-mcp-worker` resource does **not** prove a separate v2 preview deployment exists.
 
+## Separate v2 preview rollout — authorization and isolation
+
+The owner authorized a **separate nonproduction preview deployment and disposable test-device pairing/fault exercises** on 2026-10-15. This does NOT authorize changing production v1 Worker, Agent, Tunnel, secrets, or shutting down any existing non-test Windows/WSL machine. An actual human must still enter the confirmation challenge in the new Agent's own terminal.
+
+The reviewed staging config is `apps/remote-control-mcp-worker/wrangler.v2-preview.jsonc`. It names `remote-control-v2-preview` (NOT `remote-control-mcp-worker`), binds `V2_OWNER` to a new SQLite-backed DO namespace, and has **no v1 VPC Service or REMOTE_CONTROL_DEVICE_TOKEN**. Setting `REMOTE_CONTROL_V2_PREVIEW_ONLY=true` disables Shell, file mutations and implicit v1 calls. If its own `MCP_ACCESS_TOKEN` is missing, all public preview routes—including Agent bootstrap—return 503. Invocation Logs remain disabled.
+
+**Before publishing** from an independently reviewed Node24/pnpm checkout at the exact Draft commit, verify the existing CI already passed `pnpm --filter remote-control-mcp-worker run check:v2-preview` (Wrangler dry run plus preview-only tests). This is NOT an actual deployment. Also read production v1 current version/bindings first without changing them.
+
+**Explicit deploy on authorized operator workstation only:**
+
+    pnpm --filter remote-control-mcp-worker exec wrangler deploy --config wrangler.v2-preview.jsonc
+
+Verify the new Worker name and separate DO namespace, and that unauthenticated `/mcp` and all bootstrap routes return 503 until a separate preview secret exists. Never point deployment to production name or use its secret.
+
+**Enter a new, independent high-entropy secret interactively in the preview Worker:**
+
+    pnpm --filter remote-control-mcp-worker exec wrangler secret put MCP_ACCESS_TOKEN --config wrangler.v2-preview.jsonc
+
+Do not paste private tokens into GitHub, logs, terminal argv, or ChatGPT. Configure the nonproduction MCP client through a private credential input. Validate 401 without auth and authorized MCP with the preview token; do not print it. If a private credential entry channel is unavailable, do not pair devices.
+
+Next, using only authorized disposable test Linux/WSL2 Agents, complete fingerprint lookup, preparation and **manual local-terminal** confirmation; verify first read-only explicit-device call, then measure reconnect, epoch fencing, real DO Hibernation, account-wide quotas and unaffected production v1. Track exact deployed version and run timestamp. Do not mark the 72h gate complete from a dry run or mocked device statuses.
 ## Authorization and preflight (before real testing)
 
 The owner must separately authorize a **nonproduction** Cloudflare v2 deployment and five designated test devices (real hosts or independently simulated Agent identities). Record the exact environment URL (never embed a credential), deployed Worker/version and DO namespace, shared Cloudflare account, five **distinct** approved Ed25519 identities, and who may stop/reboot test hosts. Do not reuse or reconfigure the existing v1 Worker/Tunnel/device token. Do not start `wsl.exe --terminate` or restart production services. The real ChatGPT client must show the immutable fingerprint and human owner must separately enter the challenge in the new Agent terminal; a pair of automatic tool calls is not sufficient.
