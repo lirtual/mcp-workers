@@ -175,8 +175,16 @@ export async function acceptAuthenticatedSocket(
   const older = state.getWebSockets("device:" + auth.device_id);
   const pair = new WebSocketPair();
   const client = pair[0], server = pair[1];
-  state.acceptWebSocket(server, ["device:" + proof.device_id]);
-  server.serializeAttachment({ device_id: auth.device_id, epoch: auth.epoch });
+  try {
+    state.acceptWebSocket(server, ["device:" + proof.device_id]);
+    server.serializeAttachment({ device_id: auth.device_id, epoch: auth.epoch });
+  } catch {
+    // An accepted socket without a persisted Hibernation identity must never
+    // remain live. Refuse the HTTP upgrade and close any accepted half with a
+    // retryable internal-error code, without revealing the underlying failure.
+    try { server.close(1011, "authorization unavailable"); } catch { /* not accepted or already closed */ }
+    return new Response("Service unavailable.", { status: 503 });
+  }
   for (const socket of older) {
     try { socket.close(1000, "superseded"); } catch { /* already closed */ }
   }

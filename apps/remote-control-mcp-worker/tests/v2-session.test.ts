@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { newEnrollment } from "../../remote-control-agent/src/v2-enrollment.ts";
 import { signedSessionProof } from "../../remote-control-agent/src/v2-session-client.ts";
-import { authorizeSession, authorizeSocketSession, issueSessionChallenge, readWebSocketProof } from "../src/v2-session.ts";
+import { acceptAuthenticatedSocket, authorizeSession, authorizeSocketSession, issueSessionChallenge, readWebSocketProof } from "../src/v2-session.ts";
 
 interface MockStore {
   get<T>(key: string): Promise<T | undefined>;
@@ -152,4 +152,46 @@ test("revoked device with an otherwise correct signed nonce never commits socket
   });
   assert.equal(result, null);
   assert.equal(records.has("session:epoch:" + uuid), false);
+});
+
+test("failed Hibernation attachment setup closes an accepted WSS instead of leaking a live socket", async () => {
+  const { records, store } = testStore();
+  const identity = newEnrollment("attachment-failure");
+  records.set("device:" + uuid, {
+    device_id: uuid, name: "attachment-failure", public_key: identity.request.public_key,
+    fingerprint: "0123456789abcdef01234567", approved_at: Date.now(), revoked: false,
+  });
+  const challenge = (await issueSessionChallenge(store as never, { device_id: uuid })).body as { nonce: string };
+  const proof = signedSessionProof(identity.privateKeyPem, uuid, challenge.nonce).proof;
+  const closeCalls: Array<{ code: number; reason: string }> = [];
+  const server = {
+    serializeAttachment: () => { throw new Error("private attachment failure"); },
+    close: (code: number, reason: string) => closeCalls.push({ code, reason }),
+  } as unknown as WebSocket;
+  let accepted = false;
+  const state = {
+    getWebSockets: () => [],
+    acceptWebSocket: (socket: WebSocket) => { assert.equal(socket, server); accepted = true; },
+  } as unknown as DurableObjectState;
+  const pairGlobal = globalThis as unknown as { WebSocketPair?: unknown };
+  const previousPair = pairGlobal.WebSocketPair;
+  pairGlobal.WebSocketPair = class {
+    0 = {} as WebSocket;
+    1 = server;
+  };
+  try {
+    const response = await acceptAuthenticatedSocket(store as never, state, new Request(
+      "https://test.invalid/ws/" + uuid,
+      { headers: {
+        upgrade: "websocket",
+        "sec-websocket-protocol": "rc-v2, rcv2." + challenge.nonce + "." + proof,
+      } },
+    ));
+    assert.equal(response.status, 503, "failed socket attachment must not return an authenticated 101");
+    assert.equal(accepted, true);
+    assert.deepEqual(closeCalls, [{ code: 1011, reason: "authorization unavailable" }]);
+    assert.equal(records.has("session:nonce:" + uuid), false, "failed upgrade proof cannot be reused");
+  } finally {
+    pairGlobal.WebSocketPair = previousPair;
+  }
 });
