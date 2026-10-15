@@ -96,10 +96,41 @@ export async function openAuthenticatedDeviceSocket(
   wsUrl.protocol = base.protocol === "https:" ? "wss:" : "ws:";
   const socket = makeSocket(wsUrl.toString(), ["rc-v2", "rcv2." + challenged.result.nonce + "." + proof]);
   await new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(() => { socket.close(); reject(new Error("WSS login timed out.")); }, 10_000);
-    socket.addEventListener("open", () => { clearTimeout(timeout); resolve(); }, { once: true });
-    socket.addEventListener("error", () => { clearTimeout(timeout); reject(new Error("WSS authentication failed.")); }, { once: true });
-    socket.addEventListener("close", () => { clearTimeout(timeout); reject(new Error("WSS authentication was rejected.")); }, { once: true });
+    let finished = false;
+    const cleanup = () => {
+      clearTimeout(timeout);
+      socket.removeEventListener("open", onOpen);
+      socket.removeEventListener("error", onError);
+      socket.removeEventListener("close", onClose);
+    };
+    const fail = (message: string) => {
+      if (finished) return;
+      finished = true;
+      cleanup();
+      try { socket.close(); } catch { /* already closed */ }
+      reject(new Error(message));
+    };
+    const onOpen = () => {
+      if (finished) return;
+      // WebSocket may negotiate any one of the offered subprotocols. Only the
+      // non-credential rc-v2 marker is allowed as the server's selection.
+      if (socket.protocol !== "rc-v2" || socket.readyState !== WebSocket.OPEN) {
+        fail("WSS returned an unexpected protocol or state.");
+        return;
+      }
+      finished = true;
+      cleanup();
+      resolve();
+    };
+    const onError = () => fail("WSS authentication failed.");
+    const onClose = () => fail("WSS authentication was rejected.");
+    const timeout = setTimeout(() => fail("WSS login timed out."), 10_000);
+    socket.addEventListener("open", onOpen);
+    socket.addEventListener("error", onError);
+    socket.addEventListener("close", onClose);
+    // Protect the factory's extremely rare already-open/closed synchronous case.
+    if (socket.readyState === WebSocket.OPEN) onOpen();
+    else if (socket.readyState === WebSocket.CLOSED) onClose();
   });
   return { device_id: deviceId, socket };
 }
