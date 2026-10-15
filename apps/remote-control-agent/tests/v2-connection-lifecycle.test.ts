@@ -242,3 +242,46 @@ test("unexpected negotiated WSS subprotocol is permanent, not an infinite reconn
     assert.deepEqual(statuses, ["rejected"]);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+
+test("periodic authorization check wakes DO separately while routine pongs stay automatic", async () => {
+  const socket = new FakeSocket();
+  const stop = new AbortController();
+  socket.onSend = (frame: string) => {
+    if (frame === "rc-v2:ping") queueMicrotask(() => socket.pong());
+    if (frame === "rc-v2:auth") queueMicrotask(() => socket.event("message", { data: "rc-v2:auth-ok" }));
+  };
+  const result = monitorDeviceSocket(socket as unknown as WebSocket, stop.signal,
+    { intervalMs: 16, timeoutMs: 10, authIntervalMs: 40 });
+  await new Promise(resolve => setTimeout(resolve, 135));
+  assert.ok(socket.sent.filter(x => x === "rc-v2:ping").length >= 3);
+  assert.ok(socket.sent.filter(x => x === "rc-v2:auth").length >= 2,
+    "DO must be explicitly checked at the slower authorization cadence");
+  assert.equal(socket.closeCount, 0);
+  stop.abort();
+  assert.equal(await result, "aborted");
+});
+
+test("automatic pongs never replace an overdue authorization check", async () => {
+  const socket = new FakeSocket();
+  socket.onSend = frame => {
+    if (frame === "rc-v2:ping") queueMicrotask(() => socket.pong());
+    // A stale/partitioned session may still get transport pongs, but not an
+    // authorized response from the DO. The Agent must eventually close.
+  };
+  const result = await monitorDeviceSocket(socket as unknown as WebSocket,
+    new AbortController().signal, { intervalMs: 15, timeoutMs: 9, authIntervalMs: 34 });
+  assert.equal(result, "offline");
+  assert.ok(socket.sent.includes("rc-v2:auth"));
+  assert.ok(socket.sent.includes("rc-v2:ping"));
+  assert.equal(socket.closeCount, 1);
+});
+
+test("unexpected unsolicited authorization success is rejected", async () => {
+  const socket = new FakeSocket();
+  const result = monitorDeviceSocket(socket as unknown as WebSocket,
+    new AbortController().signal, { intervalMs: 16, timeoutMs: 10, authIntervalMs: 40 });
+  socket.event("message", { data: "rc-v2:auth-ok" });
+  assert.equal(await result, "policy");
+  assert.equal(socket.closeCount, 1);
+});
