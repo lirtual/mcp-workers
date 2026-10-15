@@ -222,6 +222,13 @@ export async function completeLocalConfirmation(storage: PendingStorage, data: u
         again.expires_at <= Date.now()) {
       return { status: 409, body: { error: "already_consumed" } };
     }
+    // A revoked public key is a permanent tombstone: reinstalling with the
+    // stolen/old private key must never create a fresh authorized device ID.
+    const known = await txn.list<V2Device>({ prefix: "device:", limit: 65 });
+    if (known.size > 64) return { status: 503, body: { error: "capacity" } };
+    if ([...known.values()].some(device => device.public_key === again.public_key)) {
+      return { status: 409, body: { error: "identity_already_used" } };
+    }
     const deviceId = crypto.randomUUID();
     await txn.put("device:" + deviceId, {
       device_id: deviceId, name: again.name, public_key: again.public_key,
@@ -358,6 +365,52 @@ export class V2OwnerCoordinator {
     } catch { pending.resolve(Response.json({ error: "unavailable" }, { status: 503 })); }
     return true;
   }
+  /** Commit the tombstone before touching live sockets or in-flight requests. */
+  private async revokeDevice(request: Request): Promise<Response> {
+    const body = await limitedJson(request);
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return Response.json({ error: "invalid_request" }, { status: 400 });
+    }
+    const args = body as Record<string, unknown>;
+    if (Object.keys(args).length !== 1 || typeof args.device_id !== "string" ||
+        !/^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(args.device_id)) {
+      return Response.json({ error: "invalid_request" }, { status: 400 });
+    }
+    const id = args.device_id;
+    const outcome = await this.state.storage.transaction(async txn => {
+      const record = await txn.get<V2Device>("device:" + id);
+      if (!record) return "not_found" as const;
+      if (record.revoked === true) return "already_revoked" as const;
+      await txn.put("device:" + id, { ...record, revoked: true });
+      await txn.delete("session:nonce:" + id);
+      await txn.delete("session:epoch:" + id);
+      return "revoked" as const;
+    });
+    if (outcome === "not_found") return Response.json({ error: "not_found" }, { status: 404 });
+    if (outcome === "already_revoked") {
+      return Response.json({ device_id: id, status: outcome, process_cleanup: "unconfirmed" });
+    }
+    // Cancel ongoing transport reads AFTER the durable denial is committed.
+    // T07's authenticated owned-session cleanup is not implemented yet:
+    // explicitly do not imply Agent processes were stopped.
+    for (const pending of this.pendingReads.values()) {
+      if (pending.deviceId === id) {
+        pending.resolve(Response.json({ error: "revoked" }, { status: 503 }));
+      }
+    }
+    let cleanup: "offline" | "not_attempted" | "unconfirmed" = "offline";
+    try {
+      for (const socket of this.state.getWebSockets("device:" + id)) {
+        if (socket.readyState === WebSocket.OPEN) cleanup = "not_attempted";
+        try { socket.close(1008, "revoked"); }
+        catch { cleanup = "unconfirmed"; }
+      }
+    } catch { cleanup = "unconfirmed"; }
+    return Response.json({ device_id: id, status: "revoked", process_cleanup: cleanup }, {
+      headers: { "cache-control": "no-store" },
+    });
+  }
+
   /** Hibernation callbacks run after close/error without relying on JS Map state. */
   private rejectSocketReads(socket: WebSocket): void {
     // Iterating in-flight callbacks is bounded to four; no storage I/O or
@@ -402,6 +455,10 @@ export class V2OwnerCoordinator {
     }
     if (request.method !== "POST") return new Response(null, { status: 405 });
     const path = new URL(request.url).pathname;
+    if (path === "/revoke") {
+      try { return await this.revokeDevice(request); }
+      catch { return Response.json({ error: "unavailable" }, { status: 503 }); }
+    }
     if (path === "/read") {
       try { return await this.readFile(request); }
       catch { return Response.json({ error: "unavailable" }, { status: 503 }); }

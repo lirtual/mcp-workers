@@ -159,3 +159,52 @@ test("local confirmation rejects guessed/expired challenge and wrong private key
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("revoked identity cannot silently re-pair with the old key, but a new key and the same machine name can", async () => {
+  const { rows, site, send, rpc, value } = setup();
+  const original = newEnrollment("same-host");
+  const fresh = newEnrollment("same-host");
+  const dir = await mkdtemp(path.join(os.tmpdir(), "v2-reinstall-after-revoke-"));
+  async function begin(material: typeof original) {
+    const registered = await send(site + "agent/pair/start", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(material.request),
+    });
+    assert.equal(registered.status, 202);
+    const identity = value(await rpc("pairing_lookup", { code: material.code }));
+    const prepared = value(await rpc("pairing_prepare", {
+      pairing_id: identity.pairing_id, expected_fingerprint: identity.fingerprint,
+    }));
+    return String(prepared.challenge);
+  }
+  try {
+    const oldKey = path.join(dir, "old.pem");
+    await saveNewPrivateKey(oldKey, original.privateKeyPem);
+    const originalId = await confirmDeviceLocally(original.code, await begin(original), site, oldKey, send);
+    assert.match(originalId, /^[a-f0-9-]{36}$/);
+    const revoked = await rpc("revoke_device", { device_id: originalId });
+    assert.equal(value(revoked).status, "revoked");
+
+    // A reinstalled Agent still holding a cloned old key and an entirely new
+    // human-entered confirmation challenge must never obtain a second ID.
+    const clonedOld = path.join(dir, "cloned-old.pem");
+    await saveNewPrivateKey(clonedOld, original.privateKeyPem);
+    await assert.rejects(
+      confirmDeviceLocally(original.code, await begin(original), site, clonedOld, send),
+      /Confirmation denied/,
+    );
+    assert.equal([...rows].filter(([k]) => k.startsWith("device:")).length, 1);
+    assert.equal((rows.get("device:" + originalId) as { revoked: boolean }).revoked, true);
+
+    // A fresh installation with a fresh Ed25519 identity can go through the
+    // same independent human terminal confirmation, even with the same label.
+    const newKey = path.join(dir, "new.pem");
+    await saveNewPrivateKey(newKey, fresh.privateKeyPem);
+    const newId = await confirmDeviceLocally(fresh.code, await begin(fresh), site, newKey, send);
+    assert.notEqual(newId, originalId);
+    assert.equal((rows.get("device:" + newId) as { revoked: boolean }).revoked, false);
+    assert.equal((rows.get("device:" + originalId) as { revoked: boolean }).revoked, true);
+    assert.equal([...rows].filter(([k]) => k.startsWith("device:")).length, 2);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

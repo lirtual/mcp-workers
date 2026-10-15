@@ -252,10 +252,14 @@ export async function listApprovedDevices(state: DurableObjectState):
   Promise<{ status: number; body: object }> {
   const stored = await state.storage.list<V2Device>({ prefix: "device:", limit: 65 });
   if (stored.size > 64) return { status: 503, body: { error: "capacity" } };
-  const devices: Array<{ device_id: string; name: string; status: "online" | "offline" }> = [];
+  const devices: Array<{ device_id: string; name: string; status: "online" | "offline" | "revoked" }> = [];
   for (const [key, device] of stored) {
     if (!device || !isId(device.device_id) || key !== "device:" + device.device_id ||
-        device.revoked !== false || typeof device.name !== "string") continue;
+        typeof device.name !== "string" || typeof device.revoked !== "boolean") continue;
+    if (device.revoked) {
+      devices.push({ device_id: device.device_id, name: device.name, status: "revoked" });
+      continue;
+    }
     let online = false;
     // Socket attachments can survive DO Hibernation, while JS Map state cannot.
     // A socket alone does not establish current authority: check its stored epoch.

@@ -38,6 +38,36 @@ async function callPairedDeviceRead(env: Env, id: unknown, name: string, args: u
   } catch { return toolError(id, "The requested v2 device is unavailable."); }
 }
 
+const REVOKE_DEVICE_TOOL = {
+  name: "revoke_device",
+  title: "Revoke a paired v2 device",
+  description: "Permanently reject a paired v2 identity and attempt to close its WSS. Agent-owned processes are not confirmed stopped.",
+  inputSchema: {
+    type: "object",
+    properties: { device_id: { type: "string", description: "Exact paired device ID" } },
+    required: ["device_id"],
+    additionalProperties: false,
+  },
+  annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+} as const;
+
+async function revokePairedDevice(env: Env, id: unknown, args: unknown): Promise<Response> {
+  if (!args || typeof args !== "object" || Array.isArray(args) ||
+      Object.keys(args).length !== 1 || typeof (args as { device_id?: unknown }).device_id !== "string" ||
+      !/^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test((args as { device_id: string }).device_id)) {
+    return toolError(id, "Invalid device revocation request.");
+  }
+  const owner = pendingOwner(env);
+  if (!owner) return toolError(id, "Device revocation is disabled.");
+  try {
+    const response = await owner.fetch("https://v2.internal/revoke", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(args),
+    });
+    if (!response.ok) return toolError(id, "Device revocation was not confirmed.");
+    return toolText(id, JSON.stringify(await response.json()));
+  } catch { return toolError(id, "Device revocation was not confirmed."); }
+}
+
 const LIST_DEVICES_TOOL = {
   name: "list_devices",
   title: "List paired v2 devices",
@@ -1012,7 +1042,7 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
   }
 
   if (rpcMessage.method === "tools/list") {
-    return rpc(rpcMessage.id, { tools: pendingOwner(env) ? [...LOCAL_TOOLS, PAIRING_LOOKUP_TOOL, PAIRING_PREPARE_TOOL, LIST_DEVICES_TOOL] : LOCAL_TOOLS });
+    return rpc(rpcMessage.id, { tools: pendingOwner(env) ? [...LOCAL_TOOLS, PAIRING_LOOKUP_TOOL, PAIRING_PREPARE_TOOL, LIST_DEVICES_TOOL, REVOKE_DEVICE_TOOL] : LOCAL_TOOLS });
   }
 
   if (rpcMessage.method === "tools/call") {
@@ -1026,6 +1056,9 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
         call.arguments && typeof call.arguments === "object" && !Array.isArray(call.arguments) &&
         Object.hasOwn(call.arguments, "device_id")) {
       return callPairedDeviceRead(env, rpcMessage.id, call.name, call.arguments);
+    }
+    if (call.name === "revoke_device" && pendingOwner(env)) {
+      return revokePairedDevice(env, rpcMessage.id, call.arguments);
     }
     if (call.name === "list_devices" && pendingOwner(env)) {
       return listPairedDevices(env, rpcMessage.id, call.arguments ?? {});
