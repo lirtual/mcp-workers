@@ -107,7 +107,13 @@ export function renderV2Service({ node, home, repoRoot, endpoint, keyPath }) {
 
 function run(binary, args) {
   const result = spawnSync(binary, args, { encoding: "utf8", timeout: 15_000 });
-  if (result.error || result.status !== 0) throw new Error("A local dependency or service command failed.");
+  if (result.error || result.status !== 0) {
+    if (binary === "cc") throw new Error("Missing or unusable cc compiler.");
+    if (binary === "systemctl") throw new Error("The systemd user manager or requested user service action is unavailable.");
+    if (binary === "systemd-analyze") throw new Error("Missing or unusable systemd-analyze.");
+    if (binary === process.execPath) throw new Error("Could not compile the existing C session supervisor.");
+    throw new Error("A local prerequisite is unavailable.");
+  }
 }
 
 async function exists(target) {
@@ -255,9 +261,20 @@ export async function runInstaller(args, { home = os.homedir(), stdin = process.
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  runInstaller(process.argv.slice(2)).catch(() => {
-    // Never print private keys, raw responses, or unsafe user input in logs.
-    process.stderr.write("v2 installation/upgrade/removal failed. Check prerequisites and previous service state; no v1 change was made.\n");
+  runInstaller(process.argv.slice(2)).catch(error => {
+    // Only print fixed, hard-coded classifications; never echo external
+    // exception messages, endpoint query strings or private credential data.
+    const safeErrors = [
+      "Install as a non-root Linux user with Node.js 24.",
+      "Missing or unusable cc compiler.",
+      "The systemd user manager or requested user service action is unavailable.",
+      "Missing or unusable systemd-analyze.",
+      "Could not compile the existing C session supervisor.",
+    ];
+    const reason = error instanceof Error && safeErrors.includes(error.message)
+      ? error.message + " " : "";
+    process.stderr.write(reason +
+      "v2 installation/upgrade/removal failed; no v1 service was changed.\n");
     process.exitCode = 1;
   });
 }
