@@ -92,3 +92,79 @@ test("pending store rejects invalid proof and expired/duplicate requests", async
   record.expires_at = Date.now() - 1;
   assert.equal((await lookupPending(store as never, request.code_verifier)).status, 404);
 });
+
+
+test("P1 security gate: a valid Portal token and automated confirm tool call cannot activate a pending device", async () => {
+  const { store, values } = makeStore();
+  const owner = new V2OwnerCoordinator({ storage: store } as unknown as DurableObjectState);
+  const ns = {
+    idFromName() { return "isolated-owner"; },
+    get() { return { fetch: (input: RequestInfo | URL, init?: RequestInit) =>
+      owner.fetch(input instanceof Request ? input : new Request(input, init)) }; },
+  } as unknown as DurableObjectNamespace;
+  const env = {
+    MCP_ACCESS_TOKEN: "portal-credential",
+    REMOTE_CONTROL_DEVICE_TOKEN: "legacy-local-secret",
+    V2_OWNER: ns,
+  } as Env & { V2_OWNER: DurableObjectNamespace };
+  const pending = newEnrollment("sandbox-agent");
+  const first = await worker.fetch(new Request("https://localhost.test/agent/pair/start", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(pending.request),
+  }), env);
+  assert.equal(first.status, 202);
+
+  const rpc = async (token: string, method: string, params?: unknown) =>
+    worker.fetch(new Request("https://localhost.test/mcp", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 7, method, params }),
+    }), env);
+  const tools = await (await rpc("portal-credential", "tools/list")).json() as {
+    result: { tools: Array<{ name: string }> };
+  };
+  assert.equal(tools.result.tools.some(x => x.name === "pairing_lookup"), true);
+  // The only pairing tool is observational; a model-generated approval cannot be accepted.
+  assert.equal(tools.result.tools.some(x => /confirm|approve|authorize|pairing_complete/.test(x.name)), false);
+
+  const observed = await rpc("portal-credential", "tools/call", {
+    name: "pairing_lookup", arguments: { code: pending.code },
+  });
+  assert.equal(observed.status, 200);
+  const envelope = await observed.json() as { result: { content: [{ text: string }] } };
+  const details = JSON.parse(envelope.result.content[0].text) as { pairing_id: string; fingerprint: string };
+  assert.match(details.fingerprint, /^[a-f0-9]{24}$/);
+  const before = [...values.entries()].filter(([key]) => key.startsWith("pending:"));
+  assert.equal(before.length, 1);
+
+  for (const [token, name] of [
+    ["portal-credential", "pairing_confirm"],
+    ["portal-credential", "approve_device"],
+    ["wrong-credential", "pairing_confirm"],
+  ] as const) {
+    const result = await rpc(token, "tools/call", {
+      name, arguments: {
+        pairing_id: details.pairing_id,
+        expected_fingerprint: details.fingerprint,
+        approve: true,
+      },
+    });
+    if (token !== "portal-credential") {
+      assert.equal(result.status, 401);
+    } else {
+      assert.equal(result.status, 200);
+      assert.match(await result.text(), /rejected/);
+    }
+  }
+  for (const pathname of ["/agent/pair/confirm", "/agent/connect", "/agent/approve"]) {
+    const response = await worker.fetch(new Request("https://localhost.test" + pathname, {
+      method: "POST", headers: { authorization: "Bearer portal-credential" },
+    }), env);
+    assert.equal(response.status, 404);
+  }
+  // The pending record is not transformed into an approved device or public Shell capability.
+  const after = [...values.entries()].filter(([key]) => key.startsWith("pending:"));
+  assert.deepEqual(after, before);
+  assert.equal([...values.keys()].filter(key => key.startsWith("device:")).length, 0);
+});

@@ -77,8 +77,8 @@ import {
   type LocalProcessTermination,
 } from "./local-read.ts";
 
-/** Fixed VPC Service target. Tool arguments cannot change this URL. */
-export const DEVICE_CALL_URL = "http://remote-control-device.invalid/internal/call";
+/** Fixed v1 VPC Service target. Re-exporting arbitrary constants from a DO entrypoint breaks workerd. */
+import { DEVICE_CALL_URL } from "./device-target.ts";
 
 const MAX_MCP_BODY_BYTES = 65_536;
 const MAX_DEVICE_BODY_BYTES = 512_000;
