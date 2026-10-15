@@ -234,6 +234,23 @@ test("without an operation callback, signed v2 Agent rejects file mutation frame
   assert.equal(await run, "policy");
 });
 
+test("a file-write-only v2 Agent refuses Shell even when a mutation callback is present", async () => {
+  const stop = new AbortController();
+  const socket = new Client(() => {
+    throw new Error("a Shell response must never be emitted");
+  });
+  let executed = false;
+  const running = monitorDeviceSocket(socket as unknown as WebSocket, stop.signal,
+    { intervalMs: 60_000, timeoutMs: 10_000 }, undefined,
+    async () => { executed = true; return { status: "completed" }; });
+  socket.receive(JSON.stringify({
+    kind: "operation", request_id: randomUUID(), operation_id: "shell-not-authorized",
+    tool: "start_process", arguments: { command: "echo prohibited", timeout_ms: 0 },
+  }));
+  assert.equal(await running, "policy");
+  assert.equal(executed, false);
+});
+
 test("response-lost-after-write returns timeout_unknown; reconnect only queries the persisted receipt", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "v2-response-lost-"));
   const marker = path.join(dir, "output.txt");
