@@ -12,7 +12,8 @@ const CHALLENGE_TTL_MS = 300_000;
 const CONFIRM_DOMAIN = "remote-control:v2:local-confirm:";
 const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 const te = new TextEncoder();
-import { issueSessionChallenge, authorizeSession, acceptAuthenticatedSocket, handleIdleSocketMessage, listApprovedDevices } from "./v2-session.ts";
+import { issueSessionChallenge, authorizeSession, acceptAuthenticatedSocket, handleIdleSocketMessage, listApprovedDevices, type V2Device } from "./v2-session.ts";
+import { parseLocalRead } from "./local-read.ts";
 
 export interface PendingDevice {
   name: string;
@@ -255,6 +256,101 @@ async function limitedJson(request: Request): Promise<unknown> {
 
 export class V2OwnerCoordinator {
   private readonly state: DurableObjectState;
+  // In-flight reads only: bounded by request timeout; never durable/queued.
+  private readonly pendingReads = new Map<string, {
+    socket: WebSocket; deviceId: string; epoch: string;
+    resolve: (response: Response) => void;
+  }>();
+
+  private async readFile(request: Request): Promise<Response> {
+    let body: unknown;
+    try { body = await limitedJson(request); }
+    catch { return Response.json({ error: "bad_request" }, { status: 400 }); }
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return Response.json({ error: "bad_request" }, { status: 400 });
+    }
+    const arg = body as Record<string, unknown>;
+    const deviceId = arg.device_id;
+    if (Object.keys(arg).length !== 3 || arg.tool !== "read_file" ||
+        typeof deviceId !== "string" || !/^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(deviceId) ||
+        !parseLocalRead(arg.arguments)) {
+      return Response.json({ error: "bad_request" }, { status: 400 });
+    }
+    if (this.pendingReads.size >= 4) return Response.json({ error: "busy" }, { status: 503 });
+    const [device, epoch] = await Promise.all([
+      this.state.storage.get<V2Device>("device:" + deviceId),
+      this.state.storage.get<string>("session:epoch:" + deviceId),
+    ]);
+    if (!device || device.revoked !== false || !epoch) {
+      return Response.json({ error: "offline" }, { status: 503 });
+    }
+    let active: WebSocket | undefined;
+    for (const socket of this.state.getWebSockets("device:" + deviceId)) {
+      try {
+        const a = socket.deserializeAttachment() as { device_id?: unknown; epoch?: unknown } | null;
+        if (a?.device_id === deviceId && a.epoch === epoch && socket.readyState === 1) {
+          active = socket; break;
+        }
+      } catch { /* Ignore malformed detached sessions. */ }
+    }
+    if (!active) return Response.json({ error: "offline" }, { status: 503 });
+    // Concurrent requests may all have passed the earlier cap before awaiting
+    // SQLite. Enforce the limit again immediately before reserving a slot.
+    if (this.pendingReads.size >= 4) return Response.json({ error: "busy" }, { status: 503 });
+    const requestId = crypto.randomUUID();
+    const selected = active;
+    return new Promise<Response>(resolve => {
+      const timer = setTimeout(() => {
+        this.pendingReads.delete(requestId);
+        resolve(Response.json({ error: "timeout" }, { status: 503 }));
+      }, 5_000);
+      this.pendingReads.set(requestId, {
+        socket: selected, deviceId, epoch,
+        resolve: response => {
+          clearTimeout(timer);
+          this.pendingReads.delete(requestId);
+          resolve(response);
+        },
+      });
+      try {
+        selected.send(JSON.stringify({
+          kind: "read", request_id: requestId, tool: "read_file", arguments: arg.arguments,
+        }));
+      } catch {
+        this.pendingReads.get(requestId)?.resolve(Response.json({ error: "offline" }, { status: 503 }));
+      }
+    });
+  }
+
+  private async handleReadResult(socket: WebSocket, message: string): Promise<boolean> {
+    if (message.length > 70_000 || !message.startsWith("{")) return false;
+    let reply: Record<string, unknown>;
+    try { reply = JSON.parse(message) as Record<string, unknown>; }
+    catch { return false; }
+    if (reply.kind !== "read_result" || typeof reply.request_id !== "string") return false;
+    const pending = this.pendingReads.get(reply.request_id);
+    // A timed-out response has no active waiter. Never queue it for a reconnect.
+    if (!pending) return true;
+    if (pending.socket !== socket) {
+      try { socket.close(1008, "wrong device response"); } catch { /* disconnected */ }
+      return true;
+    }
+    try {
+      const [device, epoch] = await Promise.all([
+        this.state.storage.get<V2Device>("device:" + pending.deviceId),
+        this.state.storage.get<string>("session:epoch:" + pending.deviceId),
+      ]);
+      if (!device || device.revoked !== false || epoch !== pending.epoch) {
+        pending.resolve(Response.json({ error: "unauthorized" }, { status: 503 }));
+      } else if (reply.status === "completed" && typeof reply.text === "string" &&
+          reply.text.length <= 65_536) {
+        pending.resolve(Response.json({ status: "completed", text: reply.text }));
+      } else {
+        pending.resolve(Response.json({ error: "read_failed" }, { status: 503 }));
+      }
+    } catch { pending.resolve(Response.json({ error: "unavailable" }, { status: 503 })); }
+    return true;
+  }
   constructor(state: DurableObjectState) {
     this.state = state;
     // Cloudflare replies to these liveness frames without waking a hibernating
@@ -267,6 +363,7 @@ export class V2OwnerCoordinator {
     }
   }
   async webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    if (typeof message === "string" && await this.handleReadResult(socket, message)) return;
     await handleIdleSocketMessage(this.state, socket, message);
   }
   async fetch(request: Request): Promise<Response> {
@@ -275,6 +372,10 @@ export class V2OwnerCoordinator {
     }
     if (request.method !== "POST") return new Response(null, { status: 405 });
     const path = new URL(request.url).pathname;
+    if (path === "/read") {
+      try { return await this.readFile(request); }
+      catch { return Response.json({ error: "unavailable" }, { status: 503 }); }
+    }
     if (path === "/devices") {
       try {
         if (request.headers.get("content-type") !== "application/json" ||

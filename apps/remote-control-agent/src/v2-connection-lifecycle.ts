@@ -1,11 +1,14 @@
 /**
- * Authentication-only v2 Agent connection lifecycle.
+ * v2 Agent lifecycle with an explicit, read_file-only test capability.
  *
  * Heartbeats are answered by the Durable Object Hibernation auto-response,
- * without waking the DO for normal liveness checks. This deliberately does
- * not accept or execute remote commands.
+ * without waking the DO for normal liveness checks. Remote reads are disabled
+ * by default; this handler never executes Shell or write operations.
  */
 import { DeviceSessionRejectedError, openAuthenticatedDeviceSocket } from "./v2-session-client.ts";
+import { executeReadTool } from "./read-execution.ts";
+import { parseLocalRead } from "./local-read.ts";
+import { SearchSessions } from "./search.ts";
 
 export type SocketEnd = "aborted" | "closed" | "offline" | "policy";
 const PING = "rc-v2:ping";
@@ -22,6 +25,7 @@ export function monitorDeviceSocket(
   timing: { intervalMs: number; timeoutMs: number; authIntervalMs?: number } = {
     intervalMs: HEARTBEAT_INTERVAL_MS, timeoutMs: HEARTBEAT_TIMEOUT_MS,
   },
+  readFile?: (args: unknown, signal: AbortSignal) => Promise<string | null>,
 ): Promise<SocketEnd> {
   const authEvery = timing.authIntervalMs ?? AUTH_INTERVAL_MS;
   if (!Number.isFinite(timing.intervalMs) || timing.intervalMs <= 0 ||
@@ -33,6 +37,7 @@ export function monitorDeviceSocket(
   return new Promise((resolve) => {
     let settled = false;
     let awaitingPong = false;
+    let readsInFlight = 0;
     let awaitingAuth: string | undefined;
     let watchdog: ReturnType<typeof setTimeout> | undefined;
     let authWatchdog: ReturnType<typeof setTimeout> | undefined;
@@ -80,7 +85,41 @@ export function monitorDeviceSocket(
         authWatchdog = undefined;
         return;
       }
-      finish("policy"); // No remote operations or unexpected protocol messages.
+      if (typeof event.data === "string" && event.data.length <= 8192 &&
+          event.data.startsWith("{") && readFile) {
+        let request: Record<string, unknown> | undefined;
+        try {
+          const decoded = JSON.parse(event.data) as unknown;
+          if (decoded && typeof decoded === "object" && !Array.isArray(decoded)) {
+            request = decoded as Record<string, unknown>;
+          }
+        } catch { /* Not an authorized read frame. */ }
+        if (request?.kind === "read" && request.tool === "read_file" &&
+            typeof request.request_id === "string" &&
+            /^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(request.request_id) &&
+            Object.keys(request).length === 4 && parseLocalRead(request.arguments) &&
+            readsInFlight < 4) {
+          readsInFlight++;
+          const id = request.request_id;
+          void Promise.resolve().then(() => readFile(request.arguments, signal))
+            .then(text => {
+              if (settled || signal.aborted || socket.readyState !== WebSocket.OPEN) return;
+              const valid = typeof text === "string" && text.length <= 65_536;
+              socket.send(JSON.stringify({
+                kind: "read_result", request_id: id,
+                status: valid ? "completed" : "failed",
+                ...(valid ? { text } : {}),
+              }));
+            }).catch(() => {
+              if (!settled && !signal.aborted && socket.readyState === WebSocket.OPEN) {
+                try { socket.send(JSON.stringify({ kind: "read_result", request_id: id, status: "failed" })); }
+                catch { finish("offline"); }
+              }
+            }).finally(() => { readsInFlight--; });
+          return;
+        }
+      }
+      finish("policy"); // Never interpret non-read traffic as an executable request.
     };
     if (signal.aborted) { finish("aborted"); return; }
     if (socket.readyState !== WebSocket.OPEN) { finish("offline"); return; }
@@ -122,6 +161,8 @@ export async function maintainAuthenticatedDeviceSession(
     send?: typeof fetch;
     makeSocket?: (url: string, protocols: string[]) => WebSocket;
     heartbeat?: { intervalMs: number; timeoutMs: number; authIntervalMs?: number };
+    // Explicit opt-in for isolated T05 tests. Default remains authentication only.
+    readOnly?: boolean;
     wait?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
     onState?: (status: "connected" | "disconnected" | "rejected") => void;
   } = {},
@@ -142,7 +183,15 @@ export async function maintainAuthenticatedDeviceSession(
       if (signal.aborted) { connection.socket.close(); break; }
       const connectedAt = performance.now();
       options.onState?.("connected");
-      const outcome = await monitorDeviceSocket(connection.socket, signal, options.heartbeat);
+      const outcome = await monitorDeviceSocket(connection.socket, signal, options.heartbeat,
+        options.readOnly ? async (args, requestSignal) => {
+          const searches = new SearchSessions();
+          try {
+            // Reuse the existing v1 validated read engine, never the Shell/mutation dispatcher.
+            const reply = await executeReadTool("read_file", args, searches, requestSignal);
+            return reply.kind === "completed" ? reply.text : null;
+          } finally { await searches.close(); }
+        } : undefined);
       if (outcome === "aborted" || outcome === "closed") return;
       if (outcome === "policy") { options.onState?.("rejected"); return; }
       // Opening a socket is not evidence of stability. If an Agent loops
