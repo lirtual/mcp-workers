@@ -104,6 +104,37 @@ test("v2 write_file preserves Agent receipt idempotency per device; no v1 fallba
     assert.equal(JSON.parse(conflict.content).status, "conflict");
     assert.equal(await readFile(markerA, "utf8"), "A\n");
 
+    const invalidDirectory = await call("create_directory", {
+      device_id: a, path: path.join(dir, "unauthorized"),
+    });
+    assert.equal(invalidDirectory.data.result?.isError, true);
+    const subdir = path.join(dir, "created");
+    const mkdirId = "mkdir-" + randomUUID();
+    const createArgs = { device_id: a, operation_id: mkdirId, path: subdir };
+    assert.equal(JSON.parse((await call("create_directory", createArgs)).content).status, "completed");
+    assert.equal(JSON.parse((await call("create_directory", createArgs)).content).status, "completed");
+    assert.equal(JSON.parse((await call("create_directory", {
+      ...createArgs, path: path.join(dir, "other"),
+    })).content).status, "conflict");
+
+    const editId = "edit-" + randomUUID();
+    const editArgs = { device_id: a, operation_id: editId, file_path: markerA,
+      old_string: "A\\n", new_string: "EDITED\\n" };
+    assert.equal(JSON.parse((await call("replace_text", editArgs)).content).status, "completed");
+    assert.equal(JSON.parse((await call("replace_text", editArgs)).content).status, "completed");
+    assert.equal(await readFile(markerA, "utf8"), "EDITED\\n");
+
+    const moved = path.join(subdir, "moved.txt");
+    const moveArgs = { device_id: a, operation_id: "move-" + randomUUID(),
+      source: markerA, destination: moved };
+    assert.equal(JSON.parse((await call("move_file", moveArgs)).content).status, "completed");
+    assert.equal(JSON.parse((await call("move_file", moveArgs)).content).status, "completed");
+    assert.equal(await readFile(moved, "utf8"), "EDITED\\n");
+    const deleteArgs = { device_id: a, operation_id: "delete-" + randomUUID(), path: moved };
+    assert.equal(JSON.parse((await call("delete_file", deleteArgs)).content).status, "completed");
+    assert.equal(JSON.parse((await call("delete_file", deleteArgs)).content).status, "completed");
+    await assert.rejects(readFile(moved, "utf8"), { code: "ENOENT" });
+
     const notAtB = await call("get_operation_status", { device_id: b, operation_id: id });
     assert.equal(JSON.parse(notAtB.content).status, "not_found");
     const receiptA = await call("get_operation_status", { device_id: a, operation_id: id });

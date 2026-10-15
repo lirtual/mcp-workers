@@ -13,7 +13,7 @@ const CONFIRM_DOMAIN = "remote-control:v2:local-confirm:";
 const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 const te = new TextEncoder();
 import { issueSessionChallenge, authorizeSession, acceptAuthenticatedSocket, handleIdleSocketMessage, listApprovedDevices, type V2Device } from "./v2-session.ts";
-import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId, parseLocalWriteFile, parseOperationId } from "./local-read.ts";
+import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId, parseLocalWriteFile, parseLocalCreateDirectory, parseLocalEditBlock, parseLocalMoveFile, parseLocalDeleteFile, parseOperationId } from "./local-read.ts";
 
 export interface PendingDevice {
   name: string;
@@ -286,13 +286,18 @@ export class V2OwnerCoordinator {
       stop_search: parseSearchSessionId,
     };
     const operationId = isOperation ? arg.operation_id : undefined;
+    const mutationParsers: Record<string, (input: unknown) => unknown> = {
+      write_file: parseLocalWriteFile, create_directory: parseLocalCreateDirectory,
+      edit_block: parseLocalEditBlock, move_file: parseLocalMoveFile,
+      delete_file: parseLocalDeleteFile,
+    };
     const validOperation = typeof operationId === "string" &&
       Boolean(parseOperationId({ operation_id: operationId })) &&
-      (arg.tool === "write_file"
-        ? Boolean(parseLocalWriteFile({ ...(arg.arguments as object), operation_id: operationId }))
-        : arg.tool === "get_operation_status" &&
-          Boolean(parseOperationId(arg.arguments)) &&
-          (arg.arguments as { operation_id: string }).operation_id === operationId);
+      ((arg.tool === "get_operation_status" &&
+        Boolean(parseOperationId(arg.arguments)) &&
+        (arg.arguments as { operation_id: string }).operation_id === operationId) ||
+      (typeof arg.tool === "string" && Object.hasOwn(mutationParsers, arg.tool) &&
+        Boolean(mutationParsers[arg.tool]?.({ ...(arg.arguments as object), operation_id: operationId }))));
     if ((isOperation ? Object.keys(arg).length !== 4 : Object.keys(arg).length !== 3) ||
         typeof arg.tool !== "string" ||
         (isOperation ? !validOperation : (!Object.hasOwn(parsers, arg.tool) || !parsers[arg.tool]?.(arg.arguments))) ||

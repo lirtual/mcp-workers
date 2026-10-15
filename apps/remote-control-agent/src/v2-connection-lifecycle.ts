@@ -6,14 +6,16 @@
  */
 import { DeviceSessionRejectedError, openAuthenticatedDeviceSocket } from "./v2-session-client.ts";
 import { executeReadTool } from "./read-execution.ts";
-import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId, parseLocalWriteFile, parseOperationId } from "./local-read.ts";
+import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId, parseLocalWriteFile, parseLocalCreateDirectory, parseLocalEditBlock, parseLocalMoveFile, parseLocalDeleteFile, parseOperationId } from "./local-read.ts";
 import { SearchSessions } from "./search.ts";
 import { createAgentExecutionEngine, type AgentExecutionEngine } from "./execution.ts";
+
+type V2FileOperation = "write_file" | "create_directory" | "edit_block" | "move_file" | "delete_file" | "get_operation_status";
 
 /** One adapter shared by production and tests; no new mutation executor. */
 export async function executeV2FileOperation(
   execution: AgentExecutionEngine,
-  tool: "write_file" | "get_operation_status",
+  tool: V2FileOperation,
   args: unknown,
   operationId: string,
   signal: AbortSignal,
@@ -25,7 +27,7 @@ export async function executeV2FileOperation(
         ...(receipt ? { receipt } : {}) };
     }
     const outcome = await execution.executeTool({
-      tool: "write_file", arguments: args, operation_id: operationId,
+      tool, arguments: args, operation_id: operationId,
     }, signal);
     if (outcome?.status === 409) return { operation_id: operationId, status: "conflict" };
     if (outcome?.status === 400) return { operation_id: operationId, status: "bad_request" };
@@ -55,7 +57,7 @@ export function monitorDeviceSocket(
     intervalMs: HEARTBEAT_INTERVAL_MS, timeoutMs: HEARTBEAT_TIMEOUT_MS,
   },
   readOnly?: (tool: string, args: unknown, signal: AbortSignal) => Promise<string | null>,
-  operation?: (tool: "write_file" | "get_operation_status", args: unknown, operationId: string, signal: AbortSignal) => Promise<Record<string, unknown> | null>,
+  operation?: (tool: V2FileOperation, args: unknown, operationId: string, signal: AbortSignal) => Promise<Record<string, unknown> | null>,
 ): Promise<SocketEnd> {
   const authEvery = timing.authIntervalMs ?? AUTH_INTERVAL_MS;
   if (!Number.isFinite(timing.intervalMs) || timing.intervalMs <= 0 ||
@@ -160,22 +162,27 @@ export function monitorDeviceSocket(
             }).finally(() => { readsInFlight--; });
           return;
         }
-        if (operation && request?.kind === "operation" &&
-            (request.tool === "write_file" || request.tool === "get_operation_status") &&
+        const mutationParsers: Record<string, (input: unknown) => unknown> = {
+          write_file: parseLocalWriteFile, create_directory: parseLocalCreateDirectory,
+          edit_block: parseLocalEditBlock, move_file: parseLocalMoveFile,
+          delete_file: parseLocalDeleteFile,
+        };
+        if (operation && request?.kind === "operation" && typeof request.tool === "string" &&
+            (request.tool === "get_operation_status" || Object.hasOwn(mutationParsers, request.tool)) &&
             typeof request.operation_id === "string" &&
             parseOperationId({ operation_id: request.operation_id }) &&
             typeof request.request_id === "string" &&
             /^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(request.request_id) &&
             Object.keys(request).length === 5 &&
-            (request.tool === "write_file"
-              ? Boolean(parseLocalWriteFile(request.arguments))
-              : Boolean(parseOperationId(request.arguments)) &&
-                (request.arguments as { operation_id: string }).operation_id === request.operation_id) &&
+            (request.tool === "get_operation_status"
+              ? Boolean(parseOperationId(request.arguments)) &&
+                (request.arguments as { operation_id: string }).operation_id === request.operation_id
+              : Boolean(mutationParsers[request.tool]?.(request.arguments))) &&
             readsInFlight < 4) {
           readsInFlight++;
           const requestId = request.request_id;
           const operationId = request.operation_id;
-          const tool = request.tool;
+          const tool = request.tool as V2FileOperation;
           void Promise.resolve().then(() => operation(tool, request.arguments, operationId, socketWork.signal))
             .then(result => {
               if (settled || socketWork.signal.aborted || socket.readyState !== WebSocket.OPEN) return;
@@ -237,7 +244,7 @@ export async function maintainAuthenticatedDeviceSession(
     heartbeat?: { intervalMs: number; timeoutMs: number; authIntervalMs?: number };
     // Explicit opt-in for isolated T05 tests. Default remains authentication only.
     readOnly?: boolean;
-    // Explicit T07 capability. Not exposed by the current v1 entrypoint.
+    // Explicit T07 file-mutation capability; disabled in the shipped entrypoint.
     writeFile?: boolean;
     wait?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
     onState?: (status: "connected" | "disconnected" | "rejected") => void;

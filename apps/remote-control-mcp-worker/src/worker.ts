@@ -68,8 +68,9 @@ async function revokePairedDevice(env: Env, id: unknown, args: unknown): Promise
   } catch { return toolError(id, "Device revocation was not confirmed."); }
 }
 
-// T07 staged capability: only file writes and existing Agent receipt lookup.
-const V2_OPERATION_TOOLS = new Set(["write_file", "get_operation_status"]);
+// T07 staged file-mutation capability; Shell and managed sessions remain disabled.
+const V2_OPERATION_TOOLS = new Set(["write_file", "create_directory", "replace_text", "move_file", "delete_file", "get_operation_status"]);
+const V2_AGENT_OPERATION_TOOLS = new Set(["write_file", "create_directory", "edit_block", "move_file", "delete_file", "get_operation_status"]);
 async function callPairedDeviceOperation(env: Env, id: unknown, name: string, args: unknown): Promise<Response> {
   if (!args || typeof args !== "object" || Array.isArray(args)) {
     return toolError(id, "The requested v2 operation was rejected.");
@@ -79,7 +80,7 @@ async function callPairedDeviceOperation(env: Env, id: unknown, name: string, ar
     return toolError(id, "An explicit valid device_id is required.");
   }
   const parsed = parseLocalCall(name, localArgs);
-  if (!parsed || (parsed.tool !== "write_file" && parsed.tool !== "get_operation_status")) {
+  if (!parsed || !V2_AGENT_OPERATION_TOOLS.has(parsed.tool)) {
     return toolError(id, "The requested v2 operation was rejected.");
   }
   const operationId = callOperationId(parsed);
@@ -94,7 +95,7 @@ async function callPairedDeviceOperation(env: Env, id: unknown, name: string, ar
     });
     if (!response.ok) {
       return toolText(id, JSON.stringify({ operation_id: operationId,
-        status: parsed.tool === "write_file" ? "timeout_unknown" : "unavailable" }));
+        status: parsed.tool === "get_operation_status" ? "unavailable" : "timeout_unknown" }));
     }
     const result = await response.json() as Record<string, unknown>;
     if (result.operation_id !== operationId || typeof result.status !== "string") {
@@ -103,7 +104,7 @@ async function callPairedDeviceOperation(env: Env, id: unknown, name: string, ar
     return toolText(id, JSON.stringify(result));
   } catch {
     return toolText(id, JSON.stringify({ operation_id: operationId,
-      status: parsed.tool === "write_file" ? "timeout_unknown" : "unavailable" }));
+      status: parsed.tool === "get_operation_status" ? "unavailable" : "timeout_unknown" }));
   }
 }
 
@@ -452,21 +453,21 @@ const WRITE_FILE_TOOL = {
 const CREATE_DIRECTORY_TOOL = {
   name: "create_directory", title: "Create local directory",
   description: "Create one local directory. Use a stable operation_id for this exact intent and query get_operation_status after an uncertain response.",
-  inputSchema: { type: "object", properties: { operation_id: { type: "string", minLength: 1, maxLength: 128 }, path: { type: "string" } }, required: ["operation_id", "path"], additionalProperties: false },
+  inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." }, operation_id: { type: "string", minLength: 1, maxLength: 128 }, path: { type: "string" } }, required: ["operation_id", "path"], additionalProperties: false },
   annotations: { title: "Create local directory", readOnlyHint: false, destructiveHint: true, openWorldHint: false },
 } as const;
 
 const EDIT_BLOCK_TOOL = {
   name: "replace_text", title: "Replace text in local file",
   description: "Replace exact text occurrences in a local UTF-8 file. expected_replacements defaults to 1; the file is unchanged if the count differs. Use a stable operation_id and query status after an uncertain response.",
-  inputSchema: { type: "object", properties: { operation_id: { type: "string", minLength: 1, maxLength: 128 }, file_path: { type: "string" }, old_string: { type: "string", minLength: 1, maxLength: 49152 }, new_string: { type: "string", maxLength: 49152 }, expected_replacements: { type: "integer", minimum: 1, maximum: 1000 } }, required: ["operation_id", "file_path", "old_string", "new_string"], additionalProperties: false },
+  inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." }, operation_id: { type: "string", minLength: 1, maxLength: 128 }, file_path: { type: "string" }, old_string: { type: "string", minLength: 1, maxLength: 49152 }, new_string: { type: "string", maxLength: 49152 }, expected_replacements: { type: "integer", minimum: 1, maximum: 1000 } }, required: ["operation_id", "file_path", "old_string", "new_string"], additionalProperties: false },
   annotations: { title: "Replace text in local file", readOnlyHint: false, destructiveHint: true, openWorldHint: false },
 } as const;
 
 const MOVE_FILE_TOOL = {
   name: "move_file", title: "Move or rename local file",
   description: "Move or rename a local regular file on the same filesystem to a destination that does not already exist. Use a stable operation_id and query status after an uncertain response.",
-  inputSchema: { type: "object", properties: { operation_id: { type: "string", minLength: 1, maxLength: 128 }, source: { type: "string" }, destination: { type: "string" } }, required: ["operation_id", "source", "destination"], additionalProperties: false },
+  inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." }, operation_id: { type: "string", minLength: 1, maxLength: 128 }, source: { type: "string" }, destination: { type: "string" } }, required: ["operation_id", "source", "destination"], additionalProperties: false },
   annotations: { title: "Move or rename local file", readOnlyHint: false, destructiveHint: true, openWorldHint: false },
 } as const;
 
@@ -477,6 +478,7 @@ const DELETE_FILE_TOOL = {
   inputSchema: {
     type: "object",
     properties: {
+      device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." },
       operation_id: { type: "string", minLength: 1, maxLength: 128 },
       path: { type: "string" },
     },
