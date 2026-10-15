@@ -465,7 +465,7 @@ export class V2OwnerCoordinator {
       await txn.delete("session:epoch:" + id);
       return { status: "revoked" as const, previousEpoch };
     });
-    if (outcome === "not_found") return Response.json({ error: "not_found" }, { status: 404 });
+    if (outcome.status === "not_found") return Response.json({ error: "not_found" }, { status: 404 });
     if (outcome.status === "already_revoked") {
       return Response.json({ device_id: id, status: outcome.status, process_cleanup: "unconfirmed" });
     }
