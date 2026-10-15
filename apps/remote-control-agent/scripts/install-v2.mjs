@@ -3,6 +3,7 @@
  * sudo, Portal Bearer, Cloudflare token, or changes to deployed v1 services.
  *
  * node apps/remote-control-agent/scripts/install-v2.mjs --endpoint https://EXAMPLE/ [--name HOST]
+ * node apps/remote-control-agent/scripts/install-v2.mjs --resume --endpoint https://EXAMPLE/
  * node apps/remote-control-agent/scripts/install-v2.mjs --upgrade --endpoint https://EXAMPLE/
  * node apps/remote-control-agent/scripts/install-v2.mjs --uninstall
  */
@@ -28,7 +29,7 @@ export function parseInstallArgs(argv) {
   const result = { action: "install", endpoint: undefined, name: undefined };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === "--upgrade" || arg === "--uninstall") {
+    if (arg === "--upgrade" || arg === "--uninstall" || arg === "--resume") {
       if (result.action !== "install") throw new Error("Choose one installer action.");
       result.action = arg.slice(2);
     } else if (arg === "--endpoint" || arg === "--name") {
@@ -125,7 +126,7 @@ async function ownerOnly(file, expectedMode) {
   }
 }
 
-function preflight() {
+function preflight(action) {
   if (process.platform !== "linux" || process.getuid?.() === 0 ||
       Number(process.versions.node.split(".")[0]) !== 24) {
     throw new Error("Install as a non-root Linux user with Node.js 24.");
@@ -133,6 +134,7 @@ function preflight() {
   systemdLiteral(process.execPath);
   systemdLiteral(packageRoot);
   run("systemctl", ["--user", "show-environment"]);
+  if (action === "uninstall") return; // Removal must work even after compiler failure.
   run("systemd-analyze", ["--user", "--version"]);
   run("cc", ["--version"]);
   run(process.execPath, [compilerScript]);
@@ -195,7 +197,7 @@ export async function runInstaller(args, { home = os.homedir(), stdin = process.
   const unitPath = path.join(home, ".config", "systemd", "user", UNIT);
   const keyPath = path.join(home, IDENTITY_REL);
   systemdLiteral(home);
-  preflight();
+  preflight(options.action);
   if (options.action !== "uninstall") trustedEndpoint(options.endpoint);
   const previous = await readOwnedUnit(unitPath);
 
@@ -207,7 +209,7 @@ export async function runInstaller(args, { home = os.homedir(), stdin = process.
     stdout.write("Removed the v2 user service. Local keys retained; revoke the device from MCP separately.\n");
     return;
   }
-  if ((options.action === "install" && previous) || (options.action === "upgrade" && !previous)) {
+  if (((options.action === "install" || options.action === "resume") && previous) || (options.action === "upgrade" && !previous)) {
     throw new Error("Existing v2 service requires --upgrade; an absent service requires a first install.");
   }
   await mkdir(path.dirname(keyPath), { recursive: true, mode: 0o700 });
@@ -215,6 +217,12 @@ export async function runInstaller(args, { home = os.homedir(), stdin = process.
   if (!privateDirectory.isDirectory() || privateDirectory.isSymbolicLink() ||
       privateDirectory.uid !== process.getuid() || (privateDirectory.mode & 0o077) !== 0) {
     throw new Error("The private identity directory must be owner-only.");
+  }
+
+  if (options.action === "resume") {
+    if (!(await exists(keyPath)) || !(await exists(keyPath + ".device-id"))) {
+      throw new Error("Resume requires a completed local confirmation and an absent v2 service.");
+    }
   }
 
   if (options.action === "install") {
