@@ -162,13 +162,17 @@ test("periodic authorization checks the persisted device and epoch after hiberna
     };
   };
   const active = createSocket("current");
-  await handleIdleSocketMessage(state, active.value, "rc-v2:auth");
-  assert.deepEqual(active.messages, ["rc-v2:auth-ok"]);
+  await handleIdleSocketMessage(state, active.value, "rc-v2:auth:" + "a".repeat(32));
+  assert.deepEqual(active.messages, ["rc-v2:auth-ok:" + "a".repeat(32)]);
   assert.deepEqual(active.closes, []);
+  const malformed = createSocket("current");
+  await handleIdleSocketMessage(state, malformed.value, "rc-v2:auth");
+  assert.deepEqual(malformed.messages, []);
+  assert.deepEqual(malformed.closes, [{ code: 1008, reason: "no remote operations enabled" }]);
 
   entries.set("session:epoch:" + id, "replacement");
   const stale = createSocket("current");
-  await handleIdleSocketMessage(state, stale.value, "rc-v2:auth");
+  await handleIdleSocketMessage(state, stale.value, "rc-v2:auth:" + "b".repeat(32));
   assert.deepEqual(stale.messages, []);
   assert.deepEqual(stale.closes, [{ code: 1008, reason: "revoked" }]);
 
@@ -176,7 +180,7 @@ test("periodic authorization checks the persisted device and epoch after hiberna
     ...(entries.get("device:" + id) as object), revoked: true,
   });
   const revoked = createSocket("replacement");
-  await handleIdleSocketMessage(state, revoked.value, "rc-v2:auth");
+  await handleIdleSocketMessage(state, revoked.value, "rc-v2:auth:" + "c".repeat(32));
   assert.deepEqual(revoked.messages, []);
   assert.deepEqual(revoked.closes, [{ code: 1008, reason: "revoked" }]);
 });

@@ -249,13 +249,13 @@ test("periodic authorization check wakes DO separately while routine pongs stay 
   const stop = new AbortController();
   socket.onSend = (frame: string) => {
     if (frame === "rc-v2:ping") queueMicrotask(() => socket.pong());
-    if (frame === "rc-v2:auth") queueMicrotask(() => socket.event("message", { data: "rc-v2:auth-ok" }));
+    if (frame.startsWith("rc-v2:auth:")) queueMicrotask(() => socket.event("message", { data: frame.replace("rc-v2:auth:", "rc-v2:auth-ok:") }));
   };
   const result = monitorDeviceSocket(socket as unknown as WebSocket, stop.signal,
     { intervalMs: 16, timeoutMs: 10, authIntervalMs: 40 });
   await new Promise(resolve => setTimeout(resolve, 135));
   assert.ok(socket.sent.filter(x => x === "rc-v2:ping").length >= 3);
-  assert.ok(socket.sent.filter(x => x === "rc-v2:auth").length >= 2,
+  assert.ok(socket.sent.filter(x => /^rc-v2:auth:[a-f0-9]{32}$/.test(x)).length >= 2,
     "DO must be explicitly checked at the slower authorization cadence");
   assert.equal(socket.closeCount, 0);
   stop.abort();
@@ -272,7 +272,7 @@ test("automatic pongs never replace an overdue authorization check", async () =>
   const result = await monitorDeviceSocket(socket as unknown as WebSocket,
     new AbortController().signal, { intervalMs: 15, timeoutMs: 9, authIntervalMs: 34 });
   assert.equal(result, "offline");
-  assert.ok(socket.sent.includes("rc-v2:auth"));
+  assert.ok(socket.sent.some(x => /^rc-v2:auth:[a-f0-9]{32}$/.test(x)));
   assert.ok(socket.sent.includes("rc-v2:ping"));
   assert.equal(socket.closeCount, 1);
 });
@@ -284,4 +284,57 @@ test("unexpected unsolicited authorization success is rejected", async () => {
   socket.event("message", { data: "rc-v2:auth-ok" });
   assert.equal(await result, "policy");
   assert.equal(socket.closeCount, 1);
+});
+
+test("a delayed authorization ACK for the previous check never renews the current check", async () => {
+  const socket = new FakeSocket();
+  const requests: string[] = [];
+  socket.onSend = (frame: string) => {
+    if (frame === "rc-v2:ping") queueMicrotask(() => socket.pong());
+    if (frame.startsWith("rc-v2:auth:")) {
+      requests.push(frame);
+      if (requests.length === 1) {
+        queueMicrotask(() => socket.event("message", {
+          data: frame.replace("rc-v2:auth:", "rc-v2:auth-ok:"),
+        }));
+      } else {
+        // Delayed/duplicated response to the first check, not this request.
+        queueMicrotask(() => socket.event("message", {
+          data: requests[0]!.replace("rc-v2:auth:", "rc-v2:auth-ok:"),
+        }));
+      }
+    }
+  };
+  const result = await monitorDeviceSocket(socket as unknown as WebSocket,
+    new AbortController().signal, { intervalMs: 16, timeoutMs: 10, authIntervalMs: 40 });
+  assert.equal(result, "offline");
+  assert.equal(requests.length, 2);
+  assert.notEqual(requests[0], requests[1]);
+  assert.match(requests[0]!, /^rc-v2:auth:[a-f0-9]{32}$/);
+  assert.equal(socket.closeCount, 1);
+});
+
+test("a stale ACK is ignored while the matching current ACK is accepted", async () => {
+  const socket = new FakeSocket();
+  const stop = new AbortController();
+  const requests: string[] = [];
+  socket.onSend = frame => {
+    if (frame === "rc-v2:ping") queueMicrotask(() => socket.pong());
+    if (frame.startsWith("rc-v2:auth:")) {
+      requests.push(frame);
+      if (requests.length === 2) {
+        socket.event("message", { data: requests[0]!.replace("rc-v2:auth:", "rc-v2:auth-ok:") });
+      }
+      queueMicrotask(() => socket.event("message", {
+        data: frame.replace("rc-v2:auth:", "rc-v2:auth-ok:"),
+      }));
+    }
+  };
+  const pending = monitorDeviceSocket(socket as unknown as WebSocket, stop.signal,
+    { intervalMs: 16, timeoutMs: 10, authIntervalMs: 40 });
+  await new Promise(resolve => setTimeout(resolve, 110));
+  assert.ok(requests.length >= 2);
+  assert.equal(socket.closeCount, 0);
+  stop.abort();
+  assert.equal(await pending, "aborted");
 });

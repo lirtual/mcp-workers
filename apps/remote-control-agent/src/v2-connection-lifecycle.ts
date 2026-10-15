@@ -10,8 +10,8 @@ import { DeviceSessionRejectedError, openAuthenticatedDeviceSocket } from "./v2-
 export type SocketEnd = "aborted" | "closed" | "offline" | "policy";
 const PING = "rc-v2:ping";
 const PONG = "rc-v2:pong";
-const AUTH_REQUEST = "rc-v2:auth";
-const AUTH_RESPONSE = "rc-v2:auth-ok";
+const AUTH_REQUEST = "rc-v2:auth:";
+const AUTH_RESPONSE = "rc-v2:auth-ok:";
 const AUTH_INTERVAL_MS = 900_000; // 15 minutes; a deliberate, rare DO wake-up.
 const HEARTBEAT_INTERVAL_MS = 60_000;
 const HEARTBEAT_TIMEOUT_MS = 20_000;
@@ -33,7 +33,7 @@ export function monitorDeviceSocket(
   return new Promise((resolve) => {
     let settled = false;
     let awaitingPong = false;
-    let awaitingAuth = false;
+    let awaitingAuth: string | undefined;
     let watchdog: ReturnType<typeof setTimeout> | undefined;
     let authWatchdog: ReturnType<typeof setTimeout> | undefined;
     let interval: ReturnType<typeof setInterval> | undefined;
@@ -71,8 +71,11 @@ export function monitorDeviceSocket(
         watchdog = undefined;
         return;
       }
-      if (event.data === AUTH_RESPONSE && awaitingAuth) {
-        awaitingAuth = false;
+      if (typeof event.data === "string" && event.data.startsWith(AUTH_RESPONSE)) {
+        // A delayed reply to an older check can never satisfy this request.
+        // Ignore stale/duplicate replies, but retain the active deadline.
+        if (!awaitingAuth || event.data !== AUTH_RESPONSE + awaitingAuth) return;
+        awaitingAuth = undefined;
         if (authWatchdog) clearTimeout(authWatchdog);
         authWatchdog = undefined;
         return;
@@ -97,9 +100,11 @@ export function monitorDeviceSocket(
     authInterval = setInterval(() => {
       if (socket.readyState !== WebSocket.OPEN) { finish("offline"); return; }
       if (awaitingAuth) return;
-      awaitingAuth = true;
+      // Every authority check has a unique identifier. No fixed-string ACK
+      // from an earlier check may authorize a later one after network delay.
+      awaitingAuth = crypto.randomUUID().replace(/-/g, "");
       authWatchdog = setTimeout(() => finish("offline"), timing.timeoutMs);
-      try { socket.send(AUTH_REQUEST); } catch { finish("offline"); }
+      try { socket.send(AUTH_REQUEST + awaitingAuth); } catch { finish("offline"); }
     }, authEvery);
   });
 }
