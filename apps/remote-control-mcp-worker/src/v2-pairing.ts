@@ -13,7 +13,7 @@ const CONFIRM_DOMAIN = "remote-control:v2:local-confirm:";
 const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 const te = new TextEncoder();
 import { issueSessionChallenge, authorizeSession, acceptAuthenticatedSocket, handleIdleSocketMessage, listApprovedDevices, type V2Device } from "./v2-session.ts";
-import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId } from "./local-read.ts";
+import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId, parseLocalWriteFile, parseOperationId } from "./local-read.ts";
 
 export interface PendingDevice {
   name: string;
@@ -267,9 +267,10 @@ export class V2OwnerCoordinator {
   private readonly pendingReads = new Map<string, {
     socket: WebSocket; deviceId: string; epoch: string;
     resolve: (response: Response) => void;
+    kind: "read" | "operation"; operationId?: string;
   }>();
 
-  private async readFile(request: Request): Promise<Response> {
+  private async readFile(request: Request, isOperation = false): Promise<Response> {
     let body: unknown;
     try { body = await limitedJson(request, 65_536); }
     catch { return Response.json({ error: "bad_request" }, { status: 400 }); }
@@ -284,10 +285,18 @@ export class V2OwnerCoordinator {
       start_search: parseSearchStart, get_more_search_results: parseSearchSessionId,
       stop_search: parseSearchSessionId,
     };
-    if (Object.keys(arg).length !== 3 || typeof arg.tool !== "string" ||
-        !Object.hasOwn(parsers, arg.tool) ||
-        typeof deviceId !== "string" || !/^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(deviceId) ||
-        !parsers[arg.tool]?.(arg.arguments)) {
+    const operationId = isOperation ? arg.operation_id : undefined;
+    const validOperation = typeof operationId === "string" &&
+      Boolean(parseOperationId({ operation_id: operationId })) &&
+      (arg.tool === "write_file"
+        ? Boolean(parseLocalWriteFile({ ...(arg.arguments as object), operation_id: operationId }))
+        : arg.tool === "get_operation_status" &&
+          Boolean(parseOperationId(arg.arguments)) &&
+          (arg.arguments as { operation_id: string }).operation_id === operationId);
+    if ((isOperation ? Object.keys(arg).length !== 4 : Object.keys(arg).length !== 3) ||
+        typeof arg.tool !== "string" ||
+        (isOperation ? !validOperation : (!Object.hasOwn(parsers, arg.tool) || !parsers[arg.tool]?.(arg.arguments))) ||
+        typeof deviceId !== "string" || !/^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(deviceId)) {
       return Response.json({ error: "bad_request" }, { status: 400 });
     }
     if (this.pendingReads.size >= 4) return Response.json({ error: "busy" }, { status: 503 });
@@ -316,10 +325,14 @@ export class V2OwnerCoordinator {
     return new Promise<Response>(resolve => {
       const timer = setTimeout(() => {
         this.pendingReads.delete(requestId);
-        resolve(Response.json({ error: "timeout" }, { status: 503 }));
+        resolve(Response.json(isOperation
+          ? { operation_id: operationId, status: "timeout_unknown" }
+          : { error: "timeout" }, { status: 503 }));
       }, 5_000);
       this.pendingReads.set(requestId, {
         socket: selected, deviceId, epoch,
+        kind: isOperation ? "operation" : "read",
+        ...(isOperation ? { operationId: operationId as string } : {}),
         resolve: response => {
           clearTimeout(timer);
           this.pendingReads.delete(requestId);
@@ -328,7 +341,9 @@ export class V2OwnerCoordinator {
       });
       try {
         selected.send(JSON.stringify({
-          kind: "read", request_id: requestId, tool: arg.tool, arguments: arg.arguments,
+          kind: isOperation ? "operation" : "read", request_id: requestId,
+          tool: arg.tool, arguments: arg.arguments,
+          ...(isOperation ? { operation_id: operationId } : {}),
         }));
       } catch {
         this.pendingReads.get(requestId)?.resolve(Response.json({ error: "offline" }, { status: 503 }));
@@ -341,11 +356,13 @@ export class V2OwnerCoordinator {
     let reply: Record<string, unknown>;
     try { reply = JSON.parse(message) as Record<string, unknown>; }
     catch { return false; }
-    if (reply.kind !== "read_result" || typeof reply.request_id !== "string") return false;
+    if (!["read_result", "operation_result"].includes(String(reply.kind)) ||
+        typeof reply.request_id !== "string") return false;
     const pending = this.pendingReads.get(reply.request_id);
     // A timed-out response has no active waiter. Never queue it for a reconnect.
     if (!pending) return true;
-    if (pending.socket !== socket) {
+    if (pending.socket !== socket ||
+        reply.kind !== (pending.kind === "operation" ? "operation_result" : "read_result")) {
       try { socket.close(1008, "wrong device response"); } catch { /* disconnected */ }
       return true;
     }
@@ -356,6 +373,34 @@ export class V2OwnerCoordinator {
       ]);
       if (!device || device.revoked !== false || epoch !== pending.epoch) {
         pending.resolve(Response.json({ error: "unauthorized" }, { status: 503 }));
+      } else if (pending.kind === "operation") {
+        const result = reply.result;
+        if (!result || typeof result !== "object" || Array.isArray(result)) {
+          pending.resolve(Response.json({ error: "unavailable" }, { status: 503 }));
+        } else {
+          const answer = result as Record<string, unknown>;
+          const status = answer.status;
+          if (answer.operation_id !== pending.operationId || typeof status !== "string" ||
+              !["completed", "failed", "admitted", "running", "unknown", "not_found", "conflict", "bad_request", "unavailable"].includes(status)) {
+            pending.resolve(Response.json({ error: "unavailable" }, { status: 503 }));
+          } else {
+            // Never echo private file contents, raw exceptions, or arbitrary
+            // Agent-owned properties over the public MCP endpoint.
+            const receipt = answer.receipt;
+            const publicReceipt: Record<string, unknown> = {};
+            if (receipt && typeof receipt === "object" && !Array.isArray(receipt)) {
+              const r = receipt as Record<string, unknown>;
+              for (const key of ["operation_id", "tool_name", "state", "created_at",
+                "updated_at", "safe_result_summary", "session_id"]) {
+                if (typeof r[key] === "string") publicReceipt[key] = r[key];
+              }
+            }
+            pending.resolve(Response.json({
+              operation_id: pending.operationId, status,
+              ...(Object.keys(publicReceipt).length ? { receipt: publicReceipt } : {}),
+            }));
+          }
+        }
       } else if (reply.status === "completed" && typeof reply.text === "string" &&
           reply.text.length <= 65_536) {
         pending.resolve(Response.json({ status: "completed", text: reply.text }));
@@ -457,6 +502,10 @@ export class V2OwnerCoordinator {
     const path = new URL(request.url).pathname;
     if (path === "/revoke") {
       try { return await this.revokeDevice(request); }
+      catch { return Response.json({ error: "unavailable" }, { status: 503 }); }
+    }
+    if (path === "/operation") {
+      try { return await this.readFile(request, true); }
       catch { return Response.json({ error: "unavailable" }, { status: 503 }); }
     }
     if (path === "/read") {

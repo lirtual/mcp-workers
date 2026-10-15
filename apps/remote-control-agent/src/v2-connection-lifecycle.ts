@@ -1,14 +1,43 @@
 /**
- * v2 Agent lifecycle with an explicitly enabled, bounded read-only capability.
+ * v2 Agent lifecycle with separately gated read-only and T07 file-write capabilities.
  *
- * Heartbeats are answered by the Durable Object Hibernation auto-response,
- * without waking the DO for normal liveness checks. Remote reads are disabled
- * by default; this handler never executes Shell or write operations.
+ * Hibernation heartbeat responses do not wake the DO. Both remote access
+ * capabilities are disabled by default; this handler never executes Shell.
  */
 import { DeviceSessionRejectedError, openAuthenticatedDeviceSocket } from "./v2-session-client.ts";
 import { executeReadTool } from "./read-execution.ts";
-import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId } from "./local-read.ts";
+import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId, parseLocalWriteFile, parseOperationId } from "./local-read.ts";
 import { SearchSessions } from "./search.ts";
+import { createAgentExecutionEngine, type AgentExecutionEngine } from "./execution.ts";
+
+/** One adapter shared by production and tests; no new mutation executor. */
+export async function executeV2FileOperation(
+  execution: AgentExecutionEngine,
+  tool: "write_file" | "get_operation_status",
+  args: unknown,
+  operationId: string,
+  signal: AbortSignal,
+): Promise<Record<string, unknown>> {
+  try {
+    if (tool === "get_operation_status") {
+      const receipt = await execution.getReceipt(operationId);
+      return { operation_id: operationId, status: receipt?.state ?? "not_found",
+        ...(receipt ? { receipt } : {}) };
+    }
+    const outcome = await execution.executeTool({
+      tool: "write_file", arguments: args, operation_id: operationId,
+    }, signal);
+    if (outcome?.status === 409) return { operation_id: operationId, status: "conflict" };
+    if (outcome?.status === 400) return { operation_id: operationId, status: "bad_request" };
+    const body = outcome?.body;
+    if (outcome?.status !== 200 || !body || typeof body !== "object" || Array.isArray(body)) {
+      return { operation_id: operationId, status: "unavailable" };
+    }
+    return body as Record<string, unknown>;
+  } catch {
+    return { operation_id: operationId, status: "unavailable" };
+  }
+}
 
 export type SocketEnd = "aborted" | "closed" | "offline" | "policy";
 const PING = "rc-v2:ping";
@@ -26,6 +55,7 @@ export function monitorDeviceSocket(
     intervalMs: HEARTBEAT_INTERVAL_MS, timeoutMs: HEARTBEAT_TIMEOUT_MS,
   },
   readOnly?: (tool: string, args: unknown, signal: AbortSignal) => Promise<string | null>,
+  operation?: (tool: "write_file" | "get_operation_status", args: unknown, operationId: string, signal: AbortSignal) => Promise<Record<string, unknown> | null>,
 ): Promise<SocketEnd> {
   const authEvery = timing.authIntervalMs ?? AUTH_INTERVAL_MS;
   if (!Number.isFinite(timing.intervalMs) || timing.intervalMs <= 0 ||
@@ -90,7 +120,7 @@ export function monitorDeviceSocket(
         return;
       }
       if (typeof event.data === "string" && event.data.length <= 65_536 &&
-          event.data.startsWith("{") && readOnly) {
+          event.data.startsWith("{") && (readOnly || operation)) {
         let request: Record<string, unknown> | undefined;
         try {
           const decoded = JSON.parse(event.data) as unknown;
@@ -104,7 +134,7 @@ export function monitorDeviceSocket(
           start_search: parseSearchStart, get_more_search_results: parseSearchSessionId,
           stop_search: parseSearchSessionId,
         };
-        if (request?.kind === "read" && typeof request.tool === "string" &&
+        if (readOnly && request?.kind === "read" && typeof request.tool === "string" &&
             Object.hasOwn(readParsers, request.tool) &&
             typeof request.request_id === "string" &&
             /^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(request.request_id) &&
@@ -130,8 +160,40 @@ export function monitorDeviceSocket(
             }).finally(() => { readsInFlight--; });
           return;
         }
+        if (operation && request?.kind === "operation" &&
+            (request.tool === "write_file" || request.tool === "get_operation_status") &&
+            typeof request.operation_id === "string" &&
+            parseOperationId({ operation_id: request.operation_id }) &&
+            typeof request.request_id === "string" &&
+            /^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(request.request_id) &&
+            Object.keys(request).length === 5 &&
+            (request.tool === "write_file"
+              ? Boolean(parseLocalWriteFile(request.arguments))
+              : Boolean(parseOperationId(request.arguments)) &&
+                (request.arguments as { operation_id: string }).operation_id === request.operation_id) &&
+            readsInFlight < 4) {
+          readsInFlight++;
+          const requestId = request.request_id;
+          const operationId = request.operation_id;
+          const tool = request.tool;
+          void Promise.resolve().then(() => operation(tool, request.arguments, operationId, socketWork.signal))
+            .then(result => {
+              if (settled || socketWork.signal.aborted || socket.readyState !== WebSocket.OPEN) return;
+              const wire = JSON.stringify({ kind: "operation_result", request_id: requestId,
+                result: result ?? { operation_id: operationId, status: "unavailable" } });
+              if (wire.length > 65_536) throw new Error("operation response too large");
+              socket.send(wire);
+            }).catch(() => {
+              if (!settled && !socketWork.signal.aborted && socket.readyState === WebSocket.OPEN) {
+                try { socket.send(JSON.stringify({ kind: "operation_result", request_id: requestId,
+                  result: { operation_id: operationId, status: "unavailable" } })); }
+                catch { finish("offline"); }
+              }
+            }).finally(() => { readsInFlight--; });
+          return;
+        }
       }
-      finish("policy"); // Never interpret non-read traffic as an executable request.
+      finish("policy"); // Never interpret unapproved remote traffic as a command.
     };
     if (signal.aborted) { finish("aborted"); return; }
     if (socket.readyState !== WebSocket.OPEN) { finish("offline"); return; }
@@ -175,6 +237,8 @@ export async function maintainAuthenticatedDeviceSession(
     heartbeat?: { intervalMs: number; timeoutMs: number; authIntervalMs?: number };
     // Explicit opt-in for isolated T05 tests. Default remains authentication only.
     readOnly?: boolean;
+    // Explicit T07 capability. Not exposed by the current v1 entrypoint.
+    writeFile?: boolean;
     wait?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
     onState?: (status: "connected" | "disconnected" | "rejected") => void;
   } = {},
@@ -186,7 +250,11 @@ export async function maintainAuthenticatedDeviceSession(
       const timer = setTimeout(done, ms);
       abort.addEventListener("abort", done, { once: true });
     }));
+  // One receipt engine for the Agent lifetime, not one per reconnect. The
+  // original local receipt store owns idempotency; DO never stores/replays it.
+  const execution = options.writeFile ? createAgentExecutionEngine() : undefined;
   let failures = 0;
+  try {
   while (!signal.aborted) {
     try {
       const connection = await openAuthenticatedDeviceSocket(
@@ -205,7 +273,9 @@ export async function maintainAuthenticatedDeviceSession(
             // Reuse the v1 read-only engine, not any file-write/Shell dispatcher.
             const reply = await executeReadTool(tool, args, searches, requestSignal);
             return reply.kind === "completed" ? reply.text : null;
-          } : undefined);
+          } : undefined,
+          execution ? (tool, args, operationId, requestSignal) =>
+            executeV2FileOperation(execution, tool, args, operationId, requestSignal) : undefined);
       } finally {
         await searches?.close();
       }
@@ -230,5 +300,8 @@ export async function maintainAuthenticatedDeviceSession(
     const capped = Math.min(30_000, 1000 * 2 ** Math.min(failures, 5));
     failures++;
     await delay(capped, signal);
+  }
+  } finally {
+    await execution?.close();
   }
 }

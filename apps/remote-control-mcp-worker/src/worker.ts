@@ -68,6 +68,45 @@ async function revokePairedDevice(env: Env, id: unknown, args: unknown): Promise
   } catch { return toolError(id, "Device revocation was not confirmed."); }
 }
 
+// T07 staged capability: only file writes and existing Agent receipt lookup.
+const V2_OPERATION_TOOLS = new Set(["write_file", "get_operation_status"]);
+async function callPairedDeviceOperation(env: Env, id: unknown, name: string, args: unknown): Promise<Response> {
+  if (!args || typeof args !== "object" || Array.isArray(args)) {
+    return toolError(id, "The requested v2 operation was rejected.");
+  }
+  const { device_id, ...localArgs } = args as Record<string, unknown>;
+  if (typeof device_id !== "string" || !/^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(device_id)) {
+    return toolError(id, "An explicit valid device_id is required.");
+  }
+  const parsed = parseLocalCall(name, localArgs);
+  if (!parsed || (parsed.tool !== "write_file" && parsed.tool !== "get_operation_status")) {
+    return toolError(id, "The requested v2 operation was rejected.");
+  }
+  const operationId = callOperationId(parsed);
+  if (!operationId) return toolError(id, "A valid operation_id is required.");
+  const owner = pendingOwner(env);
+  if (!owner) return toolError(id, "The requested v2 device is unavailable.");
+  try {
+    const response = await owner.fetch("https://v2.internal/operation", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ device_id, tool: parsed.tool,
+        operation_id: operationId, arguments: upstreamArguments(parsed) }),
+    });
+    if (!response.ok) {
+      return toolText(id, JSON.stringify({ operation_id: operationId,
+        status: parsed.tool === "write_file" ? "timeout_unknown" : "unavailable" }));
+    }
+    const result = await response.json() as Record<string, unknown>;
+    if (result.operation_id !== operationId || typeof result.status !== "string") {
+      return toolText(id, JSON.stringify({ operation_id: operationId, status: "timeout_unknown" }));
+    }
+    return toolText(id, JSON.stringify(result));
+  } catch {
+    return toolText(id, JSON.stringify({ operation_id: operationId,
+      status: parsed.tool === "write_file" ? "timeout_unknown" : "unavailable" }));
+  }
+}
+
 const LIST_DEVICES_TOOL = {
   name: "list_devices",
   title: "List paired v2 devices",
@@ -398,7 +437,7 @@ const WRITE_FILE_TOOL = {
     "Rewrite or append a local file. Supply a stable operation_id and reuse it only for the same intent after a lost response; use a new ID for a new intent. Query get_operation_status with the same ID before considering a retry.",
   inputSchema: {
     type: "object",
-    properties: {
+    properties: { device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." },
       operation_id: { type: "string", minLength: 1, maxLength: 128, description: "Stable ID for this exact write intent." },
       path: { type: "string" },
       content: { type: "string", maxLength: 49152, description: "UTF-8 text up to the bounded internal request size." },
@@ -453,7 +492,7 @@ const GET_OPERATION_STATUS_TOOL = {
   description: "Query a previously submitted operation by its stable operation_id. This only reads the local receipt and never dispatches work.",
   inputSchema: {
     type: "object",
-    properties: { operation_id: { type: "string", minLength: 1, maxLength: 128 } },
+    properties: { device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." }, operation_id: { type: "string", minLength: 1, maxLength: 128 } },
     required: ["operation_id"],
     additionalProperties: false,
   },
@@ -1052,6 +1091,11 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
       return toolError(rpcMessage.id, "The requested tool call was rejected.");
     }
     const call = params as { name?: unknown; arguments?: unknown };
+    if (typeof call.name === "string" && V2_OPERATION_TOOLS.has(call.name) &&
+        call.arguments && typeof call.arguments === "object" && !Array.isArray(call.arguments) &&
+        Object.hasOwn(call.arguments, "device_id")) {
+      return callPairedDeviceOperation(env, rpcMessage.id, call.name, call.arguments);
+    }
     if (typeof call.name === "string" && V2_READ_TOOLS.has(call.name) &&
         call.arguments && typeof call.arguments === "object" && !Array.isArray(call.arguments) &&
         Object.hasOwn(call.arguments, "device_id")) {
