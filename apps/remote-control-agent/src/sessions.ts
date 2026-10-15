@@ -122,6 +122,7 @@ function snapshot(session: ManagedSession): SessionSnapshot {
 export class ManagedSessions {
   private readonly sessions = new Map<string, ManagedSession>();
   private readonly starting = new Set<string>();
+  private revocationClosing = false;
   private readonly shellPath: string;
 
   constructor(shellPath: string) {
@@ -144,6 +145,7 @@ export class ManagedSessions {
 
   async start(command: string, waitMs: number, onExit?: (session: SessionSnapshot) => Promise<void>): Promise<SessionSnapshot> {
     this.prune();
+    if (this.revocationClosing) throw new Error("Managed sessions are closed to new starts.");
     const active = [...this.sessions.values()].filter((session) => session.state === "running").length;
     if (active + this.starting.size >= MAX_SESSIONS) throw new Error("Session capacity reached.");
 
@@ -232,6 +234,15 @@ export class ManagedSessions {
       await control.signal("SIGKILL");
       await Promise.race([session.closed, new Promise<void>((resolve) => setTimeout(resolve, 500))]);
       throw new Error("The managed Shell supervisor is unavailable on this Linux kernel.");
+    }
+    // Revocation may have started while waiting for supervisor readiness.
+    // Never register a newly spawned session after the cleanup snapshot.
+    if (this.revocationClosing) {
+      session.terminationRequested = true;
+      await control.signal("SIGTERM");
+      await Promise.race([session.closed, new Promise<void>(resolve => setTimeout(resolve, 500))]);
+      if (session.state === "running") await control.signal("SIGKILL");
+      throw new Error("Managed sessions are closed to new starts.");
     }
     this.sessions.set(sessionId, session);
     this.starting.delete(sessionId);
@@ -335,7 +346,22 @@ export class ManagedSessions {
     };
   }
 
+  /** Attempt to terminate only sessions created by this Agent instance. */
+  async stopOwnedForRevocation(): Promise<"confirmed" | "uncertain"> {
+    this.revocationClosing = true;
+    // An in-progress supervisor start could still spawn after the snapshot;
+    // conservatively report uncertain, even if the known sessions stopped.
+    const starting = this.starting.size > 0;
+    const ids = this.list().filter(session => session.state === "running").map(session => session.session_id);
+    const settled = await Promise.allSettled(ids.map(id => this.terminate(id)));
+    const allStopped = settled.every(result => result.status === "fulfilled" && result.value === "completed");
+    const anyRunning = this.list().some(session => session.state === "running");
+    return !starting && this.starting.size === 0 && allStopped && !anyRunning
+      ? "confirmed" : "uncertain";
+  }
+
   async close(): Promise<void> {
+    this.revocationClosing = true;
     const running = [...this.sessions.values()].filter((session) => session.state === "running");
     const waitForClose = async (timeoutMs: number) => {
       let timer: ReturnType<typeof setTimeout> | undefined;

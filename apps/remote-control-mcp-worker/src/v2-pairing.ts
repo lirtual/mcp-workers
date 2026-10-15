@@ -264,6 +264,10 @@ async function limitedJson(request: Request, maxBytes = MAX_BOOTSTRAP_BODY): Pro
 export class V2OwnerCoordinator {
   private readonly state: DurableObjectState;
   // In-flight reads only: bounded by request timeout; never durable/queued.
+  private readonly pendingCleanup = new Map<string, {
+    socket: WebSocket;
+    resolve: (status: "confirmed" | "uncertain") => void;
+  }>();
   private readonly pendingReads = new Map<string, {
     socket: WebSocket; deviceId: string; epoch: string;
     resolve: (response: Response) => void;
@@ -421,6 +425,24 @@ export class V2OwnerCoordinator {
     } catch { pending.resolve(Response.json({ error: "unavailable" }, { status: 503 })); }
     return true;
   }
+  /** Cleanup ACKs are accepted only from the exact pre-revocation socket. */
+  private handleCleanupAck(socket: WebSocket, message: string): boolean {
+    if (message.length > 256 || !message.startsWith("{")) return false;
+    let response: Record<string, unknown>;
+    try { response = JSON.parse(message) as Record<string, unknown>; }
+    catch { return false; }
+    if (response.kind !== "revoke_cleanup_result") return false;
+    if (typeof response.request_id !== "string") return true;
+    const pending = this.pendingCleanup.get(response.request_id);
+    if (!pending) return true; // timed-out / already acknowledged; never queue
+    if (pending.socket !== socket) {
+      try { socket.close(1008, "wrong device cleanup ack"); } catch { /* closed */ }
+      return true;
+    }
+    pending.resolve(response.status === "confirmed" ? "confirmed" : "uncertain");
+    return true;
+  }
+
   /** Commit the tombstone before touching live sockets or in-flight requests. */
   private async revokeDevice(request: Request): Promise<Response> {
     const body = await limitedJson(request);
@@ -435,29 +457,56 @@ export class V2OwnerCoordinator {
     const id = args.device_id;
     const outcome = await this.state.storage.transaction(async txn => {
       const record = await txn.get<V2Device>("device:" + id);
-      if (!record) return "not_found" as const;
-      if (record.revoked === true) return "already_revoked" as const;
+      if (!record) return { status: "not_found" as const };
+      if (record.revoked === true) return { status: "already_revoked" as const };
+      const previousEpoch = await txn.get<string>("session:epoch:" + id);
       await txn.put("device:" + id, { ...record, revoked: true });
       await txn.delete("session:nonce:" + id);
       await txn.delete("session:epoch:" + id);
-      return "revoked" as const;
+      return { status: "revoked" as const, previousEpoch };
     });
     if (outcome === "not_found") return Response.json({ error: "not_found" }, { status: 404 });
-    if (outcome === "already_revoked") {
-      return Response.json({ device_id: id, status: outcome, process_cleanup: "unconfirmed" });
+    if (outcome.status === "already_revoked") {
+      return Response.json({ device_id: id, status: outcome.status, process_cleanup: "unconfirmed" });
     }
-    // Cancel ongoing transport reads AFTER the durable denial is committed.
-    // T07's authenticated owned-session cleanup is not implemented yet:
-    // explicitly do not imply Agent processes were stopped.
+    // Cancel all ordinary requests AFTER the tombstone commits; cleanup is a
+    // one-shot internal frame to the pre-revocation authenticated socket only.
     for (const pending of this.pendingReads.values()) {
       if (pending.deviceId === id) {
         pending.resolve(Response.json({ error: "revoked" }, { status: 503 }));
       }
     }
-    let cleanup: "offline" | "not_attempted" | "unconfirmed" = "offline";
+    let cleanup: "offline" | "confirmed" | "unconfirmed" = "offline";
     try {
-      for (const socket of this.state.getWebSockets("device:" + id)) {
-        if (socket.readyState === WebSocket.OPEN) cleanup = "not_attempted";
+      const sockets = this.state.getWebSockets("device:" + id);
+      const target = sockets.find(socket => {
+        if (!outcome.previousEpoch || socket.readyState !== WebSocket.OPEN) return false;
+        try {
+          const attachment = socket.deserializeAttachment() as { device_id?: unknown; epoch?: unknown } | null;
+          return attachment?.device_id === id && attachment.epoch === outcome.previousEpoch;
+        } catch { return false; }
+      });
+      if (target) {
+        cleanup = "unconfirmed";
+        if (this.pendingCleanup.size < 4) {
+          const requestId = crypto.randomUUID();
+          cleanup = await new Promise<"confirmed" | "unconfirmed">(resolve => {
+            const timer = setTimeout(() => finish("unconfirmed"), 2_500);
+            const finish = (status: "confirmed" | "unconfirmed") => {
+              clearTimeout(timer);
+              this.pendingCleanup.delete(requestId);
+              resolve(status);
+            };
+            this.pendingCleanup.set(requestId, {
+              socket: target,
+              resolve: status => finish(status === "confirmed" ? "confirmed" : "unconfirmed"),
+            });
+            try { target.send(JSON.stringify({ kind: "revoke_cleanup", request_id: requestId })); }
+            catch { finish("unconfirmed"); }
+          });
+        }
+      } else if (sockets.some(socket => socket.readyState === WebSocket.OPEN)) cleanup = "unconfirmed";
+      for (const socket of sockets) {
         try { socket.close(1008, "revoked"); }
         catch { cleanup = "unconfirmed"; }
       }
@@ -469,6 +518,9 @@ export class V2OwnerCoordinator {
 
   /** Hibernation callbacks run after close/error without relying on JS Map state. */
   private rejectSocketReads(socket: WebSocket): void {
+    for (const pending of this.pendingCleanup.values()) {
+      if (pending.socket === socket) pending.resolve("uncertain");
+    }
     // Iterating in-flight callbacks is bounded to four; no storage I/O or
     // persistent offline flag that could erase a newer signed epoch.
     for (const pending of this.pendingReads.values()) {
@@ -502,6 +554,7 @@ export class V2OwnerCoordinator {
     }
   }
   async webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    if (typeof message === "string" && this.handleCleanupAck(socket, message)) return;
     if (typeof message === "string" && await this.handleReadResult(socket, message)) return;
     await handleIdleSocketMessage(this.state, socket, message);
   }

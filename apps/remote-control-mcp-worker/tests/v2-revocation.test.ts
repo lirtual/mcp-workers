@@ -94,7 +94,7 @@ test("Portal-only revoke commits tombstone before closing A, preserves B, and is
   };
   assert.equal(body.device_id, f.a);
   assert.equal(body.status, "revoked");
-  assert.equal(body.process_cleanup, "not_attempted", "v2 must not pretend it stopped local managed sessions");
+  assert.equal(body.process_cleanup, "unconfirmed", "missing Agent cleanup reply must never claim a process stopped");
   assert.equal((f.entries.get("device:" + f.a) as V2Device).revoked, true);
   assert.equal(f.entries.has("session:nonce:" + f.a), false);
   assert.equal(f.entries.has("session:epoch:" + f.a), false);

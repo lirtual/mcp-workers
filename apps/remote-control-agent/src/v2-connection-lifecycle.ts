@@ -77,6 +77,7 @@ export function monitorDeviceSocket(
   readOnly?: (tool: string, args: unknown, signal: AbortSignal) => Promise<string | null>,
   operation?: (tool: V2FileOperation, args: unknown, operationId: string, signal: AbortSignal) => Promise<Record<string, unknown> | null>,
   allowShell = false,
+  revokeCleanup?: () => Promise<"confirmed" | "uncertain">,
 ): Promise<SocketEnd> {
   const authEvery = timing.authIntervalMs ?? AUTH_INTERVAL_MS;
   if (!Number.isFinite(timing.intervalMs) || timing.intervalMs <= 0 ||
@@ -91,6 +92,7 @@ export function monitorDeviceSocket(
     // inherit their cancellation scope or keep them running after disconnect.
     const socketWork = new AbortController();
     let awaitingPong = false;
+    let revocationStarted = false;
     let readsInFlight = 0;
     let awaitingAuth: string | undefined;
     let watchdog: ReturnType<typeof setTimeout> | undefined;
@@ -124,6 +126,9 @@ export function monitorDeviceSocket(
     };
     const onError = () => finish("offline");
     const onMessage = (event: MessageEvent) => {
+      // Once an authenticated owner revocation arrives, no further ordinary
+      // frames can dispatch work, even during the bounded cleanup attempt.
+      if (revocationStarted) return;
       if (event.data === PONG) {
         if (!awaitingPong) return; // Ignore late duplicate pongs.
         awaitingPong = false;
@@ -141,7 +146,7 @@ export function monitorDeviceSocket(
         return;
       }
       if (typeof event.data === "string" && event.data.length <= 65_536 &&
-          event.data.startsWith("{") && (readOnly || operation)) {
+          event.data.startsWith("{") && (readOnly || operation || revokeCleanup)) {
         let request: Record<string, unknown> | undefined;
         try {
           const decoded = JSON.parse(event.data) as unknown;
@@ -149,6 +154,29 @@ export function monitorDeviceSocket(
             request = decoded as Record<string, unknown>;
           }
         } catch { /* Not an authorized read frame. */ }
+        if (request?.kind === "revoke_cleanup" &&
+            Object.keys(request).length === 2 &&
+            typeof request.request_id === "string" &&
+            /^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(request.request_id) &&
+            allowShell && revokeCleanup) {
+          revocationStarted = true;
+          socketWork.abort();
+          const requestId = request.request_id;
+          void Promise.resolve().then(revokeCleanup).then(status => {
+            if (settled || socket.readyState !== WebSocket.OPEN) return;
+            socket.send(JSON.stringify({
+              kind: "revoke_cleanup_result", request_id: requestId,
+              status: status === "confirmed" ? "confirmed" : "uncertain",
+            }));
+          }).catch(() => {
+            if (!settled && socket.readyState === WebSocket.OPEN) {
+              try { socket.send(JSON.stringify({
+                kind: "revoke_cleanup_result", request_id: requestId, status: "uncertain",
+              })); } catch { /* DO will report uncertain */ }
+            }
+          }).finally(() => finish("policy"));
+          return;
+        }
         const readParsers: Record<string, (args: unknown) => unknown> = {
           read_file: parseLocalRead, read_multiple_files: parseReadMultiple,
           list_directory: parseListDirectory, get_file_info: parseFileInfo,
@@ -314,7 +342,8 @@ export async function maintainAuthenticatedDeviceSession(
             (["start_process", "interact_with_process", "force_terminate"].includes(tool) ? options.shell : options.writeFile)
               ? executeV2FileOperation(execution, tool, args, operationId, requestSignal)
               : Promise.resolve({ operation_id: operationId, status: "unavailable" }) : undefined,
-          options.shell === true);
+          options.shell === true,
+          options.shell && execution ? () => execution.stopOwnedForRevocation() : undefined);
       } finally {
         await searches?.close();
       }

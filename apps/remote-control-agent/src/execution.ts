@@ -34,6 +34,7 @@ export interface AgentExecutionEngine {
     signal: AbortSignal,
   ): Promise<AgentExecutionReply | undefined>;
   getReceipt(id: string): Promise<OperationReceipt | null>;
+  stopOwnedForRevocation(): Promise<"confirmed" | "uncertain">;
   close(): Promise<void>;
 }
 
@@ -465,6 +466,13 @@ export function createAgentExecutionEngine(options: AgentExecutionOptions = {}):
     getReceipt: async (id: string) => {
       await ensureReceipts();
       return receipts.get(id);
+    },
+    stopOwnedForRevocation: async () => {
+      // Operations already admitted before the tombstone may still be
+      // starting a supervised process: never overclaim complete cleanup.
+      const pendingEffects = inFlight.size > 0;
+      const result = await sessions.stopOwnedForRevocation();
+      return pendingEffects ? "uncertain" : result;
     },
     close: async () => {
       await searches.close();
