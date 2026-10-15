@@ -138,3 +138,45 @@ test("hibernation-style reconstruction checks durable epoch and forbids every re
   await handleIdleSocketMessage(state, afterRevoke.obj, "{}");
   assert.deepEqual(afterRevoke.closes, [{ code: 1008, reason: "revoked" }]);
 });
+
+
+test("periodic authorization checks the persisted device and epoch after hibernation reconstruction", async () => {
+  const { entries, storage } = fixture();
+  const id = randomUUID();
+  entries.set("device:" + id, {
+    device_id: id, name: "approved", public_key: newEnrollment("approved").request.public_key,
+    fingerprint: "a".repeat(24), approved_at: Date.now(), revoked: false,
+  });
+  entries.set("session:epoch:" + id, "current");
+  const state = { storage } as unknown as DurableObjectState;
+  const createSocket = (epoch: string) => {
+    const messages: string[] = [];
+    const closes: Array<{ code: number; reason: string }> = [];
+    return {
+      value: {
+        deserializeAttachment: () => ({ device_id: id, epoch }),
+        send: (value: string) => messages.push(value),
+        close: (code: number, reason: string) => closes.push({ code, reason }),
+      } as unknown as WebSocket,
+      messages, closes,
+    };
+  };
+  const active = createSocket("current");
+  await handleIdleSocketMessage(state, active.value, "rc-v2:auth");
+  assert.deepEqual(active.messages, ["rc-v2:auth-ok"]);
+  assert.deepEqual(active.closes, []);
+
+  entries.set("session:epoch:" + id, "replacement");
+  const stale = createSocket("current");
+  await handleIdleSocketMessage(state, stale.value, "rc-v2:auth");
+  assert.deepEqual(stale.messages, []);
+  assert.deepEqual(stale.closes, [{ code: 1008, reason: "revoked" }]);
+
+  entries.set("device:" + id, {
+    ...(entries.get("device:" + id) as object), revoked: true,
+  });
+  const revoked = createSocket("replacement");
+  await handleIdleSocketMessage(state, revoked.value, "rc-v2:auth");
+  assert.deepEqual(revoked.messages, []);
+  assert.deepEqual(revoked.closes, [{ code: 1008, reason: "revoked" }]);
+});

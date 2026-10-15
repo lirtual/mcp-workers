@@ -10,29 +10,39 @@ import { DeviceSessionRejectedError, openAuthenticatedDeviceSocket } from "./v2-
 export type SocketEnd = "aborted" | "closed" | "offline" | "policy";
 const PING = "rc-v2:ping";
 const PONG = "rc-v2:pong";
+const AUTH_REQUEST = "rc-v2:auth";
+const AUTH_RESPONSE = "rc-v2:auth-ok";
+const AUTH_INTERVAL_MS = 900_000; // 15 minutes; a deliberate, rare DO wake-up.
 const HEARTBEAT_INTERVAL_MS = 60_000;
 const HEARTBEAT_TIMEOUT_MS = 20_000;
 
 export function monitorDeviceSocket(
   socket: WebSocket,
   signal: AbortSignal,
-  timing: { intervalMs: number; timeoutMs: number } = {
+  timing: { intervalMs: number; timeoutMs: number; authIntervalMs?: number } = {
     intervalMs: HEARTBEAT_INTERVAL_MS, timeoutMs: HEARTBEAT_TIMEOUT_MS,
   },
 ): Promise<SocketEnd> {
+  const authEvery = timing.authIntervalMs ?? AUTH_INTERVAL_MS;
   if (!Number.isFinite(timing.intervalMs) || timing.intervalMs <= 0 ||
       !Number.isFinite(timing.timeoutMs) || timing.timeoutMs <= 0 ||
-      timing.timeoutMs >= timing.intervalMs) {
+      timing.timeoutMs >= timing.intervalMs ||
+      !Number.isFinite(authEvery) || authEvery <= timing.timeoutMs) {
     throw new Error("Invalid Agent heartbeat interval.");
   }
   return new Promise((resolve) => {
     let settled = false;
     let awaitingPong = false;
+    let awaitingAuth = false;
     let watchdog: ReturnType<typeof setTimeout> | undefined;
+    let authWatchdog: ReturnType<typeof setTimeout> | undefined;
     let interval: ReturnType<typeof setInterval> | undefined;
+    let authInterval: ReturnType<typeof setInterval> | undefined;
     const cleanup = () => {
       if (interval) clearInterval(interval);
+      if (authInterval) clearInterval(authInterval);
       if (watchdog) clearTimeout(watchdog);
+      if (authWatchdog) clearTimeout(authWatchdog);
       signal.removeEventListener("abort", onAbort);
       socket.removeEventListener("message", onMessage);
       socket.removeEventListener("close", onClose);
@@ -54,11 +64,20 @@ export function monitorDeviceSocket(
     };
     const onError = () => finish("offline");
     const onMessage = (event: MessageEvent) => {
-      if (event.data !== PONG) return finish("policy");
-      if (!awaitingPong) return; // Ignore unsolicited/late harmless duplicate pongs.
-      awaitingPong = false;
-      if (watchdog) clearTimeout(watchdog);
-      watchdog = undefined;
+      if (event.data === PONG) {
+        if (!awaitingPong) return; // Ignore late duplicate pongs.
+        awaitingPong = false;
+        if (watchdog) clearTimeout(watchdog);
+        watchdog = undefined;
+        return;
+      }
+      if (event.data === AUTH_RESPONSE && awaitingAuth) {
+        awaitingAuth = false;
+        if (authWatchdog) clearTimeout(authWatchdog);
+        authWatchdog = undefined;
+        return;
+      }
+      finish("policy"); // No remote operations or unexpected protocol messages.
     };
     if (signal.aborted) { finish("aborted"); return; }
     if (socket.readyState !== WebSocket.OPEN) { finish("offline"); return; }
@@ -73,6 +92,15 @@ export function monitorDeviceSocket(
       watchdog = setTimeout(() => finish("offline"), timing.timeoutMs);
       try { socket.send(PING); } catch { finish("offline"); }
     }, timing.intervalMs);
+    // Automatic pongs prove transport liveness only. This separate low-frequency
+    // check intentionally wakes the DO to verify the current device/epoch.
+    authInterval = setInterval(() => {
+      if (socket.readyState !== WebSocket.OPEN) { finish("offline"); return; }
+      if (awaitingAuth) return;
+      awaitingAuth = true;
+      authWatchdog = setTimeout(() => finish("offline"), timing.timeoutMs);
+      try { socket.send(AUTH_REQUEST); } catch { finish("offline"); }
+    }, authEvery);
   });
 }
 
@@ -88,7 +116,7 @@ export async function maintainAuthenticatedDeviceSession(
   options: {
     send?: typeof fetch;
     makeSocket?: (url: string, protocols: string[]) => WebSocket;
-    heartbeat?: { intervalMs: number; timeoutMs: number };
+    heartbeat?: { intervalMs: number; timeoutMs: number; authIntervalMs?: number };
     wait?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
     onState?: (status: "connected" | "disconnected" | "rejected") => void;
   } = {},

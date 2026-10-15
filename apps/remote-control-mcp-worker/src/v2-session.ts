@@ -177,5 +177,12 @@ export async function handleIdleSocketMessage(state: DurableObjectState, socket:
     socket.close(1008, "revoked");
     return;
   }
+  // Unlike the automatic ping/pong, this intentionally wakes the DO and
+  // rechecks persisted device approval + session epoch. A stale/revoked socket
+  // therefore loses authority even when its earlier close frame was delayed.
+  if (message === "rc-v2:auth") {
+    socket.send("rc-v2:auth-ok");
+    return;
+  }
   socket.close(1008, "no remote operations enabled");
 }
