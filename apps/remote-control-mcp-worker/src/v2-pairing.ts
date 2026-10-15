@@ -6,6 +6,11 @@ const TTL_MS = 600_000;
 const BUDGET_WINDOW_MS = 60_000;
 const MAX_REGISTRATIONS_PER_MINUTE = 12;
 const MAX_LOOKUPS_PER_MINUTE = 30;
+const MAX_PREPARES_PER_MINUTE = 8;
+const MAX_COMPLETIONS_PER_MINUTE = 12;
+const CHALLENGE_TTL_MS = 300_000;
+const CONFIRM_DOMAIN = "remote-control:v2:local-confirm:";
+const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 const te = new TextEncoder();
 
 export interface PendingDevice {
@@ -15,6 +20,17 @@ export interface PendingDevice {
   fingerprint: string;
   expires_at: number;
   created_at: number;
+  confirmation_hash?: string;
+  confirmation_expires_at?: number;
+}
+
+export interface ApprovedDevice {
+  device_id: string;
+  name: string;
+  public_key: string;
+  fingerprint: string;
+  approved_at: number;
+  revoked: false;
 }
 
 type PendingStorage = Pick<DurableObjectStorage, "get" | "put" | "list" | "delete" | "transaction">;
@@ -26,7 +42,7 @@ type AttemptBudget = { reset_at: number; count: number };
  * adding a KV/R2 service, an always-on alarm, or IP-based device tracking.
  * A sustained hostile flood can still deny service; this gate bounds DO work.
  */
-async function consumeBudget(storage: PendingStorage, action: "register" | "lookup", max: number): Promise<boolean> {
+async function consumeBudget(storage: PendingStorage, action: "register" | "lookup" | "prepare" | "complete", max: number): Promise<boolean> {
   const key = "budget:" + action;
   return storage.transaction(async (txn) => {
     const now = Date.now();
@@ -112,6 +128,104 @@ export async function lookupPending(storage: PendingStorage, verifier: string): 
   return { status: 200, body: { pairing_id: record.pairing_id, name: record.name, fingerprint: record.fingerprint, expires_at: record.expires_at } };
 }
 
+/**
+ * Prepare a device-specific challenge for a *separately confirmed local terminal*.
+ * The MCP caller may ask for a challenge but can never authorize a device itself.
+ * A new preparation invalidates any prior challenge on the same pending entry.
+ */
+export async function prepareLocalConfirmation(
+  storage: PendingStorage, pairingId: unknown, fingerprint: unknown,
+): Promise<{ status: number; body: object }> {
+  if (typeof pairingId !== "string" || !/^[a-f0-9-]{36}$/.test(pairingId) ||
+      typeof fingerprint !== "string" || !/^[a-f0-9]{24}$/.test(fingerprint)) {
+    return { status: 400, body: { error: "invalid_request" } };
+  }
+  if (!await consumeBudget(storage, "prepare", MAX_PREPARES_PER_MINUTE)) {
+    return { status: 429, body: { error: "rate_limited" } };
+  }
+  return storage.transaction(async (txn) => {
+    const pending = await txn.list<PendingDevice>({ prefix: "pending:", limit: MAX_PENDING + 1 });
+    const match = [...pending].find(([, row]) =>
+      row.pairing_id === pairingId && row.fingerprint === fingerprint && row.expires_at > Date.now());
+    if (!match) return { status: 404, body: { error: "not_found" } };
+    const [key, row] = match;
+    // 12 Base32 symbols, 60 bits. This code is entered on the new host only.
+    const random = new Uint8Array(12);
+    crypto.getRandomValues(random);
+    const challenge = [...random].map((b) => ALPHABET[b & 31]).join("");
+    const hash = await crypto.subtle.digest("SHA-256", te.encode(CONFIRM_DOMAIN + challenge));
+    const confirmationHash = [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, "0")).join("");
+    const expiresAt = Math.min(row.expires_at, Date.now() + CHALLENGE_TTL_MS);
+    await txn.put(key, {
+      ...row, confirmation_hash: confirmationHash, confirmation_expires_at: expiresAt,
+    });
+    return { status: 200, body: {
+      pairing_id: row.pairing_id,
+      fingerprint: row.fingerprint,
+      challenge,
+      expires_at: expiresAt,
+      instruction: "Enter this challenge manually in the NEW Agent's local terminal. No MCP tool can approve it.",
+    } };
+  });
+}
+
+/** The Agent must sign the already owner-reviewed challenge with its own private key. */
+export async function completeLocalConfirmation(storage: PendingStorage, data: unknown):
+  Promise<{ status: number; body: object }> {
+  if (!await consumeBudget(storage, "complete", MAX_COMPLETIONS_PER_MINUTE)) {
+    return { status: 429, body: { error: "rate_limited" } };
+  }
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return { status: 400, body: { error: "invalid_request" } };
+  }
+  const p = data as Record<string, unknown>;
+  if (typeof p.verifier !== "string" || !/^[a-f0-9]{64}$/.test(p.verifier) ||
+      typeof p.challenge !== "string" || !/^[A-Z2-7]{12}$/.test(p.challenge) ||
+      typeof p.proof !== "string" || p.proof.length > 128) {
+    return { status: 400, body: { error: "invalid_request" } };
+  }
+  const key = "pending:" + p.verifier;
+  const pending = await storage.get<PendingDevice>(key);
+  if (!pending || pending.expires_at <= Date.now() || !pending.confirmation_hash ||
+      !pending.confirmation_expires_at || pending.confirmation_expires_at <= Date.now()) {
+    return { status: 404, body: { error: "not_found" } };
+  }
+  const actual = await crypto.subtle.digest("SHA-256", te.encode(CONFIRM_DOMAIN + p.challenge));
+  const actualHex = [...new Uint8Array(actual)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  if (actualHex !== pending.confirmation_hash) return { status: 403, body: { error: "denied" } };
+
+  let signatureValid = false;
+  try {
+    const pub = await crypto.subtle.importKey(
+      "spki", Uint8Array.from(asBytes(pending.public_key)).buffer as ArrayBuffer,
+      { name: "Ed25519" }, false, ["verify"],
+    );
+    const transcript = te.encode(CONFIRM_DOMAIN + p.verifier + ":" + p.challenge + ":" + pending.public_key);
+    signatureValid = await crypto.subtle.verify(
+      "Ed25519", pub, Uint8Array.from(asBytes(p.proof)).buffer as ArrayBuffer,
+      Uint8Array.from(transcript).buffer as ArrayBuffer,
+    );
+  } catch { /* malformed key/signature */ }
+  if (!signatureValid) return { status: 403, body: { error: "denied" } };
+  // Re-check inside a DO transaction so two valid parallel proofs never activate twice.
+  return storage.transaction(async (txn) => {
+    const again = await txn.get<PendingDevice>(key);
+    if (!again || again.pairing_id !== pending.pairing_id ||
+        again.confirmation_hash !== pending.confirmation_hash ||
+        !again.confirmation_expires_at || again.confirmation_expires_at <= Date.now() ||
+        again.expires_at <= Date.now()) {
+      return { status: 409, body: { error: "already_consumed" } };
+    }
+    const deviceId = crypto.randomUUID();
+    await txn.put("device:" + deviceId, {
+      device_id: deviceId, name: again.name, public_key: again.public_key,
+      fingerprint: again.fingerprint, approved_at: Date.now(), revoked: false,
+    } satisfies ApprovedDevice);
+    await txn.delete(key);
+    return { status: 200, body: { status: "paired", device_id: deviceId } };
+  });
+}
+
 async function limitedJson(request: Request): Promise<unknown> {
   const length = Number(request.headers.get("content-length"));
   if (Number.isFinite(length) && length > MAX_BOOTSTRAP_BODY) throw new Error("oversize");
@@ -140,13 +254,19 @@ export class V2OwnerCoordinator {
   async fetch(request: Request): Promise<Response> {
     if (request.method !== "POST") return new Response(null, { status: 405 });
     const path = new URL(request.url).pathname;
-    if (path !== "/register" && path !== "/lookup") return new Response(null, { status: 404 });
+    if (!["/register", "/lookup", "/prepare", "/complete"].includes(path)) return new Response(null, { status: 404 });
     let payload: unknown;
     try { payload = await limitedJson(request); } catch { return Response.json({ error: "invalid_request" }, { status: 400 }); }
     try {
-      const output = path === "/register"
-        ? await registerPending(this.state.storage, payload)
-        : await lookupPending(this.state.storage, (payload as { verifier?: unknown })?.verifier as string);
+      let output: { status: number; body: object };
+      if (path === "/register") output = await registerPending(this.state.storage, payload);
+      else if (path === "/lookup") output = await lookupPending(
+        this.state.storage, (payload as { verifier?: unknown })?.verifier as string,
+      );
+      else if (path === "/prepare") {
+        const pending = payload as { pairing_id?: unknown; expected_fingerprint?: unknown };
+        output = await prepareLocalConfirmation(this.state.storage, pending?.pairing_id, pending?.expected_fingerprint);
+      } else output = await completeLocalConfirmation(this.state.storage, payload);
       return Response.json(output.body, { status: output.status, headers: { "cache-control": "no-store" } });
     } catch { return Response.json({ error: "unavailable" }, { status: 503 }); }
   }

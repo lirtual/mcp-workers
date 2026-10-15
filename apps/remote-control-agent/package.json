@@ -10,6 +10,7 @@
   "scripts": {
     "start": "node --experimental-strip-types src/main.ts",
     "pair:v2": "node --experimental-strip-types src/pair-device.ts",
+    "pair:v2:confirm": "node --experimental-strip-types src/confirm-device.ts",
     "build:shell": "node scripts/build-session-supervisor.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
     "test": "node scripts/build-session-supervisor.mjs && node --experimental-strip-types --test tests/*.test.ts"
