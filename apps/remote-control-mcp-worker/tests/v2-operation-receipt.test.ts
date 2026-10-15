@@ -119,17 +119,17 @@ test("v2 write_file preserves Agent receipt idempotency per device; no v1 fallba
 
     const editId = "edit-" + randomUUID();
     const editArgs = { device_id: a, operation_id: editId, file_path: markerA,
-      old_string: "A\\n", new_string: "EDITED\\n" };
+      old_string: "A\n", new_string: "EDITED\n" };
     assert.equal(JSON.parse((await call("replace_text", editArgs)).content).status, "completed");
     assert.equal(JSON.parse((await call("replace_text", editArgs)).content).status, "completed");
-    assert.equal(await readFile(markerA, "utf8"), "EDITED\\n");
+    assert.equal(await readFile(markerA, "utf8"), "EDITED\n");
 
     const moved = path.join(subdir, "moved.txt");
     const moveArgs = { device_id: a, operation_id: "move-" + randomUUID(),
       source: markerA, destination: moved };
     assert.equal(JSON.parse((await call("move_file", moveArgs)).content).status, "completed");
     assert.equal(JSON.parse((await call("move_file", moveArgs)).content).status, "completed");
-    assert.equal(await readFile(moved, "utf8"), "EDITED\\n");
+    assert.equal(await readFile(moved, "utf8"), "EDITED\n");
     const deleteArgs = { device_id: a, operation_id: "delete-" + randomUUID(), path: moved };
     assert.equal(JSON.parse((await call("delete_file", deleteArgs)).content).status, "completed");
     assert.equal(JSON.parse((await call("delete_file", deleteArgs)).content).status, "completed");
