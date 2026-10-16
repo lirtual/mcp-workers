@@ -107,9 +107,26 @@ async function callPairedDeviceOperation(env: Env, id: unknown, name: string, ar
   }
   // Never dispatch an opt-in Preview mutation to another paired device,
   // even when the caller forges a tools/call not present in tools/list.
-  if (previewOnly(env) &&
-      (device_id !== receiptTestDevice(env) || !RECEIPT_TEST_TOOLS.has(name))) {
-    return toolError(id, "The requested operation is not authorized for this device.");
+  if (previewOnly(env)) {
+    if (device_id !== receiptTestDevice(env) || !RECEIPT_TEST_TOOLS.has(name)) {
+      return toolError(id, "The requested operation is not authorized for this device.");
+    }
+    // During this narrow Receipt acceptance, even the sole opted-in device
+    // may only append a sentinel into its disposable user's home and run a
+    // constant printf. This avoids exposing arbitrary filesystem/Shell access
+    // through an existing ChatGPT connector while the test grant is enabled.
+    if (name === "write_file" &&
+        (typeof localArgs.path !== "string" ||
+         !/^\/home\/rcagent\/receipt-v2-preview-test-[a-f0-9-]{36}\.txt$/.test(localArgs.path) ||
+         localArgs.mode !== "append" ||
+         !["RC_V2_RECEIPT_ONCE\\n", "RC_V2_RECEIPT_CHANGED\\n"].includes(localArgs.content as string))) {
+      return toolError(id, "The Receipt test only allows a fixed disposable fixture.");
+    }
+    if (name === "run_command" &&
+        !["printf 'RC_V2_RECEIPT_TEST_OK\\n'", "printf 'RC_V2_RECEIPT_TEST_CHANGED\\n'"]
+          .includes(localArgs.command as string)) {
+      return toolError(id, "The Receipt test only allows a fixed harmless command.");
+    }
   }
   const parsed = parseLocalCall(name, localArgs);
   if (!parsed || !V2_AGENT_OPERATION_TOOLS.has(parsed.tool)) {
