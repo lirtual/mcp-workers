@@ -393,10 +393,10 @@ export class ManagedSessions {
     };
     await Promise.all(running.map((session) => this.signalOwnedProcess(session, "SIGTERM")));
     await waitForClose(500);
-    await Promise.all(running.filter((session) => session.state === "running").map((session) => this.signalOwnedProcess(session, "SIGKILL")));
+    await Promise.all(running.filter((session) => this.ownsRunningProcess(session)).map((session) => this.signalOwnedProcess(session, "SIGKILL")));
     await waitForClose(500);
     for (const session of running) {
-      if (session.state === "running") {
+      if (this.ownsRunningProcess(session)) {
         session.state = "unknown";
         session.lastObservedAt = Date.now();
       }
