@@ -1,6 +1,6 @@
 # Remote Control MCP — Domain Context
 
-> Status (updated 2026-10-16): v1 architecture accepted (ADR-0011/0012/0013); later T11 #14 approved file writes and Shell independently. Reliability design Q1–Q9 is recorded in ADR-0016 and [Spec #60](https://github.com/lirtual/mcp-workers/issues/60). Agent reliability source code was merged via [PR #66](https://github.com/lirtual/mcp-workers/pull/66) at `main@71f5a243`; follow-up offline acceptance is tracked by #62/#63/#65. **The installed production Agent was not upgraded**; no live receipt migration, credentials or permissions were changed by that source merge.
+> Status (updated 2026-10-16): v1 Agent reliability source merged in [PR #66](https://github.com/lirtual/mcp-workers/pull/66) and [PR #67](https://github.com/lirtual/mcp-workers/pull/67), and v1 Linux Agent **was separately upgraded and verified** to Node 24 + SQLite under [Spec #60](https://github.com/lirtual/mcp-workers/issues/60) / [#65](https://github.com/lirtual/mcp-workers/issues/65). Original JSON and historical backup were preserved for intentional manual rollback; SQLite is now authoritative. v2 multi-device WSS/DO remains an independent **preview / Draft PR #58** and is not a v1 production replacement. Independent human terminal confirmation and the 72-hour five-device Hibernation/quota gate remain unverified for production.
 
 ## Language
 
@@ -115,8 +115,34 @@ _Avoid_: Treating a successful new-store startup as sufficient evidence that his
 
 - The exact allowed tools and parameters; how destructive workspace writes, interactive process inputs and secret handling are authorized.
 - Managed-session lifecycle details: stopping/canceling, output paging, quotas and behavior after device restart.
-- The Agent receipt/timeout/recovery architecture is owner-selected in ADR-0016 (Q1–Q9), awaiting final approval. Precise data schema, repair procedure, test acceptance and rollout instructions belong in a later technical Spec; unrelated device-token revocation and existing operational authorization remain separately controlled.
+- The v1 Agent receipt/timeout architecture and production migration were completed under Spec #60; device-token revocation and v2 human-confirmation, transport and quota acceptance remain separately controlled.
 - Actual ChatGPT/MCP Portal delivery of the separate static Bearer credential, token provisioning/rotation and denied-request acceptance; compatibility with arbitrary non-Portal MCP clients is not guaranteed.
 - Actual permissions and secret exposure of the **confirmed existing normal Linux login account**, ingress compromise risk, limits (payload, output, time), supported tool shapes and rollout/monitoring policy.
 
 Architecture and deployment implementation details belong in the research draft and ADRs, not in this vocabulary document.
+
+## Future v2 multi-device context — chosen design, not deployed (2026-10-15)
+
+**Product goal:** one Remote Control MCP explicitly controls multiple individually approved Linux/WSL2 Agent installations across independent home, office and cloud networks; native Windows/macOS remote execution is deferred. Each new device should be convenient to install without a public IP, firewall inbound rule or manual Cloudflare resource/credential management.
+
+**Transport:** selected v2 is an Agent-initiated outbound TLS WebSocket to one owner-scoped SQLite-backed Durable Object using WebSocket Hibernation; **no Cloudflare One Client, Mesh, VPC Network, separate site Tunnel or per-device DO** is required. Earlier consideration of One Client was contingent on using the now-rejected Mesh transport. Existing v1's fixed VPC Service + private Tunnel and independent Portal token remain authoritative **for current production**, which is not migrated by this decision.
+
+**Device Identity:** a server-issued opaque `device_id` uniquely identifies an approved installation, not its display label, hostname, IP or current socket.
+
+**Pairing Code:** exactly 10 cryptographically random Base32 characters shown locally by a fresh Agent installation, single-use and expiring after 10 minutes. It identifies a pending pairing but is never a long-lived device credential.
+
+**Device Pairing:** the Remote-Control-specific Portal Bearer-authenticated `pairing_lookup` shows one pending device and fingerprint; `pairing_prepare` returns a single-use 12-character Base32 challenge (five minutes) but cannot approve. The owner manually enters the original 10-character device code and 12-character challenge in the **new Agent's own local terminal/SSH**, and the Agent signs the bound code/challenge transcript with its locally stored private key. Only the matching one-use DO proof can issue `device_id`. Portal Bearer by itself is **not** human-presence proof; this separate terminal requirement assumes the model cannot operate that host or obtain its private key. This is the owner-approved two-code UX refinement (updated 2026-10-16) and still requires nonproduction client/host verification.
+
+**Device Credential:** a per-installation private/public keypair generated locally (prefer standard Ed25519 after interoperability validation); the Agent retains the private key and proves possession via fresh signed server challenge. Reinstall means a new key, new `device_id`, new pairing.
+
+**Device Selection:** one MCP lists known devices with `list_devices` and every v2 operation explicitly specifies a trusted `device_id`; never default silently to another device or accept a client-selected private IP/URL.
+
+**Device Availability:** a currently approved Agent connection observed usable by the service. Known disconnects immediately become offline; silent partitions require a bounded measured detection delay. Reconnect is automatic, with **no offline command queue**.
+
+**Operation Outcome:** existing local `operation_id` receipts remain authoritative for state-changing operations. During ordinary disconnection, running Agent-owned commands may continue; when outcome is uncertain, do not blindly replay.
+
+**Device Revocation:** persistently deny the device key before all other actions, reject new commands/connections, close the socket, and request **best-effort** termination of online Agent-owned sessions. Offline/compromised local processes cannot be certified stopped. Re-pairing requires fresh deliberate owner approval. Because v2 never issues Cloudflare One device registration, there is no Cloudflare One permission to remove.
+
+**Free and testing gate:** five simulated Agent connections for 72 continuous nonproduction hours, with demonstrated actual Hibernation/recovery, DO and Workers Free shared quota headroom, replay/steal/revoke tests, Linux+WSL2 network/lifecycle proof, and non-disruptive v1 migration. No test or production change is authorized by these design decisions.
+
+**Canonical v2 design sources:** [ADR-0014 — v2 transport](./adr/0014-v2-multi-device-ws-do.md), [ADR-0015 — owner pairing/identity](./adr/0015-v2-pairing-and-identity.md), [v2 technical Spec](./V2-MULTI-DEVICE-SPEC.md). Grilling Q1–Q20 and competing-transport exploration remain retrievable in the [Draft PR #45 discussion](https://github.com/lirtual/mcp-workers/pull/45) and Git history, not as active implementation instructions.
