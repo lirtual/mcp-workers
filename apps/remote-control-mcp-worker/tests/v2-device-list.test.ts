@@ -73,7 +73,6 @@ test("list_devices requires Portal bearer and reports only current, approved WSS
     { device_id: onlineId, name: "home", status: "online" },
     { device_id: staleId, name: "stale", status: "offline" },
     { device_id: offlineId, name: "office", status: "offline" },
-    { device_id: revokedId, name: "retired", status: "revoked" },
   ].sort((a, b) => a.device_id.localeCompare(b.device_id)));
   assert.equal(payload.result.content[0]!.text.includes("private-public-key"), false);
   assert.equal(devices.some(d => d.device_id === revokedId && d.status === "online"), false);

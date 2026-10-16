@@ -1,4 +1,4 @@
-/** Read-only revoked-key proof required BEFORE any explicit fresh-key --re-pair. */
+/** Signed read-only negative approval check; no deleted-ID historic binding proof. */
 import { createPrivateKey, createPublicKey, sign } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
@@ -33,7 +33,7 @@ export async function assertRemoteRevocation(
   // Never interpret 404, 401, 409, 429, 503 or connection failure as revocation.
   if (response.status !== 200) throw new Error("Revocation cannot be verified; existing identity preserved.");
   const payload = await response.json() as {status?: unknown; device_id?: unknown};
-  if (payload.status !== "revoked" || payload.device_id !== deviceId) {
+  if (payload.status !== "not_approved" || payload.device_id !== deviceId) {
     throw new Error("Revocation cannot be verified; existing identity preserved.");
   }
 }

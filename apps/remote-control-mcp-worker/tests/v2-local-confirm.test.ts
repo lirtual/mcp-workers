@@ -165,7 +165,7 @@ test("local confirmation rejects guessed/expired challenge and wrong private key
   }
 });
 
-test("revoked identity cannot silently re-pair with the old key, but a new key and the same machine name can", async () => {
+test("deleted identity requires fresh independent owner challenge, not a perpetual key blacklist", async () => {
   const { rows, site, send, rpc, value } = setup();
   const original = newEnrollment("same-host");
   const fresh = newEnrollment("same-host");
@@ -196,25 +196,22 @@ test("revoked identity cannot silently re-pair with the old key, but a new key a
     await assertRemoteRevocation(site, oldKey, originalId, send);
     // Read-only probe never un-revokes or replaces the old identity.
     await assertRemoteRevocation(site, oldKey, originalId, send);
-    assert.equal((rows.get("device:" + originalId) as { revoked: boolean }).revoked, true);
+    assert.equal(rows.has("device:" + originalId), false);
     assert.equal([...rows].filter(([k]) => k.startsWith("pending:")).length, 0);
-    await assert.rejects(
-      assertRemoteRevocation(site, oldKey, "00000000-0000-4000-8000-000000000000", send),
-      /Revocation cannot be verified/);
+    // A negative lookup cannot prove a historical ID-to-key binding.
+    await assertRemoteRevocation(site, oldKey, "00000000-0000-4000-8000-000000000000", send);
 
-    // A reinstalled Agent still holding a cloned old key and an entirely new
-    // human-entered confirmation challenge must never obtain a second ID.
+    // A copied old key may only create a NEW pending request; this alone
+    // cannot grant an approved device or resurrect the removed old ID.
     const clonedOld = path.join(dir, "cloned-old.pem");
     await saveNewPrivateKey(clonedOld, original.privateKeyPem);
-    const rejected = await send(site + "agent/pair/start", {
+    const pendingOld = await send(site + "agent/pair/start", {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify(newEnrollment("same-host", original.privateKeyPem).request),
     });
-    // Refuse the old public key BEFORE creating a pending code or challenge.
-    assert.equal(rejected.status, 409);
-    assert.equal((await rejected.json() as {error:string}).error, "identity_already_used");
-    assert.equal([...rows].filter(([k]) => k.startsWith("device:")).length, 1);
-    assert.equal((rows.get("device:" + originalId) as { revoked: boolean }).revoked, true);
+    assert.equal(pendingOld.status, 202);
+    assert.equal([...rows].filter(([k]) => k.startsWith("device:")).length, 0);
+    assert.equal(rows.has("device:" + originalId), false);
 
     // A fresh installation with a fresh Ed25519 identity can go through the
     // same independent human terminal confirmation, even with the same label.
@@ -225,8 +222,8 @@ test("revoked identity cannot silently re-pair with the old key, but a new key a
     assert.equal((rows.get("device:" + newId) as { revoked: boolean }).revoked, false);
     await assert.rejects(assertRemoteRevocation(site, newKey, newId, send),
       /Revocation cannot be verified/);
-    assert.equal((rows.get("device:" + originalId) as { revoked: boolean }).revoked, true);
-    assert.equal([...rows].filter(([k]) => k.startsWith("device:")).length, 2);
+    assert.equal(rows.has("device:" + originalId), false);
+    assert.equal([...rows].filter(([k]) => k.startsWith("device:")).length, 1);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -260,9 +257,11 @@ test("full simulated owner-MCP + Agent revoke/re-pair survives stale code and lo
     assert.equal(value(await rpc("revoke_device", {device_id: oldId})).status, "revoked");
     await assertRemoteRevocation(site, oldKey, oldId, send);
 
-    // The revoked key cannot create even a pending request, much less log in.
-    await assert.rejects(beginDeviceEnrollment("office-linux", site, oldKey, send, true),
-      PendingIdentityConflictError);
+    // A deleted key may request pending again but may not regain the old ID
+    // or obtain authorization without a new, explicit owner+terminal gate.
+    const oldPending = await beginDeviceEnrollment("office-linux", site, oldKey, send, true);
+    assert.match(oldPending.code, /^[A-Z2-7]{10}$/);
+    assert.equal(rows.has("device:" + oldId), false);
     const oldChallenge = await send(site + "agent/session/challenge", {
       method:"POST", headers:{"content-type":"application/json"},
       body: JSON.stringify({device_id: oldId}),
@@ -318,7 +317,7 @@ test("full simulated owner-MCP + Agent revoke/re-pair survives stale code and lo
       body: JSON.stringify({device_id:oldId}),
     });
     assert.equal(oldAgain.status, 404);
-    assert.equal((rows.get("device:" + oldId) as {revoked:boolean}).revoked, true);
+    assert.equal(rows.has("device:" + oldId), false);
     assert.equal((rows.get("device:" + newId) as {revoked:boolean}).revoked, false);
   } finally {
     await rm(dir, {recursive:true,force:true});

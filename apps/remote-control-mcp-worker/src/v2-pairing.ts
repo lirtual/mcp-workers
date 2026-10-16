@@ -169,10 +169,17 @@ export async function checkRevokedIdentity(
       return { status: 403, body: { error: "unauthorized" } };
     }
     const device = await storage.get<V2Device>("device:" + p.device_id);
-    if (!device || device.public_key !== p.public_key) return { status: 404, body: { error: "not_found" } };
-    return device.revoked === true
-      ? { status: 200, body: { status: "revoked", device_id: device.device_id } }
-      : { status: 409, body: { error: "identity_still_approved" } };
+    // Proof confirms possession of the SUPPLIED key, not historical ownership
+    // of a deleted device ID. This negative status never grants authority;
+    // fresh owner-reviewed pairing is always required.
+    if (device && device.revoked === false) {
+      return { status: device.public_key === p.public_key ? 409 : 403,
+        body: { error: device.public_key === p.public_key ? "identity_still_approved" : "unauthorized" } };
+    }
+    // Tolerate and lazily remove legacy preview tombstones after the new
+    // negative-status contract is active. Never retain a new tombstone.
+    if (device?.revoked === true) await storage.delete("device:" + p.device_id);
+    return { status: 200, body: { status: "not_approved", device_id: p.device_id } };
   } catch {
     return { status: 400, body: { error: "invalid_request" } };
   }
@@ -277,8 +284,8 @@ export async function completeLocalConfirmation(storage: PendingStorage, data: u
         again.expires_at <= Date.now()) {
       return { status: 409, body: { error: "already_consumed" } };
     }
-    // A revoked public key is a permanent tombstone: reinstalling with the
-    // stolen/old private key must never create a fresh authorized device ID.
+    // Only a fresh, owner-approved pending challenge can grant authority.
+    // Existing active public keys remain ineligible; deleted keys confer no rights.
     const known = await txn.list<V2Device>({ prefix: "device:", limit: 65 });
     if (known.size > 64) return { status: 503, body: { error: "capacity" } };
     if ([...known.values()].some(device => device.public_key === again.public_key)) {
@@ -498,7 +505,7 @@ export class V2OwnerCoordinator {
     return true;
   }
 
-  /** Commit the tombstone before touching live sockets or in-flight requests. */
+  /** Delete durable grant/epoch before touching any live sockets or in-flight requests. */
   private async revokeDevice(request: Request): Promise<Response> {
     const body = await limitedJson(request);
     if (!body || typeof body !== "object" || Array.isArray(body)) {
@@ -513,18 +520,18 @@ export class V2OwnerCoordinator {
     const outcome = await this.state.storage.transaction(async txn => {
       const record = await txn.get<V2Device>("device:" + id);
       if (!record) return { status: "not_found" as const };
-      if (record.revoked === true) return { status: "already_revoked" as const };
+      if (record.revoked === true) {
+        await txn.delete("device:" + id); // Legacy Preview tombstone only.
+        return { status: "not_found" as const };
+      }
       const previousEpoch = await txn.get<string>("session:epoch:" + id);
-      await txn.put("device:" + id, { ...record, revoked: true });
+      await txn.delete("device:" + id);
       await txn.delete("session:nonce:" + id);
       await txn.delete("session:epoch:" + id);
       return { status: "revoked" as const, previousEpoch };
     });
     if (outcome.status === "not_found") return Response.json({ error: "not_found" }, { status: 404 });
-    if (outcome.status === "already_revoked") {
-      return Response.json({ device_id: id, status: outcome.status, process_cleanup: "unconfirmed" });
-    }
-    // Cancel all ordinary requests AFTER the tombstone commits; cleanup is a
+    // Cancel all ordinary requests AFTER authorization deletion commits; cleanup is a
     // one-shot internal frame to the pre-revocation authenticated socket only.
     for (const pending of this.pendingReads.values()) {
       if (pending.deviceId === id) {
