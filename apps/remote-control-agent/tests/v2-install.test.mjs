@@ -376,8 +376,8 @@ test("revoked install archives old identity only AFTER new challenged pairing", 
   assert.match(src, /await pairFreshPending\(options, stage, stdin, stdout, Boolean\(stageExists\)\)/);
   assert.match(src, /await beginRevokedPromotion\(keyPath, oldId, nextId\)/);
   assert.match(src, /await resumeRevokedPromotion\(options, keyPath, previous\)/);
-  assert.match(src, /await move\(keyPath, path\.join\(archive, "identity\.pem"\)\)/);
-  assert.match(src, /await move\(stage, keyPath\)/);
+  assert.match(src, /\[keyPath, path\.join\(archive, "identity\.pem"\)\]/);
+  assert.match(src, /\[stage, keyPath\]/);
   assert.doesNotMatch(src, /rm\(keyPath\)|unlink\(keyPath\)/);
 });
 
