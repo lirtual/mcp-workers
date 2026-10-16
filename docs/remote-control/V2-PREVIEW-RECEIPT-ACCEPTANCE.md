@@ -70,11 +70,15 @@ A WSL2 distro is not a VM-grade security sandbox.
    from its own reviewed checkout. A maximum 12-minute timer and Ctrl+C
    both end the privileged test.
 6. Through the original v2 Preview plugin, use ONLY a unique harmless
-   fixture path under `/home/rcagent/`, unique stable operation IDs and
-   `write_file` with `mode=append`. Verify exactly one append for same ID,
-   conflict on changed arguments, `get_operation_status` completed, and
-   a fixed benign `printf` `run_command` whose duplicate reuses its
-   session. No arbitrary commands or access to user workspaces.
+   fixture path `/home/rcagent/receipt-v2-preview-test-<uuid>.txt`,
+   unique stable operation IDs, and `write_file` with `mode=append`,
+   `content="RC_V2_RECEIPT_ONCE\\n"` (or `RC_V2_RECEIPT_CHANGED\\n`
+   only to verify an operation-ID conflict). Verify exactly one append,
+   the original `get_operation_status` receipt, and `run_command` with
+   exactly `printf RC_V2_RECEIPT_TEST_OK` (or
+   `printf RC_V2_RECEIPT_TEST_CHANGED` only for the conflict check).
+   Duplicate command operation IDs must reuse the same session.
+   The Worker rejects arbitrary paths, content and Shell commands.
    If a mutation responds `timeout_unknown` or transport fails,
    **do not retry it**; query its original operation_id.
 7. Immediately stop the foreground test Agent and delete the temporary
