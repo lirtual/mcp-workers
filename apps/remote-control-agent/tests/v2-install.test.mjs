@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { MARKER, UNIT, classifyLinuxKernel, inspectInstallIdentity, parseInstallArgs, promoteRevokedIdentity, renderV2Service, trustedEndpoint } from "../scripts/install-v2.mjs";
+import { MARKER, UNIT, assertExistingServiceEndpoint, classifyLinuxKernel, inspectInstallIdentity, parseInstallArgs, promoteRevokedIdentity, renderV2Service, trustedEndpoint } from "../scripts/install-v2.mjs";
 import { beginDeviceEnrollment, PendingIdentityConflictError } from "../src/pair-device.ts";
 import { assertRemoteRevocation } from "../src/v2-repair.ts";
 import { DeviceSessionRejectedError, recoverDeviceId, signedSessionProof } from "../src/v2-session-client.ts";
@@ -67,6 +67,20 @@ test("separate v2 systemd unit never references v1 credentials, tunnel or write/
     { ...example, repoRoot: "/tmp/%h" }, { ...example, keyPath: "/tmp/a\\b" },
     { ...example, endpoint: "https://user:pass@rc.example.org" },
   ]) assert.throws(() => renderV2Service(unsafe));
+});
+
+test("ordinary repeat install rejects changed Worker origin before identity rotation", () => {
+  const owned = renderV2Service(example);
+  assert.doesNotThrow(() => assertExistingServiceEndpoint(owned, "https://rc.example.org/"));
+  for (const unexpected of [
+    "https://other.example.org/",
+    "https://rc.example.org:8443/",
+  ]) assert.throws(() => assertExistingServiceEndpoint(owned, unexpected),
+    /endpoint differs/);
+  const missingBinding = owned.replace("Environment=REMOTE_CONTROL_V2_ENDPOINT=https://rc.example.org/", "");
+  assert.throws(() => assertExistingServiceEndpoint(missingBinding, example.endpoint), /endpoint differs/);
+  assert.throws(() => assertExistingServiceEndpoint(owned,
+    "https://user:password@rc.example.org/"), /trusted HTTPS origin/);
 });
 
 test("v2 startup opts into read-only but explicitly keeps file write/Shell off", async () => {
