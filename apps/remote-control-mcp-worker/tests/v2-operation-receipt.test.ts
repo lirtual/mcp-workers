@@ -223,32 +223,43 @@ test("v2 write_file preserves Agent receipt idempotency per device; no v1 fallba
   }
 });
 
-test("without an operation callback, signed v2 Agent rejects file mutation frames", async () => {
+test("a read-only signed v2 Agent refuses mutation without dropping WSS", async () => {
   const stop = new AbortController();
-  const socket = new Client(() => {});
+  const responses: Array<{ kind: string; request_id: string; result: { operation_id: string; status: string } }> = [];
+  const socket = new Client(frame => responses.push(JSON.parse(frame)));
   const run = monitorDeviceSocket(socket as unknown as WebSocket, stop.signal,
-    { intervalMs: 60_000, timeoutMs: 10_000 });
-  socket.receive(JSON.stringify({ kind: "operation", request_id: randomUUID(),
+    { intervalMs: 60_000, timeoutMs: 10_000 }, async () => null);
+  const request_id = randomUUID();
+  socket.receive(JSON.stringify({ kind: "operation", request_id,
     operation_id: "intent-1", tool: "write_file",
     arguments: { path: "/tmp/no-write", content: "NO", mode: "append" } }));
-  assert.equal(await run, "policy");
+  assert.equal(responses.length, 1);
+  assert.deepEqual(responses[0], { kind: "operation_result", request_id,
+    result: { operation_id: "intent-1", status: "unavailable" } });
+  assert.equal(socket.readyState, WebSocket.OPEN);
+  stop.abort();
+  assert.equal(await run, "aborted");
 });
 
-test("a file-write-only v2 Agent refuses Shell even when a mutation callback is present", async () => {
+test("a file-write-only v2 Agent denies Shell without disconnecting or invoking executor", async () => {
   const stop = new AbortController();
-  const socket = new Client(() => {
-    throw new Error("a Shell response must never be emitted");
-  });
+  const responses: Array<{ kind: string; request_id: string; result: { operation_id: string; status: string } }> = [];
+  const socket = new Client(frame => responses.push(JSON.parse(frame)));
   let executed = false;
   const running = monitorDeviceSocket(socket as unknown as WebSocket, stop.signal,
     { intervalMs: 60_000, timeoutMs: 10_000 }, undefined,
     async () => { executed = true; return { status: "completed" }; });
+  const request_id = randomUUID();
   socket.receive(JSON.stringify({
-    kind: "operation", request_id: randomUUID(), operation_id: "shell-not-authorized",
+    kind: "operation", request_id, operation_id: "shell-not-authorized",
     tool: "start_process", arguments: { command: "echo prohibited", timeout_ms: 0 },
   }));
-  assert.equal(await running, "policy");
+  assert.deepEqual(responses[0], { kind: "operation_result", request_id,
+    result: { operation_id: "shell-not-authorized", status: "unavailable" } });
   assert.equal(executed, false);
+  assert.equal(socket.readyState, WebSocket.OPEN);
+  stop.abort();
+  assert.equal(await running, "aborted");
 });
 
 test("response-lost-after-write returns timeout_unknown; reconnect only queries the persisted receipt", async () => {
