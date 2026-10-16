@@ -398,11 +398,16 @@ export async function promoteRevokedIdentity(keyPath, oldId, moveFile = rename, 
   }
   const idPath = keyPath + ".device-id";
   const stage = keyPath + ".re-pair-new";
-  await ownerOnly(keyPath, 0o600);
-  await ownerOnly(idPath, 0o600);
-  await ownerOnly(stage, 0o600);
-  await ownerOnly(stage + ".device-id", 0o600);
   const archive = path.join(path.dirname(keyPath), "revoked-" + oldId);
+  const archivedKey = path.join(archive, "identity.pem");
+  const archivedId = path.join(archive, "identity.pem.device-id");
+  const required = [
+    [keyPath, idPath, stage, stage + ".device-id"],
+    [archivedKey, idPath, stage, stage + ".device-id"],
+    [archivedKey, archivedId, stage, stage + ".device-id"],
+    [archivedKey, archivedId, keyPath, stage + ".device-id"],
+  ][resumeAt];
+  for (const file of required) await ownerOnly(file, 0o600);
   if (resumeAt === 0) {
     if (await exists(archive)) throw new Error("Old identity archive already exists.");
     await mkdir(archive, {mode: 0o700});
