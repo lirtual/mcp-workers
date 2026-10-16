@@ -535,6 +535,46 @@ export async function inspectInstallIdentity(options, keyPath, previous, {
   }
 }
 
+
+/** Hold a kernel flock through the full interactive CLI, released even on SIGKILL. */
+export async function runLockedInstallerCli(argv, {
+  home = os.homedir(), invoke = spawnSync, node = process.execPath,
+} = {}) {
+  // An internal marker avoids recursive wrapping. It does not confer rights;
+  // the authenticated device key and owner challenge remain independent.
+  if (process.env.RC_V2_INSTALL_FLOCKED === "1") {
+    await runInstaller(argv, { home });
+    return 0;
+  }
+  const dir = path.join(home, ".local", "share", "mcp-workers", "remote-control");
+  const lockPath = path.join(dir, "v2-installer.lock");
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  const d = await lstat(dir);
+  if (!d.isDirectory() || d.isSymbolicLink() || d.uid !== process.getuid() ||
+      (d.mode & 0o077) !== 0) {
+    throw new Error("The private identity directory must be owner-only.");
+  }
+  try {
+    const lock = await open(lockPath, "wx", 0o600);
+    await lock.close();
+  } catch (error) {
+    if (error.code !== "EEXIST") throw error;
+  }
+  await ownerOnly(lockPath, 0o600);
+  const result = invoke("flock", [
+    "-n", "-E", "75", "-F", lockPath, node, "--experimental-strip-types",
+    fileURLToPath(import.meta.url), ...argv,
+  ], {
+    stdio: "inherit",
+    env: { ...process.env, RC_V2_INSTALL_FLOCKED: "1" },
+  });
+  if (result.error) throw new Error("A local installer lock prerequisite is unavailable.");
+  if (result.signal) throw new Error("Installer was interrupted; identity files were preserved.");
+  if (result.status === 75) throw new Error("Another v2 installer is already running.");
+  if (result.status !== 0) throw new Error("The v2 installer did not complete.");
+  return 0;
+}
+
 export async function runInstaller(args, {
   home = os.homedir(), stdin = process.stdin, stdout = process.stdout,
   startForeground = launchForeground,
@@ -632,7 +672,7 @@ export async function runInstaller(args, {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  runInstaller(process.argv.slice(2)).catch(error => {
+  runLockedInstallerCli(process.argv.slice(2)).catch(error => {
     // Only print fixed, hard-coded classifications; never echo external
     // exception messages, endpoint query strings or private credential data.
     const safeErrors = [
@@ -654,6 +694,10 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       "Revoked foreground identity requires manual review.",
       "New device identity was not verified.",
       "Old identity archive already exists.",
+      "A local installer lock prerequisite is unavailable.",
+      "Another v2 installer is already running.",
+      "The v2 installer did not complete.",
+      "Installer was interrupted; identity files were preserved.",
     ];
     const detail = error instanceof PendingIdentityConflictError
       ? "Existing device key is already approved or revoked. Never reuse it; ask the owner for explicit fresh-key pairing. "
