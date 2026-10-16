@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { createHash, createPrivateKey, createPublicKey, sign as nodeSign } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -566,4 +568,102 @@ test("crash recovery requires both signed proofs; corrupted layouts fail closed 
     assert.equal(await readFile(key, "utf8"), "old-revoked-key");
     assert.equal((await stat(key + ".re-pair-transition")).mode & 0o777, 0o600);
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+
+test("actual SIGKILL after each identity rename permits guarded operator-only recovery", async () => {
+  const oldId = "0ded0000-0000-4000-8000-000000000031";
+  const newId = "0ded0000-0000-4000-8000-000000000032";
+  const installModule = new URL("../scripts/install-v2.mjs", import.meta.url).href;
+  // Separate Node process performs REAL renames and is killed by the OS.
+  // The child sees ONLY temp fixture paths; no enrolled device, systemd,
+  // network endpoint or live key material is accessible through the test.
+  const childScript = [
+    'import { rename } from "node:fs/promises";',
+    'const { promoteRevokedIdentity } = await import(process.env.RC_TEST_INSTALL_MODULE);',
+    'let step = 0;',
+    'await promoteRevokedIdentity(process.env.RC_TEST_KEY, process.env.RC_TEST_OLD_ID, async (from, to) => {',
+    '  await rename(from, to);',
+    '  if (++step === Number(process.env.RC_TEST_KILL_AT)) {',
+    '    process.send({ completed_renames: step });',
+    '    await new Promise(() => {});',
+    '  }',
+    '});',
+    'throw Error("Child must be SIGKILLed before the promotion returns");',
+  ].join("\n");
+  for (let killAt = 1; killAt <= 4; killAt++) {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "rc-v2-actual-sigkill-"));
+    const key = path.join(dir, "identity.pem");
+    const stage = key + ".re-pair-new";
+    const archive = path.join(dir, "revoked-" + oldId);
+    let child;
+    try {
+      await writeFile(key, "old-fixture-key", { mode: 0o600 });
+      await writeFile(key + ".device-id", oldId, { mode: 0o600 });
+      await writeFile(stage, "approved-fixture-key", { mode: 0o600 });
+      await writeFile(stage + ".device-id", newId, { mode: 0o600 });
+      await beginRevokedPromotion(key, oldId, newId);
+      child = spawn(process.execPath,
+        ["--experimental-strip-types", "--input-type=module", "--eval", childScript],
+        {
+          stdio: ["ignore", "ignore", "ignore", "ipc"],
+          env: {
+            ...process.env,
+            RC_TEST_INSTALL_MODULE: installModule,
+            RC_TEST_KEY: key,
+            RC_TEST_OLD_ID: oldId,
+            RC_TEST_KILL_AT: String(killAt),
+          },
+        });
+      const exited = once(child, "exit");
+      let timeout;
+      const signal = await Promise.race([
+        once(child, "message").then(([value]) => value),
+        exited.then(([code, sig]) => {
+          throw Error("Child exited before SIGKILL: " + code + " / " + sig);
+        }),
+        new Promise((_, reject) => {
+          timeout = setTimeout(() => reject(Error("Child did not reach rename " + killAt)), 10_000);
+        }),
+      ]).finally(() => clearTimeout(timeout));
+      assert.deepEqual(signal, { completed_renames: killAt });
+      assert.equal(child.kill("SIGKILL"), true);
+      const [code, exitSignal] = await exited;
+      assert.equal(code, null);
+      assert.equal(exitSignal, "SIGKILL");
+      // No child catch/finally/rollback runs; this is a real dead process.
+      assert.equal((await stat(key + ".re-pair-transition")).mode & 0o777, 0o600);
+      let checkedOld = 0, checkedNew = 0, stopCount = 0;
+      const resumed = await resumeRevokedPromotion({ endpoint: "https://rc.example.org/" },
+        key, "fixture-only-v2-unit", {
+          verifyRevoked: async (_url, file, id) => {
+            assert.equal(id, oldId);
+            assert.equal(await readFile(file, "utf8"), "old-fixture-key");
+            checkedOld++;
+          },
+          verifyApproved: async (_url, file) => {
+            assert.equal(await readFile(file, "utf8"), "approved-fixture-key");
+            checkedNew++;
+            return newId;
+          },
+          stopService: () => { stopCount++; },
+        });
+      assert.equal(resumed.resumedAt, killAt);
+      assert.equal(checkedOld, 1);
+      assert.equal(checkedNew, 1);
+      assert.equal(stopCount, 1);
+      assert.equal(await readFile(key, "utf8"), "approved-fixture-key");
+      assert.equal(await readFile(key + ".device-id", "utf8"), newId);
+      assert.equal(await readFile(path.join(archive, "identity.pem"), "utf8"), "old-fixture-key");
+      assert.equal(await readFile(path.join(archive, "identity.pem.device-id"), "utf8"), oldId);
+      assert.equal((await stat(key)).mode & 0o777, 0o600);
+      assert.equal((await stat(key + ".device-id")).mode & 0o777, 0o600);
+    } finally {
+      if (child && child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL");
+        await once(child, "exit").catch(() => {});
+      }
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
 });
