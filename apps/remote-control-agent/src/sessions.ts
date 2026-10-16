@@ -410,7 +410,7 @@ export class ManagedSessions {
 
   async close(): Promise<void> {
     this.revocationClosing = true;
-    const running = [...this.sessions.values().filter((session) => session.state === "running" || session.state === "unknown");
+    const running = [...this.sessions.values()].filter((session) => session.state === "running" || session.state === "unknown");
     for (const session of this.sessions.values()) if (session.deadlineTimer) clearTimeout(session.deadlineTimer);
     const waitForClose = async (timeoutMs: number) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
