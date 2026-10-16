@@ -71,3 +71,42 @@ The basic acceptance does not establish true lost-after-commit WSS response
 handling, sustained hibernation reliability, or the #57 72-hour soak. Keep
 those gates open until there is evidence. Do not treat a unit/integration test
 as a real-device mutation E2E result.
+
+## One-shot real WSS response-loss check
+
+This test uses the same Preview Worker and the **same disposable** WSL2 Agent,
+with an optional fault injector that exists **only** in the foreground test
+script. Do not run it on the regular `rc-v2-lab` or v1 Agent.
+
+1. Stop the previous foreground test Agent using Ctrl+C. Update the disposable
+   `rcagent` checkout to the reviewed PR #58 commit and use a **fresh**
+   `operation_id` beginning with `receipt-fault-` followed by a unique suffix.
+2. In the `rc-v2-receipt-lab` shell start:
+
+   ```bash
+   sudo -u rcagent -H env WSL_DISTRO_NAME="$WSL_DISTRO_NAME" bash -c '
+     cd /home/rcagent/mcp-workers-v2-receipt-lab || exit 1
+     exec node --experimental-strip-types \
+       apps/remote-control-agent/scripts/v2-preview-receipt-foreground.mjs \
+       --drop-reply-once receipt-fault-20261016-unique1234
+   '
+   ```
+
+3. Only on that test device, call `write_file` once using **exactly the
+   matching** `operation_id`, `mode=append`, a new path such as
+   `/home/rcagent/receipt-v2-preview-test-<random-uuid>.txt`, and the literal
+   content `RC_V2_LOST_REPLY_ONCE\n`.
+4. The Agent intercepts only a successful `write_file` response with the
+   matching `operation_id` and exact fixture; the SQLite Receipt is committed
+   **before** interception. It drops that response once per Agent lifetime,
+   closes that WSS as a retryable failure, and reconnects with a fresh signed
+   session nonce. Other results, errors, Shell and ordinary traffic are
+   unaffected. The initial MCP request should be unknown/failed transport,
+   **not** reported as a confirmed completion.
+5. After `discarded one committed write reply` and `connected` appear in
+   terminal, query **only** `get_operation_status` for the original ID.
+   Expect `completed`. Read the fixture and verify exactly one sentinel
+   line. Do **not** resubmit the write on an unknown response.
+6. Ctrl+C the disposable foreground Agent. No Worker, Secret or regular Agent
+   needs to change. If the ChatGPT platform blocks the write before routing,
+   record that outcome; it is **not** a successful failure-injection test.
