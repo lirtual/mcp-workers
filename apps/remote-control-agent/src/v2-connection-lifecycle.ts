@@ -216,6 +216,34 @@ export function monitorDeviceSocket(
           delete_file: parseLocalDeleteFile, start_process: parseStartProcess,
           interact_with_process: parseInteractWithProcess, force_terminate: parseForceTerminate,
         };
+        // A paired but read-only Agent must deny valid unsupported operations
+        // without disconnecting its otherwise healthy signed WSS session.
+        // Malformed or unrecognized frames still fail closed below.
+        const mutationTool = typeof request?.tool === "string" &&
+          Object.hasOwn(mutationParsers, request.tool);
+        const shellTool = ["start_process", "interact_with_process", "force_terminate"]
+          .includes(String(request?.tool));
+        const validOperation = request?.kind === "operation" &&
+          typeof request.tool === "string" &&
+          (request.tool === "get_operation_status" || mutationTool) &&
+          typeof request.operation_id === "string" &&
+          Boolean(parseOperationId({ operation_id: request.operation_id })) &&
+          typeof request.request_id === "string" &&
+          /^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(request.request_id) &&
+          Object.keys(request).length === 5 &&
+          (request.tool === "get_operation_status"
+            ? Boolean(parseOperationId(request.arguments)) &&
+              (request.arguments as { operation_id: string }).operation_id === request.operation_id
+            : Boolean(mutationParsers[request.tool]?.(request.arguments)));
+        if (validOperation && (!operation || (shellTool && !allowShell))) {
+          try {
+            socket.send(JSON.stringify({
+              kind: "operation_result", request_id: request.request_id,
+              result: { operation_id: request.operation_id, status: "unavailable" },
+            }));
+          } catch { finish("offline"); }
+          return;
+        }
         if (operation && request?.kind === "operation" && typeof request.tool === "string" &&
             (request.tool === "get_operation_status" ||
               (Object.hasOwn(mutationParsers, request.tool) &&
