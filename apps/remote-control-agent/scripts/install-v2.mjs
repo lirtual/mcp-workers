@@ -588,25 +588,25 @@ export async function runInstaller(args, {
         throw new Error("Interrupted identity promotion requires a local interactive terminal.");
       }
       const resumed = await resumeRevokedPromotion(options, keyPath, previous);
-      stdout.write("Verified interrupted identity promotion for " + resumed.newId + ".\\n");
+      stdout.write("Verified interrupted identity promotion for " + resumed.newId + ".\n");
     } else {
-    const state = await inspectInstallIdentity(options, keyPath, previous);
-    if (state === "revoked") {
-      // Only an interactive installer can recover a revoked installation.
-      // Foreground mode cannot replace an identity belonging to a systemd unit.
-      if (options.foreground) throw new Error("Revoked foreground identity requires manual review.");
-      await rePairRevokedDevice(options, keyPath, previous, stdin, stdout);
-    } else if (state === "approved") {
-      if (previous) {
-        stdout.write("v2 user service already installed; approved identity preserved.\n");
-        return;
+      const state = await inspectInstallIdentity(options, keyPath, previous);
+      if (state === "revoked") {
+        // Only an interactive installer can recover a revoked installation.
+        // Foreground mode cannot replace an identity belonging to a systemd unit.
+        if (options.foreground) throw new Error("Revoked foreground identity requires manual review.");
+        await rePairRevokedDevice(options, keyPath, previous, stdin, stdout);
+      } else if (state === "approved") {
+        if (previous) {
+          stdout.write("v2 user service already installed; approved identity preserved.\n");
+          return;
+        }
+        stdout.write("Existing approved identity recovered; continuing v2 installation.\n");
+      } else {
+        if (!stdin.isTTY || !stdout.isTTY) throw new Error("First pairing needs the device's interactive terminal.");
+        if (state === "pending") stdout.write("Previous pairing not completed; retrying with the same private key.\n");
+        await pairFreshPending(options, keyPath, stdin, stdout, state === "pending");
       }
-      stdout.write("Existing approved identity recovered; continuing v2 installation.\n");
-    } else {
-      if (!stdin.isTTY || !stdout.isTTY) throw new Error("First pairing needs the device's interactive terminal.");
-      if (state === "pending") stdout.write("Previous pairing not completed; retrying with the same private key.\n");
-      await pairFreshPending(options, keyPath, stdin, stdout, state === "pending");
-    }
     }
   }
   await ownerOnly(keyPath, 0o600);
