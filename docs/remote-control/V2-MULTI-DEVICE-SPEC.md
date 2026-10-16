@@ -1,7 +1,7 @@
 # Remote Control MCP v2 — One authoritative multi-device Spec
 
-**Status:** design accepted; source implementation is under [Draft PR #58](https://github.com/lirtual/mcp-workers/pull/58), but production deployment and full multi-device acceptance are **not** authorized. Updated 2026-10-16.
-Authority: [ADR-0014 — transport](./adr/0014-v2-multi-device-ws-do.md), [ADR-0015 — pairing](./adr/0015-v2-pairing-and-identity.md). Existing [v1 Spec](./SPEC.md) continues to govern the deployed single-device path.
+**Status:** design accepted; source implementation is under [Draft PR #58](https://github.com/lirtual/mcp-workers/pull/58), but production deployment and full multi-device acceptance are **not** authorized. Updated 2026-10-17 (device-removal retention changed by ADR-0017; implementation pending).
+Authority: [ADR-0014 — transport](./adr/0014-v2-multi-device-ws-do.md), [ADR-0015 — pairing](./adr/0015-v2-pairing-and-identity.md), [ADR-0017 — device removal](./adr/0017-v2-device-revocation-without-tombstones.md). Existing [v1 Spec](./SPEC.md) continues to govern the deployed single-device path.
 
 ## Goal
 
@@ -25,7 +25,7 @@ One Remote Control MCP controls separately paired Linux/WSL2 Agents across unrel
 | Module | v2 work | Reuse |
 | --- | --- | --- |
 | `apps/remote-control-mcp-worker` | Keep one authenticated `/mcp`, add `list_devices`, `pairing_lookup`, `pairing_prepare`, `revoke_device`, and explicit `device_id` on v2 tool calls; route to DO | Existing Portal auth, curated `LOCAL_TOOLS` schema/validation, error/redaction, operation IDs |
-| New v2 owner DO module | Minimal SQLite `pending_pairing` and `device` records; bounded WS dispatch/correlation; revoke tombstones | Cloudflare DO Hibernation and SQLite; **one DO**, not a fleet platform |
+| New v2 owner DO module | Minimal SQLite `pending_pairing` and `device` records; bounded WS dispatch/correlation; atomic device authorization removal without permanent tombstones | Cloudflare DO Hibernation and SQLite; **one DO**, not a fleet platform |
 | `apps/remote-control-agent` v2 transport entry | Device-local Ed25519 key, 10-symbol pairing code, outbound WSS, automatic reconnect, local service startup | Existing Linux tool handlers and loopback server can act as v2 execution adapter initially; no duplicated file/Shell engine or new cloud-side receipt storage |
 | Existing v1 | **No change in production**; isolated preview/testing until approved cutover | Fixed VPC Service, Tunnel, current credential and worker semantics |
 
@@ -35,11 +35,13 @@ The existing Agent build invokes **`cc`** for its C session-supervisor helper; o
 
 - `device_id`: opaque server-issued per-installation identifier; public to authenticated MCP, never based on hostname/IP or user-provided URL. Friendly `name` is untrusted presentation only. Reinstallation creates a new ID/key.
 - `operation_id`: existing Agent-local stable mutation identity and receipt; never substitute a WSS correlation identifier. Unknown outcome is `timeout_unknown`, not “failed / safe to retry”.
-- `list_devices()` returns bounded `[{device_id,name,status,last_seen_at?}]`; availability means observed Agent connectivity, not merely network/host state.
+- `list_devices()` returns bounded **currently approved** `[{device_id,name,status,last_seen_at?}]` only; availability means observed Agent connectivity, not merely network/host state. Removed identities are not returned.
 - `pairing_lookup({code})`: Portal-authenticated **read-only** pending device lookup returning `pairing_id`, `name`, `fingerprint`, `expires_at`. Never approves a device.
 - `pairing_prepare({pairing_id,expected_fingerprint})`: a separate authenticated MCP preparation action. Confirms the reviewed pending key and returns a **12-character random Base32 challenge (60 bits), one-use, maximum five minutes**. It does **not** approve a device or issue credentials. Owner copies the challenge to the **new device terminal**. A signed local response alone activates identity; a model-generated `approve:true` is rejected.
-- `revoke_device({device_id})`: durably deny before any other effect, reject fresh connections/dispatch and close live socket. Attempt an authenticated internal best-effort stop of owned managed sessions if online, reporting `stop_confirmed`, `stop_unconfirmed` or `offline` honestly. No Cloudflare One registration exists to delete.
+- `revoke_device({device_id})`: atomically delete durable approval and its outstanding session challenge/epoch **before** any socket or process cleanup; then reject fresh connections/dispatch and close live sockets. Attempt an authenticated internal best-effort stop of owned managed sessions if online, reporting `stop_confirmed`, `stop_unconfirmed` or `offline` honestly. An already absent device is `not_found`, not `already_revoked`. No Cloudflare One registration exists to delete.
 - Every v2 existing curated tool adds a validated `device_id` while retaining original tool names/arguments and mutation IDs. No global mutable default. The single-device v1 compatibility route cannot silently pick a v2 target.
+
+**Device removal retention refinement (2026-10-17):** This supersedes earlier permanent-tombstone wording only. Removing a device deletes its authorization; there is no persistent removed-device history or automatic 90-day cleanup. The DO must fail closed on missing records, prevent revoke-vs-login/dispatch races, reject stale WSS sessions, and count **approved** identities against the existing device cap. The current Draft PR #58 still implements tombstones and must be updated and independently tested before this design is claimed complete. This does not select or implement a temporary-pairing lifetime; that remains in grilling.
 
 ## Agent-only pairing and authentication (separate from MCP)
 
@@ -47,7 +49,7 @@ The existing Agent build invokes **`cc`** for its C session-supervisor helper; o
 2. A **bounded public, tool-less Agent bootstrap endpoint** registers a pending code verifier + exact public key/fingerprint in the fixed owner DO. It receives no Shell/file authority. Rate-limit submissions and code guesses, cap outstanding pending requests, expire and clean on access; no general queue or always-on alarm.
 3. Owner supplies the code via Portal-authenticated `pairing_lookup`, reviews immutable fingerprint, then uses `pairing_prepare` to receive a short-lived one-use challenge bound to that same pending public key. MCP alone cannot activate a device, and no `pairing_confirm` tool is exposed.
 4. The owner manually enters **only the 12-character MCP challenge** on the new device's local terminal/SSH. The Agent retains its original 10-character pairing code in installer memory; it is not retyped. Its private key signs a domain-separated transcript binding pending code verifier, challenge and the immutable public key. The public, tool-less `/agent/pair/complete` endpoint verifies one-use challenge and signature, atomically consumes pending approval and issues a device ID. **This pairing proof is not a WSS login.** Later a fresh independent server nonce signs the authenticated operational `wss` session in #50. Never put long-lived keys, code or Portal Bearer into query strings/logs.
-5. Every subsequent WSS reconnect uses a new challenge and the same approved local private key. Verify current SQLite authorization at connection and before **each command dispatch**, including after Hibernation wake. Use a deterministic per-device connection epoch to fence duplicate old sockets. Revoke permanently blocks the old key until a *new owner-approved pairing*.
+5. Every subsequent WSS reconnect uses a new challenge and the same approved local private key. Verify current SQLite authorization at connection and before **each command dispatch**, including after Hibernation wake. Use a deterministic per-device connection epoch to fence duplicate old sockets. Removal permanently invalidates the old `device_id`; no old authorization survives. Without historical key blacklists the same old public key can still submit a **new pending pairing request**, which has no operational authority until full independent owner/device approval.
 
 **Security gate (refined 2026-10-16):** static Portal Bearer authenticates caller possession, not an actual human. The owner approved an independent **new-device terminal confirmation** to prevent autonomous MCP-only approval without adding OAuth or a dashboard. This is independent **only if ChatGPT and its other authorized tools cannot operate that terminal or access the new private key**. A compromised target/SSH session is not proof of a separate human; do not claim universal human-presence verification. Validate actual client/host boundaries before production.
 
@@ -62,7 +64,7 @@ The existing Agent build invokes **`cc`** for its C session-supervisor helper; o
 
 ## Hibernation, persistent state and Free quota
 
-- The **SQLite-backed owner DO** stores minimal `pending_pairing` (code verifier, public key, expiry, status, attempts) and `device` (opaque ID, key, label, approval, revoked tombstone) records. No separate D1/KV/R2 or cloud-side operation-receipts.
+- The **SQLite-backed owner DO** stores minimal `pending_pairing` (code verifier, public key, expiry, status, attempts) and `device` (currently approved opaque ID, key, label, approval) records; remove the record on revocation and do not retain history. No separate D1/KV/R2 or cloud-side operation-receipts.
 - Use `ctx.acceptWebSocket()`, connection `serializeAttachment()`/`deserializeAttachment()` and `getWebSockets()`; attachments hold **nonsecret** `device_id`/epoch, but **SQLite** remains authoritative after DO eviction or code deployment.
 - DO Hibernation requires *no scheduled `setInterval`/`setTimeout`*, no unbounded `waitUntil` or held-open outgoing I/O. Prefer protocol ping/pong or Cloudflare automatic WS responses; **frequent application-layer heartbeats on multiple devices can keep the one DO awake**. Read auto-response timestamps when requested and use measured offline detection, not a busy poller.
 - Verified official Workers Free SQLite-DO limits: **100,000 DO request-billing units/day**, **13,000 GB-s/day**, **5 million rows read/day**, **100,000 rows written/day**, **5 GB stored total**. WebSocket application messages bill 20:1 for DO requests; Workers requests are an additional quota. Duration for a continually non-hibernating DO allocated 128 MiB for 24h is ~**10,800 GB-s**. Free limits are shared with other account DOs, including IMA; crossing a limit causes errors, not automatic paid usage.
@@ -74,7 +76,7 @@ The existing Agent build invokes **`cc`** for its C session-supervisor helper; o
 | Pairing | missing/wrong Bearer, lookup-only, model-only approval, code substitution, expired/replayed/guessed code, duplicate approve and immutable fingerprint binding; **real-client explicit consent** |
 | Identity | Ed25519 Node/Workers interoperability; stolen, wrong or revoked key, replayed challenge, duplicate sockets and failed identity swap; owner and device isolation |
 | Operations | original Worker/Agent curated tool contracts, no arbitrary URL, offline rejection, no blind retry, local receipts, bounded file/output and long process sessions |
-| Device lifecycle | revoke one device while others run, online best-effort process stop, offline no false termination, reinstall and reconnect with old key denied |
+| Device lifecycle | revoke one device while others run, deleted identity cannot reconnect or dispatch even with stale WSS, online best-effort process stop, offline no false termination, repeated removals do not exhaust the 64-active-device cap, and any fresh pairing requires independent owner confirmation |
 | Linux/WSL2 installer | different home/cloud networks, Node/compiled helper prerequisites, WSL2 startup, restart and network outage |
 | Cost and sleep | **5 simulated independent Agents continuously connected 72h in nonproduction**, actual DO hibernation and wake, daily DO request/GB-s/SQLite/Workers usage and other DO load, traffic bursts and fail/reconnect |
 | v1 safety | existing VPC/Tunnel unchanged, explicit v2 opt-in, rollback and separate authorization before changing production |
