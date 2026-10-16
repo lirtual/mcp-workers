@@ -25,11 +25,11 @@ Permanent denial of the *same public key* is useful only if the owner wishes to 
 - **Trade-off:** the server loses revoked-device history, `already_revoked` becomes an ordinary `not_found`, and permanent old-public-key exclusion is no longer promised. Independent local owner approval remains the critical re-enrollment security gate.
 - **Migration:** when implementing on the v2 preview, safely remove existing historical tombstones after confirming the new authorization checks do not depend on their existence. Ensure missing record semantics cannot trigger automatic re-pair in an unattended Agent. No v1 production database or v1 identity is altered by this decision.
 
-## Temporary pairing decisions recorded separately (2026-10-17)
+## Temporary pairing clarified separately (2026-10-17)
 
-The owner subsequently approved **Q1=C**: temporary debugging authorization is intended to end upon **intentional Agent exit**, without a fixed authorization timeout or one-operation limit; and **Q2=A**: preserve the existing independent local two-code pairing. See [ADR-0018 — temporary Agent pairing lifecycle](./0018-v2-temporary-agent-pairing-lifecycle.md). The old alternative choices in the original grilling frontier are now resolved.
+The owner first considered revoking temporary device authorization on Agent exit, then **replaced that decision** with a **fixed, nonrenewable 24-hour authorization from pairing approval**; the previously accepted **Q2=A** independent two-code local confirmation remains unchanged. See [ADR-0018 — temporary 24-hour pairing lifecycle](./0018-v2-temporary-agent-pairing-lifecycle.md).
 
-**Still unsettled:** abnormal crash/offline cleanup semantics; voluntary exit with managed operations still running; per-temporary-device key handling and failed revocation; and the concrete Agent-initiated, self-only authenticated exit/revocation protocol. Do not treat these unresolved details as implementation authorization.
+An expired temporary identity follows the same effective deny-and-remove semantics as owner-requested device removal: deny new sessions and commands immediately at the **server-side expiration check**, then lazily remove its stored grant and session state on a subsequent relevant DO access. Do not require an Agent self-revocation endpoint, offline grace period, or expiration scheduler. Do not mistake expiry of *new authorization* for guaranteed cancellation of already-admitted work.
 
 ## Required verification before implementing/deploying
 
