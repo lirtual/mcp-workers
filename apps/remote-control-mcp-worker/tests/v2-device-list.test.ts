@@ -90,7 +90,7 @@ test("list_devices requires Portal bearer and reports only current, approved WSS
   assert.equal((await tools.json() as {result:{tools:Array<{name:string}>}}).result.tools.some(t=>t.name==="list_devices"),true);
 });
 
-test("preview-only MCP never lists Shell, file mutations or implicit v1 routes", async () => {
+test("v2 Preview lists per-device Shell and files but never implicitly routes to v1", async () => {
   let v1Requests = 0;
   const v2Stub = {
     fetch: async () => Response.json([]),
@@ -111,17 +111,17 @@ test("preview-only MCP never lists Shell, file mutations or implicit v1 routes",
     name: string; inputSchema: { required?: string[] };
   }> } };
   const exposed = new Set(list.result.tools.map(x => x.name));
-  for (const denied of ["run_command", "write_file", "delete_file", "move_file",
+  for (const supported of ["run_command", "write_file", "delete_file", "move_file",
       "create_directory", "replace_text", "list_sessions", "read_session_output", "stop_session", "send_input"]) {
-    assert.equal(exposed.has(denied), false, denied);
+    assert.equal(exposed.has(supported), true, supported);
   }
   for (const item of list.result.tools.filter(x => !["pairing_lookup", "pairing_prepare", "list_devices", "revoke_device"].includes(x.name))) {
     assert.ok(item.inputSchema.required?.includes("device_id"), item.name);
   }
   for (const [name, args] of [
     ["read_file", { path: "/tmp/test" }],
-    ["run_command", { device_id: randomUUID(), operation_id: "safe-1", command: "date" }],
-    ["write_file", { device_id: randomUUID(), operation_id: "safe-2", path: "/tmp/denied", content: "x" }],
+    ["run_command", { operation_id: "safe-1", command: "date" }],
+    ["write_file", { operation_id: "safe-2", path: "/tmp/denied", content: "x" }],
   ] as const) {
     const response = await rpc("tools/call", { name, arguments: args });
     const body = await response.json() as { result: { isError: boolean } };
