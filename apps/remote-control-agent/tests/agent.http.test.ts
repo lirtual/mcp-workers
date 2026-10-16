@@ -1200,6 +1200,100 @@ test("SQLite write failure leaves safe reads available and only allows owned eme
   }
 });
 
+test("database outage rejects all mutations and can stop an owned session at ten active slots", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-10-slot-outage-"));
+  const state = path.join(root, "state");
+  const file = path.join(root, "fixture");
+  const moved = path.join(root, "moved");
+  await writeFile(file, "keep");
+  const failure = { enabled: false };
+  const agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: state, shellPath: "/bin/sh",
+    receiptFaultForTests: () => failure.enabled });
+  const sessions: string[] = [];
+  try {
+    for (let n = 0; n < 10; n += 1) {
+      const started = await call(agent, { tool: "start_process",
+        operation_id: "ten-active-" + n, arguments: { command: "sleep 30", timeout_ms: 0 } });
+      assert.equal((started.json as { status: string }).status, "running");
+      sessions.push((started.json as { session_id: string }).session_id);
+    }
+    const full = await call(agent, { tool: "start_process", operation_id: "ten-active-limit",
+      arguments: { command: "sleep 30", timeout_ms: 0 } });
+    assert.equal((full.json as { status: string }).status, "failed");
+
+    failure.enabled = true;
+    const mutations = [
+      { tool: "write_file", arguments: { path: file, content: "not-written", mode: "rewrite" } },
+      { tool: "create_directory", arguments: { path: path.join(root, "not-created") } },
+      { tool: "edit_block", arguments: { file_path: file, old_string: "keep", new_string: "changed", expected_replacements: 1 } },
+      { tool: "move_file", arguments: { source: file, destination: moved } },
+      { tool: "delete_file", arguments: { path: file } },
+      { tool: "start_process", arguments: { command: "echo should-not-run", timeout_ms: 0 } },
+      { tool: "interact_with_process", arguments: { session_id: sessions[0], input: "side effect\n" } },
+    ];
+    for (let n = 0; n < mutations.length; n += 1) {
+      const request = mutations[n];
+      const refused = await call(agent, { ...request, operation_id: "outage-denied-" + n });
+      assert.equal(refused.status, 503, request.tool);
+    }
+    assert.equal(await readFile(file, "utf8"), "keep");
+    assert.equal(existsSync(moved), false);
+    assert.equal(existsSync(path.join(root, "not-created")), false);
+    const safe = await call(agent, { tool: "read_file", arguments: { path: file } });
+    assert.match(completedText(safe.json), /keep/);
+
+    const denied = await call(agent, { tool: "force_terminate", operation_id: "unauthorized-outage-stop",
+      arguments: { session_id: sessions[0] } }, "incorrect");
+    assert.equal(denied.status, 401);
+    const stopped = await call(agent, { tool: "force_terminate", operation_id: "outage-owned-stop",
+      arguments: { session_id: sessions[0] } });
+    assert.equal(stopped.status, 200);
+    assert.equal((stopped.json as { status: string }).status, "unknown");
+    const snapshot = await call(agent, { tool: "list_sessions", arguments: {} });
+    const current = JSON.parse(completedText(snapshot.json)) as Array<{ session_id: string; state: string }>;
+    assert.ok(current.some((item) => item.session_id === sessions[0] && item.state !== "running"));
+    failure.enabled = false;
+    const replacement = await call(agent, { tool: "start_process", operation_id: "after-outage-free-slot",
+      arguments: { command: "sleep 30", timeout_ms: 0 } });
+    assert.equal((replacement.json as { status: string }).status, "running");
+  } finally {
+    failure.enabled = false;
+    await agent.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a failed SQLite commit blocks the effect and leaves same operation ID usable", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-commit-failure-"));
+  const state = path.join(root, "state");
+  const target = path.join(root, "target");
+  const failure = { commit: false };
+  const agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: state,
+    receiptFaultForTests: (phase) => phase === "commit" && failure.commit });
+  try {
+    const initial = await call(agent, { tool: "read_file", arguments: { path: target } });
+    assert.equal((initial.json as { status: string }).status, "failed");
+    // Initialize the store before simulating a transaction COMMIT failure.
+    const missing = await fetch(agent.baseUrl + "/internal/operations/not-present",
+      { headers: { "x-device-credential": DEVICE_TOKEN } });
+    assert.equal(missing.status, 404);
+    const request = { tool: "write_file", operation_id: "commit-failed-before-effect",
+      arguments: { path: target, content: "once", mode: "rewrite" } };
+    failure.commit = true;
+    const rejected = await call(agent, request);
+    assert.equal(rejected.status, 503);
+    assert.equal(existsSync(target), false);
+    failure.commit = false;
+    const accepted = await call(agent, request);
+    assert.equal((accepted.json as { status: string }).status, "completed");
+    assert.equal(await readFile(target, "utf8"), "once");
+  } finally {
+    failure.commit = false;
+    await agent.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("interrupted SQLite receipt survives restart and old protected identities do not expire", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-sqlite-restart-"));
   const state = path.join(root, "state");
