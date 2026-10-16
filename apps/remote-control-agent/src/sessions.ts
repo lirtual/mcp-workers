@@ -268,20 +268,23 @@ export class ManagedSessions {
     if (!this.ownsRunningProcess(session)) return;
     session.deadlineExceeded = true;
     session.terminationRequested = true;
+    // Dispatch TERM without waiting indefinitely for the supervisor's ACK.
+    // A lost ACK is not proof that TERM failed, and must never prevent the
+    // independently bounded grace period and eventual owned-group KILL.
+    void this.signalOwnedProcess(session, "SIGTERM").catch(() => false);
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      // Only the existing pidfd-owning supervisor may signal this process group.
-      await this.signalOwnedProcess(session, "SIGTERM");
-      let timer: ReturnType<typeof setTimeout> | undefined;
       await Promise.race([
         session.closed,
         new Promise<void>((resolve) => { timer = setTimeout(resolve, DEADLINE_TERMINATION_GRACE_MS); }),
       ]);
+    } finally {
       if (timer) clearTimeout(timer);
-      if (this.ownsRunningProcess(session)) {
-        await this.signalOwnedProcess(session, "SIGKILL");
-      }
-    } catch {
-      // Failure to signal does not mean that a process or its effects are gone.
+    }
+    if (this.ownsRunningProcess(session)) {
+      // SIGKILL writes to the same existing pidfd-backed supervisor channel.
+      // An unacknowledged signal must be surfaced as unknown, not success.
+      void this.signalOwnedProcess(session, "SIGKILL").catch(() => false);
     }
     if (this.ownsRunningProcess(session)) {
       session.state = "unknown";
