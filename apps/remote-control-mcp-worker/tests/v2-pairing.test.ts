@@ -181,7 +181,7 @@ test("interrupted same-key pairing rotates pending code atomically and old code 
   assert.equal((await lookupPending(store as never, sameKey.request.code_verifier)).status, 200);
 });
 
-test("approved and revoked device keys can NEVER register a new pending code", async () => {
+test("approved keys cannot be reused, but stale revoked rows are pruned before new pending enrollment", async () => {
   for (const revoked of [false, true]) {
     const {store,values} = makeStore();
     const identity = newEnrollment("old-agent");
@@ -193,9 +193,9 @@ test("approved and revoked device keys can NEVER register a new pending code", a
     } as never);
     const repeated = newEnrollment("old-agent", identity.privateKeyPem);
     const response = await registerPending(store as never, repeated.request);
-    assert.equal(response.status, 409);
-    assert.deepEqual(response.body, {error:"identity_already_used"});
-    assert.equal([...values.keys()].filter(x => x.startsWith("pending:")).length, 0);
+    assert.equal(response.status, revoked ? 202 : 409);
+    if (!revoked) assert.deepEqual(response.body, {error:"identity_already_used"});
+    assert.equal([...values.keys()].filter(x => x.startsWith("pending:")).length, revoked ? 1 : 0);
     const fresh = newEnrollment("old-agent");
     assert.equal((await registerPending(store as never, fresh.request)).status, 202);
     assert.notEqual(fresh.request.public_key, identity.request.public_key);

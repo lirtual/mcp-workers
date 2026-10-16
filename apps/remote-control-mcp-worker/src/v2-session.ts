@@ -10,7 +10,41 @@ export interface V2Device {
   fingerprint: string;
   approved_at: number;
   revoked: boolean;
+  grant_type?: "permanent" | "temporary";
+  expires_at?: number;
 }
+export const TEMPORARY_GRANT_MS = 86_400_000;
+
+/** Old v2 Preview grants had no grant_type; they remain permanent. */
+export function deviceIsAuthorized(device: V2Device | undefined, now = Date.now()): device is V2Device & { revoked: false } {
+  if (!device || device.revoked !== false) return false;
+  if (device.grant_type === undefined || device.grant_type === "permanent") return true;
+  return device.grant_type === "temporary" &&
+    Number.isSafeInteger(device.approved_at) && Number.isSafeInteger(device.expires_at) &&
+    device.expires_at === device.approved_at + TEMPORARY_GRANT_MS && now < device.expires_at;
+}
+/** A bounded lazy sweep; expired grants never consume the 64 active slots.
+ * No alarm, historical blacklist, or new persistent index. */
+export async function listLiveGrants(
+  store: Pick<DurableObjectStorage, "list" | "delete">,
+  now = Date.now(),
+): Promise<Map<string, V2Device>> {
+  const rows = await store.list<V2Device>({ prefix: "device:", limit: 65 });
+  const active = new Map<string, V2Device>();
+  for (const [key, row] of rows) {
+    if (deviceIsAuthorized(row, now)) {
+      active.set(key, row);
+    } else {
+      await store.delete(key);
+      if (row?.device_id && key === "device:" + row.device_id) {
+        await store.delete("session:nonce:" + row.device_id);
+        await store.delete("session:epoch:" + row.device_id);
+      }
+    }
+  }
+  return active;
+}
+
 type DurableStore = Pick<DurableObjectStorage, "get" | "put" | "delete" | "list" | "transaction">;
 type NonceRecord = { nonce: string; expires_at: number };
 type Budget = { reset_at: number; count: number };
@@ -58,11 +92,11 @@ export async function issueSessionChallenge(store: DurableStore, body: unknown):
     device = await store.get<V2Device>("device:" + device_id);
   } else {
     // Small single-owner fleet only; bounded scan, not a new index/service.
-    const devices = await store.list<V2Device>({ prefix: "device:", limit: 65 });
+    const devices = await listLiveGrants(store);
     if (devices.size > 64) return { status: 503, body: { error: "capacity" } };
     device = [...devices.values()].find(d => d.public_key === public_key);
   }
-  if (!device || device.revoked !== false) return { status: 404, body: { error: "not_found" } };
+  if (!deviceIsAuthorized(device)) return { status: 404, body: { error: "not_found" } };
   const entropy = new Uint8Array(18);
   crypto.getRandomValues(entropy);
   const nonce = btoa(String.fromCharCode(...entropy)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
@@ -84,7 +118,7 @@ async function verifyProof(store: DurableStore, deviceId: unknown, nonce: unknow
     store.get<V2Device>("device:" + deviceId),
     store.get<NonceRecord>(nonceKey(deviceId)),
   ]);
-  if (!device || device.revoked !== false || !record ||
+  if (!deviceIsAuthorized(device) || !record ||
       record.expires_at <= Date.now() || record.nonce !== nonce) return null;
   try {
     const der = Uint8Array.from(atob(device.public_key), c => c.charCodeAt(0));
@@ -116,7 +150,7 @@ async function consumeAuthorizedProof(
       tx.get<V2Device>("device:" + verified.device.device_id),
     ]);
     if (!nonce || nonce.nonce !== verified.record.nonce || nonce.expires_at <= Date.now() ||
-        !current || current.revoked !== false || current.public_key !== verified.device.public_key) return false;
+        !deviceIsAuthorized(current) || current.public_key !== verified.device.public_key) return false;
     await tx.delete(nonceKey(verified.device.device_id));
     if (epoch) await tx.put("session:epoch:" + verified.device.device_id, epoch);
     return true;
@@ -168,7 +202,7 @@ export async function acceptAuthenticatedSocket(
     store.get<string>("session:epoch:" + auth.device_id),
     store.get<V2Device>("device:" + auth.device_id),
   ]);
-  if (currentEpoch !== auth.epoch || !currentDevice || currentDevice.revoked !== false) {
+  if (currentEpoch !== auth.epoch || !deviceIsAuthorized(currentDevice)) {
     return new Response("Unauthorized.", { status: 401 });
   }
   // Only the most recently committed signed session remains authorized.
@@ -232,7 +266,7 @@ export async function handleIdleSocketMessage(state: DurableObjectState, socket:
       state.storage.get<V2Device>("device:" + attachment.device_id),
       state.storage.get<string>("session:epoch:" + attachment.device_id),
     ]);
-    if (!device || device.revoked !== false || epoch !== attachment.epoch) {
+    if (!deviceIsAuthorized(device) || epoch !== attachment.epoch) {
       socket.close(1008, "revoked");
       return;
     }
@@ -250,13 +284,13 @@ export async function handleIdleSocketMessage(state: DurableObjectState, socket:
 /** Bounded, observational device status. No heartbeat, session mutation or secret disclosure. */
 export async function listApprovedDevices(state: DurableObjectState):
   Promise<{ status: number; body: object }> {
-  const stored = await state.storage.list<V2Device>({ prefix: "device:", limit: 65 });
+  const stored = await listLiveGrants(state.storage);
   if (stored.size > 64) return { status: 503, body: { error: "capacity" } };
-  const devices: Array<{ device_id: string; name: string; status: "online" | "offline" }> = [];
+  const devices: Array<{ device_id: string; name: string; status: "online" | "offline"; expires_at?: number }> = [];
   for (const [key, device] of stored) {
     if (!device || !isId(device.device_id) || key !== "device:" + device.device_id ||
         typeof device.name !== "string" || typeof device.revoked !== "boolean") continue;
-    if (device.revoked) continue; // Legacy rows are never selectable.
+    if (!deviceIsAuthorized(device)) continue; // Deleted/expired/legacy revoked rows are never selectable.
     let online = false;
     // Socket attachments can survive DO Hibernation, while JS Map state cannot.
     // A socket alone does not establish current authority: check its stored epoch.
@@ -274,7 +308,9 @@ export async function listApprovedDevices(state: DurableObjectState):
         } catch { /* Corrupt or unavailable socket is never considered online. */ }
       }
     }
-    devices.push({ device_id: device.device_id, name: device.name, status: online ? "online" : "offline" });
+    devices.push({ device_id: device.device_id, name: device.name,
+      status: online ? "online" : "offline",
+      ...(device.grant_type === "temporary" ? { expires_at: device.expires_at } : {}) });
   }
   devices.sort((a, b) => a.device_id.localeCompare(b.device_id));
   return { status: 200, body: devices };

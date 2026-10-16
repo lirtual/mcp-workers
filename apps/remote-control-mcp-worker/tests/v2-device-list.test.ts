@@ -28,6 +28,7 @@ test("list_devices requires Portal bearer and reports only current, approved WSS
   ]);
   let deviceReads = 0;
   const storage = {
+    async delete(key: string) { return rows.delete(key); },
     async get<T>(key: string) { deviceReads++; return rows.get(key) as T | undefined; },
     async list<T>({ prefix, limit }: { prefix: string; limit: number }) {
       return new Map([...rows].filter(([key]) => key.startsWith(prefix)).slice(0, limit)) as Map<string, T>;
