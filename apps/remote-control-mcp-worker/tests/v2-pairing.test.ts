@@ -168,3 +168,35 @@ test("P1 security gate: a valid Portal token and automated confirm tool call can
   assert.deepEqual(after, before);
   assert.equal([...values.keys()].filter(key => key.startsWith("device:")).length, 0);
 });
+
+test("interrupted same-key pairing rotates pending code atomically and old code is unusable", async () => {
+  const { store } = makeStore();
+  const first = newEnrollment("first");
+  const sameKey = newEnrollment("first", first.privateKeyPem);
+  assert.equal((await registerPending(store as never, first.request)).status, 202);
+  assert.equal((await lookupPending(store as never, first.request.code_verifier)).status, 200);
+  assert.equal((await registerPending(store as never, sameKey.request)).status, 202);
+  assert.equal((await lookupPending(store as never, first.request.code_verifier)).status, 404);
+  assert.equal((await lookupPending(store as never, sameKey.request.code_verifier)).status, 200);
+});
+
+test("approved and revoked device keys can NEVER register a new pending code", async () => {
+  for (const revoked of [false, true]) {
+    const {store,values} = makeStore();
+    const identity = newEnrollment("old-agent");
+    values.set("device:deadbeef-dead-4dad-8dad-deadbeefdead", {
+      device_id: "deadbeef-dead-4dad-8dad-deadbeefdead",
+      public_key: identity.request.public_key,
+      fingerprint: "00112233445566778899aabb",
+      name: "old-agent", approved_at: Date.now(), revoked,
+    } as never);
+    const repeated = newEnrollment("old-agent", identity.privateKeyPem);
+    const response = await registerPending(store as never, repeated.request);
+    assert.equal(response.status, 409);
+    assert.deepEqual(response.body, {error:"identity_already_used"});
+    assert.equal([...values.keys()].filter(x => x.startsWith("pending:")).length, 0);
+    const fresh = newEnrollment("old-agent");
+    assert.equal((await registerPending(store as never, fresh.request)).status, 202);
+    assert.notEqual(fresh.request.public_key, identity.request.public_key);
+  }
+});

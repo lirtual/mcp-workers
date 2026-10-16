@@ -94,3 +94,9 @@ No native Windows/macOS Shell, GUI/mouse/screen, general fleet dashboard, OAuth 
 - https://developers.cloudflare.com/durable-objects/api/state/
 - https://developers.cloudflare.com/durable-objects/platform/pricing/
 - https://developers.cloudflare.com/workers/runtime-apis/web-crypto/
+
+### Retry and intentional revocation semantics (2026-10-16)
+
+- Re-running exactly the original installer command is the safe default for interrupted first pairing. Check for an existing 0600 key and attempt signed `recoverDeviceId` first. On verified approval, restore the server-issued ID. When server explicitly returns 404 (not approved), re-enroll using the **same Ed25519 private key**, fresh 10-character code, and a new one-use challenge. New registration atomically invalidates previous pending entries for that public key. Network ambiguity never authorizes a new identity, and local key/ID files are never silently deleted or overwritten.
+- A previously approved or **revoked** public key is a permanent identity record: the DO rejects registration of any new pending code from that key (409). The automatic retry path must **not** rotate keys, bypass a revocation tombstone, or issue a replacement device ID. Rejoining after explicit MCP revocation requires a **separately initiated fresh-key pairing** with new manual owner confirmation; old key, ID and tombstone remain invalid. No implicit `--re-pair` in routine install. A new key with an old friendly name is never evidence of the old identity.
+- When v2 user service is already installed, re-running install is non-destructive and must not claim cloud connectivity. The owner can separately inspect service and MCP `list_devices`; a revoked device may have a local unit but is not authorized.

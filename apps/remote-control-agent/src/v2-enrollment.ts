@@ -2,7 +2,7 @@
  * v2 device enrollment material. Only the device owns its private key and code.
  * This is preparation for an owner-reviewed pairing, NOT Shell authorization.
  */
-import { createHash, generateKeyPairSync, randomBytes, sign } from "node:crypto";
+import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import { open } from "node:fs/promises";
 
 const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
@@ -21,7 +21,7 @@ export function pairingVerifier(code: string): string {
   return createHash("sha256").update(ENROLLMENT_DOMAIN + code).digest("hex");
 }
 
-export function newEnrollment(name: string): {
+export function newEnrollment(name: string, existingPrivateKeyPem?: string): {
   code: string;
   privateKeyPem: string;
   request: EnrollmentRequest;
@@ -31,7 +31,13 @@ export function newEnrollment(name: string): {
   }
   // Each of 256 byte values maps to a Base32 symbol uniformly: 8 values/symbol.
   const code = [...randomBytes(10)].map((b) => ALPHABET[b & 31]).join("");
-  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  // Retry after an interrupted install with the SAME device identity.
+  // Never rotate a key implicitly; revocation remains an explicit boundary.
+  const privateKey = existingPrivateKeyPem
+    ? createPrivateKey(existingPrivateKeyPem)
+    : generateKeyPairSync("ed25519").privateKey;
+  if (privateKey.asymmetricKeyType !== "ed25519") throw new Error("Only Ed25519 device identity is supported.");
+  const publicKey = createPublicKey(privateKey);
   const publicSpki = Buffer.from(publicKey.export({ type: "spki", format: "der" }) as Buffer).toString("base64");
   const verifier = pairingVerifier(code);
   const issuedAt = Date.now();

@@ -16,8 +16,9 @@ import { createInterface } from "node:readline/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { beginDeviceEnrollment } from "../src/pair-device.ts";
+import { beginDeviceEnrollment, PendingIdentityConflictError } from "../src/pair-device.ts";
 import { confirmDeviceLocally } from "../src/confirm-device.ts";
+import { recoverDeviceId, DeviceSessionRejectedError } from "../src/v2-session-client.ts";
 
 /** WSL2 runs the same Linux Agent; Windows is never an authentication peer. */
 export function classifyLinuxKernel(release) {
@@ -269,7 +270,11 @@ export async function runInstaller(args, {
     stdout.write("Removed the v2 user service. Local keys retained; revoke the device from MCP separately.\n");
     return;
   }
-  if (((options.action === "install" || options.action === "resume") && previous) || (options.action === "upgrade" && !previous)) {
+  if (options.action === "install" && previous) {
+    stdout.write("v2 user service is already installed; no pairing or identity was changed. Check its online state separately.\n");
+    return;
+  }
+  if ((options.action === "resume" && previous) || (options.action === "upgrade" && !previous)) {
     throw new Error("Existing v2 service requires --upgrade; an absent service requires a first install.");
   }
   await mkdir(path.dirname(keyPath), { recursive: true, mode: 0o700 });
@@ -286,39 +291,59 @@ export async function runInstaller(args, {
   }
 
   if (options.action === "install") {
-    if (!stdin.isTTY || !stdout.isTTY) throw new Error("First pairing needs the device's interactive terminal.");
-    if (await exists(keyPath) || await exists(keyPath + ".device-id")) {
-      throw new Error("An identity already exists; never overwrite or silently re-pair it.");
-    }
-    const enrollment = await beginDeviceEnrollment(options.name ?? os.hostname(), options.endpoint, keyPath);
-    const terminal = createInterface({ input: stdin, output: stdout, terminal: true });
-    try {
-      stdout.write("Pending 10-minute pairing code: " + enrollment.code + "\n");
-      // Fingerprint is already checked by the MCP/DO against the pending
-      // public key. Local visual comparison is an explicit opt-in diagnostic:
-      // it can help detect misdirected pairing, but is not part of the
-      // two-code default interaction or a substitute for human terminal consent.
-      if (options.showFingerprint) {
-        stdout.write("Local public key fingerprint (optional check): " + enrollment.fingerprint + "\n");
-      }
-      stdout.write("In authenticated MCP: pairing_lookup, then pairing_prepare. Enter only the 12-character challenge here.\n");
-      // The installer already holds the original code in memory. Prompt only
-      // for the independently prepared challenge; never ask the user to type
-      // a second lookalike code or persist the pairing code to disk.
-      let challenge;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        const typed = (await terminal.question("12-character MCP confirmation challenge: ")).trim().toUpperCase();
-        if (/^[A-Z2-7]{12}$/.test(typed)) {
-          challenge = typed;
-          break;
+    const existingKey = await exists(keyPath);
+    const existingId = await exists(keyPath + ".device-id");
+    if (existingId && !existingKey) throw new Error("A local device ID exists without its private key.");
+    if (existingKey) await ownerOnly(keyPath, 0o600);
+    if (existingId) await ownerOnly(keyPath + ".device-id", 0o600);
+
+    let alreadyPaired = false;
+    if (existingKey) {
+      try {
+        // Signed key recovery detects server approval that completed just
+        // before the installer crashed writing the local device ID.
+        const recoveredId = await recoverDeviceId(options.endpoint, keyPath);
+        if (existingId) {
+          const actualId = (await readFile(keyPath + ".device-id", "utf8")).trim();
+          if (actualId !== recoveredId) throw new Error("Local and server device identities conflict.");
         }
-        if (attempt < 2) stdout.write("Challenge must be 12 characters (A-Z, 2-7). Try again.\n");
+        stdout.write("Existing approved identity recovered; continuing v2 installation.\n");
+        alreadyPaired = true;
+      } catch (error) {
+        if (existingId || !(error instanceof DeviceSessionRejectedError && error.status === 404)) {
+          // Network trouble, rejected/revoked existing IDs and ambiguous
+          // outcomes must not automatically generate a different identity.
+          throw error;
+        }
+        // Not an approved key. The registration endpoint separately rejects
+        // revoked/previously approved public keys before refreshing pending.
+        stdout.write("Previous pairing was not completed. Retrying with the same private key.\n");
       }
-      if (!challenge) throw new Error("Invalid local challenge format.");
-      // The verifier and Ed25519 transcript remain bound to the exact code
-      // generated for this identity; owner-reviewed server challenge is required.
-      await confirmDeviceLocally(enrollment.code, challenge, options.endpoint, keyPath);
-    } finally { terminal.close(); }
+    }
+    if (!alreadyPaired) {
+      if (!stdin.isTTY || !stdout.isTTY) throw new Error("First pairing needs the device's interactive terminal.");
+      const enrollment = await beginDeviceEnrollment(
+        options.name ?? os.hostname(), options.endpoint, keyPath, fetch, Boolean(existingKey));
+      const terminal = createInterface({ input: stdin, output: stdout, terminal: true });
+      try {
+        stdout.write("Pending 10-minute pairing code: " + enrollment.code + "\n");
+        if (options.showFingerprint) {
+          stdout.write("Local public key fingerprint (optional check): " + enrollment.fingerprint + "\n");
+        }
+        stdout.write("In authenticated MCP: pairing_lookup, then pairing_prepare. Enter only the 12-character challenge here.\n");
+        let challenge;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const typed = (await terminal.question("12-character MCP confirmation challenge: ")).trim().toUpperCase();
+          if (/^[A-Z2-7]{12}$/.test(typed)) {
+            challenge = typed;
+            break;
+          }
+          if (attempt < 2) stdout.write("Challenge must be 12 characters (A-Z, 2-7). Try again.\n");
+        }
+        if (!challenge) throw new Error("Invalid local challenge format.");
+        await confirmDeviceLocally(enrollment.code, challenge, options.endpoint, keyPath);
+      } finally { terminal.close(); }
+    }
   }
   await ownerOnly(keyPath, 0o600);
   await ownerOnly(keyPath + ".device-id", 0o600);
@@ -348,10 +373,19 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       "Could not compile the existing C session supervisor.",
       "WSL1 is not supported; use WSL2 with systemd.",
       "Foreground supports first pairing or --resume only.",
+      "An approved or revoked identity cannot be enrolled again.",
+      "The existing private identity has unsafe ownership or permissions.",
+      "A local device ID exists without its private key.",
+      "Local and server device identities conflict.",
+      "Pending enrollment could not be completed.",
     ];
-    const reason = error instanceof Error && safeErrors.includes(error.message)
-      ? error.message + " " : "";
-    process.stderr.write(reason +
+    const detail = error instanceof PendingIdentityConflictError
+      ? "Existing device key is already approved or revoked. Never reuse it; ask the owner for explicit fresh-key pairing. "
+      : error instanceof DeviceSessionRejectedError
+        ? "Device identity is unavailable or revoked. Do not reset its key automatically. "
+        : error instanceof Error && safeErrors.includes(error.message)
+          ? error.message + " " : "Pairing state is uncertain; existing identity files were preserved. ";
+    process.stderr.write(detail +
       "v2 installation/upgrade/removal failed; no v1 service was changed.\n");
     process.exitCode = 1;
   });

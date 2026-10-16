@@ -6,7 +6,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { MARKER, UNIT, classifyLinuxKernel, parseInstallArgs, renderV2Service, trustedEndpoint } from "../scripts/install-v2.mjs";
-import { beginDeviceEnrollment } from "../src/pair-device.ts";
+import { beginDeviceEnrollment, PendingIdentityConflictError } from "../src/pair-device.ts";
+import { DeviceSessionRejectedError, recoverDeviceId, signedSessionProof } from "../src/v2-session-client.ts";
+import { newEnrollment } from "../src/v2-enrollment.ts";
 
 const example = {
   node: "/opt/node24/bin/node",
@@ -169,4 +171,80 @@ test("first pairing hides fingerprint by default, but optional display matches p
   } finally {
     await rm(folder, { recursive: true, force: true });
   }
+});
+
+test("interrupted enrollment renews its code using the SAME owner-only Ed25519 key", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "rc-v2-retry-"));
+  const key = path.join(dir, "identity.pem");
+  const registered = [];
+  const send = async (_url, options) => {
+    registered.push(JSON.parse(options.body));
+    return new Response(null, { status: 202 });
+  };
+  try {
+    const first = await beginDeviceEnrollment("retry-host", "https://rc.example.org/", key, send);
+    const pem = await readFile(key, "utf8");
+    const again = await beginDeviceEnrollment("retry-host", "https://rc.example.org/", key, send, true);
+    assert.notEqual(first.code, again.code);
+    assert.equal(first.fingerprint, again.fingerprint);
+    assert.equal(registered[0].public_key, registered[1].public_key);
+    assert.notEqual(registered[0].code_verifier, registered[1].code_verifier);
+    assert.equal(await readFile(key, "utf8"), pem);
+    assert.equal((await stat(key)).mode & 0o777, 0o600);
+    await assert.rejects(
+      beginDeviceEnrollment("retry-host", "https://rc.example.org/", key,
+        async () => { throw new Error("network offline"); }, true),
+      /Pending enrollment could not be completed/);
+    assert.equal(await readFile(key, "utf8"), pem);
+    await assert.rejects(
+      beginDeviceEnrollment("retry-host", "https://rc.example.org/", key,
+        async () => new Response(null, { status: 409 }), true),
+      PendingIdentityConflictError);
+    assert.equal(await readFile(key, "utf8"), pem);
+  } finally { await rm(dir, {recursive: true, force: true}); }
+});
+
+test("signed recovery distinguishes unknown key (404) from uncertain network and keeps private identity", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "rc-v2-recovery-"));
+  const key = path.join(dir, "identity.pem");
+  const material = newEnrollment("repair-host");
+  try {
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(key, material.privateKeyPem, {mode: 0o600});
+    const id = "5431b055-a601-47d5-92c8-1beeddea7ce1";
+    const nonce = "0123456789abcdef01234567";
+    const server = async (url, options) => {
+      const pathname = new URL(url).pathname;
+      if (pathname === "/agent/session/challenge")
+        return Response.json({device_id: id, nonce});
+      if (pathname === "/agent/session/recover") {
+        const body = JSON.parse(options.body);
+        const signed = signedSessionProof(material.privateKeyPem, id, nonce);
+        assert.equal(body.proof, signed.proof);
+        assert.equal(body.device_id, id);
+        return Response.json({status: "verified", device_id: id});
+      }
+      throw new Error("unexpected route");
+    };
+    assert.equal(await recoverDeviceId("https://rc.example.org/", key, server), id);
+    assert.equal((await readFile(key + ".device-id", "utf8")).trim(), id);
+    await assert.rejects(
+      recoverDeviceId("https://rc.example.org/", key, async () => new Response(null, {status: 404})),
+      error => error instanceof DeviceSessionRejectedError && error.status === 404);
+    await assert.rejects(
+      recoverDeviceId("https://rc.example.org/", key, async () => { throw new Error("offline"); }),
+      /offline/);
+    assert.equal((await readFile(key + ".device-id", "utf8")).trim(), id);
+  } finally { await rm(dir, {recursive: true, force: true}); }
+});
+
+test("default installer distinguishes interrupted pairing from deliberate revoke", async () => {
+  const script = await readFile(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "scripts", "install-v2.mjs"), "utf8");
+  assert.match(script, /await recoverDeviceId\(options\.endpoint, keyPath\)/);
+  assert.match(script, /error instanceof DeviceSessionRejectedError && error\.status === 404/);
+  assert.match(script, /await beginDeviceEnrollment\(/);
+  assert.match(script, /Boolean\(existingKey\)/);
+  assert.match(script, /if \(existingId\)/);
+  assert.match(script, /Existing device key is already approved or revoked/);
+  assert.doesNotMatch(script, /unlink\(keyPath\)|rm\(keyPath\)/);
 });

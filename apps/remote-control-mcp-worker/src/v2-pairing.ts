@@ -105,19 +105,30 @@ export async function registerPending(storage: PendingStorage, payload: unknown)
   const verified = await verifyRegistration(payload);
   if (!verified) return { status: 400, body: { error: "invalid_request" } };
   return storage.transaction(async (txn) => {
-    const existing = await txn.list<PendingDevice>({ prefix: "pending:", limit: MAX_PENDING + 1 });
-    let active = 0;
-    for (const [key, record] of existing) {
-      if (record.expires_at <= Date.now()) await txn.delete(key);
-      else active++;
+    // The bootstrap request includes a signed proof of this public key, but
+    // never grants permissions. A revoked or previously approved key MUST
+    // NOT be allowed to enroll as a new identity, even after reinstall.
+    const devices = await txn.list<V2Device>({ prefix: "device:", limit: 65 });
+    if (devices.size > 64) return { status: 503, body: { error: "capacity" } };
+    if ([...devices.values()].some(d => d.public_key === verified.record.public_key)) {
+      return { status: 409, body: { error: "identity_already_used" } };
     }
-    if (active >= MAX_PENDING) return { status: 429, body: { error: "pending_capacity" } };
+    const existing = await txn.list<PendingDevice>({ prefix: "pending:", limit: MAX_PENDING + 1 });
     const key = "pending:" + verified.verifier;
-    // Expired entries were deleted above; permit reuse of their verifier.
-    // Reject only an active record so stale pending state cannot block retries.
+    // A repeated identical active request is rejected, as before.
     if (existing.get(key)?.expires_at && existing.get(key)!.expires_at > Date.now()) {
       return { status: 409, body: { error: "already_pending" } };
     }
+    let active = 0;
+    for (const [pendingKey, record] of existing) {
+      if (record.expires_at <= Date.now() ||
+          record.public_key === verified.record.public_key) {
+        // Invalidate any prior code/challenge for this same unapproved key
+        // atomically; an interrupted install obtains a fresh pairing code.
+        await txn.delete(pendingKey);
+      } else active++;
+    }
+    if (active >= MAX_PENDING) return { status: 429, body: { error: "pending_capacity" } };
     await txn.put(key, verified.record);
     return { status: 202, body: { status: "pending", expires_at: verified.record.expires_at } };
   });

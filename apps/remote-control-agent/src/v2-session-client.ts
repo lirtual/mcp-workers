@@ -6,7 +6,7 @@ const SESSION_DOMAIN = "remote-control:v2:session:";
 
 /** A permanent identity rejection: operator action is required, not retry/backoff. */
 export class DeviceSessionRejectedError extends Error {
-  constructor(message = "Device identity is not authorized.") {
+  constructor(message = "Device identity is not authorized.", public readonly status?: number) {
     super(message);
     this.name = "DeviceSessionRejectedError";
   }
@@ -14,7 +14,7 @@ export class DeviceSessionRejectedError extends Error {
 
 function rejectPermanentStatus(status: number, message?: string): void {
   if (status === 401 || status === 403 || status === 404) {
-    throw new DeviceSessionRejectedError(message);
+    throw new DeviceSessionRejectedError(message, status);
   }
 }
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;

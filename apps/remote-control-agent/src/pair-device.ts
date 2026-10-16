@@ -3,7 +3,7 @@
  * calls, create a command connection, or install a running background service.
  */
 import { createHash } from "node:crypto";
-import { mkdir, unlink } from "node:fs/promises";
+import { lstat, mkdir, readFile, unlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,11 +20,16 @@ export interface PendingEnrollmentResult {
   keyPath: string;
 }
 
+export class PendingIdentityConflictError extends Error {
+  constructor() { super("An approved or revoked identity cannot be enrolled again."); }
+}
+
 export async function beginDeviceEnrollment(
   name: string,
   endpoint: string,
   keyPath = DEFAULT_KEY_FILE,
   send: typeof fetch = fetch,
+  reuseExistingKey = false,
 ): Promise<PendingEnrollmentResult> {
   const base = new URL(endpoint);
   const local = base.protocol === "http:" && base.hostname === "127.0.0.1";
@@ -33,9 +38,21 @@ export async function beginDeviceEnrollment(
     throw new Error("Enrollment requires a trusted HTTPS endpoint (or local test endpoint).");
   }
 
-  const material = newEnrollment(name);
-  await mkdir(path.dirname(keyPath), { recursive: true, mode: 0o700 });
-  await saveNewPrivateKey(keyPath, material.privateKeyPem);
+  let savedPem: string | undefined;
+  if (reuseExistingKey) {
+    // The retry path must not follow a symlink, replace, or loosen a key.
+    const key = await lstat(keyPath);
+    if (!key.isFile() || key.isSymbolicLink() || key.uid !== process.getuid() ||
+        (key.mode & 0o777) !== 0o600) {
+      throw new Error("The existing private identity has unsafe ownership or permissions.");
+    }
+    savedPem = await readFile(keyPath, "utf8");
+  }
+  const material = newEnrollment(name, savedPem);
+  if (!reuseExistingKey) {
+    await mkdir(path.dirname(keyPath), { recursive: true, mode: 0o700 });
+    await saveNewPrivateKey(keyPath, material.privateKeyPem);
+  }
   try {
     const result = await send(new URL("/agent/pair/start", base), {
       method: "POST",
@@ -44,6 +61,7 @@ export async function beginDeviceEnrollment(
       redirect: "error",
       signal: AbortSignal.timeout(10_000),
     });
+    if (result.status === 409 && reuseExistingKey) throw new PendingIdentityConflictError();
     if (result.status !== 202) {
       throw new Error("Pending enrollment was not accepted.");
     }
@@ -53,10 +71,11 @@ export async function beginDeviceEnrollment(
       .update(Buffer.from(material.request.public_key, "base64"))
       .digest("hex").slice(0, 24);
     return { code: material.code, fingerprint, expiresAt: material.request.issued_at + 600_000, keyPath };
-  } catch {
-    // A request may have arrived despite a lost response; any orphaned pending
-    // record expires. Do not retain a local key that has not been acknowledged.
-    await unlink(keyPath).catch(() => {});
+  } catch (error) {
+    // Never unlink the original key on a retry or network ambiguity. It may
+    // already be authorized even if the local .device-id is still missing.
+    if (!reuseExistingKey) await unlink(keyPath).catch(() => {});
+    if (error instanceof PendingIdentityConflictError) throw error;
     throw new Error("Pending enrollment could not be completed.");
   }
 }

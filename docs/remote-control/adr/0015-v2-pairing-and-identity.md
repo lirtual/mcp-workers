@@ -33,3 +33,7 @@ Invalid/stolen code, rate limit, wrong fingerprint, repeated/expired/local confi
 No per-device OAuth app, Cloudflare One/Access login, shared `REMOTE_CONTROL_DEVICE_TOKEN`, user-managed permanent installer secret, fleet identity service, automatic trust on installation, and no new CI or production changes.
 
 References: https://developers.cloudflare.com/workers/runtime-apis/web-crypto/ · https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/ · [v2 Spec](../V2-MULTI-DEVICE-SPEC.md).
+
+## Interrupted enrollment versus intentional revoke (2026-10-16)
+
+The original `install-v2.mjs --endpoint ... --name ...` may be rerun after Ctrl+C, expired challenge or lost confirmation response. It **preserves the same 0600 Ed25519 key**, attempts signed server-side approved-ID recovery first, and re-registers a new pending code under that key **only if the server confirms no approved identity**. DO registration atomically invalidates old pending codes for that key and blocks any key already present in durable approved/revoked device records. Ambiguous network/authorization outcomes retain all local files and fail closed. Never automatically rotate a revoked key: the owner must explicitly initiate a separately confirmed, fresh-key new installation after intentional MCP revocation. Re-pairing an old friendly name has no identity authority.
