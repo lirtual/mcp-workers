@@ -33,6 +33,13 @@ The owner prioritizes a minimal, reliably recoverable single-user Linux Agent, p
 
 **Cross-cutting safety limits:** The existing Worker/Agent credential checks and OS user authority remain unchanged. The emergency stop is limited to *verified currently Agent-owned* sessions, and must not become an unaudited general Shell/file mutation bypass. A timeout is an attempted bounded termination, not a guarantee that the OS has reaped an uninterruptible process; report uncertainty rather than incorrectly reporting success. Neither local migrations nor v1/v2 shared Agent logic authorizes a production cutover.
 
+**Final audit clarifications (do not change Q1–Q9):**
+- A nonzero exit code and a receipt state of `failed` do **not** by themselves prove absence of effects. In particular, an already-started development command may have modified files before it exited. The receipt design must distinguish execution failure from *effect certainty* and retain unresolved replay protection as required by Q7, without adding a new public task state machine.
+- The known historical JSON archive produced when a full 1,000-entry receipt file was reduced to 300 must be considered during one-time migration. Only trusted, operator-identified source archives from the same Agent instance may supplement still-protected missing IDs; conflicting identity/tool/digest/outcome facts are a migration blocker, not grounds for blind overwrite or deletion.
+- v1/v2 **share Agent code**, not an uncoordinated cross-instance database. Each independent Agent/state directory requires single-writer ownership; simultaneous independent processes may not mutate the same state directory.
+- The current `timeout_ms` argument caps **initial client wait (30 seconds)** and is not a process lifetime. The supervisor enforces the independent absolute 60-minute runtime and the 5-second graceful escalation using only its verified owned process-group signaling path.
+
+
 ## Consequences and trade-offs
 
 - **Benefits:** Removes the fixed 1,000-entry throughput bottleneck without repeatedly rewriting an entire JSON history; requires no new infrastructure; protects unknown operation IDs beyond normal expiry; retains transport-independent local operation semantics; prevents forgotten temporary Vite/build/test sessions from running indefinitely.
@@ -43,7 +50,7 @@ The owner prioritizes a minimal, reliably recoverable single-user Linux Agent, p
 
 **All architectural questions Q1–Q9 have user-selected answers; no additional architectural frontier is currently required.** The owner has **not yet approved the final synthesized design for implementation**. The final consent message should confirm the minimal plan before `to-spec` and `to-tickets`.
 
-The later technical Spec must verify these edge cases before any Agent rollout:
+The derived technical Spec must verify these edge cases before any Agent rollout:
 - JSON receipt import preserves IDs, digests and states, including `unknown`, duplicate IDs and records from a previous interrupted Agent; a failed import cannot admit new mutations or silently recreate an empty store.
 - SQLite operation admission and state changes remain durable, serialized and conflict-safe for same `operation_id` across reconnection/restart and v1/v2 transport paths. An intentionally repeated action uses a *new* ID, never an assumed-safe replay of `unknown`.
 - Hundreds/thousands of terminal receipts expire normally while unresolved markers remain protected. Disk-full, corruption and unavailable storage fail closed without blocking a **validated Agent-owned emergency stop**.
@@ -51,9 +58,13 @@ The later technical Spec must verify these edge cases before any Agent rollout:
 - Stopping/rolling back the installed Agent accounts for post-migration operations; no automatic backward-compatible JSON writing or fake rollback guarantee. Verify the deployed Agent's actual revision separately from GitHub `main`.
 - Preserve existing Portal / device credentials, read-only file access where still safe, single-Linux-account execution boundary, session supervisor and existing tests/CI; add no new CI by default.
 
-**Details delegated to `to-spec` rather than additional grilling:** SQLite schema and transaction boundaries, backup file permissions, migration locking mechanics, exact cleanup trigger/batch size, timeout error representation using the existing contract, fault-injection test fixtures, and operator recovery runbook. These are constrained implementation decisions, not authorization for new services, API tools, security scope or infrastructure.
+**Details resolved in the draft technical Spec without another Grilling round:** SQLite schema and transaction boundaries, backup file permissions, migration locking mechanics, exact cleanup trigger/batch size, timeout error representation using the existing contract, fault-injection test fixtures, and operator recovery runbook. These are constrained implementation decisions, not authorization for new services, API tools, security scope or infrastructure.
 
 No DDL, production repair commands or deployment authorization are implied.
+
+## Derived technical specification
+
+The implementation-ready synthesis is [Agent Reliability Spec](../SPEC-agent-reliability.md), authored using the accepted Q1–Q9 choices and the final audit clarifications. It covers user stories, receipt schema boundaries, migration, failure modes, existing API compatibility and public-seam tests. The Spec is **draft-only** until explicitly approved; it is not an authorization to implement or deploy.
 
 ## Authority and rollout
 
