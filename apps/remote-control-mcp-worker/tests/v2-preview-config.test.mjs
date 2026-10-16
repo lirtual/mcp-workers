@@ -35,174 +35,119 @@ test("dedicated v2 preview cannot inherit the v1 VPC binding, token or DO namesp
 });
 
 
-test("preview MCP blocks direct mutation, shell and receipt calls even with a valid device ID", async () => {
-  // The tool-list boundary is not sufficient: a client can handcraft any MCP
-  // tools/call RPC. Refuse risky calls before routing to owner DO or legacy VPC.
+test("Preview exposes per-device reads, writes, Shell and Receipt without a temporary grant", async () => {
   const { default: worker } = await import("../src/worker.ts");
   const { randomUUID } = await import("node:crypto");
-  let ownerCalls = 0, legacyCalls = 0;
-  const env = {
-    MCP_ACCESS_TOKEN: "isolated-preview-test-token",
-    REMOTE_CONTROL_V2_PREVIEW_ONLY: "true",
-    V2_OWNER: {
-      idFromName() { ownerCalls++; throw Error("Preview must not route mutation to DO"); },
-      get() { ownerCalls++; throw Error("Preview must not route mutation to DO"); },
-    },
-    REMOTE_CONTROL_DEVICE: {
-      fetch() { legacyCalls++; throw Error("Preview must not route mutation to v1"); },
-    },
-  };
-  async function rpc(method, params, token = "isolated-preview-test-token") {
-    const response = await worker.fetch(new Request("https://preview.test/mcp", {
-      method: "POST",
-      headers: {
-        authorization: "Bearer " + token,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 51, method, params }),
-    }), env);
-    return { status: response.status, body: await response.json() };
-  }
-  const listed = await rpc("tools/list", {});
-  const names = listed.body.result.tools.map(tool => tool.name);
-  assert.ok(names.includes("read_file"));
-  assert.ok(names.includes("list_devices"));
-  for (const denied of [
-    "write_file", "create_directory", "replace_text", "move_file",
-    "delete_file", "get_operation_status", "run_command",
-    "send_input", "stop_session", "list_sessions", "read_session_output",
-  ]) assert.ok(!names.includes(denied), "preview must not advertise " + denied);
-
-  const device_id = randomUUID(), operation_id = "preview-blocked-" + randomUUID();
-  const cases = [
-    ["write_file", { device_id, operation_id, path: "/tmp/preview-denied", content: "NO", mode: "append" }],
-    ["run_command", { device_id, operation_id, command: "echo NO", timeout_ms: 100 }],
-    ["get_operation_status", { device_id, operation_id }],
-    ["send_input", { device_id, operation_id, session_id: randomUUID(), input: "NO" }],
-    ["delete_file", { device_id, operation_id, path: "/tmp/preview-denied" }],
-    ["read_file", { path: "/etc/os-release" }], // explicit device is mandatory in preview
-  ];
-  for (const [name, args] of cases) {
-    const result = await rpc("tools/call", { name, arguments: args });
-    assert.equal(result.body.result?.isError, true, "preview must deny " + name);
-    assert.match(result.body.result?.content?.[0]?.text ?? "",
-      /preview permits only explicit-device read-only calls and owner pairing/i);
-  }
-  const unauthorized = await rpc("tools/call", { name: "write_file",
-    arguments: { device_id, operation_id, path: "/tmp/preview-denied", content: "NO", mode: "append" },
-  }, "wrong-token");
-  assert.equal(unauthorized.status, 401);
-  assert.equal(ownerCalls, 0, "disallowed preview tools must not reach the owner DO");
-  assert.equal(legacyCalls, 0, "disallowed preview tools must not fall back to v1");
-});
-
-
-test("Preview Receipt tools require one explicitly granted device, without widening other device access", async () => {
-  const { default: worker } = await import("../src/worker.ts");
-  const { randomUUID } = await import("node:crypto");
-  const permittedId = randomUUID(), otherId = randomUUID();
-  const operation_id = "preview-test-" + randomUUID();
-  let doCalls = 0, v1Calls = 0;
+  const device_id = randomUUID(), operation_id = "preview-operation-" + randomUUID();
+  const calls = [];
+  let legacyCalls = 0;
   const env = {
     MCP_ACCESS_TOKEN: "preview-test-token",
     REMOTE_CONTROL_V2_PREVIEW_ONLY: "true",
-    REMOTE_CONTROL_V2_RECEIPT_TEST_DEVICE_ID: permittedId,
     V2_OWNER: {
-      idFromName: () => "single-owner-v2",
+      idFromName: name => name,
       get: () => ({
-        fetch: async request => {
-          doCalls++;
-          assert.match(String(request.url || request), /\/operation$/);
-          return Response.json({ operation_id, status: "not_found" });
+        fetch: async (request, init) => {
+          const pathname = new URL(String(request)).pathname;
+          const payload = JSON.parse(init.body);
+          calls.push({ pathname, payload });
+          return pathname === "/read"
+            ? Response.json({ status: "completed", text: "test-read" })
+            : Response.json({ operation_id: payload.operation_id, status: "not_found" });
         },
       }),
     },
-    REMOTE_CONTROL_DEVICE: { fetch: () => { v1Calls++; throw Error("v1 forbidden"); } },
+    REMOTE_CONTROL_DEVICE: { fetch: () => { legacyCalls++; throw Error("v1 must not be called"); } },
   };
-  const rpc = async (method, params, token = "preview-test-token") => {
+  async function rpc(method, params, token = "preview-test-token") {
     const res = await worker.fetch(new Request("https://preview.test/mcp", {
       method: "POST", headers: {
         "content-type": "application/json", authorization: "Bearer " + token,
       },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 21, method, params }),
+      body: JSON.stringify({ jsonrpc: "2.0", id: 42, method, params }),
     }), env);
     return { status: res.status, body: await res.json() };
-  };
-  const names = (await rpc("tools/list", {})).body.result.tools.map(t => t.name);
-  for (const name of ["write_file", "run_command", "get_operation_status",
+  }
+
+  const listed = await rpc("tools/list", {});
+  const tools = listed.body.result.tools;
+  for (const name of ["read_file", "write_file", "create_directory", "replace_text", "move_file",
+    "delete_file", "get_operation_status", "run_command", "send_input", "stop_session",
     "list_sessions", "read_session_output"]) {
-    assert.ok(names.includes(name), "missing opt-in tool: " + name);
+    const tool = tools.find(item => item.name === name);
+    assert.ok(tool, "v2 Preview missing " + name);
+    assert.ok(tool.inputSchema.required.includes("device_id"), "missing explicit device_id: " + name);
   }
-  for (const name of ["delete_file", "move_file", "create_directory", "replace_text",
-    "send_input", "stop_session"]) {
-    assert.ok(!names.includes(name), "unrelated mutation listed: " + name);
+  for (const name of ["pairing_lookup", "pairing_prepare", "list_devices", "revoke_device"]) {
+    assert.ok(tools.some(item => item.name === name), "owner tool missing: " + name);
   }
 
-  const mutation = { operation_id, path: "/tmp/denied", content: "NO", mode: "append" };
-  for (const [name, args] of [
-    ["write_file", { device_id: otherId, ...mutation }],
-    ["write_file", { ...mutation }],
-    ["run_command", { device_id: otherId, operation_id, command: "printf 'NO'" }],
-    ["get_operation_status", { device_id: otherId, operation_id }],
-    ["list_sessions", { device_id: otherId }],
-    ["read_session_output", { device_id: otherId, session_id: randomUUID() }],
-    ["write_file", { device_id: permittedId, operation_id, path: "/tmp/denied", content: "BAD", mode: "append" }],
-    ["run_command", { device_id: permittedId, operation_id, command: "id" }],
-    ["delete_file", { device_id: permittedId, operation_id, path: "/tmp/denied" }],
-    ["send_input", { device_id: permittedId, operation_id, session_id: randomUUID(), input: "NO" }],
-  ]) {
-    const r = await rpc("tools/call", { name, arguments: args });
-    assert.equal(r.body.result?.isError, true, name + " should be denied");
+  const cases = [
+    ["read_file", { device_id, path: "/etc/os-release" }],
+    ["write_file", { device_id, operation_id, path: "/home/rcagent/test.txt", content: "test", mode: "append" }],
+    ["run_command", { device_id, operation_id, command: "printf fixture" }],
+    ["get_operation_status", { device_id, operation_id }],
+  ];
+  for (const [name, args] of cases) {
+    const result = await rpc("tools/call", { name, arguments: args });
+    assert.notEqual(result.body.result?.isError, true, name + " rejected a paired-device request");
   }
-  assert.equal(doCalls, 0);
-  assert.equal(v1Calls, 0);
-
-  const fixture = "/home/rcagent/receipt-v2-preview-test-" + randomUUID() + ".txt";
-  const boundedWrite = await rpc("tools/call", {
-    name: "write_file", arguments: {
-      device_id: permittedId, operation_id, path: fixture,
-      content: "RC_V2_RECEIPT_ONCE\\n", mode: "append",
-    },
-  });
-  assert.notEqual(boundedWrite.body.result?.isError, true);
-  assert.equal(JSON.parse(boundedWrite.body.result.content[0].text).status, "not_found");
-  const boundedCommand = await rpc("tools/call", {
-    name: "run_command", arguments: {
-      device_id: permittedId, operation_id, command: "printf RC_V2_RECEIPT_TEST_OK",
-    },
-  });
-  assert.notEqual(boundedCommand.body.result?.isError, true);
-  assert.equal(doCalls, 2, "only allowed test tools reached DO");
-  assert.equal(v1Calls, 0);
-  doCalls = 0;
-
-  const unauthorized = await rpc("tools/call", {
-    name: "get_operation_status", arguments: { device_id: permittedId, operation_id },
-  }, "wrong-token");
-  assert.equal(unauthorized.status, 401);
-  const allowed = await rpc("tools/call", {
-    name: "get_operation_status", arguments: { device_id: permittedId, operation_id },
-  });
-  assert.notEqual(allowed.body.result?.isError, true);
-  assert.equal(JSON.parse(allowed.body.result.content[0].text).status, "not_found");
-  assert.equal(doCalls, 1);
-  assert.equal(v1Calls, 0);
+  assert.equal(calls.length, cases.length);
+  assert.deepEqual(calls.map(x => x.pathname), ["/read", "/operation", "/operation", "/operation"]);
+  assert.ok(calls.every(x => x.payload.device_id === device_id));
+  assert.equal(legacyCalls, 0);
+  assert.equal((await rpc("tools/call", {
+    name: "write_file",
+    arguments: { device_id, operation_id, path: "/home/rcagent/test.txt", content: "test", mode: "append" },
+  }, "wrong-token")).status, 401);
+  assert.equal(calls.length, cases.length, "invalid MCP token must never reach owner DO");
 });
 
-test("malformed device grant fails closed and does not advertise mutation tools", async () => {
+test("Preview denies missing/invalid device IDs and never routes to legacy v1", async () => {
   const { default: worker } = await import("../src/worker.ts");
-  for (const invalid of ["", "all", "*", "not-a-uuid", "00000000-0000-0000-0000-000000000000 extra"]) {
-    const result = await worker.fetch(new Request("https://preview.test/mcp", {
+  const { randomUUID } = await import("node:crypto");
+  let ownerCalls = 0, legacyCalls = 0;
+  const device_id = randomUUID(), operation_id = "preview-reject-" + randomUUID();
+  const env = {
+    MCP_ACCESS_TOKEN: "token",
+    REMOTE_CONTROL_V2_PREVIEW_ONLY: "true",
+    V2_OWNER: {
+      idFromName: () => { ownerCalls++; throw Error("should not dispatch"); },
+      get: () => { ownerCalls++; throw Error("should not dispatch"); },
+    },
+    REMOTE_CONTROL_DEVICE: { fetch: () => { legacyCalls++; throw Error("legacy fallback"); } },
+  };
+  async function rpc(name, args) {
+    const res = await worker.fetch(new Request("https://preview.test/mcp", {
       method: "POST",
       headers: { "content-type": "application/json", authorization: "Bearer token" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 22, method: "tools/list", params: {} }),
-    }), {
-      MCP_ACCESS_TOKEN: "token",
-      REMOTE_CONTROL_V2_PREVIEW_ONLY: "true",
-      REMOTE_CONTROL_V2_RECEIPT_TEST_DEVICE_ID: invalid,
-    });
-    const names = (await result.json()).result.tools.map(x => x.name);
-    assert.ok(!names.includes("write_file") && !names.includes("run_command") &&
-      !names.includes("get_operation_status"));
+      body: JSON.stringify({ jsonrpc: "2.0", id: 43, method: "tools/call", params: {
+        name, arguments: args,
+      } }),
+    }), env);
+    return (await res.json()).result;
   }
+  for (const [name, args] of [
+    ["read_file", { path: "/etc/os-release" }],
+    ["write_file", { operation_id, path: "/tmp/a", content: "x", mode: "append" }],
+    ["run_command", { device_id: "bad-device-id", operation_id, command: "id" }],
+    ["get_operation_status", { device_id: "", operation_id }],
+    ["unsupported_tool", { device_id }],
+  ]) {
+    const result = await rpc(name, args);
+    assert.equal(result?.isError, true, name + " must be rejected");
+  }
+  assert.equal(ownerCalls, 0, "invalid calls must be refused before owner DO dispatch");
+  assert.equal(legacyCalls, 0, "v2 Preview never falls back to v1 VPC");
+
+  const noOwnerEnv = { MCP_ACCESS_TOKEN: "token", REMOTE_CONTROL_V2_PREVIEW_ONLY: "true",
+    REMOTE_CONTROL_DEVICE: env.REMOTE_CONTROL_DEVICE };
+  const response = await worker.fetch(new Request("https://preview.test/mcp", {
+    method: "POST", headers: { "content-type": "application/json", authorization: "Bearer token" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 44, method: "tools/call",
+      params: { name: "write_file", arguments: { device_id, operation_id,
+        path: "/home/rcagent/test.txt", content: "test", mode: "append" } } }),
+  }), noOwnerEnv);
+  assert.equal((await response.json()).result?.isError, true);
+  assert.equal(legacyCalls, 0);
 });
