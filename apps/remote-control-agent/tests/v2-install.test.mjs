@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { createHash, createPrivateKey, createPublicKey, sign as nodeSign } from "node:crypto";
-import { mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { MARKER, UNIT, assertExistingServiceEndpoint, classifyLinuxKernel, inspectInstallIdentity, parseInstallArgs, promoteRevokedIdentity, renderV2Service, trustedEndpoint } from "../scripts/install-v2.mjs";
+import { MARKER, UNIT, assertExistingServiceEndpoint, classifyLinuxKernel, beginRevokedPromotion, inspectInstallIdentity, parseInstallArgs, promoteRevokedIdentity, resumeRevokedPromotion, renderV2Service, trustedEndpoint } from "../scripts/install-v2.mjs";
 import { beginDeviceEnrollment, PendingIdentityConflictError } from "../src/pair-device.ts";
 import { assertRemoteRevocation } from "../src/v2-repair.ts";
-import { DeviceSessionRejectedError, recoverDeviceId, signedSessionProof } from "../src/v2-session-client.ts";
+import { DeviceSessionRejectedError, recoverDeviceId, verifyApprovedDeviceId, signedSessionProof } from "../src/v2-session-client.ts";
 import { newEnrollment } from "../src/v2-enrollment.ts";
 
 const example = {
@@ -374,7 +374,8 @@ test("revoked install archives old identity only AFTER new challenged pairing", 
   assert.match(src, /Old device identity confirmed revoked; starting fresh pairing/);
   assert.match(src, /const stage = keyPath \+ "\.re-pair-new"/);
   assert.match(src, /await pairFreshPending\(options, stage, stdin, stdout, Boolean\(stageExists\)\)/);
-  assert.match(src, /if \(previous\) run\("systemctl", \["--user", "stop", UNIT\]\)/);
+  assert.match(src, /await beginRevokedPromotion\(keyPath, oldId, nextId\)/);
+  assert.match(src, /await resumeRevokedPromotion\(options, keyPath, previous\)/);
   assert.match(src, /await move\(keyPath, path\.join\(archive, "identity\.pem"\)\)/);
   assert.match(src, /await move\(stage, keyPath\)/);
   assert.doesNotMatch(src, /rm\(keyPath\)|unlink\(keyPath\)/);
@@ -445,4 +446,124 @@ test("every interrupted staging rename rolls back BOTH identities and a retry re
       await rm(dir, { recursive: true, force: true });
     }
   }
+});
+
+
+test("verified approval probe is read-only and never creates a device-id sidecar", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "rc-v2-readonly-approved-"));
+  const key = path.join(dir, "identity.pem");
+  const material = newEnrollment("fresh-approved");
+  const deviceId = "ce110000-0000-4000-8000-000000000001";
+  const nonce = "0123456789abcdef01234567";
+  try {
+    await writeFile(key, material.privateKeyPem, { mode: 0o600 });
+    const send = async (url, options) => {
+      if (new URL(url).pathname === "/agent/session/challenge") {
+        assert.equal(JSON.parse(options.body).public_key, material.request.public_key);
+        return Response.json({ device_id: deviceId, nonce });
+      }
+      assert.equal(new URL(url).pathname, "/agent/session/recover");
+      const payload = JSON.parse(options.body);
+      assert.equal(payload.proof, signedSessionProof(material.privateKeyPem, deviceId, nonce).proof);
+      return Response.json({ status: "verified", device_id: deviceId });
+    };
+    assert.equal(await verifyApprovedDeviceId("https://rc.example.org/", key, send), deviceId);
+    await assert.rejects(stat(key + ".device-id"), { code: "ENOENT" });
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("operator install resumes all five SIGKILL crash prefix states without rotating either identity", async () => {
+  const oldId = "0ded0000-0000-4000-8000-000000000011";
+  const newId = "0ded0000-0000-4000-8000-000000000012";
+  for (let crashAt = 0; crashAt <= 4; crashAt++) {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "rc-v2-crash-resume-"));
+    const key = path.join(dir, "identity.pem");
+    const stage = key + ".re-pair-new";
+    const archive = path.join(dir, "revoked-" + oldId);
+    try {
+      await writeFile(key, "old-revoked-key", { mode: 0o600 });
+      await writeFile(key + ".device-id", oldId, { mode: 0o600 });
+      await writeFile(stage, "new-approved-key", { mode: 0o600 });
+      await writeFile(stage + ".device-id", newId, { mode: 0o600 });
+      await beginRevokedPromotion(key, oldId, newId);
+      await mkdir(archive, { mode: 0o700 });
+      const moves = [
+        [key, path.join(archive, "identity.pem")],
+        [key + ".device-id", path.join(archive, "identity.pem.device-id")],
+        [stage, key],
+        [stage + ".device-id", key + ".device-id"],
+      ];
+      for (const [from, to] of moves.slice(0, crashAt)) await rename(from, to);
+      // Pretend the process died without running a JS catch/rollback handler.
+      let revokeChecks = 0, approvalChecks = 0, stops = 0;
+      const resumed = await resumeRevokedPromotion({ endpoint: "https://rc.example.org/" },
+        key, "existing-unit", {
+          verifyRevoked: async (_endpoint, candidate, actual) => {
+            assert.equal(await readFile(candidate, "utf8"), "old-revoked-key");
+            assert.equal(actual, oldId);
+            revokeChecks++;
+          },
+          verifyApproved: async (_endpoint, candidate) => {
+            assert.equal(await readFile(candidate, "utf8"), "new-approved-key");
+            approvalChecks++;
+            return newId;
+          },
+          stopService: () => { stops++; },
+        });
+      assert.equal(resumed.resumedAt, crashAt);
+      assert.equal(revokeChecks, 1);
+      assert.equal(approvalChecks, 1);
+      assert.equal(stops, 1);
+      assert.equal(await readFile(key, "utf8"), "new-approved-key");
+      assert.equal(await readFile(key + ".device-id", "utf8"), newId);
+      assert.equal(await readFile(path.join(archive, "identity.pem"), "utf8"), "old-revoked-key");
+      assert.equal(await readFile(path.join(archive, "identity.pem.device-id"), "utf8"), oldId);
+      assert.equal((await stat(key)).mode & 0o777, 0o600);
+      assert.equal((await stat(key + ".device-id")).mode & 0o777, 0o600);
+      assert.equal((await stat(key + ".re-pair-transition")).mode & 0o777, 0o600);
+      await assert.rejects(stat(stage), { code: "ENOENT" });
+      await assert.rejects(stat(stage + ".device-id"), { code: "ENOENT" });
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  }
+});
+
+test("crash recovery requires both signed proofs; corrupted layouts fail closed without stopping service", async () => {
+  const oldId = "0ded0000-0000-4000-8000-000000000021";
+  const newId = "0ded0000-0000-4000-8000-000000000022";
+  const dir = await mkdtemp(path.join(os.tmpdir(), "rc-v2-crash-guard-"));
+  const key = path.join(dir, "identity.pem");
+  const stage = key + ".re-pair-new";
+  const options = { endpoint: "https://rc.example.org/" };
+  let stops = 0;
+  const allow = {
+    verifyRevoked: async () => {},
+    verifyApproved: async () => newId,
+    stopService: () => { stops++; },
+  };
+  try {
+    await writeFile(key, "old-revoked-key", { mode: 0o600 });
+    await writeFile(key + ".device-id", oldId, { mode: 0o600 });
+    await writeFile(stage, "new-approved-key", { mode: 0o600 });
+    await writeFile(stage + ".device-id", newId, { mode: 0o600 });
+    await beginRevokedPromotion(key, oldId, newId);
+    await assert.rejects(resumeRevokedPromotion(options, key, true,
+      { ...allow, verifyRevoked: async () => { throw Error("offline"); } }), /offline/);
+    await assert.rejects(resumeRevokedPromotion(options, key, true,
+      { ...allow, verifyApproved: async () => { throw Error("new key revoked"); } }), /new key revoked/);
+    await assert.rejects(resumeRevokedPromotion(options, key, true,
+      { ...allow, verifyApproved: async () => "11110000-0000-4000-8000-000000000001" }),
+      /replacement is not approved/);
+    assert.equal(stops, 0);
+    assert.equal(await readFile(key, "utf8"), "old-revoked-key");
+    assert.equal(await readFile(stage, "utf8"), "new-approved-key");
+
+    await writeFile(stage + ".device-id", "99990000-0000-4000-8000-000000000001");
+    await assert.rejects(resumeRevokedPromotion(options, key, true, allow), /do not match/);
+    await writeFile(stage + ".device-id", newId);
+    await rm(stage); // impossible forward prefix (missing staged key before archive)
+    await assert.rejects(resumeRevokedPromotion(options, key, true, allow), /inconsistent/);
+    assert.equal(stops, 0);
+    assert.equal(await readFile(key, "utf8"), "old-revoked-key");
+    assert.equal((await stat(key + ".re-pair-transition")).mode & 0o777, 0o600);
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });
