@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { newEnrollment, saveNewPrivateKey } from "../../remote-control-agent/src/v2-enrollment.ts";
 import { confirmDeviceLocally } from "../../remote-control-agent/src/confirm-device.ts";
 import { assertRemoteRevocation } from "../../remote-control-agent/src/v2-repair.ts";
+import { beginDeviceEnrollment, PendingIdentityConflictError } from "../../remote-control-agent/src/pair-device.ts";
+import { recoverDeviceId } from "../../remote-control-agent/src/v2-session-client.ts";
+import { promoteRevokedIdentity } from "../../remote-control-agent/scripts/install-v2.mjs";
 import worker, { V2OwnerCoordinator } from "../src/worker.ts";
 
 interface StorageFixture {
@@ -225,5 +228,98 @@ test("revoked identity cannot silently re-pair with the old key, but a new key a
     assert.equal([...rows].filter(([k]) => k.startsWith("device:")).length, 2);
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("full simulated owner-MCP + Agent revoke/re-pair survives stale code and lost confirmation", async () => {
+  // All paths are disposable test fixtures. This test never contacts a live
+  // Worker, real device or local systemd service.
+  const {rows, site, send, rpc, value} = setup();
+  const dir = await mkdtemp(path.join(os.tmpdir(), "v2-full-repair-"));
+  const oldKey = path.join(dir, "v2-identity.pem");
+  const stage = oldKey + ".re-pair-new";
+  try {
+    const first = await beginDeviceEnrollment("office-linux", site, oldKey, send);
+    const prepare = async (code: string) => {
+      const lookup = value(await rpc("pairing_lookup", {code}));
+      assert.match(String(lookup.pairing_id), /^[a-f0-9-]{36}$/);
+      const prepared = value(await rpc("pairing_prepare", {
+        pairing_id: lookup.pairing_id, expected_fingerprint: lookup.fingerprint,
+      }));
+      const challenge = String(prepared.challenge);
+      assert.match(challenge, /^[A-Z2-7]{12}$/);
+      return challenge;
+    };
+    const oldId = await confirmDeviceLocally(first.code, await prepare(first.code), site, oldKey, send);
+    assert.match(oldId, /^[a-f0-9-]{36}$/);
+    assert.equal((await readFile(oldKey + ".device-id", "utf8")).trim(), oldId);
+    // No re-pair can occur before the owner explicitly revokes this ID.
+    await assert.rejects(assertRemoteRevocation(site, oldKey, oldId, send),
+      /Revocation cannot be verified/);
+    assert.equal(value(await rpc("revoke_device", {device_id: oldId})).status, "revoked");
+    await assertRemoteRevocation(site, oldKey, oldId, send);
+
+    // The revoked key cannot create even a pending request, much less log in.
+    await assert.rejects(beginDeviceEnrollment("office-linux", site, oldKey, send, true),
+      PendingIdentityConflictError);
+    const oldChallenge = await send(site + "agent/session/challenge", {
+      method:"POST", headers:{"content-type":"application/json"},
+      body: JSON.stringify({device_id: oldId}),
+    });
+    assert.equal(oldChallenge.status, 404);
+
+    // An interrupted first attempt to pair a NEW key does not rotate it again.
+    const firstStage = await beginDeviceEnrollment("office-linux", site, stage, send);
+    const stagedPem = await readFile(stage, "utf8");
+    const retryStage = await beginDeviceEnrollment("office-linux", site, stage, send, true);
+    assert.notEqual(retryStage.code, firstStage.code);
+    assert.equal(retryStage.fingerprint, firstStage.fingerprint);
+    assert.equal(await readFile(stage, "utf8"), stagedPem);
+    const stale = await rpc("pairing_lookup", {code:firstStage.code});
+    assert.match(stale.data.result?.content[0]?.text ?? "", /not found/i);
+    assert.equal((await readFile(oldKey + ".device-id", "utf8")).trim(), oldId);
+
+    // Cloud approved the new key, but the local confirmation HTTP response
+    // disappeared before the Agent could write its .device-id.
+    let serverApproved = false;
+    const droppedReply: typeof fetch = async (input, init) => {
+      const response = await send(input, init);
+      if (new URL(input instanceof Request ? input.url : String(input)).pathname === "/agent/pair/complete" &&
+          response.status === 200) {
+        serverApproved = true;
+        throw new Error("simulated lost confirmation response");
+      }
+      return response;
+    };
+    await assert.rejects(
+      confirmDeviceLocally(retryStage.code, await prepare(retryStage.code), site, stage, droppedReply),
+      /simulated lost confirmation response/);
+    assert.equal(serverApproved, true);
+    await assert.rejects(readFile(stage + ".device-id", "utf8"), {code:"ENOENT"});
+    assert.equal((await readFile(oldKey + ".device-id", "utf8")).trim(), oldId);
+
+    // Signed identity recovery finds the newly approved ID without replaying
+    // a pairing challenge and then promotes only this approved replacement.
+    const newId = await recoverDeviceId(site, stage, send);
+    assert.notEqual(newId, oldId);
+    assert.equal((await readFile(stage + ".device-id", "utf8")).trim(), newId);
+    const archive = await promoteRevokedIdentity(oldKey, oldId);
+    assert.equal((await readFile(oldKey + ".device-id", "utf8")).trim(), newId);
+    assert.equal(await readFile(oldKey, "utf8"), stagedPem);
+    assert.equal((await readFile(path.join(archive, "identity.pem.device-id"), "utf8")).trim(), oldId);
+    const newChallenge = await send(site + "agent/session/challenge", {
+      method:"POST", headers:{"content-type":"application/json"},
+      body: JSON.stringify({device_id:newId}),
+    });
+    assert.equal(newChallenge.status, 200);
+    const oldAgain = await send(site + "agent/session/challenge", {
+      method:"POST", headers:{"content-type":"application/json"},
+      body: JSON.stringify({device_id:oldId}),
+    });
+    assert.equal(oldAgain.status, 404);
+    assert.equal((rows.get("device:" + oldId) as {revoked:boolean}).revoked, true);
+    assert.equal((rows.get("device:" + newId) as {revoked:boolean}).revoked, false);
+  } finally {
+    await rm(dir, {recursive:true,force:true});
   }
 });
