@@ -3,7 +3,6 @@
  * sudo, Portal Bearer, Cloudflare token, or changes to deployed v1 services.
  *
  * node apps/remote-control-agent/scripts/install-v2.mjs --endpoint https://EXAMPLE/ [--name HOST] [--show-fingerprint]
- * node apps/remote-control-agent/scripts/install-v2.mjs --re-pair --endpoint https://EXAMPLE/ --name HOST
  * node apps/remote-control-agent/scripts/install-v2.mjs --resume --endpoint https://EXAMPLE/
  * node apps/remote-control-agent/scripts/install-v2.mjs --upgrade --endpoint https://EXAMPLE/
  * node apps/remote-control-agent/scripts/install-v2.mjs --uninstall
@@ -50,7 +49,7 @@ export function parseInstallArgs(argv) {
     } else if (arg === "--foreground") {
       if (result.foreground) throw new Error("Duplicate foreground option.");
       result.foreground = true;
-    } else if (arg === "--upgrade" || arg === "--uninstall" || arg === "--resume" || arg === "--re-pair") {
+    } else if (arg === "--upgrade" || arg === "--uninstall" || arg === "--resume") {
       if (result.action !== "install") throw new Error("Choose one installer action.");
       result.action = arg.slice(2);
     } else if (arg === "--endpoint" || arg === "--name") {
@@ -60,10 +59,10 @@ export function parseInstallArgs(argv) {
       throw new Error("Unknown installer option.");
     }
   }
-  if (result.showFingerprint && !["install", "re-pair"].includes(result.action)) {
+  if (result.showFingerprint && result.action !== "install") {
     throw new Error("Fingerprint display is available only for first pairing.");
   }
-  if (result.foreground && (result.action === "uninstall" || result.action === "upgrade" || result.action === "re-pair")) {
+  if (result.foreground && (result.action === "uninstall" || result.action === "upgrade")) {
     throw new Error("Foreground supports first pairing or --resume only.");
   }
   if (result.action !== "uninstall" && !result.endpoint) {
@@ -316,7 +315,7 @@ export async function promoteRevokedIdentity(keyPath, oldId, moveFile = rename) 
   return archive;
 }
 
-/** Explicit revoked-device replacement, never ordinary install recovery. */
+/** Revoked-device replacement after signed tombstone proof and fresh local owner challenge. */
 async function rePairRevokedDevice(options, keyPath, previous, stdin, stdout) {
   const idPath = keyPath + ".device-id";
   if (!await exists(keyPath) || !await exists(idPath)) {
@@ -329,13 +328,7 @@ async function rePairRevokedDevice(options, keyPath, previous, stdin, stdout) {
   // verified before old identity files or the service can be touched.
   await assertRemoteRevocation(options.endpoint, keyPath, oldId);
   if (!stdin.isTTY || !stdout.isTTY) throw new Error("Re-pair requires an interactive device terminal.");
-  const consent = createInterface({input: stdin, output: stdout, terminal: true});
-  try {
-    stdout.write("Cloud confirms that this old device ID is revoked. It cannot be restored.\n");
-    if ((await consent.question("Type RE-PAIR to authorize a new key and new device ID: ")).trim() !== "RE-PAIR") {
-      throw new Error("Explicit re-pair confirmation was not provided.");
-    }
-  } finally { consent.close(); }
+  stdout.write("Old device identity confirmed revoked; starting fresh pairing with a new key.\n");
 
   // Create/confirm the new identity in a separate staging file. The
   // revoked key and its original .device-id remain intact until pairing
@@ -373,6 +366,45 @@ async function rePairRevokedDevice(options, keyPath, previous, stdin, stdout) {
   stdout.write("Revoked identity archived locally; new device ID paired. Activating v2 only.\n");
 }
 
+/**
+ * Classify identity during an operator-invoked install without rotating any key.
+ * Only a signed tombstone for the EXACT old key and device ID permits re-pair.
+ * A recovery 404 alone is never sufficient to replace a completed identity.
+ */
+export async function inspectInstallIdentity(options, keyPath, previous, {
+  recover = recoverDeviceId, verifyRevoked = assertRemoteRevocation,
+} = {}) {
+  const existingKey = Boolean(await exists(keyPath));
+  const existingId = Boolean(await exists(keyPath + ".device-id"));
+  if (existingId && !existingKey) throw new Error("A local device ID exists without its private key.");
+  if (previous && !existingKey) throw new Error("Installed v2 service identity is missing; manual review required.");
+  if (!existingKey) return "new";
+  await ownerOnly(keyPath, 0o600);
+  if (existingId) await ownerOnly(keyPath + ".device-id", 0o600);
+  try {
+    const recoveredId = await recover(options.endpoint, keyPath);
+    if (existingId) {
+      const actualId = (await readFile(keyPath + ".device-id", "utf8")).trim();
+      if (actualId !== recoveredId) throw new Error("Local and server device identities conflict.");
+    }
+    return "approved";
+  } catch (error) {
+    if (existingId) {
+      // Only a definitive server rejection may trigger the independent signed
+      // tombstone probe. Offline/timeout/5xx or a local identity mismatch fail closed.
+      if (!(error instanceof DeviceSessionRejectedError) ||
+          ![401, 403, 404].includes(error.status)) throw error;
+      const oldId = (await readFile(keyPath + ".device-id", "utf8")).trim();
+      await verifyRevoked(options.endpoint, keyPath, oldId);
+      return "revoked";
+    }
+    if (!previous && error instanceof DeviceSessionRejectedError && error.status === 404) {
+      return "pending";
+    }
+    throw error;
+  }
+}
+
 export async function runInstaller(args, {
   home = os.homedir(), stdin = process.stdin, stdout = process.stdout,
   startForeground = launchForeground,
@@ -401,10 +433,6 @@ export async function runInstaller(args, {
     stdout.write("Removed the v2 user service. Local keys retained; revoke the device from MCP separately.\n");
     return;
   }
-  if (options.action === "install" && previous) {
-    stdout.write("v2 user service is already installed; no pairing or identity was changed. Check its online state separately.\n");
-    return;
-  }
   if ((options.action === "resume" && previous) || (options.action === "upgrade" && !previous)) {
     throw new Error("Existing v2 service requires --upgrade; an absent service requires a first install.");
   }
@@ -421,43 +449,23 @@ export async function runInstaller(args, {
     }
   }
 
-  if (options.action === "re-pair") {
-    await rePairRevokedDevice(options, keyPath, previous, stdin, stdout);
-  }
-
   if (options.action === "install") {
-    const existingKey = await exists(keyPath);
-    const existingId = await exists(keyPath + ".device-id");
-    if (existingId && !existingKey) throw new Error("A local device ID exists without its private key.");
-    if (existingKey) await ownerOnly(keyPath, 0o600);
-    if (existingId) await ownerOnly(keyPath + ".device-id", 0o600);
-
-    let alreadyPaired = false;
-    if (existingKey) {
-      try {
-        // Signed key recovery detects server approval that completed just
-        // before the installer crashed writing the local device ID.
-        const recoveredId = await recoverDeviceId(options.endpoint, keyPath);
-        if (existingId) {
-          const actualId = (await readFile(keyPath + ".device-id", "utf8")).trim();
-          if (actualId !== recoveredId) throw new Error("Local and server device identities conflict.");
-        }
-        stdout.write("Existing approved identity recovered; continuing v2 installation.\n");
-        alreadyPaired = true;
-      } catch (error) {
-        if (existingId || !(error instanceof DeviceSessionRejectedError && error.status === 404)) {
-          // Network trouble, rejected/revoked existing IDs and ambiguous
-          // outcomes must not automatically generate a different identity.
-          throw error;
-        }
-        // Not an approved key. The registration endpoint separately rejects
-        // revoked/previously approved public keys before refreshing pending.
-        stdout.write("Previous pairing was not completed. Retrying with the same private key.\n");
+    const state = await inspectInstallIdentity(options, keyPath, previous);
+    if (state === "revoked") {
+      // Only an interactive installer can recover a revoked installation.
+      // Foreground mode cannot replace an identity belonging to a systemd unit.
+      if (options.foreground) throw new Error("Revoked foreground identity requires manual review.");
+      await rePairRevokedDevice(options, keyPath, previous, stdin, stdout);
+    } else if (state === "approved") {
+      if (previous) {
+        stdout.write("v2 user service already installed; approved identity preserved.\n");
+        return;
       }
-    }
-    if (!alreadyPaired) {
+      stdout.write("Existing approved identity recovered; continuing v2 installation.\n");
+    } else {
       if (!stdin.isTTY || !stdout.isTTY) throw new Error("First pairing needs the device's interactive terminal.");
-      await pairFreshPending(options, keyPath, stdin, stdout, Boolean(existingKey));
+      if (state === "pending") stdout.write("Previous pairing not completed; retrying with the same private key.\n");
+      await pairFreshPending(options, keyPath, stdin, stdout, state === "pending");
     }
   }
   await ownerOnly(keyPath, 0o600);
@@ -493,10 +501,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       "A local device ID exists without its private key.",
       "Local and server device identities conflict.",
       "Pending enrollment could not be completed.",
-      "Re-pair requires the old local private key and device ID.",
-      "Re-pair requires an interactive device terminal.",
-      "Explicit re-pair confirmation was not provided.",
       "Incomplete staged identity requires manual review.",
+      "Installed v2 service identity is missing; manual review required.",
+      "Revoked foreground identity requires manual review.",
       "New device identity was not verified.",
       "Old identity archive already exists.",
     ];
