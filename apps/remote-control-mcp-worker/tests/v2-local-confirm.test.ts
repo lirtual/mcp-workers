@@ -8,6 +8,7 @@ import { confirmDeviceLocally } from "../../remote-control-agent/src/confirm-dev
 import { assertRemoteRevocation } from "../../remote-control-agent/src/v2-repair.ts";
 import { beginDeviceEnrollment, PendingIdentityConflictError } from "../../remote-control-agent/src/pair-device.ts";
 import { recoverDeviceId } from "../../remote-control-agent/src/v2-session-client.ts";
+// @ts-expect-error JS installer intentionally exports a test helper without a TS declaration
 import { promoteRevokedIdentity } from "../../remote-control-agent/scripts/install-v2.mjs";
 import worker, { V2OwnerCoordinator } from "../src/worker.ts";
 
