@@ -374,7 +374,7 @@ export class ManagedSessions {
       ...snapshot(session),
       offset,
       next_offset: end,
-      eof: session.state !== "running" && end >= data.byteLength,
+      eof: !this.ownsRunningProcess(session) && end >= data.byteLength,
       truncated: session.truncated,
       output: data.subarray(Math.min(offset, data.byteLength), end).toString("utf8"),
     };
