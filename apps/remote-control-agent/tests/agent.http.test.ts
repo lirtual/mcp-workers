@@ -808,7 +808,7 @@ test("a known filesystem permission failure retains its operation ID without lea
   }
 });
 
-test("expired uncertain receipts become not_found based on admission time", async () => {
+test("expired uncertain receipts remain protected beyond normal retention", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-receipt-expiry-"));
   const receiptDirectory = path.join(root, "receipts");
   await mkdir(receiptDirectory, { mode: 0o700 });
@@ -823,15 +823,15 @@ test("expired uncertain receipts become not_found based on admission time", asyn
     const status = await fetch(`${agent.baseUrl}/internal/operations/expired-unknown`, {
       headers: { "x-device-credential": DEVICE_TOKEN },
     });
-    assert.equal(status.status, 404);
-    assert.equal((await status.json() as { error: string }).error, "not_found");
+    assert.equal(status.status, 200);
+    assert.equal((await status.json() as { state: string }).state, "unknown");
   } finally {
     await agent.close();
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("receipt capacity preserves uncertain records and rejects new dispatches", async () => {
+test("receipt capacity preserves uncertain records without rejecting new work", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-receipt-capacity-"));
   const receiptDirectory = path.join(root, "receipts");
   await mkdir(receiptDirectory, { mode: 0o700 });
@@ -853,14 +853,154 @@ test("receipt capacity preserves uncertain records and rejects new dispatches", 
       operation_id: "capacity-rejected",
       arguments: { path: fixture, content: "no side effect", mode: "rewrite" },
     });
-    assert.equal(result.status, 503);
+    assert.equal(result.status, 200);
     assert.equal((result.json as { operation_id: string }).operation_id, "capacity-rejected");
-    assert.equal((result.json as { status: string }).status, "unavailable");
-    assert.equal(existsSync(fixture), false);
+    assert.equal((result.json as { status: string }).status, "completed");
+    assert.equal(existsSync(fixture), true);
     const retained = await fetch(`${agent.baseUrl}/internal/operations/unknown-0`, {
       headers: { "x-device-credential": DEVICE_TOKEN },
     });
     assert.equal((await retained.json() as { state: string }).state, "unknown");
+  } finally {
+    await agent.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("SQLite admits more than 1,000 distinct file operations and still deduplicates", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-sqlite-volume-"));
+  const target = path.join(root, "counter.txt");
+  const agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: path.join(root, "state") });
+  try {
+    for (let i = 0; i < 1500; i += 1) {
+      const result = await call(agent, {
+        tool: "write_file",
+        operation_id: "sqlite-volume-" + i,
+        arguments: { path: target, content: "x", mode: "append" },
+      });
+      assert.equal((result.json as { status: string }).status, "completed");
+    }
+    assert.equal((await readFile(target, "utf8")).length, 1500);
+    const same = await call(agent, {
+      tool: "write_file", operation_id: "sqlite-volume-1499",
+      arguments: { path: target, content: "x", mode: "append" },
+    });
+    assert.equal((same.json as { status: string }).status, "completed");
+    assert.equal((await readFile(target, "utf8")).length, 1500);
+    const conflict = await call(agent, {
+      tool: "write_file", operation_id: "sqlite-volume-1499",
+      arguments: { path: target, content: "y", mode: "append" },
+    });
+    assert.equal(conflict.status, 409);
+  } finally {
+    await agent.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("migration reconciles known 1,000-to-300 backup with current protected history", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-sqlite-migration-"));
+  const state = path.join(root, "state");
+  await mkdir(state, { mode: 0o700 });
+  const timestamp = new Date(Date.now() - 35 * 24 * 3600_000).toISOString();
+  const old = Array.from({ length: 1000 }, (_, i) => ({
+    operation_id: "history-" + i, tool_name: "write_file",
+    argument_digest: "a".repeat(64), state: "unknown",
+    created_at: timestamp, updated_at: timestamp,
+  }));
+  const current = old.slice(700);
+  const original = JSON.stringify({ version: 1, receipts: current });
+  await writeFile(path.join(state, "operation-receipts.json"), original);
+  await writeFile(path.join(state, "operation-receipts.backup-20261016-090053.json"),
+    JSON.stringify({ version: 1, receipts: old }));
+  const agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: state });
+  try {
+    const status = await fetch(agent.baseUrl + "/internal/operations/history-0", {
+      headers: { "x-device-credential": DEVICE_TOKEN },
+    });
+    assert.equal(status.status, 200);
+    assert.equal((await status.json() as { state: string }).state, "unknown");
+    assert.equal(await readFile(path.join(state, "operation-receipts.json"), "utf8"), original);
+    assert.equal(await readFile(path.join(state, "operation-receipts.pre-sqlite.json"), "utf8"), original);
+  } finally {
+    await agent.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("migration rejects conflicting historical identities before any file mutation", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-sqlite-conflict-"));
+  const state = path.join(root, "state");
+  await mkdir(state);
+  const time = new Date().toISOString();
+  const record = {
+    operation_id: "conflicted", tool_name: "write_file", argument_digest: "a".repeat(64),
+    state: "unknown", created_at: time, updated_at: time,
+  };
+  await writeFile(path.join(state, "operation-receipts.json"), JSON.stringify({ version: 1, receipts: [record] }));
+  await writeFile(path.join(state, "operation-receipts.backup-20261016-090053.json"),
+    JSON.stringify({ version: 1, receipts: [{ ...record, argument_digest: "b".repeat(64) }] }));
+  const agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: state });
+  const target = path.join(root, "must-not-exist");
+  try {
+    const result = await call(agent, { tool: "write_file", operation_id: "another",
+      arguments: { path: target, content: "forbidden", mode: "rewrite" } });
+    assert.equal(result.status, 503);
+    assert.equal(existsSync(target), false);
+  } finally {
+    await agent.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("two local agents cannot concurrently admit work to one SQLite state", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-sqlite-owner-"));
+  const state = path.join(root, "state");
+  const target = path.join(root, "fixture");
+  const first = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: state });
+  const second = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: state });
+  try {
+    const accepted = await call(first, {
+      tool: "write_file", operation_id: "first-owner",
+      arguments: { path: target, content: "first", mode: "rewrite" },
+    });
+    assert.equal(accepted.status, 200);
+    const rejected = await call(second, {
+      tool: "write_file", operation_id: "second-owner",
+      arguments: { path: target, content: "second", mode: "rewrite" },
+    });
+    assert.equal(rejected.status, 503);
+    assert.equal(await readFile(target, "utf8"), "first");
+  } finally {
+    await second.close();
+    await first.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("managed command expires without polling and retains its timeout reason", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-deadline-"));
+  const agent = await startAgent({
+    deviceToken: DEVICE_TOKEN, receiptDirectory: path.join(root, "state"), shellPath: "/bin/sh",
+    sessionMaxLifetimeMs: 150,
+  });
+  try {
+    const start = await call(agent, {
+      tool: "start_process", operation_id: "absolute-session-deadline",
+      arguments: { command: "sleep 10", timeout_ms: 0 },
+    });
+    assert.equal((start.json as { status: string }).status, "running");
+    const session = (start.json as { session_id: string }).session_id;
+    let snapshot: { state: string; termination_reason?: string } | null = null;
+    const deadline = Date.now() + 7000;
+    do {
+      const result = await call(agent, { tool: "read_process_output", arguments: { session_id: session } });
+      snapshot = JSON.parse(completedText(result.json)) as typeof snapshot;
+      if (snapshot?.state !== "running") break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    } while (Date.now() < deadline);
+    assert.equal(snapshot?.state, "failed");
+    assert.equal(snapshot?.termination_reason, "deadline_exceeded");
   } finally {
     await agent.close();
     await rm(root, { recursive: true, force: true });
