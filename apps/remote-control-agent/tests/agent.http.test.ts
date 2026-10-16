@@ -941,12 +941,36 @@ test("the known 300-receipt cleanup requires its verified historical backup", as
   }));
   await writeFile(path.join(state, "operation-receipts.json"), JSON.stringify({ version: 1, receipts: records }));
   const target = path.join(root, "must-not-exist");
-  const agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: state });
+  const agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: state,
+    receiptHistoricalBackupPath: path.join(state, "operation-receipts.backup-20261016-090053.json") });
   try {
     const attempt = await call(agent, { tool: "write_file", operation_id: "missing-backup",
       arguments: { path: target, content: "unsafe", mode: "rewrite" } });
     assert.equal(attempt.status, 503);
     assert.equal(existsSync(target), false);
+  } finally {
+    await agent.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("an unrelated Agent with exactly 300 legitimate receipts needs no unrelated historic backup", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-independent-300-"));
+  const state = path.join(root, "state");
+  await mkdir(state);
+  const time = new Date().toISOString();
+  const records = Array.from({ length: 300 }, (_, i) => ({
+    operation_id: "legitimate-" + i, tool_name: "write_file",
+    argument_digest: "a".repeat(64), state: "unknown",
+    created_at: time, updated_at: time,
+  }));
+  await writeFile(path.join(state, "operation-receipts.json"), JSON.stringify({ version: 1, receipts: records }));
+  const agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: state });
+  try {
+    const status = await fetch(agent.baseUrl + "/internal/operations/legitimate-0",
+      { headers: { "x-device-credential": DEVICE_TOKEN } });
+    assert.equal(status.status, 200);
+    assert.equal((await status.json() as { state: string }).state, "unknown");
   } finally {
     await agent.close();
     await rm(root, { recursive: true, force: true });
