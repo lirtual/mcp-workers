@@ -7,6 +7,16 @@ Authority: [ADR-0014 — transport](./adr/0014-v2-multi-device-ws-do.md), [ADR-0
 
 One Remote Control MCP controls separately paired Linux/WSL2 Agents across unrelated networks, with near-one-command installation, explicit per-operation device selection and independent revocation. Reuse the existing native Node.js file/Shell/managed-process implementation and **Agent-local operation receipts**. The v2 Agent opens outbound WSS to one **SQLite-backed Durable Object using WebSocket Hibernation**. No device public IP, port forwarding, Tunnel, Cloudflare One Client or Mesh enrolment for v2.
 
+## Standalone CLI onboarding — accepted user experience, packaging design still open (2026-10-17)
+
+**Accepted owner goal:** Installing and pairing a Remote Control Agent on a new supported device must begin with **one terminal command**, with **no Git clone/checkout, manual workspace dependency installation, local Node.js package preparation, or C compiler setup required of the operator**. Pairing continues through a local interactive CLI. This extends the original near-one-command Linux/WSL2 onboarding goal. It does **not** itself approve a distribution channel, artifact type, unsupported operating system, auto-update policy, or production installation.
+
+**Current gap confirmed in Draft PR #58:** `install-v2.mjs` runs from a trusted checkout and requires Node.js 24, `cc`, compiled `session-supervisor`, and for persistent service mode an accessible systemd user manager. Its service unit points to checkout paths; `--foreground` omits the user unit but still requires the checkout/toolchain and preserves local credentials. The repository has **no GitHub Releases assets** for a standalone Agent as of this review. A thin download script that then clones the repo and builds it on the target **does not** satisfy the user goal.
+
+**Accepted security boundaries:** New-device local identity must be independent per installation; the existing 10-character device pairing code, authenticated owner-side `pairing_lookup` / `pairing_prepare` and signed 12-character local-terminal proof remain required. Do not expose Portal Bearer/admin tokens or store private keys in installer command arguments, logs or release artifacts. Existing `revoke_device` deletion semantics and optional **24-hour temporary authorization** are independent of how the CLI is distributed.
+
+**Decisions still open and NOT to be assumed:** Linux/WSL2-first versus native Windows/macOS feature expansion; installer/download vs prebuilt archive or package-manager transport; portable Node runtime/bundled script/native helper vs single executable; foreground versus installed service defaults and temporary/permanent mode selection; pinned/reproducible releases and artifact integrity, architecture compatibility, offline install/update/uninstall semantics. No new CI workflow, release, binary, deploy or permission change is approved by this UX requirement alone.
+
 ## User stories
 
 1. As an owner, I want one straightforward install on Linux/WSL2, so that devices on other networks can join without Cloudflare account setup.
