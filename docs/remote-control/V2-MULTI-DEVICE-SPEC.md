@@ -1,6 +1,6 @@
 # Remote Control MCP v2 — One authoritative multi-device Spec
 
-**Status:** design accepted; implementation and deployment not authorized. Updated 2026-10-16 (owner-approved two-code default UX).
+**Status:** design accepted and being implemented in [Draft PR #58](https://github.com/lirtual/mcp-workers/pull/58); production deployment remains blocked on independent human-confirmation and multi-device/72h gates. Updated 2026-10-16.
 Authority: [ADR-0014 — transport](./adr/0014-v2-multi-device-ws-do.md), [ADR-0015 — pairing](./adr/0015-v2-pairing-and-identity.md). Existing [v1 Spec](./SPEC.md) continues to govern the deployed single-device path.
 
 ## Goal
