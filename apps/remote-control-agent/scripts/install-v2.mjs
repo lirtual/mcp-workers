@@ -167,6 +167,36 @@ async function ownerOnly(file, expectedMode) {
   }
 }
 
+export function assertSupportedLinuxHost({ platform, arch, release, libc }) {
+  if (platform !== "linux" || !["x64", "arm64"].includes(arch)) {
+    throw new Error("Only Linux x86_64 and ARM64 Agents are supported.");
+  }
+  const host = classifyLinuxKernel(release);
+  if (host === "wsl1") throw new Error("WSL1 is unsupported; use WSL2.");
+  const kernel = /^([0-9]+)\.([0-9]+)(?:\.|-)/.exec(release);
+  if (!kernel || Number(kernel[1]) < 6 ||
+      (Number(kernel[1]) === 6 && Number(kernel[2]) < 9)) {
+    throw new Error("Linux kernel 6.9+ is required for safe pidfd process-group signaling.");
+  }
+  // Initial portable Node 24 distribution is glibc-only. T04 must verify
+  // actual prebuilt ABI compatibility for each published architecture.
+  const version = /^([0-9]+)\.([0-9]+)$/.exec(libc || "");
+  if (!version || Number(version[1]) < 2 ||
+      (Number(version[1]) === 2 && Number(version[2]) < 28)) {
+    throw new Error("This Agent needs glibc 2.28+; musl/unverified libc is unsupported.");
+  }
+  return host;
+}
+
+export function assertNativeSupervisorProbe(binary, invoke = spawnSync) {
+  const result = invoke(binary, ["--probe"], {
+    detached: true, stdio: "ignore", timeout: 5000,
+  });
+  if (result.error || result.status !== 0) {
+    throw new Error("Required pidfd process-group capability is unavailable; refusing pairing.");
+  }
+}
+
 async function preflight(action, foreground) {
   if (process.platform !== "linux" || process.getuid?.() === 0 ||
       Number(process.versions.node.split(".")[0]) !== 24) {
@@ -175,19 +205,18 @@ async function preflight(action, foreground) {
   systemdLiteral(process.execPath);
   systemdLiteral(packageRoot);
   const release = await readFile("/proc/sys/kernel/osrelease", "utf8");
-  const host = classifyLinuxKernel(release);
-  // Uninstall still works on a host that no longer supports the original
-  // C pidfd helper; do not strand the independent v2 user-service unit.
-  if (host === "wsl1" && action !== "uninstall") {
-    throw new Error("WSL1 is not supported; use WSL2 with systemd.");
-  }
-  // Foreground testing is deliberately supervisor-free: same Node24/C
-  // helper and identity constraints, no user bus, unit or daemon required.
+  // Uninstall remains possible when the original host no longer supports
+  // its v2 executable. Do not strand an existing user service.
+  if (action === "uninstall") return classifyLinuxKernel(release);
+  const host = assertSupportedLinuxHost({ platform: process.platform,
+    arch: process.arch, release,
+    libc: process.report?.getReport?.().header.glibcVersionRuntime });
   if (!foreground) run("systemctl", ["--user", "show-environment"]);
-  if (action === "uninstall") return host; // No compiler required for removal.
   if (!foreground) run("systemd-analyze", ["--user", "--version"]);
+  // T04 replaces this checkout build with the verified prebuilt executable.
   run("cc", ["--version"]);
   run(process.execPath, [compilerScript]);
+  assertNativeSupervisorProbe(path.join(packageRoot, ".build", "session-supervisor"));
   return host;
 }
 
