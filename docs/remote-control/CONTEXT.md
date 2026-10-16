@@ -12,6 +12,15 @@ _Avoid_: **Remote Desktop MCP**, which implies remote graphical screen access an
 A Linux machine or Linux runtime environment targeted for remote operations.
 _Avoid_: Treating WSL2 as the only supported host.
 
+**Standalone Agent Installation**:
+Installing Remote Control Agent directly on a target host without first obtaining the development repository or manually installing its source build tools and package dependencies. The user starts with **one terminal command**, and any subsequent interactive local confirmation is part of onboarding. The supported operating-system scope and distribution mechanism remain design choices, not assumed capabilities.
+_Avoid_: Calling a source checkout or a prerequisite-heavy build script a one-command install.
+
+**Agent CLI Pairing**:
+The local terminal onboarding experience that enrolls the specific host and its independently held identity with Remote Control MCP, retaining the already approved owner-reviewed pairing code and on-device challenge confirmation. A convenient terminal UI must not silently authorize a device or remove the independent owner approval boundary.
+_Avoid_: Treating the Agent's one-line installer as an owner authorization credential.
+
+
 **WSL2 Linux Environment**:
 A possible deployment variant of the Linux Host, not a product or protocol requirement.
 
