@@ -122,3 +122,14 @@ test("foreground reuses signed read-only v2 entrypoint and skips systemd preflig
   assert.match(src, /ownerOnly\(keyPath \+ "\.device-id", 0o600\)/);
   assert.doesNotMatch(src, /nohup|supervisord|cron|pm2/);
 });
+
+test("first enrollment prompts for one challenge, not the original pairing code again", async () => {
+  const src = await readFile(path.join(path.dirname(fileURLToPath(import.meta.url)),
+    "..", "scripts", "install-v2.mjs"), "utf8");
+  assert.doesNotMatch(src, /Repeat original 10-character code:/);
+  assert.match(src, /await confirmDeviceLocally\(enrollment\.code, challenge, options\.endpoint, keyPath\)/);
+  assert.match(src, /\^\[A-Z2-7\]\{12\}\$/);
+  assert.match(src, /attempt < 3/);
+  assert.match(src, /Invalid local challenge format/);
+  assert.match(src, /if \(!stdin\.isTTY \|\| !stdout\.isTTY\)/);
+});

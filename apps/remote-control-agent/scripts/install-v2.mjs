@@ -289,12 +289,22 @@ export async function runInstaller(args, {
     try {
       stdout.write("Pending 10-minute pairing code: " + enrollment.code + "\n");
       stdout.write("In authenticated MCP: pairing_lookup, then pairing_prepare; approve fingerprint before entering challenge here.\n");
-      const repeated = await terminal.question("Repeat original 10-character code: ");
-      const challenge = await terminal.question("12-character MCP confirmation challenge: ");
-      if (repeated.trim().toUpperCase() !== enrollment.code) {
-        throw new Error("The local code was not confirmed.");
+      // The installer already holds the original code in memory. Prompt only
+      // for the independently prepared challenge; never ask the user to type
+      // a second lookalike code or persist the pairing code to disk.
+      let challenge;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const typed = (await terminal.question("12-character MCP confirmation challenge: ")).trim().toUpperCase();
+        if (/^[A-Z2-7]{12}$/.test(typed)) {
+          challenge = typed;
+          break;
+        }
+        if (attempt < 2) stdout.write("Challenge must be 12 characters (A-Z, 2-7). Try again.\n");
       }
-      await confirmDeviceLocally(repeated, challenge, options.endpoint, keyPath);
+      if (!challenge) throw new Error("Invalid local challenge format.");
+      // The verifier and Ed25519 transcript remain bound to the exact code
+      // generated for this identity; owner-reviewed server challenge is required.
+      await confirmDeviceLocally(enrollment.code, challenge, options.endpoint, keyPath);
     } finally { terminal.close(); }
   }
   await ownerOnly(keyPath, 0o600);
