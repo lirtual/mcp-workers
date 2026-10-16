@@ -80,6 +80,8 @@ export interface StartAgentOptions {
   searchSessionTtlMs?: number;
   /** Test seam; production uses the fixed per-user local state directory. */
   receiptDirectory?: string;
+  /** Optional absolute local path to a required pre-trim historical receipt backup. */
+  receiptHistoricalBackupPath?: string;
   /** Test-only SQLite write-failure seam; never supplied by the remote protocol. */
   receiptFaultForTests?: () => boolean;
   /** Test-only shortened deadline; production always uses 60 minutes. */
@@ -265,7 +267,7 @@ export async function startAgent(options: StartAgentOptions): Promise<RunningAge
   const log = options.log;
   const searches = new SearchSessions(options.searchSessionTtlMs);
   const sessions = new ManagedSessions(options.shellPath ?? process.env.SHELL ?? "/bin/sh", options.sessionMaxLifetimeMs);
-  const receipts = new ReceiptStore(options.receiptDirectory, options.receiptFaultForTests);
+  const receipts = new ReceiptStore(options.receiptDirectory, options.receiptFaultForTests, options.receiptHistoricalBackupPath);
   let receiptsReady: Promise<void> | undefined;
   const ensureReceipts = () => (receiptsReady ??= receipts.open().catch((error) => {
     receiptsReady = undefined;
