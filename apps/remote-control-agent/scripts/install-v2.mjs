@@ -131,6 +131,14 @@ export function renderV2Service({ node, home, repoRoot, endpoint, keyPath }) {
   ].join("\n");
 }
 
+/** The regular installer never silently retargets an installed v2 service. */
+export function assertExistingServiceEndpoint(unit, endpoint) {
+  const expected = "Environment=REMOTE_CONTROL_V2_ENDPOINT=" + trustedEndpoint(endpoint);
+  if (!unit.split("\n").includes(expected)) {
+    throw new Error("Existing v2 service endpoint differs; manual review required.");
+  }
+}
+
 function run(binary, args) {
   const result = spawnSync(binary, args, { encoding: "utf8", timeout: 15_000 });
   if (result.error || result.status !== 0) {
@@ -424,10 +432,7 @@ export async function runInstaller(args, {
   // Ordinary repeat install must not silently accept a different Worker target.
   // Explicit --upgrade remains the separate path for intentional endpoint changes.
   if (previous && options.action === "install") {
-    const endpointLine = "Environment=REMOTE_CONTROL_V2_ENDPOINT=" + trustedEndpoint(options.endpoint);
-    if (!previous.split("\n").includes(endpointLine)) {
-      throw new Error("Existing v2 service endpoint differs; manual review required.");
-    }
+    assertExistingServiceEndpoint(previous, options.endpoint);
   }
   if (options.foreground && previous) {
     throw new Error("Foreground refuses to compete with an existing v2 systemd unit.");
