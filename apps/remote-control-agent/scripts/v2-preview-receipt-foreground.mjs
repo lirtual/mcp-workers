@@ -17,6 +17,7 @@ if (args.length !== 0 && (args.length !== 2 || args[0] !== "--drop-reply-once" |
   throw new Error("Use --drop-reply-once receipt-fault-<unique-safe-id>, or no arguments.");
 }
 const faultId = args.length === 2 ? args[1] : null;
+const faultState = { used: false };
 
 if (process.platform !== "linux" || process.env.WSL_DISTRO_NAME !== "rc-v2-receipt-lab" ||
     os.userInfo().username !== "rcagent" || process.getuid?.() === 0 ||
@@ -52,7 +53,7 @@ try {
     shell: true,
     ...(faultId ? {
       makeSocket: (url, protocols) => dropOneCompletedWriteReply(
-        new WebSocket(url, protocols), faultId,
+        new WebSocket(url, protocols), faultId, faultState,
         () => process.stderr.write("preview-receipt-test: discarded one committed write reply; reconnecting\\n"),
       ),
     } : {}),
