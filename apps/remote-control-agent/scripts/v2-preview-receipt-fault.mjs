@@ -5,11 +5,10 @@
 const FIXTURE = /^\/home\/rcagent\/receipt-v2-preview-test-[a-f0-9-]{36}\.txt$/;
 const SENTINEL = "RC_V2_LOST_REPLY_ONCE\n";
 
-export function dropOneCompletedWriteReply(socket, operationId, onDrop = () => {}) {
+export function dropOneCompletedWriteReply(socket, operationId, sharedState, onDrop = () => {}) {
   let matchingRequestId = null;
-  let dropped = false;
   socket.addEventListener("message", event => {
-    if (dropped || typeof event.data !== "string" || event.data.length > 65536) return;
+    if (sharedState.used || typeof event.data !== "string" || event.data.length > 65536) return;
     let frame;
     try { frame = JSON.parse(event.data); } catch { return; }
     if (frame?.kind !== "operation" || frame.tool !== "write_file" ||
@@ -23,14 +22,14 @@ export function dropOneCompletedWriteReply(socket, operationId, onDrop = () => {
   });
   const send = socket.send.bind(socket);
   socket.send = data => {
-    if (!dropped && matchingRequestId && typeof data === "string" && data.length <= 65536) {
+    if (!sharedState.used && matchingRequestId && typeof data === "string" && data.length <= 65536) {
       let reply;
       try { reply = JSON.parse(data); } catch { /* ordinary heartbeat or reply */ }
       if (reply?.kind === "operation_result" &&
           reply.request_id === matchingRequestId &&
           reply.result?.operation_id === operationId &&
           reply.result?.status === "completed") {
-        dropped = true;
+        sharedState.used = true;
         onDrop();
         // Agent has already committed its SQLite Receipt; DO never gets this
         // reply. The usual reconnect logic will fetch a fresh signed nonce.
