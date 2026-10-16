@@ -402,34 +402,47 @@ test("staged identity promotion archives the revoked key/ID and installs only th
   } finally {await rm(dir,{recursive:true,force:true});}
 });
 
-test("mid-promotion rename failure restores BOTH complete identities; retry succeeds without deleting keys", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "rc-v2-stage-rollback-"));
-  const key = path.join(dir, "identity.pem");
+test("every interrupted staging rename rolls back BOTH identities and a retry remains safe", async () => {
   const oldId = "0ded0000-0000-4000-8000-000000000003";
   const newId = "0ded0000-0000-4000-8000-000000000004";
-  try {
-    await writeFile(key,"old-revoked-key",{mode:0o600});
-    await writeFile(key+".device-id",oldId,{mode:0o600});
-    await writeFile(key+".re-pair-new","new-paired-key",{mode:0o600});
-    await writeFile(key+".re-pair-new.device-id",newId,{mode:0o600});
-    let failed=false;
-    const failAfterThreeMoves=async (from,to)=>{
-      if (!failed && from===key+".re-pair-new.device-id") {
-        failed=true;
-        throw new Error("injected rename failure");
+  // Each of the four forward renames can fail, including before touching any
+  // old file and after moving the new private key but not its device ID.
+  // This simulates a caught filesystem error, not an uncatchable power loss.
+  for (let failAt = 1; failAt <= 4; failAt++) {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "rc-v2-stage-rollback-"));
+    const key = path.join(dir, "identity.pem");
+    const stage = key + ".re-pair-new";
+    try {
+      await writeFile(key, "old-revoked-key", { mode: 0o600 });
+      await writeFile(key + ".device-id", oldId, { mode: 0o600 });
+      await writeFile(stage, "new-paired-key", { mode: 0o600 });
+      await writeFile(stage + ".device-id", newId, { mode: 0o600 });
+      let moves = 0;
+      const failOneRename = async (from, to) => {
+        moves++;
+        if (moves === failAt) throw new Error("injected rename failure " + failAt);
+        return rename(from, to);
+      };
+      await assert.rejects(promoteRevokedIdentity(key, oldId, failOneRename),
+        new RegExp("injected rename failure " + failAt));
+      assert.equal(moves, failAt, "must stop immediately at the injected move");
+      assert.equal(await readFile(key, "utf8"), "old-revoked-key");
+      assert.equal(await readFile(key + ".device-id", "utf8"), oldId);
+      assert.equal(await readFile(stage, "utf8"), "new-paired-key");
+      assert.equal(await readFile(stage + ".device-id", "utf8"), newId);
+      for (const file of [key, key + ".device-id", stage, stage + ".device-id"]) {
+        assert.equal((await stat(file)).mode & 0o777, 0o600);
       }
-      return rename(from,to);
-    };
-    await assert.rejects(promoteRevokedIdentity(key,oldId,failAfterThreeMoves),
-      /injected rename failure/);
-    assert.equal(failed,true);
-    assert.equal(await readFile(key,"utf8"),"old-revoked-key");
-    assert.equal(await readFile(key+".device-id","utf8"),oldId);
-    assert.equal(await readFile(key+".re-pair-new","utf8"),"new-paired-key");
-    assert.equal(await readFile(key+".re-pair-new.device-id","utf8"),newId);
-    await assert.rejects(stat(path.join(dir,"revoked-"+oldId)),{code:"ENOENT"});
-    await promoteRevokedIdentity(key,oldId);
-    assert.equal(await readFile(key+".device-id","utf8"),newId);
-    assert.equal(await readFile(path.join(dir,"revoked-"+oldId,"identity.pem.device-id"),"utf8"),oldId);
-  } finally {await rm(dir,{recursive:true,force:true});}
+      await assert.rejects(stat(path.join(dir, "revoked-" + oldId)), { code: "ENOENT" });
+
+      // Retry using the original staged key/ID; never generate new material.
+      const archive = await promoteRevokedIdentity(key, oldId);
+      assert.equal(await readFile(key, "utf8"), "new-paired-key");
+      assert.equal(await readFile(key + ".device-id", "utf8"), newId);
+      assert.equal(await readFile(path.join(archive, "identity.pem"), "utf8"), "old-revoked-key");
+      assert.equal(await readFile(path.join(archive, "identity.pem.device-id"), "utf8"), oldId);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
 });
