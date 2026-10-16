@@ -1232,7 +1232,7 @@ test("database outage rejects all mutations and can stop an owned session at ten
       { tool: "interact_with_process", arguments: { session_id: sessions[0], input: "side effect\n" } },
     ];
     for (let n = 0; n < mutations.length; n += 1) {
-      const request = mutations[n];
+      const request = mutations[n]!;
       const refused = await call(agent, { ...request, operation_id: "outage-denied-" + n });
       assert.equal(refused.status, 503, request.tool);
     }
