@@ -179,6 +179,8 @@ export class ReceiptStore {
     const db = new DatabaseSync(this.file);
     this.database = db;
     try {
+      // Do not expose a newly created database with the platform umask mode.
+      await chmod(this.file, 0o600);
       db.exec("PRAGMA busy_timeout = 0; PRAGMA locking_mode = EXCLUSIVE; PRAGMA synchronous = FULL;");
       const versionRow = db.prepare("PRAGMA user_version").get() as { user_version: number };
       if (versionRow.user_version !== 0 && versionRow.user_version !== 1) {
