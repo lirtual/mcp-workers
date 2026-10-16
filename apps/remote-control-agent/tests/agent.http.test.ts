@@ -928,6 +928,30 @@ test("migration reconciles known 1,000-to-300 backup with current protected hist
   }
 });
 
+test("the known 300-receipt cleanup requires its verified historical backup", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-missing-backup-"));
+  const state = path.join(root, "state");
+  await mkdir(state);
+  const time = new Date().toISOString();
+  const records = Array.from({ length: 300 }, (_, i) => ({
+    operation_id: "historic-" + i, tool_name: "write_file",
+    argument_digest: "a".repeat(64), state: "unknown",
+    created_at: time, updated_at: time,
+  }));
+  await writeFile(path.join(state, "operation-receipts.json"), JSON.stringify({ version: 1, receipts: records }));
+  const target = path.join(root, "must-not-exist");
+  const agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: state });
+  try {
+    const attempt = await call(agent, { tool: "write_file", operation_id: "missing-backup",
+      arguments: { path: target, content: "unsafe", mode: "rewrite" } });
+    assert.equal(attempt.status, 503);
+    assert.equal(existsSync(target), false);
+  } finally {
+    await agent.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("migration rejects conflicting historical identities before any file mutation", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-sqlite-conflict-"));
   const state = path.join(root, "state");
