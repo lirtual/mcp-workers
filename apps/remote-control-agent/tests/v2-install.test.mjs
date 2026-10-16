@@ -343,7 +343,7 @@ test("explicit re-pair accepts only a signed proof of an already revoked same-ID
       const key = createPrivateKey(material.privateKeyPem);
       const signed = requireCompatibleSignedProof(req, key);
       assert.equal(req.proof, signed);
-      return Response.json({status:"revoked",device_id:id});
+      return Response.json({status:"not_approved",device_id:id});
     };
     await assertRemoteRevocation("https://rc.example.org/", keyPath, id, fake);
     assert.equal(count, 1);
@@ -373,7 +373,7 @@ test("revoked install archives old identity only AFTER new challenged pairing", 
   const src = await readFile(path.join(path.dirname(fileURLToPath(import.meta.url)),
     "..","scripts","install-v2.mjs"), "utf8");
   assert.match(src, /await assertRemoteRevocation\(options\.endpoint, keyPath, oldId\)/);
-  assert.match(src, /Old device identity confirmed revoked; starting fresh pairing/);
+  assert.match(src, /Old device ID is not currently approved; independent owner confirmation is required for a new key/);
   assert.match(src, /const stage = keyPath \+ "\.re-pair-new"/);
   assert.match(src, /await pairFreshPending\(options, stage, stdin, stdout, Boolean\(stageExists\)\)/);
   assert.match(src, /await beginRevokedPromotion\(keyPath, oldId, nextId\)/);

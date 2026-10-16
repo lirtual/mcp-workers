@@ -445,7 +445,7 @@ export async function promoteRevokedIdentity(keyPath, oldId, moveFile = rename, 
   return archive;
 }
 
-/** Revoked-device replacement after signed tombstone proof and fresh local owner challenge. */
+/** Explicit replacement after a signed negative approval check and fresh owner challenge. */
 async function rePairRevokedDevice(options, keyPath, previous, stdin, stdout) {
   const idPath = keyPath + ".device-id";
   if (!await exists(keyPath) || !await exists(idPath)) {
@@ -458,7 +458,7 @@ async function rePairRevokedDevice(options, keyPath, previous, stdin, stdout) {
   // verified before old identity files or the service can be touched.
   await assertRemoteRevocation(options.endpoint, keyPath, oldId);
   if (!stdin.isTTY || !stdout.isTTY) throw new Error("Re-pair requires an interactive device terminal.");
-  stdout.write("Old device identity confirmed revoked; starting fresh pairing with a new key.\n");
+  stdout.write("Old device ID is not currently approved; independent owner confirmation is required for a new key.\n");
 
   // Create/confirm the new identity in a separate staging file. The
   // revoked key and its original .device-id remain intact until pairing
@@ -498,8 +498,8 @@ async function rePairRevokedDevice(options, keyPath, previous, stdin, stdout) {
 
 /**
  * Classify identity during an operator-invoked install without rotating any key.
- * Only a signed tombstone for the EXACT old key and device ID permits re-pair.
- * A recovery 404 alone is never sufficient to replace a completed identity.
+ * A signed negative status does not prove historic ID-key binding or grant
+ * authorization. A recovery 404 alone never permits replacing local identity.
  */
 export async function inspectInstallIdentity(options, keyPath, previous, {
   recover = recoverDeviceId, verifyRevoked = assertRemoteRevocation,

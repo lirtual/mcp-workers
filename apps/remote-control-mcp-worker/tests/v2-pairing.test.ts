@@ -202,7 +202,7 @@ test("approved and revoked device keys can NEVER register a new pending code", a
   }
 });
 
-test("read-only signed revoke-state probe prevents accidental --re-pair on active, wrong-key and unknown IDs", async () => {
+test("read-only signed negative-status probe denies active/foreign keys and requires owner re-pair on active, wrong-key and unknown IDs", async () => {
   const {store,values} = makeStore();
   const material = newEnrollment("revoked");
   const id = "d41f1d0c-288c-4ae4-bd0d-9ff8b1b8c321";
@@ -220,10 +220,10 @@ test("read-only signed revoke-state probe prevents accidental --re-pair on activ
   const record = values.get("device:" + id) as unknown as {revoked:boolean};
   record.revoked = true;
   assert.deepEqual(await checkRevokedIdentity(store as never, request),
-    {status:200, body:{status:"revoked", device_id:id}});
+    {status:200, body:{status:"not_approved", device_id:id}});
   assert.equal((await checkRevokedIdentity(store as never, {...request, proof:"invalid"})).status, 400);
   assert.equal((await checkRevokedIdentity(store as never, {...request, device_id:"00000000-0000-4000-8000-000000000000"})).status, 403);
   assert.equal((await checkRevokedIdentity(store as never, {...request, issued_at:Date.now()-120_000})).status, 400);
-  assert.equal(record.revoked, true);
+  assert.equal(values.has("device:" + id), false);
   assert.equal([...values.keys()].filter(x=>x.startsWith("pending:")).length, 0);
 });
