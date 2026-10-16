@@ -105,7 +105,9 @@ function reconcile(current: OperationReceipt[], historical: OperationReceipt[]):
     const previous = entries.get(record.operation_id);
     if (previous && (previous.tool_name !== record.tool_name || previous.argument_digest !== record.argument_digest ||
         previous.created_at !== record.created_at)) throw new Error("Conflicting legacy operation identity.");
-    entries.set(record.operation_id, previous?.state === "unknown" && record.state !== "unknown"
+    entries.set(record.operation_id, previous &&
+        (previous.state === "unknown" || previous.state === "failed") &&
+        previous.state !== record.state
       ? { ...record, state: "unknown", safe_result_summary: "Effect needs operator reconciliation." }
       : record);
   }
@@ -199,11 +201,20 @@ export class ReceiptStore {
           const original = await readFile(this.legacyFile, "utf8");
           const current = parseLegacy(original);
           const knownBackup = path.join(this.directory, KNOWN_HISTORICAL_BACKUP);
-          const historical = await this.exists(knownBackup)
+          const backupExists = await this.exists(knownBackup);
+          // This known installation was trimmed from 1,000 receipts to exactly
+          // 300. Do not silently forget the missing protected identities when
+          // its explicitly identified backup is absent. Other stores are not
+          // subject to the historical cleanup's exact-record-count preflight.
+          if (current.length === 300 && !backupExists) {
+            throw new Error("Known historical receipt backup must be verified.");
+          }
+          const historical = backupExists
             ? parseLegacy(await readFile(knownBackup, "utf8"))
             : [];
-          // Do not assume the preserved 1,000→300 backup is irrelevant: when
-          // present it is reconciled before any new admission is permitted.
+          if (current.length === 300 && historical.length < current.length) {
+            throw new Error("Historical receipt backup is incomplete.");
+          }
           records = reconcile(current, historical);
           await this.preserveLegacy(original);
           if ((await readFile(this.legacyFile, "utf8")) !== original) throw new Error("Legacy receipt source changed.");
