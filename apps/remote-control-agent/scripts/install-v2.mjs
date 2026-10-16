@@ -571,7 +571,8 @@ export async function runLockedInstallerCli(argv, {
   if (result.error) throw new Error("A local installer lock prerequisite is unavailable.");
   if (result.signal) throw new Error("Installer was interrupted; identity files were preserved.");
   if (result.status === 75) throw new Error("Another v2 installer is already running.");
-  if (result.status !== 0) throw new Error("The v2 installer did not complete.");
+  // The child has already printed its sanitized error; do not print another.
+  if (result.status !== 0) return result.status ?? 1;
   return 0;
 }
 
@@ -672,7 +673,9 @@ export async function runInstaller(args, {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  runLockedInstallerCli(process.argv.slice(2)).catch(error => {
+  runLockedInstallerCli(process.argv.slice(2)).then(code => {
+    process.exitCode = code;
+  }).catch(error => {
     // Only print fixed, hard-coded classifications; never echo external
     // exception messages, endpoint query strings or private credential data.
     const safeErrors = [
@@ -696,7 +699,6 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       "Old identity archive already exists.",
       "A local installer lock prerequisite is unavailable.",
       "Another v2 installer is already running.",
-      "The v2 installer did not complete.",
       "Installer was interrupted; identity files were preserved.",
     ];
     const detail = error instanceof PendingIdentityConflictError
