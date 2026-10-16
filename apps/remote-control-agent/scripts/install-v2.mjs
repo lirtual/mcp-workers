@@ -18,7 +18,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { beginDeviceEnrollment, PendingIdentityConflictError } from "../src/pair-device.ts";
 import { confirmDeviceLocally } from "../src/confirm-device.ts";
-import { recoverDeviceId, DeviceSessionRejectedError } from "../src/v2-session-client.ts";
+import { recoverDeviceId, verifyApprovedDeviceId, DeviceSessionRejectedError } from "../src/v2-session-client.ts";
 import { assertRemoteRevocation } from "../src/v2-repair.ts";
 
 /** WSL2 runs the same Linux Agent; Windows is never an authentication peer. */
@@ -38,6 +38,7 @@ const entry = path.join(packageRoot, "src", "v2-main.ts");
 const compilerScript = path.join(packageRoot, "scripts", "build-session-supervisor.mjs");
 const IDENTITY_REL = path.join(".local", "share", "mcp-workers", "remote-control", "v2-identity.pem");
 const UINT = /^[a-zA-Z0-9._/+-]+$/;
+const DEVICE_ID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 
 export function parseInstallArgs(argv) {
   const result = { action: "install", endpoint: undefined, name: undefined, foreground: false, showFingerprint: false };
@@ -287,8 +288,109 @@ async function pairFreshPending(options, keyPath, stdin, stdout, reuseExistingKe
  * review. No network or service actions here, so rollback is testable using
  * temporary owner-only files without touching any installed Agent.
  */
-export async function promoteRevokedIdentity(keyPath, oldId, moveFile = rename) {
-  if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(oldId)) {
+
+/**
+ * Durable, local-only marker written after the owner approved the fresh key
+ * and before stopping v2. IDs only: no key, Portal token or replay queue.
+ */
+const promotionMarker = keyPath => keyPath + ".re-pair-transition";
+async function syncParent(filePath) {
+  const dir = await open(path.dirname(filePath), "r");
+  try { await dir.sync(); } finally { await dir.close(); }
+}
+export async function beginRevokedPromotion(keyPath, oldId, newId) {
+  if (!DEVICE_ID.test(oldId) || !DEVICE_ID.test(newId) || oldId === newId) {
+    throw new Error("Invalid promotion identities.");
+  }
+  const marker = promotionMarker(keyPath);
+  if (await exists(marker)) throw new Error("An interrupted identity promotion must be recovered first.");
+  const temporary = marker + "." + process.pid + ".tmp";
+  const file = await open(temporary, "wx", 0o600);
+  try {
+    await file.writeFile(JSON.stringify({ version: 1, old_id: oldId, new_id: newId }) + "\n");
+    await file.sync();
+  } finally { await file.close(); }
+  try {
+    await rename(temporary, marker);
+    await syncParent(marker);
+  } catch (error) {
+    await rm(temporary, { force: true });
+    throw error;
+  }
+}
+
+/** Recover only the five exact prefixes of the four original renames. */
+export async function resumeRevokedPromotion(options, keyPath, previous, {
+  verifyRevoked = assertRemoteRevocation,
+  verifyApproved = verifyApprovedDeviceId,
+  stopService = () => run("systemctl", ["--user", "stop", UNIT]),
+  moveFile = rename,
+} = {}) {
+  const marker = promotionMarker(keyPath);
+  await ownerOnly(marker, 0o600);
+  let txn;
+  try { txn = JSON.parse(await readFile(marker, "utf8")); }
+  catch { throw new Error("Invalid interrupted identity promotion; manual review required."); }
+  if (!txn || Object.keys(txn).sort().join(",") !== "new_id,old_id,version" ||
+      txn.version !== 1 || typeof txn.old_id !== "string" ||
+      typeof txn.new_id !== "string" || !DEVICE_ID.test(txn.old_id) ||
+      !DEVICE_ID.test(txn.new_id) || txn.old_id === txn.new_id) {
+    throw new Error("Invalid interrupted identity promotion; manual review required.");
+  }
+  const idPath = keyPath + ".device-id";
+  const stage = keyPath + ".re-pair-new";
+  const stageId = stage + ".device-id";
+  const archive = path.join(path.dirname(keyPath), "revoked-" + txn.old_id);
+  const archivedKey = path.join(archive, "identity.pem");
+  const archivedId = path.join(archive, "identity.pem.device-id");
+  const files = [keyPath, idPath, stage, stageId, archivedKey, archivedId];
+  const present = await Promise.all(files.map(async file => Boolean(await exists(file))));
+  const phases = [
+    [true, true, true, true, false, false],
+    [false, true, true, true, true, false],
+    [false, false, true, true, true, true],
+    [true, false, false, true, true, true],
+    [true, true, false, false, true, true],
+  ];
+  const phase = phases.findIndex(shape => shape.every((value, i) => value === present[i]));
+  if (phase < 0) throw new Error("Interrupted identity files are inconsistent; manual review required.");
+  const meta = await exists(archive);
+  if (meta && (!meta.isDirectory() || meta.isSymbolicLink() ||
+      meta.uid !== process.getuid() || (meta.mode & 0o777) !== 0o700)) {
+    throw new Error("Revoked identity archive has unsafe permissions.");
+  }
+  if (phase > 0 && !meta) throw new Error("Revoked identity archive is missing.");
+  for (let i = 0; i < files.length; i++) if (present[i]) await ownerOnly(files[i], 0o600);
+  const oldKey = phase === 0 ? keyPath : archivedKey;
+  const oldIdFile = phase < 2 ? idPath : archivedId;
+  const newKey = phase < 3 ? stage : keyPath;
+  const newIdFile = phase < 4 ? stageId : idPath;
+  if ((await readFile(oldIdFile, "utf8")).trim() !== txn.old_id ||
+      (await readFile(newIdFile, "utf8")).trim() !== txn.new_id) {
+    throw new Error("Interrupted promotion device IDs do not match; manual review required.");
+  }
+  // Recheck both cloud identities even if the marker claims pairing succeeded.
+  await verifyRevoked(options.endpoint, oldKey, txn.old_id);
+  if (await verifyApproved(options.endpoint, newKey) !== txn.new_id) {
+    throw new Error("Staged replacement is not approved; manual review required.");
+  }
+  if (previous) stopService();
+  if (phase < 4) {
+    if (phase === 0 && meta) await rmdir(archive); // empty only, never recursive
+    await promoteRevokedIdentity(keyPath, txn.old_id, moveFile, phase);
+  }
+  return { newId: txn.new_id, resumedAt: phase };
+}
+async function finishRevokedPromotion(keyPath) {
+  const marker = promotionMarker(keyPath);
+  if (!await exists(marker)) return;
+  await ownerOnly(marker, 0o600);
+  await rm(marker);
+  await syncParent(marker);
+}
+
+export async function promoteRevokedIdentity(keyPath, oldId, moveFile = rename, resumeAt = 0) {
+  if (!DEVICE_ID.test(oldId) || !Number.isInteger(resumeAt) || resumeAt < 0 || resumeAt > 3) {
     throw new Error("Invalid prior device identity.");
   }
   const idPath = keyPath + ".device-id";
@@ -298,15 +400,20 @@ export async function promoteRevokedIdentity(keyPath, oldId, moveFile = rename) 
   await ownerOnly(stage, 0o600);
   await ownerOnly(stage + ".device-id", 0o600);
   const archive = path.join(path.dirname(keyPath), "revoked-" + oldId);
-  if (await exists(archive)) throw new Error("Old identity archive already exists.");
-  await mkdir(archive, {mode: 0o700});
+  if (resumeAt === 0) {
+    if (await exists(archive)) throw new Error("Old identity archive already exists.");
+    await mkdir(archive, {mode: 0o700});
+  }
   const moved = [];
   async function move(from, to) { await moveFile(from, to); moved.push([to, from]); }
+  const steps = [
+    [keyPath, path.join(archive, "identity.pem")],
+    [idPath, path.join(archive, "identity.pem.device-id")],
+    [stage, keyPath],
+    [stage + ".device-id", idPath],
+  ];
   try {
-    await move(keyPath, path.join(archive, "identity.pem"));
-    await move(idPath, path.join(archive, "identity.pem.device-id"));
-    await move(stage, keyPath);
-    await move(stage + ".device-id", idPath);
+    for (const [from, to] of steps.slice(resumeAt)) await move(from, to);
   } catch (error) {
     let rollbackFailed = false;
     for (const [from, to] of moved.reverse()) {
@@ -315,7 +422,7 @@ export async function promoteRevokedIdentity(keyPath, oldId, moveFile = rename) 
     }
     // Only rmdir, never recursive rm: remove a leftover empty archive on
     // complete rollback, but preserve any nonempty/uncertain state for review.
-    if (!rollbackFailed) {
+    if (!rollbackFailed && resumeAt === 0) {
       try { await rmdir(archive); } catch { /* Nonempty/uncertain, preserve. */ }
     }
     throw error;
@@ -369,8 +476,8 @@ async function rePairRevokedDevice(options, keyPath, previous, stdin, stdout) {
 
   // Stop only the owned v2 service AFTER new cloud approval and BEFORE
   // touching the old identity files.
-  if (previous) run("systemctl", ["--user", "stop", UNIT]);
-  await promoteRevokedIdentity(keyPath, oldId);
+  await beginRevokedPromotion(keyPath, oldId, nextId);
+  await resumeRevokedPromotion(options, keyPath, previous);
   stdout.write("Revoked identity archived locally; new device ID paired. Activating v2 only.\n");
 }
 
@@ -463,6 +570,13 @@ export async function runInstaller(args, {
   }
 
   if (options.action === "install") {
+    if (await exists(promotionMarker(keyPath))) {
+      if (options.foreground || !stdin.isTTY || !stdout.isTTY) {
+        throw new Error("Interrupted identity promotion requires a local interactive terminal.");
+      }
+      const resumed = await resumeRevokedPromotion(options, keyPath, previous);
+      stdout.write("Verified interrupted identity promotion for " + resumed.newId + ".\\n");
+    } else {
     const state = await inspectInstallIdentity(options, keyPath, previous);
     if (state === "revoked") {
       // Only an interactive installer can recover a revoked installation.
@@ -480,6 +594,7 @@ export async function runInstaller(args, {
       if (state === "pending") stdout.write("Previous pairing not completed; retrying with the same private key.\n");
       await pairFreshPending(options, keyPath, stdin, stdout, state === "pending");
     }
+    }
   }
   await ownerOnly(keyPath, 0o600);
   await ownerOnly(keyPath + ".device-id", 0o600);
@@ -494,6 +609,7 @@ export async function runInstaller(args, {
     endpoint: options.endpoint, keyPath,
   });
   await installUnit(unitPath, rendered, previous);
+  await finishRevokedPromotion(keyPath);
   stdout.write("v2 user service active. Use list_devices and an approved nonsensitive read fixture to verify connectivity.\n");
 }
 
