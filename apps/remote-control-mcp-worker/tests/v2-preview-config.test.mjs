@@ -151,3 +151,50 @@ test("Preview denies missing/invalid device IDs and never routes to legacy v1", 
   assert.equal((await response.json()).result?.isError, true);
   assert.equal(legacyCalls, 0);
 });
+
+test("Preview mutation maps Agent uncertain outcomes to timeout_unknown without replay", async () => {
+  const { default: worker } = await import("../src/worker.ts");
+  const { randomUUID } = await import("node:crypto");
+  const device_id = randomUUID(), operation_id = "uncertain-" + randomUUID();
+  let status = "unavailable";
+  let ownerCalls = 0;
+  const env = {
+    MCP_ACCESS_TOKEN: "preview-uncertain-token",
+    REMOTE_CONTROL_V2_PREVIEW_ONLY: "true",
+    V2_OWNER: {
+      idFromName: () => "single-owner",
+      get: () => ({
+        fetch: async (url, init) => {
+          ownerCalls++;
+          assert.equal(new URL(String(url)).pathname, "/operation");
+          const body = JSON.parse(init.body);
+          assert.equal(body.device_id, device_id);
+          return Response.json({ operation_id, status });
+        },
+      }),
+    },
+  };
+  async function invoke(name, argumentsValue) {
+    const result = await worker.fetch(new Request("https://preview.test/mcp", {
+      method: "POST",
+      headers: { authorization: "Bearer preview-uncertain-token", "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 36, method: "tools/call",
+        params: { name, arguments: argumentsValue } }),
+    }), env);
+    const payload = await result.json();
+    assert.notEqual(payload.result?.isError, true);
+    return JSON.parse(payload.result.content[0].text);
+  }
+  const write = { device_id, operation_id, path: "/home/rcagent/fault-test.txt",
+    content: "ONE\\n", mode: "append" };
+  assert.deepEqual(await invoke("write_file", write), { operation_id, status: "timeout_unknown" });
+  status = "unknown";
+  assert.deepEqual(await invoke("write_file", write), { operation_id, status: "timeout_unknown" });
+  status = "completed";
+  assert.deepEqual(await invoke("write_file", write), { operation_id, status: "completed" });
+  status = "unavailable";
+  // A receipt lookup must remain a read-only status report, not a mutation.
+  assert.deepEqual(await invoke("get_operation_status", { device_id, operation_id }),
+    { operation_id, status: "unavailable" });
+  assert.equal(ownerCalls, 4);
+});
