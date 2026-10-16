@@ -421,6 +421,14 @@ export async function runInstaller(args, {
       "while WSL is stopped, the device is unavailable. See docs/remote-control/WSL2-V2-LIFECYCLE.md.\n");
   }
   const previous = await readOwnedUnit(unitPath);
+  // Ordinary repeat install must not silently accept a different Worker target.
+  // Explicit --upgrade remains the separate path for intentional endpoint changes.
+  if (previous && options.action === "install") {
+    const endpointLine = "Environment=REMOTE_CONTROL_V2_ENDPOINT=" + trustedEndpoint(options.endpoint);
+    if (!previous.split("\n").includes(endpointLine)) {
+      throw new Error("Existing v2 service endpoint differs; manual review required.");
+    }
+  }
   if (options.foreground && previous) {
     throw new Error("Foreground refuses to compete with an existing v2 systemd unit.");
   }
@@ -503,6 +511,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       "Pending enrollment could not be completed.",
       "Incomplete staged identity requires manual review.",
       "Installed v2 service identity is missing; manual review required.",
+      "Existing v2 service endpoint differs; manual review required.",
       "Revoked foreground identity requires manual review.",
       "New device identity was not verified.",
       "Old identity archive already exists.",
