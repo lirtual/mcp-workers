@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { createHash, createPrivateKey, createPublicKey } from "node:crypto";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { MARKER, UNIT, classifyLinuxKernel, parseInstallArgs, renderV2Service, trustedEndpoint } from "../scripts/install-v2.mjs";
+import { beginDeviceEnrollment } from "../src/pair-device.ts";
 
 const example = {
   node: "/opt/node24/bin/node",
@@ -132,4 +135,33 @@ test("first enrollment prompts for one challenge, not the original pairing code 
   assert.match(src, /attempt < 3/);
   assert.match(src, /Invalid local challenge format/);
   assert.match(src, /if \(!stdin\.isTTY \|\| !stdout\.isTTY\)/);
+});
+
+test("enrollment displays the immutable locally generated public-key fingerprint, with no second command", async () => {
+  const folder = await mkdtemp(path.join(os.tmpdir(), "rc-v2-fingerprint-"));
+  try {
+    const keyPath = path.join(folder, "private.pem");
+    let request;
+    const fakeFetch = async (url, options) => {
+      assert.equal(new URL(url).pathname, "/agent/pair/start");
+      request = JSON.parse(options.body);
+      return new Response(null, { status: 202 });
+    };
+    const pending = await beginDeviceEnrollment("debian-wsl2", "https://rc.example.org/", keyPath, fakeFetch);
+    const publicSpkiDer = createPublicKey(createPrivateKey(await readFile(keyPath, "utf8")))
+      .export({ type: "spki", format: "der" });
+    const expected = createHash("sha256").update(publicSpkiDer).digest("hex").slice(0, 24);
+    assert.equal(pending.fingerprint, expected);
+    assert.equal(pending.fingerprint, createHash("sha256")
+      .update(Buffer.from(request.public_key, "base64")).digest("hex").slice(0, 24));
+    assert.match(pending.code, /^[A-Z2-7]{10}$/);
+    assert.equal((await stat(keyPath)).mode & 0o777, 0o600);
+    const script = await readFile(path.join(path.dirname(fileURLToPath(import.meta.url)),
+      "..", "scripts", "install-v2.mjs"), "utf8");
+    assert.match(script, /Local public key fingerprint: " \+ enrollment\.fingerprint/);
+    assert.match(script, /compare its fingerprint with the one above/);
+    assert.doesNotMatch(script, /openssl pkey|Repeat original 10-character code/);
+  } finally {
+    await rm(folder, { recursive: true, force: true });
+  }
 });

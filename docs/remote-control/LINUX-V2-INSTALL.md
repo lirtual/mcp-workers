@@ -13,7 +13,7 @@ From the checkout, the **single installer invocation** is:
 
     node --experimental-strip-types apps/remote-control-agent/scripts/install-v2.mjs --endpoint https://APPROVED-V2-WORKER/ --name linux-workstation
 
-This requires a TTY. After dependency checks, it writes an Ed25519 key to the owner-controlled directory under ~/.local/share/mcp-workers/remote-control/, with mode 0600 and parent mode 0700, and displays a short-lived **10-character one-use code in the local interactive terminal**. Avoid recording this terminal transcript or sending it to logs.
+This requires a TTY. After dependency checks, it writes an Ed25519 key to the owner-controlled directory under ~/.local/share/mcp-workers/remote-control/, with mode 0600 and parent mode 0700, and displays a short-lived **10-character one-use code and local public-key fingerprint together in the local interactive terminal**. The public-key fingerprint is derived from SHA-256 of the Ed25519 SPKI DER, truncated to 12 bytes; it must match the fingerprint reported by authenticated MCP `pairing_lookup`. No separate `openssl` command or second terminal is needed. Avoid recording the pairing code/confirmation challenge or sending them to logs.
 
 ## Independent human authorization
 

@@ -288,7 +288,8 @@ export async function runInstaller(args, {
     const terminal = createInterface({ input: stdin, output: stdout, terminal: true });
     try {
       stdout.write("Pending 10-minute pairing code: " + enrollment.code + "\n");
-      stdout.write("In authenticated MCP: pairing_lookup, then pairing_prepare; approve fingerprint before entering challenge here.\n");
+      stdout.write("Local public key fingerprint: " + enrollment.fingerprint + "\n");
+      stdout.write("In authenticated MCP: pairing_lookup; compare its fingerprint with the one above, then pairing_prepare. Enter only the returned challenge here.\n");
       // The installer already holds the original code in memory. Prompt only
       // for the independently prepared challenge; never ask the user to type
       // a second lookalike code or persist the pairing code to disk.

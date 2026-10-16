@@ -11,7 +11,7 @@ node --experimental-strip-types apps/remote-control-agent/scripts/install-v2.mjs
   --name grokbot
 ```
 
-The device displays a **10-character pairing code** in its terminal. The owner reviews the immutable fingerprint via `pairing_lookup`, prepares a one-use challenge via `pairing_prepare`, and **personally authorizes** the local confirmation. The local device then signs the challenge. After successful pairing, the installer starts the **same** `src/v2-main.ts` Agent **in the foreground**. Only `readOnly: true` is enabled; Shell and writes stay disabled. There is **no systemd unit, daemon, nohup, PM2, startup task, Windows helper, v1 credential or auto-restart process**.
+The device displays a **10-character pairing code and local public-key fingerprint together** in its terminal; no extra `openssl` command is necessary. The owner compares this fingerprint to the immutable fingerprint from `pairing_lookup`, prepares a one-use challenge via `pairing_prepare`, and **personally authorizes** the local confirmation. The local device then signs the challenge. After successful pairing, the installer starts the **same** `src/v2-main.ts` Agent **in the foreground**. Only `readOnly: true` is enabled; Shell and writes stay disabled. There is **no systemd unit, daemon, nohup, PM2, startup task, Windows helper, v1 credential or auto-restart process**.
 
 If the terminal/session closes, the container is suspended, or the environment is wiped, the Agent goes offline once network failure is observed. An ordinary reconnect while the process remains alive uses bounded backoff. If a container is resumed with its **original key + device ID**, restart manually:
 
