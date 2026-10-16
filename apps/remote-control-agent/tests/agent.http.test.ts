@@ -912,9 +912,10 @@ test("migration reconciles known 1,000-to-300 backup with current protected hist
   const current = old.slice(700);
   const original = JSON.stringify({ version: 1, receipts: current });
   await writeFile(path.join(state, "operation-receipts.json"), original);
-  await writeFile(path.join(state, "operation-receipts.backup-20261016-090053.json"),
-    JSON.stringify({ version: 1, receipts: old }));
-  const agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: state });
+  const requiredBackup = path.join(state, "operation-receipts.backup-20261016-090053.json");
+  await writeFile(requiredBackup, JSON.stringify({ version: 1, receipts: old }));
+  const agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: state,
+    receiptHistoricalBackupPath: requiredBackup });
   try {
     const status = await fetch(agent.baseUrl + "/internal/operations/history-0", {
       headers: { "x-device-credential": DEVICE_TOKEN },
@@ -987,15 +988,138 @@ test("migration rejects conflicting historical identities before any file mutati
     state: "unknown", created_at: time, updated_at: time,
   };
   await writeFile(path.join(state, "operation-receipts.json"), JSON.stringify({ version: 1, receipts: [record] }));
-  await writeFile(path.join(state, "operation-receipts.backup-20261016-090053.json"),
+  const backup = path.join(state, "operation-receipts.backup-20261016-090053.json");
+  await writeFile(backup,
     JSON.stringify({ version: 1, receipts: [{ ...record, argument_digest: "b".repeat(64) }] }));
-  const agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: state });
+  const agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: state,
+    receiptHistoricalBackupPath: backup });
   const target = path.join(root, "must-not-exist");
   try {
     const result = await call(agent, { tool: "write_file", operation_id: "another",
       arguments: { path: target, content: "forbidden", mode: "rewrite" } });
     assert.equal(result.status, 503);
     assert.equal(existsSync(target), false);
+  } finally {
+    await agent.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("missing, incomplete or malformed required receipt history fails closed", async () => {
+  for (const kind of ["missing", "incomplete", "malformed"]) {
+    const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-history-invalid-"));
+    const state = path.join(root, "state");
+    await mkdir(state);
+    const created = new Date().toISOString();
+    const record = { operation_id: "historical-1", tool_name: "write_file",
+      argument_digest: "a".repeat(64), state: "unknown", created_at: created, updated_at: created };
+    const source = JSON.stringify({ version: 1, receipts: [record] });
+    const backup = path.join(state, "required-history.json");
+    await writeFile(path.join(state, "operation-receipts.json"), source);
+    if (kind === "incomplete") await writeFile(backup, JSON.stringify({ version: 1, receipts: [] }));
+    if (kind === "malformed") await writeFile(backup, "{ broken");
+    const target = path.join(root, "must-not-be-written");
+    const agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: state,
+      receiptHistoricalBackupPath: backup });
+    try {
+      const attempt = await call(agent, { tool: "write_file",
+        operation_id: "migration-unsafe-" + kind,
+        arguments: { path: target, content: "no", mode: "rewrite" } });
+      assert.equal(attempt.status, 503, kind);
+      assert.equal(existsSync(target), false, kind);
+      assert.equal(await readFile(path.join(state, "operation-receipts.json"), "utf8"), source);
+    } finally {
+      await agent.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("bad legacy fields and duplicate operation IDs cannot authorize fresh writes", async () => {
+  const now = new Date().toISOString();
+  const valid = { operation_id: "valid-1", tool_name: "write_file", argument_digest: "a".repeat(64),
+    state: "unknown", created_at: now, updated_at: now };
+  const variants = [
+    [{ ...valid, argument_digest: "not-sha256" }],
+    [{ ...valid, created_at: "invalid-date" }],
+    [{ ...valid, state: "not-a-state" }],
+    [valid, { ...valid }],
+  ];
+  for (const records of variants) {
+    const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-bad-schema-"));
+    const state = path.join(root, "state");
+    await mkdir(state);
+    const original = JSON.stringify({ version: 1, receipts: records });
+    await writeFile(path.join(state, "operation-receipts.json"), original);
+    const agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: state });
+    const target = path.join(root, "target");
+    try {
+      const attempt = await call(agent, { tool: "write_file", operation_id: "bad-schema-blocked",
+        arguments: { path: target, content: "no", mode: "rewrite" } });
+      assert.equal(attempt.status, 503);
+      assert.equal(existsSync(target), false);
+      assert.equal(await readFile(path.join(state, "operation-receipts.json"), "utf8"), original);
+    } finally {
+      await agent.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("interrupted legacy migration rolls back transaction and retries safely", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-import-rollback-"));
+  const state = path.join(root, "state");
+  await mkdir(state);
+  const now = new Date().toISOString();
+  const old = { operation_id: "old-unknown", tool_name: "write_file", argument_digest: "b".repeat(64),
+    state: "unknown", created_at: now, updated_at: now };
+  const source = JSON.stringify({ version: 1, receipts: [old] });
+  await writeFile(path.join(state, "operation-receipts.json"), source);
+  const fail = { commit: true };
+  const agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: state,
+    receiptFaultForTests: (phase) => phase === "commit" && fail.commit });
+  const target = path.join(root, "new");
+  const request = { tool: "write_file", operation_id: "after-import",
+    arguments: { path: target, content: "once", mode: "rewrite" } };
+  try {
+    const rejected = await call(agent, request);
+    assert.equal(rejected.status, 503);
+    assert.equal(existsSync(target), false);
+    assert.equal(await readFile(path.join(state, "operation-receipts.json"), "utf8"), source);
+    fail.commit = false;
+    const allowed = await call(agent, request);
+    assert.equal((allowed.json as { status: string }).status, "completed");
+    const oldStatus = await fetch(agent.baseUrl + "/internal/operations/old-unknown",
+      { headers: { "x-device-credential": DEVICE_TOKEN } });
+    assert.equal((await oldStatus.json() as { state: string }).state, "unknown");
+    assert.equal(await readFile(target, "utf8"), "once");
+  } finally {
+    fail.commit = false;
+    await agent.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("unselected same-name historical file is never imported for an independent Agent", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-history-opt-in-"));
+  const state = path.join(root, "state");
+  await mkdir(state);
+  const now = new Date().toISOString();
+  const trusted = { operation_id: "current-1", tool_name: "write_file",
+    argument_digest: "a".repeat(64), state: "unknown", created_at: now, updated_at: now };
+  const unrelated = { ...trusted, operation_id: "untrusted-old" };
+  await writeFile(path.join(state, "operation-receipts.json"),
+    JSON.stringify({ version: 1, receipts: [trusted] }));
+  await writeFile(path.join(state, "operation-receipts.backup-20261016-090053.json"),
+    JSON.stringify({ version: 1, receipts: [unrelated] }));
+  const agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: state });
+  try {
+    const known = await fetch(agent.baseUrl + "/internal/operations/current-1",
+      { headers: { "x-device-credential": DEVICE_TOKEN } });
+    assert.equal(known.status, 200);
+    const unselected = await fetch(agent.baseUrl + "/internal/operations/untrusted-old",
+      { headers: { "x-device-credential": DEVICE_TOKEN } });
+    assert.equal(unselected.status, 404);
   } finally {
     await agent.close();
     await rm(root, { recursive: true, force: true });
@@ -1078,6 +1202,100 @@ test("SQLite write failure leaves safe reads available and only allows owned eme
   }
 });
 
+test("database outage rejects all mutations and can stop an owned session at ten active slots", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-10-slot-outage-"));
+  const state = path.join(root, "state");
+  const file = path.join(root, "fixture");
+  const moved = path.join(root, "moved");
+  await writeFile(file, "keep");
+  const failure = { enabled: false };
+  const agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: state, shellPath: "/bin/sh",
+    receiptFaultForTests: () => failure.enabled });
+  const sessions: string[] = [];
+  try {
+    for (let n = 0; n < 10; n += 1) {
+      const started = await call(agent, { tool: "start_process",
+        operation_id: "ten-active-" + n, arguments: { command: "sleep 30", timeout_ms: 0 } });
+      assert.equal((started.json as { status: string }).status, "running");
+      sessions.push((started.json as { session_id: string }).session_id);
+    }
+    const full = await call(agent, { tool: "start_process", operation_id: "ten-active-limit",
+      arguments: { command: "sleep 30", timeout_ms: 0 } });
+    assert.equal((full.json as { status: string }).status, "failed");
+
+    failure.enabled = true;
+    const mutations = [
+      { tool: "write_file", arguments: { path: file, content: "not-written", mode: "rewrite" } },
+      { tool: "create_directory", arguments: { path: path.join(root, "not-created") } },
+      { tool: "edit_block", arguments: { file_path: file, old_string: "keep", new_string: "changed", expected_replacements: 1 } },
+      { tool: "move_file", arguments: { source: file, destination: moved } },
+      { tool: "delete_file", arguments: { path: file } },
+      { tool: "start_process", arguments: { command: "echo should-not-run", timeout_ms: 0 } },
+      { tool: "interact_with_process", arguments: { session_id: sessions[0], input: "side effect\n" } },
+    ];
+    for (let n = 0; n < mutations.length; n += 1) {
+      const request = mutations[n]!;
+      const refused = await call(agent, { ...request, operation_id: "outage-denied-" + n });
+      assert.equal(refused.status, 503, request.tool);
+    }
+    assert.equal(await readFile(file, "utf8"), "keep");
+    assert.equal(existsSync(moved), false);
+    assert.equal(existsSync(path.join(root, "not-created")), false);
+    const safe = await call(agent, { tool: "read_file", arguments: { path: file } });
+    assert.match(completedText(safe.json), /keep/);
+
+    const denied = await call(agent, { tool: "force_terminate", operation_id: "unauthorized-outage-stop",
+      arguments: { session_id: sessions[0] } }, "incorrect");
+    assert.equal(denied.status, 401);
+    const stopped = await call(agent, { tool: "force_terminate", operation_id: "outage-owned-stop",
+      arguments: { session_id: sessions[0] } });
+    assert.equal(stopped.status, 200);
+    assert.equal((stopped.json as { status: string }).status, "unknown");
+    const snapshot = await call(agent, { tool: "list_sessions", arguments: {} });
+    const current = JSON.parse(completedText(snapshot.json)) as Array<{ session_id: string; state: string }>;
+    assert.ok(current.some((item) => item.session_id === sessions[0] && item.state !== "running"));
+    failure.enabled = false;
+    const replacement = await call(agent, { tool: "start_process", operation_id: "after-outage-free-slot",
+      arguments: { command: "sleep 30", timeout_ms: 0 } });
+    assert.equal((replacement.json as { status: string }).status, "running");
+  } finally {
+    failure.enabled = false;
+    await agent.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a failed SQLite commit blocks the effect and leaves same operation ID usable", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-commit-failure-"));
+  const state = path.join(root, "state");
+  const target = path.join(root, "target");
+  const failure = { commit: false };
+  const agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: state,
+    receiptFaultForTests: (phase) => phase === "commit" && failure.commit });
+  try {
+    const initial = await call(agent, { tool: "read_file", arguments: { path: target } });
+    assert.equal((initial.json as { status: string }).status, "failed");
+    // Initialize the store before simulating a transaction COMMIT failure.
+    const missing = await fetch(agent.baseUrl + "/internal/operations/not-present",
+      { headers: { "x-device-credential": DEVICE_TOKEN } });
+    assert.equal(missing.status, 404);
+    const request = { tool: "write_file", operation_id: "commit-failed-before-effect",
+      arguments: { path: target, content: "once", mode: "rewrite" } };
+    failure.commit = true;
+    const rejected = await call(agent, request);
+    assert.equal(rejected.status, 503);
+    assert.equal(existsSync(target), false);
+    failure.commit = false;
+    const accepted = await call(agent, request);
+    assert.equal((accepted.json as { status: string }).status, "completed");
+    assert.equal(await readFile(target, "utf8"), "once");
+  } finally {
+    failure.commit = false;
+    await agent.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("interrupted SQLite receipt survives restart and old protected identities do not expire", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-sqlite-restart-"));
   const state = path.join(root, "state");
@@ -1137,6 +1355,63 @@ test("a nonzero-exit command with prior file effects keeps its replay guard afte
     assert.equal((repeated.json as { status: string }).status, "failed");
     assert.equal(await readFile(target, "utf8"), "x");
   } finally {
+    await agent.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("simulated ENOSPC and EROFS storage faults never authorize file effects", async () => {
+  for (const code of ["ENOSPC", "EROFS"]) {
+    const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-sqlite-errno-"));
+    const target = path.join(root, "fixture");
+    const failure = { enabled: true };
+    const agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: path.join(root, "state"),
+      receiptFaultForTests: (phase) => {
+        if (phase === "begin" && failure.enabled) throw Object.assign(new Error("SQLite I/O failure"), { code });
+        return false;
+      } });
+    try {
+      const request = { tool: "write_file", operation_id: "errno-fault-" + code,
+        arguments: { path: target, content: "after-recovery", mode: "rewrite" } };
+      const denied = await call(agent, request);
+      assert.equal(denied.status, 503, code);
+      assert.equal(existsSync(target), false, code);
+      failure.enabled = false;
+      const restored = await call(agent, request);
+      assert.equal((restored.json as { status: string }).status, "completed");
+      assert.equal(await readFile(target, "utf8"), "after-recovery");
+    } finally {
+      failure.enabled = false;
+      await agent.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("a failed post-effect receipt commit returns unknown and cannot replay the append", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-effect-commit-"));
+  const state = path.join(root, "state");
+  const target = path.join(root, "effect");
+  const failure = { enabled: true };
+  let agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: state,
+    receiptFaultForTests: (phase) => phase === "commit" && failure.enabled && existsSync(target) });
+  const request = { tool: "write_file", operation_id: "effect-commit-unknown",
+    arguments: { path: target, content: "x", mode: "append" } };
+  try {
+    const first = await call(agent, request);
+    assert.equal((first.json as { status: string }).status, "unknown");
+    assert.equal(await readFile(target, "utf8"), "x");
+    failure.enabled = false;
+    const repeated = await call(agent, request);
+    assert.equal((repeated.json as { status: string }).status, "unknown");
+    assert.equal(await readFile(target, "utf8"), "x");
+    await agent.close();
+    agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: state });
+    const afterRestart = await call(agent, request);
+    assert.equal((afterRestart.json as { status: string }).status, "unknown");
+    assert.equal(await readFile(target, "utf8"), "x");
+  } finally {
+    failure.enabled = false;
     await agent.close();
     await rm(root, { recursive: true, force: true });
   }

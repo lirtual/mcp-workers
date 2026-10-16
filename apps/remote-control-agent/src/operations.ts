@@ -41,10 +41,6 @@ const RECEIPT_TOOLS = new Set<OperationReceipt["tool_name"]>([
   "write_file", "create_directory", "edit_block", "move_file", "delete_file",
   "start_process", "interact_with_process", "force_terminate",
 ]);
-// This is the operator-identified 2026-10-16 recovery snapshot, not a
-// wildcard search through arbitrary files in an Agent state directory.
-const KNOWN_HISTORICAL_BACKUP = "operation-receipts.backup-20261016-090053.json";
-
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return "[" + value.map(canonical).join(",") + "]";
   if (value !== null && typeof value === "object") {
@@ -119,12 +115,12 @@ export class ReceiptStore {
   private readonly file: string;
   private readonly legacyFile: string;
   private database: DatabaseSync | undefined;
-  private readonly testPersistenceUnavailable?: () => boolean;
+  private readonly testPersistenceUnavailable?: (phase: "begin" | "commit") => boolean;
   private readonly historicalBackupPath?: string;
 
   constructor(
     directory = path.join(os.homedir(), ".local", "state", "mcp-workers", "remote-control-agent"),
-    testPersistenceUnavailable?: () => boolean,
+    testPersistenceUnavailable?: (phase: "begin" | "commit") => boolean,
     historicalBackupPath?: string,
   ) {
     this.directory = directory;
@@ -147,11 +143,12 @@ export class ReceiptStore {
   private transaction<T>(action: () => T): T {
     // A local-only failure probe enables public-boundary failure tests without
     // mutating or corrupting a real SQLite file. Not exposed through MCP.
-    if (this.testPersistenceUnavailable?.()) throw new Error("Receipt persistence is unavailable.");
+    if (this.testPersistenceUnavailable?.("begin")) throw new Error("Receipt persistence is unavailable.");
     const db = this.db();
     db.exec("BEGIN IMMEDIATE");
     try {
       const result = action();
+      if (this.testPersistenceUnavailable?.("commit")) throw new Error("Receipt commit is unavailable.");
       db.exec("COMMIT");
       return result;
     } catch (error) {
@@ -163,7 +160,7 @@ export class ReceiptStore {
   private cleanup(): void {
     const cutoff = new Date(Date.now() - RECEIPT_TTL_MS).toISOString();
     this.db().prepare("DELETE FROM receipts WHERE guarded = 0 AND state IN ('completed','failed') AND created_at < ?").run(cutoff);
-    this.db().prepare("UPDATE receipts SET safe_result_summary = NULL, session_id = NULL WHERE guarded = 1 AND created_at < ?").run(cutoff);
+    this.db().prepare("UPDATE receipts SET safe_result_summary = NULL, session_id = NULL WHERE guarded = 1 AND created_at < ? AND (safe_result_summary IS NOT NULL OR session_id IS NOT NULL)").run(cutoff);
   }
 
   private async exists(file: string): Promise<boolean> {
@@ -209,13 +206,10 @@ export class ReceiptStore {
           // Operators with a known trimmed history supply this exact path and
           // must not accidentally migrate without it. Other Agent instances
           // do not get an invented 300-record special case.
-          const knownBackup = this.historicalBackupPath ?? path.join(this.directory, KNOWN_HISTORICAL_BACKUP);
-          const backupExists = await this.exists(knownBackup);
-          if (this.historicalBackupPath && !backupExists) {
-            throw new Error("Required historical receipt backup is missing.");
-          }
-          const historical = backupExists
-            ? parseLegacy(await readFile(knownBackup, "utf8"))
+          // Never silently import a similarly named file: history must be
+          // explicitly selected and verified by the operator for this Agent.
+          const historical = this.historicalBackupPath
+            ? parseLegacy(await readFile(this.historicalBackupPath, "utf8"))
             : [];
           if (this.historicalBackupPath && historical.length < current.length) {
             throw new Error("Required historical receipt backup is incomplete.");

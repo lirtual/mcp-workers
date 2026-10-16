@@ -83,7 +83,7 @@ export interface StartAgentOptions {
   /** Optional absolute local path to a required pre-trim historical receipt backup. */
   receiptHistoricalBackupPath?: string;
   /** Test-only SQLite write-failure seam; never supplied by the remote protocol. */
-  receiptFaultForTests?: () => boolean;
+  receiptFaultForTests?: (phase: "begin" | "commit") => boolean;
   /** Test-only shortened deadline; production always uses 60 minutes. */
   sessionMaxLifetimeMs?: number;
   /** Test seam; production uses the current account's configured shell. */
