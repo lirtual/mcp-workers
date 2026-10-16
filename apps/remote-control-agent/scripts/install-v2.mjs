@@ -3,6 +3,7 @@
  * sudo, Portal Bearer, Cloudflare token, or changes to deployed v1 services.
  *
  * node apps/remote-control-agent/scripts/install-v2.mjs --endpoint https://EXAMPLE/ [--name HOST] [--show-fingerprint]
+ * node apps/remote-control-agent/scripts/install-v2.mjs --re-pair --endpoint https://EXAMPLE/ --name HOST
  * node apps/remote-control-agent/scripts/install-v2.mjs --resume --endpoint https://EXAMPLE/
  * node apps/remote-control-agent/scripts/install-v2.mjs --upgrade --endpoint https://EXAMPLE/
  * node apps/remote-control-agent/scripts/install-v2.mjs --uninstall
@@ -19,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import { beginDeviceEnrollment, PendingIdentityConflictError } from "../src/pair-device.ts";
 import { confirmDeviceLocally } from "../src/confirm-device.ts";
 import { recoverDeviceId, DeviceSessionRejectedError } from "../src/v2-session-client.ts";
+import { assertRemoteRevocation } from "../src/v2-repair.ts";
 
 /** WSL2 runs the same Linux Agent; Windows is never an authentication peer. */
 export function classifyLinuxKernel(release) {
@@ -48,7 +50,7 @@ export function parseInstallArgs(argv) {
     } else if (arg === "--foreground") {
       if (result.foreground) throw new Error("Duplicate foreground option.");
       result.foreground = true;
-    } else if (arg === "--upgrade" || arg === "--uninstall" || arg === "--resume") {
+    } else if (arg === "--upgrade" || arg === "--uninstall" || arg === "--resume" || arg === "--re-pair") {
       if (result.action !== "install") throw new Error("Choose one installer action.");
       result.action = arg.slice(2);
     } else if (arg === "--endpoint" || arg === "--name") {
@@ -58,10 +60,10 @@ export function parseInstallArgs(argv) {
       throw new Error("Unknown installer option.");
     }
   }
-  if (result.showFingerprint && result.action !== "install") {
+  if (result.showFingerprint && !["install", "re-pair"].includes(result.action)) {
     throw new Error("Fingerprint display is available only for first pairing.");
   }
-  if (result.foreground && (result.action === "uninstall" || result.action === "upgrade")) {
+  if (result.foreground && (result.action === "uninstall" || result.action === "upgrade" || result.action === "re-pair")) {
     throw new Error("Foreground supports first pairing or --resume only.");
   }
   if (result.action !== "uninstall" && !result.endpoint) {
@@ -242,6 +244,111 @@ async function launchForeground({ endpoint, keyPath }) {
   await import("../src/v2-main.ts");
 }
 
+/**
+ * Shared manual local challenge. Only the Agent holds the original pairing
+ * code in memory, and it never asks the user to repeat it.
+ */
+async function pairFreshPending(options, keyPath, stdin, stdout, reuseExistingKey) {
+  if (!stdin.isTTY || !stdout.isTTY) {
+    throw new Error("Pairing requires a local interactive device terminal.");
+  }
+  const enrollment = await beginDeviceEnrollment(
+    options.name ?? os.hostname(), options.endpoint, keyPath, fetch, reuseExistingKey);
+  const terminal = createInterface({ input: stdin, output: stdout, terminal: true });
+  try {
+    stdout.write("Pending 10-minute pairing code: " + enrollment.code + "\n");
+    if (options.showFingerprint) {
+      stdout.write("Local public key fingerprint (optional check): " + enrollment.fingerprint + "\n");
+    }
+    stdout.write("In authenticated MCP: pairing_lookup, then pairing_prepare. Enter only the 12-character challenge here.\n");
+    let challenge;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const typed = (await terminal.question("12-character MCP confirmation challenge: ")).trim().toUpperCase();
+      if (/^[A-Z2-7]{12}$/.test(typed)) {
+        challenge = typed;
+        break;
+      }
+      if (attempt < 2) stdout.write("Challenge must be 12 characters (A-Z, 2-7). Try again.\n");
+    }
+    if (!challenge) throw new Error("Invalid local challenge format.");
+    await confirmDeviceLocally(enrollment.code, challenge, options.endpoint, keyPath);
+  } finally { terminal.close(); }
+}
+
+/** Explicit revoked-device replacement, never ordinary install recovery. */
+async function rePairRevokedDevice(options, keyPath, previous, stdin, stdout) {
+  const idPath = keyPath + ".device-id";
+  if (!await exists(keyPath) || !await exists(idPath)) {
+    throw new Error("Re-pair requires the old local private key and device ID.");
+  }
+  await ownerOnly(keyPath, 0o600);
+  await ownerOnly(idPath, 0o600);
+  const oldId = (await readFile(idPath, "utf8")).trim();
+  // Fail closed: an owner-issued revoke must be durable and cryptographically
+  // verified before old identity files or the service can be touched.
+  await assertRemoteRevocation(options.endpoint, keyPath, oldId);
+  if (!stdin.isTTY || !stdout.isTTY) throw new Error("Re-pair requires an interactive device terminal.");
+  const consent = createInterface({input: stdin, output: stdout, terminal: true});
+  try {
+    stdout.write("Cloud confirms that this old device ID is revoked. It cannot be restored.\n");
+    if ((await consent.question("Type RE-PAIR to authorize a new key and new device ID: ")).trim() !== "RE-PAIR") {
+      throw new Error("Explicit re-pair confirmation was not provided.");
+    }
+  } finally { consent.close(); }
+
+  // Create/confirm the new identity in a separate staging file. The
+  // revoked key and its original .device-id remain intact until pairing
+  // has succeeded, including across Ctrl+C, expiry and lost HTTP replies.
+  const stage = keyPath + ".re-pair-new";
+  const stageExists = await exists(stage);
+  const stageId = await exists(stage + ".device-id");
+  if (stageId && !stageExists) throw new Error("Incomplete staged identity requires manual review.");
+  if (stageExists) await ownerOnly(stage, 0o600);
+  if (stageId) await ownerOnly(stage + ".device-id", 0o600);
+  let paired = false;
+  if (stageExists) {
+    try {
+      await recoverDeviceId(options.endpoint, stage);
+      paired = true;
+    } catch (error) {
+      if (stageId || !(error instanceof DeviceSessionRejectedError && error.status === 404)) {
+        throw error;
+      }
+      stdout.write("Resuming unapproved staged replacement with its existing private key.\n");
+    }
+  }
+  if (!paired) await pairFreshPending(options, stage, stdin, stdout, Boolean(stageExists));
+  await ownerOnly(stage, 0o600);
+  await ownerOnly(stage + ".device-id", 0o600);
+  const nextId = (await readFile(stage + ".device-id", "utf8")).trim();
+  if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(nextId) || nextId === oldId) {
+    throw new Error("New device identity was not verified.");
+  }
+
+  // No destructive replace of the old key: archive both revoked identity
+  // files in an owner-only directory, then promote the paired new identity.
+  // In-process rename failures roll back; power loss mid-swap must fail closed
+  // for manual reconciliation rather than silently re-pairing.
+  const archive = path.join(path.dirname(keyPath), "revoked-" + oldId);
+  if (await exists(archive)) throw new Error("Old identity archive already exists.");
+  if (previous) run("systemctl", ["--user", "stop", UNIT]);
+  await mkdir(archive, {mode: 0o700});
+  const moved = [];
+  async function move(from, to) { await rename(from, to); moved.push([to, from]); }
+  try {
+    await move(keyPath, path.join(archive, "identity.pem"));
+    await move(idPath, path.join(archive, "identity.pem.device-id"));
+    await move(stage, keyPath);
+    await move(stage + ".device-id", idPath);
+  } catch (error) {
+    for (const [from, to] of moved.reverse()) {
+      try { await rename(from, to); } catch { /* Preserve both sides for manual inspection. */ }
+    }
+    throw error;
+  }
+  stdout.write("Revoked identity archived locally; new device ID paired. Activating v2 only.\n");
+}
+
 export async function runInstaller(args, {
   home = os.homedir(), stdin = process.stdin, stdout = process.stdout,
   startForeground = launchForeground,
@@ -290,6 +397,10 @@ export async function runInstaller(args, {
     }
   }
 
+  if (options.action === "re-pair") {
+    await rePairRevokedDevice(options, keyPath, previous, stdin, stdout);
+  }
+
   if (options.action === "install") {
     const existingKey = await exists(keyPath);
     const existingId = await exists(keyPath + ".device-id");
@@ -322,27 +433,7 @@ export async function runInstaller(args, {
     }
     if (!alreadyPaired) {
       if (!stdin.isTTY || !stdout.isTTY) throw new Error("First pairing needs the device's interactive terminal.");
-      const enrollment = await beginDeviceEnrollment(
-        options.name ?? os.hostname(), options.endpoint, keyPath, fetch, Boolean(existingKey));
-      const terminal = createInterface({ input: stdin, output: stdout, terminal: true });
-      try {
-        stdout.write("Pending 10-minute pairing code: " + enrollment.code + "\n");
-        if (options.showFingerprint) {
-          stdout.write("Local public key fingerprint (optional check): " + enrollment.fingerprint + "\n");
-        }
-        stdout.write("In authenticated MCP: pairing_lookup, then pairing_prepare. Enter only the 12-character challenge here.\n");
-        let challenge;
-        for (let attempt = 0; attempt < 3; attempt++) {
-          const typed = (await terminal.question("12-character MCP confirmation challenge: ")).trim().toUpperCase();
-          if (/^[A-Z2-7]{12}$/.test(typed)) {
-            challenge = typed;
-            break;
-          }
-          if (attempt < 2) stdout.write("Challenge must be 12 characters (A-Z, 2-7). Try again.\n");
-        }
-        if (!challenge) throw new Error("Invalid local challenge format.");
-        await confirmDeviceLocally(enrollment.code, challenge, options.endpoint, keyPath);
-      } finally { terminal.close(); }
+      await pairFreshPending(options, keyPath, stdin, stdout, Boolean(existingKey));
     }
   }
   await ownerOnly(keyPath, 0o600);
@@ -378,6 +469,12 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       "A local device ID exists without its private key.",
       "Local and server device identities conflict.",
       "Pending enrollment could not be completed.",
+      "Re-pair requires the old local private key and device ID.",
+      "Re-pair requires an interactive device terminal.",
+      "Explicit re-pair confirmation was not provided.",
+      "Incomplete staged identity requires manual review.",
+      "New device identity was not verified.",
+      "Old identity archive already exists.",
     ];
     const detail = error instanceof PendingIdentityConflictError
       ? "Existing device key is already approved or revoked. Never reuse it; ask the owner for explicit fresh-key pairing. "

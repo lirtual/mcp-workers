@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
+import { createPrivateKey, sign as nodeSign } from "node:crypto";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { newEnrollment, saveNewPrivateKey } from "../../remote-control-agent/src/v2-enrollment.ts";
 import worker, { V2OwnerCoordinator } from "../src/worker.ts";
-import { registerPending, lookupPending, verifyRegistration, type PendingDevice } from "../src/v2-pairing.ts";
+import { registerPending, lookupPending, verifyRegistration, checkRevokedIdentity, type PendingDevice } from "../src/v2-pairing.ts";
 
 function makeStore() {
   const values = new Map<string, PendingDevice>();
@@ -199,4 +200,30 @@ test("approved and revoked device keys can NEVER register a new pending code", a
     assert.equal((await registerPending(store as never, fresh.request)).status, 202);
     assert.notEqual(fresh.request.public_key, identity.request.public_key);
   }
+});
+
+test("read-only signed revoke-state probe prevents accidental --re-pair on active, wrong-key and unknown IDs", async () => {
+  const {store,values} = makeStore();
+  const material = newEnrollment("revoked");
+  const id = "d41f1d0c-288c-4ae4-bd0d-9ff8b1b8c321";
+  values.set("device:" + id, {
+    device_id:id, name:"revoked", public_key:material.request.public_key,
+    fingerprint:"012345678901234567890123", approved_at:Date.now(), revoked:false,
+  } as never);
+  const issued_at = Date.now();
+  const raw = "remote-control:v2:re-pair-revoked:" +
+    id + ":" + material.request.public_key + ":" + issued_at;
+  const proof = Buffer.from(nodeSign(null, Buffer.from(raw),
+    createPrivateKey(material.privateKeyPem))).toString("base64");
+  const request = {device_id:id, public_key:material.request.public_key, proof, issued_at};
+  assert.equal((await checkRevokedIdentity(store as never, request)).status, 409);
+  const record = values.get("device:" + id) as {revoked:boolean};
+  record.revoked = true;
+  assert.deepEqual(await checkRevokedIdentity(store as never, request),
+    {status:200, body:{status:"revoked", device_id:id}});
+  assert.equal((await checkRevokedIdentity(store as never, {...request, proof:"invalid"})).status, 400);
+  assert.equal((await checkRevokedIdentity(store as never, {...request, device_id:"00000000-0000-4000-8000-000000000000"})).status, 403);
+  assert.equal((await checkRevokedIdentity(store as never, {...request, issued_at:Date.now()-120_000})).status, 400);
+  assert.equal(record.revoked, true);
+  assert.equal([...values.keys()].filter(x=>x.startsWith("pending:")).length, 0);
 });

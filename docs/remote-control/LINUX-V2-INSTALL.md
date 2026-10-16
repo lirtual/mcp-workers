@@ -52,6 +52,18 @@ Uninstall deliberately retains the paired private key and server-issued device I
 
 Only sanitized state names are written to the service journal, never private key, enrollment code, local terminal challenge or command data. No service-specific environment secret file is needed. Normal Unix same-user/root file access still applies.
 
+
+### Explicit re-pair after owner-initiated revoke
+
+**Only after `revoke_device` is confirmed in authenticated MCP**, run this command on the device itself:
+
+    node --experimental-strip-types apps/remote-control-agent/scripts/install-v2.mjs --re-pair --endpoint https://APPROVED-V2-WORKER/ --name linux-workstation
+
+- `--re-pair` is deliberately separate from automatic `--install` recovery and unsupported with `--foreground`. It requires existing owner-only Ed25519 key and `.device-id`, then sends a short-lived **signed read-only proof** to `/agent/re-pair/status`. The DO checks the *exact old ID + public key* and returns `revoked` only for an irrevocable tombstone. The endpoint cannot approve, un-revoke or create device permissions. **Unknown, still-approved, wrong-key, network or server-failure responses all stop with files unchanged.**
+- Only on verified revoke does the installer ask you to type `RE-PAIR` explicitly. It stages a **new Ed25519 key** under a separate owner-only path, displays a fresh 10-character code, and requires the ordinary independent 12-character challenge on the new device terminal. Ctrl+C/expiry before success leaves old revoked files unchanged and retains the staged identity for a later **`--re-pair` retry**.
+- After the NEW device ID is actually approved, it stops only its owned v2 user service, archives the **old revoked key and ID** in an owner-only `revoked-<old-device-id>` directory, moves the paired new key and ID into place, and restarts the v2 unit. Same human-readable `--name` is allowed but never reuses the old ID. A mid-file-swap OS crash is **not** silently auto-repaired: inspect the archived/staged identity and reconcile explicitly; ordinary in-process rename failures attempt rollback. Review backups before secure retirement.
+- A normal reinstall or restart **cannot** undo revocation or rotate keys. This preview-only code requires a matching v2 Worker supporting the signed status endpoint; older Preview Worker returns 404 and fails closed. No hosted deployment or production v1 change is included in this commit.
+
 ## Real-host acceptance still needed
 
 Before closing #55, obtain separately authorized nonproduction evidence from a clean Linux host: wrong Node/compiler/user-bus fails before pairing, key ownership/modes, one-use code + separate local terminal challenge (optional fingerprint review), signed WSS first read, stop/start/reboot-session reconnect, failure after pairing + explicit resume, upgrade/uninstall rollback and unchanged v1 services. #47/#50/#52 also require Cloudflare-hosted WSS acceptance; #57 requires five devices and 72 hours. These tests have **not** been run by merely merging code or passing mocked CI. No automatic production deployment or secret/config mutation follows from this document.

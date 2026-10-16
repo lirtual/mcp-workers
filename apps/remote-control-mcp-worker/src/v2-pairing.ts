@@ -134,6 +134,50 @@ export async function registerPending(storage: PendingStorage, payload: unknown)
   });
 }
 
+/**
+ * Read-only revocation proof for explicit --re-pair.
+ * No approval, device mutation or key reactivation occurs here.
+ */
+export async function checkRevokedIdentity(
+  storage: PendingStorage, payload: unknown,
+): Promise<{ status: number; body: object }> {
+  if (!await consumeBudget(storage, "lookup", MAX_LOOKUPS_PER_MINUTE)) {
+    return { status: 429, body: { error: "rate_limited" } };
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return { status: 400, body: { error: "invalid_request" } };
+  }
+  const p = payload as { device_id?: unknown; public_key?: unknown; issued_at?: unknown; proof?: unknown };
+  if (typeof p.device_id !== "string" || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(p.device_id) ||
+      typeof p.public_key !== "string" || p.public_key.length > 96 ||
+      typeof p.proof !== "string" || p.proof.length > 128 ||
+      typeof p.issued_at !== "number" || !Number.isSafeInteger(p.issued_at) ||
+      Date.now() - p.issued_at > 60_000 || p.issued_at - Date.now() > 30_000) {
+    return { status: 400, body: { error: "invalid_request" } };
+  }
+  try {
+    const signature = asBytes(p.proof);
+    const keyBytes = asBytes(p.public_key);
+    if (signature.length !== 64 || keyBytes.length !== 44) return { status: 400, body: {error: "invalid_request"} };
+    const key = await crypto.subtle.importKey("spki", Uint8Array.from(keyBytes).buffer as ArrayBuffer,
+      { name: "Ed25519" }, false, ["verify"]);
+    const transcript = te.encode("remote-control:v2:re-pair-revoked:" +
+      p.device_id + ":" + p.public_key + ":" + p.issued_at);
+    if (!await crypto.subtle.verify("Ed25519", key,
+      Uint8Array.from(signature).buffer as ArrayBuffer,
+      Uint8Array.from(transcript).buffer as ArrayBuffer)) {
+      return { status: 403, body: { error: "unauthorized" } };
+    }
+    const device = await storage.get<V2Device>("device:" + p.device_id);
+    if (!device || device.public_key !== p.public_key) return { status: 404, body: { error: "not_found" } };
+    return device.revoked === true
+      ? { status: 200, body: { status: "revoked", device_id: device.device_id } }
+      : { status: 409, body: { error: "identity_still_approved" } };
+  } catch {
+    return { status: 400, body: { error: "invalid_request" } };
+  }
+}
+
 export async function lookupPending(storage: PendingStorage, verifier: string): Promise<{ status: number; body: object }> {
   if (!/^[a-f0-9]{64}$/.test(verifier)) return { status: 400, body: { error: "invalid_code" } };
   if (!await consumeBudget(storage, "lookup", MAX_LOOKUPS_PER_MINUTE)) {
@@ -595,12 +639,13 @@ export class V2OwnerCoordinator {
         return Response.json(output.body, { status: output.status, headers: { "cache-control": "no-store" } });
       } catch { return Response.json({ error: "unavailable" }, { status: 503 }); }
     }
-    if (!["/register", "/lookup", "/prepare", "/complete", "/session/challenge", "/session/recover"].includes(path)) return new Response(null, { status: 404 });
+    if (!["/register", "/lookup", "/prepare", "/complete", "/session/challenge", "/session/recover", "/re-pair/status"].includes(path)) return new Response(null, { status: 404 });
     let payload: unknown;
     try { payload = await limitedJson(request); } catch { return Response.json({ error: "invalid_request" }, { status: 400 }); }
     try {
       let output: { status: number; body: object };
-      if (path === "/session/challenge") output = await issueSessionChallenge(this.state.storage, payload);
+      if (path === "/re-pair/status") output = await checkRevokedIdentity(this.state.storage, payload);
+      else if (path === "/session/challenge") output = await issueSessionChallenge(this.state.storage, payload);
       else if (path === "/session/recover") output = await authorizeSession(this.state.storage, payload);
       else if (path === "/register") output = await registerPending(this.state.storage, payload);
       else if (path === "/lookup") output = await lookupPending(
