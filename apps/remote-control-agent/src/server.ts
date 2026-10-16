@@ -376,7 +376,7 @@ export async function startAgent(options: StartAgentOptions): Promise<RunningAge
     } catch {
       // A persistence failure must not turn off the existing authenticated
       // owner-only ability to stop an active Agent-managed session.
-      if (tool === "force_terminate" && sessions.get(sessionId)?.state === "running") {
+      if (tool === "force_terminate" && ["running", "unknown"].includes(sessions.get(sessionId)?.state ?? "")) {
         try { await sessions.terminate(sessionId); } catch { /* Effect is unknown. */ }
         return { statusCode: 200, status: "unknown" };
       }
