@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { MARKER, UNIT, classifyLinuxKernel, parseInstallArgs, promoteRevokedIdentity, renderV2Service, trustedEndpoint } from "../scripts/install-v2.mjs";
+import { MARKER, UNIT, classifyLinuxKernel, inspectInstallIdentity, parseInstallArgs, promoteRevokedIdentity, renderV2Service, trustedEndpoint } from "../scripts/install-v2.mjs";
 import { beginDeviceEnrollment, PendingIdentityConflictError } from "../src/pair-device.ts";
 import { assertRemoteRevocation } from "../src/v2-repair.ts";
 import { DeviceSessionRejectedError, recoverDeviceId, signedSessionProof } from "../src/v2-session-client.ts";
@@ -26,10 +26,10 @@ test("minimal Linux v2 CLI supports install, explicit paired-key resume, upgrade
   assert.equal(parseInstallArgs(["--resume", "--endpoint", "https://rc.example.org"]).action, "resume");
   assert.equal(parseInstallArgs(["--upgrade", "--endpoint", "https://rc.example.org"]).action, "upgrade");
   assert.equal(parseInstallArgs(["--uninstall"]).action, "uninstall");
-  assert.equal(parseInstallArgs(["--re-pair", "--endpoint", "https://rc.example.org/", "--name", "new"]).action, "re-pair");
   for (const args of [
     [], ["--upgrade"], ["--uninstall", "--name", "x"], ["--uninstall", "--endpoint", "https://host.test"],
     ["--upgrade", "--uninstall", "--endpoint", "https://host.test"], ["--unknown"],
+    ["--re-pair", "--endpoint", "https://host.test"],
     ["--endpoint", "https://host.test", "--name", "malicious\nhost"],
   ]) {
     assert.throws(() => parseInstallArgs(args));
@@ -113,8 +113,6 @@ test("foreground is opt-in and cannot uninstall, upgrade, or duplicate flags", (
     ["--foreground", "--foreground", "--endpoint", "https://rc.example.org"],
     ["--show-fingerprint", "--show-fingerprint", "--endpoint", "https://rc.example.org"],
     ["--show-fingerprint", "--resume", "--endpoint", "https://rc.example.org"],
-    ["--re-pair", "--foreground", "--endpoint", "https://rc.example.org"],
-    ["--re-pair", "--upgrade", "--endpoint", "https://rc.example.org"],
     ["--foreground"],
   ]) assert.throws(() => parseInstallArgs(args));
 });
@@ -242,15 +240,72 @@ test("signed recovery distinguishes unknown key (404) from uncertain network and
   } finally { await rm(dir, {recursive: true, force: true}); }
 });
 
-test("default installer distinguishes interrupted pairing from deliberate revoke", async () => {
-  const script = await readFile(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "scripts", "install-v2.mjs"), "utf8");
-  assert.match(script, /await recoverDeviceId\(options\.endpoint, keyPath\)/);
-  assert.match(script, /error instanceof DeviceSessionRejectedError && error\.status === 404/);
-  assert.match(script, /await beginDeviceEnrollment\(/);
-  assert.match(script, /Boolean\(existingKey\)/);
-  assert.match(script, /if \(existingId\)/);
-  assert.match(script, /Existing device key is already approved or revoked/);
-  assert.doesNotMatch(script, /unlink\(keyPath\)|rm\(keyPath\)/);
+test("default installer auto-classifies approved, pending and signed-revoked identities safely", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "rc-v2-automatic-install-"));
+  const key = path.join(dir, "identity.pem");
+  const deviceId = "77770000-0000-4000-8000-000000000001";
+  const options = {endpoint: "https://rc.example.org/"};
+  const rejected = (status) => async () => { throw new DeviceSessionRejectedError("denied", status); };
+  const offline = async () => { throw new Error("network unavailable"); };
+  const neverVerify = async () => { throw new Error("unexpected tombstone check"); };
+  const verify = async (endpoint, pathName, id) => {
+    assert.equal(endpoint, options.endpoint);
+    assert.equal(pathName, key);
+    assert.equal(id, deviceId);
+  };
+  try {
+    assert.equal(await inspectInstallIdentity(options, key, null), "new");
+    await assert.rejects(inspectInstallIdentity(options, key, "owned-service"),
+      /identity is missing/);
+    await writeFile(key+".device-id", deviceId, {mode:0o600});
+    await assert.rejects(inspectInstallIdentity(options, key, null), /without its private key/);
+    await rm(key+".device-id");
+
+    const material = newEnrollment("recovered-debian");
+    await writeFile(key, material.privateKeyPem, {mode:0o600});
+    assert.equal(await inspectInstallIdentity(options, key, null,
+      {recover:rejected(404),verifyRevoked:neverVerify}), "pending");
+    await assert.rejects(inspectInstallIdentity(options, key, "owned-service",
+      {recover:rejected(404),verifyRevoked:neverVerify}), DeviceSessionRejectedError);
+    await assert.rejects(inspectInstallIdentity(options, key, null,
+      {recover:offline,verifyRevoked:neverVerify}), /network unavailable/);
+    assert.equal(await readFile(key, "utf8"), material.privateKeyPem);
+    assert.equal(await inspectInstallIdentity(options, key, null,
+      {recover:async () => deviceId,verifyRevoked:neverVerify}), "approved");
+
+    await writeFile(key+".device-id", deviceId, {mode:0o600});
+    assert.equal(await inspectInstallIdentity(options, key, "owned-service",
+      {recover:async () => deviceId,verifyRevoked:neverVerify}), "approved");
+    await assert.rejects(inspectInstallIdentity(options, key, "owned-service",
+      {recover:async () => "88880000-0000-4000-8000-000000000002",
+        verifyRevoked:neverVerify}), /identities conflict/);
+    await assert.rejects(inspectInstallIdentity(options, key, "owned-service",
+      {recover:offline,verifyRevoked:neverVerify}), /network unavailable/);
+    await assert.rejects(inspectInstallIdentity(options, key, "owned-service",
+      {recover:rejected(503),verifyRevoked:neverVerify}), DeviceSessionRejectedError);
+    for (const status of [401,403,404]) {
+      assert.equal(await inspectInstallIdentity(options, key, "owned-service",
+        {recover:rejected(status),verifyRevoked:verify}), "revoked");
+      await assert.rejects(inspectInstallIdentity(options, key, "owned-service",
+        {recover:rejected(status),verifyRevoked:async () => {throw Error("unverified");}}),
+        /unverified/);
+    }
+    assert.equal(await readFile(key+".device-id", "utf8"), deviceId);
+    assert.equal(await readFile(key, "utf8"), material.privateKeyPem);
+  } finally {await rm(dir,{recursive:true,force:true});}
+});
+
+test("one installer command dispatches verified revoke to guarded local challenge", async () => {
+  const src = await readFile(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "scripts", "install-v2.mjs"), "utf8");
+  assert.match(src, /const state = await inspectInstallIdentity\(options, keyPath, previous\)/);
+  assert.match(src, /if \(state === "revoked"\)/);
+  assert.match(src, /await rePairRevokedDevice\(options, keyPath, previous, stdin, stdout\)/);
+  assert.match(src, /if \(previous\) \{\s*stdout.write\("v2 user service already installed/);
+  assert.match(src, /await pairFreshPending\(options, keyPath, stdin, stdout, state === "pending"\)/);
+  assert.match(src, /await assertRemoteRevocation\(options.endpoint, keyPath, oldId\)/);
+  assert.doesNotMatch(src, /Type RE-PAIR|Explicit re-pair confirmation was not provided/);
+  assert.doesNotMatch(src, /options.action === "re-pair"/);
+  assert.doesNotMatch(src, /unlink\(keyPath\)|rm\(keyPath\)/);
 });
 
 test("explicit re-pair accepts only a signed proof of an already revoked same-ID key", async () => {
@@ -298,11 +353,11 @@ function requireCompatibleSignedProof(payload, key) {
   return Buffer.from(nodeSign(null, Buffer.from(content), key)).toString("base64");
 }
 
-test("re-pair is an explicit guarded action and archives old identity only AFTER successful new pairing", async () => {
+test("revoked install archives old identity only AFTER new challenged pairing", async () => {
   const src = await readFile(path.join(path.dirname(fileURLToPath(import.meta.url)),
     "..","scripts","install-v2.mjs"), "utf8");
   assert.match(src, /await assertRemoteRevocation\(options\.endpoint, keyPath, oldId\)/);
-  assert.match(src, /Type RE-PAIR to authorize/);
+  assert.match(src, /Old device identity confirmed revoked; starting fresh pairing/);
   assert.match(src, /const stage = keyPath \+ "\.re-pair-new"/);
   assert.match(src, /await pairFreshPending\(options, stage, stdin, stdout, Boolean\(stageExists\)\)/);
   assert.match(src, /if \(previous\) run\("systemctl", \["--user", "stop", UNIT\]\)/);
