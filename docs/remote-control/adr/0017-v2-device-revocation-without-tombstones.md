@@ -25,13 +25,11 @@ Permanent denial of the *same public key* is useful only if the owner wishes to 
 - **Trade-off:** the server loses revoked-device history, `already_revoked` becomes an ordinary `not_found`, and permanent old-public-key exclusion is no longer promised. Independent local owner approval remains the critical re-enrollment security gate.
 - **Migration:** when implementing on the v2 preview, safely remove existing historical tombstones after confirming the new authorization checks do not depend on their existence. Ensure missing record semantics cannot trigger automatic re-pair in an unattended Agent. No v1 production database or v1 identity is altered by this decision.
 
-## Outstanding grilling frontier — not yet approved
+## Temporary pairing decisions recorded separately (2026-10-17)
 
-- Whether a **temporary debugging device** is time-limited authorization or single-operation authorization, and which default duration and execution semantics apply.
-- Whether temporary onboarding preserves the existing two-code independently confirmed pairing flow or adopts a different reviewed human-consent mechanism.
-- On expiry, the exact rule for in-flight and managed processes, and whether to use foreground-only/no-service installation.
+The owner subsequently approved **Q1=C**: temporary debugging authorization is intended to end upon **intentional Agent exit**, without a fixed authorization timeout or one-operation limit; and **Q2=A**: preserve the existing independent local two-code pairing. See [ADR-0018 — temporary Agent pairing lifecycle](./0018-v2-temporary-agent-pairing-lifecycle.md). The old alternative choices in the original grilling frontier are now resolved.
 
-Those are **questions**, not accepted decisions, and must not be implemented based on this ADR alone.
+**Still unsettled:** abnormal crash/offline cleanup semantics; voluntary exit with managed operations still running; per-temporary-device key handling and failed revocation; and the concrete Agent-initiated, self-only authenticated exit/revocation protocol. Do not treat these unresolved details as implementation authorization.
 
 ## Required verification before implementing/deploying
 
