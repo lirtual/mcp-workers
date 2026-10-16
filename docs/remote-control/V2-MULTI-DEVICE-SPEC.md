@@ -1,6 +1,6 @@
 # Remote Control MCP v2 — One authoritative multi-device Spec
 
-**Status:** design accepted and being implemented in [Draft PR #58](https://github.com/lirtual/mcp-workers/pull/58); production deployment remains blocked on independent human-confirmation and multi-device/72h gates. Updated 2026-10-16.
+**Status:** design accepted and being implemented in [Draft PR #58](https://github.com/lirtual/mcp-workers/pull/58); production deployment remains blocked on independent human-confirmation and the single-device/48h soak gate. Updated 2026-10-16.
 Authority: [ADR-0014 — transport](./adr/0014-v2-multi-device-ws-do.md), [ADR-0015 — pairing](./adr/0015-v2-pairing-and-identity.md). Existing [v1 Spec](./SPEC.md) continues to govern the deployed single-device path.
 
 ## Goal
@@ -18,7 +18,7 @@ One Remote Control MCP controls separately paired Linux/WSL2 Agents across unrel
 7. As an owner, I want to remove a lost device without harming others, so that its identity and access remain revoked.
 8. As an owner, I want online removal to attempt stopping only Agent-owned managed processes, so that the result is accurate without claiming to control an offline host.
 9. As an owner, I want reinstallation to require new pairing, so that copied labels/old keys do not inherit authority.
-10. As a maintainer, I want 72-hour five-Agent Hibernation and quota evidence and an independent v1 deployment, so that Free costs and rollback are verified before any cutover.
+10. As a maintainer, I want 48-hour single-Agent Hibernation and quota evidence and an independent v1 deployment, so that Free costs and rollback are verified before any cutover.
 
 ## Minimal changes to existing modules
 
@@ -76,7 +76,7 @@ The existing Agent build invokes **`cc`** for its C session-supervisor helper; o
 | Operations | original Worker/Agent curated tool contracts, no arbitrary URL, offline rejection, no blind retry, local receipts, bounded file/output and long process sessions |
 | Device lifecycle | revoke one device while others run, online best-effort process stop, offline no false termination, reinstall and reconnect with old key denied |
 | Linux/WSL2 installer | different home/cloud networks, Node/compiled helper prerequisites, WSL2 startup, restart and network outage |
-| Cost and sleep | **5 simulated independent Agents continuously connected 72h in nonproduction**, actual DO hibernation and wake, daily DO request/GB-s/SQLite/Workers usage and other DO load, traffic bursts and fail/reconnect |
+| Cost and sleep | **1 isolated v2 Preview Agent observed for 48h in nonproduction**, actual DO hibernation and wake, daily DO request/GB-s/SQLite/Workers usage and other DO load, low-frequency reads and controlled reconnect |
 | v1 safety | existing VPC/Tunnel unchanged, explicit v2 opt-in, rollback and separate authorization before changing production |
 
 Prefer behavior tests at existing MCP→Worker→Agent seams plus disposable Agent bootstrap/WSS integration; use existing CI **if already available**, but **do not add a CI workflow**.
