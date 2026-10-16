@@ -8,10 +8,12 @@
     "dev": "wrangler dev",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
     "test": "node --experimental-strip-types --test tests/*.test.ts tests/*.test.mjs",
-    "check": "pnpm --filter @mcp-workers/remote-control-agent build:shell && pnpm run typecheck && pnpm test && pnpm run check:v2-preview && pnpm run check:v2-bootstrap",
+    "check": "pnpm --filter @mcp-workers/remote-control-agent build:shell && pnpm run typecheck && pnpm test && pnpm run check:v2-preview && pnpm run check:v2-bootstrap && pnpm run check:v2-receipt-lab && pnpm run check:v2-receipt-lab-bootstrap",
     "check:v2-bootstrap": "wrangler deploy --dry-run --config wrangler.v2-preview-bootstrap.jsonc --outdir .build/v2-bootstrap",
     "check:v2-preview": "wrangler deploy --dry-run --config wrangler.v2-preview.jsonc --outdir .build/v2-preview",
-    "types": "wrangler types"
+    "types": "wrangler types",
+    "check:v2-receipt-lab": "wrangler deploy --dry-run --config wrangler.v2-receipt-lab.jsonc --outdir .build/v2-receipt-lab",
+    "check:v2-receipt-lab-bootstrap": "wrangler deploy --dry-run --config wrangler.v2-receipt-lab-bootstrap.jsonc --outdir .build/v2-receipt-lab-bootstrap"
   },
   "dependencies": {
     "@mcp-workers/portal-auth": "workspace:*"
