@@ -1003,6 +1003,127 @@ test("migration rejects conflicting historical identities before any file mutati
   }
 });
 
+test("missing, incomplete or malformed required receipt history fails closed", async () => {
+  for (const kind of ["missing", "incomplete", "malformed"]) {
+    const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-history-invalid-"));
+    const state = path.join(root, "state");
+    await mkdir(state);
+    const created = new Date().toISOString();
+    const record = { operation_id: "historical-1", tool_name: "write_file",
+      argument_digest: "a".repeat(64), state: "unknown", created_at: created, updated_at: created };
+    const source = JSON.stringify({ version: 1, receipts: [record] });
+    const backup = path.join(state, "required-history.json");
+    await writeFile(path.join(state, "operation-receipts.json"), source);
+    if (kind === "incomplete") await writeFile(backup, JSON.stringify({ version: 1, receipts: [] }));
+    if (kind === "malformed") await writeFile(backup, "{ broken");
+    const target = path.join(root, "must-not-be-written");
+    const agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: state,
+      receiptHistoricalBackupPath: backup });
+    try {
+      const attempt = await call(agent, { tool: "write_file",
+        operation_id: "migration-unsafe-" + kind,
+        arguments: { path: target, content: "no", mode: "rewrite" } });
+      assert.equal(attempt.status, 503, kind);
+      assert.equal(existsSync(target), false, kind);
+      assert.equal(await readFile(path.join(state, "operation-receipts.json"), "utf8"), source);
+    } finally {
+      await agent.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("bad legacy fields and duplicate operation IDs cannot authorize fresh writes", async () => {
+  const now = new Date().toISOString();
+  const valid = { operation_id: "valid-1", tool_name: "write_file", argument_digest: "a".repeat(64),
+    state: "unknown", created_at: now, updated_at: now };
+  const variants = [
+    [{ ...valid, argument_digest: "not-sha256" }],
+    [{ ...valid, created_at: "invalid-date" }],
+    [{ ...valid, state: "not-a-state" }],
+    [valid, { ...valid }],
+  ];
+  for (const records of variants) {
+    const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-bad-schema-"));
+    const state = path.join(root, "state");
+    await mkdir(state);
+    const original = JSON.stringify({ version: 1, receipts: records });
+    await writeFile(path.join(state, "operation-receipts.json"), original);
+    const agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: state });
+    const target = path.join(root, "target");
+    try {
+      const attempt = await call(agent, { tool: "write_file", operation_id: "bad-schema-blocked",
+        arguments: { path: target, content: "no", mode: "rewrite" } });
+      assert.equal(attempt.status, 503);
+      assert.equal(existsSync(target), false);
+      assert.equal(await readFile(path.join(state, "operation-receipts.json"), "utf8"), original);
+    } finally {
+      await agent.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("interrupted legacy migration rolls back transaction and retries safely", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-import-rollback-"));
+  const state = path.join(root, "state");
+  await mkdir(state);
+  const now = new Date().toISOString();
+  const old = { operation_id: "old-unknown", tool_name: "write_file", argument_digest: "b".repeat(64),
+    state: "unknown", created_at: now, updated_at: now };
+  const source = JSON.stringify({ version: 1, receipts: [old] });
+  await writeFile(path.join(state, "operation-receipts.json"), source);
+  const fail = { commit: true };
+  const agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: state,
+    receiptFaultForTests: (phase) => phase === "commit" && fail.commit });
+  const target = path.join(root, "new");
+  const request = { tool: "write_file", operation_id: "after-import",
+    arguments: { path: target, content: "once", mode: "rewrite" } };
+  try {
+    const rejected = await call(agent, request);
+    assert.equal(rejected.status, 503);
+    assert.equal(existsSync(target), false);
+    assert.equal(await readFile(path.join(state, "operation-receipts.json"), "utf8"), source);
+    fail.commit = false;
+    const allowed = await call(agent, request);
+    assert.equal((allowed.json as { status: string }).status, "completed");
+    const oldStatus = await fetch(agent.baseUrl + "/internal/operations/old-unknown",
+      { headers: { "x-device-credential": DEVICE_TOKEN } });
+    assert.equal((await oldStatus.json() as { state: string }).state, "unknown");
+    assert.equal(await readFile(target, "utf8"), "once");
+  } finally {
+    fail.commit = false;
+    await agent.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("unselected same-name historical file is never imported for an independent Agent", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-history-opt-in-"));
+  const state = path.join(root, "state");
+  await mkdir(state);
+  const now = new Date().toISOString();
+  const trusted = { operation_id: "current-1", tool_name: "write_file",
+    argument_digest: "a".repeat(64), state: "unknown", created_at: now, updated_at: now };
+  const unrelated = { ...trusted, operation_id: "untrusted-old" };
+  await writeFile(path.join(state, "operation-receipts.json"),
+    JSON.stringify({ version: 1, receipts: [trusted] }));
+  await writeFile(path.join(state, "operation-receipts.backup-20261016-090053.json"),
+    JSON.stringify({ version: 1, receipts: [unrelated] }));
+  const agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: state });
+  try {
+    const known = await fetch(agent.baseUrl + "/internal/operations/current-1",
+      { headers: { "x-device-credential": DEVICE_TOKEN } });
+    assert.equal(known.status, 200);
+    const unselected = await fetch(agent.baseUrl + "/internal/operations/untrusted-old",
+      { headers: { "x-device-credential": DEVICE_TOKEN } });
+    assert.equal(unselected.status, 404);
+  } finally {
+    await agent.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("two local agents cannot concurrently admit work to one SQLite state", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-sqlite-owner-"));
   const state = path.join(root, "state");
