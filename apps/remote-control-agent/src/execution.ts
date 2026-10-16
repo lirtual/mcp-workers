@@ -23,6 +23,12 @@ export interface AgentExecutionOptions {
   searchSessionTtlMs?: number;
   receiptDirectory?: string;
   shellPath?: string;
+  /** Local-only test seam: production uses the 60-minute deadline. */
+  sessionMaxLifetimeMs?: number;
+  /** Local-only storage error probe, never routed through MCP. */
+  receiptFaultForTests?: (phase: "begin" | "commit") => boolean;
+  /** Explicit operator-verified historical backup, never selected by remote callers. */
+  receiptHistoricalBackupPath?: string;
 }
 export interface AgentExecutionReply {
   status: number;
@@ -43,10 +49,13 @@ export function createAgentExecutionEngine(options: AgentExecutionOptions = {}):
   const emit = (log: AgentExecutionOptions["log"], event: string) => log?.(event);
   const log = options.log;
   const searches = new SearchSessions(options.searchSessionTtlMs);
-  const sessions = new ManagedSessions(options.shellPath ?? process.env.SHELL ?? "/bin/sh");
-  const receipts = new ReceiptStore(options.receiptDirectory);
+  const sessions = new ManagedSessions(options.shellPath ?? process.env.SHELL ?? "/bin/sh", options.sessionMaxLifetimeMs);
+  const receipts = new ReceiptStore(options.receiptDirectory, options.receiptFaultForTests, options.receiptHistoricalBackupPath);
   let receiptsReady: Promise<void> | undefined;
-  const ensureReceipts = () => (receiptsReady ??= receipts.open());
+  const ensureReceipts = () => (receiptsReady ??= receipts.open().catch(error => {
+    receiptsReady = undefined;
+    throw error;
+  }));
   const inFlight = new Map<string, Promise<OperationReceipt | undefined>>();
 
   type MutationTool = "write_file" | "create_directory" | "edit_block" | "move_file" | "delete_file";
@@ -71,14 +80,14 @@ export function createAgentExecutionEngine(options: AgentExecutionOptions = {}):
         const originalBytes = await readFile(edit.filePath);
         const original = Buffer.from(originalBytes).toString("utf8");
         if (!Buffer.from(original, "utf8").equals(originalBytes)) {
-          await receipts.update(id, "failed", "The file is not valid UTF-8 text.");
+          await receipts.update(id, "failed", "The file is not valid UTF-8 text.", undefined, true);
           emit(log, "edit_failed");
           return await receipts.get(id) ?? undefined;
         }
         let count = 0;
         for (let offset = 0; (offset = original.indexOf(edit.oldString, offset)) !== -1; offset += edit.oldString.length) count += 1;
         if (count !== edit.expectedReplacements) {
-          await receipts.update(id, "failed", "Expected text replacement count did not match.");
+          await receipts.update(id, "failed", "Expected text replacement count did not match.", undefined, true);
           emit(log, "edit_failed");
           return await receipts.get(id) ?? undefined;
         }
@@ -87,7 +96,7 @@ export function createAgentExecutionEngine(options: AgentExecutionOptions = {}):
         const target = (args as NonNullable<ReturnType<typeof parseLocalDeleteFile>>).path;
         const info = await lstat(target);
         if (!info.isFile()) {
-          await receipts.update(id, "failed", "The target is not a regular file.");
+          await receipts.update(id, "failed", "The target is not a regular file.", undefined, true);
           emit(log, "delete_failed");
           return await receipts.get(id) ?? undefined;
         }
@@ -97,13 +106,13 @@ export function createAgentExecutionEngine(options: AgentExecutionOptions = {}):
         const source = path.resolve(move.source);
         const destination = path.resolve(move.destination);
         if (source === destination) {
-          await receipts.update(id, "failed", "Source and destination must differ.");
+          await receipts.update(id, "failed", "Source and destination must differ.", undefined, true);
           emit(log, "move_failed");
           return await receipts.get(id) ?? undefined;
         }
         const sourceInfo = await lstat(source);
         if (!sourceInfo.isFile()) {
-          await receipts.update(id, "failed", "The source is not a regular file.");
+          await receipts.update(id, "failed", "The source is not a regular file.", undefined, true);
           emit(log, "move_failed");
           return await receipts.get(id) ?? undefined;
         }
@@ -125,7 +134,7 @@ export function createAgentExecutionEngine(options: AgentExecutionOptions = {}):
       const knownNoEffect = ["EACCES", "EPERM", "ENOENT", "EISDIR", "ENOTDIR", "EEXIST", "EINVAL", "EXDEV", "EOPNOTSUPP", "ENOTSUP"].includes(code ?? "");
       emit(log, tool === "write_file" ? "write_failed" : tool === "create_directory" ? "directory_failed" : tool === "edit_block" ? "edit_failed" : tool === "delete_file" ? "delete_failed" : "move_failed");
       try {
-        return await receipts.update(id, knownNoEffect ? "failed" : "unknown", "Operation did not complete.");
+        return await receipts.update(id, knownNoEffect ? "failed" : "unknown", "Operation did not complete.", undefined, knownNoEffect);
       } catch { return undefined; }
     }
     emit(log, tool === "write_file" ? "write_completed" : tool === "create_directory" ? "directory_completed" : tool === "edit_block" ? "edit_completed" : tool === "delete_file" ? "delete_completed" : "move_completed");
@@ -148,6 +157,12 @@ export function createAgentExecutionEngine(options: AgentExecutionOptions = {}):
       if (!existing && !sessions.get(sessionId)) return { statusCode: 404, status: "not_found" };
       admitted = await receipts.admit(id, tool, digest);
     } catch {
+      // When storage is unavailable, the authenticated owner retains only
+      // the narrow emergency stop for an already Agent-owned session.
+      if (tool === "force_terminate" && ["running", "unknown"].includes(sessions.get(sessionId)?.state ?? "")) {
+        try { await sessions.terminate(sessionId); } catch { /* Outcome remains unknown. */ }
+        return { statusCode: 200, status: "unknown" };
+      }
       return { statusCode: 503, status: "unavailable" };
     }
     if (admitted.kind === "conflict") {
@@ -302,8 +317,14 @@ export function createAgentExecutionEngine(options: AgentExecutionOptions = {}):
           await receipts.update(id, "running", "Development command is starting.");
           try {
             const session = await sessions.start(processArgs.command, processArgs.timeoutMs, async (exited) => {
-              await receipts.update(id, exited.state, "Development command session ended.", exited.session_id);
+              await receipts.update(id, exited.state, exited.termination_reason === "deadline_exceeded"
+                ? "Managed command exceeded the 60-minute deadline."
+                : "Development command session ended.", exited.session_id);
             });
+            // On quick exits the exit callback may settle first: never overwrite
+            // a completed/failed receipt with an earlier running snapshot.
+            const latest = await receipts.get(id);
+            if (latest && ["completed", "failed", "unknown"].includes(latest.state)) return latest;
             return await receipts.update(id, session.state, "Development command session recorded.", session.session_id);
           } catch (error) {
             // Only classify known Agent-generated failures: never persist arbitrary
@@ -317,7 +338,7 @@ export function createAgentExecutionEngine(options: AgentExecutionOptions = {}):
                   ? "process_spawn_failed"
                   : "process_start_internal";
             emit(log, "process_failed");
-            return await receipts.update(id, "failed", "Development command start failed: " + reason);
+            return await receipts.update(id, "failed", "Development command start failed: " + reason, undefined, reason === "session_capacity");
           }
         })();
         inFlight.set(id, pending);
