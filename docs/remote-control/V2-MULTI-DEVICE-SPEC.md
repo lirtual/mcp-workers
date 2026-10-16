@@ -50,7 +50,7 @@ Authority: [ADR-0019 — standalone Linux Agent distribution](./adr/0019-standal
 4. Manual upgrade preserves keys/IDs/receipts, validates local data/wire compatibility, performs versioned binary switch with rollback after activation failure, never masks an uncertain WSS result, and never replays an unknown mutating operation. An incompatible schema upgrade stops without claiming a reversible data migration.
 5. Local uninstall touches only v2-owned files, leaves existing keys and receipt store unless separately confirmed, warns when remote authorization remains live, and keeps v1 intact. Optional explicit purge must not be mistaken for remote revocation.
 6. A permanent Agent uses a verified user-systemd service; a temporary Agent has no service unit and doesn't silently stay running after CLI foreground termination. Test WSL2 suspend/reboot, SIGINT/SIGKILL, reconnect, duplicate installer lock and both existing/new device states.
-7. Treat **one-device 48-hour nonproduction soak** as the initial single-device promotion gate, and retain the historical **five-device 72-hour** Hibernation/quota gate for later general multi-device readiness. These are distinct scopes, not competing claims. Neither is deemed complete without measured evidence. No production deploy, release or forced CI expansion authorized by these docs.
+7. Per [Issue #57](https://github.com/lirtual/mcp-workers/issues/57), require **one actual device observed for 48 real hours** with verified DO Hibernation/wake, cross-account Free quota metrics and v1 isolation. The former five-device/72-hour scope was **removed from this rollout gate**; do not reintroduce it as a hidden requirement or claim fleet scale was tested. No production deploy, release or forced CI expansion authorized by these docs.
 
 ## User stories
 
@@ -63,7 +63,7 @@ Authority: [ADR-0019 — standalone Linux Agent distribution](./adr/0019-standal
 7. As an owner, I want to remove a lost device without harming others, so that its identity and access remain revoked.
 8. As an owner, I want online removal to attempt stopping only Agent-owned managed processes, so that the result is accurate without claiming to control an offline host.
 9. As an owner, I want reinstallation to require new pairing, so that copied labels/old keys do not inherit authority.
-10. As a maintainer, I want the approved single-device **48-hour preview soak** before promoting the initial device; a separate full five-device **72-hour** Hibernation/quota gate applies before claiming the broader multi-device capacity goal. Neither gate is passed by documentation alone.
+10. As a maintainer, I want the current **one-device 48-hour preview acceptance** with observed Hibernation, Free usage and v1 isolation before requesting initial production authorization, so that the release is assessed against the scope actually approved in Issue #57. This does not prove five-device fleet throughput.
 
 ## Minimal changes to existing modules
 
@@ -139,7 +139,7 @@ Owner revision **Q1: fixed 24-hour validity** (supersedes earlier Q1=C exit-coup
 | Temporary 24-hour grant | server-clock 24h from approved pairing; deny after expiry even with old authenticated WSS; no renewal on reconnect, no requirement for on-exit self revoke, lazy expired-record pruning without active-device cap leakage, and honest in-flight 60-minute Shell/receipt handling |
 | Standalone Linux/WSL2 CLI install | clean supported x86_64 and ARM64 Linux/WSL2 host **without git/Node/pnpm/cc**, verified prebuilt Node/Supervisor bundle, first-run permanent-or-24h mode selection, independent local code+challenge, unsupported ABI rejection, no v1 clobber, WSL2 startup limitation, restart and recovery |
 | Standalone release lifecycle | official GitHub HTTPS immutable-release + asset `digest` SHA-256 verification; real CLI TTY; idempotent same-command retry via existing lock/atomic staging; managed sessions block upgrade; current/previous binary rollback without schema rollback; v2-only uninstall + separate owner revoke; permanent systemd versus temporary foreground |
-| Cost and sleep | **5 simulated independent Agents continuously connected 72h in nonproduction**, actual DO hibernation and wake, daily DO request/GB-s/SQLite/Workers usage and other DO load, traffic bursts and fail/reconnect |
+| Cost and sleep | **One isolated v2 Agent continuously observed for at least 48 actual hours** per Issue #57, measured DO Hibernation and wake, reconnection, account-level DO/Workers request/GB-s/SQLite usage including other existing DOs and explicit v1 isolation; five-device/72-hour load is not this gate |
 | v1 safety | existing VPC/Tunnel unchanged, explicit v2 opt-in, rollback and separate authorization before changing production |
 
 Prefer behavior tests at existing MCP→Worker→Agent seams plus disposable Agent bootstrap/WSS integration; use existing CI **if already available**, but **do not add a CI workflow**.
