@@ -4,19 +4,24 @@ export { V2OwnerCoordinator } from "./v2-pairing.ts";
 type V2Env = Env & {
   V2_OWNER?: DurableObjectNamespace;
   REMOTE_CONTROL_V2_PREVIEW_ONLY?: string;
-  REMOTE_CONTROL_V2_RECEIPT_LAB_ONLY?: string;
+  REMOTE_CONTROL_V2_RECEIPT_TEST_DEVICE_ID?: string;
 };
 function previewOnly(env: Env): boolean {
   return (env as V2Env).REMOTE_CONTROL_V2_PREVIEW_ONLY === "true";
 }
-function receiptLabOnly(env: Env): boolean {
-  // Preview is always the more restrictive mode if both flags are present.
-  return !previewOnly(env) &&
-    (env as V2Env).REMOTE_CONTROL_V2_RECEIPT_LAB_ONLY === "true";
+// A single, explicit per-device grant enables short-lived Receipt testing on
+// the existing v2 Preview. No grant means the original preview is read-only.
+// Use a separate disposable, unprivileged test Agent; production Agent service
+// continues to refuse mutations at its own signed WSS boundary.
+function receiptTestDevice(env: Env): string | null {
+  if (!previewOnly(env)) return null;
+  const id = (env as V2Env).REMOTE_CONTROL_V2_RECEIPT_TEST_DEVICE_ID;
+  return typeof id === "string" &&
+    /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(id) ? id : null;
 }
-const RECEIPT_LAB_TOOLS = new Set([
-  "read_file", "stat_file", "write_file", "get_operation_status",
-  "run_command", "list_sessions", "read_session_output",
+const RECEIPT_TEST_TOOLS = new Set([
+  "write_file", "get_operation_status", "run_command",
+  "list_sessions", "read_session_output",
 ]);
 const PREVIEW_TOOLS = new Set([
   "read_file", "read_files", "list_directory", "stat_file",
@@ -99,6 +104,12 @@ async function callPairedDeviceOperation(env: Env, id: unknown, name: string, ar
   const { device_id, ...localArgs } = args as Record<string, unknown>;
   if (typeof device_id !== "string" || !/^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(device_id)) {
     return toolError(id, "An explicit valid device_id is required.");
+  }
+  // Never dispatch an opt-in Preview mutation to another paired device,
+  // even when the caller forges a tools/call not present in tools/list.
+  if (previewOnly(env) &&
+      (device_id !== receiptTestDevice(env) || !RECEIPT_TEST_TOOLS.has(name))) {
+    return toolError(id, "The requested operation is not authorized for this device.");
   }
   const parsed = parseLocalCall(name, localArgs);
   if (!parsed || !V2_AGENT_OPERATION_TOOLS.has(parsed.tool)) {
@@ -1104,10 +1115,9 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
   }
 
   if (rpcMessage.method === "tools/list") {
-    if (previewOnly(env) || receiptLabOnly(env)) {
-      // Dedicated restricted scripts never advertise default v1 routing.
-      // Receipt lab exposes only what T07 needs; normal Preview stays read-only.
-      const allowed = previewOnly(env) ? PREVIEW_TOOLS : RECEIPT_LAB_TOOLS;
+    if (previewOnly(env)) {
+      const grant = receiptTestDevice(env);
+      const allowed = new Set([...PREVIEW_TOOLS, ...(grant ? RECEIPT_TEST_TOOLS : [])]);
       return rpc(rpcMessage.id, { tools: [
         ...LOCAL_TOOLS.filter(tool => allowed.has(tool.name)).map(tool => ({
           ...tool,
@@ -1128,19 +1138,19 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
       return toolError(rpcMessage.id, "The requested tool call was rejected.");
     }
     const call = params as { name?: unknown; arguments?: unknown };
-    if (previewOnly(env) || receiptLabOnly(env)) {
-      const preview = previewOnly(env);
-      const allowed = preview ? PREVIEW_TOOLS : RECEIPT_LAB_TOOLS;
+    if (previewOnly(env)) {
+      const grant = receiptTestDevice(env);
+      const allowed = new Set([...PREVIEW_TOOLS, ...(grant ? RECEIPT_TEST_TOOLS : [])]);
       const target = call.arguments && typeof call.arguments === "object" && !Array.isArray(call.arguments)
         ? (call.arguments as Record<string, unknown>).device_id : undefined;
       const requiresDevice = V2_READ_TOOLS.has(String(call.name)) ||
         V2_OPERATION_TOOLS.has(String(call.name));
       if (typeof call.name !== "string" ||
           (!allowed.has(call.name) && !OWNER_TOOLS.has(call.name)) ||
-          (requiresDevice && typeof target !== "string")) {
-        return toolError(rpcMessage.id, preview
-          ? "The preview permits only explicit-device read-only calls and owner pairing."
-          : "The isolated receipt lab requires explicit-device scoped test tools.");
+          (requiresDevice && typeof target !== "string") ||
+          (RECEIPT_TEST_TOOLS.has(String(call.name)) && target !== grant)) {
+        return toolError(rpcMessage.id,
+          "The preview permits only explicit-device read-only calls and owner pairing, unless a test device is explicitly authorized.");
       }
     }
     if (typeof call.name === "string" && V2_OPERATION_TOOLS.has(call.name) &&
