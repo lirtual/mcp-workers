@@ -119,12 +119,14 @@ export class ReceiptStore {
   private readonly file: string;
   private readonly legacyFile: string;
   private database: DatabaseSync | undefined;
+  private readonly testPersistenceUnavailable?: () => boolean;
 
   constructor(
     directory = path.join(os.homedir(), ".local", "state", "mcp-workers", "remote-control-agent"),
-    private readonly testPersistenceUnavailable?: () => boolean,
+    testPersistenceUnavailable?: () => boolean,
   ) {
     this.directory = directory;
+    this.testPersistenceUnavailable = testPersistenceUnavailable;
     this.file = path.join(directory, "operation-receipts.sqlite");
     this.legacyFile = path.join(directory, "operation-receipts.json");
   }
