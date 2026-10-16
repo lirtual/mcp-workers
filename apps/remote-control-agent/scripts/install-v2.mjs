@@ -11,7 +11,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { constants } from "node:fs";
-import { access, lstat, mkdir, open, readFile, rename, rm, rmdir } from "node:fs/promises";
+import { access, lstat, mkdir, open, readFile, readdir, rename, rm, rmdir } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
 import os from "node:os";
 import path from "node:path";
@@ -360,6 +360,9 @@ export async function resumeRevokedPromotion(options, keyPath, previous, {
     throw new Error("Revoked identity archive has unsafe permissions.");
   }
   if (phase > 0 && !meta) throw new Error("Revoked identity archive is missing.");
+  if (phase === 0 && meta && (await readdir(archive)).length > 0) {
+    throw new Error("Unexpected revoked archive contents; manual review required.");
+  }
   for (let i = 0; i < files.length; i++) if (present[i]) await ownerOnly(files[i], 0o600);
   const oldKey = phase === 0 ? keyPath : archivedKey;
   const oldIdFile = phase < 2 ? idPath : archivedId;
@@ -405,7 +408,14 @@ export async function promoteRevokedIdentity(keyPath, oldId, moveFile = rename, 
     await mkdir(archive, {mode: 0o700});
   }
   const moved = [];
-  async function move(from, to) { await moveFile(from, to); moved.push([to, from]); }
+  async function move(from, to) {
+    await moveFile(from, to);
+    moved.push([to, from]);
+    // Persist each prefix before attempting the next rename. A terminated
+    // installer therefore leaves a classifiable on-disk prefix, not a guess.
+    await syncParent(from);
+    if (path.dirname(from) !== path.dirname(to)) await syncParent(to);
+  }
   const steps = [
     [keyPath, path.join(archive, "identity.pem")],
     [idPath, path.join(archive, "identity.pem.device-id")],
@@ -569,6 +579,9 @@ export async function runInstaller(args, {
     }
   }
 
+  if (options.action !== "install" && await exists(promotionMarker(keyPath))) {
+    throw new Error("Finish the interrupted identity promotion using the ordinary install command first.");
+  }
   if (options.action === "install") {
     if (await exists(promotionMarker(keyPath))) {
       if (options.foreground || !stdin.isTTY || !stdout.isTTY) {
