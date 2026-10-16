@@ -123,7 +123,7 @@ async function callPairedDeviceOperation(env: Env, id: unknown, name: string, ar
       return toolError(id, "The Receipt test only allows a fixed disposable fixture.");
     }
     if (name === "run_command" &&
-        !["printf 'RC_V2_RECEIPT_TEST_OK\\n'", "printf 'RC_V2_RECEIPT_TEST_CHANGED\\n'"]
+        !["printf RC_V2_RECEIPT_TEST_OK", "printf RC_V2_RECEIPT_TEST_CHANGED"]
           .includes(localArgs.command as string)) {
       return toolError(id, "The Receipt test only allows a fixed harmless command.");
     }
