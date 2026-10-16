@@ -5,19 +5,19 @@ import { checkSoakEvidence, FREE_LIMITS } from "../scripts/check-v2-soak-evidenc
 
 const start = Date.parse("2026-10-16T13:00:00.000Z");
 function syntheticFixture() {
-  const devices = Array.from({length:5},()=>randomUUID());
+  const devices = [randomUUID()];
   const date = offset => new Date(start + offset).toISOString();
   return {
     environment:"nonproduction",
     start_utc:date(0),
-    end_utc:date(72*3600_000),
+    end_utc:date(48*3600_000),
     device_ids: devices,
-    hourly_samples: Array.from({length:73},(_,i)=>({
+    hourly_samples: Array.from({length:49},(_,i)=>({
       at_utc:date(i*3600_000),online_device_ids:[...devices],
     })),
-    // Crossing midnight UTC on four distinct dates requires four account
-    // reports, not just 3 averaged daily snapshots.
-    daily_account_usage: Array.from({length:4},(_,i)=>({
+    // A 48-hour UTC window spanning parts of three calendar days needs
+    // three separate account-wide daily totals, not an average.
+    daily_account_usage: Array.from({length:3},(_,i)=>({
       date_utc:new Date(Date.UTC(2026,9,16+i)).toISOString().slice(0,10),
       source_ref:"nonprod-account-dashboard-" + i,
       includes_other_durable_objects:true,
@@ -40,7 +40,7 @@ function syntheticFixture() {
     },
   };
 }
-test("synthetic full 72h/five-device/account-wide 4 UTC date coverage is complete but not proof", () => {
+test("synthetic full 48h/single-device/account-wide 3 UTC date coverage is complete but not proof", () => {
   const res=checkSoakEvidence(syntheticFixture());
   assert.equal(res.ready_for_manual_review,true);
   assert.deepEqual(res.findings,[]);
@@ -51,14 +51,21 @@ test("missing 1h sample, bad device coverage and shortened window cannot pass",(
   report.hourly_samples.splice(18,1);
   assert.ok(checkSoakEvidence(report).findings.includes("hourly_samples_incomplete"));
   const report2=syntheticFixture();
-  report2.hourly_samples[4].online_device_ids=[...report2.device_ids.slice(1)];
+  report2.hourly_samples[4].online_device_ids=[randomUUID()];
   assert.ok(checkSoakEvidence(report2).findings.includes("hourly_samples_incomplete"));
   const report3=syntheticFixture();
-  report3.end_utc="2026-10-19T12:00:00.000Z";
-  assert.ok(checkSoakEvidence(report3).findings.includes("invalid_72h_window"));
+  report3.end_utc="2026-10-18T12:00:00.000Z";
+  assert.ok(checkSoakEvidence(report3).findings.includes("invalid_48h_window"));
   const report4=syntheticFixture();
-  report4.device_ids[0]=report4.device_ids[1];
-  assert.ok(checkSoakEvidence(report4).findings.includes("five_independent_device_ids_required"));
+  report4.device_ids.push(randomUUID());
+  assert.ok(checkSoakEvidence(report4).findings.includes("one_device_id_required"));
+});
+test("a recorded intermediate offline snapshot is allowed but startup and end must be online",()=>{
+  const report=syntheticFixture();
+  report.hourly_samples[18].online_device_ids=[];
+  assert.equal(checkSoakEvidence(report).ready_for_manual_review,true);
+  report.hourly_samples[0].online_device_ids=[];
+  assert.ok(checkSoakEvidence(report).findings.includes("hourly_samples_incomplete"));
 });
 test("account-wide missing IMA/other DO inclusion and UTC partial days fail",()=>{
   const report=syntheticFixture();
