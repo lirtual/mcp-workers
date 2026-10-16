@@ -217,7 +217,7 @@ test("read-only signed revoke-state probe prevents accidental --re-pair on activ
     createPrivateKey(material.privateKeyPem))).toString("base64");
   const request = {device_id:id, public_key:material.request.public_key, proof, issued_at};
   assert.equal((await checkRevokedIdentity(store as never, request)).status, 409);
-  const record = values.get("device:" + id) as {revoked:boolean};
+  const record = values.get("device:" + id) as unknown as {revoked:boolean};
   record.revoked = true;
   assert.deepEqual(await checkRevokedIdentity(store as never, request),
     {status:200, body:{status:"revoked", device_id:id}});
