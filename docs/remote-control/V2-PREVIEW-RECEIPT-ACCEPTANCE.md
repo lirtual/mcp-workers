@@ -68,7 +68,7 @@ per-device Worker secret or hard-coded command/file allowlist.
    creating or deleting: the test Agent being stopped ends its Shell access.
 
 The basic acceptance does not establish true lost-after-commit WSS response
-handling, sustained hibernation reliability, or the #57 72-hour soak. Keep
+handling, sustained hibernation reliability, or the #57 single-device 48-hour soak. Keep
 those gates open until there is evidence. Do not treat a unit/integration test
 as a real-device mutation E2E result.
 
