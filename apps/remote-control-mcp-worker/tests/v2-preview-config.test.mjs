@@ -97,108 +97,91 @@ test("preview MCP blocks direct mutation, shell and receipt calls even with a va
 });
 
 
-test("disposable receipt lab Worker is separate from Preview and v1 with no VPC credentials", async () => {
-  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-  const lab = JSON.parse(await readFile(path.join(root, "wrangler.v2-receipt-lab.jsonc"), "utf8"));
-  const preview = JSON.parse(await readFile(path.join(root, "wrangler.v2-preview.jsonc"), "utf8"));
-  assert.equal(lab.name, "remote-control-v2-receipt-lab");
-  assert.notEqual(lab.name, preview.name);
-  assert.equal(lab.main, "src/worker.ts");
-  assert.deepEqual(lab.vars, { REMOTE_CONTROL_V2_RECEIPT_LAB_ONLY: "true" });
-  assert.equal(lab.vars.REMOTE_CONTROL_V2_PREVIEW_ONLY, undefined);
-  assert.deepEqual(lab.durable_objects.bindings, [{
-    name: "V2_OWNER", class_name: "V2OwnerCoordinator",
-  }]);
-  assert.deepEqual(lab.exports.V2OwnerCoordinator, { type: "durable-object", storage: "sqlite" });
-  assert.deepEqual(lab.secrets.required, ["MCP_ACCESS_TOKEN"]);
-  assert.equal(lab.keep_vars, false);
-  assert.equal(lab.preview_urls, false);
-  assert.equal(lab.observability.logs.invocation_logs, false);
-  for (const forbidden of ["vpc_services", "routes", "triggers", "migrations"]) {
-    assert.equal(Object.hasOwn(lab, forbidden), false, "receipt lab must not inherit " + forbidden);
-  }
-  const raw = JSON.stringify(lab);
-  assert.doesNotMatch(raw, /REMOTE_CONTROL_DEVICE_TOKEN|REMOTE_CONTROL_DEVICE"/);
-  const bootstrap = JSON.parse(await readFile(
-    path.join(root, "wrangler.v2-receipt-lab-bootstrap.jsonc"), "utf8"));
-  const { secrets: _, ...withoutSecret } = lab;
-  assert.deepEqual(bootstrap, withoutSecret);
-});
-
-test("receipt lab exposes only explicit-device reads, stable receipts and bounded command tools", async () => {
+test("Preview Receipt tools require one explicitly granted device, without widening other device access", async () => {
   const { default: worker } = await import("../src/worker.ts");
   const { randomUUID } = await import("node:crypto");
-  const device_id = randomUUID();
-  const operation_id = "receipt-lab-" + randomUUID();
-  let ownerCalls = 0, legacyCalls = 0;
+  const permittedId = randomUUID(), otherId = randomUUID();
+  const operation_id = "preview-test-" + randomUUID();
+  let doCalls = 0, v1Calls = 0;
   const env = {
-    MCP_ACCESS_TOKEN: "receipt-lab-test-token",
-    REMOTE_CONTROL_V2_RECEIPT_LAB_ONLY: "true",
+    MCP_ACCESS_TOKEN: "preview-test-token",
+    REMOTE_CONTROL_V2_PREVIEW_ONLY: "true",
+    REMOTE_CONTROL_V2_RECEIPT_TEST_DEVICE_ID: permittedId,
     V2_OWNER: {
       idFromName: () => "single-owner-v2",
       get: () => ({
-        fetch: async (request) => {
-          ownerCalls++;
-          assert.ok(String(request.url || request).includes("/operation"));
+        fetch: async request => {
+          doCalls++;
+          assert.match(String(request.url || request), /\/operation$/);
           return Response.json({ operation_id, status: "not_found" });
         },
       }),
     },
-    REMOTE_CONTROL_DEVICE: {
-      fetch: () => { legacyCalls++; throw Error("Lab cannot route to legacy"); },
-    },
+    REMOTE_CONTROL_DEVICE: { fetch: () => { v1Calls++; throw Error("v1 forbidden"); } },
   };
-  async function rpc(name, args, token = "receipt-lab-test-token") {
-    const response = await worker.fetch(new Request("https://receipt-lab.example/mcp", {
-      method: "POST",
-      headers: { authorization: "Bearer " + token, "content-type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 101, method: "tools/call",
-        params: { name, arguments: args } }),
+  const rpc = async (method, params, token = "preview-test-token") => {
+    const res = await worker.fetch(new Request("https://preview.test/mcp", {
+      method: "POST", headers: {
+        "content-type": "application/json", authorization: "Bearer " + token,
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 21, method, params }),
     }), env);
-    return { status: response.status, result: await response.json() };
+    return { status: res.status, body: await res.json() };
+  };
+  const names = (await rpc("tools/list", {})).body.result.tools.map(t => t.name);
+  for (const name of ["write_file", "run_command", "get_operation_status",
+    "list_sessions", "read_session_output"]) {
+    assert.ok(names.includes(name), "missing opt-in tool: " + name);
   }
-  const toolsResponse = await worker.fetch(new Request("https://receipt-lab.example/mcp", {
-    method: "POST",
-    headers: { authorization: "Bearer receipt-lab-test-token", "content-type": "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 100, method: "tools/list", params: {} }),
-  }), env);
-  const listed = await toolsResponse.json();
-  const toolList = listed.result.tools;
-  const names = toolList.map(x => x.name);
-  for (const permitted of ["read_file", "stat_file", "write_file", "get_operation_status",
-    "run_command", "list_sessions", "read_session_output", "pairing_lookup",
-    "pairing_prepare", "list_devices", "revoke_device"]) {
-    assert.ok(names.includes(permitted), "lab tool missing: " + permitted);
+  for (const name of ["delete_file", "move_file", "create_directory", "replace_text",
+    "send_input", "stop_session"]) {
+    assert.ok(!names.includes(name), "unrelated mutation listed: " + name);
   }
-  for (const denied of ["create_directory", "replace_text", "move_file", "delete_file",
-    "send_input", "stop_session", "read_files", "search_files", "search_next", "stop_search"]) {
-    assert.ok(!names.includes(denied), "lab unexpectedly advertises: " + denied);
-  }
-  for (const entry of toolList.filter(x => !["pairing_lookup", "pairing_prepare",
-    "list_devices", "revoke_device"].includes(x.name))) {
-    assert.ok(entry.inputSchema.required.includes("device_id"), "all lab file/session tools need device_id");
-  }
+
+  const mutation = { operation_id, path: "/tmp/denied", content: "NO", mode: "append" };
   for (const [name, args] of [
-    ["create_directory", { device_id, operation_id, path: "/tmp/not-allowed" }],
-    ["delete_file", { device_id, operation_id, path: "/tmp/not-allowed" }],
-    ["send_input", { device_id, operation_id, session_id: randomUUID(), input: "ignored" }],
-    ["stop_session", { device_id, operation_id, session_id: randomUUID() }],
-    ["write_file", { operation_id, path: "/tmp/not-allowed", content: "ignored", mode: "append" }],
-    ["get_operation_status", { operation_id }],
-    ["run_command", { operation_id, command: "true" }],
-    ["read_file", { path: "/etc/os-release" }],
+    ["write_file", { device_id: otherId, ...mutation }],
+    ["write_file", { ...mutation }],
+    ["run_command", { device_id: otherId, operation_id, command: "printf 'NO'" }],
+    ["get_operation_status", { device_id: otherId, operation_id }],
+    ["list_sessions", { device_id: otherId }],
+    ["read_session_output", { device_id: otherId, session_id: randomUUID() }],
+    ["delete_file", { device_id: permittedId, operation_id, path: "/tmp/denied" }],
+    ["send_input", { device_id: permittedId, operation_id, session_id: randomUUID(), input: "NO" }],
   ]) {
-    const denied = await rpc(name, args);
-    assert.equal(denied.result.result?.isError, true, name + " must fail closed");
-    assert.match(denied.result.result.content[0].text, /isolated receipt lab requires explicit-device/);
+    const r = await rpc("tools/call", { name, arguments: args });
+    assert.equal(r.body.result?.isError, true, name + " should be denied");
   }
-  assert.equal(ownerCalls, 0);
-  assert.equal(legacyCalls, 0);
-  const unauthorized = await rpc("get_operation_status", { device_id, operation_id }, "wrong");
+  assert.equal(doCalls, 0);
+  assert.equal(v1Calls, 0);
+
+  const unauthorized = await rpc("tools/call", {
+    name: "get_operation_status", arguments: { device_id: permittedId, operation_id },
+  }, "wrong-token");
   assert.equal(unauthorized.status, 401);
-  const allowed = await rpc("get_operation_status", { device_id, operation_id });
-  assert.notEqual(allowed.result.result?.isError, true);
-  assert.equal(JSON.parse(allowed.result.result.content[0].text).status, "not_found");
-  assert.equal(ownerCalls, 1);
-  assert.equal(legacyCalls, 0);
+  const allowed = await rpc("tools/call", {
+    name: "get_operation_status", arguments: { device_id: permittedId, operation_id },
+  });
+  assert.notEqual(allowed.body.result?.isError, true);
+  assert.equal(JSON.parse(allowed.body.result.content[0].text).status, "not_found");
+  assert.equal(doCalls, 1);
+  assert.equal(v1Calls, 0);
+});
+
+test("malformed device grant fails closed and does not advertise mutation tools", async () => {
+  const { default: worker } = await import("../src/worker.ts");
+  for (const invalid of ["", "all", "*", "not-a-uuid", "00000000-0000-0000-0000-000000000000 extra"]) {
+    const result = await worker.fetch(new Request("https://preview.test/mcp", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer token" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 22, method: "tools/list", params: {} }),
+    }), {
+      MCP_ACCESS_TOKEN: "token",
+      REMOTE_CONTROL_V2_PREVIEW_ONLY: "true",
+      REMOTE_CONTROL_V2_RECEIPT_TEST_DEVICE_ID: invalid,
+    });
+    const names = (await result.json()).result.tools.map(x => x.name);
+    assert.ok(!names.includes("write_file") && !names.includes("run_command") &&
+      !names.includes("get_operation_status"));
+  }
 });
