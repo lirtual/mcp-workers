@@ -10,7 +10,7 @@
  * node apps/remote-control-agent/scripts/install-v2.mjs --foreground --resume --endpoint https://EXAMPLE/
  */
 import { spawnSync } from "node:child_process";
-import { constants } from "node:fs";
+import { constants, existsSync, readFileSync } from "node:fs";
 import { access, lstat, mkdir, open, readFile, readdir, rename, rm, rmdir } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
 import os from "node:os";
@@ -34,6 +34,9 @@ export function classifyLinuxKernel(release) {
 export const UNIT = "remote-control-v2-agent.service";
 export const MARKER = "# Managed by mcp-workers v2 Linux installer; NOT the v1 Agent.";
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const programRoot = path.resolve(packageRoot, "..", "..");
+const manifestPath = path.join(programRoot, "bundle.json");
+const portable = existsSync(manifestPath);
 const entry = path.join(packageRoot, "src", "v2-main.ts");
 const compilerScript = path.join(packageRoot, "scripts", "build-session-supervisor.mjs");
 const IDENTITY_REL = path.join(".local", "share", "mcp-workers", "remote-control", "v2-identity.pem");
@@ -98,7 +101,8 @@ function systemdLiteral(value) {
   return value;
 }
 
-export function renderV2Service({ node, home, repoRoot, endpoint, keyPath }) {
+export function renderV2Service({ node, home, repoRoot, endpoint, keyPath, entryExt = "ts" }) {
+  if (!["ts", "js"].includes(entryExt)) throw new Error("Invalid Agent runtime entry.");
   const nodePath = systemdLiteral(node);
   const project = systemdLiteral(repoRoot);
   const identity = systemdLiteral(keyPath);
@@ -121,7 +125,8 @@ export function renderV2Service({ node, home, repoRoot, endpoint, keyPath }) {
     "ExecStartPre=/usr/bin/test -r " + identity,
     "ExecStartPre=/usr/bin/test -r " + identity + ".device-id",
     "ExecStartPre=/usr/bin/test -x " + project + "/apps/remote-control-agent/.build/session-supervisor",
-    "ExecStart=" + nodePath + " --experimental-strip-types " + project + "/apps/remote-control-agent/src/v2-main.ts",
+    "ExecStart=" + nodePath + (entryExt === "ts" ? " --experimental-strip-types" : "") +
+      " " + project + "/apps/remote-control-agent/src/v2-main." + entryExt,
     "Restart=on-failure",
     "RestartSec=15s",
     "TimeoutStopSec=15s",
@@ -213,10 +218,25 @@ async function preflight(action, foreground) {
     libc: process.report?.getReport?.().header.glibcVersionRuntime });
   if (!foreground) run("systemctl", ["--user", "show-environment"]);
   if (!foreground) run("systemd-analyze", ["--user", "--version"]);
-  // T04 replaces this checkout build with the verified prebuilt executable.
-  run("cc", ["--version"]);
-  run(process.execPath, [compilerScript]);
-  assertNativeSupervisorProbe(path.join(packageRoot, ".build", "session-supervisor"));
+  if (portable) {
+    // T04 archive verification must precede this first execution. Run only
+    // the bundled Node24, signed program contents and precompiled supervisor.
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    if (manifest.artifact_schema !== 1 ||
+        manifest.target !== "linux-" + process.arch + "-glibc" ||
+        manifest.node !== process.version ||
+        path.resolve(process.execPath) !== path.join(programRoot, "bin/node")) {
+      throw new Error("Portable runtime mismatch; no pairing attempted.");
+    }
+    const native = path.join(packageRoot, ".build", "session-supervisor");
+    await ownerOnly(native, 0o700);
+    assertNativeSupervisorProbe(native);
+  } else {
+    // Existing reviewed checkout-only development path.
+    run("cc", ["--version"]);
+    run(process.execPath, [compilerScript]);
+    assertNativeSupervisorProbe(path.join(packageRoot, ".build", "session-supervisor"));
+  }
   return host;
 }
 
@@ -610,6 +630,26 @@ export async function runInstaller(args, {
   startForeground = launchForeground,
 } = {}) {
   const options = parseInstallArgs(args);
+  if (portable && ["upgrade", "uninstall"].includes(options.action)) {
+    throw new Error("Portable upgrade/uninstall requires separately reviewed lifecycle CLI.");
+  }
+  if (portable && options.action === "install") {
+    if (!stdin.isTTY || !stdout.isTTY) {
+      throw new Error("Portable pairing requires a real interactive target-terminal TTY.");
+    }
+    const prompt = createInterface({input:stdin,output:stdout,terminal:true});
+    try {
+      stdout.write("Remote Control v2 — read-only by default. Worker endpoint: " +
+        trustedEndpoint(options.endpoint) + "\nTarget label: " +
+        (options.name ?? os.hostname()) + "\n");
+      const choice=(await prompt.question("Choose 1 = Permanent (systemd); 2 = Temporary (24h): ")).trim();
+      if (choice !== "1") {
+        if (choice === "2") throw new Error("Temporary CLI requires the separate T06 implementation.");
+        throw new Error("An explicit Permanent selection is required.");
+      }
+      if (options.foreground) throw new Error("Permanent installation requires its own user service.");
+    } finally {prompt.close();}
+  }
   const unitPath = path.join(home, ".config", "systemd", "user", UNIT);
   const keyPath = path.join(home, IDENTITY_REL);
   systemdLiteral(home);
@@ -694,7 +734,7 @@ export async function runInstaller(args, {
   await mkdir(path.dirname(unitPath), { recursive: true, mode: 0o700 });
   const rendered = renderV2Service({
     node: process.execPath, home, repoRoot: path.resolve(packageRoot, "..", ".."),
-    endpoint: options.endpoint, keyPath,
+    endpoint: options.endpoint, keyPath, entryExt: portable ? "js" : "ts",
   });
   await installUnit(unitPath, rendered, previous);
   await finishRevokedPromotion(keyPath);
