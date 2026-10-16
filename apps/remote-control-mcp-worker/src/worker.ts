@@ -1,10 +1,28 @@
 import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
 export { V2OwnerCoordinator } from "./v2-pairing.ts";
 
-type V2Env = Env & { V2_OWNER?: DurableObjectNamespace; REMOTE_CONTROL_V2_PREVIEW_ONLY?: string };
+type V2Env = Env & {
+  V2_OWNER?: DurableObjectNamespace;
+  REMOTE_CONTROL_V2_PREVIEW_ONLY?: string;
+  REMOTE_CONTROL_V2_RECEIPT_LAB_ONLY?: string;
+};
 function previewOnly(env: Env): boolean {
   return (env as V2Env).REMOTE_CONTROL_V2_PREVIEW_ONLY === "true";
 }
+function receiptLabOnly(env: Env): boolean {
+  // Preview is always the more restrictive mode if both flags are present.
+  return !previewOnly(env) &&
+    (env as V2Env).REMOTE_CONTROL_V2_RECEIPT_LAB_ONLY === "true";
+}
+const RECEIPT_LAB_TOOLS = new Set([
+  "read_file", "stat_file", "write_file", "get_operation_status",
+  "run_command", "list_sessions", "read_session_output",
+]);
+const PREVIEW_TOOLS = new Set([
+  "read_file", "read_files", "list_directory", "stat_file",
+  "search_files", "search_next", "stop_search",
+]);
+const OWNER_TOOLS = new Set(["pairing_lookup", "pairing_prepare", "list_devices", "revoke_device"]);
 function pendingOwner(env: Env): DurableObjectStub | null {
   const ns = (env as V2Env).V2_OWNER;
   return ns ? ns.get(ns.idFromName("single-owner-v2")) : null;
@@ -1086,12 +1104,10 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
   }
 
   if (rpcMessage.method === "tools/list") {
-    if (previewOnly(env)) {
-      // Preview never advertises v1 default routing, file writes, Shell, or sessions.
-      const allowed = new Set([
-        "read_file", "read_files", "list_directory", "stat_file",
-        "search_files", "search_next", "stop_search",
-      ]);
+    if (previewOnly(env) || receiptLabOnly(env)) {
+      // Dedicated restricted scripts never advertise default v1 routing.
+      // Receipt lab exposes only what T07 needs; normal Preview stays read-only.
+      const allowed = previewOnly(env) ? PREVIEW_TOOLS : RECEIPT_LAB_TOOLS;
       return rpc(rpcMessage.id, { tools: [
         ...LOCAL_TOOLS.filter(tool => allowed.has(tool.name)).map(tool => ({
           ...tool,
@@ -1112,18 +1128,19 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
       return toolError(rpcMessage.id, "The requested tool call was rejected.");
     }
     const call = params as { name?: unknown; arguments?: unknown };
-    if (previewOnly(env)) {
-      const previews = new Set([
-        "read_file", "read_files", "list_directory", "stat_file",
-        "search_files", "search_next", "stop_search",
-        "pairing_lookup", "pairing_prepare", "list_devices", "revoke_device",
-      ]);
+    if (previewOnly(env) || receiptLabOnly(env)) {
+      const preview = previewOnly(env);
+      const allowed = preview ? PREVIEW_TOOLS : RECEIPT_LAB_TOOLS;
       const target = call.arguments && typeof call.arguments === "object" && !Array.isArray(call.arguments)
         ? (call.arguments as Record<string, unknown>).device_id : undefined;
-      if (typeof call.name !== "string" || !previews.has(call.name) ||
-          (V2_READ_TOOLS.has(String(call.name)) && typeof target !== "string")) {
-        return toolError(rpcMessage.id,
-          "The preview permits only explicit-device read-only calls and owner pairing.");
+      const requiresDevice = V2_READ_TOOLS.has(String(call.name)) ||
+        V2_OPERATION_TOOLS.has(String(call.name));
+      if (typeof call.name !== "string" ||
+          (!allowed.has(call.name) && !OWNER_TOOLS.has(call.name)) ||
+          (requiresDevice && typeof target !== "string")) {
+        return toolError(rpcMessage.id, preview
+          ? "The preview permits only explicit-device read-only calls and owner pairing."
+          : "The isolated receipt lab requires explicit-device scoped test tools.");
       }
     }
     if (typeof call.name === "string" && V2_OPERATION_TOOLS.has(call.name) &&
