@@ -18,7 +18,7 @@ const example = {
 
 test("minimal Linux v2 CLI supports install, explicit paired-key resume, upgrade, and safe uninstall", () => {
   assert.deepEqual(parseInstallArgs(["--endpoint", "https://rc.example.org", "--name", "office"]), {
-    action: "install", endpoint: "https://rc.example.org", name: "office", foreground: false,
+    action: "install", endpoint: "https://rc.example.org", name: "office", foreground: false, showFingerprint: false,
   });
   assert.equal(parseInstallArgs(["--resume", "--endpoint", "https://rc.example.org"]).action, "resume");
   assert.equal(parseInstallArgs(["--upgrade", "--endpoint", "https://rc.example.org"]).action, "upgrade");
@@ -101,12 +101,14 @@ test("WSL2 shares the Linux-only Agent, with no Windows Shell or host auto-wakeu
 test("foreground is opt-in and cannot uninstall, upgrade, or duplicate flags", () => {
   assert.deepEqual(parseInstallArgs([
     "--foreground", "--endpoint", "https://rc.example.org", "--name", "grokbot",
-  ]), { action: "install", endpoint: "https://rc.example.org", name: "grokbot", foreground: true });
+  ]), { action: "install", endpoint: "https://rc.example.org", name: "grokbot", foreground: true, showFingerprint: false });
   assert.equal(parseInstallArgs(["--resume", "--foreground", "--endpoint", "https://rc.example.org"]).action, "resume");
   for (const args of [
     ["--foreground", "--uninstall"],
     ["--upgrade", "--foreground", "--endpoint", "https://rc.example.org"],
     ["--foreground", "--foreground", "--endpoint", "https://rc.example.org"],
+    ["--show-fingerprint", "--show-fingerprint", "--endpoint", "https://rc.example.org"],
+    ["--show-fingerprint", "--resume", "--endpoint", "https://rc.example.org"],
     ["--foreground"],
   ]) assert.throws(() => parseInstallArgs(args));
 });
@@ -137,7 +139,7 @@ test("first enrollment prompts for one challenge, not the original pairing code 
   assert.match(src, /if \(!stdin\.isTTY \|\| !stdout\.isTTY\)/);
 });
 
-test("enrollment displays the immutable locally generated public-key fingerprint, with no second command", async () => {
+test("first pairing hides fingerprint by default, but optional display matches pending public key", async () => {
   const folder = await mkdtemp(path.join(os.tmpdir(), "rc-v2-fingerprint-"));
   try {
     const keyPath = path.join(folder, "private.pem");
@@ -158,8 +160,11 @@ test("enrollment displays the immutable locally generated public-key fingerprint
     assert.equal((await stat(keyPath)).mode & 0o777, 0o600);
     const script = await readFile(path.join(path.dirname(fileURLToPath(import.meta.url)),
       "..", "scripts", "install-v2.mjs"), "utf8");
-    assert.match(script, /Local public key fingerprint: " \+ enrollment\.fingerprint/);
-    assert.match(script, /compare its fingerprint with the one above/);
+    assert.equal(parseInstallArgs(["--endpoint", "https://rc.example.org"]).showFingerprint, false);
+    assert.equal(parseInstallArgs(["--show-fingerprint", "--endpoint", "https://rc.example.org"]).showFingerprint, true);
+    assert.match(script, /if \(options\.showFingerprint\)/);
+    assert.match(script, /Local public key fingerprint \(optional check\): " \+ enrollment\.fingerprint/);
+    assert.match(script, /Enter only the 12-character challenge here/);
     assert.doesNotMatch(script, /openssl pkey|Repeat original 10-character code/);
   } finally {
     await rm(folder, { recursive: true, force: true });

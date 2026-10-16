@@ -2,7 +2,7 @@
  * Linux v2 user-service installer, from a trusted checkout. No curl|sh,
  * sudo, Portal Bearer, Cloudflare token, or changes to deployed v1 services.
  *
- * node apps/remote-control-agent/scripts/install-v2.mjs --endpoint https://EXAMPLE/ [--name HOST]
+ * node apps/remote-control-agent/scripts/install-v2.mjs --endpoint https://EXAMPLE/ [--name HOST] [--show-fingerprint]
  * node apps/remote-control-agent/scripts/install-v2.mjs --resume --endpoint https://EXAMPLE/
  * node apps/remote-control-agent/scripts/install-v2.mjs --upgrade --endpoint https://EXAMPLE/
  * node apps/remote-control-agent/scripts/install-v2.mjs --uninstall
@@ -38,10 +38,13 @@ const IDENTITY_REL = path.join(".local", "share", "mcp-workers", "remote-control
 const UINT = /^[a-zA-Z0-9._/+-]+$/;
 
 export function parseInstallArgs(argv) {
-  const result = { action: "install", endpoint: undefined, name: undefined, foreground: false };
+  const result = { action: "install", endpoint: undefined, name: undefined, foreground: false, showFingerprint: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === "--foreground") {
+    if (arg === "--show-fingerprint") {
+      if (result.showFingerprint) throw new Error("Duplicate fingerprint option.");
+      result.showFingerprint = true;
+    } else if (arg === "--foreground") {
       if (result.foreground) throw new Error("Duplicate foreground option.");
       result.foreground = true;
     } else if (arg === "--upgrade" || arg === "--uninstall" || arg === "--resume") {
@@ -53,6 +56,9 @@ export function parseInstallArgs(argv) {
     } else {
       throw new Error("Unknown installer option.");
     }
+  }
+  if (result.showFingerprint && result.action !== "install") {
+    throw new Error("Fingerprint display is available only for first pairing.");
   }
   if (result.foreground && (result.action === "uninstall" || result.action === "upgrade")) {
     throw new Error("Foreground supports first pairing or --resume only.");
@@ -288,8 +294,14 @@ export async function runInstaller(args, {
     const terminal = createInterface({ input: stdin, output: stdout, terminal: true });
     try {
       stdout.write("Pending 10-minute pairing code: " + enrollment.code + "\n");
-      stdout.write("Local public key fingerprint: " + enrollment.fingerprint + "\n");
-      stdout.write("In authenticated MCP: pairing_lookup; compare its fingerprint with the one above, then pairing_prepare. Enter only the returned challenge here.\n");
+      // Fingerprint is already checked by the MCP/DO against the pending
+      // public key. Local visual comparison is an explicit opt-in diagnostic:
+      // it can help detect misdirected pairing, but is not part of the
+      // two-code default interaction or a substitute for human terminal consent.
+      if (options.showFingerprint) {
+        stdout.write("Local public key fingerprint (optional check): " + enrollment.fingerprint + "\n");
+      }
+      stdout.write("In authenticated MCP: pairing_lookup, then pairing_prepare. Enter only the 12-character challenge here.\n");
       // The installer already holds the original code in memory. Prompt only
       // for the independently prepared challenge; never ask the user to type
       // a second lookalike code or persist the pairing code to disk.

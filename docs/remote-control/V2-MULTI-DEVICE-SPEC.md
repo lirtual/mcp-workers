@@ -1,6 +1,6 @@
 # Remote Control MCP v2 — One authoritative multi-device Spec
 
-**Status:** design accepted; implementation and deployment not authorized. Updated 2026-10-15.
+**Status:** design accepted; implementation and deployment not authorized. Updated 2026-10-16 (owner-approved two-code default UX).
 Authority: [ADR-0014 — transport](./adr/0014-v2-multi-device-ws-do.md), [ADR-0015 — pairing](./adr/0015-v2-pairing-and-identity.md). Existing [v1 Spec](./SPEC.md) continues to govern the deployed single-device path.
 
 ## Goal
@@ -11,7 +11,7 @@ One Remote Control MCP controls separately paired Linux/WSL2 Agents across unrel
 
 1. As an owner, I want one straightforward install on Linux/WSL2, so that devices on other networks can join without Cloudflare account setup.
 2. As an owner, I want a short locally displayed pairing code, so that I can identify an installation before approving it.
-3. As an owner, I want to inspect the device's fingerprint in authenticated MCP, receive a short-lived challenge, and **confirm from the NEW device's local terminal**, so that an autonomous model tool call alone cannot approve it.
+3. As an owner, I want **only one 10-character pairing code and one 12-character confirmation challenge** in the default UX, with optional local fingerprint inspection and **mandatory confirmation from the NEW device's terminal**, so model-only MCP calls cannot approve it.
 4. As an owner, I want `list_devices` with stable IDs and observed status, so that I can target the correct host.
 5. As an owner, I want every v2 file/Shell/process command to name its target device, so that concurrent clients cannot redirect actions by changing a default.
 6. As an owner, I want disconnected hosts to reject commands, reconnect automatically and reconcile local receipts, so that stale or uncertain mutations are not replayed.
@@ -37,19 +37,19 @@ The existing Agent build invokes **`cc`** for its C session-supervisor helper; o
 - `operation_id`: existing Agent-local stable mutation identity and receipt; never substitute a WSS correlation identifier. Unknown outcome is `timeout_unknown`, not “failed / safe to retry”.
 - `list_devices()` returns bounded `[{device_id,name,status,last_seen_at?}]`; availability means observed Agent connectivity, not merely network/host state.
 - `pairing_lookup({code})`: Portal-authenticated **read-only** pending device lookup returning `pairing_id`, `name`, `fingerprint`, `expires_at`. Never approves a device.
-- `pairing_prepare({pairing_id,expected_fingerprint})`: a separate authenticated MCP preparation action. Confirms the reviewed pending key and returns a **12-character random Base32 challenge (60 bits), one-use, maximum five minutes**. It does **not** approve a device or issue credentials. Owner copies the challenge to the **new device terminal**. A signed local response alone activates identity; a model-generated `approve:true` is rejected.
+- `pairing_prepare({pairing_id,expected_fingerprint})`: a separate authenticated MCP preparation action. Checks the MCP-observed fingerprint against the same immutable pending record and returns a **12-character random Base32 challenge (60 bits), one-use, maximum five minutes**. It does **not** approve a device or issue credentials. Owner copies the challenge to the **new device terminal**. A signed local response alone activates identity; a model-generated `approve:true` is rejected.
 - `revoke_device({device_id})`: durably deny before any other effect, reject fresh connections/dispatch and close live socket. Attempt an authenticated internal best-effort stop of owned managed sessions if online, reporting `stop_confirmed`, `stop_unconfirmed` or `offline` honestly. No Cloudflare One registration exists to delete.
 - Every v2 existing curated tool adds a validated `device_id` while retaining original tool names/arguments and mutation IDs. No global mutable default. The single-device v1 compatibility route cannot silently pick a v2 target.
 
 ## Agent-only pairing and authentication (separate from MCP)
 
-1. Installer generates a new **Ed25519** pair locally and a cryptographically uniform **10-character Base32 code (50 random bits)**; displays it locally with **10-minute** expiry. The private key remains device-local with restricted OS permissions.
+1. Installer generates a new **Ed25519** pair locally and a cryptographically uniform **10-character Base32 code (50 random bits)**; displays only the pairing code in the default **10-minute** pending flow. The private key remains device-local with restricted OS permissions. The locally derived public-key fingerprint is available with an explicit `--show-fingerprint` install flag for additional visual verification.
 2. A **bounded public, tool-less Agent bootstrap endpoint** registers a pending code verifier + exact public key/fingerprint in the fixed owner DO. It receives no Shell/file authority. Rate-limit submissions and code guesses, cap outstanding pending requests, expire and clean on access; no general queue or always-on alarm.
-3. Owner supplies the code via Portal-authenticated `pairing_lookup`, reviews immutable fingerprint, then uses `pairing_prepare` to receive a short-lived one-use challenge bound to that same pending public key. MCP alone cannot activate a device, and no `pairing_confirm` tool is exposed.
-4. The owner manually enters the original 10-character pairing code plus the 12-character MCP challenge on the new device's local terminal/SSH. Its private key signs a domain-separated transcript binding pending code verifier, challenge and the immutable public key. The public, tool-less `/agent/pair/complete` endpoint verifies one-use challenge and signature, atomically consumes pending approval and issues a device ID. **This pairing proof is not a WSS login.** Later a fresh independent server nonce signs the authenticated operational `wss` session in #50. Never put long-lived keys, code or Portal Bearer into query strings/logs.
+3. Owner supplies the code via Portal-authenticated `pairing_lookup`. MCP receives `pairing_id`, label and immutable fingerprint; `pairing_prepare` requires the same fingerprint and returns a short-lived one-use challenge bound to that public key. **No mandatory manual fingerprint comparison in the default UX**; optional owner verification uses `--show-fingerprint`. MCP lookup/prepare alone cannot activate a device, and no `pairing_confirm` tool is exposed.
+4. The owner manually enters **only the 12-character MCP challenge** on the new device's local terminal/SSH; the original pairing code is retained in installer memory and never needs to be retyped. Its private key signs a domain-separated transcript binding pending code verifier, challenge and the immutable public key. The public, tool-less `/agent/pair/complete` endpoint verifies one-use challenge and signature, atomically consumes pending approval and issues a device ID. **This pairing proof is not a WSS login.** Later a fresh independent server nonce signs the authenticated operational `wss` session in #50. Never put long-lived keys, code or Portal Bearer into query strings/logs.
 5. Every subsequent WSS reconnect uses a new challenge and the same approved local private key. Verify current SQLite authorization at connection and before **each command dispatch**, including after Hibernation wake. Use a deterministic per-device connection epoch to fence duplicate old sockets. Revoke permanently blocks the old key until a *new owner-approved pairing*.
 
-**Security gate (refined 2026-10-15):** static Portal Bearer authenticates caller possession, not an actual human. The owner approved an independent **new-device terminal confirmation** to prevent autonomous MCP-only approval without adding OAuth or a dashboard. This is independent **only if ChatGPT and its other authorized tools cannot operate that terminal or access the new private key**. A compromised target/SSH session is not proof of a separate human; do not claim universal human-presence verification. Validate actual client/host boundaries before production.
+**Security gate (refined 2026-10-16):** static Portal Bearer authenticates caller possession, not an actual human. **MCP-side fingerprint matching is cryptographic key binding, not an independent check of the physical device the owner intended; hiding the local fingerprint by default trades away manual mispairing detection.** The owner approved an independent **new-device terminal confirmation** to prevent autonomous MCP-only approval without adding OAuth or a dashboard. This is independent **only if ChatGPT and its other authorized tools cannot operate that terminal or access the new private key**. A compromised target/SSH session is not proof of a separate human; do not claim universal human-presence verification. Validate actual client/host boundaries before production.
 
 ## Device control and failure model
 
@@ -71,7 +71,7 @@ The existing Agent build invokes **`cc`** for its C session-supervisor helper; o
 
 | Gate | Observable check |
 | --- | --- |
-| Pairing | missing/wrong Bearer, lookup-only, model-only approval, code substitution, expired/replayed/guessed code, duplicate approve and immutable fingerprint binding; **real-client explicit consent** |
+| Pairing | missing/wrong Bearer, lookup-only, model-only approval, code substitution, expired/replayed/guessed code, duplicate approve, server-side immutable fingerprint binding, optional local fingerprint comparison and **real-client explicit consent** |
 | Identity | Ed25519 Node/Workers interoperability; stolen, wrong or revoked key, replayed challenge, duplicate sockets and failed identity swap; owner and device isolation |
 | Operations | original Worker/Agent curated tool contracts, no arbitrary URL, offline rejection, no blind retry, local receipts, bounded file/output and long process sessions |
 | Device lifecycle | revoke one device while others run, online best-effort process stop, offline no false termination, reinstall and reconnect with old key denied |
