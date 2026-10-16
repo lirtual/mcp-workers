@@ -81,8 +81,9 @@ async function fetchJson(url,send) {
 /** No mutable 'latest'; verify the release's immutable property AND exact tag target. */
 export async function resolvePinnedRelease({tag,commit,target,send=fetch}) {
   validateRequest({tag,commit,target});
-  const repository=await fetchJson(API+"/immutable-releases",send);
-  if (repository.enabled!==true) throw new Error("Repository immutable Releases setting is unverified.");
+  // Repository immutable-release settings require GitHub authentication.
+  // A clean public Agent must not need a maintainer token.
+  // The published Release exposes its own public immutable=true property.
   const release=await fetchJson(API+"/releases/tags/"+encodeURIComponent(tag),send);
   if (release.immutable!==true || release.draft!==false || release.tag_name!==tag ||
       !Number.isSafeInteger(release.id) || !Array.isArray(release.assets)) {

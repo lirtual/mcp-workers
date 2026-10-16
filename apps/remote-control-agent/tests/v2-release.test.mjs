@@ -100,8 +100,10 @@ test("#73 verifies immutable setting, tag commit, exact asset id and official di
   assert.deepEqual(bytes, payload);
   assert.equal(seen.some(x=>x.url.endsWith("/latest")),false);
   assert.ok(seen.every(x=>x.init.redirect==="manual"));
+  assert.equal(seen.some(x=>x.url.endsWith("/immutable-releases")),false,
+    "A public installer must not need GitHub admin credentials.");
   for(const options of [
-    {immutable:false},{repoEnabled:false},{actualCommit:"2".repeat(40)},
+    {immutable:false},{actualCommit:"2".repeat(40)},
     {digest:null},{digest:"sha256:"+"a".repeat(63)},
     {assetSize:MAX_NEGATIVE},
   ]) {
