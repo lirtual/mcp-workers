@@ -144,7 +144,7 @@ export class ManagedSessions {
     const cutoff = Date.now() - SESSION_TTL_MS;
     const history: Array<[string, ManagedSession]> = [];
     for (const [id, session] of this.sessions) {
-      if (session.state === "running") continue;
+      if (session.state === "running" || (session.state === "unknown" && this.ownsRunningProcess(session))) continue;
       if (session.endedAt !== undefined && session.endedAt < cutoff) this.sessions.delete(id);
       else history.push([id, session]);
     }
@@ -155,7 +155,7 @@ export class ManagedSessions {
 
   async start(command: string, waitMs: number, onExit?: (session: SessionSnapshot) => Promise<void>): Promise<SessionSnapshot> {
     this.prune();
-    const active = [...this.sessions.values()].filter((session) => session.state === "running").length;
+    const active = [...this.sessions.values()].filter((session) => this.ownsRunningProcess(session)).length;
     if (active + this.starting.size >= MAX_SESSIONS) throw new Error("Session capacity reached.");
 
     const sessionId = randomUUID();
@@ -292,7 +292,8 @@ export class ManagedSessions {
   }
 
   private ownsRunningProcess(session: ManagedSession): boolean {
-    return session.state === "running" && session.child.exitCode === null && session.child.signalCode === null;
+    return (session.state === "running" || (session.state === "unknown" && session.deadlineExceeded)) &&
+      session.child.exitCode === null && session.child.signalCode === null;
   }
 
   private processExited(session: ManagedSession): boolean {
@@ -331,7 +332,7 @@ export class ManagedSessions {
     this.prune();
     const session = this.sessions.get(sessionId);
     if (!session) return "not_found";
-    if (session.state !== "running") return "completed";
+    if (session.state !== "running" && session.state !== "unknown") return "completed";
     if (!await this.signalOwnedProcess(session, "SIGTERM")) return "unknown";
     session.terminationRequested = true;
     const waitForExit = async (timeoutMs: number) => {
@@ -400,6 +401,7 @@ export class ManagedSessions {
         session.lastObservedAt = Date.now();
       }
     }
+    for (const session of this.sessions.values()) session.control.close();
     this.sessions.clear();
   }
 }
