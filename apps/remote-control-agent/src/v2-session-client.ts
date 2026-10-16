@@ -63,7 +63,7 @@ async function postJson(
   return { status: response.status, result };
 }
 
-export async function recoverDeviceId(
+export async function verifyApprovedDeviceId(
   baseAddress: string, keyPath: string, send: typeof fetch = fetch,
   signal?: AbortSignal,
 ): Promise<string> {
@@ -86,19 +86,28 @@ export async function recoverDeviceId(
       result.result.device_id !== challenged.result.device_id) {
     throw new Error("Signed device identity recovery failed.");
   }
+  return challenged.result.device_id;
+}
+
+/** Read-only signed approval proof; never creates an incomplete .device-id file. */
+export async function recoverDeviceId(
+  baseAddress: string, keyPath: string, send: typeof fetch = fetch,
+  signal?: AbortSignal,
+): Promise<string> {
+  const approvedId = await verifyApprovedDeviceId(baseAddress, keyPath, send, signal);
   signal?.throwIfAborted();
   // This is an identity recovery, NOT a replay of an uncertain Shell mutation.
   // A lost recovery response may be handled by a fresh nonce/challenge.
   try {
-    await writeFile(keyPath + ".device-id", result.result.device_id + "\n", { encoding: "utf8", flag: "wx", mode: 0o600 });
+    await writeFile(keyPath + ".device-id", approvedId + "\n", { encoding: "utf8", flag: "wx", mode: 0o600 });
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
     const existing = (await readFile(keyPath + ".device-id", "utf8")).trim();
-    if (existing !== result.result.device_id) {
+    if (existing !== approvedId) {
       throw new DeviceSessionRejectedError("Device ID on disk does not match authenticated identity.");
     }
   }
-  return result.result.device_id;
+  return approvedId;
 }
 
 export async function openAuthenticatedDeviceSocket(
