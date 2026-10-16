@@ -237,7 +237,7 @@ test("directory creation, text edits, and moves share operation receipts without
       assert.equal((denied.json as { status: string }).status, "failed");
       assert.equal(existsSync(path.join(permissions, "denied")), false);
     }
-    const rawReceipts = await readFile(path.join(receiptDirectory, "operation-receipts.json"), "utf8");
+    const rawReceipts = await readFile(path.join(receiptDirectory, "operation-receipts.sqlite"), "utf8");
     assert.equal(rawReceipts.includes("secret-replacement"), false);
     assert.equal(rawReceipts.includes(fixture), false);
   } finally {
@@ -313,7 +313,7 @@ test("write_file appends once for concurrent duplicate IDs and rejects changed p
     assert.equal(missingId.status, 400);
     assert.equal(await readFile(fixture, "utf8"), "start+one");
 
-    const receiptFile = path.join(receiptDirectory, "operation-receipts.json");
+    const receiptFile = path.join(receiptDirectory, "operation-receipts.sqlite");
     const persisted = await readFile(receiptFile, "utf8");
     assert.equal(persisted.includes("+one"), false);
     assert.equal(persisted.includes(fixture), false);
