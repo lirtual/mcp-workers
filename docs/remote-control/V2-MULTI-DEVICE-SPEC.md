@@ -1,7 +1,7 @@
 # Remote Control MCP v2 — One authoritative multi-device Spec
 
 **Status:** design accepted; source implementation is under [Draft PR #58](https://github.com/lirtual/mcp-workers/pull/58), but production deployment and full multi-device acceptance are **not** authorized. Updated 2026-10-17 (device-removal retention changed by ADR-0017; implementation pending).
-Authority: [ADR-0014 — transport](./adr/0014-v2-multi-device-ws-do.md), [ADR-0015 — pairing](./adr/0015-v2-pairing-and-identity.md), [ADR-0017 — device removal](./adr/0017-v2-device-revocation-without-tombstones.md). Existing [v1 Spec](./SPEC.md) continues to govern the deployed single-device path.
+Authority: [ADR-0014 — transport](./adr/0014-v2-multi-device-ws-do.md), [ADR-0015 — pairing](./adr/0015-v2-pairing-and-identity.md), [ADR-0017 — device removal](./adr/0017-v2-device-revocation-without-tombstones.md), [ADR-0018 — temporary Agent lifecycle](./adr/0018-v2-temporary-agent-pairing-lifecycle.md). Existing [v1 Spec](./SPEC.md) continues to govern the deployed single-device path.
 
 ## Goal
 
@@ -42,6 +42,20 @@ The existing Agent build invokes **`cc`** for its C session-supervisor helper; o
 - Every v2 existing curated tool adds a validated `device_id` while retaining original tool names/arguments and mutation IDs. No global mutable default. The single-device v1 compatibility route cannot silently pick a v2 target.
 
 **Device removal retention refinement (2026-10-17):** This supersedes earlier permanent-tombstone wording only. Removing a device deletes its authorization; there is no persistent removed-device history or automatic 90-day cleanup. The DO must fail closed on missing records, prevent revoke-vs-login/dispatch races, reject stale WSS sessions, and count **approved** identities against the existing device cap. The current Draft PR #58 still implements tombstones and must be updated and independently tested before this design is claimed complete. This does not select or implement a temporary-pairing lifetime; that remains in grilling.
+
+## Temporary Debug Device — approved mode, unresolved termination semantics (2026-10-17)
+
+Owner-selected **Q1=C / Q2=A** ([ADR-0018](./adr/0018-v2-temporary-agent-pairing-lifecycle.md)):
+
+- **Authorization lifetime:** A temporary debugging Agent is intended to **revoke its authorization when intentionally closed**. It is **not** a 2-hour lease, other fixed wall-clock TTL, or single-operation allowance. Ordinary development Shell sessions **still have their existing 60-minute maximum lifetime** under [ADR-0016](./adr/0016-agent-local-receipts-and-bounded-commands.md); unlimited *temporary Agent uptime* must never imply unlimited execution of one command.
+- **Pairing/security:** Reuse existing locally displayed 10-character pending pairing code, authenticated MCP lookup/prepare, and human entry of the single-use 12-character challenge in the new device's terminal with Ed25519 proof. No weaker authorization, additional Portal token on Agent, or alternative model-only confirmation. A new pending request is not an authorized device.
+- **Isolation:** Regular durable devices retain their separate normal lifecycle. Temporary exit must never silently revoke an ordinary systemd Agent, and merely going `offline` must not be treated as confirmed intentional exit until a separate failure policy is approved.
+- **Observed code gap (Draft PR #58):** `install-v2.mjs --foreground` avoids creating a systemd service, but currently reuses persistent identity files and only aborts/disconnects on SIGINT/SIGTERM; it does **not** delete device approval. The Worker has only Portal owner-side `revoke_device`, not a device-authorized self-revoke endpoint. Thus the chosen mode is **not yet implemented**.
+- **Security/accounting gate:** Any future exit path must ensure fail-closed authorization removal based on the exact approved `device_id` and valid device proof, without granting Agent a Portal/admin Bearer. Server deletion must be confirmed before announcing removal; already admitted operations may remain `timeout_unknown`. It must not treat a simple WSS close as a trusted revocation request (network crash and WSL suspension are not owner intent).
+
+**Grilling questions still open — do not implement prematurely:** (1) unexpected crash, SIGKILL, power loss, stopped WSL and offline-grace handling; (2) voluntary exit while owned sessions are running, stop versus wait, and truthful unknown outcomes; (3) isolated temporary keys and failed server-revoke recovery; (4) exact signed self-revoke protocol, shutdown deadlines and same-device-only proof. Maintain the existing v1/Preview/production approval gates.
+
+**Future acceptance cases:** clean local Ctrl+C/SIGTERM, abrupt kill, WSL suspend, socket partition/reconnect, cloud unavailable at exit, duplicate device name, stale WSS race after deletion, service v. foreground separation, receipt reconciliation and bounded Shell cleanup. No CI addition or live Worker mutation is authorized by these design decisions.
 
 ## Agent-only pairing and authentication (separate from MCP)
 
