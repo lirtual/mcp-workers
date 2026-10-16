@@ -9,7 +9,9 @@ export async function assertRemoteRevocation(
     throw new Error("Invalid prior device identity.");
   }
   const base = new URL(endpoint);
-  if (base.protocol !== "https:" || base.username || base.password ||
+  const loopback = base.protocol === "http:" &&
+    base.hostname === "127.0.0.1" && !!base.port;
+  if ((!loopback && base.protocol !== "https:") || base.username || base.password ||
       base.search || base.hash || base.pathname !== "/") {
     throw new Error("A trusted HTTPS endpoint is required.");
   }
