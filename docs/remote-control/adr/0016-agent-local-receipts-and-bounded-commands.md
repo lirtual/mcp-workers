@@ -1,0 +1,73 @@
+# ADR-0016 — Agent-local receipts and bounded development commands
+
+**Status:** **Design accepted for source implementation.** Agent-local reliability code merged via [PR #66](https://github.com/lirtual/mcp-workers/pull/66) (`main@71f5a243`, 2026-10-16); follow-up offline validation #62/#63/#65 remains. **No live Agent upgrade, data migration or deployment is authorized by this ADR.**
+
+## Context
+
+The Linux Agent provides an authoritative local `Operation Receipt` keyed by `operation_id` to protect state-changing operations from accidental re-execution after lost responses. Before PR #66, `apps/remote-control-agent/src/operations.ts` used an atomically replaced JSON file with 30-day retention and `MAX_RECEIPTS = 1000`; the merged source now uses Node.js 24 built-in SQLite while the installed device may still use JSON. Its admission path can reject all new mutations when at capacity, including a `force_terminate` request that would otherwise free resources. The live host may run a different installed Agent revision from GitHub `main`, so deployment and installed-version verification are separate work.
+
+The newer `main` implementation of `sessions.ts` already excludes completed session history from the 10 **active** command slots and uses a session supervisor. We must preserve those fixes instead of rebuilding process ownership or adding a second execution engine. The existing system has a single Agent-side local execution boundary shared conceptually by v1 and v2 despite differing network ingress.
+
+The owner prioritizes a minimal, reliably recoverable single-user Linux Agent, preserving existing operation IDs and Unknown Outcome behavior rather than introducing more Cloudflare resources or a complex task scheduler.
+
+## Accepted decisions from grilling, round 1
+
+1. **Local storage:** Replace the fixed-capacity JSON receipt store with a **single local SQLite database using the Node.js 24 built-in `node:sqlite` module**. Preserve authoritative per-`operation_id` deduplication, parameter-digest conflict detection, outcome reconciliation, and the existing **normal 30-day terminal receipt retention window**; unresolved outcomes are separately protected as decided in Q7. No new database server, ORM, Cloudflare D1/R2, Durable Object or external storage service. SQLite is an implementation detail: it does not belong in the domain glossary.
+2. **Command lifetime:** Ordinary temporary development commands have a **maximum runtime of 60 minutes**. Long-lived services belong to an existing system service manager (e.g., systemd) rather than a new lease-renewal protocol or indefinite Agent-owned command session.
+3. **Shared implementation:** The Agent-local receipt store and managed-command lifecycle are shared by **both v1 and v2**. Do not duplicate storage or process-management mechanisms by transport version. Do not change the existing v1/v2 authentication, pairing, deployment routing or Worker transport in this effort.
+4. **Preserved safety invariants:** No blind repeat of an `unknown` operation; no claim of exactly-once external effects; only Agent-owned processes may be stopped; local OS account permissions and current authorization checks are unchanged. SQLite disk/storage failures must not silently downgrade durability for new file writes or process starts.
+
+## Accepted decisions from grilling, round 2
+
+5. **Q4=A — One-time automatic migration:** On the first Agent startup with the new implementation, back up the existing JSON receipt file before migration. Allow **only one Agent instance / writer** to perform the transition; import historical receipts transactionally into SQLite, validate record counts and identities/states/digests, and permit new state-changing operations only once validation succeeds. If a backup, import or validation step fails, **fail closed for all new mutations and process starts**, leave the original JSON untouched and do not silently initialize an empty store or fall back to the old JSON writer. Preserve the backup for deliberate recovery; do not delete it automatically as part of a successful migration.
+6. **Q5=A — Absolute command lifetime with graceful escalation:** Every ordinary Agent-owned development command has an **absolute maximum of 60 minutes measured from its actual process start**, independent of the MCP request timeout or output polling. At expiry, request `SIGTERM`, wait up to **5 seconds**, then request `SIGKILL` if the owned process remains alive. Reuse the existing supervisor and verified process ownership; never signal unrelated host processes. Record a distinct timeout reason where durable storage is available; if the effect cannot be established, report `unknown`, not success. Do not add renewable leases or another scheduling service.
+7. **Q6=A — Emergency stop while persistence is unavailable:** Continue requiring existing caller/device authorization and validated Agent session ownership. When SQLite storage is full, read-only, corrupt or otherwise unavailable, block all **new** state-changing file operations and process starts, while still permitting an owner-scoped stop of an already running **Agent-owned** session. Do not expand this exception to arbitrary Shell commands, file writes, process input or unrelated system processes. If the operation result cannot be stored, report outcome uncertainty without claiming a durable receipt; recovery must not blindly repeat unknown operations.
+
+**Safety interpretation:** This is a narrow emergency control-plane exception, not a general receipt-free mutation fallback. Exact error/result semantics and storage-failure test fixtures belong in the future technical spec; no code changes are authorized yet.
+
+## Accepted decisions from grilling, round 3
+
+8. **Q7=A — Unresolved outcomes do not expire automatically:** Completed and definitively failed receipts follow the normal 30-day retention policy. An operation with an unresolved `unknown` outcome must retain a **minimal durable non-replay marker** beyond day 30 until an authenticated, deliberate owner-led reconciliation establishes the disposition. This minimal marker retains the `operation_id`, tool identity, argument digest, and unresolved status (not original command arguments, secrets or output). Restart-interrupted `admitted`/`running` records must likewise be reconciled conservatively as `unknown`, not implicitly cleared. Manual acknowledgement does **not** by itself authorize a blind replay; an intentional new operation requires a new operation identity and normal authorization. The technical Spec will define reconciliation interaction using existing mechanisms; do not introduce a public admin API for this.
+9. **Q8=A — Expire only eligible terminal receipts, fail closed when durable writes fail:** SQLite automatically removes only receipts that are **both eligible for expiry and beyond the normal retention window**; do not evict protected entries to satisfy an arbitrary item-count or DB-size quota. Keep local housekeeping simple (on startup / bounded routine maintenance, not a separate scheduler). Disk-full, read-only, corruption or transaction failure must not allow new state-changing operations or process starts to proceed without durable admission. The Q6 authenticated stop of proven Agent-owned sessions remains the narrow exception, with honest uncertainty if durable recording is unavailable. No additional local database server, metrics pipeline, dynamic disk quota manager or background compaction daemon.
+10. **Q9=A — One-way migration, deliberate old-Agent rollback:** JSON→SQLite is a one-time forward migration. Retain the read-only original JSON backup after verified import, but never run old JSON writing and new SQLite writing in parallel, and never silently roll back to the old Agent/schema. If a previous Agent binary must be restored, the operator must first stop the Agent, reconcile all post-migration operations and unresolved IDs, and approve a documented recovery action. Do not falsely claim that restoring the pre-migration JSON backup alone preserves operations admitted after the cutover.
+
+**Cross-cutting safety limits:** The existing Worker/Agent credential checks and OS user authority remain unchanged. The emergency stop is limited to *verified currently Agent-owned* sessions, and must not become an unaudited general Shell/file mutation bypass. A timeout is an attempted bounded termination, not a guarantee that the OS has reaped an uninterruptible process; report uncertainty rather than incorrectly reporting success. Neither local migrations nor v1/v2 shared Agent logic authorizes a production cutover.
+
+**Final audit clarifications (do not change Q1–Q9):**
+- A nonzero exit code and a receipt state of `failed` do **not** by themselves prove absence of effects. In particular, an already-started development command may have modified files before it exited. The receipt design must distinguish execution failure from *effect certainty* and retain unresolved replay protection as required by Q7, without adding a new public task state machine.
+- The known historical JSON archive produced when a full 1,000-entry receipt file was reduced to 300 must be considered during one-time migration. Only trusted, operator-identified source archives from the same Agent instance may supplement still-protected missing IDs; conflicting identity/tool/digest/outcome facts are a migration blocker, not grounds for blind overwrite or deletion.
+- v1/v2 **share Agent code**, not an uncoordinated cross-instance database. Each independent Agent/state directory requires single-writer ownership; simultaneous independent processes may not mutate the same state directory.
+- The current `timeout_ms` argument caps **initial client wait (30 seconds)** and is not a process lifetime. The supervisor enforces the independent absolute 60-minute runtime and the 5-second graceful escalation using only its verified owned process-group signaling path.
+
+
+## Consequences and trade-offs
+
+- **Benefits:** Removes the fixed 1,000-entry throughput bottleneck without repeatedly rewriting an entire JSON history; requires no new infrastructure; protects unknown operation IDs beyond normal expiry; retains transport-independent local operation semantics; prevents forgotten temporary Vite/build/test sessions from running indefinitely.
+- **Costs:** One-time backup/transactional migration must be tested on valid, invalid and full JSON stores; unresolved-operation markers may accumulate until owner review; an unusable SQLite store temporarily blocks new mutations pending repair; long-running development processes will be stopped after 60 minutes (plus a bounded 5-second grace period); installed Agent versions must be checked rather than assuming `main` matches production; rollback requires explicit reconciliation.
+- **Explicitly rejected for this design:** Raising `MAX_RECEIPTS` to an arbitrary larger number; silently deleting unexpired or unresolved receipts when full; auto-replaying unknown operations; creating a D1/DO/R2 receipt backend; separate v1/v2 execution implementations; JSON/SQLite dual-write, auto-rollback, generic workflow/queue/scheduler frameworks; adding indefinite renewable leases in the first release.
+
+## Final consensus gate and implementation boundaries
+
+**All architectural questions Q1–Q9 have user-selected answers; no additional architectural frontier is currently required.** The owner has **not yet approved the final synthesized design for implementation**. The final consent message should confirm the minimal plan before `to-spec` and `to-tickets`.
+
+The derived technical Spec must verify these edge cases before any Agent rollout:
+- JSON receipt import preserves IDs, digests and states, including `unknown`, duplicate IDs and records from a previous interrupted Agent; a failed import cannot admit new mutations or silently recreate an empty store.
+- SQLite operation admission and state changes remain durable, serialized and conflict-safe for same `operation_id` across reconnection/restart and v1/v2 transport paths. An intentionally repeated action uses a *new* ID, never an assumed-safe replay of `unknown`.
+- Hundreds/thousands of terminal receipts expire normally while unresolved markers remain protected. Disk-full, corruption and unavailable storage fail closed without blocking a **validated Agent-owned emergency stop**.
+- Exactly the Agent-owned process/session lifetime is bounded: at 60 minutes request `SIGTERM`, allow 5 seconds, then `SIGKILL` if necessary. Record timeout versus uncertain termination accurately; never kill unrelated host processes.
+- Stopping/rolling back the installed Agent accounts for post-migration operations; no automatic backward-compatible JSON writing or fake rollback guarantee. Verify the deployed Agent's actual revision separately from GitHub `main`.
+- Preserve existing Portal / device credentials, read-only file access where still safe, single-Linux-account execution boundary, session supervisor and existing tests/CI; add no new CI by default.
+
+**Details resolved in the draft technical Spec without another Grilling round:** SQLite schema and transaction boundaries, backup file permissions, migration locking mechanics, exact cleanup trigger/batch size, timeout error representation using the existing contract, fault-injection test fixtures, and operator recovery runbook. These are constrained implementation decisions, not authorization for new services, API tools, security scope or infrastructure.
+
+No DDL, production repair commands or deployment authorization are implied.
+
+## Derived technical specification
+
+The implementation-ready synthesis is [Agent Reliability Spec](../SPEC-agent-reliability.md), authored using the accepted Q1–Q9 choices and the final audit clarifications. It covers user stories, receipt schema boundaries, migration, failure modes, existing API compatibility and public-seam tests. The Spec is **draft-only** until explicitly approved; it is not an authorization to implement or deploy.
+
+## Authority and rollout
+
+This is a **documentation-only, in-progress architectural record**. It does **not** authorize production restarts, changing credentials, backup deletion, deploying a new Agent/Worker, merging code, or resolving the existing host outage. Implementation and any production cutover require their own validation and explicit approval.
+
+Related: [Remote Control context](../CONTEXT.md), v1 [spec](../SPEC.md), ADR-0007 (receipts), ADR-0009 (managed sessions), ADR-0013 (native Agent), and prospective v2 spec Issue #46.

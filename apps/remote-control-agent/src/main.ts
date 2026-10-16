@@ -18,6 +18,7 @@ const agent: RunningAgent = await startAgent({
   deviceToken: token,
   host,
   port,
+  receiptHistoricalBackupPath: process.env.REMOTE_CONTROL_RECEIPT_HISTORICAL_BACKUP || undefined,
   log: (event) => {
     process.stderr.write(`${JSON.stringify({ service: "remote-control-agent", event })}\n`);
   },
