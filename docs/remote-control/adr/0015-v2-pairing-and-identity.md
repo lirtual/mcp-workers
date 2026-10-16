@@ -1,6 +1,6 @@
 # ADR-0015 — v2 owner-reviewed pairing and device-held identity
 
-Status: **accepted protocol with explicit local-terminal second confirmation; real-host security and production validation pending**. Date: 2026-10-16 (two-code UX refinement).
+Status: **accepted two-code UX with only one terminal challenge entry; independent human-confirmation security and production validation still pending**. Updated: 2026-10-16.
 New consolidated protocol decision for PR #45's accepted Q15–Q20 (prior discovery drafts superseded, not merged). Related: [v2 transport ADR](./0014-v2-multi-device-ws-do.md).
 
 ## Accepted requirements
