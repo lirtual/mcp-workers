@@ -110,6 +110,13 @@ async function callPairedDeviceOperation(env: Env, id: unknown, name: string, ar
     if (result.operation_id !== operationId || typeof result.status !== "string") {
       return toolText(id, JSON.stringify({ operation_id: operationId, status: "timeout_unknown" }));
     }
+    // A mutating Agent call may already have committed before losing its
+    // response. Never expose "unavailable"/"unknown" as a safe-to-retry
+    // outcome; recover only by querying this same operation_id.
+    if (parsed.tool !== "get_operation_status" &&
+        (result.status === "unavailable" || result.status === "unknown")) {
+      return toolText(id, JSON.stringify({ operation_id: operationId, status: "timeout_unknown" }));
+    }
     return toolText(id, JSON.stringify(result));
   } catch {
     return toolText(id, JSON.stringify({ operation_id: operationId,
