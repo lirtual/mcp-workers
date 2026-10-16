@@ -7,9 +7,17 @@ import { lstat, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { maintainAuthenticatedDeviceSession } from "../src/v2-connection-lifecycle.ts";
+import { dropOneCompletedWriteReply } from "./v2-preview-receipt-fault.mjs";
 
 const ENDPOINT = "https://remote-control-v2-preview.aiyaya.workers.dev/";
 const MAX_RUNTIME_MS = 12 * 60_000;
+const args = process.argv.slice(2);
+if (args.length !== 0 && (args.length !== 2 || args[0] !== "--drop-reply-once" ||
+    !/^receipt-fault-[a-z0-9-]{10,90}$/.test(args[1] ?? ""))) {
+  throw new Error("Use --drop-reply-once receipt-fault-<unique-safe-id>, or no arguments.");
+}
+const faultId = args.length === 2 ? args[1] : null;
+
 if (process.platform !== "linux" || process.env.WSL_DISTRO_NAME !== "rc-v2-receipt-lab" ||
     os.userInfo().username !== "rcagent" || process.getuid?.() === 0 ||
     process.versions.node.split(".")[0] !== "24" || os.homedir() !== "/home/rcagent") {
@@ -42,6 +50,12 @@ try {
     readOnly: true,
     writeFile: true,
     shell: true,
+    ...(faultId ? {
+      makeSocket: (url, protocols) => dropOneCompletedWriteReply(
+        new WebSocket(url, protocols), faultId,
+        () => process.stderr.write("preview-receipt-test: discarded one committed write reply; reconnecting\\n"),
+      ),
+    } : {}),
     onState: state => process.stderr.write(`preview-receipt-test: ${state}\n`),
   });
 } finally {
