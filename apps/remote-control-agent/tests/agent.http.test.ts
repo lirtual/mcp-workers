@@ -912,9 +912,10 @@ test("migration reconciles known 1,000-to-300 backup with current protected hist
   const current = old.slice(700);
   const original = JSON.stringify({ version: 1, receipts: current });
   await writeFile(path.join(state, "operation-receipts.json"), original);
-  await writeFile(path.join(state, "operation-receipts.backup-20261016-090053.json"),
-    JSON.stringify({ version: 1, receipts: old }));
-  const agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: state });
+  const requiredBackup = path.join(state, "operation-receipts.backup-20261016-090053.json");
+  await writeFile(requiredBackup, JSON.stringify({ version: 1, receipts: old }));
+  const agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: state,
+    receiptHistoricalBackupPath: requiredBackup });
   try {
     const status = await fetch(agent.baseUrl + "/internal/operations/history-0", {
       headers: { "x-device-credential": DEVICE_TOKEN },
