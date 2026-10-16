@@ -42,7 +42,7 @@ export async function beginDeviceEnrollment(
   if (reuseExistingKey) {
     // The retry path must not follow a symlink, replace, or loosen a key.
     const key = await lstat(keyPath);
-    if (!key.isFile() || key.isSymbolicLink() || key.uid !== process.getuid() ||
+    if (!key.isFile() || key.isSymbolicLink() || key.uid !== process.getuid?.() ||
         (key.mode & 0o777) !== 0o600) {
       throw new Error("The existing private identity has unsafe ownership or permissions.");
     }
