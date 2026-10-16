@@ -1,0 +1,155 @@
+# Remote Control Agent — Standalone Linux/WSL2 CLI and v2 Device Lifecycle Spec
+
+**Status:** To Spec · Draft for design and ticket review, **ready for ticket decomposition but not authorized for implementation, publication, production rollout or v1 cutover**. 2026-10-17.
+**Repository:** lirtual/mcp-workers.
+**Authority:** [Design PR #68](https://github.com/lirtual/mcp-workers/pull/68) (Draft), [ADR-0019](./adr/0019-standalone-linux-agent-distribution.md), [ADR-0017](./adr/0017-v2-device-revocation-without-tombstones.md), [ADR-0018](./adr/0018-v2-temporary-agent-pairing-lifecycle.md), [ADR-0015](./adr/0015-v2-pairing-and-identity.md), [v2 protocol Spec](./V2-MULTI-DEVICE-SPEC.md), [v2 Spec Issue #46](https://github.com/lirtual/mcp-workers/issues/46), [48h acceptance Issue #57](https://github.com/lirtual/mcp-workers/issues/57).
+**Implementation baseline:** inspect live main and unmerged [v2 PR #58](https://github.com/lirtual/mcp-workers/pull/58) afresh before implementation. It already has Ed25519 onboarding, an owner-reviewed two-code challenge, signed WSS, Agent-local operation receipts, and a checkout-based installer. Neither this specification nor passing offline tests changes the production v1 authority.
+
+## 1. Problem and required outcome
+
+**Problem.** The current v2 installation experience requires a trusted source checkout, Node.js 24, a local C compiler and a compiled Linux Shell Supervisor. Installing from arbitrary new Linux/WSL2 machines is far less convenient than a modern standalone developer CLI. Previous v2 Preview code also retains revoked-device tombstones and depends on them during interactive re-pair; new owner decisions remove that history and add fixed 24-hour temporary authorization. Packaging without reconciling those contracts would yield an installer that may fail on a new host or revive inconsistent device identity state.
+
+**Outcome.** One reviewed HTTPS terminal command starts a **local interactive** installer on a compatible Linux x86_64/ARM64 or WSL2 host, downloads a verified **prebuilt GitHub Release Agent** containing Node.js 24, Agent JS and the precompiled native Shell Supervisor, asks the owner to select permanent or temporary (24-hour) pairing, and completes existing independent owner/MCP + local-terminal challenge without cloning code or installing build dependencies. Permanent devices become a v2 **systemd user service**; temporary devices run **foreground only**. Upgrade, uninstall and rerun are explicit, minimally recoverable and keep local identity/SQLite receipts safe. Cloud authorization remains authoritative and fail-closed.
+
+**Publication status.** No independently usable Agent GitHub Release or executable bootstrap URL has been verified in the repository. Do not advertise a real install command or count installation as tested before publishing and verifying a release in a separately authorized action.
+
+## 2. Numbered user stories
+
+1. As a Linux device owner, I want to start installation using one reviewed command without cloning a repository, so that a fresh supported host is easy to add.
+2. As a device owner, I want support for compatible x86_64 and ARM64 Linux including WSL2, so that my normal Linux machines can share the same CLI workflow.
+3. As a device owner, I want incompatible kernel/runtime/native-helper conditions identified before pairing, so that I do not approve a device that cannot run safely.
+4. As a device owner, I want to choose permanent or temporary mode explicitly in the terminal, so that device authorization lasts only as long as I intend.
+5. As a device owner, I want a short pairing code displayed locally and reviewed through authenticated MCP, so that I can identify the intended new installation.
+6. As a device owner, I want to enter only a one-use confirmation challenge in the target device's own terminal, so that MCP-only tool access cannot silently approve the new Agent.
+7. As a device owner, I want a new permanent Agent to start as my own managed background service, so that ordinary restarts can restore connectivity.
+8. As a device owner, I want a temporary Agent to run only in the foreground with a fixed 24-hour grant, so that a brief debugging session does not install a service.
+9. As a device owner, I want a temporary device to be denied new remote requests at its server-defined expiry, so that disconnects and reconnects do not extend permission.
+10. As a device owner, I want an interrupted install to resume when I rerun the same command, so that partial downloads or expired pairing codes do not force unsafe manual cleanup.
+11. As a device owner, I want existing approved credentials to be preserved on repeated installation, so that an already trusted device is not silently replaced or duplicated.
+12. As a device owner, I want deliberate re-pairing after revoked or expired authorization to require fresh independent approval, so that a missing record cannot restore an old grant.
+13. As a device owner, I want a manually requested upgrade to preserve identity, configuration and unknown-operation receipts, so that program updates do not lose trust or replay protection.
+14. As a device owner, I want an upgrade to refuse while managed work may still be running, so that service restart does not unexpectedly terminate development tasks.
+15. As a device owner, I want a failed program activation to restore the previous executable without downgrading local data, so that recovery is bounded and honest.
+16. As a device owner, I want a local uninstall to preserve credentials and receipts by default while explaining the separate cloud revoke, so that I do not confuse deleted software with removed access.
+17. As a device owner, I want clear unsupported-platform, no-TTY, failed-download, offline and service-manager diagnostics, so that I know which problem actually occurred.
+18. As an authorized MCP caller, I want expired or revoked device IDs denied and absent from selectable devices, so that remote operations cannot target removed grants.
+19. As an authorized MCP caller, I want an already-admitted operation to retain its local receipt and original maximum runtime even if the device grant expires, so that uncertain effects are not replayed.
+20. As a maintainer, I want real end-to-end CLI-to-MCP-to-Agent tests at current protocol seams, so that the installer can evolve without bespoke internal mock layers.
+21. As a maintainer, I want initial acceptance limited to an isolated **single-device, real 48-hour** Hibernation and quota observation, so that pilot readiness is measured without claiming unobserved fleet scale.
+22. As a maintainer, I want the existing v1 Worker, Tunnel, service and credentials untouched, so that preview onboarding cannot regress production.
+
+## 3. Scope, priorities, and hard invariants
+
+### In scope
+
+- A single canonical reviewed installer/bootstrap channel plus a self-contained versioned Linux Agent archive from GitHub Releases, for **tested** x86_64 and ARM64 Linux targets; WSL2 uses the same Linux package.
+- One local CLI for first install/pair, explicit manual upgrade, local uninstall, status/diagnostics and safe repeat invocation; reuse existing installation/pairing code instead of a second control plane.
+- Permanent/background and temporary/foreground mode selection, private per-mode credentials, 24-hour temporary authorization enforcement in the existing owner-scoped DO.
+- Replacement of persistent-tombstone device removal and associated re-pair logic in PR #58 while protecting existing session/receipt semantics.
+- Preserving all existing read-only, Shell and file capability gates: installing is **not** blanket permission for mutations.
+
+### Hard invariants
+
+1. **No owner secret on Agent.** No Portal Bearer, Cloudflare admin token, private device key or other reusable credential in downloadable binaries, installer command line, logs, issue comments, Release assets or standard diagnostics. Private Ed25519 key is generated locally.
+2. **Independent approval.** Pending 10-character Base32 code remains valid at most 10 minutes; authenticated MCP pairing_lookup reviews pending identity/fingerprint and pairing_prepare returns a one-use 12-character challenge valid at most five minutes. Only the challenge is typed into the **new device's** local terminal. Device private-key signed proof plus server checks are mandatory; model-controlled terminal access is not independent human approval.
+3. **No surprise privilege growth.** PR #58 v2-main currently enables readOnly:true, writeFile:false, shell:false. An online device does not automatically gain file-write/Shell permission. Mutation-tool enablement remains subject to separate authorization and acceptance.
+4. **No active-device history blacklist.** Device removal deletes authorization/session grants and permanently denies the former device_id. A previously used public key may initiate a **new pending request only**, never obtain automatic authority. Expired temporary grants count as unauthorized, not as capacity-consuming active devices.
+5. **Local state is authoritative for effects.** Existing SQLite receipts, operation_id deduplication, timeout_unknown reconciliation, managed sessions and 60-minute command ceiling remain intact. No cloud-side receipt duplicate or blind resubmission.
+6. **V1 isolation.** No production Worker/Tunnel/VPC/Agent, service, Secret or credential changes, and no v2 deployment/cutover, are permitted by this spec.
+7. **No unnecessary infrastructure.** One existing MCP ingress/DO; no OAuth provider, D1/KV/R2, external package registry, CDN, queue, new application-wide installer DB, cron, background updater, or custom fleet service.
+
+## 4. Module ownership and interface seams
+
+| Existing module or delivery surface | Specification responsibility |
+| --- | --- |
+| apps/remote-control-agent/scripts/install-v2.mjs | Reuse installer lock, owner-only identity staging, repeat-install inspection, signed re-pair, safe v2 systemd unit generation and CLI prompt behavior. Adapt to a self-contained **installed runtime directory**, not a source checkout. |
+| Agent release packaging (minimal scripts in existing repo) | Build/test Node.js 24 bundled JS and native Session Supervisor for each declared compatible Linux ABI/CPU; produce versioned release archives, lightweight bootstrap and release metadata. |
+| apps/remote-control-agent/src/v2-main.ts and v2-connection-lifecycle.ts | Reuse signed WSS client and current capability gating; implement approved permanent/temporary lifecycle without cloning transport or broadening tool authority. |
+| apps/remote-control-agent/src/v2-enrollment.ts, pair-device.ts, confirm-device.ts, v2-repair.ts, v2-session-client.ts | Reuse independent local cryptographic pairing; pass immutable explicit grant mode; handle missing/removed/expired old ID with fail-closed, user-initiated fresh pairing and protected local identity promotion. |
+| apps/remote-control-mcp-worker/src/v2-pairing.ts and existing owner DO | Persist temporary/permanent grant type, approved_at and optional device expires_at; validate expiry on every authorization/dispatch, remove revoked/expired grants without permanent tombstones, correct list/capacity and stale socket race handling. |
+| apps/remote-control-agent/src/operations.ts, sessions.ts, execution.ts, session-supervisor.c | Preserve SQLite receipts and owned-process semantics. Provide existing process-state/quiescence check to **block** ordinary upgrade if active/starting/uncertain ownership exists; native helper capability preflight must be safe and non-privileged. |
+| Existing .github/workflows/ci.yml and Agent test files | Extend existing check surfaces when practical; versioned release packaging/publishing can be an explicit reviewed manual process; **do not create a new CI workflow by default**. |
+| docs/remote-control | Document install/upgrade/uninstall, supported ABI/kernel constraints, WSL2 lifecycle, idempotent recovery, initial read-only acceptance, incident and rollback runbook. |
+
+Do not copy the entire source workspace, test fixtures, build system or private configuration into the released Agent archive. If the Agent executable needs a module from the existing runtime tree, include only the actually required reviewed runtime dependencies.
+
+## 5. Distribution/installer contract
+
+**Release metadata:** A supported downloadable archive is identified by immutable release tag/commit, an architecture-and-ABI-qualified asset identifier/name and its official GitHub Release asset SHA-256 digest. The installer resolves one version and does not switch from it mid-run. Repository Release immutability must be **enabled and observed**, not assumed. A missing digest, unexpected redirect or unverified archive fails closed. Same-origin HTTPS/digest checks verify archive consistency but **do not independently certify publisher or downloaded shell-script authenticity**.
+
+**Installer trust:** A reviewed, **version-bound official GitHub HTTPS** bootstrap is the only initial entry; no fabricated install domain. Its exact command/link is finalized only after it exists. The bootstrap invokes the CLI attached to a real local controlling terminal; a pipe used to transfer the script must not absorb mode/challenge input. If no interactive TTY is available, fail **before identity creation**. No root installation requirement, shell eval of network-supplied text in privileged scope, or remote scripts after checksum verification without policy review.
+
+**Archive and ABI:** The portable archive contains the bundled Node.js 24 binary, existing Agent JS and compiled native Shell Supervisor. Check architecture, available libc/runtime ABI, kernel/native supervisor capability and user filesystem ownership before pairing. The existing Supervisor uses PIDFD_SIGNAL_PROCESS_GROUP, requiring Linux **6.9+** for the approved initial scope. Test an actual **harmless pidfd process-group signaling capability**, not merely a kernel version string. No local git, pnpm, system Node.js, C compiler or TypeScript build is permitted in the normal clean-host install path. Reject unsupported targets rather than launching unmanaged Shell helpers or inventing an unsafe fallback. Declare supported libc matrix from measured artifacts; glibc and musl are **not assumed interchangeable**.
+
+**Filesystem and locality:** Keep versioned **current and previous** program directories with a simple active pointer or owned user-service reference. Keep private identities, mode/endpoint configuration and SQLite operation receipts outside those replaceable directories, with existing restricted parent directories/files (0700/0600) and ownership checks. Permanent and temporary identities have **separate protected scope**; never overwrite v1 or another v2 identity/unit. Unpack only into a restricted staging directory; reject traversal/symlink escape, wrong permissions, incomplete/oversized/invalid archive. Promote only fully verified program files.
+
+## 6. Local CLI and pairing state machine (minimal observable transitions)
+
+**Entry:** one command starts installer; display reviewed Worker endpoint, target device name, owner identity warning if existing, and mandatory choice **Permanent** or **Temporary (24h)**. No unreviewed automatic permanent default. No-TTY is an early error.
+
+**Preflight:** verify Linux x86_64/ARM64, declared libc/ABI, kernel 6.9+ native helper capability and writable private home paths; require an available **systemd user manager** for permanent mode. Unsupported host fails before creating a remote pending grant or new local key. WSL2 stopped distro cannot be auto-woken by systemd; do not modify Windows boot tasks, host systemd settings or linger.
+
+**Pairing:** create/retain a local Ed25519 key and pending 10-character code; send only the scoped pending verifier and public key to approved bootstrap endpoint (no command authority). User supplies code to authenticated owner MCP pairing_lookup, MCP pairing_prepare validates the immutable reviewed fingerprint, and user personally enters **only** the 12-character challenge at the new device terminal. Verify one-use signed completion, then persist returned device_id securely. Only success creates a permanent grant or a temporary grant expiring at **server-approved timestamp + 86,400,000 ms**. Reconnect/Agent restart never renews temporary expiry.
+
+**Activation:** permanent mode starts only its owned v2 systemd user service and verifies Agent startup; temporary mode runs only foreground, creates no managed unit, and exits with its terminal. Distinguish **local startup successful**, **signed WSS online**, **offline/unconfirmed**, and **permission denied** in CLI output. No success claim for remote Shell/writes from read-only status.
+
+**Recovery:** repeat the identical entry command under the existing exclusive per-user flock. Infer safe action from verified complete download, protected local key/ID, pending confirmation and owned v2 service state; retain existing staging and atomic rename behavior. Do not create a general installation-state database. Reused pending state can obtain a new short code/challenge after expiry, but **does not silently change a previously approved key, mode or expiry**. A disconnected/5xx/error response is not proof an old ID was revoked. Re-pair requires an explicit fresh action and independent owner+terminal approval.
+
+**Re-pair without tombstones:** PR #58 previously relied on a signed lookup returning status revoked from a persistent device record. That contract **must change before deletion-based revocation is enabled**. The server may return a narrowly scoped **old device ID currently not approved** decision after validating the request's proof of possession, but **cannot cryptographically re-create the historic old-ID/public-key binding from a record it no longer stores**. This negative status never grants authority, is not a reusable credential, and must be distinguished from ordinary 404/401/403, network failure or an unknown result. Existing old local identity remains archived/protected until the **new** key/ID passes full owner-approved pairing and atomic local promotion. Silent Agent/background auto re-pair is forbidden.
+
+## 7. Cloud authorization and device contracts
+
+- Keep existing authenticated MCP tools and names: pairing_lookup, pairing_prepare, list_devices, revoke_device; every curated v2 operation uses an explicit validated device_id. The public bootstrap endpoints create **pending** requests only and require device-side cryptographic proof; no public execution.
+- The approved device record adds **grant_type** (permanent/temporary), **approved_at** (server clock), optional **expires_at** (exact fixed 24-hour deadline). Pending-code expiry and challenge expiry are **separate fields** and remain short-lived. The exact storage column/key structure should follow the existing single owner DO; no new database.
+- On login/nonce validation, WebSocket session recovery/Hibernation wake, target selection and each *new* command dispatch (including via already-open socket), deny deleted or expired approval at now >= expires_at. A physical socket need not close on the exact instant if there is no event: authorization checks, not timers, enforce expiry. No sliding renewal and no expiry cleanup alarm.
+- Deleting a grant invalidates its active session nonce/epoch so stale WSS cannot dispatch. Best-effort socket closure/Agent-owned process stop does not retroactively undo already-started file writes. Do not report stop_confirmed when host is offline/unknown.
+- list_devices only exposes presently approved, unexpired devices as usable; cap **64 active** approvals, not historical revoked/expired entries. Expired records can be removed lazily during bounded relevant DO requests without unbounded sweeps that falsely exhaust the fleet.
+- An authenticated owner explicitly revoking a device receives actual deletion outcome; missing means not_found, never the assertion that a permanent tombstone was stored.
+- A managed process already admitted before expiry may continue within its **original 60-minute** deadline and receipt contract, unless independently stopped; the Worker denies **new** dispatch after expiry but cannot forcibly kill offline work.
+
+## 8. Upgrade, uninstall and failure contracts
+
+**Manual upgrade** is owner-initiated and uses the same versioned GitHub Release verification path. No auto-updater or timer. Stage/test the new binary before activating. If **any Agent-owned session is running, starting or potentially still owned with unknown status**, refuse routine upgrade before interrupting the service and show a safe next step. Preserve identity, endpoint, grant lifetime, original operation_id and all SQLite receipts. Reject unsupported schema/protocol transitions before switching. Upon definitive **local executable activation failure**, revert program reference to the immediately previous version. This rollback does **not** revert SQLite or previous effects. A Worker outage / failed remote WSS is not in itself evidence of a bad local binary; report remote_connectivity_unconfirmed and do not blindly toggle versions or replay commands.
+
+**Local uninstall** disables/stops only an installer-owned v2 service (if permanent) and removes owned CLI/program files. Keep key, ID, configured endpoint and receipts by default. Present the exact device ID and an unambiguous instruction to invoke the **existing authenticated MCP revoke_device** independently; local deletion is not cloud revocation. Any explicit user-confirmed local data purge must be path-scoped and is not evidence of cloud removal or historical effect rollback. Do not expose Portal Bearer to the local installer.
+
+**Failed bootstrap / install / activation:** missing digest, compromised/invalid archive, wrong ABI, rejected native capability, unsafe key permissions, no TTY, no user systemd, incorrect/expired pairing proof and wrong/revoked identity all fail without partial trust grants being described as approved. If remote pairing was approved but local activation fails, report the known remote identity and owner revoke option; preserve recoverable local identity state and avoid automatically provisioning another cloud ID.
+
+**CLI status:** tell the truth about distinct concepts: installed software version; local service or foreground state; server-approved versus offline/rejected identity; grant type and known expiry; verified read-only operation; remote revocation requested versus confirmed. Do not invent online certainty from local PID or bootstrap exit code.
+
+## 9. Verification seams and acceptance criteria
+
+Favor actual externally observable behavior using existing Agent CLI tests, authenticated MCP→Worker→single DO→signed Agent calls, existing native Supervisor and local receipt tests. No newly introduced per-function mock seams or duplicate execution engine.
+
+| Gate | Required observation |
+| --- | --- |
+| Release provenance/installation | A real **reviewed GitHub Release asset** (not generated source archive), immutable setting observed, official asset digest matches; 1-command install on clean tested x86_64/ARM64 Linux and WSL2 without Node/git/pnpm/cc; no synthetic URL. |
+| Compatibility fail-closed | Reject Linux without the required kernel 6.9+ pidfd group capability or incompatible libc/native ABI **before pairing**; harmless probe requires no root or arbitrary process targeting; permanent mode without working user systemd fails safely. |
+| Supply-chain failures | No execution of unchecked archive on mismatched/missing SHA-256 digest, TLS errors, unsafe redirect, malicious archive entry, unsupported architecture, incomplete download and concurrent installation; prior installation intact. |
+| CLI terminal/pairing | Interactive mode selection; initial 10-character code/12-character challenge and optional fingerprint; MCP lookup alone never grants approval; challenge only on independent target terminal; stale/replayed code/challenge rejected; no usable TTY fails before key or approval. |
+| Device identities | Permanent/temporary private identities isolated with owner-only permissions; no changed device_id/expiry on reconnect/repeat; deleted/expired exact ID never dispatched; verified non-approval result permits only deliberate fresh signed+owner-confirmed enrollment, not restoration or background auto-pair. |
+| Temporary server boundary | T+24h−1ms allowed, T+24h denied with fixed server time, including old WSS/Hibernation; no sliding extension, no stale list/capacity leak and no DO alarm; already-admitted process/receipt remains honestly accounted for. |
+| Capability gate | Signed WSS + explicit-device benign **read-only** fixture works; no claim that Shell/file-write works when v2 Agent flags are disabled; destructive gates require separate approval. |
+| Recovery/upgrade | Same one-liner restores interrupted install without creating a second approved identity; active/unknown managed sessions block upgrade; current/previous binaries suffice; identity/SQLite unchanged through program rollback and remote temporary outage; no blind replay. |
+| Uninstall and v1 isolation | Only owned v2 binaries/user unit removed, receipts/key retained by default, explicit MCP revoke not falsely reported as automatic, v1 app/Worker/Tunnel/Secret unaffected. |
+| Pilot acceptance | **Issue #57 single device + 48 actual elapsed hours**, measured DO Hibernation/wake, reconnect, account-level Free usage including other existing DOs, with source evidence and v1 control checks. No claims of passing because of short smoke tests or inaccessible metrics. |
+
+**Release separation:** Packaging smoke tests, single-device 48-hour pilot and subsequent **production authorization** are distinct gates. Issue #57 explicitly removed the prior five-device/72-hour requirement from this rollout; that historical scenario is **not** a hidden extra acceptance gate in this specification. A later full-fleet performance claim can require new evidence and separate scope, not be smuggled into this release.
+
+## 10. Implementation order / ticket decomposition boundaries
+
+For later to-tickets, decompose by observable vertical seam (not by individual helper function):
+
+1. **Safety prerequisite:** linux native capability preflight plus explicit supported ABI matrix; fix deleted-tombstone vs re-pair protocol/identity promotion and 24-hour expiry semantics in the unmerged v2 implementation.
+2. **Release artifacts:** deterministic reviewed prebuilt Agent archives and SHA-256 verified GitHub release metadata; clean-host noninteractive failure and trust validation; no published release until separate authorization.
+3. **Standalone installer/onboarding:** reviewed bootstrap, CLI TTY+mode prompt, identity isolation and preflight-before-pair, permanent service versus temporary foreground; preserve v1.
+4. **Lifecycle management:** same-command recover/reinstall, bounded manual program upgrade with process quiescence and binary rollback, v2-local uninstall and separate remote revoke.
+5. **Acceptance:** highest-seam integration and actual clean-host architecture tests, then independent pilot/production release gates (#57). Avoid duplicating already passed PR #58 tests where contracts remain unchanged.
+
+Do not create tickets, make deployment decisions, or claim release readiness as part of publishing this specification.
+
+## 11. Out of scope
+
+Native Windows/macOS Agent, WSL1, older Linux kernels without a separately approved safe alternative, untested musl/ABI distributions, root/system-wide services, Windows scheduled startup or WSL auto-wake, GUI/remote desktop, auto updates, general package manager or multi-channel releases, public npm packaging, self-revocation endpoint, additional human OAuth/dashboard, permanent tombstone/history store, D1/KV/R2 or per-device DOs, offline command queue, new cloud receipt store, hot-upgrade/in-flight command migration, database rollback migrations, automatically enabling Shell/write, new CI workflow by default, expansion of v1 production privileges, v2 live deployment or production cutover.
+
+**This specification is a buildable design and tracker artifact only. Its acceptance or ready-for-agent label is permission to review/split tickets, not permission to merge code, publish binaries, install on live machines, grant mutations, begin the 48-hour test or change production.**
