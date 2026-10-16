@@ -1360,6 +1360,63 @@ test("a nonzero-exit command with prior file effects keeps its replay guard afte
   }
 });
 
+test("simulated ENOSPC and EROFS storage faults never authorize file effects", async () => {
+  for (const code of ["ENOSPC", "EROFS"]) {
+    const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-sqlite-errno-"));
+    const target = path.join(root, "fixture");
+    const failure = { enabled: true };
+    const agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: path.join(root, "state"),
+      receiptFaultForTests: (phase) => {
+        if (phase === "begin" && failure.enabled) throw Object.assign(new Error("SQLite I/O failure"), { code });
+        return false;
+      } });
+    try {
+      const request = { tool: "write_file", operation_id: "errno-fault-" + code,
+        arguments: { path: target, content: "after-recovery", mode: "rewrite" } };
+      const denied = await call(agent, request);
+      assert.equal(denied.status, 503, code);
+      assert.equal(existsSync(target), false, code);
+      failure.enabled = false;
+      const restored = await call(agent, request);
+      assert.equal((restored.json as { status: string }).status, "completed");
+      assert.equal(await readFile(target, "utf8"), "after-recovery");
+    } finally {
+      failure.enabled = false;
+      await agent.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("a failed post-effect receipt commit returns unknown and cannot replay the append", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-effect-commit-"));
+  const state = path.join(root, "state");
+  const target = path.join(root, "effect");
+  const failure = { enabled: true };
+  let agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: state,
+    receiptFaultForTests: (phase) => phase === "commit" && failure.enabled && existsSync(target) });
+  const request = { tool: "write_file", operation_id: "effect-commit-unknown",
+    arguments: { path: target, content: "x", mode: "append" } };
+  try {
+    const first = await call(agent, request);
+    assert.equal((first.json as { status: string }).status, "unknown");
+    assert.equal(await readFile(target, "utf8"), "x");
+    failure.enabled = false;
+    const repeated = await call(agent, request);
+    assert.equal((repeated.json as { status: string }).status, "unknown");
+    assert.equal(await readFile(target, "utf8"), "x");
+    await agent.close();
+    agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: state });
+    const afterRestart = await call(agent, request);
+    assert.equal((afterRestart.json as { status: string }).status, "unknown");
+    assert.equal(await readFile(target, "utf8"), "x");
+  } finally {
+    failure.enabled = false;
+    await agent.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("corrupt SQLite denies new mutation before effects without disabling safe file reads", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-sqlite-corrupt-"));
   const state = path.join(root, "state");
