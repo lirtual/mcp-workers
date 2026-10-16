@@ -54,13 +54,20 @@ static int child_exit_code(int status) {
 }
 
 int main(int argc, char **argv) {
-  if (argc != 3 || getpid() != getpgrp()) return 125;
+  /* A detached, isolated process group checks the exact required syscall.
+   * Signal 0 only checks permission/existence; it never delivers a signal. */
+  const int probe = argc == 2 && strcmp(argv[1], "--probe") == 0;
+  if ((!probe && argc != 3) || getpid() != getpgrp()) return 125;
 
   int pidfd = (int)syscall(SYS_pidfd_open, getpid(), 0);
   if (pidfd < 0 || signal_group(pidfd, 0) < 0) {
     if (pidfd >= 0) close(pidfd);
-    write_byte(4, 'E');
+    if (!probe) write_byte(4, 'E');
     return 125;
+  }
+  if (probe) {
+    close(pidfd);
+    return 0;
   }
 
   if (prctl(PR_SET_CHILD_SUBREAPER, 1) < 0) {

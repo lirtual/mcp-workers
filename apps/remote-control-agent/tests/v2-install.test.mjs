@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { MARKER, UNIT, assertExistingServiceEndpoint, classifyLinuxKernel, beginRevokedPromotion, inspectInstallIdentity, parseInstallArgs, promoteRevokedIdentity, resumeRevokedPromotion, runLockedInstallerCli, renderV2Service, trustedEndpoint } from "../scripts/install-v2.mjs";
+import { MARKER, UNIT, assertExistingServiceEndpoint, classifyLinuxKernel, assertSupportedLinuxHost, assertNativeSupervisorProbe, beginRevokedPromotion, inspectInstallIdentity, parseInstallArgs, promoteRevokedIdentity, resumeRevokedPromotion, runLockedInstallerCli, renderV2Service, trustedEndpoint } from "../scripts/install-v2.mjs";
 import { beginDeviceEnrollment, PendingIdentityConflictError } from "../src/pair-device.ts";
 import { assertRemoteRevocation } from "../src/v2-repair.ts";
 import { DeviceSessionRejectedError, recoverDeviceId, verifyApprovedDeviceId, signedSessionProof } from "../src/v2-session-client.ts";
@@ -738,5 +738,33 @@ test("two real independent installer lock processes cannot overlap and SIGKILL r
       await once(holder, "exit").catch(() => {});
     }
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("#70 host preflight denies old kernels, musl, and untested CPU/ABI before enrollment", () => {
+  const supported = { platform: "linux", arch: "x64", release: "6.18.33-microsoft-standard-WSL2", libc: "2.39" };
+  assert.equal(assertSupportedLinuxHost(supported), "wsl2");
+  assert.equal(assertSupportedLinuxHost({ ...supported, arch: "arm64", release: "6.9.0-generic" }), "linux");
+  for (const wrong of [
+    { release: "6.8.15-generic" }, { release: "5.15.0-microsoft-standard-WSL2" },
+    { release: "6.9.0-Microsoft" }, { platform: "win32" }, { arch: "riscv64" },
+    { libc: "" }, { libc: "musl" }, { libc: "2.27" },
+  ]) assert.throws(() => assertSupportedLinuxHost({ ...supported, ...wrong }));
+});
+
+test("#70 pidfd capability probe is isolated and refuses unsupported syscall before pairing", () => {
+  const binary = "/test/session-supervisor";
+  let called = 0;
+  assertNativeSupervisorProbe(binary, (command, args, options) => {
+    called++;
+    assert.equal(command, binary);
+    assert.deepEqual(args, ["--probe"]);
+    assert.equal(options.detached, true);
+    assert.equal(options.stdio, "ignore");
+    return { status: 0 };
+  });
+  assert.equal(called, 1);
+  for (const errorResult of [{ status: 125 }, { status: null, error: new Error("ENOSYS") }]) {
+    assert.throws(() => assertNativeSupervisorProbe(binary, () => errorResult), /pidfd.*unavailable/);
   }
 });
