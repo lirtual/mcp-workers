@@ -168,7 +168,7 @@ test("Preview Receipt tools require one explicitly granted device, without widen
   assert.equal(JSON.parse(boundedWrite.body.result.content[0].text).status, "not_found");
   const boundedCommand = await rpc("tools/call", {
     name: "run_command", arguments: {
-      device_id: permittedId, operation_id, command: "printf 'RC_V2_RECEIPT_TEST_OK\\n'",
+      device_id: permittedId, operation_id, command: "printf RC_V2_RECEIPT_TEST_OK",
     },
   });
   assert.notEqual(boundedCommand.body.result?.isError, true);
