@@ -1,6 +1,6 @@
 # Remote Control MCP — Domain Context
 
-> Status (2026-10-13): architecture accepted (ADR-0011/0012/0013); real-client Bearer read-only path validated (T02), **restricted read-only** release accepted (T10 #12). Writes/Shell remain disabled in production. Shell requires separately tracked #14 and explicit authorization; lifecycle and historical-log limitations are detailed in T10.
+> Status (updated 2026-10-16): v1 architecture accepted (ADR-0011/0012/0013); historical read-only acceptance was recorded in T02/T10 #12. Later T11 #14 independently approved file writes and Shell; the [v1 Spec](./SPEC.md) records that approval and the approved production configuration. Current deployed Agent/runtime status must be verified separately; historical read-only evidence does not prove later capabilities. ADR-0016 records **Q1–Q9 owner-selected reliability design**, awaiting final design approval; no implementation or deployment is implied.
 
 ## Language
 
@@ -67,8 +67,12 @@ The Linux Agent's authoritative collection of Operation Receipts used to reconci
 _Avoid_: Treating remote Worker transport acknowledgements, process logs, or a ChatGPT conversation as substitutes for a durable receipt.
 
 **Receipt Retention Window**:
-The period during which a previously admitted Operation ID remains available for outcome reconciliation and deduplication; an operation whose result is unknown is not presumed safe to repeat merely because a record is no longer present.
-_Avoid_: Treating storage cleanup as proof that a previous operation had no effect.
+The normal period during which a previously admitted Operation ID remains available for outcome reconciliation and deduplication. An operation whose result is unknown remains protected beyond the normal window until explicitly reconciled.
+_Avoid_: Treating storage cleanup or elapsed time as proof that a previous operation had no effect.
+
+**Unresolved Operation Marker**:
+The minimal retained identity and non-replay protection for an operation whose effect is still unknown after the normal receipt retention window. Only a deliberate, authenticated owner-led reconciliation can resolve that uncertainty.
+_Avoid_: Discarding an unresolved identity just because it is old, or treating manual acknowledgement as automatic permission to replay the same operation.
 
 **Bounded Development Command**:
 A managed execution launched for temporary development work that must have a finite lifetime and an owner-scoped stop path.
@@ -103,12 +107,15 @@ _Avoid_: Treating a successful new-store startup as sufficient evidence that his
 16. A local receipt-store migration must preserve all existing operation identities and outcomes before allowing new state-changing operations; failed verification cannot silently reset the store (2026-10-16 second-round decision; ADR-0016).
 17. A Bounded Development Command stops after at most 60 minutes through the Agent's existing owner-scoped termination path: graceful stop first, bounded forced stop if necessary (second-round decision; ADR-0016).
 18. Failure of local receipt persistence cannot grant permission for new writes or Shell commands; the already-authorized Emergency Session Stop remains available only for provably Agent-owned sessions and must report uncertain outcomes honestly (second-round decision; ADR-0016).
+19. Unresolved operations retain a minimal non-replay marker beyond the normal 30-day retention window until explicit owner-led reconciliation. Elapsed time alone does not make an unknown operation safe to repeat (third-round decision; ADR-0016).
+20. Normal terminal receipts expire under their retention policy. Storage housekeeping cannot evict still-protected receipts to meet an arbitrary count quota; when durable writes fail, new state-changing operations fail closed while the narrow Emergency Session Stop remains available (third-round decision; ADR-0016).
+21. JSON-to-local-store migration is one-way. Returning to an older Agent is a deliberate operator-led restore/reconciliation activity, not an automatic dual-write or silent fallback (third-round decision; ADR-0016).
 
 ## Unsettled boundaries — not approved yet
 
 - The exact allowed tools and parameters; how destructive workspace writes, interactive process inputs and secret handling are authorized.
 - Managed-session lifecycle details: stopping/canceling, output paging, quotas and behavior after device restart.
-- Detailed reconciliation after the 30-day retention window, SQLite disk growth / disk-full recovery, Agent deployment rollback and token revocation remain to be decided; the initial SQLite choice and JSON migration / timeout / emergency-stop principles are recorded in ADR-0016.
+- The Agent receipt/timeout/recovery architecture is owner-selected in ADR-0016 (Q1–Q9), awaiting final approval. Precise data schema, repair procedure, test acceptance and rollout instructions belong in a later technical Spec; unrelated device-token revocation and existing operational authorization remain separately controlled.
 - Actual ChatGPT/MCP Portal delivery of the separate static Bearer credential, token provisioning/rotation and denied-request acceptance; compatibility with arbitrary non-Portal MCP clients is not guaranteed.
 - Actual permissions and secret exposure of the **confirmed existing normal Linux login account**, ingress compromise risk, limits (payload, output, time), supported tool shapes and rollout/monitoring policy.
 
