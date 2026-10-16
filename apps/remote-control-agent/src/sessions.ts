@@ -11,6 +11,8 @@ const MAX_OUTPUT_BYTES = 256 * 1024;
 const DEFAULT_PAGE_BYTES = 16 * 1024;
 const MAX_PAGE_BYTES = 64 * 1024;
 const MAX_WAIT_MS = 30_000;
+const MAX_SESSION_LIFETIME_MS = 60 * 60 * 1000;
+const DEADLINE_TERMINATION_GRACE_MS = 5_000;
 
 export type SessionState = "running" | "completed" | "failed" | "unknown";
 
@@ -29,6 +31,8 @@ interface ManagedSession {
   truncated: boolean;
   exited: Promise<void>;
   closed: Promise<void>;
+  deadlineExceeded: boolean;
+  deadlineTimer?: ReturnType<typeof setTimeout>;
 }
 
 export type SessionActionResult = "completed" | "failed" | "unknown" | "not_found";
@@ -39,6 +43,7 @@ export interface SessionSnapshot {
   started_at: string;
   last_observed_at: string;
   exit_code: number | null;
+  termination_reason?: "deadline_exceeded";
 }
 
 export interface OutputPage extends SessionSnapshot {
@@ -116,6 +121,7 @@ function snapshot(session: ManagedSession): SessionSnapshot {
     started_at: session.startedAt,
     last_observed_at: new Date(session.lastObservedAt).toISOString(),
     exit_code: session.exitCode,
+    ...(session.deadlineExceeded ? { termination_reason: "deadline_exceeded" as const } : {}),
   };
 }
 
@@ -123,17 +129,22 @@ export class ManagedSessions {
   private readonly sessions = new Map<string, ManagedSession>();
   private readonly starting = new Set<string>();
   private readonly shellPath: string;
+  private readonly maxLifetimeMs: number;
 
-  constructor(shellPath: string) {
+  constructor(shellPath: string, maxLifetimeMs = MAX_SESSION_LIFETIME_MS) {
     if (!path.isAbsolute(shellPath)) throw new Error("The configured shell path must be absolute.");
     this.shellPath = shellPath;
+    if (!Number.isSafeInteger(maxLifetimeMs) || maxLifetimeMs <= 0 || maxLifetimeMs > MAX_SESSION_LIFETIME_MS) {
+      throw new Error("Invalid managed-session lifetime.");
+    }
+    this.maxLifetimeMs = maxLifetimeMs;
   }
 
   private prune(): void {
     const cutoff = Date.now() - SESSION_TTL_MS;
     const history: Array<[string, ManagedSession]> = [];
     for (const [id, session] of this.sessions) {
-      if (session.state === "running") continue;
+      if (session.state === "running" || (session.state === "unknown" && this.ownsRunningProcess(session))) continue;
       if (session.endedAt !== undefined && session.endedAt < cutoff) this.sessions.delete(id);
       else history.push([id, session]);
     }
@@ -144,7 +155,7 @@ export class ManagedSessions {
 
   async start(command: string, waitMs: number, onExit?: (session: SessionSnapshot) => Promise<void>): Promise<SessionSnapshot> {
     this.prune();
-    const active = [...this.sessions.values()].filter((session) => session.state === "running").length;
+    const active = [...this.sessions.values()].filter((session) => this.ownsRunningProcess(session)).length;
     if (active + this.starting.size >= MAX_SESSIONS) throw new Error("Session capacity reached.");
 
     const sessionId = randomUUID();
@@ -179,6 +190,7 @@ export class ManagedSessions {
       truncated: false,
       exited: Promise.resolve(),
       closed: Promise.resolve(),
+      deadlineExceeded: false,
     };
 
     const capture = (chunk: Buffer) => {
@@ -205,7 +217,8 @@ export class ManagedSessions {
       const finish = async (state: SessionState, exitCode: number | null) => {
         if (settled) return;
         settled = true;
-        session.state = state;
+        if (session.deadlineTimer) clearTimeout(session.deadlineTimer);
+        session.state = session.deadlineExceeded ? "failed" : state;
         session.exitCode = exitCode;
         session.lastObservedAt = Date.now();
         session.endedAt = session.lastObservedAt;
@@ -234,6 +247,10 @@ export class ManagedSessions {
       throw new Error("The managed Shell supervisor is unavailable on this Linux kernel.");
     }
     this.sessions.set(sessionId, session);
+    // This is an absolute deadline from process spawn, not the client's initial wait.
+    // The callback is Agent-owned and runs without polling or further MCP requests.
+    const elapsedMs = Date.now() - Date.parse(session.startedAt);
+    session.deadlineTimer = setTimeout(() => { void this.expire(session); }, Math.max(0, this.maxLifetimeMs - elapsedMs));
     this.starting.delete(sessionId);
 
     if (waitMs > 0 && session.state === "running") {
@@ -247,8 +264,39 @@ export class ManagedSessions {
     }
   }
 
+  private async expire(session: ManagedSession): Promise<void> {
+    if (!this.ownsRunningProcess(session)) return;
+    session.deadlineExceeded = true;
+    session.terminationRequested = true;
+    // Dispatch TERM without waiting indefinitely for the supervisor's ACK.
+    // A lost ACK is not proof that TERM failed, and must never prevent the
+    // independently bounded grace period and eventual owned-group KILL.
+    void this.signalOwnedProcess(session, "SIGTERM").catch(() => false);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        session.closed,
+        new Promise<void>((resolve) => { timer = setTimeout(resolve, DEADLINE_TERMINATION_GRACE_MS); }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    if (this.ownsRunningProcess(session)) {
+      // SIGKILL writes to the same existing pidfd-backed supervisor channel.
+      // An unacknowledged signal must be surfaced as unknown, not success.
+      void this.signalOwnedProcess(session, "SIGKILL").catch(() => false);
+    }
+    if (this.ownsRunningProcess(session)) {
+      session.state = "unknown";
+      session.lastObservedAt = Date.now();
+      // Preserve the unresolved session locally until normal shutdown; never
+      // free the active capacity merely because the termination signal failed.
+    }
+  }
+
   private ownsRunningProcess(session: ManagedSession): boolean {
-    return session.state === "running" && session.child.exitCode === null && session.child.signalCode === null;
+    return (session.state === "running" || (session.state === "unknown" && session.deadlineExceeded)) &&
+      session.child.exitCode === null && session.child.signalCode === null;
   }
 
   private processExited(session: ManagedSession): boolean {
@@ -287,7 +335,7 @@ export class ManagedSessions {
     this.prune();
     const session = this.sessions.get(sessionId);
     if (!session) return "not_found";
-    if (session.state !== "running") return "completed";
+    if (session.state !== "running" && session.state !== "unknown") return "completed";
     if (!await this.signalOwnedProcess(session, "SIGTERM")) return "unknown";
     session.terminationRequested = true;
     const waitForExit = async (timeoutMs: number) => {
@@ -329,14 +377,15 @@ export class ManagedSessions {
       ...snapshot(session),
       offset,
       next_offset: end,
-      eof: session.state !== "running" && end >= data.byteLength,
+      eof: !this.ownsRunningProcess(session) && end >= data.byteLength,
       truncated: session.truncated,
       output: data.subarray(Math.min(offset, data.byteLength), end).toString("utf8"),
     };
   }
 
   async close(): Promise<void> {
-    const running = [...this.sessions.values()].filter((session) => session.state === "running");
+    const running = [...this.sessions.values()].filter((session) => session.state === "running" || session.state === "unknown");
+    for (const session of this.sessions.values()) if (session.deadlineTimer) clearTimeout(session.deadlineTimer);
     const waitForClose = async (timeoutMs: number) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       await Promise.race([
@@ -347,14 +396,15 @@ export class ManagedSessions {
     };
     await Promise.all(running.map((session) => this.signalOwnedProcess(session, "SIGTERM")));
     await waitForClose(500);
-    await Promise.all(running.filter((session) => session.state === "running").map((session) => this.signalOwnedProcess(session, "SIGKILL")));
+    await Promise.all(running.filter((session) => this.ownsRunningProcess(session)).map((session) => this.signalOwnedProcess(session, "SIGKILL")));
     await waitForClose(500);
     for (const session of running) {
-      if (session.state === "running") {
+      if (this.ownsRunningProcess(session)) {
         session.state = "unknown";
         session.lastObservedAt = Date.now();
       }
     }
+    for (const session of this.sessions.values()) session.control.close();
     this.sessions.clear();
   }
 }
