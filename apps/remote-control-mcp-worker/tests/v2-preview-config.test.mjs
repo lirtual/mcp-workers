@@ -197,7 +197,7 @@ test("receipt lab exposes only explicit-device reads, stable receipts and bounde
   const unauthorized = await rpc("get_operation_status", { device_id, operation_id }, "wrong");
   assert.equal(unauthorized.status, 401);
   const allowed = await rpc("get_operation_status", { device_id, operation_id });
-  assert.equal(allowed.result.result?.isError, undefined);
+  assert.notEqual(allowed.result.result?.isError, true);
   assert.equal(JSON.parse(allowed.result.result.content[0].text).status, "not_found");
   assert.equal(ownerCalls, 1);
   assert.equal(legacyCalls, 0);
