@@ -238,8 +238,8 @@ export function monitorDeviceSocket(
         if (validOperation && (!operation || (shellTool && !allowShell))) {
           try {
             socket.send(JSON.stringify({
-              kind: "operation_result", request_id: request.request_id,
-              result: { operation_id: request.operation_id, status: "unavailable" },
+              kind: "operation_result", request_id: request!.request_id,
+              result: { operation_id: request!.operation_id, status: "unavailable" },
             }));
           } catch { finish("offline"); }
           return;
