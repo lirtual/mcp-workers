@@ -5,7 +5,7 @@
 ## Prerequisites
 
 - Linux systemd user manager. Install under a non-root Linux account. The installer will not invoke sudo or enable lingering.
-- Node.js **24.x**, a C11-capable **cc** compiler, systemd-analyze, systemctl, and /usr/bin/test. The existing Linux pidfd session supervisor is compiled locally **before pairing or enabling any service**; no precompiled helper is downloaded.
+- Node.js **24.x**, a C11-capable **cc** compiler, util-linux **flock**, systemd-analyze, systemctl, and /usr/bin/test. The existing Linux pidfd session supervisor is compiled locally **before pairing or enabling any service**; no precompiled helper is downloaded.
 - A trusted, reviewed, persistent checkout of lirtual/mcp-workers, with filesystem paths without spaces/systemd escapes. The script does not perform curl-pipe-shell, clone repositories, or silently update code.
 - An approved and reachable HTTPS *origin* of a separately authorized v2-capable Worker; a Portal Bearer, Cloudflare API key, v1 device token, or Tunnel credential is NOT used or copied to the new host.
 
@@ -13,7 +13,7 @@ From the checkout, the **single installer invocation** is:
 
     node --experimental-strip-types apps/remote-control-agent/scripts/install-v2.mjs --endpoint https://APPROVED-V2-WORKER/ --name linux-workstation
 
-This requires a TTY. After dependency checks, it writes an Ed25519 key to the owner-controlled directory under ~/.local/share/mcp-workers/remote-control/, with mode 0600 and parent mode 0700, and displays only a short-lived **10-character one-use code in the default local interactive terminal**. For optional extra visual verification, pass `--show-fingerprint` to the original first-install invocation to show the local public-key fingerprint (first 12 bytes of SHA-256 over Ed25519 SPKI DER) and compare it with `pairing_lookup`. No separate `openssl` command or second terminal is needed. This optional comparison may help catch approval of an unintended host; MCP-side key matching alone does not prove physical-host identity. Avoid recording the pairing code/confirmation challenge or sending them to logs.
+The ordinary CLI holds a private, non-blocking Linux `flock` while installing. A second simultaneous installer is rejected without modifying identities; a process killed with `SIGKILL` releases the kernel lock automatically (the owner-only empty lockfile may remain for reuse). No daemon, database, or background cleanup is introduced. This advisory lock prevents accidental overlapping commands; it does not substitute for cryptographic authorization.\n\nThis requires a TTY. After dependency checks, it writes an Ed25519 key to the owner-controlled directory under ~/.local/share/mcp-workers/remote-control/, with mode 0600 and parent mode 0700, and displays only a short-lived **10-character one-use code in the default local interactive terminal**. For optional extra visual verification, pass `--show-fingerprint` to the original first-install invocation to show the local public-key fingerprint (first 12 bytes of SHA-256 over Ed25519 SPKI DER) and compare it with `pairing_lookup`. No separate `openssl` command or second terminal is needed. This optional comparison may help catch approval of an unintended host; MCP-side key matching alone does not prove physical-host identity. Avoid recording the pairing code/confirmation challenge or sending them to logs.
 
 ## Independent human authorization
 
