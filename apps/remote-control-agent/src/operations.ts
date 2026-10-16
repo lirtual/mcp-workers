@@ -118,7 +118,10 @@ export class ReceiptStore {
   private readonly legacyFile: string;
   private database: DatabaseSync | undefined;
 
-  constructor(directory = path.join(os.homedir(), ".local", "state", "mcp-workers", "remote-control-agent")) {
+  constructor(
+    directory = path.join(os.homedir(), ".local", "state", "mcp-workers", "remote-control-agent"),
+    private readonly testPersistenceUnavailable?: () => boolean,
+  ) {
     this.directory = directory;
     this.file = path.join(directory, "operation-receipts.sqlite");
     this.legacyFile = path.join(directory, "operation-receipts.json");
@@ -134,6 +137,9 @@ export class ReceiptStore {
   }
 
   private transaction<T>(action: () => T): T {
+    // A local-only failure probe enables public-boundary failure tests without
+    // mutating or corrupting a real SQLite file. Not exposed through MCP.
+    if (this.testPersistenceUnavailable?.()) throw new Error("Receipt persistence is unavailable.");
     const db = this.db();
     db.exec("BEGIN IMMEDIATE");
     try {
