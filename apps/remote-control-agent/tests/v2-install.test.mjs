@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { createHash, createPrivateKey, createPublicKey, sign as nodeSign } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { MARKER, UNIT, assertExistingServiceEndpoint, classifyLinuxKernel, beginRevokedPromotion, inspectInstallIdentity, parseInstallArgs, promoteRevokedIdentity, resumeRevokedPromotion, renderV2Service, trustedEndpoint } from "../scripts/install-v2.mjs";
+import { MARKER, UNIT, assertExistingServiceEndpoint, classifyLinuxKernel, beginRevokedPromotion, inspectInstallIdentity, parseInstallArgs, promoteRevokedIdentity, resumeRevokedPromotion, runLockedInstallerCli, renderV2Service, trustedEndpoint } from "../scripts/install-v2.mjs";
 import { beginDeviceEnrollment, PendingIdentityConflictError } from "../src/pair-device.ts";
 import { assertRemoteRevocation } from "../src/v2-repair.ts";
 import { DeviceSessionRejectedError, recoverDeviceId, verifyApprovedDeviceId, signedSessionProof } from "../src/v2-session-client.ts";
@@ -665,5 +665,78 @@ test("actual SIGKILL after each identity rename permits guarded operator-only re
       }
       await rm(dir, { recursive: true, force: true });
     }
+  }
+});
+
+
+test("installer CLI uses a private crash-released Linux flock without adding a daemon", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "rc-v2-flock-cli-"));
+  try {
+    const calls = [];
+    const code = await runLockedInstallerCli(["--endpoint", "https://rc.example.org/"], {
+      home: dir,
+      invoke: (command, args, options) => {
+        calls.push({ command, args, options });
+        return { status: 0 };
+      },
+    });
+    assert.equal(code, 0);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].command, "flock");
+    assert.deepEqual(calls[0].args.slice(0, 4), ["-n", "-E", "75", "-F"]);
+    assert.equal(calls[0].args.at(-2), "--endpoint");
+    assert.equal(calls[0].args.at(-1), "https://rc.example.org/");
+    assert.equal(calls[0].options.env.RC_V2_INSTALL_FLOCKED, "1");
+    assert.equal(calls[0].options.stdio, "inherit");
+    const lock = calls[0].args[4];
+    assert.ok(lock.startsWith(dir + path.sep));
+    assert.equal((await stat(lock)).mode & 0o777, 0o600);
+    assert.equal((await stat(path.dirname(lock))).mode & 0o777, 0o700);
+    await assert.rejects(runLockedInstallerCli([], {
+      home: dir, invoke: () => ({ status: 75 }),
+    }), /Another v2 installer is already running/);
+    await assert.rejects(runLockedInstallerCli([], {
+      home: dir, invoke: () => ({ error: Error("missing flock") }),
+    }), /installer lock prerequisite is unavailable/);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("two real independent installer lock processes cannot overlap and SIGKILL releases lock", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "rc-v2-flock-sigkill-"));
+  const lock = path.join(dir, "installer.lock");
+  const node = process.execPath;
+  let holder;
+  try {
+    holder = spawn("flock", ["-n", "-E", "75", "-F", lock, node, "-e",
+      "process.stdout.write('locked\\n');setInterval(()=>{},1000)"],
+    { stdio: ["ignore", "pipe", "pipe"], env: { HOME: dir } });
+    const holderExit = once(holder, "exit");
+    let timeout;
+    const started = await Promise.race([
+      once(holder.stdout, "data").then(([chunk]) => String(chunk)),
+      holderExit.then(([code, signal]) => { throw Error("flock holder exited: " + code + "/" + signal); }),
+      new Promise((_, reject) => {
+        timeout = setTimeout(() => reject(Error("flock holder start timeout")), 10_000);
+      }),
+    ]).finally(() => clearTimeout(timeout));
+    assert.match(started, /locked/);
+    const competitor = spawnSync("flock", ["-n", "-E", "75", "-F", lock, node, "-e", "process.exit(0)"],
+      { stdio: "ignore", env: { HOME: dir }, timeout: 5000 });
+    assert.equal(competitor.error, undefined);
+    assert.equal(competitor.status, 75, "parallel installer must be rejected");
+    assert.equal(holder.kill("SIGKILL"), true);
+    const [code, signal] = await holderExit;
+    assert.equal(code, null);
+    assert.equal(signal, "SIGKILL");
+    const retry = spawnSync("flock", ["-n", "-E", "75", "-F", lock, node, "-e", "process.exit(0)"],
+      { stdio: "ignore", env: { HOME: dir }, timeout: 5000 });
+    assert.equal(retry.error, undefined);
+    assert.equal(retry.status, 0, "the crashed installer lock must not strand identity recovery");
+  } finally {
+    if (holder && holder.exitCode === null && holder.signalCode === null) {
+      holder.kill("SIGKILL");
+      await once(holder, "exit").catch(() => {});
+    }
+    await rm(dir, { recursive: true, force: true });
   }
 });
