@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -1048,6 +1049,90 @@ test("SQLite write failure leaves safe reads available and only allows owned eme
     assert.ok(sessions.some((item) => item.session_id === sessionId && item.state !== "running"));
   } finally {
     failure.enabled = false;
+    await agent.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("interrupted SQLite receipt survives restart and old protected identities do not expire", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-sqlite-restart-"));
+  const state = path.join(root, "state");
+  const target = path.join(root, "target");
+  let agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: state });
+  try {
+    const args = { path: target, content: "once", mode: "rewrite" };
+    const written = await call(agent, { tool: "write_file", operation_id: "sqlite-interrupted", arguments: args });
+    assert.equal((written.json as { status: string }).status, "completed");
+    const stable = await call(agent, { tool: "write_file", operation_id: "sqlite-expired-terminal",
+      arguments: { path: target, content: "once", mode: "rewrite" } });
+    assert.equal((stable.json as { status: string }).status, "completed");
+    await agent.close();
+
+    const db = new DatabaseSync(path.join(state, "operation-receipts.sqlite"));
+    const old = new Date(Date.now() - 31 * 24 * 3600_000).toISOString();
+    db.prepare("UPDATE receipts SET state = 'running', guarded = 1, created_at = ? WHERE operation_id = 'sqlite-interrupted'").run(old);
+    db.prepare("UPDATE receipts SET guarded = 0, created_at = ? WHERE operation_id = 'sqlite-expired-terminal'").run(old);
+    db.close();
+
+    agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: state });
+    const protectedStatus = await fetch(agent.baseUrl + "/internal/operations/sqlite-interrupted",
+      { headers: { "x-device-credential": DEVICE_TOKEN } });
+    assert.equal((await protectedStatus.json() as { state: string }).state, "unknown");
+    const retry = await call(agent, { tool: "write_file", operation_id: "sqlite-interrupted", arguments: args });
+    assert.equal((retry.json as { status: string }).status, "unknown");
+    assert.equal(await readFile(target, "utf8"), "once");
+    const eligible = await fetch(agent.baseUrl + "/internal/operations/sqlite-expired-terminal",
+      { headers: { "x-device-credential": DEVICE_TOKEN } });
+    assert.equal(eligible.status, 404);
+  } finally {
+    await agent.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a nonzero-exit command with prior file effects keeps its replay guard after 30 days", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-failed-effect-"));
+  const state = path.join(root, "state");
+  const target = path.join(root, "effect");
+  const command = "printf x >> '" + target + "'; exit 1";
+  let agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: state, shellPath: "/bin/sh" });
+  try {
+    const original = await call(agent, { tool: "start_process", operation_id: "effectful-failure",
+      arguments: { command, timeout_ms: 1000 } });
+    assert.ok(["failed", "running"].includes((original.json as { status: string }).status));
+    await agent.close();
+    assert.equal(await readFile(target, "utf8"), "x");
+    const db = new DatabaseSync(path.join(state, "operation-receipts.sqlite"));
+    const old = new Date(Date.now() - 31 * 24 * 3600_000).toISOString();
+    db.prepare("UPDATE receipts SET created_at = ? WHERE operation_id = 'effectful-failure'").run(old);
+    db.close();
+
+    agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: state, shellPath: "/bin/sh" });
+    const repeated = await call(agent, { tool: "start_process", operation_id: "effectful-failure",
+      arguments: { command, timeout_ms: 1000 } });
+    assert.equal((repeated.json as { status: string }).status, "failed");
+    assert.equal(await readFile(target, "utf8"), "x");
+  } finally {
+    await agent.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("corrupt SQLite denies new mutation before effects without disabling safe file reads", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-sqlite-corrupt-"));
+  const state = path.join(root, "state");
+  await mkdir(state);
+  await writeFile(path.join(state, "operation-receipts.sqlite"), "not a database");
+  const target = path.join(root, "target");
+  const agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: state });
+  try {
+    const result = await call(agent, { tool: "write_file", operation_id: "corrupt-denied",
+      arguments: { path: target, content: "forbidden", mode: "rewrite" } });
+    assert.equal(result.status, 503);
+    assert.equal(existsSync(target), false);
+    const listing = await call(agent, { tool: "list_directory", arguments: { path: root } });
+    assert.equal(listing.status, 200);
+  } finally {
     await agent.close();
     await rm(root, { recursive: true, force: true });
   }
