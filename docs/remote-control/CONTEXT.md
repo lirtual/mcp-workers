@@ -20,10 +20,33 @@ _Avoid_: Calling a source checkout or a prerequisite-heavy build script a one-co
 A versioned, ready-to-run package available to the owner for installing the Linux Agent independently of the source repository, containing what the Agent needs to operate on its supported platform.
 _Avoid_: Treating the public availability of installation bytes as an authorization to pair or remotely control a host.
 
+**Verified Agent Release**:
+An owner-selected and integrity-checked immutable version of the Agent's distribution, distinct from both the local device identity and the authority to pair that identity.
+_Avoid_: Treating a successful download or file hash match as independent proof that arbitrary installer code is trustworthy.
+
+**Owner-Initiated Agent Upgrade**:
+An explicit user action to replace installed Agent program files with another reviewed version while preserving the same approved device identity and prior operation history. A failed upgrade can revert the program without implying that already changed data has been rolled back.
+_Avoid_: Treating an upgrade as a new device enrollment, an extension of temporary authorization, or permission to discard uncertain work.
+
+**Local Agent Uninstall**:
+Removal of this Agent's installed program and managed startup, not an automatic removal of its cloud-side permission. Identity and local operation history are retained by default unless the owner separately confirms data deletion.
+_Avoid_: Equating removal of local software with confirmed remote revocation.
+
+**Interrupted Installation Recovery**:
+Safely resuming the same intended Agent installation after an interrupted download, local setup or device confirmation without silently replacing a trusted device identity, duplicating authorization or erasing local receipts.
+_Avoid_: Treating an expired or revoked pairing as permission for automatic re-enrollment.
+
+**Permanent Agent Mode**:
+An owner-chosen enrollment intended for the host's ongoing operation as a managed background service, with no temporary pairing expiry.
+_Avoid_: Equating a background service with an always-online WSL2 host.
+
+**Temporary Agent Mode**:
+An owner-chosen foreground debugging enrollment, valid for no more than 24 hours from successful approval and without an automatic background service. Leaving the foreground session does not imply that remote permission has been revoked early.
+_Avoid_: Assuming local process exit, disconnection or uninstall terminates server-side authorization.
+
 **Agent CLI Pairing**:
 The local terminal onboarding experience that first **asks the owner to select a permanent or 24-hour temporary device**, then enrolls the target host's independently held identity via the existing owner-reviewed pairing code and on-device challenge confirmation. A convenient terminal UI must not silently authorize a device or remove the independent owner approval boundary.
 _Avoid_: Treating the Agent's one-line installer as an owner authorization credential, or silently choosing a device lifetime without presenting it.
-
 
 **WSL2 Linux Environment**:
 A possible deployment variant of the Linux Host, not a product or protocol requirement.
