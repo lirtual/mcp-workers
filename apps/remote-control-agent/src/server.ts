@@ -56,6 +56,12 @@ export interface StartAgentOptions {
   receiptDirectory?: string;
   /** Test seam; production uses the current account's configured shell. */
   shellPath?: string;
+  /** Local-only test seam, production defaults to 60 minutes. */
+  sessionMaxLifetimeMs?: number;
+  /** Local-only failure injection for existing Agent HTTP tests. */
+  receiptFaultForTests?: (phase: "begin" | "commit") => boolean;
+  /** Operator-verified historical JSON snapshot for one-time SQLite migration. */
+  receiptHistoricalBackupPath?: string;
 }
 
 export interface RunningAgent {
@@ -147,6 +153,9 @@ export async function startAgent(options: StartAgentOptions): Promise<RunningAge
     searchSessionTtlMs: options.searchSessionTtlMs,
     receiptDirectory: options.receiptDirectory,
     shellPath: options.shellPath,
+    sessionMaxLifetimeMs: options.sessionMaxLifetimeMs,
+    receiptFaultForTests: options.receiptFaultForTests,
+    receiptHistoricalBackupPath: options.receiptHistoricalBackupPath,
   });
 
   const server: Server = createServer((request, response) => {
