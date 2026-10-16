@@ -995,7 +995,7 @@ test("managed command expires without polling and retains its timeout reason", a
     const deadline = Date.now() + 7000;
     do {
       const result = await call(agent, { tool: "read_process_output", arguments: { session_id: session } });
-      snapshot = JSON.parse(completedText(result.json)) as typeof snapshot;
+      snapshot = JSON.parse(completedText(result.json)) as { state: string; termination_reason?: string };
       if (snapshot?.state !== "running") break;
       await new Promise((resolve) => setTimeout(resolve, 50));
     } while (Date.now() < deadline);
