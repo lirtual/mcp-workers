@@ -120,13 +120,17 @@ export class ReceiptStore {
   private readonly legacyFile: string;
   private database: DatabaseSync | undefined;
   private readonly testPersistenceUnavailable?: () => boolean;
+  private readonly historicalBackupPath?: string;
 
   constructor(
     directory = path.join(os.homedir(), ".local", "state", "mcp-workers", "remote-control-agent"),
     testPersistenceUnavailable?: () => boolean,
+    historicalBackupPath?: string,
   ) {
     this.directory = directory;
     this.testPersistenceUnavailable = testPersistenceUnavailable;
+    if (historicalBackupPath && !path.isAbsolute(historicalBackupPath)) throw new Error("Historical backup path must be absolute.");
+    this.historicalBackupPath = historicalBackupPath;
     this.file = path.join(directory, "operation-receipts.sqlite");
     this.legacyFile = path.join(directory, "operation-receipts.json");
   }
@@ -202,20 +206,19 @@ export class ReceiptStore {
         if (legacyPresent) {
           const original = await readFile(this.legacyFile, "utf8");
           const current = parseLegacy(original);
-          const knownBackup = path.join(this.directory, KNOWN_HISTORICAL_BACKUP);
+          // Operators with a known trimmed history supply this exact path and
+          // must not accidentally migrate without it. Other Agent instances
+          // do not get an invented 300-record special case.
+          const knownBackup = this.historicalBackupPath ?? path.join(this.directory, KNOWN_HISTORICAL_BACKUP);
           const backupExists = await this.exists(knownBackup);
-          // This known installation was trimmed from 1,000 receipts to exactly
-          // 300. Do not silently forget the missing protected identities when
-          // its explicitly identified backup is absent. Other stores are not
-          // subject to the historical cleanup's exact-record-count preflight.
-          if (current.length === 300 && !backupExists) {
-            throw new Error("Known historical receipt backup must be verified.");
+          if (this.historicalBackupPath && !backupExists) {
+            throw new Error("Required historical receipt backup is missing.");
           }
           const historical = backupExists
             ? parseLegacy(await readFile(knownBackup, "utf8"))
             : [];
-          if (current.length === 300 && historical.length < current.length) {
-            throw new Error("Historical receipt backup is incomplete.");
+          if (this.historicalBackupPath && historical.length < current.length) {
+            throw new Error("Required historical receipt backup is incomplete.");
           }
           records = reconcile(current, historical);
           await this.preserveLegacy(original);
