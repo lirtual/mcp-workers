@@ -978,17 +978,14 @@ test("two local agents cannot concurrently admit work to one SQLite state", asyn
   }
 });
 
-test("SQLite write failure leaves safe reads available and only allows owned emergency stop", async (t) => {
-  if (typeof process.getuid === "function" && process.getuid() === 0) {
-    t.skip("root may bypass the disposable state-directory permission fault");
-    return;
-  }
+test("SQLite write failure leaves safe reads available and only allows owned emergency stop", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-sqlite-degraded-"));
   const state = path.join(root, "state");
   const visible = path.join(root, "readable.txt");
   await writeFile(visible, "safe-fixture", "utf8");
-  const agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: state, shellPath: "/bin/sh" });
-  let changed = false;
+  const failure = { enabled: false };
+  const agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: state, shellPath: "/bin/sh",
+    receiptFaultForTests: () => failure.enabled });
   try {
     const started = await call(agent, {
       tool: "start_process", operation_id: "degraded-owned-start",
@@ -996,8 +993,7 @@ test("SQLite write failure leaves safe reads available and only allows owned eme
     });
     assert.equal((started.json as { status: string }).status, "running");
     const sessionId = (started.json as { session_id: string }).session_id;
-    await chmod(state, 0o500);
-    changed = true;
+    failure.enabled = true;
 
     const read = await call(agent, { tool: "read_file", arguments: { path: visible } });
     assert.equal(read.status, 200);
@@ -1027,7 +1023,7 @@ test("SQLite write failure leaves safe reads available and only allows owned eme
     const sessions = JSON.parse(completedText(list.json)) as Array<{ session_id: string; state: string }>;
     assert.ok(sessions.some((item) => item.session_id === sessionId && item.state !== "running"));
   } finally {
-    if (changed) await chmod(state, 0o700);
+    failure.enabled = false;
     await agent.close();
     await rm(root, { recursive: true, force: true });
   }
