@@ -978,6 +978,61 @@ test("two local agents cannot concurrently admit work to one SQLite state", asyn
   }
 });
 
+test("SQLite write failure leaves safe reads available and only allows owned emergency stop", async (t) => {
+  if (typeof process.getuid === "function" && process.getuid() === 0) {
+    t.skip("root may bypass the disposable state-directory permission fault");
+    return;
+  }
+  const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-sqlite-degraded-"));
+  const state = path.join(root, "state");
+  const visible = path.join(root, "readable.txt");
+  await writeFile(visible, "safe-fixture", "utf8");
+  const agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: state, shellPath: "/bin/sh" });
+  let changed = false;
+  try {
+    const started = await call(agent, {
+      tool: "start_process", operation_id: "degraded-owned-start",
+      arguments: { command: "sleep 30", timeout_ms: 0 },
+    });
+    assert.equal((started.json as { status: string }).status, "running");
+    const sessionId = (started.json as { session_id: string }).session_id;
+    await chmod(state, 0o500);
+    changed = true;
+
+    const read = await call(agent, { tool: "read_file", arguments: { path: visible } });
+    assert.equal(read.status, 200);
+    assert.match(completedText(read.json), /safe-fixture/);
+    const unauthorized = await call(agent, {
+      tool: "force_terminate", operation_id: "degraded-forbidden",
+      arguments: { session_id: sessionId },
+    }, "invalid-token");
+    assert.equal(unauthorized.status, 401);
+
+    const denied = await call(agent, {
+      tool: "write_file", operation_id: "degraded-denied-write",
+      arguments: { path: visible, content: "danger", mode: "rewrite" },
+    });
+    assert.equal(denied.status, 503);
+    assert.equal(await readFile(visible, "utf8"), "safe-fixture");
+
+    const stopped = await call(agent, {
+      tool: "force_terminate", operation_id: "degraded-owned-stop",
+      arguments: { session_id: sessionId },
+    });
+    assert.equal(stopped.status, 200);
+    assert.equal((stopped.json as { status: string }).status, "unknown");
+
+    const list = await call(agent, { tool: "list_sessions", arguments: {} });
+    assert.equal(list.status, 200);
+    const sessions = JSON.parse(completedText(list.json)) as Array<{ session_id: string; state: string }>;
+    assert.ok(sessions.some((item) => item.session_id === sessionId && item.state !== "running"));
+  } finally {
+    if (changed) await chmod(state, 0o700);
+    await agent.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("managed command expires without polling and retains its timeout reason", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-deadline-"));
   const agent = await startAgent({
