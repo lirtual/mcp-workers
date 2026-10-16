@@ -4,29 +4,12 @@ export { V2OwnerCoordinator } from "./v2-pairing.ts";
 type V2Env = Env & {
   V2_OWNER?: DurableObjectNamespace;
   REMOTE_CONTROL_V2_PREVIEW_ONLY?: string;
-  REMOTE_CONTROL_V2_RECEIPT_TEST_DEVICE_ID?: string;
 };
 function previewOnly(env: Env): boolean {
   return (env as V2Env).REMOTE_CONTROL_V2_PREVIEW_ONLY === "true";
 }
-// A single, explicit per-device grant enables short-lived Receipt testing on
-// the existing v2 Preview. No grant means the original preview is read-only.
-// Use a separate disposable, unprivileged test Agent; production Agent service
-// continues to refuse mutations at its own signed WSS boundary.
-function receiptTestDevice(env: Env): string | null {
-  if (!previewOnly(env)) return null;
-  const id = (env as V2Env).REMOTE_CONTROL_V2_RECEIPT_TEST_DEVICE_ID;
-  return typeof id === "string" &&
-    /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(id) ? id : null;
-}
-const RECEIPT_TEST_TOOLS = new Set([
-  "write_file", "get_operation_status", "run_command",
-  "list_sessions", "read_session_output",
-]);
-const PREVIEW_TOOLS = new Set([
-  "read_file", "read_files", "list_directory", "stat_file",
-  "search_files", "search_next", "stop_search",
-]);
+// Preview operations use existing authenticated per-device WSS routing.
+// The paired Agent, not a temporary Worker secret, opts into write/Shell.
 const OWNER_TOOLS = new Set(["pairing_lookup", "pairing_prepare", "list_devices", "revoke_device"]);
 function pendingOwner(env: Env): DurableObjectStub | null {
   const ns = (env as V2Env).V2_OWNER;
@@ -104,29 +87,6 @@ async function callPairedDeviceOperation(env: Env, id: unknown, name: string, ar
   const { device_id, ...localArgs } = args as Record<string, unknown>;
   if (typeof device_id !== "string" || !/^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(device_id)) {
     return toolError(id, "An explicit valid device_id is required.");
-  }
-  // Never dispatch an opt-in Preview mutation to another paired device,
-  // even when the caller forges a tools/call not present in tools/list.
-  if (previewOnly(env)) {
-    if (device_id !== receiptTestDevice(env) || !RECEIPT_TEST_TOOLS.has(name)) {
-      return toolError(id, "The requested operation is not authorized for this device.");
-    }
-    // During this narrow Receipt acceptance, even the sole opted-in device
-    // may only append a sentinel into its disposable user's home and run a
-    // constant printf. This avoids exposing arbitrary filesystem/Shell access
-    // through an existing ChatGPT connector while the test grant is enabled.
-    if (name === "write_file" &&
-        (typeof localArgs.path !== "string" ||
-         !/^\/home\/rcagent\/receipt-v2-preview-test-[a-f0-9-]{36}\.txt$/.test(localArgs.path) ||
-         localArgs.mode !== "append" ||
-         !["RC_V2_RECEIPT_ONCE\\n", "RC_V2_RECEIPT_CHANGED\\n"].includes(localArgs.content as string))) {
-      return toolError(id, "The Receipt test only allows a fixed disposable fixture.");
-    }
-    if (name === "run_command" &&
-        !["printf RC_V2_RECEIPT_TEST_OK", "printf RC_V2_RECEIPT_TEST_CHANGED"]
-          .includes(localArgs.command as string)) {
-      return toolError(id, "The Receipt test only allows a fixed harmless command.");
-    }
   }
   const parsed = parseLocalCall(name, localArgs);
   if (!parsed || !V2_AGENT_OPERATION_TOOLS.has(parsed.tool)) {
@@ -1133,10 +1093,8 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
 
   if (rpcMessage.method === "tools/list") {
     if (previewOnly(env)) {
-      const grant = receiptTestDevice(env);
-      const allowed = new Set([...PREVIEW_TOOLS, ...(grant ? RECEIPT_TEST_TOOLS : [])]);
       return rpc(rpcMessage.id, { tools: [
-        ...LOCAL_TOOLS.filter(tool => allowed.has(tool.name)).map(tool => ({
+        ...LOCAL_TOOLS.map(tool => ({
           ...tool,
           inputSchema: { ...tool.inputSchema,
             required: [...("required" in tool.inputSchema ? tool.inputSchema.required : []), "device_id"],
@@ -1156,18 +1114,15 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
     }
     const call = params as { name?: unknown; arguments?: unknown };
     if (previewOnly(env)) {
-      const grant = receiptTestDevice(env);
-      const allowed = new Set([...PREVIEW_TOOLS, ...(grant ? RECEIPT_TEST_TOOLS : [])]);
+      const name = typeof call.name === "string" ? call.name : "";
+      const requiresDevice = V2_READ_TOOLS.has(name) || V2_OPERATION_TOOLS.has(name);
       const target = call.arguments && typeof call.arguments === "object" && !Array.isArray(call.arguments)
         ? (call.arguments as Record<string, unknown>).device_id : undefined;
-      const requiresDevice = V2_READ_TOOLS.has(String(call.name)) ||
-        V2_OPERATION_TOOLS.has(String(call.name));
-      if (typeof call.name !== "string" ||
-          (!allowed.has(call.name) && !OWNER_TOOLS.has(call.name)) ||
-          (requiresDevice && typeof target !== "string") ||
-          (RECEIPT_TEST_TOOLS.has(String(call.name)) && target !== grant)) {
-        return toolError(rpcMessage.id,
-          "The preview permits only explicit-device read-only calls and owner pairing, unless a test device is explicitly authorized.");
+      // Never fall back to the v1 VPC. A caller must choose a paired device.
+      if ((!requiresDevice && !OWNER_TOOLS.has(name)) ||
+          (requiresDevice && (typeof target !== "string" ||
+            !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(target)))) {
+        return toolError(rpcMessage.id, "The v2 preview requires a valid explicit device_id.");
       }
     }
     if (typeof call.name === "string" && V2_OPERATION_TOOLS.has(call.name) &&
@@ -1197,6 +1152,8 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
       }
       return lookupPendingDevice(env, (args as { code?: unknown }).code, rpcMessage.id);
     }
+    // Preview has no legacy v1 VPC fallback, even if its owner DO is missing.
+    if (previewOnly(env)) return toolError(rpcMessage.id, "The requested v2 tool is unavailable.");
     if (!isKnownTool(call.name)) {
       log("rejected");
       return toolError(rpcMessage.id, "The requested tool call was rejected.");
