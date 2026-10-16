@@ -146,6 +146,8 @@ test("Preview Receipt tools require one explicitly granted device, without widen
     ["get_operation_status", { device_id: otherId, operation_id }],
     ["list_sessions", { device_id: otherId }],
     ["read_session_output", { device_id: otherId, session_id: randomUUID() }],
+    ["write_file", { device_id: permittedId, operation_id, path: "/tmp/denied", content: "BAD", mode: "append" }],
+    ["run_command", { device_id: permittedId, operation_id, command: "id" }],
     ["delete_file", { device_id: permittedId, operation_id, path: "/tmp/denied" }],
     ["send_input", { device_id: permittedId, operation_id, session_id: randomUUID(), input: "NO" }],
   ]) {
@@ -154,6 +156,25 @@ test("Preview Receipt tools require one explicitly granted device, without widen
   }
   assert.equal(doCalls, 0);
   assert.equal(v1Calls, 0);
+
+  const fixture = "/home/rcagent/receipt-v2-preview-test-" + randomUUID() + ".txt";
+  const boundedWrite = await rpc("tools/call", {
+    name: "write_file", arguments: {
+      device_id: permittedId, operation_id, path: fixture,
+      content: "RC_V2_RECEIPT_ONCE\\n", mode: "append",
+    },
+  });
+  assert.notEqual(boundedWrite.body.result?.isError, true);
+  assert.equal(JSON.parse(boundedWrite.body.result.content[0].text).status, "not_found");
+  const boundedCommand = await rpc("tools/call", {
+    name: "run_command", arguments: {
+      device_id: permittedId, operation_id, command: "printf 'RC_V2_RECEIPT_TEST_OK\\n'",
+    },
+  });
+  assert.notEqual(boundedCommand.body.result?.isError, true);
+  assert.equal(doCalls, 2, "only allowed test tools reached DO");
+  assert.equal(v1Calls, 0);
+  doCalls = 0;
 
   const unauthorized = await rpc("tools/call", {
     name: "get_operation_status", arguments: { device_id: permittedId, operation_id },
