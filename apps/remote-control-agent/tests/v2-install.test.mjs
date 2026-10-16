@@ -608,7 +608,7 @@ test("actual SIGKILL after each identity rename permits guarded operator-only re
         {
           stdio: ["ignore", "ignore", "ignore", "ipc"],
           env: {
-            ...process.env,
+            HOME: dir, // isolated child; no inherited tokens or live Agent config
             RC_TEST_INSTALL_MODULE: installModule,
             RC_TEST_KEY: key,
             RC_TEST_OLD_ID: oldId,
