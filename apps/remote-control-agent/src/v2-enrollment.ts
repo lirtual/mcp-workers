@@ -14,6 +14,7 @@ export interface EnrollmentRequest {
   code_verifier: string;
   proof: string;
   issued_at: number;
+  grant_type?: "temporary"; // Omitted in preexisting permanent protocol
 }
 
 export function pairingVerifier(code: string): string {
@@ -21,7 +22,7 @@ export function pairingVerifier(code: string): string {
   return createHash("sha256").update(ENROLLMENT_DOMAIN + code).digest("hex");
 }
 
-export function newEnrollment(name: string, existingPrivateKeyPem?: string): {
+export function newEnrollment(name: string, existingPrivateKeyPem?: string, grantType: "permanent" | "temporary" = "permanent"): {
   code: string;
   privateKeyPem: string;
   request: EnrollmentRequest;
@@ -29,6 +30,7 @@ export function newEnrollment(name: string, existingPrivateKeyPem?: string): {
   if (typeof name !== "string" || name.length < 1 || name.length > 64 || /[\r\n\x00-\x1f]/.test(name)) {
     throw new Error("Invalid device label.");
   }
+  if (!["permanent", "temporary"].includes(grantType)) throw new Error("Invalid grant type.");
   // Each of 256 byte values maps to a Base32 symbol uniformly: 8 values/symbol.
   const code = [...randomBytes(10)].map((b) => ALPHABET[b & 31]).join("");
   // Retry after an interrupted install with the SAME device identity.
@@ -41,12 +43,13 @@ export function newEnrollment(name: string, existingPrivateKeyPem?: string): {
   const publicSpki = Buffer.from(publicKey.export({ type: "spki", format: "der" }) as Buffer).toString("base64");
   const verifier = pairingVerifier(code);
   const issuedAt = Date.now();
-  const transcript = Buffer.from(ENROLLMENT_DOMAIN + verifier + ":" + publicSpki + ":" + name + ":" + issuedAt);
+  const transcript = Buffer.from(ENROLLMENT_DOMAIN + verifier + ":" + publicSpki + ":" + name + ":" + issuedAt + (grantType === "temporary" ? ":temporary" : ""));
   const proof = Buffer.from(sign(null, transcript, privateKey)).toString("base64");
   return {
     code,
     privateKeyPem: String(privateKey.export({ type: "pkcs8", format: "pem" })),
-    request: { name, public_key: publicSpki, code_verifier: verifier, proof, issued_at: issuedAt },
+    request: { name, public_key: publicSpki, code_verifier: verifier, proof, issued_at: issuedAt,
+      ...(grantType === "temporary" ? { grant_type: "temporary" as const } : {}) },
   };
 }
 

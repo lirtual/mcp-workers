@@ -30,6 +30,7 @@ export async function beginDeviceEnrollment(
   keyPath = DEFAULT_KEY_FILE,
   send: typeof fetch = fetch,
   reuseExistingKey = false,
+  grantType: "permanent" | "temporary" = "permanent",
 ): Promise<PendingEnrollmentResult> {
   const base = new URL(endpoint);
   const local = base.protocol === "http:" && base.hostname === "127.0.0.1";
@@ -48,7 +49,7 @@ export async function beginDeviceEnrollment(
     }
     savedPem = await readFile(keyPath, "utf8");
   }
-  const material = newEnrollment(name, savedPem);
+  const material = newEnrollment(name, savedPem, grantType);
   if (!reuseExistingKey) {
     await mkdir(path.dirname(keyPath), { recursive: true, mode: 0o700 });
     await saveNewPrivateKey(keyPath, material.privateKeyPem);

@@ -156,6 +156,7 @@ const PAIRING_PREPARE_TOOL = {
     properties: {
       pairing_id: { type: "string" },
       expected_fingerprint: { type: "string" },
+      expected_grant_type: { type: "string", enum: ["permanent", "temporary"] },
     },
     required: ["pairing_id", "expected_fingerprint"],
     additionalProperties: false,
@@ -170,8 +171,11 @@ async function prepareLocalDevice(
     return toolError(id, "The confirmation preparation was rejected.");
   }
   const args = argumentsValue as Record<string, unknown>;
-  if (Object.keys(args).length !== 2 ||
-      typeof args.pairing_id !== "string" || typeof args.expected_fingerprint !== "string") {
+  if (![2, 3].includes(Object.keys(args).length) ||
+      !Object.keys(args).every(key => ["pairing_id", "expected_fingerprint", "expected_grant_type"].includes(key)) ||
+      typeof args.pairing_id !== "string" || typeof args.expected_fingerprint !== "string" ||
+      (Object.hasOwn(args, "expected_grant_type") &&
+        !["permanent", "temporary"].includes(String(args.expected_grant_type)))) {
     return toolError(id, "The confirmation preparation was rejected.");
   }
   const owner = pendingOwner(env);
@@ -179,7 +183,8 @@ async function prepareLocalDevice(
   try {
     const response = await owner.fetch("https://v2.internal/prepare", {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ pairing_id: args.pairing_id, expected_fingerprint: args.expected_fingerprint }),
+      body: JSON.stringify({ pairing_id: args.pairing_id, expected_fingerprint: args.expected_fingerprint,
+        ...(args.expected_grant_type ? { expected_grant_type: args.expected_grant_type } : {}) }),
     });
     if (!response.ok) return toolError(id, "The pending device was not found or cannot be confirmed.");
     return toolText(id, JSON.stringify(await response.json()));

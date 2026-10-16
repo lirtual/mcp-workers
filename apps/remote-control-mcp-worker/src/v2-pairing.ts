@@ -12,12 +12,13 @@ const CHALLENGE_TTL_MS = 300_000;
 const CONFIRM_DOMAIN = "remote-control:v2:local-confirm:";
 const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 const te = new TextEncoder();
-import { issueSessionChallenge, authorizeSession, acceptAuthenticatedSocket, handleIdleSocketMessage, listApprovedDevices, type V2Device } from "./v2-session.ts";
+import { issueSessionChallenge, authorizeSession, acceptAuthenticatedSocket, handleIdleSocketMessage, listApprovedDevices, deviceIsAuthorized, listLiveGrants, TEMPORARY_GRANT_MS, type V2Device } from "./v2-session.ts";
 import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId, parseLocalWriteFile, parseLocalCreateDirectory, parseLocalEditBlock, parseLocalMoveFile, parseLocalDeleteFile, parseStartProcess, parseLocalProcessOutput, parseListSessions, parseLocalProcessInteraction, parseLocalProcessTermination, parseOperationId } from "./local-read.ts";
 
 export interface PendingDevice {
   name: string;
   public_key: string;
+  grant_type?: "temporary";
   pairing_id: string;
   fingerprint: string;
   expires_at: number;
@@ -32,11 +33,13 @@ export interface ApprovedDevice {
   public_key: string;
   fingerprint: string;
   approved_at: number;
+  grant_type?: "permanent" | "temporary";
+  expires_at?: number;
   revoked: false;
 }
 
 type PendingStorage = Pick<DurableObjectStorage, "get" | "put" | "list" | "delete" | "transaction">;
-type Registration = { name: string; public_key: string; code_verifier: string; proof: string; issued_at: number };
+type Registration = { name: string; public_key: string; code_verifier: string; proof: string; issued_at: number; grant_type?: "temporary" };
 type AttemptBudget = { reset_at: number; count: number };
 
 /**
@@ -74,6 +77,7 @@ export async function verifyRegistration(payload: unknown): Promise<{ record: Pe
       /[\x00-\x1f]/.test(p.name) || typeof p.code_verifier !== "string" ||
       !/^[a-f0-9]{64}$/.test(p.code_verifier) || typeof p.public_key !== "string" ||
       p.public_key.length > 96 || typeof p.proof !== "string" || p.proof.length > 128 ||
+      (p.grant_type !== undefined && p.grant_type !== "temporary") ||
       typeof p.issued_at !== "number" || !Number.isSafeInteger(p.issued_at) ||
       Date.now() - p.issued_at > 60_000 || p.issued_at - Date.now() > 30_000) return null;
   try {
@@ -82,7 +86,7 @@ export async function verifyRegistration(payload: unknown): Promise<{ record: Pe
     const signature = asBytes(p.proof);
     if (signature.length !== 64) return null;
     const key = await crypto.subtle.importKey("spki", Uint8Array.from(keyBytes).buffer as ArrayBuffer, { name: "Ed25519" }, false, ["verify"]);
-    const challenge = te.encode(PAIRING_DOMAIN + p.code_verifier + ":" + p.public_key + ":" + p.name + ":" + p.issued_at);
+    const challenge = te.encode(PAIRING_DOMAIN + p.code_verifier + ":" + p.public_key + ":" + p.name + ":" + p.issued_at + (p.grant_type === "temporary" ? ":temporary" : ""));
     const ok = await crypto.subtle.verify("Ed25519", key, Uint8Array.from(signature).buffer as ArrayBuffer, Uint8Array.from(challenge).buffer as ArrayBuffer);
     if (!ok) return null;
     const digest = await crypto.subtle.digest("SHA-256", Uint8Array.from(keyBytes).buffer as ArrayBuffer);
@@ -90,7 +94,8 @@ export async function verifyRegistration(payload: unknown): Promise<{ record: Pe
     const time = Date.now();
     return {
       verifier: p.code_verifier,
-      record: { name: p.name, public_key: p.public_key, pairing_id: crypto.randomUUID(), fingerprint, expires_at: time + TTL_MS, created_at: time },
+      record: { name: p.name, public_key: p.public_key, pairing_id: crypto.randomUUID(), fingerprint, expires_at: time + TTL_MS, created_at: time,
+        ...(p.grant_type === "temporary" ? {grant_type: "temporary" as const} : {}) },
     };
   } catch {
     return null;
@@ -108,7 +113,7 @@ export async function registerPending(storage: PendingStorage, payload: unknown)
     // The bootstrap request includes a signed proof of this public key, but
     // never grants permissions. A revoked or previously approved key MUST
     // NOT be allowed to enroll as a new identity, even after reinstall.
-    const devices = await txn.list<V2Device>({ prefix: "device:", limit: 65 });
+    const devices = await listLiveGrants(txn);
     if (devices.size > 64) return { status: 503, body: { error: "capacity" } };
     if ([...devices.values()].some(d => d.public_key === verified.record.public_key)) {
       return { status: 409, body: { error: "identity_already_used" } };
@@ -172,13 +177,17 @@ export async function checkRevokedIdentity(
     // Proof confirms possession of the SUPPLIED key, not historical ownership
     // of a deleted device ID. This negative status never grants authority;
     // fresh owner-reviewed pairing is always required.
-    if (device && device.revoked === false) {
+    if (deviceIsAuthorized(device)) {
       return { status: device.public_key === p.public_key ? 409 : 403,
         body: { error: device.public_key === p.public_key ? "identity_still_approved" : "unauthorized" } };
     }
     // Tolerate and lazily remove legacy preview tombstones after the new
     // negative-status contract is active. Never retain a new tombstone.
-    if (device?.revoked === true) await storage.delete("device:" + p.device_id);
+    if (device && !deviceIsAuthorized(device)) {
+      await storage.delete("device:" + p.device_id);
+      await storage.delete("session:nonce:" + p.device_id);
+      await storage.delete("session:epoch:" + p.device_id);
+    }
     return { status: 200, body: { status: "not_approved", device_id: p.device_id } };
   } catch {
     return { status: 400, body: { error: "invalid_request" } };
@@ -193,7 +202,8 @@ export async function lookupPending(storage: PendingStorage, verifier: string): 
   const record = await storage.get<PendingDevice>("pending:" + verifier);
   if (!record || record.expires_at <= Date.now()) return { status: 404, body: { error: "not_found" } };
   // Public key only appears as an immutable fingerprint to the authenticated MCP owner.
-  return { status: 200, body: { pairing_id: record.pairing_id, name: record.name, fingerprint: record.fingerprint, expires_at: record.expires_at } };
+  return { status: 200, body: { pairing_id: record.pairing_id, name: record.name, fingerprint: record.fingerprint, expires_at: record.expires_at,
+    grant_type: record.grant_type ?? "permanent" } };
 }
 
 /**
@@ -202,7 +212,7 @@ export async function lookupPending(storage: PendingStorage, verifier: string): 
  * A new preparation invalidates any prior challenge on the same pending entry.
  */
 export async function prepareLocalConfirmation(
-  storage: PendingStorage, pairingId: unknown, fingerprint: unknown,
+  storage: PendingStorage, pairingId: unknown, fingerprint: unknown, expectedGrantType: unknown = undefined,
 ): Promise<{ status: number; body: object }> {
   if (typeof pairingId !== "string" || !/^[a-f0-9-]{36}$/.test(pairingId) ||
       typeof fingerprint !== "string" || !/^[a-f0-9]{24}$/.test(fingerprint)) {
@@ -217,6 +227,10 @@ export async function prepareLocalConfirmation(
       row.pairing_id === pairingId && row.fingerprint === fingerprint && row.expires_at > Date.now());
     if (!match) return { status: 404, body: { error: "not_found" } };
     const [key, row] = match;
+    if (row.grant_type === "temporary" ? expectedGrantType !== "temporary" :
+        expectedGrantType !== undefined && expectedGrantType !== "permanent") {
+      return { status: 409, body: { error: "grant_type_mismatch" } };
+    }
     // 12 Base32 symbols, 60 bits. This code is entered on the new host only.
     const random = new Uint8Array(12);
     crypto.getRandomValues(random);
@@ -230,6 +244,7 @@ export async function prepareLocalConfirmation(
     return { status: 200, body: {
       pairing_id: row.pairing_id,
       fingerprint: row.fingerprint,
+      grant_type: row.grant_type ?? "permanent",
       challenge,
       expires_at: expiresAt,
       instruction: "Enter this challenge manually in the NEW Agent's local terminal. No MCP tool can approve it.",
@@ -286,15 +301,18 @@ export async function completeLocalConfirmation(storage: PendingStorage, data: u
     }
     // Only a fresh, owner-approved pending challenge can grant authority.
     // Existing active public keys remain ineligible; deleted keys confer no rights.
-    const known = await txn.list<V2Device>({ prefix: "device:", limit: 65 });
+    const known = await listLiveGrants(txn);
     if (known.size > 64) return { status: 503, body: { error: "capacity" } };
     if ([...known.values()].some(device => device.public_key === again.public_key)) {
       return { status: 409, body: { error: "identity_already_used" } };
     }
     const deviceId = crypto.randomUUID();
+    const approvedAt = Date.now();
     await txn.put("device:" + deviceId, {
       device_id: deviceId, name: again.name, public_key: again.public_key,
-      fingerprint: again.fingerprint, approved_at: Date.now(), revoked: false,
+      fingerprint: again.fingerprint, approved_at: approvedAt, revoked: false,
+      grant_type: again.grant_type ?? "permanent",
+      ...(again.grant_type === "temporary" ? { expires_at: approvedAt + TEMPORARY_GRANT_MS } : {}),
     } satisfies ApprovedDevice);
     await txn.delete(key);
     return { status: 200, body: { status: "paired", device_id: deviceId } };
@@ -377,7 +395,7 @@ export class V2OwnerCoordinator {
       this.state.storage.get<V2Device>("device:" + deviceId),
       this.state.storage.get<string>("session:epoch:" + deviceId),
     ]);
-    if (!device || device.revoked !== false || !epoch) {
+    if (!deviceIsAuthorized(device) || !epoch) {
       return Response.json({ error: "offline" }, { status: 503 });
     }
     let active: WebSocket | undefined;
@@ -444,6 +462,8 @@ export class V2OwnerCoordinator {
         this.state.storage.get<V2Device>("device:" + pending.deviceId),
         this.state.storage.get<string>("session:epoch:" + pending.deviceId),
       ]);
+      // A reply to work admitted BEFORE expiry may still settle its existing
+      // receipt; expiry only forbids NEW dispatch. Revocation still rejects.
       if (!device || device.revoked !== false || epoch !== pending.epoch) {
         pending.resolve(Response.json({ error: "unauthorized" }, { status: 503 }));
       } else if (pending.kind === "operation") {
@@ -659,8 +679,8 @@ export class V2OwnerCoordinator {
         this.state.storage, (payload as { verifier?: unknown })?.verifier as string,
       );
       else if (path === "/prepare") {
-        const pending = payload as { pairing_id?: unknown; expected_fingerprint?: unknown };
-        output = await prepareLocalConfirmation(this.state.storage, pending?.pairing_id, pending?.expected_fingerprint);
+        const pending = payload as { pairing_id?: unknown; expected_fingerprint?: unknown; expected_grant_type?: unknown };
+        output = await prepareLocalConfirmation(this.state.storage, pending?.pairing_id, pending?.expected_fingerprint, pending?.expected_grant_type);
       } else output = await completeLocalConfirmation(this.state.storage, payload);
       return Response.json(output.body, { status: output.status, headers: { "cache-control": "no-store" } });
     } catch { return Response.json({ error: "unavailable" }, { status: 503 }); }
