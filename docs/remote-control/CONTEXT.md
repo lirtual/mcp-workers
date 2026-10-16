@@ -25,7 +25,7 @@ An owner-selected and integrity-checked immutable version of the Agent's distrib
 _Avoid_: Treating a successful download or file hash match as independent proof that arbitrary installer code is trustworthy.
 
 **Owner-Initiated Agent Upgrade**:
-An explicit user action to replace installed Agent program files with another reviewed version while preserving the same approved device identity and prior operation history. A failed upgrade can revert the program without implying that already changed data has been rolled back.
+An explicit user action to replace installed Agent program files with another reviewed version while preserving the same approved device identity and prior operation history. Work actively owned by the Agent must be completed or explicitly stopped before upgrading. A failed upgrade can revert the program without implying that already changed data has been rolled back.
 _Avoid_: Treating an upgrade as a new device enrollment, an extension of temporary authorization, or permission to discard uncertain work.
 
 **Local Agent Uninstall**:
@@ -171,7 +171,7 @@ Architecture and deployment implementation details belong in the research draft 
 
 **Pairing Code:** exactly 10 cryptographically random Base32 characters shown locally by a fresh Agent installation, single-use and expiring after 10 minutes. It identifies a pending pairing but is never a long-lived device credential.
 
-**Device Pairing:** the Remote-Control-specific Portal Bearer-authenticated `pairing_lookup` shows one pending device and fingerprint; `pairing_prepare` returns a single-use 12-character Base32 challenge (five minutes) but cannot approve. The owner manually enters the original 10-character device code and 12-character challenge in the **new Agent's own local terminal/SSH**, and the Agent signs the bound code/challenge transcript with its locally stored private key. Only the matching one-use DO proof can issue `device_id`. Portal Bearer by itself is **not** human-presence proof; this separate terminal requirement assumes the model cannot operate that host or obtain its private key. This is the owner-approved two-code UX refinement (updated 2026-10-16) and still requires nonproduction client/host verification.
+**Device Pairing:** the Remote-Control-specific Portal Bearer-authenticated `pairing_lookup` shows one pending device and fingerprint; `pairing_prepare` returns a single-use 12-character Base32 challenge (five minutes) but cannot approve. The owner uses the **10-character code shown by the Agent** for authenticated MCP lookup, and manually enters **only the 12-character challenge** back into the new Agent's own terminal/SSH. The installer already retains its original 10-character code locally, and the Agent signs the bound proof with its private key. Only the matching one-use DO proof can issue `device_id`. Portal Bearer by itself is **not** human-presence proof; this separate terminal requirement assumes the model cannot operate that host or obtain its private key. This is the owner-approved two-code UX refinement (updated 2026-10-16) and still requires nonproduction client/host verification.
 
 **Device Credential:** a per-installation private/public keypair generated locally (prefer standard Ed25519 after interoperability validation); the Agent retains the private key and proves possession via fresh signed server challenge. Reinstall means a new key, new `device_id`, new pairing.
 
