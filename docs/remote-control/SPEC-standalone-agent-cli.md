@@ -1,7 +1,7 @@
 # Remote Control Agent — Standalone Linux/WSL2 CLI and v2 Device Lifecycle Spec
 
 **Status:** To Spec · Draft for design and ticket review, **ready for ticket decomposition but not authorized for implementation, publication, production rollout or v1 cutover**. 2026-10-17.
-**Repository:** lirtual/mcp-workers.
+**Repository:** lirtual/mcp-workers. **Spec tracker:** [Issue #69](https://github.com/lirtual/mcp-workers/issues/69) (ready-for-agent = spec review/ticket decomposition only).
 **Authority:** [Design PR #68](https://github.com/lirtual/mcp-workers/pull/68) (Draft), [ADR-0019](./adr/0019-standalone-linux-agent-distribution.md), [ADR-0017](./adr/0017-v2-device-revocation-without-tombstones.md), [ADR-0018](./adr/0018-v2-temporary-agent-pairing-lifecycle.md), [ADR-0015](./adr/0015-v2-pairing-and-identity.md), [v2 protocol Spec](./V2-MULTI-DEVICE-SPEC.md), [v2 Spec Issue #46](https://github.com/lirtual/mcp-workers/issues/46), [48h acceptance Issue #57](https://github.com/lirtual/mcp-workers/issues/57).
 **Implementation baseline:** inspect live main and unmerged [v2 PR #58](https://github.com/lirtual/mcp-workers/pull/58) afresh before implementation. It already has Ed25519 onboarding, an owner-reviewed two-code challenge, signed WSS, Agent-local operation receipts, and a checkout-based installer. Neither this specification nor passing offline tests changes the production v1 authority.
 
