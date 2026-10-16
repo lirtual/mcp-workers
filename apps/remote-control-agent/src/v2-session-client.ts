@@ -6,9 +6,11 @@ const SESSION_DOMAIN = "remote-control:v2:session:";
 
 /** A permanent identity rejection: operator action is required, not retry/backoff. */
 export class DeviceSessionRejectedError extends Error {
-  constructor(message = "Device identity is not authorized.", public readonly status?: number) {
+  readonly status?: number;
+  constructor(message = "Device identity is not authorized.", status?: number) {
     super(message);
     this.name = "DeviceSessionRejectedError";
+    this.status = status;
   }
 }
 
