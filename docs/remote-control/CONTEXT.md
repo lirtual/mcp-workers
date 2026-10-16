@@ -62,6 +62,19 @@ The authoritative minimal record of whether a state-changing operation was admit
 A state in which an operation may have reached execution but available evidence cannot establish its final effect.
 _Avoid_: Relabeling an uncertain operation as failed or safe to retry.
 
+**Local Receipt Store**:
+The Linux Agent's authoritative collection of Operation Receipts used to reconcile outcomes and suppress unintended repetition of state-changing requests across disconnections and restarts.
+_Avoid_: Treating remote Worker transport acknowledgements, process logs, or a ChatGPT conversation as substitutes for a durable receipt.
+
+**Receipt Retention Window**:
+The period during which a previously admitted Operation ID remains available for outcome reconciliation and deduplication; an operation whose result is unknown is not presumed safe to repeat merely because a record is no longer present.
+_Avoid_: Treating storage cleanup as proof that a previous operation had no effect.
+
+**Bounded Development Command**:
+A managed execution launched for temporary development work that must have a finite lifetime and an owner-scoped stop path.
+_Avoid_: Treating a temporary development command as the preferred mechanism for keeping a permanent service running.
+
+
 ## Settled product boundaries
 
 1. The product name is **Remote Control MCP**; the prospective Worker identifier is `remote-control-mcp-worker`.
@@ -77,12 +90,14 @@ _Avoid_: Relabeling an uncertain operation as failed or safe to retry.
 11. The client sees a **Curated Tool Surface**, restricted to necessary file, search, development Shell and managed-process tool categories, **not** to a project-root path allowlist. See ADR-0008 and ADR-0011.
 12. **Managed Sessions** may outlive the originating MCP request; support status, bounded output and explicit stop, without affecting unrelated host processes. See ADR-0009.
 13. One Remote Control MCP Worker uses the existing Portal Bearer validation pattern rather than OAuth. ADR-0012 supersedes the OAuth decisions in ADR-0003 and ADR-0010.
+14. v1 and v2 Remote Control use the same Agent-side implementation for local Operation Receipts and Managed Sessions; differences in ingress and device routing do not create two local execution engines (2026-10-16 first-round decision; see ADR-0016).
+15. Ordinary development commands have a finite execution lifetime, while durable/background services are managed outside the temporary command session contract (2026-10-16 first-round decision; see ADR-0016).
 
 ## Unsettled boundaries — not approved yet
 
 - The exact allowed tools and parameters; how destructive workspace writes, interactive process inputs and secret handling are authorized.
 - Managed-session lifecycle details: stopping/canceling, output paging, quotas and behavior after device restart.
-- Exact local receipt retention/storage, crash recovery, token revocation and cleanup rules.
+- Detailed local receipt migration, crash recovery, emergency cleanup, token revocation and failure-mode rules; the initial local SQLite storage direction and bounded development-command lifecycle are agreed in ADR-0016.
 - Actual ChatGPT/MCP Portal delivery of the separate static Bearer credential, token provisioning/rotation and denied-request acceptance; compatibility with arbitrary non-Portal MCP clients is not guaranteed.
 - Actual permissions and secret exposure of the **confirmed existing normal Linux login account**, ingress compromise risk, limits (payload, output, time), supported tool shapes and rollout/monitoring policy.
 
