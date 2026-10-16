@@ -188,10 +188,13 @@ test("revoked identity cannot silently re-pair with the old key, but a new key a
     // human-entered confirmation challenge must never obtain a second ID.
     const clonedOld = path.join(dir, "cloned-old.pem");
     await saveNewPrivateKey(clonedOld, original.privateKeyPem);
-    await assert.rejects(
-      confirmDeviceLocally(original.code, await begin(original), site, clonedOld, send),
-      /Confirmation denied/,
-    );
+    const rejected = await send(site + "agent/pair/start", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify(newEnrollment("same-host", original.privateKeyPem).request),
+    });
+    // Refuse the old public key BEFORE creating a pending code or challenge.
+    assert.equal(rejected.status, 409);
+    assert.equal((await rejected.json() as {error:string}).error, "identity_already_used");
     assert.equal([...rows].filter(([k]) => k.startsWith("device:")).length, 1);
     assert.equal((rows.get("device:" + originalId) as { revoked: boolean }).revoked, true);
 
