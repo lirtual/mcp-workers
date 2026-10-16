@@ -12,7 +12,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { constants } from "node:fs";
-import { access, lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
+import { access, lstat, mkdir, open, readFile, rename, rm, rmdir } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
 import os from "node:os";
 import path from "node:path";
@@ -275,6 +275,47 @@ async function pairFreshPending(options, keyPath, stdin, stdout, reuseExistingKe
   } finally { terminal.close(); }
 }
 
+/**
+ * Promote already-paired staging files, preserving revoked identity for
+ * review. No network or service actions here, so rollback is testable using
+ * temporary owner-only files without touching any installed Agent.
+ */
+export async function promoteRevokedIdentity(keyPath, oldId, moveFile = rename) {
+  if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(oldId)) {
+    throw new Error("Invalid prior device identity.");
+  }
+  const idPath = keyPath + ".device-id";
+  const stage = keyPath + ".re-pair-new";
+  await ownerOnly(keyPath, 0o600);
+  await ownerOnly(idPath, 0o600);
+  await ownerOnly(stage, 0o600);
+  await ownerOnly(stage + ".device-id", 0o600);
+  const archive = path.join(path.dirname(keyPath), "revoked-" + oldId);
+  if (await exists(archive)) throw new Error("Old identity archive already exists.");
+  await mkdir(archive, {mode: 0o700});
+  const moved = [];
+  async function move(from, to) { await moveFile(from, to); moved.push([to, from]); }
+  try {
+    await move(keyPath, path.join(archive, "identity.pem"));
+    await move(idPath, path.join(archive, "identity.pem.device-id"));
+    await move(stage, keyPath);
+    await move(stage + ".device-id", idPath);
+  } catch (error) {
+    let rollbackFailed = false;
+    for (const [from, to] of moved.reverse()) {
+      try { await rename(from, to); }
+      catch { rollbackFailed = true; }
+    }
+    // Only rmdir, never recursive rm: remove a leftover empty archive on
+    // complete rollback, but preserve any nonempty/uncertain state for review.
+    if (!rollbackFailed) {
+      try { await rmdir(archive); } catch { /* Nonempty/uncertain, preserve. */ }
+    }
+    throw error;
+  }
+  return archive;
+}
+
 /** Explicit revoked-device replacement, never ordinary install recovery. */
 async function rePairRevokedDevice(options, keyPath, previous, stdin, stdout) {
   const idPath = keyPath + ".device-id";
@@ -325,27 +366,10 @@ async function rePairRevokedDevice(options, keyPath, previous, stdin, stdout) {
     throw new Error("New device identity was not verified.");
   }
 
-  // No destructive replace of the old key: archive both revoked identity
-  // files in an owner-only directory, then promote the paired new identity.
-  // In-process rename failures roll back; power loss mid-swap must fail closed
-  // for manual reconciliation rather than silently re-pairing.
-  const archive = path.join(path.dirname(keyPath), "revoked-" + oldId);
-  if (await exists(archive)) throw new Error("Old identity archive already exists.");
+  // Stop only the owned v2 service AFTER new cloud approval and BEFORE
+  // touching the old identity files.
   if (previous) run("systemctl", ["--user", "stop", UNIT]);
-  await mkdir(archive, {mode: 0o700});
-  const moved = [];
-  async function move(from, to) { await rename(from, to); moved.push([to, from]); }
-  try {
-    await move(keyPath, path.join(archive, "identity.pem"));
-    await move(idPath, path.join(archive, "identity.pem.device-id"));
-    await move(stage, keyPath);
-    await move(stage + ".device-id", idPath);
-  } catch (error) {
-    for (const [from, to] of moved.reverse()) {
-      try { await rename(from, to); } catch { /* Preserve both sides for manual inspection. */ }
-    }
-    throw error;
-  }
+  await promoteRevokedIdentity(keyPath, oldId);
   stdout.write("Revoked identity archived locally; new device ID paired. Activating v2 only.\n");
 }
 

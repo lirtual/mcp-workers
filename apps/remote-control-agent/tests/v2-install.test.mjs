@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { createHash, createPrivateKey, createPublicKey, sign as nodeSign } from "node:crypto";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { MARKER, UNIT, classifyLinuxKernel, parseInstallArgs, renderV2Service, trustedEndpoint } from "../scripts/install-v2.mjs";
+import { MARKER, UNIT, classifyLinuxKernel, parseInstallArgs, promoteRevokedIdentity, renderV2Service, trustedEndpoint } from "../scripts/install-v2.mjs";
 import { beginDeviceEnrollment, PendingIdentityConflictError } from "../src/pair-device.ts";
 import { assertRemoteRevocation } from "../src/v2-repair.ts";
 import { DeviceSessionRejectedError, recoverDeviceId, signedSessionProof } from "../src/v2-session-client.ts";
@@ -309,4 +309,58 @@ test("re-pair is an explicit guarded action and archives old identity only AFTER
   assert.match(src, /await move\(keyPath, path\.join\(archive, "identity\.pem"\)\)/);
   assert.match(src, /await move\(stage, keyPath\)/);
   assert.doesNotMatch(src, /rm\(keyPath\)|unlink\(keyPath\)/);
+});
+
+test("staged identity promotion archives the revoked key/ID and installs only the new paired identity", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "rc-v2-stage-success-"));
+  const key = path.join(dir, "identity.pem");
+  const oldId = "0ded0000-0000-4000-8000-000000000001";
+  const newId = "0ded0000-0000-4000-8000-000000000002";
+  try {
+    await writeFile(key, "old-revoked-key", {mode:0o600});
+    await writeFile(key+".device-id", oldId, {mode:0o600});
+    await writeFile(key+".re-pair-new", "new-paired-key", {mode:0o600});
+    await writeFile(key+".re-pair-new.device-id", newId, {mode:0o600});
+    const archive=await promoteRevokedIdentity(key,oldId);
+    assert.equal((await stat(archive)).mode & 0o777,0o700);
+    assert.equal(await readFile(path.join(archive,"identity.pem"),"utf8"),"old-revoked-key");
+    assert.equal(await readFile(path.join(archive,"identity.pem.device-id"),"utf8"),oldId);
+    assert.equal(await readFile(key,"utf8"),"new-paired-key");
+    assert.equal(await readFile(key+".device-id","utf8"),newId);
+    await assert.rejects(readFile(key+".re-pair-new"),{code:"ENOENT"});
+    await assert.rejects(readFile(key+".re-pair-new.device-id"),{code:"ENOENT"});
+    assert.equal((await stat(key)).mode & 0o777,0o600);
+  } finally {await rm(dir,{recursive:true,force:true});}
+});
+
+test("mid-promotion rename failure restores BOTH complete identities; retry succeeds without deleting keys", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "rc-v2-stage-rollback-"));
+  const key = path.join(dir, "identity.pem");
+  const oldId = "0ded0000-0000-4000-8000-000000000003";
+  const newId = "0ded0000-0000-4000-8000-000000000004";
+  try {
+    await writeFile(key,"old-revoked-key",{mode:0o600});
+    await writeFile(key+".device-id",oldId,{mode:0o600});
+    await writeFile(key+".re-pair-new","new-paired-key",{mode:0o600});
+    await writeFile(key+".re-pair-new.device-id",newId,{mode:0o600});
+    let failed=false;
+    const failAfterThreeMoves=async (from,to)=>{
+      if (!failed && from===key+".re-pair-new.device-id") {
+        failed=true;
+        throw new Error("injected rename failure");
+      }
+      return rename(from,to);
+    };
+    await assert.rejects(promoteRevokedIdentity(key,oldId,failAfterThreeMoves),
+      /injected rename failure/);
+    assert.equal(failed,true);
+    assert.equal(await readFile(key,"utf8"),"old-revoked-key");
+    assert.equal(await readFile(key+".device-id","utf8"),oldId);
+    assert.equal(await readFile(key+".re-pair-new","utf8"),"new-paired-key");
+    assert.equal(await readFile(key+".re-pair-new.device-id","utf8"),newId);
+    await assert.rejects(stat(path.join(dir,"revoked-"+oldId)),{code:"ENOENT"});
+    await promoteRevokedIdentity(key,oldId);
+    assert.equal(await readFile(key+".device-id","utf8"),newId);
+    assert.equal(await readFile(path.join(dir,"revoked-"+oldId,"identity.pem.device-id"),"utf8"),oldId);
+  } finally {await rm(dir,{recursive:true,force:true});}
 });
