@@ -1,5 +1,5 @@
 /**
- * T11 / #57: offline completeness guard for operator-supplied 72h
+ * T11 / #57: offline completeness guard for operator-supplied 48h single-device
  * nonproduction evidence. This NEVER accesses Cloudflare or devices and
  * NEVER certifies that a Durable Object actually hibernated.
  */
@@ -15,7 +15,7 @@ export const FREE_LIMITS = Object.freeze({
   sqlite_rows_written: 100_000,
   sqlite_storage_bytes: 5_000_000_000,
 });
-const MIN_DURATION_MS = 72 * 60 * 60 * 1000;
+const MIN_DURATION_MS = 48 * 60 * 60 * 1000;
 const MAX_SAMPLE_GAP_MS = 60 * 60 * 1000;
 const MAX_USAGE_RATIO = 0.8;
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
@@ -59,18 +59,18 @@ export function checkSoakEvidence(report) {
   const start = time(report.start_utc), end = time(report.end_utc);
   if (!Number.isFinite(start) || !Number.isFinite(end) ||
       end - start < MIN_DURATION_MS || end - start > 31 * 86_400_000) {
-    note("invalid_72h_window");
+    note("invalid_48h_window");
   }
   const devices = report.device_ids;
   const idSet = new Set(Array.isArray(devices) ? devices : []);
-  if (!Array.isArray(devices) || devices.length !== 5 || idSet.size !== 5 ||
+  if (!Array.isArray(devices) || devices.length !== 1 || idSet.size !== 1 ||
       !devices.every(id => typeof id === "string" && UUID.test(id))) {
-    note("five_independent_device_ids_required");
+    note("one_device_id_required");
   }
 
   const samples = report.hourly_samples;
   if (!Array.isArray(samples) || !Number.isFinite(start) || !Number.isFinite(end) ||
-      samples.length < 73 || samples.length > 800) {
+      samples.length < 49 || samples.length > 800) {
     note("hourly_samples_incomplete");
   } else {
     let previous = NaN;
@@ -82,9 +82,11 @@ export function checkSoakEvidence(report) {
           at < start || at > end || (index === 0 && at !== start) ||
           (index === samples.length - 1 && at !== end) ||
           (index > 0 && (at <= previous || at - previous > MAX_SAMPLE_GAP_MS)) ||
-          !Array.isArray(online) || online.length !== 5 ||
-          new Set(online).size !== 5 ||
-          !online.every(id => idSet.has(id))) {
+          !Array.isArray(online) || online.length > 1 ||
+          new Set(online).size !== online.length ||
+          !online.every(id => idSet.has(id)) ||
+          ((index === 0 || index === samples.length - 1) &&
+            (online.length !== 1 || online[0] !== devices[0]))) {
         note("hourly_samples_incomplete");
         break;
       }
@@ -136,7 +138,7 @@ export function checkSoakEvidence(report) {
     findings: unique,
     // Intentionally NOT "passed"; numbers and links can be fabricated, and
     // an hourly snapshot cannot prove continuous connection or true sleep.
-    disclaimer: "Completeness only: no proof of 72h continuous connectivity, DO hibernation, owner consent, or production readiness.",
+    disclaimer: "Completeness only: no proof of 48h continuous connectivity, DO hibernation, owner consent, or production readiness.",
   };
 }
 
