@@ -13,12 +13,16 @@ A Linux machine or Linux runtime environment targeted for remote operations.
 _Avoid_: Treating WSL2 as the only supported host.
 
 **Standalone Agent Installation**:
-Installing Remote Control Agent directly on a target host without first obtaining the development repository or manually installing its source build tools and package dependencies. The user starts with **one terminal command**, and any subsequent interactive local confirmation is part of onboarding. The supported operating-system scope and distribution mechanism remain design choices, not assumed capabilities.
-_Avoid_: Calling a source checkout or a prerequisite-heavy build script a one-command install.
+An Agent installation initiated with **one terminal command** on a supported **Linux x86_64 or ARM64 host, including WSL2**, without obtaining development source code or manually installing build tools, a language runtime or workspace dependencies. The product distributes a ready-to-run Agent package rather than making the target host build its own Agent.
+_Avoid_: Calling a source checkout or a prerequisite-heavy build script a one-command install; assuming native Windows or macOS support.
+
+**Agent Distribution**:
+A versioned, ready-to-run package available to the owner for installing the Linux Agent independently of the source repository, containing what the Agent needs to operate on its supported platform.
+_Avoid_: Treating the public availability of installation bytes as an authorization to pair or remotely control a host.
 
 **Agent CLI Pairing**:
-The local terminal onboarding experience that enrolls the specific host and its independently held identity with Remote Control MCP, retaining the already approved owner-reviewed pairing code and on-device challenge confirmation. A convenient terminal UI must not silently authorize a device or remove the independent owner approval boundary.
-_Avoid_: Treating the Agent's one-line installer as an owner authorization credential.
+The local terminal onboarding experience that first **asks the owner to select a permanent or 24-hour temporary device**, then enrolls the target host's independently held identity via the existing owner-reviewed pairing code and on-device challenge confirmation. A convenient terminal UI must not silently authorize a device or remove the independent owner approval boundary.
+_Avoid_: Treating the Agent's one-line installer as an owner authorization credential, or silently choosing a device lifetime without presenting it.
 
 
 **WSL2 Linux Environment**:
@@ -158,4 +162,4 @@ Architecture and deployment implementation details belong in the research draft 
 
 **Free and testing gate:** five simulated Agent connections for 72 continuous nonproduction hours, with demonstrated actual Hibernation/recovery, DO and Workers Free shared quota headroom, replay/steal/revoke tests, Linux+WSL2 network/lifecycle proof, and non-disruptive v1 migration. No test or production change is authorized by these design decisions.
 
-**Canonical v2 design sources:** [ADR-0014 — v2 transport](./adr/0014-v2-multi-device-ws-do.md), [ADR-0015 — owner pairing/identity](./adr/0015-v2-pairing-and-identity.md), [ADR-0017 — device removal/identity lifecycle](./adr/0017-v2-device-revocation-without-tombstones.md), [ADR-0018 — temporary pairing/24-hour grant](./adr/0018-v2-temporary-agent-pairing-lifecycle.md), [v2 technical Spec](./V2-MULTI-DEVICE-SPEC.md). Grilling Q1–Q20 and competing-transport exploration remain retrievable in the [Draft PR #45 discussion](https://github.com/lirtual/mcp-workers/pull/45) and Git history, not as active implementation instructions.
+**Canonical v2 design sources:** [ADR-0014 — v2 transport](./adr/0014-v2-multi-device-ws-do.md), [ADR-0015 — owner pairing/identity](./adr/0015-v2-pairing-and-identity.md), [ADR-0017 — device removal/identity lifecycle](./adr/0017-v2-device-revocation-without-tombstones.md), [ADR-0018 — temporary pairing/24-hour grant](./adr/0018-v2-temporary-agent-pairing-lifecycle.md), [ADR-0019 — standalone Linux Agent distribution](./adr/0019-standalone-linux-agent-distribution.md), [v2 technical Spec](./V2-MULTI-DEVICE-SPEC.md). Grilling Q1–Q20 and competing-transport exploration remain retrievable in the [Draft PR #45 discussion](https://github.com/lirtual/mcp-workers/pull/45) and Git history, not as active implementation instructions.
