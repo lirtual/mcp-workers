@@ -1,10 +1,10 @@
 # ADR-0016 — Agent-local receipts and bounded development commands
 
-**Status:** **Design choices Q1–Q9 agreed in grilling on 2026-10-16; final owner approval pending.** This is a documentation-only Draft ADR, **not implementation or deployment approval**.
+**Status:** **Design accepted for source implementation.** Agent-local reliability code merged via [PR #66](https://github.com/lirtual/mcp-workers/pull/66) (`main@71f5a243`, 2026-10-16); follow-up offline validation #62/#63/#65 remains. **No live Agent upgrade, data migration or deployment is authorized by this ADR.**
 
 ## Context
 
-The Linux Agent provides an authoritative local `Operation Receipt` keyed by `operation_id` to protect state-changing operations from accidental re-execution after lost responses. On `main`, `apps/remote-control-agent/src/operations.ts` uses an atomically replaced JSON file with 30-day retention and `MAX_RECEIPTS = 1000`. Its admission path can reject all new mutations when at capacity, including a `force_terminate` request that would otherwise free resources. The live host may run a different installed Agent revision from GitHub `main`, so deployment and installed-version verification are separate work.
+The Linux Agent provides an authoritative local `Operation Receipt` keyed by `operation_id` to protect state-changing operations from accidental re-execution after lost responses. Before PR #66, `apps/remote-control-agent/src/operations.ts` used an atomically replaced JSON file with 30-day retention and `MAX_RECEIPTS = 1000`; the merged source now uses Node.js 24 built-in SQLite while the installed device may still use JSON. Its admission path can reject all new mutations when at capacity, including a `force_terminate` request that would otherwise free resources. The live host may run a different installed Agent revision from GitHub `main`, so deployment and installed-version verification are separate work.
 
 The newer `main` implementation of `sessions.ts` already excludes completed session history from the 10 **active** command slots and uses a session supervisor. We must preserve those fixes instead of rebuilding process ownership or adding a second execution engine. The existing system has a single Agent-side local execution boundary shared conceptually by v1 and v2 despite differing network ingress.
 
