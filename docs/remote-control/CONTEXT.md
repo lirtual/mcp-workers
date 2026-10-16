@@ -1,6 +1,6 @@
 # Remote Control MCP — Domain Context
 
-> v1 status: ADR-0011/0012/0013 accepted. T02/T10 established the historical read-only path; subsequent T11 #14 approved file writes and Shell as independently controlled capabilities. Current *live* enablement must be checked against Cloudflare configuration, not inferred from the earlier T10 snapshot. v2 multi-device is design-only and is not deployed.
+> Status (updated 2026-10-16): v1 Agent reliability source merged in [PR #66](https://github.com/lirtual/mcp-workers/pull/66) and [PR #67](https://github.com/lirtual/mcp-workers/pull/67), and v1 Linux Agent **was separately upgraded and verified** to Node 24 + SQLite under [Spec #60](https://github.com/lirtual/mcp-workers/issues/60) / [#65](https://github.com/lirtual/mcp-workers/issues/65). Original JSON and historical backup were preserved for intentional manual rollback; SQLite is now authoritative. v2 multi-device WSS/DO remains an independent **preview / Draft PR #58** and is not a v1 production replacement. Independent human terminal confirmation and the 72-hour five-device Hibernation/quota gate remain unverified for production.
 
 ## Language
 
@@ -62,6 +62,31 @@ The authoritative minimal record of whether a state-changing operation was admit
 A state in which an operation may have reached execution but available evidence cannot establish its final effect.
 _Avoid_: Relabeling an uncertain operation as failed or safe to retry.
 
+**Local Receipt Store**:
+The Linux Agent's authoritative collection of Operation Receipts used to reconcile outcomes and suppress unintended repetition of state-changing requests across disconnections and restarts.
+_Avoid_: Treating remote Worker transport acknowledgements, process logs, or a ChatGPT conversation as substitutes for a durable receipt.
+
+**Receipt Retention Window**:
+The normal period during which a previously admitted Operation ID remains available for outcome reconciliation and deduplication. An operation whose result is unknown remains protected beyond the normal window until explicitly reconciled.
+_Avoid_: Treating storage cleanup or elapsed time as proof that a previous operation had no effect.
+
+**Unresolved Operation Marker**:
+The minimal retained identity and non-replay protection for an operation whose effect is still unknown after the normal receipt retention window. Only a deliberate, authenticated owner-led reconciliation can resolve that uncertainty.
+_Avoid_: Discarding an unresolved identity just because it is old, or treating manual acknowledgement as automatic permission to replay the same operation.
+
+**Bounded Development Command**:
+A managed execution launched for temporary development work that must have a finite lifetime and an owner-scoped stop path.
+_Avoid_: Treating a temporary development command as the preferred mechanism for keeping a permanent service running.
+
+**Emergency Session Stop**:
+An explicitly authorized request to stop only a Managed Process that the Agent can still prove it owns, even when operation-result persistence is unavailable. The stop may have an Unknown Outcome if durable acknowledgement cannot be recorded.
+_Avoid_: General-purpose host process killing, unauthenticated overrides, or claiming a stop was durably recorded when it was not.
+
+**Receipt Migration**:
+The controlled transfer of existing authoritative Operation Receipts to a replacement local store without discarding unresolved Operation IDs or weakening outcome reconciliation.
+_Avoid_: Treating a successful new-store startup as sufficient evidence that historical operation identities were preserved.
+
+
 ## Settled product boundaries
 
 1. The product name is **Remote Control MCP**; the prospective Worker identifier is `remote-control-mcp-worker`.
@@ -77,12 +102,20 @@ _Avoid_: Relabeling an uncertain operation as failed or safe to retry.
 11. The client sees a **Curated Tool Surface**, restricted to necessary file, search, development Shell and managed-process tool categories, **not** to a project-root path allowlist. See ADR-0008 and ADR-0011.
 12. **Managed Sessions** may outlive the originating MCP request; support status, bounded output and explicit stop, without affecting unrelated host processes. See ADR-0009.
 13. One Remote Control MCP Worker uses the existing Portal Bearer validation pattern rather than OAuth. ADR-0012 supersedes the OAuth decisions in ADR-0003 and ADR-0010.
+14. v1 and v2 Remote Control use the same Agent-side implementation for local Operation Receipts and Managed Sessions; differences in ingress and device routing do not create two local execution engines (2026-10-16 first-round decision; see ADR-0016).
+15. Ordinary development commands have a finite execution lifetime, while durable/background services are managed outside the temporary command session contract (2026-10-16 first-round decision; see ADR-0016).
+16. A local receipt-store migration must preserve all existing operation identities and outcomes before allowing new state-changing operations; failed verification cannot silently reset the store (2026-10-16 second-round decision; ADR-0016).
+17. A Bounded Development Command stops after at most 60 minutes through the Agent's existing owner-scoped termination path: graceful stop first, bounded forced stop if necessary (second-round decision; ADR-0016).
+18. Failure of local receipt persistence cannot grant permission for new writes or Shell commands; the already-authorized Emergency Session Stop remains available only for provably Agent-owned sessions and must report uncertain outcomes honestly (second-round decision; ADR-0016).
+19. Unresolved operations retain a minimal non-replay marker beyond the normal 30-day retention window until explicit owner-led reconciliation. Elapsed time alone does not make an unknown operation safe to repeat (third-round decision; ADR-0016).
+20. Normal terminal receipts expire under their retention policy. Storage housekeeping cannot evict still-protected receipts to meet an arbitrary count quota; when durable writes fail, new state-changing operations fail closed while the narrow Emergency Session Stop remains available (third-round decision; ADR-0016).
+21. JSON-to-local-store migration is one-way. Returning to an older Agent is a deliberate operator-led restore/reconciliation activity, not an automatic dual-write or silent fallback (third-round decision; ADR-0016).
 
 ## Unsettled boundaries — not approved yet
 
 - The exact allowed tools and parameters; how destructive workspace writes, interactive process inputs and secret handling are authorized.
 - Managed-session lifecycle details: stopping/canceling, output paging, quotas and behavior after device restart.
-- Exact local receipt retention/storage, crash recovery, token revocation and cleanup rules.
+- The v1 Agent receipt/timeout architecture and production migration were completed under Spec #60; device-token revocation and v2 human-confirmation, transport and quota acceptance remain separately controlled.
 - Actual ChatGPT/MCP Portal delivery of the separate static Bearer credential, token provisioning/rotation and denied-request acceptance; compatibility with arbitrary non-Portal MCP clients is not guaranteed.
 - Actual permissions and secret exposure of the **confirmed existing normal Linux login account**, ingress compromise risk, limits (payload, output, time), supported tool shapes and rollout/monitoring policy.
 
@@ -98,7 +131,7 @@ Architecture and deployment implementation details belong in the research draft 
 
 **Pairing Code:** exactly 10 cryptographically random Base32 characters shown locally by a fresh Agent installation, single-use and expiring after 10 minutes. It identifies a pending pairing but is never a long-lived device credential.
 
-**Device Pairing:** the Remote-Control-specific Portal Bearer-authenticated `pairing_lookup` shows one pending device and fingerprint; `pairing_prepare` returns a single-use 12-character Base32 challenge (five minutes) but cannot approve. The owner manually enters the original 10-character device code and 12-character challenge in the **new Agent's own local terminal/SSH**, and the Agent signs them with its locally stored private key. Only the matching one-use DO proof can issue `device_id`. Portal Bearer by itself is **not** human-presence proof; this separate terminal requirement assumes the model cannot operate that host or obtain its private key. This is an explicitly owner-approved refinement (2026-10-15) and still requires nonproduction client/host verification.
+**Device Pairing:** the Remote-Control-specific Portal Bearer-authenticated `pairing_lookup` shows one pending device and fingerprint; `pairing_prepare` returns a single-use 12-character Base32 challenge (five minutes) but cannot approve. The owner manually enters the original 10-character device code and 12-character challenge in the **new Agent's own local terminal/SSH**, and the Agent signs the bound code/challenge transcript with its locally stored private key. Only the matching one-use DO proof can issue `device_id`. Portal Bearer by itself is **not** human-presence proof; this separate terminal requirement assumes the model cannot operate that host or obtain its private key. This is the owner-approved two-code UX refinement (updated 2026-10-16) and still requires nonproduction client/host verification.
 
 **Device Credential:** a per-installation private/public keypair generated locally (prefer standard Ed25519 after interoperability validation); the Agent retains the private key and proves possession via fresh signed server challenge. Reinstall means a new key, new `device_id`, new pairing.
 
