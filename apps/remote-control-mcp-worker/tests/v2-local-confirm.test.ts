@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { newEnrollment, saveNewPrivateKey } from "../../remote-control-agent/src/v2-enrollment.ts";
 import { confirmDeviceLocally } from "../../remote-control-agent/src/confirm-device.ts";
+import { assertRemoteRevocation } from "../../remote-control-agent/src/v2-repair.ts";
 import worker, { V2OwnerCoordinator } from "../src/worker.ts";
 
 interface StorageFixture {
@@ -181,8 +182,21 @@ test("revoked identity cannot silently re-pair with the old key, but a new key a
     await saveNewPrivateKey(oldKey, original.privateKeyPem);
     const originalId = await confirmDeviceLocally(original.code, await begin(original), site, oldKey, send);
     assert.match(originalId, /^[a-f0-9-]{36}$/);
+    // The exact Agent-signed read-only status route must refuse re-pair
+    // while the MCP still considers the old identity approved.
+    await assert.rejects(assertRemoteRevocation(site, oldKey, originalId, send),
+      /Revocation cannot be verified/);
+    assert.equal((rows.get("device:" + originalId) as { revoked: boolean }).revoked, false);
     const revoked = await rpc("revoke_device", { device_id: originalId });
     assert.equal(value(revoked).status, "revoked");
+    await assertRemoteRevocation(site, oldKey, originalId, send);
+    // Read-only probe never un-revokes or replaces the old identity.
+    await assertRemoteRevocation(site, oldKey, originalId, send);
+    assert.equal((rows.get("device:" + originalId) as { revoked: boolean }).revoked, true);
+    assert.equal([...rows].filter(([k]) => k.startsWith("pending:")).length, 0);
+    await assert.rejects(
+      assertRemoteRevocation(site, oldKey, "00000000-0000-4000-8000-000000000000", send),
+      /Revocation cannot be verified/);
 
     // A reinstalled Agent still holding a cloned old key and an entirely new
     // human-entered confirmation challenge must never obtain a second ID.
@@ -205,6 +219,8 @@ test("revoked identity cannot silently re-pair with the old key, but a new key a
     const newId = await confirmDeviceLocally(fresh.code, await begin(fresh), site, newKey, send);
     assert.notEqual(newId, originalId);
     assert.equal((rows.get("device:" + newId) as { revoked: boolean }).revoked, false);
+    await assert.rejects(assertRemoteRevocation(site, newKey, newId, send),
+      /Revocation cannot be verified/);
     assert.equal((rows.get("device:" + originalId) as { revoked: boolean }).revoked, true);
     assert.equal([...rows].filter(([k]) => k.startsWith("device:")).length, 2);
   } finally {
