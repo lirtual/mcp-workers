@@ -1082,6 +1082,36 @@ test("managed command expires without polling and retains its timeout reason", a
   }
 });
 
+test("deadline escalates to SIGKILL after five seconds for a TERM-resistant owned group", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-deadline-escalation-"));
+  const agent = await startAgent({
+    deviceToken: DEVICE_TOKEN, receiptDirectory: path.join(root, "state"),
+    shellPath: "/bin/sh", sessionMaxLifetimeMs: 150,
+  });
+  try {
+    const started = await call(agent, {
+      tool: "start_process", operation_id: "absolute-deadline-kill",
+      arguments: { command: "trap '' TERM; while :; do sleep 0.5; done", timeout_ms: 0 },
+    });
+    assert.equal((started.json as { status: string }).status, "running");
+    const sessionId = (started.json as { session_id: string }).session_id;
+    const observedStart = Date.now();
+    let result: { state: string; termination_reason?: string } = { state: "running" };
+    while (Date.now() - observedStart < 9000) {
+      const output = await call(agent, { tool: "read_process_output", arguments: { session_id: sessionId } });
+      result = JSON.parse(completedText(output.json)) as typeof result;
+      if (result.state !== "running") break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal(result.state, "failed");
+    assert.equal(result.termination_reason, "deadline_exceeded");
+    assert.ok(Date.now() - observedStart >= 4500, "TERM-resistant command should receive the five-second grace period");
+  } finally {
+    await agent.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("health and operation status do not execute work or expose host details", async () => {
   const home = await temporaryHome();
   const events: string[] = [];
