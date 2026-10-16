@@ -1,6 +1,6 @@
 # Remote Control MCP — Domain Context
 
-> Status (updated 2026-10-16): v1 architecture accepted (ADR-0011/0012/0013); historical read-only acceptance was recorded in T02/T10 #12. Later T11 #14 independently approved file writes and Shell; the [v1 Spec](./SPEC.md) records that approval and the approved production configuration. Current deployed Agent/runtime status must be verified separately; historical read-only evidence does not prove later capabilities. ADR-0016 records **Q1–Q9 owner-selected reliability design**, awaiting final design approval; no implementation or deployment is implied.
+> Status (updated 2026-10-16): v1 architecture accepted (ADR-0011/0012/0013); later T11 #14 approved file writes and Shell independently. Reliability design Q1–Q9 is recorded in ADR-0016 and [Spec #60](https://github.com/lirtual/mcp-workers/issues/60). Agent reliability source code was merged via [PR #66](https://github.com/lirtual/mcp-workers/pull/66) at `main@71f5a243`; follow-up offline acceptance is tracked by #62/#63/#65. **The installed production Agent was not upgraded**; no live receipt migration, credentials or permissions were changed by that source merge.
 
 ## Language
 
