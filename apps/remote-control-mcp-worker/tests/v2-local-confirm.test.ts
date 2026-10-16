@@ -324,3 +324,47 @@ test("full simulated owner-MCP + Agent revoke/re-pair survives stale code and lo
     await rm(dir, {recursive:true,force:true});
   }
 });
+
+test("T01 pairing lookup/prepare cannot bypass Portal Bearer or Origin checks", async () => {
+  const { rows, site, send, rpc, value } = setup();
+  const material = newEnrollment("auth-negative-fixture");
+  assert.equal((await send(site + "agent/pair/start", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(material.request),
+  })).status, 202);
+
+  const preview = value(await rpc("pairing_lookup", { code: material.code }));
+  const lookupArgs = { code: material.code };
+  const prepareArgs = {
+    pairing_id: preview.pairing_id,
+    expected_fingerprint: preview.fingerprint,
+  };
+  const unchanged = [...rows.entries()];
+  const attempts = [
+    { label: "no Authorization header", headers: {}, status: 401 },
+    { label: "wrong authorization scheme", headers: { authorization: "Basic portal-test-only" }, status: 401 },
+    { label: "empty Bearer", headers: { authorization: "Bearer" }, status: 401 },
+    { label: "invalid Bearer", headers: { authorization: "Bearer wrong-token" }, status: 401 },
+    { label: "forged browser Origin", headers: {
+      authorization: "Bearer portal-test-only", origin: "https://untrusted.invalid",
+    }, status: 403 },
+  ] as const;
+  for (const attempt of attempts) {
+    for (const [method, params] of [
+      ["tools/list", undefined],
+      ["tools/call", { name: "pairing_lookup", arguments: lookupArgs }],
+      ["tools/call", { name: "pairing_prepare", arguments: prepareArgs }],
+    ] as const) {
+      const response = await send(site + "mcp", {
+        method: "POST",
+        headers: { "content-type": "application/json", ...attempt.headers },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 5, method, params }),
+      });
+      assert.equal(response.status, attempt.status, attempt.label + " / " + method);
+      assert.deepEqual([...rows.entries()], unchanged,
+        "rejected MCP requests must never alter pending approval or create device credentials");
+      assert.equal([...rows.keys()].filter(key => key.startsWith("device:")).length, 0);
+    }
+  }
+});
