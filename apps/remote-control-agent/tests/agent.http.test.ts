@@ -988,9 +988,11 @@ test("migration rejects conflicting historical identities before any file mutati
     state: "unknown", created_at: time, updated_at: time,
   };
   await writeFile(path.join(state, "operation-receipts.json"), JSON.stringify({ version: 1, receipts: [record] }));
-  await writeFile(path.join(state, "operation-receipts.backup-20261016-090053.json"),
+  const backup = path.join(state, "operation-receipts.backup-20261016-090053.json");
+  await writeFile(backup,
     JSON.stringify({ version: 1, receipts: [{ ...record, argument_digest: "b".repeat(64) }] }));
-  const agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: state });
+  const agent = await startAgent({ deviceToken: DEVICE_TOKEN, receiptDirectory: state,
+    receiptHistoricalBackupPath: backup });
   const target = path.join(root, "must-not-exist");
   try {
     const result = await call(agent, { tool: "write_file", operation_id: "another",
