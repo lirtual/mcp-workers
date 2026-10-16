@@ -1,7 +1,7 @@
 # Remote Control Agent — Local Reliability Technical Specification
 
-> **Status:** Draft / ready for design review, **not approved for implementation or rollout**.
-> **Baseline:** GitHub `main` checked 2026-10-16. Architecture decisions Q1–Q9 from [ADR-0016](./adr/0016-agent-local-receipts-and-bounded-commands.md), reviewed against [CONTEXT](./CONTEXT.md), existing [v1 Spec](./SPEC.md) and current Agent source.
+> **Status:** Source implementation completed by [PR #66](https://github.com/lirtual/mcp-workers/pull/66) (`main@71f5a243`, 2026-10-16); follow-up offline migration/degraded-mode acceptance remains in #62/#63/#65. **Not approved for live-host installation, migration or rollout.**
+> **Baseline:** Pre-implementation GitHub `main` checked 2026-10-16; implementation subsequently merged in PR #66. Architecture decisions Q1–Q9 from [ADR-0016](./adr/0016-agent-local-receipts-and-bounded-commands.md), reviewed against [CONTEXT](./CONTEXT.md), existing [v1 Spec](./SPEC.md) and current Agent source.
 > **Scope:** The local Linux Agent receipt lifecycle, temporary managed processes and safe recovery shared across Remote Control v1/v2; no change to their transport or authorization policy.
 
 ## 1. Problem and outcome
