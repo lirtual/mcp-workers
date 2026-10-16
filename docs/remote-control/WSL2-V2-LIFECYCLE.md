@@ -10,7 +10,15 @@ Use the *same* reviewed checkout and T09 Linux user-service installer **inside t
 
 The installer detects the `microsoft-standard-WSL2` kernel and explains the lifecycle limitation before pairing. **WSL1 is rejected** because the Linux managed Shell supervisor expects Linux pidfd behavior. On WSL2, Node 24, cc and a working systemd user manager are still required; no Windows native Shell backend is supplied. Generate an **independent local Ed25519 identity** for *each* intended distribution/installation; do not copy another host's `v2-identity.pem` or `.device-id`. Keep the identity under the WSL distro's Linux home filesystem (not `/mnt/c` or other Windows-mounted paths). The private directory/file permissions remain 0700/0600.
 
-The same two independent confirmation steps apply: 10-character locally displayed code, authenticated MCP lookup and fingerprint review plus `pairing_prepare`, then original code + 12-character challenge entered by a human in the **new WSL2 terminal**. No remote Portal Bearer or Cloudflare secret is stored in the distro.
+The same two-code confirmation flow applies: the new WSL2 terminal displays a **10-character pairing code**; authenticated MCP `pairing_lookup` obtains the device label and immutable fingerprint and `pairing_prepare` checks that binding; the owner manually types **only the 12-character challenge** into the **new WSL2 terminal**. The original 10-character code stays in installer memory and is not re-entered. Local fingerprint display is optional with `--show-fingerprint`; MCP fingerprint consistency alone does not identify the intended physical host. No Portal Bearer or Cloudflare secret is stored in the distro.
+
+## Independent owner-confirmation gate (T01 / #47)
+
+For release acceptance, use a **disposable, newly paired WSL2 distribution** whose terminal, private key, and Linux user files are **not accessible to any ChatGPT/model-enabled Shell or Remote Control tool during pairing**. Do not treat an already remotely controlled WSL2 user session as an independent human channel. The owner must personally operate that distro's local PowerShell/WSL terminal when entering the challenge; asking an agent to type it invalidates this particular security test.
+
+In the independent terminal, inspect the code and optional fingerprint, then use authenticated MCP `pairing_lookup` and `pairing_prepare` from ChatGPT. Before the owner types the one-use challenge, `list_devices` must not show the pending identity as approved; the model must not have a tool that can submit the terminal response, access the private key, or produce a signed proof on this host. Only after personal terminal confirmation should the owner check the new opaque device ID and a nonsensitive explicit-ID read. Never paste the private key, Portal token, or Agent credentials into chat. Pairing-code/challenge expiration is expected; rerun the original interactive installer command for a safe retry rather than reusing an expired challenge.
+
+This is a **separately authorized nonproduction** host acceptance test, not a pretext for a Windows reboot, global WSL shutdown, re-pair of an existing host, or production v1 changes. Do not close #47 on cryptography-only or model-controlled terminal evidence.
 
 ## systemd user service is not Windows startup
 
