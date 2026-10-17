@@ -25,7 +25,7 @@ declared available. An immutable commit-pinned source URL is still not
 independent cryptographic proof of the publisher.
 
 The bootstrap itself fail-closes unless:
-- Linux x86_64 or ARM64, non-root, kernel >=6.9, glibc >=2.28 and TTY.
+- Linux x86_64 or ARM64, non-root, kernel >=6.9, glibc >=2.28 as a base gate, an archive-specific measured `glibc_min` requirement, and TTY. The local x64 Supervisor currently needs glibc >=2.34; ARM64 minimum remains unverified.
 - Public GitHub Release is published and `immutable=true`; public tag ref
   points to the exact reviewed commit; architecture-specific uploaded asset
   ID, official digest, size and fixed GitHub release URL all match.

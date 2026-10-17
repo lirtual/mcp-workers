@@ -4,7 +4,7 @@
 
 ## Reviewed offline build
 
-Run from a trusted clean checkout of the intended commit, on **each target's native Linux glibc CPU** with Node.js 24, TypeScript dev dependency, cc and tar/gzip installed **on the build host only**. Native Supervisor must already have been compiled and probed using `node scripts/build-session-supervisor.mjs`. The portable install host does **not** compile it.
+Run from a trusted clean checkout of the intended commit, on **each target's native Linux glibc CPU** with Node.js 24, TypeScript dev dependency, cc, `readelf` (binutils) and tar/gzip installed **on the build host only**. Native Supervisor must already have been compiled and probed using `node scripts/build-session-supervisor.mjs`. The portable install host does **not** compile it.
 
 ```sh
 node apps/remote-control-agent/scripts/build-v2-release.mjs \
@@ -17,7 +17,9 @@ node apps/remote-control-agent/scripts/build-v2-release.mjs \
   --out /fresh/output-directory
 ```
 
-The builder checks ELF machine IDs, executable permissions, matching native build CPU/libc, actual Node24, native signal-0 pidfd capability, pinned input hashes, TS runtime dependency graph, and excludes test fixtures, .git, source checkout, tokens and user private state. Deterministic ustar with fixed owner, group, mode and timestamp plus gzip `-n` yields a version-and-target-qualified `tar.gz`. Local build SHA-256 is a **comparison value only**, not an independently authoritative published digest.
+The builder checks ELF machine IDs, executable permissions, matching native build CPU/libc, the highest ELF `GLIBC_*` symbol requirement in both pinned binaries via `readelf`, actual Node24, native signal-0 pidfd capability, pinned input hashes, TS runtime dependency graph, and excludes test fixtures, .git, source checkout, tokens and user private state. Deterministic ustar with fixed owner, group, mode and timestamp plus gzip `-n` yields a version-and-target-qualified `tar.gz`. Local build SHA-256 is a **comparison value only**, not an independently authoritative published digest.
+
+The bundle includes `glibc_min` calculated from the real Node24 and native Supervisor symbol dependencies. The first tested WSL2/x64 candidate needs **glibc 2.34** (Node 24: 2.28, Supervisor: 2.34), despite the 2.39 build-host libc. The bootstrap checks each archive's own ABI requirement before unpacking/execution; kernel and generic host preflight alone do not guarantee its compatibility. ARM64 minimum is **not known** until verified natively.
 
 Supported release **candidates**: `linux-x64-glibc`, `linux-arm64-glibc`; host-specific binary build and smoke tests are required for *each*. WSL2 is Linux, not a Windows binary. musl, older kernel and unsupported libc are refused, no fallback.
 
