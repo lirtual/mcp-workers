@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
-import { createPrivateKey, sign } from "node:crypto";
 import test from "node:test";
 import { newEnrollment } from "../../remote-control-agent/src/v2-enrollment.ts";
 import {
-  registerPending, lookupPending, prepareLocalConfirmation, completeLocalConfirmation,
+  registerPending, lookupPending, approvePendingKey,
   verifyRegistration,
 } from "../src/v2-pairing.ts";
 import { deviceIsAuthorized, issueSessionChallenge, listApprovedDevices, TEMPORARY_GRANT_MS } from "../src/v2-session.ts";
@@ -32,19 +31,10 @@ test("#72 signed temporary mode cannot be downgraded, and MCP owner must review 
   const detail = await lookupPending(store as never, temporary.request.code_verifier);
   const pending = detail.body as {pairing_id:string; fingerprint:string; grant_type:string};
   assert.equal(pending.grant_type, "temporary");
-  const refused = await prepareLocalConfirmation(store as never, pending.pairing_id, pending.fingerprint);
+  const refused = await approvePendingKey(store as never, pending.pairing_id, pending.fingerprint, "permanent");
   assert.equal(refused.status, 409);
   assert.equal((refused.body as {error:string}).error, "grant_type_mismatch");
-  const prepared = await prepareLocalConfirmation(store as never, pending.pairing_id, pending.fingerprint, "temporary");
-  assert.equal(prepared.status, 200);
-  assert.equal((prepared.body as {grant_type:string}).grant_type, "temporary");
-  const challenge = (prepared.body as {challenge:string}).challenge;
-  const payload = "remote-control:v2:local-confirm:" + temporary.request.code_verifier + ":" +
-    challenge + ":" + temporary.request.public_key;
-  const proof = Buffer.from(sign(null, Buffer.from(payload), createPrivateKey(temporary.privateKeyPem))).toString("base64");
-  const approval = await completeLocalConfirmation(store as never, {
-    verifier:temporary.request.code_verifier, challenge, proof,
-  });
+  const approval = await approvePendingKey(store as never, pending.pairing_id, pending.fingerprint, "temporary");
   assert.equal(approval.status, 200);
   const deviceId = (approval.body as {device_id:string}).device_id;
   const record = await store.get<{approved_at:number; expires_at:number; grant_type:string; revoked:boolean}>("device:"+deviceId);
@@ -134,21 +124,13 @@ test("#72 capacity refuses truncated scan before expired grants are pruned", asy
 });
 
 
-test("#72 approval rechecks the 64-device cap after the owner prepared a pending challenge", async () => {
+test("#72 owner approval rechecks the 64-device cap atomically", async () => {
   const {rows,store} = setup();
   const pending = newEnrollment("prepared-at-capacity",undefined,"temporary");
   assert.equal((await registerPending(store as never,pending.request)).status,202);
   const details = await lookupPending(store as never,pending.request.code_verifier);
   const info = details.body as {pairing_id:string;fingerprint:string};
-  const prepared = await prepareLocalConfirmation(store as never,
-    info.pairing_id,info.fingerprint,"temporary");
-  assert.equal(prepared.status,200);
-  const challenge=(prepared.body as {challenge:string}).challenge;
-  const text="remote-control:v2:local-confirm:"+pending.request.code_verifier+
-    ":"+challenge+":"+pending.request.public_key;
-  const proof=Buffer.from(sign(null,Buffer.from(text),
-    createPrivateKey(pending.privateKeyPem))).toString("base64");
-  // Capacity may fill between the owner preparing and the device confirming.
+  // Capacity may fill after lookup but before explicit owner approval.
   for(let i=0;i<64;i++){
     const id="00000000-0000-4000-8000-"+i.toString(16).padStart(12,"0");
     rows.set("device:"+id,{
@@ -156,9 +138,7 @@ test("#72 approval rechecks the 64-device cap after the owner prepared a pending
       fingerprint:"c".repeat(24),approved_at:Date.now(),revoked:false,grant_type:"permanent",
     });
   }
-  const result=await completeLocalConfirmation(store as never,{
-    verifier:pending.request.code_verifier,challenge,proof,
-  });
+  const result=await approvePendingKey(store as never, info.pairing_id, info.fingerprint, "temporary");
   assert.equal(result.status,503);
   assert.equal([...rows.keys()].filter(k=>k.startsWith("device:")).length,64);
   assert.equal(rows.has("pending:"+pending.request.code_verifier),true);
