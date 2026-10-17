@@ -16,8 +16,10 @@ const remoteFiles = new Map<string, Buffer>([
   ['/fixture/out.txt', Buffer.alloc(0)],
 ]);
 
+let connectionSequence = 0;
 const server = new Server({ hostKeys: [hostKey] }, (client) => {
-  client.on('close', () => log('connection-closed'));
+  const connectionId = ++connectionSequence;
+  client.on('close', () => log(`connection-closed:${connectionId}`));
   client.on('authentication', (context) => {
     if (context.method === 'none') {
       appendFileSync(process.env.FIXTURE_AUTH_LOG!, 'none\n');
@@ -66,7 +68,11 @@ const server = new Server({ hostKeys: [hostKey] }, (client) => {
           client.end();
           return;
         }
-        if (!['fixture-output', 'fixture-output-large', 'fixture-timeout'].includes(info.command)) return reject();
+        if (!['fixture-output', 'fixture-output-large', 'fixture-timeout', 'fixture-stalled-exec-ack'].includes(info.command)) return reject();
+        if (info.command === 'fixture-stalled-exec-ack') {
+          log(`stalled-ack-open:${connectionId}`);
+          return;
+        }
         const stream = acceptCommand();
         if (info.command === 'fixture-timeout') return;
         if (info.command === 'fixture-output-large') {

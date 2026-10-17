@@ -111,8 +111,8 @@ try {
     assert.ok(text, data);
     return { value: JSON.parse(text) as Record<string, unknown>, isError: envelope.result?.isError === true };
   };
-  const control = async (method: 'PUT' | 'DELETE') => {
-    const response = await fetch(`${endpoint}/__fixture/receipt-store-failure`, { method });
+  const control = async (method: 'PUT' | 'DELETE', path = 'receipt-store-failure') => {
+    const response = await fetch(`${endpoint}/__fixture/${path}`, { method });
     assert.equal(response.status, 204);
   };
   const exec = (id: number, operationId: string, command: string, timeoutMs = 10_000, targetHostId = hostId) =>
@@ -124,7 +124,18 @@ try {
   assert.doesNotMatch(await readFile(authLog, 'utf8'), /exec-command:/, 'failed receipt admission must precede SSH dispatch');
   await control('DELETE');
 
+  const dispatchCountBeforeRunningFailure = (await readFile(authLog, 'utf8')).match(/exec-command:/g)?.length ?? 0;
+  await control('PUT', 'running-update-failure');
+  const runningUpdateFailure = await exec(9, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'fixture-output');
+  assert.equal(runningUpdateFailure.value.error, 'receipt_store_unavailable');
+  assert.equal((await readFile(authLog, 'utf8')).match(/exec-command:/g)?.length ?? 0, dispatchCountBeforeRunningFailure,
+    'running receipt failure must not dispatch SSH exec');
+  await control('DELETE', 'running-update-failure');
+  const afterRunningUpdateFailure = await exec(10, 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'fixture-output');
+  assert.equal(afterRunningUpdateFailure.value.status, 'completed', 'a failed running receipt update must release its host lease');
+
   const operationId = '55555555-5555-4555-8555-555555555555';
+  const outputDispatchCountBeforePrimary = (await readFile(authLog, 'utf8')).match(/exec-command:fixture-output\n/g)?.length ?? 0;
   const first = await exec(2, operationId, 'fixture-output');
   assert.equal(first.value.status, 'completed', `${JSON.stringify(first)}\nfixture: ${await readFile(authLog, 'utf8')}\nworker: ${workerOutput}`);
   assert.equal(first.value.stdout, 'fixture stdout\n');
@@ -137,7 +148,7 @@ try {
   assert.equal(replay.value.stdout, undefined, 'receipt replay returns metadata without replaying remote output');
   const conflict = await exec(4, operationId, 'fixture-output-large');
   assert.equal(conflict.value.error, 'receipt_conflict');
-  assert.equal((await readFile(authLog, 'utf8')).match(/exec-command:fixture-output\n/g)?.length, 1);
+  assert.equal((await readFile(authLog, 'utf8')).match(/exec-command:fixture-output\n/g)?.length, outputDispatchCountBeforePrimary + 1);
 
   const status = await call(5, 'get_operation_status', { operation_id: operationId });
   assert.equal(status.value.status, 'completed');
@@ -160,11 +171,28 @@ try {
   assert.equal(timed.value.error, 'unknown_outcome');
   await delay(150);
   const log = await readFile(authLog, 'utf8');
-  assert.equal((log.match(/exec-command:fixture-output\n/g) ?? []).length, 1);
+  assert.equal((log.match(/exec-command:fixture-output\n/g) ?? []).length, outputDispatchCountBeforePrimary + 1);
   assert.equal((log.match(/exec-command:fixture-output-large\n/g) ?? []).length, 1);
   assert.equal((log.match(/exec-command:fixture-timeout\n/g) ?? []).length, 1);
-  assert.ok((log.match(/connection-closed/g) ?? []).length >= 4, 'one-shot SSH connections close after success, authentication failure and timeout');
-  console.log('Local MCP → SQLite DO → pinned SSH fixture passed: durable pre-dispatch admission, store-failure fail-closed, same-ID replay suppression, changed-intent conflict, secret-free status receipt, bounded output and timeout/connection close.');
+  const stalledId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  const started = Date.now();
+  const stalled = await Promise.race([
+    exec(11, stalledId, 'fixture-stalled-exec-ack', 1_000),
+    delay(3500).then(() => { throw new Error('operation deadline did not bound stalled SSH exec acknowledgement'); }),
+  ]);
+  assert.equal(stalled.value.status, 'unknown');
+  assert.ok(Date.now() - started < 3_000, 'stalled exec acknowledgement must return within the operation deadline and bounded cleanup');
+  const stalledReplay = await exec(12, stalledId, 'fixture-stalled-exec-ack', 1_000);
+  assert.equal(stalledReplay.value.status, 'unknown');
+  const afterStalledAck = await exec(13, 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', 'fixture-output');
+  assert.equal(afterStalledAck.value.status, 'completed', 'a stalled exec acknowledgement must not retain the host lease');
+  const finalLog = await readFile(authLog, 'utf8');
+  assert.equal((finalLog.match(/exec-command:fixture-stalled-exec-ack\n/g) ?? []).length, 1, 'replaying an uncertain dispatch must not send it again');
+  const stalledConnectionId = finalLog.match(/stalled-ack-open:(\d+)/)?.[1];
+  assert.ok(stalledConnectionId, 'fixture should identify the stalled SSH peer connection');
+  assert.match(finalLog, new RegExp(`connection-closed:${stalledConnectionId}\\n`), 'transport close must reach the stalled SSH peer');
+  assert.ok((finalLog.match(/connection-closed/g) ?? []).length >= 7, 'one-shot SSH connections close after success, authentication failure and timeout');
+  console.log('Local MCP → SQLite DO → pinned SSH fixture passed: atomic admission, storage-failure release, same-ID replay suppression, stalled exec-ack deadline, bounded cleanup, changed-intent conflict, secret-free status receipt, bounded output and reusable host lease.');
 } finally {
   stop(wrangler);
   stop(fixture);

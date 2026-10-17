@@ -4,6 +4,7 @@ import { connect as connectSsh, SshAuthenticationError, SshHostKeyError, type Ss
 import { getSshHostCredentials, HostError } from './hosts.ts';
 import type { Env } from './types.ts';
 import { isIpLiteral, isPublicAddress, normalizeDnsName } from './target-security.ts';
+import { closeSshResources } from './ssh-lifecycle.ts';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PIN = /^SHA256:[A-Za-z0-9+/]{43}$/;
@@ -43,22 +44,22 @@ function errorCode(error: unknown): string {
   return 'host_unreachable';
 }
 
-async function resolvePublicAddress(host: string): Promise<string> {
+async function resolvePublicAddress(host: string, signal?: AbortSignal): Promise<string> {
   const candidates = isIpLiteral(host)
     ? [host.replace(/^\[|\]$/g, '')]
-    : await resolveDns(normalizeDnsName(host) ?? (() => { throw new HostError('invalid_target'); })());
+    : await resolveDns(normalizeDnsName(host) ?? (() => { throw new HostError('invalid_target'); })(), signal);
   if (candidates.length === 0 || candidates.length > 16 || candidates.some(address => !isPublicAddress(address))) {
     throw new HostError('invalid_target');
   }
   return candidates[0]!;
 }
 
-async function resolveDns(host: string): Promise<string[]> {
+async function resolveDns(host: string, signal?: AbortSignal): Promise<string[]> {
   const addresses: string[] = [];
   for (const type of [1, 28]) {
     const response = await fetch(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(host)}&type=${type}`, {
       headers: { accept: 'application/dns-json' },
-      signal: AbortSignal.timeout(3000),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(3000)]) : AbortSignal.timeout(3000),
     });
     if (!response.ok) throw new HostError('invalid_target');
     const body: unknown = await response.json();
@@ -109,56 +110,106 @@ async function digest(request: ExecRequest): Promise<string> {
 }
 
 async function runSshExec(env: Env, request: ExecRequest, operationId: string, resolveTarget = resolvePublicAddress): Promise<ExecReply> {
-  const saved = await getSshHostCredentials(env, request.hostId);
-  if (!PIN.test(saved.fingerprint)) throw new HostError('host_untrusted');
-  if (saved.port === 25 || !Number.isInteger(saved.port) || saved.port < 1 || saved.port > 65535) {
-    throw new HostError('invalid_target');
-  }
-  const checkedIp = await resolveTarget(saved.host);
   let client: SshClient | undefined;
   let channel: SshChannel | undefined;
+  let socket: ReturnType<typeof connectTcp> | undefined;
   let dispatchStarted = false;
+  let expired = false;
+  let clientCloseStarted = false;
+  let channelCloseStarted = false;
+  let cleanupInFlight: Promise<void> = Promise.resolve();
+  const deadline = Date.now() + request.timeoutMs;
+  const controller = new AbortController();
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
-  try {
+  const cleanupResources = () => {
+    const closingChannel = channel && !channelCloseStarted ? channel : undefined;
+    const closingClient = client && !clientCloseStarted ? client : undefined;
+    if (closingChannel) channelCloseStarted = true;
+    if (closingClient) clientCloseStarted = true;
+    if (closingChannel || closingClient) {
+      cleanupInFlight = Promise.all([cleanupInFlight, closeSshResources(closingChannel, closingClient)]).then(() => undefined);
+    }
+    return cleanupInFlight;
+  };
+  const ensureTime = () => {
+    const remaining = deadline - Date.now();
+    if (expired || remaining <= 0) throw new Error('exec_timeout');
+    return remaining;
+  };
+  let rejectAtDeadline: ((error: Error) => void) | undefined;
+  const deadlineReached = new Promise<never>((_resolve, reject) => { rejectAtDeadline = reject; });
+  timeoutId = setTimeout(() => {
+    expired = true;
+    controller.abort();
+    try { socket?.close(); } catch { /* force local socket termination */ }
+    void cleanupResources();
+    rejectAtDeadline?.(new Error('exec_timeout'));
+  }, request.timeoutMs);
+
+  const perform = async (): Promise<ExecReply> => {
+    const saved = await getSshHostCredentials(env, request.hostId);
+    ensureTime();
+    if (!PIN.test(saved.fingerprint)) throw new HostError('host_untrusted');
+    if (saved.port === 25 || !Number.isInteger(saved.port) || saved.port < 1 || saved.port > 65535) {
+      throw new HostError('invalid_target');
+    }
+    const checkedIp = await resolveTarget(saved.host, controller.signal);
+    ensureTime();
     const credentials = saved.authMethod === 'password'
       ? { password: saved.password! }
       : { privateKey: saved.privateKey! };
-    client = await connectSsh({
+    const connected = await connectSsh({
       host: saved.host,
       port: saved.port,
       username: saved.username,
       ...credentials,
-      timeout: 10_000,
+      timeout: Math.min(10_000, ensureTime()),
       verifyHostKey: key => key.fingerprint === saved.fingerprint,
       openSocket: async ({ port }): Promise<SshSocket> => {
-        const socket = connectTcp({ hostname: checkedIp, port }, { secureTransport: 'off', allowHalfOpen: false });
-        socket.closed.catch(() => undefined);
-        const writer = socket.writable.getWriter();
+        ensureTime();
+        const openedSocket = connectTcp({ hostname: checkedIp, port }, { secureTransport: 'off', allowHalfOpen: false });
+        socket = openedSocket;
+        openedSocket.closed.catch(() => undefined);
+        const writer = openedSocket.writable.getWriter();
         writer.closed.catch(() => undefined);
-        await writer.ready;
-        return {
-          readable: socket.readable,
-          write: data => writer.write(data),
-          close: () => writer.close().catch(() => undefined),
-        };
+        try {
+          await writer.ready;
+          ensureTime();
+          return {
+            readable: openedSocket.readable,
+            write: data => writer.write(data),
+            close: () => writer.close().catch(() => undefined),
+          };
+        } catch (error) {
+          try { openedSocket.close(); } catch { /* socket is already closed */ }
+          throw error;
+        }
       },
     });
+    client = connected;
+    if (expired) {
+      void cleanupResources();
+      throw new Error('exec_timeout');
+    }
+    ensureTime();
     dispatchStarted = true;
-    channel = await client.spawn(request.command);
-    await channel.end();
-    const result = await Promise.race([
-      Promise.all([
-        readBounded(channel.stdout, MAX_CAPTURE_BYTES * 3 / 4),
-        readBounded(channel.stderr, MAX_CAPTURE_BYTES / 4),
-        channel.exit,
-      ]),
-      new Promise<never>((_, reject) => {
-        timeoutId = setTimeout(() => reject(new Error('exec_timeout')), request.timeoutMs);
-      }),
+    const openedChannel = await connected.spawn(request.command);
+    channel = openedChannel;
+    if (expired) {
+      void cleanupResources();
+      throw new Error('exec_timeout');
+    }
+    await openedChannel.end();
+    ensureTime();
+    const result = await Promise.all([
+      readBounded(openedChannel.stdout, MAX_CAPTURE_BYTES * 3 / 4),
+      readBounded(openedChannel.stderr, MAX_CAPTURE_BYTES / 4),
+      openedChannel.exit,
     ]);
+    ensureTime();
     const stdout = bounded(result[0].value, MAX_CAPTURE_BYTES * 3 / 4);
     const stderr = bounded(result[1].value, MAX_CAPTURE_BYTES / 4);
-    const reply: ExecReply = {
+    return {
       operation_id: operationId,
       status: 'completed',
       stdout: stdout.value,
@@ -166,10 +217,15 @@ async function runSshExec(env: Env, request: ExecRequest, operationId: string, r
       exit_code: result[2].code,
       truncated: stdout.truncated || stderr.truncated || result[0].truncated || result[1].truncated,
     };
-    return reply;
+  };
+
+  try {
+    return await Promise.race([perform(), deadlineReached]);
   } catch (error) {
     if (error instanceof Error && error.message === 'exec_timeout') {
-      return { operation_id: operationId, status: 'unknown', error: 'unknown_outcome' };
+      return dispatchStarted
+        ? { operation_id: operationId, status: 'unknown', error: 'unknown_outcome' }
+        : { operation_id: operationId, status: 'failed', error: 'host_unreachable' };
     }
     if (dispatchStarted && !(error instanceof SshAuthenticationError) && !(error instanceof SshHostKeyError)) {
       return { operation_id: operationId, status: 'unknown', error: 'unknown_outcome' };
@@ -177,8 +233,7 @@ async function runSshExec(env: Env, request: ExecRequest, operationId: string, r
     return { operation_id: operationId, status: 'failed', error: errorCode(error) };
   } finally {
     if (timeoutId !== undefined) clearTimeout(timeoutId);
-    try { await channel?.close(); } catch { /* channel close best effort */ }
-    try { await client?.close({ timeout: 1000 }); } catch { /* close best effort after transport failure */ }
+    try { await cleanupResources(); } catch { /* bounded best-effort cleanup */ }
   }
 }
 
@@ -222,10 +277,23 @@ export class SshOperationsDO extends DurableObject<Env> {
     } catch {
       return { operation_id: operationId, status: 'failed', error: 'receipt_store_unavailable' };
     }
-    sql.exec('UPDATE operations SET status = \'running\' WHERE operation_id = ?', operationId);
+    const releaseLease = () => {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          sql.exec('DELETE FROM connection_leases WHERE operation_id = ?', operationId);
+          return;
+        } catch { /* retry once before returning from a reserved operation */ }
+      }
+    };
+    try {
+      sql.exec('UPDATE operations SET status = \'running\' WHERE operation_id = ?', operationId);
+    } catch {
+      releaseLease();
+      return { operation_id: operationId, status: 'failed', error: 'receipt_store_unavailable' };
+    }
     let reply: ExecReply;
     try { reply = await this.dispatchExec(request, operationId); }
-    catch (error) { reply = { operation_id: operationId, status: 'failed', error: errorCode(error) }; }
+    catch { reply = { operation_id: operationId, status: 'unknown', error: 'unknown_outcome' }; }
     try {
       const receipt = {
         operation_id: operationId,
@@ -238,17 +306,17 @@ export class SshOperationsDO extends DurableObject<Env> {
     } catch {
       return { operation_id: operationId, status: 'unknown', error: 'unknown_outcome' };
     } finally {
-      sql.exec('DELETE FROM connection_leases WHERE operation_id = ?', operationId);
+      releaseLease();
     }
     return reply;
   }
 
   protected dispatchExec(request: ExecRequest, operationId: string): Promise<ExecReply> {
-    return runSshExec(this.env, request, operationId, host => this.resolveTarget(host));
+    return runSshExec(this.env, request, operationId, (host, signal) => this.resolveTarget(host, signal));
   }
 
-  protected resolveTarget(host: string): Promise<string> {
-    return resolvePublicAddress(host);
+  protected resolveTarget(host: string, signal?: AbortSignal): Promise<string> {
+    return resolvePublicAddress(host, signal);
   }
 
   getOperationStatus(operationId: string): ExecReply | null {
