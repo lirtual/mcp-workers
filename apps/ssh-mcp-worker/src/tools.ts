@@ -4,7 +4,7 @@ import { getHost, HostError, listHosts } from './hosts.ts';
 import type { Env } from './types.ts';
 import { fitsMcpToolResultBudget, MCP_TOOL_RESULT_MAX_BYTES, serializeMcpToolResult } from './result-budget.ts';
 import type { SessionReply } from './operations.ts';
-import { validExecInput, validSessionLookupInput, validSessionStartInput } from './validation.ts';
+import { validExecInput, validSessionInput, validSessionLookupInput, validSessionStartInput, validSessionStop } from './validation.ts';
 
 function success(value: unknown) {
   const serialized = serializeMcpToolResult(value);
@@ -68,7 +68,7 @@ function failure(error: unknown) {
 export function buildMcpServer(env: Env): McpServer {
   const server = new McpServer({ name: 'ssh-mcp-worker', version: '0.1.0' }, {
     capabilities: { tools: {} },
-    instructions: 'Discover saved EdgeSSH hosts and run bounded SSH commands or managed shells. Credentials are never returned. A managed shell can outlive one call, but output polling does not extend it and a lost shell is not reconnected.',
+    instructions: 'Discover saved EdgeSSH hosts and run bounded SSH commands or managed shells. Credentials are never returned. A managed shell can outlive one call, but output polling does not extend it and a lost shell is not reconnected. Interactive input is admitted once per operation id and is never rewritten. Stopping a shell closes only that owned channel and does not promise remote descendants were reaped.',
   });
   server.registerTool('list_hosts', {
     description: 'List saved hosts with bounded pagination and sanitized SSH trust readiness.',
@@ -132,6 +132,41 @@ export function buildMcpServer(env: Env): McpServer {
     try {
       const stub = env.SSH_OPERATIONS.getByName('single-admin-operations');
       return sessionResult(await stub.startSession({ hostId: host_id, operationId: operation_id, termType: term_type }));
+    } catch {
+      return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify({ error: 'receipt_store_unavailable' }) }] };
+    }
+  });
+  server.registerTool('ssh_session_input', {
+    description: 'Send one UTF-8 PTY batch of at most 16 KiB to a live owned shell. The same operation id is never written twice; a changed batch conflicts. Uncertain bytes are not replayed.',
+    inputSchema: z.object({
+      session_id: z.string().uuid(),
+      operation_id: z.string().uuid(),
+      input: z.string(),
+    }).strict(),
+    annotations: { readOnlyHint: false, idempotentHint: true, openWorldHint: true },
+  }, async ({ session_id, operation_id, input }) => {
+    const invalid = validSessionInput(session_id, operation_id, input);
+    if (invalid) return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify({ error: invalid }) }] };
+    try {
+      const stub = env.SSH_OPERATIONS.getByName('single-admin-operations');
+      return sessionResult(await stub.inputSession({ sessionId: session_id, operationId: operation_id, input }));
+    } catch {
+      return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify({ error: 'receipt_store_unavailable' }) }] };
+    }
+  });
+  server.registerTool('ssh_session_stop', {
+    description: 'Close the SSH channel and TCP connection for one live owned shell. Detached remote processes are not observed. If the receipt cannot be stored, a provably live owned shell is still closed and the result is unknown.',
+    inputSchema: z.object({
+      session_id: z.string().uuid(),
+      operation_id: z.string().uuid(),
+    }).strict(),
+    annotations: { readOnlyHint: false, idempotentHint: true, openWorldHint: true },
+  }, async ({ session_id, operation_id }) => {
+    const invalid = validSessionStop(session_id, operation_id);
+    if (invalid) return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify({ error: invalid }) }] };
+    try {
+      const stub = env.SSH_OPERATIONS.getByName('single-admin-operations');
+      return sessionResult(await stub.stopSession({ sessionId: session_id, operationId: operation_id }));
     } catch {
       return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify({ error: 'receipt_store_unavailable' }) }] };
     }

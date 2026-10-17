@@ -23,6 +23,7 @@ const secondHostId = '12121212-1212-4212-8212-121212121212';
 const accountId = '44444444-4444-4444-8444-444444444444';
 const encryptionKey = Buffer.alloc(32, 0x87).toString('base64');
 const testToken = 'synthetic-mcp-bearer';
+let activeToken = testToken;
 const wrongPasswordHostId = '88888888-8888-4888-8888-888888888888';
 const run = (command: string, args: string[]) => {
   const result = spawnSync(command, args, { cwd: app, encoding: 'utf8' });
@@ -48,11 +49,12 @@ await writeFile(authLog, '');
 await writeFile(resetAllow, '');
 
 const key = await crypto.subtle.importKey('raw', Buffer.from(encryptionKey, 'base64'), 'AES-GCM', false, ['encrypt']);
-async function encryptedHost(id: string, password: string): Promise<string> {
+async function encryptedHost(id: string, password: string, patch: Record<string, unknown> = {}): Promise<string> {
   const payload = JSON.stringify({
     name: 'Synthetic exec fixture', group: 'Tests', host: 'fixture.example.test', port: fixturePort,
     username: 'fixture', authMethod: 'password', password,
     fingerprint, initialCommand: 'synthetic-initial-command-do-not-run', termType: 'xterm-256color', encoding: 'utf-8', location: null,
+    ...patch,
   });
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const encrypted = await crypto.subtle.encrypt({
@@ -86,7 +88,7 @@ const stop = (child: typeof fixture) => { if (child.exitCode === null) child.kil
 let wrangler: ReturnType<typeof spawn> | undefined;
 const startWorker = () => {
   const child = spawn('pnpm', ['exec', 'wrangler', 'dev', '--local', '--config', config, '--port', String(workerPort),
-    '--persist-to', state, '--var', `MCP_ACCESS_TOKEN:${testToken}`, '--var', `ENCRYPTION_KEY:${encryptionKey}`], {
+    '--persist-to', state, '--var', `MCP_ACCESS_TOKEN:${activeToken}`, '--var', `ENCRYPTION_KEY:${encryptionKey}`], {
     cwd: app, stdio: ['ignore', 'pipe', 'pipe'],
   });
   wrangler = child;
@@ -98,7 +100,7 @@ const waitForWorker = async () => {
     if (fixture.exitCode !== null || (wrangler && wrangler.exitCode !== null)) throw new Error(`fixture/runtime exited early\n${fixtureOutput}\n${workerOutput}`);
     try {
       const response = await fetch(`http://127.0.0.1:${workerPort}/mcp`, { headers: { authorization: `Bearer ${testToken}` } });
-      if (response.status === 405 || response.status === 400) return;
+      if (response.status === 405 || response.status === 400 || response.status === 401) return;
     } catch { /* wait for local workerd */ }
     await delay(200);
   }
@@ -268,6 +270,8 @@ try {
   const sftpDigest = await digestVector({ tool: 'sftp_write', hostId, sessionId: null, normalizedArgs: ['/fixture/out.txt', 'héllo', false] });
   assert.equal(execDigest.digest, 'IDVXGZQrd7jGHolI8dsfxuOSCeG0RDgWEJ+ShIGJvCg=');
   assert.equal(inputDigest.digest, 'vOxKJQLNWWY3mkpjb897VJQNYpDhKuL8n5uF5hQRf1I=');
+  const stopDigest = await digestVector({ tool: 'ssh_session_stop', hostId, sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', normalizedArgs: [] });
+  assert.equal(stopDigest.digest, 'kqiDKEvDcrrzcMJgZ95OUG7GASCh0RcvUjn5tw1WNNo=');
   assert.equal(sftpDigest.digest, 'YajeZaNlhjYrjAac/KjGvf/QQODQ9uoEzjzViqgLlIA=');
 
   const replay = await exec(3, operationId, 'fixture-output');
@@ -549,6 +553,237 @@ try {
   const restartReplay = await sessionStart(88, '32323232-3232-4232-8232-323232323232');
   assert.equal(restartReplay.value.status, 'completed');
   assert.equal(await shellOpens(), shellsBeforeRestart, 'restart recovery must not reconnect the SSH session');
+
+  const inputHash = (value: string) => createHash('sha256').update(value).digest('hex');
+  const shellInputCount = async (hash?: string) => {
+    const matches = [...(await readFile(authLog, 'utf8')).matchAll(/shell-input:([0-9a-f]+)/g)].map(match => match[1]!);
+    return hash === undefined ? matches.length : matches.filter(item => item === hash).length;
+  };
+  const sessionInput = (id: number, operationId: string, targetSessionId: string, input: string) => call(id, 'ssh_session_input', {
+    session_id: targetSessionId, operation_id: operationId, input,
+  });
+  const sessionStop = (id: number, operationId: string, targetSessionId: string) => call(id, 'ssh_session_stop', {
+    session_id: targetSessionId, operation_id: operationId,
+  });
+  const mutateHost = async (body: Record<string, unknown>) => {
+    const response = await fetch(`${endpoint}/__fixture/host-row`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    });
+    assert.equal(response.status, 204, await response.text());
+  };
+  const authedCall = async (token: string, id: number, name: string, args: Record<string, unknown>) => {
+    const response = await fetch(`${endpoint}/mcp`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+      body: JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } }),
+    });
+    return response.status;
+  };
+
+  const lostInputs = await shellInputCount();
+  const lostInput = await sessionInput(120, '40404040-4040-4404-8404-404040404040', restartSessionId, 'hello from client\n');
+  assert.equal(lostInput.value.error, 'session_not_live');
+  assert.equal(lostInput.value.write_accepted, false);
+  const lostStop = await sessionStop(121, '41414141-4141-4414-8414-414141414141', restartSessionId);
+  assert.equal(lostStop.value.error, 'session_not_live');
+  const missingInput = await sessionInput(122, '42424242-4242-4424-8424-424242424242', '30303030-3030-4303-8303-303030303030', 'hello from client\n');
+  assert.equal(missingInput.isError, true);
+  assert.equal(missingInput.value.error, 'session_not_found');
+  assert.equal(await shellInputCount(), lostInputs, 'lost or unknown sessions must not receive PTY input');
+  assert.equal(await shellOpens(), shellsBeforeRestart, 'rejected input must not open a shell');
+
+  const interactiveStart = await sessionStart(123, '43434343-4343-4434-8434-434343434343');
+  assert.equal(interactiveStart.value.status, 'live', JSON.stringify(interactiveStart));
+  const interactiveSessionId = String(interactiveStart.value.session_id);
+  const [interactivePty] = await noteNewPtyIds();
+  assert.ok(interactivePty, 'the interactive shell has one PTY connection');
+  const ready = await waitForOutput(124, interactiveSessionId, /fixture-shell-ready/);
+  assert.match(String(ready.value.output), /fixture-shell-ready/);
+  const authsAtInput = await passwordAuths();
+  const shellsAtInput = await shellOpens();
+  const leasesBeforeInput = await fixtureRequest<{ total: number }>('lease-count', {});
+  const inputsBeforeAuth = await shellInputCount();
+  assert.equal(await authedCall('wrong-bearer', 125, 'ssh_session_input', {
+    session_id: interactiveSessionId, operation_id: '44444444-4444-4444-8444-444444444444', input: 'hello from client\n',
+  }), 401);
+  assert.equal(await authedCall('rotated-mcp-bearer', 126, 'ssh_session_stop', {
+    session_id: interactiveSessionId, operation_id: '45454545-4545-4454-8454-454545454545',
+  }), 401);
+  assert.equal(await shellInputCount(), inputsBeforeAuth, 'a rejected bearer must not write PTY input');
+  const emptyInput = await sessionInput(127, '46464646-4646-4464-8464-464646464646', interactiveSessionId, '');
+  assert.equal(emptyInput.isError, true);
+  assert.equal(emptyInput.value.error, 'invalid_args');
+  const oversizedInput = await sessionInput(128, '47474747-4747-4474-8474-474747474747', interactiveSessionId, 'x'.repeat(16 * 1024 + 1));
+  assert.equal(oversizedInput.value.error, 'invalid_args');
+  const rejectedReceipt = await call(129, 'get_operation_status', { operation_id: '47474747-4747-4474-8474-474747474747' });
+  assert.equal(rejectedReceipt.value.error, 'operation_not_found', 'over-limit input is rejected before admission');
+  const hello = 'hello from client\n';
+  const helloOperation = '48484848-4848-4484-8484-484848484848';
+  const beforeHello = await shellInputCount(inputHash(hello));
+  const activityBefore = Number((await sessionStatus(130, interactiveSessionId)).value.last_activity_at);
+  const sent = await sessionInput(131, helloOperation, interactiveSessionId, hello);
+  assert.equal(sent.value.status, 'completed', JSON.stringify(sent));
+  assert.equal(sent.value.admitted, true);
+  assert.equal(sent.value.write_accepted, true);
+  assert.doesNotMatch(JSON.stringify(sent), /hello from client|synthetic-password|synthetic-initial-command/);
+  let echoed = await sessionOutput(132, interactiveSessionId);
+  for (let attempt = 0; attempt < 30 && !String(echoed.value.output).includes('fixture says hello'); attempt++) {
+    await delay(50);
+    echoed = await sessionOutput(133, interactiveSessionId);
+  }
+  assert.match(String(echoed.value.output), /fixture says hello/);
+  assert.equal(await shellInputCount(inputHash(hello)), beforeHello + 1);
+  const afterInput = await sessionStatus(134, interactiveSessionId);
+  assert.equal(afterInput.value.status, 'live');
+  assert.ok(Number(afterInput.value.last_activity_at) >= activityBefore);
+  assert.equal(afterInput.value.idle_deadline_at, Number(afterInput.value.last_activity_at) + 10 * 60 * 1000);
+  const inputReceipt = await fixtureRequest('read-receipt', { operationId: helloOperation });
+  assert.equal(inputReceipt?.status, 'completed');
+  assert.doesNotMatch(JSON.stringify(inputReceipt), /hello from client/);
+  const inputStatus = await call(135, 'get_operation_status', { operation_id: helloOperation });
+  assert.equal(inputStatus.value.write_accepted, true);
+  assert.equal(inputStatus.value.output, undefined);
+  const replayedInput = await sessionInput(136, helloOperation, interactiveSessionId, hello);
+  assert.equal(replayedInput.value.write_accepted, true);
+  assert.equal(await shellInputCount(inputHash(hello)), beforeHello + 1, 'replaying an input operation must not resend bytes');
+  const conflictedInput = await sessionInput(137, helloOperation, interactiveSessionId, 'different batch\n');
+  assert.equal(conflictedInput.value.error, 'receipt_conflict');
+  assert.equal(await shellInputCount(inputHash(hello)), beforeHello + 1);
+  assert.equal(await shellInputCount(inputHash('different batch\n')), 0);
+  const concurrentInput = 'concurrent-batch\n';
+  const concurrentOperation = '49494949-4949-4494-8494-494949494949';
+  const concurrentResults = await Promise.all(Array.from({ length: 6 }, (_, index) => sessionInput(140 + index, concurrentOperation, interactiveSessionId, concurrentInput)));
+  assert.ok(concurrentResults.some(result => result.value.write_accepted === true || result.value.status === 'completed' || result.value.status === 'unknown'));
+  const concurrentReceipt = await call(146, 'get_operation_status', { operation_id: concurrentOperation });
+  assert.equal(concurrentReceipt.value.status, 'completed');
+  assert.equal(await shellInputCount(inputHash(concurrentInput)), 1, 'concurrent retries of one input id write once');
+  const firstBatch = 'batch-one\n';
+  const secondBatch = 'batch-two\n';
+  await Promise.all([
+    sessionInput(147, '50505050-5050-4505-8505-505050505050', interactiveSessionId, firstBatch),
+    sessionInput(148, '51515151-5151-4515-8515-515151515151', interactiveSessionId, secondBatch),
+  ]);
+  assert.equal(await shellInputCount(inputHash(firstBatch)), 1);
+  assert.equal(await shellInputCount(inputHash(secondBatch)), 1);
+  const inputsBeforeRead = await shellInputCount();
+  await sessionOutput(149, interactiveSessionId, 0, 32);
+  await sessionStatus(150, interactiveSessionId);
+  assert.equal(await shellInputCount(), inputsBeforeRead, 'output and status reads must not write to the PTY');
+  assert.equal(await passwordAuths(), authsAtInput, 'input reuses the already authenticated transport');
+  assert.equal(await shellOpens(), shellsAtInput, 'input does not open another shell');
+  const leasesAfterInput = await fixtureRequest<{ total: number }>('lease-count', {});
+  assert.equal(leasesAfterInput?.total, leasesBeforeInput?.total, 'input and its receipt do not take another connection slot');
+
+  const renamed = await encryptedHost(hostId, 'synthetic-password-do-not-use', { name: 'Renamed without security change' });
+  await mutateHost({ action: 'update', hostId, encryptedPayload: renamed, updatedAt: 1 });
+  const renamedInput = 'name-only-change\n';
+  const renamedSend = await sessionInput(151, '52525252-5252-4525-8525-525252525252', interactiveSessionId, renamedInput);
+  assert.equal(renamedSend.value.write_accepted, true, JSON.stringify(renamedSend));
+  assert.equal(await shellInputCount(inputHash(renamedInput)), 1);
+  const changedPassword = await encryptedHost(hostId, 'changed-synthetic-password');
+  await mutateHost({ action: 'update', hostId, encryptedPayload: changedPassword, updatedAt: 1 });
+  const inputsBeforeChange = await shellInputCount();
+  await allowPtyResets([interactivePty]);
+  const changedSend = await sessionInput(152, '53535353-5353-4535-8535-535353535353', interactiveSessionId, 'should-not-send\n');
+  assert.equal(changedSend.value.error, 'host_changed', JSON.stringify(changedSend));
+  assert.equal(changedSend.value.write_accepted, false);
+  const changedStatus = await sessionStatus(153, interactiveSessionId);
+  assert.equal(changedStatus.value.status, 'closed');
+  assert.equal(await shellInputCount(), inputsBeforeChange, 'a changed credential closes the owned channel instead of sending input');
+  await clearPtyResets();
+  await mutateHost({ action: 'update', hostId, encryptedPayload, updatedAt: 1 });
+
+  const deleteStart = await sessionStart(154, '54545454-5454-4545-8545-545454545454');
+  assert.equal(deleteStart.value.status, 'live', JSON.stringify(deleteStart));
+  const deleteSessionId = String(deleteStart.value.session_id);
+  const [deletePty] = await noteNewPtyIds();
+  assert.ok(deletePty);
+  await mutateHost({ action: 'delete', hostId });
+  await allowPtyResets([deletePty]);
+  const deletedInput = await sessionInput(155, '56565656-5656-4565-8565-565656565656', deleteSessionId, 'missing-host\n');
+  assert.equal(deletedInput.value.error, 'host_not_found', JSON.stringify(deletedInput));
+  const deletedStatus = await sessionStatus(157, deleteSessionId);
+  assert.equal(deletedStatus.value.status, 'closed');
+  assert.equal(await shellInputCount(inputHash('missing-host\n')), 0);
+  await clearPtyResets();
+  await mutateHost({ action: 'insert', hostId, accountId, encryptedPayload, updatedAt: 1 });
+
+  const emergencyStart = await sessionStart(158, '57575757-5757-4575-8575-575757575757');
+  assert.equal(emergencyStart.value.status, 'live', JSON.stringify(emergencyStart));
+  const emergencySessionId = String(emergencyStart.value.session_id);
+  const [emergencyPty] = await noteNewPtyIds();
+  assert.ok(emergencyPty);
+  await control('PUT');
+  const blockedInput = await sessionInput(159, '58585858-5858-4585-8585-585858585858', emergencySessionId, 'blocked-input\n');
+  assert.equal(blockedInput.value.error, 'receipt_store_unavailable');
+  assert.equal(await shellInputCount(inputHash('blocked-input\n')), 0);
+  const stillLive = await sessionStatus(160, emergencySessionId);
+  assert.equal(stillLive.value.status, 'live');
+  const blockedExec = await exec(161, '59595959-5959-4595-8595-595959595959', 'fixture-output');
+  assert.equal(blockedExec.value.error, 'receipt_store_unavailable');
+  await allowPtyResets([emergencyPty]);
+  const emergency = await sessionStop(162, '60606060-6060-4606-8606-606060606060', emergencySessionId);
+  assert.equal(emergency.value.status, 'unknown', JSON.stringify(emergency));
+  assert.equal(emergency.value.unverified, true);
+  assert.equal(emergency.value.error, 'unknown_outcome');
+  assert.equal(emergency.value.remote_descendants, 'not_observed');
+  assert.equal(emergency.value.channel_close_attempted, true);
+  const emergencyAgain = await sessionStop(163, '61616161-6161-4616-8616-616161616161', emergencySessionId);
+  assert.equal(emergencyAgain.value.error, 'session_not_live');
+  const emergencyState = await sessionStatus(164, emergencySessionId);
+  assert.ok(emergencyState.value.status === 'closed' || emergencyState.value.status === 'lost', JSON.stringify(emergencyState));
+  await clearPtyResets();
+  await control('DELETE');
+
+  const uncertainInputStart = await sessionStart(165, '62626262-6262-4626-8626-626262626262');
+  assert.equal(uncertainInputStart.value.status, 'live', JSON.stringify(uncertainInputStart));
+  const uncertainInputSessionId = String(uncertainInputStart.value.session_id);
+  const [uncertainInputPty] = await noteNewPtyIds();
+  assert.ok(uncertainInputPty);
+  const uncertainText = 'uncertain-batch\n';
+  await control('PUT', 'terminal-update-failure');
+  const uncertainInput = await sessionInput(166, '63636363-6363-4636-8636-636363636363', uncertainInputSessionId, uncertainText);
+  assert.equal(uncertainInput.value.status, 'unknown', JSON.stringify(uncertainInput));
+  assert.equal(uncertainInput.value.error, 'unknown_outcome');
+  assert.equal(await shellInputCount(inputHash(uncertainText)), 1);
+  const uncertainInputReplay = await sessionInput(167, '63636363-6363-4636-8636-636363636363', uncertainInputSessionId, uncertainText);
+  assert.equal(uncertainInputReplay.value.status, 'unknown');
+  assert.equal(await shellInputCount(inputHash(uncertainText)), 1, 'an uncertain PTY write is not replayed');
+  await control('DELETE', 'terminal-update-failure');
+  await allowPtyResets([uncertainInputPty]);
+  const controlledStop = await sessionStop(168, '64646464-6464-4646-8646-646464646464', uncertainInputSessionId);
+  assert.equal(controlledStop.value.status, 'completed', JSON.stringify(controlledStop));
+  assert.equal(controlledStop.value.session_status, 'closed');
+  assert.equal(controlledStop.value.channel_close_attempted, true);
+  assert.equal(controlledStop.value.transport_close_attempted, true);
+  assert.equal(controlledStop.value.remote_descendants, 'not_observed');
+  assert.doesNotMatch(JSON.stringify(controlledStop), /stopped|reaped|pid/i);
+  const stopReceipt = await fixtureRequest('read-receipt', { operationId: '64646464-6464-4646-8646-646464646464' });
+  assert.equal(stopReceipt?.status, 'completed');
+  assert.doesNotMatch(JSON.stringify(stopReceipt), /uncertain-batch|synthetic-password/);
+  const shellsAfterStop = await shellOpens();
+  const replayedStop = await sessionStop(169, '64646464-6464-4646-8646-646464646464', uncertainInputSessionId);
+  assert.equal(replayedStop.value.status, 'completed');
+  assert.equal(replayedStop.value.remote_descendants, 'not_observed');
+  assert.equal(await shellOpens(), shellsAfterStop, 'replaying a stop receipt must not open or signal another channel');
+  const execsBeforeStop = (await readFile(authLog, 'utf8')).match(/exec-command:/g)?.length ?? 0;
+  const stoppedInput = await sessionInput(170, '65656565-6565-4565-8565-656565656565', uncertainInputSessionId, 'after-stop\n');
+  assert.equal(stoppedInput.value.error, 'session_not_live');
+  assert.equal((await readFile(authLog, 'utf8')).match(/exec-command:/g)?.length ?? 0, execsBeforeStop, 'stop does not run a remote command');
+  await clearPtyResets();
+
+  activeToken = 'rotated-mcp-bearer';
+  await restartWorker();
+  assert.equal(await authedCall(testToken, 171, 'ssh_session_input', {
+    session_id: interactiveSessionId, operation_id: '66666666-6666-4666-8666-666666666666', input: 'rotated-away\n',
+  }), 401);
+  assert.equal(await authedCall(testToken, 172, 'ssh_session_stop', {
+    session_id: interactiveSessionId, operation_id: '67676767-6767-4676-8676-676767676767',
+  }), 401);
+  assert.equal(await authedCall(testToken, 173, 'ssh_session_status', { session_id: interactiveSessionId }), 401);
+  assert.equal(await authedCall(activeToken, 174, 'ssh_session_status', { session_id: interactiveSessionId }), 200);
+  activeToken = testToken;
+  await restartWorker();
 
   const floodStart = await sessionStart(89, '34343434-3434-4343-8343-343434343434', 'fixture-flood');
   assert.equal(floodStart.value.status, 'live', JSON.stringify(floodStart));

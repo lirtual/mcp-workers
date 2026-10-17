@@ -179,7 +179,7 @@ test('the real /mcp outer handler rejects missing/bad bearer and Origin before a
   assert.ok(payload, eventStream);
   const response = JSON.parse(payload) as { result?: { tools?: Array<{ name: string }> } };
   assert.deepEqual(response.result?.tools?.map(tool => tool.name), [
-    'list_hosts', 'get_host', 'ssh_exec', 'get_operation_status', 'ssh_session_start', 'ssh_session_output', 'ssh_session_status',
+    'list_hosts', 'get_host', 'ssh_exec', 'get_operation_status', 'ssh_session_start', 'ssh_session_input', 'ssh_session_stop', 'ssh_session_output', 'ssh_session_status',
   ]);
   const callTool = async (id: number, name: string, args: Record<string, unknown>) => {
     const result = await worker.fetch(new Request('https://worker.example/mcp', {

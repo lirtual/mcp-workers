@@ -21,3 +21,14 @@ export function validSessionLookupInput(sessionId: string, offset?: number, limi
   if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 64 * 1024)) return 'invalid_args';
   return null;
 }
+
+export function validSessionInput(sessionId: string, operationId: string, input: string): string | null {
+  if (!UUID.test(sessionId) || !UUID.test(operationId) || typeof input !== 'string' || input.length === 0) return 'invalid_args';
+  if (encoder.encode(input).byteLength > 16 * 1024) return 'invalid_args';
+  return null;
+}
+
+export function validSessionStop(sessionId: string, operationId: string): string | null {
+  if (!UUID.test(sessionId) || !UUID.test(operationId)) return 'invalid_args';
+  return null;
+}

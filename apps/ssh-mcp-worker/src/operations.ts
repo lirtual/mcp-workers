@@ -41,6 +41,8 @@ export interface ExecReply {
 
 export interface SessionStartRequest { hostId: string; operationId: string; termType?: string }
 export interface SessionOutputRequest { sessionId: string; offset?: number; limit?: number }
+export interface SessionInputRequest { sessionId: string; operationId: string; input: string }
+export interface SessionStopRequest { sessionId: string; operationId: string }
 export interface SessionReply {
   operation_id?: string;
   session_id?: string;
@@ -55,6 +57,13 @@ export interface SessionReply {
   output?: string;
   truncated?: boolean;
   error?: string;
+  admitted?: boolean;
+  write_accepted?: boolean;
+  unverified?: boolean;
+  session_status?: 'live' | 'closing' | 'closed' | 'lost' | 'unknown';
+  channel_close_attempted?: boolean;
+  transport_close_attempted?: boolean;
+  remote_descendants?: 'not_observed';
 }
 
 interface LiveSession {
@@ -68,6 +77,7 @@ interface LiveSession {
   lastActivityAt: number;
   absoluteDeadlineAt: number;
   ring: OutputRing;
+  securityDigest: string;
   releaseReason: 'live' | 'closing' | 'closed' | 'lost';
   settled?: Promise<void>;
 }
@@ -234,6 +244,14 @@ export async function canonicalOperationDigest(intent: CanonicalOperationIntent)
   return btoa(String.fromCharCode(...new Uint8Array(hash)));
 }
 
+async function sessionSecurityDigest(saved: { host: string; port: number; username: string; authMethod: string; fingerprint: string; password?: string; privateKey?: string }): Promise<string> {
+  const canonical = JSON.stringify([
+    saved.host, saved.port, saved.username, saved.authMethod, saved.fingerprint, saved.password ?? null, saved.privateKey ?? null,
+  ]);
+  const hash = await crypto.subtle.digest('SHA-256', encoder.encode(canonical));
+  return btoa(String.fromCharCode(...new Uint8Array(hash)));
+}
+
 async function legacyExecDigest(request: ExecRequest): Promise<string> {
   const canonical = JSON.stringify(['ssh_exec', request.hostId, request.command, request.timeoutMs]);
   const hash = await crypto.subtle.digest('SHA-256', encoder.encode(canonical));
@@ -371,6 +389,7 @@ async function runSshExec(env: Env, request: ExecRequest, operationId: string, r
 export class SshOperationsDO extends DurableObject<Env> {
   protected readonly sessions = new Map<string, LiveSession>();
   private readonly unresolvedOutcomes = new Set<string>();
+  private readonly sessionEffects = new Map<string, Promise<unknown>>();
   private deadlineSweep: Promise<void> = Promise.resolve();
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -513,7 +532,7 @@ export class SshOperationsDO extends DurableObject<Env> {
       this.releaseLease(operationId);
       return { operation_id: operationId, status: 'failed', error: 'receipt_store_unavailable' };
     }
-    let opened: { client: SshClient; channel: SshChannel; socket: ReturnType<typeof connectTcp> } | undefined;
+    let opened: { client: SshClient; channel: SshChannel; socket: ReturnType<typeof connectTcp>; securityDigest: string } | undefined;
     try {
       opened = await this.openManagedShell(hostId, termType);
       const sessionId = crypto.randomUUID().toLowerCase();
@@ -521,7 +540,7 @@ export class SshOperationsDO extends DurableObject<Env> {
       const session: LiveSession = {
         sessionId, operationId, hostId, client: opened.client, channel: opened.channel, socket: opened.socket,
         createdAt, lastActivityAt: createdAt, absoluteDeadlineAt: createdAt + SESSION_MAX_AGE_MS,
-        ring: new OutputRing(), releaseReason: 'live',
+        ring: new OutputRing(), securityDigest: opened.securityDigest, releaseReason: 'live',
       };
       const receipt = { operation_id: operationId, status: 'completed', session_id: sessionId };
       try {
@@ -593,6 +612,40 @@ export class SshOperationsDO extends DurableObject<Env> {
     await this.enforceSessionDeadlines();
   }
 
+  async inputSession(request: SessionInputRequest): Promise<SessionReply> {
+    const sessionId = request.sessionId.toLowerCase();
+    const operationId = request.operationId.toLowerCase();
+    try {
+      await this.enforceSessionDeadlines();
+    } catch {
+      return { operation_id: operationId, session_id: sessionId, status: 'failed', error: 'receipt_store_unavailable' };
+    }
+    const state = { admitted: false, wrote: false };
+    return this.enqueueSession(sessionId, async () => {
+      try {
+        return await this.performInput(sessionId, operationId, request.input, state);
+      } catch {
+        if (state.wrote || state.admitted) return this.persistUncertainOutcome(operationId);
+        return { operation_id: operationId, session_id: sessionId, status: 'failed', error: 'receipt_store_unavailable' };
+      }
+    });
+  }
+
+  async stopSession(request: SessionStopRequest): Promise<SessionReply> {
+    const sessionId = request.sessionId.toLowerCase();
+    const operationId = request.operationId.toLowerCase();
+    try {
+      await this.enforceSessionDeadlines();
+    } catch { /* a storage fault still allows one owned live close */ }
+    return this.enqueueSession(sessionId, async () => {
+      try {
+        return await this.performStop(sessionId, operationId);
+      } catch {
+        return this.emergencyStop(operationId, sessionId);
+      }
+    });
+  }
+
   private existingStartReply(operationId: string, digest: string, existing: ReceiptRow): SessionReply {
     if (existing.digest !== digest) return { operation_id: operationId, status: 'failed', error: 'receipt_conflict' };
     if (this.unresolvedOutcomes.has(operationId) || existing.status === 'unknown' || existing.status === 'admitted') {
@@ -622,7 +675,7 @@ export class SshOperationsDO extends DurableObject<Env> {
     return reply;
   }
 
-  private claimOperation(operationId: string, hostId: string, digest: string, now: number): Admission {
+  private claimOperation(operationId: string, hostId: string, digest: string, now: number, reserveConnection = true): Admission {
     const sql = this.ctx.storage.sql;
     return this.ctx.storage.transactionSync(() => {
       // Each request prunes a finite indexed batch; unresolved and in-flight rows are never eligible.
@@ -634,11 +687,14 @@ export class SshOperationsDO extends DurableObject<Env> {
       const existing = sql.exec<ReceiptRow>('SELECT * FROM operations WHERE operation_id = ?', operationId).toArray()[0];
       if (existing) return { kind: 'existing', row: existing };
       // In-flight starts and live shells share the exec lease table; over-limit rejects instead of queueing.
-      const total = sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM connection_leases').one().count;
-      const perHost = sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM connection_leases WHERE host_id = ?', hostId).one().count;
-      if (total >= TOTAL_CONNECTION_LIMIT || perHost >= HOST_CONNECTION_LIMIT) return { kind: 'capacity' };
+      // Input and stop reuse the owned channel and must not take another slot.
+      if (reserveConnection) {
+        const total = sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM connection_leases').one().count;
+        const perHost = sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM connection_leases WHERE host_id = ?', hostId).one().count;
+        if (total >= TOTAL_CONNECTION_LIMIT || perHost >= HOST_CONNECTION_LIMIT) return { kind: 'capacity' };
+      }
       sql.exec('INSERT INTO operations(operation_id,digest,host_id,status,created_at) VALUES(?,?,?,\'admitted\',?)', operationId, digest, hostId, now);
-      sql.exec('INSERT INTO connection_leases(operation_id,host_id,created_at) VALUES(?,?,?)', operationId, hostId, now);
+      if (reserveConnection) sql.exec('INSERT INTO connection_leases(operation_id,host_id,created_at) VALUES(?,?,?)', operationId, hostId, now);
       return { kind: 'admitted' };
     });
   }
@@ -673,7 +729,13 @@ export class SshOperationsDO extends DurableObject<Env> {
       }
       // Output polling is not activity. Only admission (and later authorized input) moves the idle deadline.
       if (now >= session.lastActivityAt + SESSION_IDLE_MS || now >= session.absoluteDeadlineAt) {
-        await this.settleSession(session, 'closed');
+        await this.enqueueSession(session.sessionId, async () => {
+          if (session.releaseReason !== 'live') return;
+          const current = this.now();
+          if (current >= session.lastActivityAt + SESSION_IDLE_MS || current >= session.absoluteDeadlineAt) {
+            await this.settleSession(session, 'closed');
+          }
+        });
       }
     }
     await this.scheduleSessionAlarm();
@@ -693,7 +755,7 @@ export class SshOperationsDO extends DurableObject<Env> {
     await this.ctx.storage.setAlarm(next);
   }
 
-  private async openManagedShell(hostId: string, termType: string): Promise<{ client: SshClient; channel: SshChannel; socket: ReturnType<typeof connectTcp> }> {
+  private async openManagedShell(hostId: string, termType: string): Promise<{ client: SshClient; channel: SshChannel; socket: ReturnType<typeof connectTcp>; securityDigest: string }> {
     let client: SshClient | undefined;
     let socket: ReturnType<typeof connectTcp> | undefined;
     let channel: SshChannel | undefined;
@@ -702,6 +764,7 @@ export class SshOperationsDO extends DurableObject<Env> {
       const saved = await getSshHostCredentials(this.env, hostId);
       if (!PIN.test(saved.fingerprint)) throw new HostError('host_untrusted');
       if (saved.port === 25 || !Number.isInteger(saved.port) || saved.port < 1 || saved.port > 65535) throw new HostError('invalid_target');
+      const securityDigest = await sessionSecurityDigest(saved);
       const checkedIp = await this.resolveTarget(saved.host);
       const credentials = saved.authMethod === 'password' ? { password: saved.password! } : { privateKey: saved.privateKey! };
       const connected = await connectSsh({
@@ -751,7 +814,7 @@ export class SshOperationsDO extends DurableObject<Env> {
         if (shellTimer !== undefined) clearTimeout(shellTimer);
       }
       if (!socket || !channel) throw new Error('shell_timeout');
-      return { client: connected, channel, socket };
+      return { client: connected, channel, socket, securityDigest };
     } catch (error) {
       const observed = channel !== undefined;
       await this.closeShell({ client, channel, socket });
@@ -840,6 +903,194 @@ export class SshOperationsDO extends DurableObject<Env> {
       output_cursor: session.ring.end,
       truncated: session.ring.evicted,
     };
+  }
+
+  private enqueueSession<T>(sessionId: string, task: () => Promise<T>): Promise<T> {
+    const previous = this.sessionEffects.get(sessionId) ?? Promise.resolve();
+    const run = previous.catch(() => undefined).then(task);
+    this.sessionEffects.set(sessionId, run);
+    void run.finally(() => {
+      if (this.sessionEffects.get(sessionId) === run) this.sessionEffects.delete(sessionId);
+    }).catch(() => undefined);
+    return run;
+  }
+
+  private async performInput(sessionId: string, operationId: string, input: string, state: { admitted: boolean; wrote: boolean }): Promise<SessionReply> {
+    const session = this.sessions.get(sessionId);
+    let row: SessionRow | undefined;
+    try {
+      row = this.sessionRow(sessionId);
+    } catch {
+      return { operation_id: operationId, session_id: sessionId, status: 'failed', error: 'receipt_store_unavailable' };
+    }
+    if (!session && !row) return { operation_id: operationId, session_id: sessionId, status: 'failed', error: 'session_not_found' };
+    if (session?.releaseReason === 'live' && this.sessionExpired(session)) await this.settleSession(session, 'closed');
+    const hostId = session?.hostId ?? row!.host_id;
+    const digest = await canonicalOperationDigest({
+      tool: 'ssh_session_input', hostId, sessionId, normalizedArgs: [input],
+    });
+    let admission: Admission;
+    try {
+      admission = this.claimOperation(operationId, hostId, digest, this.now(), false);
+    } catch {
+      return { operation_id: operationId, session_id: sessionId, status: 'failed', error: 'receipt_store_unavailable' };
+    }
+    if (admission.kind === 'capacity') return { operation_id: operationId, session_id: sessionId, status: 'failed', error: 'capacity_reached' };
+    if (admission.kind === 'existing') return this.existingStartReply(operationId, digest, admission.row);
+    state.admitted = true;
+    try {
+      this.ctx.storage.sql.exec('UPDATE operations SET status = \'running\' WHERE operation_id = ?', operationId);
+    } catch {
+      return this.persistUncertainOutcome(operationId);
+    }
+    const owned = this.sessions.get(sessionId);
+    if (!owned || owned.releaseReason !== 'live') {
+      return this.storeEffectResult(operationId, {
+        operation_id: operationId, session_id: sessionId, status: 'failed', error: 'session_not_live', admitted: true, write_accepted: false,
+      });
+    }
+    const rejected = await this.rejectInputIfTargetChanged(owned);
+    if (rejected) {
+      return this.storeEffectResult(operationId, {
+        ...rejected, operation_id: operationId, session_id: sessionId, admitted: true, write_accepted: false,
+      });
+    }
+    if (owned.releaseReason !== 'live') {
+      return this.storeEffectResult(operationId, {
+        operation_id: operationId, session_id: sessionId, status: 'failed', error: 'session_not_live', admitted: true, write_accepted: false,
+      });
+    }
+    try {
+      state.wrote = true;
+      await owned.channel.write(input);
+    } catch {
+      if (owned.releaseReason === 'live') await this.settleSession(owned, 'lost').catch(() => undefined);
+      return this.persistUncertainOutcome(operationId);
+    }
+    owned.lastActivityAt = this.now();
+    try {
+      this.ctx.storage.sql.exec('UPDATE managed_sessions SET last_activity_at = ? WHERE session_id = ?', owned.lastActivityAt, owned.sessionId);
+      await this.scheduleSessionAlarm();
+    } catch { /* an accepted write is not sent again to repair the idle deadline */ }
+    return this.storeEffectResult(operationId, {
+      operation_id: operationId, session_id: sessionId, status: 'completed', admitted: true, write_accepted: true,
+    });
+  }
+
+  private async performStop(sessionId: string, operationId: string): Promise<SessionReply> {
+    let row: SessionRow | undefined;
+    try {
+      row = this.sessionRow(sessionId);
+    } catch {
+      return this.emergencyStop(operationId, sessionId);
+    }
+    const session = this.sessions.get(sessionId);
+    if (!session && !row) return { operation_id: operationId, session_id: sessionId, status: 'failed', error: 'session_not_found' };
+    const hostId = session?.hostId ?? row!.host_id;
+    const digest = await canonicalOperationDigest({ tool: 'ssh_session_stop', hostId, sessionId, normalizedArgs: [] });
+    let admission: Admission;
+    try {
+      admission = this.claimOperation(operationId, hostId, digest, this.now(), false);
+    } catch {
+      return this.emergencyStop(operationId, sessionId);
+    }
+    if (admission.kind === 'existing') return this.existingStartReply(operationId, digest, admission.row);
+    if (admission.kind === 'capacity') return { operation_id: operationId, session_id: sessionId, status: 'failed', error: 'capacity_reached' };
+    const owned = this.sessions.get(sessionId);
+    if (!owned || owned.releaseReason !== 'live') {
+      return this.storeEffectResult(operationId, {
+        operation_id: operationId, session_id: sessionId, status: 'failed', error: 'session_not_live', admitted: true,
+      });
+    }
+    let runningStored = true;
+    try {
+      this.ctx.storage.sql.exec('UPDATE operations SET status = \'running\' WHERE operation_id = ?', operationId);
+    } catch {
+      runningStored = false;
+    }
+    let closeError = false;
+    try {
+      await this.settleSession(owned, 'closed');
+    } catch {
+      closeError = true;
+    }
+    const uncertain = closeError || !runningStored;
+    const reply: SessionReply = {
+      operation_id: operationId,
+      session_id: sessionId,
+      status: uncertain ? 'unknown' : 'completed',
+      ...(uncertain ? { error: 'unknown_outcome', unverified: true } : {}),
+      admitted: true,
+      session_status: owned.releaseReason === 'live' ? 'unknown' : owned.releaseReason,
+      channel_close_attempted: true,
+      transport_close_attempted: true,
+      remote_descendants: 'not_observed',
+    };
+    return this.storeEffectResult(operationId, reply);
+  }
+
+  private async emergencyStop(operationId: string, sessionId: string): Promise<SessionReply> {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.releaseReason !== 'live') {
+      return { operation_id: operationId, session_id: sessionId, status: 'failed', error: 'session_not_live' };
+    }
+    try {
+      await this.settleSession(session, 'closed');
+    } catch { /* the close attempt is still unrecorded */ }
+    const reply: SessionReply = {
+      operation_id: operationId,
+      session_id: sessionId,
+      status: 'unknown',
+      error: 'unknown_outcome',
+      unverified: true,
+      channel_close_attempted: true,
+      transport_close_attempted: true,
+      remote_descendants: 'not_observed',
+      session_status: session.releaseReason === 'live' ? 'unknown' : session.releaseReason,
+    };
+    try {
+      const digest = await canonicalOperationDigest({
+        tool: 'ssh_session_stop', hostId: session.hostId, sessionId, normalizedArgs: [],
+      });
+      const admission = this.claimOperation(operationId, session.hostId, digest, this.now(), false);
+      if (admission.kind === 'admitted') this.storeEffectResult(operationId, reply);
+    } catch { /* an unrecordable emergency stop stays unknown only on this response */ }
+    return reply;
+  }
+
+  private async rejectInputIfTargetChanged(session: LiveSession): Promise<SessionReply | undefined> {
+    try {
+      const saved = await getSshHostCredentials(this.env, session.hostId);
+      if (await sessionSecurityDigest(saved) === session.securityDigest) return undefined;
+      await this.settleSession(session, 'closed').catch(() => undefined);
+      return { status: 'failed', error: 'host_changed' };
+    } catch (error) {
+      if (error instanceof HostError) {
+        await this.settleSession(session, 'closed').catch(() => undefined);
+        const code = error.code === 'host_not_found' || error.code === 'host_untrusted' ? error.code : 'host_changed';
+        return { status: 'failed', error: code };
+      }
+      return { status: 'failed', error: 'host_catalog_unavailable' };
+    }
+  }
+
+  private sessionExpired(session: LiveSession): boolean {
+    const now = this.now();
+    return now >= session.lastActivityAt + SESSION_IDLE_MS || now >= session.absoluteDeadlineAt;
+  }
+
+  private storeEffectResult(operationId: string, reply: SessionReply): SessionReply {
+    try {
+      this.ctx.storage.sql.exec(
+        'UPDATE operations SET status = ?, result_json = ? WHERE operation_id = ?',
+        reply.status, JSON.stringify(reply), operationId,
+      );
+      this.unresolvedOutcomes.delete(operationId);
+      return reply;
+    } catch {
+      const uncertain = this.persistUncertainOutcome(operationId);
+      return { ...reply, ...uncertain, unverified: true, write_accepted: undefined };
+    }
   }
 
   private storedSessionView(row: SessionRow): SessionReply {

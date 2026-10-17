@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { isIpLiteral, isPublicAddress, normalizeDnsName } from '../src/target-security.ts';
-import { validExecInput } from '../src/validation.ts';
+import { validExecInput, validSessionInput, validSessionStop } from '../src/validation.ts';
 
 test('public target screening rejects special IPv4 and IPv6 ranges and accepts global unicast', () => {
   for (const address of [
@@ -33,4 +33,15 @@ test('exec validation counts UTF-8 bytes and constrains timeout before any DO ad
   assert.equal(validExecInput(host, operation, '😀'.repeat(4097), 30_000), 'invalid_args');
   assert.equal(validExecInput(host, operation, 'x', 999), 'invalid_args');
   assert.equal(validExecInput(host, operation, 'x', 60_001), 'invalid_args');
+});
+
+test('session input counts UTF-8 bytes and stop requires only the owned session and operation ids', () => {
+  const session = '33333333-3333-4333-8333-333333333333';
+  const operation = '44444444-4444-4444-8444-444444444444';
+  assert.equal(validSessionInput(session, operation, 'x'.repeat(16 * 1024)), null);
+  assert.equal(validSessionInput(session, operation, '😀'.repeat(4097)), 'invalid_args');
+  assert.equal(validSessionInput(session, operation, ''), 'invalid_args');
+  assert.equal(validSessionInput(session, 'not-a-uuid', 'x'), 'invalid_args');
+  assert.equal(validSessionStop(session, operation), null);
+  assert.equal(validSessionStop('not-a-session', operation), 'invalid_args');
 });

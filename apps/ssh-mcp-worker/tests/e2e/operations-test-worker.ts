@@ -257,6 +257,24 @@ export default {
       const intent = await request.json() as CanonicalOperationIntent;
       return Response.json({ digest: await canonicalOperationDigest(intent) });
     }
+    if (path === '/__fixture/host-row' && request.method === 'POST') {
+      const body = await request.json() as {
+        action: 'update' | 'delete' | 'insert';
+        hostId: string;
+        accountId?: string;
+        encryptedPayload?: string;
+        updatedAt?: number;
+      };
+      const db = env.EDGE_SSH_DB;
+      if (!db) return new Response(null, { status: 503 });
+      const statement = body.action === 'delete'
+        ? db.prepare('DELETE FROM hosts WHERE id = ?').bind(body.hostId)
+        : body.action === 'insert'
+          ? db.prepare('INSERT INTO hosts(id, account_id, encrypted_payload, updated_at) VALUES(?, ?, ?, ?)').bind(body.hostId, body.accountId ?? '', body.encryptedPayload ?? '', body.updatedAt ?? 1)
+          : db.prepare('UPDATE hosts SET encrypted_payload = ?, updated_at = ? WHERE id = ?').bind(body.encryptedPayload ?? '', body.updatedAt ?? 1, body.hostId);
+      await (statement as unknown as { run(): Promise<unknown> }).run();
+      return new Response(null, { status: 204 });
+    }
     return handler.fetch(request, env);
   },
 };

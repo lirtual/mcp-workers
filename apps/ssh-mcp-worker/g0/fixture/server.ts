@@ -1,5 +1,6 @@
 import ssh2 from 'ssh2';
 const { Server, utils } = ssh2;
+import { createHash } from 'node:crypto';
 import { appendFileSync, readFileSync } from 'node:fs';
 import { createServer as createNetServer } from 'node:net';
 import { constants } from 'node:fs';
@@ -102,6 +103,7 @@ const server = new Server({ hostKeys: [hostKey] }, (client) => {
           }
         }
         channel.on('data', (data: Buffer) => {
+          log(`shell-input:${createHash('sha256').update(data).digest('hex')}`);
           const input = data.toString();
           if (input.includes('hello from client')) channel.write('fixture says hello\r\n');
           if (input.includes('disconnect shell')) client.end();
