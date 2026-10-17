@@ -115,7 +115,7 @@ test("v2 Preview lists per-device Shell and files but never implicitly routes to
       "create_directory", "replace_text", "list_sessions", "read_session_output", "stop_session", "send_input"]) {
     assert.equal(exposed.has(supported), true, supported);
   }
-  for (const item of list.result.tools.filter(x => !["pairing_lookup", "pairing_prepare", "pairing_approve", "list_devices", "revoke_device"].includes(x.name))) {
+  for (const item of list.result.tools.filter(x => !["pairing_lookup", "pairing_approve", "list_devices", "revoke_device"].includes(x.name))) {
     assert.ok(item.inputSchema.required?.includes("device_id"), item.name);
   }
   for (const [name, args] of [
