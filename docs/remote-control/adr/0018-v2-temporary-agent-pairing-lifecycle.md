@@ -1,6 +1,6 @@
 # ADR-0018 — v2 temporary debugging pairing with 24-hour authorization
 
-Status: **Accepted fixed 24-hour lifetime; single-code MCP pairing supersedes earlier two-code UX (2026-10-18); new protocol not yet implemented**. Updated: 2026-10-17.
+Status: **Accepted fixed 24-hour lifetime; single-code MCP pairing supersedes earlier two-code UX (2026-10-18); new protocol not yet implemented**. Updated: 2026-10-18.
 Related: [ADR-0015 — owner-reviewed pairing](./0015-v2-pairing-and-identity.md), [ADR-0017 — device removal without tombstones](./0017-v2-device-revocation-without-tombstones.md), [ADR-0016 — bounded managed commands](./0016-agent-local-receipts-and-bounded-commands.md), and [v2 Spec](../V2-MULTI-DEVICE-SPEC.md).
 
 ## Context and decision history
