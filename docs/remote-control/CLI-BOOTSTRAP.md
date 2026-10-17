@@ -34,9 +34,11 @@ The bootstrap itself fail-closes unless:
 - Archive is a bounded list of reviewed regular files/directories (not
   symlinks, traversal, devices or arbitrary paths), uncompressed entries at
   most 240MiB, includes matching manifest and ELF CPU architecture.
-- Target is a new owner-only version directory; installs do not overwrite an
-  existing program, local identity or receipt DB. Full retry/resume and
-  upgrade ownership checks belong to #76/#77.
+- Target is an owner-only version directory. On the same command replay, an
+  existing program is compared byte-for-byte with a freshly downloaded
+  immutable SHA-256-verified Release; mismatches fail without overwriting.
+  Valid interrupted download/staging files are safely cleaned, never
+  identity data or SQLite receipts. Manual upgrade remains #77.
 
 The bundled Node24 is executed **only after** the official digest and archive
 verification complete. It uses the same signed Owner MCP+local terminal
@@ -49,6 +51,11 @@ WSL2 stopped distros cannot reconnect by themselves.
 `tests/v2-bootstrap.test.mjs`; a genuinely built local x64 archive was
 verified, safely unpacked and checked to refuse overwrite. No real
 published Release or paired service has been activated from this path.
+
+After a cloud approval but before local `.device-id` fsync, a signed recovery
+now persists the existing approved device ID with exclusive creation. An
+interrupted owned systemd service activation can restart its own v2 unit;
+no new grant or private key is generated. Temporary expiry never slides.
 
 **Required human decisions/steps later:** review Release immutability settings
 with maintainer credentials, trusted Node binary provenance, verify ARM64 and

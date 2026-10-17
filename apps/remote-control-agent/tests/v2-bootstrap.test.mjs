@@ -112,3 +112,35 @@ print("PYTHON_TAR_SAFETY_OK")
   assert.equal(r.status,0,r.stderr);
   assert.match(r.stdout,/PYTHON_TAR_SAFETY_OK/);
 });
+
+test("#76 same verified archive reuses installed program; tampering never overwrites it",()=>{
+  const validation=String.raw`import importlib.util,sys,tarfile,tempfile,pathlib,os
+spec=importlib.util.spec_from_file_location("b",sys.argv[1]);b=importlib.util.module_from_spec(spec);spec.loader.exec_module(b)
+archive=sys.argv[2]
+with tempfile.TemporaryDirectory() as d:
+    root=pathlib.Path(d);dest=root/"v0.1.0"
+    records=b.inspect_archive(archive,"v0.1.0","linux-x64-glibc")
+    b.unpack_verified(archive,dest,records,"v0.1.0","linux-x64-glibc")
+    assert b.verify_existing_program(archive,dest,records)
+    target=dest/"apps/remote-control-agent/src/v2-main.js"
+    with target.open("ab") as f:f.write(b"malicious extension")
+    try:b.verify_existing_program(archive,dest,records);raise AssertionError("modified program accepted")
+    except ValueError:pass
+    assert target.read_bytes().endswith(b"malicious extension")
+    orphan=root/".download-historical"
+    orphan.write_bytes(b"partial");orphan.chmod(0o600)
+    b.clean_orphaned_staging(root)
+    assert not orphan.exists()
+    foreign=root/".download-unsafe"
+    foreign.symlink_to(dest)
+    try:b.clean_orphaned_staging(root);raise AssertionError("staging symlink deleted")
+    except ValueError:pass
+    assert foreign.is_symlink()
+print("SAME_ARCHIVE_SAFE_RETRY_OK")
+`;
+  const archive=process.env.RC_V2_PACKAGE_SMOKE;
+  if (!archive) return;
+  const r=python(["-c",validation,script,archive]);
+  assert.equal(r.status,0,r.stderr);
+  assert.match(r.stdout,/SAME_ARCHIVE_SAFE_RETRY_OK/);
+});

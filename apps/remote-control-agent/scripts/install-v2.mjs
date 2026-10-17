@@ -572,6 +572,30 @@ async function rePairRevokedDevice(options, keyPath, previous, stdin, stdout) {
  * A signed negative status does not prove historic ID-key binding or grant
  * authorization. A recovery 404 alone never permits replacing local identity.
  */
+/**
+ * Cloud approval may succeed before the device's ID fsync. Signed recovery
+ * identifies the already-approved ID, without generating a new grant.
+ */
+export async function persistRecoveredDeviceId(keyPath, recoveredId) {
+  if (!DEVICE_ID.test(recoveredId)) throw new Error("Invalid recovered device ID.");
+  await ownerOnly(keyPath, 0o600);
+  const target = keyPath + ".device-id";
+  if (await exists(target)) {
+    await ownerOnly(target, 0o600);
+    if ((await readFile(target, "utf8")).trim() !== recoveredId) {
+      throw new Error("Local and recovered device identities conflict.");
+    }
+    return;
+  }
+  const f = await open(target, constants.O_CREAT | constants.O_EXCL |
+    constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
+  try {
+    await f.writeFile(recoveredId + "\n", "utf8");
+    await f.sync();
+  } finally { await f.close(); }
+  await syncParent(target);
+}
+
 export async function inspectInstallIdentity(options, keyPath, previous, {
   recover = recoverDeviceId, verifyRevoked = assertRemoteRevocation,
 } = {}) {
@@ -587,6 +611,8 @@ export async function inspectInstallIdentity(options, keyPath, previous, {
     if (existingId) {
       const actualId = (await readFile(keyPath + ".device-id", "utf8")).trim();
       if (actualId !== recoveredId) throw new Error("Local and server device identities conflict.");
+    } else {
+      await persistRecoveredDeviceId(keyPath, recoveredId);
     }
     return "approved";
   } catch (error) {
@@ -736,6 +762,14 @@ export async function runInstaller(args, {
         await rePairRevokedDevice(options, keyPath, previous, stdin, stdout);
       } else if (state === "approved") {
         if (previous && options.grantType !== "temporary") {
+          // A repeat install may complete an interrupted owned v2 activation.
+          // Never restart v1 or replace this approved local identity.
+          try { run("systemctl", ["--user", "is-active", "--quiet", UNIT]); }
+          catch {
+            run("systemctl", ["--user", "daemon-reload"]);
+            run("systemctl", ["--user", "start", UNIT]);
+            run("systemctl", ["--user", "is-active", "--quiet", UNIT]);
+          }
           stdout.write("v2 user service already installed; approved identity preserved.\n");
           return;
         }
