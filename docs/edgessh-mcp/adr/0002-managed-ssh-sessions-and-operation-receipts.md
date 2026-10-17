@@ -1,6 +1,6 @@
 # ADR-0002 — Managed SSH sessions, trusted hosts, unattended operations and durable receipts
 
-Status: **Round 2 operator decisions accepted on 2026-10-17; Round 3 boundaries recorded in [ADR-0003](./0003-bounded-live-sessions-and-authoritative-admission.md). Further retention/failure/rollout policy remains open.**
+Status: **Historical Q6–Q10 accepted on 2026-10-17; Q17–Q21 recorded in [ADR-0004](./0004-unmodified-edgessh-and-reliability-policy.md), whose no-EdgeSSH-changes boundary blocks the original execution model. Q22 open.**
 Scope: prospective EdgeSSH-owned SSH execution / optional MCP adapter. Design decision only, no code or production authorization.
 Related: [ADR-0001](./0001-edgessh-mcp-cross-repo-boundary.md), [interview](../DESIGN-INTERVIEW.md).
 
@@ -44,6 +44,6 @@ Q6 and Q9 were chosen because an AI caller needs Shell sessions and durable know
 
 The operator accepted **Q11=A–Q16=A** in [ADR-0003](./0003-bounded-live-sessions-and-authoritative-admission.md): lost connections do not trigger automatic re-execution, only provably session-owned live jobs may be stopped, interactive input has receipt deduplication, EdgeSSH owns durable admission in its existing storage, sessions/output have finite limits, and MCP SFTP writes are explicit bounded UTF-8 operations.
 
-**Still open:** receipt retention and protected unknown outcomes, reconciliation authority, exceptional owner-scoped stop if receipt persistence fails, MCP token revocation effect on live sessions, and independent code/schema deployment and rollback. Q1–Q16 alone never authorized live rollout.
+**Q17–Q20 now settled at policy level** via ADR-0004. **Q21 prohibits all EdgeSSH changes**, so the original EdgeSSH-only credential execution and receipt model is technically blocked pending Q22. No automatic implementation or rollout authorization exists.
 
 No code changes, database migrations, Cloudflare bindings, new deployments or production SSH actions are authorized by this ADR.
