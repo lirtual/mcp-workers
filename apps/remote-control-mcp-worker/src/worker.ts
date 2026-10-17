@@ -18,7 +18,7 @@ function pendingOwner(env: Env): DurableObjectStub | null {
 
 function pairedReadErrorMessage(tool: string, code: unknown): string {
   if (code === "offline") {
-    return "The requested v2 device is offline or has no current authenticated session.";
+    return "The requested v2 device is unavailable: it is offline or has no current authenticated session.";
   }
   if (code === "busy") {
     return "The v2 device is busy handling other reads; retry later.";
