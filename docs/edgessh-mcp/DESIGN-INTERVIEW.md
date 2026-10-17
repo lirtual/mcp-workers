@@ -1,9 +1,9 @@
-# EdgeSSH MCP — Grilling with Docs · Round 4
+# EdgeSSH MCP — Grilling with Docs · Critical Q22 compatibility decision
 
-Status: **Rounds 1–3 operator decisions accepted; round 4 open; final design NOT APPROVED**.
+Status: **Q17–Q20 accepted; Q21 no-EdgeSSH-changes constraint accepted; Q22 BLOCKS architecture; final design NOT APPROVED**.
 Date: 2026-10-17
 Source repos: [EdgeSSH](https://github.com/lirtual/EdgeSSH) and [mcp-workers](https://github.com/lirtual/mcp-workers).
-Decision records: [ADR-0001](./adr/0001-edgessh-mcp-cross-repo-boundary.md), [ADR-0002](./adr/0002-managed-ssh-sessions-and-operation-receipts.md), and [ADR-0003](./adr/0003-bounded-live-sessions-and-authoritative-admission.md).
+Decision records: [ADR-0001](./adr/0001-edgessh-mcp-cross-repo-boundary.md), [ADR-0002](./adr/0002-managed-ssh-sessions-and-operation-receipts.md), , [ADR-0003](./adr/0003-bounded-live-sessions-and-authoritative-admission.md), and [ADR-0004](./adr/0004-unmodified-edgessh-and-reliability-policy.md).
 This branch and PR contain **documentation only**: no runtime, credentials, Portal connection, Cloudflare bindings or production deployments were changed.
 
 ## Round 1 — signed-off decisions (2026-10-17)
@@ -28,7 +28,15 @@ These are deliberate choices, including the broader security exposure of Q2=B + 
 6. The `mcp-workers` repo is intentionally multi-app, not a central business logic platform. Reuse its MCP ingress mechanism and retain independently deployable apps.
 7. The operator's connected Cloudflare account currently has both `edgessh` and existing MCP Workers. Same-account Service Binding + a named `WorkerEntrypoint` is supported by Cloudflare [RPC docs](https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/rpc/) and [binding docs](https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/); this does not mean authorization is propagated automatically.
 
-## Candidate design honoring Q1–Q16 (implementation NOT approved)
+## 2026-10-17 operator correction: DO NOT MODIFY EDGESSH — previous candidate blocked
+
+The operator states EdgeSSH is a fork of a project they do **not** maintain and no changes to EdgeSSH will be considered. The previously drawn named private RPC entrypoint would have to be **implemented in EdgeSSH**; this is now forbidden. Merely binding to `edgessh` does **not** make unimplemented SSH RPC methods exist. EdgeSSH's `/api/hosts/:id/credentials` returns plaintext credentials for authenticated browser use; the existing SSH/SFTP entrypoints use authenticated/ticketed WebSocket flows, not an operation-receipt-protected server-side execute RPC. Its Cloudflare Access/GitHub user credentials are not the MCP Portal Bearer.
+
+This creates a hard Q3=A and Q14=A conflict: they require EdgeSSH to perform credential decryption, SSH execution and authoritative receipt admission, but the unchanged EdgeSSH does not expose those operations to the companion. The broad SSH/SFTP/interactive scope Q2=B/Q6=B cannot be delivered without changing **either** the credential/execution trust model **or** the feature promise. **Do not implement, publish, or call the architecture approved until Q22 is answered.**
+
+The prior diagram below is retained only as **superseded historical proposal**, not a viable plan under Q21. Alternatives appear in [ADR-0004](./adr/0004-unmodified-edgessh-and-reliability-policy.md).
+
+## Superseded candidate design honoring Q1–Q16 (not implementable under corrected Q21)
 
 ```text
 MCP Client / MCP Portal
@@ -103,31 +111,37 @@ These decisions are **accepted requirements**, not production authorization. Q6=
 - **Q2=B/Q4=B/Q8=A are unchanged:** the single dedicated EdgeSSH MCP token still enables unattended high-impact operations across all saved hosts. Prompt content, MCP tool safety annotations or an AI confirmation prompt are not additional server-side permissions.
 - **No remote stop by stale PID:** only operations on a verifiably live and owned session/channel are eligible; a detached descendant may remain after stop. A secret/key rotation cannot retroactively undo completed remote effects.
 
-## Round 4 — independent reliability and release frontier (awaits operator decisions)
+## Round 4 — recorded operator decisions (2026-10-17)
 
-**Q17 · Terminal receipt retention and unresolved effects**
-- A (**recommended**): Retain completed/known-terminal receipts for a fixed 30-day normal window; preserve minimal `unknown` non-replay markers **beyond** that window until deliberate reconciliation. Do not store commands, file content or credentials in receipts; do not delete unresolved markers to satisfy an arbitrary count quota.
-- B: Expire **all** receipts, even `unknown`, at a fixed date; simpler storage cleanup but an old operation ID could be admitted again with unknown side effects.
+| ID | Selected | Effective policy |
+| --- | --- | --- |
+| Q17 | **A** | Known-terminal receipts retained normally for 30 days; unresolved minimal non-replay markers retained until deliberate reconciliation. |
+| Q18 | **A** | Inspect unknown remote effects before any new operation; no automatic retry or compensation, new intent uses a fresh operation ID. |
+| Q19 | **A** | Durable admission unavailable ⇒ all new mutating commands/interactive input fail closed, with a narrow owner-authenticated best-effort live session stop exception. |
+| Q20 | **A** | Rotated/revoked Bearer cannot authorize new calls; remote sessions are not guaranteed immediately killed, and live sessions still have finite lifetime. |
+| Q21 | **Operator correction, not old A** | **EdgeSSH is an independently maintained fork and must not be changed.** Only the companion in `mcp-workers` may be developed/deployed. Old recommendation to add an EdgeSSH RPC first is withdrawn. |
 
-**Q18 · Reconciliation after unknown command/file outcome**
-- A (**recommended**): No blind replay/automatic compensating write. A known operation ID returns its existing receipt. The human checks actual remote state and deliberately decides whether a **new** operation with a fresh ID is needed. Merely acknowledging a status does not silently permit reusing the old ID; avoid a complex automated reconciliation engine.
-- B: Auto-resend or auto-repair `unknown` SSH/SFTP effects after reconnection, including retrying commands whose side effects cannot be proven.
+### Q21 breaks the previous integration model
 
-**Q19 · Durable receipt store outage and emergency stop**
-- A (**recommended**): If durable admission fails, deny **all new** effectful operations and Shell input (fail closed). Allow only a narrowly scoped, authorized best-effort stop/close of a **provably currently owned live session**, even if its emergency result cannot be durably recorded; report uncertainty, never promise remote process termination.
-- B: Deny even verified session stop while receipts are unavailable. Simpler invariant, but may strand still-live and expensive sessions.
+- **Q3=A:** only EdgeSSH decrypts credentials and executes SSH.
+- **Q14=A:** only EdgeSSH atomically admits/stores MCP mutating-operation receipts.
+- **Q21:** EdgeSSH cannot be changed, and currently provides neither a headless execute-only API nor an operation-receipt claim endpoint.
 
-**Q20 · MCP credential rotation or compromise**
-- A (**recommended with residual risk**): Every new MCP tool call requires the current independent Bearer; rotation immediately rejects further commands/input/status by the old token. Existing remote sessions are **not guaranteed instantly killed** by rotation; enforce the fixed session expiry and provide deliberate, owner-authorized best-effort session stops. No global scanning/killing service in v1.
-- B: Guarantee immediate fleet-wide shutdown of all active managed SSH sessions upon rotation/revocation; requires reliable active-session inventory, cross-DO fanout and failure reconciliation, and still cannot ensure detached remote descendants are terminated.
+**No same-account Service Binding can fix missing method implementations.** The team must explicitly choose another SSH credential / execution / receipt custodian or suspend the prior full-featured MCP promise. This is a design incompatibility, not an implementation parameter.
 
-**Q21 · Independent release/rollback and compatibility**
-- A (**recommended**): Add an optional, narrow, versioned RPC entrypoint to EdgeSSH first, keeping WebSSH behavior intact, then deploy the separate MCP Worker after contract checks. Disable/roll back the MCP adapter independently; perform only forward-compatible additive EdgeSSH storage changes and **preserve outstanding receipts** on code rollback. Incompatible RPC changes require a separately reviewed rollout.
-- B: Lockstep deploy both repos and automatically downgrade/delete receipt/session state on rollback, accepting distributed version coupling and possible loss of non-replay evidence.
+## Final active frontier — Q22 (choose one coherent model)
 
-## Remaining decisions dependent on Round 4
+**Q22 · How to provide a full SSH/SFTP MCP while EdgeSSH remains completely unchanged?**
 
-After Q17–Q21, verify no unresolved architecture frontier remains. The final review should check: receipt retention and storage capacity behavior, duplicate same-ID race tests, safe recovery of interrupted `admitted/running` operations, emergency stop authorization, revocation and session expiry honesty, RPC visibility, browser independence, and independent rollback compatibility. Numerical input/output/session defaults and precise D1/DO schema are implementation details for `to-spec`, not permission to expand runtime architecture.
+- **A (recommended for isolation): Independent MCP host/credential configuration.** MCP manages its own SSH credentials and host list, entered or explicitly imported independently, and executes operations/receipts itself. No automatic EdgeSSH credential sync; EdgeSSH remains unaffected. Supersedes Q3=A and Q14=A, and requires restating how the original all-hosts Q4=B applies to onboarded MCP hosts. Reuse EdgeSSH Apache-2.0 SSH implementation where useful with attribution, not its browser WebSocket login/session APIs. **Operational trade-off:** separate credential maintenance.
+- **B (possible, but higher secret exposure): Read the same existing EdgeSSH D1 and configure the same encryption key in the MCP Worker.** MCP reads/decrypts SSH credentials locally, executes commands itself, and stores its own authoritative receipts. The EdgeSSH fork remains unchanged and host credentials are automatically reusable, **but** Q3=A and Q14=A are explicitly revised; all remote SSH keys become accessible to the MCP Worker, and upstream schema changes can break it. No EdgeSSH D1 writes except separately reviewed adapter-owned receipt storage. Requires manual secret provisioning and compatibility/fingerprint tests. No authorization for live secret access yet.
+- **C (retain old trust boundary):** Keep Q3=A/Q14=A unchanged and defer the executing SSH/SFTP MCP until EdgeSSH upstream exposes a supported internal execution service, or until requirements change. Do not claim a metadata-only MCP satisfies the already accepted Q2=B/Q6=B.
+
+**Do not silently choose B just because an earlier user message wanted reuse of EdgeSSH SSH credentials; doing so would intentionally expand private-key custody. Do not silently choose A and promise EdgeSSH host sync that the system cannot provide.**
+
+## Consistency gate after Q22
+
+Update the old ADRs, authoritative receipt storage, ingress threat model, all-saved-host semantics, independent SSH engine/code-license strategy, fingerprint trust flow, and MCP-only deployment/rollback plan to align with the selected design. Then assess the remaining bounded numerical limits and actual Cloudflare constraints before seeking final operator approval and running `to-spec`.
 
 ## Preliminary acceptance risks / gates — no test result claimed
 
@@ -147,4 +161,4 @@ After Q17–Q21, verify no unresolved architecture frontier remains. The final r
 
 ## Interview completion gate
 
-Once Q17–Q21 are decided, run a final consistency / no-overengineering audit and request the operator's explicit agreement before `to-spec` or `to-tickets`. The numerical session/transfer/time bounds and storage schema can be decided within the approved technical Spec, not by speculative extra features. No production code, deploy, secret change or SSH action is authorized during grilling.
+Q17–Q21 are recorded, but **Q22 is a hard architecture blocker** introduced by the corrected source-ownership requirement. After Q22 is selected, revise contradictory earlier decisions and conduct a final security/no-overengineering audit before requesting final implementation-spec approval. The numerical session/transfer/time bounds and storage schema can be decided within the approved technical Spec, not by speculative extra features. No production code, deploy, secret change or SSH action is authorized during grilling.
