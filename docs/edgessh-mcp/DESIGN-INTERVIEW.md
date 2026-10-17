@@ -1,9 +1,9 @@
-# EdgeSSH MCP — Grilling with Docs · Round 2
+# EdgeSSH MCP — Grilling with Docs · Round 3
 
-Status: **Round 1 operator decisions accepted; round 2 open; final design NOT APPROVED**.
+Status: **Rounds 1 and 2 operator decisions accepted; round 3 open; final design NOT APPROVED**.
 Date: 2026-10-17
 Source repos: [EdgeSSH](https://github.com/lirtual/EdgeSSH) and [mcp-workers](https://github.com/lirtual/mcp-workers).
-Decision record: [ADR-0001](./adr/0001-edgessh-mcp-cross-repo-boundary.md).
+Decision records: [ADR-0001](./adr/0001-edgessh-mcp-cross-repo-boundary.md) and [ADR-0002](./adr/0002-managed-ssh-sessions-and-operation-receipts.md).
 This branch and PR contain **documentation only**: no runtime, credentials, Portal connection, Cloudflare bindings or production deployments were changed.
 
 ## Round 1 — signed-off decisions (2026-10-17)
@@ -28,7 +28,7 @@ These are deliberate choices, including the broader security exposure of Q2=B + 
 6. The `mcp-workers` repo is intentionally multi-app, not a central business logic platform. Reuse its MCP ingress mechanism and retain independently deployable apps.
 7. The operator's connected Cloudflare account currently has both `edgessh` and existing MCP Workers. Same-account Service Binding + a named `WorkerEntrypoint` is supported by Cloudflare [RPC docs](https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/rpc/) and [binding docs](https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/); this does not mean authorization is propagated automatically.
 
-## Candidate design honoring Q1–Q5 (implementation NOT approved)
+## Candidate design honoring Q1–Q10 (implementation NOT approved)
 
 ```text
 MCP Client / MCP Portal
@@ -43,7 +43,7 @@ mcp-workers/apps/edgessh-mcp-worker
 EdgeSSH Worker [independent WebSSH product]
   - small internal operations surface; does not return credentials
   - owns single-admin workspace, host lookup, credentials, target and trust checks
-  - bounded headless SSH connection or SFTP operation using existing SSH core
+  - managed interactive SSH sessions + owned background operations, as well as bounded text SFTP operations, using existing SSH core
         |
         v
 SSH server (privileges of stored SSH login account)
@@ -53,29 +53,67 @@ SSH server (privileges of stored SSH login account)
 
 **Security truth:** The accepted feature set can modify or destroy remote state. A dedicated Bearer is an extremely powerful credential for the entire host collection; it is **not equivalent to per-operation human approval or a safety sandbox**. Model-generated commands must be treated as untrusted intentions and validated as structured inputs, not as authorized merely because the MCP caller is authenticated.
 
-**Main implementation feasibility gate:** run a design/code-level proof that standalone noninteractive SSH exec and SFTP share the existing transport while not invoking a fake browser WebSocket. Pay particular attention to stdout/stderr, exit status, timeouts, close, disconnect and private-key memory lifetime. Reuse known working browser SSH and SFTP tests; don't rebuild the SSH protocol.
+**Main implementation feasibility gate:** prove non-browser SSH operation and interactive PTY/session support (input, bounded output polling, stop, disconnect, separate tool-call lifetimes), plus headless text SFTP, against the existing SSH core. The current `SSHSession` constructor takes a WebSocket; that browser-shaped API cannot be treated as a ready-made headless execution interface. Pay particular attention to stdout/stderr/exit-status visibility, private-key memory lifetime, process identity and cleanup. Reuse proven protocol code; do not build a second SSH implementation.
 
-## Round 2 — independent frontier (awaits operator answers)
+**Runtime lifecycle caveat:** Durable Object session coordination does not mean the remote TCP/SSH connection, PTY, or process survives eviction, deployment, or network failure. Cloudflare's [DO lifecycle](https://developers.cloudflare.com/durable-objects/concepts/durable-object-lifecycle/) and [TCP sockets](https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/) docs describe constraints on outbound connection liveness (including a 15-minute *keep-alive protection window*, which is not a maximum guaranteed SSH session length). Design must report lost/unknown outcomes, not silently replay prior commands or reattach to an unverifiable process.
 
-**Q6 · SSH command session lifetime**
-- A (**recommended**): One `exec(command)` = one bounded noninteractive operation, no PTY, no persistent interactive Shell. Cap runtime/output and clean up connection at completion. A timeout does **not** prove the server rolled back side effects.
-- B: Support persistent/interactive Shell and background processes from first release, with managed-session lifecycle, stop and recovery.
+**Receipt boundary:** Because EdgeSSH actually admits/dispatches SSH operations, deduplication must be enforced before dispatch **on the EdgeSSH side**. Recording an operation solely in the MCP adapter is insufficient if the adapter loses its response. Remote command execution, interactive Shell input and SFTP mutations are potentially effectful; receipt coverage for each is a Round 3 decision. No database storage choice or schema is approved yet.
 
-**Q7 · First-time host-key trust / changed fingerprint**
-- A (**recommended**): MCP can execute only against a host fingerprint already verified by the human through EdgeSSH; unknown, missing or changed fingerprints fail closed until human re-confirms. This gate applies equally when Q4 grants eligibility to every host.
-- B: MCP automatically trusts host fingerprints for initial connections or changes. This weakens server-identity protection.
+## Round 2 — operator decisions accepted (2026-10-17)
 
-**Q8 · Per-operation human confirmation**
-- A (**minimum-complexity recommendation, high risk**): Possession of the dedicated EdgeSSH MCP Bearer authorizes unattended commands and SFTP changes on every saved host under the stored SSH login privileges, after input/target/host-key validation and finite limits; **no extra manual prompt on each call**. This raises the consequence of token compromise and prompt injection.
-- B (**stronger security, more complexity**): Mutating commands and file operations need a separate, short-lived operator approval from EdgeSSH; requires pending operation state and approval UX. ChatGPT tool approval alone is not a reliable server-side guarantee.
+| ID | Selected | Effective requirement |
+| --- | --- | --- |
+| Q6 | **B** | First-release persistent/interactive SSH Shell and background processes with managed session identity, status, stop and recovery semantics. **Does not mean indefinite connection uptime or automatic process resurrection.** |
+| Q7 | **A** | Human verifies host fingerprint in EdgeSSH before unattended MCP use; missing, new and changed host fingerprints fail closed. |
+| Q8 | **A** | Dedicated MCP Bearer permits unattended commands and SFTP mutations, without an extra interactive approval on each tool call. |
+| Q9 | **B** | Persistent operation receipts and duplicate detection for state-changing calls belong in the first release; exact storage, input coverage and reconciliation rules not yet chosen. |
+| Q10 | **A** | MCP SFTP exposes bounded text-oriented reads/writes and common file/directory mutations; bulk binary transfer and streaming stay in the browser product. |
 
-**Q9 · Uncertain write/exec outcomes**
-- A (**minimum-complexity recommendation**): No automatic retry of arbitrary SSH commands or SFTP mutations. On connection loss or timeout after possible dispatch, return an explicit **Unknown Outcome** and require human inspection/reconciliation before another attempt. Do not promise exactly-once behavior or silently treat it as failure; no new durable receipt service in v1.
-- B: Build minimal persistent operation receipts and deduplication for mutating calls into the existing EdgeSSH storage from v1. This adds complexity but can protect against duplicate submissions, though cannot make arbitrary side effects transactional.
+These decisions are **accepted requirements**, not production authorization. Q6=B and Q9=B increase implementation scope; do not relabel them as one-shot execution or receipt-free retries in order to reduce complexity.
 
-**Q10 · MCP-side SFTP transfer format**
-- A (**recommended**): Include bounded text-oriented file read/write/create plus common list/rename/delete/mkdir operations. Exclude bulk binary upload/download and streaming from the first release; these remain available in the existing EdgeSSH browser File Manager. Limits must be appropriate for an MCP result, not automatically the browser's 64 MiB cap.
-- B: Fully expose binary upload/download (up to existing SFTP transfer limits) with transport/chunking support in the first MCP release.
+### Scope stress test — implications now visible
+
+- **Persistent interactive sessions** must survive the *MCP HTTP call* ending. They are **not** guaranteed to survive worker deployment, DO eviction, SSH disconnection or unexpected remote exit. Retained identifiers may remain queryable as lost/ended while the original TCP session is gone.
+- **Background processes** are not automatically "owned" merely because a remote Shell started them. `kill <pid>` without proven identity risks controlling unrelated processes or reused PIDs. The first-release lifecycle/stop contract needs an explicit boundary.
+- **Interactive Shell input** is at least as dangerous as `exec(command)`: sending `rm -rf ...\n` can mutate state, and partial delivery makes completion uncertain. A generic "read-only session" designation does not solve that.
+- **Receipt durability** must be established before dispatch if it is intended to prevent duplicates. It still cannot atomically coordinate a local record with remote side effects. A duplicate call with the same ID and different payload must conflict, not execute anew.
+- **Unattended + all hosts** gives one EdgeSSH MCP Bearer highly privileged access to every saved SSH account, including any root-capable account. There is no per-host or per-operation server-side consent after initial host-key verification. This is a consciously accepted trust exposure, not "safe" merely due to Service Binding.
+- **Text SFTP write operations** may overwrite important files and must have explicit overwrite/deletion intent and a bounded payload. The browser's current 64 MiB transfer limit is not an MCP response size policy.
+- **No automatically safe retries**: a receipt can return an existing known result or unresolved status for the same ID. It must never trigger a blind re-dispatch of an operation whose effect might have started. Retained "unknown" must not be silently treated as rejection.
+- **Isolation**: the optional MCP runtime and any long-lived managed sessions must not change base EdgeSSH's browser session/credential-security behavior.
+
+## Round 3 — independent frontier (awaiting operator decisions)
+
+**Q11 · Session recovery after disconnect/deployment**
+- A (**recommended**): Preserve session ID and last-known status/limited output; on lost SSH TCP/session mark lost/unknown, never automatically reconnect to the old PTY or rerun its command. A new SSH session requires an explicit new request. "Recovery" means honest state inspection and deliberate re-establishment, not resurrecting the old process.
+- B: Automatically reconnect and restore/restart interactive sessions and processes. Requires a remote supervisor/agent and risks repeating side effects; not generally achievable from SSH transport alone.
+
+**Q12 · Ownership of remote background processes and stopping**
+- A (**recommended**): Support long-running, session-attached commands while the SSH session is actually live; control only **provably session-owned** channels/jobs. Explicit stop/close may end the session but cannot promise termination of detached descendants. Do not support autonomous detached PID tracking or arbitrary `kill PID` as an MCP management primitive.
+- B: Manage detached remote jobs across broken SSH connections, persist/recover PID identity, and stop them independently. Needs stronger remote ownership proof/supervision and additional life-cycle code.
+
+**Q13 · Receipt scope for Shell input**
+- A (**recommended**): Every potentially state-changing admission, including exec/start, interactive input and SFTP create/write/rename/delete/mkdir, requires a stable operation ID and matching parameter digest; duplicate IDs return recorded state instead of sending bytes again. Read-only status/list operations do not need receipts.
+- B: Receipts protect only discrete exec and SFTP writes; raw interactive input is allowed without deduplication, making accidental command re-delivery possible.
+
+**Q14 · Receipt authority and storage**
+- A (**recommended**): The authoritative admission/receipt record belongs to EdgeSSH and uses its **existing durable storage**, with atomic unique-ID admission before SSH dispatch, final/unknown states, and explicit conflict on changed arguments. Live session state stays with the existing SSH lifecycle owner; no second operation platform/DB.
+- B: Add an independent durable job service/queue or manage receipt state in the MCP adapter, creating additional write/transport state and distributed reconciliation.
+
+**Q15 · Session resource bounds**
+- A (**recommended**): Start with small fixed concurrency per host/overall, bounded idle + absolute session lifetime and a bounded output ring; refuse extra sessions instead of creating a distributed queue or unbounded remote shell pool. Exact numerical limits are a later spec/test parameter.
+- B: Allow open-ended concurrent sessions and effectively unlimited lifetimes, with automatic resource expansion or a distributed scheduler.
+
+**Q16 · SFTP text mutation contract**
+- A (**recommended**): UTF-8 text with small fixed request/response limits, explicit `overwrite` or destructive intent and safe handling of partial-write/rename uncertainty. This does not claim atomic replacement across every SFTP server.
+- B: Implicit overwrite of existing paths and transfers up to the browser's 64 MiB limit, without a small MCP-specific data contract.
+
+## Next decisions dependent on Round 3
+
+- Only after Q11/Q12: precise allowed session APIs, remote process ownership evidence, whether an emergency stop remains possible when durable receipt writes fail, and any remote process orphan reconciliation.
+- Only after Q13/Q14: receipt retention for unresolved operations, admission-failure behavior, contention and the actual storage schema.
+- Only after Q15/Q16: defaults for time limits/concurrency/output/text transfer, file encoding and text-write replacement/rollback tests.
+- Then: release compatibility, rollback, and final human design consensus. No software implementation, infrastructure deployment or live SSH tests are authorized by this document.
 
 ## Preliminary acceptance risks / gates — no test result claimed
 
@@ -90,8 +128,6 @@ SSH server (privileges of stored SSH login account)
 - API payload validation must guard result-size and argument-size limits, including malicious/untrusted tool output; Cloudflare Worker resource ceilings must be measured, not guessed.
 - Source deployment of EdgeSSH and MCP Worker must stay independent. No release authorization is implied by this interview.
 
-## Deferred frontier
+## Interview completion gate
 
-Exact default time/output limits and concurrency (after Q6), possible approval UX (after Q8), status and deduplication schema (after Q9), file payload size and binary support (after Q10), independent deployment/rollback acceptance and compatibility between published EdgeSSH and the optional adapter.
-
-When Q6–Q10 are resolved, update [CONTEXT.md](./CONTEXT.md) and the ADR, then run the last focused frontier of residual dependent questions. Only after the operator approves final consensus should `to-spec` or `to-tickets` begin. Do not implement or deploy during the interview.
+After Q11–Q16 are selected, resolve only remaining dependent lifecycle/receipt/release questions. The design is not finalized until the operator explicitly approves the synthesis. Only then begin `to-spec` or `to-tickets`. No code or production change during grilling.
