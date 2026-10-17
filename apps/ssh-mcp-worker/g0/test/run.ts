@@ -192,7 +192,7 @@ try {
   await writeFile(authLog, '');
   const list = await request({ mode: 'sftpList', password: 'synthetic-password', ...expected });
   assert.equal(list.status, 200, `${JSON.stringify(list.body)} fixture=${fixtureOutput} events=${await readFile(authLog, 'utf8')}`);
-  assert.deepEqual(list.body.entries, ['hello.txt'], `${JSON.stringify(list.body)} events=${await readFile(authLog, 'utf8')}`);
+  assert.deepEqual(list.body.entries, ['hello.txt', 'out.txt', 'binary.bin', 'big.txt', 'envelope.txt', 'many'], `${JSON.stringify(list.body)} events=${await readFile(authLog, 'utf8')}`);
   const read = await request({ mode: 'sftpRead', password: 'synthetic-password', path: '/fixture/hello.txt', ...expected });
   assert.equal(read.status, 200, JSON.stringify(read.body));
   assert.equal(read.body.contents, 'héllo SSH\n');

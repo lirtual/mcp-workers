@@ -1023,7 +1023,14 @@ try {
 
   const sftpListed = await call(206, 'sftp_list', { host_id: secondHostId, path: '/fixture' });
   assert.equal(sftpListed.value.status, 'completed', JSON.stringify(sftpListed));
-  assert.deepEqual(sftpListed.value.entries, [{ name: 'hello.txt', type: 'file', size: 10 }]);
+  assert.deepEqual(sftpListed.value.entries, [
+    { name: 'hello.txt', type: 'file', size: Buffer.byteLength('héllo SSH\n') },
+    { name: 'out.txt', type: 'file', size: 0 },
+    { name: 'binary.bin', type: 'file', size: 3 },
+    { name: 'big.txt', type: 'file', size: 64 * 1024 + 1 },
+    { name: 'envelope.txt', type: 'file', size: 65_000 },
+    { name: 'many', type: 'directory', size: 0 },
+  ]);
   assert.equal(sftpListed.value.truncated, false);
   const readText = await call(207, 'sftp_read_text', { host_id: secondHostId, path: '/fixture/hello.txt' });
   assert.equal(readText.value.status, 'completed', JSON.stringify(readText));
@@ -1348,7 +1355,19 @@ try {
   const helloAfterMkdir = await call(278, 'sftp_read_text', { host_id: secondHostId, path: '/fixture/hello.txt' });
   assert.equal(helloAfterMkdir.value.text, 'héllo SSH\n');
   const listedRoot = await call(279, 'sftp_list', { host_id: secondHostId, path: '/fixture' });
-  assert.deepEqual(listedRoot.value.entries, [{ name: 'hello.txt', type: 'file', size: 10 }]);
+  assert.deepEqual(listedRoot.value.entries, [
+    { name: 'hello.txt', type: 'file', size: Buffer.byteLength('héllo SSH\n') },
+    { name: 'binary.bin', type: 'file', size: 3 },
+    { name: 'big.txt', type: 'file', size: 64 * 1024 + 1 },
+    { name: 'envelope.txt', type: 'file', size: 65_000 },
+    { name: 'created-92.txt', type: 'file', size: Buffer.byteLength(writeTextBody) },
+    { name: 'drop-write', type: 'file', size: 0 },
+    { name: 'stall-write', type: 'file', size: 0 },
+    { name: 'commit-write.txt', type: 'file', size: Buffer.byteLength(commitBody) },
+    { name: 'rename-dst-93.txt', type: 'file', size: Buffer.byteLength('second') },
+    { name: 'tree-93', type: 'directory', size: 0 },
+    { name: 'many', type: 'directory', size: 0 },
+  ]);
   const listedTree = await call(280, 'sftp_list', { host_id: secondHostId, path: '/fixture/tree-93' });
   assert.equal(listedTree.value.status, 'completed', JSON.stringify(listedTree));
   assert.deepEqual(listedTree.value.entries, [{ name: 'child', type: 'directory', size: 0 }]);

@@ -192,7 +192,7 @@ export function buildMcpServer(env: Env): McpServer {
       overwrite: z.boolean().optional(),
       timeout_ms: z.number().int().min(1_000).max(60_000).optional(),
     }).strict(),
-    annotations: { readOnlyHint: false, idempotentHint: true, openWorldHint: true },
+    annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: true, openWorldHint: true },
   }, async ({ host_id, operation_id, old_path, new_path, overwrite, timeout_ms }) => {
     const timeoutMs = timeout_ms ?? 30_000;
     const invalid = validSftpRenameInput(host_id, operation_id, old_path, new_path, overwrite, timeoutMs);

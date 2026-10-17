@@ -60,6 +60,8 @@ function pathKind(path: string): 'file' | 'directory' | 'missing' {
   return 'missing';
 }
 
+const builtinDirectories = ['/fixture/many'];
+
 function directChildren(directory: string): Array<{ name: string; kind: 'file' | 'directory'; size: number }> {
   const prefix = `${directory}/`;
   const entries = new Map<string, { name: string; kind: 'file' | 'directory'; size: number }>();
@@ -69,7 +71,7 @@ function directChildren(directory: string): Array<{ name: string; kind: 'file' |
     if (name.length === 0 || name.includes('/')) continue;
     entries.set(name, { name, kind: 'file', size: remoteFiles.get(file)?.length ?? 0 });
   }
-  for (const dir of remoteDirs) {
+  for (const dir of [...remoteDirs, ...builtinDirectories]) {
     if (!dir.startsWith(prefix)) continue;
     const name = dir.slice(prefix.length);
     if (name.length === 0 || name.includes('/')) continue;
@@ -300,20 +302,17 @@ const server = new Server({ hostKeys: [hostKey] }, (client) => {
             sftp.name(reqid, entries);
             return;
           }
-          if (state === 'created') {
-            const children = directChildren(createdDirPaths.get(id) ?? '');
-            if (children.length === 0) return sftp.status(reqid, STATUS_CODE.EOF);
-            sftp.name(reqid, children.map(child => ({
-              filename: child.name,
-              longname: child.name,
-              attrs: {
-                mode: (child.kind === 'directory' ? constants.S_IFDIR | 0o755 : constants.S_IFREG | 0o644),
-                size: child.size,
-              },
-            })));
-            return;
-          }
-          sftp.name(reqid, [{ filename: 'hello.txt', longname: 'hello.txt', attrs: { mode: constants.S_IFREG | 0o644, size: 10 } }]);
+          const directory = state === 'created' ? createdDirPaths.get(id) ?? '' : '/fixture';
+          const children = directChildren(directory);
+          if (children.length === 0) return sftp.status(reqid, STATUS_CODE.EOF);
+          sftp.name(reqid, children.map(child => ({
+            filename: child.name,
+            longname: child.name,
+            attrs: {
+              mode: (child.kind === 'directory' ? constants.S_IFDIR | 0o755 : constants.S_IFREG | 0o644),
+              size: child.size,
+            },
+          })));
         }).on('OPEN', (reqid, path, flags) => {
           const isWrite = Boolean(flags & OPEN_MODE.WRITE);
           const creating = Boolean(flags & OPEN_MODE.CREAT);
