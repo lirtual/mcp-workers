@@ -21,6 +21,7 @@ export interface PendingDevice {
   created_at: number;
   confirmation_hash?: string;
   confirmation_expires_at?: number;
+  pairing_protocol?: "single-code-v1"; // absent on old pending rows
 }
 
 export interface ApprovedDevice {
@@ -35,7 +36,7 @@ export interface ApprovedDevice {
 }
 
 type PendingStorage = Pick<DurableObjectStorage, "get" | "put" | "list" | "delete" | "transaction">;
-type Registration = { name: string; public_key: string; code_verifier: string; proof: string; issued_at: number; grant_type?: "temporary" };
+type Registration = { name: string; public_key: string; code_verifier: string; proof: string; issued_at: number; grant_type?: "temporary"; pairing_protocol?: "single-code-v1" };
 type AttemptBudget = { reset_at: number; count: number };
 
 /**
@@ -74,6 +75,7 @@ export async function verifyRegistration(payload: unknown): Promise<{ record: Pe
       !/^[a-f0-9]{64}$/.test(p.code_verifier) || typeof p.public_key !== "string" ||
       p.public_key.length > 96 || typeof p.proof !== "string" || p.proof.length > 128 ||
       (p.grant_type !== undefined && p.grant_type !== "temporary") ||
+      p.pairing_protocol !== "single-code-v1" ||
       typeof p.issued_at !== "number" || !Number.isSafeInteger(p.issued_at) ||
       Date.now() - p.issued_at > 60_000 || p.issued_at - Date.now() > 30_000) return null;
   try {
@@ -82,7 +84,7 @@ export async function verifyRegistration(payload: unknown): Promise<{ record: Pe
     const signature = asBytes(p.proof);
     if (signature.length !== 64) return null;
     const key = await crypto.subtle.importKey("spki", Uint8Array.from(keyBytes).buffer as ArrayBuffer, { name: "Ed25519" }, false, ["verify"]);
-    const challenge = te.encode(PAIRING_DOMAIN + p.code_verifier + ":" + p.public_key + ":" + p.name + ":" + p.issued_at + (p.grant_type === "temporary" ? ":temporary" : ""));
+    const challenge = te.encode(PAIRING_DOMAIN + p.code_verifier + ":" + p.public_key + ":" + p.name + ":" + p.issued_at + (p.grant_type === "temporary" ? ":temporary" : "") + ":single-code-v1");
     const ok = await crypto.subtle.verify("Ed25519", key, Uint8Array.from(signature).buffer as ArrayBuffer, Uint8Array.from(challenge).buffer as ArrayBuffer);
     if (!ok) return null;
     const digest = await crypto.subtle.digest("SHA-256", Uint8Array.from(keyBytes).buffer as ArrayBuffer);
@@ -91,7 +93,8 @@ export async function verifyRegistration(payload: unknown): Promise<{ record: Pe
     return {
       verifier: p.code_verifier,
       record: { name: p.name, public_key: p.public_key, pairing_id: crypto.randomUUID(), fingerprint, expires_at: time + TTL_MS, created_at: time,
-        ...(p.grant_type === "temporary" ? {grant_type: "temporary" as const} : {}) },
+        ...(p.grant_type === "temporary" ? {grant_type: "temporary" as const} : {}),
+        pairing_protocol: "single-code-v1" as const },
     };
   } catch {
     return null;
@@ -234,7 +237,9 @@ export async function approvePendingKey(
     if (expectedGrantType !== mode) return {status: 409, body: {error: "grant_type_mismatch"}};
     // Do not repurpose a previously prepared two-code request into a
     // one-code approval while its old terminal challenge remains in flight.
-    if (row.confirmation_hash) return {status: 409, body: {error: "legacy_pairing_in_progress"}};
+    if (row.pairing_protocol !== "single-code-v1" || row.confirmation_hash) {
+      return {status: 409, body: {error: "legacy_pairing_in_progress"}};
+    }
     const grants = await listLiveGrants(txn);
     if (!grants.complete || grants.active.size >= 64) return {status: 503, body: {error: "capacity"}};
     if ([...grants.active.values()].some(device => device.public_key === row.public_key)) {
