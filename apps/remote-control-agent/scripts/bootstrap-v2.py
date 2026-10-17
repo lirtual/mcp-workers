@@ -560,6 +560,85 @@ def local_uninstall(home, confirm, systemctl=None, process_check=no_running_prog
             "cloud_revocation": "NOT_PERFORMED"}
 
 
+def local_identity_purge_plan(home):
+    """Review exact v2 identity files; NEVER remove shared SQLite receipts."""
+    programs, versions, unit_file, unit, ids = local_inventory(home)
+    if versions or unit or unit_file.is_symlink():
+        raise ValueError("Uninstall installer-owned v2 software before purging identity")
+    base = pathlib.Path(home) / STORE
+    if base.is_symlink():
+        raise ValueError("Linked v2 identity directory")
+    if not base.exists():
+        return [], ids
+    info = base.stat()
+    if not base.is_dir() or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+        raise ValueError("Untrusted v2 identity directory")
+    for relative in ("temporary",):
+        directory = base / relative
+        if directory.is_symlink() or (directory.exists() and (
+                not directory.is_dir() or directory.stat().st_uid != os.getuid()
+                or stat.S_IMODE(directory.stat().st_mode) & 0o077)):
+            raise ValueError("Unsafe v2 identity subdirectory")
+    # A re-pair transaction or archived key requires deliberate operator
+    # reconciliation. Never discard old or pending evidence implicitly.
+    for item in base.iterdir():
+        if item.name.startswith("revoked-") or item.name.endswith(
+                (".re-pair-new", ".re-pair-transition", ".re-pair-new.device-id")):
+            raise ValueError("Unresolved v2 re-pair/archive state; purge blocked")
+    files = []
+    for relative in ("v2-identity.pem", "v2-identity.pem.device-id",
+                     "temporary/v2-identity.pem",
+                     "temporary/v2-identity.pem.device-id"):
+        file = base / relative
+        if file.is_symlink():
+            raise ValueError("Linked identity file; purge blocked")
+        if not file.exists():
+            continue
+        info = file.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) != 0o600):
+            raise ValueError("Untrusted v2 identity file; purge blocked")
+        files.append(file)
+    return files, ids
+
+
+def local_identity_purge(home, confirm, process_check=None):
+    if os.getuid() == 0 or not confirm:
+        raise ValueError("Non-root explicit v2 identity purge confirmation required")
+    files, ids = local_identity_purge_plan(home)
+    if process_check is None:
+        process_check = no_live_v2_identity_processes
+    if not process_check():
+        raise ValueError("Active or uncertain v2 pairing/Agent process; purge blocked")
+    for file in files:
+        file.unlink()
+    return {"removed_identity_paths": [str(f) for f in files],
+            "preserved_sqlite_receipts": True, "cloud_revocation": "NOT_PERFORMED",
+            "previous_device_ids": ids}
+
+
+def no_live_v2_identity_processes(proc_root=pathlib.Path("/proc")):
+    # No portable way to certify no copied key is in use. Refuse known local
+    # CLI or Agent processes, including an active temporary foreground v2.
+    for process in proc_root.iterdir():
+        if not process.name.isdigit() or int(process.name) == os.getpid():
+            continue
+        try:
+            if process.stat().st_uid != os.getuid():
+                continue
+            argv = (process / "cmdline").read_bytes()
+            if (b"/remote-control-agent/src/v2-main." in argv
+                    or b"/remote-control-agent/scripts/install-v2.mjs" in argv
+                    or b"/remote-control-agent/src/pair-device." in argv):
+                return False
+        except (FileNotFoundError, ProcessLookupError):
+            if process.exists():
+                return False
+        except OSError:
+            return False
+    return True
+
+
 def systemctl_user(args):
     result = subprocess.run(["systemctl"] + args, stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL, timeout=15, check=False)
@@ -575,6 +654,8 @@ def main():
     actions=parser.add_mutually_exclusive_group()
     actions.add_argument("--status", action="store_true")
     actions.add_argument("--uninstall", action="store_true")
+    actions.add_argument("--purge-local-identity", action="store_true",
+                         help="separate explicit v2 key/ID purge after uninstall; shared SQLite retained")
     parser.add_argument("--name")
     parser.add_argument("--upgrade", action="store_true", help="manual owned v2 program upgrade only")
     args = parser.parse_args()
@@ -591,6 +672,39 @@ def main():
             if input("Type UNINSTALL-V2 to confirm local removal: ").strip() != "UNINSTALL-V2":
                 raise ValueError("Local uninstall not confirmed")
             print(json.dumps(local_uninstall(os.path.expanduser("~"), True, systemctl_user), indent=2))
+        elif args.purge_local_identity:
+            if os.getuid() == 0 or not (sys.stdin.isatty() and sys.stdout.isatty()):
+                raise ValueError("Local identity purge requires a non-root interactive terminal")
+            home = os.path.expanduser("~")
+            local_inventory(home)  # Reject unowned path components before opening lock.
+            base = pathlib.Path(home) / STORE
+            if not base.is_dir() or base.is_symlink() or base.stat().st_uid != os.getuid() \
+                    or stat.S_IMODE(base.stat().st_mode) & 0o077:
+                raise ValueError("No safe v2 identity directory to purge")
+            # Existing v2 installer flock: avoid racing local pairing or re-pair.
+            fd = os.open(base / "v2-installer.lock",
+                         os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "r+b") as lock:
+                info = os.fstat(lock.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() \
+                        or stat.S_IMODE(info.st_mode) != 0o600:
+                    raise ValueError("Untrusted v2 installer lock")
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    raise ValueError("Another v2 installer is running")
+                files, ids = local_identity_purge_plan(home)
+                print("Exact v2-only identity files:", *(str(f) for f in files),
+                      sep="\\n  ")
+                print("Device IDs:", ids)
+                print("Cloud authorization has NOT been revoked. In authenticated MCP,",
+                      "call revoke_device separately BEFORE discarding the local key.")
+                print("SQLite receipts and historical/local operation evidence are",
+                      "shared and WILL NOT be deleted. Already executed effects persist.")
+                if input("Type PURGE-V2-IDENTITY to irreversibly remove only the listed keys/IDs: "
+                         ).strip() != "PURGE-V2-IDENTITY":
+                    raise ValueError("Local identity purge not confirmed")
+                print(json.dumps(local_identity_purge(home, True), indent=2))
         else:
             if not args.tag or not args.commit or not args.endpoint:
                 raise ValueError("Pinned --tag, --commit, and --endpoint are required")
