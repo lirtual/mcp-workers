@@ -1,6 +1,6 @@
 # EdgeSSH MCP — Grilling with Docs · Accepted decisions and final consensus gate
 
-**Status: Q1–Q22 answered; final architecture audited, operator's final implementation-spec approval pending.**
+**Status: Q1–Q22 answered; operator invoked `to-spec`; [Draft SPEC.md](./SPEC.md) published. Implementation/production not approved.**
 Date: 2026-10-17. Documentation-only Draft PR #81. **No EdgeSSH or production modification.**
 
 ## Current architectural authority
@@ -74,4 +74,4 @@ UNCHANGED EdgeSSH Worker --> same existing D1
 
 **No additional grilling frontier remains.** Exact quotas, session API contracts, operation receipt schema, compatibility tests, credential provisioning runbooks, upstream update handling and rollback procedures belong in the later `to-spec`; they are not new scope choices. Before writing production code, require an isolated feasibility proof for Workers SSH PTY/SFTP and safe AAD decryption fixtures. Reuse existing CI and add tests, not new infrastructure by default.
 
-**Consent boundary:** The operator has accepted Q22=B, **not** yet approved an implementation-ready Spec or live access to existing secrets/D1/SSH servers. Keep PR #81 Draft and documentation-only until the operator expressly confirms the final synthesis, then `to-spec`.
+**Consent boundary updated:** The operator explicitly invoked `to-spec` to authorize drafting [SPEC.md](./SPEC.md) within PR #81. This does **not** authorize code changes, production secret/D1 access, real SSH tests, PR merge or deployment. The Spec requires separate review before tickets/implementation.
