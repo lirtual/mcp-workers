@@ -192,6 +192,30 @@ jobs:
           pnpm --filter remote-control-mcp-worker typecheck
           pnpm --filter remote-control-mcp-worker test
 
+      - name: Cross-check Worker against pinned public Agent source
+        if: steps.scope.outputs.remote_control_changed == 'true'
+        env:
+          PUBLIC_AGENT_SHA: 0d76327208559cc061c068864bad7c428b753239
+        run: |
+          set -euo pipefail
+          # Anonymous public checkout, pinned to a reviewed immutable commit;
+          # never trust a mutable public branch for private Worker CI.
+          fixture="$(mktemp -d)"
+          git init -q "$fixture/public"
+          git -C "$fixture/public" fetch --quiet --depth=1 \
+            https://github.com/lirtual/remote-control-agent.git "$PUBLIC_AGENT_SHA"
+          git -C "$fixture/public" checkout -q --detach FETCH_HEAD
+          test "$(git -C "$fixture/public" rev-parse HEAD)" = "$PUBLIC_AGENT_SHA"
+          mv apps/remote-control-agent "$fixture/private-agent"
+          trap 'rm -rf apps/remote-control-agent; mv "$fixture/private-agent" apps/remote-control-agent' EXIT
+          cp -a "$fixture/public/apps/remote-control-agent" apps/remote-control-agent
+          # Workspace pnpm dependencies were already installed for the private
+          # Agent, and the app occupies the same relative location.
+          cp -a "$fixture/private-agent/node_modules" apps/remote-control-agent/node_modules
+          node apps/remote-control-agent/scripts/build-session-supervisor.mjs
+          pnpm --filter remote-control-mcp-worker typecheck
+          pnpm --filter remote-control-mcp-worker test
+
       - name: Run affected application checks
         if: steps.scope.outputs.apps != ''
         env:
