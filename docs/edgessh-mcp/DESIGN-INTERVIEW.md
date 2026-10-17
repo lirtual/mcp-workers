@@ -59,7 +59,7 @@ UNCHANGED EdgeSSH Worker --> same existing D1
 
 - All Saved Hosts are visible/eligible, but a missing/mismatched human-pinned host-key fingerprint must **fail closed before credentials are sent**.
 - Preserve public target/DNS rebinding/blocked port protections, validate fresh saved host ID and encrypted payload; never allow caller-provided arbitrary TCP destinations.
-- Zero plaintext password/private-key/key-root in tool output, logs, receipts or public errors. Copy key only through deliberate later secret provisioning, **not in this Draft PR**.
+- Never expose the saved connection password/private key or root key as tool fields, logs, receipts or errors. **Arbitrary command output or file reads can contain other remote secrets** and cannot promise automatic redaction. Copy key only through deliberate later secret provisioning, **not in this Draft PR**.
 - Do not invent an EdgeSSH execution RPC, call the browser credential-returning endpoint, replay browser cookies, alter EdgeSSH schema or silently synchronize a new database.
 - One MCP app may own its SQLite-backed DO for bounded live sessions and receipts; no extra standalone Worker/database/queue/agent/scheduler.
 - Receipt admission *before* SSH dispatch with unique IDs/digests; unknown effects do not auto-replay. Always keep clear distinction between accepted intent, SSH delivery, exit status and confirmed effects.
