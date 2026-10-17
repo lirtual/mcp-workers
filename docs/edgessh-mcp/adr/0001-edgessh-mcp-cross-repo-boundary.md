@@ -54,6 +54,6 @@ Reuse the repo's existing `portal-auth` static Bearer approach, using a **dedica
 
 ## Unsettled decisions — next interview round
 
-Round 2 settled these areas (Q6=B, Q7=A, Q8=A, Q9=B, Q10=A) in [ADR-0002](./0002-managed-ssh-sessions-and-operation-receipts.md). Detailed session failure/recovery, remote process ownership, receipt input coverage/storage, and capacity limits remain **unsettled**. Accepted Q1–Q5 alone never authorized these mechanics.
+Round 2 settled Q6–Q10 in [ADR-0002](./0002-managed-ssh-sessions-and-operation-receipts.md), and Round 3 settled Q11–Q16 in [ADR-0003](./0003-bounded-live-sessions-and-authoritative-admission.md). Receipt retention, unknown-effect reconciliation, persistence-failure stop behavior, revocation and independent rollout/rollback **remain unsettled**. Accepted Q1–Q16 never authorize live deployment.
 
 Do not create code, deploy, accept production risk, or mark the technical design complete until the operator confirms the final architecture. See [DESIGN-INTERVIEW.md](../DESIGN-INTERVIEW.md).
