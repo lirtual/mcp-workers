@@ -1,0 +1,8 @@
+{
+  "name": "ssh-g0-fixture",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-09-10",
+  "compatibility_flags": [],
+  "workers_dev": false,
+  "observability": { "enabled": false }
+}

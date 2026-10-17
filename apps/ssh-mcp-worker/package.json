@@ -1,0 +1,20 @@
+{
+  "name": "ssh-mcp-worker-g0",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test:g0": "node --experimental-strip-types g0/test/run.ts"
+  },
+  "dependencies": {
+    "@meitaim/ssh": "1.0.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260911.1",
+    "@types/node": "24.19.2",
+    "ssh2": "1.17.0",
+    "typescript": "6.0.3",
+    "wrangler": "4.130.0"
+  }
+}
