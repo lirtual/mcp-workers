@@ -305,8 +305,16 @@ async function preflight(action, foreground) {
     if (manifest.artifact_schema !== 1 ||
         manifest.target !== "linux-" + process.arch + "-glibc" ||
         manifest.node !== process.version ||
-        path.resolve(process.execPath) !== path.join(programRoot, "bin/node")) {
+        path.resolve(process.execPath) !== path.join(programRoot, "bin/node") ||
+        !/^[0-9]+\.[0-9]+$/.test(manifest.glibc_min ?? "")) {
       throw new Error("Portable runtime mismatch; no pairing attempted.");
+    }
+    const activeLibc = process.report.getReport().header.glibcVersionRuntime;
+    const required = manifest.glibc_min.split(".").map(Number);
+    const actual = (activeLibc ?? "0.0").split(".").map(Number);
+    if (actual[0] < required[0] ||
+        (actual[0] === required[0] && actual[1] < required[1])) {
+      throw new Error("Release glibc ABI is unsupported on this device.");
     }
     const native = path.join(packageRoot, ".build", "session-supervisor");
     await ownerOnly(native, 0o700);

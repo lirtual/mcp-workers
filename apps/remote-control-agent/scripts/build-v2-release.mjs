@@ -45,6 +45,22 @@ function machine(binary) {
   return b.readUInt16LE(18);
 }
 
+export function requiredGlibcVersion(binary, invoke = spawnSync) {
+  const result = invoke("readelf", ["--version-info", binary], {
+    encoding: "utf8", timeout: 5000, maxBuffer: 2 * 1024 * 1024,
+  });
+  if (result.error || result.status !== 0) {
+    throw new Error("Cannot determine native ELF glibc ABI; readelf is required on build host.");
+  }
+  const versions = [...result.stdout.matchAll(/\bGLIBC_(\d+)\.(\d+)\b/g)]
+    .map(match => [Number(match[1]), Number(match[2])]);
+  if (!versions.length) {
+    throw new Error("ELF binary has no verifiable glibc version requirements.");
+  }
+  versions.sort((a,b) => a[0] - b[0] || a[1] - b[1]);
+  return versions.at(-1).join(".");
+}
+
 export function ensureNativeTarget({ target, nodeBin, native, nodeSha256, nativeSha256 }) {
   const arch = target === "linux-x64-glibc" ? "x64" : "arm64";
   const id = arch === "x64" ? 62 : 183;
@@ -68,7 +84,10 @@ export function ensureNativeTarget({ target, nodeBin, native, nodeSha256, native
   // Actual native group-pidfd probe: no command or separate process signaled.
   const probe = spawnSync(native, ["--probe"], { detached:true, stdio:"ignore", timeout:5000 });
   if (probe.error || probe.status !== 0) throw new Error("Native Supervisor pidfd ABI is unavailable.");
-  return { arch, nodeVersion: version.stdout.trim(),
+  const requires = [requiredGlibcVersion(nodeBin), requiredGlibcVersion(native)]
+    .map(version => version.split(".").map(Number))
+    .sort((a,b) => a[0] - b[0] || a[1] - b[1]);
+  return { arch, nodeVersion: version.stdout.trim(), glibcMin: requires.at(-1).join("."),
     libc: process.report.getReport().header.glibcVersionRuntime };
 }
 
@@ -114,7 +133,7 @@ function tarball(dir, file) {
 }
 
 export function build(args) {
-  const { arch, nodeVersion, libc } = ensureNativeTarget(args);
+  const { arch, nodeVersion, libc, glibcMin } = ensureNativeTarget(args);
   if (existsSync(args.out) && readdirSync(args.out).length) {
     throw new Error("Output must be a new or empty directory.");
   }
@@ -151,7 +170,7 @@ export function build(args) {
   writeFileSync(path.join(work,"apps/remote-control-agent/package.json"),JSON.stringify({type:"module"})+"\n",{mode:0o600});
   writeFileSync(path.join(work,"bundle.json"),JSON.stringify({
     name:"remote-control-agent",version:args.version,target:args.target,
-    node:nodeVersion,glibc_build:libc,modules,
+    node:nodeVersion,glibc_build:libc,glibc_min:glibcMin,modules,
     artifact_schema:1,device_protocol:2,receipt_schema:1,
     upgrade_profile:"read-only-no-shell-v1"
   })+"\n",{mode:0o600});
@@ -159,7 +178,7 @@ export function build(args) {
   tarball(work,path.join(args.out,name));
   const artifact=readFileSync(path.join(args.out,name));
   return {file:path.join(args.out,name),sha256:createHash("sha256").update(artifact).digest("hex"),
-    bytes:artifact.length,arch,nodeVersion,libc,modules};
+    bytes:artifact.length,arch,nodeVersion,libc,glibcMin,modules};
 }
 if (process.argv[1] && path.resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
   try { console.log(JSON.stringify(build(parseArgs(process.argv.slice(2))))); }

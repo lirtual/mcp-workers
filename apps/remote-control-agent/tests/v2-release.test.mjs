@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
 import test from "node:test";
-import { parseArgs, runtimeSources, ensureNativeTarget } from "../scripts/build-v2-release.mjs";
+import { parseArgs, runtimeSources, ensureNativeTarget, requiredGlibcVersion } from "../scripts/build-v2-release.mjs";
 import { resolvePinnedRelease, downloadPinnedAsset, inspectTarGzip, extractVerifiedAsset, releaseAssetName } from "../scripts/verify-v2-release.mjs";
 
 const tag="v0.1.0",target="linux-x64-glibc",commit="1".repeat(40);
@@ -162,4 +162,15 @@ test("#73 verified local staging is owner-only, leaves unrelated active version 
     await assert.rejects(extractVerifiedAsset(meta,archive,dst));
     assert.equal((await readFile(path.join(dst,"bundle.json"),"utf8")).includes(tag),true);
   } finally {await rm(dir,{recursive:true,force:true});}
+});
+
+test("#73 builder selects maximum actual glibc version across ELF requirements",()=>{
+  const probe = (_binary,args,opts) => ({status:0,stdout:
+    "Version needs section: Name: GLIBC_2.28; Name: GLIBC_2.34; Name: GLIBC_2.2.5",
+  });
+  assert.equal(requiredGlibcVersion("/fake/supervisor",probe),"2.34");
+  assert.throws(()=>requiredGlibcVersion("/fake/musl",()=>({status:0,stdout:""})),
+    /no verifiable glibc/);
+  assert.throws(()=>requiredGlibcVersion("/fake/readelf-fail",()=>({status:1,stdout:""})),
+    /Cannot determine/);
 });

@@ -144,3 +144,28 @@ print("SAME_ARCHIVE_SAFE_RETRY_OK")
   assert.equal(r.status,0,r.stderr);
   assert.match(r.stdout,/SAME_ARCHIVE_SAFE_RETRY_OK/);
 });
+
+test("#73 clean-host bootstrap rejects a release whose real glibc ABI exceeds host",()=>{
+  const archive=process.env.RC_V2_PACKAGE_SMOKE;
+  if(!archive) return;
+  const code=String.raw`import importlib.util,sys
+spec=importlib.util.spec_from_file_location("b",sys.argv[1])
+b=importlib.util.module_from_spec(spec);spec.loader.exec_module(b)
+archive=sys.argv[2]
+records=b.inspect_archive(archive,"v0.1.0","linux-x64-glibc")
+assert len(records)>20
+original=b.platform.libc_ver
+b.platform.libc_ver=lambda:("glibc","2.28")
+try:
+    b.inspect_archive(archive,"v0.1.0","linux-x64-glibc")
+    raise AssertionError("ABI mismatch accepted")
+except ValueError as e:
+    assert "newer glibc ABI" in str(e)
+finally:
+    b.platform.libc_ver=original
+print("GLIBC_ABI_FAILS_BEFORE_UNPACK_OR_EXECUTE")
+`;
+  const r=python(["-c",code,script,archive]);
+  assert.equal(r.status,0,r.stderr);
+  assert.match(r.stdout,/GLIBC_ABI_FAILS_BEFORE_UNPACK_OR_EXECUTE/);
+});

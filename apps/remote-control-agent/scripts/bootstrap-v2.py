@@ -178,6 +178,16 @@ def inspect_archive(archive, tag, target):
                 or manifest.get("version") != tag or manifest.get("target") != target
                 or not re.fullmatch(r"v24\.[0-9]+\.[0-9]+", str(manifest.get("node", "")))):
             raise ValueError("Bundle version, architecture, or runtime mismatch")
+        # The official manifest is covered by the GitHub asset SHA-256.
+        # Refuse ABI-incompatible binaries before unpacking OR executing Node.
+        minimum = str(manifest.get("glibc_min", ""))
+        if not re.fullmatch(r"[0-9]+\.[0-9]+", minimum):
+            raise ValueError("Missing or invalid Release glibc ABI requirement")
+        host_libc, host_version = platform.libc_ver()
+        if (host_libc != "glibc" or not re.fullmatch(r"[0-9]+\.[0-9]+", host_version)
+                or tuple(map(int, host_version.split("."))) <
+                   tuple(map(int, minimum.split(".")))):
+            raise ValueError("Release requires a newer glibc ABI; no execution attempted")
         machine = 62 if target.startswith("linux-x64-") else 183
         for binary in EXEC_FILES:
             b = tf.extractfile(tf.getmember(binary)).read(64)

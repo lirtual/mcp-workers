@@ -8,3 +8,7 @@ This gate does not authorize installing or publishing a GitHub Release.
 - Until T04 replaces checkout compilation with verified prebuilt artifacts, the development installer still builds the native helper locally and is **not** a clean-host one-command distribution.
 
 Verified development smoke: WSL2 Linux 6.18.33.2, x86_64, glibc 2.39, Node 24.21.0; built native helper `--probe` exit 0. Negative unit coverage includes kernel < 6.9, WSL1, absent/old libc, wrong architecture and capability-probe failure. **ARM64 clean-host/native ABI acceptance and immutable GitHub Release verification remain untested**; neither architecture is advertised as a published asset.
+
+## Actual packaged glibc ABI (release boundary)
+
+The generic preflight minimum (glibc 2.28) alone does **not** establish a bundled Agent will run. Each checked release archive must include the greater ELF `GLIBC_*` requirement from its Node 24 binary and compiled Supervisor as `glibc_min`, which the bootstrap checks before unpack/execution. The WSL2/x86_64 build examined 2026-10-17 requires glibc **2.34** due to its Supervisor (Node alone requires 2.28). ARM64 remains unsupported for publication until its actual requirements and native clean-host launch are verified.
