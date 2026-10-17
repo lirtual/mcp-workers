@@ -357,7 +357,7 @@ async function atomicUnitWrite(unitPath, content) {
   }
 }
 
-async function installUnit(unitPath, content, previous) {
+export async function installUnit(unitPath, content, previous) {
   await atomicUnitWrite(unitPath, content);
   try {
     run("systemctl", ["--user", "daemon-reload"]);
