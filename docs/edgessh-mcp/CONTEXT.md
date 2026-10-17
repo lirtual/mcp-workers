@@ -1,6 +1,6 @@
 # EdgeSSH MCP — Domain Context
 
-**Status:** Operator decisions Q1–Q22 settled on 2026-10-17, with **Q3=A and Q14=A expressly superseded by Q22=B**. Final architecture reviewed, **not yet approved for `to-spec` or implementation**. EdgeSSH fork/production must remain unchanged.
+**Status:** Operator decisions Q1–Q22 settled on 2026-10-17, with **Q3=A and Q14=A expressly superseded by Q22=B**. Final architecture reviewed, **to-spec drafting now authorized; [Draft SPEC.md](./SPEC.md) published; implementation still not approved**. EdgeSSH fork/production must remain unchanged.
 
 This is a domain dictionary: technology, database layout, encryption algorithm and release mechanics belong in the [decision records](./adr/0005-independent-mcp-ssh-shared-edgessh-credentials.md) and [final review](./FINAL-ARCHITECTURE-REVIEW.md).
 
