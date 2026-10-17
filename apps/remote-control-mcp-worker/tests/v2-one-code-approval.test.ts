@@ -11,13 +11,23 @@ import {TEMPORARY_GRANT_MS} from "../src/v2-session.ts";
 
 function fixture() {
   const rows = new Map<string,unknown>();
+  // Simulate Durable Object storage's transaction serialization. This test
+  // fixture cannot model every DO failure, but simultaneous owner requests
+  // must never observe the same unconsumed pending record in separate commits.
+  let transactionTail:Promise<void> = Promise.resolve();
   const store = {
     get: async <T>(key:string) => rows.get(key) as T | undefined,
     put: async (key:string, value:unknown) => {rows.set(key,value);},
     delete: async (key:string) => rows.delete(key),
     list: async <T>({prefix,limit}:{prefix:string;limit:number}) =>
       new Map([...rows].filter(([key])=>key.startsWith(prefix)).slice(0,limit)) as Map<string,T>,
-    transaction: async <T>(fn:(tx:unknown)=>Promise<T>) => fn(store),
+    transaction: async <T>(fn:(tx:unknown)=>Promise<T>) => {
+      const previous=transactionTail;
+      let release!:()=>void;
+      transactionTail=new Promise<void>(resolve=>{release=resolve;});
+      await previous;
+      try{return await fn(store);} finally{release();}
+    },
   };
   const owner = new V2OwnerCoordinator({storage:store} as unknown as DurableObjectState);
   const V2_OWNER = {
@@ -125,5 +135,42 @@ test("#97 pending legacy two-code preparation cannot be upgraded into approval",
   const rejected=await approvePendingKey(f.store as never,id,fp,"permanent");
   assert.equal(rejected.status,409);
   assert.equal((rejected.body as {error:string}).error,"legacy_pairing_in_progress");
+  assert.equal([...f.rows.keys()].filter(key=>key.startsWith("device:")).length,0);
+});
+
+test("#97 concurrent owner approvals serialize to one grant; replay cannot mint another ID",async()=>{
+  const f=fixture(),pending=newEnrollment("race-approval");
+  assert.equal((await f.register(pending.request)).status,202);
+  const found=await f.rpc("pairing_lookup",{code:pending.code});
+  const args={pairing_id:String(found.object.pairing_id),
+    expected_fingerprint:String(found.object.fingerprint),expected_grant_type:"permanent"};
+  const results=await Promise.all(Array.from({length:5},()=>
+    approvePendingKey(f.store as never,args.pairing_id,args.expected_fingerprint,args.expected_grant_type)));
+  assert.equal(results.filter(r=>r.status===200).length,1);
+  assert.equal(results.filter(r=>r.status===404).length,4);
+  const devices=[...f.rows].filter(([key])=>key.startsWith("device:"));
+  assert.equal(devices.length,1);
+  assert.equal(f.rows.has("pending:"+pending.request.code_verifier),false);
+  const original=(results.find(r=>r.status===200)!.body as {device_id:string}).device_id;
+  assert.equal((devices[0]![1] as {device_id:string}).device_id,original);
+  assert.equal((await approvePendingKey(f.store as never,args.pairing_id,
+    args.expected_fingerprint,args.expected_grant_type)).status,404);
+  assert.equal([...f.rows.keys()].filter(key=>key.startsWith("device:")).length,1);
+});
+
+test("#97 expired code, wrong pairing ID and malformed fingerprint cannot approve",async()=>{
+  const f=fixture(),material=newEnrollment("expires");
+  assert.equal((await f.register(material.request)).status,202);
+  const lookup=await f.rpc("pairing_lookup",{code:material.code});
+  const id=String(lookup.object.pairing_id),fp=String(lookup.object.fingerprint);
+  assert.equal((await approvePendingKey(f.store as never,
+    "00000000-0000-4000-8000-000000000000",fp,"permanent")).status,404);
+  assert.equal((await approvePendingKey(f.store as never,id,"z".repeat(24),"permanent")).status,400);
+  assert.equal((await approvePendingKey(f.store as never,id,fp,"temporary")).status,409);
+  // Simulate the server-side clock passing the pending lifetime; DO controls it.
+  const pending=f.rows.get("pending:"+material.request.code_verifier) as {expires_at:number};
+  pending.expires_at=Date.now()-1;
+  assert.equal((await f.rpc("pairing_lookup",{code:material.code})).object.pairing_id,undefined);
+  assert.equal((await approvePendingKey(f.store as never,id,fp,"permanent")).status,404);
   assert.equal([...f.rows.keys()].filter(key=>key.startsWith("device:")).length,0);
 });
