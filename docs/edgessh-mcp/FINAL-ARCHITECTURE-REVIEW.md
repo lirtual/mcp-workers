@@ -38,7 +38,7 @@ Historical ADR-0001 Q3=A and ADR-0003 Q14=A are kept as decision provenance but 
                                |
                        dedicated Bearer
                                v
-             mcp-workers/apps/edgessh-mcp-worker  [ONE Worker]
+             mcp-workers/apps/ssh-mcp-worker  [ONE Worker]
              ├─ MCP ingress + strict tool validation
              ├─ host reader ---- fixed SELECT -------------> Existing EdgeSSH D1
              │    decrypt with MCP-side ENCRYPTION_KEY copy  [NO MCP WRITES]
