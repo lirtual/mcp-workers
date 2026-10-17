@@ -11,7 +11,7 @@ function previewOnly(env: Env): boolean {
 }
 // Preview operations use existing authenticated per-device WSS routing.
 // The paired Agent, not a temporary Worker secret, opts into write/Shell.
-const OWNER_TOOLS = new Set(["pairing_lookup", "pairing_prepare", "pairing_approve", "list_devices", "revoke_device"]);
+const OWNER_TOOLS = new Set(["pairing_lookup", "pairing_approve", "list_devices", "revoke_device"]);
 function pendingOwner(env: Env): DurableObjectStub | null {
   const ns = (env as V2Env).V2_OWNER;
   return ns ? ns.get(ns.idFromName("single-owner-v2")) : null;
@@ -146,50 +146,6 @@ async function listPairedDevices(env: Env, id: unknown, args: unknown): Promise<
     if (!response.ok) return toolError(id, "Device listing is unavailable.");
     return toolText(id, JSON.stringify(await response.json()));
   } catch { return toolError(id, "Device listing is unavailable."); }
-}
-
-const PAIRING_PREPARE_TOOL = {
-  name: "pairing_prepare",
-  title: "Prepare new device terminal confirmation",
-  description: "Prepare a short-lived, one-use challenge for the NEW device's physical/SSH terminal. This tool cannot approve or activate a device. The owner must manually enter the challenge on that device.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      pairing_id: { type: "string" },
-      expected_fingerprint: { type: "string" },
-      expected_grant_type: { type: "string", enum: ["permanent", "temporary"] },
-    },
-    required: ["pairing_id", "expected_fingerprint"],
-    additionalProperties: false,
-  },
-  annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
-} as const;
-
-async function prepareLocalDevice(
-  env: Env, id: unknown, argumentsValue: unknown,
-): Promise<Response> {
-  if (!argumentsValue || typeof argumentsValue !== "object" || Array.isArray(argumentsValue)) {
-    return toolError(id, "The confirmation preparation was rejected.");
-  }
-  const args = argumentsValue as Record<string, unknown>;
-  if (![2, 3].includes(Object.keys(args).length) ||
-      !Object.keys(args).every(key => ["pairing_id", "expected_fingerprint", "expected_grant_type"].includes(key)) ||
-      typeof args.pairing_id !== "string" || typeof args.expected_fingerprint !== "string" ||
-      (Object.hasOwn(args, "expected_grant_type") &&
-        !["permanent", "temporary"].includes(String(args.expected_grant_type)))) {
-    return toolError(id, "The confirmation preparation was rejected.");
-  }
-  const owner = pendingOwner(env);
-  if (!owner) return toolError(id, "Device enrollment is disabled.");
-  try {
-    const response = await owner.fetch("https://v2.internal/prepare", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ pairing_id: args.pairing_id, expected_fingerprint: args.expected_fingerprint,
-        ...(args.expected_grant_type ? { expected_grant_type: args.expected_grant_type } : {}) }),
-    });
-    if (!response.ok) return toolError(id, "The pending device was not found or cannot be confirmed.");
-    return toolText(id, JSON.stringify(await response.json()));
-  } catch { return toolError(id, "Confirmation preparation is unavailable."); }
 }
 
 const PAIRING_APPROVE_TOOL = {
@@ -1154,10 +1110,10 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
             required: [...("required" in tool.inputSchema ? tool.inputSchema.required : []), "device_id"],
           },
         })),
-        PAIRING_LOOKUP_TOOL, PAIRING_PREPARE_TOOL, PAIRING_APPROVE_TOOL, LIST_DEVICES_TOOL, REVOKE_DEVICE_TOOL,
+        PAIRING_LOOKUP_TOOL, PAIRING_APPROVE_TOOL, LIST_DEVICES_TOOL, REVOKE_DEVICE_TOOL,
       ] });
     }
-    return rpc(rpcMessage.id, { tools: pendingOwner(env) ? [...LOCAL_TOOLS, PAIRING_LOOKUP_TOOL, PAIRING_PREPARE_TOOL, PAIRING_APPROVE_TOOL, LIST_DEVICES_TOOL, REVOKE_DEVICE_TOOL] : LOCAL_TOOLS });
+    return rpc(rpcMessage.id, { tools: pendingOwner(env) ? [...LOCAL_TOOLS, PAIRING_LOOKUP_TOOL, PAIRING_APPROVE_TOOL, LIST_DEVICES_TOOL, REVOKE_DEVICE_TOOL] : LOCAL_TOOLS });
   }
 
   if (rpcMessage.method === "tools/call") {
@@ -1197,9 +1153,6 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
     }
     if (call.name === "pairing_approve" && pendingOwner(env)) {
       return approvePendingDevice(env,rpcMessage.id,call.arguments);
-    }
-    if (call.name === "pairing_prepare" && pendingOwner(env)) {
-      return prepareLocalDevice(env, rpcMessage.id, call.arguments);
     }
     if (call.name === "pairing_lookup" && pendingOwner(env)) {
       const args = call.arguments;
@@ -1268,7 +1221,7 @@ export default {
         });
       } catch { return jsonError(503, "unavailable", "Device session is unavailable."); }
     }
-    if ((url.pathname === "/agent/pair/start" || url.pathname === "/agent/pair/complete" ||
+    if ((url.pathname === "/agent/pair/start" ||
          url.pathname === "/agent/session/challenge" || url.pathname === "/agent/session/recover" ||
          url.pathname === "/agent/re-pair/status") && pendingOwner(env)) {
       if (request.method !== "POST" || request.headers.has("origin")) {
@@ -1277,8 +1230,7 @@ export default {
       try {
         const raw = await readBounded(request, 4096);
         if (raw === null) return jsonError(400, "bad_request", "The request was rejected.");
-        return await pendingOwner(env)!.fetch(url.pathname === "/agent/pair/complete" ? "https://v2.internal/complete" :
-          url.pathname === "/agent/session/challenge" ? "https://v2.internal/session/challenge" :
+        return await pendingOwner(env)!.fetch(url.pathname === "/agent/session/challenge" ? "https://v2.internal/session/challenge" :
           url.pathname === "/agent/session/recover" ? "https://v2.internal/session/recover" :
           url.pathname === "/agent/re-pair/status" ? "https://v2.internal/re-pair/status" : "https://v2.internal/register", {
           method: "POST",
