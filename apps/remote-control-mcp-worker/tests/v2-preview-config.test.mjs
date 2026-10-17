@@ -78,7 +78,7 @@ test("Preview exposes per-device reads, writes, Shell and Receipt without a temp
     assert.ok(tool, "v2 Preview missing " + name);
     assert.ok(tool.inputSchema.required.includes("device_id"), "missing explicit device_id: " + name);
   }
-  for (const name of ["pairing_lookup", "pairing_prepare", "list_devices", "revoke_device"]) {
+  for (const name of ["pairing_lookup", "pairing_approve", "list_devices", "revoke_device"]) {
     assert.ok(tools.some(item => item.name === name), "owner tool missing: " + name);
   }
 
