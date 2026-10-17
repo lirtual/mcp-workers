@@ -3,7 +3,7 @@
 > **Status:** Draft technical specification, synthesized by Matt Skills Curated / to-spec on 2026-10-17. Operator authorized **specification drafting**, NOT implementation, merging, secrets provisioning, production binding, deployment or any live SSH operation.
 > **Target:** lirtual/mcp-workers, one new independent app at apps/ssh-mcp-worker (proposed Worker name: ssh-mcp-worker). Existing EdgeSSH fork and production deployment remain UNCHANGED.
 > **Naming:** `ssh-mcp-worker` is the new Worker name, app directory and package identity; `EdgeSSH` remains the unchanged upstream credential/host-catalog product. Do not rename the EdgeSSH fork, its D1, or its current Worker.
-> **Tracker:** [Issue #83 — EdgeSSH MCP v0.1 specification](https://github.com/lirtual/mcp-workers/issues/83), published through Matt Skills Curated / to-spec. `ready-for-agent` is a spec-review/decomposition label, not implementation authorization.
+> **Tracker:** [Issue #83 — EdgeSSH MCP v0.1 specification and reviewed tickets #84–#95](https://github.com/lirtual/mcp-workers/issues/83), published through Matt Skills Curated / to-spec and to-tickets. No implementation-ready label is applied before separate operator authorization.
 > **Authority:** [CONTEXT.md](./CONTEXT.md), [accepted Q1–Q22](./DESIGN-INTERVIEW.md), [ADR-0005](./adr/0005-independent-mcp-ssh-shared-edgessh-credentials.md), [final security audit](./FINAL-ARCHITECTURE-REVIEW.md).
 > **Supersessions:** historical Q3=A (EdgeSSH-exclusive credential custody / SSH execution) and Q14=A (EdgeSSH-owned MCP receipts) are **expressly superseded by Q22=B**. Other agreed decisions remain intact.
 
