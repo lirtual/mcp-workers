@@ -129,6 +129,12 @@ export function build(args) {
   for (const relative of ["bin/node","apps/remote-control-agent/.build/session-supervisor"]) {
     chmodSync(path.join(work,relative),0o700);
   }
+  // Only a statically read-only, Shell-disabled Agent can be upgraded without
+  // a new live-session quiescence IPC. All future mutable profiles fail closed.
+  const entrySource=readFileSync(path.join(source,"v2-main.ts"),"utf8");
+  if(!/readOnly:\s*true,\s*writeFile:\s*false,\s*shell:\s*false,/.test(entrySource)) {
+    throw new Error("Standalone unattended-session upgrade safety profile is not proven.");
+  }
   const modules=runtimeSources();
   for(const file of modules){
     const src=readFileSync(path.join(source,file),"utf8");
@@ -146,7 +152,8 @@ export function build(args) {
   writeFileSync(path.join(work,"bundle.json"),JSON.stringify({
     name:"remote-control-agent",version:args.version,target:args.target,
     node:nodeVersion,glibc_build:libc,modules,
-    artifact_schema:1
+    artifact_schema:1,device_protocol:2,receipt_schema:1,
+    upgrade_profile:"read-only-no-shell-v1"
   })+"\n",{mode:0o600});
   const name="remote-control-agent-"+args.version+"-"+args.target+".tar.gz";
   tarball(work,path.join(args.out,name));

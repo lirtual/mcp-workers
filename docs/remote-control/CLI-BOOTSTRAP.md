@@ -57,6 +57,29 @@ now persists the existing approved device ID with exclusive creation. An
 interrupted owned systemd service activation can restart its own v2 unit;
 no new grant or private key is generated. Temporary expiry never slides.
 
+## Manual program upgrade (read-only v2 only)
+
+The reviewed pinned bootstrap supports `--upgrade` on an already installed
+permanent v2 user unit. Only immutable, owner-protected **old and new** version
+directories with matching `device_protocol=2`, `receipt_schema=1` and
+`upgrade_profile=read-only-no-shell-v1` are accepted. The builder enforces
+literal `readOnly:true, writeFile:false, shell:false` in the v2 entrypoint.
+Any Shell-enabled, checkout-based, mutable, unowned or unknown-profile
+runtime is **blocked**, because Managed Session start/running/unknown state
+cannot be safely inferred from SQLite alone.
+
+For the accepted no-Shell profile, the installer reuses the existing
+`installUnit()` guarded systemd unit switch. It preserves the old program
+directory, Ed25519 key, device ID, endpoint, fixed temporary expiry and
+operation receipts. A *definitive local unit activation failure* restores the
+old owned v2 unit/program reference. Network/WSS disconnection is reported
+separately and **is not** a signal to rollback or re-pair. Neither the
+Python bootstrap nor the CLI touches deployed v1.
+
+This intentionally narrow upgrade gate remains subject to isolated
+clean-host, local-failure injection and real signed read-only connectivity
+acceptance. Do not claim upgrades of Shell-enabled Agents as supported.
+
 **Required human decisions/steps later:** review Release immutability settings
 with maintainer credentials, trusted Node binary provenance, verify ARM64 and
 x64 clean-host ABI/runs, explicitly approve publishing any Release, then

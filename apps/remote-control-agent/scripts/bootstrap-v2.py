@@ -330,7 +330,7 @@ def preflight(tag, commit, endpoint):
     return "linux-" + ("x64" if cpu == "x86_64" else "arm64") + "-glibc"
 
 
-def install(tag, commit, endpoint, name=None):
+def install(tag, commit, endpoint, name=None, upgrade=False):
     target = preflight(tag, commit, endpoint)
     location = program_home(os.path.expanduser("~"))
     version = location / (tag + "-" + target)
@@ -367,6 +367,8 @@ def install(tag, commit, endpoint, name=None):
                    "--endpoint", endpoint]
         if name:
             command += ["--name", name]
+        if upgrade:
+            command += ["--upgrade"]
         print("Verified GitHub Release " + tag + " for " + target
               + ". Local permanent/temporary pairing requires independent MCP approval.",
               flush=True)
@@ -380,9 +382,10 @@ def main():
     parser.add_argument("--commit", required=True)
     parser.add_argument("--endpoint", required=True)
     parser.add_argument("--name")
+    parser.add_argument("--upgrade", action="store_true", help="manual owned v2 program upgrade only")
     args = parser.parse_args()
     try:
-        install(args.tag, args.commit, args.endpoint, args.name)
+        install(args.tag, args.commit, args.endpoint, args.name, args.upgrade)
     except ValueError as exc:
         # Only messages from explicitly authored validation branches.
         print("Standalone v2 install refused: " + str(exc), file=sys.stderr)

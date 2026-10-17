@@ -158,6 +158,65 @@ export function renderV2Service({ node, home, repoRoot, endpoint, keyPath, entry
   ].join("\n");
 }
 
+/**
+ * Fail-closed T08 upgrade gate: the currently published v2 runtime has
+ * readOnly:true, writeFile:false and shell:false. This is the *only* profile
+ * for which live managed Shell work is impossible by construction; no new
+ * process IPC/state database is introduced. Any other profile must get a
+ * separately reviewed authoritative in-process quiescence gate before upgrade.
+ *
+ * Existing systemd activation+rollback in installUnit() switches ONLY the
+ * v2 program path; private Ed25519 keys, endpoint and SQLite remain intact.
+ */
+export async function assertSafePortableUpgrade(unit, home, newManifestPath) {
+  if (!unit || !unit.startsWith(MARKER + "\n")) {
+    throw new Error("Manual upgrade requires an owned v2 service.");
+  }
+  const settings = unit.split("\n");
+  const working = settings.filter(line => line.startsWith("WorkingDirectory="));
+  const starts = settings.filter(line => line.startsWith("ExecStart="));
+  if (working.length !== 1 || starts.length !== 1) {
+    throw new Error("Current v2 service has ambiguous executable ownership.");
+  }
+  const previousRoot = path.resolve(working[0].slice("WorkingDirectory=".length), "..", "..");
+  const privatePrograms = path.join(home, ".local", "share", "mcp-workers", "remote-control", "programs");
+  if (!previousRoot.startsWith(privatePrograms + path.sep) ||
+      !starts[0].includes("ExecStart=" + path.join(previousRoot, "bin", "node") + " ") ||
+      !starts[0].endsWith(path.join(previousRoot, "apps", "remote-control-agent", "src", "v2-main.js"))) {
+    throw new Error("Cannot upgrade an unverified/checkout-based current v2 Agent.");
+  }
+  for (const root of [previousRoot, path.resolve(path.dirname(newManifestPath))]) {
+    const meta = await lstat(root);
+    if (!meta.isDirectory() || meta.isSymbolicLink() || meta.uid !== process.getuid() ||
+        (meta.mode & 0o077) !== 0) {
+      throw new Error("Unowned Agent program directory; manual review required.");
+    }
+    const manifestFile = path.join(root, "bundle.json");
+    const metaFile = await lstat(manifestFile);
+    if (!metaFile.isFile() || metaFile.isSymbolicLink() ||
+        metaFile.uid !== process.getuid() || (metaFile.mode & 0o077) !== 0) {
+      throw new Error("Untrusted program manifest.");
+    }
+    let manifest;
+    try { manifest = JSON.parse(await readFile(manifestFile, "utf8")); }
+    catch { throw new Error("Invalid Agent program manifest."); }
+    if (manifest.artifact_schema !== 1 || manifest.device_protocol !== 2 ||
+        manifest.receipt_schema !== 1 ||
+        manifest.upgrade_profile !== "read-only-no-shell-v1") {
+      throw new Error("Managed Sessions quiescence cannot be proven; upgrade blocked.");
+    }
+    const entrySource = await readFile(path.join(root,
+      "apps", "remote-control-agent", "src", "v2-main.js"), "utf8");
+    if (!/readOnly:\s*true,\s*writeFile:\s*false,\s*shell:\s*false,/.test(entrySource)) {
+      throw new Error("Active/unknown Shell ownership may exist; upgrade blocked.");
+    }
+  }
+  if (previousRoot === path.resolve(path.dirname(newManifestPath))) {
+    throw new Error("Already running this program version; use ordinary install.");
+  }
+  return {oldProgram:previousRoot, newProgram:path.resolve(path.dirname(newManifestPath))};
+}
+
 /** The regular installer never silently retargets an installed v2 service. */
 export function assertExistingServiceEndpoint(unit, endpoint) {
   const expected = "Environment=REMOTE_CONTROL_V2_ENDPOINT=" + trustedEndpoint(endpoint);
@@ -678,8 +737,11 @@ export async function runInstaller(args, {
   startForeground = launchForeground,
 } = {}) {
   const options = parseInstallArgs(args);
-  if (portable && ["upgrade", "uninstall", "resume"].includes(options.action)) {
-    throw new Error("Portable upgrade/uninstall requires separately reviewed lifecycle CLI.");
+  if (portable && ["uninstall", "resume"].includes(options.action)) {
+    throw new Error("Portable uninstall/resume requires separately reviewed lifecycle CLI.");
+  }
+  if (portable && options.action === "upgrade" && (!stdin.isTTY || !stdout.isTTY)) {
+    throw new Error("Manual portable upgrade requires a real local terminal.");
   }
   if (portable && options.action === "install") {
     if (!stdin.isTTY || !stdout.isTTY) {
@@ -711,7 +773,8 @@ export async function runInstaller(args, {
   const previous = await readOwnedUnit(unitPath);
   // Ordinary repeat install must not silently accept a different Worker target.
   // Explicit --upgrade remains the separate path for intentional endpoint changes.
-  if (previous && options.action === "install" && options.grantType !== "temporary") {
+  if (previous && (options.action === "install" || options.action === "upgrade") &&
+      options.grantType !== "temporary") {
     assertExistingServiceEndpoint(previous, options.endpoint);
   }
   // A distinct temporary Agent may coexist with the installed permanent unit.
@@ -794,6 +857,9 @@ export async function runInstaller(args, {
     node: process.execPath, home, repoRoot: path.resolve(packageRoot, "..", ".."),
     endpoint: options.endpoint, keyPath, entryExt: portable ? "js" : "ts",
   });
+  if (portable && options.action === "upgrade") {
+    await assertSafePortableUpgrade(previous, home, manifestPath);
+  }
   await installUnit(unitPath, rendered, previous);
   await finishRevokedPromotion(keyPath);
   stdout.write("v2 user service active. Use list_devices and an approved nonsensitive read fixture to verify connectivity.\n");
