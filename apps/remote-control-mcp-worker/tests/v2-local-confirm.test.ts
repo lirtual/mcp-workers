@@ -4,7 +4,6 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { newEnrollment, saveNewPrivateKey } from "../../remote-control-agent/src/v2-enrollment.ts";
-import { confirmDeviceLocally } from "../../remote-control-agent/src/confirm-device.ts";
 import { assertRemoteRevocation } from "../../remote-control-agent/src/v2-repair.ts";
 import { beginDeviceEnrollment, PendingIdentityConflictError } from "../../remote-control-agent/src/pair-device.ts";
 import { recoverDeviceId } from "../../remote-control-agent/src/v2-session-client.ts";
@@ -61,309 +60,120 @@ function setup() {
   return { rows, env, site, send, rpc, value, storage };
 }
 
-test("Portal preview/prepare + independent Agent terminal proof is the ONLY pairing activation path", async () => {
-  const { rows, site, send, rpc, value } = setup();
-  const material = newEnrollment("Linux-v2-pending");
-  const dir = await mkdtemp(path.join(os.tmpdir(), "v2-local-confirm-"));
-  const file = path.join(dir, "key.pem");
-  try {
-    await saveNewPrivateKey(file, material.privateKeyPem);
-    const registration = await send(site + "agent/pair/start", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify(material.request),
-    });
-    assert.equal(registration.status, 202);
-
-    const preview = await rpc("pairing_lookup", { code: material.code });
-    const identity = value(preview);
-    assert.match(String(identity.pairing_id), /^[a-f0-9-]{36}$/);
-    assert.match(String(identity.fingerprint), /^[a-f0-9]{24}$/);
-    const denied = await rpc("pairing_prepare", { pairing_id: identity.pairing_id,
-      expected_fingerprint: "0".repeat(24) });
-    assert.equal(denied.data.result?.content[0]?.text.includes("not found"), true);
-    const prepWithoutBearer = await rpc("pairing_prepare", {
-      pairing_id: identity.pairing_id, expected_fingerprint: identity.fingerprint,
-    }, "not-the-owner");
-    assert.equal(prepWithoutBearer.response.status, 401);
-
-    const prepared = await rpc("pairing_prepare", {
-      pairing_id: identity.pairing_id, expected_fingerprint: identity.fingerprint,
-    });
-    const challenge = String(value(prepared).challenge);
-    assert.match(challenge, /^[A-Z2-7]{12}$/);
-    assert.equal([...rows.keys()].filter(x => x.startsWith("device:")).length, 0);
-
-    const auto = await rpc("pairing_confirm", {
-      pairing_id: identity.pairing_id, expected_fingerprint: identity.fingerprint, approve: true,
-    });
-    assert.match(auto.data.result?.content[0]?.text ?? "", /rejected/);
-    assert.equal([...rows.keys()].filter(x => x.startsWith("device:")).length, 0);
-
-    // The model may see the challenge but cannot sign as the new device.
-    const forged = await send(site + "agent/pair/complete", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ verifier: material.request.code_verifier,
-        challenge, proof: "invalid" }),
-    });
-    assert.equal(forged.status, 403);
-
-    let capturedProof: unknown;
-    const signed: typeof fetch = async (input, init) => {
-      capturedProof = JSON.parse(String(init?.body));
-      return send(input, init);
-    };
-    const deviceId = await confirmDeviceLocally(material.code, challenge, site, file, signed);
-    assert.match(deviceId, /^[a-f0-9-]{36}$/);
-    assert.equal([...rows.keys()].filter(x => x.startsWith("device:")).length, 1);
-    assert.equal([...rows.keys()].filter(x => x.startsWith("pending:")).length, 0);
-    assert.equal((rows.get("device:" + deviceId) as { public_key: string }).public_key, material.request.public_key);
-
-    const replay = await send(site + "agent/pair/complete", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify(capturedProof),
-    });
-    assert.equal(replay.status, 404);
-    await assert.rejects(confirmDeviceLocally(material.code, challenge, site, file, signed), /already has a paired/);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
+test("#97 old pairing_prepare and public /agent/pair/complete cannot approve a device",async()=>{
+  const {rows,site,send,rpc,value}=setup();
+  const pending=newEnrollment("no-legacy-fallback");
+  assert.equal((await send(site+"agent/pair/start",{
+    method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(pending.request),
+  })).status,202);
+  const looked=value(await rpc("pairing_lookup",{code:pending.code}));
+  assert.match(String(looked.pairing_id),/^[a-f0-9-]{36}$/);
+  for(const name of ["pairing_prepare","pairing_confirm","approve_device"]){
+    const result=await rpc(name,{pairing_id:looked.pairing_id,
+      expected_fingerprint:looked.fingerprint,expected_grant_type:"permanent"});
+    assert.equal(result.data.result?.content[0]?.text.includes("unavailable")||
+      result.data.result?.content[0]?.text.includes("rejected"),true,name);
   }
+  const old=await send(site+"agent/pair/complete",{
+    method:"POST",headers:{"content-type":"application/json"},
+    body:JSON.stringify({verifier:pending.request.code_verifier,challenge:"A".repeat(12),proof:"bogus"}),
+  });
+  assert.equal(old.status,404);
+  assert.equal([...rows.keys()].filter(k=>k.startsWith("device:")).length,0);
+  assert.equal([...rows.keys()].filter(k=>k.startsWith("pending:")).length,1);
 });
 
-test("local confirmation rejects guessed/expired challenge and wrong private key", async () => {
-  const { rows, site, send, rpc, value } = setup();
-  const material = newEnrollment("trusted-key");
-  const wrong = newEnrollment("wrong-key");
-  const dir = await mkdtemp(path.join(os.tmpdir(), "v2-local-deny-"));
-  const rightPath = path.join(dir, "right.pem");
-  const wrongPath = path.join(dir, "wrong.pem");
-  try {
-    await saveNewPrivateKey(rightPath, material.privateKeyPem);
-    await saveNewPrivateKey(wrongPath, wrong.privateKeyPem);
-    assert.equal((await send(site + "agent/pair/start", {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(material.request),
-    })).status, 202);
-    const identity = value(await rpc("pairing_lookup", { code: material.code }));
-    const prepared = value(await rpc("pairing_prepare", {
-      pairing_id: identity.pairing_id, expected_fingerprint: identity.fingerprint,
+test("#97 revoked ID can only be replaced after distinct explicit MCP approval and new-key proof",async()=>{
+  const {rows,site,send,rpc,value}=setup();
+  const dir=await mkdtemp(path.join(os.tmpdir(),"v2-single-repair-"));
+  const oldKey=path.join(dir,"v2-identity.pem");
+  const stage=oldKey+".re-pair-new";
+  const approve=async(code:string)=>{
+    const pending=value(await rpc("pairing_lookup",{code}));
+    const approved=value(await rpc("pairing_approve",{
+      pairing_id:pending.pairing_id,expected_fingerprint:pending.fingerprint,
+      expected_grant_type:pending.grant_type,
     }));
-    const challenge = String(prepared.challenge);
-    await assert.rejects(confirmDeviceLocally(material.code, challenge, site, wrongPath, send), /denied/);
-    await assert.rejects(confirmDeviceLocally(material.code, "AAAAAAAAAAAA", site, rightPath, send), /denied/);
-    assert.equal([...rows.keys()].filter(x => x.startsWith("device:")).length, 0);
-    const replacement = value(await rpc("pairing_prepare", {
-      pairing_id: identity.pairing_id, expected_fingerprint: identity.fingerprint,
-    }));
-    const newerChallenge = String(replacement.challenge);
-    assert.notEqual(challenge, newerChallenge);
-    await assert.rejects(confirmDeviceLocally(material.code, challenge, site, rightPath, send), /denied/);
-    const row = rows.get("pending:" + material.request.code_verifier) as { confirmation_expires_at: number };
-    row.confirmation_expires_at = Date.now() - 1;
-    await assert.rejects(confirmDeviceLocally(material.code, challenge, site, rightPath, send), /denied/);
-    assert.equal([...rows.keys()].filter(x => x.startsWith("device:")).length, 0);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("deleted identity requires fresh independent owner challenge, not a perpetual key blacklist", async () => {
-  const { rows, site, send, rpc, value } = setup();
-  const original = newEnrollment("same-host");
-  const fresh = newEnrollment("same-host");
-  const dir = await mkdtemp(path.join(os.tmpdir(), "v2-reinstall-after-revoke-"));
-  async function begin(material: typeof original) {
-    const registered = await send(site + "agent/pair/start", {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(material.request),
-    });
-    assert.equal(registered.status, 202);
-    const identity = value(await rpc("pairing_lookup", { code: material.code }));
-    const prepared = value(await rpc("pairing_prepare", {
-      pairing_id: identity.pairing_id, expected_fingerprint: identity.fingerprint,
-    }));
-    return String(prepared.challenge);
-  }
-  try {
-    const oldKey = path.join(dir, "old.pem");
-    await saveNewPrivateKey(oldKey, original.privateKeyPem);
-    const originalId = await confirmDeviceLocally(original.code, await begin(original), site, oldKey, send);
-    assert.match(originalId, /^[a-f0-9-]{36}$/);
-    // The exact Agent-signed read-only status route must refuse re-pair
-    // while the MCP still considers the old identity approved.
-    await assert.rejects(assertRemoteRevocation(site, oldKey, originalId, send),
-      /Revocation cannot be verified/);
-    assert.equal((rows.get("device:" + originalId) as { revoked: boolean }).revoked, false);
-    const revoked = await rpc("revoke_device", { device_id: originalId });
-    assert.equal(value(revoked).status, "revoked");
-    await assertRemoteRevocation(site, oldKey, originalId, send);
-    // Read-only probe never un-revokes or replaces the old identity.
-    await assertRemoteRevocation(site, oldKey, originalId, send);
-    assert.equal(rows.has("device:" + originalId), false);
-    assert.equal([...rows].filter(([k]) => k.startsWith("pending:")).length, 0);
-    // A negative lookup cannot prove a historical ID-to-key binding.
-    await assertRemoteRevocation(site, oldKey, "00000000-0000-4000-8000-000000000000", send);
-
-    // A copied old key may only create a NEW pending request; this alone
-    // cannot grant an approved device or resurrect the removed old ID.
-    const clonedOld = path.join(dir, "cloned-old.pem");
-    await saveNewPrivateKey(clonedOld, original.privateKeyPem);
-    const pendingOld = await send(site + "agent/pair/start", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify(newEnrollment("same-host", original.privateKeyPem).request),
-    });
-    assert.equal(pendingOld.status, 202);
-    assert.equal([...rows].filter(([k]) => k.startsWith("device:")).length, 0);
-    assert.equal(rows.has("device:" + originalId), false);
-
-    // A fresh installation with a fresh Ed25519 identity can go through the
-    // same independent human terminal confirmation, even with the same label.
-    const newKey = path.join(dir, "new.pem");
-    await saveNewPrivateKey(newKey, fresh.privateKeyPem);
-    const newId = await confirmDeviceLocally(fresh.code, await begin(fresh), site, newKey, send);
-    assert.notEqual(newId, originalId);
-    assert.equal((rows.get("device:" + newId) as { revoked: boolean }).revoked, false);
-    await assert.rejects(assertRemoteRevocation(site, newKey, newId, send),
-      /Revocation cannot be verified/);
-    assert.equal(rows.has("device:" + originalId), false);
-    assert.equal([...rows].filter(([k]) => k.startsWith("device:")).length, 1);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("full simulated owner-MCP + Agent revoke/re-pair survives stale code and lost confirmation", async () => {
-  // All paths are disposable test fixtures. This test never contacts a live
-  // Worker, real device or local systemd service.
-  const {rows, site, send, rpc, value} = setup();
-  const dir = await mkdtemp(path.join(os.tmpdir(), "v2-full-repair-"));
-  const oldKey = path.join(dir, "v2-identity.pem");
-  const stage = oldKey + ".re-pair-new";
-  try {
-    const first = await beginDeviceEnrollment("office-linux", site, oldKey, send);
-    const prepare = async (code: string) => {
-      const lookup = value(await rpc("pairing_lookup", {code}));
-      assert.match(String(lookup.pairing_id), /^[a-f0-9-]{36}$/);
-      const prepared = value(await rpc("pairing_prepare", {
-        pairing_id: lookup.pairing_id, expected_fingerprint: lookup.fingerprint,
-      }));
-      const challenge = String(prepared.challenge);
-      assert.match(challenge, /^[A-Z2-7]{12}$/);
-      return challenge;
-    };
-    const oldId = await confirmDeviceLocally(first.code, await prepare(first.code), site, oldKey, send);
-    assert.match(oldId, /^[a-f0-9-]{36}$/);
-    assert.equal((await readFile(oldKey + ".device-id", "utf8")).trim(), oldId);
-    // No re-pair can occur before the owner explicitly revokes this ID.
-    await assert.rejects(assertRemoteRevocation(site, oldKey, oldId, send),
-      /Revocation cannot be verified/);
-    assert.equal(value(await rpc("revoke_device", {device_id: oldId})).status, "revoked");
-    await assertRemoteRevocation(site, oldKey, oldId, send);
-
-    // A deleted key may request pending again but may not regain the old ID
-    // or obtain authorization without a new, explicit owner+terminal gate.
-    const oldPending = await beginDeviceEnrollment("office-linux", site, oldKey, send, true);
-    assert.match(oldPending.code, /^[A-Z2-7]{10}$/);
-    assert.equal(rows.has("device:" + oldId), false);
-    const oldChallenge = await send(site + "agent/session/challenge", {
-      method:"POST", headers:{"content-type":"application/json"},
-      body: JSON.stringify({device_id: oldId}),
-    });
-    assert.equal(oldChallenge.status, 404);
-
-    // An interrupted first attempt to pair a NEW key does not rotate it again.
-    const firstStage = await beginDeviceEnrollment("office-linux", site, stage, send);
-    const stagedPem = await readFile(stage, "utf8");
-    const retryStage = await beginDeviceEnrollment("office-linux", site, stage, send, true);
-    assert.notEqual(retryStage.code, firstStage.code);
-    assert.equal(retryStage.fingerprint, firstStage.fingerprint);
-    assert.equal(await readFile(stage, "utf8"), stagedPem);
-    const stale = await rpc("pairing_lookup", {code:firstStage.code});
-    assert.match(stale.data.result?.content[0]?.text ?? "", /not found/i);
-    assert.equal((await readFile(oldKey + ".device-id", "utf8")).trim(), oldId);
-
-    // Cloud approved the new key, but the local confirmation HTTP response
-    // disappeared before the Agent could write its .device-id.
-    let serverApproved = false;
-    const droppedReply: typeof fetch = async (input, init) => {
-      const response = await send(input, init);
-      if (new URL(input instanceof Request ? input.url : String(input)).pathname === "/agent/pair/complete" &&
-          response.status === 200) {
-        serverApproved = true;
-        throw new Error("simulated lost confirmation response");
-      }
-      return response;
-    };
-    await assert.rejects(
-      confirmDeviceLocally(retryStage.code, await prepare(retryStage.code), site, stage, droppedReply),
-      /simulated lost confirmation response/);
-    assert.equal(serverApproved, true);
-    await assert.rejects(readFile(stage + ".device-id", "utf8"), {code:"ENOENT"});
-    assert.equal((await readFile(oldKey + ".device-id", "utf8")).trim(), oldId);
-
-    // Signed identity recovery finds the newly approved ID without replaying
-    // a pairing challenge and then promotes only this approved replacement.
-    const newId = await recoverDeviceId(site, stage, send);
-    assert.notEqual(newId, oldId);
-    assert.equal((await readFile(stage + ".device-id", "utf8")).trim(), newId);
-    const archive = await promoteRevokedIdentity(oldKey, oldId);
-    assert.equal((await readFile(oldKey + ".device-id", "utf8")).trim(), newId);
-    assert.equal(await readFile(oldKey, "utf8"), stagedPem);
-    assert.equal((await readFile(path.join(archive, "identity.pem.device-id"), "utf8")).trim(), oldId);
-    const newChallenge = await send(site + "agent/session/challenge", {
-      method:"POST", headers:{"content-type":"application/json"},
-      body: JSON.stringify({device_id:newId}),
-    });
-    assert.equal(newChallenge.status, 200);
-    const oldAgain = await send(site + "agent/session/challenge", {
-      method:"POST", headers:{"content-type":"application/json"},
-      body: JSON.stringify({device_id:oldId}),
-    });
-    assert.equal(oldAgain.status, 404);
-    assert.equal(rows.has("device:" + oldId), false);
-    assert.equal((rows.get("device:" + newId) as {revoked:boolean}).revoked, false);
-  } finally {
-    await rm(dir, {recursive:true,force:true});
-  }
-});
-
-test("T01 pairing lookup/prepare cannot bypass Portal Bearer or Origin checks", async () => {
-  const { rows, site, send, rpc, value } = setup();
-  const material = newEnrollment("auth-negative-fixture");
-  assert.equal((await send(site + "agent/pair/start", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(material.request),
-  })).status, 202);
-
-  const preview = value(await rpc("pairing_lookup", { code: material.code }));
-  const lookupArgs = { code: material.code };
-  const prepareArgs = {
-    pairing_id: preview.pairing_id,
-    expected_fingerprint: preview.fingerprint,
+    assert.equal(approved.status,"approved");
+    return String(approved.device_id);
   };
-  const unchanged = [...rows.entries()];
-  const attempts = [
-    { label: "no Authorization header", headers: {}, status: 401 },
-    { label: "wrong authorization scheme", headers: { authorization: "Basic portal-test-only" }, status: 401 },
-    { label: "empty Bearer", headers: { authorization: "Bearer" }, status: 401 },
-    { label: "invalid Bearer", headers: { authorization: "Bearer wrong-token" }, status: 401 },
-    { label: "forged browser Origin", headers: {
-      authorization: "Bearer portal-test-only", origin: "https://untrusted.invalid",
-    }, status: 403 },
+  try {
+    const first=await beginDeviceEnrollment("office-linux",site,oldKey,send);
+    const oldGrant=await approve(first.code);
+    assert.equal(await recoverDeviceId(site,oldKey,send),oldGrant);
+    await assert.rejects(assertRemoteRevocation(site,oldKey,oldGrant,send),
+      /Revocation cannot be verified/);
+    assert.equal(value(await rpc("revoke_device",{device_id:oldGrant})).status,"revoked");
+    await assertRemoteRevocation(site,oldKey,oldGrant,send);
+    assert.equal(rows.has("device:"+oldGrant),false);
+    const stale=await beginDeviceEnrollment("office-linux",site,oldKey,send,true);
+    assert.match(stale.code,/^[A-Z2-7]{10}$/);
+    assert.equal(rows.has("device:"+oldGrant),false);
+    // New key goes into a staging file; uncertain response must not rotate it.
+    const original=await beginDeviceEnrollment("office-linux",site,stage,send);
+    const stagedPem=await readFile(stage,"utf8");
+    const retry=await beginDeviceEnrollment("office-linux",site,stage,send,true);
+    assert.notEqual(retry.code,original.code);
+    assert.equal(await readFile(stage,"utf8"),stagedPem);
+    assert.match((await rpc("pairing_lookup",{code:original.code})).data.result?.content[0]?.text??"",
+      /not found/i);
+    const newGrant=await approve(retry.code);
+    let dropped=false;
+    const unreliable:typeof fetch=async(input,init)=>{
+      const result=await send(input,init);
+      if(!dropped && new URL(input instanceof Request ? input.url : String(input)).pathname===
+          "/agent/session/recover" && result.status===200){
+        dropped=true;
+        throw new Error("simulated lost signed recovery response");
+      }
+      return result;
+    };
+    await assert.rejects(recoverDeviceId(site,stage,unreliable),/simulated lost/);
+    await assert.rejects(readFile(stage+".device-id","utf8"),{code:"ENOENT"});
+    assert.equal((await readFile(oldKey+".device-id","utf8")).trim(),oldGrant);
+    assert.equal(await recoverDeviceId(site,stage,send),newGrant);
+    assert.notEqual(newGrant,oldGrant);
+    const archive=await promoteRevokedIdentity(oldKey,oldGrant);
+    assert.equal((await readFile(oldKey+".device-id","utf8")).trim(),newGrant);
+    assert.equal(await readFile(oldKey,"utf8"),stagedPem);
+    assert.equal((await readFile(path.join(archive,"identity.pem.device-id"),"utf8")).trim(),oldGrant);
+    assert.equal(rows.has("device:"+oldGrant),false);
+    assert.equal([...rows.keys()].filter(k=>k.startsWith("device:")).length,1);
+    await assert.rejects(assertRemoteRevocation(site,oldKey,newGrant,send),
+      /Revocation cannot be verified/);
+  } finally {await rm(dir,{recursive:true,force:true});}
+});
+
+test("#97 pairing lookup and approval cannot bypass Portal Bearer or Origin checks",async()=>{
+  const {rows,site,send,rpc,value}=setup();
+  const material=newEnrollment("one-code-auth");
+  assert.equal((await send(site+"agent/pair/start",{
+    method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(material.request),
+  })).status,202);
+  const identity=value(await rpc("pairing_lookup",{code:material.code}));
+  const lookupArgs={code:material.code};
+  const approveArgs={pairing_id:identity.pairing_id,
+    expected_fingerprint:identity.fingerprint,expected_grant_type:"permanent"};
+  const unauthorized=[
+    {label:"missing",headers:{},status:401},
+    {label:"wrong scheme",headers:{authorization:"Basic portal-test-only"},status:401},
+    {label:"wrong bearer",headers:{authorization:"Bearer wrong-token"},status:401},
+    {label:"cross origin",headers:{authorization:"Bearer portal-test-only",origin:"https://evil.invalid"},status:403},
   ] as const;
-  for (const attempt of attempts) {
-    for (const [method, params] of [
-      ["tools/list", undefined],
-      ["tools/call", { name: "pairing_lookup", arguments: lookupArgs }],
-      ["tools/call", { name: "pairing_prepare", arguments: prepareArgs }],
-    ] as const) {
-      const response = await send(site + "mcp", {
-        method: "POST",
-        headers: { "content-type": "application/json", ...attempt.headers },
-        body: JSON.stringify({ jsonrpc: "2.0", id: 5, method, params }),
+  for(const attempt of unauthorized){
+    for(const [method,params] of [
+      ["tools/list",undefined],
+      ["tools/call",{name:"pairing_lookup",arguments:lookupArgs}],
+      ["tools/call",{name:"pairing_approve",arguments:approveArgs}],
+    ] as const){
+      const response=await send(site+"mcp",{
+        method:"POST",headers:{"content-type":"application/json",...attempt.headers},
+        body:JSON.stringify({jsonrpc:"2.0",id:5,method,params}),
       });
-      assert.equal(response.status, attempt.status, attempt.label + " / " + method);
-      assert.deepEqual([...rows.entries()], unchanged,
-        "rejected MCP requests must never alter pending approval or create device credentials");
-      assert.equal([...rows.keys()].filter(key => key.startsWith("device:")).length, 0);
+      assert.equal(response.status,attempt.status,attempt.label+" / "+method);
+      assert.equal([...rows.keys()].filter(k=>k.startsWith("device:")).length,0);
     }
   }
+  const approved=value(await rpc("pairing_approve",approveArgs));
+  assert.equal(approved.status,"approved");
 });
