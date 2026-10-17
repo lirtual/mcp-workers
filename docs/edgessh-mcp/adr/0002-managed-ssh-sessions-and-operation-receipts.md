@@ -1,7 +1,7 @@
 # ADR-0002 — Managed SSH sessions, trusted hosts, unattended operations and durable receipts
 
-Status: **Historical Q6–Q10 accepted on 2026-10-17; Q17–Q21 recorded in [ADR-0004](./0004-unmodified-edgessh-and-reliability-policy.md), whose no-EdgeSSH-changes boundary blocks the original execution model. Q22 open.**
-Scope: prospective EdgeSSH-owned SSH execution / optional MCP adapter. Design decision only, no code or production authorization.
+Status: **Historical Round 2 product choices remain accepted. Execution/credential custody changed via Q22=B; [ADR-0005](./0005-independent-mcp-ssh-shared-edgessh-credentials.md) is current. Documentation only.**
+Scope: SSH functionality requirements irrespective of executor. **Historical EdgeSSH-owned executor assumption superseded by MCP-owned execution (Q22=B)**. No code/production authorization.
 Related: [ADR-0001](./0001-edgessh-mcp-cross-repo-boundary.md), [interview](../DESIGN-INTERVIEW.md).
 
 ## Context
@@ -22,7 +22,7 @@ Q6 and Q9 were chosen because an AI caller needs Shell sessions and durable know
 
 ## Security and operation invariants
 
-- **No SSH credential export:** only EdgeSSH decrypts and uses credentials, not the MCP Worker. Never forward the existing credential-returning browser endpoint as a tool.
+- **No credential exposure to MCP callers:** per Q22=B, both EdgeSSH and MCP now hold/use the same root encryption key and decrypt host credentials. Neither may return them to MCP tool results/logs. The browser credential-returning endpoint is not an MCP interface. See [ADR-0005](./0005-independent-mcp-ssh-shared-edgessh-credentials.md).
 - **No host-key auto-approval:** a new or mismatched fingerprint blocks even an otherwise authenticated unattended command until a human verifies it.
 - **No hidden per-host restrictions:** Q4=B explicitly allows all Saved Hosts. Host-key checks and stored SSH account privileges remain enforceable.
 - **No guarantee of a surviving TCP session:** Cloudflare [Durable Object lifecycle](https://developers.cloudflare.com/durable-objects/concepts/durable-object-lifecycle/) and [TCP socket behavior](https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/) do not justify a guaranteed always-live SSH session. A durable session ID is not a durable TCP connection. A remotely detached process might outlive its connection without being controllable.
@@ -44,6 +44,6 @@ Q6 and Q9 were chosen because an AI caller needs Shell sessions and durable know
 
 The operator accepted **Q11=A–Q16=A** in [ADR-0003](./0003-bounded-live-sessions-and-authoritative-admission.md): lost connections do not trigger automatic re-execution, only provably session-owned live jobs may be stopped, interactive input has receipt deduplication, EdgeSSH owns durable admission in its existing storage, sessions/output have finite limits, and MCP SFTP writes are explicit bounded UTF-8 operations.
 
-**Q17–Q20 now settled at policy level** via ADR-0004. **Q21 prohibits all EdgeSSH changes**, so the original EdgeSSH-only credential execution and receipt model is technically blocked pending Q22. No automatic implementation or rollout authorization exists.
+**Q17–Q20 and Q21 are settled** in ADR-0004. **Q22=B explicitly resolves** the previously blocked architecture by moving SSH command dispatch/credential decryption and operation receipts into the MCP Worker while leaving EdgeSSH unchanged; see [ADR-0005](./0005-independent-mcp-ssh-shared-edgessh-credentials.md). Q6–Q10 remain intact. The new solution increases shared-key and D1 write-capability risks, not authorized for deployment.
 
 No code changes, database migrations, Cloudflare bindings, new deployments or production SSH actions are authorized by this ADR.
