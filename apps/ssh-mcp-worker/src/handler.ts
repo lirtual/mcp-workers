@@ -23,7 +23,7 @@ export default {
       allowedOrigins: [],
     });
     if (!auth.ok) {
-      if (auth.reason === 'misconfigured') return authError(503, 'portal_auth_not_configured', 'MCP Portal authentication is not configured.');
+      if (auth.reason === 'misconfigured') return authError(503, 'auth_misconfigured', 'MCP Portal authentication is not configured.');
       if (auth.reason === 'invalid_origin') return authError(403, 'invalid_origin', 'Request Origin is not allowed.');
       return authError(401, 'unauthorized', 'Valid MCP Portal authentication is required.');
     }

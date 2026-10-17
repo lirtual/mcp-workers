@@ -1,0 +1,53 @@
+{
+  "ticket": "https://github.com/lirtual/mcp-workers/issues/94",
+  "spec": "9fa870946f9d1891cba2992c67a5f6c1db9c4241",
+  "edgeSshCryptoFixture": "7a051e412d2cfa4ee52edec30e6ccefedb4e1c99",
+  "commands": [
+    "pnpm install --frozen-lockfile",
+    "pnpm --filter ssh-mcp-worker typecheck",
+    "pnpm --filter ssh-mcp-worker test",
+    "pnpm --filter ssh-mcp-worker test:g0",
+    "pnpm --filter ssh-mcp-worker test:exec",
+    "node --test scripts/select-affected-apps.test.mjs"
+  ],
+  "fixtureCommands": [
+    "git clone --filter=blob:none --no-checkout https://github.com/lirtual/EdgeSSH.git /tmp/edgessh-7a051e4",
+    "git -C /tmp/edgessh-7a051e4 checkout --detach 7a051e412d2cfa4ee52edec30e6ccefedb4e1c99",
+    "node --experimental-strip-types apps/ssh-mcp-worker/scripts/generate-host-fixture.mjs /tmp/edgessh-7a051e4/src/accounts/crypto.ts"
+  ],
+  "ci": {
+    "workflow": ".github/workflows/ci.yml",
+    "selector": "scripts/select-affected-apps.mjs",
+    "selectorTest": "scripts/select-affected-apps.test.mjs",
+    "appCheck": "pnpm --filter \"$app\" check",
+    "appOnlyInput": "apps/ssh-mcp-worker/**",
+    "sharedInputs": ["packages/**", "pnpm-lock.yaml", "pnpm-workspace.yaml", "package.json"],
+    "liveGitHubActionsRunRequired": false,
+    "productionReleaseIncludesSsh": false
+  },
+  "runtime": {
+    "node": ">=24 <25",
+    "pnpm": "10.17.1",
+    "wrangler": "4.130.0",
+    "workerd": "1.20260908.1",
+    "compatibilityDate": "2026-09-10",
+    "sshClient": "@meitaim/ssh@1.0.0",
+    "sshFixture": "ssh2@1.17.0",
+    "mcpServer": "@modelcontextprotocol/server@2.0.0",
+    "mcpClient": "@modelcontextprotocol/client@2.0.0",
+    "typescript": "6.0.3",
+    "workersTypes": "@cloudflare/workers-types@5.20260911.1"
+  },
+  "plan": {
+    "measuredAgainstLiveAccount": false,
+    "localRuntime": "wrangler dev --local uses the pinned workerd above and one SQLite-backed SshOperationsDO. No Cron, Queue, second Worker, or production route is configured.",
+    "documentedLimitsReviewed": "2026-10-18",
+    "sources": [
+      "https://developers.cloudflare.com/durable-objects/platform/limits/",
+      "https://developers.cloudflare.com/durable-objects/platform/pricing/",
+      "https://developers.cloudflare.com/workers/platform/limits/",
+      "https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/"
+    ],
+    "comparison": "Workers Free documents 100,000 requests/day and 10 ms CPU for ordinary Workers; Durable Object invocations document a 30 s default CPU limit. Free SQLite DO pricing documents 100,000 requests/day, 13,000 GB-s/day, 5 million row reads/day, 100,000 row writes/day, and 5 GB stored SQL. An outbound TCP socket keeps its DO billable and unevictable for up to 15 minutes per connection, then ordinary eviction resumes even if the socket remains open. That 15-minute protection is not a 60-minute SSH lifetime. The app budget remains 2 connections per host and 4 total, below the documented 6 simultaneous outgoing connections per request. Observability export is disabled. This record is not an account bill or a deployed measurement."
+  }
+}

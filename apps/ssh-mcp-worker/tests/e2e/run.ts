@@ -325,7 +325,7 @@ try {
     exec(11, stalledId, 'fixture-stalled-exec-ack', 1_000),
     delay(3500).then(() => { throw new Error('operation deadline did not bound stalled SSH exec acknowledgement'); }),
   ]);
-  assert.equal(stalled.value.status, 'unknown');
+  assert.equal(stalled.value.status, 'unknown', JSON.stringify(stalled));
   assert.ok(Date.now() - started < 3_000, 'stalled exec acknowledgement must return within the operation deadline and bounded cleanup');
   const stalledReplay = await exec(12, stalledId, 'fixture-stalled-exec-ack', 1_000);
   assert.equal(stalledReplay.value.status, 'unknown');
@@ -1510,6 +1510,117 @@ try {
   assert.equal((afterWriteLog.match(/exec-command:/g) ?? []).length, sftpCallsBefore.exec, 'SFTP write must not run initialCommand or another exec');
   const leasesAfterWrite = await fixtureRequest<{ perHost: Record<string, number> }>('lease-count', {});
   assert.equal(leasesAfterWrite?.perHost[secondHostId] ?? 0, 0, 'finished SFTP writes release the host connection lease');
+
+  const slowHostId = '1a1a1a1a-1a1a-41a1-81a1-1a1a1a1a1a1a';
+  const thirdHostId = '1b1b1b1b-1b1b-41b1-81b1-1b1b1b1b1b1b';
+  const fourthHostId = '1c1c1c1c-1c1c-41c1-81c1-1c1c1c1c1c1c';
+  await mutateHost({ action: 'insert', hostId: slowHostId, accountId, encryptedPayload: await encryptedHost(slowHostId, 'synthetic-password-do-not-use', { host: 'slow-dns.example.test' }) });
+  await mutateHost({ action: 'insert', hostId: thirdHostId, accountId, encryptedPayload: await encryptedHost(thirdHostId, 'synthetic-password-do-not-use') });
+  await mutateHost({ action: 'insert', hostId: fourthHostId, accountId, encryptedPayload: await encryptedHost(fourthHostId, 'synthetic-password-do-not-use') });
+  const authsBeforeSlowDns = await passwordAuths();
+  const slowStarted = Date.now();
+  const slowDns = await call(400, 'sftp_list', { host_id: slowHostId, path: '/fixture', timeout_ms: 1_000 });
+  const slowElapsed = Date.now() - slowStarted;
+  assert.equal(slowDns.value.error, 'host_unreachable', JSON.stringify(slowDns));
+  assert.ok(slowElapsed < 3_000, `SFTP setup must be inside the 1s deadline, took ${slowElapsed}ms`);
+  assert.equal(await passwordAuths(), authsBeforeSlowDns, 'a deadline that expires during DNS setup must not authenticate');
+  const slowLeases = await fixtureRequest<{ perHost: Record<string, number> }>('lease-count', {});
+  assert.equal(slowLeases?.perHost[slowHostId] ?? 0, 0, 'an expired SFTP setup releases its lease');
+
+  const acceptanceLog = await readFile(authLog, 'utf8');
+  await allowPtyResets(cleanupPtyIds);
+  const besideSessionId = String(besideStall.value.session_id);
+  const releasedBeside = await sessionStop(399, '3a3a3a3a-3a3a-43a3-83a3-3a3a3a3a3a3a', besideSessionId);
+  assert.equal(releasedBeside.value.session_status, 'closed', JSON.stringify(releasedBeside));
+  let hostLeases = 1;
+  for (let attempt = 0; attempt < 80 && hostLeases !== 0; attempt++) {
+    const counted = await fixtureRequest<{ perHost: Record<string, number> }>('lease-count', {});
+    hostLeases = counted?.perHost[hostId] ?? 0;
+    if (hostLeases === 0) break;
+    await delay(500);
+  }
+  assert.equal(hostLeases, 0, 'the stalled shell open releases its lease when the shell deadline expires');
+  const mixedSession = sessionStart(401, '1d1d1d1d-1d1d-41d1-81d1-1d1d1d1d1d1d', undefined, secondHostId);
+  const mixedList = call(402, 'sftp_list', { host_id: secondHostId, path: '/fixture/stall', timeout_ms: 4_000 });
+  const mixedWrite = call(403, 'sftp_write_text', {
+    host_id: thirdHostId, operation_id: '1e1e1e1e-1e1e-41e1-81e1-1e1e1e1e1e1e',
+    path: '/fixture/stall-write', text: 'hold', overwrite: true, timeout_ms: 4_000,
+  });
+  const mixedRead = call(404, 'sftp_list', { host_id: thirdHostId, path: '/fixture/stall', timeout_ms: 4_000 });
+  for (const pending of [mixedSession, mixedList, mixedWrite, mixedRead]) pending.catch(() => undefined);
+  let mixedLeases: { total: number; perHost: Record<string, number> } | undefined;
+  for (let attempt = 0; attempt < 50; attempt++) {
+    mixedLeases = await fixtureRequest<{ total: number; perHost: Record<string, number> }>('lease-count', {});
+    if ((mixedLeases?.perHost[secondHostId] ?? 0) === 2 && (mixedLeases?.perHost[thirdHostId] ?? 0) === 2) break;
+    await delay(50);
+  }
+  assert.equal(mixedLeases?.perHost[secondHostId], 2, JSON.stringify(mixedLeases));
+  assert.equal(mixedLeases?.perHost[thirdHostId], 2, JSON.stringify(mixedLeases));
+  const startedMixed = await mixedSession;
+  assert.equal(startedMixed.value.status, 'live', JSON.stringify(startedMixed));
+  const mixedSessionId = String(startedMixed.value.session_id);
+  let freshLog = '';
+  for (let attempt = 0; attempt < 40; attempt++) {
+    freshLog = (await readFile(authLog, 'utf8')).slice(acceptanceLog.length);
+    if ([...freshLog.matchAll(/sftp-stall:(\d+)/g)].length >= 2 && /sftp-stall-write:\d+/.test(freshLog)) break;
+    await delay(50);
+  }
+  const mixedResetIds = [
+    ...[...freshLog.matchAll(/sftp-stall:(\d+)/g)].map(match => match[1]!),
+    ...[...freshLog.matchAll(/sftp-stall-write:(\d+)/g)].map(match => match[1]!),
+    ...(await noteNewPtyIds()),
+  ];
+  assert.ok(mixedResetIds.length >= 4, `missing intentional reset ids in ${freshLog.slice(-500)}`);
+  await allowPtyResets([...cleanupPtyIds, ...mixedResetIds]);
+  const rejectStarted = Date.now();
+  const [mixedExec, mixedStart, mixedMkdir] = await Promise.all([
+    exec(405, '1f1f1f1f-1f1f-41f1-81f1-1f1f1f1f1f1f', 'fixture-output', 10_000, secondHostId),
+    sessionStart(406, '2a2a2a2a-2a2a-42a2-82a2-2a2a2a2a2a2a', undefined, fourthHostId),
+    call(407, 'sftp_mkdir', { host_id: thirdHostId, operation_id: '2b2b2b2b-2b2b-42b2-82b2-2b2b2b2b2b2b', path: '/fixture/mixed-dir' }),
+  ]);
+  assert.ok(Date.now() - rejectStarted < 1_000, 'over quota rejects without waiting for an in-flight connection');
+  assert.equal(mixedExec.value.error, 'capacity_reached');
+  assert.equal(mixedStart.value.error, 'capacity_reached');
+  assert.equal(mixedMkdir.value.error, 'capacity_reached');
+  const metadata = await call(408, 'list_hosts', { limit: 10 });
+  const hostMetadata = await call(409, 'get_host', { host_id: secondHostId });
+  const mixedStatus = await sessionStatus(410, mixedSessionId);
+  const mixedReceipt = await call(411, 'get_operation_status', { operation_id: '1d1d1d1d-1d1d-41d1-81d1-1d1d1d1d1d1d' });
+  assert.equal(metadata.isError, false);
+  assert.equal(hostMetadata.isError, false);
+  assert.equal(mixedStatus.value.status, 'live');
+  assert.equal(mixedReceipt.value.status, 'completed');
+  assert.doesNotMatch(JSON.stringify([metadata, hostMetadata, mixedStatus, mixedReceipt]), /synthetic-password|privateKey|ENCRYPTION_KEY/);
+  const leasesDuringMetadata = await fixtureRequest<{ perHost: Record<string, number> }>('lease-count', {});
+  assert.equal(leasesDuringMetadata?.perHost[secondHostId], 2, 'metadata and status do not take a connection slot');
+  assert.equal(leasesDuringMetadata?.perHost[thirdHostId], 2);
+  const mixedStop = await sessionStop(412, '2c2c2c2c-2c2c-42c2-82c2-2c2c2c2c2c2c', mixedSessionId);
+  assert.equal(mixedStop.value.session_status, 'closed', JSON.stringify(mixedStop));
+  const afterStop = await fixtureRequest<{ total: number; perHost: Record<string, number> }>('lease-count', {});
+  assert.equal(afterStop?.perHost[secondHostId], 1, 'owned stop releases only the session lease');
+  const [mixedStalledList, mixedStalledWrite, mixedStalledRead] = await Promise.all([mixedList, mixedWrite, mixedRead]);
+  assert.equal(mixedStalledList.value.error, 'host_unreachable');
+  assert.equal(mixedStalledRead.value.error, 'host_unreachable');
+  assert.equal(mixedStalledWrite.value.status, 'unknown');
+  const releasedMixed = await fixtureRequest<{ total: number; perHost: Record<string, number> }>('lease-count', {});
+  assert.equal(releasedMixed?.perHost[secondHostId] ?? 0, 0, 'SFTP timeout releases the remaining host lease');
+  assert.equal(releasedMixed?.perHost[thirdHostId] ?? 0, 0);
+  const closedBeforeRecovery = (await readFile(authLog, 'utf8')).match(/connection-closed:/g)?.length ?? 0;
+  const recovered = await exec(413, '2d2d2d2d-2d2d-42d2-82d2-2d2d2d2d2d2d', 'fixture-output', 10_000, secondHostId);
+  assert.equal(recovered.value.status, 'completed', JSON.stringify(recovered));
+  const failedRead = await call(414, 'sftp_read_text', { host_id: secondHostId, path: '/fixture/missing-mixed.txt' });
+  assert.equal(failedRead.value.error, 'host_unreachable');
+  let closedAfterFailure = false;
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const closed = (await readFile(authLog, 'utf8')).match(/connection-closed:/g)?.length ?? 0;
+    closedAfterFailure = closed >= closedBeforeRecovery + 2;
+    if (closedAfterFailure) break;
+    await delay(50);
+  }
+  assert.equal(closedAfterFailure, true, 'successful and failed one-shot calls close TCP');
+  const acceptanceTail = (await readFile(authLog, 'utf8')).slice(acceptanceLog.length);
+  assert.doesNotMatch(acceptanceTail, /unexpected-fixture-error:/);
+  await allowPtyResets(cleanupPtyIds);
 
   console.log('Local MCP → SQLite DO → pinned SSH fixture passed: concurrent atomic admission, indexed bounded cleanup, legacy digest replay compatibility, restart recovery before dispatch, during live SSH and after effect/receipt-commit failure, fail-closed storage behavior, unknown tombstone retention, managed shell lifecycle, authenticated SFTP list/read limits, receipt-protected SFTP UTF-8 create and explicit overwrite, receipt-protected SFTP rename, explicit delete, and single-level mkdir, and no automatic redispatch.');
 } finally {

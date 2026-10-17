@@ -41,4 +41,6 @@ The generator fixes synthetic AES-GCM IVs so the source output is reproducible. 
 
 The existing application selector includes `ssh-mcp-worker`. Changes under `apps/ssh-mcp-worker/**` select its check. Shared package, workspace, root package and lockfile changes select every app, including this one; the existing affected-application step invokes `pnpm --filter ssh-mcp-worker check`. CI runs `node --test scripts/select-affected-apps.test.mjs` to cover app-only and shared package/lockfile selection. The Worker is not added to the workflow's production release choices.
 
+The rerunnable command list, fixture revision, runtime pins, and the documented Workers/DO plan comparison are in `acceptance-record.json`. A live GitHub Actions run is not required to see the path filter: `.github/workflows/ci.yml` runs `node scripts/select-affected-apps.mjs` and then `pnpm --filter "$app" check` for every selected app. Remote command output is not redacted; stored connection secrets and `ENCRYPTION_KEY` are excluded from tool schemas, receipts, and error text. No production account usage was measured.
+
 No deployed D1 ID or secret is committed here. A binding to the existing EdgeSSH database and MCP secrets require later operator-controlled configuration.

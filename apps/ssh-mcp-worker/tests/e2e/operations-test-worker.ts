@@ -18,6 +18,20 @@ export class SshOperationsDO extends ProductionOperationsDO {
 
   protected override async resolveTarget(host: string, signal?: AbortSignal): Promise<string> {
     if (host === 'fixture.example.test') return '127.0.0.1';
+    if (host === 'slow-dns.example.test') {
+      await new Promise<void>((resolve, reject) => {
+        if (signal?.aborted) {
+          reject(new Error('aborted'));
+          return;
+        }
+        const timer = setTimeout(resolve, 5_000);
+        signal?.addEventListener('abort', () => {
+          clearTimeout(timer);
+          reject(new Error('aborted'));
+        }, { once: true });
+      });
+      return '127.0.0.1';
+    }
     return super.resolveTarget(host, signal);
   }
 

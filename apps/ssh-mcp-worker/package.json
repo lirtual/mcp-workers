@@ -18,6 +18,7 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20260911.1",
+    "@modelcontextprotocol/client": "2.0.0",
     "@types/node": "24.19.2",
     "ssh2": "1.17.0",
     "typescript": "6.0.3",

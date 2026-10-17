@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
-import { selectionDetails } from './select-affected-apps.mjs';
+import { selectAffectedApps, selectionDetails } from './select-affected-apps.mjs';
 
 test('an ssh-mcp-worker-only change selects and schedules its app check', () => {
   const selection = selectionDetails(['apps/ssh-mcp-worker/src/hosts.ts']);
@@ -13,5 +14,15 @@ test('shared package and lockfile changes select every app, including ssh-mcp-wo
     const selection = selectionDetails([file]);
     assert.ok(selection.apps.includes('ssh-mcp-worker'), file);
     assert.equal(selection.portalAuthChanged, file.startsWith('packages/portal-auth/'));
+  }
+});
+
+test('the existing workflow runs ssh-mcp-worker check for both selector results and does not release it', async () => {
+  const workflow = await readFile(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /node scripts\/select-affected-apps\.mjs/);
+  assert.match(workflow, /pnpm --filter "\$app" check/);
+  assert.equal(workflow.includes('\n          - ssh-mcp-worker\n'), false);
+  for (const files of [['apps/ssh-mcp-worker/src/hosts.ts'], ['packages/portal-auth/src/index.ts'], ['pnpm-lock.yaml']]) {
+    assert.equal(selectAffectedApps(files).includes('ssh-mcp-worker'), true, files.join(','));
   }
 });
