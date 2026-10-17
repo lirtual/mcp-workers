@@ -127,7 +127,8 @@ test("P1 security gate: a valid Portal token and automated confirm tool call can
   };
   assert.equal(tools.result.tools.some(x => x.name === "pairing_lookup"), true);
   // The only pairing tool is observational; a model-generated approval cannot be accepted.
-  assert.equal(tools.result.tools.some(x => /confirm|approve|authorize|pairing_complete/.test(x.name)), false);
+  assert.equal(tools.result.tools.some(x => /pairing_confirm|approve_device|pairing_complete/.test(x.name)), false);
+  assert.equal(tools.result.tools.some(x => x.name === "pairing_approve"), true); // new deliberate mutating owner grant
 
   const observed = await rpc("portal-credential", "tools/call", {
     name: "pairing_lookup", arguments: { code: pending.code },
