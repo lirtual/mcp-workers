@@ -498,20 +498,38 @@ def owned_unit_root(unit, versions):
     return root
 
 
-def no_running_programs(versions):
-    for p in pathlib.Path("/proc").iterdir():
+def no_running_programs(versions, proc_root=pathlib.Path("/proc")):
+    """Fail closed on owned processes even when argv hides the executable.
+
+    The local v2 unit is stopped before uninstall. A manually started Agent
+    may still have its /proc/PID/exe or cwd within an installed version,
+    regardless of how its command line was changed.
+    """
+    if not versions:
+        return True
+    prefixes = tuple(os.fsencode(str(v) + "/") for v in versions)
+    for p in proc_root.iterdir():
         if not p.name.isdigit() or int(p.name) == os.getpid():
             continue
         try:
             if p.stat().st_uid != os.getuid():
                 continue
+            status = (p / "status").read_text("ascii")
+            if re.search(r"^State:\s*Z\b", status, re.MULTILINE):
+                continue  # Exited zombie is not a running Agent.
             argv = (p / "cmdline").read_bytes().split(b"\0")
+            if any(arg.startswith(prefix) for arg in argv for prefix in prefixes):
+                return False
+            for link in ("exe", "cwd"):
+                resolved = os.fsencode(os.readlink(p / link))
+                if any(resolved.startswith(prefix) for prefix in prefixes):
+                    return False
         except (FileNotFoundError, ProcessLookupError):
-            continue
-        except PermissionError:
-            return False
-        if any(arg.startswith(str(v).encode() + b"/") for arg in argv for v in versions):
-            return False
+            if p.exists():
+                return False  # Process remains but its executable state vanished.
+            continue  # Process exited during inspection.
+        except OSError:
+            return False  # Can't establish process ownership/state.
     return True
 
 

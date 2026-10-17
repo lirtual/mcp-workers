@@ -71,3 +71,36 @@ test("#78 no terminal refuses local uninstall before touching local files",()=>{
   assert.equal(r.status,1);
   assert.match(r.stderr,/real terminal|interactive terminal|non-root/);
 });
+
+test("#78 uninstall process guard catches disguised executables and working-directory ownership",()=>{
+ const code=String.raw`import importlib.util,os,pathlib,sys,tempfile
+spec=importlib.util.spec_from_file_location("b",sys.argv[1])
+b=importlib.util.module_from_spec(spec);spec.loader.exec_module(b)
+with tempfile.TemporaryDirectory(prefix="rc-process-owner-") as d:
+    root=pathlib.Path(d); version=root/"programs/v1"
+    version.mkdir(parents=True)
+    processes=root/"proc"; processes.mkdir()
+    pid=processes/"999999"; pid.mkdir()
+    (pid/"cmdline").write_bytes(b"unrelated-executable\0")
+    (pid/"status").write_text("Name:\tuserprocess\nState:\tS (sleeping)\n")
+    (pid/"exe").symlink_to(version/"bin/node")
+    (pid/"cwd").symlink_to("/")
+    assert not b.no_running_programs([version],processes), "executable was disguised by argv"
+    (pid/"exe").unlink(); (pid/"exe").symlink_to("/usr/bin/bash")
+    (pid/"cwd").unlink(); (pid/"cwd").symlink_to(version/"apps/remote-control-agent")
+    assert not b.no_running_programs([version],processes), "program cwd ignored"
+    (pid/"cwd").unlink(); (pid/"cwd").symlink_to("/")
+    (pid/"cmdline").write_bytes((str(version)+"/bin/node").encode()+b"\0")
+    assert not b.no_running_programs([version],processes), "program argv ignored"
+    (pid/"cmdline").write_bytes(b"unrelated-executable\0")
+    assert b.no_running_programs([version],processes)
+    (pid/"exe").unlink()
+    assert not b.no_running_programs([version],processes), "uncertain process silently allowed"
+    (pid/"status").write_text("Name:\tuserprocess\nState:\tZ (zombie)\n")
+    assert b.no_running_programs([version],processes)
+print("PROCESS_OWNER_FAIL_CLOSED_OK")
+`;
+ const r=spawnSync("python3",["-B","-c",code,script],{encoding:"utf8",timeout:15000});
+ assert.equal(r.status,0,r.stderr);
+ assert.match(r.stdout,/PROCESS_OWNER_FAIL_CLOSED_OK/);
+});
