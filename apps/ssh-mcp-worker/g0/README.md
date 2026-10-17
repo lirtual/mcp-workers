@@ -21,12 +21,12 @@ The selected package metadata declares MIT, author Meitaim OÜ. Its npm artifact
 
 ## Reproduce
 
-Requirements: Node `>=24 <25` (repository engine), pnpm `10.17.1`, `ssh-keygen`, and free local ports `22222` and `8791`.
+Requirements: Node `>=24 <25` (repository engine), pnpm `10.17.1`, and `ssh-keygen`. The runner allocates temporary local ports for its disposable SSH and workerd fixtures.
 
 ```sh
 pnpm install --frozen-lockfile
-pnpm --filter ssh-mcp-worker-g0 typecheck
-pnpm --filter ssh-mcp-worker-g0 test:g0
+pnpm --filter ssh-mcp-worker typecheck
+pnpm --filter ssh-mcp-worker test:g0
 ```
 
 The test generates temporary synthetic Ed25519 host, authorized-user, and unauthorized-user keys, starts the local SSH fixture, and runs the Worker using `wrangler dev --local`. Temporary keys, logs and fixture processes are cleaned up on exit. It does not use EdgeSSH data, real credentials, remote hosts, or cloud resources.

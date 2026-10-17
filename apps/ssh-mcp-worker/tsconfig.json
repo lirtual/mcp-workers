@@ -8,9 +8,10 @@
     "strict": true,
     "skipLibCheck": true,
     "noEmit": true,
+    "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
     "noUncheckedIndexedAccess": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["g0/src/**/*.ts"]
+  "include": ["src/**/*.ts", "g0/src/**/*.ts"]
 }

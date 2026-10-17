@@ -4,11 +4,21 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { createServer } from 'node:net';
 import { fileURLToPath } from 'node:url';
 
 const app = resolve(fileURLToPath(new URL('../..', import.meta.url)));
-const fixturePort = 22222;
-const workerPort = 8791;
+async function availablePorts(count: number): Promise<number[]> {
+  const servers = Array.from({ length: count }, () => createServer());
+  const ports = await Promise.all(servers.map(server => new Promise<number>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => resolve((server.address() as { port: number }).port));
+  })));
+  await Promise.all(servers.map(server => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))));
+  return ports;
+}
+
+const [fixturePort, workerPort] = await availablePorts(2);
 const scratch = await mkdtemp(join(tmpdir(), 'ssh-g0-'));
 const authLog = join(scratch, 'auth.log');
 const run = (command: string, args: string[]) => {

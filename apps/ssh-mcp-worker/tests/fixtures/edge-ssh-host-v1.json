@@ -1,0 +1,38 @@
+{
+  "source": "lirtual/EdgeSSH@7a051e412d2cfa4ee52edec30e6ccefedb4e1c99/src/accounts/crypto.ts",
+  "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+  "accountId": "11111111-1111-4111-8111-111111111111",
+  "hostId": "22222222-2222-4222-8222-222222222222",
+  "host": {
+    "name": "Synthetic fixture",
+    "group": "Tests",
+    "host": "fixture.example.test",
+    "port": 2222,
+    "username": "fixture-user",
+    "authMethod": "password",
+    "password": "synthetic-password-do-not-use",
+    "initialCommand": "synthetic-initial-command-do-not-run",
+    "termType": "xterm-256color",
+    "encoding": "utf-8",
+    "fingerprint": "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "location": null
+  },
+  "encryptedPayload": "v1.AQIDBAUGBwgJCgsM.fsg0tIHx0rxu8RopZHuPXCsgwZj+FSSw0zrbCLzRBKrxlLnlTOGJ7MTfmMnns5cu6tR1wrLwTgVDD2njCnlVYQcRbg3LlC6UaT6SCpRKd4XnAgIa0AXctQnz5GVBk0UBreQKFMcwexeQ++RWzoQ64LrlUqy5NPQaG0KV5IazXVVzFHXKmL1WHMjYI4+Gqd8zoNkGs62/ZRb7VBn0DVUqdoEZQuZhUQgm++Xh9ctLylRH8DKd7b4+qrBvoGygPdX7D2f5pKBIX7TvEUa9weZ5w4pBanFiIuPcmf+9lHnCby3saokNfB/FQyUySuwMhXpU0rSzJrWWp7SJGjVLSJqzbvcNUsD7PArbmc5AjA4nCcGekY+Hou4S1hg7M1QIywSZ9+FneIfg+Ypo68HTrFE7bpb5EbIXHlFcAMaNF+O0EK2s8pq5bwnF6/zpW95JbMEpO3oxd+w5YGFenAyoWxiiM0zcMMV/nVk2/3w7Dpi5JnBcjupd88ljHJ3figSK",
+  "secondHostId": "33333333-3333-4333-8333-333333333333",
+  "secondEncryptedPayload": "v1.AQIDBAUGBwgJCgsN.rAc32m1WYG6du0HYalsWcqjz0bk7u3leCkDDXXsun/DAKXfafwxFA9EIaAy6mWo8KKaNbAmngXRT/0MKvrgQVAiSHWZgtGjKDBVdLk+EJcSS8V02jU//UNIxk8Tnw6zGsj38nu8m3vXMBmbSGaRnxZImUb53DQpVx1SbqfwjIW/Vkz5PAASP/AL++jF5m0IBvwpmj1ZDkcPGscdwdzbcbX0BKyHy71Q8jyqap2MxVUoelhcy/xNiEfT3r1pksGDJCF7smHOfe+BB0++d6sGLSo1XKnQhES/cJru7oeuJXZ0bYbgs9SYq/pleV7vpCkPqzAuDcxwk0uvEV903x2HfUZONzHDODZYVj5BOfppu8TwyqrXEoYLhWINtf3F3UNw1RVJwe37p1MZUhGuzf60kAXQWH3YnhoAK3GM2wcQE03Gzq5ffRfKb0yc9EdbknbFDH4lBQxIeNnpDUBqO1il+1PZCYrIPiY/ydfTxwcfl86GDtIJmNAH2JC1mnZ1W",
+  "changedHost": {
+    "name": "Changed synthetic fixture",
+    "group": "Tests",
+    "host": "fixture.example.test",
+    "port": 2222,
+    "username": "fixture-user",
+    "authMethod": "password",
+    "password": "synthetic-password-do-not-use",
+    "initialCommand": "synthetic-initial-command-do-not-run",
+    "termType": "xterm-256color",
+    "encoding": "utf-8",
+    "fingerprint": "SHA256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+    "location": null
+  },
+  "changedEncryptedPayload": "v1.AQIDBAUGBwgJCgsO.x2OiA1b0fgISfx7Xv9urhHX7N3dXVo5Y4neg+tRTzBklezmeEIvSaC1QDythfFul59c/ocJqD6uEBpo0dNlZsyUuCVXgj/bE/frljA35bghpPvV4QTTAViJ9mHB3vbvL1mo6tUq0nrRYofYynbMFKtlpMoiPTKuJoBcMXc8iOn+d8sWg0y+hXkEhNbE1IUDI83BYrPeOt3RWJCGh5sZn7mrmHTnds8maDfRQlGSh0acR/K0ZkYFPv4r7luXKCpMM768vY9um7Rz0WSU7fA75mtw9IYUcfRUt1h0bMOTljx7id1+g6kqCmBXFib386nP2FBMERCz920ENIY0n2TFQQqaXLGoJlrqoF4fdmwMimpuPR2JBiHcOJXp8AosWtQmyYx8nGy0useFCdarS8kNMAaUpzgGmxrRFB0j1YW0XvGrQhzfrT4jONLhMFtuD3f32swN6Ggriqfj77tqJOz/cNuxVGNkz5DEdDdscP20FBsRgrmRBH28AtZg9XG6iMUzkWtnry64="
+}

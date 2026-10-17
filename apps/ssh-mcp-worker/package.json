@@ -1,14 +1,19 @@
 {
-  "name": "ssh-mcp-worker-g0",
+  "name": "ssh-mcp-worker",
   "version": "0.0.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test:g0": "node --experimental-strip-types g0/test/run.ts"
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
+    "test:g0": "node --experimental-strip-types g0/test/run.ts",
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "check": "pnpm run typecheck && pnpm test && pnpm run test:g0"
   },
   "dependencies": {
-    "@meitaim/ssh": "1.0.0"
+    "@meitaim/ssh": "1.0.0",
+    "@mcp-workers/portal-auth": "workspace:*",
+    "@modelcontextprotocol/server": "2.0.0",
+    "zod": "4.6.2"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20260911.1",
