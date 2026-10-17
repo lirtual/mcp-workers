@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import {createPrivateKey,sign} from "node:crypto";
 import {mkdtemp, rm} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -212,4 +213,33 @@ test("#97 a legacy approved key without grant_type keeps signed WSS authority af
   });
   assert.equal(ws?.device_id,oldId);
   assert.ok(ws?.epoch);
+});
+
+test("#97 old signed pending code without new protocol proof cannot be silently approved",async()=>{
+  const f=fixture(),old=newEnrollment("pre-migration-pending");
+  // Verify actual old signature format, not just an arbitrary invalid blob.
+  const req=old.request;
+  const oldTranscript="remote-control:v2:pending:"+req.code_verifier+":"+
+    req.public_key+":"+req.name+":"+req.issued_at;
+  const oldProof=sign(null,Buffer.from(oldTranscript),createPrivateKey(old.privateKeyPem)).toString("base64");
+  const oldRequest:Record<string,unknown>={...req,proof:oldProof};
+  delete oldRequest.pairing_protocol;
+  assert.equal((await f.register(oldRequest)).status,400,"obsolete Agent cannot create an ambiguously approvable pending record");
+  assert.equal((await f.register({...oldRequest,pairing_protocol:"single-code-v1"})).status,400,
+    "an attacker cannot upgrade the old signed transcript by injecting an unsigned marker");
+  assert.equal((await f.register({...req,pairing_protocol:"unknown-protocol"})).status,400);
+  assert.equal([...f.rows.keys()].filter(k=>k.startsWith("pending:")).length,0);
+  // A pre-migration pending record already stored in DO must fail closed,
+  // even when it never reached the old pairing_prepare challenge step.
+  const newValid=await f.register(req);
+  assert.equal(newValid.status,202);
+  const looked=await f.rpc("pairing_lookup",{code:old.code});
+  const pending=f.rows.get("pending:"+req.code_verifier) as Record<string,unknown>;
+  delete pending.pairing_protocol;
+  assert.equal(pending.confirmation_hash,undefined);
+  const result=await approvePendingKey(f.store as never,
+    looked.object.pairing_id,looked.object.fingerprint,"permanent");
+  assert.equal(result.status,409);
+  assert.equal((result.body as {error:string}).error,"legacy_pairing_in_progress");
+  assert.equal([...f.rows.keys()].filter(k=>k.startsWith("device:")).length,0);
 });
