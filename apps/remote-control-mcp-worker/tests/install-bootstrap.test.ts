@@ -26,7 +26,7 @@ test("future reviewed route binds its own validated origin and pins both ABIs", 
   assert.match(shell,/--sha256/);
   assert.match(shell,/sha256sum -c/);
   assert.match(shell,/bootstrap-node.mjs/);
-  assert.match(shell,/for tool in curl sha256sum tar mktemp uname id chmod flock rm/);
+  assert.match(shell,/for tool in curl sha256sum tar mktemp uname id chmod flock rm readlink dirname/);
   assert.match(shell,/unset NODE_OPTIONS NODE_PATH/);
   assert.doesNotMatch(shell,/python3|pip install|REMOTE_CONTROL_AGENT_ENDPOINT/);
   assert.ok(shell.indexOf("sha256sum -c")<shell.indexOf("tar -xOzf"));

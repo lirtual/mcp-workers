@@ -29,7 +29,7 @@ export function renderAgentInstallShell(origin: string, p: InstallReleasePin): s
     "if [ \"$(id -u)\" -eq 0 ] || [ ! -r /dev/tty ] || [ ! -t 1 ]; then",
     "  echo 'Requires an ordinary interactive Linux user' >&2; exit 1",
     "fi",
-    "for tool in curl sha256sum tar mktemp uname id chmod flock rm; do",
+    "for tool in curl sha256sum tar mktemp uname id chmod flock rm readlink dirname; do",
     "  command -v \"$tool\" >/dev/null 2>&1 || { echo 'Missing Linux installer tool' >&2; exit 1; }",
     "done",
     "[ \"$(uname -s)\" = Linux ] || { echo 'Linux only' >&2; exit 1; }",
