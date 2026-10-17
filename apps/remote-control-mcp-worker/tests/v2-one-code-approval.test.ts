@@ -221,7 +221,7 @@ test("#97 old signed pending code without new protocol proof cannot be silently 
   const req=old.request;
   const oldTranscript="remote-control:v2:pending:"+req.code_verifier+":"+
     req.public_key+":"+req.name+":"+req.issued_at;
-  const oldProof=sign(null,Buffer.from(oldTranscript),createPrivateKey(old.privateKeyPem)).toString("base64");
+  const oldProof=Buffer.from(sign(null,Buffer.from(oldTranscript),createPrivateKey(old.privateKeyPem))).toString("base64");
   const oldRequest:Record<string,unknown>={...req,proof:oldProof};
   delete oldRequest.pairing_protocol;
   assert.equal((await f.register(oldRequest)).status,400,"obsolete Agent cannot create an ambiguously approvable pending record");
