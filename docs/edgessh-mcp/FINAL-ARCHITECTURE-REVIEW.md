@@ -2,6 +2,8 @@
 
 **Review date:** 2026-10-17. **State:** first complete architecture synthesis, **operator authorized `to-spec` drafting; [Draft SPEC.md](./SPEC.md) published**. PR #81 remains Draft and docs-only. No EdgeSSH code/config/schema/deploy change.
 
+**Source and delivery baseline:** SPEC §3.3 pins the upstream compatibility revision; SPEC §12 defines G0 approval, shared connection limits, CI ownership and isolated G5 closure. Earlier references to “current” source are historical, not a production-version assertion.
+
 ## 1. Decision reconciliation
 
 | Choice | Current status | Meaning |

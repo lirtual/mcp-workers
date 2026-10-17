@@ -1,6 +1,6 @@
 # ADR-0004 — Unmodified EdgeSSH boundary and fourth-round reliability policies
 
-**Status:** Q17=A–Q20=A and Q21 (no EdgeSSH changes) accepted. Prior Q22 conflict is **resolved by Q22=B in [ADR-0005](./0005-independent-mcp-ssh-shared-edgessh-credentials.md)**. Final sign-off for `to-spec` and implementation remains outstanding.
+**Status:** Q17=A–Q20=A and Q21 (no EdgeSSH changes) accepted. Prior Q22 conflict is **resolved by Q22=B in [ADR-0005](./0005-independent-mcp-ssh-shared-edgessh-credentials.md)**. Draft SPEC.md has since been published; implementation remains separately gated by SPEC §12.
 Applies to future EdgeSSH-related MCP in `mcp-workers`; no runtime/secret/storage/production change is authorized.
 
 Related: [ADR-0001](./0001-edgessh-mcp-cross-repo-boundary.md), [ADR-0003](./0003-bounded-live-sessions-and-authoritative-admission.md), [Grilling interview](../DESIGN-INTERVIEW.md).
@@ -25,7 +25,7 @@ These policies are still required, and under Q22=B the independently deployed MC
 
 **Q3=A** requires that only EdgeSSH decrypt saved SSH credentials and execute commands. **Q14=A** requires EdgeSSH to atomically claim and record MCP operation IDs before SSH dispatch. The now-unchangeable EdgeSSH code provides neither a suitable internal execute service nor an MCP receipt admission hook. Hence **Q2=B (arbitrary commands/SFTP writes), Q6=B (managed sessions), Q21 (unmodified EdgeSSH), Q3=A and Q14=A cannot all be delivered together with the current interfaces**.
 
-**Decision (2026-10-17): Q22=B accepted**. The MCP Worker itself will decrypt EdgeSSH's encrypted host records using its own copy of the same root `ENCRYPTION_KEY`, and will independently execute SSH and own its durable operation receipts. **This expressly supersedes Q3=A and Q14=A; it does not edit EdgeSSH.** Refer to [ADR-0005](./0005-independent-mcp-ssh-shared-edgessh-credentials.md). Final operator consent before `to-spec` is still pending.
+**Decision (2026-10-17): Q22=B accepted**. The MCP Worker itself will decrypt EdgeSSH's encrypted host records using its own copy of the same root `ENCRYPTION_KEY`, and will independently execute SSH and own its durable operation receipts. **This expressly supersedes Q3=A and Q14=A; it does not edit EdgeSSH.** Refer to [ADR-0005](./0005-independent-mcp-ssh-shared-edgessh-credentials.md). Draft SPEC.md has since been published; implementation remains separately gated by SPEC §12.
 
 ### Q22 alternatives — historical choice record (B SELECTED; A/C rejected)
 

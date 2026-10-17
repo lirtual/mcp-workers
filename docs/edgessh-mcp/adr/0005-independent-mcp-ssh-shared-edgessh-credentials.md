@@ -3,6 +3,8 @@
 **Status: Architecture choice accepted (Q22=B, 2026-10-17); final design audit complete, operator subsequently invoked `to-spec`, producing [Draft SPEC.md](../SPEC.md). Not approved for implementation/deployment.**
 Supersedes only the infeasible responsibility clauses of Q3=A in [ADR-0001](./0001-edgessh-mcp-cross-repo-boundary.md) and Q14=A in [ADR-0003](./0003-bounded-live-sessions-and-authoritative-admission.md). All other accepted Q1–Q21 requirements remain. See [Final review](../FINAL-ARCHITECTURE-REVIEW.md).
 
+**Source and delivery baseline:** SPEC §3.3 pins the upstream compatibility revision; SPEC §12 defines G0 approval, shared connection limits, CI ownership and isolated G5 closure. Earlier references to “current” source are historical, not a production-version assertion.
+
 ## Context and forcing constraints
 
 1. `lirtual/EdgeSSH` is an independently maintained fork of `aozorae/EdgeSSH`; Q21 forbids *any* changes to EdgeSSH's repository, Worker, D1 schema, secrets, bindings, or existing deployment.
