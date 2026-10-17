@@ -1,4 +1,5 @@
 import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
+import { handleAgentInstallerRequest } from "./install-bootstrap.ts";
 export { V2OwnerCoordinator } from "./v2-pairing.ts";
 
 type V2Env = Env & {
@@ -1203,6 +1204,9 @@ export default {
       return jsonError(503, "preview_unconfigured", "The preview is not yet configured.");
     }
     const url = new URL(request.url);
+    if (url.pathname === "/install.sh") {
+      return handleAgentInstallerRequest(request);
+    }
     if (url.pathname.startsWith("/agent/connect/") && pendingOwner(env)) {
       const deviceId = url.pathname.slice("/agent/connect/".length);
       if (request.method !== "GET" || !/^[a-f0-9-]{36}$/.test(deviceId) ||

@@ -1,0 +1,64 @@
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { test } from "node:test";
+import { handleAgentInstallerRequest, renderAgentInstallShell } from "../src/install-bootstrap.ts";
+
+const origin = "https://remote-control-v2-preview.aiyaya.workers.dev";
+const pin = Object.freeze({
+  tag:"v0.1.2", commit:"a".repeat(40),
+  x64Sha256:"b".repeat(64), arm64Sha256:"c".repeat(64),
+});
+
+test("unreleased Worker installation route fails closed", async()=>{
+  const response=handleAgentInstallerRequest(new Request(origin+"/install.sh"));
+  assert.equal(response.status,503);
+  assert.equal(response.headers.get("cache-control"),"no-store");
+  assert.doesNotMatch(await response.text(),/#!/);
+});
+
+test("future reviewed route binds its own validated origin and pins both ABIs", async()=>{
+  const response=handleAgentInstallerRequest(new Request(origin+"/install.sh"),pin);
+  assert.equal(response.status,200);
+  assert.match(response.headers.get("content-type")??"",/text\/x-shellscript/);
+  const shell=await response.text();
+  assert.match(shell,/--endpoint "https:\/\/remote-control-v2-preview.aiyaya.workers.dev\/"/);
+  assert.match(shell,/^#!\/bin\/sh/);
+  assert.match(shell,/--sha256/);
+  assert.match(shell,/sha256sum -c/);
+  assert.match(shell,/bootstrap-node.mjs/);
+  assert.doesNotMatch(shell,/python3|pip install|REMOTE_CONTROL_AGENT_ENDPOINT/);
+  assert.ok(shell.indexOf("sha256sum -c")<shell.indexOf("tar -xOzf"));
+  const syntax=spawnSync("sh",["-n"],{input:shell,encoding:"utf8",timeout:3000});
+  assert.equal(syntax.status,0,syntax.stderr);
+});
+
+test("fake Host, Forwarded, scheme, path, query and method are refused",async()=>{
+  const bad=[
+    new Request("http://remote-control-v2-preview.aiyaya.workers.dev/install.sh"),
+    new Request("https://evil.example/install.sh"),
+    new Request(origin+"/install.sh?endpoint=https://evil.example"),
+    new Request(origin+"/INSTALL.SH"),
+    new Request(origin+"/install.sh",{method:"POST"}),
+    new Request(origin+"/install.sh",{headers:{"x-forwarded-host":"evil.example"}}),
+    new Request(origin+"/install.sh",{headers:{"forwarded":"host=evil.example"}}),
+    new Request(origin+"/install.sh",{headers:{"origin":"https://evil.example"}}),
+  ];
+  for(const request of bad){
+    const response=handleAgentInstallerRequest(request,pin);
+    assert.notEqual(response.status,200,request.url);
+    assert.doesNotMatch(await response.text(),/#!/);
+  }
+});
+
+test("untrusted pinned release metadata cannot interpolate shell commands",async()=>{
+  const bad=[
+    {...pin,tag:"v0.1.2; touch /tmp/unsafe"},
+    {...pin,commit:"$(id)"},
+    {...pin,x64Sha256:"x".repeat(64)},
+    {...pin,arm64Sha256:"a".repeat(63)},
+  ];
+  for(const candidate of bad){
+    assert.throws(()=>renderAgentInstallShell(origin,candidate),/Unapproved/);
+  }
+  assert.throws(()=>renderAgentInstallShell("https://unknown.example",pin),/Unapproved/);
+});
