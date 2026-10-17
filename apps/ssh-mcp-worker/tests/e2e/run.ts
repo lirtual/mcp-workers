@@ -364,9 +364,20 @@ try {
   assert.equal(liveStatus.value.status, 'unknown', 'a restart during active SSH work recovers the persisted running row as unknown');
   const liveReplay = await exec(52, liveOperationId, 'fixture-live-long-running', 60_000);
   assert.equal(liveReplay.value.status, 'unknown');
+  const outputDispatchesBeforeFreshConnection = (await readFile(authLog, 'utf8')).match(/exec-command:fixture-output\n/g)?.length ?? 0;
+  const afterRestartId = '18181818-1818-4818-8818-181818181818';
+  const afterRestart = await exec(53, afterRestartId, 'fixture-output');
+  assert.equal(afterRestart.value.status, 'completed', 'the same SSH fixture accepts a fresh valid connection after the expected runtime reset');
   const afterLiveRestartLog = await readFile(authLog, 'utf8');
   assert.equal((afterLiveRestartLog.match(/exec-command:fixture-live-long-running\n/g) ?? []).length, 1,
     'status lookup and same-ID retry after an in-flight restart never reconnect or redispatch');
+  assert.doesNotMatch(afterLiveRestartLog, /unexpected-fixture-error:/,
+    'fixture errors other than the intentional live-command reset still fail the peer');
+  const resetConnectionIds = [...afterLiveRestartLog.matchAll(/expected-runtime-reset:(\d+)/g)].map((match) => match[1]);
+  assert.ok(resetConnectionIds.every((id) => id === liveConnectionId),
+    'only the connection interrupted by the intentional runtime restart may consume ECONNRESET');
+  assert.equal((afterLiveRestartLog.match(/exec-command:fixture-output\n/g) ?? []).length, outputDispatchesBeforeFreshConnection + 1,
+    'a new SSH operation succeeds through the same fixture after the interrupted connection is reset');
   assert.match(afterLiveRestartLog, new RegExp(`connection-closed:${liveConnectionId}\\n`), 'runtime restart closes the synthetic live SSH transport');
   console.log('Local MCP → SQLite DO → pinned SSH fixture passed: concurrent atomic admission, indexed bounded cleanup, legacy digest replay compatibility, restart recovery before dispatch, during live SSH and after effect/receipt-commit failure, fail-closed storage behavior, unknown tombstone retention, and no automatic redispatch.');
 } finally {

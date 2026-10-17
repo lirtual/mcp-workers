@@ -19,7 +19,16 @@ const remoteFiles = new Map<string, Buffer>([
 let connectionSequence = 0;
 const server = new Server({ hostKeys: [hostKey] }, (client) => {
   const connectionId = ++connectionSequence;
+  let expectedRuntimeReset = false;
   client.on('close', () => log(`connection-closed:${connectionId}`));
+  client.on('error', (error: NodeJS.ErrnoException) => {
+    if (expectedRuntimeReset && error.code === 'ECONNRESET') {
+      log(`expected-runtime-reset:${connectionId}`);
+      return;
+    }
+    log(`unexpected-fixture-error:${connectionId}:${error.code ?? 'unknown'}`);
+    throw error;
+  });
   client.on('authentication', (context) => {
     if (context.method === 'none') {
       appendFileSync(process.env.FIXTURE_AUTH_LOG!, 'none\n');
@@ -75,6 +84,7 @@ const server = new Server({ hostKeys: [hostKey] }, (client) => {
         }
         const stream = acceptCommand();
         if (info.command === 'fixture-live-long-running') {
+          expectedRuntimeReset = true;
           log(`live-command-started:${connectionId}`);
           stream.write('synthetic command remains in flight\n');
           return;

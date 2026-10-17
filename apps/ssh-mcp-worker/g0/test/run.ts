@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { createServer } from 'node:net';
+import { connect as connectTcp, createServer } from 'node:net';
 import { fileURLToPath } from 'node:url';
+import ssh2 from 'ssh2';
+const { Client } = ssh2;
 
 const app = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 async function availablePorts(count: number): Promise<number[]> {
@@ -200,7 +203,57 @@ try {
   assert.equal((sftpLog.match(/sftp-session-closed:open-files=0:open-dirs=0/g) ?? []).length, 6, sftpLog);
   assert.equal((sftpLog.match(/connection-closed/g) ?? []).length, 6, sftpLog);
 
-  console.log('G0 workerd SSH fixture passed: bad pin before auth, valid/invalid password, authorized/unauthorized private key, exec stdout/stderr/exit, remote disconnect, PTY shell across HTTP requests, SFTP list/UTF-8 read/write/failure/disconnect and resource close.');
+  const resetPeer = async (command: string) => {
+    const socket = connectTcp(fixturePort, '127.0.0.1');
+    await once(socket, 'connect');
+    const client = new Client();
+    await new Promise<void>((resolveReady, rejectReady) => {
+      const fail = (error: Error) => rejectReady(error);
+      client.once('error', fail);
+      client.once('ready', () => {
+        client.removeListener('error', fail);
+        resolveReady();
+      });
+      client.connect({ sock: socket, username: 'fixture', password: 'synthetic-password' });
+    });
+    await new Promise<void>((resolveExec, rejectExec) => {
+      client.exec(command, (error, stream) => {
+        if (error || !stream) return rejectExec(error ?? new Error('missing exec stream'));
+        if (command === 'fixture-live-long-running') stream.once('data', () => resolveExec());
+        else resolveExec();
+      });
+    });
+    client.on('error', () => {});
+    socket.resetAndDestroy();
+  };
+
+  await writeFile(authLog, '');
+  await resetPeer('fixture-live-long-running');
+  let liveResetLog = '';
+  for (let attempt = 0; attempt < 50; attempt++) {
+    liveResetLog = await readFile(authLog, 'utf8');
+    if (/expected-runtime-reset:\d+\n/.test(liveResetLog)) break;
+    await delay(20);
+  }
+  assert.equal(fixture.exitCode, null, `expected live-command reset must not kill the fixture\n${fixtureOutput}\n${liveResetLog}`);
+  const liveResetId = liveResetLog.match(/live-command-started:(\d+)/)?.[1];
+  assert.match(liveResetLog, new RegExp(`expected-runtime-reset:${liveResetId}\\n`), liveResetLog);
+  const afterReset = await request({ mode: 'password', password: 'synthetic-password', ...expected });
+  assert.equal(afterReset.status, 200, `${JSON.stringify(afterReset.body)} fixture=${fixtureOutput}`);
+  assert.equal(afterReset.body.exitCode, 7, 'the fixture still accepts a pinned authenticated command after the expected reset');
+
+  await resetPeer('fixture-timeout');
+  const unexpectedExit = await Promise.race([
+    once(fixture, 'exit'),
+    delay(3_000).then(async () => {
+      throw new Error(`unexpected ECONNRESET was ignored\n${fixtureOutput}\n${await readFile(authLog, 'utf8')}`);
+    }),
+  ]);
+  assert.notEqual(unexpectedExit[0], 0, 'ECONNRESET outside the intentional live-command reset must still fail the fixture');
+  assert.match(fixtureOutput, /ECONNRESET/);
+  assert.match(await readFile(authLog, 'utf8'), /unexpected-fixture-error:\d+:ECONNRESET/);
+
+  console.log('G0 workerd SSH fixture passed: bad pin before auth, valid/invalid password, authorized/unauthorized private key, exec stdout/stderr/exit, remote disconnect, PTY shell across HTTP requests, SFTP list/UTF-8 read/write/failure/disconnect and resource close, expected live-command reset, and rejection of other socket resets.');
 } finally {
   stop(wrangler);
   stop(fixture);
