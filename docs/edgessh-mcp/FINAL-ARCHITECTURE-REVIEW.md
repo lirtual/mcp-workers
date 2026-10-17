@@ -1,6 +1,6 @@
 # EdgeSSH MCP — Final architecture and overengineering review (Q22=B)
 
-**Review date:** 2026-10-17. **State:** first complete architecture synthesis, **awaiting explicit operator acceptance** before `to-spec`. PR #81 remains Draft and docs-only. No EdgeSSH code/config/schema/deploy change.
+**Review date:** 2026-10-17. **State:** first complete architecture synthesis, **operator authorized `to-spec` drafting; [Draft SPEC.md](./SPEC.md) published**. PR #81 remains Draft and docs-only. No EdgeSSH code/config/schema/deploy change.
 
 ## 1. Decision reconciliation
 
@@ -125,4 +125,4 @@ Do not turn this into a multi-tenant SSH gateway, generic distributed job platfo
 
 **Q22=B is coherent with all other selected behavior once Q3 and Q14 are explicitly superseded.** It is also more security-sensitive than the originally proposed EdgeSSH-private-RPC model: unavoidable shared root key (also used for GitHub login signing) and a write-capable D1 binding. Those costs are inherent in auto-reusing encrypted upstream host records without modifying the upstream project.
 
-This is the **smallest design that implements the accepted feature scope under Q21+Q22=B**, *not* a claim of maximal credential isolation. No unnecessary component has been added. The final choice remains pending operator acknowledgement of these residual risks and explicit approval to proceed to `to-spec` — **the documentation PR stays Draft and this review does not authorize code/secret/production work**.
+This is the **smallest design that implements the accepted feature scope under Q21+Q22=B**, *not* a claim of maximal credential isolation. No unnecessary component has been added. The operator has now requested `to-spec` and [Draft SPEC.md](./SPEC.md) is available for review. **This authorizes spec creation only, NOT implementation, production secret/database/SSH access, merge or deployment**. Residual risks remain explicit acceptance gates. PR #81 stays Draft.
