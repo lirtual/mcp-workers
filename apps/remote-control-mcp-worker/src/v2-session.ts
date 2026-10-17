@@ -28,8 +28,11 @@ export function deviceIsAuthorized(device: V2Device | undefined, now = Date.now(
 export async function listLiveGrants(
   store: Pick<DurableObjectStorage, "list" | "delete">,
   now = Date.now(),
-): Promise<Map<string, V2Device>> {
+): Promise<{ active: Map<string, V2Device>; complete: boolean }> {
+  // A full page may hide more active grants after expired rows. Fail closed
+  // for this request while lazily cleaning the page, then allow a safe retry.
   const rows = await store.list<V2Device>({ prefix: "device:", limit: 65 });
+  const complete = rows.size < 65;
   const active = new Map<string, V2Device>();
   for (const [key, row] of rows) {
     if (deviceIsAuthorized(row, now)) {
@@ -42,7 +45,7 @@ export async function listLiveGrants(
       }
     }
   }
-  return active;
+  return { active, complete };
 }
 
 type DurableStore = Pick<DurableObjectStorage, "get" | "put" | "delete" | "list" | "transaction">;
@@ -92,9 +95,9 @@ export async function issueSessionChallenge(store: DurableStore, body: unknown):
     device = await store.get<V2Device>("device:" + device_id);
   } else {
     // Small single-owner fleet only; bounded scan, not a new index/service.
-    const devices = await listLiveGrants(store);
-    if (devices.size > 64) return { status: 503, body: { error: "capacity" } };
-    device = [...devices.values()].find(d => d.public_key === public_key);
+    const grants = await listLiveGrants(store);
+    if (!grants.complete || grants.active.size > 64) return { status: 503, body: { error: "capacity" } };
+    device = [...grants.active.values()].find(d => d.public_key === public_key);
   }
   if (!deviceIsAuthorized(device)) return { status: 404, body: { error: "not_found" } };
   const entropy = new Uint8Array(18);
@@ -284,8 +287,9 @@ export async function handleIdleSocketMessage(state: DurableObjectState, socket:
 /** Bounded, observational device status. No heartbeat, session mutation or secret disclosure. */
 export async function listApprovedDevices(state: DurableObjectState):
   Promise<{ status: number; body: object }> {
-  const stored = await listLiveGrants(state.storage);
-  if (stored.size > 64) return { status: 503, body: { error: "capacity" } };
+  const grants = await listLiveGrants(state.storage);
+  if (!grants.complete || grants.active.size > 64) return { status: 503, body: { error: "capacity" } };
+  const stored = grants.active;
   const devices: Array<{ device_id: string; name: string; status: "online" | "offline"; expires_at?: number }> = [];
   for (const [key, device] of stored) {
     if (!device || !isId(device.device_id) || key !== "device:" + device.device_id ||
