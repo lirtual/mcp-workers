@@ -195,7 +195,7 @@ jobs:
       - name: Cross-check Worker against pinned public Agent source
         if: steps.scope.outputs.remote_control_changed == 'true'
         env:
-          PUBLIC_AGENT_SHA: e82b90287374797ce20072ce18892055e4a17980
+          PUBLIC_AGENT_SHA: 9641aeb8856eae483b71114b489ba737470334f0
         run: |
           set -euo pipefail
           # Anonymous public checkout, pinned to a reviewed immutable commit;
