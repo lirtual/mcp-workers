@@ -17,6 +17,7 @@ const remoteFiles = new Map<string, Buffer>([
   ['/fixture/out.txt', Buffer.alloc(0)],
   ['/fixture/binary.bin', Buffer.from([0xff, 0xfe, 0xfd])],
   ['/fixture/big.txt', Buffer.alloc(64 * 1024 + 1, 0x61)],
+  ['/fixture/envelope.txt', Buffer.alloc(65_000, 0x61)],
 ]);
 
 let connectionSequence = 0;

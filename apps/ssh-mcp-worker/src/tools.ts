@@ -60,21 +60,8 @@ function sessionResult(reply: SessionReply) {
 
 function fitSftpRead(reply: SftpReadReply) {
   if (reply.text === undefined || fitsMcpToolResultBudget(reply)) return success(reply);
-  const encoded = outputEncoder.encode(reply.text);
-  let low = 0;
-  let high = encoded.byteLength;
-  let best = 0;
-  while (low <= high) {
-    const mid = Math.floor((low + high) / 2);
-    const prefix = boundedPrefix(encoded.subarray(0, mid));
-    const candidate = { ...reply, text: prefix.text, bytes: prefix.consumed, cursor: prefix.consumed, truncated: true };
-    if (fitsMcpToolResultBudget(candidate)) {
-      best = mid;
-      low = mid + 1;
-    } else high = mid - 1;
-  }
-  const fitted = boundedPrefix(encoded.subarray(0, best));
-  return success({ ...reply, text: fitted.text, bytes: fitted.consumed, cursor: fitted.consumed, truncated: true });
+  // No read offset exists, so an envelope overflow is a refusal, not a resumable prefix.
+  return success({ status: 'failed', error: 'output_truncated', truncated: true });
 }
 
 function fitSftpList(reply: SftpListReply) {
@@ -163,7 +150,7 @@ export function buildMcpServer(env: Env): McpServer {
     annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   }, async ({ host_id, path, timeout_ms }) => runSftp('sftp_list', host_id, path, timeout_ms ?? 30_000));
   server.registerTool('sftp_read_text', {
-    description: 'Read one remote UTF-8 text file up to 64 KiB over a short SSH connection. Oversized or non-UTF-8 content is refused without a file body. The connection closes when the call finishes.',
+    description: 'Read one remote UTF-8 text file up to 64 KiB over a short SSH connection. Oversized, non-UTF-8, or over-budget content is refused without a file body. The connection closes when the call finishes.',
     inputSchema: sftpSchema,
     annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   }, async ({ host_id, path, timeout_ms }) => runSftp('sftp_read_text', host_id, path, timeout_ms ?? 30_000));

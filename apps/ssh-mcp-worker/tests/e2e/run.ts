@@ -945,11 +945,17 @@ try {
   assert.equal(oversized.value.error, 'output_truncated');
   assert.equal(oversized.value.truncated, true);
   assert.equal(oversized.value.text, undefined);
+  const envelope = await call(214, 'sftp_read_text', { host_id: secondHostId, path: '/fixture/envelope.txt' });
+  assert.equal(envelope.value.status, 'failed');
+  assert.equal(envelope.value.error, 'output_truncated');
+  assert.equal(envelope.value.text, undefined);
+  assert.equal(envelope.value.cursor, undefined);
+  assert.doesNotMatch(JSON.stringify(envelope.value), /a{64}/, 'an over-budget UTF-8 file must not return a partial body');
   const missingFile = await call(211, 'sftp_read_text', { host_id: secondHostId, path: '/fixture/missing.txt' });
   assert.equal(missingFile.value.status, 'failed');
   assert.equal(missingFile.value.error, 'host_unreachable');
   assert.equal(missingFile.value.text, undefined);
-  const sftpResults = [blockedList, privateTarget, wrongPin, missingCredential, sftpListed, readText, many, binary, oversized, missingFile];
+  const sftpResults = [blockedList, privateTarget, wrongPin, missingCredential, sftpListed, readText, many, binary, oversized, envelope, missingFile];
   assert.doesNotMatch(JSON.stringify(sftpResults), /synthetic-password|synthetic-initial-command|privateKey|ENCRYPTION_KEY/);
   assert.equal((await readFile(authLog, 'utf8')).match(/exec-command:/g)?.length ?? 0, sftpCallsBefore.exec, 'SFTP must not run initialCommand or another exec');
   assert.equal(await shellOpens(), sftpCallsBefore.shells, 'SFTP must not open a managed shell');
