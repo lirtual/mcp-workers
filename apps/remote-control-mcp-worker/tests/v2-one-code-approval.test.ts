@@ -4,10 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {newEnrollment, saveNewPrivateKey} from "../../remote-control-agent/src/v2-enrollment.ts";
-import {recoverDeviceId} from "../../remote-control-agent/src/v2-session-client.ts";
+import {recoverDeviceId, signedSessionProof} from "../../remote-control-agent/src/v2-session-client.ts";
 import worker, {V2OwnerCoordinator} from "../src/worker.ts";
 import {approvePendingKey} from "../src/v2-pairing.ts";
-import {TEMPORARY_GRANT_MS} from "../src/v2-session.ts";
+import {TEMPORARY_GRANT_MS, issueSessionChallenge, authorizeSession, authorizeSocketSession} from "../src/v2-session.ts";
 
 function fixture() {
   const rows = new Map<string,unknown>();
@@ -173,4 +173,43 @@ test("#97 expired code, wrong pairing ID and malformed fingerprint cannot approv
   assert.equal((await f.rpc("pairing_lookup",{code:material.code})).object.pairing_id,undefined);
   assert.equal((await approvePendingKey(f.store as never,id,fp,"permanent")).status,404);
   assert.equal([...f.rows.keys()].filter(key=>key.startsWith("device:")).length,0);
+});
+
+test("#97 a legacy approved key without grant_type keeps signed WSS authority after a new one-code approval",async()=>{
+  const f=fixture(),old=newEnrollment("approved-before-migration");
+  const oldId="7e8855e2-e5d8-4bce-a11e-1833e9a0e6b0";
+  f.rows.set("device:"+oldId,{
+    device_id:oldId,name:"approved-before-migration",public_key:old.request.public_key,
+    fingerprint:"9".repeat(24),approved_at:Date.now()-7200_000,revoked:false,
+    // Historical v2 Preview records do not have grant_type.
+  });
+  const incoming=newEnrollment("new-one-code-device");
+  assert.equal((await f.register(incoming.request)).status,202);
+  const looked=await f.rpc("pairing_lookup",{code:incoming.code});
+  const result=await f.rpc("pairing_approve",{
+    pairing_id:String(looked.object.pairing_id),expected_fingerprint:String(looked.object.fingerprint),
+    expected_grant_type:"permanent",
+  });
+  assert.equal(result.object.status,"approved");
+  assert.notEqual(result.object.device_id,oldId);
+  assert.equal([...f.rows.keys()].filter(k=>k.startsWith("device:")).length,2);
+  const unchanged=f.rows.get("device:"+oldId) as {public_key:string;grant_type?:string;revoked:boolean};
+  assert.equal(unchanged.public_key,old.request.public_key);
+  assert.equal(unchanged.grant_type,undefined);
+  assert.equal(unchanged.revoked,false);
+  const nonce1=await issueSessionChallenge(f.store as never,{device_id:oldId});
+  assert.equal(nonce1.status,200);
+  const ch1=(nonce1.body as {nonce:string}).nonce;
+  assert.equal((await authorizeSession(f.store as never,{
+    device_id:oldId,nonce:ch1,proof:signedSessionProof(old.privateKeyPem,oldId,ch1).proof,
+  })).status,200);
+  // A fresh signed WSS login for the existing device must still work; the
+  // new owner approval must not rewrite or revoke this prior grant.
+  const nonce2=await issueSessionChallenge(f.store as never,{device_id:oldId});
+  const ch2=(nonce2.body as {nonce:string}).nonce;
+  const ws=await authorizeSocketSession(f.store as never,{
+    device_id:oldId,nonce:ch2,proof:signedSessionProof(old.privateKeyPem,oldId,ch2).proof,
+  });
+  assert.equal(ws?.device_id,oldId);
+  assert.ok(ws?.epoch);
 });
