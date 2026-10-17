@@ -179,3 +179,46 @@ test("#78 optional identity purge cannot run non-interactively",()=>{
  assert.equal(r.status,1);
  assert.match(r.stderr,/non-root interactive terminal/);
 });
+
+test("#78 real PTY opt-in identity-purge command shows exact scope and never touches shared receipts",()=>{
+ const code=String.raw`import os,sys,tempfile,pathlib,pty,subprocess,select,time
+script=sys.argv[1]
+with tempfile.TemporaryDirectory(prefix="rc-v2-identity-cli-") as home:
+    base=pathlib.Path(home)/".local/share/mcp-workers/remote-control"
+    base.mkdir(parents=True,mode=0o700);base.chmod(0o700)
+    key=base/"v2-identity.pem";key.write_text("dummy-key");key.chmod(0o600)
+    did=pathlib.Path(str(key)+".device-id")
+    did.write_text("e11d9c70-16fe-4d47-aafc-d01db72750fd");did.chmod(0o600)
+    receipt=pathlib.Path(home)/".local/state/mcp-workers/remote-control-agent/operation-receipts.sqlite"
+    receipt.parent.mkdir(parents=True);receipt.write_text("unknown-v1-v2-receipt")
+    master,slave=pty.openpty()
+    env=dict(os.environ,HOME=home)
+    child=subprocess.Popen([sys.executable,"-B",script,"--purge-local-identity"],
+        stdin=slave,stdout=slave,stderr=slave,env=env,close_fds=True)
+    os.close(slave)
+    output=b"";written=False;deadline=time.monotonic()+8
+    while time.monotonic()<deadline:
+        ready,_,_=select.select([master],[],[],0.1)
+        if ready:
+            try:chunk=os.read(master,8192)
+            except OSError:break
+            if not chunk:break
+            output+=chunk
+        if b"PURGE-V2-IDENTITY to irreversibly remove" in output and not written:
+            assert str(key).encode() in output and str(did).encode() in output
+            assert b"Cloud authorization has NOT been revoked" in output
+            assert b"SQLite receipts" in output
+            os.write(master,b"PURGE-V2-IDENTITY\n");written=True
+        if child.poll() is not None:
+            break
+    os.close(master)
+    if child.poll() is None:child.kill()
+    assert child.wait(timeout=5)==0,output.decode(errors="replace")
+    assert written and not key.exists() and not did.exists()
+    assert receipt.read_text()=="unknown-v1-v2-receipt"
+print("PTY_CONFIRMED_KEY_ONLY_PURGE_OK")
+`;
+ const r=spawnSync("python3",["-B","-c",code,script],{encoding:"utf8",timeout:17000});
+ assert.equal(r.status,0,r.stderr);
+ assert.match(r.stdout,/PTY_CONFIRMED_KEY_ONLY_PURGE_OK/);
+});
