@@ -48,6 +48,12 @@ test("future reviewed route binds its own validated origin and pins both ABIs", 
   assert.match(shell,/unset NODE_OPTIONS NODE_PATH/);
   assert.doesNotMatch(shell,/python3|pip install|REMOTE_CONTROL_AGENT_ENDPOINT/);
   assert.ok(shell.indexOf("sha256sum -c")<shell.indexOf("tar -xOzf"));
+  assert.match(shell,/effective=\$\(curl[\s\S]*-w '%\{url_effective\}'/);
+  assert.match(shell,/case "\$effective" in/);
+  assert.match(shell,/https:\/\/release-assets\.githubusercontent\.com\/\*/);
+  assert.match(shell,/https:\/\/objects\.githubusercontent\.com\/\*/);
+  assert.match(shell,/Unexpected GitHub Release asset redirect/);
+  assert.ok(shell.indexOf('case "$effective" in')<shell.indexOf("sha256sum -c"));
   const syntax=spawnSync("sh",["-n"],{input:shell,encoding:"utf8",timeout:3000});
   assert.equal(syntax.status,0,syntax.stderr);
 });
