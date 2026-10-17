@@ -19,7 +19,7 @@ for unsafe in ["../../.ssh/id_rsa","/tmp/evil","bin/../evil","apps/remote-contro
     except ValueError: pass
 for url in ["http://github.com/file","https://evil.example/file","https://github.com.evil.test/file"]:
     assert not m.https_origin(url),url
-assert m.https_origin("https://github.com/lirtual/mcp-workers/releases/download/v0.1.0/agent.tgz")
+assert m.https_origin("https://github.com/lirtual/remote-control-agent/releases/download/v0.1.0/agent.tgz")
 try: m.resolve_pinned("latest",commit,target); raise AssertionError("latest accepted")
 except ValueError: pass
 print("PYTHON_BOOTSTRAP_FAIL_CLOSED_OK")
@@ -53,7 +53,7 @@ tag="v0.1.0";c="a"*40;t="linux-x64-glibc"
 name="remote-control-agent-"+tag+"-"+t+".tar.gz"
 asset={"name":name,"state":"uploaded","id":42,"size":50000,"digest":"sha256:"+"b"*64,
        "url":m.API+"/releases/assets/42",
-       "browser_download_url":"https://github.com/lirtual/mcp-workers/releases/download/"+tag+"/"+name}
+       "browser_download_url":"https://github.com/lirtual/remote-control-agent/releases/download/"+tag+"/"+name}
 calls=[]
 def response(url):
     calls.append(url)

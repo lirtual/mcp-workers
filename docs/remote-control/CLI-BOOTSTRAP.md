@@ -11,7 +11,7 @@ real Release tag, immutable source commit and published official SHA-256 digest
 have been verified by a maintainer:
 
 ```sh
-bash -c 'set -eu; code=$(curl -fsSL --proto =https --tlsv1.2 "https://raw.githubusercontent.com/lirtual/mcp-workers/<REVIEWED_40_CHAR_COMMIT>/apps/remote-control-agent/scripts/bootstrap-v2.py"); exec python3 -c "$code" --tag <PUBLISHED_TAG> --commit <REVIEWED_40_CHAR_COMMIT> --endpoint https://<REVIEWED_WORKER_ORIGIN>/'
+bash -c 'set -eu; code=$(curl -fsSL --proto =https --tlsv1.2 "https://raw.githubusercontent.com/lirtual/remote-control-agent/<REVIEWED_40_CHAR_COMMIT>/apps/remote-control-agent/scripts/bootstrap-v2.py"); exec python3 -c "$code" --tag <PUBLISHED_TAG> --commit <REVIEWED_40_CHAR_COMMIT> --endpoint https://<REVIEWED_WORKER_ORIGIN>/'
 ```
 
 **Do not copy/paste the placeholders.** All references are pinned; there is no

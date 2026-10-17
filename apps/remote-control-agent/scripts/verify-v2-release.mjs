@@ -11,7 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { gunzipSync } from "node:zlib";
 
-const REPO="lirtual/mcp-workers";
+const REPO="lirtual/remote-control-agent";
 const API="https://api.github.com/repos/"+REPO;
 const MAX_ARCHIVE=180*1024*1024;
 const MAX_TAR=240*1024*1024;
