@@ -14,6 +14,7 @@ const app = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 const config = join(app, 'tests/e2e/wrangler.jsonc');
 const scratch = await mkdtemp(join(tmpdir(), 'ssh-exec-e2e-'));
 const authLog = join(scratch, 'fixture-auth.log');
+const resetAllow = join(scratch, 'pty-reset-allow');
 const state = join(scratch, 'wrangler-state');
 const hostKey = join(scratch, 'host_key');
 const userKey = join(scratch, 'user_key');
@@ -44,6 +45,7 @@ keyCommand(hostKey);
 keyCommand(userKey);
 const fingerprint = run('ssh-keygen', ['-lf', `${hostKey}.pub`, '-E', 'sha256']).split(/\s+/)[1]!;
 await writeFile(authLog, '');
+await writeFile(resetAllow, '');
 
 const key = await crypto.subtle.importKey('raw', Buffer.from(encryptionKey, 'base64'), 'AES-GCM', false, ['encrypt']);
 async function encryptedHost(id: string, password: string): Promise<string> {
@@ -72,7 +74,8 @@ run('pnpm', ['exec', 'wrangler', 'd1', 'execute', 'ssh-mcp-local-fixture', '--lo
 const fixture = spawn(process.execPath, ['--experimental-strip-types', join(app, 'g0/fixture/server.ts')], {
   cwd: app,
   env: { ...process.env, FIXTURE_PORT: String(fixturePort), FIXTURE_HOST_KEY: hostKey,
-    FIXTURE_USER_PUBLIC_KEY: `${userKey}.pub`, FIXTURE_PASSWORD: 'synthetic-password-do-not-use', FIXTURE_AUTH_LOG: authLog },
+    FIXTURE_USER_PUBLIC_KEY: `${userKey}.pub`, FIXTURE_PASSWORD: 'synthetic-password-do-not-use', FIXTURE_AUTH_LOG: authLog,
+    FIXTURE_RESET_ALLOW: resetAllow },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let fixtureOutput = '';
@@ -382,6 +385,11 @@ try {
     'a new SSH operation succeeds through the same fixture after the interrupted connection is reset');
   assert.match(afterLiveRestartLog, new RegExp(`connection-closed:${liveConnectionId}\\n`), 'runtime restart closes the synthetic live SSH transport');
 
+  const allowPtyResets = async () => {
+    const log = await readFile(authLog, 'utf8');
+    const ids = [...log.matchAll(/pty-connection:(\d+)/g)].map(match => match[1]);
+    await writeFile(resetAllow, `${ids.join('\n')}\n`);
+  };
   const shellOpens = () => readFile(authLog, 'utf8').then(log => (log.match(/shell-open/g) ?? []).length);
   const passwordAuths = () => readFile(authLog, 'utf8').then(log => (log.match(/^password$/gm) ?? []).length);
   const sessionStart = (id: number, operationId: string, term?: string, targetHostId = hostId) => call(id, 'ssh_session_start', {
@@ -459,6 +467,7 @@ try {
 
   const createdAt = Number(startedSession.value.created_at);
   const activityAt = Number(startedSession.value.last_activity_at);
+  await allowPtyResets();
   await fixtureRequest('session-clock', { now: createdAt + 10 * 60 * 1000 - 1000 });
   const polled = await sessionOutput(76, sessionId, 0, 64);
   assert.equal(polled.value.status, 'live');
@@ -484,6 +493,7 @@ try {
   assert.equal(bumped?.updated, true);
   const absoluteAlarm = await fixtureRequest<{ alarm: number | null }>('session-alarm-time', {});
   assert.equal(absoluteAlarm?.alarm, absoluteCreatedAt + 60 * 60 * 1000, 'an active shell is still capped by the absolute deadline');
+  await allowPtyResets();
   await fixtureRequest('session-clock', { now: absoluteCreatedAt + 60 * 60 * 1000 });
   await fixtureRequest('session-alarm', {});
   const absoluteClosed = await sessionStatus(80, absoluteSessionId);
@@ -491,10 +501,10 @@ try {
   await fixtureRequest('session-clock', { now: null });
 
   const disconnectStart = await sessionStart(81, '31313131-3131-4313-8313-313131313131', 'fixture-disconnect');
-  assert.ok(disconnectStart.value.status === 'live' || disconnectStart.value.status === 'lost', JSON.stringify(disconnectStart));
+  assert.ok(disconnectStart.value.status === 'live' || disconnectStart.value.status === 'closing' || disconnectStart.value.status === 'lost', JSON.stringify(disconnectStart));
   const disconnectSessionId = String(disconnectStart.value.session_id);
   let disconnected = await sessionStatus(82, disconnectSessionId);
-  for (let attempt = 0; attempt < 40 && disconnected.value.status === 'live'; attempt++) {
+  for (let attempt = 0; attempt < 40 && disconnected.value.status !== 'lost'; attempt++) {
     await delay(50);
     disconnected = await sessionStatus(83, disconnectSessionId);
   }
@@ -508,6 +518,7 @@ try {
   assert.equal(restartStart.value.status, 'live', JSON.stringify(restartStart));
   const restartSessionId = String(restartStart.value.session_id);
   const shellsBeforeRestart = await shellOpens();
+  await allowPtyResets();
   await restartWorker();
   const restarted = await sessionStatus(86, restartSessionId);
   assert.equal(restarted.value.status, 'lost', 'a DO restart loses the shell and does not infer ownership from the stored id');
@@ -549,8 +560,51 @@ try {
   assert.ok(combined.endsWith('FLOOD-END'));
   assert.ok(Buffer.byteLength(combined) <= 256 * 1024);
   assert.equal(await shellOpens() > shellsBeforeRestart, true);
+  await allowPtyResets();
   await fixtureRequest('session-clock', { now: Date.now() + 11 * 60 * 1000 });
   await fixtureRequest('session-alarm', {});
+  await fixtureRequest('session-clock', { now: null });
+
+  const uncertainOperationId = '38383838-3838-4383-8383-383838383838';
+  const shellsBeforeUncertain = await shellOpens();
+  await control('PUT', 'terminal-update-failure');
+  const uncertainStart = await sessionStart(110, uncertainOperationId, 'fixture-interrupt');
+  assert.equal(uncertainStart.value.status, 'unknown', JSON.stringify(uncertainStart));
+  assert.equal(uncertainStart.value.error, 'unknown_outcome');
+  assert.equal(await shellOpens(), shellsBeforeUncertain + 1, 'an uncertain session start still opened the shell once');
+  const uncertainReceipt = await fixtureRequest('read-receipt', { operationId: uncertainOperationId });
+  assert.equal(uncertainReceipt?.status, 'unknown', 'a terminal receipt that cannot store result_json is still persisted as unknown');
+  const uncertainStatus = await call(111, 'get_operation_status', { operation_id: uncertainOperationId });
+  assert.equal(uncertainStatus.value.status, 'unknown');
+  const uncertainReplay = await sessionStart(112, uncertainOperationId, 'fixture-interrupt');
+  assert.equal(uncertainReplay.value.status, 'unknown');
+  assert.equal(uncertainReplay.value.error, 'unknown_outcome');
+  assert.equal(await shellOpens(), shellsBeforeUncertain + 1, 'an unknown session start is not opened again');
+  await control('DELETE', 'terminal-update-failure');
+
+  const closingStart = await sessionStart(113, '39393939-3939-4393-8393-393939393939');
+  assert.equal(closingStart.value.status, 'live', JSON.stringify(closingStart));
+  const closingSessionId = String(closingStart.value.session_id);
+  await fixtureRequest('session-close-delay', {});
+  await allowPtyResets();
+  await fixtureRequest('session-clock', { now: Number(closingStart.value.created_at) + 10 * 60 * 1000 });
+  const closingAlarm = fetch(`${endpoint}/__fixture/session-alarm`, { method: 'POST' });
+  await fixtureRequest('session-close-entered', {});
+  let closingStatus = await sessionStatus(114, closingSessionId);
+  for (let attempt = 0; attempt < 40 && closingStatus.value.status !== 'closing'; attempt++) {
+    await delay(50);
+    closingStatus = await sessionStatus(115, closingSessionId);
+  }
+  assert.equal(closingStatus.value.status, 'closing', JSON.stringify(closingStatus));
+  assert.equal(typeof closingStatus.value.created_at, 'number');
+  assert.equal(typeof closingStatus.value.last_activity_at, 'number');
+  assert.equal(typeof closingStatus.value.idle_deadline_at, 'number');
+  assert.equal(typeof closingStatus.value.absolute_deadline_at, 'number');
+  assert.equal(typeof closingStatus.value.output_cursor, 'number');
+  await fixtureRequest('session-close-release', {});
+  assert.equal((await closingAlarm).status, 204);
+  const closedAfterDelay = await sessionStatus(116, closingSessionId);
+  assert.equal(closedAfterDelay.value.status, 'closed');
   await fixtureRequest('session-clock', { now: null });
 
   const shellsBeforeStall = await shellOpens();
@@ -570,6 +624,7 @@ try {
   const rejectedDuringStall = await sessionStart(102, '37373737-3737-4373-8373-373737373737');
   assert.equal(rejectedDuringStall.value.error, 'capacity_reached', 'a start that has not finished still consumes the host connection quota');
   assert.equal(await shellOpens(), shellsBeforeStall + 1);
+  await allowPtyResets();
 
   console.log('Local MCP → SQLite DO → pinned SSH fixture passed: concurrent atomic admission, indexed bounded cleanup, legacy digest replay compatibility, restart recovery before dispatch, during live SSH and after effect/receipt-commit failure, fail-closed storage behavior, unknown tombstone retention, managed shell lifecycle, and no automatic redispatch.');
 } finally {

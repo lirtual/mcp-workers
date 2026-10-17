@@ -24,6 +24,7 @@ async function availablePorts(count: number): Promise<number[]> {
 const [fixturePort, workerPort] = await availablePorts(2);
 const scratch = await mkdtemp(join(tmpdir(), 'ssh-g0-'));
 const authLog = join(scratch, 'auth.log');
+const resetAllow = join(scratch, 'pty-reset-allow');
 const run = (command: string, args: string[]) => {
   const result = spawnSync(command, args, { encoding: 'utf8' });
   if (result.status !== 0) throw new Error(`${command} failed: ${result.stderr}`);
@@ -40,6 +41,7 @@ const fingerprintLine = run('ssh-keygen', ['-lf', `${hostKey}.pub`, '-E', 'sha25
 const fingerprint = fingerprintLine.split(/\s+/)[1]!;
 const privateKey = await readFile(userKey, 'utf8');
 await writeFile(authLog, '');
+await writeFile(resetAllow, '');
 
 const fixture = spawn(process.execPath, ['--experimental-strip-types', join(app, 'g0/fixture/server.ts')], {
   cwd: app,
@@ -50,6 +52,7 @@ const fixture = spawn(process.execPath, ['--experimental-strip-types', join(app,
     FIXTURE_USER_PUBLIC_KEY: `${userKey}.pub`,
     FIXTURE_PASSWORD: 'synthetic-password',
     FIXTURE_AUTH_LOG: authLog,
+    FIXTURE_RESET_ALLOW: resetAllow,
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
@@ -153,6 +156,12 @@ try {
     await delay(50);
   }
   assert.match(shellOutput, /fixture says hello/);
+  const allowPtyResets = async () => {
+    const log = await readFile(authLog, 'utf8');
+    const ids = [...log.matchAll(/pty-connection:(\d+)/g)].map(match => match[1]);
+    await writeFile(resetAllow, `${ids.join('\n')}\n`);
+  };
+  await allowPtyResets();
   const close = await request({ mode: 'sessionClose', sessionId: 'g0-live-session' });
   assert.equal(close.status, 200, JSON.stringify(close.body));
   assert.equal(close.body.closed, true);
@@ -165,6 +174,7 @@ try {
 
   const disconnectedShell = await request({ mode: 'sessionStart', password: 'synthetic-password', ...expected });
   assert.equal(disconnectedShell.status, 200, JSON.stringify(disconnectedShell.body));
+  await allowPtyResets();
   await request({ mode: 'sessionWrite', sessionId: 'g0-live-session', input: 'disconnect shell\n' });
   let shellLost = false;
   for (let attempt = 0; attempt < 30; attempt++) {

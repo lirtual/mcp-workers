@@ -17,18 +17,27 @@ const remoteFiles = new Map<string, Buffer>([
 ]);
 
 let connectionSequence = 0;
+const ptyResetAllowed = (connectionId: number): boolean => {
+  const file = process.env.FIXTURE_RESET_ALLOW;
+  if (!file) return false;
+  try {
+    return readFileSync(file, 'utf8').split(/\s+/).includes(String(connectionId));
+  } catch {
+    return false;
+  }
+};
 const server = new Server({ hostKeys: [hostKey] }, (client) => {
   const connectionId = ++connectionSequence;
   let expectedRuntimeReset = false;
-  let tolerateShellReset = false;
+  let intentionalPtyReset = false;
   client.on('close', () => log(`connection-closed:${connectionId}`));
   client.on('error', (error: NodeJS.ErrnoException) => {
     if (expectedRuntimeReset && error.code === 'ECONNRESET') {
       log(`expected-runtime-reset:${connectionId}`);
       return;
     }
-    if (tolerateShellReset && error.code === 'ECONNRESET') {
-      log(`shell-runtime-reset:${connectionId}`);
+    if (error.code === 'ECONNRESET' && (intentionalPtyReset || ptyResetAllowed(connectionId))) {
+      log(`allowed-pty-reset:${connectionId}`);
       return;
     }
     log(`unexpected-fixture-error:${connectionId}:${error.code ?? 'unknown'}`);
@@ -68,9 +77,9 @@ const server = new Server({ hostKeys: [hostKey] }, (client) => {
       session.on('pty', (accept, _reject, info: { term?: string }) => {
         ptyRequested = true;
         term = info?.term ?? '';
-        // PTY sessions are closed by idle deadlines and runtime restarts; only this connection may absorb that reset.
-        tolerateShellReset = true;
+        log(`pty-connection:${connectionId}`);
         log(`pty-request:${term}`);
+        if (term === 'fixture-disconnect' || term === 'fixture-interrupt') intentionalPtyReset = true;
         accept();
       });
       session.on('shell', (accept, reject) => {
@@ -87,7 +96,10 @@ const server = new Server({ hostKeys: [hostKey] }, (client) => {
           channel.write(payload);
         } else {
           channel.write('fixture-shell-ready\n');
-          if (term === 'fixture-disconnect') setTimeout(() => client.end(), 20);
+          if (term === 'fixture-disconnect') {
+            intentionalPtyReset = true;
+            setTimeout(() => client.end(), 20);
+          }
         }
         channel.on('data', (data: Buffer) => {
           const input = data.toString();

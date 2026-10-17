@@ -68,7 +68,7 @@ interface LiveSession {
   lastActivityAt: number;
   absoluteDeadlineAt: number;
   ring: OutputRing;
-  releaseReason: 'live' | 'closed' | 'lost';
+  releaseReason: 'live' | 'closing' | 'closed' | 'lost';
   settled?: Promise<void>;
 }
 
@@ -370,6 +370,7 @@ async function runSshExec(env: Env, request: ExecRequest, operationId: string, r
 
 export class SshOperationsDO extends DurableObject<Env> {
   protected readonly sessions = new Map<string, LiveSession>();
+  private readonly unresolvedOutcomes = new Set<string>();
   private deadlineSweep: Promise<void> = Promise.resolve();
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -474,8 +475,12 @@ export class SshOperationsDO extends DurableObject<Env> {
     } catch {
       return { operation_id: operationId.toLowerCase(), status: 'failed', error: 'receipt_store_unavailable' };
     }
-    const row = this.ctx.storage.sql.exec<ReceiptRow>('SELECT * FROM operations WHERE operation_id = ?', operationId.toLowerCase()).toArray()[0];
+    const normalized = operationId.toLowerCase();
+    const row = this.ctx.storage.sql.exec<ReceiptRow>('SELECT * FROM operations WHERE operation_id = ?', normalized).toArray()[0];
     if (!row) return null;
+    if (this.unresolvedOutcomes.has(normalized)) {
+      return { operation_id: normalized, status: 'unknown', error: 'unknown_outcome' };
+    }
     if (row.result_json) return JSON.parse(row.result_json) as ExecReply;
     return { operation_id: row.operation_id, status: row.status === 'admitted' ? 'unknown' : row.status as ExecReply['status'] };
   }
@@ -529,7 +534,7 @@ export class SshOperationsDO extends DurableObject<Env> {
       } catch {
         await this.closeShell(opened);
         this.releaseLease(operationId);
-        return { operation_id: operationId, status: 'unknown', error: 'unknown_outcome' };
+        return this.persistUncertainOutcome(operationId);
       }
       this.sessions.set(sessionId, session);
       this.observeSession(session);
@@ -538,15 +543,15 @@ export class SshOperationsDO extends DurableObject<Env> {
     } catch (error) {
       if (opened) await this.closeShell(opened);
       const observed = error instanceof Error && error.message === 'shell_observed';
-      const reply: SessionReply = observed
-        ? { operation_id: operationId, status: 'unknown', error: 'unknown_outcome' }
-        : { operation_id: operationId, status: 'failed', error: errorCode(error) };
-      try {
-        sql.exec('UPDATE operations SET status = ?, result_json = ? WHERE operation_id = ?', reply.status, JSON.stringify(reply), operationId);
-      } catch {
-        this.releaseLease(operationId);
-        return { operation_id: operationId, status: 'unknown', error: 'unknown_outcome' };
+      if (!observed) {
+        const failed: SessionReply = { operation_id: operationId, status: 'failed', error: errorCode(error) };
+        try {
+          sql.exec('UPDATE operations SET status = ?, result_json = ? WHERE operation_id = ?', failed.status, JSON.stringify(failed), operationId);
+          this.releaseLease(operationId);
+          return failed;
+        } catch { /* a definitive failure that cannot be stored is still not safe to retry */ }
       }
+      const reply = this.persistUncertainOutcome(operationId);
       this.releaseLease(operationId);
       return reply;
     }
@@ -575,6 +580,8 @@ export class SshOperationsDO extends DurableObject<Env> {
 
   async readSessionStatus(sessionId: string): Promise<SessionReply> {
     const normalized = sessionId.toLowerCase();
+    const closing = this.sessions.get(normalized);
+    if (closing?.releaseReason === 'closing') return this.sessionView(closing);
     await this.enforceSessionDeadlines();
     const session = this.sessions.get(normalized);
     const row = this.sessionRow(normalized);
@@ -588,8 +595,31 @@ export class SshOperationsDO extends DurableObject<Env> {
 
   private existingStartReply(operationId: string, digest: string, existing: ReceiptRow): SessionReply {
     if (existing.digest !== digest) return { operation_id: operationId, status: 'failed', error: 'receipt_conflict' };
+    if (this.unresolvedOutcomes.has(operationId) || existing.status === 'unknown' || existing.status === 'admitted') {
+      return { operation_id: operationId, status: 'unknown', error: 'unknown_outcome' };
+    }
     if (existing.result_json) return JSON.parse(existing.result_json) as SessionReply;
-    return { operation_id: operationId, status: existing.status === 'admitted' ? 'unknown' : existing.status as SessionReply['status'] };
+    return { operation_id: operationId, status: existing.status as SessionReply['status'] };
+  }
+
+  private persistUncertainOutcome(operationId: string): SessionReply {
+    const reply: SessionReply = { operation_id: operationId, status: 'unknown', error: 'unknown_outcome' };
+    try {
+      this.ctx.storage.sql.exec(
+        'UPDATE operations SET status = ?, result_json = ? WHERE operation_id = ?',
+        'unknown', JSON.stringify(reply), operationId,
+      );
+      this.unresolvedOutcomes.delete(operationId);
+    } catch {
+      try {
+        // result_json may be unwritable; status alone must still stop a later same-id start from seeing running.
+        this.ctx.storage.sql.exec('UPDATE operations SET status = \'unknown\' WHERE operation_id = ?', operationId);
+        this.unresolvedOutcomes.delete(operationId);
+      } catch {
+        this.unresolvedOutcomes.add(operationId);
+      }
+    }
+    return reply;
   }
 
   private claimOperation(operationId: string, hostId: string, digest: string, now: number): Admission {
@@ -643,7 +673,6 @@ export class SshOperationsDO extends DurableObject<Env> {
       }
       // Output polling is not activity. Only admission (and later authorized input) moves the idle deadline.
       if (now >= session.lastActivityAt + SESSION_IDLE_MS || now >= session.absoluteDeadlineAt) {
-        session.releaseReason = 'closed';
         await this.settleSession(session, 'closed');
       }
     }
@@ -731,7 +760,7 @@ export class SshOperationsDO extends DurableObject<Env> {
     }
   }
 
-  private async closeShell(resources: { client?: SshClient; channel?: SshChannel; socket?: ReturnType<typeof connectTcp> }): Promise<void> {
+  protected async closeShell(resources: { client?: SshClient; channel?: SshChannel; socket?: ReturnType<typeof connectTcp> }): Promise<void> {
     try { resources.socket?.close(); } catch { /* already closed */ }
     await closeSshResources(resources.channel, resources.client);
   }
@@ -764,9 +793,14 @@ export class SshOperationsDO extends DurableObject<Env> {
 
   private settleSession(session: LiveSession, status: 'closed' | 'lost'): Promise<void> {
     if (session.settled) return session.settled;
-    const chosen = session.releaseReason === 'live' ? status : session.releaseReason;
-    session.releaseReason = chosen;
-    session.settled = this.finishSession(session, chosen);
+    if (session.releaseReason === 'live') session.releaseReason = 'closing';
+    session.settled = (async () => {
+      try {
+        await this.finishSession(session, status);
+      } finally {
+        if (session.releaseReason === 'closing') session.releaseReason = status;
+      }
+    })();
     return session.settled;
   }
 
@@ -809,7 +843,7 @@ export class SshOperationsDO extends DurableObject<Env> {
   }
 
   private storedSessionView(row: SessionRow): SessionReply {
-    const status = row.status === 'closing' ? 'lost' : row.status as SessionReply['status'];
+    const status = row.status as SessionReply['status'];
     return {
       operation_id: row.operation_id,
       session_id: row.session_id,

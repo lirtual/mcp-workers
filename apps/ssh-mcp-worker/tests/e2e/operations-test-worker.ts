@@ -7,6 +7,10 @@ import type { Env } from '../../src/types.ts';
 // receipt, SSH client, pin verification, and result handling code.
 export class SshOperationsDO extends ProductionOperationsDO {
   private fixtureNow: number | null = null;
+  private closeDelay: Promise<void> | null = null;
+  private releaseCloseDelay: (() => void) | null = null;
+  private closeEntered: Promise<void> = Promise.resolve();
+  private markCloseEntered: (() => void) | null = null;
 
   protected override now(): number {
     return this.fixtureNow ?? super.now();
@@ -14,6 +18,28 @@ export class SshOperationsDO extends ProductionOperationsDO {
 
   protected override async resolveTarget(_host: string, _signal?: AbortSignal): Promise<string> {
     return '127.0.0.1';
+  }
+
+  protected override async closeShell(resources: Parameters<ProductionOperationsDO['closeShell']>[0]): Promise<void> {
+    this.markCloseEntered?.();
+    this.markCloseEntered = null;
+    if (this.closeDelay) await this.closeDelay;
+    await super.closeShell(resources);
+  }
+
+  async armSessionCloseDelay(): Promise<void> {
+    this.closeEntered = new Promise(resolve => { this.markCloseEntered = resolve; });
+    this.closeDelay = new Promise(resolve => { this.releaseCloseDelay = resolve; });
+  }
+
+  async waitForSessionCloseEntered(): Promise<void> {
+    await this.closeEntered;
+  }
+
+  async releaseSessionCloseDelay(): Promise<void> {
+    this.releaseCloseDelay?.();
+    this.closeDelay = null;
+    this.releaseCloseDelay = null;
   }
 
   async setFixtureClock(now: number | null): Promise<void> {
@@ -187,6 +213,21 @@ export default {
       const { cutoff } = await request.json() as { cutoff: number };
       const operations = env.SSH_OPERATIONS.getByName('single-admin-operations') as unknown as SshOperationsDO;
       return Response.json(await operations.getCleanupStateForFixture(cutoff));
+    }
+    if (path === '/__fixture/session-close-delay' && request.method === 'POST') {
+      const operations = env.SSH_OPERATIONS.getByName('single-admin-operations') as unknown as SshOperationsDO;
+      await operations.armSessionCloseDelay();
+      return new Response(null, { status: 204 });
+    }
+    if (path === '/__fixture/session-close-release' && request.method === 'POST') {
+      const operations = env.SSH_OPERATIONS.getByName('single-admin-operations') as unknown as SshOperationsDO;
+      await operations.releaseSessionCloseDelay();
+      return new Response(null, { status: 204 });
+    }
+    if (path === '/__fixture/session-close-entered' && request.method === 'POST') {
+      const operations = env.SSH_OPERATIONS.getByName('single-admin-operations') as unknown as SshOperationsDO;
+      await operations.waitForSessionCloseEntered();
+      return new Response(null, { status: 204 });
     }
     if (path === '/__fixture/session-clock' && request.method === 'POST') {
       const { now } = await request.json() as { now: number | null };
