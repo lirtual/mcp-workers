@@ -1,6 +1,6 @@
 # ADR-0002 — Managed SSH sessions, trusted hosts, unattended operations and durable receipts
 
-Status: **Round 2 operator decisions accepted on 2026-10-17; implementation mechanics pending Round 3.**
+Status: **Round 2 operator decisions accepted on 2026-10-17; Round 3 boundaries recorded in [ADR-0003](./0003-bounded-live-sessions-and-authoritative-admission.md). Further retention/failure/rollout policy remains open.**
 Scope: prospective EdgeSSH-owned SSH execution / optional MCP adapter. Design decision only, no code or production authorization.
 Related: [ADR-0001](./0001-edgessh-mcp-cross-repo-boundary.md), [interview](../DESIGN-INTERVIEW.md).
 
@@ -40,15 +40,10 @@ Q6 and Q9 were chosen because an AI caller needs Shell sessions and durable know
 
 **Explicitly rejected by these decisions:** one-shot-only/no managed sessions (Q6=A), unattended first-use/changed-fingerprint auto-trust (Q7=B), per-tool human approval workflow (Q8=B), no durable receipt implementation (Q9=A), first-release binary streaming/bulk transfer (Q10=B). Do not sneak these back as silent scope reductions or expansions.
 
-## Still open — Round 3
+## Subsequent decisions — Round 3
 
-- Q11: session identity and recovery when the TCP connection is lost
-- Q12: what qualifies as a remotely owned managed background job and what `stop` can truthfully guarantee
-- Q13: receipt coverage for interactive PTY input as well as discrete command/SFTP mutations
-- Q14: where admission/receipts are authoritative and whether more infrastructure is justified
-- Q15: capacity, inactivity, lifetime and output bounds for managed sessions
-- Q16: safe bounded text mutation request contract
+The operator accepted **Q11=A–Q16=A** in [ADR-0003](./0003-bounded-live-sessions-and-authoritative-admission.md): lost connections do not trigger automatic re-execution, only provably session-owned live jobs may be stopped, interactive input has receipt deduplication, EdgeSSH owns durable admission in its existing storage, sessions/output have finite limits, and MCP SFTP writes are explicit bounded UTF-8 operations.
 
-Those decisions are not implied by Q6=B/Q9=B. The next round must also assess storage-failure behavior, reconciliation, revocation and cross-repo rollout before requesting final operator approval.
+**Still open:** receipt retention and protected unknown outcomes, reconciliation authority, exceptional owner-scoped stop if receipt persistence fails, MCP token revocation effect on live sessions, and independent code/schema deployment and rollback. Q1–Q16 alone never authorized live rollout.
 
 No code changes, database migrations, Cloudflare bindings, new deployments or production SSH actions are authorized by this ADR.
