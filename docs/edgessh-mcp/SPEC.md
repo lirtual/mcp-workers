@@ -1,7 +1,8 @@
 # EdgeSSH MCP — Technical Specification (v0.1)
 
 > **Status:** Draft technical specification, synthesized by Matt Skills Curated / to-spec on 2026-10-17. Operator authorized **specification drafting**, NOT implementation, merging, secrets provisioning, production binding, deployment or any live SSH operation.
-> **Target:** lirtual/mcp-workers, one new independent app at apps/edgessh-mcp-worker (proposed Worker name: edgessh-mcp-worker). Existing EdgeSSH fork and production deployment remain UNCHANGED.
+> **Target:** lirtual/mcp-workers, one new independent app at apps/ssh-mcp-worker (proposed Worker name: ssh-mcp-worker). Existing EdgeSSH fork and production deployment remain UNCHANGED.
+> **Naming:** `ssh-mcp-worker` is the new Worker name, app directory and package identity; `EdgeSSH` remains the unchanged upstream credential/host-catalog product. Do not rename the EdgeSSH fork, its D1, or its current Worker.
 > **Tracker:** [Issue #83 — EdgeSSH MCP v0.1 specification](https://github.com/lirtual/mcp-workers/issues/83), published through Matt Skills Curated / to-spec. `ready-for-agent` is a spec-review/decomposition label, not implementation authorization.
 > **Authority:** [CONTEXT.md](./CONTEXT.md), [accepted Q1–Q22](./DESIGN-INTERVIEW.md), [ADR-0005](./adr/0005-independent-mcp-ssh-shared-edgessh-credentials.md), [final security audit](./FINAL-ARCHITECTURE-REVIEW.md).
 > **Supersessions:** historical Q3=A (EdgeSSH-exclusive credential custody / SSH execution) and Q14=A (EdgeSSH-owned MCP receipts) are **expressly superseded by Q22=B**. Other agreed decisions remain intact.
@@ -65,7 +66,7 @@ Neither risk is eliminated by a clever wrapper, another Worker, or a renamed bin
 
 | Component | Responsibilities | Forbidden responsibility |
 | --- | --- | --- |
-| apps/edgessh-mcp-worker MCP fetch entry | /mcp ingress, dedicated Portal Bearer, tool discovery, input validation, safe error mapping | SSH credentials in tool output, unauthenticated alternative routes |
+| apps/ssh-mcp-worker MCP fetch entry | /mcp ingress, dedicated Portal Bearer, tool discovery, input validation, safe error mapping | SSH credentials in tool output, unauthenticated alternative routes |
 | Application-local HostReader | Parameterized SELECT from existing EdgeSSH D1; workspace account ID; AES-GCM v1 decode; sanitized host view | INSERT/UPDATE/DELETE/DDL to EdgeSSH D1; caching/syncing a second host catalog |
 | Application-local SSH engine | One verified outbound transport; authentication, one-shot exec, PTY/channel operations and text SFTP | Login via EdgeSSH browser cookies; arbitrary raw TCP host supplied by client; a second duplicate SSH implementation |
 | One MCP-owned SQLite-backed DO namespace/class | Single-admin session registry; atomic operation-ID claim; persistent receipt status; bounded output/idle cleanup; session-owned SSH sockets | Extra standalone Worker, queue, new D1 receipt database, remote Agent or guarantee that a PID can be reattached after loss |
@@ -84,7 +85,7 @@ Neither risk is eliminated by a clever wrapper, another Worker, or a renamed bin
 - Encrypted record format is v1.Base64(12-byte IV).Base64(AES-GCM ciphertext+tag); root ENCRYPTION_KEY must Base64-decode to **32 bytes**; AAD UTF-8 is **edgessh:v1:{accountId}:{hostId}**. Decode strictly. Wrong key/account/host, tampering, unsupported version or bad encoding returns no plaintext and no SSH attempt.
 - Host payload: host, port, username, authMethod(password|publickey), password/privateKey, fingerprint, name/group, initialCommand, encoding and optional cached system/location. Only necessary fields are projected into results; NEVER output the saved password, private key or raw host payload.
 - **Do not auto-run initialCommand.** It is a saved browser-session preference, not permission for unattended MCP execution.
-- Every *new* SSH connection and mutation re-reads the current saved row. A change in encrypted data may occur without updated_at changing; do not treat updated_at alone as a trustworthy identity/credential version. For already-live sessions, continue using the initially verified SSH transport; do not silently migrate credentials, target or host-key to another server. If host disappears or its security-relevant target/pin changes, deny new input and close the owned session best-effort rather than reattach.
+- Every *new* SSH connection and mutation (including `ssh_session_input` on an already-open session) re-reads the current saved row. A change in encrypted data may occur without updated_at changing; do not treat updated_at alone as a trustworthy identity/credential version. For already-live sessions, continue using the initially verified SSH transport; do not silently migrate credentials, target or host-key to another server. If host disappears or its security-relevant target/pin changes, deny new input and close the owned session best-effort rather than reattach.
 - Cloudflare D1 binding must point to the **same existing database**; its general D1 API remains write-capable. Implement only literal, fixed, bound SELECT queries. No generic SQL tool, input-driven SQL construction, migrations, admin statements, or data writes. At code review, static grep/allowlist of HostReader query templates is required. Do not describe this as database-enforced read-only.
 - Root ENCRYPTION_KEY is provisioned as an MCP-only Cloudflare Secret by the operator **later** and must never be printed, logged, derived into another publicly callable credential, stored in DO SQLite, or returned by a tool. No credential material is provisioned during spec or tickets.
 
@@ -135,6 +136,8 @@ These are adjustable acceptance defaults, not reasons to build a policy engine o
 | Output ring in a live session | **256 KiB** of trailing bytes; eviction of older output marked as truncated |
 | Per MCP result output | **64 KiB** aggregate maximum, including stdout/stderr/text/metadata |
 | Interactive input per call | **16 KiB** UTF-8 input (count encoded bytes, not characters) |
+| One-shot SSH command input | **16 KiB** maximum UTF-8 bytes; reject over-limit before admission |
+| SFTP path input | **4 KiB** maximum UTF-8 bytes per path; reject over-limit before admission |
 | One SFTP text read or write | **64 KiB** maximum bytes; reject over-limit content rather than silently mutating partially |
 | Directory listing | maximum **100 entries** returned per request (cursor or explicit truncation) |
 | Host catalog listing | default **50** per page; maximum **200** distinct records as permitted by the current EdgeSSH app |
@@ -159,6 +162,7 @@ Important: "60 min" is an **absolute business deadline**, not a runtime guarante
 ### 6.2 Retention and reconciliation
 
 - Ordinary known-terminal receipts have a **30-day** normal retention period from admission; bounded opportunistic cleanup on ordinary operations/DO alarm, not a separate scheduler.
+- **Deduplication horizon:** once a known-terminal receipt is legitimately cleaned up after 30 days, the service no longer has evidence to recognize its old ID; never claim indefinite non-replay for such IDs. Clients must generate a fresh UUID for each new intention and not retry expired IDs. Unknown/unproven-effect tombstones are different: retain them across cleanup until deliberate reconciliation, with no re-dispatch of those IDs.
 - For unknown, interrupted, unproven-effect and ambiguous statuses, keep **minimal tombstones** (operation ID, tool/host/session identity, digest, unresolved state, timestamps) past 30 days until authenticated deliberate owner-led reconciliation. Do not store plaintext command/input/file contents in receipts.
 - A human/operator inspects remote state using new *read* requests, then deliberately chooses any new mutation with a **fresh operation_id**. Acknowledgement of the old unknown does not make its ID re-executable. No automated compensation or blind retry.
 - If the receipt store is unavailable or at capacity, **fail closed** for new mutating work, including interactive input and session creation. Continue available safe reads and authorized status checks where possible.
@@ -179,14 +183,14 @@ Use existing app/CI patterns; this is a contract, not a mandated file-for-file i
 
 | Location | Responsibility |
 | --- | --- |
-| apps/edgessh-mcp-worker/src/index.ts | /mcp HTTP route, authentication via packages/portal-auth, stateless MCP SDK handler, safe error boundary |
-| apps/edgessh-mcp-worker/src/tools.ts (or local equivalent) | Tool definitions, validated inputs/outputs, DO access |
-| apps/edgessh-mcp-worker/src/hosts.ts | Fixed D1 SELECT catalog access, account/host pin, AES-GCM v1 decode, sanitized projection |
-| apps/edgessh-mcp-worker/src/ssh/ | Exactly one chosen Workers-compatible SSH protocol implementation/adapter, including PTY and SFTP text |
-| apps/edgessh-mcp-worker/src/session-do.ts | One SQLite DO for durable receipt admission, live session/channel registry, bounded outputs, cleanup |
-| apps/edgessh-mcp-worker/src/types.ts | Tight Env binding types; no credential-bearing public type in MCP schemas |
-| apps/edgessh-mcp-worker/wrangler.jsonc | Distinct Worker, binding to existing EdgeSSH D1, DO migration for **new MCP namespace only**, required secrets MCP_ACCESS_TOKEN and copied ENCRYPTION_KEY |
-| apps/edgessh-mcp-worker/tests/ | Public /mcp + DO boundary and disposable SSH-fixture tests using existing repo approach |
+| apps/ssh-mcp-worker/src/index.ts | /mcp HTTP route, authentication via packages/portal-auth, stateless MCP SDK handler, safe error boundary |
+| apps/ssh-mcp-worker/src/tools.ts (or local equivalent) | Tool definitions, validated inputs/outputs, DO access |
+| apps/ssh-mcp-worker/src/hosts.ts | Fixed D1 SELECT catalog access, account/host pin, AES-GCM v1 decode, sanitized projection |
+| apps/ssh-mcp-worker/src/ssh/ | Exactly one chosen Workers-compatible SSH protocol implementation/adapter, including PTY and SFTP text |
+| apps/ssh-mcp-worker/src/session-do.ts | One SQLite DO for durable receipt admission, live session/channel registry, bounded outputs, cleanup |
+| apps/ssh-mcp-worker/src/types.ts | Tight Env binding types; no credential-bearing public type in MCP schemas |
+| apps/ssh-mcp-worker/wrangler.jsonc | Distinct Worker, binding to existing EdgeSSH D1, DO migration for **new MCP namespace only**, required secrets MCP_ACCESS_TOKEN and copied ENCRYPTION_KEY |
+| apps/ssh-mcp-worker/tests/ | Public /mcp + DO boundary and disposable SSH-fixture tests using existing repo approach |
 | docs/edgessh-mcp/ | This spec, ADRs, final audit, setup/rollback guidance |
 
 **Do not** modify: EdgeSSH repo, its wrangler/deployed Worker, existing EdgeSSH D1 schema/content, EdgeSSH root key, other MCP apps, shared portal-auth semantics, existing production workers, CI infrastructure without a proven need. Reuse existing pnpm workspace, available scripts/checks, and independent Worker deployment conventions.
@@ -264,8 +268,8 @@ Use existing app/CI patterns; this is a contract, not a mandated file-for-file i
 
 ## 11. Deliverable and handoff
 
-**Deliverable:** this Draft Spec plus prior domain/ADR/review material in PR #81, **not code**. The specification is ready for operator review and decomposition into ordered tracer-bullet tickets **after** final approval; no tickets created here.
+**Deliverable:** this Draft Spec plus prior domain/ADR/review material in PR #81, **not code**. Planning tickets [#84–#95](https://github.com/lirtual/mcp-workers/issues/84) were subsequently published under [Issue #83](https://github.com/lirtual/mcp-workers/issues/83). Their existence does **not** authorize implementation, real secrets/D1/SSH access, merge, or deployment.
 
-**Dependencies/ordering for future tickets:** G0 runtime feasibility first; then G1 host/crypto + G2 security; then G3 DO receipts & managed sessions; then G4 full SSH/SFTP tools + bound/lifecycle; lastly G5 staging/rollback. Security must be tested through the real outer MCP/DO/SSH seams, not only mocked helpers.
+**Dependencies/ordering for published tickets:** G0 runtime feasibility first; then G1 host/crypto + G2 security; then G3 DO receipts & managed sessions; then G4 full SSH/SFTP tools + bound/lifecycle; lastly G5 staging/rollback. Security must be tested through the real outer MCP/DO/SSH seams, not only mocked helpers.
 
 **Decision audit:** no original Q1–Q22 product decision was changed in the Spec. The numerical defaults and module paths in section 5/7 are **new proposed engineering defaults**, explicitly marked for spec review; they are not falsely attributed to operator selections. Any failed hard feasibility gate requires spec revision rather than silent scope reductions.
