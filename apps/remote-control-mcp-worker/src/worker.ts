@@ -11,7 +11,7 @@ function previewOnly(env: Env): boolean {
 }
 // Preview operations use existing authenticated per-device WSS routing.
 // The paired Agent, not a temporary Worker secret, opts into write/Shell.
-const OWNER_TOOLS = new Set(["pairing_lookup", "pairing_prepare", "list_devices", "revoke_device"]);
+const OWNER_TOOLS = new Set(["pairing_lookup", "pairing_prepare", "pairing_approve", "list_devices", "revoke_device"]);
 function pendingOwner(env: Env): DurableObjectStub | null {
   const ns = (env as V2Env).V2_OWNER;
   return ns ? ns.get(ns.idFromName("single-owner-v2")) : null;
@@ -190,6 +190,47 @@ async function prepareLocalDevice(
     if (!response.ok) return toolError(id, "The pending device was not found or cannot be confirmed.");
     return toolText(id, JSON.stringify(await response.json()));
   } catch { return toolError(id, "Confirmation preparation is unavailable."); }
+}
+
+const PAIRING_APPROVE_TOOL = {
+  name: "pairing_approve",
+  title: "Approve exactly one pending device",
+  description: "Mutating owner approval for the reviewed pending public key and explicitly selected permanent/temporary grant. This creates a device grant; it does not grant Shell/write. MCP credentials do not cryptographically prove human presence.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      pairing_id: {type:"string"},
+      expected_fingerprint: {type:"string"},
+      expected_grant_type: {type:"string",enum:["permanent","temporary"]},
+    },
+    required: ["pairing_id","expected_fingerprint","expected_grant_type"],
+    additionalProperties: false,
+  },
+  annotations: {readOnlyHint:false,destructiveHint:false,openWorldHint:false},
+} as const;
+
+async function approvePendingDevice(env: Env, id: unknown, input: unknown): Promise<Response> {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return toolError(id,"The device approval was rejected.");
+  }
+  const args=input as Record<string,unknown>;
+  if (Object.keys(args).length !== 3 ||
+      !["pairing_id","expected_fingerprint","expected_grant_type"].every(key => Object.hasOwn(args,key)) ||
+      typeof args.pairing_id !== "string" || typeof args.expected_fingerprint !== "string" ||
+      (args.expected_grant_type !== "permanent" && args.expected_grant_type !== "temporary")) {
+    return toolError(id,"The device approval was rejected.");
+  }
+  const owner=pendingOwner(env);
+  if (!owner) return toolError(id,"Device enrollment is disabled.");
+  try {
+    const response=await owner.fetch("https://v2.internal/approve",{
+      method:"POST",headers:{"content-type":"application/json"},
+      body:JSON.stringify({pairing_id:args.pairing_id, expected_fingerprint:args.expected_fingerprint,
+        expected_grant_type:args.expected_grant_type}),
+    });
+    if (!response.ok) return toolError(id,"Device approval denied, expired or conflicting.");
+    return toolText(id,JSON.stringify(await response.json()));
+  } catch {return toolError(id,"Device approval is unavailable.");}
 }
 
 const PAIRING_LOOKUP_TOOL = {
@@ -1113,10 +1154,10 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
             required: [...("required" in tool.inputSchema ? tool.inputSchema.required : []), "device_id"],
           },
         })),
-        PAIRING_LOOKUP_TOOL, PAIRING_PREPARE_TOOL, LIST_DEVICES_TOOL, REVOKE_DEVICE_TOOL,
+        PAIRING_LOOKUP_TOOL, PAIRING_PREPARE_TOOL, PAIRING_APPROVE_TOOL, LIST_DEVICES_TOOL, REVOKE_DEVICE_TOOL,
       ] });
     }
-    return rpc(rpcMessage.id, { tools: pendingOwner(env) ? [...LOCAL_TOOLS, PAIRING_LOOKUP_TOOL, PAIRING_PREPARE_TOOL, LIST_DEVICES_TOOL, REVOKE_DEVICE_TOOL] : LOCAL_TOOLS });
+    return rpc(rpcMessage.id, { tools: pendingOwner(env) ? [...LOCAL_TOOLS, PAIRING_LOOKUP_TOOL, PAIRING_PREPARE_TOOL, PAIRING_APPROVE_TOOL, LIST_DEVICES_TOOL, REVOKE_DEVICE_TOOL] : LOCAL_TOOLS });
   }
 
   if (rpcMessage.method === "tools/call") {
@@ -1153,6 +1194,9 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
     }
     if (call.name === "list_devices" && pendingOwner(env)) {
       return listPairedDevices(env, rpcMessage.id, call.arguments ?? {});
+    }
+    if (call.name === "pairing_approve" && pendingOwner(env)) {
+      return approvePendingDevice(env,rpcMessage.id,call.arguments);
     }
     if (call.name === "pairing_prepare" && pendingOwner(env)) {
       return prepareLocalDevice(env, rpcMessage.id, call.arguments);
