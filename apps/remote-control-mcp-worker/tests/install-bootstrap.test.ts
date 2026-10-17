@@ -65,6 +65,7 @@ test("fake Host, Forwarded, scheme, path, query and method are refused",async()=
     new Request(origin+"/install.sh?endpoint=https://evil.example"),
     new Request(origin+"/INSTALL.SH"),
     new Request(origin+"/install.sh",{method:"POST"}),
+    new Request(origin+"/install.sh",{headers:{"host":"evil.example"}}),
     new Request(origin+"/install.sh",{headers:{"x-forwarded-host":"evil.example"}}),
     new Request(origin+"/install.sh",{headers:{"forwarded":"host=evil.example"}}),
     new Request(origin+"/install.sh",{headers:{"origin":"https://evil.example"}}),
