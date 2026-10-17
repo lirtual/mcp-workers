@@ -11,6 +11,8 @@ const PIN = /^SHA256:[A-Za-z0-9+/]{43}$/;
 const encoder = new TextEncoder();
 const MAX_CAPTURE_BYTES = 4 * 1024;
 const DAY = 24 * 60 * 60 * 1000;
+const TERMINAL_RECEIPTS = ['completed', 'failed'] as const;
+const RECEIPT_RETENTION_MS = 30 * DAY;
 
 export interface ExecRequest {
   hostId: string;
@@ -103,8 +105,20 @@ async function readBounded(stream: ReadableStream<Uint8Array>, maximum: number):
   return { value: new TextDecoder().decode(bytes), truncated };
 }
 
-async function digest(request: ExecRequest): Promise<string> {
-  const canonical = JSON.stringify(['ssh_exec', request.hostId, request.command, request.timeoutMs]);
+export interface CanonicalOperationIntent {
+  tool: string;
+  hostId: string;
+  sessionId: string | null;
+  normalizedArgs: readonly (string | number | boolean | null)[];
+}
+
+export async function canonicalOperationDigest(intent: CanonicalOperationIntent): Promise<string> {
+  const canonical = JSON.stringify([
+    intent.tool,
+    intent.hostId.toLowerCase(),
+    intent.sessionId?.toLowerCase() ?? null,
+    intent.normalizedArgs,
+  ]);
   const hash = await crypto.subtle.digest('SHA-256', encoder.encode(canonical));
   return btoa(String.fromCharCode(...new Uint8Array(hash)));
 }
@@ -257,25 +271,45 @@ export class SshOperationsDO extends DurableObject<Env> {
   async execute(request: ExecRequest): Promise<ExecReply> {
     request = { ...request, hostId: request.hostId.toLowerCase() };
     const operationId = request.operationId.toLowerCase();
-    const requestDigest = await digest(request);
+    const requestDigest = await canonicalOperationDigest({
+      tool: 'ssh_exec',
+      hostId: request.hostId,
+      sessionId: null,
+      normalizedArgs: [request.command, request.timeoutMs],
+    });
     const sql = this.ctx.storage.sql;
-    const existing = sql.exec<ReceiptRow>('SELECT * FROM operations WHERE operation_id = ?', operationId).toArray()[0];
-    if (existing) {
+    const now = Date.now();
+    type Admission =
+      | { kind: 'admitted' }
+      | { kind: 'existing'; row: ReceiptRow }
+      | { kind: 'capacity' };
+    let admission: Admission;
+    try {
+      admission = this.ctx.storage.transactionSync(() => {
+        // Cleanup is opportunistic on effectful requests; unknown and in-flight rows are never aged out.
+        sql.exec('DELETE FROM operations WHERE status IN (?, ?) AND created_at <= ?',
+          TERMINAL_RECEIPTS[0], TERMINAL_RECEIPTS[1], now - RECEIPT_RETENTION_MS);
+        const existing = sql.exec<ReceiptRow>('SELECT * FROM operations WHERE operation_id = ?', operationId).toArray()[0];
+        if (existing) return { kind: 'existing', row: existing };
+
+        const total = sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM connection_leases').one().count;
+        const perHost = sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM connection_leases WHERE host_id = ?', request.hostId).one().count;
+        if (total >= 4 || perHost >= 2) return { kind: 'capacity' };
+
+        // Durable admission and its connection reservation commit together before any SSH effect.
+        sql.exec('INSERT INTO operations(operation_id,digest,host_id,status,created_at) VALUES(?,?,?,\'admitted\',?)', operationId, requestDigest, request.hostId, now);
+        sql.exec('INSERT INTO connection_leases(operation_id,host_id,created_at) VALUES(?,?,?)', operationId, request.hostId, now);
+        return { kind: 'admitted' };
+      });
+    } catch {
+      return { operation_id: operationId, status: 'failed', error: 'receipt_store_unavailable' };
+    }
+    if (admission.kind === 'capacity') return { operation_id: operationId, status: 'failed', error: 'capacity_reached' };
+    if (admission.kind === 'existing') {
+      const existing = admission.row;
       if (existing.digest !== requestDigest) return { operation_id: operationId, status: 'failed', error: 'receipt_conflict' };
       if (existing.result_json) return JSON.parse(existing.result_json) as ExecReply;
       return { operation_id: operationId, status: existing.status === 'admitted' ? 'unknown' : existing.status as ExecReply['status'] };
-    }
-    const now = Date.now();
-    try {
-      sql.exec('DELETE FROM operations WHERE status IN (\'completed\', \'failed\') AND created_at < ?', now - 30 * DAY);
-      const total = sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM connection_leases').one().count;
-      const perHost = sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM connection_leases WHERE host_id = ?', request.hostId).one().count;
-      if (total >= 4 || perHost >= 2) return { operation_id: operationId, status: 'failed', error: 'capacity_reached' };
-      // These synchronous writes are one storage transaction and precede every await/effect.
-      sql.exec('INSERT INTO operations(operation_id,digest,host_id,status,created_at) VALUES(?,?,?,\'admitted\',?)', operationId, requestDigest, request.hostId, now);
-      sql.exec('INSERT INTO connection_leases(operation_id,host_id,created_at) VALUES(?,?,?)', operationId, request.hostId, now);
-    } catch {
-      return { operation_id: operationId, status: 'failed', error: 'receipt_store_unavailable' };
     }
     const releaseLease = () => {
       for (let attempt = 0; attempt < 2; attempt++) {
@@ -302,7 +336,9 @@ export class SshOperationsDO extends DurableObject<Env> {
         ...(reply.truncated ? { truncated: true } : {}),
         ...(reply.error ? { error: reply.error } : {}),
       };
-      sql.exec('UPDATE operations SET status = ?, result_json = ? WHERE operation_id = ?', reply.status, JSON.stringify(receipt), operationId);
+      this.ctx.storage.transactionSync(() => {
+        sql.exec('UPDATE operations SET status = ?, result_json = ? WHERE operation_id = ?', reply.status, JSON.stringify(receipt), operationId);
+      });
     } catch {
       return { operation_id: operationId, status: 'unknown', error: 'unknown_outcome' };
     } finally {
