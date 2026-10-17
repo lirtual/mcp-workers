@@ -1,13 +1,13 @@
 import type { Env } from './types.ts';
 import { fitsMcpToolResultBudget } from './result-budget.ts';
+import { normalizeDnsName } from './target-security.ts';
 
 const HOST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const FINGERPRINT = /^SHA256:[A-Za-z0-9+/]{43}$/;
-const HOSTNAME = /^(?=.{1,253}$)(?:[a-z\d](?:[a-z\d-]{0,61}[a-z\d])?\.)*[a-z\d](?:[a-z\d-]{0,61}[a-z\d])?$/i;
 const IPV4 = /^(?:\d{1,3}\.){3}\d{1,3}$/;
 const utf8 = new TextEncoder();
 
-export type HostErrorCode = 'host_not_found' | 'host_record_invalid' | 'unsupported_crypto_version' | 'secret_mismatch' | 'result_too_large';
+export type HostErrorCode = 'host_not_found' | 'host_record_invalid' | 'unsupported_crypto_version' | 'secret_mismatch' | 'result_too_large' | 'host_untrusted' | 'invalid_target';
 
 export class HostError extends Error {
   readonly code: HostErrorCode;
@@ -46,6 +46,17 @@ export interface HostView {
   readinessReason: 'ready' | 'host_untrusted' | 'credential_missing';
 }
 
+export interface SshHostCredentials {
+  id: string;
+  host: string;
+  port: number;
+  username: string;
+  authMethod: 'password' | 'publickey';
+  password?: string;
+  privateKey?: string;
+  fingerprint: string;
+}
+
 function decodeBase64Strict(value: string): Uint8Array<ArrayBuffer> {
   if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
     throw new HostError('host_record_invalid');
@@ -75,7 +86,7 @@ function validHost(host: string): boolean {
   if (/^[\d.]+$/.test(host)) {
     return IPV4.test(host) && host.split('.').every(part => Number(part) <= 255 && (part === '0' || !part.startsWith('0')));
   }
-  return HOSTNAME.test(host);
+  return normalizeDnsName(host) !== null;
 }
 
 function validPayload(value: unknown): value is HostPayload {
@@ -179,6 +190,34 @@ async function decodeRow(row: HostRow, accountId: string, secret: string): Promi
   if (!HOST_ID.test(row.id) || row.account_id !== accountId || typeof row.encrypted_payload !== 'string'
       || !Number.isSafeInteger(row.updated_at)) throw new HostError('host_record_invalid');
   return project(row.id, await decryptHost(row.encrypted_payload, secret, accountId, row.id));
+}
+
+/** Read the current catalog row for an effectful operation; never persist this result. */
+export async function getSshHostCredentials(env: Env, hostId: string): Promise<SshHostCredentials> {
+  if (!HOST_ID.test(hostId)) throw new HostError('host_not_found');
+  const accountId = await readAccount(env);
+  const secret = requiredSecret(env);
+  const row = await env.EDGE_SSH_DB!.prepare(
+    'SELECT id, account_id, encrypted_payload, updated_at FROM hosts WHERE id = ? AND account_id = ?',
+  ).bind(hostId, accountId).first<HostRow>();
+  if (!row) throw new HostError('host_not_found');
+  if (!HOST_ID.test(row.id) || row.account_id !== accountId || !Number.isSafeInteger(row.updated_at)) {
+    throw new HostError('host_record_invalid');
+  }
+  const payload = await decryptHost(row.encrypted_payload, secret, accountId, row.id);
+  const view = project(row.id, payload);
+  if (!view.trustReady) throw new HostError('host_untrusted');
+  if (view.readinessReason === 'credential_missing') throw new HostError('host_record_invalid');
+  return {
+    id: row.id,
+    host: payload.host,
+    port: payload.port,
+    username: payload.username,
+    authMethod: payload.authMethod,
+    ...(payload.password === undefined ? {} : { password: payload.password }),
+    ...(payload.privateKey === undefined ? {} : { privateKey: payload.privateKey }),
+    fingerprint: payload.fingerprint,
+  };
 }
 
 export async function listHosts(env: Env, input: { cursor?: string; limit?: number }): Promise<{ hosts: HostView[]; nextCursor: string | null }> {

@@ -1,0 +1,17 @@
+{
+  "$schema": "../../../node_modules/wrangler/config-schema.json",
+  "name": "ssh-mcp-worker-e2e-fixture",
+  "main": "operations-test-worker.ts",
+  "compatibility_date": "2026-09-10",
+  "durable_objects": {
+    "bindings": [{ "name": "SSH_OPERATIONS", "class_name": "SshOperationsDO" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SshOperationsDO"] }],
+  "d1_databases": [{
+    "binding": "EDGE_SSH_DB",
+    "database_name": "ssh-mcp-local-fixture",
+    "database_id": "00000000-0000-0000-0000-000000000087",
+    "migrations_dir": "migrations"
+  }],
+  "observability": { "enabled": false }
+}

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
-import worker from '../src/index.ts';
+import worker from '../src/handler.ts';
 import { getHost, listHosts } from '../src/hosts.ts';
 import type { D1Database, D1Statement, Env } from '../src/types.ts';
 
@@ -56,8 +56,11 @@ class SyntheticD1 implements D1Database {
   }
 }
 
-function environment(db = new SyntheticD1(), key = fixture.key): Env & { EDGE_SSH_DB: SyntheticD1 } {
-  return { MCP_ACCESS_TOKEN: 'synthetic-mcp-token', ENCRYPTION_KEY: key, EDGE_SSH_DB: db };
+function environment(db = new SyntheticD1(), key = fixture.key, onDoCall: () => void = () => { throw new Error('unexpected DO call'); }): Env & { EDGE_SSH_DB: SyntheticD1 } {
+  return {
+    MCP_ACCESS_TOKEN: 'synthetic-mcp-token', ENCRYPTION_KEY: key, EDGE_SSH_DB: db,
+    SSH_OPERATIONS: { getByName: () => { onDoCall(); throw new Error('unexpected DO call'); } } as unknown as Env['SSH_OPERATIONS'],
+  };
 }
 
 test('reads the pinned upstream-generated AES-GCM v1 fixture and projects only host metadata', async () => {
@@ -69,6 +72,30 @@ test('reads the pinned upstream-generated AES-GCM v1 fixture and projects only h
     port: 2222, username: 'fixture-user', authMethod: 'password', trustReady: true, readinessReason: 'ready',
   });
   assert.doesNotMatch(JSON.stringify(result), /synthetic-password|synthetic-initial-command|encryptedPayload|ENCRYPTION_KEY|privateKey/);
+});
+
+test('the authenticated MCP boundary rejects commands over 16 KiB UTF-8 before D1 or DO access', async () => {
+  const db = new SyntheticD1();
+  let doCalls = 0;
+  const env = environment(db, fixture.key, () => { doCalls += 1; });
+  const response = await worker.fetch(new Request('https://worker.example/mcp', {
+    method: 'POST',
+    headers: {
+      authorization: 'Bearer synthetic-mcp-token',
+      'content-type': 'application/json',
+      accept: 'application/json, text/event-stream',
+    },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 44, method: 'tools/call', params: {
+      name: 'ssh_exec', arguments: { host_id: fixture.hostId, operation_id: '33333333-3333-4333-8333-333333333333', command: '😀'.repeat(4097),
+      },
+    } }),
+  }), env);
+  assert.equal(response.status, 200);
+  const data = (await response.text()).split('\n').find(line => line.startsWith('data: '))?.slice(6);
+  assert.ok(data);
+  assert.match(data, /invalid_args/);
+  assert.equal(db.reads, 0);
+  assert.equal(doCalls, 0);
 });
 
 test('rejects wrong key, account AAD, host AAD, tampering, bad versions, missing host, and ambiguous workspace', async () => {
@@ -151,7 +178,7 @@ test('the real /mcp outer handler rejects missing/bad bearer and Origin before a
   const payload = eventStream.split('\n').find(line => line.startsWith('data: '))?.slice(6);
   assert.ok(payload, eventStream);
   const response = JSON.parse(payload) as { result?: { tools?: Array<{ name: string }> } };
-  assert.deepEqual(response.result?.tools?.map(tool => tool.name), ['list_hosts', 'get_host']);
+  assert.deepEqual(response.result?.tools?.map(tool => tool.name), ['list_hosts', 'get_host', 'ssh_exec', 'get_operation_status']);
   const callTool = async (id: number, name: string, args: Record<string, unknown>) => {
     const result = await worker.fetch(new Request('https://worker.example/mcp', {
       method: 'POST',

@@ -1,8 +1,10 @@
 # ssh-mcp-worker
 
-Independent MCP app for sanitized discovery of saved EdgeSSH hosts. It uses the existing `@mcp-workers/portal-auth` package and reads the existing EdgeSSH host catalog through fixed, parameterized D1 `SELECT` statements. The D1 binding is write-capable at the platform level; SELECT-only is enforced by this application's code and review.
+Independent MCP app for sanitized discovery and bounded one-shot SSH execution against saved EdgeSSH hosts. It uses the existing `@mcp-workers/portal-auth` package and reads the existing EdgeSSH host catalog through fixed, parameterized D1 `SELECT` statements. The D1 binding is write-capable at the platform level; SELECT-only is enforced by this application's code and review.
 
-The current app exposes only `list_hosts` and `get_host`. Its G0 SSH protocol probe remains under `g0/`; that probe is evidence for the later execution work and is not part of this app's MCP tool surface.
+The app exposes `list_hosts`, `get_host`, `ssh_exec`, and `get_operation_status`. The SQLite-backed `SshOperationsDO` owns receipt admission and shared four-total/two-per-host SSH connection leases. It records an operation ID and canonical intent digest before target resolution or SSH dispatch; same-ID retries return stored metadata and cannot redispatch. Results are bounded and command input is limited to 16 KiB UTF-8. Known terminal receipts are eligible for cleanup after 30 days; unknown outcomes retain their no-replay tombstone.
+
+SSH execution re-reads the current saved record in the DO, rejects an absent or malformed pin before authentication, resolves DNS once through DNS-over-HTTPS, rejects any private/reserved answer, and injects a socket that connects only to the selected validated numeric IP. SSH host signature verification and SHA256 pin comparison use the G0-selected `@meitaim/ssh` runtime before credentials are sent. Port 25 and non-public numeric targets are rejected. Remote stdout and stderr are untrusted host output and may themselves contain secrets; stored connection credentials and the encryption root are never included in receipts or errors.
 
 Each tool result is bounded to 64 KiB including its MCP content representation and a reserved transport envelope. `list_hosts` applies both the requested row limit (at most 200) and a UTF-8 byte budget; when a page fills by bytes, `nextCursor` points to its last returned host so the next request resumes without skipping the first host that did not fit.
 
@@ -12,10 +14,13 @@ Requirements: Node `>=24 <25`, pnpm `10.17.1`, and `ssh-keygen` for the retained
 
 ```sh
 pnpm install --frozen-lockfile
-pnpm --filter ssh-mcp-worker check
+pnpm --filter ssh-mcp-worker typecheck
+pnpm --filter ssh-mcp-worker test
+pnpm --filter ssh-mcp-worker test:g0
+pnpm --filter ssh-mcp-worker test:exec
 ```
 
-The check typechecks app and tests, runs synthetic D1/crypto/outer-handler tests, and runs the existing disposable workerd SSH G0 probe. The G1 tests never bind to a deployed or production D1.
+`typecheck` checks the Worker and Node test types. `test` exercises the real `/mcp` handler with synthetic D1 fixtures and proves oversized commands are rejected before any catalog lookup or DO call. `test:g0` runs the selected SSH implementation in local workerd against disposable SSH fixtures. `test:exec` starts the actual MCP handler with a local SQLite-backed DO, synthetic encrypted D1 row, and disposable SSH peer. Its test-only Worker entrypoint maps the synthetic fixture hostname to loopback; that routing override is not included in the deployable Worker entrypoint. The end-to-end check covers fail-closed receipt-store failure, durable same-ID admission/replay, changed-intent conflict, output bounds, timeout, connection close, and secret-free receipts. These checks do not cover public DNS/network success, a deployed DO, production Portal/D1/Secrets, cloud eviction, or long-lived TCP behavior.
 
 ## Recreate the upstream compatibility fixture
 

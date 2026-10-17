@@ -1,0 +1,15 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "ssh-mcp-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-10",
+  "durable_objects": {
+    "bindings": [
+      { "name": "SSH_OPERATIONS", "class_name": "SshOperationsDO" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["SshOperationsDO"] }
+  ],
+  "observability": { "enabled": false }
+}

@@ -6,8 +6,9 @@
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
     "test:g0": "node --experimental-strip-types g0/test/run.ts",
+    "test:exec": "node --experimental-strip-types tests/e2e/run.ts",
     "test": "node --experimental-strip-types --test tests/*.test.ts",
-    "check": "pnpm run typecheck && pnpm test && pnpm run test:g0"
+    "check": "pnpm run typecheck && pnpm test && pnpm run test:g0 && pnpm run test:exec"
   },
   "dependencies": {
     "@meitaim/ssh": "1.0.0",

@@ -61,12 +61,20 @@ const server = new Server({ hostKeys: [hostKey] }, (client) => {
         channel.on('close', () => log('shell-channel-closed'));
       });
       session.on('exec', (acceptCommand, reject, info) => {
+        log(`exec-command:${info.command}`);
         if (info.command === 'fixture-disconnect') {
           client.end();
           return;
         }
-        if (info.command !== 'fixture-output') return reject();
+        if (!['fixture-output', 'fixture-output-large', 'fixture-timeout'].includes(info.command)) return reject();
         const stream = acceptCommand();
+        if (info.command === 'fixture-timeout') return;
+        if (info.command === 'fixture-output-large') {
+          stream.write('x'.repeat(20_000));
+          stream.exit(0);
+          stream.end();
+          return;
+        }
         stream.write('fixture stdout\n');
         stream.stderr.write('fixture stderr\n');
         stream.exit(7);
