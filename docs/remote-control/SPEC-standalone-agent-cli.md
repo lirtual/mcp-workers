@@ -1,7 +1,7 @@
 # Remote Control Agent — Standalone Linux/WSL2 CLI and v2 Device Lifecycle Spec
 
-**Status:** To Spec · Draft for design and ticket review, **ready for ticket decomposition but not authorized for implementation, publication, production rollout or v1 cutover**. 2026-10-17.
-**Source/control-plane repository:** `lirtual/mcp-workers` (Private); **public Agent release and source repository:** `lirtual/remote-control-agent` (new, pending verified import). **Spec tracker:** [Issue #69](https://github.com/lirtual/mcp-workers/issues/69) (ready-for-agent = spec review/ticket decomposition only).
+**Status:** Design Draft; owner approved scoped Draft implementation of Python-free Worker-origin installer on 2026-10-17. **No approval for Release publication, Preview deployment, production rollout or v1 cutover.**
+**Source/control-plane repository:** `lirtual/mcp-workers` (Private); **public Agent release and source repository:** `lirtual/remote-control-agent` (live; immutable v0.1.1 test prerelease already published). **Spec tracker:** [Issue #69](https://github.com/lirtual/mcp-workers/issues/69) (ready-for-agent = spec review/ticket decomposition only).
 **Authority:** [Design PR #68](https://github.com/lirtual/mcp-workers/pull/68) (Draft), [ADR-0019](./adr/0019-standalone-linux-agent-distribution.md), [ADR-0017](./adr/0017-v2-device-revocation-without-tombstones.md), [ADR-0018](./adr/0018-v2-temporary-agent-pairing-lifecycle.md), [ADR-0015](./adr/0015-v2-pairing-and-identity.md), [v2 protocol Spec](./V2-MULTI-DEVICE-SPEC.md), [v2 Spec Issue #46](https://github.com/lirtual/mcp-workers/issues/46), [48h acceptance Issue #57](https://github.com/lirtual/mcp-workers/issues/57).
 **Implementation baseline:** inspect live main and unmerged [v2 PR #58](https://github.com/lirtual/mcp-workers/pull/58) afresh before implementation. It already has Ed25519 onboarding, an owner-reviewed two-code challenge, signed WSS, Agent-local operation receipts, and a checkout-based installer. Neither this specification nor passing offline tests changes the production v1 authority.
 
@@ -11,7 +11,7 @@
 
 **Outcome.** One reviewed HTTPS terminal command starts a **local interactive** installer on a compatible Linux x86_64/ARM64 or WSL2 host, downloads a verified **prebuilt GitHub Release Agent** containing Node.js 24, Agent JS and the precompiled native Shell Supervisor, asks the owner to select permanent or temporary (24-hour) pairing, and completes existing independent owner/MCP + local-terminal challenge without cloning code or installing build dependencies. Permanent devices become a v2 **systemd user service**; temporary devices run **foreground only**. Upgrade, uninstall and rerun are explicit, minimally recoverable and keep local identity/SQLite receipts safe. Cloud authorization remains authoritative and fail-closed.
 
-**Publication status.** No independently usable Agent GitHub Release or executable bootstrap URL has been verified in the repository. Do not advertise a real install command or count installation as tested before publishing and verifying a release in a separately authorized action.
+**Publication status.** The earlier Python-based immutable Agent v0.1.1 TEST Release has been published and used for separate isolated WSL2 pairing/lifecycle tests. The *new* Worker `/install.sh` + Python-free Node installer/manager has **no published Release or deployed working URL** yet. Do not present the new route as live or count its install flow as accepted before separate approval and real tests.
 
 ## 2. Numbered user stories
 
