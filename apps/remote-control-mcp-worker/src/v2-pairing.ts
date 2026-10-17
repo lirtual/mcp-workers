@@ -207,6 +207,58 @@ export async function lookupPending(storage: PendingStorage, verifier: string): 
 }
 
 /**
+ * One-code owner approval, called ONLY through the authenticated MCP tool.
+ * Approval never depends on an Agent-supplied public Bearer token or a second
+ * human-entered challenge. The waiting Agent uses existing signed session
+ * recovery (fresh nonce, same Ed25519 public key) to claim its device ID.
+ * 
+ * Keep legacy challenge functions below until the old protocol's tests and
+ * callers have been migrated; do not deploy this intermediate dual path.
+ */
+export async function approvePendingKey(
+  storage: PendingStorage, pairingId: unknown, fingerprint: unknown, expectedGrantType: unknown,
+): Promise<{ status: number; body: object }> {
+  if (typeof pairingId !== "string" || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(pairingId) ||
+      typeof fingerprint !== "string" || !/^[a-f0-9]{24}$/.test(fingerprint) ||
+      (expectedGrantType !== "permanent" && expectedGrantType !== "temporary")) {
+    return {status: 400, body: {error: "invalid_request"}};
+  }
+  // Use the existing enrollment budget; no second rate-counter namespace.
+  if (!await consumeBudget(storage, "prepare", MAX_PREPARES_PER_MINUTE)) {
+    return {status: 429, body: {error: "rate_limited"}};
+  }
+  return storage.transaction(async (txn) => {
+    const pending = await txn.list<PendingDevice>({prefix: "pending:", limit: MAX_PENDING + 1});
+    if (pending.size > MAX_PENDING) return {status: 503, body: {error: "capacity"}};
+    const match = [...pending].find(([,row]) =>
+      row.pairing_id === pairingId && row.fingerprint === fingerprint && row.expires_at > Date.now());
+    if (!match) return {status: 404, body: {error: "not_found"}};
+    const [key, row] = match;
+    const mode = row.grant_type ?? "permanent";
+    if (expectedGrantType !== mode) return {status: 409, body: {error: "grant_type_mismatch"}};
+    // Do not repurpose a previously prepared two-code request into a
+    // one-code approval while its old terminal challenge remains in flight.
+    if (row.confirmation_hash) return {status: 409, body: {error: "legacy_pairing_in_progress"}};
+    const grants = await listLiveGrants(txn);
+    if (!grants.complete || grants.active.size >= 64) return {status: 503, body: {error: "capacity"}};
+    if ([...grants.active.values()].some(device => device.public_key === row.public_key)) {
+      return {status: 409, body: {error: "identity_already_used"}};
+    }
+    const deviceId = crypto.randomUUID();
+    const approvedAt = Date.now();
+    await txn.put("device:" + deviceId, {
+      device_id: deviceId, name: row.name, public_key: row.public_key,
+      fingerprint: row.fingerprint, approved_at: approvedAt, revoked: false,
+      grant_type: mode,
+      ...(mode === "temporary" ? {expires_at: approvedAt + TEMPORARY_GRANT_MS} : {}),
+    } satisfies ApprovedDevice);
+    await txn.delete(key);
+    // Do not return the pairing code, verifier or public key to MCP.
+    return {status: 200, body: {status: "approved", device_id: deviceId, grant_type: mode}};
+  });
+}
+
+/**
  * Prepare a device-specific challenge for a *separately confirmed local terminal*.
  * The MCP caller may ask for a challenge but can never authorize a device itself.
  * A new preparation invalidates any prior challenge on the same pending entry.
