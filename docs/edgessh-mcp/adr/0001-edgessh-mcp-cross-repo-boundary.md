@@ -19,8 +19,8 @@ The first version integrates EdgeSSH and its MCP adapter deployed inside one Clo
 ### Q2=B: Broad first-release SSH + SFTP scope
 The intended first-release product provides caller-specified SSH command execution **and remote SFTP mutations**, not merely cached host metadata or fixed read-only diagnostics. This grants potentially destructive remote operation capability; it is not characterized as a read-only MCP. The precise command/session lifecycle, file operation formats and limits remain second-round questions, not implied defaults.
 
-### Q3=A: EdgeSSH owns credentials and execution — historical decision, presently infeasible with unmodified EdgeSSH
-The MCP adapter must **never** read the EdgeSSH D1 credential ciphertext directly, share `ENCRYPTION_KEY`, or return decrypted SSH passwords/private keys. EdgeSSH retrieves credentials and performs remote operations, returning bounded/sanitized results. Its existing browser credential-returning endpoint is not an MCP interface.
+### Q3=A: EdgeSSH-only credential custody and execution — **SUPERSEDED by Q22=B**
+**Historical reasoning:** the original private-RPC proposal required EdgeSSH to keep the sole ability to decrypt credentials and run commands. **Current Q22=B expressly reverses that ownership choice:** an independently deployed MCP Worker holds its own copy of EdgeSSH's `ENCRYPTION_KEY`, reads the existing host catalog, decrypts credentials in its own runtime, and executes SSH. **Still forbidden:** returning plaintext credentials or keys in tool outputs/logs, using browser login cookies, or calling the browser credential-returning API. See [ADR-0005](./0005-independent-mcp-ssh-shared-edgessh-credentials.md).
 
 ### Q4=B: All saved hosts eligible
 An authorized MCP caller can select **any** saved host without a per-host opt-in feature, allowlist or separate permissions database. This does not waive host-key identity verification, the requirement that the record contain usable credentials, or normal SSH account privileges. The power of the single MCP access token thus spans the whole workspace; this is an explicitly accepted expanded impact radius.
@@ -32,8 +32,8 @@ Reuse the repo's existing `portal-auth` static Bearer approach, using a **dedica
 
 **Advantages**
 - Browser EdgeSSH remains an independently usable product.
-- MCP code has its own deployment and repo lifecycle, without duplicating the SSH protocol, D1 host store, or credential custody.
-- One self-hosted Cloudflare account and a small named RPC surface avoid an extra public credentials gateway.
+- **Historical only for the private-RPC candidate:** originally expected no credential/SSH implementation duplication. Under Q22=B, the host catalog is reused (not copied), but credential custody and SSH execution necessarily exist in MCP as well.
+- **Historical:** a small private RPC was preferred, but the unmodified EdgeSSH fork has no such interface. Q22=B uses direct D1 reads and independent SSH instead.
 - No per-host RBAC or second credential vault.
 
 **Risks and costs**
@@ -47,13 +47,13 @@ Reuse the repo's existing `portal-auth` static Bearer approach, using a **dedica
 **Rejected for this iteration**
 - Q1=B cross-account public gateway
 - Q2=A/C fixed read-only diagnostics or metadata-only product
-- Q3=B duplicate storage or encryption key sharing
+- **Historical Q3=B**: encryption-key sharing was rejected in the first round, then **expressly accepted as Q22=B** after Q21 prohibited EdgeSSH source changes.
 - Q4=A per-host opt-in
 - Q5=B shared low-risk token, and Q5=C full OAuth
 - New general-purpose remote-control agent, common SSH SDK, generic permission platform, persistent session orchestrator or additional credential database
 
-## Unsettled decisions — next interview round
+## Subsequent resolution (Q22=B accepted; no additional architecture frontier)
 
-Round 2 settled Q6–Q10 in [ADR-0002](./0002-managed-ssh-sessions-and-operation-receipts.md), Round 3 settled Q11–Q16 in [ADR-0003](./0003-bounded-live-sessions-and-authoritative-admission.md), and Round 4 Q17–Q20/Q21 are recorded in [ADR-0004](./0004-unmodified-edgessh-and-reliability-policy.md). The new Q21 requirement **forbids changes to EdgeSSH**, so this ADR's Q3=A execution/RPC model is no longer realizable via present interfaces. Q22 explicitly reopens the integration strategy. The historical decision is not silently superseded or considered implemented.
+The operator subsequently accepted Q6–Q10 ([ADR-0002](./0002-managed-ssh-sessions-and-operation-receipts.md)), Q11–Q16 ([ADR-0003](./0003-bounded-live-sessions-and-authoritative-admission.md)), Q17–Q21 ([ADR-0004](./0004-unmodified-edgessh-and-reliability-policy.md)) and ultimately **Q22=B** ([ADR-0005](./0005-independent-mcp-ssh-shared-edgessh-credentials.md)). Q3=A is no longer operative; all saved hosts, unique Bearer and same-account constraints still apply. The D1 binding is write-capable even when MCP application code only performs SELECT, and copied `ENCRYPTION_KEY` also relates to GitHub login signing. Final operator approval for `to-spec` remains outstanding.
 
 Do not create code, deploy, accept production risk, or mark the technical design complete until the operator confirms the final architecture. See [DESIGN-INTERVIEW.md](../DESIGN-INTERVIEW.md).
