@@ -256,6 +256,57 @@ def unpack_verified(archive, destination, records, tag, target):
             shutil.rmtree(stage)
 
 
+def verify_existing_program(archive, destination, records):
+    """Rerun only if on-disk program matches the SAME officially verified asset.
+
+    Local modification or a foreign file never causes silent replacement.
+    All private identity and SQLite state stay outside this program directory.
+    """
+    root = pathlib.Path(destination)
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError("Existing program is not an owned directory")
+    names = {name for name, _ in records}
+    actual = {str(p.relative_to(root)) for p in root.rglob("*")}
+    if actual != names:
+        raise ValueError("Existing program has missing or unexpected files")
+    with tarfile.open(archive, "r:gz") as tf:
+        for name, member in records:
+            item = root / name
+            st = item.lstat()
+            if st.st_uid != os.getuid() or stat.S_IMODE(st.st_mode) & 0o077:
+                raise ValueError("Existing program has unsafe file permissions")
+            if member.isdir():
+                if not stat.S_ISDIR(st.st_mode):
+                    raise ValueError("Existing program directory was replaced")
+                continue
+            if not stat.S_ISREG(st.st_mode) or st.st_size != member.size:
+                raise ValueError("Existing executable or JS does not match the reviewed Release")
+            with open(item, "rb") as installed:
+                expected = tf.extractfile(member)
+                remaining = member.size
+                while remaining:
+                    old = installed.read(min(65536, remaining))
+                    new = expected.read(len(old))
+                    if not old or old != new:
+                        raise ValueError("Existing program modified since trusted Release")
+                    remaining -= len(old)
+    return True
+
+
+def clean_orphaned_staging(parent):
+    """Remove only known owner-private interrupted archives, never identity data."""
+    for entry in pathlib.Path(parent).iterdir():
+        if not entry.name.startswith((".unverified-", ".download-")):
+            continue
+        st = entry.lstat()
+        if st.st_uid != os.getuid() or stat.S_IMODE(st.st_mode) & 0o077                 or not (stat.S_ISDIR(st.st_mode) or stat.S_ISREG(st.st_mode)):
+            raise ValueError("Untrusted leftover staging file needs manual review")
+        if stat.S_ISDIR(st.st_mode):
+            shutil.rmtree(entry)
+        else:
+            entry.unlink()
+
+
 def preflight(tag, commit, endpoint):
     if (sys.platform != "linux" or os.getuid() == 0
             or not sys.stdin.isatty() or not sys.stdout.isatty()):
@@ -290,8 +341,7 @@ def install(tag, commit, endpoint, name=None):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise ValueError("Another v2 standalone installer is already running")
-        if version.exists() or version.is_symlink():
-            raise ValueError("Version already present; safe re-invocation is tracked by #76")
+        clean_orphaned_staging(location)
         pinned = resolve_pinned(tag, commit, target)
         archive_path = None
         try:
@@ -305,7 +355,10 @@ def install(tag, commit, endpoint, name=None):
                 f.flush()
                 os.fsync(f.fileno())
             records = inspect_archive(archive_path, tag, target)
-            unpack_verified(archive_path, version, records, tag, target)
+            if version.exists() or version.is_symlink():
+                verify_existing_program(archive_path, version, records)
+            else:
+                unpack_verified(archive_path, version, records, tag, target)
         finally:
             if archive_path is not None:
                 archive_path.unlink(missing_ok=True)
