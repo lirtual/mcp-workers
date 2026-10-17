@@ -6,7 +6,7 @@ import test from "node:test";
 import {newEnrollment, saveNewPrivateKey} from "../../remote-control-agent/src/v2-enrollment.ts";
 import {recoverDeviceId} from "../../remote-control-agent/src/v2-session-client.ts";
 import worker, {V2OwnerCoordinator} from "../src/worker.ts";
-import {approvePendingKey, prepareLocalConfirmation} from "../src/v2-pairing.ts";
+import {approvePendingKey} from "../src/v2-pairing.ts";
 import {TEMPORARY_GRANT_MS} from "../src/v2-session.ts";
 
 function fixture() {
@@ -117,8 +117,11 @@ test("#97 pending legacy two-code preparation cannot be upgraded into approval",
   assert.equal((await f.register(material.request)).status,202);
   const lookup=await f.rpc("pairing_lookup",{code:material.code});
   const id=String(lookup.object.pairing_id),fp=String(lookup.object.fingerprint);
-  const legacy=await prepareLocalConfirmation(f.store as never,id,fp);
-  assert.equal(legacy.status,200);
+  // Simulate an in-flight old two-code record preserved in DO storage
+  // through rollout; never upgrade it automatically into the new flow.
+  const row=f.rows.get("pending:"+material.request.code_verifier) as Record<string,unknown>;
+  row.confirmation_hash="d".repeat(64);
+  row.confirmation_expires_at=Date.now()+60_000;
   const rejected=await approvePendingKey(f.store as never,id,fp,"permanent");
   assert.equal(rejected.status,409);
   assert.equal((rejected.body as {error:string}).error,"legacy_pairing_in_progress");
