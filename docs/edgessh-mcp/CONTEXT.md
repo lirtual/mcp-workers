@@ -106,7 +106,7 @@ The independently maintained EdgeSSH fork whose code, deployment configuration, 
 
 - Do not call a logically read-only host-catalog consumer a database-permission-enforced read-only principal unless the infrastructure actually provides it.
 - Do not conflate SSH Credential custody, SSH Host Identity, MCP bearer authorization and cloud resource access.
-- Do not return SSH Credentials to MCP callers, receipts, tool outputs or logs.
+- Do not expose the **saved connection credentials or shared encryption root** as MCP tool fields, receipts or logs. An arbitrary SSH command or remote text-file read can itself return confidential remote data; do not claim it is automatically redacted.
 - Do not infer liveness from persisted session identity or guarantee termination of detached processes.
 - Do not relabel `unknown` as safely failed or re-run a stored operation ID.
 - Do not claim EdgeSSH itself executes MCP commands or stores MCP receipts after Q22=B.
