@@ -198,3 +198,30 @@ test("Preview mutation maps Agent uncertain outcomes to timeout_unknown without 
     { operation_id, status: "unavailable" });
   assert.equal(ownerCalls, 4);
 });
+
+
+test("reviewed Python-free install shell is exposed ONLY by configured v2 Preview", async () => {
+  const { default: worker } = await import("../src/worker.ts");
+  const origin = "https://remote-control-v2-preview.aiyaya.workers.dev";
+  const request = new Request(origin+"/install.sh");
+  const configured = { MCP_ACCESS_TOKEN: "test-only", REMOTE_CONTROL_V2_PREVIEW_ONLY: "true" };
+  const enabled = await worker.fetch(request,configured);
+  assert.equal(enabled.status,200);
+  assert.equal(enabled.headers.get("cache-control"),"no-store");
+  const shell = await enabled.text();
+  assert.match(shell,/^#!\/bin\/sh/);
+  assert.match(shell,/--commit "00aaf200107e42a1b7cede3db51f9a16edea5b09"/);
+  assert.match(shell,/b895f8133a03a53f4eacbf4fa6d0619f59ad722064c5e2e8ca469f9fc637221a/);
+  assert.match(shell,/ec16343f50b20b762b04a06039164c0f3a7f42bdeb597ab8e04ecc4b3e40724c/);
+  assert.match(shell,/--endpoint "https:\/\/remote-control-v2-preview.aiyaya.workers.dev\/"/);
+  const disabled = await worker.fetch(new Request(origin+"/install.sh"),{
+    MCP_ACCESS_TOKEN: "test-only", REMOTE_CONTROL_V2_PREVIEW_ONLY:"false"
+  });
+  assert.equal(disabled.status,503);
+  const unconfigured = await worker.fetch(new Request(origin+"/install.sh"),{
+    REMOTE_CONTROL_V2_PREVIEW_ONLY:"true"
+  });
+  assert.equal(unconfigured.status,503);
+  const unexpectedOrigin = await worker.fetch(new Request("https://evil.example/install.sh"),configured);
+  assert.equal(unexpectedOrigin.status,403);
+});
