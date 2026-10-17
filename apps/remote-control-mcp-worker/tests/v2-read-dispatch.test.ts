@@ -8,6 +8,7 @@ import { executeReadTool } from "../../remote-control-agent/src/read-execution.t
 import { monitorDeviceSocket } from "../../remote-control-agent/src/v2-connection-lifecycle.ts";
 import { SearchSessions } from "../../remote-control-agent/src/search.ts";
 import worker, { V2OwnerCoordinator } from "../src/worker.ts";
+import { TEMPORARY_GRANT_MS } from "../src/v2-session.ts";
 
 class ClientSocket extends EventTarget {
   readyState: number = WebSocket.OPEN;
@@ -295,4 +296,62 @@ test("five simultaneous DO reads admit only four bounded in-flight requests", as
   const responses = await Promise.all(requests);
   assert.deepEqual(responses.map(r => r.status).sort(), [200, 200, 200, 200, 503]);
   assert.equal(sent.length, 4);
+});
+
+
+test("#72 temporary expiry rejects new work on old WSS and after DO reconstruction at exact deadline", async () => {
+  const realNow=Date.now;
+  const id=randomUUID(), epoch="signed-session-epoch";
+  const expiresAt=realNow()+120_000;
+  const rows=new Map<string, unknown>([
+    ["device:"+id, {device_id:id, name:"temporary-dispatch-fixture", revoked:false,
+      grant_type:"temporary", approved_at:expiresAt-TEMPORARY_GRANT_MS, expires_at:expiresAt}],
+    ["session:epoch:"+id,epoch],
+  ]);
+  let sent=0;
+  let owner!: V2OwnerCoordinator;
+  const socket={
+    readyState:WebSocket.OPEN,
+    deserializeAttachment:()=>({device_id:id, epoch}),
+    send(message:string) {
+      sent++;
+      const incoming=JSON.parse(message) as {request_id:string};
+      queueMicrotask(()=>{void owner.webSocketMessage(socket as unknown as WebSocket,
+        JSON.stringify({kind:"read_result",request_id:incoming.request_id,
+          status:"completed",text:"admitted-before-expiry"}));});
+    },
+  } as unknown as WebSocket;
+  const state={
+    storage:{get:async <T>(key:string)=>rows.get(key) as T|undefined},
+    getWebSockets:(tag:string)=>tag==="device:"+id?[socket]:[],
+  } as unknown as DurableObjectState;
+  const request=()=>new Request("https://v2.internal/read",{
+    method:"POST",headers:{"content-type":"application/json"},
+    body:JSON.stringify({device_id:id,tool:"read_file",arguments:{path:"/tmp/harmless"}}),
+  });
+  try {
+    Date.now=()=>expiresAt-1;
+    owner=new V2OwnerCoordinator(state);
+    const allowed=await owner.fetch(request());
+    assert.equal(allowed.status,200);
+    assert.match(await allowed.text(),/admitted-before-expiry/);
+    assert.equal(sent,1);
+
+    // Authorization uses the server clock at dispatch, even when the
+    // authenticated old WSS is still open with a matching durable epoch.
+    Date.now=()=>expiresAt;
+    const denied=await owner.fetch(request());
+    assert.equal(denied.status,503);
+    assert.equal((await denied.json() as {error:string}).error,"offline");
+    assert.equal(sent,1,"old socket must not receive post-expiry work");
+
+    // Hibernation discards JS in-memory maps but preserves socket attachments.
+    owner=new V2OwnerCoordinator(state);
+    const afterWake=await owner.fetch(request());
+    assert.equal(afterWake.status,503);
+    assert.equal((await afterWake.json() as {error:string}).error,"offline");
+    assert.equal(sent,1);
+  } finally {
+    Date.now=realNow;
+  }
 });
