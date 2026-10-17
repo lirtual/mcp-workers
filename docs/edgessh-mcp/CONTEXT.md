@@ -1,6 +1,6 @@
 # EdgeSSH MCP — Domain Context
 
-Status: **Rounds 1 and 2 recorded; further session/receipt questions open** (2026-10-17). No production implementation or deployment approved.
+Status: **Rounds 1–3 accepted; receipt-retention, exceptional-stop and rollout decisions still open** (2026-10-17). No production implementation or deployment approved.
 
 This document records domain terms and product invariants, not implementation details. Technical options and the next unresolved decisions live in [DESIGN-INTERVIEW.md](./DESIGN-INTERVIEW.md).
 
@@ -63,7 +63,25 @@ A durable record of an operation's admission, identity, known state and outcome,
 **Unattended Operation**:
 A remote operation permitted to proceed without a new interactive human approval for each call, within the authorized caller's SSH account privileges and the applicable system constraints.
 
-## Settled product invariants — first and second decision rounds
+**Lost Session**:
+A previously established Managed SSH Session for which the service can no longer prove a live SSH connection and controllable channel. Its recorded identity and prior outcome may remain visible, but a lost session cannot safely accept new input or be automatically restarted.
+
+**Session-Owned Job**:
+A job started and controlled through a Managed SSH Session for which the service can still establish a valid ownership relationship to the live channel or process. Detachment or a reused process identifier alone is not sufficient ownership evidence.
+
+**Operation Admission**:
+The durable acceptance of a new Operation ID and its intended parameters *before* attempting the remote side effect. Admission is distinct from successful delivery, execution, and completion.
+
+**Operation Conflict**:
+A request that repeats an existing Operation ID with a different operation type, target or argument fingerprint. It must not be treated as a continuation of the first request.
+
+**Session Stop**:
+A request to terminate or close a particular Managed SSH Session or Session-Owned Job. The request's success at the control boundary does not prove that an independently running remote descendant process was terminated.
+
+**Text File Mutation**:
+An explicitly authorized, bounded request to create, overwrite, rename or delete remote text data. The operation may have partial or uncertain effects and is distinct from general binary file transfer.
+
+## Settled product invariants — first three decision rounds
 
 - EdgeSSH stays usable as a standalone SSH workspace without any AI or MCP integration.
 - The initial MCP feature scope includes arbitrary/parameterized SSH commands and SFTP file mutations, **not only read-only diagnostics**. Safety and lifecycle limits still require independent decisions.
@@ -71,11 +89,15 @@ A remote operation permitted to proceed without a new interactive human approval
 - SSH Credentials remain under EdgeSSH ownership and are not returned to MCP callers.
 - MCP caller authentication and SSH host authentication are distinct trust boundaries.
 - This design is for one administrator, not a new multi-user permission or tenancy model.
-- Initial capability includes interactive/persistent Shell sessions **and** background processes, not just one-shot `exec`. The precise persistence, process ownership and recovery contract remains open.
+- Initial capability includes interactive/persistent Shell sessions **and** background processes, not just one-shot `exec`. A live session may outlast the originating MCP call, but is not guaranteed to survive a Worker/SSH disconnect.
 - A human must pre-verify SSH Host Identity in EdgeSSH. Unknown, absent or changed fingerprints must not be auto-accepted by AI tools.
 - The dedicated caller credential permits unattended command and SFTP mutation requests; there is no separate EdgeSSH approval per tool call.
-- State-changing operations need durable Operation Receipts and deduplication from the first release; their storage, session-input coverage and reconciliation details are still to be chosen.
-- MCP SFTP scope is bounded text-oriented file operations, including mutation; not bulk binary transfer or streaming.
+- State-changing operations require an Operation ID and durable Operation Receipt, **including Interactive Input**. Repeat submissions with matching intent must not dispatch side effects twice; conflicting intent must be rejected.
+- EdgeSSH owns Operation Admission and receipts using its existing durable storage, not a second credentials/job/receipt platform. Exact persistence mechanics and retention remain to be designed.
+- MCP SFTP scope is bounded UTF-8 text-oriented file operations, including mutation; not bulk binary transfer or streaming. Overwrite or destructive intent must be explicit.
+- On disconnection, record a Lost Session and last-known bounded output; never automatically reconnect to its old PTY or rerun a previous command.
+- Only session-attached, provably Session-Owned Jobs may be controlled or stopped. Do not claim to manage detached processes across SSH disconnections.
+- Managed SSH Sessions must have finite concurrency, idle/absolute lifetime and output limits. Their precise values are implementation details, not agreed requirements.
 
 ## Terminology guardrails
 
@@ -85,4 +107,6 @@ A remote operation permitted to proceed without a new interactive human approval
 - Do not claim every command succeeded after the connection was lost; preserve Unknown Outcome.
 - A recorded Managed SSH Session does not guarantee that its original TCP/SSH transport can survive interruption.
 - Persistent receipts do not make remote side effects transactional or prove exactly-once execution.
-- Detailed session recovery, ownership, stop, deduplication, storage, resource and text-transfer limits **remain unresolved** in [the third-round interview](./DESIGN-INTERVIEW.md).
+- A live Shell channel or remote process cannot be proved owned using a PID alone after reconnection; stopped channel != guaranteed termination of descendants.
+- The receipt's retention period, reconciliation of Unknown Outcome, storage-failure response and exact privileged stop/revocation policy **remain unresolved** in [the fourth-round interview](./DESIGN-INTERVIEW.md).
+- Release sequencing and rollback remain to be accepted; nothing in the three rounds authorizes a production deployment.
