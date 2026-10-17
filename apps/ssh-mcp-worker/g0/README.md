@@ -28,7 +28,7 @@ pnpm --filter ssh-mcp-worker-g0 typecheck
 pnpm --filter ssh-mcp-worker-g0 test:g0
 ```
 
-The test creates temporary synthetic Ed25519 host and user keys, starts an isolated local SSH fixture with only fixed command behavior, and runs the Worker under `wrangler dev --local`. It verifies wrong-pin rejection before auth, password and private-key authentication, separate stdout/stderr and exit code, and a typed remote disconnect. Temporary keys and logs are removed at exit. No EdgeSSH data, real credentials, remote hosts, or cloud resources are read or used.
+The test creates temporary synthetic Ed25519 host, authorized-user, and unauthorized-user keys, starts an isolated local SSH fixture with only fixed command behavior, and runs the Worker under `wrangler dev --local`. The fixture accepts only the exact synthetic password and authorized public key; following the `ssh2` server auth-context contract (`node_modules/ssh2/README.md`, authentication events), it acknowledges an unsigned matching public-key query with PK_OK but grants authentication only after `key.verify(blob, signature, hashAlgo)` succeeds. It verifies wrong-pin rejection before auth, wrong-password and wrong-key rejection, signed private-key success, separate stdout/stderr and exit code, and a typed remote disconnect. Temporary keys and logs are removed at exit. No EdgeSSH data, real credentials, remote hosts, or cloud resources are read or used.
 
 ## Result and limits
 

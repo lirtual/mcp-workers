@@ -19,8 +19,10 @@ const run = (command: string, args: string[]) => {
 
 const hostKey = join(scratch, 'host_key');
 const userKey = join(scratch, 'user_key');
+const wrongUserKey = join(scratch, 'wrong_user_key');
 run('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', hostKey]);
 run('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', userKey]);
+run('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', wrongUserKey]);
 const fingerprintLine = run('ssh-keygen', ['-lf', `${hostKey}.pub`, '-E', 'sha256']);
 const fingerprint = fingerprintLine.split(/\s+/)[1]!;
 const privateKey = await readFile(userKey, 'utf8');
@@ -33,6 +35,7 @@ const fixture = spawn(process.execPath, ['--experimental-strip-types', join(app,
     FIXTURE_PORT: String(fixturePort),
     FIXTURE_HOST_KEY: hostKey,
     FIXTURE_USER_PUBLIC_KEY: `${userKey}.pub`,
+    FIXTURE_PASSWORD: 'synthetic-password',
     FIXTURE_AUTH_LOG: authLog,
   },
   stdio: ['ignore', 'pipe', 'pipe'],
@@ -81,6 +84,13 @@ try {
   assert.equal(rejected.body.hostKeyChecked, true);
   assert.equal(await readFile(authLog, 'utf8'), '', 'wrong pin must fail before the server sees authentication');
 
+  await writeFile(authLog, '');
+  const wrongPassword = await request({ mode: 'password', password: 'wrong-fixture-password', ...expected });
+  assert.equal(wrongPassword.status, 502);
+  assert.equal(wrongPassword.body.error, 'SshAuthenticationError');
+  assert.match(await readFile(authLog, 'utf8'), /password/);
+
+  await writeFile(authLog, '');
   const passwordResult = await request({ mode: 'password', password: 'synthetic-password', ...expected });
   assert.equal(passwordResult.status, 200, `${JSON.stringify(passwordResult.body)} auth=${await readFile(authLog, 'utf8')} fixture=${fixtureOutput}`);
   assert.equal(passwordResult.body.ok, true);
@@ -90,16 +100,30 @@ try {
   assert.equal(passwordResult.body.hostKeyChecked, true);
   console.log(`negotiated SSH algorithms: ${JSON.stringify(passwordResult.body.algorithms)}`);
 
+  await writeFile(authLog, '');
+  const wrongPrivateKeyResult = await request({
+    mode: 'privateKey',
+    privateKey: await readFile(wrongUserKey, 'utf8'),
+    ...expected,
+  });
+  assert.equal(wrongPrivateKeyResult.status, 502);
+  assert.equal(wrongPrivateKeyResult.body.error, 'SshAuthenticationError');
+  assert.match(await readFile(authLog, 'utf8'), /publickey-wrong-query/);
+  assert.doesNotMatch(await readFile(authLog, 'utf8'), /publickey-signed/);
+
+  await writeFile(authLog, '');
   const privateKeyResult = await request({ mode: 'privateKey', privateKey, ...expected });
   assert.equal(privateKeyResult.status, 200);
   assert.equal(privateKeyResult.body.ok, true);
   assert.equal(privateKeyResult.body.exitCode, 7);
+  assert.match(await readFile(authLog, 'utf8'), /publickey-query/);
+  assert.match(await readFile(authLog, 'utf8'), /publickey-signed/);
 
   const disconnected = await request({ mode: 'disconnect', password: 'synthetic-password', ...expected, command: 'fixture-disconnect' });
   assert.equal(disconnected.status, 502);
   assert.equal(disconnected.body.ok, false);
   assert.equal(disconnected.body.error, 'SshDisconnectError');
-  console.log('G0 workerd SSH fixture passed: bad pin before auth, password, private key, exec stdout/stderr/exit, remote disconnect.');
+  console.log('G0 workerd SSH fixture passed: bad pin before auth, valid/invalid password, authorized/unauthorized private key, exec stdout/stderr/exit, remote disconnect.');
 } finally {
   stop(wrangler);
   stop(fixture);

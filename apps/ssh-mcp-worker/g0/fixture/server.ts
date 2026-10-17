@@ -11,11 +11,29 @@ const expectedKeyBytes = authorizedPublicKey.getPublicSSH();
 
 const server = new Server({ hostKeys: [hostKey] }, (client) => {
   client.on('authentication', (context) => {
-    appendFileSync(process.env.FIXTURE_AUTH_LOG!, `${context.method}\n`);
-    if (context.method === 'none') return context.reject(['password', 'publickey']);
+    if (context.method === 'none') {
+      appendFileSync(process.env.FIXTURE_AUTH_LOG!, 'none\n');
+      return context.reject(['password', 'publickey']);
+    }
     if (context.username !== 'fixture') return context.reject();
-    if (context.method === 'password') return context.accept();
-    if (context.method === 'publickey' && context.key.data.equals(expectedKeyBytes)) return context.accept();
+    if (context.method === 'password') {
+      appendFileSync(process.env.FIXTURE_AUTH_LOG!, 'password\n');
+      return context.password === process.env.FIXTURE_PASSWORD ? context.accept() : context.reject();
+    }
+    if (context.method === 'publickey') {
+      if (!context.key.data.equals(expectedKeyBytes)) {
+        appendFileSync(process.env.FIXTURE_AUTH_LOG!, context.signature ? 'publickey-wrong-signature\n' : 'publickey-wrong-query\n');
+        return context.reject();
+      }
+      if (!context.signature) {
+        appendFileSync(process.env.FIXTURE_AUTH_LOG!, 'publickey-query\n');
+        return context.accept();
+      }
+      appendFileSync(process.env.FIXTURE_AUTH_LOG!, 'publickey-signed\n');
+      return authorizedPublicKey.verify(context.blob, context.signature, context.hashAlgo) === true
+        ? context.accept()
+        : context.reject();
+    }
     return context.reject();
   });
   client.on('ready', () => {
