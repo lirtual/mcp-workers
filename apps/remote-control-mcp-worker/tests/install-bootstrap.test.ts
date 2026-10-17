@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
-import { handleAgentInstallerRequest, renderAgentInstallShell } from "../src/install-bootstrap.ts";
+import { handleAgentInstallerRequest, renderAgentInstallShell, REVIEWED_V012_RELEASE_PIN } from "../src/install-bootstrap.ts";
 
 const origin = "https://remote-control-v2-preview.aiyaya.workers.dev";
 const pin = Object.freeze({
@@ -14,6 +14,24 @@ test("unreleased Worker installation route fails closed", async()=>{
   assert.equal(response.status,503);
   assert.equal(response.headers.get("cache-control"),"no-store");
   assert.doesNotMatch(await response.text(),/#!/);
+});
+
+test("published immutable v0.1.2 hash pins can render a Shell while Preview remains disabled",async()=>{
+  const reviewed=REVIEWED_V012_RELEASE_PIN;
+  assert.equal(reviewed.tag,"v0.1.2");
+  assert.equal(reviewed.commit,"00aaf200107e42a1b7cede3db51f9a16edea5b09");
+  assert.equal(reviewed.x64Sha256,"b895f8133a03a53f4eacbf4fa6d0619f59ad722064c5e2e8ca469f9fc637221a");
+  assert.equal(reviewed.arm64Sha256,"ec16343f50b20b762b04a06039164c0f3a7f42bdeb597ab8e04ecc4b3e40724c");
+  const stillDisabled=handleAgentInstallerRequest(new Request(origin+"/install.sh"));
+  assert.equal(stillDisabled.status,503);
+  const prepared=handleAgentInstallerRequest(new Request(origin+"/install.sh"),reviewed);
+  assert.equal(prepared.status,200);
+  const shell=await prepared.text();
+  assert.ok(shell.includes(reviewed.commit));
+  assert.ok(shell.includes(reviewed.x64Sha256));
+  assert.ok(shell.includes(reviewed.arm64Sha256));
+  assert.match(shell,/--endpoint "https:\/\/remote-control-v2-preview.aiyaya.workers.dev\/"/);
+  assert.equal(spawnSync("sh",["-n"],{input:shell,encoding:"utf8"}).status,0);
 });
 
 test("future reviewed route binds its own validated origin and pins both ABIs", async()=>{

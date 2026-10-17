@@ -6,7 +6,17 @@ export type InstallReleasePin = Readonly<{
   tag: string; commit: string; x64Sha256: string; arm64Sha256: string;
 }>;
 
-// Intentionally disabled until separate Release and deployment approval.
+// Verified against the published, immutable public GitHub v0.1.2 Pre-release
+// and both official Release asset digests. This constant is NOT a deployment
+// approval; the active endpoint remains deliberately disabled below.
+export const REVIEWED_V012_RELEASE_PIN: InstallReleasePin = Object.freeze({
+  tag: "v0.1.2",
+  commit: "00aaf200107e42a1b7cede3db51f9a16edea5b09",
+  x64Sha256: "b895f8133a03a53f4eacbf4fa6d0619f59ad722064c5e2e8ca469f9fc637221a",
+  arm64Sha256: "ec16343f50b20b762b04a06039164c0f3a7f42bdeb597ab8e04ecc4b3e40724c",
+});
+
+// Deliberately NULL until a *separate* explicit Preview deployment approval.
 const VERIFIED_PYTHON_FREE_RELEASE: InstallReleasePin | null = null;
 const APPROVED_ORIGINS = new Set(["https://remote-control-v2-preview.aiyaya.workers.dev"]);
 
