@@ -1,6 +1,6 @@
 # EdgeSSH MCP — Domain Context
 
-Status: **Rounds 1–3 accepted; receipt-retention, exceptional-stop and rollout decisions still open** (2026-10-17). No production implementation or deployment approved.
+Status: **Q1–Q20 decisions recorded; Q21 explicitly forbids any changes to the upstream/forked EdgeSSH project; architectural conflict Q22 OPEN** (2026-10-17). No production implementation or deployment approved.
 
 This document records domain terms and product invariants, not implementation details. Technical options and the next unresolved decisions live in [DESIGN-INTERVIEW.md](./DESIGN-INTERVIEW.md).
 
@@ -81,23 +81,52 @@ A request to terminate or close a particular Managed SSH Session or Session-Owne
 **Text File Mutation**:
 An explicitly authorized, bounded request to create, overwrite, rename or delete remote text data. The operation may have partial or uncertain effects and is distinct from general binary file transfer.
 
+**Unmodified Upstream Application**:
+An independently maintained application whose source, deployment and runtime contract are not altered by this integration. The optional AI companion must not assume the application can expose a new internal API.
+
+**Credential Custodian**:
+The component that can read, decrypt and use authentication material to establish remote sessions. Changing the custodian changes the trust and exposure boundary, even when the same logical host list is reused.
+
+**Reconciliation**:
+Deliberate investigation of an operation with uncertain effects before choosing any new corrective intent. Inspection alone is not automatic authorization to re-execute the prior operation.
+
+**Revoked Caller Credential**:
+An access credential no longer valid for **new** MCP requests. Revocation is not evidence that an already-running remote action or an SSH connection has been terminated.
+
 ## Settled product invariants — first three decision rounds
 
 - EdgeSSH stays usable as a standalone SSH workspace without any AI or MCP integration.
 - The initial MCP feature scope includes arbitrary/parameterized SSH commands and SFTP file mutations, **not only read-only diagnostics**. Safety and lifecycle limits still require independent decisions.
 - The MCP-eligible host set consists of **all Saved Hosts**, with no per-host opt-in.
-- SSH Credentials remain under EdgeSSH ownership and are not returned to MCP callers.
+- Original EdgeSSH SSH Credentials remain in EdgeSSH, but whether MCP may independently use imported/shared credentials is **unresolved under Q22**; the earlier EdgeSSH-only execution boundary Q3=A cannot currently coexist with Q21.
 - MCP caller authentication and SSH host authentication are distinct trust boundaries.
 - This design is for one administrator, not a new multi-user permission or tenancy model.
 - Initial capability includes interactive/persistent Shell sessions **and** background processes, not just one-shot `exec`. A live session may outlast the originating MCP call, but is not guaranteed to survive a Worker/SSH disconnect.
 - A human must pre-verify SSH Host Identity in EdgeSSH. Unknown, absent or changed fingerprints must not be auto-accepted by AI tools.
 - The dedicated caller credential permits unattended command and SFTP mutation requests; there is no separate EdgeSSH approval per tool call.
 - State-changing operations require an Operation ID and durable Operation Receipt, **including Interactive Input**. Repeat submissions with matching intent must not dispatch side effects twice; conflicting intent must be rejected.
-- EdgeSSH owns Operation Admission and receipts using its existing durable storage, not a second credentials/job/receipt platform. Exact persistence mechanics and retention remain to be designed.
+- **Historical Q14=A**, locating Operation Admission in EdgeSSH, conflicts with the now mandatory unmodified-EdgeSSH boundary. The authoritative future custodian/dispatcher must be selected under Q22 before implementation.
 - MCP SFTP scope is bounded UTF-8 text-oriented file operations, including mutation; not bulk binary transfer or streaming. Overwrite or destructive intent must be explicit.
 - On disconnection, record a Lost Session and last-known bounded output; never automatically reconnect to its old PTY or rerun a previous command.
 - Only session-attached, provably Session-Owned Jobs may be controlled or stopped. Do not claim to manage detached processes across SSH disconnections.
 - Managed SSH Sessions must have finite concurrency, idle/absolute lifetime and output limits. Their precise values are implementation details, not agreed requirements.
+
+## Accepted fourth-round product choices — conditional on Q22
+
+- **Q17=A:** Ordinary known-terminal operation receipts remain for a 30-day normal window; unresolved `unknown` identities retain minimal non-replay markers beyond that window until deliberate reconciliation. Stored receipts should not contain original commands, file payloads, private keys or passwords.
+- **Q18=A:** Never automatically retry or compensate an uncertain SSH/SFTP side effect; the human checks remote state before deliberately initiating a new operation under a fresh identity.
+- **Q19=A:** If durable admission cannot be recorded, new effectful operations and interactive input fail closed. An authenticated stop/close remains a narrow best-effort exception only for a provably owned live session; its unrecorded outcome must be stated as uncertain.
+- **Q20=A:** A revoked/rotated MCP credential cannot authorize new tool calls. Rotation alone does not guarantee that a live SSH session or detached remote action is immediately killed; bounded session expiration and deliberate authorized stop remain necessary.
+- **Q21=constraint (operator correction):** EdgeSSH is a third-party-maintained **fork**, not an application the operator wishes to change. The integration must make **zero changes** to its source, deployed Worker, routes, secrets, storage schema, or runtime behavior; all new development/deployment belongs to `mcp-workers`. This supersedes the previously proposed "extend EdgeSSH with a private RPC interface" release plan.
+
+## Unresolved compatibility — requires Q22
+
+- **Previously accepted Q3=A** placed SSH credential decryption and remote command execution *only* inside EdgeSSH. The existing unchanged EdgeSSH does not expose a server-to-server SSH execute service. This outcome therefore cannot currently be implemented together with Q21 and the accepted broad unattended MCP capabilities Q2=B/Q6=B.
+- **Previously accepted Q14=A** placed authoritative MCP admission/receipts in EdgeSSH storage. Doing so requires executable enforcement in the actual dispatch path. The unchanged application has no such MCP admission path. A separate MCP worker can own its receipts only if the architecture decision is explicitly changed.
+- **Previously accepted Q4=B** means all Saved Hosts are *eligible*, not that an unmodified independent MCP Worker can automatically retrieve them. Actual access to host metadata and credentials remains unresolved.
+- Existing Q7=A SSH host identity confirmation stays a security requirement; whether a new custodian can safely import the confirmed fingerprint without modifying EdgeSSH requires specification and validation.
+
+No alternative architecture is accepted yet. See [Q22 in DESIGN-INTERVIEW.md](./DESIGN-INTERVIEW.md).
 
 ## Terminology guardrails
 
@@ -108,5 +137,5 @@ An explicitly authorized, bounded request to create, overwrite, rename or delete
 - A recorded Managed SSH Session does not guarantee that its original TCP/SSH transport can survive interruption.
 - Persistent receipts do not make remote side effects transactional or prove exactly-once execution.
 - A live Shell channel or remote process cannot be proved owned using a PID alone after reconnection; stopped channel != guaranteed termination of descendants.
-- The receipt's retention period, reconciliation of Unknown Outcome, storage-failure response and exact privileged stop/revocation policy **remain unresolved** in [the fourth-round interview](./DESIGN-INTERVIEW.md).
-- Release sequencing and rollback remain to be accepted; nothing in the three rounds authorizes a production deployment.
+- Q17–Q20 settle the high-level retention, reconciliation, failure-stop, and revocation policies **conditionally**. Their enforcing service depends on the pending architecture choice.
+- The no-EdgeSSH-changes boundary is accepted for Q21; actual MCP-only release sequencing/rollback depends on Q22. Nothing recorded here authorizes a deployment.
