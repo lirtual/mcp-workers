@@ -1,31 +1,27 @@
-# Standalone Agent one-command bootstrap — Draft, not yet published
+# Standalone Agent one-command bootstrap — published v0.1.0 TEST prerelease
 
-**Not a runnable public install command yet.** Draft PR #79 includes an offline-tested
-version-pinned Python3 stdlib bootstrap at
-`apps/remote-control-agent/scripts/bootstrap-v2.py`.
-There is **no authorized immutable Agent GitHub Release** or verified ARM64 package.
-Do not install the production Agent or use a guessed GitHub Release URL.
+**Public verified prerelease:** https://github.com/lirtual/remote-control-agent/releases/tag/v0.1.0 . This GitHub Release is published, **immutable=true**, and its x64 + ARM64 official asset digests match native CI https://github.com/lirtual/remote-control-agent/actions/runs/38996153946 . Annotated tag `v0.1.0` peels to public Agent source commit `e82b90287374797ce20072ce18892055e4a17980`. The separate private Worker/v1 production deployment has not been changed.
 
-The final reviewed one-line invocation will take this form **only after** the
-real Release tag, immutable source commit and published official SHA-256 digest
-have been verified by a maintainer:
+The following pinned one-liner is **only for an isolated nonproduction test device** after the real approved HTTPS Worker endpoint is verified. Replace the illustrative origin; do NOT use an endpoint placeholder or run as root:
 
 ```sh
-bash -c 'set -eu; code=$(curl -fsSL --proto =https --tlsv1.2 "https://raw.githubusercontent.com/lirtual/remote-control-agent/<REVIEWED_40_CHAR_COMMIT>/apps/remote-control-agent/scripts/bootstrap-v2.py"); exec python3 -c "$code" --tag <PUBLISHED_TAG> --commit <REVIEWED_40_CHAR_COMMIT> --endpoint https://<REVIEWED_WORKER_ORIGIN>/'
+bash -c 'set -eu; code=$(curl -fsSL --proto =https --tlsv1.2 "https://raw.githubusercontent.com/lirtual/remote-control-agent/e82b90287374797ce20072ce18892055e4a17980/apps/remote-control-agent/scripts/bootstrap-v2.py"); exec python3 -c "$code" --tag v0.1.0 --commit e82b90287374797ce20072ce18892055e4a17980 --endpoint https://APPROVED_NONPRODUCTION_WORKER_ORIGIN/'
 ```
 
-**Do not copy/paste the placeholders.** All references are pinned; there is no
+The **published** x64 installer has been tested through actual anonymous GitHub retrieval, strict archive verification/staging, bundled Node execution and a real pseudo-terminal with deliberately invalid mode: prompt displayed, no pairing performed, **zero private identity keys** created, disposable HOME removed. ARM64 native CI passed equivalent archive/CLI refusal checks but still requires actual device/owner acceptance.
+
+All references are pinned; there is no
 `latest` or `main`. Shell uses command substitution, **not** `curl|bash`,
 so Python/CLI inherits the real controlling TTY for the mandatory mode/challenge
 prompts. HTTP/TLS failures must abort the command (`set -e`). Python3 3.8+
 and curl are **bootstrap prerequisites**; unlike the Agent, no system Node,
-npm/pnpm, git or compiler is required. This Python prerequisite must be
-reviewed against the supported clean-host matrix before the one-liner is
-declared available. An immutable commit-pinned source URL is still not
+npm/pnpm, git or compiler is required. Python 3.12 was exercised on native
+clean-host CI; other supported host distributions and the real owner pairing
+still require explicit end-to-end acceptance. An immutable commit-pinned source URL is still not
 independent cryptographic proof of the publisher.
 
 The bootstrap itself fail-closes unless:
-- Linux x86_64 or ARM64, non-root, kernel >=6.9, glibc >=2.28 as a base gate, an archive-specific measured `glibc_min` requirement, and TTY. The local x64 Supervisor currently needs glibc >=2.34; ARM64 minimum remains unverified.
+- Linux x86_64 or ARM64, non-root, kernel >=6.9, glibc >=2.28 as a base gate, an archive-specific measured `glibc_min` requirement, and TTY. Both published native binaries currently require measured glibc >=2.34.
 - Public GitHub Release is published and `immutable=true`; public tag ref
   points to the exact reviewed commit; architecture-specific uploaded asset
   ID, official digest, size and fixed GitHub release URL all match.
@@ -47,10 +43,9 @@ Agent entrypoint. Permanent generates the owned v2 systemd user unit;
 Temporary uses a separate protected identity and runs foreground only.
 WSL2 stopped distros cannot reconnect by themselves.
 
-**Offline evidence only:** public API and malicious archive cases simulated in
+**Published prerelease evidence:** public API and malicious archive cases simulated in
 `tests/v2-bootstrap.test.mjs`; a genuinely built local x64 archive was
-verified, safely unpacked and checked to refuse overwrite. No real
-published Release or paired service has been activated from this path.
+verified, safely unpacked and checked to refuse overwrite. The public v0.1.0 Release has also been independently resolved by exact tag, pinned commit, official size and SHA-256 for both assets. No real owner-approved device pairing or live service activation has been executed via this new Release.
 
 After a cloud approval but before local `.device-id` fsync, a signed recovery
 now persists the existing approved device ID with exclusive creation. An
@@ -80,11 +75,7 @@ This intentionally narrow upgrade gate remains subject to isolated
 clean-host, local-failure injection and real signed read-only connectivity
 acceptance. Do not claim upgrades of Shell-enabled Agents as supported.
 
-**Required human decisions/steps later:** review Release immutability settings
-with maintainer credentials, trusted Node binary provenance, verify ARM64 and
-x64 clean-host ABI/runs, explicitly approve publishing any Release, then
-authorize the target's live pairing and #57 real 48-hour acceptance. None of
-these is implied by CI success.
+**Release publication gate completed for TEST prerelease:** immutable Release `v0.1.0` has been published with reviewed official Node 24.21.0 archive SHA-256 provenance and native x64/ARM64 clean-host CI. **Still require separate user authorization for a real device MCP pairing**, lifecycle and #57 real single-device 48 elapsed-hour acceptance, plus independent production authorization. These are not implied by CI success or prerelease publication.
 
 ## Local-only status and removal (#78)
 
@@ -105,10 +96,7 @@ call authenticated MCP revoke_device with the displayed device ID, or wait
 for server-side fixed 24h expiry of a temporary grant. Offline/local service
 status is not evidence of signed WSS reachability or cloud revocation.
 
-Optional local identity/receipt purge is not enabled until its own explicitly
-confirmed and scope-reviewed tests; do not improvise rm -rf on private state.
-Commands remain Draft: do not advertise a public bootstrap/release until
-the actual official immutable Release and clean-host acceptance are complete.
+Optional v2-only key/ID removal is separately exposed as `--purge-local-identity` after uninstall; it **never deletes shared SQLite receipt history**, requires a local confirmation and does not revoke cloud authorization. Do not improvise `rm -rf` on private state. The pinned public installer is **test-only** pending real owner pairing and 48-hour validation.
 
 ### Local activation and rollback failure-injection evidence
 
