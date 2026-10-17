@@ -718,7 +718,7 @@ export class V2OwnerCoordinator {
         return Response.json(output.body, { status: output.status, headers: { "cache-control": "no-store" } });
       } catch { return Response.json({ error: "unavailable" }, { status: 503 }); }
     }
-    if (!["/register", "/lookup", "/prepare", "/complete", "/session/challenge", "/session/recover", "/re-pair/status"].includes(path)) return new Response(null, { status: 404 });
+    if (!["/register", "/lookup", "/prepare", "/approve", "/complete", "/session/challenge", "/session/recover", "/re-pair/status"].includes(path)) return new Response(null, { status: 404 });
     let payload: unknown;
     try { payload = await limitedJson(request); } catch { return Response.json({ error: "invalid_request" }, { status: 400 }); }
     try {
@@ -733,6 +733,10 @@ export class V2OwnerCoordinator {
       else if (path === "/prepare") {
         const pending = payload as { pairing_id?: unknown; expected_fingerprint?: unknown; expected_grant_type?: unknown };
         output = await prepareLocalConfirmation(this.state.storage, pending?.pairing_id, pending?.expected_fingerprint, pending?.expected_grant_type);
+      } else if (path === "/approve") {
+        const pending = payload as {pairing_id?:unknown; expected_fingerprint?:unknown; expected_grant_type?:unknown};
+        output = await approvePendingKey(this.state.storage, pending?.pairing_id,
+          pending?.expected_fingerprint, pending?.expected_grant_type);
       } else output = await completeLocalConfirmation(this.state.storage, payload);
       return Response.json(output.body, { status: output.status, headers: { "cache-control": "no-store" } });
     } catch { return Response.json({ error: "unavailable" }, { status: 503 }); }
