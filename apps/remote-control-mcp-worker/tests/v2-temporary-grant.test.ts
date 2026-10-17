@@ -132,3 +132,34 @@ test("#72 capacity refuses truncated scan before expired grants are pruned", asy
   // Bounded cleanup committed: a normal second owner request can proceed.
   assert.equal((await registerPending(store as never,next.request)).status,202);
 });
+
+
+test("#72 approval rechecks the 64-device cap after the owner prepared a pending challenge", async () => {
+  const {rows,store} = setup();
+  const pending = newEnrollment("prepared-at-capacity",undefined,"temporary");
+  assert.equal((await registerPending(store as never,pending.request)).status,202);
+  const details = await lookupPending(store as never,pending.request.code_verifier);
+  const info = details.body as {pairing_id:string;fingerprint:string};
+  const prepared = await prepareLocalConfirmation(store as never,
+    info.pairing_id,info.fingerprint,"temporary");
+  assert.equal(prepared.status,200);
+  const challenge=(prepared.body as {challenge:string}).challenge;
+  const text="remote-control:v2:local-confirm:"+pending.request.code_verifier+
+    ":"+challenge+":"+pending.request.public_key;
+  const proof=Buffer.from(sign(null,Buffer.from(text),
+    createPrivateKey(pending.privateKeyPem))).toString("base64");
+  // Capacity may fill between the owner preparing and the device confirming.
+  for(let i=0;i<64;i++){
+    const id="00000000-0000-4000-8000-"+i.toString(16).padStart(12,"0");
+    rows.set("device:"+id,{
+      device_id:id,name:"existing",public_key:"existing-"+i,
+      fingerprint:"c".repeat(24),approved_at:Date.now(),revoked:false,grant_type:"permanent",
+    });
+  }
+  const result=await completeLocalConfirmation(store as never,{
+    verifier:pending.request.code_verifier,challenge,proof,
+  });
+  assert.equal(result.status,503);
+  assert.equal([...rows.keys()].filter(k=>k.startsWith("device:")).length,64);
+  assert.equal(rows.has("pending:"+pending.request.code_verifier),true);
+});
