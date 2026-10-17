@@ -908,6 +908,20 @@ try {
   });
   assert.equal(blockedWrite.value.error, 'capacity_reached', 'a full host quota rejects SFTP write before SSH');
   assert.equal(blockedWrite.value.partial_write, undefined);
+  const blockedRename = await call(240, 'sftp_rename', {
+    host_id: hostId, operation_id: 'd6d6d6d6-d6d6-46d6-86d6-d6d6d6d6d6d6',
+    old_path: '/fixture/created-92.txt', new_path: '/fixture/renamed-93.txt', overwrite: false,
+  });
+  assert.equal(blockedRename.value.error, 'capacity_reached', 'a full host quota rejects SFTP rename before SSH');
+  const blockedDelete = await call(241, 'sftp_delete', {
+    host_id: hostId, operation_id: 'd7d7d7d7-d7d7-47d7-87d7-d7d7d7d7d7d7',
+    path: '/fixture/created-92.txt', kind: 'file', confirm: true,
+  });
+  assert.equal(blockedDelete.value.error, 'capacity_reached', 'a full host quota rejects SFTP delete before SSH');
+  const blockedMkdir = await call(242, 'sftp_mkdir', {
+    host_id: hostId, operation_id: 'd8d8d8d8-d8d8-48d8-88d8-d8d8d8d8d8d8', path: '/fixture/created-dir-93',
+  });
+  assert.equal(blockedMkdir.value.error, 'capacity_reached', 'a full host quota rejects SFTP mkdir before SSH');
   const privateHostId = '14141414-1414-4414-8414-141414141414';
   const wrongPinHostId = '15151515-1515-4515-8515-151515151515';
   const missingCredentialHostId = '16161616-1616-4616-8616-161616161616';
@@ -949,6 +963,61 @@ try {
     path: '/fixture/created-92.txt', text: 'x', overwrite: true,
   });
   assert.equal(unauthenticatedWrite, 401);
+  const overlongRename = await call(243, 'sftp_rename', {
+    host_id: secondHostId, operation_id: 'd9d9d9d9-d9d9-49d9-89d9-d9d9d9d9d9d9',
+    old_path: '😀'.repeat(1025), new_path: '/fixture/b.txt', overwrite: false,
+  });
+  assert.equal(overlongRename.isError, true);
+  assert.equal(overlongRename.value.error, 'invalid_args');
+  const overlongDestination = await call(244, 'sftp_rename', {
+    host_id: secondHostId, operation_id: 'dadadada-dada-4ada-8ada-dadadadadada',
+    old_path: '/fixture/a.txt', new_path: '😀'.repeat(1025), overwrite: true,
+  });
+  assert.equal(overlongDestination.isError, true);
+  assert.equal(overlongDestination.value.error, 'invalid_args');
+  const missingOverwriteRename = await call(245, 'sftp_rename', {
+    host_id: secondHostId, operation_id: 'dbdbdbdb-dbdb-4bdb-8bdb-dbdbdbdbdbdb',
+    old_path: '/fixture/a.txt', new_path: '/fixture/b.txt',
+  });
+  assert.equal(missingOverwriteRename.isError, true);
+  assert.equal(missingOverwriteRename.value.error, 'invalid_args');
+  const unauthenticatedRename = await authedCall('wrong-bearer', 246, 'sftp_rename', {
+    host_id: secondHostId, operation_id: 'dcdcdcdc-dcdc-4cdc-8cdc-dcdcdcdcdcdc',
+    old_path: '/fixture/a.txt', new_path: '/fixture/b.txt', overwrite: false,
+  });
+  assert.equal(unauthenticatedRename, 401);
+  const implicitDelete = await call(247, 'sftp_delete', {
+    host_id: secondHostId, operation_id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+    path: '/fixture/a.txt', kind: 'file',
+  });
+  assert.equal(implicitDelete.isError, true);
+  assert.equal(implicitDelete.value.error, 'invalid_args');
+  const recursiveDelete = await call(248, 'sftp_delete', {
+    host_id: secondHostId, operation_id: 'dededede-dede-4ede-8ede-dededededede',
+    path: '/fixture/a.txt', kind: 'file', confirm: true, recursive: true,
+  });
+  assert.equal(recursiveDelete.isError, true);
+  assert.equal(recursiveDelete.value.error, 'invalid_args');
+  const wrongDeleteKind = await call(249, 'sftp_delete', {
+    host_id: secondHostId, operation_id: 'dfdfdfdf-dfdf-4fdf-8fdf-dfdfdfdfdfdf',
+    path: '/fixture/a.txt', kind: 'directory', confirm: true,
+  });
+  assert.equal(wrongDeleteKind.isError, true);
+  assert.equal(wrongDeleteKind.value.error, 'invalid_args');
+  const unauthenticatedDelete = await authedCall('wrong-bearer', 250, 'sftp_delete', {
+    host_id: secondHostId, operation_id: 'e0e0e0e0-e0e0-40e0-80e0-e0e0e0e0e0e0',
+    path: '/fixture/a.txt', kind: 'file', confirm: true,
+  });
+  assert.equal(unauthenticatedDelete, 401);
+  const overlongMkdir = await call(251, 'sftp_mkdir', {
+    host_id: secondHostId, operation_id: 'e1e1e1e1-e1e1-41e1-81e1-e1e1e1e1e1e1', path: '😀'.repeat(1025),
+  });
+  assert.equal(overlongMkdir.isError, true);
+  assert.equal(overlongMkdir.value.error, 'invalid_args');
+  const unauthenticatedMkdir = await authedCall('wrong-bearer', 252, 'sftp_mkdir', {
+    host_id: secondHostId, operation_id: 'e2e2e2e2-e2e2-42e2-82e2-e2e2e2e2e2e2', path: '/fixture/new-dir',
+  });
+  assert.equal(unauthenticatedMkdir, 401);
   assert.equal((await readFile(authLog, 'utf8')).match(/sftp-subsystem/g)?.length ?? 0, sftpCallsBefore.sftp, 'rejected SFTP targets must not open a subsystem');
   assert.equal(await passwordAuths(), sftpCallsBefore.auth, 'capacity, private, wrong pin, missing credential, and bad bearer must not authenticate');
 
@@ -990,6 +1059,14 @@ try {
   assert.equal(await shellOpens(), sftpCallsBefore.shells, 'SFTP must not open a managed shell');
   const operationsAfter = await fixtureRequest<{ count: number }>('operation-count', {});
   assert.equal(operationsAfter?.count, operationsBefore?.count, 'SFTP list and read do not write a mutation receipt');
+  const subsystemsBeforePrivateRename = (await readFile(authLog, 'utf8')).match(/sftp-subsystem/g)?.length ?? 0;
+  const privateRename = await call(253, 'sftp_rename', {
+    host_id: privateHostId, operation_id: 'e3e3e3e3-e3e3-43e3-83e3-e3e3e3e3e3e3',
+    old_path: '/fixture/a.txt', new_path: '/fixture/b.txt', overwrite: false,
+  });
+  assert.equal(privateRename.value.error, 'invalid_target');
+  assert.equal((await readFile(authLog, 'utf8')).match(/sftp-subsystem/g)?.length ?? 0, subsystemsBeforePrivateRename, 'a private rename target must not open SFTP');
+  assert.doesNotMatch(JSON.stringify(privateRename), /synthetic-password|privateKey|ENCRYPTION_KEY/);
   const leasesAfterReads = await fixtureRequest<{ total: number; perHost: Record<string, number> }>('lease-count', {});
   assert.equal(leasesAfterReads?.perHost[secondHostId] ?? 0, 0, 'a finished SFTP call releases its connection lease');
 
@@ -1172,13 +1249,250 @@ try {
   assert.doesNotMatch(JSON.stringify(commitReceipt), /commit-body-must-not-persist/);
   assert.equal((await readFile(authLog, 'utf8')).match(/sftp-write:\/fixture\/commit-write.txt:/g)?.length ?? 0, 1);
 
+  const renameBody = 'rename-body-93';
+  const renameSource = '/fixture/rename-src-93.txt';
+  const renameDestination = '/fixture/rename-dst-93.txt';
+  const renameOperationId = 'e4e4e4e4-e4e4-44e4-84e4-e4e4e4e4e4e4';
+  const seeded = await call(260, 'sftp_write_text', {
+    host_id: secondHostId, operation_id: 'e5e5e5e5-e5e5-45e5-85e5-e5e5e5e5e5e5',
+    path: renameSource, text: renameBody, overwrite: false,
+  });
+  assert.equal(seeded.value.status, 'completed', JSON.stringify(seeded));
+  const renamedFile = await call(261, 'sftp_rename', {
+    host_id: secondHostId, operation_id: renameOperationId,
+    old_path: renameSource, new_path: renameDestination, overwrite: false,
+  });
+  assert.equal(renamedFile.value.status, 'completed', JSON.stringify(renamedFile));
+  assert.equal(renamedFile.value.partial_write, undefined);
+  assert.doesNotMatch(JSON.stringify(renamedFile), /rename-body-93|synthetic-password|privateKey|ENCRYPTION_KEY/);
+  const renameReceipt = await fixtureRequest('read-receipt', { operationId: renameOperationId });
+  assert.ok(renameReceipt);
+  assert.equal(renameReceipt.status, 'completed');
+  const expectedRenameDigest = await digestVector({
+    tool: 'sftp_rename', hostId: secondHostId, sessionId: null, normalizedArgs: [renameSource, renameDestination, false],
+  });
+  assert.equal(renameReceipt.digest, expectedRenameDigest.digest);
+  assert.doesNotMatch(renameReceipt.result_json ?? '', /rename-body-93|synthetic-password|privateKey|ENCRYPTION_KEY|rename-src-93/);
+  const readRenamed = await call(262, 'sftp_read_text', { host_id: secondHostId, path: renameDestination });
+  assert.equal(readRenamed.value.text, renameBody);
+  const readOld = await call(263, 'sftp_read_text', { host_id: secondHostId, path: renameSource });
+  assert.equal(readOld.value.error, 'host_unreachable');
+  const replayRename = await call(264, 'sftp_rename', {
+    host_id: secondHostId, operation_id: renameOperationId,
+    old_path: renameSource, new_path: renameDestination, overwrite: false, timeout_ms: 15_000,
+  });
+  assert.equal(replayRename.value.status, 'completed');
+  const conflictRename = await call(265, 'sftp_rename', {
+    host_id: secondHostId, operation_id: renameOperationId,
+    old_path: renameSource, new_path: '/fixture/elsewhere-93.txt', overwrite: false,
+  });
+  assert.equal(conflictRename.value.error, 'receipt_conflict');
+  assert.equal((await readFile(authLog, 'utf8')).match(/sftp-rename:\/fixture\/rename-src-93.txt:\/fixture\/rename-dst-93.txt/g)?.length ?? 0, 1,
+    'same-id replay and argument conflicts must not rename again');
+
+  const occupied = await call(266, 'sftp_rename', {
+    host_id: secondHostId, operation_id: 'e6e6e6e6-e6e6-46e6-86e6-e6e6e6e6e6e6',
+    old_path: '/fixture/out.txt', new_path: renameDestination, overwrite: false,
+  });
+  assert.equal(occupied.value.status, 'failed', JSON.stringify(occupied));
+  assert.equal(occupied.value.error, 'conflict');
+  const stillThere = await call(267, 'sftp_read_text', { host_id: secondHostId, path: '/fixture/out.txt' });
+  assert.equal(stillThere.value.text, 'second');
+  const replacedName = await call(268, 'sftp_rename', {
+    host_id: secondHostId, operation_id: 'e7e7e7e7-e7e7-47e7-87e7-e7e7e7e7e7e7',
+    old_path: '/fixture/out.txt', new_path: renameDestination, overwrite: true,
+  });
+  assert.equal(replacedName.value.status, 'completed', JSON.stringify(replacedName));
+  assert.equal(replacedName.value.partial_write, undefined);
+  const readReplacedName = await call(269, 'sftp_read_text', { host_id: secondHostId, path: renameDestination });
+  assert.equal(readReplacedName.value.text, 'second');
+  const oldOut = await call(270, 'sftp_read_text', { host_id: secondHostId, path: '/fixture/out.txt' });
+  assert.equal(oldOut.value.error, 'host_unreachable');
+  const missingRename = await call(271, 'sftp_rename', {
+    host_id: secondHostId, operation_id: 'e8e8e8e8-e8e8-48e8-88e8-e8e8e8e8e8e8',
+    old_path: '/fixture/missing-93.txt', new_path: '/fixture/missing-dst-93.txt', overwrite: false,
+  });
+  assert.equal(missingRename.value.status, 'failed');
+  assert.equal(missingRename.value.error, 'host_unreachable');
+
+  const mkdirId = 'e9e9e9e9-e9e9-49e9-89e9-e9e9e9e9e9e9';
+  const made = await call(272, 'sftp_mkdir', {
+    host_id: secondHostId, operation_id: mkdirId, path: '/fixture/tree-93',
+  });
+  assert.equal(made.value.status, 'completed', JSON.stringify(made));
+  const mkdirReceipt = await fixtureRequest('read-receipt', { operationId: mkdirId });
+  const expectedMkdirDigest = await digestVector({
+    tool: 'sftp_mkdir', hostId: secondHostId, sessionId: null, normalizedArgs: ['/fixture/tree-93'],
+  });
+  assert.equal(mkdirReceipt?.digest, expectedMkdirDigest.digest);
+  assert.doesNotMatch(mkdirReceipt?.result_json ?? '', /synthetic-password|privateKey|ENCRYPTION_KEY/);
+  const madeChild = await call(273, 'sftp_mkdir', {
+    host_id: secondHostId, operation_id: 'eaeaeaea-eaea-4aea-8aea-eaeaeaeaeaea', path: '/fixture/tree-93/child',
+  });
+  assert.equal(madeChild.value.status, 'completed', JSON.stringify(madeChild));
+  const missingParent = await call(274, 'sftp_mkdir', {
+    host_id: secondHostId, operation_id: 'ebebebeb-ebeb-4beb-8beb-ebebebebebeb', path: '/fixture/tree-93/missing/leaf',
+  });
+  assert.equal(missingParent.value.status, 'failed', JSON.stringify(missingParent));
+  assert.equal(missingParent.value.error, 'host_unreachable');
+  const missingParentList = await call(275, 'sftp_list', { host_id: secondHostId, path: '/fixture/tree-93/missing' });
+  assert.equal(missingParentList.value.error, 'host_unreachable');
+  const mkdirAgain = await call(276, 'sftp_mkdir', {
+    host_id: secondHostId, operation_id: 'ecececec-ecec-4cec-8cec-ecececececec', path: '/fixture/tree-93',
+  });
+  assert.equal(mkdirAgain.value.error, 'conflict');
+  const mkdirFile = await call(277, 'sftp_mkdir', {
+    host_id: secondHostId, operation_id: 'edededed-eded-4ded-8ded-edededededed', path: '/fixture/hello.txt',
+  });
+  assert.equal(mkdirFile.value.error, 'conflict');
+  const helloAfterMkdir = await call(278, 'sftp_read_text', { host_id: secondHostId, path: '/fixture/hello.txt' });
+  assert.equal(helloAfterMkdir.value.text, 'héllo SSH\n');
+  const listedRoot = await call(279, 'sftp_list', { host_id: secondHostId, path: '/fixture' });
+  assert.deepEqual(listedRoot.value.entries, [{ name: 'hello.txt', type: 'file', size: 10 }]);
+  const listedTree = await call(280, 'sftp_list', { host_id: secondHostId, path: '/fixture/tree-93' });
+  assert.equal(listedTree.value.status, 'completed', JSON.stringify(listedTree));
+  assert.deepEqual(listedTree.value.entries, [{ name: 'child', type: 'directory', size: 0 }]);
+  const replayMkdir = await call(281, 'sftp_mkdir', {
+    host_id: secondHostId, operation_id: mkdirId, path: '/fixture/tree-93',
+  });
+  assert.equal(replayMkdir.value.status, 'completed');
+  const mkdirConflict = await call(282, 'sftp_mkdir', {
+    host_id: secondHostId, operation_id: mkdirId, path: '/fixture/tree-93/other',
+  });
+  assert.equal(mkdirConflict.value.error, 'receipt_conflict');
+  assert.equal((await readFile(authLog, 'utf8')).match(/sftp-mkdir:\/fixture\/tree-93\n/g)?.length ?? 0, 1,
+    'same-id replay and argument conflicts must not create the directory again');
+
+  const childFile = await call(283, 'sftp_write_text', {
+    host_id: secondHostId, operation_id: 'a93a93a9-93a9-493a-893a-93a93a93a93a',
+    path: '/fixture/tree-93/child/note.txt', text: 'kept', overwrite: false,
+  });
+  assert.equal(childFile.value.status, 'completed', JSON.stringify(childFile));
+  const deleteTree = await call(284, 'sftp_delete', {
+    host_id: secondHostId, operation_id: 'efefefef-efef-4fef-8fef-efefefefefef',
+    path: '/fixture/tree-93/child', kind: 'empty_directory', confirm: true,
+  });
+  assert.equal(deleteTree.value.status, 'failed', JSON.stringify(deleteTree));
+  assert.equal(deleteTree.value.error, 'conflict');
+  const keptNote = await call(285, 'sftp_read_text', { host_id: secondHostId, path: '/fixture/tree-93/child/note.txt' });
+  assert.equal(keptNote.value.text, 'kept');
+  const deleteFileAsDir = await call(286, 'sftp_delete', {
+    host_id: secondHostId, operation_id: 'f0f0f0f0-f0f0-40f0-80f0-f0f0f0f0f0f0',
+    path: '/fixture/tree-93/child/note.txt', kind: 'empty_directory', confirm: true,
+  });
+  assert.equal(deleteFileAsDir.value.error, 'conflict');
+  const deleteNoteId = 'f1f1f1f1-f1f1-41f1-81f1-f1f1f1f1f1f1';
+  const deletedNote = await call(287, 'sftp_delete', {
+    host_id: secondHostId, operation_id: deleteNoteId,
+    path: '/fixture/tree-93/child/note.txt', kind: 'file', confirm: true,
+  });
+  assert.equal(deletedNote.value.status, 'completed', JSON.stringify(deletedNote));
+  assert.equal(deletedNote.value.partial_write, undefined);
+  assert.doesNotMatch(JSON.stringify(deletedNote), /kept|synthetic-password|privateKey|ENCRYPTION_KEY/);
+  const noteReceipt = await fixtureRequest('read-receipt', { operationId: deleteNoteId });
+  const expectedDeleteDigest = await digestVector({
+    tool: 'sftp_delete', hostId: secondHostId, sessionId: null,
+    normalizedArgs: ['/fixture/tree-93/child/note.txt', 'file', true],
+  });
+  assert.equal(noteReceipt?.digest, expectedDeleteDigest.digest);
+  assert.doesNotMatch(noteReceipt?.result_json ?? '', /kept|note\.txt|synthetic-password|privateKey|ENCRYPTION_KEY/);
+  const replayDelete = await call(288, 'sftp_delete', {
+    host_id: secondHostId, operation_id: deleteNoteId,
+    path: '/fixture/tree-93/child/note.txt', kind: 'file', confirm: true,
+  });
+  assert.equal(replayDelete.value.status, 'completed');
+  const deleteKindConflict = await call(289, 'sftp_delete', {
+    host_id: secondHostId, operation_id: deleteNoteId,
+    path: '/fixture/tree-93/child/note.txt', kind: 'empty_directory', confirm: true,
+  });
+  assert.equal(deleteKindConflict.value.error, 'receipt_conflict');
+  assert.equal((await readFile(authLog, 'utf8')).match(/sftp-delete:file:\/fixture\/tree-93\/child\/note.txt/g)?.length ?? 0, 1,
+    'same-id replay and argument conflicts must not delete again');
+  const deletedChild = await call(290, 'sftp_delete', {
+    host_id: secondHostId, operation_id: 'f2f2f2f2-f2f2-42f2-82f2-f2f2f2f2f2f2',
+    path: '/fixture/tree-93/child', kind: 'empty_directory', confirm: true,
+  });
+  assert.equal(deletedChild.value.status, 'completed', JSON.stringify(deletedChild));
+  const childGone = await call(291, 'sftp_list', { host_id: secondHostId, path: '/fixture/tree-93/child' });
+  assert.equal(childGone.value.error, 'host_unreachable');
+  const wrongPinRename = await call(292, 'sftp_rename', {
+    host_id: wrongPinHostId, operation_id: 'f3f3f3f3-f3f3-43f3-83f3-f3f3f3f3f3f3',
+    old_path: renameDestination, new_path: '/fixture/nope-93.txt', overwrite: false,
+  });
+  assert.equal(wrongPinRename.value.error, 'host_untrusted');
+  assert.doesNotMatch(JSON.stringify(wrongPinRename), /synthetic-password|privateKey|ENCRYPTION_KEY/);
+
+  const stallRenameId = 'f4f4f4f4-f4f4-44f4-84f4-f4f4f4f4f4f4';
+  const stalledRename = call(293, 'sftp_rename', {
+    host_id: secondHostId, operation_id: stallRenameId,
+    old_path: '/fixture/stall-rename', new_path: '/fixture/stall-rename-dst', overwrite: false, timeout_ms: 1_000,
+  });
+  let stallRenameConnection: string | undefined;
+  for (let attempt = 0; attempt < 40; attempt++) {
+    stallRenameConnection = (await readFile(authLog, 'utf8')).match(/sftp-stall-rename:(\d+)/)?.[1];
+    if (stallRenameConnection) break;
+    await delay(50);
+  }
+  assert.ok(stallRenameConnection, 'the stalled rename identifies its SSH connection');
+  await allowPtyResets([stallRenameConnection]);
+  const duringRenameStall = await fixtureRequest<{ perHost: Record<string, number> }>('lease-count', {});
+  assert.equal(duringRenameStall?.perHost[secondHostId], 1, 'an in-flight SFTP rename holds the host connection quota');
+  const stalledRenameResult = await stalledRename;
+  assert.equal(stalledRenameResult.value.status, 'unknown', JSON.stringify(stalledRenameResult));
+  assert.equal(stalledRenameResult.value.error, 'unknown_outcome');
+  assert.equal(stalledRenameResult.value.partial_write, undefined);
+  await clearPtyResets();
+  const releasedRename = await fixtureRequest<{ perHost: Record<string, number> }>('lease-count', {});
+  assert.equal(releasedRename?.perHost[secondHostId] ?? 0, 0, 'a timed-out SFTP rename releases the connection lease');
+  const stallRenameReplay = await call(294, 'sftp_rename', {
+    host_id: secondHostId, operation_id: stallRenameId,
+    old_path: '/fixture/stall-rename', new_path: '/fixture/stall-rename-dst', overwrite: false, timeout_ms: 1_000,
+  });
+  assert.equal(stallRenameReplay.value.status, 'unknown');
+  assert.equal((await readFile(authLog, 'utf8')).match(/sftp-stall-rename:/g)?.length ?? 0, 1, 'replaying an uncertain rename must not open SFTP again');
+
+  const dropRenameId = 'f5f5f5f5-f5f5-45f5-85f5-f5f5f5f5f5f5';
+  const droppedRename = await call(295, 'sftp_rename', {
+    host_id: secondHostId, operation_id: dropRenameId,
+    old_path: '/fixture/drop-rename', new_path: '/fixture/drop-rename-dst', overwrite: false, timeout_ms: 10_000,
+  });
+  assert.equal(droppedRename.value.status, 'unknown', JSON.stringify(droppedRename));
+  assert.equal(droppedRename.value.partial_write, undefined);
+  const droppedReplay = await call(296, 'sftp_rename', {
+    host_id: secondHostId, operation_id: dropRenameId,
+    old_path: '/fixture/drop-rename', new_path: '/fixture/drop-rename-dst', overwrite: false,
+  });
+  assert.equal(droppedReplay.value.status, 'unknown');
+  assert.equal((await readFile(authLog, 'utf8')).match(/sftp-rename-drop:/g)?.length ?? 0, 1, 'a disconnected rename is not replayed');
+
+  await control('PUT', 'terminal-update-failure');
+  const commitRenameId = 'f6f6f6f6-f6f6-46f6-86f6-f6f6f6f6f6f6';
+  const commitRename = await call(297, 'sftp_rename', {
+    host_id: secondHostId, operation_id: commitRenameId,
+    old_path: renameDestination, new_path: '/fixture/commit-rename-93.txt', overwrite: false,
+  });
+  assert.equal(commitRename.value.status, 'unknown', JSON.stringify(commitRename));
+  assert.equal(commitRename.value.partial_write, undefined);
+  assert.doesNotMatch(JSON.stringify(commitRename), /synthetic-password|privateKey|ENCRYPTION_KEY/);
+  await control('DELETE', 'terminal-update-failure');
+  const commitRenameReplay = await call(298, 'sftp_rename', {
+    host_id: secondHostId, operation_id: commitRenameId,
+    old_path: renameDestination, new_path: '/fixture/commit-rename-93.txt', overwrite: false,
+  });
+  assert.equal(commitRenameReplay.value.status, 'unknown');
+  const commitRenamed = await call(299, 'sftp_read_text', { host_id: secondHostId, path: '/fixture/commit-rename-93.txt' });
+  assert.equal(commitRenamed.value.text, 'second', 'the remote rename happened once before the receipt failure');
+  const commitRenameReceipt = await fixtureRequest('read-receipt', { operationId: commitRenameId });
+  assert.doesNotMatch(commitRenameReceipt?.result_json ?? '', /second|synthetic-password|privateKey/);
+  assert.equal((await readFile(authLog, 'utf8')).match(/sftp-rename:\/fixture\/rename-dst-93.txt:\/fixture\/commit-rename-93.txt/g)?.length ?? 0, 1);
+
   const afterWriteLog = await readFile(authLog, 'utf8');
   assert.doesNotMatch(afterWriteLog, /unexpected-fixture-error:/, 'only an intentional interrupted write may absorb ECONNRESET');
   assert.equal((afterWriteLog.match(/exec-command:/g) ?? []).length, sftpCallsBefore.exec, 'SFTP write must not run initialCommand or another exec');
   const leasesAfterWrite = await fixtureRequest<{ perHost: Record<string, number> }>('lease-count', {});
   assert.equal(leasesAfterWrite?.perHost[secondHostId] ?? 0, 0, 'finished SFTP writes release the host connection lease');
 
-  console.log('Local MCP → SQLite DO → pinned SSH fixture passed: concurrent atomic admission, indexed bounded cleanup, legacy digest replay compatibility, restart recovery before dispatch, during live SSH and after effect/receipt-commit failure, fail-closed storage behavior, unknown tombstone retention, managed shell lifecycle, authenticated SFTP list/read limits, receipt-protected SFTP UTF-8 create and explicit overwrite, and no automatic redispatch.');
+  console.log('Local MCP → SQLite DO → pinned SSH fixture passed: concurrent atomic admission, indexed bounded cleanup, legacy digest replay compatibility, restart recovery before dispatch, during live SSH and after effect/receipt-commit failure, fail-closed storage behavior, unknown tombstone retention, managed shell lifecycle, authenticated SFTP list/read limits, receipt-protected SFTP UTF-8 create and explicit overwrite, receipt-protected SFTP rename, explicit delete, and single-level mkdir, and no automatic redispatch.');
 } finally {
   if (cleanupPtyIds.length) await writeFile(resetAllow, `${cleanupPtyIds.join('\n')}\n`);
   await stopWorker();

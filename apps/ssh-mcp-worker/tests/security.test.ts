@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { isIpLiteral, isPublicAddress, normalizeDnsName } from '../src/target-security.ts';
-import { validExecInput, validSessionInput, validSessionStop, validSftpInput, validSftpWriteInput } from '../src/validation.ts';
+import { validExecInput, validSessionInput, validSessionStop, validSftpDeleteInput, validSftpInput, validSftpMkdirInput, validSftpRenameInput, validSftpWriteInput } from '../src/validation.ts';
 
 test('public target screening rejects special IPv4 and IPv6 ranges and accepts global unicast', () => {
   for (const address of [
@@ -69,4 +69,24 @@ test('SFTP write validation requires explicit overwrite and rejects over-limit U
   assert.equal(validSftpWriteInput(host, operation, '/fixture/out.txt', 'x', undefined, 30_000), 'invalid_args');
   assert.equal(validSftpWriteInput(host, operation, '😀'.repeat(1025), 'x', false, 30_000), 'invalid_args');
   assert.equal(validSftpWriteInput(host, 'not-an-operation', '/fixture/out.txt', 'x', false, 30_000), 'invalid_args');
+});
+
+test('SFTP rename, delete, and mkdir validation rejects implicit intent and over-limit paths before admission', () => {
+  const host = '11111111-1111-4111-8111-111111111111';
+  const operation = '22222222-2222-4222-8222-222222222222';
+  const longPath = '😀'.repeat(1025);
+  assert.equal(validSftpRenameInput(host, operation, '/fixture/a.txt', '/fixture/b.txt', false, 30_000), null);
+  assert.equal(validSftpRenameInput(host, operation, '/fixture/a.txt', '/fixture/b.txt', undefined, 30_000), 'invalid_args');
+  assert.equal(validSftpRenameInput(host, operation, longPath, '/fixture/b.txt', true, 30_000), 'invalid_args');
+  assert.equal(validSftpRenameInput(host, operation, '/fixture/a.txt', longPath, false, 60_000), 'invalid_args');
+  assert.equal(validSftpDeleteInput(host, operation, '/fixture/a.txt', 'file', true, undefined, 30_000), null);
+  assert.equal(validSftpDeleteInput(host, operation, '/fixture/a.txt', 'empty_directory', true, undefined, 30_000), null);
+  assert.equal(validSftpDeleteInput(host, operation, '/fixture/a.txt', 'file', undefined, undefined, 30_000), 'invalid_args');
+  assert.equal(validSftpDeleteInput(host, operation, '/fixture/a.txt', 'file', false, undefined, 30_000), 'invalid_args');
+  assert.equal(validSftpDeleteInput(host, operation, '/fixture/a.txt', 'directory', true, undefined, 30_000), 'invalid_args');
+  assert.equal(validSftpDeleteInput(host, operation, '/fixture/a.txt', 'file', true, true, 30_000), 'invalid_args');
+  assert.equal(validSftpDeleteInput(host, operation, longPath, 'file', true, undefined, 30_000), 'invalid_args');
+  assert.equal(validSftpMkdirInput(host, operation, '/fixture/new', 30_000), null);
+  assert.equal(validSftpMkdirInput(host, operation, longPath, 30_000), 'invalid_args');
+  assert.equal(validSftpMkdirInput(host, 'not-an-operation', '/fixture/new', 30_000), 'invalid_args');
 });

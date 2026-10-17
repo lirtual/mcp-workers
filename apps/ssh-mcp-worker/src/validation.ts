@@ -52,3 +52,38 @@ export function validSftpWriteInput(
   if (encoder.encode(text).byteLength > 64 * 1024) return 'invalid_args';
   return validSftpInput(hostId, path, timeoutMs);
 }
+
+function validSftpPath(path: string): boolean {
+  return typeof path === 'string' && path.length > 0 && !path.includes('\0') && encoder.encode(path).byteLength <= 4 * 1024;
+}
+
+export function validSftpRenameInput(
+  hostId: string,
+  operationId: string,
+  oldPath: string,
+  newPath: string,
+  overwrite: boolean | undefined,
+  timeoutMs: number,
+): string | null {
+  if (!UUID.test(operationId) || typeof overwrite !== 'boolean' || !validSftpPath(newPath)) return 'invalid_args';
+  return validSftpInput(hostId, oldPath, timeoutMs);
+}
+
+export function validSftpDeleteInput(
+  hostId: string,
+  operationId: string,
+  path: string,
+  kind: string | undefined,
+  confirm: boolean | undefined,
+  recursive: boolean | undefined,
+  timeoutMs: number,
+): string | null {
+  if (!UUID.test(operationId) || confirm !== true || recursive !== undefined) return 'invalid_args';
+  if (kind !== 'file' && kind !== 'empty_directory') return 'invalid_args';
+  return validSftpInput(hostId, path, timeoutMs);
+}
+
+export function validSftpMkdirInput(hostId: string, operationId: string, path: string, timeoutMs: number): string | null {
+  if (!UUID.test(operationId)) return 'invalid_args';
+  return validSftpInput(hostId, path, timeoutMs);
+}

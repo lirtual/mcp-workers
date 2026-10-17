@@ -5,7 +5,7 @@ import { getSshHostCredentials, HostError } from './hosts.ts';
 import type { Env } from './types.ts';
 import { isIpLiteral, isPublicAddress, normalizeDnsName } from './target-security.ts';
 import { closeSshResources } from './ssh-lifecycle.ts';
-import { validSftpInput, validSftpWriteInput } from './validation.ts';
+import { validSftpDeleteInput, validSftpInput, validSftpMkdirInput, validSftpRenameInput, validSftpWriteInput } from './validation.ts';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PIN = /^SHA256:[A-Za-z0-9+/]{43}$/;
@@ -58,12 +58,35 @@ export interface SftpWriteRequest {
   overwrite: boolean;
   timeoutMs: number;
 }
-export interface SftpWriteReply {
+export interface SftpMutationReply {
   operation_id: string;
   status: 'completed' | 'failed' | 'unknown' | 'running';
   bytes?: number;
   error?: string;
   partial_write?: 'possible';
+}
+export type SftpWriteReply = SftpMutationReply;
+export interface SftpRenameRequest {
+  hostId: string;
+  operationId: string;
+  oldPath: string;
+  newPath: string;
+  overwrite: boolean;
+  timeoutMs: number;
+}
+export interface SftpDeleteRequest {
+  hostId: string;
+  operationId: string;
+  path: string;
+  kind: 'file' | 'empty_directory';
+  confirm: true;
+  timeoutMs: number;
+}
+export interface SftpMkdirRequest {
+  hostId: string;
+  operationId: string;
+  path: string;
+  timeoutMs: number;
 }
 
 export interface ExecRequest {
@@ -456,10 +479,76 @@ async function readDirectory(sftp: Sftp, path: string): Promise<SftpListReply> {
   return { status: 'completed', entries: visible, truncated: entries.length > SFTP_LIST_MAX_ENTRIES };
 }
 
-type SftpWriteInner =
-  | { status: 'completed'; bytes: number }
+type SftpEffectInner =
+  | { status: 'completed'; bytes?: number }
   | { status: 'failed'; error: string }
-  | { status: 'unknown'; error: string; partial_write: 'possible' };
+  | { status: 'unknown'; error: string; partial_write?: 'possible' };
+
+const POSIX_RENAME = 'posix-rename@openssh.com';
+
+function definitiveSftpStatus(error: unknown): boolean {
+  return error instanceof SftpError && (
+    error.code === SftpStatus.noSuchFile
+    || error.code === SftpStatus.permissionDenied
+    || error.code === SftpStatus.failure
+    || error.code === SftpStatus.badMessage
+    || error.code === SftpStatus.unsupported
+    || error.code === 11
+  );
+}
+
+function existenceConflict(error: unknown): boolean {
+  return error instanceof SftpError && (error.code === SftpStatus.failure || error.code === 11);
+}
+
+async function renameRemote(
+  sftp: Sftp,
+  from: string,
+  to: string,
+  overwrite: boolean,
+  markMutating: (value: boolean) => void,
+): Promise<void> {
+  // posix-rename is one server call when offered. It is still not a universal atomic rename.
+  if (overwrite && !sftp.serverExtensions.some(extension => extension.name === POSIX_RENAME)) {
+    throw new Error('sftp_unsupported');
+  }
+  markMutating(true);
+  try {
+    await sftp.rename(from, to, overwrite ? { replace: true } : undefined);
+  } catch (error) {
+    if (definitiveSftpStatus(error)) markMutating(false);
+    if (existenceConflict(error)) throw new Error('sftp_conflict');
+    throw error;
+  }
+}
+
+async function deleteRemote(
+  sftp: Sftp,
+  path: string,
+  kind: 'file' | 'empty_directory',
+  markMutating: (value: boolean) => void,
+): Promise<void> {
+  markMutating(true);
+  try {
+    if (kind === 'file') await sftp.remove(path);
+    else await sftp.removeDirectory(path);
+  } catch (error) {
+    if (definitiveSftpStatus(error)) markMutating(false);
+    if (existenceConflict(error)) throw new Error('sftp_conflict');
+    throw error;
+  }
+}
+
+async function makeRemoteDirectory(sftp: Sftp, path: string, markMutating: (value: boolean) => void): Promise<void> {
+  markMutating(true);
+  try {
+    await sftp.makeDirectory(path);
+  } catch (error) {
+    if (definitiveSftpStatus(error)) markMutating(false);
+    if (existenceConflict(error)) throw new Error('sftp_conflict');
+    throw error;
+  }
+}
 
 async function writeUtf8Text(
   sftp: Sftp,
@@ -528,7 +617,7 @@ async function readUtf8File(sftp: Sftp, path: string): Promise<SftpReadReply> {
   }
 }
 
-async function runBoundedSftp<T extends SftpListReply | SftpReadReply | SftpWriteInner>(
+async function runBoundedSftp<T extends SftpListReply | SftpReadReply | SftpEffectInner>(
   env: Env,
   request: SftpRequest,
   resolveTarget: (host: string, signal?: AbortSignal) => Promise<string>,
@@ -776,45 +865,67 @@ export class SshOperationsDO extends DurableObject<Env> {
       sessionId: null,
       normalizedArgs: [request.path, request.text, request.overwrite],
     });
-    let admission: Admission;
-    try {
-      admission = this.claimOperation(operationId, hostId, digest, this.now());
-    } catch {
-      return { operation_id: operationId, status: 'failed', error: 'receipt_store_unavailable' };
-    }
-    if (admission.kind === 'capacity') return { operation_id: operationId, status: 'failed', error: 'capacity_reached' };
-    if (admission.kind === 'existing') return this.existingWriteReply(operationId, digest, admission.row);
-    try {
-      this.ctx.storage.sql.exec('UPDATE operations SET status = \'running\' WHERE operation_id = ?', operationId);
-    } catch {
-      this.releaseLease(operationId);
-      return { operation_id: operationId, status: 'failed', error: 'receipt_store_unavailable' };
-    }
-    const outcome = { mutating: false };
-    let reply: SftpWriteReply;
-    try {
-      const inner = await runBoundedSftp(this.env, {
-        hostId, path: request.path, timeoutMs: request.timeoutMs,
-      }, (host, signal) => this.resolveTarget(host, signal), async (sftp) => {
-        const written = await writeUtf8Text(sftp, request.path, request.text, request.overwrite, (value) => {
-          outcome.mutating = value;
-        });
-        return { status: 'completed' as const, bytes: written.bytes };
-      }, (error) => this.classifyWriteError(error, outcome.mutating));
-      reply = { operation_id: operationId, ...inner };
-    } catch {
-      reply = {
-        operation_id: operationId,
-        status: 'unknown',
-        error: 'unknown_outcome',
-        ...(outcome.mutating ? { partial_write: 'possible' as const } : {}),
-      };
-    }
-    try {
-      return this.persistWriteReceipt(operationId, reply);
-    } finally {
-      this.releaseLease(operationId);
-    }
+    return this.runMutatingSftp(hostId, operationId, request.path, request.timeoutMs, digest, true, async (sftp, markMutating) => {
+      const written = await writeUtf8Text(sftp, request.path, request.text, request.overwrite, markMutating);
+      return { status: 'completed', bytes: written.bytes };
+    });
+  }
+
+  async renamePath(request: SftpRenameRequest): Promise<SftpMutationReply> {
+    const hostId = request.hostId.toLowerCase();
+    const operationId = request.operationId.toLowerCase();
+    const invalid = validSftpRenameInput(hostId, operationId, request.oldPath, request.newPath, request.overwrite, request.timeoutMs);
+    if (invalid) return { operation_id: operationId, status: 'failed', error: invalid };
+    const ready = await this.prepareMutation(operationId);
+    if (ready) return ready;
+    const digest = await canonicalOperationDigest({
+      tool: 'sftp_rename',
+      hostId,
+      sessionId: null,
+      normalizedArgs: [request.oldPath, request.newPath, request.overwrite],
+    });
+    return this.runMutatingSftp(hostId, operationId, request.oldPath, request.timeoutMs, digest, false, async (sftp, markMutating) => {
+      await renameRemote(sftp, request.oldPath, request.newPath, request.overwrite, markMutating);
+      return { status: 'completed' };
+    });
+  }
+
+  async deletePath(request: SftpDeleteRequest): Promise<SftpMutationReply> {
+    const hostId = request.hostId.toLowerCase();
+    const operationId = request.operationId.toLowerCase();
+    const invalid = validSftpDeleteInput(hostId, operationId, request.path, request.kind, request.confirm, undefined, request.timeoutMs);
+    if (invalid) return { operation_id: operationId, status: 'failed', error: invalid };
+    const ready = await this.prepareMutation(operationId);
+    if (ready) return ready;
+    const digest = await canonicalOperationDigest({
+      tool: 'sftp_delete',
+      hostId,
+      sessionId: null,
+      normalizedArgs: [request.path, request.kind, true],
+    });
+    return this.runMutatingSftp(hostId, operationId, request.path, request.timeoutMs, digest, false, async (sftp, markMutating) => {
+      await deleteRemote(sftp, request.path, request.kind, markMutating);
+      return { status: 'completed' };
+    });
+  }
+
+  async makeDirectory(request: SftpMkdirRequest): Promise<SftpMutationReply> {
+    const hostId = request.hostId.toLowerCase();
+    const operationId = request.operationId.toLowerCase();
+    const invalid = validSftpMkdirInput(hostId, operationId, request.path, request.timeoutMs);
+    if (invalid) return { operation_id: operationId, status: 'failed', error: invalid };
+    const ready = await this.prepareMutation(operationId);
+    if (ready) return ready;
+    const digest = await canonicalOperationDigest({
+      tool: 'sftp_mkdir',
+      hostId,
+      sessionId: null,
+      normalizedArgs: [request.path],
+    });
+    return this.runMutatingSftp(hostId, operationId, request.path, request.timeoutMs, digest, false, async (sftp, markMutating) => {
+      await makeRemoteDirectory(sftp, request.path, markMutating);
+      return { status: 'completed' };
+    });
   }
 
   private async runSftp<T extends SftpListReply | SftpReadReply>(
@@ -985,26 +1096,89 @@ export class SshOperationsDO extends DurableObject<Env> {
     });
   }
 
-  private classifyWriteError(error: unknown, mutating: boolean): SftpWriteInner {
-    if (mutating) return { status: 'unknown', error: 'unknown_outcome', partial_write: 'possible' };
+  private async prepareMutation(operationId: string): Promise<SftpMutationReply | null> {
+    try {
+      await this.enforceSessionDeadlines();
+      return null;
+    } catch {
+      return { operation_id: operationId, status: 'failed', error: 'receipt_store_unavailable' };
+    }
+  }
+
+  private async runMutatingSftp(
+    hostId: string,
+    operationId: string,
+    path: string,
+    timeoutMs: number,
+    digest: string,
+    partialWrite: boolean,
+    perform: (sftp: Sftp, markMutating: (value: boolean) => void) => Promise<SftpEffectInner>,
+  ): Promise<SftpMutationReply> {
+    let admission: Admission;
+    try {
+      admission = this.claimOperation(operationId, hostId, digest, this.now());
+    } catch {
+      return { operation_id: operationId, status: 'failed', error: 'receipt_store_unavailable' };
+    }
+    if (admission.kind === 'capacity') return { operation_id: operationId, status: 'failed', error: 'capacity_reached' };
+    if (admission.kind === 'existing') return this.existingMutationReply(operationId, digest, admission.row, partialWrite);
+    try {
+      this.ctx.storage.sql.exec('UPDATE operations SET status = \'running\' WHERE operation_id = ?', operationId);
+    } catch {
+      this.releaseLease(operationId);
+      return { operation_id: operationId, status: 'failed', error: 'receipt_store_unavailable' };
+    }
+    const outcome = { mutating: false };
+    let reply: SftpMutationReply;
+    try {
+      const inner = await runBoundedSftp<SftpEffectInner>(this.env, {
+        hostId, path, timeoutMs,
+      }, (host, signal) => this.resolveTarget(host, signal), async (sftp) => perform(sftp, (value) => {
+        outcome.mutating = value;
+      }), (error) => this.classifyMutationError(error, outcome.mutating, partialWrite));
+      reply = { operation_id: operationId, ...inner };
+    } catch {
+      reply = {
+        operation_id: operationId,
+        status: 'unknown',
+        error: 'unknown_outcome',
+        ...(partialWrite && outcome.mutating ? { partial_write: 'possible' as const } : {}),
+      };
+    }
+    try {
+      return this.persistMutationReceipt(operationId, reply, partialWrite);
+    } finally {
+      this.releaseLease(operationId);
+    }
+  }
+
+  private classifyMutationError(error: unknown, mutating: boolean, partialWrite: boolean): SftpEffectInner {
+    if (mutating) {
+      return partialWrite
+        ? { status: 'unknown', error: 'unknown_outcome', partial_write: 'possible' }
+        : { status: 'unknown', error: 'unknown_outcome' };
+    }
     if (error instanceof Error && error.message === 'sftp_conflict') return { status: 'failed', error: 'conflict' };
+    if (error instanceof Error && error.message === 'sftp_unsupported') return { status: 'failed', error: 'unsupported_ssh_runtime' };
     return { status: 'failed', error: errorCode(error) };
   }
 
-  private existingWriteReply(operationId: string, digest: string, existing: ReceiptRow): SftpWriteReply {
+  private existingMutationReply(operationId: string, digest: string, existing: ReceiptRow, partialWrite: boolean): SftpMutationReply {
     if (existing.digest !== digest) return { operation_id: operationId, status: 'failed', error: 'receipt_conflict' };
     if (this.unresolvedOutcomes.has(operationId) || existing.status === 'unknown' || existing.status === 'admitted') {
       return { operation_id: operationId, status: 'unknown', error: 'unknown_outcome' };
     }
-    if (existing.result_json) return JSON.parse(existing.result_json) as SftpWriteReply;
+    if (existing.result_json) return JSON.parse(existing.result_json) as SftpMutationReply;
     if (existing.status === 'running') {
-      return { operation_id: operationId, status: 'unknown', error: 'unknown_outcome', partial_write: 'possible' };
+      return partialWrite
+        ? { operation_id: operationId, status: 'unknown', error: 'unknown_outcome', partial_write: 'possible' }
+        : { operation_id: operationId, status: 'unknown', error: 'unknown_outcome' };
     }
-    return { operation_id: operationId, status: existing.status as SftpWriteReply['status'] };
+    return { operation_id: operationId, status: existing.status as SftpMutationReply['status'] };
   }
 
-  private persistWriteReceipt(operationId: string, reply: SftpWriteReply): SftpWriteReply {
-    const stored: SftpWriteReply = {
+  private persistMutationReceipt(operationId: string, reply: SftpMutationReply, partialWrite: boolean): SftpMutationReply {
+    const stored: SftpMutationReply = {
       operation_id: operationId,
       status: reply.status,
       ...(reply.bytes === undefined ? {} : { bytes: reply.bytes }),
@@ -1021,11 +1195,12 @@ export class SshOperationsDO extends DurableObject<Env> {
       return stored;
     } catch {
       const uncertain = this.persistUncertainOutcome(operationId);
+      const uncertainEffect = reply.status === 'completed' || reply.status === 'unknown' || reply.partial_write !== undefined;
       return {
         operation_id: operationId,
         status: 'unknown',
         error: uncertain.error ?? 'unknown_outcome',
-        ...(reply.status === 'completed' || reply.status === 'unknown' || reply.partial_write ? { partial_write: 'possible' as const } : {}),
+        ...(partialWrite && uncertainEffect ? { partial_write: 'possible' as const } : {}),
       };
     }
   }
