@@ -6,8 +6,48 @@ import type { Env } from '../../src/types.ts';
 // fixture hostname to loopback while exercising the production DO admission,
 // receipt, SSH client, pin verification, and result handling code.
 export class SshOperationsDO extends ProductionOperationsDO {
+  private fixtureNow: number | null = null;
+
+  protected override now(): number {
+    return this.fixtureNow ?? super.now();
+  }
+
   protected override async resolveTarget(_host: string, _signal?: AbortSignal): Promise<string> {
     return '127.0.0.1';
+  }
+
+  async setFixtureClock(now: number | null): Promise<void> {
+    this.fixtureNow = now;
+  }
+
+  async runSessionAlarmForFixture(): Promise<void> {
+    await this.alarm();
+  }
+
+  async sessionAlarmForFixture(): Promise<number | null> {
+    return await this.ctx.storage.getAlarm();
+  }
+
+  async setSessionActivityForFixture(sessionId: string, lastActivityAt: number): Promise<boolean> {
+    const session = this.sessions.get(sessionId.toLowerCase());
+    if (!session || session.releaseReason !== 'live') return false;
+    session.lastActivityAt = lastActivityAt;
+    this.ctx.storage.sql.exec('UPDATE managed_sessions SET last_activity_at = ? WHERE session_id = ?', lastActivityAt, session.sessionId);
+    await this.scheduleSessionAlarm();
+    return true;
+  }
+
+  async leaseSnapshotForFixture(): Promise<{ total: number; perHost: Record<string, number> }> {
+    const rows = this.ctx.storage.sql.exec<{ host_id: string; count: number }>(
+      'SELECT host_id, COUNT(*) AS count FROM connection_leases GROUP BY host_id',
+    ).toArray();
+    const perHost: Record<string, number> = {};
+    let total = 0;
+    for (const row of rows) {
+      perHost[row.host_id] = row.count;
+      total += row.count;
+    }
+    return { total, perHost };
   }
 
   async injectReceiptStoreFailure(): Promise<void> {
@@ -147,6 +187,30 @@ export default {
       const { cutoff } = await request.json() as { cutoff: number };
       const operations = env.SSH_OPERATIONS.getByName('single-admin-operations') as unknown as SshOperationsDO;
       return Response.json(await operations.getCleanupStateForFixture(cutoff));
+    }
+    if (path === '/__fixture/session-clock' && request.method === 'POST') {
+      const { now } = await request.json() as { now: number | null };
+      const operations = env.SSH_OPERATIONS.getByName('single-admin-operations') as unknown as SshOperationsDO;
+      await operations.setFixtureClock(now);
+      return new Response(null, { status: 204 });
+    }
+    if (path === '/__fixture/session-alarm' && request.method === 'POST') {
+      const operations = env.SSH_OPERATIONS.getByName('single-admin-operations') as unknown as SshOperationsDO;
+      await operations.runSessionAlarmForFixture();
+      return new Response(null, { status: 204 });
+    }
+    if (path === '/__fixture/session-alarm-time' && request.method === 'POST') {
+      const operations = env.SSH_OPERATIONS.getByName('single-admin-operations') as unknown as SshOperationsDO;
+      return Response.json({ alarm: await operations.sessionAlarmForFixture() });
+    }
+    if (path === '/__fixture/session-activity' && request.method === 'POST') {
+      const { sessionId, lastActivityAt } = await request.json() as { sessionId: string; lastActivityAt: number };
+      const operations = env.SSH_OPERATIONS.getByName('single-admin-operations') as unknown as SshOperationsDO;
+      return Response.json({ updated: await operations.setSessionActivityForFixture(sessionId, lastActivityAt) });
+    }
+    if (path === '/__fixture/lease-count' && request.method === 'POST') {
+      const operations = env.SSH_OPERATIONS.getByName('single-admin-operations') as unknown as SshOperationsDO;
+      return Response.json(await operations.leaseSnapshotForFixture());
     }
     if (path === '/__fixture/digest' && request.method === 'POST') {
       const intent = await request.json() as CanonicalOperationIntent;

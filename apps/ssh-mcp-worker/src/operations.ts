@@ -8,12 +8,19 @@ import { closeSshResources } from './ssh-lifecycle.ts';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PIN = /^SHA256:[A-Za-z0-9+/]{43}$/;
-const encoder = new TextEncoder();
 const MAX_CAPTURE_BYTES = 4 * 1024;
 const DAY = 24 * 60 * 60 * 1000;
 const TERMINAL_RECEIPTS = ['completed', 'failed'] as const;
 const RECEIPT_RETENTION_MS = 30 * DAY;
 const RECEIPT_CLEANUP_BATCH_SIZE = 50;
+const SESSION_IDLE_MS = 10 * 60 * 1000;
+const SESSION_MAX_AGE_MS = 60 * 60 * 1000;
+const SESSION_RING_BYTES = 256 * 1024;
+const SESSION_READ_BYTES = 64 * 1024;
+const SHELL_OPEN_TIMEOUT_MS = 30_000;
+const HOST_CONNECTION_LIMIT = 2;
+const TOTAL_CONNECTION_LIMIT = 4;
+const encoder = new TextEncoder();
 
 export interface ExecRequest {
   hostId: string;
@@ -29,6 +36,94 @@ export interface ExecReply {
   exit_code?: number | null;
   truncated?: boolean;
   error?: string;
+  session_id?: string;
+}
+
+export interface SessionStartRequest { hostId: string; operationId: string; termType?: string }
+export interface SessionOutputRequest { sessionId: string; offset?: number; limit?: number }
+export interface SessionReply {
+  operation_id?: string;
+  session_id?: string;
+  status: 'live' | 'closing' | 'closed' | 'lost' | 'failed' | 'running' | 'completed' | 'unknown';
+  created_at?: number;
+  last_activity_at?: number;
+  idle_deadline_at?: number;
+  absolute_deadline_at?: number;
+  output_cursor?: number;
+  output_offset?: number;
+  next_offset?: number;
+  output?: string;
+  truncated?: boolean;
+  error?: string;
+}
+
+interface LiveSession {
+  sessionId: string;
+  operationId: string;
+  hostId: string;
+  client: SshClient;
+  channel: SshChannel;
+  socket: ReturnType<typeof connectTcp>;
+  createdAt: number;
+  lastActivityAt: number;
+  absoluteDeadlineAt: number;
+  ring: OutputRing;
+  releaseReason: 'live' | 'closed' | 'lost';
+  settled?: Promise<void>;
+}
+
+class OutputRing {
+  private chunks: Array<{ start: number; data: Uint8Array }> = [];
+  start = 0;
+  end = 0;
+  evicted = false;
+
+  append(chunk: Uint8Array): void {
+    if (chunk.byteLength === 0) return;
+    this.chunks.push({ start: this.end, data: chunk });
+    this.end += chunk.byteLength;
+    const retainFrom = this.end - SESSION_RING_BYTES;
+    while (this.chunks.length > 0 && this.chunks[0]!.start + this.chunks[0]!.data.byteLength <= retainFrom) {
+      this.chunks.shift();
+      this.evicted = true;
+    }
+    const first = this.chunks[0];
+    if (first && first.start < retainFrom) {
+      const cut = retainFrom - first.start;
+      this.chunks[0] = { start: retainFrom, data: first.data.subarray(cut) };
+      this.evicted = true;
+    }
+    this.start = this.chunks[0]?.start ?? this.end;
+  }
+
+  read(from: number, maxBytes: number): { bytes: Uint8Array; offset: number; truncated: boolean } {
+    const offset = Math.max(from, this.start);
+    const available = Math.max(0, this.end - offset);
+    const size = Math.min(Math.max(0, maxBytes), available);
+    const bytes = new Uint8Array(size);
+    let cursor = offset;
+    let written = 0;
+    for (const chunk of this.chunks) {
+      const chunkEnd = chunk.start + chunk.data.byteLength;
+      if (chunkEnd <= cursor || written === size) continue;
+      const begin = Math.max(0, cursor - chunk.start);
+      const copy = Math.min(chunk.data.byteLength - begin, size - written);
+      bytes.set(chunk.data.subarray(begin, begin + copy), written);
+      written += copy;
+      cursor += copy;
+    }
+    return { bytes, offset, truncated: from < this.start || size < available };
+  }
+}
+
+function utf8Prefix(bytes: Uint8Array): { text: string; consumed: number } {
+  for (let trim = 0; trim <= 3 && trim <= bytes.byteLength; trim++) {
+    const consumed = bytes.byteLength - trim;
+    try {
+      return { text: new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, consumed)), consumed };
+    } catch { /* keep a trailing partial code unit for the next read */ }
+  }
+  return { text: '', consumed: 0 };
 }
 
 interface ReceiptRow extends Record<string, SqlStorageValue> {
@@ -38,6 +133,21 @@ interface ReceiptRow extends Record<string, SqlStorageValue> {
   result_json: string | null;
   created_at: number;
 }
+
+interface SessionRow extends Record<string, SqlStorageValue> {
+  session_id: string;
+  operation_id: string;
+  host_id: string;
+  status: string;
+  created_at: number;
+  last_activity_at: number;
+  absolute_deadline_at: number;
+}
+
+type Admission =
+  | { kind: 'admitted' }
+  | { kind: 'existing'; row: ReceiptRow }
+  | { kind: 'capacity' };
 
 interface DnsAnswer { type: number; data: string }
 
@@ -259,6 +369,9 @@ async function runSshExec(env: Env, request: ExecRequest, operationId: string, r
 }
 
 export class SshOperationsDO extends DurableObject<Env> {
+  protected readonly sessions = new Map<string, LiveSession>();
+  private deadlineSweep: Promise<void> = Promise.resolve();
+
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
@@ -271,14 +384,30 @@ export class SshOperationsDO extends DurableObject<Env> {
         operation_id TEXT PRIMARY KEY, host_id TEXT NOT NULL, created_at INTEGER NOT NULL
       )`);
       ctx.storage.sql.exec('CREATE INDEX IF NOT EXISTS connection_leases_host ON connection_leases(host_id)');
+      ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS managed_sessions (
+        session_id TEXT PRIMARY KEY, operation_id TEXT NOT NULL UNIQUE, host_id TEXT NOT NULL,
+        status TEXT NOT NULL, created_at INTEGER NOT NULL, last_activity_at INTEGER NOT NULL,
+        absolute_deadline_at INTEGER NOT NULL
+      )`);
+      // A restarted DO no longer owns the previous TCP sockets. Stored IDs become lost, not reconnectable.
+      ctx.storage.sql.exec('UPDATE managed_sessions SET status = \'lost\' WHERE status IN (\'live\', \'closing\')');
       ctx.storage.sql.exec('UPDATE operations SET status = \'unknown\', result_json = NULL WHERE status IN (\'admitted\', \'running\')');
       ctx.storage.sql.exec('DELETE FROM connection_leases');
     });
   }
 
+  protected now(): number {
+    return Date.now();
+  }
+
   async execute(request: ExecRequest): Promise<ExecReply> {
     request = { ...request, hostId: request.hostId.toLowerCase() };
     const operationId = request.operationId.toLowerCase();
+    try {
+      await this.enforceSessionDeadlines();
+    } catch {
+      return { operation_id: operationId, status: 'failed', error: 'receipt_store_unavailable' };
+    }
     const requestDigest = await canonicalOperationDigest({
       tool: 'ssh_exec',
       hostId: request.hostId,
@@ -286,32 +415,10 @@ export class SshOperationsDO extends DurableObject<Env> {
       normalizedArgs: [request.command, request.timeoutMs],
     });
     const sql = this.ctx.storage.sql;
-    const now = Date.now();
-    type Admission =
-      | { kind: 'admitted' }
-      | { kind: 'existing'; row: ReceiptRow }
-      | { kind: 'capacity' };
+    const now = this.now();
     let admission: Admission;
     try {
-      admission = this.ctx.storage.transactionSync(() => {
-        // Each request prunes a finite indexed batch; unresolved and in-flight rows are never eligible.
-        sql.exec(`DELETE FROM operations WHERE operation_id IN (
-          SELECT operation_id FROM operations
-          WHERE status IN (?, ?) AND created_at <= ?
-          LIMIT ?
-        )`, TERMINAL_RECEIPTS[0], TERMINAL_RECEIPTS[1], now - RECEIPT_RETENTION_MS, RECEIPT_CLEANUP_BATCH_SIZE);
-        const existing = sql.exec<ReceiptRow>('SELECT * FROM operations WHERE operation_id = ?', operationId).toArray()[0];
-        if (existing) return { kind: 'existing', row: existing };
-
-        const total = sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM connection_leases').one().count;
-        const perHost = sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM connection_leases WHERE host_id = ?', request.hostId).one().count;
-        if (total >= 4 || perHost >= 2) return { kind: 'capacity' };
-
-        // Durable admission and its connection reservation commit together before any SSH effect.
-        sql.exec('INSERT INTO operations(operation_id,digest,host_id,status,created_at) VALUES(?,?,?,\'admitted\',?)', operationId, requestDigest, request.hostId, now);
-        sql.exec('INSERT INTO connection_leases(operation_id,host_id,created_at) VALUES(?,?,?)', operationId, request.hostId, now);
-        return { kind: 'admitted' };
-      });
+      admission = this.claimOperation(operationId, request.hostId, requestDigest, now);
     } catch {
       return { operation_id: operationId, status: 'failed', error: 'receipt_store_unavailable' };
     }
@@ -324,18 +431,10 @@ export class SshOperationsDO extends DurableObject<Env> {
       if (existing.result_json) return JSON.parse(existing.result_json) as ExecReply;
       return { operation_id: operationId, status: existing.status === 'admitted' ? 'unknown' : existing.status as ExecReply['status'] };
     }
-    const releaseLease = () => {
-      for (let attempt = 0; attempt < 2; attempt++) {
-        try {
-          sql.exec('DELETE FROM connection_leases WHERE operation_id = ?', operationId);
-          return;
-        } catch { /* retry once before returning from a reserved operation */ }
-      }
-    };
     try {
       sql.exec('UPDATE operations SET status = \'running\' WHERE operation_id = ?', operationId);
     } catch {
-      releaseLease();
+      this.releaseLease(operationId);
       return { operation_id: operationId, status: 'failed', error: 'receipt_store_unavailable' };
     }
     let reply: ExecReply;
@@ -355,7 +454,7 @@ export class SshOperationsDO extends DurableObject<Env> {
     } catch {
       return { operation_id: operationId, status: 'unknown', error: 'unknown_outcome' };
     } finally {
-      releaseLease();
+      this.releaseLease(operationId);
     }
     return reply;
   }
@@ -368,11 +467,358 @@ export class SshOperationsDO extends DurableObject<Env> {
     return resolvePublicAddress(host, signal);
   }
 
-  getOperationStatus(operationId: string): ExecReply | null {
+  async getOperationStatus(operationId: string): Promise<ExecReply | null> {
     if (!UUID.test(operationId)) return null;
+    try {
+      await this.enforceSessionDeadlines();
+    } catch {
+      return { operation_id: operationId.toLowerCase(), status: 'failed', error: 'receipt_store_unavailable' };
+    }
     const row = this.ctx.storage.sql.exec<ReceiptRow>('SELECT * FROM operations WHERE operation_id = ?', operationId.toLowerCase()).toArray()[0];
     if (!row) return null;
     if (row.result_json) return JSON.parse(row.result_json) as ExecReply;
     return { operation_id: row.operation_id, status: row.status === 'admitted' ? 'unknown' : row.status as ExecReply['status'] };
+  }
+
+  async startSession(request: SessionStartRequest): Promise<SessionReply> {
+    const hostId = request.hostId.toLowerCase();
+    const operationId = request.operationId.toLowerCase();
+    const termType = request.termType ?? 'xterm-256color';
+    try {
+      await this.enforceSessionDeadlines();
+    } catch {
+      return { operation_id: operationId, status: 'failed', error: 'receipt_store_unavailable' };
+    }
+    const digest = await canonicalOperationDigest({
+      tool: 'ssh_session_start', hostId, sessionId: null, normalizedArgs: [termType],
+    });
+    const now = this.now();
+    let admission: Admission;
+    try {
+      admission = this.claimOperation(operationId, hostId, digest, now);
+    } catch {
+      return { operation_id: operationId, status: 'failed', error: 'receipt_store_unavailable' };
+    }
+    if (admission.kind === 'capacity') return { operation_id: operationId, status: 'failed', error: 'capacity_reached' };
+    if (admission.kind === 'existing') return this.existingStartReply(operationId, digest, admission.row);
+    const sql = this.ctx.storage.sql;
+    try {
+      sql.exec('UPDATE operations SET status = \'running\' WHERE operation_id = ?', operationId);
+    } catch {
+      this.releaseLease(operationId);
+      return { operation_id: operationId, status: 'failed', error: 'receipt_store_unavailable' };
+    }
+    let opened: { client: SshClient; channel: SshChannel; socket: ReturnType<typeof connectTcp> } | undefined;
+    try {
+      opened = await this.openManagedShell(hostId, termType);
+      const sessionId = crypto.randomUUID().toLowerCase();
+      const createdAt = this.now();
+      const session: LiveSession = {
+        sessionId, operationId, hostId, client: opened.client, channel: opened.channel, socket: opened.socket,
+        createdAt, lastActivityAt: createdAt, absoluteDeadlineAt: createdAt + SESSION_MAX_AGE_MS,
+        ring: new OutputRing(), releaseReason: 'live',
+      };
+      const receipt = { operation_id: operationId, status: 'completed', session_id: sessionId };
+      try {
+        this.ctx.storage.transactionSync(() => {
+          sql.exec(`INSERT INTO managed_sessions(
+            session_id, operation_id, host_id, status, created_at, last_activity_at, absolute_deadline_at
+          ) VALUES(?,?,?,'live',?,?,?)`, sessionId, operationId, hostId, createdAt, createdAt, session.absoluteDeadlineAt);
+          sql.exec('UPDATE operations SET status = \'completed\', result_json = ? WHERE operation_id = ?', JSON.stringify(receipt), operationId);
+        });
+      } catch {
+        await this.closeShell(opened);
+        this.releaseLease(operationId);
+        return { operation_id: operationId, status: 'unknown', error: 'unknown_outcome' };
+      }
+      this.sessions.set(sessionId, session);
+      this.observeSession(session);
+      await this.scheduleSessionAlarm();
+      return this.sessionView(session);
+    } catch (error) {
+      if (opened) await this.closeShell(opened);
+      const observed = error instanceof Error && error.message === 'shell_observed';
+      const reply: SessionReply = observed
+        ? { operation_id: operationId, status: 'unknown', error: 'unknown_outcome' }
+        : { operation_id: operationId, status: 'failed', error: errorCode(error) };
+      try {
+        sql.exec('UPDATE operations SET status = ?, result_json = ? WHERE operation_id = ?', reply.status, JSON.stringify(reply), operationId);
+      } catch {
+        this.releaseLease(operationId);
+        return { operation_id: operationId, status: 'unknown', error: 'unknown_outcome' };
+      }
+      this.releaseLease(operationId);
+      return reply;
+    }
+  }
+
+  async readSessionOutput(request: SessionOutputRequest): Promise<SessionReply> {
+    const sessionId = request.sessionId.toLowerCase();
+    await this.enforceSessionDeadlines();
+    const session = this.sessions.get(sessionId);
+    const row = this.sessionRow(sessionId);
+    if (!session && !row) return { session_id: sessionId, status: 'failed', error: 'session_not_found' };
+    const view = session ? this.sessionView(session, row) : this.storedSessionView(row!);
+    if (!session) return { ...view, output: '', output_offset: 0, next_offset: 0, truncated: true };
+    const from = request.offset ?? 0;
+    const limit = Math.min(request.limit ?? SESSION_READ_BYTES, SESSION_READ_BYTES);
+    const slice = session.ring.read(from, limit);
+    const decoded = utf8Prefix(slice.bytes);
+    return {
+      ...view,
+      output: decoded.text,
+      output_offset: slice.offset,
+      next_offset: slice.offset + decoded.consumed,
+      truncated: slice.truncated || decoded.consumed < slice.bytes.byteLength,
+    };
+  }
+
+  async readSessionStatus(sessionId: string): Promise<SessionReply> {
+    const normalized = sessionId.toLowerCase();
+    await this.enforceSessionDeadlines();
+    const session = this.sessions.get(normalized);
+    const row = this.sessionRow(normalized);
+    if (!session && !row) return { session_id: normalized, status: 'failed', error: 'session_not_found' };
+    return session ? this.sessionView(session, row) : this.storedSessionView(row!);
+  }
+
+  async alarm(): Promise<void> {
+    await this.enforceSessionDeadlines();
+  }
+
+  private existingStartReply(operationId: string, digest: string, existing: ReceiptRow): SessionReply {
+    if (existing.digest !== digest) return { operation_id: operationId, status: 'failed', error: 'receipt_conflict' };
+    if (existing.result_json) return JSON.parse(existing.result_json) as SessionReply;
+    return { operation_id: operationId, status: existing.status === 'admitted' ? 'unknown' : existing.status as SessionReply['status'] };
+  }
+
+  private claimOperation(operationId: string, hostId: string, digest: string, now: number): Admission {
+    const sql = this.ctx.storage.sql;
+    return this.ctx.storage.transactionSync(() => {
+      // Each request prunes a finite indexed batch; unresolved and in-flight rows are never eligible.
+      sql.exec(`DELETE FROM operations WHERE operation_id IN (
+        SELECT operation_id FROM operations
+        WHERE status IN (?, ?) AND created_at <= ?
+        LIMIT ?
+      )`, TERMINAL_RECEIPTS[0], TERMINAL_RECEIPTS[1], now - RECEIPT_RETENTION_MS, RECEIPT_CLEANUP_BATCH_SIZE);
+      const existing = sql.exec<ReceiptRow>('SELECT * FROM operations WHERE operation_id = ?', operationId).toArray()[0];
+      if (existing) return { kind: 'existing', row: existing };
+      // In-flight starts and live shells share the exec lease table; over-limit rejects instead of queueing.
+      const total = sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM connection_leases').one().count;
+      const perHost = sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM connection_leases WHERE host_id = ?', hostId).one().count;
+      if (total >= TOTAL_CONNECTION_LIMIT || perHost >= HOST_CONNECTION_LIMIT) return { kind: 'capacity' };
+      sql.exec('INSERT INTO operations(operation_id,digest,host_id,status,created_at) VALUES(?,?,?,\'admitted\',?)', operationId, digest, hostId, now);
+      sql.exec('INSERT INTO connection_leases(operation_id,host_id,created_at) VALUES(?,?,?)', operationId, hostId, now);
+      return { kind: 'admitted' };
+    });
+  }
+
+  private releaseLease(operationId: string): void {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        this.ctx.storage.sql.exec('DELETE FROM connection_leases WHERE operation_id = ?', operationId);
+        return;
+      } catch { /* retry once before returning from a reserved operation */ }
+    }
+  }
+
+  protected async enforceSessionDeadlines(): Promise<void> {
+    const run = this.deadlineSweep.then(() => this.sweepSessions());
+    this.deadlineSweep = run.catch(() => undefined);
+    await run;
+  }
+
+  private async sweepSessions(): Promise<void> {
+    const now = this.now();
+    const sql = this.ctx.storage.sql;
+    const rows = sql.exec<SessionRow>('SELECT * FROM managed_sessions WHERE status IN (\'live\', \'closing\')').toArray();
+    for (const row of rows) {
+      const session = this.sessions.get(row.session_id);
+      if (!session || session.releaseReason !== 'live') {
+        if (!session) {
+          sql.exec('UPDATE managed_sessions SET status = \'lost\' WHERE session_id = ? AND status IN (\'live\', \'closing\')', row.session_id);
+          sql.exec('DELETE FROM connection_leases WHERE operation_id = ?', row.operation_id);
+        }
+        continue;
+      }
+      // Output polling is not activity. Only admission (and later authorized input) moves the idle deadline.
+      if (now >= session.lastActivityAt + SESSION_IDLE_MS || now >= session.absoluteDeadlineAt) {
+        session.releaseReason = 'closed';
+        await this.settleSession(session, 'closed');
+      }
+    }
+    await this.scheduleSessionAlarm();
+  }
+
+  protected async scheduleSessionAlarm(): Promise<void> {
+    let next: number | undefined;
+    for (const session of this.sessions.values()) {
+      if (session.releaseReason !== 'live') continue;
+      const deadline = Math.min(session.lastActivityAt + SESSION_IDLE_MS, session.absoluteDeadlineAt);
+      if (next === undefined || deadline < next) next = deadline;
+    }
+    if (next === undefined) {
+      if (await this.ctx.storage.getAlarm() !== null) await this.ctx.storage.deleteAlarm();
+      return;
+    }
+    await this.ctx.storage.setAlarm(next);
+  }
+
+  private async openManagedShell(hostId: string, termType: string): Promise<{ client: SshClient; channel: SshChannel; socket: ReturnType<typeof connectTcp> }> {
+    let client: SshClient | undefined;
+    let socket: ReturnType<typeof connectTcp> | undefined;
+    let channel: SshChannel | undefined;
+    let timedOut = false;
+    try {
+      const saved = await getSshHostCredentials(this.env, hostId);
+      if (!PIN.test(saved.fingerprint)) throw new HostError('host_untrusted');
+      if (saved.port === 25 || !Number.isInteger(saved.port) || saved.port < 1 || saved.port > 65535) throw new HostError('invalid_target');
+      const checkedIp = await this.resolveTarget(saved.host);
+      const credentials = saved.authMethod === 'password' ? { password: saved.password! } : { privateKey: saved.privateKey! };
+      const connected = await connectSsh({
+        host: saved.host,
+        port: saved.port,
+        username: saved.username,
+        ...credentials,
+        timeout: 10_000,
+        verifyHostKey: key => key.fingerprint === saved.fingerprint,
+        openSocket: async ({ port }): Promise<SshSocket> => {
+          const openedSocket = connectTcp({ hostname: checkedIp, port }, { secureTransport: 'off', allowHalfOpen: false });
+          socket = openedSocket;
+          openedSocket.closed.catch(() => undefined);
+          const writer = openedSocket.writable.getWriter();
+          writer.closed.catch(() => undefined);
+          try {
+            await writer.ready;
+            return {
+              readable: openedSocket.readable,
+              write: data => writer.write(data),
+              close: () => writer.close().catch(() => undefined),
+            };
+          } catch (error) {
+            try { openedSocket.close(); } catch { /* socket is already closed */ }
+            throw error;
+          }
+        },
+      });
+      client = connected;
+      let shellTimer: ReturnType<typeof setTimeout> | undefined;
+      const shellPromise = connected.shell({ pty: { term: termType, columns: 80, rows: 24 } }).then(opened => {
+        if (timedOut) void this.closeShell({ client: connected, channel: opened, socket });
+        return opened;
+      });
+      void shellPromise.catch(() => undefined);
+      try {
+        channel = await Promise.race([
+          shellPromise,
+          new Promise<SshChannel>((_resolve, reject) => {
+            shellTimer = setTimeout(() => {
+              timedOut = true;
+              reject(new Error('shell_timeout'));
+            }, SHELL_OPEN_TIMEOUT_MS);
+          }),
+        ]);
+      } finally {
+        if (shellTimer !== undefined) clearTimeout(shellTimer);
+      }
+      if (!socket || !channel) throw new Error('shell_timeout');
+      return { client: connected, channel, socket };
+    } catch (error) {
+      const observed = channel !== undefined;
+      await this.closeShell({ client, channel, socket });
+      if (observed) throw new Error('shell_observed', { cause: error });
+      throw error;
+    }
+  }
+
+  private async closeShell(resources: { client?: SshClient; channel?: SshChannel; socket?: ReturnType<typeof connectTcp> }): Promise<void> {
+    try { resources.socket?.close(); } catch { /* already closed */ }
+    await closeSshResources(resources.channel, resources.client);
+  }
+
+  private observeSession(session: LiveSession): void {
+    this.pumpOutput(session, session.channel.stdout, true);
+    this.pumpOutput(session, session.channel.stderr, false);
+    void session.channel.exit.then(() => this.settleSession(session, 'lost')).catch(() => this.settleSession(session, 'lost'));
+    void session.socket.closed.then(() => this.settleSession(session, 'lost')).catch(() => this.settleSession(session, 'lost'));
+  }
+
+  private pumpOutput(session: LiveSession, stream: ReadableStream<Uint8Array>, endsSession: boolean): void {
+    void (async () => {
+      const reader = stream.getReader();
+      try {
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          if (value?.byteLength) session.ring.append(value);
+        }
+      } catch {
+        if (endsSession) await this.settleSession(session, 'lost');
+        return;
+      } finally {
+        try { reader.releaseLock(); } catch { /* the stream may already be cancelled */ }
+      }
+      if (endsSession) await this.settleSession(session, 'lost');
+    })();
+  }
+
+  private settleSession(session: LiveSession, status: 'closed' | 'lost'): Promise<void> {
+    if (session.settled) return session.settled;
+    const chosen = session.releaseReason === 'live' ? status : session.releaseReason;
+    session.releaseReason = chosen;
+    session.settled = this.finishSession(session, chosen);
+    return session.settled;
+  }
+
+  private async finishSession(session: LiveSession, status: 'closed' | 'lost'): Promise<void> {
+    const sql = this.ctx.storage.sql;
+    try {
+      sql.exec('UPDATE managed_sessions SET status = \'closing\' WHERE session_id = ? AND status = \'live\'', session.sessionId);
+    } catch { /* the transport close still proceeds */ }
+    await this.closeShell(session);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        this.ctx.storage.transactionSync(() => {
+          sql.exec('UPDATE managed_sessions SET status = ? WHERE session_id = ? AND status IN (\'live\', \'closing\')', status, session.sessionId);
+          sql.exec('DELETE FROM connection_leases WHERE operation_id = ?', session.operationId);
+        });
+        break;
+      } catch { /* retry the durable release once */ }
+    }
+    await this.scheduleSessionAlarm();
+  }
+
+  private sessionRow(sessionId: string): SessionRow | undefined {
+    return this.ctx.storage.sql.exec<SessionRow>('SELECT * FROM managed_sessions WHERE session_id = ?', sessionId).toArray()[0];
+  }
+
+  private sessionView(session: LiveSession, row?: SessionRow): SessionReply {
+    const lastActivityAt = session.lastActivityAt;
+    const status = session.releaseReason === 'live' ? 'live' : session.releaseReason;
+    return {
+      operation_id: session.operationId,
+      session_id: session.sessionId,
+      status,
+      created_at: row?.created_at ?? session.createdAt,
+      last_activity_at: lastActivityAt,
+      idle_deadline_at: lastActivityAt + SESSION_IDLE_MS,
+      absolute_deadline_at: row?.absolute_deadline_at ?? session.absoluteDeadlineAt,
+      output_cursor: session.ring.end,
+      truncated: session.ring.evicted,
+    };
+  }
+
+  private storedSessionView(row: SessionRow): SessionReply {
+    const status = row.status === 'closing' ? 'lost' : row.status as SessionReply['status'];
+    return {
+      operation_id: row.operation_id,
+      session_id: row.session_id,
+      status,
+      created_at: row.created_at,
+      last_activity_at: row.last_activity_at,
+      idle_deadline_at: row.last_activity_at + SESSION_IDLE_MS,
+      absolute_deadline_at: row.absolute_deadline_at,
+      truncated: status === 'lost',
+    };
   }
 }

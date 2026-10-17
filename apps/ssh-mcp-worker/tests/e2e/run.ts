@@ -18,6 +18,7 @@ const state = join(scratch, 'wrangler-state');
 const hostKey = join(scratch, 'host_key');
 const userKey = join(scratch, 'user_key');
 const hostId = '33333333-3333-4333-8333-333333333333';
+const secondHostId = '12121212-1212-4212-8212-121212121212';
 const accountId = '44444444-4444-4444-8444-444444444444';
 const encryptionKey = Buffer.alloc(32, 0x87).toString('base64');
 const testToken = 'synthetic-mcp-bearer';
@@ -58,10 +59,11 @@ async function encryptedHost(id: string, password: string): Promise<string> {
   return `v1.${Buffer.from(iv).toString('base64')}.${Buffer.from(encrypted).toString('base64')}`;
 }
 const encryptedPayload = await encryptedHost(hostId, 'synthetic-password-do-not-use');
+const secondEncryptedPayload = await encryptedHost(secondHostId, 'synthetic-password-do-not-use');
 const badEncryptedPayload = await encryptedHost(wrongPasswordHostId, 'wrong-synthetic-password');
 const quote = (value: string) => `'${value.replaceAll("'", "''")}'`;
 const seed = join(scratch, 'seed.sql');
-await writeFile(seed, `INSERT INTO workspace_state(id, account_id) VALUES(1, ${quote(accountId)});\nINSERT INTO hosts(id, account_id, encrypted_payload, updated_at) VALUES(${quote(hostId)}, ${quote(accountId)}, ${quote(encryptedPayload)}, 1);\nINSERT INTO hosts(id, account_id, encrypted_payload, updated_at) VALUES(${quote(wrongPasswordHostId)}, ${quote(accountId)}, ${quote(badEncryptedPayload)}, 1);\n`);
+await writeFile(seed, `INSERT INTO workspace_state(id, account_id) VALUES(1, ${quote(accountId)});\nINSERT INTO hosts(id, account_id, encrypted_payload, updated_at) VALUES(${quote(hostId)}, ${quote(accountId)}, ${quote(encryptedPayload)}, 1);\nINSERT INTO hosts(id, account_id, encrypted_payload, updated_at) VALUES(${quote(secondHostId)}, ${quote(accountId)}, ${quote(secondEncryptedPayload)}, 1);\nINSERT INTO hosts(id, account_id, encrypted_payload, updated_at) VALUES(${quote(wrongPasswordHostId)}, ${quote(accountId)}, ${quote(badEncryptedPayload)}, 1);\n`);
 run('pnpm', ['exec', 'wrangler', 'd1', 'execute', 'ssh-mcp-local-fixture', '--local', '--config', config,
   '--persist-to', state, '--file', join(app, 'tests/e2e/migrations/0001_fixture_catalog.sql')]);
 run('pnpm', ['exec', 'wrangler', 'd1', 'execute', 'ssh-mcp-local-fixture', '--local', '--config', config,
@@ -379,7 +381,197 @@ try {
   assert.equal((afterLiveRestartLog.match(/exec-command:fixture-output\n/g) ?? []).length, outputDispatchesBeforeFreshConnection + 1,
     'a new SSH operation succeeds through the same fixture after the interrupted connection is reset');
   assert.match(afterLiveRestartLog, new RegExp(`connection-closed:${liveConnectionId}\\n`), 'runtime restart closes the synthetic live SSH transport');
-  console.log('Local MCP → SQLite DO → pinned SSH fixture passed: concurrent atomic admission, indexed bounded cleanup, legacy digest replay compatibility, restart recovery before dispatch, during live SSH and after effect/receipt-commit failure, fail-closed storage behavior, unknown tombstone retention, and no automatic redispatch.');
+
+  const shellOpens = () => readFile(authLog, 'utf8').then(log => (log.match(/shell-open/g) ?? []).length);
+  const passwordAuths = () => readFile(authLog, 'utf8').then(log => (log.match(/^password$/gm) ?? []).length);
+  const sessionStart = (id: number, operationId: string, term?: string, targetHostId = hostId) => call(id, 'ssh_session_start', {
+    host_id: targetHostId, operation_id: operationId, ...(term ? { term_type: term } : {}),
+  });
+  const sessionOutput = (id: number, sessionId: string, offset?: number, limit?: number) => call(id, 'ssh_session_output', {
+    session_id: sessionId, ...(offset === undefined ? {} : { offset }), ...(limit === undefined ? {} : { limit }),
+  });
+  const sessionStatus = (id: number, sessionId: string) => call(id, 'ssh_session_status', { session_id: sessionId });
+  const waitForOutput = async (id: number, sessionId: string, pattern: RegExp) => {
+    let latest = await sessionOutput(id, sessionId);
+    for (let attempt = 0; attempt < 40 && !pattern.test(String(latest.value.output ?? '')); attempt++) {
+      await delay(50);
+      latest = await sessionOutput(id, sessionId, 0, 1024);
+    }
+    return latest;
+  };
+
+  const shellsBefore = await shellOpens();
+  const authsBefore = await passwordAuths();
+  const invalidTerm = await sessionStart(60, '19191919-1919-4919-8919-191919191919', 'bad term');
+  assert.equal(invalidTerm.isError, true);
+  assert.equal(invalidTerm.value.error, 'invalid_args');
+  const startOperationId = '20202020-2020-4202-8202-202020202020';
+  const startedSession = await sessionStart(61, startOperationId);
+  assert.equal(startedSession.value.status, 'live', JSON.stringify(startedSession));
+  const sessionId = String(startedSession.value.session_id);
+  assert.match(sessionId, /^[0-9a-f-]{36}$/);
+  assert.equal(startedSession.value.idle_deadline_at, Number(startedSession.value.last_activity_at) + 10 * 60 * 1000);
+  assert.equal(startedSession.value.absolute_deadline_at, Number(startedSession.value.created_at) + 60 * 60 * 1000);
+  const firstOutput = await waitForOutput(62, sessionId, /fixture-shell-ready/);
+  assert.match(String(firstOutput.value.output), /fixture-shell-ready/);
+  assert.equal(firstOutput.value.truncated, false);
+  const listed = await call(63, 'list_hosts', { limit: 10 });
+  const fetched = await call(64, 'get_host', { host_id: hostId });
+  const operationStatus = await call(65, 'get_operation_status', { operation_id: startOperationId });
+  assert.equal(listed.isError, false);
+  assert.equal(fetched.value.host && typeof fetched.value.host === 'object', true);
+  assert.equal(operationStatus.value.status, 'completed');
+  assert.equal(operationStatus.value.session_id, sessionId);
+  assert.equal(operationStatus.value.output, undefined);
+  assert.doesNotMatch(JSON.stringify([startedSession, firstOutput, operationStatus]), /synthetic-password|synthetic-initial-command|privateKey/);
+  assert.equal(await shellOpens(), shellsBefore + 1, 'metadata and receipt reads must not open another shell');
+  assert.equal(await passwordAuths(), authsBefore + 1, 'list/get/status must not authenticate a new SSH connection');
+  const replayedStart = await sessionStart(66, startOperationId);
+  assert.equal(replayedStart.value.status, 'completed');
+  assert.equal(replayedStart.value.session_id, sessionId);
+  const conflictedStart = await sessionStart(67, startOperationId, 'vt100');
+  assert.equal(conflictedStart.value.error, 'receipt_conflict');
+  assert.equal(await shellOpens(), shellsBefore + 1, 'replaying or conflicting with a start receipt must not open a shell');
+  const missing = await sessionStatus(68, '30303030-3030-4303-8303-303030303030');
+  assert.equal(missing.isError, true);
+  assert.equal(missing.value.error, 'session_not_found');
+
+  const wrongPasswordSession = await sessionStart(69, '21212121-2121-4212-8212-212121212121', undefined, wrongPasswordHostId);
+  assert.equal(wrongPasswordSession.value.status, 'failed');
+  assert.equal(wrongPasswordSession.value.error, 'host_unreachable');
+  const quotaA = await sessionStart(70, '22222222-2222-4222-8222-222222222222');
+  assert.equal(quotaA.value.status, 'live', JSON.stringify(quotaA));
+  const quotaB = await sessionStart(71, '23232323-2323-4232-8232-232323232323', undefined, secondHostId);
+  const quotaC = await sessionStart(72, '24242424-2424-4242-8242-242424242424', undefined, secondHostId);
+  assert.equal(quotaB.value.status, 'live', JSON.stringify(quotaB));
+  assert.equal(quotaC.value.status, 'live', JSON.stringify(quotaC));
+  const overHost = await sessionStart(73, '25252525-2525-4252-8252-252525252525');
+  assert.equal(overHost.value.error, 'capacity_reached');
+  const overTotal = await sessionStart(74, '26262626-2626-4262-8262-262626262626', undefined, secondHostId);
+  assert.equal(overTotal.value.error, 'capacity_reached');
+  const leasesAtCap = await fixtureRequest<{ total: number; perHost: Record<string, number> }>('lease-count', {});
+  assert.equal(leasesAtCap?.total, 4);
+  assert.equal(leasesAtCap?.perHost[hostId], 2);
+  assert.equal(leasesAtCap?.perHost[secondHostId], 2);
+  const execWhileSessions = await exec(75, '27272727-2727-4272-8272-272727272727', 'fixture-output');
+  assert.equal(execWhileSessions.value.error, 'capacity_reached', 'live shells occupy the shared exec connection budget');
+  assert.equal(await shellOpens(), shellsBefore + 4, 'rejected starts must not open extra shells');
+
+  const createdAt = Number(startedSession.value.created_at);
+  const activityAt = Number(startedSession.value.last_activity_at);
+  await fixtureRequest('session-clock', { now: createdAt + 10 * 60 * 1000 - 1000 });
+  const polled = await sessionOutput(76, sessionId, 0, 64);
+  assert.equal(polled.value.status, 'live');
+  assert.equal(polled.value.last_activity_at, activityAt, 'output polling does not extend the idle deadline');
+  const scheduledAlarm = await fixtureRequest<{ alarm: number | null }>('session-alarm-time', {});
+  assert.equal(scheduledAlarm?.alarm, activityAt + 10 * 60 * 1000);
+  await fixtureRequest('session-clock', { now: createdAt + 10 * 60 * 1000 });
+  const idleClosed = await sessionStatus(77, sessionId);
+  assert.equal(idleClosed.value.status, 'closed', 'the next session request closes an idle shell without waiting for wall-clock time');
+  await fixtureRequest('session-clock', { now: Date.now() + 11 * 60 * 1000 });
+  await fixtureRequest('session-alarm', {});
+  const afterIdleExec = await exec(78, '28282828-2828-4282-8282-282828282828', 'fixture-output');
+  assert.equal(afterIdleExec.value.status, 'completed', 'idle closure releases the shared connection lease');
+  await fixtureRequest('session-clock', { now: null });
+
+  const absoluteStart = await sessionStart(79, '29292929-2929-4292-8292-292929292929');
+  assert.equal(absoluteStart.value.status, 'live', JSON.stringify(absoluteStart));
+  const absoluteSessionId = String(absoluteStart.value.session_id);
+  const absoluteCreatedAt = Number(absoluteStart.value.created_at);
+  const bumped = await fixtureRequest<{ updated: boolean }>('session-activity', {
+    sessionId: absoluteSessionId, lastActivityAt: absoluteCreatedAt + 51 * 60 * 1000,
+  });
+  assert.equal(bumped?.updated, true);
+  const absoluteAlarm = await fixtureRequest<{ alarm: number | null }>('session-alarm-time', {});
+  assert.equal(absoluteAlarm?.alarm, absoluteCreatedAt + 60 * 60 * 1000, 'an active shell is still capped by the absolute deadline');
+  await fixtureRequest('session-clock', { now: absoluteCreatedAt + 60 * 60 * 1000 });
+  await fixtureRequest('session-alarm', {});
+  const absoluteClosed = await sessionStatus(80, absoluteSessionId);
+  assert.equal(absoluteClosed.value.status, 'closed');
+  await fixtureRequest('session-clock', { now: null });
+
+  const disconnectStart = await sessionStart(81, '31313131-3131-4313-8313-313131313131', 'fixture-disconnect');
+  assert.ok(disconnectStart.value.status === 'live' || disconnectStart.value.status === 'lost', JSON.stringify(disconnectStart));
+  const disconnectSessionId = String(disconnectStart.value.session_id);
+  let disconnected = await sessionStatus(82, disconnectSessionId);
+  for (let attempt = 0; attempt < 40 && disconnected.value.status === 'live'; attempt++) {
+    await delay(50);
+    disconnected = await sessionStatus(83, disconnectSessionId);
+  }
+  assert.equal(disconnected.value.status, 'lost', 'a remote SSH disconnect is lost rather than reconnected');
+  const shellsAfterDisconnect = await shellOpens();
+  const disconnectReplay = await sessionStart(84, '31313131-3131-4313-8313-313131313131', 'fixture-disconnect');
+  assert.equal(disconnectReplay.value.session_id, disconnectSessionId);
+  assert.equal(await shellOpens(), shellsAfterDisconnect, 'a lost session id is not a credential to reopen or replay the shell');
+
+  const restartStart = await sessionStart(85, '32323232-3232-4232-8232-323232323232');
+  assert.equal(restartStart.value.status, 'live', JSON.stringify(restartStart));
+  const restartSessionId = String(restartStart.value.session_id);
+  const shellsBeforeRestart = await shellOpens();
+  await restartWorker();
+  const restarted = await sessionStatus(86, restartSessionId);
+  assert.equal(restarted.value.status, 'lost', 'a DO restart loses the shell and does not infer ownership from the stored id');
+  const restartedOutput = await sessionOutput(87, restartSessionId);
+  assert.equal(restartedOutput.value.status, 'lost');
+  assert.equal(restartedOutput.value.output, '');
+  assert.equal(restartedOutput.value.truncated, true);
+  const restartReplay = await sessionStart(88, '32323232-3232-4232-8232-323232323232');
+  assert.equal(restartReplay.value.status, 'completed');
+  assert.equal(await shellOpens(), shellsBeforeRestart, 'restart recovery must not reconnect the SSH session');
+
+  const floodStart = await sessionStart(89, '34343434-3434-4343-8343-343434343434', 'fixture-flood');
+  assert.equal(floodStart.value.status, 'live', JSON.stringify(floodStart));
+  const floodSessionId = String(floodStart.value.session_id);
+  let floodCursor = 0;
+  let floodOffset = 0;
+  for (let attempt = 0; attempt < 50 && floodCursor < 300 * 1024; attempt++) {
+    const probe = await sessionOutput(90, floodSessionId, 0, 1024);
+    floodCursor = Number(probe.value.output_cursor ?? 0);
+    floodOffset = Number(probe.value.output_offset ?? 0);
+    if (floodCursor < 300 * 1024) await delay(50);
+  }
+  assert.equal(floodCursor, 300 * 1024);
+  assert.equal(floodOffset, floodCursor - 256 * 1024, 'the ring retains only the trailing 256 KiB');
+  let combined = '';
+  let next = floodOffset;
+  let reads = 0;
+  while (next < floodCursor && reads < 8) {
+    const page = await sessionOutput(91 + reads, floodSessionId, next, 65_536);
+    const text = String(page.value.output ?? '');
+    const pageBytes = Buffer.byteLength(text);
+    assert.ok(pageBytes <= 64 * 1024);
+    assert.equal(page.value.truncated, next + pageBytes < floodCursor);
+    combined += text;
+    next = Number(page.value.next_offset);
+    reads += 1;
+  }
+  assert.ok(reads >= 4);
+  assert.ok(combined.endsWith('FLOOD-END'));
+  assert.ok(Buffer.byteLength(combined) <= 256 * 1024);
+  assert.equal(await shellOpens() > shellsBeforeRestart, true);
+  await fixtureRequest('session-clock', { now: Date.now() + 11 * 60 * 1000 });
+  await fixtureRequest('session-alarm', {});
+  await fixtureRequest('session-clock', { now: null });
+
+  const shellsBeforeStall = await shellOpens();
+  const stalledSession = sessionStart(100, '35353535-3535-4353-8353-353535353535', 'fixture-stall-shell');
+  void stalledSession.catch(() => undefined);
+  let stallSeen = false;
+  for (let attempt = 0; attempt < 50; attempt++) {
+    stallSeen = (await readFile(authLog, 'utf8')).includes('shell-stall');
+    if (stallSeen) break;
+    await delay(50);
+  }
+  assert.equal(stallSeen, true, 'an in-flight shell start remains reserved before the channel is accepted');
+  const duringStall = await fixtureRequest<{ total: number; perHost: Record<string, number> }>('lease-count', {});
+  assert.ok((duringStall?.total ?? 0) >= 1);
+  const besideStall = await sessionStart(101, '36363636-3636-4363-8363-363636363636');
+  assert.equal(besideStall.value.status, 'live', JSON.stringify(besideStall));
+  const rejectedDuringStall = await sessionStart(102, '37373737-3737-4373-8373-373737373737');
+  assert.equal(rejectedDuringStall.value.error, 'capacity_reached', 'a start that has not finished still consumes the host connection quota');
+  assert.equal(await shellOpens(), shellsBeforeStall + 1);
+
+  console.log('Local MCP → SQLite DO → pinned SSH fixture passed: concurrent atomic admission, indexed bounded cleanup, legacy digest replay compatibility, restart recovery before dispatch, during live SSH and after effect/receipt-commit failure, fail-closed storage behavior, unknown tombstone retention, managed shell lifecycle, and no automatic redispatch.');
 } finally {
   await stopWorker();
   stop(fixture);

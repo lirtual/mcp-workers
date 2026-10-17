@@ -2,8 +2,9 @@ import { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { getHost, HostError, listHosts } from './hosts.ts';
 import type { Env } from './types.ts';
-import { MCP_TOOL_RESULT_MAX_BYTES, serializeMcpToolResult } from './result-budget.ts';
-import { validExecInput } from './validation.ts';
+import { fitsMcpToolResultBudget, MCP_TOOL_RESULT_MAX_BYTES, serializeMcpToolResult } from './result-budget.ts';
+import type { SessionReply } from './operations.ts';
+import { validExecInput, validSessionLookupInput, validSessionStartInput } from './validation.ts';
 
 function success(value: unknown) {
   const serialized = serializeMcpToolResult(value);
@@ -11,6 +12,50 @@ function success(value: unknown) {
     return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify({ error: 'result_too_large' }) }] };
   }
   return { content: [{ type: 'text' as const, text: serialized.text }] };
+}
+
+const outputEncoder = new TextEncoder();
+
+function boundedPrefix(bytes: Uint8Array): { text: string; consumed: number } {
+  for (let trim = 0; trim <= 3 && trim <= bytes.byteLength; trim++) {
+    const consumed = bytes.byteLength - trim;
+    try {
+      return { text: new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, consumed)), consumed };
+    } catch { /* a shorter prefix may end on a code-unit boundary */ }
+  }
+  return { text: '', consumed: 0 };
+}
+
+function sessionResult(reply: SessionReply) {
+  if (reply.error === 'session_not_found') {
+    return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify({ error: 'session_not_found' }) }] };
+  }
+  if (typeof reply.output !== 'string' || fitsMcpToolResultBudget(reply)) return success(reply);
+  const encoded = outputEncoder.encode(reply.output);
+  let low = 0;
+  let high = encoded.byteLength;
+  let best = 0;
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const prefix = boundedPrefix(encoded.subarray(0, mid));
+    const candidate = {
+      ...reply,
+      output: prefix.text,
+      truncated: true,
+      next_offset: (reply.output_offset ?? 0) + prefix.consumed,
+    };
+    if (fitsMcpToolResultBudget(candidate)) {
+      best = mid;
+      low = mid + 1;
+    } else high = mid - 1;
+  }
+  const fitted = boundedPrefix(encoded.subarray(0, best));
+  return success({
+    ...reply,
+    output: fitted.text,
+    truncated: true,
+    next_offset: (reply.output_offset ?? 0) + fitted.consumed,
+  });
 }
 
 function failure(error: unknown) {
@@ -23,7 +68,7 @@ function failure(error: unknown) {
 export function buildMcpServer(env: Env): McpServer {
   const server = new McpServer({ name: 'ssh-mcp-worker', version: '0.1.0' }, {
     capabilities: { tools: {} },
-    instructions: 'Discover saved EdgeSSH hosts and their metadata. Host data is read from the existing catalog; credentials are never returned.',
+    instructions: 'Discover saved EdgeSSH hosts and run bounded SSH commands or managed shells. Credentials are never returned. A managed shell can outlive one call, but output polling does not extend it and a lost shell is not reconnected.',
   });
   server.registerTool('list_hosts', {
     description: 'List saved hosts with bounded pagination and sanitized SSH trust readiness.',
@@ -69,6 +114,56 @@ export function buildMcpServer(env: Env): McpServer {
     try {
       const result = await env.SSH_OPERATIONS.getByName('single-admin-operations').getOperationStatus(operation_id);
       return result ? success(result) : { isError: true, content: [{ type: 'text' as const, text: JSON.stringify({ error: 'operation_not_found' }) }] };
+    } catch {
+      return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify({ error: 'receipt_store_unavailable' }) }] };
+    }
+  });
+  server.registerTool('ssh_session_start', {
+    description: 'Open one managed PTY shell on a saved host. The operation receipt is durable; the TCP session is not reconnected after loss.',
+    inputSchema: z.object({
+      host_id: z.string().uuid(),
+      operation_id: z.string().uuid(),
+      term_type: z.string().min(1).max(32).optional(),
+    }).strict(),
+    annotations: { readOnlyHint: false, idempotentHint: true, openWorldHint: true },
+  }, async ({ host_id, operation_id, term_type }) => {
+    const invalid = validSessionStartInput(host_id, operation_id, term_type);
+    if (invalid) return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify({ error: invalid }) }] };
+    try {
+      const stub = env.SSH_OPERATIONS.getByName('single-admin-operations');
+      return sessionResult(await stub.startSession({ hostId: host_id, operationId: operation_id, termType: term_type }));
+    } catch {
+      return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify({ error: 'receipt_store_unavailable' }) }] };
+    }
+  });
+  server.registerTool('ssh_session_output', {
+    description: 'Read at most 64 KiB of retained PTY output. Polling does not extend the session idle deadline or open a connection.',
+    inputSchema: z.object({
+      session_id: z.string().uuid(),
+      offset: z.number().int().min(0).optional(),
+      limit: z.number().int().min(1).max(65_536).optional(),
+    }).strict(),
+    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+  }, async ({ session_id, offset, limit }) => {
+    const invalid = validSessionLookupInput(session_id, offset, limit);
+    if (invalid) return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify({ error: invalid }) }] };
+    try {
+      const stub = env.SSH_OPERATIONS.getByName('single-admin-operations');
+      return sessionResult(await stub.readSessionOutput({ sessionId: session_id, offset, limit }));
+    } catch {
+      return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify({ error: 'receipt_store_unavailable' }) }] };
+    }
+  });
+  server.registerTool('ssh_session_status', {
+    description: 'Read managed-shell liveness, deadlines and output cursor without creating an SSH connection.',
+    inputSchema: z.object({ session_id: z.string().uuid() }).strict(),
+    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+  }, async ({ session_id }) => {
+    const invalid = validSessionLookupInput(session_id);
+    if (invalid) return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify({ error: invalid }) }] };
+    try {
+      const stub = env.SSH_OPERATIONS.getByName('single-admin-operations');
+      return sessionResult(await stub.readSessionStatus(session_id));
     } catch {
       return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify({ error: 'receipt_store_unavailable' }) }] };
     }

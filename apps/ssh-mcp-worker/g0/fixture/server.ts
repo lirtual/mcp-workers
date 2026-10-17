@@ -20,10 +20,15 @@ let connectionSequence = 0;
 const server = new Server({ hostKeys: [hostKey] }, (client) => {
   const connectionId = ++connectionSequence;
   let expectedRuntimeReset = false;
+  let tolerateShellReset = false;
   client.on('close', () => log(`connection-closed:${connectionId}`));
   client.on('error', (error: NodeJS.ErrnoException) => {
     if (expectedRuntimeReset && error.code === 'ECONNRESET') {
       log(`expected-runtime-reset:${connectionId}`);
+      return;
+    }
+    if (tolerateShellReset && error.code === 'ECONNRESET') {
+      log(`shell-runtime-reset:${connectionId}`);
       return;
     }
     log(`unexpected-fixture-error:${connectionId}:${error.code ?? 'unknown'}`);
@@ -59,11 +64,31 @@ const server = new Server({ hostKeys: [hostKey] }, (client) => {
     client.on('session', (accept) => {
       const session = accept();
       let ptyRequested = false;
-      session.on('pty', (accept) => { ptyRequested = true; log('pty-request'); accept(); });
+      let term = '';
+      session.on('pty', (accept, _reject, info: { term?: string }) => {
+        ptyRequested = true;
+        term = info?.term ?? '';
+        // PTY sessions are closed by idle deadlines and runtime restarts; only this connection may absorb that reset.
+        tolerateShellReset = true;
+        log(`pty-request:${term}`);
+        accept();
+      });
       session.on('shell', (accept, reject) => {
         if (!ptyRequested) return reject();
+        if (term === 'fixture-stall-shell') {
+          log('shell-stall');
+          return;
+        }
         const channel = accept();
         log('shell-open');
+        if (term === 'fixture-flood') {
+          const payload = Buffer.alloc(300 * 1024, 0x61);
+          payload.write('FLOOD-END', payload.length - 'FLOOD-END'.length);
+          channel.write(payload);
+        } else {
+          channel.write('fixture-shell-ready\n');
+          if (term === 'fixture-disconnect') setTimeout(() => client.end(), 20);
+        }
         channel.on('data', (data: Buffer) => {
           const input = data.toString();
           if (input.includes('hello from client')) channel.write('fixture says hello\r\n');
