@@ -40,8 +40,29 @@ const portable = existsSync(manifestPath);
 const entry = path.join(packageRoot, "src", "v2-main.ts");
 const compilerScript = path.join(packageRoot, "scripts", "build-session-supervisor.mjs");
 const IDENTITY_REL = path.join(".local", "share", "mcp-workers", "remote-control", "v2-identity.pem");
+// Separate cloud grant and key; temporary enrollment never reads permanent identity.
+const TEMP_IDENTITY_REL = path.join(".local", "share", "mcp-workers", "remote-control",
+  "temporary", "v2-identity.pem");
 const UINT = /^[a-zA-Z0-9._/+-]+$/;
 const DEVICE_ID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
+
+export function choosePortableInstallMode(choice, cliArgs = []) {
+  if (choice !== "1" && choice !== "2") {
+    throw new Error("Choose Permanent or Temporary explicitly.");
+  }
+  if (choice === "1" && cliArgs.includes("--foreground")) {
+    throw new Error("Permanent installation requires its own user service.");
+  }
+  return Object.freeze({
+    grantType: choice === "2" ? "temporary" : "permanent",
+    foreground: choice === "2",
+  });
+}
+
+export function keyForInstallMode(home, mode) {
+  if (!["permanent", "temporary"].includes(mode)) throw new Error("Invalid device grant mode.");
+  return path.join(home, mode === "temporary" ? TEMP_IDENTITY_REL : IDENTITY_REL);
+}
 
 export function parseInstallArgs(argv) {
   const result = { action: "install", endpoint: undefined, name: undefined, foreground: false, showFingerprint: false };
@@ -298,7 +319,7 @@ async function launchForeground({ endpoint, keyPath }) {
   // job runner, local port or unattended supervisor is installed.
   process.env.REMOTE_CONTROL_V2_ENDPOINT = endpoint;
   process.env.REMOTE_CONTROL_V2_KEY_PATH = keyPath;
-  await import("../src/v2-main.ts");
+  await import(portable ? "../src/v2-main.js" : "../src/v2-main.ts");
 }
 
 /**
@@ -310,7 +331,8 @@ async function pairFreshPending(options, keyPath, stdin, stdout, reuseExistingKe
     throw new Error("Pairing requires a local interactive device terminal.");
   }
   const enrollment = await beginDeviceEnrollment(
-    options.name ?? os.hostname(), options.endpoint, keyPath, fetch, reuseExistingKey);
+    options.name ?? os.hostname(), options.endpoint, keyPath, fetch, reuseExistingKey,
+    options.grantType ?? "permanent");
   const terminal = createInterface({ input: stdin, output: stdout, terminal: true });
   try {
     stdout.write("Pending 10-minute pairing code: " + enrollment.code + "\n");
@@ -630,7 +652,7 @@ export async function runInstaller(args, {
   startForeground = launchForeground,
 } = {}) {
   const options = parseInstallArgs(args);
-  if (portable && ["upgrade", "uninstall"].includes(options.action)) {
+  if (portable && ["upgrade", "uninstall", "resume"].includes(options.action)) {
     throw new Error("Portable upgrade/uninstall requires separately reviewed lifecycle CLI.");
   }
   if (portable && options.action === "install") {
@@ -643,15 +665,15 @@ export async function runInstaller(args, {
         trustedEndpoint(options.endpoint) + "\nTarget label: " +
         (options.name ?? os.hostname()) + "\n");
       const choice=(await prompt.question("Choose 1 = Permanent (systemd); 2 = Temporary (24h): ")).trim();
-      if (choice !== "1") {
-        if (choice === "2") throw new Error("Temporary CLI requires the separate T06 implementation.");
-        throw new Error("An explicit Permanent selection is required.");
-      }
-      if (options.foreground) throw new Error("Permanent installation requires its own user service.");
+      // Mode choice binds the signed Agent pending request and owner MCP review.
+      Object.assign(options, choosePortableInstallMode(choice, args));
+      stdout.write(choice === "2"
+        ? "Temporary: foreground only; cloud expires 24 hours after owner approval. Terminal stop is not a cloud revoke.\n"
+        : "Permanent: only the installer-owned v2 user service is started.\n");
     } finally {prompt.close();}
   }
   const unitPath = path.join(home, ".config", "systemd", "user", UNIT);
-  const keyPath = path.join(home, IDENTITY_REL);
+  const keyPath = keyForInstallMode(home, options.grantType ?? "permanent");
   systemdLiteral(home);
   const host = await preflight(options.action, options.foreground);
   if (options.action !== "uninstall") trustedEndpoint(options.endpoint);
@@ -663,10 +685,11 @@ export async function runInstaller(args, {
   const previous = await readOwnedUnit(unitPath);
   // Ordinary repeat install must not silently accept a different Worker target.
   // Explicit --upgrade remains the separate path for intentional endpoint changes.
-  if (previous && options.action === "install") {
+  if (previous && options.action === "install" && options.grantType !== "temporary") {
     assertExistingServiceEndpoint(previous, options.endpoint);
   }
-  if (options.foreground && previous) {
+  // A distinct temporary Agent may coexist with the installed permanent unit.
+  if (options.foreground && previous && options.grantType !== "temporary") {
     throw new Error("Foreground refuses to compete with an existing v2 systemd unit.");
   }
 
@@ -712,7 +735,7 @@ export async function runInstaller(args, {
         if (options.foreground) throw new Error("Revoked foreground identity requires manual review.");
         await rePairRevokedDevice(options, keyPath, previous, stdin, stdout);
       } else if (state === "approved") {
-        if (previous) {
+        if (previous && options.grantType !== "temporary") {
           stdout.write("v2 user service already installed; approved identity preserved.\n");
           return;
         }
@@ -727,7 +750,8 @@ export async function runInstaller(args, {
   await ownerOnly(keyPath, 0o600);
   await ownerOnly(keyPath + ".device-id", 0o600);
   if (options.foreground) {
-    stdout.write("v2 identity ready. Starting foreground Agent; closing this terminal or suspending the container disconnects it. No systemd service is created.\n");
+    stdout.write("v2 " + (options.grantType === "temporary" ? "temporary 24-hour" : "foreground") +
+      " identity ready. Starting foreground Agent. Closing the terminal or stopping WSL2 disconnects it; no service is installed and no cloud revoke is implied.\n");
     await startForeground({ endpoint: trustedEndpoint(options.endpoint), keyPath });
     return;
   }

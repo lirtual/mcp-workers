@@ -142,7 +142,7 @@ test("foreground reuses signed read-only v2 entrypoint and skips systemd preflig
   assert.match(src, /run\(process.execPath, \[compilerScript\]\)/);
   assert.match(src, /if \(options.foreground\)/);
   assert.match(src, /await startForeground\(\{ endpoint: trustedEndpoint\(options.endpoint\), keyPath \}\)/);
-  assert.match(src, /await import\("\.\.\/src\/v2-main\.ts"\)/);
+  assert.match(src, /await import\(portable \? "\.\.\/src\/v2-main\.js" : "\.\.\/src\/v2-main\.ts"\)/);
   assert.match(src, /Foreground refuses to compete with an existing v2 systemd unit/);
   assert.match(src, /ownerOnly\(keyPath \+ "\.device-id", 0o600\)/);
   assert.doesNotMatch(src, /nohup|supervisord|cron|pm2/);
@@ -316,7 +316,7 @@ test("one installer command dispatches verified revoke to guarded local challeng
   assert.match(src, /const state = await inspectInstallIdentity\(options, keyPath, previous\)/);
   assert.match(src, /if \(state === "revoked"\)/);
   assert.match(src, /await rePairRevokedDevice\(options, keyPath, previous, stdin, stdout\)/);
-  assert.match(src, /if \(previous\) \{\s*stdout.write\("v2 user service already installed/);
+  assert.match(src, /if \(previous && options\.grantType !== "temporary"\) \{\s*stdout.write\("v2 user service already installed/);
   assert.match(src, /await pairFreshPending\(options, keyPath, stdin, stdout, state === "pending"\)/);
   assert.match(src, /await assertRemoteRevocation\(options.endpoint, keyPath, oldId\)/);
   assert.doesNotMatch(src, /Type RE-PAIR|Explicit re-pair confirmation was not provided/);
