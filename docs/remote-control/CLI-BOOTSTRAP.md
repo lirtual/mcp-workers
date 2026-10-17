@@ -85,3 +85,27 @@ with maintainer credentials, trusted Node binary provenance, verify ARM64 and
 x64 clean-host ABI/runs, explicitly approve publishing any Release, then
 authorize the target's live pairing and #57 real 48-hour acceptance. None of
 these is implied by CI success.
+
+## Local-only status and removal (#78)
+
+Reviewed commit-pinned Python bootstrap also exposes --status (local program
+versions, service state, public device IDs; cloud authorization, signed WSS,
+read-only capability and temporary expiry always unconfirmed without owner MCP)
+and --uninstall (non-root real terminal and explicit UNINSTALL-V2 confirmation).
+
+Uninstall refuses foreign/symlinked entries, unrecognized program versions,
+Shell-enabled or unknown capability profiles, foreign systemd units and
+running or ownership-uncertain Agent processes. Only the installer-owned
+remote-control-v2-agent.service and reviewed versioned v2 program directories
+are removed. Local Ed25519 keys, device IDs and SQLite receipts are retained.
+Existing v1 service, Tunnel, Cloudflare Worker and secrets are untouched.
+
+**Local uninstall never revokes the cloud grant.** The owner must separately
+call authenticated MCP revoke_device with the displayed device ID, or wait
+for server-side fixed 24h expiry of a temporary grant. Offline/local service
+status is not evidence of signed WSS reachability or cloud revocation.
+
+Optional local identity/receipt purge is not enabled until its own explicitly
+confirmed and scope-reviewed tests; do not improvise rm -rf on private state.
+Commands remain Draft: do not advertise a public bootstrap/release until
+the actual official immutable Release and clean-host acceptance are complete.

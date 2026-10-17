@@ -14,6 +14,7 @@ import os
 import pathlib
 import platform
 import re
+import subprocess
 import shutil
 import ssl
 import stat
@@ -376,16 +377,196 @@ def install(tag, commit, endpoint, name=None, upgrade=False):
         os.execv(str(binary), command)
 
 
+UNIT = "remote-control-v2-agent.service"
+MARKER = "# Managed by mcp-workers v2 Linux installer; NOT the v1 Agent."
+STORE = pathlib.Path(".local/share/mcp-workers/remote-control")
+
+
+def local_inventory(home):
+    home = pathlib.Path(home)
+    if home.is_symlink() or not home.is_dir() or home.stat().st_uid != os.getuid():
+        raise ValueError("Untrusted account home")
+    base = home / STORE
+    # Never follow a link in any trusted uninstall root component.
+    for relative in (".local", ".local/share", ".local/share/mcp-workers",
+                     str(STORE), str(STORE / "programs"),
+                     ".config", ".config/systemd", ".config/systemd/user"):
+        item = home / relative
+        if item.is_symlink() or (item.exists() and
+                (not item.is_dir() or item.stat().st_uid != os.getuid())):
+            raise ValueError("Linked or unowned path in v2 install tree")
+    programs = base / "programs"
+    unit_file = home / ".config/systemd/user" / UNIT
+    if programs.is_symlink() or unit_file.is_symlink():
+        raise ValueError("Untrusted v2 installation symlink")
+    versions = []
+    if programs.exists():
+        if not programs.is_dir() or programs.stat().st_uid != os.getuid():
+            raise ValueError("Untrusted program directory")
+        for p in programs.iterdir():
+            if p.name == "install.lock" or p.name.startswith((".download-", ".unverified-")):
+                continue
+            if not re.fullmatch(r"v\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?-linux-(?:x64|arm64)-glibc", p.name) \
+                    or p.is_symlink() or not p.is_dir() or p.stat().st_uid != os.getuid():
+                raise ValueError("Unknown version entry: do not remove")
+            versions.append(p)
+    unit = None
+    if unit_file.exists():
+        if unit_file.stat().st_uid != os.getuid() or not unit_file.is_file():
+            raise ValueError("Unowned v2 user service")
+        unit = unit_file.read_text("utf8")
+        if not unit.startswith(MARKER + "\n"):
+            raise ValueError("Foreign user service; do not remove")
+    ids = {}
+    for mode, relative in (("permanent", "v2-identity.pem"),
+                           ("temporary", "temporary/v2-identity.pem")):
+        f = pathlib.Path(str(base / relative) + ".device-id")
+        if f.is_symlink():
+            raise ValueError("Linked identity ID")
+        if f.exists():
+            st = f.stat()
+            if not f.is_file() or st.st_uid != os.getuid() or st.st_mode & 0o077:
+                raise ValueError("Unsafe identity metadata")
+            value = f.read_text("utf8").strip()
+            if not re.fullmatch(r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}", value):
+                raise ValueError("Invalid device ID")
+            ids[mode] = value
+    return programs, versions, unit_file, unit, ids
+
+
+def local_status(home):
+    programs, versions, unit_file, unit, ids = local_inventory(home)
+    service = "not_installed"
+    if unit:
+        result = subprocess.run(["systemctl", "--user", "is-active", "--quiet", UNIT],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                timeout=5, check=False)
+        service = "active" if result.returncode == 0 else "inactive_or_unconfirmed"
+    return {"installed_versions": sorted(x.name for x in versions),
+            "local_permanent_service": service, "device_ids": ids,
+            "cloud_authorization": "unconfirmed", "signed_wss": "unconfirmed",
+            "read_only_access": "unconfirmed", "cloud_revoke": "not_performed",
+            "temporary_expires_at": "server_authoritative_unconfirmed",
+            "sqlite_receipts": "preserved"}
+
+
+def validated_owned_version(p):
+    f = p / "bundle.json"
+    source = p / APP / "src/v2-main.js"
+    if f.is_symlink() or source.is_symlink() or not f.is_file() or not source.is_file():
+        raise ValueError("Missing/linked runtime manifest")
+    manifest = json.loads(f.read_text("utf8"))
+    if (manifest.get("artifact_schema") != 1 or manifest.get("device_protocol") != 2
+            or manifest.get("receipt_schema") != 1
+            or manifest.get("upgrade_profile") != "read-only-no-shell-v1"
+            or p.name != manifest.get("version") + "-" + manifest.get("target")
+            or not re.search(r"readOnly:\s*true,\s*writeFile:\s*false,\s*shell:\s*false,",
+                             source.read_text("utf8"))):
+        raise ValueError("Unverified or Shell-enabled Agent; cannot uninstall")
+    for parent, dirs, files in os.walk(p, followlinks=False):
+        for name in dirs + files:
+            file = pathlib.Path(parent) / name
+            st = file.lstat()
+            if st.st_uid != os.getuid() or st.st_mode & 0o077 or not (
+                    stat.S_ISDIR(st.st_mode) or stat.S_ISREG(st.st_mode)):
+                raise ValueError("Untrusted file in v2 program")
+    return True
+
+
+def owned_unit_root(unit, versions):
+    if not unit:
+        return None
+    lines = unit.splitlines()
+    cwd = [line.partition("=")[2] for line in lines if line.startswith("WorkingDirectory=")]
+    start = [line.partition("=")[2] for line in lines if line.startswith("ExecStart=")]
+    if len(cwd) != 1 or len(start) != 1:
+        raise ValueError("Ambiguous v2 user service")
+    root = pathlib.Path(cwd[0]).parent.parent
+    if root not in versions or start[0] != (
+            str(root / "bin/node") + " " + str(root / APP / "src/v2-main.js")):
+        raise ValueError("Current v2 service does not belong to standalone installer")
+    return root
+
+
+def no_running_programs(versions):
+    for p in pathlib.Path("/proc").iterdir():
+        if not p.name.isdigit() or int(p.name) == os.getpid():
+            continue
+        try:
+            if p.stat().st_uid != os.getuid():
+                continue
+            argv = (p / "cmdline").read_bytes().split(b"\0")
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        except PermissionError:
+            return False
+        if any(arg.startswith(str(v).encode() + b"/") for arg in argv for v in versions):
+            return False
+    return True
+
+
+def local_uninstall(home, confirm, systemctl=None, process_check=no_running_programs):
+    if os.getuid() == 0 or not confirm:
+        raise ValueError("Owner-only explicit local uninstall required")
+    programs, versions, unit_file, unit, ids = local_inventory(home)
+    owned = owned_unit_root(unit, versions)
+    for version in versions:
+        validated_owned_version(version)
+    # For an owned permanent user service, its explicit stop is required first;
+    # refuse cleanup if any Agent remains after stopping it.
+    if owned is None and not process_check(versions):
+        raise ValueError("Active or uncertain v2 process; do not delete")
+    if owned is not None:
+        if systemctl is None:
+            raise ValueError("Cannot stop owned service")
+        systemctl(["--user", "disable", "--now", UNIT])
+        if not process_check(versions):
+            raise ValueError("v2 Agent still active after service stop")
+        unit_file.unlink()
+        systemctl(["--user", "daemon-reload"])
+    for version in versions:
+        shutil.rmtree(version)
+    return {"removed_versions": [v.name for v in versions],
+            "removed_owned_v2_service": owned is not None,
+            "preserved_device_ids": ids, "preserved_keys_and_sqlite": True,
+            "cloud_revocation": "NOT_PERFORMED"}
+
+
+def systemctl_user(args):
+    result = subprocess.run(["systemctl"] + args, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, timeout=15, check=False)
+    if result.returncode:
+        raise ValueError("Owned v2 systemd user service action failed")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Verified Remote Control v2 GitHub Release bootstrap")
-    parser.add_argument("--tag", required=True)
-    parser.add_argument("--commit", required=True)
-    parser.add_argument("--endpoint", required=True)
+    parser.add_argument("--tag")
+    parser.add_argument("--commit")
+    parser.add_argument("--endpoint")
+    actions=parser.add_mutually_exclusive_group()
+    actions.add_argument("--status", action="store_true")
+    actions.add_argument("--uninstall", action="store_true")
     parser.add_argument("--name")
     parser.add_argument("--upgrade", action="store_true", help="manual owned v2 program upgrade only")
     args = parser.parse_args()
     try:
-        install(args.tag, args.commit, args.endpoint, args.name, args.upgrade)
+        if args.status:
+            print(json.dumps(local_status(os.path.expanduser("~")), indent=2))
+        elif args.uninstall:
+            if os.getuid() == 0 or not (sys.stdin.isatty() and sys.stdout.isatty()):
+                raise ValueError("Local uninstall requires a non-root interactive terminal")
+            _, versions, _, _, ids = local_inventory(os.path.expanduser("~"))
+            print("Owned local v2 versions:", ", ".join(v.name for v in versions))
+            print("Device IDs (cloud grants will NOT be revoked):", ids)
+            print("Private keys and SQLite receipts will be retained; use MCP revoke_device separately.")
+            if input("Type UNINSTALL-V2 to confirm local removal: ").strip() != "UNINSTALL-V2":
+                raise ValueError("Local uninstall not confirmed")
+            print(json.dumps(local_uninstall(os.path.expanduser("~"), True, systemctl_user), indent=2))
+        else:
+            if not args.tag or not args.commit or not args.endpoint:
+                raise ValueError("Pinned --tag, --commit, and --endpoint are required")
+            install(args.tag, args.commit, args.endpoint, args.name, args.upgrade)
     except ValueError as exc:
         # Only messages from explicitly authored validation branches.
         print("Standalone v2 install refused: " + str(exc), file=sys.stderr)
