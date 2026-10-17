@@ -1,6 +1,6 @@
 # EdgeSSH MCP — Grilling with Docs · Decision Record
 
-Status: **Round 1 decisions accepted on 2026-10-17; Round 2 decisions recorded separately in [ADR-0002](./0002-managed-ssh-sessions-and-operation-receipts.md); final technical design NOT yet approved**.
+Status: **Historical Q1–Q5 decision record; Q3 execution ownership is BLOCKED by the subsequently accepted no-EdgeSSH-modification constraint in [ADR-0004](./0004-unmodified-edgessh-and-reliability-policy.md). Final design not approved.**
 Document-only change. No implementation, production change, secret provisioning, Portal registration, or release authorization.
 
 ## Context and verified baseline
@@ -19,7 +19,7 @@ The first version integrates EdgeSSH and its MCP adapter deployed inside one Clo
 ### Q2=B: Broad first-release SSH + SFTP scope
 The intended first-release product provides caller-specified SSH command execution **and remote SFTP mutations**, not merely cached host metadata or fixed read-only diagnostics. This grants potentially destructive remote operation capability; it is not characterized as a read-only MCP. The precise command/session lifecycle, file operation formats and limits remain second-round questions, not implied defaults.
 
-### Q3=A: EdgeSSH owns credentials and execution
+### Q3=A: EdgeSSH owns credentials and execution — historical decision, presently infeasible with unmodified EdgeSSH
 The MCP adapter must **never** read the EdgeSSH D1 credential ciphertext directly, share `ENCRYPTION_KEY`, or return decrypted SSH passwords/private keys. EdgeSSH retrieves credentials and performs remote operations, returning bounded/sanitized results. Its existing browser credential-returning endpoint is not an MCP interface.
 
 ### Q4=B: All saved hosts eligible
@@ -54,6 +54,6 @@ Reuse the repo's existing `portal-auth` static Bearer approach, using a **dedica
 
 ## Unsettled decisions — next interview round
 
-Round 2 settled Q6–Q10 in [ADR-0002](./0002-managed-ssh-sessions-and-operation-receipts.md), and Round 3 settled Q11–Q16 in [ADR-0003](./0003-bounded-live-sessions-and-authoritative-admission.md). Receipt retention, unknown-effect reconciliation, persistence-failure stop behavior, revocation and independent rollout/rollback **remain unsettled**. Accepted Q1–Q16 never authorize live deployment.
+Round 2 settled Q6–Q10 in [ADR-0002](./0002-managed-ssh-sessions-and-operation-receipts.md), Round 3 settled Q11–Q16 in [ADR-0003](./0003-bounded-live-sessions-and-authoritative-admission.md), and Round 4 Q17–Q20/Q21 are recorded in [ADR-0004](./0004-unmodified-edgessh-and-reliability-policy.md). The new Q21 requirement **forbids changes to EdgeSSH**, so this ADR's Q3=A execution/RPC model is no longer realizable via present interfaces. Q22 explicitly reopens the integration strategy. The historical decision is not silently superseded or considered implemented.
 
 Do not create code, deploy, accept production risk, or mark the technical design complete until the operator confirms the final architecture. See [DESIGN-INTERVIEW.md](../DESIGN-INTERVIEW.md).
