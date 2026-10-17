@@ -26,7 +26,7 @@ function fixture() {
       owner.fetch(input instanceof Request ? input : new Request(input,init))};},
   } as unknown as DurableObjectNamespace;
   const env = {MCP_ACCESS_TOKEN:"owner-test-credential",V2_OWNER,
-    REMOTE_CONTROL_DEVICE_TOKEN:"legacy-v1-fixture"} as Env;
+    REMOTE_CONTROL_DEVICE_TOKEN:"legacy-v1-fixture"} as unknown as Env;
   const origin="https://pairing.test/";
   const send:typeof fetch=async(input,init)=>worker.fetch(
     input instanceof Request ? input : new Request(input,init),env);
