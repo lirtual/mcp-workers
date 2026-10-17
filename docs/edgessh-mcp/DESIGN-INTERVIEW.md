@@ -31,7 +31,7 @@ AI / MCP Portal
      |
      | dedicated MCP Bearer
      v
-mcp-workers/apps/edgessh-mcp-worker    (one independently deployed Worker)
+mcp-workers/apps/ssh-mcp-worker    (one independently deployed Worker)
      |                |
      |                +-- MCP-owned SQLite DO: session owner + atomic receipts
      |
