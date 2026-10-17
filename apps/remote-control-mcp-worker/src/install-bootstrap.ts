@@ -83,6 +83,7 @@ export function handleAgentInstallerRequest(
   if (request.method !== "GET" || u.search || u.hash || request.headers.has("origin"))
     return new Response("Invalid installation request.\n", { status:405, headers });
   if (u.protocol !== "https:" || !APPROVED_ORIGINS.has(u.origin) ||
+      (request.headers.has("host") && request.headers.get("host") !== u.host) ||
       request.headers.has("forwarded") || request.headers.has("x-forwarded-host"))
     return new Response("Unapproved Worker origin.\n", { status:403, headers });
   if (!release || !validPin(release))
