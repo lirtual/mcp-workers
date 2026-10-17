@@ -3,8 +3,8 @@ import { z } from 'zod';
 import { getHost, HostError, listHosts } from './hosts.ts';
 import type { Env } from './types.ts';
 import { fitsMcpToolResultBudget, MCP_TOOL_RESULT_MAX_BYTES, serializeMcpToolResult } from './result-budget.ts';
-import type { SessionReply, SftpListReply, SftpReadReply } from './operations.ts';
-import { validExecInput, validSessionInput, validSessionLookupInput, validSessionStartInput, validSessionStop, validSftpInput } from './validation.ts';
+import type { SessionReply, SftpListReply, SftpReadReply, SftpWriteReply } from './operations.ts';
+import { validExecInput, validSessionInput, validSessionLookupInput, validSessionStartInput, validSessionStop, validSftpInput, validSftpWriteInput } from './validation.ts';
 
 function success(value: unknown) {
   const serialized = serializeMcpToolResult(value);
@@ -90,7 +90,7 @@ function failure(error: unknown) {
 export function buildMcpServer(env: Env): McpServer {
   const server = new McpServer({ name: 'ssh-mcp-worker', version: '0.1.0' }, {
     capabilities: { tools: {} },
-    instructions: 'Discover saved EdgeSSH hosts and run bounded SSH commands, managed shells, or short SFTP directory and UTF-8 reads. Credentials are never returned. SFTP reads do not keep a shell open. A managed shell can outlive one call, but output polling does not extend it and a lost shell is not reconnected. Interactive input is admitted once per operation id and is never rewritten. Stopping a shell closes only that owned channel and does not promise remote descendants were reaped.',
+    instructions: 'Discover saved EdgeSSH hosts and run bounded SSH commands, managed shells, or short SFTP directory, UTF-8 read, and explicit UTF-8 write calls. Credentials are never returned. SFTP reads do not keep a shell open. sftp_write_text admits one operation id before creating or explicitly overwriting a file of at most 64 KiB and does not promise that every SFTP server applies that write atomically. A managed shell can outlive one call, but output polling does not extend it and a lost shell is not reconnected. Interactive input is admitted once per operation id and is never rewritten. Stopping a shell closes only that owned channel and does not promise remote descendants were reaped.',
   });
   server.registerTool('list_hosts', {
     description: 'List saved hosts with bounded pagination and sanitized SSH trust readiness.',
@@ -154,6 +154,33 @@ export function buildMcpServer(env: Env): McpServer {
     inputSchema: sftpSchema,
     annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   }, async ({ host_id, path, timeout_ms }) => runSftp('sftp_read_text', host_id, path, timeout_ms ?? 30_000));
+  server.registerTool('sftp_write_text', {
+    description: 'Create or explicitly overwrite one remote UTF-8 file of at most 64 KiB. overwrite is required. The same operation id is not written twice; a changed path, text, or overwrite conflicts. A disconnect, timeout, or receipt failure after the write starts is unknown and may be a partial write. The result does not include the file text, and not every SFTP server applies the write atomically. The connection closes when the call finishes.',
+    inputSchema: z.object({
+      host_id: z.string().uuid(),
+      operation_id: z.string().uuid(),
+      path: z.string().min(1),
+      text: z.string(),
+      overwrite: z.boolean().optional(),
+      timeout_ms: z.number().int().min(1_000).max(60_000).optional(),
+    }).strict(),
+    annotations: { readOnlyHint: false, idempotentHint: true, openWorldHint: true },
+  }, async ({ host_id, operation_id, path, text, overwrite, timeout_ms }) => {
+    const timeoutMs = timeout_ms ?? 30_000;
+    const invalid = validSftpWriteInput(host_id, operation_id, path, text, overwrite, timeoutMs);
+    if (invalid || typeof overwrite !== 'boolean') {
+      return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify({ error: invalid ?? 'invalid_args' }) }] };
+    }
+    try {
+      const stub = env.SSH_OPERATIONS.getByName('single-admin-operations');
+      const reply: SftpWriteReply = await stub.writeText({
+        hostId: host_id, operationId: operation_id, path, text, overwrite, timeoutMs,
+      });
+      return success(reply);
+    } catch {
+      return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify({ error: 'receipt_store_unavailable' }) }] };
+    }
+  });
   server.registerTool('get_operation_status', {
     description: 'Read the durable status of one SSH operation without dispatching it.',
     inputSchema: z.object({ operation_id: z.string().uuid() }).strict(),

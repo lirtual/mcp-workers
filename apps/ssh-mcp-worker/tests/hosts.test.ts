@@ -113,6 +113,43 @@ test('the authenticated MCP boundary rejects commands over 16 KiB UTF-8 before D
   assert.match(sftpData, /invalid_args/);
   assert.equal(db.reads, 0);
   assert.equal(doCalls, 0);
+  const writeResponse = await worker.fetch(new Request('https://worker.example/mcp', {
+    method: 'POST',
+    headers: {
+      authorization: 'Bearer synthetic-mcp-token',
+      'content-type': 'application/json',
+      accept: 'application/json, text/event-stream',
+    },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 46, method: 'tools/call', params: {
+      name: 'sftp_write_text', arguments: {
+        host_id: fixture.hostId, operation_id: '33333333-3333-4333-8333-333333333333',
+        path: '/fixture/out.txt', text: 'x'.repeat(64 * 1024 + 1), overwrite: false,
+      },
+    } }),
+  }), env);
+  assert.equal(writeResponse.status, 200);
+  const writeData = (await writeResponse.text()).split('\n').find(line => line.startsWith('data: '))?.slice(6);
+  assert.ok(writeData);
+  assert.match(writeData, /invalid_args/);
+  assert.equal(db.reads, 0);
+  assert.equal(doCalls, 0);
+  const missingOverwrite = await worker.fetch(new Request('https://worker.example/mcp', {
+    method: 'POST',
+    headers: {
+      authorization: 'Bearer synthetic-mcp-token',
+      'content-type': 'application/json',
+      accept: 'application/json, text/event-stream',
+    },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 47, method: 'tools/call', params: {
+      name: 'sftp_write_text', arguments: {
+        host_id: fixture.hostId, operation_id: '33333333-3333-4333-8333-333333333333', path: '/fixture/out.txt', text: 'x',
+      },
+    } }),
+  }), env);
+  const missingData = (await missingOverwrite.text()).split('\n').find(line => line.startsWith('data: '))?.slice(6);
+  assert.ok(missingData);
+  assert.match(missingData, /invalid_args/);
+  assert.equal(doCalls, 0);
 });
 
 test('rejects wrong key, account AAD, host AAD, tampering, bad versions, missing host, and ambiguous workspace', async () => {
@@ -196,7 +233,7 @@ test('the real /mcp outer handler rejects missing/bad bearer and Origin before a
   assert.ok(payload, eventStream);
   const response = JSON.parse(payload) as { result?: { tools?: Array<{ name: string }> } };
   assert.deepEqual(response.result?.tools?.map(tool => tool.name), [
-    'list_hosts', 'get_host', 'ssh_exec', 'sftp_list', 'sftp_read_text', 'get_operation_status', 'ssh_session_start', 'ssh_session_input', 'ssh_session_stop', 'ssh_session_output', 'ssh_session_status',
+    'list_hosts', 'get_host', 'ssh_exec', 'sftp_list', 'sftp_read_text', 'sftp_write_text', 'get_operation_status', 'ssh_session_start', 'ssh_session_input', 'ssh_session_stop', 'ssh_session_output', 'ssh_session_status',
   ]);
   const callTool = async (id: number, name: string, args: Record<string, unknown>) => {
     const result = await worker.fetch(new Request('https://worker.example/mcp', {

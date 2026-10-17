@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { isIpLiteral, isPublicAddress, normalizeDnsName } from '../src/target-security.ts';
-import { validExecInput, validSessionInput, validSessionStop, validSftpInput } from '../src/validation.ts';
+import { validExecInput, validSessionInput, validSessionStop, validSftpInput, validSftpWriteInput } from '../src/validation.ts';
 
 test('public target screening rejects special IPv4 and IPv6 ranges and accepts global unicast', () => {
   for (const address of [
@@ -57,4 +57,16 @@ test('SFTP path validation counts UTF-8 bytes and rejects an empty path before a
   assert.equal(validSftpInput(host, '/fixture', 999), 'invalid_args');
   assert.equal(validSftpInput(host, '/fixture', 60_001), 'invalid_args');
   assert.equal(validSftpInput('not-a-host', '/fixture', 30_000), 'invalid_args');
+});
+
+test('SFTP write validation requires explicit overwrite and rejects over-limit UTF-8 before admission', () => {
+  const host = '11111111-1111-4111-8111-111111111111';
+  const operation = '22222222-2222-4222-8222-222222222222';
+  assert.equal(validSftpWriteInput(host, operation, '/fixture/out.txt', 'héllo', false, 30_000), null);
+  assert.equal(validSftpWriteInput(host, operation, '/fixture/out.txt', 'x'.repeat(64 * 1024), true, 60_000), null);
+  assert.equal(validSftpWriteInput(host, operation, '/fixture/out.txt', 'x'.repeat(64 * 1024 + 1), true, 30_000), 'invalid_args');
+  assert.equal(validSftpWriteInput(host, operation, '/fixture/out.txt', '😀'.repeat(16 * 1024 + 1), false, 30_000), 'invalid_args');
+  assert.equal(validSftpWriteInput(host, operation, '/fixture/out.txt', 'x', undefined, 30_000), 'invalid_args');
+  assert.equal(validSftpWriteInput(host, operation, '😀'.repeat(1025), 'x', false, 30_000), 'invalid_args');
+  assert.equal(validSftpWriteInput(host, 'not-an-operation', '/fixture/out.txt', 'x', false, 30_000), 'invalid_args');
 });

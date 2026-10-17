@@ -1,11 +1,11 @@
 import { DurableObject } from 'cloudflare:workers';
 import { connect as connectTcp } from 'cloudflare:sockets';
-import { connect as connectSsh, openSftp, SshAuthenticationError, SshHostKeyError, type Sftp, type SshChannel, type SshClient, type SshSocket } from '@meitaim/ssh';
+import { connect as connectSsh, openSftp, SftpError, SftpStatus, SshAuthenticationError, SshHostKeyError, type Sftp, type SshChannel, type SshClient, type SshSocket } from '@meitaim/ssh';
 import { getSshHostCredentials, HostError } from './hosts.ts';
 import type { Env } from './types.ts';
 import { isIpLiteral, isPublicAddress, normalizeDnsName } from './target-security.ts';
 import { closeSshResources } from './ssh-lifecycle.ts';
-import { validSftpInput } from './validation.ts';
+import { validSftpInput, validSftpWriteInput } from './validation.ts';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PIN = /^SHA256:[A-Za-z0-9+/]{43}$/;
@@ -22,6 +22,7 @@ const SHELL_OPEN_TIMEOUT_MS = 30_000;
 const HOST_CONNECTION_LIMIT = 2;
 const TOTAL_CONNECTION_LIMIT = 4;
 const SFTP_READ_MAX_BYTES = 64 * 1024;
+const SFTP_WRITE_MAX_BYTES = 64 * 1024;
 const SFTP_LIST_MAX_ENTRIES = 100;
 const encoder = new TextEncoder();
 
@@ -48,6 +49,21 @@ export interface SftpReadReply {
   cursor?: number;
   truncated?: boolean;
   error?: string;
+}
+export interface SftpWriteRequest {
+  hostId: string;
+  operationId: string;
+  path: string;
+  text: string;
+  overwrite: boolean;
+  timeoutMs: number;
+}
+export interface SftpWriteReply {
+  operation_id: string;
+  status: 'completed' | 'failed' | 'unknown' | 'running';
+  bytes?: number;
+  error?: string;
+  partial_write?: 'possible';
 }
 
 export interface ExecRequest {
@@ -440,6 +456,51 @@ async function readDirectory(sftp: Sftp, path: string): Promise<SftpListReply> {
   return { status: 'completed', entries: visible, truncated: entries.length > SFTP_LIST_MAX_ENTRIES };
 }
 
+type SftpWriteInner =
+  | { status: 'completed'; bytes: number }
+  | { status: 'failed'; error: string }
+  | { status: 'unknown'; error: string; partial_write: 'possible' };
+
+async function writeUtf8Text(
+  sftp: Sftp,
+  path: string,
+  text: string,
+  overwrite: boolean,
+  markMutating: (value: boolean) => void,
+): Promise<{ bytes: number }> {
+  const bytes = encoder.encode(text);
+  if (bytes.byteLength > SFTP_WRITE_MAX_BYTES) throw new Error('sftp_invalid');
+  // Opening for create or truncate can change the remote file before any byte is acknowledged.
+  markMutating(true);
+  let file: Awaited<ReturnType<Sftp['open']>>;
+  try {
+    file = await sftp.open(path, overwrite
+      ? { write: true, create: true, truncate: true }
+      : { write: true, create: true, exclusive: true });
+  } catch (error) {
+    const definitive = error instanceof SftpError && (
+      error.code === SftpStatus.noSuchFile
+      || error.code === SftpStatus.permissionDenied
+      || error.code === SftpStatus.failure
+      || error.code === SftpStatus.unsupported
+      || error.code === 11
+    );
+    if (definitive) markMutating(false);
+    if (!overwrite && error instanceof SftpError && (error.code === SftpStatus.failure || error.code === 11)) {
+      throw new Error('sftp_conflict');
+    }
+    throw error;
+  }
+  try {
+    if (bytes.byteLength > 0) await file.write(0, bytes);
+    await file.close();
+  } catch (error) {
+    await file.close().catch(() => undefined);
+    throw error;
+  }
+  return { bytes: bytes.byteLength };
+}
+
 async function readUtf8File(sftp: Sftp, path: string): Promise<SftpReadReply> {
   const file = await sftp.open(path, { read: true });
   try {
@@ -467,11 +528,12 @@ async function readUtf8File(sftp: Sftp, path: string): Promise<SftpReadReply> {
   }
 }
 
-async function runBoundedSftp<T extends SftpListReply | SftpReadReply>(
+async function runBoundedSftp<T extends SftpListReply | SftpReadReply | SftpWriteInner>(
   env: Env,
   request: SftpRequest,
   resolveTarget: (host: string, signal?: AbortSignal) => Promise<string>,
   operation: (sftp: Sftp) => Promise<T>,
+  classifyError?: (error: unknown) => T,
 ): Promise<T | SftpListReply> {
   let client: SshClient | undefined;
   let sftp: Sftp | undefined;
@@ -564,6 +626,7 @@ async function runBoundedSftp<T extends SftpListReply | SftpReadReply>(
   try {
     return await Promise.race([perform(), deadlineReached]);
   } catch (error) {
+    if (classifyError) return classifyError(error);
     return { status: 'failed', error: errorCode(error) };
   } finally {
     if (timeoutId !== undefined) clearTimeout(timeoutId);
@@ -695,6 +758,63 @@ export class SshOperationsDO extends DurableObject<Env> {
 
   async readText(request: SftpRequest): Promise<SftpReadReply> {
     return this.runSftp(request, sftp => readUtf8File(sftp, request.path));
+  }
+
+  async writeText(request: SftpWriteRequest): Promise<SftpWriteReply> {
+    const hostId = request.hostId.toLowerCase();
+    const operationId = request.operationId.toLowerCase();
+    const invalid = validSftpWriteInput(hostId, operationId, request.path, request.text, request.overwrite, request.timeoutMs);
+    if (invalid) return { operation_id: operationId, status: 'failed', error: invalid };
+    try {
+      await this.enforceSessionDeadlines();
+    } catch {
+      return { operation_id: operationId, status: 'failed', error: 'receipt_store_unavailable' };
+    }
+    const digest = await canonicalOperationDigest({
+      tool: 'sftp_write',
+      hostId,
+      sessionId: null,
+      normalizedArgs: [request.path, request.text, request.overwrite],
+    });
+    let admission: Admission;
+    try {
+      admission = this.claimOperation(operationId, hostId, digest, this.now());
+    } catch {
+      return { operation_id: operationId, status: 'failed', error: 'receipt_store_unavailable' };
+    }
+    if (admission.kind === 'capacity') return { operation_id: operationId, status: 'failed', error: 'capacity_reached' };
+    if (admission.kind === 'existing') return this.existingWriteReply(operationId, digest, admission.row);
+    try {
+      this.ctx.storage.sql.exec('UPDATE operations SET status = \'running\' WHERE operation_id = ?', operationId);
+    } catch {
+      this.releaseLease(operationId);
+      return { operation_id: operationId, status: 'failed', error: 'receipt_store_unavailable' };
+    }
+    const outcome = { mutating: false };
+    let reply: SftpWriteReply;
+    try {
+      const inner = await runBoundedSftp(this.env, {
+        hostId, path: request.path, timeoutMs: request.timeoutMs,
+      }, (host, signal) => this.resolveTarget(host, signal), async (sftp) => {
+        const written = await writeUtf8Text(sftp, request.path, request.text, request.overwrite, (value) => {
+          outcome.mutating = value;
+        });
+        return { status: 'completed' as const, bytes: written.bytes };
+      }, (error) => this.classifyWriteError(error, outcome.mutating));
+      reply = { operation_id: operationId, ...inner };
+    } catch {
+      reply = {
+        operation_id: operationId,
+        status: 'unknown',
+        error: 'unknown_outcome',
+        ...(outcome.mutating ? { partial_write: 'possible' as const } : {}),
+      };
+    }
+    try {
+      return this.persistWriteReceipt(operationId, reply);
+    } finally {
+      this.releaseLease(operationId);
+    }
   }
 
   private async runSftp<T extends SftpListReply | SftpReadReply>(
@@ -863,6 +983,51 @@ export class SshOperationsDO extends DurableObject<Env> {
         return this.emergencyStop(operationId, sessionId);
       }
     });
+  }
+
+  private classifyWriteError(error: unknown, mutating: boolean): SftpWriteInner {
+    if (mutating) return { status: 'unknown', error: 'unknown_outcome', partial_write: 'possible' };
+    if (error instanceof Error && error.message === 'sftp_conflict') return { status: 'failed', error: 'conflict' };
+    return { status: 'failed', error: errorCode(error) };
+  }
+
+  private existingWriteReply(operationId: string, digest: string, existing: ReceiptRow): SftpWriteReply {
+    if (existing.digest !== digest) return { operation_id: operationId, status: 'failed', error: 'receipt_conflict' };
+    if (this.unresolvedOutcomes.has(operationId) || existing.status === 'unknown' || existing.status === 'admitted') {
+      return { operation_id: operationId, status: 'unknown', error: 'unknown_outcome' };
+    }
+    if (existing.result_json) return JSON.parse(existing.result_json) as SftpWriteReply;
+    if (existing.status === 'running') {
+      return { operation_id: operationId, status: 'unknown', error: 'unknown_outcome', partial_write: 'possible' };
+    }
+    return { operation_id: operationId, status: existing.status as SftpWriteReply['status'] };
+  }
+
+  private persistWriteReceipt(operationId: string, reply: SftpWriteReply): SftpWriteReply {
+    const stored: SftpWriteReply = {
+      operation_id: operationId,
+      status: reply.status,
+      ...(reply.bytes === undefined ? {} : { bytes: reply.bytes }),
+      ...(reply.error ? { error: reply.error } : {}),
+      ...(reply.partial_write ? { partial_write: reply.partial_write } : {}),
+    };
+    try {
+      this.ctx.storage.transactionSync(() => {
+        this.ctx.storage.sql.exec(
+          'UPDATE operations SET status = ?, result_json = ? WHERE operation_id = ?',
+          stored.status, JSON.stringify(stored), operationId,
+        );
+      });
+      return stored;
+    } catch {
+      const uncertain = this.persistUncertainOutcome(operationId);
+      return {
+        operation_id: operationId,
+        status: 'unknown',
+        error: uncertain.error ?? 'unknown_outcome',
+        ...(reply.status === 'completed' || reply.status === 'unknown' || reply.partial_write ? { partial_write: 'possible' as const } : {}),
+      };
+    }
   }
 
   private existingStartReply(operationId: string, digest: string, existing: ReceiptRow): SessionReply {

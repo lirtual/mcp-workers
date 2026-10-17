@@ -902,6 +902,12 @@ try {
   const blockedList = await call(200, 'sftp_list', { host_id: hostId, path: '/fixture' });
   assert.equal(blockedList.value.error, 'capacity_reached', 'live shells occupy the shared SFTP connection budget');
   assert.equal(blockedList.value.entries, undefined);
+  const blockedWrite = await call(215, 'sftp_write_text', {
+    host_id: hostId, operation_id: 'd1d1d1d1-d1d1-41d1-81d1-d1d1d1d1d1d1',
+    path: '/fixture/created-92.txt', text: 'must-not-write', overwrite: true,
+  });
+  assert.equal(blockedWrite.value.error, 'capacity_reached', 'a full host quota rejects SFTP write before SSH');
+  assert.equal(blockedWrite.value.partial_write, undefined);
   const privateHostId = '14141414-1414-4414-8414-141414141414';
   const wrongPinHostId = '15151515-1515-4515-8515-151515151515';
   const missingCredentialHostId = '16161616-1616-4616-8616-161616161616';
@@ -920,6 +926,29 @@ try {
   const overlongPath = await call(205, 'sftp_list', { host_id: secondHostId, path: '😀'.repeat(1025) });
   assert.equal(overlongPath.isError, true);
   assert.equal(overlongPath.value.error, 'invalid_args');
+  const overlongWrite = await call(216, 'sftp_write_text', {
+    host_id: secondHostId, operation_id: 'd2d2d2d2-d2d2-42d2-82d2-d2d2d2d2d2d2',
+    path: '😀'.repeat(1025), text: 'x', overwrite: false,
+  });
+  assert.equal(overlongWrite.isError, true);
+  assert.equal(overlongWrite.value.error, 'invalid_args');
+  const hugeWrite = await call(217, 'sftp_write_text', {
+    host_id: secondHostId, operation_id: 'd3d3d3d3-d3d3-43d3-83d3-d3d3d3d3d3d3',
+    path: '/fixture/created-92.txt', text: 'x'.repeat(64 * 1024 + 1), overwrite: false,
+  });
+  assert.equal(hugeWrite.isError, true);
+  assert.equal(hugeWrite.value.error, 'invalid_args');
+  const missingOverwrite = await call(218, 'sftp_write_text', {
+    host_id: secondHostId, operation_id: 'd4d4d4d4-d4d4-44d4-84d4-d4d4d4d4d4d4',
+    path: '/fixture/created-92.txt', text: 'x',
+  });
+  assert.equal(missingOverwrite.isError, true);
+  assert.equal(missingOverwrite.value.error, 'invalid_args');
+  const unauthenticatedWrite = await authedCall('wrong-bearer', 219, 'sftp_write_text', {
+    host_id: secondHostId, operation_id: 'd5d5d5d5-d5d5-45d5-85d5-d5d5d5d5d5d5',
+    path: '/fixture/created-92.txt', text: 'x', overwrite: true,
+  });
+  assert.equal(unauthenticatedWrite, 401);
   assert.equal((await readFile(authLog, 'utf8')).match(/sftp-subsystem/g)?.length ?? 0, sftpCallsBefore.sftp, 'rejected SFTP targets must not open a subsystem');
   assert.equal(await passwordAuths(), sftpCallsBefore.auth, 'capacity, private, wrong pin, missing credential, and bad bearer must not authenticate');
 
@@ -998,7 +1027,158 @@ try {
   assert.doesNotMatch(finalSftpLog, /unexpected-fixture-error:/, 'only the intentional stalled SFTP connection may absorb ECONNRESET');
   assert.equal((finalSftpLog.match(/exec-command:/g) ?? []).length, sftpCallsBefore.exec);
 
-  console.log('Local MCP → SQLite DO → pinned SSH fixture passed: concurrent atomic admission, indexed bounded cleanup, legacy digest replay compatibility, restart recovery before dispatch, during live SSH and after effect/receipt-commit failure, fail-closed storage behavior, unknown tombstone retention, managed shell lifecycle, authenticated SFTP list/read limits, and no automatic redispatch.');
+  const writeTextBody = 'héllo write';
+  const writePath = '/fixture/created-92.txt';
+  const writeOperationId = 'c1c1c1c1-c1c1-41c1-81c1-c1c1c1c1c1c1';
+  const created = await call(220, 'sftp_write_text', {
+    host_id: secondHostId, operation_id: writeOperationId, path: writePath, text: writeTextBody, overwrite: false,
+  });
+  assert.equal(created.value.status, 'completed', JSON.stringify(created));
+  assert.equal(created.value.bytes, Buffer.byteLength(writeTextBody));
+  assert.equal(created.value.text, undefined);
+  assert.equal(created.value.partial_write, undefined);
+  assert.doesNotMatch(JSON.stringify(created), /héllo write|synthetic-password|synthetic-initial-command|privateKey|ENCRYPTION_KEY/);
+  const writeReceipt = await fixtureRequest('read-receipt', { operationId: writeOperationId });
+  assert.ok(writeReceipt);
+  assert.equal(writeReceipt.status, 'completed');
+  assert.doesNotMatch(JSON.stringify(writeReceipt), /héllo write|synthetic-password|privateKey|ENCRYPTION_KEY/);
+  const expectedWriteDigest = await digestVector({
+    tool: 'sftp_write', hostId: secondHostId, sessionId: null, normalizedArgs: [writePath, writeTextBody, false],
+  });
+  assert.equal(writeReceipt.digest, expectedWriteDigest.digest);
+  const readCreated = await call(221, 'sftp_read_text', { host_id: secondHostId, path: writePath });
+  assert.equal(readCreated.value.text, writeTextBody);
+  const replayWrite = await call(222, 'sftp_write_text', {
+    host_id: secondHostId, operation_id: writeOperationId, path: writePath, text: writeTextBody, overwrite: false, timeout_ms: 15_000,
+  });
+  assert.equal(replayWrite.value.status, 'completed');
+  assert.equal(replayWrite.value.bytes, Buffer.byteLength(writeTextBody));
+  assert.equal(replayWrite.value.text, undefined);
+  const conflictWrite = await call(223, 'sftp_write_text', {
+    host_id: secondHostId, operation_id: writeOperationId, path: writePath, text: 'changed', overwrite: false,
+  });
+  assert.equal(conflictWrite.value.error, 'receipt_conflict');
+  const overwriteFlagConflict = await call(224, 'sftp_write_text', {
+    host_id: secondHostId, operation_id: writeOperationId, path: writePath, text: writeTextBody, overwrite: true,
+  });
+  assert.equal(overwriteFlagConflict.value.error, 'receipt_conflict');
+  assert.equal((await readFile(authLog, 'utf8')).match(/sftp-write:\/fixture\/created-92.txt:/g)?.length ?? 0, 1,
+    'same-id replay and argument conflicts must not write again');
+
+  const exists = await call(225, 'sftp_write_text', {
+    host_id: secondHostId, operation_id: 'c2c2c2c2-c2c2-42c2-82c2-c2c2c2c2c2c2',
+    path: '/fixture/hello.txt', text: 'nope', overwrite: false,
+  });
+  assert.equal(exists.value.status, 'failed', JSON.stringify(exists));
+  assert.equal(exists.value.error, 'conflict');
+  assert.equal(exists.value.partial_write, undefined);
+  const helloStill = await call(226, 'sftp_read_text', { host_id: secondHostId, path: '/fixture/hello.txt' });
+  assert.equal(helloStill.value.text, 'héllo SSH\n');
+  assert.equal((await readFile(authLog, 'utf8')).match(/sftp-write:\/fixture\/hello.txt:/g)?.length ?? 0, 0);
+
+  const replaced = await call(227, 'sftp_write_text', {
+    host_id: secondHostId, operation_id: 'c3c3c3c3-c3c3-43c3-83c3-c3c3c3c3c3c3',
+    path: '/fixture/out.txt', text: 'first overwrite', overwrite: true,
+  });
+  assert.equal(replaced.value.status, 'completed', JSON.stringify(replaced));
+  assert.equal(replaced.value.text, undefined);
+  const replacedAgain = await call(228, 'sftp_write_text', {
+    host_id: secondHostId, operation_id: 'c4c4c4c4-c4c4-44c4-84c4-c4c4c4c4c4c4',
+    path: '/fixture/out.txt', text: 'second', overwrite: true,
+  });
+  assert.equal(replacedAgain.value.status, 'completed');
+  const readReplaced = await call(229, 'sftp_read_text', { host_id: secondHostId, path: '/fixture/out.txt' });
+  assert.equal(readReplaced.value.text, 'second');
+
+  const privateWrite = await call(230, 'sftp_write_text', {
+    host_id: privateHostId, operation_id: 'c5c5c5c5-c5c5-45c5-85c5-c5c5c5c5c5c5',
+    path: writePath, text: 'x', overwrite: true,
+  });
+  assert.equal(privateWrite.value.error, 'invalid_target');
+  const wrongPinWrite = await call(231, 'sftp_write_text', {
+    host_id: wrongPinHostId, operation_id: 'c6c6c6c6-c6c6-46c6-86c6-c6c6c6c6c6c6',
+    path: writePath, text: 'x', overwrite: true,
+  });
+  assert.equal(wrongPinWrite.value.error, 'host_untrusted');
+  assert.doesNotMatch(JSON.stringify(wrongPinWrite), /synthetic-password|privateKey|ENCRYPTION_KEY/);
+  const missingCredentialWrite = await call(232, 'sftp_write_text', {
+    host_id: missingCredentialHostId, operation_id: 'c7c7c7c7-c7c7-47c7-87c7-c7c7c7c7c7c7',
+    path: writePath, text: 'x', overwrite: true,
+  });
+  assert.equal(missingCredentialWrite.value.error, 'host_record_invalid');
+
+  const dropId = 'c8c8c8c8-c8c8-48c8-88c8-c8c8c8c8c8c8';
+  const dropBody = 'partial-body-must-not-persist';
+  const drop = await call(233, 'sftp_write_text', {
+    host_id: secondHostId, operation_id: dropId, path: '/fixture/drop-write', text: dropBody, overwrite: true, timeout_ms: 10_000,
+  });
+  assert.equal(drop.value.status, 'unknown', JSON.stringify(drop));
+  assert.equal(drop.value.error, 'unknown_outcome');
+  assert.equal(drop.value.partial_write, 'possible');
+  assert.equal(drop.value.text, undefined);
+  assert.doesNotMatch(JSON.stringify(drop), /partial-body-must-not-persist|synthetic-password/);
+  const dropReplay = await call(234, 'sftp_write_text', {
+    host_id: secondHostId, operation_id: dropId, path: '/fixture/drop-write', text: dropBody, overwrite: true,
+  });
+  assert.equal(dropReplay.value.status, 'unknown');
+  assert.equal((await readFile(authLog, 'utf8')).match(/sftp-write-drop:/g)?.length ?? 0, 1, 'a disconnected write is not replayed');
+  const dropReceipt = await fixtureRequest('read-receipt', { operationId: dropId });
+  assert.doesNotMatch(JSON.stringify(dropReceipt), /partial-body-must-not-persist/);
+
+  const stallWriteId = 'c9c9c9c9-c9c9-49c9-89c9-c9c9c9c9c9c9';
+  const stalledWrite = call(235, 'sftp_write_text', {
+    host_id: secondHostId, operation_id: stallWriteId, path: '/fixture/stall-write', text: 'stalled', overwrite: true, timeout_ms: 1_000,
+  });
+  let stallWriteConnection: string | undefined;
+  for (let attempt = 0; attempt < 40; attempt++) {
+    stallWriteConnection = (await readFile(authLog, 'utf8')).match(/sftp-stall-write:(\d+)/)?.[1];
+    if (stallWriteConnection) break;
+    await delay(50);
+  }
+  assert.ok(stallWriteConnection, 'the stalled write identifies its SSH connection');
+  await allowPtyResets([stallWriteConnection]);
+  const duringWriteStall = await fixtureRequest<{ perHost: Record<string, number> }>('lease-count', {});
+  assert.equal(duringWriteStall?.perHost[secondHostId], 1, 'an in-flight SFTP write holds the host connection quota');
+  const stalledWriteResult = await stalledWrite;
+  assert.equal(stalledWriteResult.value.status, 'unknown', JSON.stringify(stalledWriteResult));
+  assert.equal(stalledWriteResult.value.error, 'unknown_outcome');
+  assert.equal(stalledWriteResult.value.partial_write, 'possible');
+  await clearPtyResets();
+  const releasedWrite = await fixtureRequest<{ perHost: Record<string, number> }>('lease-count', {});
+  assert.equal(releasedWrite?.perHost[secondHostId] ?? 0, 0, 'a timed-out SFTP write releases the connection lease');
+  const stallReplay = await call(236, 'sftp_write_text', {
+    host_id: secondHostId, operation_id: stallWriteId, path: '/fixture/stall-write', text: 'stalled', overwrite: true, timeout_ms: 1_000,
+  });
+  assert.equal(stallReplay.value.status, 'unknown');
+  assert.equal((await readFile(authLog, 'utf8')).match(/sftp-stall-write:/g)?.length ?? 0, 1, 'replaying an uncertain write must not open SFTP again');
+
+  const commitWriteId = 'cacacaca-caca-4aca-8aca-cacacacacaca';
+  const commitBody = 'commit-body-must-not-persist';
+  await control('PUT', 'terminal-update-failure');
+  const commitWrite = await call(237, 'sftp_write_text', {
+    host_id: secondHostId, operation_id: commitWriteId, path: '/fixture/commit-write.txt', text: commitBody, overwrite: false,
+  });
+  assert.equal(commitWrite.value.status, 'unknown', JSON.stringify(commitWrite));
+  assert.equal(commitWrite.value.partial_write, 'possible');
+  assert.doesNotMatch(JSON.stringify(commitWrite), /commit-body-must-not-persist|synthetic-password/);
+  await control('DELETE', 'terminal-update-failure');
+  const commitReplay = await call(238, 'sftp_write_text', {
+    host_id: secondHostId, operation_id: commitWriteId, path: '/fixture/commit-write.txt', text: commitBody, overwrite: false,
+  });
+  assert.equal(commitReplay.value.status, 'unknown');
+  const commitRead = await call(239, 'sftp_read_text', { host_id: secondHostId, path: '/fixture/commit-write.txt' });
+  assert.equal(commitRead.value.text, commitBody, 'the remote write happened once before the receipt failure');
+  const commitReceipt = await fixtureRequest('read-receipt', { operationId: commitWriteId });
+  assert.doesNotMatch(JSON.stringify(commitReceipt), /commit-body-must-not-persist/);
+  assert.equal((await readFile(authLog, 'utf8')).match(/sftp-write:\/fixture\/commit-write.txt:/g)?.length ?? 0, 1);
+
+  const afterWriteLog = await readFile(authLog, 'utf8');
+  assert.doesNotMatch(afterWriteLog, /unexpected-fixture-error:/, 'only an intentional interrupted write may absorb ECONNRESET');
+  assert.equal((afterWriteLog.match(/exec-command:/g) ?? []).length, sftpCallsBefore.exec, 'SFTP write must not run initialCommand or another exec');
+  const leasesAfterWrite = await fixtureRequest<{ perHost: Record<string, number> }>('lease-count', {});
+  assert.equal(leasesAfterWrite?.perHost[secondHostId] ?? 0, 0, 'finished SFTP writes release the host connection lease');
+
+  console.log('Local MCP → SQLite DO → pinned SSH fixture passed: concurrent atomic admission, indexed bounded cleanup, legacy digest replay compatibility, restart recovery before dispatch, during live SSH and after effect/receipt-commit failure, fail-closed storage behavior, unknown tombstone retention, managed shell lifecycle, authenticated SFTP list/read limits, receipt-protected SFTP UTF-8 create and explicit overwrite, and no automatic redispatch.');
 } finally {
   if (cleanupPtyIds.length) await writeFile(resetAllow, `${cleanupPtyIds.join('\n')}\n`);
   await stopWorker();

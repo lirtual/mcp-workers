@@ -182,10 +182,22 @@ const server = new Server({ hostKeys: [hostKey] }, (client) => {
           sftp.name(reqid, [{ filename: 'hello.txt', longname: 'hello.txt', attrs: { mode: constants.S_IFREG | 0o644, size: 10 } }]);
         }).on('OPEN', (reqid, path, flags) => {
           const isWrite = Boolean(flags & OPEN_MODE.WRITE);
-          if (!remoteFiles.has(path)) return sftp.status(reqid, STATUS_CODE.NO_SUCH_FILE);
+          const creating = Boolean(flags & OPEN_MODE.CREAT);
+          const exclusive = Boolean(flags & OPEN_MODE.EXCL);
+          const truncating = Boolean(flags & OPEN_MODE.TRUNC);
+          if (remoteFiles.has(path) && creating && exclusive) return sftp.status(reqid, STATUS_CODE.FAILURE);
+          if (!remoteFiles.has(path)) {
+            if (!creating) return sftp.status(reqid, STATUS_CODE.NO_SUCH_FILE);
+            remoteFiles.set(path, Buffer.alloc(0));
+          }
           if (path === '/fixture/hello.txt' && isWrite) return sftp.status(reqid, STATUS_CODE.PERMISSION_DENIED);
+          let data = Buffer.from(remoteFiles.get(path) ?? Buffer.alloc(0));
+          if (isWrite && truncating) {
+            data = Buffer.alloc(0);
+            remoteFiles.set(path, data);
+          }
           const id = nextHandle++;
-          files.set(id, { path, data: Buffer.from(remoteFiles.get(path) ?? Buffer.alloc(0)), writable: isWrite });
+          files.set(id, { path, data, writable: isWrite });
           log(`sftp-open:${path}`);
           sftp.handle(reqid, toHandle(id));
         }).on('READ', (reqid, handle, offset, length) => {
@@ -196,6 +208,16 @@ const server = new Server({ hostKeys: [hostKey] }, (client) => {
         }).on('WRITE', (reqid, handle, offset, data) => {
           const file = files.get(fromHandle(handle));
           if (!file || !file.writable) return sftp.status(reqid, STATUS_CODE.FAILURE);
+          if (file.path === '/fixture/drop-write') {
+            intentionalPtyReset = true;
+            log(`sftp-write-drop:${connectionId}`);
+            client.end();
+            return;
+          }
+          if (file.path === '/fixture/stall-write') {
+            log(`sftp-stall-write:${connectionId}`);
+            return;
+          }
           const next = Buffer.alloc(Math.max(file.data.length, offset + data.length));
           file.data.copy(next);
           data.copy(next, offset);

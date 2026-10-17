@@ -39,3 +39,16 @@ export function validSftpInput(hostId: string, path: string, timeoutMs: number):
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 60_000) return 'invalid_args';
   return null;
 }
+
+export function validSftpWriteInput(
+  hostId: string,
+  operationId: string,
+  path: string,
+  text: string,
+  overwrite: boolean | undefined,
+  timeoutMs: number,
+): string | null {
+  if (!UUID.test(operationId) || typeof text !== 'string' || typeof overwrite !== 'boolean') return 'invalid_args';
+  if (encoder.encode(text).byteLength > 64 * 1024) return 'invalid_args';
+  return validSftpInput(hostId, path, timeoutMs);
+}
