@@ -85,3 +85,50 @@ test("#72 malformed temporary expiry is denied, including wrong duration or a mi
   assert.equal(deviceIsAuthorized({...base,expires_at:base.approved_at+TEMPORARY_GRANT_MS+1}),false);
   assert.equal(deviceIsAuthorized({...base}),false);
 });
+
+
+test("#72 grant capacity stops at exactly 64 active devices without disabling existing logins", async () => {
+  const {rows, store} = setup();
+  const existing = newEnrollment("existing-device");
+  for (let i = 0; i < 64; i++) {
+    const id = "00000000-0000-4000-8000-" + i.toString(16).padStart(12, "0");
+    rows.set("device:" + id, {
+      device_id: id, name: "existing", public_key: i === 0 ? existing.request.public_key : "another-key-" + i,
+      fingerprint: "f".repeat(24), approved_at: Date.now(), revoked: false,
+      grant_type: "permanent",
+    });
+  }
+  const proposed = newEnrollment("sixty-fifth");
+  assert.equal((await registerPending(store as never, proposed.request)).status, 503);
+  // A full 64-device fleet must still be able to use its existing credentials.
+  assert.equal((await issueSessionChallenge(store as never,
+    {public_key:existing.request.public_key})).status, 200);
+  const list = await listApprovedDevices({storage:store,getWebSockets:()=>[]} as never);
+  assert.equal(list.status, 200);
+  assert.equal((list.body as unknown[]).length, 64);
+});
+
+test("#72 capacity refuses truncated scan before expired grants are pruned", async () => {
+  const {rows, store} = setup();
+  const expiredAt = Date.now() - 1000;
+  for (let i = 0; i < 65; i++) {
+    const id = "00000000-0000-4000-8000-" + i.toString(16).padStart(12, "0");
+    rows.set("device:" + id, {
+      device_id:id, name:"expired", public_key:"old-" + i, fingerprint:"a".repeat(24),
+      approved_at:expiredAt - TEMPORARY_GRANT_MS, expires_at:expiredAt,
+      grant_type:"temporary", revoked:false,
+    });
+  }
+  const survivor="00000000-0000-4000-8000-00000000ffff";
+  rows.set("device:" + survivor, {
+    device_id:survivor,name:"active",public_key:"survivor",fingerprint:"b".repeat(24),
+    approved_at:Date.now(),grant_type:"permanent",revoked:false,
+  });
+  const next=newEnrollment("after-expiry");
+  // 65 expired rows hide the valid grant. Never approve against a partial view.
+  assert.equal((await registerPending(store as never,next.request)).status,503);
+  assert.equal(rows.has("device:"+survivor),true);
+  assert.equal([...rows.keys()].filter(k=>k.startsWith("device:")).length,1);
+  // Bounded cleanup committed: a normal second owner request can proceed.
+  assert.equal((await registerPending(store as never,next.request)).status,202);
+});
