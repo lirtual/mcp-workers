@@ -1,6 +1,6 @@
 # EdgeSSH MCP — Grilling with Docs · Decision Record
 
-Status: **Round 1 decisions accepted by operator on 2026-10-17; final technical design NOT yet approved**.
+Status: **Round 1 decisions accepted on 2026-10-17; Round 2 decisions recorded separately in [ADR-0002](./0002-managed-ssh-sessions-and-operation-receipts.md); final technical design NOT yet approved**.
 Document-only change. No implementation, production change, secret provisioning, Portal registration, or release authorization.
 
 ## Context and verified baseline
@@ -54,6 +54,6 @@ Reuse the repo's existing `portal-auth` static Bearer approach, using a **dedica
 
 ## Unsettled decisions — next interview round
 
-Per-operation consent vs unattended access, host fingerprint prerequisites, headless exec lifetime, file operation granularity/transfer bounds, and state-changing call timeout/retry reconciliation. These are **not** granted by Q1–Q5.
+Round 2 settled these areas (Q6=B, Q7=A, Q8=A, Q9=B, Q10=A) in [ADR-0002](./0002-managed-ssh-sessions-and-operation-receipts.md). Detailed session failure/recovery, remote process ownership, receipt input coverage/storage, and capacity limits remain **unsettled**. Accepted Q1–Q5 alone never authorized these mechanics.
 
 Do not create code, deploy, accept production risk, or mark the technical design complete until the operator confirms the final architecture. See [DESIGN-INTERVIEW.md](../DESIGN-INTERVIEW.md).
