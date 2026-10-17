@@ -113,9 +113,9 @@ export async function registerPending(storage: PendingStorage, payload: unknown)
     // The bootstrap request includes a signed proof of this public key, but
     // never grants permissions. A revoked or previously approved key MUST
     // NOT be allowed to enroll as a new identity, even after reinstall.
-    const devices = await listLiveGrants(txn);
-    if (devices.size > 64) return { status: 503, body: { error: "capacity" } };
-    if ([...devices.values()].some(d => d.public_key === verified.record.public_key)) {
+    const grants = await listLiveGrants(txn);
+    if (!grants.complete || grants.active.size >= 64) return { status: 503, body: { error: "capacity" } };
+    if ([...grants.active.values()].some(d => d.public_key === verified.record.public_key)) {
       return { status: 409, body: { error: "identity_already_used" } };
     }
     const existing = await txn.list<PendingDevice>({ prefix: "pending:", limit: MAX_PENDING + 1 });
@@ -301,9 +301,9 @@ export async function completeLocalConfirmation(storage: PendingStorage, data: u
     }
     // Only a fresh, owner-approved pending challenge can grant authority.
     // Existing active public keys remain ineligible; deleted keys confer no rights.
-    const known = await listLiveGrants(txn);
-    if (known.size > 64) return { status: 503, body: { error: "capacity" } };
-    if ([...known.values()].some(device => device.public_key === again.public_key)) {
+    const grants = await listLiveGrants(txn);
+    if (!grants.complete || grants.active.size >= 64) return { status: 503, body: { error: "capacity" } };
+    if ([...grants.active.values()].some(device => device.public_key === again.public_key)) {
       return { status: 409, body: { error: "identity_already_used" } };
     }
     const deviceId = crypto.randomUUID();
