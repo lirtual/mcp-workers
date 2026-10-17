@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import {createPrivateKey,sign} from "node:crypto";
-import {mkdtemp, rm} from "node:fs/promises";
+import {mkdtemp, readFile, rm} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {newEnrollment, saveNewPrivateKey} from "../../remote-control-agent/src/v2-enrollment.ts";
 import {recoverDeviceId, signedSessionProof} from "../../remote-control-agent/src/v2-session-client.ts";
+import {ReceiptStore, operationDigest} from "../../remote-control-agent/src/operations.ts";
 import worker, {V2OwnerCoordinator} from "../src/worker.ts";
 import {approvePendingKey} from "../src/v2-pairing.ts";
 import {TEMPORARY_GRANT_MS, issueSessionChallenge, authorizeSession, authorizeSocketSession} from "../src/v2-session.ts";
@@ -242,4 +243,76 @@ test("#97 old signed pending code without new protocol proof cannot be silently 
   assert.equal(result.status,409);
   assert.equal((result.body as {error:string}).error,"legacy_pairing_in_progress");
   assert.equal([...f.rows.keys()].filter(k=>k.startsWith("device:")).length,0);
+});
+
+test("#97 lost signed claim response preserves same Agent key, grant, ID and real SQLite guarded receipts",async()=>{
+  const f=fixture(),material=newEnrollment("receipt-preserving-permanent");
+  const directory=await mkdtemp(path.join(os.tmpdir(),"remote-v2-one-code-receipt-"));
+  const keyPath=path.join(directory,"identity.pem");
+  const databasePath=path.join(directory,"state");
+  const receipts=new ReceiptStore(databasePath);
+  const operationId="one-code-unknown-receipt-97";
+  const digest=operationDigest("write_file",{path:"/tmp/rc-one-code-readonly-fixture"});
+  try{
+    await saveNewPrivateKey(keyPath,material.privateKeyPem);
+    await receipts.open();
+    assert.equal((await receipts.admit(operationId,"write_file",digest)).kind,"new");
+    await receipts.update(operationId,"unknown","effect is uncertain");
+    const before=await receipts.get(operationId);
+    assert.equal(before?.state,"unknown");
+    const originalPem=await readFile(keyPath,"utf8");
+    assert.equal((await f.register(material.request)).status,202);
+    const looked=await f.rpc("pairing_lookup",{code:material.code});
+    assert.equal([...f.rows.keys()].filter(key=>key.startsWith("device:")).length,0);
+    const approved=await f.rpc("pairing_approve",{
+      pairing_id:String(looked.object.pairing_id),
+      expected_fingerprint:String(looked.object.fingerprint),
+      expected_grant_type:"permanent",
+    });
+    assert.equal(approved.object.status,"approved");
+    const deviceId=String(approved.object.device_id);
+    const grantKey="device:"+deviceId;
+    const originalGrant=structuredClone(f.rows.get(grantKey));
+    assert.equal((originalGrant as {grant_type:string}).grant_type,"permanent");
+    let dropped=false;
+    let consumedProof:Record<string,unknown>|undefined;
+    const droppedOnce:typeof fetch=async(input,init)=>{
+      const request=input instanceof Request?input:new Request(input,init);
+      const isRecover=new URL(request.url).pathname==="/agent/session/recover";
+      if(isRecover && !dropped) consumedProof=await request.clone().json() as Record<string,unknown>;
+      const response=await f.send(request);
+      if(isRecover && !dropped && response.status===200){
+        dropped=true;
+        throw new Error("simulated lost approved key proof response");
+      }
+      return response;
+    };
+    await assert.rejects(recoverDeviceId(f.origin,keyPath,droppedOnce),/simulated lost approved key proof response/);
+    assert.equal(dropped,true);
+    assert.equal(await readFile(keyPath,"utf8"),originalPem);
+    await assert.rejects(readFile(keyPath+".device-id","utf8"),{code:"ENOENT"});
+    assert.deepEqual(await receipts.get(operationId),before);
+    assert.deepEqual(f.rows.get(grantKey),originalGrant);
+    assert.equal((await authorizeSession(f.store as never,consumedProof)).status,401,
+      "signed claim nonce cannot be replayed after the upstream reply is lost");
+    assert.equal(await recoverDeviceId(f.origin,keyPath,f.send),deviceId);
+    assert.equal((await readFile(keyPath+".device-id","utf8")).trim(),deviceId);
+    assert.equal(await recoverDeviceId(f.origin,keyPath,f.send),deviceId);
+    assert.equal(await readFile(keyPath,"utf8"),originalPem);
+    assert.deepEqual(f.rows.get(grantKey),originalGrant);
+    assert.equal([...f.rows.keys()].filter(key=>key.startsWith("device:")).length,1);
+    assert.deepEqual(await receipts.get(operationId),before);
+    await receipts.close();
+    const reopened=new ReceiptStore(databasePath);
+    try{
+      await reopened.open();
+      assert.deepEqual(await reopened.get(operationId),before);
+      const guard=await reopened.admit(operationId,"write_file",digest);
+      assert.equal(guard.kind,"same");
+      assert.equal(guard.receipt?.state,"unknown","an uncertain effect must never be re-executed by pairing retries");
+    }finally{await reopened.close();}
+  }finally{
+    await receipts.close();
+    await rm(directory,{recursive:true,force:true});
+  }
 });
