@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { renderV2Service } from "../scripts/install-v2.mjs";
+import { renderV2Service, choosePortableInstallMode, keyForInstallMode } from "../scripts/install-v2.mjs";
 import { extractVerifiedAsset } from "../scripts/verify-v2-release.mjs";
 
 const example={
@@ -32,9 +32,10 @@ test("#74 portable installer requires a real local TTY and explicit permanent se
     "..","scripts","install-v2.mjs"),"utf8");
   assert.match(src,/portable && options\.action === "install"/);
   assert.match(src,/if \(!stdin\.isTTY \|\| !stdout\.isTTY\)/);
-  assert.match(src,/An explicit Permanent selection is required/);
+  assert.match(src,/Choose Permanent or Temporary explicitly/);
   assert.match(src,/choice !== "1"/);
-  assert.match(src,/Temporary CLI requires the separate T06 implementation/);
+  assert.match(src,/options.grantType === "temporary"/);
+  assert.match(src,/foreground only; cloud expires 24 hours/);
   assert.match(src,/Portable runtime mismatch; no pairing attempted/);
   assert.match(src,/assertNativeSupervisorProbe\(native\)/);
   assert.match(src,/entryExt: portable \? "js" : "ts"/);
