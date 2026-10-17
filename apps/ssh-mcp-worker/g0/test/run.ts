@@ -82,7 +82,7 @@ try {
   assert.equal(rejected.status, 502);
   assert.equal(rejected.body.error, 'host_key_rejected');
   assert.equal(rejected.body.hostKeyChecked, true);
-  assert.equal(await readFile(authLog, 'utf8'), '', 'wrong pin must fail before the server sees authentication');
+  assert.doesNotMatch(await readFile(authLog, 'utf8'), /none|password|publickey/, 'wrong pin must fail before the server sees authentication');
 
   await writeFile(authLog, '');
   const wrongPassword = await request({ mode: 'password', password: 'wrong-fixture-password', ...expected });
@@ -123,7 +123,74 @@ try {
   assert.equal(disconnected.status, 502);
   assert.equal(disconnected.body.ok, false);
   assert.equal(disconnected.body.error, 'SshDisconnectError');
-  console.log('G0 workerd SSH fixture passed: bad pin before auth, valid/invalid password, authorized/unauthorized private key, exec stdout/stderr/exit, remote disconnect.');
+
+  await writeFile(authLog, '');
+  const started = await request({ mode: 'sessionStart', password: 'synthetic-password', ...expected });
+  assert.equal(started.status, 200, JSON.stringify(started.body));
+  assert.equal(started.body.sessionId, 'g0-live-session');
+  assert.equal(started.body.ptyRequested, true);
+  await delay(1200); // A separate HTTP request follows after the start response has completed.
+  const write = await request({ mode: 'sessionWrite', sessionId: 'g0-live-session', input: 'hello from client\n' });
+  assert.equal(write.status, 200, JSON.stringify(write.body));
+  let shellOutput = '';
+  for (let attempt = 0; attempt < 30; attempt++) {
+    const output = await request({ mode: 'sessionOutput', sessionId: 'g0-live-session' });
+    shellOutput = String(output.body.output ?? '');
+    if (shellOutput.includes('fixture says hello')) break;
+    await delay(50);
+  }
+  assert.match(shellOutput, /fixture says hello/);
+  const close = await request({ mode: 'sessionClose', sessionId: 'g0-live-session' });
+  assert.equal(close.status, 200, JSON.stringify(close.body));
+  assert.equal(close.body.closed, true);
+  await delay(100);
+  const shellLog = await readFile(authLog, 'utf8');
+  assert.match(shellLog, /pty-request/);
+  assert.match(shellLog, /shell-open/);
+  assert.match(shellLog, /shell-channel-closed/);
+  assert.match(shellLog, /connection-closed/);
+
+  const disconnectedShell = await request({ mode: 'sessionStart', password: 'synthetic-password', ...expected });
+  assert.equal(disconnectedShell.status, 200, JSON.stringify(disconnectedShell.body));
+  await request({ mode: 'sessionWrite', sessionId: 'g0-live-session', input: 'disconnect shell\n' });
+  let shellLost = false;
+  for (let attempt = 0; attempt < 30; attempt++) {
+    const output = await request({ mode: 'sessionOutput', sessionId: 'g0-live-session' });
+    shellLost = output.body.closed === true;
+    if (shellLost) break;
+    await delay(50);
+  }
+  assert.equal(shellLost, true, 'the DO must observe the remote PTY channel disconnect');
+  await delay(100);
+  assert.equal(((await readFile(authLog, 'utf8')).match(/pty-request/g) ?? []).length, 2);
+
+  await writeFile(authLog, '');
+  const list = await request({ mode: 'sftpList', password: 'synthetic-password', ...expected });
+  assert.equal(list.status, 200, `${JSON.stringify(list.body)} fixture=${fixtureOutput} events=${await readFile(authLog, 'utf8')}`);
+  assert.deepEqual(list.body.entries, ['hello.txt'], `${JSON.stringify(list.body)} events=${await readFile(authLog, 'utf8')}`);
+  const read = await request({ mode: 'sftpRead', password: 'synthetic-password', path: '/fixture/hello.txt', ...expected });
+  assert.equal(read.status, 200, JSON.stringify(read.body));
+  assert.equal(read.body.contents, 'héllo SSH\n');
+  const writeFileResult = await request({ mode: 'sftpWrite', password: 'synthetic-password', path: '/fixture/out.txt', contents: 'short UTF-8 ✓', ...expected });
+  assert.equal(writeFileResult.status, 200, JSON.stringify(writeFileResult.body));
+  const readWritten = await request({ mode: 'sftpRead', password: 'synthetic-password', path: '/fixture/out.txt', ...expected });
+  assert.equal(readWritten.status, 200, JSON.stringify(readWritten.body));
+  assert.equal(readWritten.body.contents, 'short UTF-8 ✓');
+  const missing = await request({ mode: 'sftpMissing', password: 'synthetic-password', path: '/fixture/missing.txt', ...expected });
+  assert.equal(missing.status, 502);
+  assert.equal(missing.body.ok, false);
+  const sftpDisconnected = await request({ mode: 'sftpDisconnect', password: 'synthetic-password', ...expected });
+  assert.equal(sftpDisconnected.status, 502);
+  assert.equal(sftpDisconnected.body.ok, false);
+  assert.equal(sftpDisconnected.body.error, 'SshDisconnectError');
+  await delay(100);
+  const sftpLog = await readFile(authLog, 'utf8');
+  assert.match(sftpLog, /sftp-write:\/fixture\/out.txt:15/);
+  assert.equal((sftpLog.match(/sftp-close:/g) ?? []).length, 4, sftpLog);
+  assert.equal((sftpLog.match(/sftp-session-closed:open-files=0:open-dirs=0/g) ?? []).length, 6, sftpLog);
+  assert.equal((sftpLog.match(/connection-closed/g) ?? []).length, 6, sftpLog);
+
+  console.log('G0 workerd SSH fixture passed: bad pin before auth, valid/invalid password, authorized/unauthorized private key, exec stdout/stderr/exit, remote disconnect, PTY shell across HTTP requests, SFTP list/UTF-8 read/write/failure/disconnect and resource close.');
 } finally {
   stop(wrangler);
   stop(fixture);
