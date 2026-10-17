@@ -6,11 +6,7 @@ const TTL_MS = 600_000;
 const BUDGET_WINDOW_MS = 60_000;
 const MAX_REGISTRATIONS_PER_MINUTE = 12;
 const MAX_LOOKUPS_PER_MINUTE = 30;
-const MAX_PREPARES_PER_MINUTE = 8;
-const MAX_COMPLETIONS_PER_MINUTE = 12;
-const CHALLENGE_TTL_MS = 300_000;
-const CONFIRM_DOMAIN = "remote-control:v2:local-confirm:";
-const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+const MAX_APPROVALS_PER_MINUTE = 8;
 const te = new TextEncoder();
 import { issueSessionChallenge, authorizeSession, acceptAuthenticatedSocket, handleIdleSocketMessage, listApprovedDevices, deviceIsAuthorized, listLiveGrants, TEMPORARY_GRANT_MS, type V2Device } from "./v2-session.ts";
 import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId, parseLocalWriteFile, parseLocalCreateDirectory, parseLocalEditBlock, parseLocalMoveFile, parseLocalDeleteFile, parseStartProcess, parseLocalProcessOutput, parseListSessions, parseLocalProcessInteraction, parseLocalProcessTermination, parseOperationId } from "./local-read.ts";
@@ -47,7 +43,7 @@ type AttemptBudget = { reset_at: number; count: number };
  * adding a KV/R2 service, an always-on alarm, or IP-based device tracking.
  * A sustained hostile flood can still deny service; this gate bounds DO work.
  */
-async function consumeBudget(storage: PendingStorage, action: "register" | "lookup" | "prepare" | "complete", max: number): Promise<boolean> {
+async function consumeBudget(storage: PendingStorage, action: "register" | "lookup" | "approve", max: number): Promise<boolean> {
   const key = "budget:" + action;
   return storage.transaction(async (txn) => {
     const now = Date.now();
@@ -212,8 +208,8 @@ export async function lookupPending(storage: PendingStorage, verifier: string): 
  * human-entered challenge. The waiting Agent uses existing signed session
  * recovery (fresh nonce, same Ed25519 public key) to claim its device ID.
  * 
- * Keep legacy challenge functions below until the old protocol's tests and
- * callers have been migrated; do not deploy this intermediate dual path.
+ * Legacy pending entries that still contain a confirmation_hash must fail
+ * closed rather than silently convert into owner-only approvals.
  */
 export async function approvePendingKey(
   storage: PendingStorage, pairingId: unknown, fingerprint: unknown, expectedGrantType: unknown,
@@ -224,7 +220,7 @@ export async function approvePendingKey(
     return {status: 400, body: {error: "invalid_request"}};
   }
   // Use the existing enrollment budget; no second rate-counter namespace.
-  if (!await consumeBudget(storage, "prepare", MAX_PREPARES_PER_MINUTE)) {
+  if (!await consumeBudget(storage, "approve", MAX_APPROVALS_PER_MINUTE)) {
     return {status: 429, body: {error: "rate_limited"}};
   }
   return storage.transaction(async (txn) => {
@@ -255,119 +251,6 @@ export async function approvePendingKey(
     await txn.delete(key);
     // Do not return the pairing code, verifier or public key to MCP.
     return {status: 200, body: {status: "approved", device_id: deviceId, grant_type: mode}};
-  });
-}
-
-/**
- * Prepare a device-specific challenge for a *separately confirmed local terminal*.
- * The MCP caller may ask for a challenge but can never authorize a device itself.
- * A new preparation invalidates any prior challenge on the same pending entry.
- */
-export async function prepareLocalConfirmation(
-  storage: PendingStorage, pairingId: unknown, fingerprint: unknown, expectedGrantType: unknown = undefined,
-): Promise<{ status: number; body: object }> {
-  if (typeof pairingId !== "string" || !/^[a-f0-9-]{36}$/.test(pairingId) ||
-      typeof fingerprint !== "string" || !/^[a-f0-9]{24}$/.test(fingerprint)) {
-    return { status: 400, body: { error: "invalid_request" } };
-  }
-  if (!await consumeBudget(storage, "prepare", MAX_PREPARES_PER_MINUTE)) {
-    return { status: 429, body: { error: "rate_limited" } };
-  }
-  return storage.transaction(async (txn) => {
-    const pending = await txn.list<PendingDevice>({ prefix: "pending:", limit: MAX_PENDING + 1 });
-    const match = [...pending].find(([, row]) =>
-      row.pairing_id === pairingId && row.fingerprint === fingerprint && row.expires_at > Date.now());
-    if (!match) return { status: 404, body: { error: "not_found" } };
-    const [key, row] = match;
-    if (row.grant_type === "temporary" ? expectedGrantType !== "temporary" :
-        expectedGrantType !== undefined && expectedGrantType !== "permanent") {
-      return { status: 409, body: { error: "grant_type_mismatch" } };
-    }
-    // 12 Base32 symbols, 60 bits. This code is entered on the new host only.
-    const random = new Uint8Array(12);
-    crypto.getRandomValues(random);
-    const challenge = [...random].map((b) => ALPHABET[b & 31]).join("");
-    const hash = await crypto.subtle.digest("SHA-256", te.encode(CONFIRM_DOMAIN + challenge));
-    const confirmationHash = [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, "0")).join("");
-    const expiresAt = Math.min(row.expires_at, Date.now() + CHALLENGE_TTL_MS);
-    await txn.put(key, {
-      ...row, confirmation_hash: confirmationHash, confirmation_expires_at: expiresAt,
-    });
-    return { status: 200, body: {
-      pairing_id: row.pairing_id,
-      fingerprint: row.fingerprint,
-      grant_type: row.grant_type ?? "permanent",
-      challenge,
-      expires_at: expiresAt,
-      instruction: "Enter this challenge manually in the NEW Agent's local terminal. No MCP tool can approve it.",
-    } };
-  });
-}
-
-/** The Agent must sign the already owner-reviewed challenge with its own private key. */
-export async function completeLocalConfirmation(storage: PendingStorage, data: unknown):
-  Promise<{ status: number; body: object }> {
-  if (!await consumeBudget(storage, "complete", MAX_COMPLETIONS_PER_MINUTE)) {
-    return { status: 429, body: { error: "rate_limited" } };
-  }
-  if (!data || typeof data !== "object" || Array.isArray(data)) {
-    return { status: 400, body: { error: "invalid_request" } };
-  }
-  const p = data as Record<string, unknown>;
-  if (typeof p.verifier !== "string" || !/^[a-f0-9]{64}$/.test(p.verifier) ||
-      typeof p.challenge !== "string" || !/^[A-Z2-7]{12}$/.test(p.challenge) ||
-      typeof p.proof !== "string" || p.proof.length > 128) {
-    return { status: 400, body: { error: "invalid_request" } };
-  }
-  const key = "pending:" + p.verifier;
-  const pending = await storage.get<PendingDevice>(key);
-  if (!pending || pending.expires_at <= Date.now() || !pending.confirmation_hash ||
-      !pending.confirmation_expires_at || pending.confirmation_expires_at <= Date.now()) {
-    return { status: 404, body: { error: "not_found" } };
-  }
-  const actual = await crypto.subtle.digest("SHA-256", te.encode(CONFIRM_DOMAIN + p.challenge));
-  const actualHex = [...new Uint8Array(actual)].map((b) => b.toString(16).padStart(2, "0")).join("");
-  if (actualHex !== pending.confirmation_hash) return { status: 403, body: { error: "denied" } };
-
-  let signatureValid = false;
-  try {
-    const pub = await crypto.subtle.importKey(
-      "spki", Uint8Array.from(asBytes(pending.public_key)).buffer as ArrayBuffer,
-      { name: "Ed25519" }, false, ["verify"],
-    );
-    const transcript = te.encode(CONFIRM_DOMAIN + p.verifier + ":" + p.challenge + ":" + pending.public_key);
-    signatureValid = await crypto.subtle.verify(
-      "Ed25519", pub, Uint8Array.from(asBytes(p.proof)).buffer as ArrayBuffer,
-      Uint8Array.from(transcript).buffer as ArrayBuffer,
-    );
-  } catch { /* malformed key/signature */ }
-  if (!signatureValid) return { status: 403, body: { error: "denied" } };
-  // Re-check inside a DO transaction so two valid parallel proofs never activate twice.
-  return storage.transaction(async (txn) => {
-    const again = await txn.get<PendingDevice>(key);
-    if (!again || again.pairing_id !== pending.pairing_id ||
-        again.confirmation_hash !== pending.confirmation_hash ||
-        !again.confirmation_expires_at || again.confirmation_expires_at <= Date.now() ||
-        again.expires_at <= Date.now()) {
-      return { status: 409, body: { error: "already_consumed" } };
-    }
-    // Only a fresh, owner-approved pending challenge can grant authority.
-    // Existing active public keys remain ineligible; deleted keys confer no rights.
-    const grants = await listLiveGrants(txn);
-    if (!grants.complete || grants.active.size >= 64) return { status: 503, body: { error: "capacity" } };
-    if ([...grants.active.values()].some(device => device.public_key === again.public_key)) {
-      return { status: 409, body: { error: "identity_already_used" } };
-    }
-    const deviceId = crypto.randomUUID();
-    const approvedAt = Date.now();
-    await txn.put("device:" + deviceId, {
-      device_id: deviceId, name: again.name, public_key: again.public_key,
-      fingerprint: again.fingerprint, approved_at: approvedAt, revoked: false,
-      grant_type: again.grant_type ?? "permanent",
-      ...(again.grant_type === "temporary" ? { expires_at: approvedAt + TEMPORARY_GRANT_MS } : {}),
-    } satisfies ApprovedDevice);
-    await txn.delete(key);
-    return { status: 200, body: { status: "paired", device_id: deviceId } };
   });
 }
 
@@ -718,7 +601,7 @@ export class V2OwnerCoordinator {
         return Response.json(output.body, { status: output.status, headers: { "cache-control": "no-store" } });
       } catch { return Response.json({ error: "unavailable" }, { status: 503 }); }
     }
-    if (!["/register", "/lookup", "/prepare", "/approve", "/complete", "/session/challenge", "/session/recover", "/re-pair/status"].includes(path)) return new Response(null, { status: 404 });
+    if (!["/register", "/lookup", "/approve", "/session/challenge", "/session/recover", "/re-pair/status"].includes(path)) return new Response(null, { status: 404 });
     let payload: unknown;
     try { payload = await limitedJson(request); } catch { return Response.json({ error: "invalid_request" }, { status: 400 }); }
     try {
@@ -730,14 +613,11 @@ export class V2OwnerCoordinator {
       else if (path === "/lookup") output = await lookupPending(
         this.state.storage, (payload as { verifier?: unknown })?.verifier as string,
       );
-      else if (path === "/prepare") {
-        const pending = payload as { pairing_id?: unknown; expected_fingerprint?: unknown; expected_grant_type?: unknown };
-        output = await prepareLocalConfirmation(this.state.storage, pending?.pairing_id, pending?.expected_fingerprint, pending?.expected_grant_type);
-      } else if (path === "/approve") {
+      else if (path === "/approve") {
         const pending = payload as {pairing_id?:unknown; expected_fingerprint?:unknown; expected_grant_type?:unknown};
         output = await approvePendingKey(this.state.storage, pending?.pairing_id,
           pending?.expected_fingerprint, pending?.expected_grant_type);
-      } else output = await completeLocalConfirmation(this.state.storage, payload);
+      } else return new Response(null, {status:404});
       return Response.json(output.body, { status: output.status, headers: { "cache-control": "no-store" } });
     } catch { return Response.json({ error: "unavailable" }, { status: 503 }); }
   }
