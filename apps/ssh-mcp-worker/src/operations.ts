@@ -13,6 +13,7 @@ const MAX_CAPTURE_BYTES = 4 * 1024;
 const DAY = 24 * 60 * 60 * 1000;
 const TERMINAL_RECEIPTS = ['completed', 'failed'] as const;
 const RECEIPT_RETENTION_MS = 30 * DAY;
+const RECEIPT_CLEANUP_BATCH_SIZE = 50;
 
 export interface ExecRequest {
   hostId: string;
@@ -119,6 +120,12 @@ export async function canonicalOperationDigest(intent: CanonicalOperationIntent)
     intent.sessionId?.toLowerCase() ?? null,
     intent.normalizedArgs,
   ]);
+  const hash = await crypto.subtle.digest('SHA-256', encoder.encode(canonical));
+  return btoa(String.fromCharCode(...new Uint8Array(hash)));
+}
+
+async function legacyExecDigest(request: ExecRequest): Promise<string> {
+  const canonical = JSON.stringify(['ssh_exec', request.hostId, request.command, request.timeoutMs]);
   const hash = await crypto.subtle.digest('SHA-256', encoder.encode(canonical));
   return btoa(String.fromCharCode(...new Uint8Array(hash)));
 }
@@ -259,6 +266,7 @@ export class SshOperationsDO extends DurableObject<Env> {
         operation_id TEXT PRIMARY KEY, digest TEXT NOT NULL, host_id TEXT NOT NULL,
         status TEXT NOT NULL, result_json TEXT, created_at INTEGER NOT NULL
       )`);
+      ctx.storage.sql.exec('CREATE INDEX IF NOT EXISTS operations_terminal_cleanup ON operations(status, created_at)');
       ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS connection_leases (
         operation_id TEXT PRIMARY KEY, host_id TEXT NOT NULL, created_at INTEGER NOT NULL
       )`);
@@ -286,9 +294,12 @@ export class SshOperationsDO extends DurableObject<Env> {
     let admission: Admission;
     try {
       admission = this.ctx.storage.transactionSync(() => {
-        // Cleanup is opportunistic on effectful requests; unknown and in-flight rows are never aged out.
-        sql.exec('DELETE FROM operations WHERE status IN (?, ?) AND created_at <= ?',
-          TERMINAL_RECEIPTS[0], TERMINAL_RECEIPTS[1], now - RECEIPT_RETENTION_MS);
+        // Each request prunes a finite indexed batch; unresolved and in-flight rows are never eligible.
+        sql.exec(`DELETE FROM operations WHERE operation_id IN (
+          SELECT operation_id FROM operations
+          WHERE status IN (?, ?) AND created_at <= ?
+          LIMIT ?
+        )`, TERMINAL_RECEIPTS[0], TERMINAL_RECEIPTS[1], now - RECEIPT_RETENTION_MS, RECEIPT_CLEANUP_BATCH_SIZE);
         const existing = sql.exec<ReceiptRow>('SELECT * FROM operations WHERE operation_id = ?', operationId).toArray()[0];
         if (existing) return { kind: 'existing', row: existing };
 
@@ -307,7 +318,9 @@ export class SshOperationsDO extends DurableObject<Env> {
     if (admission.kind === 'capacity') return { operation_id: operationId, status: 'failed', error: 'capacity_reached' };
     if (admission.kind === 'existing') {
       const existing = admission.row;
-      if (existing.digest !== requestDigest) return { operation_id: operationId, status: 'failed', error: 'receipt_conflict' };
+      if (existing.digest !== requestDigest && existing.digest !== await legacyExecDigest(request)) {
+        return { operation_id: operationId, status: 'failed', error: 'receipt_conflict' };
+      }
       if (existing.result_json) return JSON.parse(existing.result_json) as ExecReply;
       return { operation_id: operationId, status: existing.status === 'admitted' ? 'unknown' : existing.status as ExecReply['status'] };
     }

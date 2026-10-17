@@ -68,12 +68,17 @@ const server = new Server({ hostKeys: [hostKey] }, (client) => {
           client.end();
           return;
         }
-        if (!['fixture-output', 'fixture-output-large', 'fixture-timeout', 'fixture-stalled-exec-ack'].includes(info.command)) return reject();
+        if (!['fixture-output', 'fixture-output-large', 'fixture-timeout', 'fixture-stalled-exec-ack', 'fixture-live-long-running'].includes(info.command)) return reject();
         if (info.command === 'fixture-stalled-exec-ack') {
           log(`stalled-ack-open:${connectionId}`);
           return;
         }
         const stream = acceptCommand();
+        if (info.command === 'fixture-live-long-running') {
+          log(`live-command-started:${connectionId}`);
+          stream.write('synthetic command remains in flight\n');
+          return;
+        }
         if (info.command === 'fixture-timeout') return;
         if (info.command === 'fixture-output-large') {
           stream.write('x'.repeat(20_000));

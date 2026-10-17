@@ -48,6 +48,62 @@ export class SshOperationsDO extends ProductionOperationsDO {
       'SELECT digest, status, result_json FROM operations WHERE operation_id = ?', operationId.toLowerCase(),
     ).toArray()[0] ?? null;
   }
+
+  async seedLegacyReceiptForFixture(input: {
+    operationId: string;
+    hostId: string;
+    digest: string;
+    status: 'completed' | 'unknown';
+    resultJson: string | null;
+  }): Promise<void> {
+    this.ctx.storage.sql.exec(
+      'INSERT INTO operations(operation_id,digest,host_id,status,result_json,created_at) VALUES(?,?,?,?,?,?)',
+      input.operationId.toLowerCase(), input.digest, input.hostId.toLowerCase(), input.status, input.resultJson, Date.now(),
+    );
+  }
+
+  async seedCleanupRowsForFixture(input: { count: number; createdAt: number }): Promise<void> {
+    this.ctx.storage.transactionSync(() => {
+      for (let index = 0; index < input.count; index++) {
+        const operationId = `fixture-expired-terminal-${String(index).padStart(3, '0')}`;
+        this.ctx.storage.sql.exec(
+          'INSERT INTO operations(operation_id,digest,host_id,status,result_json,created_at) VALUES(?,?,?,\'completed\',?,?)',
+          operationId, 'fixture-digest', '33333333-3333-4333-8333-333333333333',
+          JSON.stringify({ operation_id: operationId, status: 'completed' }), input.createdAt,
+        );
+      }
+      for (const status of ['unknown', 'admitted', 'running']) {
+        const operationId = `fixture-expired-${status}`;
+        this.ctx.storage.sql.exec(
+          'INSERT INTO operations(operation_id,digest,host_id,status,result_json,created_at) VALUES(?,?,?, ?,NULL,?)',
+          operationId, 'fixture-digest', '33333333-3333-4333-8333-333333333333', status, input.createdAt,
+        );
+      }
+    });
+  }
+
+  async getCleanupStateForFixture(cutoff: number): Promise<{
+    expiredTerminal: number;
+    expiredUnknown: number;
+    expiredInFlight: number;
+    queryPlan: string[];
+  }> {
+    const sql = this.ctx.storage.sql;
+    const expiredTerminal = sql.exec<{ count: number }>(
+      'SELECT COUNT(*) AS count FROM operations WHERE status IN (?, ?) AND created_at <= ?', 'completed', 'failed', cutoff,
+    ).one().count;
+    const expiredUnknown = sql.exec<{ count: number }>(
+      'SELECT COUNT(*) AS count FROM operations WHERE status = ? AND created_at <= ?', 'unknown', cutoff,
+    ).one().count;
+    const expiredInFlight = sql.exec<{ count: number }>(
+      'SELECT COUNT(*) AS count FROM operations WHERE status IN (?, ?) AND created_at <= ?', 'admitted', 'running', cutoff,
+    ).one().count;
+    const queryPlan = sql.exec<{ detail: string }>(
+      'EXPLAIN QUERY PLAN SELECT operation_id FROM operations WHERE status IN (?, ?) AND created_at <= ? LIMIT ?',
+      'completed', 'failed', cutoff, 50,
+    ).toArray().map(row => row.detail);
+    return { expiredTerminal, expiredUnknown, expiredInFlight, queryPlan };
+  }
 }
 
 export default {
@@ -74,6 +130,23 @@ export default {
         return new Response(null, { status: 204 });
       }
       return Response.json(await operations.getReceiptForFixture(operationId));
+    }
+    if (path === '/__fixture/seed-legacy' && request.method === 'POST') {
+      const input = await request.json() as Parameters<SshOperationsDO['seedLegacyReceiptForFixture']>[0];
+      const operations = env.SSH_OPERATIONS.getByName('single-admin-operations') as unknown as SshOperationsDO;
+      await operations.seedLegacyReceiptForFixture(input);
+      return new Response(null, { status: 204 });
+    }
+    if (path === '/__fixture/seed-cleanup' && request.method === 'POST') {
+      const input = await request.json() as { count: number; createdAt: number };
+      const operations = env.SSH_OPERATIONS.getByName('single-admin-operations') as unknown as SshOperationsDO;
+      await operations.seedCleanupRowsForFixture(input);
+      return new Response(null, { status: 204 });
+    }
+    if (path === '/__fixture/cleanup-state' && request.method === 'POST') {
+      const { cutoff } = await request.json() as { cutoff: number };
+      const operations = env.SSH_OPERATIONS.getByName('single-admin-operations') as unknown as SshOperationsDO;
+      return Response.json(await operations.getCleanupStateForFixture(cutoff));
     }
     if (path === '/__fixture/digest' && request.method === 'POST') {
       const intent = await request.json() as CanonicalOperationIntent;

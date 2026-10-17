@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
+import { createHash } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -137,12 +138,12 @@ try {
   };
   const exec = (id: number, operationId: string, command: string, timeoutMs = 10_000, targetHostId = hostId) =>
     call(id, 'ssh_exec', { host_id: targetHostId, operation_id: operationId, command, timeout_ms: timeoutMs });
-  const fixtureRequest = async (path: string, body: Record<string, unknown>) => {
+  const fixtureRequest = async <T = { digest: string; status: string; result_json: string | null }>(path: string, body: Record<string, unknown>) => {
     const response = await fetch(`${endpoint}/__fixture/${path}`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
     });
     if (response.status !== 204 && response.status !== 200) throw new Error(await response.text());
-    return response.status === 200 ? response.json() as Promise<{ digest: string; status: string; result_json: string | null }> : undefined;
+    return response.status === 200 ? response.json() as Promise<T> : undefined;
   };
   const digestVector = async (intent: Record<string, unknown>) => {
     const response = await fetch(`${endpoint}/__fixture/digest`, {
@@ -193,6 +194,55 @@ try {
   assert.equal(afterEffectReplay.value.status, 'unknown');
   assert.equal((await readFile(authLog, 'utf8')).match(/exec-command:fixture-output\n/g)?.length, dispatchCountBeforeCommitFailure + 1,
     'retry after effect/receipt-commit failure never repeats the remote command');
+
+  const legacyDigest = createHash('sha256').update(JSON.stringify(['ssh_exec', hostId, 'fixture-output', 10_000])).digest('base64');
+  assert.equal(legacyDigest, 'S6kKWAfytnyb1sftfM0PewlYbATaplqYmmnwkVH9Y5k=', 'fixed digest for the pre-upgrade [tool, host, command, timeout] tuple');
+  const legacyKnownId = 'abababab-abab-4bab-8bab-abababababab';
+  const legacyUnknownId = 'acacacac-acac-4cac-8cac-acacacacacac';
+  await fixtureRequest('seed-legacy', { operationId: legacyKnownId, hostId, digest: legacyDigest, status: 'completed',
+    resultJson: JSON.stringify({ operation_id: legacyKnownId, status: 'completed', exit_code: 7 }) });
+  await fixtureRequest('seed-legacy', { operationId: legacyUnknownId, hostId, digest: legacyDigest, status: 'unknown', resultJson: null });
+  await restartWorker();
+  const beforeLegacyReplay = (await readFile(authLog, 'utf8')).match(/exec-command:fixture-output\n/g)?.length ?? 0;
+  const legacyKnownReplay = await exec(15, legacyKnownId, 'fixture-output');
+  assert.equal(legacyKnownReplay.value.status, 'completed', 'same intent in a pre-upgrade receipt returns its persisted result metadata');
+  assert.equal(legacyKnownReplay.value.exit_code, 7);
+  assert.equal(legacyKnownReplay.value.stdout, undefined, 'legacy receipts continue to omit remote output');
+  const legacyKnownConflict = await exec(16, legacyKnownId, 'fixture-output-large');
+  assert.equal(legacyKnownConflict.value.error, 'receipt_conflict', 'legacy receipt digest still rejects changed intent');
+  const legacyUnknownReplay = await exec(17, legacyUnknownId, 'fixture-output');
+  assert.equal(legacyUnknownReplay.value.status, 'unknown', 'legacy unknown markers survive a DO restart and block replay');
+  const legacyUnknownConflict = await exec(18, legacyUnknownId, 'fixture-output-large');
+  assert.equal(legacyUnknownConflict.value.error, 'receipt_conflict');
+  assert.equal((await readFile(authLog, 'utf8')).match(/exec-command:fixture-output\n/g)?.length ?? 0, beforeLegacyReplay,
+    'legacy known and unknown receipt replay does not dispatch SSH');
+
+  const cleanupCutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  const cleanupCreatedAt = Date.now() - 31 * 24 * 60 * 60 * 1000;
+  await fixtureRequest('seed-cleanup', { count: 125, createdAt: cleanupCreatedAt });
+  type CleanupState = { expiredTerminal: number; expiredUnknown: number; expiredInFlight: number; queryPlan: string[] };
+  const cleanupState = async () => fixtureRequest<CleanupState>('cleanup-state', { cutoff: cleanupCutoff });
+  const beforeCleanup = await cleanupState();
+  assert.equal(beforeCleanup?.expiredTerminal, 125);
+  assert.equal(beforeCleanup?.expiredUnknown, 1);
+  assert.equal(beforeCleanup?.expiredInFlight, 2);
+  assert.match(beforeCleanup?.queryPlan.join('\n') ?? '', /operations_terminal_cleanup/);
+  assert.doesNotMatch(beforeCleanup?.queryPlan.join('\n') ?? '', /SCAN operations/i);
+  await exec(40, '14141414-1414-4414-8414-141414141414', 'fixture-output');
+  const firstCleanup = await cleanupState();
+  assert.equal(firstCleanup?.expiredTerminal, 75, 'one request removes no more than the fixed 50-row cleanup batch');
+  assert.equal(firstCleanup?.expiredUnknown, 1);
+  assert.equal(firstCleanup?.expiredInFlight, 2);
+  await exec(41, '15151515-1515-4515-8515-151515151515', 'fixture-output');
+  const secondCleanup = await cleanupState();
+  assert.equal(secondCleanup?.expiredTerminal, 25, 'a later request prunes the next bounded batch');
+  assert.equal(secondCleanup?.expiredUnknown, 1);
+  assert.equal(secondCleanup?.expiredInFlight, 2);
+  await exec(42, '16161616-1616-4616-8616-161616161616', 'fixture-output');
+  const completeCleanup = await cleanupState();
+  assert.equal(completeCleanup?.expiredTerminal, 0, 'repeated requests eventually clean all eligible terminal rows');
+  assert.equal(completeCleanup?.expiredUnknown, 1, 'expired unknown tombstones remain protected');
+  assert.equal(completeCleanup?.expiredInFlight, 2, 'admitted and running rows remain outside cleanup');
 
   const operationId = '55555555-5555-4555-8555-555555555555';
   const outputDispatchCountBeforePrimary = (await readFile(authLog, 'utf8')).match(/exec-command:fixture-output\n/g)?.length ?? 0;
@@ -290,7 +340,35 @@ try {
   assert.equal(oldUnknownReplay.value.status, 'unknown');
   assert.equal((await readFile(authLog, 'utf8')).match(/exec-command:fixture-timeout\n/g)?.length, unknownDispatchesBeforeReplay,
     'an aged unknown tombstone still prevents replay');
-  console.log('Local MCP → SQLite DO → pinned SSH fixture passed: concurrent atomic admission, restart recovery before dispatch and after effect/receipt-commit failure, storage fail-closed behavior, stable digest vector, intent conflict, 30-day terminal cleanup, durable unknown tombstones, bounded output and transport cleanup.');
+
+  const liveOperationId = '17171717-1717-4717-8717-171717171717';
+  let liveRequestOutcome: 'response' | 'connection_lost' = 'response';
+  const liveRequest = exec(50, liveOperationId, 'fixture-live-long-running', 60_000)
+    .then(() => { liveRequestOutcome = 'response'; }, () => { liveRequestOutcome = 'connection_lost'; });
+  let liveConnectionId: string | undefined;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const fixtureLog = await readFile(authLog, 'utf8');
+    liveConnectionId = fixtureLog.match(/live-command-started:(\d+)/)?.[1];
+    if (liveConnectionId) break;
+    await delay(50);
+  }
+  assert.ok(liveConnectionId, 'the synthetic SSH peer confirms the long-running command started');
+  const liveReceipt = await fixtureRequest('read-receipt', { operationId: liveOperationId });
+  assert.equal(liveReceipt?.status, 'running', 'the operation remains durably running while the SSH command is still in flight');
+  await stopWorker();
+  await Promise.race([liveRequest, delay(3_000)]);
+  assert.equal(liveRequestOutcome, 'connection_lost', 'the outer MCP request is interrupted by the real local runtime restart');
+  startWorker();
+  await waitForWorker();
+  const liveStatus = await call(51, 'get_operation_status', { operation_id: liveOperationId });
+  assert.equal(liveStatus.value.status, 'unknown', 'a restart during active SSH work recovers the persisted running row as unknown');
+  const liveReplay = await exec(52, liveOperationId, 'fixture-live-long-running', 60_000);
+  assert.equal(liveReplay.value.status, 'unknown');
+  const afterLiveRestartLog = await readFile(authLog, 'utf8');
+  assert.equal((afterLiveRestartLog.match(/exec-command:fixture-live-long-running\n/g) ?? []).length, 1,
+    'status lookup and same-ID retry after an in-flight restart never reconnect or redispatch');
+  assert.match(afterLiveRestartLog, new RegExp(`connection-closed:${liveConnectionId}\\n`), 'runtime restart closes the synthetic live SSH transport');
+  console.log('Local MCP → SQLite DO → pinned SSH fixture passed: concurrent atomic admission, indexed bounded cleanup, legacy digest replay compatibility, restart recovery before dispatch, during live SSH and after effect/receipt-commit failure, fail-closed storage behavior, unknown tombstone retention, and no automatic redispatch.');
 } finally {
   await stopWorker();
   stop(fixture);
