@@ -16,8 +16,9 @@ export class SshOperationsDO extends ProductionOperationsDO {
     return this.fixtureNow ?? super.now();
   }
 
-  protected override async resolveTarget(_host: string, _signal?: AbortSignal): Promise<string> {
-    return '127.0.0.1';
+  protected override async resolveTarget(host: string, signal?: AbortSignal): Promise<string> {
+    if (host === 'fixture.example.test') return '127.0.0.1';
+    return super.resolveTarget(host, signal);
   }
 
   protected override async closeShell(resources: Parameters<ProductionOperationsDO['closeShell']>[0]): Promise<void> {
@@ -61,6 +62,10 @@ export class SshOperationsDO extends ProductionOperationsDO {
     this.ctx.storage.sql.exec('UPDATE managed_sessions SET last_activity_at = ? WHERE session_id = ?', lastActivityAt, session.sessionId);
     await this.scheduleSessionAlarm();
     return true;
+  }
+
+  async operationCountForFixture(): Promise<number> {
+    return this.ctx.storage.sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM operations').one().count;
   }
 
   async leaseSnapshotForFixture(): Promise<{ total: number; perHost: Record<string, number> }> {
@@ -248,6 +253,10 @@ export default {
       const { sessionId, lastActivityAt } = await request.json() as { sessionId: string; lastActivityAt: number };
       const operations = env.SSH_OPERATIONS.getByName('single-admin-operations') as unknown as SshOperationsDO;
       return Response.json({ updated: await operations.setSessionActivityForFixture(sessionId, lastActivityAt) });
+    }
+    if (path === '/__fixture/operation-count' && request.method === 'POST') {
+      const operations = env.SSH_OPERATIONS.getByName('single-admin-operations') as unknown as SshOperationsDO;
+      return Response.json({ count: await operations.operationCountForFixture() });
     }
     if (path === '/__fixture/lease-count' && request.method === 'POST') {
       const operations = env.SSH_OPERATIONS.getByName('single-admin-operations') as unknown as SshOperationsDO;

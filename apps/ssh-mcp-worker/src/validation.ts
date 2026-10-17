@@ -32,3 +32,10 @@ export function validSessionStop(sessionId: string, operationId: string): string
   if (!UUID.test(sessionId) || !UUID.test(operationId)) return 'invalid_args';
   return null;
 }
+
+export function validSftpInput(hostId: string, path: string, timeoutMs: number): string | null {
+  if (!UUID.test(hostId) || typeof path !== 'string' || path.length === 0 || path.includes('\0')) return 'invalid_args';
+  if (encoder.encode(path).byteLength > 4 * 1024) return 'invalid_args';
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 60_000) return 'invalid_args';
+  return null;
+}

@@ -3,8 +3,8 @@ import { z } from 'zod';
 import { getHost, HostError, listHosts } from './hosts.ts';
 import type { Env } from './types.ts';
 import { fitsMcpToolResultBudget, MCP_TOOL_RESULT_MAX_BYTES, serializeMcpToolResult } from './result-budget.ts';
-import type { SessionReply } from './operations.ts';
-import { validExecInput, validSessionInput, validSessionLookupInput, validSessionStartInput, validSessionStop } from './validation.ts';
+import type { SessionReply, SftpListReply, SftpReadReply } from './operations.ts';
+import { validExecInput, validSessionInput, validSessionLookupInput, validSessionStartInput, validSessionStop, validSftpInput } from './validation.ts';
 
 function success(value: unknown) {
   const serialized = serializeMcpToolResult(value);
@@ -58,6 +58,41 @@ function sessionResult(reply: SessionReply) {
   });
 }
 
+function fitSftpRead(reply: SftpReadReply) {
+  if (reply.text === undefined || fitsMcpToolResultBudget(reply)) return success(reply);
+  const encoded = outputEncoder.encode(reply.text);
+  let low = 0;
+  let high = encoded.byteLength;
+  let best = 0;
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const prefix = boundedPrefix(encoded.subarray(0, mid));
+    const candidate = { ...reply, text: prefix.text, bytes: prefix.consumed, cursor: prefix.consumed, truncated: true };
+    if (fitsMcpToolResultBudget(candidate)) {
+      best = mid;
+      low = mid + 1;
+    } else high = mid - 1;
+  }
+  const fitted = boundedPrefix(encoded.subarray(0, best));
+  return success({ ...reply, text: fitted.text, bytes: fitted.consumed, cursor: fitted.consumed, truncated: true });
+}
+
+function fitSftpList(reply: SftpListReply) {
+  if (!reply.entries || fitsMcpToolResultBudget(reply)) return success(reply);
+  let low = 0;
+  let high = reply.entries.length;
+  let best = 0;
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const candidate = { ...reply, entries: reply.entries.slice(0, mid), truncated: true };
+    if (fitsMcpToolResultBudget(candidate)) {
+      best = mid;
+      low = mid + 1;
+    } else high = mid - 1;
+  }
+  return success({ ...reply, entries: reply.entries.slice(0, best), truncated: true });
+}
+
 function failure(error: unknown) {
   const code = error instanceof HostError ? error.code
     : error instanceof Error && error.message === 'host_catalog_unavailable' ? 'host_catalog_unavailable'
@@ -68,7 +103,7 @@ function failure(error: unknown) {
 export function buildMcpServer(env: Env): McpServer {
   const server = new McpServer({ name: 'ssh-mcp-worker', version: '0.1.0' }, {
     capabilities: { tools: {} },
-    instructions: 'Discover saved EdgeSSH hosts and run bounded SSH commands or managed shells. Credentials are never returned. A managed shell can outlive one call, but output polling does not extend it and a lost shell is not reconnected. Interactive input is admitted once per operation id and is never rewritten. Stopping a shell closes only that owned channel and does not promise remote descendants were reaped.',
+    instructions: 'Discover saved EdgeSSH hosts and run bounded SSH commands, managed shells, or short SFTP directory and UTF-8 reads. Credentials are never returned. SFTP reads do not keep a shell open. A managed shell can outlive one call, but output polling does not extend it and a lost shell is not reconnected. Interactive input is admitted once per operation id and is never rewritten. Stopping a shell closes only that owned channel and does not promise remote descendants were reaped.',
   });
   server.registerTool('list_hosts', {
     description: 'List saved hosts with bounded pagination and sanitized SSH trust readiness.',
@@ -106,6 +141,32 @@ export function buildMcpServer(env: Env): McpServer {
       return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify({ error: 'receipt_store_unavailable' }) }] };
     }
   });
+  const sftpSchema = z.object({
+    host_id: z.string().uuid(),
+    path: z.string().min(1),
+    timeout_ms: z.number().int().min(1_000).max(60_000).optional(),
+  }).strict();
+  const runSftp = async (name: 'sftp_list' | 'sftp_read_text', hostId: string, path: string, timeoutMs: number) => {
+    const invalid = validSftpInput(hostId, path, timeoutMs);
+    if (invalid) return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify({ error: invalid }) }] };
+    try {
+      const stub = env.SSH_OPERATIONS.getByName('single-admin-operations');
+      const request = { hostId, path, timeoutMs };
+      return name === 'sftp_list' ? fitSftpList(await stub.listDirectory(request)) : fitSftpRead(await stub.readText(request));
+    } catch {
+      return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify({ error: 'receipt_store_unavailable' }) }] };
+    }
+  };
+  server.registerTool('sftp_list', {
+    description: 'List at most 100 entries in one remote directory over a short SSH connection. The connection closes when the call finishes and no mutation receipt is written.',
+    inputSchema: sftpSchema,
+    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
+  }, async ({ host_id, path, timeout_ms }) => runSftp('sftp_list', host_id, path, timeout_ms ?? 30_000));
+  server.registerTool('sftp_read_text', {
+    description: 'Read one remote UTF-8 text file up to 64 KiB over a short SSH connection. Oversized or non-UTF-8 content is refused without a file body. The connection closes when the call finishes.',
+    inputSchema: sftpSchema,
+    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
+  }, async ({ host_id, path, timeout_ms }) => runSftp('sftp_read_text', host_id, path, timeout_ms ?? 30_000));
   server.registerTool('get_operation_status', {
     description: 'Read the durable status of one SSH operation without dispatching it.',
     inputSchema: z.object({ operation_id: z.string().uuid() }).strict(),

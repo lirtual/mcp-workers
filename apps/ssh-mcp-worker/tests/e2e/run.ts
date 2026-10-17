@@ -892,7 +892,107 @@ try {
   assert.equal(rejectedDuringStall.value.error, 'capacity_reached', 'a start that has not finished still consumes the host connection quota');
   assert.equal(await shellOpens(), shellsBeforeStall + 1);
 
-  console.log('Local MCP → SQLite DO → pinned SSH fixture passed: concurrent atomic admission, indexed bounded cleanup, legacy digest replay compatibility, restart recovery before dispatch, during live SSH and after effect/receipt-commit failure, fail-closed storage behavior, unknown tombstone retention, managed shell lifecycle, and no automatic redispatch.');
+  const sftpCallsBefore = {
+    auth: await passwordAuths(),
+    shells: await shellOpens(),
+    exec: (await readFile(authLog, 'utf8')).match(/exec-command:/g)?.length ?? 0,
+    sftp: (await readFile(authLog, 'utf8')).match(/sftp-subsystem/g)?.length ?? 0,
+  };
+  const operationsBefore = await fixtureRequest<{ count: number }>('operation-count', {});
+  const blockedList = await call(200, 'sftp_list', { host_id: hostId, path: '/fixture' });
+  assert.equal(blockedList.value.error, 'capacity_reached', 'live shells occupy the shared SFTP connection budget');
+  assert.equal(blockedList.value.entries, undefined);
+  const privateHostId = '14141414-1414-4414-8414-141414141414';
+  const wrongPinHostId = '15151515-1515-4515-8515-151515151515';
+  const missingCredentialHostId = '16161616-1616-4616-8616-161616161616';
+  await mutateHost({ action: 'insert', hostId: privateHostId, accountId, encryptedPayload: await encryptedHost(privateHostId, 'synthetic-password-do-not-use', { host: '10.1.2.3' }) });
+  await mutateHost({ action: 'insert', hostId: wrongPinHostId, accountId, encryptedPayload: await encryptedHost(wrongPinHostId, 'synthetic-password-do-not-use', { fingerprint: `SHA256:${'A'.repeat(43)}` }) });
+  await mutateHost({ action: 'insert', hostId: missingCredentialHostId, accountId, encryptedPayload: await encryptedHost(missingCredentialHostId, '', {}) });
+  const privateTarget = await call(201, 'sftp_list', { host_id: privateHostId, path: '/fixture' });
+  assert.equal(privateTarget.value.error, 'invalid_target');
+  const wrongPin = await call(202, 'sftp_read_text', { host_id: wrongPinHostId, path: '/fixture/hello.txt' });
+  assert.equal(wrongPin.value.error, 'host_untrusted');
+  assert.equal(wrongPin.value.text, undefined);
+  const missingCredential = await call(203, 'sftp_read_text', { host_id: missingCredentialHostId, path: '/fixture/hello.txt' });
+  assert.equal(missingCredential.value.error, 'host_record_invalid');
+  const unauthenticated = await authedCall('wrong-bearer', 204, 'sftp_read_text', { host_id: secondHostId, path: '/fixture/hello.txt' });
+  assert.equal(unauthenticated, 401);
+  const overlongPath = await call(205, 'sftp_list', { host_id: secondHostId, path: '😀'.repeat(1025) });
+  assert.equal(overlongPath.isError, true);
+  assert.equal(overlongPath.value.error, 'invalid_args');
+  assert.equal((await readFile(authLog, 'utf8')).match(/sftp-subsystem/g)?.length ?? 0, sftpCallsBefore.sftp, 'rejected SFTP targets must not open a subsystem');
+  assert.equal(await passwordAuths(), sftpCallsBefore.auth, 'capacity, private, wrong pin, missing credential, and bad bearer must not authenticate');
+
+  const sftpListed = await call(206, 'sftp_list', { host_id: secondHostId, path: '/fixture' });
+  assert.equal(sftpListed.value.status, 'completed', JSON.stringify(sftpListed));
+  assert.deepEqual(sftpListed.value.entries, [{ name: 'hello.txt', type: 'file', size: 10 }]);
+  assert.equal(sftpListed.value.truncated, false);
+  const readText = await call(207, 'sftp_read_text', { host_id: secondHostId, path: '/fixture/hello.txt' });
+  assert.equal(readText.value.status, 'completed', JSON.stringify(readText));
+  assert.equal(readText.value.text, 'héllo SSH\n');
+  assert.equal(readText.value.bytes, Buffer.byteLength('héllo SSH\n'));
+  assert.equal(readText.value.cursor, readText.value.bytes);
+  assert.equal(readText.value.truncated, false);
+  const many = await call(208, 'sftp_list', { host_id: secondHostId, path: '/fixture/many' });
+  assert.equal(many.value.status, 'completed', JSON.stringify(many));
+  assert.equal((many.value.entries as unknown[]).length, 100);
+  assert.equal(many.value.truncated, true);
+  assert.equal((many.value.entries as Array<{ name: string }>).some(entry => entry.name === 'item-100.txt'), false);
+  const binary = await call(209, 'sftp_read_text', { host_id: secondHostId, path: '/fixture/binary.bin' });
+  assert.equal(binary.value.error, 'output_truncated');
+  assert.equal(binary.value.text, undefined);
+  const oversized = await call(210, 'sftp_read_text', { host_id: secondHostId, path: '/fixture/big.txt' });
+  assert.equal(oversized.value.error, 'output_truncated');
+  assert.equal(oversized.value.truncated, true);
+  assert.equal(oversized.value.text, undefined);
+  const missingFile = await call(211, 'sftp_read_text', { host_id: secondHostId, path: '/fixture/missing.txt' });
+  assert.equal(missingFile.value.status, 'failed');
+  assert.equal(missingFile.value.error, 'host_unreachable');
+  assert.equal(missingFile.value.text, undefined);
+  const sftpResults = [blockedList, privateTarget, wrongPin, missingCredential, sftpListed, readText, many, binary, oversized, missingFile];
+  assert.doesNotMatch(JSON.stringify(sftpResults), /synthetic-password|synthetic-initial-command|privateKey|ENCRYPTION_KEY/);
+  assert.equal((await readFile(authLog, 'utf8')).match(/exec-command:/g)?.length ?? 0, sftpCallsBefore.exec, 'SFTP must not run initialCommand or another exec');
+  assert.equal(await shellOpens(), sftpCallsBefore.shells, 'SFTP must not open a managed shell');
+  const operationsAfter = await fixtureRequest<{ count: number }>('operation-count', {});
+  assert.equal(operationsAfter?.count, operationsBefore?.count, 'SFTP list and read do not write a mutation receipt');
+  const leasesAfterReads = await fixtureRequest<{ total: number; perHost: Record<string, number> }>('lease-count', {});
+  assert.equal(leasesAfterReads?.perHost[secondHostId] ?? 0, 0, 'a finished SFTP call releases its connection lease');
+
+  const sftpLogBeforeStall = await readFile(authLog, 'utf8');
+  const closedBeforeStall = sftpLogBeforeStall.match(/connection-closed:/g)?.length ?? 0;
+  const sessionsBeforeStall = sftpLogBeforeStall.match(/sftp-session-closed:/g)?.length ?? 0;
+  const stalledList = call(212, 'sftp_list', { host_id: secondHostId, path: '/fixture/stall', timeout_ms: 1_000 });
+  let stallConnectionId: string | undefined;
+  for (let attempt = 0; attempt < 40; attempt++) {
+    stallConnectionId = (await readFile(authLog, 'utf8')).match(/sftp-stall:(\d+)/)?.[1];
+    if (stallConnectionId) break;
+    await delay(50);
+  }
+  assert.ok(stallConnectionId, 'the stalled directory open identifies its SSH connection');
+  await allowPtyResets([stallConnectionId]);
+  const duringSftpStall = await fixtureRequest<{ total: number; perHost: Record<string, number> }>('lease-count', {});
+  assert.equal(duringSftpStall?.perHost[secondHostId], 1, 'an SFTP call that has not finished still holds the host connection quota');
+  const stalledListResult = await stalledList;
+  assert.equal(stalledListResult.value.status, 'failed');
+  assert.equal(stalledListResult.value.error, 'host_unreachable');
+  await clearPtyResets();
+  const releasedAfterStall = await fixtureRequest<{ perHost: Record<string, number> }>('lease-count', {});
+  assert.equal(releasedAfterStall?.perHost[secondHostId] ?? 0, 0, 'an SFTP timeout releases the connection lease');
+  let stallClosed = false;
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const log = await readFile(authLog, 'utf8');
+    stallClosed = log.includes(`connection-closed:${stallConnectionId}\n`) && (log.match(/sftp-session-closed:/g)?.length ?? 0) >= sessionsBeforeStall;
+    if (stallClosed && (log.match(/connection-closed:/g)?.length ?? 0) > closedBeforeStall) break;
+    await delay(50);
+  }
+  assert.equal(stallClosed, true, 'SFTP timeout closes the short SSH connection');
+  const afterSftp = await call(213, 'sftp_read_text', { host_id: secondHostId, path: '/fixture/hello.txt' });
+  assert.equal(afterSftp.value.text, 'héllo SSH\n', 'a later read can connect after the timed-out lease is released');
+  const finalSftpLog = await readFile(authLog, 'utf8');
+  assert.doesNotMatch(finalSftpLog, /unexpected-fixture-error:/, 'only the intentional stalled SFTP connection may absorb ECONNRESET');
+  assert.equal((finalSftpLog.match(/exec-command:/g) ?? []).length, sftpCallsBefore.exec);
+
+  console.log('Local MCP → SQLite DO → pinned SSH fixture passed: concurrent atomic admission, indexed bounded cleanup, legacy digest replay compatibility, restart recovery before dispatch, during live SSH and after effect/receipt-commit failure, fail-closed storage behavior, unknown tombstone retention, managed shell lifecycle, authenticated SFTP list/read limits, and no automatic redispatch.');
 } finally {
   if (cleanupPtyIds.length) await writeFile(resetAllow, `${cleanupPtyIds.join('\n')}\n`);
   await stopWorker();

@@ -96,6 +96,23 @@ test('the authenticated MCP boundary rejects commands over 16 KiB UTF-8 before D
   assert.match(data, /invalid_args/);
   assert.equal(db.reads, 0);
   assert.equal(doCalls, 0);
+  const sftpResponse = await worker.fetch(new Request('https://worker.example/mcp', {
+    method: 'POST',
+    headers: {
+      authorization: 'Bearer synthetic-mcp-token',
+      'content-type': 'application/json',
+      accept: 'application/json, text/event-stream',
+    },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 45, method: 'tools/call', params: {
+      name: 'sftp_read_text', arguments: { host_id: fixture.hostId, path: '😀'.repeat(1025) },
+    } }),
+  }), env);
+  assert.equal(sftpResponse.status, 200);
+  const sftpData = (await sftpResponse.text()).split('\n').find(line => line.startsWith('data: '))?.slice(6);
+  assert.ok(sftpData);
+  assert.match(sftpData, /invalid_args/);
+  assert.equal(db.reads, 0);
+  assert.equal(doCalls, 0);
 });
 
 test('rejects wrong key, account AAD, host AAD, tampering, bad versions, missing host, and ambiguous workspace', async () => {
@@ -179,7 +196,7 @@ test('the real /mcp outer handler rejects missing/bad bearer and Origin before a
   assert.ok(payload, eventStream);
   const response = JSON.parse(payload) as { result?: { tools?: Array<{ name: string }> } };
   assert.deepEqual(response.result?.tools?.map(tool => tool.name), [
-    'list_hosts', 'get_host', 'ssh_exec', 'get_operation_status', 'ssh_session_start', 'ssh_session_input', 'ssh_session_stop', 'ssh_session_output', 'ssh_session_status',
+    'list_hosts', 'get_host', 'ssh_exec', 'sftp_list', 'sftp_read_text', 'get_operation_status', 'ssh_session_start', 'ssh_session_input', 'ssh_session_stop', 'ssh_session_output', 'ssh_session_status',
   ]);
   const callTool = async (id: number, name: string, args: Record<string, unknown>) => {
     const result = await worker.fetch(new Request('https://worker.example/mcp', {

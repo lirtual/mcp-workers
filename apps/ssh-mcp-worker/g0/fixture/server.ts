@@ -15,6 +15,8 @@ const log = (event: string) => appendFileSync(process.env.FIXTURE_AUTH_LOG!, `${
 const remoteFiles = new Map<string, Buffer>([
   ['/fixture/hello.txt', Buffer.from('héllo SSH\n')],
   ['/fixture/out.txt', Buffer.alloc(0)],
+  ['/fixture/binary.bin', Buffer.from([0xff, 0xfe, 0xfd])],
+  ['/fixture/big.txt', Buffer.alloc(64 * 1024 + 1, 0x61)],
 ]);
 
 let connectionSequence = 0;
@@ -145,7 +147,7 @@ const server = new Server({ hostKeys: [hostKey] }, (client) => {
         const sftp = accept();
         let nextHandle = 1;
         const files = new Map<number, { path: string; data: Buffer; writable: boolean }>();
-        const dirs = new Map<number, boolean>();
+        const dirs = new Map<number, boolean | 'many'>();
         const toHandle = (id: number) => { const handle = Buffer.alloc(4); handle.writeUInt32BE(id); return handle; };
         const fromHandle = (handle: Buffer) => handle.length === 4 ? handle.readUInt32BE() : -1;
         sftp.on('OPENDIR', (reqid, path) => {
@@ -154,20 +156,32 @@ const server = new Server({ hostKeys: [hostKey] }, (client) => {
             setTimeout(() => client.end(), 10);
             return;
           }
-          if (path !== '/fixture') return sftp.status(reqid, STATUS_CODE.NO_SUCH_FILE);
+          if (path === '/fixture/stall') {
+            log(`sftp-stall:${connectionId}`);
+            return;
+          }
+          if (path !== '/fixture' && path !== '/fixture/many') return sftp.status(reqid, STATUS_CODE.NO_SUCH_FILE);
           const id = nextHandle++;
-          dirs.set(id, false);
+          dirs.set(id, path === '/fixture/many' ? 'many' : false);
           sftp.handle(reqid, toHandle(id));
         }).on('READDIR', (reqid, handle) => {
           log('sftp-readdir');
           const id = fromHandle(handle);
-          if (!dirs.has(id)) return sftp.status(reqid, STATUS_CODE.FAILURE);
-          if (dirs.get(id)) return sftp.status(reqid, STATUS_CODE.EOF);
+          const state = dirs.get(id);
+          if (state === undefined) return sftp.status(reqid, STATUS_CODE.FAILURE);
+          if (state === true) return sftp.status(reqid, STATUS_CODE.EOF);
           dirs.set(id, true);
+          if (state === 'many') {
+            const entries = Array.from({ length: 101 }, (_, index) => ({
+              filename: `item-${index}.txt`, longname: `item-${index}.txt`, attrs: { mode: constants.S_IFREG | 0o644, size: 1 },
+            }));
+            sftp.name(reqid, entries);
+            return;
+          }
           sftp.name(reqid, [{ filename: 'hello.txt', longname: 'hello.txt', attrs: { mode: constants.S_IFREG | 0o644, size: 10 } }]);
         }).on('OPEN', (reqid, path, flags) => {
           const isWrite = Boolean(flags & OPEN_MODE.WRITE);
-          if (path !== '/fixture/hello.txt' && path !== '/fixture/out.txt') return sftp.status(reqid, STATUS_CODE.NO_SUCH_FILE);
+          if (!remoteFiles.has(path)) return sftp.status(reqid, STATUS_CODE.NO_SUCH_FILE);
           if (path === '/fixture/hello.txt' && isWrite) return sftp.status(reqid, STATUS_CODE.PERMISSION_DENIED);
           const id = nextHandle++;
           files.set(id, { path, data: Buffer.from(remoteFiles.get(path) ?? Buffer.alloc(0)), writable: isWrite });

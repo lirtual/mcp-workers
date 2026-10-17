@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { isIpLiteral, isPublicAddress, normalizeDnsName } from '../src/target-security.ts';
-import { validExecInput, validSessionInput, validSessionStop } from '../src/validation.ts';
+import { validExecInput, validSessionInput, validSessionStop, validSftpInput } from '../src/validation.ts';
 
 test('public target screening rejects special IPv4 and IPv6 ranges and accepts global unicast', () => {
   for (const address of [
@@ -44,4 +44,17 @@ test('session input counts UTF-8 bytes and stop requires only the owned session 
   assert.equal(validSessionInput(session, 'not-a-uuid', 'x'), 'invalid_args');
   assert.equal(validSessionStop(session, operation), null);
   assert.equal(validSessionStop('not-a-session', operation), 'invalid_args');
+});
+
+test('SFTP path validation counts UTF-8 bytes and rejects an empty path before a connection', () => {
+  const host = '11111111-1111-4111-8111-111111111111';
+  assert.equal(validSftpInput(host, `/${'x'.repeat(4095)}`, 30_000), null);
+  assert.equal(validSftpInput(host, `/${'x'.repeat(4096)}`, 60_000), 'invalid_args');
+  assert.equal(validSftpInput(host, '😀'.repeat(1024), 30_000), null);
+  assert.equal(validSftpInput(host, '😀'.repeat(1025), 30_000), 'invalid_args');
+  assert.equal(validSftpInput(host, '', 30_000), 'invalid_args');
+  assert.equal(validSftpInput(host, '/fixture\0hidden', 30_000), 'invalid_args');
+  assert.equal(validSftpInput(host, '/fixture', 999), 'invalid_args');
+  assert.equal(validSftpInput(host, '/fixture', 60_001), 'invalid_args');
+  assert.equal(validSftpInput('not-a-host', '/fixture', 30_000), 'invalid_args');
 });

@@ -1,10 +1,11 @@
 import { DurableObject } from 'cloudflare:workers';
 import { connect as connectTcp } from 'cloudflare:sockets';
-import { connect as connectSsh, SshAuthenticationError, SshHostKeyError, type SshChannel, type SshClient, type SshSocket } from '@meitaim/ssh';
+import { connect as connectSsh, openSftp, SshAuthenticationError, SshHostKeyError, type Sftp, type SshChannel, type SshClient, type SshSocket } from '@meitaim/ssh';
 import { getSshHostCredentials, HostError } from './hosts.ts';
 import type { Env } from './types.ts';
 import { isIpLiteral, isPublicAddress, normalizeDnsName } from './target-security.ts';
 import { closeSshResources } from './ssh-lifecycle.ts';
+import { validSftpInput } from './validation.ts';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PIN = /^SHA256:[A-Za-z0-9+/]{43}$/;
@@ -20,7 +21,34 @@ const SESSION_READ_BYTES = 64 * 1024;
 const SHELL_OPEN_TIMEOUT_MS = 30_000;
 const HOST_CONNECTION_LIMIT = 2;
 const TOTAL_CONNECTION_LIMIT = 4;
+const SFTP_READ_MAX_BYTES = 64 * 1024;
+const SFTP_LIST_MAX_ENTRIES = 100;
 const encoder = new TextEncoder();
+
+export interface SftpRequest {
+  hostId: string;
+  path: string;
+  timeoutMs: number;
+}
+export interface SftpEntryView {
+  name: string;
+  type: 'file' | 'directory' | 'symlink' | 'other';
+  size: number | null;
+}
+export interface SftpListReply {
+  status: 'completed' | 'failed';
+  entries?: SftpEntryView[];
+  truncated?: boolean;
+  error?: string;
+}
+export interface SftpReadReply {
+  status: 'completed' | 'failed';
+  text?: string;
+  bytes?: number;
+  cursor?: number;
+  truncated?: boolean;
+  error?: string;
+}
 
 export interface ExecRequest {
   hostId: string;
@@ -386,6 +414,163 @@ async function runSshExec(env: Env, request: ExecRequest, operationId: string, r
   }
 }
 
+function concatBytes(chunks: Uint8Array[]): Uint8Array {
+  const size = chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
+function sftpEntryType(type: string | undefined): SftpEntryView['type'] {
+  if (type === 'file' || type === 'directory' || type === 'symlink') return type;
+  return 'other';
+}
+
+async function readDirectory(sftp: Sftp, path: string): Promise<SftpListReply> {
+  const entries = await sftp.list(path);
+  const visible = entries.slice(0, SFTP_LIST_MAX_ENTRIES).map((entry): SftpEntryView => ({
+    name: entry.name,
+    type: sftpEntryType(entry.attributes.type),
+    size: typeof entry.attributes.size === 'number' && Number.isSafeInteger(entry.attributes.size) ? entry.attributes.size : null,
+  }));
+  return { status: 'completed', entries: visible, truncated: entries.length > SFTP_LIST_MAX_ENTRIES };
+}
+
+async function readUtf8File(sftp: Sftp, path: string): Promise<SftpReadReply> {
+  const file = await sftp.open(path, { read: true });
+  try {
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    while (size <= SFTP_READ_MAX_BYTES) {
+      const chunk = await file.read(size, Math.min(32 * 1024, SFTP_READ_MAX_BYTES + 1 - size));
+      if (chunk.byteLength === 0) break;
+      chunks.push(chunk);
+      size += chunk.byteLength;
+      if (size > SFTP_READ_MAX_BYTES) {
+        return { status: 'failed', error: 'output_truncated', truncated: true, bytes: size, cursor: 0 };
+      }
+    }
+    const bytes = concatBytes(chunks);
+    let text: string;
+    try {
+      text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    } catch {
+      return { status: 'failed', error: 'output_truncated', truncated: false, bytes: bytes.byteLength, cursor: 0 };
+    }
+    return { status: 'completed', text, bytes: bytes.byteLength, cursor: bytes.byteLength, truncated: false };
+  } finally {
+    await file.close().catch(() => undefined);
+  }
+}
+
+async function runBoundedSftp<T extends SftpListReply | SftpReadReply>(
+  env: Env,
+  request: SftpRequest,
+  resolveTarget: (host: string, signal?: AbortSignal) => Promise<string>,
+  operation: (sftp: Sftp) => Promise<T>,
+): Promise<T | SftpListReply> {
+  let client: SshClient | undefined;
+  let sftp: Sftp | undefined;
+  let socket: ReturnType<typeof connectTcp> | undefined;
+  let expired = false;
+  let clientCloseStarted = false;
+  let sftpCloseStarted = false;
+  let cleanupInFlight: Promise<void> = Promise.resolve();
+  const deadline = Date.now() + request.timeoutMs;
+  const controller = new AbortController();
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const cleanupResources = () => {
+    const closingSftp = sftp && !sftpCloseStarted ? sftp : undefined;
+    const closingClient = client && !clientCloseStarted ? client : undefined;
+    if (closingSftp) sftpCloseStarted = true;
+    if (closingClient) clientCloseStarted = true;
+    const closing = Promise.all([
+      closingSftp ? closingSftp.close().catch(() => undefined) : Promise.resolve(),
+      closingClient ? closeSshResources(undefined, closingClient) : Promise.resolve(),
+    ]).then(() => undefined);
+    cleanupInFlight = Promise.all([cleanupInFlight, closing]).then(() => undefined);
+    return cleanupInFlight;
+  };
+  const ensureTime = () => {
+    const remaining = deadline - Date.now();
+    if (expired || remaining <= 0) throw new Error('sftp_timeout');
+    return remaining;
+  };
+  let rejectAtDeadline: ((error: Error) => void) | undefined;
+  const deadlineReached = new Promise<never>((_resolve, reject) => { rejectAtDeadline = reject; });
+  timeoutId = setTimeout(() => {
+    expired = true;
+    controller.abort();
+    try { socket?.close(); } catch { /* force local socket termination */ }
+    void cleanupResources();
+    rejectAtDeadline?.(new Error('sftp_timeout'));
+  }, request.timeoutMs);
+
+  const perform = async (): Promise<T> => {
+    const saved = await getSshHostCredentials(env, request.hostId);
+    ensureTime();
+    if (!PIN.test(saved.fingerprint)) throw new HostError('host_untrusted');
+    if (saved.port === 25 || !Number.isInteger(saved.port) || saved.port < 1 || saved.port > 65535) {
+      throw new HostError('invalid_target');
+    }
+    const checkedIp = await resolveTarget(saved.host, controller.signal);
+    ensureTime();
+    const credentials = saved.authMethod === 'password'
+      ? { password: saved.password! }
+      : { privateKey: saved.privateKey! };
+    const connected = await connectSsh({
+      host: saved.host,
+      port: saved.port,
+      username: saved.username,
+      ...credentials,
+      timeout: Math.min(10_000, ensureTime()),
+      verifyHostKey: key => key.fingerprint === saved.fingerprint,
+      openSocket: async ({ port }): Promise<SshSocket> => {
+        ensureTime();
+        const openedSocket = connectTcp({ hostname: checkedIp, port }, { secureTransport: 'off', allowHalfOpen: false });
+        socket = openedSocket;
+        openedSocket.closed.catch(() => undefined);
+        const writer = openedSocket.writable.getWriter();
+        writer.closed.catch(() => undefined);
+        try {
+          await writer.ready;
+          ensureTime();
+          return {
+            readable: openedSocket.readable,
+            write: data => writer.write(data),
+            close: () => writer.close().catch(() => undefined),
+          };
+        } catch (error) {
+          try { openedSocket.close(); } catch { /* socket is already closed */ }
+          throw error;
+        }
+      },
+    });
+    client = connected;
+    if (expired) {
+      void cleanupResources();
+      throw new Error('sftp_timeout');
+    }
+    ensureTime();
+    sftp = await openSftp(connected);
+    ensureTime();
+    return await operation(sftp);
+  };
+
+  try {
+    return await Promise.race([perform(), deadlineReached]);
+  } catch (error) {
+    return { status: 'failed', error: errorCode(error) };
+  } finally {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
+    try { await cleanupResources(); } catch { /* bounded best-effort cleanup */ }
+  }
+}
+
 export class SshOperationsDO extends DurableObject<Env> {
   protected readonly sessions = new Map<string, LiveSession>();
   private readonly unresolvedOutcomes = new Set<string>();
@@ -502,6 +687,40 @@ export class SshOperationsDO extends DurableObject<Env> {
     }
     if (row.result_json) return JSON.parse(row.result_json) as ExecReply;
     return { operation_id: row.operation_id, status: row.status === 'admitted' ? 'unknown' : row.status as ExecReply['status'] };
+  }
+
+  async listDirectory(request: SftpRequest): Promise<SftpListReply> {
+    return this.runSftp(request, sftp => readDirectory(sftp, request.path));
+  }
+
+  async readText(request: SftpRequest): Promise<SftpReadReply> {
+    return this.runSftp(request, sftp => readUtf8File(sftp, request.path));
+  }
+
+  private async runSftp<T extends SftpListReply | SftpReadReply>(
+    request: SftpRequest,
+    operation: (sftp: Sftp) => Promise<T>,
+  ): Promise<T | SftpListReply> {
+    const hostId = request.hostId.toLowerCase();
+    const invalid = validSftpInput(hostId, request.path, request.timeoutMs);
+    if (invalid) return { status: 'failed', error: invalid };
+    try {
+      await this.enforceSessionDeadlines();
+    } catch {
+      return { status: 'failed', error: 'receipt_store_unavailable' };
+    }
+    let reserved: { kind: 'reserved'; leaseId: string } | { kind: 'capacity' };
+    try {
+      reserved = this.reserveConnection(hostId);
+    } catch {
+      return { status: 'failed', error: 'receipt_store_unavailable' };
+    }
+    if (reserved.kind === 'capacity') return { status: 'failed', error: 'capacity_reached' };
+    try {
+      return await runBoundedSftp(this.env, { ...request, hostId }, (host, signal) => this.resolveTarget(host, signal), operation);
+    } finally {
+      this.releaseLease(reserved.leaseId);
+    }
   }
 
   async startSession(request: SessionStartRequest): Promise<SessionReply> {
@@ -696,6 +915,20 @@ export class SshOperationsDO extends DurableObject<Env> {
       sql.exec('INSERT INTO operations(operation_id,digest,host_id,status,created_at) VALUES(?,?,?,\'admitted\',?)', operationId, digest, hostId, now);
       if (reserveConnection) sql.exec('INSERT INTO connection_leases(operation_id,host_id,created_at) VALUES(?,?,?)', operationId, hostId, now);
       return { kind: 'admitted' };
+    });
+  }
+
+  private reserveConnection(hostId: string): { kind: 'reserved'; leaseId: string } | { kind: 'capacity' } {
+    const now = this.now();
+    const sql = this.ctx.storage.sql;
+    return this.ctx.storage.transactionSync(() => {
+      // Read-only SFTP takes the shared lease and does not insert an operation receipt.
+      const total = sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM connection_leases').one().count;
+      const perHost = sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM connection_leases WHERE host_id = ?', hostId).one().count;
+      if (total >= TOTAL_CONNECTION_LIMIT || perHost >= HOST_CONNECTION_LIMIT) return { kind: 'capacity' };
+      const leaseId = crypto.randomUUID().toLowerCase();
+      sql.exec('INSERT INTO connection_leases(operation_id, host_id, created_at) VALUES(?,?,?)', leaseId, hostId, now);
+      return { kind: 'reserved', leaseId };
     });
   }
 
