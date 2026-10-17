@@ -116,6 +116,7 @@ const restartWorker = async () => {
   startWorker();
   await waitForWorker();
 };
+let cleanupPtyIds: string[] = [];
 
 try {
   startWorker();
@@ -385,11 +386,16 @@ try {
     'a new SSH operation succeeds through the same fixture after the interrupted connection is reset');
   assert.match(afterLiveRestartLog, new RegExp(`connection-closed:${liveConnectionId}\\n`), 'runtime restart closes the synthetic live SSH transport');
 
-  const allowPtyResets = async () => {
-    const log = await readFile(authLog, 'utf8');
-    const ids = [...log.matchAll(/pty-connection:(\d+)/g)].map(match => match[1]);
-    await writeFile(resetAllow, `${ids.join('\n')}\n`);
+  const readPtyIds = async () => [...(await readFile(authLog, 'utf8')).matchAll(/pty-connection:(\d+)/g)].map(match => match[1]!);
+  let notedPtyIds: string[] = [];
+  const noteNewPtyIds = async () => {
+    const current = await readPtyIds();
+    const fresh = current.filter(id => !notedPtyIds.includes(id));
+    notedPtyIds = current;
+    return fresh;
   };
+  const allowPtyResets = (ids: string[]) => writeFile(resetAllow, ids.length ? `${ids.join('\n')}\n` : '');
+  const clearPtyResets = () => writeFile(resetAllow, '');
   const shellOpens = () => readFile(authLog, 'utf8').then(log => (log.match(/shell-open/g) ?? []).length);
   const passwordAuths = () => readFile(authLog, 'utf8').then(log => (log.match(/^password$/gm) ?? []).length);
   const sessionStart = (id: number, operationId: string, term?: string, targetHostId = hostId) => call(id, 'ssh_session_start', {
@@ -417,6 +423,8 @@ try {
   const startedSession = await sessionStart(61, startOperationId);
   assert.equal(startedSession.value.status, 'live', JSON.stringify(startedSession));
   const sessionId = String(startedSession.value.session_id);
+  const [startedPty] = await noteNewPtyIds();
+  assert.ok(startedPty, 'the first managed shell has one PTY connection');
   assert.match(sessionId, /^[0-9a-f-]{36}$/);
   assert.equal(startedSession.value.idle_deadline_at, Number(startedSession.value.last_activity_at) + 10 * 60 * 1000);
   assert.equal(startedSession.value.absolute_deadline_at, Number(startedSession.value.created_at) + 60 * 60 * 1000);
@@ -453,6 +461,8 @@ try {
   const quotaC = await sessionStart(72, '24242424-2424-4242-8242-242424242424', undefined, secondHostId);
   assert.equal(quotaB.value.status, 'live', JSON.stringify(quotaB));
   assert.equal(quotaC.value.status, 'live', JSON.stringify(quotaC));
+  const quotaPtys = await noteNewPtyIds();
+  assert.equal(quotaPtys.length, 3, 'quota shells are the only new PTY connections');
   const overHost = await sessionStart(73, '25252525-2525-4252-8252-252525252525');
   assert.equal(overHost.value.error, 'capacity_reached');
   const overTotal = await sessionStart(74, '26262626-2626-4262-8262-262626262626', undefined, secondHostId);
@@ -467,7 +477,6 @@ try {
 
   const createdAt = Number(startedSession.value.created_at);
   const activityAt = Number(startedSession.value.last_activity_at);
-  await allowPtyResets();
   await fixtureRequest('session-clock', { now: createdAt + 10 * 60 * 1000 - 1000 });
   const polled = await sessionOutput(76, sessionId, 0, 64);
   assert.equal(polled.value.status, 'live');
@@ -475,10 +484,14 @@ try {
   const scheduledAlarm = await fixtureRequest<{ alarm: number | null }>('session-alarm-time', {});
   assert.equal(scheduledAlarm?.alarm, activityAt + 10 * 60 * 1000);
   await fixtureRequest('session-clock', { now: createdAt + 10 * 60 * 1000 });
+  await allowPtyResets([startedPty]);
   const idleClosed = await sessionStatus(77, sessionId);
   assert.equal(idleClosed.value.status, 'closed', 'the next session request closes an idle shell without waiting for wall-clock time');
+  await clearPtyResets();
+  await allowPtyResets(quotaPtys);
   await fixtureRequest('session-clock', { now: Date.now() + 11 * 60 * 1000 });
   await fixtureRequest('session-alarm', {});
+  await clearPtyResets();
   const afterIdleExec = await exec(78, '28282828-2828-4282-8282-282828282828', 'fixture-output');
   assert.equal(afterIdleExec.value.status, 'completed', 'idle closure releases the shared connection lease');
   await fixtureRequest('session-clock', { now: null });
@@ -486,6 +499,8 @@ try {
   const absoluteStart = await sessionStart(79, '29292929-2929-4292-8292-292929292929');
   assert.equal(absoluteStart.value.status, 'live', JSON.stringify(absoluteStart));
   const absoluteSessionId = String(absoluteStart.value.session_id);
+  const [absolutePty] = await noteNewPtyIds();
+  assert.ok(absolutePty, 'the absolute-deadline shell has one PTY connection');
   const absoluteCreatedAt = Number(absoluteStart.value.created_at);
   const bumped = await fixtureRequest<{ updated: boolean }>('session-activity', {
     sessionId: absoluteSessionId, lastActivityAt: absoluteCreatedAt + 51 * 60 * 1000,
@@ -493,16 +508,18 @@ try {
   assert.equal(bumped?.updated, true);
   const absoluteAlarm = await fixtureRequest<{ alarm: number | null }>('session-alarm-time', {});
   assert.equal(absoluteAlarm?.alarm, absoluteCreatedAt + 60 * 60 * 1000, 'an active shell is still capped by the absolute deadline');
-  await allowPtyResets();
+  await allowPtyResets([absolutePty]);
   await fixtureRequest('session-clock', { now: absoluteCreatedAt + 60 * 60 * 1000 });
   await fixtureRequest('session-alarm', {});
   const absoluteClosed = await sessionStatus(80, absoluteSessionId);
   assert.equal(absoluteClosed.value.status, 'closed');
+  await clearPtyResets();
   await fixtureRequest('session-clock', { now: null });
 
   const disconnectStart = await sessionStart(81, '31313131-3131-4313-8313-313131313131', 'fixture-disconnect');
   assert.ok(disconnectStart.value.status === 'live' || disconnectStart.value.status === 'closing' || disconnectStart.value.status === 'lost', JSON.stringify(disconnectStart));
   const disconnectSessionId = String(disconnectStart.value.session_id);
+  assert.equal((await noteNewPtyIds()).length, 1, 'the disconnect shell has one PTY connection');
   let disconnected = await sessionStatus(82, disconnectSessionId);
   for (let attempt = 0; attempt < 40 && disconnected.value.status !== 'lost'; attempt++) {
     await delay(50);
@@ -517,11 +534,14 @@ try {
   const restartStart = await sessionStart(85, '32323232-3232-4232-8232-323232323232');
   assert.equal(restartStart.value.status, 'live', JSON.stringify(restartStart));
   const restartSessionId = String(restartStart.value.session_id);
+  const [restartPty] = await noteNewPtyIds();
+  assert.ok(restartPty, 'the restart shell has one PTY connection');
   const shellsBeforeRestart = await shellOpens();
-  await allowPtyResets();
+  await allowPtyResets([restartPty]);
   await restartWorker();
   const restarted = await sessionStatus(86, restartSessionId);
   assert.equal(restarted.value.status, 'lost', 'a DO restart loses the shell and does not infer ownership from the stored id');
+  await clearPtyResets();
   const restartedOutput = await sessionOutput(87, restartSessionId);
   assert.equal(restartedOutput.value.status, 'lost');
   assert.equal(restartedOutput.value.output, '');
@@ -533,6 +553,8 @@ try {
   const floodStart = await sessionStart(89, '34343434-3434-4343-8343-343434343434', 'fixture-flood');
   assert.equal(floodStart.value.status, 'live', JSON.stringify(floodStart));
   const floodSessionId = String(floodStart.value.session_id);
+  const [floodPty] = await noteNewPtyIds();
+  assert.ok(floodPty, 'the flood shell has one PTY connection');
   let floodCursor = 0;
   let floodOffset = 0;
   for (let attempt = 0; attempt < 50 && floodCursor < 300 * 1024; attempt++) {
@@ -560,9 +582,10 @@ try {
   assert.ok(combined.endsWith('FLOOD-END'));
   assert.ok(Buffer.byteLength(combined) <= 256 * 1024);
   assert.equal(await shellOpens() > shellsBeforeRestart, true);
-  await allowPtyResets();
+  await allowPtyResets([floodPty]);
   await fixtureRequest('session-clock', { now: Date.now() + 11 * 60 * 1000 });
   await fixtureRequest('session-alarm', {});
+  await clearPtyResets();
   await fixtureRequest('session-clock', { now: null });
 
   const uncertainOperationId = '38383838-3838-4383-8383-383838383838';
@@ -572,6 +595,7 @@ try {
   assert.equal(uncertainStart.value.status, 'unknown', JSON.stringify(uncertainStart));
   assert.equal(uncertainStart.value.error, 'unknown_outcome');
   assert.equal(await shellOpens(), shellsBeforeUncertain + 1, 'an uncertain session start still opened the shell once');
+  assert.equal((await noteNewPtyIds()).length, 1, 'the uncertain shell has one PTY connection');
   const uncertainReceipt = await fixtureRequest('read-receipt', { operationId: uncertainOperationId });
   assert.equal(uncertainReceipt?.status, 'unknown', 'a terminal receipt that cannot store result_json is still persisted as unknown');
   const uncertainStatus = await call(111, 'get_operation_status', { operation_id: uncertainOperationId });
@@ -585,8 +609,10 @@ try {
   const closingStart = await sessionStart(113, '39393939-3939-4393-8393-393939393939');
   assert.equal(closingStart.value.status, 'live', JSON.stringify(closingStart));
   const closingSessionId = String(closingStart.value.session_id);
+  const [closingPty] = await noteNewPtyIds();
+  assert.ok(closingPty, 'the closing shell has one PTY connection');
   await fixtureRequest('session-close-delay', {});
-  await allowPtyResets();
+  await allowPtyResets([closingPty]);
   await fixtureRequest('session-clock', { now: Number(closingStart.value.created_at) + 10 * 60 * 1000 });
   const closingAlarm = fetch(`${endpoint}/__fixture/session-alarm`, { method: 'POST' });
   await fixtureRequest('session-close-entered', {});
@@ -605,6 +631,7 @@ try {
   assert.equal((await closingAlarm).status, 204);
   const closedAfterDelay = await sessionStatus(116, closingSessionId);
   assert.equal(closedAfterDelay.value.status, 'closed');
+  await clearPtyResets();
   await fixtureRequest('session-clock', { now: null });
 
   const shellsBeforeStall = await shellOpens();
@@ -617,18 +644,29 @@ try {
     await delay(50);
   }
   assert.equal(stallSeen, true, 'an in-flight shell start remains reserved before the channel is accepted');
+  const stallPtys = await noteNewPtyIds();
+  assert.equal(stallPtys.length, 1, 'the stalled shell has one PTY connection');
   const duringStall = await fixtureRequest<{ total: number; perHost: Record<string, number> }>('lease-count', {});
   assert.ok((duringStall?.total ?? 0) >= 1);
   const besideStall = await sessionStart(101, '36363636-3636-4363-8363-363636363636');
   assert.equal(besideStall.value.status, 'live', JSON.stringify(besideStall));
+  const besidePtys = await noteNewPtyIds();
+  assert.equal(besidePtys.length, 1, 'the shell beside the stall has one PTY connection');
+  cleanupPtyIds = [...stallPtys, ...besidePtys];
   const rejectedDuringStall = await sessionStart(102, '37373737-3737-4373-8373-373737373737');
   assert.equal(rejectedDuringStall.value.error, 'capacity_reached', 'a start that has not finished still consumes the host connection quota');
   assert.equal(await shellOpens(), shellsBeforeStall + 1);
-  await allowPtyResets();
 
   console.log('Local MCP → SQLite DO → pinned SSH fixture passed: concurrent atomic admission, indexed bounded cleanup, legacy digest replay compatibility, restart recovery before dispatch, during live SSH and after effect/receipt-commit failure, fail-closed storage behavior, unknown tombstone retention, managed shell lifecycle, and no automatic redispatch.');
 } finally {
+  if (cleanupPtyIds.length) await writeFile(resetAllow, `${cleanupPtyIds.join('\n')}\n`);
   await stopWorker();
+  for (let attempt = 0; attempt < 40 && cleanupPtyIds.length; attempt++) {
+    const log = await readFile(authLog, 'utf8');
+    if (cleanupPtyIds.every(id => log.includes(`connection-closed:${id}\n`))) break;
+    await delay(50);
+  }
+  await writeFile(resetAllow, '');
   stop(fixture);
   await delay(150);
   await rm(scratch, { recursive: true, force: true });

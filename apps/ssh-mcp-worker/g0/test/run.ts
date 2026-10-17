@@ -156,12 +156,10 @@ try {
     await delay(50);
   }
   assert.match(shellOutput, /fixture says hello/);
-  const allowPtyResets = async () => {
-    const log = await readFile(authLog, 'utf8');
-    const ids = [...log.matchAll(/pty-connection:(\d+)/g)].map(match => match[1]);
-    await writeFile(resetAllow, `${ids.join('\n')}\n`);
-  };
-  await allowPtyResets();
+  const latestPtyId = async () => [...(await readFile(authLog, 'utf8')).matchAll(/pty-connection:(\d+)/g)].map(match => match[1]!).at(-1);
+  const shellPty = await latestPtyId();
+  assert.ok(shellPty, 'the live shell has one PTY connection');
+  await writeFile(resetAllow, `${shellPty}\n`);
   const close = await request({ mode: 'sessionClose', sessionId: 'g0-live-session' });
   assert.equal(close.status, 200, JSON.stringify(close.body));
   assert.equal(close.body.closed, true);
@@ -171,10 +169,13 @@ try {
   assert.match(shellLog, /shell-open/);
   assert.match(shellLog, /shell-channel-closed/);
   assert.match(shellLog, /connection-closed/);
+  await writeFile(resetAllow, '');
 
   const disconnectedShell = await request({ mode: 'sessionStart', password: 'synthetic-password', ...expected });
   assert.equal(disconnectedShell.status, 200, JSON.stringify(disconnectedShell.body));
-  await allowPtyResets();
+  const disconnectPty = await latestPtyId();
+  assert.ok(disconnectPty && disconnectPty !== shellPty, 'the disconnect shell is a different PTY connection');
+  await writeFile(resetAllow, `${disconnectPty}\n`);
   await request({ mode: 'sessionWrite', sessionId: 'g0-live-session', input: 'disconnect shell\n' });
   let shellLost = false;
   for (let attempt = 0; attempt < 30; attempt++) {
@@ -186,6 +187,7 @@ try {
   assert.equal(shellLost, true, 'the DO must observe the remote PTY channel disconnect');
   await delay(100);
   assert.equal(((await readFile(authLog, 'utf8')).match(/pty-request/g) ?? []).length, 2);
+  await writeFile(resetAllow, '');
 
   await writeFile(authLog, '');
   const list = await request({ mode: 'sftpList', password: 'synthetic-password', ...expected });
