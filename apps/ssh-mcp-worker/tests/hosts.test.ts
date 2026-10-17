@@ -10,6 +10,10 @@ const fixture = JSON.parse(await readFile(new URL('./fixtures/edge-ssh-host-v1.j
   secondHostId: string; secondEncryptedPayload: string; changedEncryptedPayload: string;
   host: Record<string, unknown>; source: string;
 };
+const longCatalog = JSON.parse(await readFile(new URL('./fixtures/long-catalog-v1.json', import.meta.url), 'utf8')) as {
+  source: string; key: string; accountId: string;
+  rows: Array<{ id: string; account_id: string; encrypted_payload: string; updated_at: number }>;
+};
 
 class SyntheticD1 implements D1Database {
   readonly queries: string[] = [];
@@ -17,6 +21,10 @@ class SyntheticD1 implements D1Database {
   accountId: string | null = fixture.accountId;
   workspaceRows = 1;
   rows = [{ id: fixture.hostId, account_id: fixture.accountId, encrypted_payload: fixture.encryptedPayload, updated_at: 10 }];
+
+  constructor(rows?: SyntheticD1['rows']) {
+    if (rows) this.rows = rows;
+  }
 
   prepare(query: string): D1Statement {
     this.queries.push(query);
@@ -164,4 +172,51 @@ test('the real /mcp outer handler rejects missing/bad bearer and Origin before a
   assert.match(rendered, /Synthetic fixture/);
   assert.doesNotMatch(rendered, /synthetic-password-do-not-use|synthetic-initial-command-do-not-run|privateKey/);
   assert.ok(db.reads >= 4, 'authenticated tool calls query workspace and host records');
+});
+
+test('the real /mcp list_hosts enforces the UTF-8 result cap and pages every long Unicode record once', async () => {
+  assert.match(longCatalog.source, /EdgeSSH@7a051e412d2cfa4ee52edec30e6ccefedb4e1c99/);
+  assert.equal(longCatalog.rows.length, 200);
+  const db = new SyntheticD1(longCatalog.rows);
+  const env = environment(db, longCatalog.key);
+  const callTool = async (id: number, name: string, args: Record<string, unknown>) => {
+    const response = await worker.fetch(new Request('https://worker.example/mcp', {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer synthetic-mcp-token',
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } }),
+    }), env);
+    const eventStream = await response.text();
+    assert.equal(response.status, 200);
+    assert.ok(new TextEncoder().encode(eventStream).byteLength <= 64 * 1024, `MCP response was ${new TextEncoder().encode(eventStream).byteLength} bytes`);
+    const data = eventStream.split('\n').find(line => line.startsWith('data: '))?.slice(6);
+    assert.ok(data, eventStream.slice(0, 300));
+    return JSON.parse(data) as { result?: { content?: Array<{ text: string }>; isError?: boolean } };
+  };
+
+  const discovered: string[] = [];
+  let cursor: string | undefined;
+  let requestId = 10;
+  for (;;) {
+    const reply = await callTool(requestId++, 'list_hosts', { ...(cursor ? { cursor } : {}), limit: 200 });
+    const text = reply.result?.content?.[0]?.text;
+    assert.ok(text, JSON.stringify(reply));
+    assert.equal(reply.result?.isError, undefined);
+    const page = JSON.parse(text) as { hosts: Array<{ id: string; name: string; group: string; username: string }>; nextCursor: string | null };
+    assert.ok(page.hosts.length > 0);
+    assert.ok(page.hosts.every(host => host.name === '主'.repeat(80) && host.group === '组'.repeat(40) && host.username === '用'.repeat(128)));
+    discovered.push(...page.hosts.map(host => host.id));
+    if (page.nextCursor === null) break;
+    cursor = page.nextCursor;
+  }
+  assert.deepEqual(discovered, longCatalog.rows.map(row => row.id));
+  assert.equal(new Set(discovered).size, 200);
+  assert.ok(db.queries.every(query => /^SELECT\b/i.test(query.trim())));
+
+  const detail = await callTool(999, 'get_host', { host_id: longCatalog.rows[0]!.id });
+  assert.ok(detail.result?.content?.[0]?.text);
+  assert.equal(detail.result?.isError, undefined);
 });

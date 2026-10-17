@@ -2,9 +2,14 @@ import { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { getHost, HostError, listHosts } from './hosts.ts';
 import type { Env } from './types.ts';
+import { MCP_TOOL_RESULT_MAX_BYTES, serializeMcpToolResult } from './result-budget.ts';
 
 function success(value: unknown) {
-  return { content: [{ type: 'text' as const, text: JSON.stringify(value) }] };
+  const serialized = serializeMcpToolResult(value);
+  if (serialized.byteLength > MCP_TOOL_RESULT_MAX_BYTES) {
+    return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify({ error: 'result_too_large' }) }] };
+  }
+  return { content: [{ type: 'text' as const, text: serialized.text }] };
 }
 
 function failure(error: unknown) {

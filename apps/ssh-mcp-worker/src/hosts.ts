@@ -1,4 +1,5 @@
 import type { Env } from './types.ts';
+import { fitsMcpToolResultBudget } from './result-budget.ts';
 
 const HOST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const FINGERPRINT = /^SHA256:[A-Za-z0-9+/]{43}$/;
@@ -6,7 +7,7 @@ const HOSTNAME = /^(?=.{1,253}$)(?:[a-z\d](?:[a-z\d-]{0,61}[a-z\d])?\.)*[a-z\d](
 const IPV4 = /^(?:\d{1,3}\.){3}\d{1,3}$/;
 const utf8 = new TextEncoder();
 
-export type HostErrorCode = 'host_not_found' | 'host_record_invalid' | 'unsupported_crypto_version' | 'secret_mismatch';
+export type HostErrorCode = 'host_not_found' | 'host_record_invalid' | 'unsupported_crypto_version' | 'secret_mismatch' | 'result_too_large';
 
 export class HostError extends Error {
   readonly code: HostErrorCode;
@@ -194,10 +195,28 @@ export async function listHosts(env: Env, input: { cursor?: string; limit?: numb
   const result = cursor === undefined
     ? await statement.bind(accountId, limit + 1).all<HostRow>()
     : await statement.bind(accountId, cursor, limit + 1).all<HostRow>();
-  const hasMore = result.results.length > limit;
-  const rows = result.results.slice(0, limit);
-  const hosts = await Promise.all(rows.map(row => decodeRow(row, accountId, secret)));
-  return { hosts, nextCursor: hasMore ? rows.at(-1)?.id ?? null : null };
+  const rows = result.results.slice(0, limit + 1);
+  const hosts: HostView[] = [];
+  let lastIncludedId: string | undefined;
+
+  for (let index = 0; index < Math.min(limit, rows.length); index += 1) {
+    const row = rows[index]!;
+    const host = await decodeRow(row, accountId, secret);
+    const hasMoreAfterCandidate = index < rows.length - 1;
+    const candidate = {
+      hosts: [...hosts, host],
+      nextCursor: hasMoreAfterCandidate ? row.id : null,
+    };
+    if (!fitsMcpToolResultBudget(candidate)) {
+      if (hosts.length === 0) throw new HostError('result_too_large');
+      break;
+    }
+    hosts.push(host);
+    lastIncludedId = row.id;
+    if (!hasMoreAfterCandidate) return { hosts, nextCursor: null };
+  }
+
+  return { hosts, nextCursor: lastIncludedId ?? null };
 }
 
 export async function getHost(env: Env, hostId: string): Promise<HostView> {

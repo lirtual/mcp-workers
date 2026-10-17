@@ -4,6 +4,8 @@ Independent MCP app for sanitized discovery of saved EdgeSSH hosts. It uses the 
 
 The current app exposes only `list_hosts` and `get_host`. Its G0 SSH protocol probe remains under `g0/`; that probe is evidence for the later execution work and is not part of this app's MCP tool surface.
 
+Each tool result is bounded to 64 KiB including its MCP content representation and a reserved transport envelope. `list_hosts` applies both the requested row limit (at most 200) and a UTF-8 byte budget; when a page fills by bytes, `nextCursor` points to its last returned host so the next request resumes without skipping the first host that did not fit.
+
 ## Local checks
 
 Requirements: Node `>=24 <25`, pnpm `10.17.1`, and `ssh-keygen` for the retained G0 runtime probe.
@@ -24,6 +26,8 @@ git clone --filter=blob:none --no-checkout https://github.com/lirtual/EdgeSSH.gi
 git -C /tmp/edgessh-7a051e4 checkout --detach 7a051e412d2cfa4ee52edec30e6ccefedb4e1c99
 node --experimental-strip-types apps/ssh-mcp-worker/scripts/generate-host-fixture.mjs /tmp/edgessh-7a051e4/src/accounts/crypto.ts > /tmp/edge-ssh-host-v1.json
 diff -u apps/ssh-mcp-worker/tests/fixtures/edge-ssh-host-v1.json /tmp/edge-ssh-host-v1.json
+node --experimental-strip-types apps/ssh-mcp-worker/scripts/generate-host-fixture.mjs /tmp/edgessh-7a051e4/src/accounts/crypto.ts --long-catalog > /tmp/long-catalog-v1.json
+diff -u apps/ssh-mcp-worker/tests/fixtures/long-catalog-v1.json /tmp/long-catalog-v1.json
 ```
 
 The generator fixes synthetic AES-GCM IVs so the source output is reproducible. The included key, account/host IDs and payload are artificial. The payload intentionally contains canary credential and `initialCommand` strings; tests verify they never leave the sanitized view.
