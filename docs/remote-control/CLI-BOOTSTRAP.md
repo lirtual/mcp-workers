@@ -109,3 +109,9 @@ Optional local identity/receipt purge is not enabled until its own explicitly
 confirmed and scope-reviewed tests; do not improvise rm -rf on private state.
 Commands remain Draft: do not advertise a public bootstrap/release until
 the actual official immutable Release and clean-host acceptance are complete.
+
+### Local activation and rollback failure-injection evidence
+
+An isolated user-home test (`apps/remote-control-agent/tests/v2-upgrade-rollback.test.mjs`) replaces only `systemctl` and `systemd-analyze` with test-local executables on `PATH`. It covers (1) failed manual v2 activation restores the exact previous owned service definition, (2) successful v2 upgrade commits the new service definition, and (3) failed first install removes only the newly staged v2 unit. In every case, sample private key, device ID, and SQLite receipt bytes remain unchanged. This is **offline fault injection**, not live production systemd/Cloudflare WSS acceptance.
+
+Separately, a non-root network-disabled Debian Bookworm clean-host smoke test (glibc 2.36, no system Node, Git or C compiler, read-only container root) verified an **unpublished x64 local bundle** using the Python bootstrap, safely unpacked it, started bundled Node 24.21.0, passed the native PIDFD Supervisor probe and checked the JS entry syntax. This validates one additional ABI environment beyond the build host (glibc 2.39); **it does not claim a live GitHub Release or signed owner pairing**, and does not substitute for native ARM64 acceptance.
