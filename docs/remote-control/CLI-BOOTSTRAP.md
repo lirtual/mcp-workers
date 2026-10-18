@@ -1,15 +1,22 @@
-> **Active TEST Preview release — 2026-10-18 (#77/#82/#97):** The *single existing*
-> `remote-control-v2-preview` Worker now serves immutable Agent
-> [v0.1.6](https://github.com/lirtual/remote-control-agent/releases/tag/v0.1.6)
-> from source `db1194ee151d93b68d0b21b6f0c19ac8b64ac065`.
-> Official x64 SHA-256: `328b0407c71713f360221e6422b66ec07f96796aaa7fcce18e27ed690bc7b5e6`;
-> ARM64: `66d53cf06b35ea941401fd12e06e69236829cd002d06d883e6d7f752936494d6`.
-> The post-publication `SHA256SUMS` was independently downloaded, compared byte-for-byte
-> with the prevalidated list and checked against both native binaries. Preview deployment
-> `811c25b3-e49b-4ef4-99ef-50e85cb85dca` serves Worker version
-> `026a3ced-ebfc-4e0b-8b30-ccc0d24ea668` at 100%; previous Preview
-> `0cff44a5-5dff-488d-8c93-577c73df22af` is the rollback target.
-> `MCP_ACCESS_TOKEN`, `V2_OWNER`, and Preview-only flag were independently retained.
+> **Active TEST Preview release — 2026-10-18 (#77/#82/#97):** Only the existing
+> `remote-control-v2-preview` Worker now pins the published immutable Agent
+> [v0.1.7](https://github.com/lirtual/remote-control-agent/releases/tag/v0.1.7)
+> from exact annotated-tag source `fd24296d58768fff7a23440b858774d9dfaa7632`.
+> Native x64 and ARM64 candidate [CI #39114540808](https://github.com/lirtual/remote-control-agent/actions/runs/39114540808) passed.
+> Official x64 SHA-256: `2b37334ccee4ae32bd9e95dc53e6813d6ca9cb9d17c97f108c7bb8b54c635a86`;
+> ARM64: `3fd1262303712080821d75a1b036e7bbc7a0354bcc2c59a8d70e3d61f3f78167`.
+> Published GitHub asset digests, sizes and the independently downloaded official
+> `SHA256SUMS` match the original two native CI artifacts and prevalidated manifest.
+> Preview deployment `649b2361-6ac0-44d4-9513-1c8c9f3db41d` serves Worker
+> version `39abb023-cae7-4f0e-9fee-4eaeffc972a4` at 100%; the previous
+> `026a3ced-ebfc-4e0b-8b30-ccc0d24ea668` is retained as the rollback target.
+> Live `/install.sh` was validated for v0.1.7 pins, endpoint and shell syntax;
+> unauthenticated MCP stayed 401, invalid installer POST 405; previously approved
+> device signed WSS benign read remained successful. `MCP_ACCESS_TOKEN`, `V2_OWNER`,
+> Preview-only flag and disabled invocation logs remained intact.
+> Worker Draft PR #79 [CI #39115159011](https://github.com/lirtual/mcp-workers/actions/runs/39115159011)
+> passed at pin-change source `af258e45fdbe84bd2767418c93aa2f0aeaddfeae`.
+> **This is not a new-device pairing acceptance or a production release.**
 >
 > **Legacy upgrade compatibility:** Immutable v0.1.1's Python `rca upgrade`
 > does **not** understand any newer Node-only archive; its unchanged allowlist
@@ -20,9 +27,12 @@
 > command is **TEST-only, not production instructions**. Do not run it against
 > existing approved WSL2 devices until the isolated real user-systemd upgrade,
 > recovery, identity/WSS verification and owner approval gates are complete.
-> Standard single-code pairing still requires authenticated MCP `pairing_approve`,
-> presently blocked in this ChatGPT client. Simulated systemd rollback and
-> non-root offline full-shell upgrade passed; *real WSL2 systemd* is not yet verified.
+> Single-code pairing still requires authenticated MCP `pairing_approve`.
+> Its prior live ChatGPT call was safety-blocked before execution; the plugin is now
+> set to ask before changes, but real owner approval/claim/WSS has **not** been retested
+> or passed. Offline full-shell upgrade and simulated rollback passed; previous real
+> WSL2 failure-injection preserved the old unit/identity, but product-vs-emergency
+> rollback attribution was not captured and remains an open #77 gate.
 >
 > **Withdrawn version:** Immutable [v0.1.5](https://github.com/lirtual/remote-control-agent/releases/tag/v0.1.5)
 > contains an incorrect ARM64 checksum entry in the uploaded `SHA256SUMS`.
