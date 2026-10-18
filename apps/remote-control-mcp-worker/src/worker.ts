@@ -17,6 +17,40 @@ function pendingOwner(env: Env): DurableObjectStub | null {
   return ns ? ns.get(ns.idFromName("single-owner-v2")) : null;
 }
 
+function pairedReadErrorMessage(tool: string, code: unknown): string {
+  if (code === "offline") {
+    return "The requested v2 device is unavailable: it is offline or has no current authenticated session.";
+  }
+  if (code === "busy") {
+    return "The v2 device is busy handling other reads; retry later.";
+  }
+  if (code === "timeout") {
+    return "The remote read timed out; no result was confirmed.";
+  }
+  if (code === "unauthorized") {
+    return "The device session changed or is no longer authorized.";
+  }
+  if (code === "bad_request") {
+    return "The requested read was rejected.";
+  }
+  if (code === "read_failed") {
+    if (tool === "list_directory") {
+      return "The remote directory listing failed; check the path and the Agent account's read permissions.";
+    }
+    if (tool === "stat_file") {
+      return "The remote file information request failed; check the path and the Agent account's read permissions.";
+    }
+    if (tool === "search_files" || tool === "search_next" || tool === "stop_search") {
+      return "The remote search request failed or its search session is no longer available.";
+    }
+    if (tool === "list_sessions" || tool === "read_session_output") {
+      return "The managed-session request failed; this Agent may not have Shell/session access enabled.";
+    }
+    return "The remote file read failed; check the path and the Agent account's read permissions.";
+  }
+  return "The requested v2 device is unavailable.";
+}
+
 const V2_READ_TOOLS = new Set(["read_file", "read_files", "list_directory", "stat_file", "search_files", "search_next", "stop_search", "list_sessions", "read_session_output"]);
 const V2_AGENT_READ_TOOLS = new Set(["read_file", "read_multiple_files", "list_directory", "get_file_info", "start_search", "get_more_search_results", "stop_search", "list_sessions", "read_process_output"]);
 
@@ -39,7 +73,20 @@ async function callPairedDeviceRead(env: Env, id: unknown, name: string, args: u
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ device_id, tool: parsed.tool, arguments: upstreamArguments(parsed) }),
     });
-    if (!response.ok) return toolError(id, "The requested v2 device is unavailable.");
+    if (!response.ok) {
+      if (response.status === 400) {
+        return toolError(id, pairedReadErrorMessage(name, "bad_request"));
+      }
+      if (response.status === 503) {
+        let code: unknown;
+        try {
+          const failure = await response.json() as { error?: unknown };
+          code = failure.error;
+        } catch { /* Unknown response bodies never cross the public boundary. */ }
+        return toolError(id, pairedReadErrorMessage(name, code));
+      }
+      return toolError(id, "The requested v2 device is unavailable.");
+    }
     const result = await response.json() as { status?: unknown; text?: unknown };
     if (result.status !== "completed" || typeof result.text !== "string" || result.text.length > 65536) {
       return toolError(id, "The remote file read failed.");

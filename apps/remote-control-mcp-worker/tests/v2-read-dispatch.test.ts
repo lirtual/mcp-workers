@@ -159,6 +159,19 @@ test("MCP read_file with explicit device_id routes through DO WSS only to the ap
     assert.match(invalid.body, /valid device_id/);
     assert.equal(legacyCalls, 0);
     assert.equal(fromServer.length, 9, "bad arguments and unknown targets must not reach any Agent");
+    // A path-level failure must not be mislabeled as a disconnected device.
+    const missingDirectory = await callTool("list_directory", {
+      device_id: a, path: path.join(dir, "does-not-exist"), depth: 1,
+    });
+    assert.match(missingDirectory.body, /directory listing failed/i);
+    assert.doesNotMatch(missingDirectory.body, /device is unavailable/i);
+
+    // The default v2 Agent has Shell/session access disabled; report that
+    // capability failure without falsely claiming that its WSS is offline.
+    const sessions = await callTool("list_sessions", { device_id: a });
+    assert.match(sessions.body, /managed-session request failed/i);
+    assert.match(sessions.body, /Shell\/session access enabled/i);
+    assert.doesNotMatch(sessions.body, /device is unavailable/i);
   } finally {
     controllers.forEach(c => c.abort());
     await Promise.all(monitors);
