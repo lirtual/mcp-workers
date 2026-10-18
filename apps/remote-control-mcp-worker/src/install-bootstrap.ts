@@ -1,0 +1,148 @@
+/**
+ * Planned Worker-local convenience bootstrap. Fail closed until a reviewed
+ * immutable zero-Python Release is published and its pins are supplied.
+ */
+export type InstallReleasePin = Readonly<{
+  tag: string; commit: string; x64Sha256: string; arm64Sha256: string;
+  pairingProtocol: "two-code-v1" | "single-code-v1";
+  upgradeMode?: "explicit-v1";
+}>;
+
+// Verified against the published, immutable public GitHub v0.1.2 Pre-release
+// and both official Release asset digests. This constant is NOT a deployment
+// approval; the active endpoint remains deliberately disabled below.
+export const REVIEWED_V012_RELEASE_PIN: InstallReleasePin = Object.freeze({
+  tag: "v0.1.2",
+  pairingProtocol: "two-code-v1",
+  commit: "00aaf200107e42a1b7cede3db51f9a16edea5b09",
+  x64Sha256: "b895f8133a03a53f4eacbf4fa6d0619f59ad722064c5e2e8ca469f9fc637221a",
+  arm64Sha256: "ec16343f50b20b762b04a06039164c0f3a7f42bdeb597ab8e04ecc4b3e40724c",
+});
+
+// Historical immutable v0.1.2 uses two-code and MUST NEVER be offered by
+// a Worker that only accepts one-code signed pending enrollments.
+// Preview may serve the new pinned release only with preview flag, owner DO and token.
+// Reviewed immutable TEST prerelease; native x64 and ARM64 build #39096572744.
+// The prior v0.1.2 is retained above only as an explicitly incompatible fixture.
+export const REVIEWED_V014_RELEASE_PIN: InstallReleasePin = Object.freeze({
+  tag: "v0.1.4",
+  pairingProtocol: "single-code-v1",
+  commit: "c389485e6570f8975346baa6bc6b0e56746824a1",
+  x64Sha256: "3b3fa8c77e1c69a3e1542923eb9203c11f782b33fa96a6db832c526a4f816d4a",
+  arm64Sha256: "bd9761a0cc740265aa825bd538a7a934bac4e3562f88f90507af958c3bfbafb8",
+});
+// Reviewed immutable native TEST release with an explicitly selected legacy
+// upgrade path. Never infer that a user's old Python rca can install it.
+// Official SHA256SUMS was re-downloaded and verified after publication.
+export const REVIEWED_V016_RELEASE_PIN: InstallReleasePin = Object.freeze({
+  tag: "v0.1.6",
+  pairingProtocol: "single-code-v1",
+  upgradeMode: "explicit-v1",
+  commit: "db1194ee151d93b68d0b21b6f0c19ac8b64ac065",
+  x64Sha256: "328b0407c71713f360221e6422b66ec07f96796aaa7fcce18e27ed690bc7b5e6",
+  arm64Sha256: "66d53cf06b35ea941401fd12e06e69236829cd002d06d883e6d7f752936494d6",
+});
+// Public immutable TEST v0.1.7, fixed annotated tag -> Agent fd24296;
+// dual-native CI #39114540808 and official uploaded SHA256SUMS independently verified.
+export const REVIEWED_V017_RELEASE_PIN: InstallReleasePin = Object.freeze({
+  tag: "v0.1.7",
+  pairingProtocol: "single-code-v1",
+  upgradeMode: "explicit-v1",
+  commit: "fd24296d58768fff7a23440b858774d9dfaa7632",
+  x64Sha256: "2b37334ccee4ae32bd9e95dc53e6813d6ca9cb9d17c97f108c7bb8b54c635a86",
+  arm64Sha256: "3fd1262303712080821d75a1b036e7bbc7a0354bcc2c59a8d70e3d61f3f78167",
+});
+// Immutable public v0.1.8 TEST release, native CI #39118555940 (x64+arm64).
+// Exact annotated Git tag peels to reviewed Agent source 4d58ffe; official
+// published SHA256SUMS re-downloaded and compared byte for byte.
+export const REVIEWED_V018_RELEASE_PIN: InstallReleasePin = Object.freeze({
+  tag: "v0.1.8",
+  pairingProtocol: "single-code-v1",
+  upgradeMode: "explicit-v1",
+  commit: "4d58ffe33e560d6f5f1c375aacf02a774b51a6c0",
+  x64Sha256: "e9116c0b1df5566d0ec49a187bf79e7e69e66698183db0da938eb355f82ed79f",
+  arm64Sha256: "73f159fe722cec4e8d354160f8975532b4f07fe9538772b6ed64c95ae4576184",
+});
+const VERIFIED_PYTHON_FREE_RELEASE: InstallReleasePin = REVIEWED_V018_RELEASE_PIN;
+const APPROVED_ORIGINS = new Set(["https://remote-control-v2-preview.aiyaya.workers.dev"]);
+
+function validPin(p: InstallReleasePin): boolean {
+  return p.pairingProtocol === "single-code-v1" &&
+    (p.upgradeMode === undefined || p.upgradeMode === "explicit-v1") && /^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$/.test(p.tag)
+    && /^[a-f0-9]{40}$/.test(p.commit)
+    && /^[a-f0-9]{64}$/.test(p.x64Sha256)
+    && /^[a-f0-9]{64}$/.test(p.arm64Sha256);
+}
+
+export function renderAgentInstallShell(origin: string, p: InstallReleasePin): string {
+  if (!APPROVED_ORIGINS.has(origin) || !validPin(p))
+    throw new Error("Unapproved immutable Agent release or install origin");
+  // All interpolation is restricted to validated ASCII pins and origin.
+  return [
+    "#!/bin/sh",
+    "# Worker-origin Agent installer: published immutable GitHub archive only",
+    "set -eu",
+    "umask 077",
+    'case "$#" in',
+    "  0) ;;",
+    ...(p.upgradeMode === "explicit-v1"
+      ? ['  1) [ "$1" = "--upgrade" ] || { echo "Unsupported installer action" >&2; exit 1; } ;;']
+      : []),
+    '  *) echo "Unsupported installer action" >&2; exit 1 ;;',
+    "esac",
+    "if [ \"$(id -u)\" -eq 0 ] || [ ! -r /dev/tty ] || [ ! -t 1 ]; then",
+    "  echo 'Requires an ordinary interactive Linux user' >&2; exit 1",
+    "fi",
+    "for tool in curl sha256sum tar mktemp uname id chmod flock rm readlink dirname; do",
+    "  command -v \"$tool\" >/dev/null 2>&1 || { echo 'Missing Linux installer tool' >&2; exit 1; }",
+    "done",
+    "[ \"$(uname -s)\" = Linux ] || { echo 'Linux only' >&2; exit 1; }",
+    "case \"$(uname -m)\" in",
+    " x86_64) target=linux-x64-glibc; expected=" + p.x64Sha256 + " ;;",
+    " aarch64) target=linux-arm64-glibc; expected=" + p.arm64Sha256 + " ;;",
+    " *) echo 'Unsupported Linux CPU' >&2; exit 1 ;;",
+    "esac",
+    "stage=$(mktemp -d /tmp/rca-stage.XXXXXXXX)",
+    "trap 'rm -rf -- \"$stage\"' EXIT",
+    "trap 'exit 130' INT",
+    "trap 'exit 143' TERM",
+    "archive=\"$stage/agent.tar.gz\"",
+    "download=\"https://github.com/lirtual/remote-control-agent/releases/download/" + p.tag + "/remote-control-agent-" + p.tag + "-$target.tar.gz\"",
+    "effective=$(curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 --max-redirs 3 --max-time 180 --max-filesize 180000000 -w '%{url_effective}' \"$download\" -o \"$archive\")",
+    "# GitHub may redirect immutable Release assets to its own CDN, never an arbitrary host.",
+    "case \"$effective\" in",
+    "  \"$download\"|https://release-assets.githubusercontent.com/*|https://objects.githubusercontent.com/*) ;;",
+    "  *) echo 'Unexpected GitHub Release asset redirect' >&2; exit 1 ;;",
+    "esac",
+    "printf '%s  %s\\n' \"$expected\" \"$archive\" | sha256sum -c - >/dev/null || { echo 'Verified asset checksum mismatch' >&2; exit 1; }",
+    "# The COMPLETE archive has been verified before any bundled byte executes.",
+    "tar -xOzf \"$archive\" bin/node > \"$stage/node\"",
+    "tar -xOzf \"$archive\" apps/remote-control-agent/scripts/bootstrap-node.mjs > \"$stage/bootstrap-node.mjs\"",
+    "chmod 700 \"$stage/node\"",
+    "chmod 600 \"$stage/bootstrap-node.mjs\"",
+    "unset NODE_OPTIONS NODE_PATH",
+    "\"$stage/node\" \"$stage/bootstrap-node.mjs\" --archive \"$archive\" --tag \"" + p.tag +
+      "\" --commit \"" + p.commit + "\" --sha256 \"$expected\" --endpoint \"" + origin + "/\" \"$@\" < /dev/tty",
+    "",
+  ].join("\n");
+}
+
+export function handleAgentInstallerRequest(
+  request: Request,
+  release: InstallReleasePin | null = VERIFIED_PYTHON_FREE_RELEASE,
+): Response {
+  const u = new URL(request.url);
+  const headers = { "cache-control": "no-store", "x-content-type-options": "nosniff" };
+  if (u.pathname !== "/install.sh") return new Response("Not found.\n", { status:404, headers });
+  if (request.method !== "GET" || u.search || u.hash || request.headers.has("origin"))
+    return new Response("Invalid installation request.\n", { status:405, headers });
+  if (u.protocol !== "https:" || !APPROVED_ORIGINS.has(u.origin) ||
+      (request.headers.has("host") && request.headers.get("host") !== u.host) ||
+      request.headers.has("forwarded") || request.headers.has("x-forwarded-host"))
+    return new Response("Unapproved Worker origin.\n", { status:403, headers });
+  if (!release || !validPin(release))
+    return new Response("No reviewed Python-free Agent release is published yet.\n", { status:503, headers });
+  return new Response(renderAgentInstallShell(u.origin,release), {
+    status:200, headers: { ...headers, "content-type":"text/x-shellscript; charset=utf-8" },
+  });
+}

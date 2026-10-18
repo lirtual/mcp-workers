@@ -33,7 +33,7 @@ export function selectionDetails(changedFiles) {
   const apps = selectAffectedApps(changedFiles);
   const checkAll = changedFiles.some(requiresAllApps);
   const remoteControlChanged = checkAll || changedFiles.some(file =>
-    file.startsWith('apps/remote-control-agent/') || file.startsWith('apps/remote-control-mcp-worker/'));
+    file.startsWith('apps/remote-control-agent/') || file.startsWith('apps/remote-control-mcp-worker/') || file === 'scripts/stage-public-remote-control-agent.sh');
   return {
     apps,
     databaseChanged: apps.includes('database-mcp-worker'),
@@ -68,6 +68,9 @@ function main(env = process.env) {
   process.stdout.write(`Changed files:\n${changedFiles.map(file => `  ${file}\n`).join('')}`);
   const details = selectionDetails(changedFiles);
   details.apps = selected;
+  if (env.EVENT_NAME === 'workflow_dispatch' && env.MANUAL_WORKER === 'remote-control-mcp-worker') {
+    details.remoteControlChanged = true;
+  }
   details.databaseChanged = selected.includes('database-mcp-worker');
   if (env.GITHUB_OUTPUT) {
     appendFileSync(env.GITHUB_OUTPUT, [

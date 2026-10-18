@@ -7,17 +7,19 @@
   "scripts": {
     "dev": "wrangler dev",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
-    "test": "node --experimental-strip-types --test tests/*.test.ts",
-    "check": "pnpm --filter @mcp-workers/remote-control-agent build:shell && pnpm run typecheck && pnpm test",
+    "test": "node --experimental-strip-types --test tests/*.test.ts tests/*.test.mjs",
+    "check": "pnpm --filter remote-control-agent build:shell && pnpm run typecheck && pnpm test && pnpm run check:v2-preview && pnpm run check:v2-bootstrap",
+    "check:v2-bootstrap": "wrangler deploy --dry-run --config wrangler.v2-preview-bootstrap.jsonc --outdir .build/v2-bootstrap",
+    "check:v2-preview": "wrangler deploy --dry-run --config wrangler.v2-preview.jsonc --outdir .build/v2-preview",
     "types": "wrangler types"
   },
   "dependencies": {
     "@mcp-workers/portal-auth": "workspace:*"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "5.20260911.1",
+    "@cloudflare/workers-types": "5.20261006.1",
     "@types/node": "24.19.2",
     "typescript": "6.0.3",
-    "wrangler": "4.130.0"
+    "wrangler": "4.151.0"
   }
 }
