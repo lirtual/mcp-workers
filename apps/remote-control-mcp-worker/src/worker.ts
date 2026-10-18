@@ -1,5 +1,5 @@
 import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
-import { handleAgentInstallerRequest, REVIEWED_V012_RELEASE_PIN } from "./install-bootstrap.ts";
+import { handleAgentInstallerRequest } from "./install-bootstrap.ts";
 export { V2OwnerCoordinator } from "./v2-pairing.ts";
 
 type V2Env = Env & {
@@ -1204,7 +1204,7 @@ export default {
     if (url.pathname === "/install.sh") {
       // Only the owner-configured v2 Preview may serve the reviewed immutable
       // test installer. Keep every other environment fail-closed (503).
-      return handleAgentInstallerRequest(request, previewOnly(env) ? REVIEWED_V012_RELEASE_PIN : null);
+      return handleAgentInstallerRequest(request); // No compatible immutable single-code Agent Release approved yet.
     }
     if (url.pathname.startsWith("/agent/connect/") && pendingOwner(env)) {
       const deviceId = url.pathname.slice("/agent/connect/".length);
