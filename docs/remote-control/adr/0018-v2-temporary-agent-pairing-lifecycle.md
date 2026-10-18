@@ -1,6 +1,8 @@
 # ADR-0018 — v2 temporary debugging pairing with 24-hour authorization
 
-Status: **Accepted fixed 24-hour lifetime; single-code MCP pairing supersedes earlier two-code UX (2026-10-18); new protocol not yet implemented**. Updated: 2026-10-18.
+**Implementation checkpoint (2026-10-18; historical plan statements below do not define today's completion):** The relevant no-tombstone and single-code changes exist in the nonproduction stacked Draft #79, supported by real #71/#97 nonproduction acceptance and public Agent immutable TEST v0.1.8. Both native architecture CI checks have succeeded; *real externally paired native ARM64*, connected-device 24-hour expiry/Hibernation, genuine continuous #57 48-hour observation, and all formal merge/production authorization remain separate unfulfilled gates. There is no v1 production cutover.
+
+Status: **Accepted fixed 24-hour temporary grant and one-code pairing implemented in stacked nonproduction Draft #79.** Deterministic boundary and actual post-expiry offline refusal passed; real connected T+24h WSS/Hibernation/receipt continuity remains an explicit open #72/#75 gate. No production approval. Updated 2026-10-18.
 Related: [ADR-0015 — owner-reviewed pairing](./0015-v2-pairing-and-identity.md), [ADR-0017 — device removal without tombstones](./0017-v2-device-revocation-without-tombstones.md), [ADR-0016 — bounded managed commands](./0016-agent-local-receipts-and-bounded-commands.md), and [v2 Spec](../V2-MULTI-DEVICE-SPEC.md).
 
 ## Context and decision history
@@ -21,7 +23,7 @@ Current v2 Draft PR #58 has `install-v2.mjs --foreground` without creating a sys
 
 ## Technical seams and verification
 
-- In Draft PR #58, `registerPending`, `completeLocalConfirmation`, `issueSessionChallenge`, `authorizeSession`, `acceptAuthenticatedSocket`, `listApprovedDevices` and each DO remote operation dispatch must agree on the same server-side `expires_at`. None of those paths currently implements temporary-grant expiry.
+- In Draft PR #58, `registerPending`, `completeLocalConfirmation`, `issueSessionChallenge`, `authorizeSession`, `acceptAuthenticatedSocket`, `listApprovedDevices` and each DO remote operation dispatch must agree on the same server-side `expires_at`. Updated expiry admission and bounded cleanup are implemented in the stacked Draft #79; the original #58 source is historical.
 - Avoid conflating `pending_pairing.expires_at` (10-minute code window) with `device.expires_at` (24-hour approved-grant window). Fresh internal WSS nonce signatures and connection-epoch checks remain binding even before expiry.
 - Enforce expiry at grant-sensitive decision points; never rely on an Agent-local clock, WSS close event, auto-pong, Hibernation callback, timed background cleanup or a list result to revoke authority. Lazy cleanup at a bounded read/list/registration is sufficient for physical storage; ensure capacity checks remain correct even when expired records exist.
 - The server may become idle exactly at expiry; **do not claim the socket instantly closes at the 24-hour mark without a scheduler**. A subsequent use or connection must be denied, and list display must not present an expired grant as available.
@@ -31,4 +33,4 @@ Current v2 Draft PR #58 has `install-v2.mjs --foreground` without creating a sys
 
 - **Positive:** eliminates the need for self-revocation on process exit, missed-exit recovery, disconnect grace, a DO alarm and extra token/configuration management. Guarantees that after a fixed server-enforced 24 hours, no new remote operation can be authorized under the temporary identity.
 - **Trade-off:** closing the temporary Agent early does *not* revoke the grant immediately; it remains authorized for re-connection until expiry or explicit owner revoke. Existing managed processes are not forcibly killed merely because the grant expired. Lazy physical removal means an expired row may remain at rest until a future request, without remaining authorized.
-- **Scope:** documentation/approval record only. PR #58 must be separately implemented/tested; no production or Preview deployment is authorized by this document.
+- **Scope:** accepted design and Draft-only code, with nonproduction validation recorded separately. No additional Preview or production deployment authorized by this document.

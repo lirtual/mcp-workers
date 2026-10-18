@@ -1,11 +1,13 @@
 # ADR-0017 — v2 device revocation without permanent tombstones
 
-Status: **Accepted product decision; documentation only, not implemented**. Date: 2026-10-17.
+**Implementation checkpoint (2026-10-18; historical plan statements below do not define today's completion):** The relevant no-tombstone and single-code changes exist in the nonproduction stacked Draft #79, supported by real #71/#97 nonproduction acceptance and public Agent immutable TEST v0.1.8. Both native architecture CI checks have succeeded; *real externally paired native ARM64*, connected-device 24-hour expiry/Hibernation, genuine continuous #57 48-hour observation, and all formal merge/production authorization remain separate unfulfilled gates. There is no v1 production cutover.
+
+Status: **Accepted and implemented in stacked nonproduction Draft #79**; real revoke/re-pair acceptance is Closed #71. No production merge or v1 change. Original design date 2026-10-17.
 Supersedes only the **permanent revoked-identity/tombstone retention** portion of [ADR-0015](./0015-v2-pairing-and-identity.md). All independent owner-confirmation, private-key, explicit-device-routing, operation-receipt and v1-isolation decisions remain in force.
 
 ## Context
 
-The v2 preview in [Draft PR #58](https://github.com/lirtual/mcp-workers/pull/58) currently marks `device:<id>` with `revoked: true` and retains it indefinitely. `list_devices` includes revoked devices. Pairing and device listing scan at most 65 device records and return a capacity error above 64; therefore repeated device removal/re-pairing can exhaust a small single-owner registry even with few active devices.
+The historical v2 implementation in [Draft PR #58](https://github.com/lirtual/mcp-workers/pull/58) marked `device:<id>` with `revoked: true` and retains it indefinitely. `list_devices` included revoked devices. Pairing and device listing scan at most 65 device records and return a capacity error above 64; therefore repeated device removal/re-pairing can exhaust a small single-owner registry even with few active devices.
 
 Permanent denial of the *same public key* is useful only if the owner wishes to maintain a permanent revoked-key blacklist. For this personal installation, the owner explicitly chose not to retain that blacklist or historical device list. The security authority is the *currently approved device record*, not a record of every previously approved key.
 
@@ -31,6 +33,6 @@ The owner first considered revoking temporary device authorization on Agent exit
 
 An expired temporary identity follows the same effective deny-and-remove semantics as owner-requested device removal: deny new sessions and commands immediately at the **server-side expiration check**, then lazily remove its stored grant and session state on a subsequent relevant DO access. Do not require an Agent self-revocation endpoint, offline grace period, or expiration scheduler. Do not mistake expiry of *new authorization* for guaranteed cancellation of already-admitted work.
 
-## Required verification before implementing/deploying
+## Verification and remaining deployment gates
 
 Revoke-vs-login and revoke-vs-dispatch races; stale/suspended socket rejection; no resurrected identity after restart/Hibernation; denied read/write after deletion; repeated revoke truthful `not_found`; no leaked capacity after multiple pair/revoke cycles; preexisting operations return honest `timeout_unknown`; explicit authenticated MCP approval and Ed25519 proof for any re-pair; unchanged v1/production behavior. All changes remain gated by the existing nonproduction v2 acceptance and explicit release approval.
