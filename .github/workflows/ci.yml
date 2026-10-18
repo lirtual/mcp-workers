@@ -171,6 +171,10 @@ jobs:
           node --version
           pnpm --version
 
+      - name: Stage pinned public Agent source (test-only)
+        if: steps.scope.outputs.apps != '' || steps.scope.outputs.remote_control_changed == 'true'
+        run: bash scripts/stage-public-remote-control-agent.sh
+
       - name: Install workspace
         if: steps.scope.outputs.apps != '' || steps.scope.outputs.remote_control_changed == 'true'
         run: pnpm install --frozen-lockfile --ignore-scripts
@@ -183,36 +187,13 @@ jobs:
         if: steps.scope.outputs.portal_auth_changed == 'true'
         run: pnpm --filter @mcp-workers/portal-auth check
 
-      - name: Check Remote Control Agent and Worker
+      - name: Check pinned public Remote Control Agent and Worker
         if: steps.scope.outputs.remote_control_changed == 'true'
         run: |
           set -euo pipefail
-          pnpm --filter @mcp-workers/remote-control-agent typecheck
-          pnpm --filter @mcp-workers/remote-control-agent test
-          pnpm --filter remote-control-mcp-worker typecheck
-          pnpm --filter remote-control-mcp-worker test
-
-      - name: Cross-check Worker against pinned public Agent source
-        if: steps.scope.outputs.remote_control_changed == 'true'
-        env:
-          PUBLIC_AGENT_SHA: 4d58ffe33e560d6f5f1c375aacf02a774b51a6c0
-        run: |
-          set -euo pipefail
-          # Anonymous public checkout, pinned to a reviewed immutable commit;
-          # never trust a mutable public branch for private Worker CI.
-          fixture="$(mktemp -d)"
-          git init -q "$fixture/public"
-          git -C "$fixture/public" fetch --quiet --depth=1 \
-            https://github.com/lirtual/remote-control-agent.git "$PUBLIC_AGENT_SHA"
-          git -C "$fixture/public" checkout -q --detach FETCH_HEAD
-          test "$(git -C "$fixture/public" rev-parse HEAD)" = "$PUBLIC_AGENT_SHA"
-          mv apps/remote-control-agent "$fixture/private-agent"
-          trap 'rm -rf apps/remote-control-agent; mv "$fixture/private-agent" apps/remote-control-agent' EXIT
-          cp -a "$fixture/public/apps/remote-control-agent" apps/remote-control-agent
-          # Workspace pnpm dependencies were already installed for the private
-          # Agent, and the app occupies the same relative location.
-          cp -a "$fixture/private-agent/node_modules" apps/remote-control-agent/node_modules
-          node apps/remote-control-agent/scripts/build-session-supervisor.mjs
+          test "$(cat apps/remote-control-agent/.pinned-public-source)" = "4d58ffe33e560d6f5f1c375aacf02a774b51a6c0"
+          pnpm --filter remote-control-agent typecheck
+          pnpm --filter remote-control-agent test
           pnpm --filter remote-control-mcp-worker typecheck
           pnpm --filter remote-control-mcp-worker test
 
@@ -276,6 +257,9 @@ jobs:
         run: |
           node --version
           pnpm --version
+
+      - name: Stage pinned public Agent source (test-only)
+        run: bash scripts/stage-public-remote-control-agent.sh
 
       - name: Install workspace
         run: pnpm install --frozen-lockfile --ignore-scripts
@@ -352,6 +336,9 @@ jobs:
           node-version: 24
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
+
+      - name: Stage pinned public Agent source (test-only)
+        run: bash scripts/stage-public-remote-control-agent.sh
 
       - name: Install pinned dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts
