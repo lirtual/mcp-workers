@@ -4,6 +4,7 @@
  */
 export type InstallReleasePin = Readonly<{
   tag: string; commit: string; x64Sha256: string; arm64Sha256: string;
+  pairingProtocol: "two-code-v1" | "single-code-v1";
 }>;
 
 // Verified against the published, immutable public GitHub v0.1.2 Pre-release
@@ -11,17 +12,20 @@ export type InstallReleasePin = Readonly<{
 // approval; the active endpoint remains deliberately disabled below.
 export const REVIEWED_V012_RELEASE_PIN: InstallReleasePin = Object.freeze({
   tag: "v0.1.2",
+  pairingProtocol: "two-code-v1",
   commit: "00aaf200107e42a1b7cede3db51f9a16edea5b09",
   x64Sha256: "b895f8133a03a53f4eacbf4fa6d0619f59ad722064c5e2e8ca469f9fc637221a",
   arm64Sha256: "ec16343f50b20b762b04a06039164c0f3a7f42bdeb597ab8e04ecc4b3e40724c",
 });
 
-// Deliberately NULL until a *separate* explicit Preview deployment approval.
+// Remain disabled until a reviewed, published single-code Agent release is pinned.
+// Historical immutable v0.1.2 uses two-code and MUST NEVER be offered by
+// a Worker that only accepts one-code signed pending enrollments.
 const VERIFIED_PYTHON_FREE_RELEASE: InstallReleasePin | null = null;
 const APPROVED_ORIGINS = new Set(["https://remote-control-v2-preview.aiyaya.workers.dev"]);
 
 function validPin(p: InstallReleasePin): boolean {
-  return /^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$/.test(p.tag)
+  return p.pairingProtocol === "single-code-v1" && /^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$/.test(p.tag)
     && /^[a-f0-9]{40}$/.test(p.commit)
     && /^[a-f0-9]{64}$/.test(p.x64Sha256)
     && /^[a-f0-9]{64}$/.test(p.arm64Sha256);
