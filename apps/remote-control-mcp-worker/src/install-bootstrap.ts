@@ -5,6 +5,7 @@
 export type InstallReleasePin = Readonly<{
   tag: string; commit: string; x64Sha256: string; arm64Sha256: string;
   pairingProtocol: "two-code-v1" | "single-code-v1";
+  upgradeMode?: "explicit-v1";
 }>;
 
 // Verified against the published, immutable public GitHub v0.1.2 Pre-release
@@ -34,7 +35,8 @@ const VERIFIED_PYTHON_FREE_RELEASE: InstallReleasePin = REVIEWED_V014_RELEASE_PI
 const APPROVED_ORIGINS = new Set(["https://remote-control-v2-preview.aiyaya.workers.dev"]);
 
 function validPin(p: InstallReleasePin): boolean {
-  return p.pairingProtocol === "single-code-v1" && /^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$/.test(p.tag)
+  return p.pairingProtocol === "single-code-v1" &&
+    (p.upgradeMode === undefined || p.upgradeMode === "explicit-v1") && /^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$/.test(p.tag)
     && /^[a-f0-9]{40}$/.test(p.commit)
     && /^[a-f0-9]{64}$/.test(p.x64Sha256)
     && /^[a-f0-9]{64}$/.test(p.arm64Sha256);
@@ -49,6 +51,13 @@ export function renderAgentInstallShell(origin: string, p: InstallReleasePin): s
     "# Worker-origin Agent installer: published immutable GitHub archive only",
     "set -eu",
     "umask 077",
+    'case "$#" in',
+    "  0) ;;",
+    ...(p.upgradeMode === "explicit-v1"
+      ? ['  1) [ "$1" = "--upgrade" ] || { echo "Unsupported installer action" >&2; exit 1; } ;;']
+      : []),
+    '  *) echo "Unsupported installer action" >&2; exit 1 ;;',
+    "esac",
     "if [ \"$(id -u)\" -eq 0 ] || [ ! -r /dev/tty ] || [ ! -t 1 ]; then",
     "  echo 'Requires an ordinary interactive Linux user' >&2; exit 1",
     "fi",
@@ -81,7 +90,7 @@ export function renderAgentInstallShell(origin: string, p: InstallReleasePin): s
     "chmod 600 \"$stage/bootstrap-node.mjs\"",
     "unset NODE_OPTIONS NODE_PATH",
     "\"$stage/node\" \"$stage/bootstrap-node.mjs\" --archive \"$archive\" --tag \"" + p.tag +
-      "\" --commit \"" + p.commit + "\" --sha256 \"$expected\" --endpoint \"" + origin + "/\" < /dev/tty",
+      "\" --commit \"" + p.commit + "\" --sha256 \"$expected\" --endpoint \"" + origin + "/\" \"$@\" < /dev/tty",
     "",
   ].join("\n");
 }

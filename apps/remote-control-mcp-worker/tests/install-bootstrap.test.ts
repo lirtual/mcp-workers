@@ -59,6 +59,19 @@ test("future reviewed route binds its own validated origin and pins both ABIs", 
   assert.equal(syntax.status,0,syntax.stderr);
 });
 
+test("migration flag is fail-closed on the published v0.1.4 pin and opt-in for a future reviewed release",()=>{
+  const current=renderAgentInstallShell(origin,REVIEWED_V014_RELEASE_PIN);
+  assert.doesNotMatch(current,/1\) \[ "\$1" = "--upgrade"/);
+  assert.match(current,/Unsupported installer action/);
+  assert.match(current,/"\$@" < \/dev\/tty/);
+  const future=renderAgentInstallShell(origin,{...pin,tag:"v0.1.5",upgradeMode:"explicit-v1"});
+  assert.match(future,/1\) \[ "\$1" = "--upgrade"/);
+  assert.match(future,/"\$@" < \/dev\/tty/);
+  const syntax=spawnSync("sh",["-n"],{input:future,encoding:"utf8"});
+  assert.equal(syntax.status,0,syntax.stderr);
+  assert.throws(()=>renderAgentInstallShell(origin,{...pin,upgradeMode:"bogus" as never}),/Unapproved/);
+});
+
 test("fake Host, Forwarded, scheme, path, query and method are refused",async()=>{
   const bad=[
     new Request("http://remote-control-v2-preview.aiyaya.workers.dev/install.sh"),
