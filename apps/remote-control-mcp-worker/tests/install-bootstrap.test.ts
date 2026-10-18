@@ -5,7 +5,7 @@ import { handleAgentInstallerRequest, renderAgentInstallShell, REVIEWED_V012_REL
 
 const origin = "https://remote-control-v2-preview.aiyaya.workers.dev";
 const pin = Object.freeze({
-  tag:"v0.1.2", commit:"a".repeat(40),
+  tag:"v0.1.4", commit:"a".repeat(40), pairingProtocol:"single-code-v1" as const,
   x64Sha256:"b".repeat(64), arm64Sha256:"c".repeat(64),
 });
 
@@ -16,7 +16,7 @@ test("unreleased Worker installation route fails closed", async()=>{
   assert.doesNotMatch(await response.text(),/#!/);
 });
 
-test("published immutable v0.1.2 hash pins can render a Shell while Preview remains disabled",async()=>{
+test("historical two-code v0.1.2 cannot be served by single-code Worker even when explicitly passed",async()=>{
   const reviewed=REVIEWED_V012_RELEASE_PIN;
   assert.equal(reviewed.tag,"v0.1.2");
   assert.equal(reviewed.commit,"00aaf200107e42a1b7cede3db51f9a16edea5b09");
@@ -24,14 +24,11 @@ test("published immutable v0.1.2 hash pins can render a Shell while Preview rema
   assert.equal(reviewed.arm64Sha256,"ec16343f50b20b762b04a06039164c0f3a7f42bdeb597ab8e04ecc4b3e40724c");
   const stillDisabled=handleAgentInstallerRequest(new Request(origin+"/install.sh"));
   assert.equal(stillDisabled.status,503);
-  const prepared=handleAgentInstallerRequest(new Request(origin+"/install.sh"),reviewed);
-  assert.equal(prepared.status,200);
-  const shell=await prepared.text();
-  assert.ok(shell.includes(reviewed.commit));
-  assert.ok(shell.includes(reviewed.x64Sha256));
-  assert.ok(shell.includes(reviewed.arm64Sha256));
-  assert.match(shell,/--endpoint "https:\/\/remote-control-v2-preview.aiyaya.workers.dev\/"/);
-  assert.equal(spawnSync("sh",["-n"],{input:shell,encoding:"utf8"}).status,0);
+  assert.equal(reviewed.pairingProtocol,"two-code-v1");
+  const incompatible=handleAgentInstallerRequest(new Request(origin+"/install.sh"),reviewed);
+  assert.equal(incompatible.status,503);
+  assert.doesNotMatch(await incompatible.text(),/#!/);
+  assert.throws(()=>renderAgentInstallShell(origin,reviewed),/Unapproved/);
 });
 
 test("future reviewed route binds its own validated origin and pins both ABIs", async()=>{
