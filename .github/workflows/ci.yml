@@ -108,7 +108,7 @@ jobs:
             else
               for app in "${apps[@]}"; do
                 for file in "${changed_files[@]}"; do
-                  if [[ "$file" == "apps/$app/"* ]]; then
+                  if [[ "$file" == "apps/$app/"* || ( "$app" == remote-control-mcp-worker && "$file" == scripts/stage-public-remote-control-agent.sh ) ]]; then
                     selected+=("$app")
                     break
                   fi
@@ -120,7 +120,7 @@ jobs:
           remote_control_changed="$check_all"
           if [[ "$remote_control_changed" != "true" ]]; then
             for file in "${changed_files[@]}"; do
-              if [[ "$file" == apps/remote-control-agent/* || "$file" == apps/remote-control-mcp-worker/* ]]; then
+              if [[ "$file" == apps/remote-control-agent/* || "$file" == apps/remote-control-mcp-worker/* || "$file" == scripts/stage-public-remote-control-agent.sh ]]; then
                 remote_control_changed=true
                 break
               fi
