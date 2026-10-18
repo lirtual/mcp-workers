@@ -52,7 +52,18 @@ export const REVIEWED_V017_RELEASE_PIN: InstallReleasePin = Object.freeze({
   x64Sha256: "2b37334ccee4ae32bd9e95dc53e6813d6ca9cb9d17c97f108c7bb8b54c635a86",
   arm64Sha256: "3fd1262303712080821d75a1b036e7bbc7a0354bcc2c59a8d70e3d61f3f78167",
 });
-const VERIFIED_PYTHON_FREE_RELEASE: InstallReleasePin = REVIEWED_V017_RELEASE_PIN;
+// Immutable public v0.1.8 TEST release, native CI #39118555940 (x64+arm64).
+// Exact annotated Git tag peels to reviewed Agent source 4d58ffe; official
+// published SHA256SUMS re-downloaded and compared byte for byte.
+export const REVIEWED_V018_RELEASE_PIN: InstallReleasePin = Object.freeze({
+  tag: "v0.1.8",
+  pairingProtocol: "single-code-v1",
+  upgradeMode: "explicit-v1",
+  commit: "4d58ffe33e560d6f5f1c375aacf02a774b51a6c0",
+  x64Sha256: "e9116c0b1df5566d0ec49a187bf79e7e69e66698183db0da938eb355f82ed79f",
+  arm64Sha256: "73f159fe722cec4e8d354160f8975532b4f07fe9538772b6ed64c95ae4576184",
+});
+const VERIFIED_PYTHON_FREE_RELEASE: InstallReleasePin = REVIEWED_V018_RELEASE_PIN;
 const APPROVED_ORIGINS = new Set(["https://remote-control-v2-preview.aiyaya.workers.dev"]);
 
 function validPin(p: InstallReleasePin): boolean {

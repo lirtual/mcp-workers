@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
-import { handleAgentInstallerRequest, renderAgentInstallShell, REVIEWED_V012_RELEASE_PIN, REVIEWED_V014_RELEASE_PIN, REVIEWED_V016_RELEASE_PIN, REVIEWED_V017_RELEASE_PIN } from "../src/install-bootstrap.ts";
+import { handleAgentInstallerRequest, renderAgentInstallShell, REVIEWED_V012_RELEASE_PIN, REVIEWED_V014_RELEASE_PIN, REVIEWED_V016_RELEASE_PIN, REVIEWED_V017_RELEASE_PIN, REVIEWED_V018_RELEASE_PIN } from "../src/install-bootstrap.ts";
 
 const origin = "https://remote-control-v2-preview.aiyaya.workers.dev";
 const pin = Object.freeze({
@@ -13,11 +13,11 @@ test("reviewed immutable single-code Worker installation route is enabled", asyn
   const response=handleAgentInstallerRequest(new Request(origin+"/install.sh"));
   assert.equal(response.status,200);
   assert.equal(response.headers.get("cache-control"),"no-store");
-  assert.equal(REVIEWED_V017_RELEASE_PIN.commit,"fd24296d58768fff7a23440b858774d9dfaa7632");
+  assert.equal(REVIEWED_V018_RELEASE_PIN.commit,"4d58ffe33e560d6f5f1c375aacf02a774b51a6c0");
   const script=await response.text();
-  assert.match(script,/remote-control-agent-v0\.1\.7/);
-  assert.match(script,/2b37334ccee4ae32/);
-  assert.match(script,/3fd1262303712080/);
+  assert.match(script,/remote-control-agent-v0\.1\.8/);
+  assert.match(script,/e9116c0b1df5566d/);
+  assert.match(script,/73f159fe722cec4e/);
   assert.match(script,/1\) \[ "\$1" = "--upgrade"/);
 });
 
