@@ -117,7 +117,7 @@ test("readback must match exact newly published Wrangler version", () => {
 
 test("manual release scope stages the pinned Agent only for Remote Control", () => {
   const workflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
-  assert.match(workflow, /- id: scope\\n[\\s\\S]*?run: node scripts\\/select-affected-apps\\.mjs/, "manual scope entry exists");
+  assert.ok(workflow.includes("      - id: scope\n") && workflow.includes("        run: node scripts/select-affected-apps.mjs"), "manual scope entry exists");
   const selector = new URL("./select-affected-apps.mjs", import.meta.url);
   function runManual(worker, ref = "refs/heads/main") {
     const dir = mkdtempSync(join(tmpdir(), "remote-release-scope-"));
