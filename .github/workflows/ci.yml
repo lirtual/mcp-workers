@@ -172,7 +172,7 @@ jobs:
           pnpm --version
 
       - name: Stage pinned public Agent source (test-only)
-        if: steps.scope.outputs.apps != '' || steps.scope.outputs.remote_control_changed == 'true'
+        if: steps.scope.outputs.remote_control_changed == 'true'
         run: bash scripts/stage-public-remote-control-agent.sh
 
       - name: Install workspace
@@ -257,9 +257,6 @@ jobs:
           node --version
           pnpm --version
 
-      - name: Stage pinned public Agent source (test-only)
-        run: bash scripts/stage-public-remote-control-agent.sh
-
       - name: Install workspace
         run: pnpm install --frozen-lockfile --ignore-scripts
 
@@ -336,7 +333,8 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
 
-      - name: Stage pinned public Agent source (test-only)
+      - name: Stage pinned public Agent source (remote-control release only)
+        if: inputs.worker == 'remote-control-mcp-worker'
         run: bash scripts/stage-public-remote-control-agent.sh
 
       - name: Install pinned dependencies
