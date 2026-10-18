@@ -1,21 +1,38 @@
-> **2026-10-18 legacy upgrade compatibility (#77, Agent #3, Worker #82):**
-> The published immutable **v0.1.1** Python `rca upgrade` strictly rejects the
-> published **v0.1.4** Node-only archive (verified against both official assets).
-> Do **not** run `rca upgrade v0.1.4 ...` on v0.1.1 or weaken the old signed
-> archive allowlist. The new Agent and Worker Drafts provide an explicit,
-> opt-in **`--upgrade`** migration path through the same origin-bound one-liner,
-> reusing the reviewed owner-only v2 service/endpoint/key/schema checks.
-> **The currently deployed v0.1.4 installer intentionally rejects this option.**
-> Only after a *new immutable migration-capable Release*, reviewed Worker pin,
-> owner-approved Preview deployment and disposable WSL2 validation would
+> **Active TEST Preview release — 2026-10-18 (#77/#82/#97):** The *single existing*
+> `remote-control-v2-preview` Worker now serves immutable Agent
+> [v0.1.6](https://github.com/lirtual/remote-control-agent/releases/tag/v0.1.6)
+> from source `db1194ee151d93b68d0b21b6f0c19ac8b64ac065`.
+> Official x64 SHA-256: `328b0407c71713f360221e6422b66ec07f96796aaa7fcce18e27ed690bc7b5e6`;
+> ARM64: `66d53cf06b35ea941401fd12e06e69236829cd002d06d883e6d7f752936494d6`.
+> The post-publication `SHA256SUMS` was independently downloaded, compared byte-for-byte
+> with the prevalidated list and checked against both native binaries. Preview deployment
+> `811c25b3-e49b-4ef4-99ef-50e85cb85dca` serves Worker version
+> `026a3ced-ebfc-4e0b-8b30-ccc0d24ea668` at 100%; previous Preview
+> `0cff44a5-5dff-488d-8c93-577c73df22af` is the rollback target.
+> `MCP_ACCESS_TOKEN`, `V2_OWNER`, and Preview-only flag were independently retained.
+>
+> **Legacy upgrade compatibility:** Immutable v0.1.1's Python `rca upgrade`
+> does **not** understand any newer Node-only archive; its unchanged allowlist
+> correctly rejects the migration. The *new* Preview-origin installer supports
+> **explicit** `--upgrade` via its one existing command and bundled Node, not
+> via an old `rca upgrade` command. The exact
 > `curl -fsSL https://remote-control-v2-preview.aiyaya.workers.dev/install.sh | sh -s -- --upgrade`
-> become an available command. Today this example is **NOT authorized or usable**.
-> Failure rollback observed in a real Release-binary **fake-systemd fixture**;
-> actual WSL2 user-systemd and signed WSS remain unverified.
+> command is **TEST-only, not production instructions**. Do not run it against
+> existing approved WSL2 devices until the isolated real user-systemd upgrade,
+> recovery, identity/WSS verification and owner approval gates are complete.
+> Standard single-code pairing still requires authenticated MCP `pairing_approve`,
+> presently blocked in this ChatGPT client. Simulated systemd rollback and
+> non-root offline full-shell upgrade passed; *real WSL2 systemd* is not yet verified.
+>
+> **Withdrawn version:** Immutable [v0.1.5](https://github.com/lirtual/remote-control-agent/releases/tag/v0.1.5)
+> contains an incorrect ARM64 checksum entry in the uploaded `SHA256SUMS`.
+> It has been marked WITHDRAWN / DO NOT INSTALL. Never use/pin it.
+> v1 and production remain unchanged; #57's actual 48h gate is separate.
+>
+> **Historical information below** describes v0.1.0 Python bootstrap and older
+> releases for audit, not the currently active Preview installer.
 
-> **2026-10-18 Preview protocol update (#97/#82):** The independently published immutable TEST prerelease [v0.1.4](https://github.com/lirtual/remote-control-agent/releases/tag/v0.1.4) at exact source `c389485e6570f8975346baa6bc6b0e56746824a1` replaces the old v0.1.2 **only for the new single-code-v1 Preview installer**. Reviewed x64 SHA-256: `3b3fa8c77e1c69a3e1542923eb9203c11f782b33fa96a6db832c526a4f816d4a`; ARM64: `bd9761a0cc740265aa825bd538a7a934bac4e3562f88f90507af958c3bfbafb8`. Existing v0.1.0-v0.1.3 Releases remain unchanged. The only approved Worker installer origin is `https://remote-control-v2-preview.aiyaya.workers.dev/install.sh`; it must be enabled solely with Preview flag, owner DO and MCP token. This test Release and offline CI do **not** constitute real pairing, clean-host E2E or production acceptance; #57 remains deferred.
-
-# Standalone Agent one-command bootstrap — published v0.1.0 TEST prerelease
+# Historical v0.1.0 TEST bootstrap (not the active Preview installer)
 
 **Public verified prerelease:** https://github.com/lirtual/remote-control-agent/releases/tag/v0.1.0 . This GitHub Release is published, **immutable=true**, and its x64 + ARM64 official asset digests match native CI https://github.com/lirtual/remote-control-agent/actions/runs/38996153946 . Annotated tag `v0.1.0` peels to public Agent source commit `e82b90287374797ce20072ce18892055e4a17980`. The separate private Worker/v1 production deployment has not been changed.
 
