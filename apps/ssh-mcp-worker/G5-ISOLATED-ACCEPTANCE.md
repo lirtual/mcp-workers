@@ -23,6 +23,18 @@ Authorization scope: operator agreed in chat to the previously proposed minimal 
 
 These facts **do not** establish valid-Bearer MCP success, real ChatGPT Portal connectivity, SSH/SFTP against a public disposable target, rollback/unknown-receipt continuity, or production readiness.
 
+## 2026-10-18 · Actual isolated Cloudflare Worker rollback/restore probe (new evidence)
+
+**Scope:** only `ssh-mcp-g5-lab`, **not** `edgessh` and **not** a production Worker. Live Cloudflare deployment/versions API reported all three historical test script versions use the **same** DO namespace (`SSH_OPERATIONS`) and same synthetic D1 (`EDGE_SSH_DB`). Historical v2 had no `ENCRYPTION_KEY` binding, so the rollback is a deliberate compatibility/fail-closed window, **not** evidence of a fully functional authenticated service.
+
+- Original v3 100% Worker version: `20022294-7b10-4a09-96e5-05811edf50e6`.
+- Isolated rollback: Cloudflare deployment POST succeeded (HTTP 200); readback showed historical v2 `3779476e-0043-4f18-ad95-477f5a55a297` serving **100%**.
+- Immediate isolated restore: Cloudflare deployment POST succeeded (HTTP 200); readback showed exact original v3 serving **100%** again.
+- Independent post-restore readback: same synthetic D1 binding `96ceaf25-2c45-4128-bdc9-88ff0ec7ac1f`, same `SSH_OPERATIONS` namespace `ac9308a01e7246beafe9f21a992620aa`, and both **secret binding names** `MCP_ACCESS_TOKEN`/`ENCRYPTION_KEY` present. No Secret values inspected.
+- Production `edgessh` script lookup still succeeded. The only write API path in this probe targeted `ssh-mcp-g5-lab/deployments`.
+
+**Honest boundaries:** this demonstrates *deployed Worker version rollback/restore and binding identity stability*, **not** a persisted unknown receipt read across actual code versions, Portal-authenticated `tools/list`, a live SSH/SFTP fixture, or a real EdgeSSH WebSSH/SFTP functional check. Therefore **do not mark DO receipt/unknown survival or full G5 rollback criteria passed**; no G5 close, no production publication. Preserve this actual evidence and do not repeat the same rollback unless the involved version/schema changes.
+
 ## Exactly what remains for closing #95
 
 - [ ] Register/connect **this isolated test URL** via the actual ChatGPT MCP Portal; confirm an authenticated Portal call to `tools/list` and a read-only `list_hosts` against synthetic D1. Direct `curl` to the Worker alone does not qualify.
