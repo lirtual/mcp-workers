@@ -5,7 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { startAgent, type RunningAgent } from "../../remote-control-agent/src/server.ts";
-import worker, { DEVICE_CALL_URL } from "../src/worker.ts";
+import worker from "../src/worker.ts";
+import { DEVICE_CALL_URL } from "../src/device-target.ts";
 
 const workerUrl = "https://remote-control-mcp-worker.example.test/mcp";
 const portalToken = "portal-secret-for-tests";

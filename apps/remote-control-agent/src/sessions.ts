@@ -128,6 +128,7 @@ function snapshot(session: ManagedSession): SessionSnapshot {
 export class ManagedSessions {
   private readonly sessions = new Map<string, ManagedSession>();
   private readonly starting = new Set<string>();
+  private revocationClosing = false;
   private readonly shellPath: string;
   private readonly maxLifetimeMs: number;
 
@@ -155,6 +156,7 @@ export class ManagedSessions {
 
   async start(command: string, waitMs: number, onExit?: (session: SessionSnapshot) => Promise<void>): Promise<SessionSnapshot> {
     this.prune();
+    if (this.revocationClosing) throw new Error("Managed sessions are closed to new starts.");
     const active = [...this.sessions.values()].filter((session) => this.ownsRunningProcess(session)).length;
     if (active + this.starting.size >= MAX_SESSIONS) throw new Error("Session capacity reached.");
 
@@ -245,6 +247,17 @@ export class ManagedSessions {
       await control.signal("SIGKILL");
       await Promise.race([session.closed, new Promise<void>((resolve) => setTimeout(resolve, 500))]);
       throw new Error("The managed Shell supervisor is unavailable on this Linux kernel.");
+    }
+    // Revocation can start while supervisor readiness is pending. Never
+    // add a session to the active map after the cleanup snapshot.
+    if (this.revocationClosing) {
+      session.terminationRequested = true;
+      await Promise.race([control.signal("SIGTERM").catch(() => false), new Promise((resolve) => setTimeout(resolve, 500))]);
+      await Promise.race([session.closed, new Promise((resolve) => setTimeout(resolve, 500))]);
+      if (!this.processExited(session)) {
+        await Promise.race([control.signal("SIGKILL").catch(() => false), new Promise((resolve) => setTimeout(resolve, 500))]);
+      }
+      throw new Error("Managed sessions are closed to new starts.");
     }
     this.sessions.set(sessionId, session);
     // This is an absolute deadline from process spawn, not the client's initial wait.
@@ -383,7 +396,20 @@ export class ManagedSessions {
     };
   }
 
+  /** Stop only this Agent's managed sessions; unknown effects remain uncertain. */
+  async stopOwnedForRevocation(): Promise<"confirmed" | "uncertain"> {
+    this.revocationClosing = true;
+    const starting = this.starting.size > 0;
+    const active = this.list().filter(session => session.state === "running" || session.state === "unknown");
+    const stopped = await Promise.allSettled(active.map(session => this.terminate(session.session_id)));
+    const allStopped = stopped.every(item => item.status === "fulfilled" && item.value === "completed");
+    const stillActive = this.list().some(session => session.state === "running" || session.state === "unknown");
+    return !starting && this.starting.size === 0 && allStopped && !stillActive
+      ? "confirmed" : "uncertain";
+  }
+
   async close(): Promise<void> {
+    this.revocationClosing = true;
     const running = [...this.sessions.values()].filter((session) => session.state === "running" || session.state === "unknown");
     for (const session of this.sessions.values()) if (session.deadlineTimer) clearTimeout(session.deadlineTimer);
     const waitForClose = async (timeoutMs: number) => {
