@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
-import { handleAgentInstallerRequest, renderAgentInstallShell, REVIEWED_V012_RELEASE_PIN, REVIEWED_V014_RELEASE_PIN } from "../src/install-bootstrap.ts";
+import { handleAgentInstallerRequest, renderAgentInstallShell, REVIEWED_V012_RELEASE_PIN, REVIEWED_V014_RELEASE_PIN, REVIEWED_V016_RELEASE_PIN } from "../src/install-bootstrap.ts";
 
 const origin = "https://remote-control-v2-preview.aiyaya.workers.dev";
 const pin = Object.freeze({
@@ -13,11 +13,12 @@ test("reviewed immutable single-code Worker installation route is enabled", asyn
   const response=handleAgentInstallerRequest(new Request(origin+"/install.sh"));
   assert.equal(response.status,200);
   assert.equal(response.headers.get("cache-control"),"no-store");
-  assert.equal(REVIEWED_V014_RELEASE_PIN.commit,"c389485e6570f8975346baa6bc6b0e56746824a1");
+  assert.equal(REVIEWED_V016_RELEASE_PIN.commit,"db1194ee151d93b68d0b21b6f0c19ac8b64ac065");
   const script=await response.text();
-  assert.match(script,/remote-control-agent-v0\.1\.4/);
-  assert.match(script,/3b3fa8c77e1c69a3/);
-  assert.match(script,/bd9761a0cc740265/);
+  assert.match(script,/remote-control-agent-v0\.1\.6/);
+  assert.match(script,/328b0407c71713f3/);
+  assert.match(script,/66d53cf06b35ea94/);
+  assert.match(script,/1\) \[ "\$1" = "--upgrade"/);
 });
 
 test("historical two-code v0.1.2 cannot be served by single-code Worker even when explicitly passed",async()=>{
@@ -64,7 +65,7 @@ test("migration flag is fail-closed on the published v0.1.4 pin and opt-in for a
   assert.doesNotMatch(current,/1\) \[ "\$1" = "--upgrade"/);
   assert.match(current,/Unsupported installer action/);
   assert.match(current,/"\$@" < \/dev\/tty/);
-  const future=renderAgentInstallShell(origin,{...pin,tag:"v0.1.5",upgradeMode:"explicit-v1"});
+  const future=renderAgentInstallShell(origin,REVIEWED_V016_RELEASE_PIN);
   assert.match(future,/1\) \[ "\$1" = "--upgrade"/);
   assert.match(future,/"\$@" < \/dev\/tty/);
   const syntax=spawnSync("sh",["-n"],{input:future,encoding:"utf8"});

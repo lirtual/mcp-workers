@@ -31,7 +31,18 @@ export const REVIEWED_V014_RELEASE_PIN: InstallReleasePin = Object.freeze({
   x64Sha256: "3b3fa8c77e1c69a3e1542923eb9203c11f782b33fa96a6db832c526a4f816d4a",
   arm64Sha256: "bd9761a0cc740265aa825bd538a7a934bac4e3562f88f90507af958c3bfbafb8",
 });
-const VERIFIED_PYTHON_FREE_RELEASE: InstallReleasePin = REVIEWED_V014_RELEASE_PIN;
+// Reviewed immutable native TEST release with an explicitly selected legacy
+// upgrade path. Never infer that a user's old Python rca can install it.
+// Official SHA256SUMS was re-downloaded and verified after publication.
+export const REVIEWED_V016_RELEASE_PIN: InstallReleasePin = Object.freeze({
+  tag: "v0.1.6",
+  pairingProtocol: "single-code-v1",
+  upgradeMode: "explicit-v1",
+  commit: "db1194ee151d93b68d0b21b6f0c19ac8b64ac065",
+  x64Sha256: "328b0407c71713f360221e6422b66ec07f96796aaa7fcce18e27ed690bc7b5e6",
+  arm64Sha256: "66d53cf06b35ea941401fd12e06e69236829cd002d06d883e6d7f752936494d6",
+});
+const VERIFIED_PYTHON_FREE_RELEASE: InstallReleasePin = REVIEWED_V016_RELEASE_PIN;
 const APPROVED_ORIGINS = new Set(["https://remote-control-v2-preview.aiyaya.workers.dev"]);
 
 function validPin(p: InstallReleasePin): boolean {
