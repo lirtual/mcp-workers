@@ -1,3 +1,18 @@
+> **2026-10-18 legacy upgrade compatibility (#77, Agent #3, Worker #82):**
+> The published immutable **v0.1.1** Python `rca upgrade` strictly rejects the
+> published **v0.1.4** Node-only archive (verified against both official assets).
+> Do **not** run `rca upgrade v0.1.4 ...` on v0.1.1 or weaken the old signed
+> archive allowlist. The new Agent and Worker Drafts provide an explicit,
+> opt-in **`--upgrade`** migration path through the same origin-bound one-liner,
+> reusing the reviewed owner-only v2 service/endpoint/key/schema checks.
+> **The currently deployed v0.1.4 installer intentionally rejects this option.**
+> Only after a *new immutable migration-capable Release*, reviewed Worker pin,
+> owner-approved Preview deployment and disposable WSL2 validation would
+> `curl -fsSL https://remote-control-v2-preview.aiyaya.workers.dev/install.sh | sh -s -- --upgrade`
+> become an available command. Today this example is **NOT authorized or usable**.
+> Failure rollback observed in a real Release-binary **fake-systemd fixture**;
+> actual WSL2 user-systemd and signed WSS remain unverified.
+
 > **2026-10-18 Preview protocol update (#97/#82):** The independently published immutable TEST prerelease [v0.1.4](https://github.com/lirtual/remote-control-agent/releases/tag/v0.1.4) at exact source `c389485e6570f8975346baa6bc6b0e56746824a1` replaces the old v0.1.2 **only for the new single-code-v1 Preview installer**. Reviewed x64 SHA-256: `3b3fa8c77e1c69a3e1542923eb9203c11f782b33fa96a6db832c526a4f816d4a`; ARM64: `bd9761a0cc740265aa825bd538a7a934bac4e3562f88f90507af958c3bfbafb8`. Existing v0.1.0-v0.1.3 Releases remain unchanged. The only approved Worker installer origin is `https://remote-control-v2-preview.aiyaya.workers.dev/install.sh`; it must be enabled solely with Preview flag, owner DO and MCP token. This test Release and offline CI do **not** constitute real pairing, clean-host E2E or production acceptance; #57 remains deferred.
 
 # Standalone Agent one-command bootstrap — published v0.1.0 TEST prerelease
