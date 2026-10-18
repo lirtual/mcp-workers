@@ -108,7 +108,7 @@ jobs:
             else
               for app in "${apps[@]}"; do
                 for file in "${changed_files[@]}"; do
-                  if [[ "$file" == "apps/$app/"* ]]; then
+                  if [[ "$file" == "apps/$app/"* || ( "$app" == remote-control-mcp-worker && "$file" == scripts/stage-public-remote-control-agent.sh ) ]]; then
                     selected+=("$app")
                     break
                   fi
@@ -118,9 +118,14 @@ jobs:
           fi
 
           remote_control_changed="$check_all"
+          # workflow_dispatch has no changed_files; the selected Remote Control
+          # release still needs its immutable public Agent test fixture.
+          if [[ "$EVENT_NAME" == "workflow_dispatch" && "$MANUAL_WORKER" == "remote-control-mcp-worker" ]]; then
+            remote_control_changed=true
+          fi
           if [[ "$remote_control_changed" != "true" ]]; then
             for file in "${changed_files[@]}"; do
-              if [[ "$file" == apps/remote-control-agent/* || "$file" == apps/remote-control-mcp-worker/* ]]; then
+              if [[ "$file" == apps/remote-control-agent/* || "$file" == apps/remote-control-mcp-worker/* || "$file" == scripts/stage-public-remote-control-agent.sh ]]; then
                 remote_control_changed=true
                 break
               fi
@@ -171,6 +176,10 @@ jobs:
           node --version
           pnpm --version
 
+      - name: Stage pinned public Agent source (test-only)
+        if: steps.scope.outputs.remote_control_changed == 'true'
+        run: bash scripts/stage-public-remote-control-agent.sh
+
       - name: Install workspace
         if: steps.scope.outputs.apps != '' || steps.scope.outputs.remote_control_changed == 'true'
         run: pnpm install --frozen-lockfile --ignore-scripts
@@ -183,14 +192,14 @@ jobs:
         if: steps.scope.outputs.portal_auth_changed == 'true'
         run: pnpm --filter @mcp-workers/portal-auth check
 
-      - name: Check Remote Control Agent and Worker
+      - name: Verify pinned public Agent fixture for Worker
         if: steps.scope.outputs.remote_control_changed == 'true'
         run: |
           set -euo pipefail
-          pnpm --filter @mcp-workers/remote-control-agent typecheck
-          pnpm --filter @mcp-workers/remote-control-agent test
-          pnpm --filter remote-control-mcp-worker typecheck
-          pnpm --filter remote-control-mcp-worker test
+          test "$(cat apps/remote-control-agent/.pinned-public-source)" = "4d58ffe33e560d6f5f1c375aacf02a774b51a6c0"
+          # Public Agent native tests belong to the upstream immutable release CI.
+          # Run private Worker compatibility checks exactly once in the
+          # existing affected-application `remote-control-mcp-worker check`.
 
       - name: Run affected application checks
         if: steps.scope.outputs.apps != ''
@@ -328,6 +337,10 @@ jobs:
           node-version: 24
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
+
+      - name: Stage pinned public Agent source (remote-control release only)
+        if: inputs.worker == 'remote-control-mcp-worker'
+        run: bash scripts/stage-public-remote-control-agent.sh
 
       - name: Install pinned dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts

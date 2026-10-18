@@ -73,7 +73,7 @@ function setup() {
   return { a, b, entries, storage, socket, sockets, aSocket, bSocket, state, owner, closes, call, get doCalls() { return doCalls; } };
 }
 
-test("Portal-only revoke commits tombstone before closing A, preserves B, and is repeatable after DO rehydrate", async () => {
+test("Portal-only revoke deletes grant before closing A, preserves B, and is repeatable after DO rehydrate", async () => {
   const f = setup();
   const rejected = await f.call("revoke_device", { device_id: f.a }, "not-owner");
   assert.equal(rejected.status, 401);
@@ -95,14 +95,14 @@ test("Portal-only revoke commits tombstone before closing A, preserves B, and is
   assert.equal(body.device_id, f.a);
   assert.equal(body.status, "revoked");
   assert.equal(body.process_cleanup, "unconfirmed", "missing Agent cleanup reply must never claim a process stopped");
-  assert.equal((f.entries.get("device:" + f.a) as V2Device).revoked, true);
+  assert.equal(f.entries.has("device:" + f.a), false);
   assert.equal(f.entries.has("session:nonce:" + f.a), false);
   assert.equal(f.entries.has("session:epoch:" + f.a), false);
   assert.deepEqual(f.closes.get(f.a), [{ code: 1008, reason: "revoked" }]);
   assert.equal(f.closes.has(f.b), false);
   assert.equal((f.entries.get("device:" + f.b) as V2Device).revoked, false);
 
-  // Tombstone survives reconstruction; challenge is denied and old socket
+  // Deletion survives reconstruction; challenge is denied and old socket
   // application messages cannot pass the ordinary persisted policy guard.
   const rehydrated = new V2OwnerCoordinator(f.state);
   const login = await issueSessionChallenge(f.storage as never, { device_id: f.a });
@@ -115,13 +115,13 @@ test("Portal-only revoke commits tombstone before closing A, preserves B, and is
     method: "POST", headers: { "content-type": "application/json" }, body: "{}",
   }));
   const devices = await list.json() as Array<{ device_id: string; status: string }>;
-  assert.equal(devices.find(d => d.device_id === f.a)?.status, "revoked");
+  assert.equal(devices.some(d => d.device_id === f.a), false);
   assert.equal(devices.find(d => d.device_id === f.b)?.status, "online");
   const repeated = await f.call("revoke_device", { device_id: f.a });
-  assert.equal(JSON.parse(repeated.json.result.content[0]!.text).status, "already_revoked");
+  assert.equal(repeated.json.result.isError, true);
 });
 
-test("revoking an offline device commits the tombstone without claiming to stop a process", async () => {
+test("revoking an offline device deletes the grant without claiming to stop a process", async () => {
   const f = setup();
   f.sockets.set("device:" + f.a, []);
   const result = await f.call("revoke_device", { device_id: f.a });
@@ -133,7 +133,7 @@ test("revoking an offline device commits the tombstone without claiming to stop 
 
 test("DO storage failure refuses to close a socket or claim revocation", async () => {
   const f = setup();
-  // Prevent committing the tombstone. All cleanup side effects must happen later.
+  // Prevent committing the deletion. All cleanup side effects must happen later.
   const fail = new V2OwnerCoordinator({
     storage: { transaction: async () => { throw new Error("backend unavailable"); } },
     getWebSockets: () => [f.aSocket],
@@ -182,12 +182,12 @@ test("revocation cancels an in-flight A request before closing A, without cancel
   }));
   assert.deepEqual(await (await bPending).json(), { status: "completed", text: "still-works" });
   // Even if the transport close hangs and readyState looks OPEN, a new A
-  // request is denied by the durable tombstone.
+  // request is denied by the missing durable grant.
   assert.equal((await read(f.a)).status, 503);
   assert.equal(pendingIds.has(f.a), true);
 });
 
-test("confirmed cleanup ACK requires durable tombstone and exact active-epoch socket", async () => {
+test("confirmed cleanup ACK requires deleted grant and exact active-epoch socket", async () => {
   const f = setup();
   let checkedTombstone = false;
   const matching = {
@@ -196,7 +196,7 @@ test("confirmed cleanup ACK requires durable tombstone and exact active-epoch so
     send(frame: string) {
       const msg = JSON.parse(frame) as { kind: string; request_id: string };
       assert.equal(msg.kind, "revoke_cleanup");
-      checkedTombstone = (f.entries.get("device:" + f.a) as V2Device).revoked === true &&
+      checkedTombstone = !f.entries.has("device:" + f.a) &&
         !f.entries.has("session:epoch:" + f.a);
       queueMicrotask(() => { void f.owner.webSocketMessage(matching as unknown as WebSocket,
         JSON.stringify({ kind: "revoke_cleanup_result", request_id: msg.request_id, status: "confirmed" })); });

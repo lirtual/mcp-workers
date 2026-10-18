@@ -28,6 +28,7 @@ test("list_devices requires Portal bearer and reports only current, approved WSS
   ]);
   let deviceReads = 0;
   const storage = {
+    async delete(key: string) { return rows.delete(key); },
     async get<T>(key: string) { deviceReads++; return rows.get(key) as T | undefined; },
     async list<T>({ prefix, limit }: { prefix: string; limit: number }) {
       return new Map([...rows].filter(([key]) => key.startsWith(prefix)).slice(0, limit)) as Map<string, T>;
@@ -73,7 +74,6 @@ test("list_devices requires Portal bearer and reports only current, approved WSS
     { device_id: onlineId, name: "home", status: "online" },
     { device_id: staleId, name: "stale", status: "offline" },
     { device_id: offlineId, name: "office", status: "offline" },
-    { device_id: revokedId, name: "retired", status: "revoked" },
   ].sort((a, b) => a.device_id.localeCompare(b.device_id)));
   assert.equal(payload.result.content[0]!.text.includes("private-public-key"), false);
   assert.equal(devices.some(d => d.device_id === revokedId && d.status === "online"), false);
@@ -115,7 +115,7 @@ test("v2 Preview lists per-device Shell and files but never implicitly routes to
       "create_directory", "replace_text", "list_sessions", "read_session_output", "stop_session", "send_input"]) {
     assert.equal(exposed.has(supported), true, supported);
   }
-  for (const item of list.result.tools.filter(x => !["pairing_lookup", "pairing_prepare", "list_devices", "revoke_device"].includes(x.name))) {
+  for (const item of list.result.tools.filter(x => !["pairing_lookup", "pairing_approve", "list_devices", "revoke_device"].includes(x.name))) {
     assert.ok(item.inputSchema.required?.includes("device_id"), item.name);
   }
   for (const [name, args] of [

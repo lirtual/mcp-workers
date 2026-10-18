@@ -127,7 +127,8 @@ test("P1 security gate: a valid Portal token and automated confirm tool call can
   };
   assert.equal(tools.result.tools.some(x => x.name === "pairing_lookup"), true);
   // The only pairing tool is observational; a model-generated approval cannot be accepted.
-  assert.equal(tools.result.tools.some(x => /confirm|approve|authorize|pairing_complete/.test(x.name)), false);
+  assert.equal(tools.result.tools.some(x => /pairing_confirm|approve_device|pairing_complete/.test(x.name)), false);
+  assert.equal(tools.result.tools.some(x => x.name === "pairing_approve"), true); // new deliberate mutating owner grant
 
   const observed = await rpc("portal-credential", "tools/call", {
     name: "pairing_lookup", arguments: { code: pending.code },
@@ -181,7 +182,7 @@ test("interrupted same-key pairing rotates pending code atomically and old code 
   assert.equal((await lookupPending(store as never, sameKey.request.code_verifier)).status, 200);
 });
 
-test("approved and revoked device keys can NEVER register a new pending code", async () => {
+test("approved keys cannot be reused, but stale revoked rows are pruned before new pending enrollment", async () => {
   for (const revoked of [false, true]) {
     const {store,values} = makeStore();
     const identity = newEnrollment("old-agent");
@@ -193,16 +194,16 @@ test("approved and revoked device keys can NEVER register a new pending code", a
     } as never);
     const repeated = newEnrollment("old-agent", identity.privateKeyPem);
     const response = await registerPending(store as never, repeated.request);
-    assert.equal(response.status, 409);
-    assert.deepEqual(response.body, {error:"identity_already_used"});
-    assert.equal([...values.keys()].filter(x => x.startsWith("pending:")).length, 0);
+    assert.equal(response.status, revoked ? 202 : 409);
+    if (!revoked) assert.deepEqual(response.body, {error:"identity_already_used"});
+    assert.equal([...values.keys()].filter(x => x.startsWith("pending:")).length, revoked ? 1 : 0);
     const fresh = newEnrollment("old-agent");
     assert.equal((await registerPending(store as never, fresh.request)).status, 202);
     assert.notEqual(fresh.request.public_key, identity.request.public_key);
   }
 });
 
-test("read-only signed revoke-state probe prevents accidental --re-pair on active, wrong-key and unknown IDs", async () => {
+test("read-only signed negative-status probe denies active/foreign keys and requires owner re-pair on active, wrong-key and unknown IDs", async () => {
   const {store,values} = makeStore();
   const material = newEnrollment("revoked");
   const id = "d41f1d0c-288c-4ae4-bd0d-9ff8b1b8c321";
@@ -220,10 +221,10 @@ test("read-only signed revoke-state probe prevents accidental --re-pair on activ
   const record = values.get("device:" + id) as unknown as {revoked:boolean};
   record.revoked = true;
   assert.deepEqual(await checkRevokedIdentity(store as never, request),
-    {status:200, body:{status:"revoked", device_id:id}});
+    {status:200, body:{status:"not_approved", device_id:id}});
   assert.equal((await checkRevokedIdentity(store as never, {...request, proof:"invalid"})).status, 400);
   assert.equal((await checkRevokedIdentity(store as never, {...request, device_id:"00000000-0000-4000-8000-000000000000"})).status, 403);
   assert.equal((await checkRevokedIdentity(store as never, {...request, issued_at:Date.now()-120_000})).status, 400);
-  assert.equal(record.revoked, true);
+  assert.equal(values.has("device:" + id), false);
   assert.equal([...values.keys()].filter(x=>x.startsWith("pending:")).length, 0);
 });

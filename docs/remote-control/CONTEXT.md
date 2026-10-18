@@ -1,6 +1,8 @@
 # Remote Control MCP — Domain Context
 
-> Status (updated 2026-10-17): v1 Agent reliability source merged in [PR #66](https://github.com/lirtual/mcp-workers/pull/66) and [PR #67](https://github.com/lirtual/mcp-workers/pull/67), and v1 Linux Agent **was separately upgraded and verified** to Node 24 + SQLite under [Spec #60](https://github.com/lirtual/mcp-workers/issues/60) / [#65](https://github.com/lirtual/mcp-workers/issues/65). Original JSON and historical backup were preserved for intentional manual rollback; SQLite is now authoritative. v2 multi-device WSS/DO remains an independent **preview / Draft PR #58** and is not a v1 production replacement. Independent human terminal confirmation and the **48-hour single-device** Hibernation/quota gate remain release conditions; #57 is open. The 48h test reduction does not remove v2 multi-device functionality.
+**Current implementation status (2026-10-18; the original design-time snapshots below are historical):** Single-code device pairing is implemented on Draft PR #79 and has genuine nonproduction x64 acceptance ([#97](https://github.com/lirtual/mcp-workers/issues/97) Closed), with public immutable Agent v0.1.8 TEST assets and the existing Preview Worker `/install.sh`. This does **not** authorize a merge or production change. Native external ARM64 owner onboarding (#74/#82), true online 24-hour expiry/Hibernation (#72/#75) and continuous 48-hour final gate (#57) remain open. v1 production is independent.
+
+> Status (updated 2026-10-16): v1 Agent reliability source merged in [PR #66](https://github.com/lirtual/mcp-workers/pull/66) and [PR #67](https://github.com/lirtual/mcp-workers/pull/67), and v1 Linux Agent **was separately upgraded and verified** to Node 24 + SQLite under [Spec #60](https://github.com/lirtual/mcp-workers/issues/60) / [#65](https://github.com/lirtual/mcp-workers/issues/65). Original JSON and historical backup were preserved for intentional manual rollback; SQLite is now authoritative. v2 multi-device WSS/DO remains an independent **preview / Draft PR #58** and is not a v1 production replacement. Independent human terminal confirmation was separately evidenced on the isolated Preview device; the current single-device **48-hour** Hibernation/quota gate in Issue #57 remains unverified for production. The older five-device/72-hour requirement is historical and no longer this rollout's gate.
 
 ## Language
 
@@ -11,6 +13,42 @@ _Avoid_: **Remote Desktop MCP**, which implies remote graphical screen access an
 **Linux Host**:
 A Linux machine or Linux runtime environment targeted for remote operations.
 _Avoid_: Treating WSL2 as the only supported host.
+
+**Standalone Agent Installation**:
+An Agent installation initiated with **one terminal command** on a supported **Linux x86_64 or ARM64 host, including WSL2**, without obtaining development source code or manually installing build tools, a language runtime or workspace dependencies. The product distributes a ready-to-run Agent package rather than making the target host build its own Agent.
+_Avoid_: Calling a source checkout or a prerequisite-heavy build script a one-command install; assuming native Windows or macOS support.
+
+**Agent Distribution**:
+A versioned, ready-to-run package available to the owner for installing the Linux Agent independently of the source repository, containing what the Agent needs to operate on its supported platform.
+_Avoid_: Treating the public availability of installation bytes as an authorization to pair or remotely control a host.
+
+**Verified Agent Release**:
+An owner-selected and integrity-checked immutable version of the Agent's distribution, distinct from both the local device identity and the authority to pair that identity.
+_Avoid_: Treating a successful download or file hash match as independent proof that arbitrary installer code is trustworthy.
+
+**Owner-Initiated Agent Upgrade**:
+An explicit user action to replace installed Agent program files with another reviewed version while preserving the same approved device identity and prior operation history. Work actively owned by the Agent must be completed or explicitly stopped before upgrading. A failed upgrade can revert the program without implying that already changed data has been rolled back.
+_Avoid_: Treating an upgrade as a new device enrollment, an extension of temporary authorization, or permission to discard uncertain work.
+
+**Local Agent Uninstall**:
+Removal of this Agent's installed program and managed startup, not an automatic removal of its cloud-side permission. Identity and local operation history are retained by default unless the owner separately confirms data deletion.
+_Avoid_: Equating removal of local software with confirmed remote revocation.
+
+**Interrupted Installation Recovery**:
+Safely resuming the same intended Agent installation after an interrupted download, local setup or device confirmation without silently replacing a trusted device identity, duplicating authorization or erasing local receipts.
+_Avoid_: Treating an expired or revoked pairing as permission for automatic re-enrollment.
+
+**Permanent Agent Mode**:
+An owner-chosen enrollment intended for the host's ongoing operation as a managed background service, with no temporary pairing expiry.
+_Avoid_: Equating a background service with an always-online WSL2 host.
+
+**Temporary Agent Mode**:
+An owner-chosen foreground debugging enrollment, valid for no more than 24 hours from successful approval and without an automatic background service. Leaving the foreground session does not imply that remote permission has been revoked early.
+_Avoid_: Assuming local process exit, disconnection or uninstall terminates server-side authorization.
+
+**Agent CLI Pairing**:
+The local terminal onboarding experience first **asks the owner to select a permanent or 24-hour temporary device** and shows one 10-character device pairing code. The owner enters it into authenticated MCP, performs separate explicit `pairing_approve` for the reviewed pending key/mode, then the Agent automatically proves its private key and obtains the approved device ID. No second local challenge. Portal Bearer/MCP action is not independent cryptographic proof of a human (owner-approved trade-off 2026-10-18).
+_Avoid_: Treating the Agent's one-line installer as an owner authorization credential, or silently choosing a device lifetime without presenting it.
 
 **WSL2 Linux Environment**:
 A possible deployment variant of the Linux Host, not a product or protocol requirement.
@@ -121,7 +159,7 @@ _Avoid_: Treating a successful new-store startup as sufficient evidence that his
 
 Architecture and deployment implementation details belong in the research draft and ADRs, not in this vocabulary document.
 
-## Future v2 multi-device context — chosen design, not deployed (2026-10-15)
+## v2 multi-device context — accepted design, implemented in isolated Preview
 
 **Product goal:** one Remote Control MCP explicitly controls multiple individually approved Linux/WSL2 Agent installations across independent home, office and cloud networks; native Windows/macOS remote execution is deferred. Each new device should be convenient to install without a public IP, firewall inbound rule or manual Cloudflare resource/credential management.
 
@@ -129,9 +167,13 @@ Architecture and deployment implementation details belong in the research draft 
 
 **Device Identity:** a server-issued opaque `device_id` uniquely identifies an approved installation, not its display label, hostname, IP or current socket.
 
+**Temporary Debug Device:** a separately and explicitly approved device identity for short-term debugging whose **authorization ends 24 hours after successful pairing approval**. Its deadline is fixed and unaffected by reconnect, Agent exit, network loss or activity; expiry denies new work even if a previously established connection remains open. Unlike a permanent device it cannot reconnect after the deadline. Earlier exit-coupled behavior was replaced by the owner's simpler 24-hour decision (2026-10-17; ADR-0018).
+
+**Temporary Pairing:** the owner-approved one-code MCP pairing grants a **nonrenewable 24-hour temporary device authorization**. The 10-character pending code lasts ten minutes and one use; explicit authenticated `pairing_approve` binds the reviewed key and grant type, followed by Agent's automatic signed key proof. The 24-hour timer begins only at server approval and never extends on reconnect. This **supersedes** 2026-10-17's independent two-code decision (ADR-0018; updated 2026-10-18).
+
 **Pairing Code:** exactly 10 cryptographically random Base32 characters shown locally by a fresh Agent installation, single-use and expiring after 10 minutes. It identifies a pending pairing but is never a long-lived device credential.
 
-**Device Pairing:** the Remote-Control-specific Portal Bearer-authenticated `pairing_lookup` shows one pending device and fingerprint; `pairing_prepare` returns a single-use 12-character Base32 challenge (five minutes) but cannot approve. The owner manually enters the original 10-character device code and 12-character challenge in the **new Agent's own local terminal/SSH**, and the Agent signs the bound code/challenge transcript with its locally stored private key. Only the matching one-use DO proof can issue `device_id`. Portal Bearer by itself is **not** human-presence proof; this separate terminal requirement assumes the model cannot operate that host or obtain its private key. This is the owner-approved two-code UX refinement (updated 2026-10-16) and still requires nonproduction client/host verification.
+**Device Pairing:** the new Agent shows one **10-character, ten-minute, one-use local code**. Remote-Control-only Portal Bearer authenticated `pairing_lookup` **reads** the immutable pending device name, fingerprint and grant type; only a separate explicit `pairing_approve({pairing_id,expected_fingerprint,expected_grant_type})` atomically authorizes exactly that pending key. The Agent automatically proves the registered Ed25519 private key via a replay-safe signed claim and obtains its approved ID; each WSS session separately signs a fresh internal server nonce. **No manually copied 12-character challenge.** Portal Bearer verifies credential possession, not independent human presence. Compromised or prompt-injected authenticated MCP clients can approve their own pending device; the owner accepted that single-user risk on 2026-10-18. Existing #47/#50 two-code validation is historical and does not certify this current single-code protocol; distinct #97 acceptance is now completed.
 
 **Device Credential:** a per-installation private/public keypair generated locally (prefer standard Ed25519 after interoperability validation); the Agent retains the private key and proves possession via fresh signed server challenge. Reinstall means a new key, new `device_id`, new pairing.
 
@@ -141,8 +183,8 @@ Architecture and deployment implementation details belong in the research draft 
 
 **Operation Outcome:** existing local `operation_id` receipts remain authoritative for state-changing operations. During ordinary disconnection, running Agent-owned commands may continue; when outcome is uncertain, do not blindly replay.
 
-**Device Revocation:** persistently deny the device key before all other actions, reject new commands/connections, close the socket, and request **best-effort** termination of online Agent-owned sessions. Offline/compromised local processes cannot be certified stopped. Re-pairing requires fresh deliberate owner approval. Because v2 never issues Cloudflare One device registration, there is no Cloudflare One permission to remove.
+**Device Removal (formerly Device Revocation):** end an approved device identity's authorization. After removal, its former device ID is no longer a valid target or reconnect identity, and the device disappears from ordinary device listings. Disconnecting its live connection and stopping any owned work are separate best-effort effects; operations already admitted may remain uncertain. Removal does not permanently forbid a previously used public key from making a *new pending* request; a fresh grant still requires explicit authenticated owner-MCP approval and matching device private-key proof. There is no permanent removed-device history or blacklist (2026-10-17 owner decision; ADR-0017).
 
-**Free and testing gate (T11 #57, updated 2026-10-17):** one isolated v2 Preview Agent observed for 48 continuous hours in nonproduction, with demonstrated actual Hibernation/recovery, DO and Workers Free shared quota headroom, reused replay/steal/revoke evidence, Linux+WSL2 network/lifecycle proof, and non-disruptive v1 migration. Multi-device functionality remains in scope; only the long-soak size is reduced. No test or production change is authorized by these design decisions.
+**Free and testing gate:** the owner-approved release gate is **one isolated Agent over 48 real nonproduction hours**, observing actual DO Hibernation/wake and account-level Workers/DO Free quota use alongside existing account resources, with previously completed pairing/revocation and v1 isolation evidence checked separately (Issue #57). The older five-device/72-hour plan is historical, not a current release requirement. No test or production change is authorized by design alone.
 
-**Canonical v2 design sources:** [ADR-0014 — v2 transport](./adr/0014-v2-multi-device-ws-do.md), [ADR-0015 — owner pairing/identity](./adr/0015-v2-pairing-and-identity.md), [v2 technical Spec](./V2-MULTI-DEVICE-SPEC.md). Grilling Q1–Q20 and competing-transport exploration remain retrievable in the [Draft PR #45 discussion](https://github.com/lirtual/mcp-workers/pull/45) and Git history, not as active implementation instructions.
+**Canonical v2 design sources:** [ADR-0014 — v2 transport](./adr/0014-v2-multi-device-ws-do.md), [ADR-0015 — owner pairing/identity](./adr/0015-v2-pairing-and-identity.md), [ADR-0017 — device removal/identity lifecycle](./adr/0017-v2-device-revocation-without-tombstones.md), [ADR-0018 — temporary pairing/24-hour grant](./adr/0018-v2-temporary-agent-pairing-lifecycle.md), [ADR-0019 — standalone Linux Agent distribution](./adr/0019-standalone-linux-agent-distribution.md), [v2 technical Spec](./V2-MULTI-DEVICE-SPEC.md). Grilling Q1–Q20 and competing-transport exploration remain retrievable in the [Draft PR #45 discussion](https://github.com/lirtual/mcp-workers/pull/45) and Git history, not as active implementation instructions.

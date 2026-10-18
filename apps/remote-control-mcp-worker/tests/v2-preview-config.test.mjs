@@ -78,7 +78,7 @@ test("Preview exposes per-device reads, writes, Shell and Receipt without a temp
     assert.ok(tool, "v2 Preview missing " + name);
     assert.ok(tool.inputSchema.required.includes("device_id"), "missing explicit device_id: " + name);
   }
-  for (const name of ["pairing_lookup", "pairing_prepare", "list_devices", "revoke_device"]) {
+  for (const name of ["pairing_lookup", "pairing_approve", "list_devices", "revoke_device"]) {
     assert.ok(tools.some(item => item.name === name), "owner tool missing: " + name);
   }
 
@@ -197,4 +197,29 @@ test("Preview mutation maps Agent uncertain outcomes to timeout_unknown without 
   assert.deepEqual(await invoke("get_operation_status", { device_id, operation_id }),
     { operation_id, status: "unavailable" });
   assert.equal(ownerCalls, 4);
+});
+
+
+test("single-code Worker Preview installer enabled only for reviewed immutable Agent release", async () => {
+  const { default: worker } = await import("../src/worker.ts");
+  const origin = "https://remote-control-v2-preview.aiyaya.workers.dev";
+  const request = new Request(origin+"/install.sh");
+  const configured = {
+    MCP_ACCESS_TOKEN: "test-only", REMOTE_CONTROL_V2_PREVIEW_ONLY: "true",
+    V2_OWNER: { idFromName: () => "single-owner-v2", get: () => ({}) },
+  };
+  const enabled = await worker.fetch(request,configured);
+  assert.equal(enabled.status,200);
+  assert.equal(enabled.headers.get("cache-control"),"no-store");
+  assert.match(await enabled.text(),/remote-control-agent-v0\.1\.8/);
+  const disabled = await worker.fetch(new Request(origin+"/install.sh"),{
+    MCP_ACCESS_TOKEN: "test-only", REMOTE_CONTROL_V2_PREVIEW_ONLY:"false"
+  });
+  assert.equal(disabled.status,503);
+  const unconfigured = await worker.fetch(new Request(origin+"/install.sh"),{
+    REMOTE_CONTROL_V2_PREVIEW_ONLY:"true"
+  });
+  assert.equal(unconfigured.status,503);
+  const unexpectedOrigin = await worker.fetch(new Request("https://evil.example/install.sh"),configured);
+  assert.equal(unexpectedOrigin.status,403);
 });
