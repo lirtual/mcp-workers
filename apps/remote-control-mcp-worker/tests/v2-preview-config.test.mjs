@@ -211,7 +211,7 @@ test("single-code Worker Preview installer enabled only for reviewed immutable A
   const enabled = await worker.fetch(request,configured);
   assert.equal(enabled.status,200);
   assert.equal(enabled.headers.get("cache-control"),"no-store");
-  assert.match(await enabled.text(),/remote-control-agent-v0\.1\.6/);
+  assert.match(await enabled.text(),/remote-control-agent-v0\.1\.7/);
   const disabled = await worker.fetch(new Request(origin+"/install.sh"),{
     MCP_ACCESS_TOKEN: "test-only", REMOTE_CONTROL_V2_PREVIEW_ONLY:"false"
   });
