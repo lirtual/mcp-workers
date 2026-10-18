@@ -1,5 +1,7 @@
 # Remote Control MCP — Domain Context
 
+**Current implementation status (2026-10-18; the original design-time snapshots below are historical):** Single-code device pairing is implemented on Draft PR #79 and has genuine nonproduction x64 acceptance ([#97](https://github.com/lirtual/mcp-workers/issues/97) Closed), with public immutable Agent v0.1.8 TEST assets and the existing Preview Worker `/install.sh`. This does **not** authorize a merge or production change. Native external ARM64 owner onboarding (#74/#82), true online 24-hour expiry/Hibernation (#72/#75) and continuous 48-hour final gate (#57) remain open. v1 production is independent.
+
 > Status (updated 2026-10-16): v1 Agent reliability source merged in [PR #66](https://github.com/lirtual/mcp-workers/pull/66) and [PR #67](https://github.com/lirtual/mcp-workers/pull/67), and v1 Linux Agent **was separately upgraded and verified** to Node 24 + SQLite under [Spec #60](https://github.com/lirtual/mcp-workers/issues/60) / [#65](https://github.com/lirtual/mcp-workers/issues/65). Original JSON and historical backup were preserved for intentional manual rollback; SQLite is now authoritative. v2 multi-device WSS/DO remains an independent **preview / Draft PR #58** and is not a v1 production replacement. Independent human terminal confirmation was separately evidenced on the isolated Preview device; the current single-device **48-hour** Hibernation/quota gate in Issue #57 remains unverified for production. The older five-device/72-hour requirement is historical and no longer this rollout's gate.
 
 ## Language
@@ -157,7 +159,7 @@ _Avoid_: Treating a successful new-store startup as sufficient evidence that his
 
 Architecture and deployment implementation details belong in the research draft and ADRs, not in this vocabulary document.
 
-## Future v2 multi-device context — chosen design, not deployed (2026-10-15)
+## v2 multi-device context — accepted design, implemented in isolated Preview
 
 **Product goal:** one Remote Control MCP explicitly controls multiple individually approved Linux/WSL2 Agent installations across independent home, office and cloud networks; native Windows/macOS remote execution is deferred. Each new device should be convenient to install without a public IP, firewall inbound rule or manual Cloudflare resource/credential management.
 
@@ -171,7 +173,7 @@ Architecture and deployment implementation details belong in the research draft 
 
 **Pairing Code:** exactly 10 cryptographically random Base32 characters shown locally by a fresh Agent installation, single-use and expiring after 10 minutes. It identifies a pending pairing but is never a long-lived device credential.
 
-**Device Pairing:** the new Agent shows one **10-character, ten-minute, one-use local code**. Remote-Control-only Portal Bearer authenticated `pairing_lookup` **reads** the immutable pending device name, fingerprint and grant type; only a separate explicit `pairing_approve({pairing_id,expected_fingerprint,expected_grant_type})` atomically authorizes exactly that pending key. The Agent automatically proves the registered Ed25519 private key via a replay-safe signed claim and obtains its approved ID; each WSS session separately signs a fresh internal server nonce. **No manually copied 12-character challenge.** Portal Bearer verifies credential possession, not independent human presence. Compromised or prompt-injected authenticated MCP clients can approve their own pending device; the owner accepted that single-user risk on 2026-10-18. Existing #47/#50 two-code validation is historical and does not certify this not-yet-implemented protocol.
+**Device Pairing:** the new Agent shows one **10-character, ten-minute, one-use local code**. Remote-Control-only Portal Bearer authenticated `pairing_lookup` **reads** the immutable pending device name, fingerprint and grant type; only a separate explicit `pairing_approve({pairing_id,expected_fingerprint,expected_grant_type})` atomically authorizes exactly that pending key. The Agent automatically proves the registered Ed25519 private key via a replay-safe signed claim and obtains its approved ID; each WSS session separately signs a fresh internal server nonce. **No manually copied 12-character challenge.** Portal Bearer verifies credential possession, not independent human presence. Compromised or prompt-injected authenticated MCP clients can approve their own pending device; the owner accepted that single-user risk on 2026-10-18. Existing #47/#50 two-code validation is historical and does not certify this current single-code protocol; distinct #97 acceptance is now completed.
 
 **Device Credential:** a per-installation private/public keypair generated locally (prefer standard Ed25519 after interoperability validation); the Agent retains the private key and proves possession via fresh signed server challenge. Reinstall means a new key, new `device_id`, new pairing.
 

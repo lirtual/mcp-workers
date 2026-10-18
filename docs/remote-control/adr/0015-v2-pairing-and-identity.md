@@ -1,6 +1,8 @@
 # ADR-0015 — v2 owner-reviewed pairing and device-held identity
 
-**Status:** **Owner-approved one-code pairing design (2026-10-18); documentation only, implementation and renewed nonproduction acceptance pending.** This decision supersedes the 2026-10-15/16 two-code/manual-terminal challenge design. Historical acceptance of that implementation in #47 and #50 remains valid **only for the old protocol**; it is not evidence that the new protocol is implemented or accepted. PR #58, public Agent Draft PR #2 and the existing Preview still use the older protocol until separately reviewed and changed.
+**Current implementation status (2026-10-18; the original design-time snapshots below are historical):** Single-code device pairing is implemented on Draft PR #79 and has genuine nonproduction x64 acceptance ([#97](https://github.com/lirtual/mcp-workers/issues/97) Closed), with public immutable Agent v0.1.8 TEST assets and the existing Preview Worker `/install.sh`. This does **not** authorize a merge or production change. Native external ARM64 owner onboarding (#74/#82), true online 24-hour expiry/Hibernation (#72/#75) and continuous 48-hour final gate (#57) remain open. v1 production is independent.
+
+**Status:** Accepted one-code design now implemented in stacked nonproduction Draft #79 with distinct genuine #97/#74 x64 acceptance and immutable public Agent v0.1.8. #58's old two-code description is historical; native ARM64 and production gates remain OPEN. Updated 2026-10-18.
 
 Related: [v2 transport ADR](./0014-v2-multi-device-ws-do.md), [v2 technical Spec](../V2-MULTI-DEVICE-SPEC.md), [Agent distribution ADR-0019](./0019-standalone-linux-agent-distribution.md).
 

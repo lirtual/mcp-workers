@@ -1,9 +1,11 @@
 # Remote Control Agent — Standalone Linux/WSL2 CLI and v2 Device Lifecycle Spec
 
+**Current implementation status (2026-10-18; the original design-time snapshots below are historical):** Single-code device pairing is implemented on Draft PR #79 and has genuine nonproduction x64 acceptance ([#97](https://github.com/lirtual/mcp-workers/issues/97) Closed), with public immutable Agent v0.1.8 TEST assets and the existing Preview Worker `/install.sh`. This does **not** authorize a merge or production change. Native external ARM64 owner onboarding (#74/#82), true online 24-hour expiry/Hibernation (#72/#75) and continuous 48-hour final gate (#57) remain open. v1 production is independent.
+
 **Status:** Design Draft; owner approved scoped Draft implementation of Python-free Worker-origin installer on 2026-10-17. **No approval for Release publication, Preview deployment, production rollout or v1 cutover.**
 **Source/control-plane repository:** `lirtual/mcp-workers` (Private); **public Agent release and source repository:** `lirtual/remote-control-agent` (live; immutable v0.1.1 test prerelease already published). **Spec tracker:** [Issue #69](https://github.com/lirtual/mcp-workers/issues/69) (ready-for-agent = spec review/ticket decomposition only).
 **Authority:** [Design PR #68](https://github.com/lirtual/mcp-workers/pull/68) (Draft), [ADR-0019](./adr/0019-standalone-linux-agent-distribution.md), [ADR-0017](./adr/0017-v2-device-revocation-without-tombstones.md), [ADR-0018](./adr/0018-v2-temporary-agent-pairing-lifecycle.md), [ADR-0015](./adr/0015-v2-pairing-and-identity.md), [v2 protocol Spec](./V2-MULTI-DEVICE-SPEC.md), [v2 Spec Issue #46](https://github.com/lirtual/mcp-workers/issues/46), [48h acceptance Issue #57](https://github.com/lirtual/mcp-workers/issues/57).
-**Implementation baseline:** inspect live main and unmerged [v2 PR #58](https://github.com/lirtual/mcp-workers/pull/58) afresh before implementation. It already has Ed25519 onboarding and the **old two-code/manual-challenge protocol** (must be migrated to the owner-approved one-code design before new acceptance), signed WSS, Agent-local operation receipts, and a checkout-based installer. Neither this specification nor passing offline tests changes the production v1 authority.
+**Implementation baseline (current):** Draft #79 now layers reviewed single-code registration and signed claim on Draft #58, uses the immutable public v0.1.8 Agent for tests, and has genuine x64 nonproduction owner pairing. The original #58 two-code/checkout Agent design is only a historical baseline. Neither this specification nor passing CI changes v1 production authority.
 
 ## 1. Problem and required outcome
 
@@ -11,7 +13,7 @@
 
 **Outcome.** One reviewed HTTPS terminal command starts a **local interactive** installer on a compatible Linux x86_64/ARM64 or WSL2 host, downloads a verified **prebuilt GitHub Release Agent** containing Node.js 24, Agent JS and the precompiled native Shell Supervisor, asks the owner to select permanent or temporary (24-hour) pairing, and completes owner-authenticated **one-code MCP approval plus automatic device-key proof**, without a second terminal challenge, cloning code or installing build dependencies. Permanent devices become a v2 **systemd user service**; temporary devices run **foreground only**. Upgrade, uninstall and rerun are explicit, minimally recoverable and keep local identity/SQLite receipts safe. Cloud authorization remains authoritative and fail-closed.
 
-**Publication status.** The earlier Python-based immutable Agent v0.1.1 TEST Release has been published and used for separate isolated WSL2 pairing/lifecycle tests. The *new* Worker `/install.sh` + Python-free Node installer/manager has **no published Release or deployed working URL** yet. Do not present the new route as live or count its install flow as accepted before separate approval and real tests.
+**Publication status (2026-10-18).** Public immutable TEST Agent v0.1.8 provides bundled Node and Python-free `rca`; the existing Preview Worker's `/install.sh` was verified and used for genuine approved x64 signed-WSS benign read. This does **not** mean a formal production release or the native ARM64 real-host pairing and 48h acceptance gates have passed.
 
 ## 2. Numbered user stories
 
