@@ -355,3 +355,70 @@ test("#72 temporary expiry rejects new work on old WSS and after DO reconstructi
     Date.now=realNow;
   }
 });
+
+test("#72: admitted uncertain operation receipt can settle across expiry without any replay", async () => {
+  const originalNow = Date.now;
+  const deviceId = randomUUID(), epoch = "prior-authorized-epoch", operationId = "existing-operation-1";
+  const expiry = originalNow() + 60_000;
+  const rows = new Map<string, unknown>([
+    ["device:" + deviceId, { device_id: deviceId, name: "temporary-inflight", revoked: false,
+      grant_type: "temporary", approved_at: expiry - TEMPORARY_GRANT_MS, expires_at: expiry }],
+    ["session:epoch:" + deviceId, epoch],
+  ]);
+  let requestId: string | undefined;
+  let sent = 0;
+  let resolveSent!: () => void;
+  const dispatched = new Promise<void>(resolve => { resolveSent = resolve; });
+  const socket = {
+    readyState: WebSocket.OPEN,
+    deserializeAttachment: () => ({ device_id: deviceId, epoch }),
+    send(frame: string) {
+      sent++;
+      const msg = JSON.parse(frame) as {kind:string;operation_id:string;request_id:string};
+      assert.equal(msg.kind, "operation");
+      assert.equal(msg.operation_id, operationId);
+      requestId = msg.request_id;
+      resolveSent();
+    },
+  } as unknown as WebSocket;
+  const owner = new V2OwnerCoordinator({
+    storage: { get: async <T>(key:string) => rows.get(key) as T | undefined },
+    getWebSockets: (tag:string) => tag === "device:" + deviceId ? [socket] : [],
+  } as unknown as DurableObjectState);
+  const request = () => new Request("https://v2.internal/operation", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ device_id: deviceId, tool:"get_operation_status",
+      operation_id: operationId, arguments: {operation_id: operationId} }),
+  });
+  try {
+    Date.now = () => expiry - 1;
+    const prior = owner.fetch(request());
+    await dispatched;
+    assert.equal(sent, 1);
+    Date.now = () => expiry;
+    const denied = await owner.fetch(request());
+    assert.equal(denied.status, 503);
+    assert.deepEqual(await denied.json(), {error:"offline"});
+    assert.equal(sent, 1, "no new work is dispatched after expiry");
+    // An operation admitted BEFORE expiry can still return its original
+    // uncertain receipt. Its existing effects must not be silently replayed.
+    const response = JSON.stringify({
+      kind: "operation_result", request_id: requestId,
+      result: {operation_id: operationId, status:"unknown",
+        receipt: {operation_id: operationId, tool_name:"start_process", state:"unknown",
+          safe_result_summary:"Effect cannot be established", private_data:"MUST_NOT_LEAK"}},
+    });
+    await owner.webSocketMessage(socket, response);
+    const settled = await prior;
+    assert.equal(settled.status, 200);
+    const value = await settled.json() as {operation_id:string; status:string;
+      receipt:Record<string,string>};
+    assert.equal(value.operation_id, operationId);
+    assert.equal(value.status, "unknown");
+    assert.equal(value.receipt.state, "unknown");
+    assert.equal(value.receipt.operation_id, operationId);
+    assert.equal("private_data" in value.receipt, false);
+    await owner.webSocketMessage(socket, response);
+    assert.equal(sent, 1, "late or duplicate reply never replays a write");
+  } finally { Date.now = originalNow; }
+});
