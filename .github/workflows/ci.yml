@@ -118,6 +118,11 @@ jobs:
           fi
 
           remote_control_changed="$check_all"
+          # workflow_dispatch has no changed_files; the selected Remote Control
+          # release still needs its immutable public Agent test fixture.
+          if [[ "$EVENT_NAME" == "workflow_dispatch" && "$MANUAL_WORKER" == "remote-control-mcp-worker" ]]; then
+            remote_control_changed=true
+          fi
           if [[ "$remote_control_changed" != "true" ]]; then
             for file in "${changed_files[@]}"; do
               if [[ "$file" == apps/remote-control-agent/* || "$file" == apps/remote-control-mcp-worker/* || "$file" == scripts/stage-public-remote-control-agent.sh ]]; then
