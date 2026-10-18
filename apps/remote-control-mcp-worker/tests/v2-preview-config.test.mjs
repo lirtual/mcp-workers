@@ -200,15 +200,18 @@ test("Preview mutation maps Agent uncertain outcomes to timeout_unknown without 
 });
 
 
-test("single-code Worker Preview fails closed until matching immutable Agent release is reviewed", async () => {
+test("single-code Worker Preview installer enabled only for reviewed immutable Agent release", async () => {
   const { default: worker } = await import("../src/worker.ts");
   const origin = "https://remote-control-v2-preview.aiyaya.workers.dev";
   const request = new Request(origin+"/install.sh");
-  const configured = { MCP_ACCESS_TOKEN: "test-only", REMOTE_CONTROL_V2_PREVIEW_ONLY: "true" };
+  const configured = {
+    MCP_ACCESS_TOKEN: "test-only", REMOTE_CONTROL_V2_PREVIEW_ONLY: "true",
+    V2_OWNER: { idFromName: () => "single-owner-v2", get: () => ({}) },
+  };
   const enabled = await worker.fetch(request,configured);
-  assert.equal(enabled.status,503);
+  assert.equal(enabled.status,200);
   assert.equal(enabled.headers.get("cache-control"),"no-store");
-  assert.doesNotMatch(await enabled.text(),/#!/);
+  assert.match(await enabled.text(),/remote-control-agent-v0\.1\.4/);
   const disabled = await worker.fetch(new Request(origin+"/install.sh"),{
     MCP_ACCESS_TOKEN: "test-only", REMOTE_CONTROL_V2_PREVIEW_ONLY:"false"
   });

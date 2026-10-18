@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
-import { handleAgentInstallerRequest, renderAgentInstallShell, REVIEWED_V012_RELEASE_PIN } from "../src/install-bootstrap.ts";
+import { handleAgentInstallerRequest, renderAgentInstallShell, REVIEWED_V012_RELEASE_PIN, REVIEWED_V014_RELEASE_PIN } from "../src/install-bootstrap.ts";
 
 const origin = "https://remote-control-v2-preview.aiyaya.workers.dev";
 const pin = Object.freeze({
@@ -9,11 +9,15 @@ const pin = Object.freeze({
   x64Sha256:"b".repeat(64), arm64Sha256:"c".repeat(64),
 });
 
-test("unreleased Worker installation route fails closed", async()=>{
+test("reviewed immutable single-code Worker installation route is enabled", async()=>{
   const response=handleAgentInstallerRequest(new Request(origin+"/install.sh"));
-  assert.equal(response.status,503);
+  assert.equal(response.status,200);
   assert.equal(response.headers.get("cache-control"),"no-store");
-  assert.doesNotMatch(await response.text(),/#!/);
+  assert.equal(REVIEWED_V014_RELEASE_PIN.commit,"c389485e6570f8975346baa6bc6b0e56746824a1");
+  const script=await response.text();
+  assert.match(script,/remote-control-agent-v0\.1\.4/);
+  assert.match(script,/3b3fa8c77e1c69a3/);
+  assert.match(script,/bd9761a0cc740265/);
 });
 
 test("historical two-code v0.1.2 cannot be served by single-code Worker even when explicitly passed",async()=>{
@@ -22,8 +26,8 @@ test("historical two-code v0.1.2 cannot be served by single-code Worker even whe
   assert.equal(reviewed.commit,"00aaf200107e42a1b7cede3db51f9a16edea5b09");
   assert.equal(reviewed.x64Sha256,"b895f8133a03a53f4eacbf4fa6d0619f59ad722064c5e2e8ca469f9fc637221a");
   assert.equal(reviewed.arm64Sha256,"ec16343f50b20b762b04a06039164c0f3a7f42bdeb597ab8e04ecc4b3e40724c");
-  const stillDisabled=handleAgentInstallerRequest(new Request(origin+"/install.sh"));
-  assert.equal(stillDisabled.status,503);
+  const nowEnabled=handleAgentInstallerRequest(new Request(origin+"/install.sh"));
+  assert.equal(nowEnabled.status,200);
   assert.equal(reviewed.pairingProtocol,"two-code-v1");
   const incompatible=handleAgentInstallerRequest(new Request(origin+"/install.sh"),reviewed);
   assert.equal(incompatible.status,503);

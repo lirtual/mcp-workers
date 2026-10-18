@@ -1204,7 +1204,12 @@ export default {
     if (url.pathname === "/install.sh") {
       // Only the owner-configured v2 Preview may serve the reviewed immutable
       // test installer. Keep every other environment fail-closed (503).
-      return handleAgentInstallerRequest(request); // No compatible immutable single-code Agent Release approved yet.
+      if (!previewOnly(env) || !env.MCP_ACCESS_TOKEN || !pendingOwner(env)) {
+        return new Response("Preview installer is disabled.\n", {
+          status: 503, headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" },
+        });
+      }
+      return handleAgentInstallerRequest(request);
     }
     if (url.pathname.startsWith("/agent/connect/") && pendingOwner(env)) {
       const deviceId = url.pathname.slice("/agent/connect/".length);

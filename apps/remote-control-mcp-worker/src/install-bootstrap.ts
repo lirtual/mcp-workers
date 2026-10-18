@@ -18,10 +18,19 @@ export const REVIEWED_V012_RELEASE_PIN: InstallReleasePin = Object.freeze({
   arm64Sha256: "ec16343f50b20b762b04a06039164c0f3a7f42bdeb597ab8e04ecc4b3e40724c",
 });
 
-// Remain disabled until a reviewed, published single-code Agent release is pinned.
 // Historical immutable v0.1.2 uses two-code and MUST NEVER be offered by
 // a Worker that only accepts one-code signed pending enrollments.
-const VERIFIED_PYTHON_FREE_RELEASE: InstallReleasePin | null = null;
+// Preview may serve the new pinned release only with preview flag, owner DO and token.
+// Reviewed immutable TEST prerelease; native x64 and ARM64 build #39096572744.
+// The prior v0.1.2 is retained above only as an explicitly incompatible fixture.
+export const REVIEWED_V014_RELEASE_PIN: InstallReleasePin = Object.freeze({
+  tag: "v0.1.4",
+  pairingProtocol: "single-code-v1",
+  commit: "c389485e6570f8975346baa6bc6b0e56746824a1",
+  x64Sha256: "3b3fa8c77e1c69a3e1542923eb9203c11f782b33fa96a6db832c526a4f816d4a",
+  arm64Sha256: "bd9761a0cc740265aa825bd538a7a934bac4e3562f88f90507af958c3bfbafb8",
+});
+const VERIFIED_PYTHON_FREE_RELEASE: InstallReleasePin = REVIEWED_V014_RELEASE_PIN;
 const APPROVED_ORIGINS = new Set(["https://remote-control-v2-preview.aiyaya.workers.dev"]);
 
 function validPin(p: InstallReleasePin): boolean {
