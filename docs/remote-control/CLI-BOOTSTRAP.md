@@ -1,5 +1,24 @@
-> **Active TEST Preview release — 2026-10-18 (#77/#82/#97):** Only the existing
-> `remote-control-v2-preview` Worker now pins the published immutable Agent
+> **Current Preview (2026-10-18; Draft and TEST only):** The existing
+> `remote-control-v2-preview` `/install.sh` now serves immutable public Agent
+> [v0.1.8](https://github.com/lirtual/remote-control-agent/releases/tag/v0.1.8),
+> whose annotated Git tag resolves to reviewed commit
+> `4d58ffe33e560d6f5f1c375aacf02a774b51a6c0`.
+> Pinned x64 SHA-256: `e9116c0b1df5566d0ec49a187bf79e7e69e66698183db0da938eb355f82ed79f`;
+> ARM64 SHA-256: `73f159fe722cec4e8d354160f8975532b4f07fe9538772b6ed64c95ae4576184`.
+> The live Preview shell matched the reviewed source-generated shell byte-for-byte
+> (SHA-256 `d99db51ca22ef54d5cc4ff02deaafab5f82c129ac6511fa3f620922d600d05fd`).
+> Genuine isolated v0.1.7→v0.1.8 product rollback and forward upgrade
+> closed [#77](https://github.com/lirtual/mcp-workers/issues/77); owner-local
+> uninstall closed [#78](https://github.com/lirtual/mcp-workers/issues/78).
+> The existing private Worker CI now tests public Agent v0.1.8 at a fixed commit
+> ([#80](https://github.com/lirtual/mcp-workers/issues/80)). This **does not**
+> establish real ARM64 interactive pairing acceptance ([#74](https://github.com/lirtual/mcp-workers/issues/74),
+> [#82](https://github.com/lirtual/mcp-workers/issues/82)), does not approve
+> merging, and does not change production v1. Records below are historical
+> snapshots and must not be followed as current version-pinning instructions.
+>
+> **Historical v0.1.7 TEST Preview record — 2026-10-18 (#77/#82/#97):** At that time, the existing
+> `remote-control-v2-preview` Worker pinned the published immutable Agent
 > [v0.1.7](https://github.com/lirtual/remote-control-agent/releases/tag/v0.1.7)
 > from exact annotated-tag source `fd24296d58768fff7a23440b858774d9dfaa7632`.
 > Native x64 and ARM64 candidate [CI #39114540808](https://github.com/lirtual/remote-control-agent/actions/runs/39114540808) passed.
