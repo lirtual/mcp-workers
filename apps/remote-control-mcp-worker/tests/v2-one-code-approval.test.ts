@@ -109,6 +109,49 @@ test("#97 explicit MCP approval is separate from lookup and Agent claims by exis
   } finally {await rm(dir,{recursive:true,force:true});}
 });
 
+test("#76 lost original pending HTTP reply retries same Ed25519 key, invalidates old code and signs one grant",async()=>{
+  const f=fixture(), initial=newEnrollment("lost-reply-agent");
+  const dir=await mkdtemp(path.join(os.tmpdir(),"rc-v2-real-do-retry-"));
+  const keyPath=path.join(dir,"identity.pem");
+  try{
+    await saveNewPrivateKey(keyPath,initial.privateKeyPem);
+    // The backend accepted the first request, but the caller cannot observe
+    // the response. No owner approval was performed.
+    assert.equal((await f.register(initial.request)).status,202);
+    assert.equal([...f.rows.keys()].filter(k=>k.startsWith("device:")).length,0);
+    const retried=newEnrollment("lost-reply-agent",await readFile(keyPath,"utf8"));
+    assert.notEqual(retried.code,initial.code);
+    assert.equal(retried.request.public_key,initial.request.public_key);
+    assert.equal((await f.register(retried.request)).status,202);
+    assert.equal([...f.rows.keys()].filter(k=>k.startsWith("pending:")).length,1);
+    assert.equal(f.rows.has("pending:"+initial.request.code_verifier),false);
+    assert.equal(f.rows.has("pending:"+retried.request.code_verifier),true);
+    assert.equal((await f.rpc("pairing_lookup",{code:initial.code})).object.status,undefined);
+    const looked=await f.rpc("pairing_lookup",{code:retried.code});
+    const pairingId=String(looked.object.pairing_id);
+    const fingerprint=String(looked.object.fingerprint);
+    assert.equal(looked.object.grant_type,"permanent");
+    assert.ok(pairingId.length>30 && fingerprint.length===24);
+    assert.equal([...f.rows.keys()].filter(k=>k.startsWith("device:")).length,0);
+    const approved=await f.rpc("pairing_approve",{
+      pairing_id:pairingId,expected_fingerprint:fingerprint,
+      expected_grant_type:"permanent",
+    });
+    assert.equal(approved.object.status,"approved");
+    const approvedId=String(approved.object.device_id);
+    assert.equal([...f.rows.keys()].filter(k=>k.startsWith("device:")).length,1);
+    assert.equal([...f.rows.keys()].filter(k=>k.startsWith("pending:")).length,0);
+    assert.equal(await recoverDeviceId(f.origin,keyPath,f.send),approvedId);
+    assert.equal((await readFile(keyPath+".device-id","utf8")).trim(),approvedId);
+    assert.equal(await readFile(keyPath,"utf8"),initial.privateKeyPem);
+    assert.equal((await f.rpc("pairing_approve",{
+      pairing_id:pairingId,expected_fingerprint:fingerprint,
+      expected_grant_type:"permanent",
+    })).object.status,undefined);
+    assert.equal([...f.rows.keys()].filter(k=>k.startsWith("device:")).length,1);
+  }finally{await rm(dir,{recursive:true,force:true});}
+});
+
 test("#97 temporary owner approval binds exact grant and fixed server expiry",async()=>{
   const f=fixture(),pending=newEnrollment("temp-approval",undefined,"temporary");
   assert.equal((await f.register(pending.request)).status,202);
