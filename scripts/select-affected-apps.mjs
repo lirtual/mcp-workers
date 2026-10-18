@@ -26,7 +26,8 @@ function requiresAllApps(file) {
 
 export function selectAffectedApps(changedFiles) {
   if (changedFiles.some(requiresAllApps)) return [...APPLICATIONS];
-  return APPLICATIONS.filter(app => changedFiles.some(file => file.startsWith(`apps/${app}/`)));
+  return APPLICATIONS.filter(app => changedFiles.some(file =>
+    file.startsWith(`apps/${app}/`) || (app === 'remote-control-mcp-worker' && file === 'scripts/stage-public-remote-control-agent.sh')));
 }
 
 export function selectionDetails(changedFiles) {

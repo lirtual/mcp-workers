@@ -9,6 +9,13 @@ test('an ssh-mcp-worker-only change selects and schedules its app check', () => 
   assert.equal(selection.apps.includes('ssh-mcp-worker'), true);
 });
 
+test('pinned public Agent staging selects existing Remote Control Worker compatibility checks', () => {
+  const selection = selectionDetails(['scripts/stage-public-remote-control-agent.sh']);
+  assert.deepEqual(selection.apps, ['remote-control-mcp-worker']);
+  assert.equal(selection.remoteControlChanged, true);
+  assert.equal(selection.apps.includes('ssh-mcp-worker'), false);
+});
+
 test('shared package and lockfile changes select every app, including ssh-mcp-worker', () => {
   for (const file of ['packages/portal-auth/src/index.ts', 'pnpm-lock.yaml']) {
     const selection = selectionDetails([file]);
