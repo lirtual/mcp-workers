@@ -15,6 +15,7 @@ on:
           - database-mcp-worker
           - ima-mcp-worker
           - raindrop-mcp-worker
+          - ssh-mcp-worker
           - remote-control-mcp-worker
 
 permissions:
@@ -201,6 +202,7 @@ jobs:
           (inputs.worker == 'raindrop-mcp-worker' ||
            inputs.worker == 'ima-mcp-worker' ||
            inputs.worker == 'database-mcp-worker' ||
+           inputs.worker == 'ssh-mcp-worker' ||
            inputs.worker == 'remote-control-mcp-worker') }}
     runs-on: ubuntu-latest
     environment: production
@@ -247,10 +249,21 @@ jobs:
         run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Cloudflare release preflight (read-only)
+        id: preflight
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: node scripts/manual-worker-release.mjs preflight "$SELECTED_WORKER"
+
+      - name: Stage bootstrap Secrets for a missing Worker
+        if: steps.preflight.outputs.bootstrap == 'true'
+        shell: bash
+        env:
+          WORKER_SECRETS_JSON: ${{ (inputs.worker == 'raindrop-mcp-worker' && secrets.RAINDROP_MCP_SECRETS_JSON) || (inputs.worker == 'ima-mcp-worker' && secrets.IMA_MCP_SECRETS_JSON) || (inputs.worker == 'database-mcp-worker' && secrets.DATABASE_MCP_SECRETS_JSON) || (inputs.worker == 'ssh-mcp-worker' && secrets.SSH_MCP_SECRETS_JSON) || '' }}
+        run: |
+          set -euo pipefail
+          umask 077
+          node scripts/bootstrap-worker-secrets.mjs "$SELECTED_WORKER" "$RUNNER_TEMP/mcp-bootstrap-secrets.json"
 
       - name: Recheck current main inside acquired release lock
         shell: bash
@@ -272,7 +285,7 @@ jobs:
         run: |
           set -euo pipefail
           case "$SELECTED_WORKER" in
-            raindrop-mcp-worker|ima-mcp-worker|database-mcp-worker|remote-control-mcp-worker) ;;
+            raindrop-mcp-worker|ima-mcp-worker|database-mcp-worker|ssh-mcp-worker|remote-control-mcp-worker) ;;
             *) echo "Invalid Worker target" >&2; exit 1 ;;
           esac
           log="$(mktemp)"
@@ -285,7 +298,14 @@ jobs:
             echo "Source became stale immediately before publication" >&2
             exit 1
           }
-          if ! (cd "apps/$SELECTED_WORKER" && pnpm exec wrangler deploy) >"$log" 2>&1; then
+          if [[ "${{ steps.preflight.outputs.bootstrap }}" == "true" ]]; then
+            [[ "$SELECTED_WORKER" != "remote-control-mcp-worker" ]]
+            test -s "$RUNNER_TEMP/mcp-bootstrap-secrets.json"
+            deploy_args=(--secrets-file "$RUNNER_TEMP/mcp-bootstrap-secrets.json")
+          else
+            deploy_args=()
+          fi
+          if ! (cd "apps/$SELECTED_WORKER" && pnpm exec wrangler deploy "${deploy_args[@]}") >"$log" 2>&1; then
             echo "Wrangler deploy failed (stage=deploy); no automated rollback attempted" >&2
             # Report only a whitelisted error code and a bounded, sanitized summary.
             # Never print raw Wrangler output (may contain secrets or configuration).
@@ -295,6 +315,11 @@ jobs:
           deployed_version="$(node scripts/manual-worker-release.mjs version "$log")"
           echo "version_id=$deployed_version" >> "$GITHUB_OUTPUT"
           echo "Wrangler reported a version ID; verifying Cloudflare active deployment next"
+
+      - name: Remove temporary bootstrap Secrets
+        if: always() && steps.preflight.outputs.bootstrap == 'true'
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/mcp-bootstrap-secrets.json"
 
       - name: Verify exact active version and required production bindings
         env:
