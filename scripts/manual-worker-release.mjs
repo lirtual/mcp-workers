@@ -132,8 +132,8 @@ function readConfiguration(worker, content) {
   const conf = JSON.parse(content.replace(/^\s*\/\/.*$/gm, ""));
   invariant(conf.name === worker && conf.main === WORKER_ENTRIES[worker],
     "Worker script name or entry differs from selected target");
-  invariant(conf.keep_vars === (worker !== "remote-control-mcp-worker"),
-    "Runtime variable cleanup must match selected Worker release contract");
+  invariant(conf.keep_vars === false,
+    "GitHub/Wrangler must own all runtime Variables; keep_vars must be false");
   if (worker === "ssh-mcp-worker") {
     invariant(conf.observability?.enabled === false, "SSH observability must stay disabled");
   } else {
