@@ -1,3 +1,5 @@
 node_modules/
 apps/remote-control-agent/.build/
 apps/remote-control-mcp-worker/.wrangler-release.jsonc
+
+apps/ssh-mcp-worker/g0/.wrangler/

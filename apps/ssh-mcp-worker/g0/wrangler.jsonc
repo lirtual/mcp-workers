@@ -1,0 +1,16 @@
+{
+  "name": "ssh-g0-fixture",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-09-10",
+  "compatibility_flags": [],
+  "workers_dev": false,
+  "observability": { "enabled": false },
+  "durable_objects": {
+    "bindings": [
+      { "name": "G0_SESSIONS", "class_name": "G0SessionDO" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["G0SessionDO"] }
+  ]
+}

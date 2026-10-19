@@ -117,32 +117,33 @@ test("readback must match exact newly published Wrangler version", () => {
 
 test("manual release scope stages the pinned Agent only for Remote Control", () => {
   const workflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
-  const marker = "      - id: scope\n";
-  const start = workflow.indexOf(marker);
-  const runStart = workflow.indexOf("        run: |\n", start);
-  const end = workflow.indexOf("\n      - name: No application checks required", runStart);
-  assert.ok(start >= 0 && runStart > start && end > runStart, "manual scope step exists");
-  const script = workflow.slice(runStart + "        run: |\n".length, end)
-    .split("\n").map((line) => line.startsWith("          ") ? line.slice(10) : line).join("\n");
-  for (const worker of ["remote-control-mcp-worker", "database-mcp-worker",
-    "ima-mcp-worker", "raindrop-mcp-worker"]) {
+  assert.ok(workflow.includes("      - id: scope\n") && workflow.includes("        run: node scripts/select-affected-apps.mjs"), "manual scope entry exists");
+  const selector = new URL("./select-affected-apps.mjs", import.meta.url);
+  function runManual(worker, ref = "refs/heads/main") {
     const dir = mkdtempSync(join(tmpdir(), "remote-release-scope-"));
     const output = join(dir, "outputs");
     try {
-      execFileSync("bash", ["-e", "-o", "pipefail", "-c", script], {
+      execFileSync(process.execPath, [selector.pathname], {
         env: { ...process.env, EVENT_NAME: "workflow_dispatch", MANUAL_WORKER: worker,
-          MANUAL_REF: "refs/heads/main", BEFORE_SHA: "", PR_BASE_SHA: "",
+          MANUAL_REF: ref, BEFORE_SHA: "", PR_BASE_SHA: "",
           GITHUB_OUTPUT: output, GITHUB_SHA: "not-read-for-manual" },
         encoding: "utf8",
       });
-      const values = readFileSync(output, "utf8");
-      assert.match(values, new RegExp("^apps=" + worker + "$", "m"));
-      assert.match(values, new RegExp("^remote_control_changed=" +
-        (worker === "remote-control-mcp-worker" ? "true" : "false") + "$", "m"));
-      assert.match(values, new RegExp("^database_changed=" +
-        (worker === "database-mcp-worker" ? "true" : "false") + "$", "m"));
+      return readFileSync(output, "utf8");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   }
+  for (const worker of ["remote-control-mcp-worker", "database-mcp-worker",
+    "ima-mcp-worker", "raindrop-mcp-worker"]) {
+    const values = runManual(worker);
+    assert.match(values, new RegExp("^apps=" + worker + "$", "m"));
+    assert.match(values, new RegExp("^remote_control_changed=" +
+      (worker === "remote-control-mcp-worker" ? "true" : "false") + "$", "m"));
+    assert.match(values, new RegExp("^database_changed=" +
+      (worker === "database-mcp-worker" ? "true" : "false") + "$", "m"));
+  }
+  // SSH may be CI-tested but must never become a manual production release target.
+  assert.throws(() => runManual("ssh-mcp-worker"), (error) => error.status !== 0);
+  assert.throws(() => runManual("remote-control-mcp-worker", "refs/heads/feature"), (error) => error.status !== 0);
 });

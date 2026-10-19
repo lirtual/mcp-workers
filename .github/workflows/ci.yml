@@ -48,110 +48,7 @@ jobs:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           MANUAL_WORKER: ${{ inputs.worker }}
           MANUAL_REF: ${{ github.ref }}
-        run: |
-          set -euo pipefail
-
-          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            [[ "$MANUAL_REF" == "refs/heads/main" ]] || { echo "Manual runs require main" >&2; exit 1; }
-            case "$MANUAL_WORKER" in
-              database-mcp-worker|ima-mcp-worker|raindrop-mcp-worker|remote-control-mcp-worker)
-                selected=("$MANUAL_WORKER")
-                ;;
-              *)
-                echo "Unsupported manual worker: $MANUAL_WORKER" >&2
-                exit 1
-                ;;
-            esac
-            changed_files=()
-          else
-            if [[ "$EVENT_NAME" == "pull_request" ]]; then
-              base_sha="$PR_BASE_SHA"
-            else
-              base_sha="$BEFORE_SHA"
-            fi
-
-            if [[ -z "$base_sha" || "$base_sha" =~ ^0+$ ]]; then
-              # A new branch or the repository's first push has no previous commit.
-              # Treat every tracked file in the new revision as changed.
-              mapfile -t changed_files < <(git ls-tree -r --name-only "$GITHUB_SHA")
-            else
-              mapfile -t changed_files < <(git diff --name-only "$base_sha" "$GITHUB_SHA")
-            fi
-          fi
-          printf 'Changed files:\n'
-          printf '  %s\n' "${changed_files[@]}"
-
-          apps=(
-            database-mcp-worker
-            ima-mcp-worker
-            raindrop-mcp-worker
-            remote-control-mcp-worker
-          )
-
-          check_all=false
-          portal_auth_changed=false
-          for file in "${changed_files[@]}"; do
-            if [[ "$file" == packages/portal-auth/* ]]; then
-              portal_auth_changed=true
-            fi
-            case "$file" in
-              package.json|pnpm-lock.yaml|pnpm-workspace.yaml|.npmrc|packages/*|.github/workflows/ci.yml|scripts/manual-worker-release*)
-                check_all=true
-                ;;
-            esac
-          done
-
-          if [[ "$EVENT_NAME" != "workflow_dispatch" ]]; then
-            selected=()
-            if [[ "$check_all" == "true" ]]; then
-              selected=("${apps[@]}")
-            else
-              for app in "${apps[@]}"; do
-                for file in "${changed_files[@]}"; do
-                  if [[ "$file" == "apps/$app/"* || ( "$app" == remote-control-mcp-worker && "$file" == scripts/stage-public-remote-control-agent.sh ) ]]; then
-                    selected+=("$app")
-                    break
-                  fi
-                done
-              done
-            fi
-          fi
-
-          remote_control_changed="$check_all"
-          # workflow_dispatch has no changed_files; the selected Remote Control
-          # release still needs its immutable public Agent test fixture.
-          if [[ "$EVENT_NAME" == "workflow_dispatch" && "$MANUAL_WORKER" == "remote-control-mcp-worker" ]]; then
-            remote_control_changed=true
-          fi
-          if [[ "$remote_control_changed" != "true" ]]; then
-            for file in "${changed_files[@]}"; do
-              if [[ "$file" == apps/remote-control-agent/* || "$file" == apps/remote-control-mcp-worker/* || "$file" == scripts/stage-public-remote-control-agent.sh ]]; then
-                remote_control_changed=true
-                break
-              fi
-            done
-          fi
-          echo "remote_control_changed=$remote_control_changed" >> "$GITHUB_OUTPUT"
-
-          selected_text="${selected[*]-}"
-          echo "apps=$selected_text" >> "$GITHUB_OUTPUT"
-          echo "portal_auth_changed=$portal_auth_changed" >> "$GITHUB_OUTPUT"
-
-          database_changed=false
-          for app in "${selected[@]}"; do
-            if [[ "$app" == "database-mcp-worker" ]]; then
-              database_changed=true
-              break
-            fi
-          done
-          echo "database_changed=$database_changed" >> "$GITHUB_OUTPUT"
-
-          if [[ ${#selected[@]} -eq 0 ]]; then
-            echo "No application checks are required for this change set."
-          else
-            echo "Selected applications: $selected_text"
-          fi
-          echo "Portal auth package changed: $portal_auth_changed"
+        run: node scripts/select-affected-apps.mjs
 
       - name: No application checks required
         if: steps.scope.outputs.apps == '' && steps.scope.outputs.remote_control_changed != 'true'
@@ -175,6 +72,10 @@ jobs:
         run: |
           node --version
           pnpm --version
+
+      - name: Verify affected application selector
+        if: steps.scope.outputs.apps != ''
+        run: node --test scripts/select-affected-apps.test.mjs
 
       - name: Stage pinned public Agent source (test-only)
         if: steps.scope.outputs.remote_control_changed == 'true'
