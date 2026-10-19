@@ -6,7 +6,7 @@ import { join } from "node:path";
 const WORKERS = new Set(["raindrop-mcp-worker", "ima-mcp-worker", "database-mcp-worker", "ssh-mcp-worker", "remote-control-mcp-worker"]);
 const REQUIRED_SECRETS = {
   "raindrop-mcp-worker": ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN"],
-  "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "API_KEY", "CLIENT_ID"],
+  "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "API_KEY"],
   "database-mcp-worker": ["MCP_ACCESS_TOKEN", "DATABASE_CONFIG"],
   "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "MCP_BROKER_TOKEN"],
   "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
@@ -54,6 +54,16 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
       "Unexpected Invocation Logs configuration");
   }
   if (worker === "ima-mcp-worker") {
+    // During preflight, accept a legacy CLIENT_ID secret because it will be
+    // replaced by the selected GitHub Environment Variable at deploy time.
+    // A successful readback MUST prove the type migration happened.
+    if (options.mode !== "preflight") {
+      const clientId = find("CLIENT_ID", "plain_text");
+      invariant(typeof clientId?.text === "string" && clientId.text.trim().length > 0,
+        "IMA CLIENT_ID must be a nonempty plain-text Variable after release");
+      invariant(!find("CLIENT_ID", "secret_text") && !secretNames.has("CLIENT_ID"),
+        "IMA legacy CLIENT_ID Secret still present after release");
+    }
     const durable = find("IMA_IMAGE_REFRESH_SHARD", "durable_object_namespace");
     invariant(durable?.class_name === "ImaImageRefreshShard", "IMA Durable Object missing or class drift");
     invariant(settings.observability?.traces?.enabled === true, "IMA tracing drift");
@@ -149,6 +159,8 @@ function readConfiguration(worker, content) {
   invariant(REQUIRED_SECRETS[worker].every((s) => conf.secrets?.required?.includes(s)),
     "Source required Secret names changed unexpectedly");
   if (worker === "ima-mcp-worker") {
+    invariant(!conf.secrets?.required?.includes("CLIENT_ID"),
+      "IMA CLIENT_ID must be provided as a Variable, not a Secret");
     invariant(conf.durable_objects?.bindings?.some((b) =>
       b.name === "IMA_IMAGE_REFRESH_SHARD" && b.class_name === "ImaImageRefreshShard") &&
       conf.exports?.ImaImageRefreshShard?.storage === "sqlite", "IMA SQLite Durable Object must remain");

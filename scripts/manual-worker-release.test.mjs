@@ -32,20 +32,34 @@ test("Active-version readback requires exactly one 100 percent version", () => {
   ] }] }), /unambiguous/);
 });
 
-test("IMA requires retained inert DO and rejects legacy R2 bindings", () => {
+test("IMA allows old CLIENT_ID Secret in preflight and requires Variable after release", () => {
   const worker = "ima-mcp-worker";
-  const secretNames = ["MCP_ACCESS_TOKEN", "CLIENT_ID", "API_KEY"];
-  const secrets = secretNames.map((name) => ({ name }));
+  const names = ["MCP_ACCESS_TOKEN", "API_KEY"];
+  const secrets = names.map(name => ({ name }));
   const durable = { name: "IMA_IMAGE_REFRESH_SHARD", type: "durable_object_namespace", class_name: "ImaImageRefreshShard" };
-  const settings = {
-    bindings: [...secretNames.map((name) => ({ name, type: "secret_text" })), durable],
-    observability: { enabled: true, logs: { invocation_logs: true }, traces: { enabled: true } },
-  };
-  assert.equal(verifyBindings(worker, settings, secrets, { mode: "preflight" }), true);
+  const observability = { enabled: true, logs: { invocation_logs: true }, traces: { enabled: true } };
+  const old = { bindings: [...names.map(name => ({ name, type: "secret_text" })),
+    { name: "CLIENT_ID", type: "secret_text" }, durable], observability };
+  const oldSecrets = [...secrets, { name: "CLIENT_ID" }];
+  assert.equal(verifyBindings(worker, old, oldSecrets, { mode: "preflight" }), true);
+  assert.throws(() => verifyBindings(worker, old, oldSecrets, { mode: "readback" }), /CLIENT_ID.*Variable/);
+  const settings = { bindings: [...names.map(name => ({ name, type: "secret_text" })),
+    { name: "CLIENT_ID", type: "plain_text", text: "ima-client-id" }, durable], observability };
   assert.equal(verifyBindings(worker, settings, secrets, { mode: "readback" }), true);
-  assert.throws(() => verifyBindings(worker, { ...settings, bindings: [...settings.bindings, { name: "R2_BUCKET", type: "r2_bucket" }] }, secrets, { mode: "preflight" }), /Legacy IMA R2/);
-  assert.throws(() => verifyBindings(worker, { ...settings, bindings: settings.bindings.filter((x) => x.name !== "IMA_IMAGE_REFRESH_SHARD") }, secrets), /Durable Object/);
-  assert.throws(() => verifyBindings(worker, { ...settings, observability: { enabled: true, logs: { invocation_logs: true } } }, secrets), /tracing drift/);
+  assert.throws(() => verifyBindings(worker, { ...settings,
+    bindings: settings.bindings.filter(x => x.name !== "CLIENT_ID") }, secrets, { mode: "readback" }), /CLIENT_ID.*Variable/);
+  assert.throws(() => verifyBindings(worker, { ...settings,
+    bindings: settings.bindings.map(x => x.name === "CLIENT_ID" ? { ...x, text: " " } : x) },
+    secrets, { mode: "readback" }), /CLIENT_ID.*Variable/);
+  assert.throws(() => verifyBindings(worker, settings, oldSecrets, { mode: "readback" }), /legacy CLIENT_ID Secret/);
+  assert.throws(() => verifyBindings(worker, { ...settings, bindings: [
+    ...settings.bindings, { name: "R2_BUCKET", type: "r2_bucket" },
+  ] }, secrets, { mode: "preflight" }), /Legacy IMA R2/);
+  assert.throws(() => verifyBindings(worker, { ...settings, bindings:
+    settings.bindings.filter(x => x.name !== "IMA_IMAGE_REFRESH_SHARD") }, secrets), /Durable Object/);
+  assert.throws(() => verifyBindings(worker, { ...settings, observability: {
+    enabled: true, logs: { invocation_logs: true },
+  } }, secrets), /tracing drift/);
 });
 
 test("Database RATE_LIMITER and required runtime Secret names are a strict gate", () => {
@@ -215,10 +229,16 @@ test("manual release always syncs selected Worker Secrets from GitHub and never 
   assert.ok(secretStart > 0 && variableStart > secretStart);
   const secretStep = workflow.slice(secretStart, variableStart);
   assert.doesNotMatch(secretStep, /^\s*if:/m, "existing Workers must never skip Secret staging");
-  for (const name of ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN", "API_KEY", "CLIENT_ID",
+  for (const name of ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN", "API_KEY",
     "DATABASE_CONFIG", "MCP_BROKER_TOKEN"]) {
     assert.ok(secretStep.includes("secrets." + name), "GitHub must provide " + name);
   }
+  assert.equal(secretStep.includes("secrets.CLIENT_ID"), false,
+    "CLIENT_ID must not be staged as a Secret");
+  const variableStep = workflow.slice(variableStart,
+    workflow.indexOf("      - name: Recheck current main inside acquired release lock", variableStart));
+  assert.ok(variableStep.includes("vars.CLIENT_ID"),
+    "CLIENT_ID must be provided by the GitHub Environment Variable");
   const deployStart = workflow.indexOf("      - name: Publish exactly selected Worker");
   const deployEnd = workflow.indexOf("      - name: Remove temporary deployment configuration", deployStart);
   assert.ok(deployStart > 0 && deployEnd > deployStart);

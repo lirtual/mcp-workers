@@ -269,7 +269,6 @@ jobs:
           MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
           RAINDROP_ACCESS_TOKEN: ${{ secrets.RAINDROP_ACCESS_TOKEN }}
           API_KEY: ${{ secrets.API_KEY }}
-          CLIENT_ID: ${{ secrets.CLIENT_ID }}
           DATABASE_CONFIG: ${{ secrets.DATABASE_CONFIG }}
           MCP_BROKER_TOKEN: ${{ secrets.MCP_BROKER_TOKEN }}
         run: |
@@ -282,6 +281,7 @@ jobs:
         env:
           RAINDROP_RATE_LIMIT_MAX_RETRIES: ${{ vars.RAINDROP_RATE_LIMIT_MAX_RETRIES }}
           IMA_BASE_URL: ${{ vars.IMA_BASE_URL }}
+          CLIENT_ID: ${{ vars.CLIENT_ID }}
           MAX_ROWS: ${{ vars.MAX_ROWS }}
           MAX_RESULT_BYTES: ${{ vars.MAX_RESULT_BYTES }}
           MAX_SCHEMA_BYTES: ${{ vars.MAX_SCHEMA_BYTES }}

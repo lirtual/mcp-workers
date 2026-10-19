@@ -15,7 +15,7 @@ const INTEGER_LIMITS = Object.freeze({
 
 export const WORKER_VARIABLES = Object.freeze({
   "raindrop-mcp-worker": ["RAINDROP_RATE_LIMIT_MAX_RETRIES"],
-  "ima-mcp-worker": ["IMA_BASE_URL"],
+  "ima-mcp-worker": ["CLIENT_ID", "IMA_BASE_URL"],
   "database-mcp-worker": [
     "MAX_ROWS", "MAX_RESULT_BYTES", "MAX_SCHEMA_BYTES", "QUERY_TIMEOUT_MS",
     "MAX_WRITE_AFFECTED_ROWS",
@@ -30,8 +30,17 @@ export function collectWorkerVars(worker, env) {
   const variables = [];
   for (const name of allowed) {
     const value = env[name];
+    if (name === "CLIENT_ID" && worker === "ima-mcp-worker" &&
+        (typeof value !== "string" || value.trim().length === 0)) {
+      throw new Error("Missing or empty required Worker Variable: CLIENT_ID");
+    }
     if (value == null || value === "") continue;
     if (typeof value !== "string") throw new Error("Invalid Worker Variable: " + name);
+    if (name === "CLIENT_ID" &&
+        (value.length > 512 || value.trim() !== value ||
+          /[\u0000-\u001f\u007f\s]/.test(value))) {
+      throw new Error("Invalid Worker Variable: CLIENT_ID");
+    }
     if (Object.hasOwn(INTEGER_LIMITS, name)) {
       const [min, max] = INTEGER_LIMITS[name];
       if (!/^(0|[1-9][0-9]*)$/.test(value) ||
