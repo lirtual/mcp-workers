@@ -75,7 +75,7 @@ test("Remote production requires its own DO and rejects Preview namespace reuse"
       type: "durable_object_namespace", namespace_id: productionNs },
   ], observability: { enabled: true, logs: { invocation_logs: false } } };
   const secrets = [{ name: "MCP_ACCESS_TOKEN" }];
-  const options = { mode: "readback", v2OwnerNamespaceId: previewNs };
+  const options = { mode: "readback", previousNamespaceId: previewNs };
   assert.equal(verifyBindings(worker, prod, secrets, options), true);
   assert.throws(() => verifyBindings(worker, prod, [], options), /Secret missing/);
   assert.throws(() => verifyBindings(worker, {
@@ -93,11 +93,27 @@ test("Remote production requires its own DO and rejects Preview namespace reuse"
   const previous = { ...prod, bindings: [
     { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
     { name: "REMOTE_CONTROL_V2_ONLY", type: "plain_text", text: "true" },
-    { name: "V2_OWNER", type: "durable_object_namespace", namespace_id: previewNs },
+    { name: "V2_OWNER", type: "durable_object_namespace", namespace_id: previewNs,
+      class_name: "V2OwnerCoordinator", script_name: "remote-control-v2-preview" },
   ] };
   assert.equal(verifyBindings(worker, previous, secrets,
-    { mode: "preflight", v2OwnerNamespaceId: previewNs }), true);
+    { mode: "preflight", previousNamespaceId: previewNs }), true);
   assert.throws(() => verifyBindings(worker, previous, secrets, options), /DeviceCoordinator/);
+  // A former Preview script and its DO can be deleted after cutover. Readback
+  // compares against the saved preflight namespace, not a live Preview call.
+  assert.equal(verifyBindings(worker, prod, secrets,
+    { mode: "readback", previousNamespaceId: previewNs }), true);
+  assert.equal(verifyBindings(worker, prod, secrets,
+    { mode: "preflight" }), true, "subsequent releases need no Preview worker");
+  assert.throws(() => verifyBindings(worker, { ...prod,
+    bindings: prod.bindings.map(x => x.name === "DEVICE_COORDINATOR"
+      ? { ...x, script_name: "remote-control-v2-preview" } : x),
+  }, secrets, options), /distinct from Preview/);
+  assert.throws(() => verifyBindings(worker, { ...previous,
+    bindings: previous.bindings.map(x => x.name === "V2_OWNER"
+      ? { ...x, script_name: "unknown-worker" } : x),
+  }, secrets, { mode: "preflight" }), /DeviceCoordinator/,
+    "legacy preflight requires the known old Preview source");
 });
 
 test("Wrangler output requires a parseable release id, not upload-only success", () => {
