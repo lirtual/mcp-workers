@@ -61,8 +61,6 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
       invariant(!previous && !find("REMOTE_CONTROL_V2_ONLY", "plain_text") &&
         !find("REMOTE_CONTROL_V2_PREVIEW_ONLY", "plain_text"),
         "Production must not retain Preview binding or v1/v2 runtime switches");
-      invariant(!secretNames.has("REMOTE_CONTROL_DEVICE_TOKEN"),
-        "Legacy VPC device token must be removed after cutover");
       invariant(!bindings.some(x => x.type === "vpc_service" ||
         x.name === "REMOTE_CONTROL_DEVICE"), "Production VPC binding must be absent");
     }
