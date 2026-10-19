@@ -1,4 +1,5 @@
-// Collect only the selected Worker's GitHub Environment + repository secrets.
+// Stage only the selected Worker's GitHub Environment + repository secrets.
+// Used for EVERY authorized manual release, not only for first deployment.
 // GitHub resolves an Environment secret over a same-name repository secret.
 // Never print credentials, and never fall back to the removed *_SECRETS_JSON.
 import { writeFile } from "node:fs/promises";
@@ -38,7 +39,7 @@ async function main() {
   }
   const payload = collectBootstrapSecrets(worker, process.env);
   await writeFile(outputPath, JSON.stringify(payload), { flag: "wx", mode: 0o600 });
-  console.log("Selected Worker bootstrap Secrets staged (secret values withheld)");
+  console.log("Selected Worker release Secrets validated and staged (values withheld)");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
