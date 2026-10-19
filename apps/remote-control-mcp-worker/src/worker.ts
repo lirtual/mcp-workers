@@ -972,145 +972,6 @@ function publicReceipt(value: unknown): Record<string, unknown> | null {
   return projection.operation_id && projection.state ? projection : null;
 }
 
-async function callDevice(env: Env, call: LocalCall, id: unknown, signal: AbortSignal): Promise<Response> {
-  const operationId = callOperationId(call);
-  const isMutation = mutationTool(call);
-  const deviceToken = env.REMOTE_CONTROL_DEVICE_TOKEN;
-  const binding = env.REMOTE_CONTROL_DEVICE;
-  if (!deviceToken || !binding) {
-    log("device_not_configured");
-    return operationId
-      ? toolText(id, JSON.stringify({ operation_id: operationId, status: "unavailable" }))
-      : toolError(id, "The remote device is unavailable.");
-  }
-
-  let response: Response;
-  const requestBody = call.tool === "get_operation_status"
-    ? undefined
-    : JSON.stringify({
-        tool: call.tool,
-        ...(operationId ? { operation_id: operationId } : {}),
-        arguments: upstreamArguments(call),
-      });
-  if (requestBody !== undefined && new TextEncoder().encode(requestBody).byteLength > MAX_DEVICE_REQUEST_BYTES) {
-    return operationId
-      ? toolError(id, JSON.stringify({ operation_id: operationId, status: "bad_request" }))
-      : toolError(id, "The requested tool call was rejected.");
-  }
-  try {
-    response = await binding.fetch(deviceUrl(call), {
-      method: call.tool === "get_operation_status" ? "GET" : "POST",
-      signal,
-      headers: {
-        "content-type": "application/json",
-        "x-device-credential": deviceToken,
-      },
-      ...(requestBody === undefined ? {} : { body: requestBody }),
-    });
-  } catch {
-    log("device_unavailable");
-    return operationId
-      ? toolText(id, JSON.stringify({ operation_id: operationId, status: isMutation ? "timeout_unknown" : "unavailable" }))
-      : toolError(id, "The remote device is unavailable.");
-  }
-
-  const raw = await readResponseText(response);
-  if (raw === null) {
-    log("device_unavailable");
-    return operationId
-      ? toolText(id, JSON.stringify({ operation_id: operationId, status: isMutation ? "timeout_unknown" : "unavailable" }))
-      : toolError(id, "The remote device is unavailable.");
-  }
-
-  if (!response.ok) {
-    if (isMutation && operationId && response.status === 409) {
-      log("operation_conflict");
-      return toolError(id, JSON.stringify({ operation_id: operationId, status: "conflict" }));
-    }
-    if (call.tool === "get_operation_status" && response.status === 404) {
-      return toolText(id, JSON.stringify({ operation_id: call.arguments.operationId, status: "not_found" }));
-    }
-    if (call.tool === "read_process_output" && response.status === 404) {
-      log("not_found");
-      return toolError(id, "The managed session was not found.");
-    }
-    if ((call.tool === "interact_with_process" || call.tool === "force_terminate") && response.status === 404) {
-      log("not_found");
-      return toolError(id, "The managed session was not found.");
-    }
-    if (operationId && response.status === 503) {
-      let knownUnavailable = false;
-      try {
-        const failed = JSON.parse(raw) as { status?: unknown };
-        knownUnavailable = failed.status === "unavailable";
-      } catch { /* An unreadable submitted-write response has an unknown outcome. */ }
-      return toolText(id, JSON.stringify({
-        operation_id: operationId,
-        status: knownUnavailable || !isMutation ? "unavailable" : "timeout_unknown",
-      }));
-    }
-    if (operationId) {
-      const status = response.status === 400 ? "bad_request" : "unavailable";
-      return isMutation
-        ? toolError(id, JSON.stringify({ operation_id: operationId, status }))
-        : toolText(id, JSON.stringify({ operation_id: operationId, status }));
-    }
-    log(response.status === 400 ? "rejected" : "device_unavailable");
-    const message =
-      response.status === 400
-        ? "The requested tool call was rejected."
-        : "The remote device is unavailable.";
-    return toolError(id, message);
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw) as unknown;
-  } catch {
-    log("device_unavailable");
-    return operationId
-      ? toolText(id, JSON.stringify({ operation_id: operationId, status: "timeout_unknown" }))
-      : toolError(id, "The remote device is unavailable.");
-  }
-
-  const text = completedText(parsed);
-  if (isMutation && parsed !== null && typeof parsed === "object") {
-    const operation = parsed as { operation_id?: unknown; status?: unknown; receipt?: unknown; session_id?: unknown };
-    if (call.tool === "start_process") {
-      log(operation.status === "failed" ? "process_failed" : "process_started");
-      return toolText(id, JSON.stringify({ operation_id: operationId, status: operation.status, session_id: operation.session_id, receipt: publicReceipt(operation.receipt) }));
-    }
-    if (call.tool === "interact_with_process" || call.tool === "force_terminate") {
-      const event = call.tool === "force_terminate" ? "process_terminated" : "process_input_sent";
-      log(operation.status === "failed" ? "process_action_failed" : event);
-      return toolText(id, JSON.stringify({ operation_id: operationId, status: operation.status, session_id: call.arguments.sessionId, receipt: publicReceipt(operation.receipt) }));
-    }
-    const category = call.tool === "create_directory" ? "directory" : call.tool === "edit_block" ? "edit" : call.tool === "move_file" ? "move" : "write";
-    log(operation.status === "failed" ? `${category}_failed` : `${category}_completed`);
-    return toolText(id, JSON.stringify({ operation_id: operationId, status: operation.status, receipt: publicReceipt(operation.receipt) }));
-  }
-  if (call.tool === "get_operation_status") {
-    const record = parsed as Record<string, unknown>;
-    return toolText(id, JSON.stringify(publicReceipt(record)));
-  }
-  if (text !== null) {
-    log(successEvent(call.tool));
-    return toolText(id, text);
-  }
-
-  const status =
-    parsed !== null && typeof parsed === "object"
-      ? (parsed as { status?: unknown }).status
-      : undefined;
-  if (status === "failed") {
-    log(failureEvent(call.tool));
-    return toolError(id, failureMessage(call.tool));
-  }
-
-  log("device_unavailable");
-  return toolError(id, "The remote device is unavailable.");
-}
-
 async function handleMcp(request: Request, env: Env): Promise<Response> {
   const raw = await readBounded(request, MAX_MCP_BODY_BYTES);
   if (raw === null) return rpcError(null, -32600, "Invalid request.");
@@ -1182,7 +1043,7 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
       if ((!requiresDevice && !OWNER_TOOLS.has(name)) ||
           (requiresDevice && (typeof target !== "string" ||
             !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(target)))) {
-        return toolError(rpcMessage.id, "An explicit valid paired device_id is required.");
+        return toolError(rpcMessage.id, "The requested tool call was rejected: a valid device_id is required.");
       }
     }
     if (typeof call.name === "string" && V2_OPERATION_TOOLS.has(call.name) &&
@@ -1237,7 +1098,7 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
       log("rejected");
       return toolError(rpcMessage.id, "The requested tool call was rejected.");
     }
-    return callDevice(env, localCall, rpcMessage.id, request.signal);
+    return toolError(rpcMessage.id, "The requested tool call was rejected: a valid device_id is required.");
   }
 
   return rpcError(rpcMessage.id, -32601, "Method not found.");
