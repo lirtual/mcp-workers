@@ -310,7 +310,6 @@ import {
 } from "./local-read.ts";
 
 const MAX_MCP_BODY_BYTES = 65_536;
-const MAX_DEVICE_BODY_BYTES = 512_000;
 const SERVER_NAME = "remote-control-mcp-worker";
 const SERVER_VERSION = "0.0.0";
 const PROTOCOL_VERSION = "2025-11-25";
@@ -743,10 +742,6 @@ async function readBounded(
   return new TextDecoder().decode(merged);
 }
 
-async function readResponseText(response: Response): Promise<string | null> {
-  return readBounded(response, MAX_DEVICE_BODY_BYTES);
-}
-
 type LocalCall =
   | { tool: "read_file"; arguments: LocalRead }
   | { tool: "read_multiple_files"; arguments: LocalReadMultiple }
@@ -765,10 +760,6 @@ type LocalCall =
   | { tool: "read_process_output"; arguments: LocalProcessOutput }
   | { tool: "interact_with_process"; arguments: LocalProcessInteraction }
   | { tool: "force_terminate"; arguments: LocalProcessTermination };
-
-function mutationTool(call: LocalCall): boolean {
-  return call.tool === "write_file" || call.tool === "create_directory" || call.tool === "edit_block" || call.tool === "move_file" || call.tool === "delete_file" || call.tool === "start_process" || call.tool === "interact_with_process" || call.tool === "force_terminate";
-}
 
 function callOperationId(call: LocalCall): string | undefined {
   if (call.tool === "get_operation_status") return call.arguments.operationId;
@@ -908,57 +899,6 @@ function failureMessage(tool: LocalCall["tool"]): string {
   if (tool === "read_process_output") return "The managed session is unavailable.";
   if (tool === "interact_with_process" || tool === "force_terminate") return "The managed session action failed.";
   return "The file read failed.";
-}
-
-function successEvent(tool: LocalCall["tool"]): string {
-  if (tool === "list_directory") return "list_completed";
-  if (tool === "get_file_info") return "info_completed";
-  if (tool === "start_search" || tool === "get_more_search_results") return "search_completed";
-  if (tool === "stop_search") return "search_stopped";
-  if (tool === "start_process") return "process_started";
-  if (tool === "list_sessions") return "process_listed";
-  if (tool === "read_process_output") return "process_output_read";
-  if (tool === "interact_with_process") return "process_input_sent";
-  if (tool === "force_terminate") return "process_terminated";
-  return "read_completed";
-}
-
-function failureEvent(tool: LocalCall["tool"]): string {
-  if (tool === "list_directory") return "list_failed";
-  if (tool === "get_file_info") return "info_failed";
-  if (tool === "start_search" || tool === "get_more_search_results" || tool === "stop_search") return "search_failed";
-  return "read_failed";
-}
-
-function completedText(body: unknown): string | null {
-  if (body === null || typeof body !== "object") return null;
-  const record = body as { status?: unknown; result?: unknown };
-  if (record.status !== "completed" || record.result === null || typeof record.result !== "object") {
-    return null;
-  }
-  const content = (record.result as { content?: unknown }).content;
-  if (!Array.isArray(content) || content.length === 0) return null;
-  const parts: string[] = [];
-  for (const block of content) {
-    if (block === null || typeof block !== "object") return null;
-    const textBlock = block as { type?: unknown; text?: unknown };
-    if (textBlock.type !== "text" || typeof textBlock.text !== "string") return null;
-    parts.push(textBlock.text);
-  }
-  return parts.join("");
-}
-
-function publicReceipt(value: unknown): Record<string, unknown> | null {
-  if (value === null || typeof value !== "object") return null;
-  const receipt = value as Record<string, unknown>;
-  const allowed = ["operation_id", "tool_name", "state", "created_at", "updated_at", "safe_result_summary", "session_id"];
-  const projection: Record<string, unknown> = {};
-  for (const key of allowed) if (receipt[key] !== undefined) projection[key] = receipt[key];
-  if (typeof projection.tool_name === "string") {
-    const publicName = AGENT_TO_PUBLIC_TOOL[projection.tool_name] ?? projection.tool_name;
-    if (LOCAL_TOOLS.some((tool) => tool.name === publicName)) projection.public_tool_name = publicName;
-  }
-  return projection.operation_id && projection.state ? projection : null;
 }
 
 async function handleMcp(request: Request, env: Env): Promise<Response> {
