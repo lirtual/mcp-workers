@@ -335,10 +335,17 @@ test('D1 stays SELECT-only, quotas stay at the spec defaults, and secrets are no
   const workflow = await readFile(new URL(`../../../${record.ci.workflow}`, import.meta.url), 'utf8');
   assert.match(workflow, /node scripts\/select-affected-apps\.mjs/);
   assert.match(workflow, /pnpm --filter "\$app" check/);
-  assert.equal(workflow.includes('- ssh-mcp-worker'), false);
+  assert.equal(workflow.includes('- ssh-mcp-worker'), true);
   const lockfile = await readFile(new URL('../../../pnpm-lock.yaml', import.meta.url), 'utf8');
   const pinned = lockfile.split(`wrangler@${record.runtime.wrangler}(@cloudflare/workers-types@`)[1] ?? '';
   assert.match(pinned.slice(0, 800), new RegExp(`workerd: ${record.runtime.workerd}`));
   const workerConfig = await readFile(new URL('../wrangler.jsonc', import.meta.url), 'utf8');
-  assert.match(workerConfig, /"observability": \{ "enabled": false \}/);
+  const config = JSON.parse(workerConfig);
+  assert.equal(config.observability.enabled, false);
+  assert.equal(config.d1_databases, undefined);
+  assert.equal(config.vars?.MCP_BROKER_FULL_ACCESS, undefined);
+  assert.deepEqual(config.services, [{
+    binding: 'EDGE_SSH_BROKER', service: 'edgessh', entrypoint: 'HostBrokerEntrypoint',
+  }]);
+  assert.deepEqual(config.secrets.required, ['MCP_ACCESS_TOKEN', 'MCP_BROKER_TOKEN']);
 });

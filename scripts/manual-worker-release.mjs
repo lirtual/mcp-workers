@@ -1,19 +1,21 @@
 // Narrow, credential-free-to-import Cloudflare release checks for #19.
 // Never log API bodies: Workers settings can include runtime plain-text values.
-import { readFile, writeFile } from "node:fs/promises";
+import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-const WORKERS = new Set(["raindrop-mcp-worker", "ima-mcp-worker", "database-mcp-worker", "remote-control-mcp-worker"]);
+const WORKERS = new Set(["raindrop-mcp-worker", "ima-mcp-worker", "database-mcp-worker", "ssh-mcp-worker", "remote-control-mcp-worker"]);
 const REQUIRED_SECRETS = {
   "raindrop-mcp-worker": ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN"],
   "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "API_KEY", "CLIENT_ID"],
   "database-mcp-worker": ["MCP_ACCESS_TOKEN", "DATABASE_CONFIG"],
+  "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "MCP_BROKER_TOKEN"],
   "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
 };
 const WORKER_ENTRIES = {
   "raindrop-mcp-worker": "src/worker.ts",
   "ima-mcp-worker": "src/index.ts",
   "database-mcp-worker": "src/index.ts",
+  "ssh-mcp-worker": "src/index.ts",
   "remote-control-mcp-worker": "src/worker.ts",
 };
 
@@ -31,10 +33,21 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     invariant(secretNames.has(name), "Required runtime Secret missing: " + name);
     invariant(!!find(name, "secret_text"), "Required Secret binding missing: " + name);
   }
-  const logs = worker === "remote-control-mcp-worker" ? false : true;
-  invariant(settings.observability?.enabled === true &&
-    settings.observability?.logs?.invocation_logs === logs,
-    "Unexpected Invocation Logs configuration");
+  if (worker === "ssh-mcp-worker") {
+    invariant(settings.observability?.enabled !== true, "SSH observability must remain disabled");
+    const broker = find("EDGE_SSH_BROKER", "service");
+    invariant(broker?.service === "edgessh" && broker.entrypoint === "HostBrokerEntrypoint",
+      "SSH Broker Service Binding missing or changed");
+    invariant(find("SSH_OPERATIONS", "durable_object_namespace")?.class_name === "SshOperationsDO",
+      "SSH Durable Object binding missing");
+    invariant(!bindings.some((x) => ["EDGE_SSH_DB", "ENCRYPTION_KEY", "MCP_BROKER_FULL_ACCESS"].includes(x.name)),
+      "SSH must not copy root decryption keys or enable unrestricted broker access");
+  } else {
+    const logs = worker === "remote-control-mcp-worker" ? false : true;
+    invariant(settings.observability?.enabled === true &&
+      settings.observability?.logs?.invocation_logs === logs,
+      "Unexpected Invocation Logs configuration");
+  }
   if (worker === "ima-mcp-worker") {
     const durable = find("IMA_IMAGE_REFRESH_SHARD", "durable_object_namespace");
     invariant(durable?.class_name === "ImaImageRefreshShard", "IMA Durable Object missing or class drift");
@@ -74,6 +87,7 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
   const allowed = new Set(worker === "ima-mcp-worker"
     ? ["IMA_IMAGE_REFRESH_SHARD"]
     : worker === "database-mcp-worker" ? ["RATE_LIMITER"]
+      : worker === "ssh-mcp-worker" ? ["EDGE_SSH_BROKER", "SSH_OPERATIONS"]
       : worker === "remote-control-mcp-worker"
         ? (options.mode === "preflight"
           ? ["DEVICE_COORDINATOR", "V2_OWNER", "REMOTE_CONTROL_DEVICE"]
@@ -107,8 +121,10 @@ export function verifyPublishedVersion(previous, observed, expected) {
     "Expected Wrangler version ID missing or malformed");
   invariant(observed.version_id.toLowerCase() === expected.toLowerCase(),
     "Active Worker version does not match the Wrangler-published version");
-  invariant(previous.version_id !== observed.version_id &&
-    previous.deployment_id !== observed.deployment_id, "Active Worker version did not change");
+  if (previous.mode !== "bootstrap") {
+    invariant(previous.version_id !== observed.version_id &&
+      previous.deployment_id !== observed.deployment_id, "Active Worker version did not change");
+  }
   return true;
 }
 
@@ -118,9 +134,13 @@ function readConfiguration(worker, content) {
     "Worker script name or entry differs from selected target");
   invariant(conf.keep_vars === (worker !== "remote-control-mcp-worker"),
     "Runtime variable cleanup must match selected Worker release contract");
-  const logs = worker === "remote-control-mcp-worker" ? false : true;
-  invariant(conf.observability?.logs?.invocation_logs === logs,
-    "Source Invocation Logs setting differs from production");
+  if (worker === "ssh-mcp-worker") {
+    invariant(conf.observability?.enabled === false, "SSH observability must stay disabled");
+  } else {
+    const logs = worker === "remote-control-mcp-worker" ? false : true;
+    invariant(conf.observability?.logs?.invocation_logs === logs,
+      "Source Invocation Logs setting differs from production");
+  }
   invariant(REQUIRED_SECRETS[worker].every((s) => conf.secrets?.required?.includes(s)),
     "Source required Secret names changed unexpectedly");
   if (worker === "ima-mcp-worker") {
@@ -134,6 +154,20 @@ function readConfiguration(worker, content) {
     invariant(conf.ratelimits?.some((b) => b.name === "RATE_LIMITER" &&
       String(b.namespace_id) === "1001" && Number(b.simple?.limit) === 120 &&
       Number(b.simple?.period) === 60), "Source RATE_LIMITER policy changed");
+  }
+  if (worker === "ssh-mcp-worker") {
+    invariant(conf.workers_dev === true && conf.preview_urls === false, "SSH public route drift");
+    invariant(conf.services?.length === 1 &&
+      conf.services[0].binding === "EDGE_SSH_BROKER" &&
+      conf.services[0].service === "edgessh" &&
+      conf.services[0].entrypoint === "HostBrokerEntrypoint", "SSH Broker source binding missing");
+    invariant(conf.durable_objects?.bindings?.length === 1 &&
+      conf.durable_objects.bindings[0].name === "SSH_OPERATIONS" &&
+      conf.durable_objects.bindings[0].class_name === "SshOperationsDO" &&
+      conf.migrations?.[0]?.tag === "v1" &&
+      conf.migrations[0].new_sqlite_classes?.includes("SshOperationsDO"), "SSH SQLite DO migration drift");
+    invariant(!conf.d1_databases?.length && !conf.vars?.MCP_BROKER_FULL_ACCESS,
+      "SSH must be broker-only and read-only by default");
   }
   if (worker === "remote-control-mcp-worker") {
     invariant(!conf.vars?.REMOTE_CONTROL_V2_ONLY &&
@@ -165,6 +199,22 @@ async function cfGet(account, worker, token, endpoint) {
   return document.result;
 }
 
+async function scriptExists(account, worker, token) {
+  const url = "https://api.cloudflare.com/client/v4/accounts/" +
+    encodeURIComponent(account) + "/workers/scripts?per_page=100";
+  const response = await fetch(url, {
+    headers: { Authorization: "Bearer " + token, Accept: "application/json" },
+    signal: AbortSignal.timeout(15_000),
+  });
+  invariant(response.ok, "Cloudflare script inventory HTTP " + response.status);
+  const document = await response.json();
+  invariant(document?.success === true && Array.isArray(document.result),
+    "Cloudflare script inventory unavailable");
+  invariant(!document.result_info?.total_count ||
+    document.result_info.total_count <= document.result.length, "Cloudflare inventory incomplete");
+  return document.result.some((item) => item.id === worker);
+}
+
 async function current(account, worker, token, options) {
   const [settings, secrets, deployments, scriptSettings] = await Promise.all([
     cfGet(account, worker, token, "/settings"),
@@ -192,9 +242,11 @@ async function current(account, worker, token, options) {
     invariant(JSON.stringify(actualFlags) === JSON.stringify(expectedFlags),
       "Compatibility flag drift");
   }
-  invariant(scriptSettings?.observability?.logs?.invocation_logs ===
-    (worker === "remote-control-mcp-worker" ? false : true),
-    "Script-level Invocation Logs drift");
+  if (worker !== "ssh-mcp-worker") {
+    invariant(scriptSettings?.observability?.logs?.invocation_logs ===
+      (worker === "remote-control-mcp-worker" ? false : true),
+      "Script-level Invocation Logs drift");
+  }
   if (worker === "ima-mcp-worker") {
     invariant(scriptSettings?.observability?.traces?.enabled === true, "IMA script tracing drift");
   }
@@ -237,18 +289,24 @@ async function main() {
     ? JSON.parse(await readFile(statePath, "utf8")) : null;
   if (previous) invariant(previous.worker === worker && previous.sourceSha === sourceSha,
     "Release source changed");
-  const observed = await current(account, worker, token, {
-    mode,
-    sourceConfig,
-    previousNamespaceId: previous?.previousNamespaceId,
-  });
+  const exists = mode === "preflight" ? await scriptExists(account, worker, token) : true;
+  invariant(exists || worker !== "remote-control-mcp-worker",
+    "Remote Control may not be created through bootstrap");
+  const observed = exists ? await current(account, worker, token, {
+    mode, sourceConfig, previousNamespaceId: previous?.previousNamespaceId,
+  }) : { mode: "bootstrap" };
   if (mode === "preflight") {
     await writeFile(statePath, JSON.stringify({ worker, sourceSha, ...observed }), { mode: 0o600 });
-    console.log("Preflight OK: " + worker + " (source " + sourceSha.slice(0, 12) + ")");
+    if (process.env.GITHUB_OUTPUT) {
+      await appendFile(process.env.GITHUB_OUTPUT, "bootstrap=" + (!exists) + "\n");
+    }
+    console.log("Preflight OK: " + worker + " (" + (exists ? "update" : "bootstrap") +
+      "; source " + sourceSha.slice(0, 12) + ")");
   } else {
     verifyPublishedVersion(previous, observed, process.env.EXPECTED_VERSION_ID);
     console.log("Release verified: " + worker + " version " + observed.version_id +
-      " source " + sourceSha.slice(0, 12));
+      " source " + sourceSha.slice(0, 12) +
+      (previous.mode === "bootstrap" ? " (first deployment)" : ""));
   }
 }
 

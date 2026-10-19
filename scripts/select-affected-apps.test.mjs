@@ -24,11 +24,11 @@ test('shared package and lockfile changes select every app, including ssh-mcp-wo
   }
 });
 
-test('the existing workflow runs ssh-mcp-worker check for both selector results and does not release it', async () => {
+test('SSH remains CI-checked and can be manually selected for production release', async () => {
   const workflow = await readFile(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
   assert.match(workflow, /node scripts\/select-affected-apps\.mjs/);
   assert.match(workflow, /pnpm --filter "\$app" check/);
-  assert.equal(workflow.includes('\n          - ssh-mcp-worker\n'), false);
+  assert.equal(workflow.includes('\n          - ssh-mcp-worker\n'), true);
   for (const files of [['apps/ssh-mcp-worker/src/hosts.ts'], ['packages/portal-auth/src/index.ts'], ['pnpm-lock.yaml']]) {
     assert.equal(selectAffectedApps(files).includes('ssh-mcp-worker'), true, files.join(','));
   }
