@@ -33,25 +33,23 @@ test("dedicated v2 preview cannot inherit the v1 VPC binding, token or DO namesp
   assert.equal("secrets" in bootstrap, false);
   const v2Prod = JSON.parse(production);
   assert.equal(v2Prod.name, "remote-control-mcp-worker");
-  assert.equal(v2Prod.vars.REMOTE_CONTROL_V2_ONLY, "true");
+  assert.equal(v2Prod.vars?.REMOTE_CONTROL_V2_ONLY, undefined);
   assert.equal(v2Prod.keep_vars, false);
   assert.deepEqual(v2Prod.secrets.required, ["MCP_ACCESS_TOKEN"]);
   assert.deepEqual(v2Prod.durable_objects.bindings, [{
-    name: "V2_OWNER", class_name: "V2OwnerCoordinator",
-    script_name: "remote-control-v2-preview",
-  }], "production must share the existing approved v2 namespace");
-  assert.equal(v2Prod.exports, undefined, "never create a new production DO namespace");
+    name: "DEVICE_COORDINATOR", class_name: "DeviceCoordinator",
+  }], "production must own an independent DO namespace");
+  assert.deepEqual(v2Prod.exports?.DeviceCoordinator, { type: "durable-object", storage: "sqlite" });
   assert.equal(v2Prod.vpc_services, undefined, "production must no longer bind VPC");
   assert.equal(JSON.stringify(v2Prod).includes("REMOTE_CONTROL_DEVICE_TOKEN"), false);
-  const legacy = await readFile(path.join(root, "wrangler.v1-rollback.jsonc"), "utf8");
-  assert.ok(legacy.includes('"vpc_services"'), "retain reviewed source for explicit rollback only");
 });
 
 
-test("production v2-only flag lists per-device tools even when stale v1 VPC is present", async () => {
+test("production DO binding lists per-device tools without v1 fallback", async () => {
   const { default: worker } = await import("../src/worker.ts");
-  const env = { MCP_ACCESS_TOKEN: "token", REMOTE_CONTROL_V2_ONLY: "true",
-    V2_OWNER: { idFromName: () => "single-owner-v2", get: () => ({
+  const env = { MCP_ACCESS_TOKEN: "token",
+    
+    DEVICE_COORDINATOR: { idFromName: () => "single-owner-v2", get: () => ({
       fetch: async () => Response.json([{ device_id: "11111111-1111-4111-8111-111111111111", name: "test", status: "online" }]),
     }) },
     REMOTE_CONTROL_DEVICE: { fetch: () => { throw Error("v1 VPC called"); } },
@@ -75,8 +73,9 @@ test("production v2-only flag lists per-device tools even when stale v1 VPC is p
 test("production installer is pinned to the public v0.1.8 release and its own origin", async () => {
   const { default: worker } = await import("../src/worker.ts");
   const prod = "https://remote-control-mcp-worker.aiyaya.workers.dev";
-  const env = { MCP_ACCESS_TOKEN: "owner-only", REMOTE_CONTROL_V2_ONLY: "true",
-    V2_OWNER: { idFromName: () => "single-owner-v2", get: () => ({}) } };
+  const env = { MCP_ACCESS_TOKEN: "owner-only",
+    
+    DEVICE_COORDINATOR: { idFromName: () => "single-owner-v2", get: () => ({}) } };
   const response = await worker.fetch(new Request(prod + "/install.sh"), env);
   assert.equal(response.status, 200);
   const content = await response.text();

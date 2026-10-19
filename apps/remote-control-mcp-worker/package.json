@@ -3,11 +3,11 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Portal-authenticated MCP worker for curated local file operations through a fixed private Agent target.",
+  "description": "Portal-authenticated MCP worker for paired devices over WebSocket and Durable Objects.",
   "scripts": {
     "dev": "wrangler dev",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
-    "test": "node --experimental-strip-types --test tests/*.test.ts tests/*.test.mjs",
+    "test": "bash scripts/run-tests.sh",
     "check": "pnpm --filter remote-control-agent build:shell && pnpm run typecheck && pnpm test && pnpm run check:v2-preview && pnpm run check:v2-bootstrap && pnpm run check:v2-production",
     "check:v2-bootstrap": "wrangler deploy --dry-run --config wrangler.v2-preview-bootstrap.jsonc --outdir .build/v2-bootstrap",
     "check:v2-preview": "wrangler deploy --dry-run --config wrangler.v2-preview.jsonc --outdir .build/v2-preview",

@@ -9,15 +9,11 @@
   "workers_dev": true,
   "preview_urls": false,
   "keep_vars": false,
-  "vars": {
-    "REMOTE_CONTROL_V2_ONLY": "true"
-  },
   "durable_objects": {
     "bindings": [
       {
-        "name": "V2_OWNER",
-        "class_name": "V2OwnerCoordinator",
-        "script_name": "remote-control-v2-preview"
+        "name": "DEVICE_COORDINATOR",
+        "class_name": "DeviceCoordinator"
       }
     ]
   },
@@ -32,5 +28,11 @@
     "required": [
       "MCP_ACCESS_TOKEN"
     ]
+  },
+  "exports": {
+    "DeviceCoordinator": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
   }
 }
