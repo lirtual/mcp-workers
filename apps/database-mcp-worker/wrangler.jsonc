@@ -6,7 +6,7 @@
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
   "preview_urls": false,
-  "keep_vars": true,
+  "keep_vars": false,
   "observability": {
     "enabled": true,
     "logs": {

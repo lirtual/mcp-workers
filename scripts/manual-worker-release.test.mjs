@@ -204,6 +204,58 @@ test("manual release selects GitHub Environment directly from the allowlisted Wo
     "only manually dispatched workflow can publish");
   assert.match(workflow, /github\.ref == 'refs\/heads\/main'/,
     "only main branch may publish");
-  assert.match(workflow, /Stage bootstrap Secrets for a missing Worker/,
-    "missing Worker must still pass required secret validation");
+  assert.match(workflow, /Stage selected Worker Secrets for every release/,
+    "every selected Worker must stage required secret values before deploy");
+});
+
+test("manual release always syncs selected Worker Secrets from GitHub and never silently falls back", () => {
+  const workflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+  const secretStart = workflow.indexOf("      - name: Stage selected Worker Secrets for every release");
+  const variableStart = workflow.indexOf("      - name: Stage approved Worker variables", secretStart);
+  assert.ok(secretStart > 0 && variableStart > secretStart);
+  const secretStep = workflow.slice(secretStart, variableStart);
+  assert.doesNotMatch(secretStep, /^\s*if:/m, "existing Workers must never skip Secret staging");
+  for (const name of ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN", "API_KEY", "CLIENT_ID",
+    "DATABASE_CONFIG", "MCP_BROKER_TOKEN"]) {
+    assert.ok(secretStep.includes("secrets." + name), "GitHub must provide " + name);
+  }
+  const deployStart = workflow.indexOf("      - name: Publish exactly selected Worker");
+  const deployEnd = workflow.indexOf("      - name: Remove temporary deployment configuration", deployStart);
+  assert.ok(deployStart > 0 && deployEnd > deployStart);
+  const deployStep = workflow.slice(deployStart, deployEnd);
+  assert.ok(deployStep.includes('test -s "$RUNNER_TEMP/mcp-worker-secrets.json"'),
+    "do not allow publishing when staged Secrets are missing");
+  assert.ok(deployStep.includes('deploy_args=(--secrets-file "$RUNNER_TEMP/mcp-worker-secrets.json")'),
+    "must upload Secrets alongside every code deployment");
+  assert.doesNotMatch(deployStep, /steps\.preflight\.outputs\.bootstrap/,
+    "Secret upload must not be limited to bootstrap");
+  assert.equal(workflow.includes("mcp-bootstrap-secrets.json"), false);
+  assert.ok(workflow.includes('run: rm -f "$RUNNER_TEMP/mcp-worker-secrets.json"'),
+    "temporary secret material must always be deleted");
+});
+
+test("Wrangler never preserves unmanaged dashboard Variables on any selected Worker", () => {
+  for (const worker of ["raindrop-mcp-worker", "ima-mcp-worker", "database-mcp-worker",
+    "ssh-mcp-worker", "remote-control-mcp-worker"]) {
+    const file = readFileSync(new URL("../apps/" + worker + "/wrangler.jsonc", import.meta.url), "utf8");
+    assert.match(file, /"keep_vars": false/, worker);
+  }
+});
+
+test("preflight allows GitHub to restore a missing runtime Secret, but readback fails closed", () => {
+  const settings = {
+    bindings: [{ name: "RAINDROP_ACCESS_TOKEN", type: "secret_text" }],
+    observability: { enabled: true, logs: { invocation_logs: true } },
+  };
+  assert.equal(verifyBindings("raindrop-mcp-worker", settings,
+    [{ name: "RAINDROP_ACCESS_TOKEN" }], { mode: "preflight" }), true);
+  assert.throws(() => verifyBindings("raindrop-mcp-worker", settings,
+    [{ name: "RAINDROP_ACCESS_TOKEN" }], { mode: "readback" }), /Required runtime Secret missing/);
+  const filled = { ...settings, bindings: [
+    { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
+    { name: "RAINDROP_ACCESS_TOKEN", type: "secret_text" },
+  ] };
+  assert.equal(verifyBindings("raindrop-mcp-worker", filled,
+    [{ name: "MCP_ACCESS_TOKEN" }, { name: "RAINDROP_ACCESS_TOKEN" }],
+    { mode: "readback" }), true);
 });

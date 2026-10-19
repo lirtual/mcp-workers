@@ -30,8 +30,13 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
   const find = (name, type) => bindings.find((x) => x.name === name && x.type === type);
   const secretNames = new Set(Array.isArray(secrets) ? secrets.map((x) => x.name) : []);
   for (const name of REQUIRED_SECRETS[worker]) {
-    invariant(secretNames.has(name), "Required runtime Secret missing: " + name);
-    invariant(!!find(name, "secret_text"), "Required Secret binding missing: " + name);
+    // On preflight a missing runtime Secret can be repaired from GitHub.
+    // The unconditional Secrets staging step fails closed before deployment.
+    // Readback must still prove that every required Secret binding exists.
+    if (options.mode !== "preflight") {
+      invariant(secretNames.has(name), "Required runtime Secret missing: " + name);
+      invariant(!!find(name, "secret_text"), "Required Secret binding missing: " + name);
+    }
   }
   if (worker === "ssh-mcp-worker") {
     invariant(settings.observability?.enabled !== true, "SSH observability must remain disabled");
@@ -132,8 +137,8 @@ function readConfiguration(worker, content) {
   const conf = JSON.parse(content.replace(/^\s*\/\/.*$/gm, ""));
   invariant(conf.name === worker && conf.main === WORKER_ENTRIES[worker],
     "Worker script name or entry differs from selected target");
-  invariant(conf.keep_vars === (worker !== "remote-control-mcp-worker"),
-    "Runtime variable cleanup must match selected Worker release contract");
+  invariant(conf.keep_vars === false,
+    "GitHub/Wrangler must own all runtime Variables; keep_vars must be false");
   if (worker === "ssh-mcp-worker") {
     invariant(conf.observability?.enabled === false, "SSH observability must stay disabled");
   } else {

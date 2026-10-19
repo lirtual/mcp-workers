@@ -8,11 +8,12 @@
 
 - 仅由 GitHub Actions → CI → `workflow_dispatch` 在当前 `main` 触发；PR 和 push CI 只运行检查，不执行发布。
 - 只能选择一个明确白名单 Worker。数据库必须通过真正的 PostgreSQL/MySQL 集成检查；其他 Worker 不得被数据库集成步骤错误阻挡。
-- 每个 Worker 使用与脚本同名的 GitHub Environment，例如 `ima-mcp-worker`。Actions 自动选择该名称，无须维护 `WORKER_CONFIG_SCOPE`。GitHub 可能自动建立尚不存在的空 Environment，首次发布前需配置 Worker 专属 Secrets、审批与分支保护；缺少必要首次部署密钥会在发布前失败。
+- 每个 Worker 使用与脚本同名的 GitHub Environment，例如 `ima-mcp-worker`。Actions 自动选择该名称，无须维护 `WORKER_CONFIG_SCOPE`。GitHub 可能自动建立尚不存在的空 Environment，应事先配置 Worker 专属 Secrets、审批与分支保护；每次手动部署缺少必需密钥都必须在上传前失败。
 - Repository Secrets 放 `CLOUDFLARE_API_TOKEN`、默认的 `MCP_ACCESS_TOKEN`；Repository Variable 放 `CLOUDFLARE_ACCOUNT_ID`。Worker 自己的 Environment 保存其余敏感字段。对应同名 Environment Secret 可覆盖全局 Portal Token。
 - 用户需自行将旧 `production` Environment 的已保存密钥与保护规则迁移。**在迁移成功前不要运行新的手动发布，也不要删除旧 Environment**。所有敏感值不得出现在代码/日志/PR 中。
 - 发布前检查当前 `main` SHA，校验 Cloudflare 状态及 Worker 是否存在；仅允许 Raindrop/IMA/Database/SSH 走首次部署。Remote Control 必须保持 existing-Worker-only。
-- 首次部署时只注入该 Worker 需要的指定 Secret；正常发布不重传或轮换已有 Worker Secret。可选 GitHub Variables 通过严格白名单校验，并仅影响被选 Worker。
+- 首次部署及后续每次手动发布，均通过 `wrangler deploy --secrets-file` 同步被选 Worker 的全部必需 GitHub Secrets；缺失或空值则拒绝发布，不再静默沿用现网旧值。其他 Worker、`edgessh` 不受该次发布影响。
+- 五个 Worker 全部使用 `keep_vars: false`；运行时普通 Variables 仅来自 Wrangler 配置默认值及被选 GitHub Environment 白名单覆盖，不再保留 Dashboard 临时配置。密钥永远使用 Secret，不以 Variable 传递。
 
 ## 发布后核对
 
@@ -23,4 +24,4 @@
 - SSH 使用 `EDGE_SSH_BROKER` 私有 Service Binding 和自己的 `SSH_OPERATIONS` Durable Object；不复制 `ENCRYPTION_KEY` 或生产 D1。默认范围受限，只有独立授权后才能扩大。
 - Remote Control 严格维持独立 SQLite `DeviceCoordinator`（不能复用 Preview DO、不能使用 VPC 和 v1/v2 运行模式开关）；不将既有的配对、身份或回执验收默认为新环境测试。
 
-正常版本回退需重新审核代码并人工发布，不要在不确定性操作发生后盲目重试或擦除状态。全局 `MCP_ACCESS_TOKEN` 是首次部署时使用的默认值；已经部署的 Worker 不会因为 GitHub 中修改全局 Secret 而自动轮换运行时 Token。若多个 Worker 共用同一 Token，泄露影响面相应扩大，需要独立的轮换流程。
+正常版本回退需重新审核代码并人工发布，不要在不确定性操作发生后盲目重试或擦除状态。`MCP_ACCESS_TOKEN` 来自 Repository Secret（允许每个 Environment 同名覆盖），并在被选 Worker 每次手动发布时同步。修改 Repository Secret 不会自动部署全部 Worker；需要协调逐个手动发布与 Portal 客户端凭据切换，尤其共享 Token 和 SSH 的 `MCP_BROKER_TOKEN`（EdgeSSH 侧需独立同步）。发布前确认 GitHub 中的 IMA 等凭据已与现网有效值一致，否则会覆盖现有生效 Secret。`CLIENT_ID` 保持 Secret，本次不转换类型。
