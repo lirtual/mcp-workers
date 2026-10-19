@@ -17,7 +17,7 @@ function testFleet() {
   function socket(id: string, epoch: string) {
     return {
       readyState: WebSocket.OPEN,
-      deserializeAttachment: () => ({ device_id: id, epoch }),
+      deserializeAttachment: () => ({ device_id: id, epoch, last_auth_check_at: Date.now() - 1_000 }),
       send(text: string) {
         const frame = JSON.parse(text) as { kind: string; request_id: string };
         assert.equal(frame.kind, "read");
