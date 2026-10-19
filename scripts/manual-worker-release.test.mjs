@@ -65,37 +65,42 @@ test("Database RATE_LIMITER and required runtime Secret names are a strict gate"
     secrets), /RATE_LIMITER/);
 });
 
-test("Remote VPC and Secret bindings remain strict without obsolete file/Shell gates", () => {
+test("Remote v2 production has no VPC, shares exact Preview namespace, checks legacy cutover", () => {
   const worker = "remote-control-mcp-worker";
-  const vpcId = "11111111-1111-4111-8111-111111111111";
-  const names = ["MCP_ACCESS_TOKEN", "REMOTE_CONTROL_DEVICE_TOKEN"];
-  const secrets = names.map((name) => ({ name }));
-  const settings = {
-    bindings: [...names.map((name) => ({ name, type: "secret_text" })),
-      { name: "REMOTE_CONTROL_DEVICE", type: "vpc_service", service_id: vpcId }],
-    observability: { enabled: true, logs: { invocation_logs: false } },
-  };
-  // New deployments no longer require these plain-text legacy bindings.
-  assert.equal(verifyBindings(worker, settings, secrets, { vpcId, mode: "preflight" }), true);
-  assert.equal(verifyBindings(worker, settings, secrets, { vpcId, mode: "readback" }), true);
-  // keep_vars=true may retain old variables temporarily; their values have
-  // no effect on the new Worker and must not block a safe release.
-  const withOldVars = {
-    ...settings,
-    bindings: [...settings.bindings,
-      { name: "REMOTE_CONTROL_ENABLE_FILE_WRITES", type: "plain_text", text: "false" },
-      { name: "REMOTE_CONTROL_ENABLE_SHELL", type: "plain_text", text: "true" }],
-  };
-  assert.equal(verifyBindings(worker, withOldVars, secrets, { vpcId }), true);
-  assert.throws(() => verifyBindings(worker, settings, secrets,
-    { vpcId: "22222222-2222-4222-8222-222222222222" }), /VPC Service/);
-  assert.throws(() => verifyBindings(worker,
-    { ...settings, bindings: settings.bindings.filter((x) => x.name !== "REMOTE_CONTROL_DEVICE") },
-    secrets, { vpcId }), /VPC Service/);
-  assert.throws(() => verifyBindings(worker, settings, [], { vpcId }), /Secret missing/);
-  assert.throws(() => verifyBindings(worker,
-    { ...settings, observability: { enabled: true, logs: { invocation_logs: true } } },
-    secrets, { vpcId }), /Invocation Logs/);
+  const ownerNs = "c086eb6384ad41df9de13765d868324a";
+  const v2 = { bindings: [
+    { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
+    { name: "REMOTE_CONTROL_V2_ONLY", type: "plain_text", text: "true" },
+    { name: "V2_OWNER", type: "durable_object_namespace", namespace_id: ownerNs },
+  ], observability: { enabled: true, logs: { invocation_logs: false } } };
+  const secrets = [{ name: "MCP_ACCESS_TOKEN" }];
+  const options = { mode: "readback", v2OwnerNamespaceId: ownerNs };
+  assert.equal(verifyBindings(worker, v2, secrets, options), true);
+  assert.throws(() => verifyBindings(worker, v2, [], options), /Secret missing/);
+  assert.throws(() => verifyBindings(worker, v2, secrets,
+    { ...options, v2OwnerNamespaceId: "wrong" }), /V2_OWNER/);
+  assert.throws(() => verifyBindings(worker, { ...v2,
+    bindings: v2.bindings.filter(x => x.name !== "V2_OWNER") }, secrets, options), /V2_OWNER/);
+  assert.throws(() => verifyBindings(worker, { ...v2,
+    bindings: [...v2.bindings, { name: "REMOTE_CONTROL_DEVICE", type: "vpc_service" }] },
+    secrets, options), /VPC/);
+  assert.throws(() => verifyBindings(worker, { ...v2,
+    bindings: v2.bindings.filter(x => x.name !== "REMOTE_CONTROL_V2_ONLY") },
+    secrets, options), /v2-only/);
+  // First production cutover must accept old VPC as the PREVIOUS version
+  // while verifying that the NEW version is strict v2-only.
+  const legacy = { bindings: [
+    { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
+    { name: "REMOTE_CONTROL_DEVICE_TOKEN", type: "secret_text" },
+    { name: "REMOTE_CONTROL_DEVICE", type: "vpc_service",
+      service_id: "11111111-1111-4111-8111-111111111111" },
+  ], observability: { enabled: true, logs: { invocation_logs: false } } };
+  assert.equal(verifyBindings(worker, legacy,
+    [{ name: "MCP_ACCESS_TOKEN" }, { name: "REMOTE_CONTROL_DEVICE_TOKEN" }],
+    { mode: "preflight", v2OwnerNamespaceId: ownerNs }), true);
+  assert.throws(() => verifyBindings(worker, legacy,
+    [{ name: "MCP_ACCESS_TOKEN" }, { name: "REMOTE_CONTROL_DEVICE_TOKEN" }],
+    { mode: "readback", v2OwnerNamespaceId: ownerNs }), /V2_OWNER/);
 });
 
 test("Wrangler output requires a parseable release id, not upload-only success", () => {
