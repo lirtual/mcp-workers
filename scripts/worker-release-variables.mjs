@@ -38,7 +38,7 @@ export function collectWorkerVars(worker, env) {
     if (typeof value !== "string") throw new Error("Invalid Worker Variable: " + name);
     if (name === "CLIENT_ID" &&
         (value.length > 512 || value.trim() !== value ||
-          /[\\u0000-\\u001f\\u007f\\s]/.test(value))) {
+          /[\u0000-\u001f\u007f\s]/.test(value))) {
       throw new Error("Invalid Worker Variable: CLIENT_ID");
     }
     if (Object.hasOwn(INTEGER_LIMITS, name)) {
