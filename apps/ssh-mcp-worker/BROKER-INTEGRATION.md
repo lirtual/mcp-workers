@@ -1,4 +1,4 @@
-# Optional EdgeSSH Broker Integration — Draft implementation, disabled by default
+# Optional EdgeSSH Broker Integration — Draft implementation, denied unless broker token + host allowlist are configured
 
 This is an **unreleased** extension to the existing SSH MCP Worker for the [EdgeSSH internal broker design](https://github.com/lirtual/EdgeSSH/pull/1). It supersedes the Q22=B direct production D1 + root `ENCRYPTION_KEY` copy proposal **only if the owner separately approves the architecture change**. This implementation/PR does not authorize merging, deploying EdgeSSH, configuring production secrets, or opening a real root SSH session.
 
@@ -23,11 +23,11 @@ After a separate production-integration approval, a deployer can add a named Ser
 ```
 
 And set **independent** secrets/variables:
-- On existing EdgeSSH Worker: `MCP_BROKER_ENABLED=true` (default disabled); `MCP_BROKER_HOST_IDS=...` (fixed explicitly approved UUID allowlist, empty rejects all); `MCP_BROKER_TOKEN` (new strong random token, **not** `ENCRYPTION_KEY`).
+- On existing EdgeSSH Worker: `MCP_BROKER_HOST_IDS=...` (only explicitly approved UUIDs; empty rejects all) and `MCP_BROKER_TOKEN` (new strong random token, **not** `ENCRYPTION_KEY`). No separate `MCP_BROKER_ENABLED` toggle exists.
 - On SSH MCP Worker: `MCP_BROKER_TOKEN` identical new **broker-only** token; continue separate `MCP_ACCESS_TOKEN` for MCP client authentication. Do not copy original root encryption Secret or D1 binding into MCP.
 - `MCP_BROKER_FULL_ACCESS` is **unset** during first G5 CloudCone smoke; when a broker binding is present, the MCP gateway blocks all effectful commands except exact `pwd` or `printf G5_SSH_OK`, and only permits bounded `/etc` SFTP listing and `/etc/hostname` text read (plus metadata and receipt lookups). Host ID allowlist is independently enforced **inside EdgeSSH**. Enabling broader access needs **separate operator approval**, not merely passing this smoke.
 
-A Service Binding alone is **not** an unforgeable caller identity. The independent broker token is mandatory; missing/invalid token, disabled broker, unknown host or changed pin fails closed. The two Workers must be in the same Cloudflare account. Changes to EdgeSSH's GitHub Actions auto-deployment configuration and durable production enablement must be explicitly reviewed at production rollout, because generic dashboard variables may not persist across automated deployments.
+A Service Binding alone is **not** an unforgeable caller identity. The independent broker token is mandatory; missing/invalid token, empty host allowlist, unknown host or changed pin fails closed. The two Workers must be in the same Cloudflare account. Changes to EdgeSSH's GitHub Actions auto-deployment configuration and durable production enablement must be explicitly reviewed at production rollout, because generic dashboard variables may not persist across automated deployments.
 
 ## Cross-request behavior
 
@@ -41,13 +41,13 @@ A Service Binding alone is **not** an unforgeable caller identity. The independe
 
 ## Operational rollback (requires separate approval)
 
-1. Disable `MCP_BROKER_ENABLED` on EdgeSSH or revoke the dedicated broker token to deny all **new** broker credential resolutions.
+1. Clear the EdgeSSH broker host allowlist or revoke the dedicated broker token to deny all **new** broker credential resolutions.
 2. Remove MCP `EDGE_SSH_BROKER` Service Binding/disable corresponding version, switch to previous synthetic-only MCP version. Keep the **same MCP DO namespace** so original operation receipts remain intact.
 3. Never change EdgeSSH `ENCRYPTION_KEY`, production D1, its SSH sessions, or saved host records. Already-established remote sessions cannot be conclusively killed by revoking broker access alone; separately stop live MCP-owned sessions if necessary.
 4. Check EdgeSSH WebSSH/SFTP baseline and only then mark rollout complete.
 
 ## Test scope
 
-- EdgeSSH: isolated AES-GCM fixture, missing/wrong broker token and disabled state reject before any D1 reads; only allowlisted hosts; metadata sanitized; `SELECT` only; invalid or untrusted host refused.
+- EdgeSSH: isolated AES-GCM fixture, missing/wrong broker token and empty host allowlist reject before any D1 reads; only allowlisted hosts; metadata sanitized; `SELECT` only; invalid or untrusted host refused.
 - SSH MCP: broker-stub metadata/credential RPC; no fallback on failures; read-only scope denies PTY, arbitrary root commands, all mutating SFTP.
 - Reuse existing full checks; **no additional CI workflow**. Production EdgeSSH and CloudCone untouched.
