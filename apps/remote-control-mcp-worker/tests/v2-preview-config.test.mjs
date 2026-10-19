@@ -258,6 +258,7 @@ test("single-code Worker Preview installer enabled only for reviewed immutable A
   const request = new Request(origin+"/install.sh");
   const configured = {
     MCP_ACCESS_TOKEN: "test-only", REMOTE_CONTROL_V2_PREVIEW_ONLY: "true",
+    REMOTE_CONTROL_INSTALL_ORIGIN: origin,
     V2_OWNER: { idFromName: () => "single-owner-v2", get: () => ({}) },
   };
   const enabled = await worker.fetch(request,configured);
