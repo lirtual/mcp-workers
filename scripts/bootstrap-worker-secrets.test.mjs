@@ -4,7 +4,7 @@ import { BOOTSTRAP_SECRETS, collectBootstrapSecrets } from "./bootstrap-worker-s
 
 const fixtures = {
   "raindrop-mcp-worker": { MCP_ACCESS_TOKEN: "portal", RAINDROP_ACCESS_TOKEN: "raindrop" },
-  "ima-mcp-worker": { MCP_ACCESS_TOKEN: "portal", API_KEY: "ima-key", CLIENT_ID: "client" },
+  "ima-mcp-worker": { MCP_ACCESS_TOKEN: "portal", API_KEY: "ima-key" },
   "database-mcp-worker": { MCP_ACCESS_TOKEN: "portal", DATABASE_CONFIG: '{"sample":"mysql://user:pass@host/db"}' },
   "ssh-mcp-worker": { MCP_ACCESS_TOKEN: "portal", MCP_BROKER_TOKEN: "x".repeat(32) },
   "remote-control-mcp-worker": { MCP_ACCESS_TOKEN: "portal" },
