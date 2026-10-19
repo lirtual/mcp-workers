@@ -34,7 +34,7 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     invariant(!!find(name, "secret_text"), "Required Secret binding missing: " + name);
   }
   if (worker === "ssh-mcp-worker") {
-    invariant(settings.observability?.enabled === false, "SSH observability must remain disabled");
+    invariant(settings.observability?.enabled !== true, "SSH observability must remain disabled");
     const broker = find("EDGE_SSH_BROKER", "service");
     invariant(broker?.service === "edgessh" && broker.entrypoint === "HostBrokerEntrypoint",
       "SSH Broker Service Binding missing or changed");
