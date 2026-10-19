@@ -66,6 +66,16 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
       "Database RATE_LIMITER binding/policy drift");
   }
   if (worker === "remote-control-mcp-worker") {
+    // Readback must prove Wrangler deployed the origin derived from the
+    // reviewed Custom Domain, not a stale or attacker-controlled Host value.
+    if (options.mode === "readback") {
+      const route = options.sourceConfig?.routes;
+      invariant(Array.isArray(route) && route.length === 1 &&
+        route[0]?.custom_domain === true &&
+        find("REMOTE_CONTROL_INSTALL_ORIGIN", "plain_text")?.text ===
+          "https://" + route[0].pattern,
+        "Remote Control installer origin binding differs from Custom Domain");
+    }
     const coordinator = find("DEVICE_COORDINATOR", "durable_object_namespace");
     const previous = find("V2_OWNER", "durable_object_namespace");
     // Preflight may inspect the currently deployed Preview-backed v2 or legacy VPC
