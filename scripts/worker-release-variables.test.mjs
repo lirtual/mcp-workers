@@ -31,6 +31,18 @@ test("IMA URL must be HTTPS and cannot contain userinfo, hashes or newlines", ()
     ["CLIENT_ID:ima-client-123", "IMA_BASE_URL:https://ima.example.com/api"]);
   for (const value of ["http://ima.example.com", "https://user:pass@ima.example.com",
     "https://ima.example.com/#frag", "https://ima.example.com/\nX"]) {
-    assert.throws(() => collectWorkerVars("ima-mcp-worker", { IMA_BASE_URL: value }), /IMA_BASE_URL/);
+    assert.throws(() => collectWorkerVars("ima-mcp-worker", { CLIENT_ID: "ima-client-123", IMA_BASE_URL: value }), /IMA_BASE_URL/);
   }
+});
+
+test("IMA CLIENT_ID must be present as a non-secret GitHub Variable", () => {
+  assert.deepEqual(collectWorkerVars("ima-mcp-worker", { CLIENT_ID: "123456789" }),
+    ["CLIENT_ID:123456789"]);
+  for (const value of [undefined, "", " ", "\n", "\t", "a\nb", "a b", "a\u0000b", "a".repeat(513)]) {
+    const env = value === undefined ? {} : { CLIENT_ID: value };
+    assert.throws(() => collectWorkerVars("ima-mcp-worker", env), /CLIENT_ID/);
+  }
+  // Old GitHub Secrets must never satisfy the new required plain-text variable.
+  assert.throws(() => collectWorkerVars("ima-mcp-worker",
+    { API_KEY: "secret", IMA_BASE_URL: "https://ima.qq.com" }), /CLIENT_ID/);
 });
