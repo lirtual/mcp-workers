@@ -67,6 +67,7 @@ const VERIFIED_PYTHON_FREE_RELEASE: InstallReleasePin = REVIEWED_V018_RELEASE_PI
 const APPROVED_ORIGINS = new Set([
   "https://remote-control-v2-preview.aiyaya.workers.dev",
   "https://remote-control-mcp-worker.aiyaya.workers.dev",
+  "https://rca.lirtual.dpdns.org",
 ]);
 
 function validPin(p: InstallReleasePin): boolean {
