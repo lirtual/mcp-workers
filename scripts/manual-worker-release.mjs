@@ -290,8 +290,6 @@ async function main() {
   if (previous) invariant(previous.worker === worker && previous.sourceSha === sourceSha,
     "Release source changed");
   const exists = mode === "preflight" ? await scriptExists(account, worker, token) : true;
-  invariant(exists || worker !== "remote-control-mcp-worker",
-    "Remote Control may not be created through bootstrap");
   const observed = exists ? await current(account, worker, token, {
     mode, sourceConfig, previousNamespaceId: previous?.previousNamespaceId,
   }) : { mode: "bootstrap" };
