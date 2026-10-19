@@ -6,11 +6,9 @@ type V2Env = Env & {
   V2_OWNER?: DurableObjectNamespace;
   DEVICE_COORDINATOR?: DurableObjectNamespace;
   REMOTE_CONTROL_V2_PREVIEW_ONLY?: string;
-  REMOTE_CONTROL_V2_ONLY?: string;
 };
-function previewOnly(env: Env): boolean {
-  return Boolean((env as V2Env).DEVICE_COORDINATOR) ||
-    (env as V2Env).REMOTE_CONTROL_V2_PREVIEW_ONLY === "true";
+function pairedOnly(env: Env): boolean {
+  return Boolean((env as V2Env).DEVICE_COORDINATOR || (env as V2Env).V2_OWNER);
 }
 // Preview operations use existing authenticated per-device WSS routing.
 // The paired Agent, not a temporary Worker secret, opts into write/Shell.
@@ -1152,7 +1150,7 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
   }
 
   if (rpcMessage.method === "tools/list") {
-    if (previewOnly(env)) {
+    if (pairedOnly(env)) {
       return rpc(rpcMessage.id, { tools: [
         ...LOCAL_TOOLS.map(tool => ({
           ...tool,
@@ -1173,7 +1171,7 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
       return toolError(rpcMessage.id, "The requested tool call was rejected.");
     }
     const call = params as { name?: unknown; arguments?: unknown };
-    if (previewOnly(env)) {
+    if (pairedOnly(env)) {
       const name = typeof call.name === "string" ? call.name : "";
       const requiresDevice = V2_READ_TOOLS.has(name) || V2_OPERATION_TOOLS.has(name);
       const target = call.arguments && typeof call.arguments === "object" && !Array.isArray(call.arguments)
@@ -1182,7 +1180,7 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
       if ((!requiresDevice && !OWNER_TOOLS.has(name)) ||
           (requiresDevice && (typeof target !== "string" ||
             !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(target)))) {
-        return toolError(rpcMessage.id, "The v2 preview requires a valid explicit device_id.");
+        return toolError(rpcMessage.id, "An explicit valid paired device_id is required.");
       }
     }
     if (typeof call.name === "string" && V2_OPERATION_TOOLS.has(call.name) &&
@@ -1212,8 +1210,8 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
       }
       return lookupPendingDevice(env, (args as { code?: unknown }).code, rpcMessage.id);
     }
-    // Preview has no legacy v1 VPC fallback, even if its owner DO is missing.
-    if (previewOnly(env)) return toolError(rpcMessage.id, "The requested v2 tool is unavailable.");
+    // A production or Preview owner never falls back to the v1 VPC.
+    if (pairedOnly(env)) return toolError(rpcMessage.id, "The requested paired-device tool is unavailable.");
     if (!isKnownTool(call.name)) {
       log("rejected");
       return toolError(rpcMessage.id, "The requested tool call was rejected.");
@@ -1247,14 +1245,14 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     // A newly uploaded public preview must not expose even the bounded
     // unauthenticated Agent bootstrap until its distinct owner key is set.
-    if (previewOnly(env) && !env.MCP_ACCESS_TOKEN) {
+    if (pairedOnly(env) && !env.MCP_ACCESS_TOKEN) {
       return jsonError(503, "preview_unconfigured", "The preview is not yet configured.");
     }
     const url = new URL(request.url);
     if (url.pathname === "/install.sh") {
       // Only the owner-configured v2 Preview may serve the reviewed immutable
       // test installer. Keep every other environment fail-closed (503).
-      if (!previewOnly(env) || !env.MCP_ACCESS_TOKEN || !pendingOwner(env)) {
+      if (!pairedOnly(env) || !env.MCP_ACCESS_TOKEN || !pendingOwner(env)) {
         return new Response("Preview installer is disabled.\n", {
           status: 503, headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" },
         });
