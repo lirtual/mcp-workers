@@ -50,13 +50,19 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
   if (worker === "remote-control-mcp-worker") {
     const coordinator = find("DEVICE_COORDINATOR", "durable_object_namespace");
     const previous = find("V2_OWNER", "durable_object_namespace");
+    // Preflight may inspect the currently deployed Preview-backed v2 or legacy VPC
+    // version. Identify the previous namespace from THIS Worker, not from a
+    // separate Preview Worker that may already have been deleted.
     const isPreflightPrevious = options.mode === "preflight" && !coordinator &&
-      (previous?.namespace_id === options.v2OwnerNamespaceId ||
+      ((previous?.class_name === "V2OwnerCoordinator" &&
+        previous?.script_name === "remote-control-v2-preview" &&
+        typeof previous.namespace_id === "string") ||
         !!find("REMOTE_CONTROL_DEVICE", "vpc_service"));
     if (!isPreflightPrevious) {
       invariant(coordinator?.class_name === "DeviceCoordinator" &&
         typeof coordinator.namespace_id === "string" &&
-        coordinator.namespace_id !== options.v2OwnerNamespaceId,
+        !coordinator.script_name &&
+        coordinator.namespace_id !== options.previousNamespaceId,
         "Production must have its own DeviceCoordinator namespace distinct from Preview");
       invariant(!previous && !find("REMOTE_CONTROL_V2_ONLY", "plain_text") &&
         !find("REMOTE_CONTROL_V2_PREVIEW_ONLY", "plain_text"),
@@ -166,17 +172,18 @@ async function current(account, worker, token, options) {
     cfGet(account, worker, token, "/deployments?per_page=1"),
     cfGet(account, worker, token, "/script-settings"),
   ]);
-  let v2OwnerNamespaceId;
-  if (worker === "remote-control-mcp-worker") {
-    const preview = await cfGet(account, "remote-control-v2-preview", token, "/settings");
-    const owners = preview.bindings?.filter(x =>
-      x.name === "V2_OWNER" && x.type === "durable_object_namespace" &&
-      x.class_name === "V2OwnerCoordinator");
-    invariant(owners?.length === 1 && typeof owners[0].namespace_id === "string",
-      "Preview V2_OWNER identity unavailable");
-    v2OwnerNamespaceId = owners[0].namespace_id;
-  }
-  verifyBindings(worker, settings, secrets, { ...options, v2OwnerNamespaceId });
+  const existingOwner = worker === "remote-control-mcp-worker" &&
+    Array.isArray(settings.bindings)
+    ? settings.bindings.find(x => x.name === "V2_OWNER" &&
+      x.type === "durable_object_namespace" &&
+      x.class_name === "V2OwnerCoordinator" &&
+      x.script_name === "remote-control-v2-preview")
+    : null;
+  // Capture the namespace before cutover in the protected release state file.
+  // After a successful release, validation must work even if Preview is gone.
+  const previousNamespaceId = options.mode === "preflight"
+    ? existingOwner?.namespace_id : options.previousNamespaceId;
+  verifyBindings(worker, settings, secrets, { ...options, previousNamespaceId });
   if (options.sourceConfig) {
     invariant(settings.compatibility_date === options.sourceConfig.compatibility_date,
       "Compatibility date drift");
@@ -191,7 +198,11 @@ async function current(account, worker, token, options) {
   if (worker === "ima-mcp-worker") {
     invariant(scriptSettings?.observability?.traces?.enabled === true, "IMA script tracing drift");
   }
-  return activeVersion(deployments);
+  return {
+    ...activeVersion(deployments),
+    ...(options.mode === "preflight" && typeof previousNamespaceId === "string"
+      ? { previousNamespaceId } : {}),
+  };
 }
 
 async function main() {
@@ -222,16 +233,19 @@ async function main() {
   const rawConfig = await readFile(configPath, "utf8");
   const sourceConfig = readConfiguration(worker, rawConfig);
   invariant(account && token && statePath && sourceSha, "Required release environment missing");
+  const previous = mode === "readback"
+    ? JSON.parse(await readFile(statePath, "utf8")) : null;
+  if (previous) invariant(previous.worker === worker && previous.sourceSha === sourceSha,
+    "Release source changed");
   const observed = await current(account, worker, token, {
     mode,
     sourceConfig,
+    previousNamespaceId: previous?.previousNamespaceId,
   });
   if (mode === "preflight") {
     await writeFile(statePath, JSON.stringify({ worker, sourceSha, ...observed }), { mode: 0o600 });
     console.log("Preflight OK: " + worker + " (source " + sourceSha.slice(0, 12) + ")");
   } else {
-    const previous = JSON.parse(await readFile(statePath, "utf8"));
-    invariant(previous.worker === worker && previous.sourceSha === sourceSha, "Release source changed");
     verifyPublishedVersion(previous, observed, process.env.EXPECTED_VERSION_ID);
     console.log("Release verified: " + worker + " version " + observed.version_id +
       " source " + sourceSha.slice(0, 12));
