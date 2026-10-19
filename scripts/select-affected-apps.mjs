@@ -11,7 +11,7 @@ export const APPLICATIONS = [
   'ssh-mcp-worker',
 ];
 
-const RELEASE_WORKERS = APPLICATIONS.filter(app => app !== 'ssh-mcp-worker');
+const RELEASE_WORKERS = APPLICATIONS;
 
 function requiresAllApps(file) {
   return file === 'package.json'
