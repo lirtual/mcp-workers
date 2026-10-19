@@ -215,13 +215,12 @@ export function buildMcpServer(env: Env): McpServer {
       path: z.string().min(1),
       kind: z.string().optional(),
       confirm: z.boolean().optional(),
-      recursive: z.boolean().optional(),
       timeout_ms: z.number().int().min(1_000).max(60_000).optional(),
     }).strict(),
     annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: true, openWorldHint: true },
-  }, async ({ host_id, operation_id, path, kind, confirm, recursive, timeout_ms }) => {
+  }, async ({ host_id, operation_id, path, kind, confirm, timeout_ms }) => {
     const timeoutMs = timeout_ms ?? 30_000;
-    const invalid = validSftpDeleteInput(host_id, operation_id, path, kind, confirm, recursive, timeoutMs);
+    const invalid = validSftpDeleteInput(host_id, operation_id, path, kind, confirm, undefined, timeoutMs);
     if (invalid || (kind !== 'file' && kind !== 'empty_directory') || confirm !== true) return rejectedArgs(invalid ?? 'invalid_args');
     try {
       const stub = env.SSH_OPERATIONS.getByName('single-admin-operations');
