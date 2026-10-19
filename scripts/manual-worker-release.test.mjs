@@ -241,3 +241,21 @@ test("Wrangler never preserves unmanaged dashboard Variables on any selected Wor
     assert.match(file, /"keep_vars": false/, worker);
   }
 });
+
+test("preflight allows GitHub to restore a missing runtime Secret, but readback fails closed", () => {
+  const settings = {
+    bindings: [{ name: "RAINDROP_ACCESS_TOKEN", type: "secret_text" }],
+    observability: { enabled: true, logs: { invocation_logs: true } },
+  };
+  assert.equal(verifyBindings("raindrop-mcp-worker", settings,
+    [{ name: "RAINDROP_ACCESS_TOKEN" }], { mode: "preflight" }), true);
+  assert.throws(() => verifyBindings("raindrop-mcp-worker", settings,
+    [{ name: "RAINDROP_ACCESS_TOKEN" }], { mode: "readback" }), /Required runtime Secret missing/);
+  const filled = { ...settings, bindings: [
+    { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
+    { name: "RAINDROP_ACCESS_TOKEN", type: "secret_text" },
+  ] };
+  assert.equal(verifyBindings("raindrop-mcp-worker", filled,
+    [{ name: "MCP_ACCESS_TOKEN" }, { name: "RAINDROP_ACCESS_TOKEN" }],
+    { mode: "readback" }), true);
+});
