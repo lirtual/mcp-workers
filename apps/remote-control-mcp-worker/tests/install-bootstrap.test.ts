@@ -26,9 +26,9 @@ test("production custom hostname serves pinned installer with same-domain Agent 
   const response=handleAgentInstallerRequest(new Request(custom+"/install.sh"));
   assert.equal(response.status,200);
   const shell=await response.text();
-  assert.match(shell,/^#!\\/bin\\/sh/);
+  assert.ok(shell.startsWith("#!/bin/sh"));
   assert.ok(shell.includes('--endpoint "https://rca.lirtual.dpdns.org/"'));
-  assert.doesNotMatch(shell,/--endpoint "https:\\/\\/remote-control-v2-preview/);
+  assert.equal(shell.includes("--endpoint \"https://remote-control-v2-preview"),false);
   assert.equal(handleAgentInstallerRequest(new Request("http://rca.lirtual.dpdns.org/install.sh")).status,403);
   assert.equal(handleAgentInstallerRequest(new Request(custom+"/install.sh",{headers:{host:"evil.test"}})).status,403);
   assert.throws(()=>renderAgentInstallShell("https://evil.lirtual.dpdns.org",pin),/Unapproved/);
