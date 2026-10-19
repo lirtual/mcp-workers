@@ -332,7 +332,7 @@ const READ_FILE_TOOL = {
         type: "string",
         description: "Local filesystem path. URL schemes are rejected.",
       },
-      device_id: { type: "string", description: "Explicit paired v2 device ID. Omit for the existing v1 device." },
+      device_id: { type: "string", description: "Explicit authorized device ID; required for every device operation." },
       offset: {
         type: "integer",
         minimum: -100_000,
@@ -365,7 +365,7 @@ const READ_MULTIPLE_TOOL = {
   inputSchema: {
     type: "object",
     properties: {
-      device_id: { type: "string", description: "Explicit v2 device ID; omit for v1." },
+      device_id: { type: "string", description: "Explicit authorized device ID; required." },
       paths: {
         type: "array",
         minItems: 1,
@@ -393,7 +393,7 @@ const LIST_DIRECTORY_TOOL = {
   inputSchema: {
     type: "object",
     properties: {
-      device_id: { type: "string", description: "Explicit v2 device ID; omit for v1." },
+      device_id: { type: "string", description: "Explicit authorized device ID; required." },
       path: { type: "string", description: "Local directory path. URL schemes are rejected." },
       depth: { type: "integer", minimum: 1, maximum: 3, description: "Optional directory depth, from 1 to 3." },
     },
@@ -415,7 +415,7 @@ const FILE_INFO_TOOL = {
   inputSchema: {
     type: "object",
     properties: {
-      device_id: { type: "string", description: "Explicit v2 device ID; omit for v1." },
+      device_id: { type: "string", description: "Explicit authorized device ID; required." },
       path: { type: "string", description: "Local filesystem path. URL schemes are rejected." },
     },
     required: ["path"],
@@ -437,7 +437,7 @@ const START_SEARCH_TOOL = {
   inputSchema: {
     type: "object",
     properties: {
-      device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." },
+      device_id: { type: "string", description: "Explicit authorized device ID; required." },
       path: { type: "string", description: "Local directory path to search. URL schemes are rejected." },
       pattern: { type: "string", minLength: 1, maxLength: 256, description: "Literal case-sensitive substring." },
       search_type: { type: "string", enum: ["filename", "content"] },
@@ -460,7 +460,7 @@ const GET_MORE_SEARCH_RESULTS_TOOL = {
   inputSchema: {
     type: "object",
     properties: {
-      device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." },
+      device_id: { type: "string", description: "Explicit authorized device ID; required." },
       session_id: { type: "string", format: "uuid" },
     },
     required: ["session_id"],
@@ -481,7 +481,7 @@ const STOP_SEARCH_TOOL = {
   inputSchema: {
     type: "object",
     properties: {
-      device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." },
+      device_id: { type: "string", description: "Explicit authorized device ID; required." },
       session_id: { type: "string", format: "uuid" },
     },
     required: ["session_id"],
@@ -502,7 +502,7 @@ const WRITE_FILE_TOOL = {
     "Rewrite or append a local file. Supply a stable operation_id and reuse it only for the same intent after a lost response; use a new ID for a new intent. Query get_operation_status with the same ID before considering a retry.",
   inputSchema: {
     type: "object",
-    properties: { device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." },
+    properties: { device_id: { type: "string", description: "Explicit authorized device ID; required." },
       operation_id: { type: "string", minLength: 1, maxLength: 128, description: "Stable ID for this exact write intent." },
       path: { type: "string" },
       content: { type: "string", maxLength: 49152, description: "UTF-8 text up to the bounded internal request size." },
@@ -517,21 +517,21 @@ const WRITE_FILE_TOOL = {
 const CREATE_DIRECTORY_TOOL = {
   name: "create_directory", title: "Create local directory",
   description: "Create one local directory. Use a stable operation_id for this exact intent and query get_operation_status after an uncertain response.",
-  inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." }, operation_id: { type: "string", minLength: 1, maxLength: 128 }, path: { type: "string" } }, required: ["operation_id", "path"], additionalProperties: false },
+  inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit authorized device ID; required." }, operation_id: { type: "string", minLength: 1, maxLength: 128 }, path: { type: "string" } }, required: ["operation_id", "path"], additionalProperties: false },
   annotations: { title: "Create local directory", readOnlyHint: false, destructiveHint: true, openWorldHint: false },
 } as const;
 
 const EDIT_BLOCK_TOOL = {
   name: "replace_text", title: "Replace text in local file",
   description: "Replace exact text occurrences in a local UTF-8 file. expected_replacements defaults to 1; the file is unchanged if the count differs. Use a stable operation_id and query status after an uncertain response.",
-  inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." }, operation_id: { type: "string", minLength: 1, maxLength: 128 }, file_path: { type: "string" }, old_string: { type: "string", minLength: 1, maxLength: 49152 }, new_string: { type: "string", maxLength: 49152 }, expected_replacements: { type: "integer", minimum: 1, maximum: 1000 } }, required: ["operation_id", "file_path", "old_string", "new_string"], additionalProperties: false },
+  inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit authorized device ID; required." }, operation_id: { type: "string", minLength: 1, maxLength: 128 }, file_path: { type: "string" }, old_string: { type: "string", minLength: 1, maxLength: 49152 }, new_string: { type: "string", maxLength: 49152 }, expected_replacements: { type: "integer", minimum: 1, maximum: 1000 } }, required: ["operation_id", "file_path", "old_string", "new_string"], additionalProperties: false },
   annotations: { title: "Replace text in local file", readOnlyHint: false, destructiveHint: true, openWorldHint: false },
 } as const;
 
 const MOVE_FILE_TOOL = {
   name: "move_file", title: "Move or rename local file",
   description: "Move or rename a local regular file on the same filesystem to a destination that does not already exist. Use a stable operation_id and query status after an uncertain response.",
-  inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." }, operation_id: { type: "string", minLength: 1, maxLength: 128 }, source: { type: "string" }, destination: { type: "string" } }, required: ["operation_id", "source", "destination"], additionalProperties: false },
+  inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit authorized device ID; required." }, operation_id: { type: "string", minLength: 1, maxLength: 128 }, source: { type: "string" }, destination: { type: "string" } }, required: ["operation_id", "source", "destination"], additionalProperties: false },
   annotations: { title: "Move or rename local file", readOnlyHint: false, destructiveHint: true, openWorldHint: false },
 } as const;
 
@@ -542,7 +542,7 @@ const DELETE_FILE_TOOL = {
   inputSchema: {
     type: "object",
     properties: {
-      device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." },
+      device_id: { type: "string", description: "Explicit authorized device ID; required." },
       operation_id: { type: "string", minLength: 1, maxLength: 128 },
       path: { type: "string" },
     },
@@ -558,7 +558,7 @@ const GET_OPERATION_STATUS_TOOL = {
   description: "Query a previously submitted operation by its stable operation_id. This only reads the local receipt and never dispatches work.",
   inputSchema: {
     type: "object",
-    properties: { device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." }, operation_id: { type: "string", minLength: 1, maxLength: 128 } },
+    properties: { device_id: { type: "string", description: "Explicit authorized device ID; required." }, operation_id: { type: "string", minLength: 1, maxLength: 128 } },
     required: ["operation_id"],
     additionalProperties: false,
   },
@@ -568,35 +568,35 @@ const GET_OPERATION_STATUS_TOOL = {
 const START_PROCESS_TOOL = {
   name: "run_command", title: "Start development command",
   description: "Start a development command with the Agent account's fixed local Shell. Commands run with that Linux account's full OS permissions. Every start requires a stable operation_id; after an uncertain response, query that ID before considering a new intent. A running command returns an Agent-owned session_id. Shell commands use the authorized Linux Agent account's current OS permissions.",
-  inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." }, operation_id: { type: "string", minLength: 1, maxLength: 128 }, command: { type: "string", minLength: 1, maxLength: 8192 }, timeout_ms: { type: "integer", minimum: 0, maximum: 30000, description: "Maximum time to wait before returning a running session; defaults to 1000 ms." } }, required: ["operation_id", "command"], additionalProperties: false },
+  inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit authorized device ID; required." }, operation_id: { type: "string", minLength: 1, maxLength: 128 }, command: { type: "string", minLength: 1, maxLength: 8192 }, timeout_ms: { type: "integer", minimum: 0, maximum: 30000, description: "Maximum time to wait before returning a running session; defaults to 1000 ms." } }, required: ["operation_id", "command"], additionalProperties: false },
   annotations: { title: "Start development command", readOnlyHint: false, destructiveHint: true, openWorldHint: true },
 } as const;
 
 const LIST_SESSIONS_TOOL = {
   name: "list_sessions", title: "List managed sessions",
   description: "List only development command sessions started and tracked by this Agent. Completed sessions are retained for a bounded period.",
-  inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." } }, additionalProperties: false },
+  inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit authorized device ID; required." } }, additionalProperties: false },
   annotations: { title: "List managed sessions", readOnlyHint: true, destructiveHint: false, openWorldHint: false },
 } as const;
 
 const READ_PROCESS_OUTPUT_TOOL = {
   name: "read_session_output", title: "Read managed session output",
   description: "Read a bounded byte page from a session started by this Agent. Includes session state, next offset, truncation, and EOF. Stale or unknown session IDs are rejected.",
-  inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." }, session_id: { type: "string", format: "uuid" }, offset: { type: "integer", minimum: 0, maximum: 262144 }, length: { type: "integer", minimum: 1, maximum: 65536 } }, required: ["session_id"], additionalProperties: false },
+  inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit authorized device ID; required." }, session_id: { type: "string", format: "uuid" }, offset: { type: "integer", minimum: 0, maximum: 262144 }, length: { type: "integer", minimum: 1, maximum: 65536 } }, required: ["session_id"], additionalProperties: false },
   annotations: { title: "Read managed session output", readOnlyHint: true, destructiveHint: false, openWorldHint: false },
 } as const;
 
 const INTERACT_WITH_PROCESS_TOOL = {
   name: "send_input", title: "Send input to managed session",
   description: "Send a bounded UTF-8 input page to a session started by this Agent. Each input requires a stable operation_id; uncertain input is never replayed. Only a currently tracked session can receive input.",
-  inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." }, operation_id: { type: "string", minLength: 1, maxLength: 128 }, session_id: { type: "string", format: "uuid" }, input: { type: "string", minLength: 1, maxLength: 8192 } }, required: ["operation_id", "session_id", "input"], additionalProperties: false },
+  inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit authorized device ID; required." }, operation_id: { type: "string", minLength: 1, maxLength: 128 }, session_id: { type: "string", format: "uuid" }, input: { type: "string", minLength: 1, maxLength: 8192 } }, required: ["operation_id", "session_id", "input"], additionalProperties: false },
   annotations: { title: "Send input to managed session", readOnlyHint: false, destructiveHint: true, openWorldHint: true },
 } as const;
 
 const FORCE_TERMINATE_TOOL = {
   name: "stop_session", title: "Stop managed session",
   description: "Stop only a session started and still owned by this Agent. Uses a graceful signal followed by bounded escalation after rechecking the same process identity. A stale or unverified session is rejected.",
-  inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." }, operation_id: { type: "string", minLength: 1, maxLength: 128 }, session_id: { type: "string", format: "uuid" } }, required: ["operation_id", "session_id"], additionalProperties: false },
+  inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit authorized device ID; required." }, operation_id: { type: "string", minLength: 1, maxLength: 128 }, session_id: { type: "string", format: "uuid" } }, required: ["operation_id", "session_id"], additionalProperties: false },
   annotations: { title: "Stop managed session", readOnlyHint: false, destructiveHint: true, openWorldHint: true },
 } as const;
 
