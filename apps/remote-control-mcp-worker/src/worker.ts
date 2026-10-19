@@ -1,6 +1,8 @@
 import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
 import { handleAgentInstallerRequest } from "./install-bootstrap.ts";
-export { V2OwnerCoordinator, V2OwnerCoordinator as DeviceCoordinator } from "./v2-pairing.ts";
+export { V2OwnerCoordinator } from "./v2-pairing.ts";
+import { V2OwnerCoordinator as PreviewCoordinator } from "./v2-pairing.ts";
+export class DeviceCoordinator extends PreviewCoordinator {}
 
 type V2Env = Env & {
   V2_OWNER?: DurableObjectNamespace;
