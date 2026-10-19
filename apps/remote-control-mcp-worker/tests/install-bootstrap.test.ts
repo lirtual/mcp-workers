@@ -39,7 +39,7 @@ test("production custom hostname serves pinned installer with same-domain Agent 
 });
 
 test("unconfigured installer origin fails closed without trusting arbitrary Host",()=>{
-  assert.equal(requestInstall(new Request(origin+"/install.sh"), undefined, undefined).status,503);
+  assert.equal(handleAgentInstallerRequest(new Request(origin+"/install.sh"), undefined, undefined).status,503);
   assert.equal(requestInstall(new Request(origin+"/install.sh"), undefined, "").status,503);
   assert.equal(requestInstall(new Request(origin+"/install.sh"), undefined, "http://bad.example").status,503);
   assert.equal(requestInstall(new Request(origin+"/install.sh"), undefined, "https://bad.example/path").status,503);
