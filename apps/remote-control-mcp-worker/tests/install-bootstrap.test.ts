@@ -21,6 +21,19 @@ test("reviewed immutable single-code Worker installation route is enabled", asyn
   assert.match(script,/1\) \[ "\$1" = "--upgrade"/);
 });
 
+test("production custom hostname serves pinned installer with same-domain Agent endpoint",async()=>{
+  const custom="https://rca.lirtual.dpdns.org";
+  const response=handleAgentInstallerRequest(new Request(custom+"/install.sh"));
+  assert.equal(response.status,200);
+  const shell=await response.text();
+  assert.match(shell,/^#!\\/bin\\/sh/);
+  assert.ok(shell.includes('--endpoint "https://rca.lirtual.dpdns.org/"'));
+  assert.doesNotMatch(shell,/--endpoint "https:\\/\\/remote-control-v2-preview/);
+  assert.equal(handleAgentInstallerRequest(new Request("http://rca.lirtual.dpdns.org/install.sh")).status,403);
+  assert.equal(handleAgentInstallerRequest(new Request(custom+"/install.sh",{headers:{host:"evil.test"}})).status,403);
+  assert.throws(()=>renderAgentInstallShell("https://evil.lirtual.dpdns.org",pin),/Unapproved/);
+});
+
 test("historical two-code v0.1.2 cannot be served by single-code Worker even when explicitly passed",async()=>{
   const reviewed=REVIEWED_V012_RELEASE_PIN;
   assert.equal(reviewed.tag,"v0.1.2");
