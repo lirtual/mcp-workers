@@ -7,11 +7,13 @@ const fixtures = {
   "ima-mcp-worker": { MCP_ACCESS_TOKEN: "portal", API_KEY: "ima-key", CLIENT_ID: "client" },
   "database-mcp-worker": { MCP_ACCESS_TOKEN: "portal", DATABASE_CONFIG: '{"sample":"mysql://user:pass@host/db"}' },
   "ssh-mcp-worker": { MCP_ACCESS_TOKEN: "portal", MCP_BROKER_TOKEN: "x".repeat(32) },
+  "remote-control-mcp-worker": { MCP_ACCESS_TOKEN: "portal" },
 };
 
-test("Remote Control cannot bootstrap, and exactly four targets are allowed", () => {
+test("bootstrap supports all selected Workers, including isolated Remote Control", () => {
   assert.deepEqual(Object.keys(BOOTSTRAP_SECRETS).sort(), Object.keys(fixtures).sort());
-  assert.throws(() => collectBootstrapSecrets("remote-control-mcp-worker", {}), /not enabled/);
+  assert.deepEqual(collectBootstrapSecrets("remote-control-mcp-worker", { MCP_ACCESS_TOKEN: "portal", REMOTE_CONTROL_DEVICE_TOKEN: "legacy" }), { MCP_ACCESS_TOKEN: "portal" });
+  assert.throws(() => collectBootstrapSecrets("unlisted-worker", {}), /not enabled/);
 });
 
 test("selected Worker receives only required named secrets (no JSON wrappers)", () => {

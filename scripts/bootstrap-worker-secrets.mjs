@@ -10,6 +10,7 @@ export const BOOTSTRAP_SECRETS = Object.freeze({
   "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "API_KEY", "CLIENT_ID"],
   "database-mcp-worker": ["MCP_ACCESS_TOKEN", "DATABASE_CONFIG"],
   "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "MCP_BROKER_TOKEN"],
+  "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
 });
 
 export function collectBootstrapSecrets(worker, env) {
