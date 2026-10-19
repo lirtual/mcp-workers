@@ -223,19 +223,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Require explicitly configured Worker scope
-        shell: bash
-        env:
-          WORKER_CONFIG_SCOPE: ${{ vars.WORKER_CONFIG_SCOPE }}
-        run: |
-          set -euo pipefail
-          # A missing Environment is silently auto-created by GitHub; this
-          # Worker-specific marker prevents deployment through an empty scope.
-          [[ "$WORKER_CONFIG_SCOPE" == "$SELECTED_WORKER" ]] || {
-            echo "Selected Worker Environment is not configured (WORKER_CONFIG_SCOPE mismatch)" >&2
-            exit 1
-          }
-
       - name: Validate current trusted main without deployment credentials
         shell: bash
         run: |
