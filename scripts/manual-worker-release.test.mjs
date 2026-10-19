@@ -71,13 +71,22 @@ test("Remote production requires its own DO and rejects Preview namespace reuse"
   const productionNs = "abcd1234abcd1234abcd1234abcd1234";
   const prod = { bindings: [
     { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
+    { name: "REMOTE_CONTROL_INSTALL_ORIGIN", type: "plain_text", text: "https://rca.lirtual.dpdns.org" },
     { name: "DEVICE_COORDINATOR", class_name: "DeviceCoordinator",
       type: "durable_object_namespace", namespace_id: productionNs },
   ], observability: { enabled: true, logs: { invocation_logs: false } } };
   const secrets = [{ name: "MCP_ACCESS_TOKEN" }];
-  const options = { mode: "readback", previousNamespaceId: previewNs };
+  const options = { mode: "readback", previousNamespaceId: previewNs,
+    sourceConfig: { routes: [{ pattern: "rca.lirtual.dpdns.org", custom_domain: true }] } };
   assert.equal(verifyBindings(worker, prod, secrets, options), true);
   assert.throws(() => verifyBindings(worker, prod, [], options), /Secret missing/);
+  assert.throws(() => verifyBindings(worker, { ...prod,
+    bindings: prod.bindings.filter(x => x.name !== "REMOTE_CONTROL_INSTALL_ORIGIN"),
+  }, secrets, options), /installer origin/);
+  assert.throws(() => verifyBindings(worker, { ...prod,
+    bindings: prod.bindings.map(x => x.name === "REMOTE_CONTROL_INSTALL_ORIGIN"
+      ? { ...x, text: "https://evil.example" } : x),
+  }, secrets, options), /installer origin/);
   assert.throws(() => verifyBindings(worker, {
     ...prod, bindings: prod.bindings.map(x => x.name === "DEVICE_COORDINATOR"
       ? { ...x, namespace_id: previewNs } : x),
@@ -102,7 +111,7 @@ test("Remote production requires its own DO and rejects Preview namespace reuse"
   // A former Preview script and its DO can be deleted after cutover. Readback
   // compares against the saved preflight namespace, not a live Preview call.
   assert.equal(verifyBindings(worker, prod, secrets,
-    { mode: "readback", previousNamespaceId: previewNs }), true);
+    options), true);
   assert.equal(verifyBindings(worker, prod, secrets,
     { mode: "preflight" }), true, "subsequent releases need no Preview worker");
   assert.throws(() => verifyBindings(worker, { ...prod,
