@@ -17,9 +17,9 @@ export function isBrokerReadOnlyToolCall(input: unknown): boolean {
       return true;
     case 'ssh_exec':
       return args.command === 'pwd' || args.command === 'printf G5_SSH_OK';
-    case 'sftp_list':
+    case 'file_list':
       return args.path === '/etc';
-    case 'sftp_read_text':
+    case 'file_read_text':
       return args.path === '/etc/hostname';
     default:
       return false;

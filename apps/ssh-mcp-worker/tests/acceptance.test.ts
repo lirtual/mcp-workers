@@ -13,24 +13,24 @@ const fixture = JSON.parse(await readFile(new URL('./fixtures/edge-ssh-host-v1.j
 };
 const secretCanary = /synthetic-password-do-not-use|synthetic-initial-command-do-not-run|privateKey|ENCRYPTION_KEY|AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=/;
 const toolNames = [
-  'list_hosts', 'get_host', 'ssh_exec', 'sftp_list', 'sftp_read_text', 'sftp_write_text', 'sftp_rename', 'sftp_delete', 'sftp_mkdir',
-  'get_operation_status', 'ssh_session_start', 'ssh_session_input', 'ssh_session_stop', 'ssh_session_output', 'ssh_session_status',
+  'list_hosts', 'get_host', 'ssh_exec', 'file_list', 'file_read_text', 'file_write_text', 'file_move', 'file_delete', 'file_mkdir',
+  'get_operation_status', 'ssh_session_start', 'ssh_session_send', 'ssh_session_stop', 'ssh_session_read', 'ssh_session_status',
 ] as const;
 const specProperties: Record<(typeof toolNames)[number], string[]> = {
   list_hosts: ['cursor', 'limit'],
   get_host: ['host_id'],
   ssh_exec: ['host_id', 'command', 'operation_id', 'timeout_ms'],
   ssh_session_start: ['host_id', 'operation_id', 'term_type'],
-  ssh_session_input: ['session_id', 'operation_id', 'input'],
-  ssh_session_output: ['session_id', 'offset', 'limit'],
+  ssh_session_send: ['session_id', 'operation_id', 'input'],
+  ssh_session_read: ['session_id', 'offset', 'limit'],
   ssh_session_status: ['session_id'],
   ssh_session_stop: ['session_id', 'operation_id'],
-  sftp_list: ['host_id', 'path', 'timeout_ms'],
-  sftp_read_text: ['host_id', 'path', 'timeout_ms'],
-  sftp_write_text: ['host_id', 'path', 'text', 'overwrite', 'operation_id', 'timeout_ms'],
-  sftp_rename: ['host_id', 'old_path', 'new_path', 'overwrite', 'operation_id', 'timeout_ms'],
-  sftp_delete: ['host_id', 'path', 'kind', 'confirm', 'recursive', 'operation_id', 'timeout_ms'],
-  sftp_mkdir: ['host_id', 'path', 'operation_id', 'timeout_ms'],
+  file_list: ['host_id', 'path', 'timeout_ms'],
+  file_read_text: ['host_id', 'path', 'timeout_ms'],
+  file_write_text: ['host_id', 'path', 'text', 'overwrite', 'operation_id', 'timeout_ms'],
+  file_move: ['host_id', 'old_path', 'new_path', 'overwrite', 'operation_id', 'timeout_ms'],
+  file_delete: ['host_id', 'path', 'kind', 'confirm', 'recursive', 'operation_id', 'timeout_ms'],
+  file_mkdir: ['host_id', 'path', 'operation_id', 'timeout_ms'],
   get_operation_status: ['operation_id'],
 };
 
@@ -155,15 +155,15 @@ test('the external /mcp entry enforces 16 KiB commands and 4 KiB SFTP paths, inc
   const exactPath = 'x'.repeat(4 * 1024);
   const rejected: Array<[string, Record<string, unknown>]> = [
     ['ssh_exec', { host_id: fixture.hostId, operation_id: operation, command: '😀'.repeat(4097) }],
-    ['sftp_list', { host_id: fixture.hostId, path: overPath }],
-    ['sftp_read_text', { host_id: fixture.hostId, path: overPath }],
-    ['sftp_write_text', { host_id: fixture.hostId, operation_id: operation, path: overPath, text: 'x', overwrite: false }],
-    ['sftp_rename', { host_id: fixture.hostId, operation_id: operation, old_path: overPath, new_path: '/fixture/b', overwrite: false }],
-    ['sftp_rename', { host_id: fixture.hostId, operation_id: operation, old_path: '/fixture/a', new_path: overPath, overwrite: true }],
-    ['sftp_delete', { host_id: fixture.hostId, operation_id: operation, path: overPath, kind: 'file', confirm: true }],
-    ['sftp_mkdir', { host_id: fixture.hostId, operation_id: operation, path: overPath }],
-    ['sftp_write_text', { host_id: fixture.hostId, operation_id: operation, path: '/fixture/out.txt', text: 'x' }],
-    ['sftp_delete', { host_id: fixture.hostId, operation_id: operation, path: '/fixture/a', kind: 'file', confirm: true, recursive: true }],
+    ['file_list', { host_id: fixture.hostId, path: overPath }],
+    ['file_read_text', { host_id: fixture.hostId, path: overPath }],
+    ['file_write_text', { host_id: fixture.hostId, operation_id: operation, path: overPath, text: 'x', overwrite: false }],
+    ['file_move', { host_id: fixture.hostId, operation_id: operation, old_path: overPath, new_path: '/fixture/b', overwrite: false }],
+    ['file_move', { host_id: fixture.hostId, operation_id: operation, old_path: '/fixture/a', new_path: overPath, overwrite: true }],
+    ['file_delete', { host_id: fixture.hostId, operation_id: operation, path: overPath, kind: 'file', confirm: true }],
+    ['file_mkdir', { host_id: fixture.hostId, operation_id: operation, path: overPath }],
+    ['file_write_text', { host_id: fixture.hostId, operation_id: operation, path: '/fixture/out.txt', text: 'x' }],
+    ['file_delete', { host_id: fixture.hostId, operation_id: operation, path: '/fixture/a', kind: 'file', confirm: true, recursive: true }],
   ];
   for (const [index, [name, args]] of rejected.entries()) {
     const response = await post(env, 70 + index, 'tools/call', { name, arguments: args }, headers);
@@ -178,13 +178,13 @@ test('the external /mcp entry enforces 16 KiB commands and 4 KiB SFTP paths, inc
   assert.equal(doCalls, 0);
   const admitted: Array<[string, Record<string, unknown>]> = [
     ['ssh_exec', { host_id: fixture.hostId, operation_id: operation, command: 'x'.repeat(16 * 1024) }],
-    ['sftp_list', { host_id: fixture.hostId, path: exactPath }],
-    ['sftp_read_text', { host_id: fixture.hostId, path: exactPath }],
-    ['sftp_write_text', { host_id: fixture.hostId, operation_id: operation, path: exactPath, text: 'x', overwrite: false }],
-    ['sftp_rename', { host_id: fixture.hostId, operation_id: operation, old_path: exactPath, new_path: '/fixture/b', overwrite: false }],
-    ['sftp_rename', { host_id: fixture.hostId, operation_id: operation, old_path: '/fixture/a', new_path: exactPath, overwrite: false }],
-    ['sftp_delete', { host_id: fixture.hostId, operation_id: operation, path: exactPath, kind: 'file', confirm: true }],
-    ['sftp_mkdir', { host_id: fixture.hostId, operation_id: operation, path: exactPath }],
+    ['file_list', { host_id: fixture.hostId, path: exactPath }],
+    ['file_read_text', { host_id: fixture.hostId, path: exactPath }],
+    ['file_write_text', { host_id: fixture.hostId, operation_id: operation, path: exactPath, text: 'x', overwrite: false }],
+    ['file_move', { host_id: fixture.hostId, operation_id: operation, old_path: exactPath, new_path: '/fixture/b', overwrite: false }],
+    ['file_move', { host_id: fixture.hostId, operation_id: operation, old_path: '/fixture/a', new_path: exactPath, overwrite: false }],
+    ['file_delete', { host_id: fixture.hostId, operation_id: operation, path: exactPath, kind: 'file', confirm: true }],
+    ['file_mkdir', { host_id: fixture.hostId, operation_id: operation, path: exactPath }],
   ];
   for (const [index, [name, args]] of admitted.entries()) {
     const callsBefore: number = doCalls;
