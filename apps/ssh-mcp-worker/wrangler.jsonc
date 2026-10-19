@@ -5,11 +5,37 @@
   "compatibility_date": "2026-09-10",
   "durable_objects": {
     "bindings": [
-      { "name": "SSH_OPERATIONS", "class_name": "SshOperationsDO" }
+      {
+        "name": "SSH_OPERATIONS",
+        "class_name": "SshOperationsDO"
+      }
     ]
   },
   "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["SshOperationsDO"] }
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "SshOperationsDO"
+      ]
+    }
   ],
-  "observability": { "enabled": false }
+  "observability": {
+    "enabled": false
+  },
+  "workers_dev": true,
+  "preview_urls": false,
+  "keep_vars": true,
+  "services": [
+    {
+      "binding": "EDGE_SSH_BROKER",
+      "service": "edgessh",
+      "entrypoint": "HostBrokerEntrypoint"
+    }
+  ],
+  "secrets": {
+    "required": [
+      "MCP_ACCESS_TOKEN",
+      "MCP_BROKER_TOKEN"
+    ]
+  }
 }
