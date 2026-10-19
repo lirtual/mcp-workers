@@ -1,4 +1,5 @@
 import type { Env } from './types.ts';
+import { brokerGetHost, brokerListHosts, brokerResolveHost } from './broker-client.ts';
 import { fitsMcpToolResultBudget } from './result-budget.ts';
 import { normalizeDnsName } from './target-security.ts';
 
@@ -194,6 +195,7 @@ async function decodeRow(row: HostRow, accountId: string, secret: string): Promi
 
 /** Read the current catalog row for an effectful operation; never persist this result. */
 export async function getSshHostCredentials(env: Env, hostId: string): Promise<SshHostCredentials> {
+  if (env.EDGE_SSH_BROKER) return brokerResolveHost(env, hostId);
   if (!HOST_ID.test(hostId)) throw new HostError('host_not_found');
   const accountId = await readAccount(env);
   const secret = requiredSecret(env);
@@ -221,6 +223,7 @@ export async function getSshHostCredentials(env: Env, hostId: string): Promise<S
 }
 
 export async function listHosts(env: Env, input: { cursor?: string; limit?: number }): Promise<{ hosts: HostView[]; nextCursor: string | null }> {
+  if (env.EDGE_SSH_BROKER) return brokerListHosts(env, input);
   const accountId = await readAccount(env);
   const secret = requiredSecret(env);
   const limit = input.limit ?? 50;
@@ -259,6 +262,7 @@ export async function listHosts(env: Env, input: { cursor?: string; limit?: numb
 }
 
 export async function getHost(env: Env, hostId: string): Promise<HostView> {
+  if (env.EDGE_SSH_BROKER) return brokerGetHost(env, hostId);
   if (!HOST_ID.test(hostId)) throw new HostError('host_not_found');
   const accountId = await readAccount(env);
   const secret = requiredSecret(env);
