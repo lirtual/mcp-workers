@@ -405,7 +405,7 @@ try {
   const sessionStart = (id: number, operationId: string, term?: string, targetHostId = hostId) => call(id, 'ssh_session_start', {
     host_id: targetHostId, operation_id: operationId, ...(term ? { term_type: term } : {}),
   });
-  const sessionOutput = (id: number, sessionId: string, offset?: number, limit?: number) => call(id, 'ssh_session_output', {
+  const sessionOutput = (id: number, sessionId: string, offset?: number, limit?: number) => call(id, 'ssh_session_read', {
     session_id: sessionId, ...(offset === undefined ? {} : { offset }), ...(limit === undefined ? {} : { limit }),
   });
   const sessionStatus = (id: number, sessionId: string) => call(id, 'ssh_session_status', { session_id: sessionId });
@@ -559,7 +559,7 @@ try {
     const matches = [...(await readFile(authLog, 'utf8')).matchAll(/shell-input:([0-9a-f]+)/g)].map(match => match[1]!);
     return hash === undefined ? matches.length : matches.filter(item => item === hash).length;
   };
-  const sessionInput = (id: number, operationId: string, targetSessionId: string, input: string) => call(id, 'ssh_session_input', {
+  const sessionInput = (id: number, operationId: string, targetSessionId: string, input: string) => call(id, 'ssh_session_send', {
     session_id: targetSessionId, operation_id: operationId, input,
   });
   const sessionStop = (id: number, operationId: string, targetSessionId: string) => call(id, 'ssh_session_stop', {
@@ -603,7 +603,7 @@ try {
   const shellsAtInput = await shellOpens();
   const leasesBeforeInput = await fixtureRequest<{ total: number }>('lease-count', {});
   const inputsBeforeAuth = await shellInputCount();
-  assert.equal(await authedCall('wrong-bearer', 125, 'ssh_session_input', {
+  assert.equal(await authedCall('wrong-bearer', 125, 'ssh_session_send', {
     session_id: interactiveSessionId, operation_id: '44444444-4444-4444-8444-444444444444', input: 'hello from client\n',
   }), 401);
   assert.equal(await authedCall('rotated-mcp-bearer', 126, 'ssh_session_stop', {
@@ -774,7 +774,7 @@ try {
 
   activeToken = 'rotated-mcp-bearer';
   await restartWorker();
-  assert.equal(await authedCall(testToken, 171, 'ssh_session_input', {
+  assert.equal(await authedCall(testToken, 171, 'ssh_session_send', {
     session_id: interactiveSessionId, operation_id: '66666666-6666-4666-8666-666666666666', input: 'rotated-away\n',
   }), 401);
   assert.equal(await authedCall(testToken, 172, 'ssh_session_stop', {
@@ -899,26 +899,26 @@ try {
     sftp: (await readFile(authLog, 'utf8')).match(/sftp-subsystem/g)?.length ?? 0,
   };
   const operationsBefore = await fixtureRequest<{ count: number }>('operation-count', {});
-  const blockedList = await call(200, 'sftp_list', { host_id: hostId, path: '/fixture' });
+  const blockedList = await call(200, 'file_list', { host_id: hostId, path: '/fixture' });
   assert.equal(blockedList.value.error, 'capacity_reached', 'live shells occupy the shared SFTP connection budget');
   assert.equal(blockedList.value.entries, undefined);
-  const blockedWrite = await call(215, 'sftp_write_text', {
+  const blockedWrite = await call(215, 'file_write_text', {
     host_id: hostId, operation_id: 'd1d1d1d1-d1d1-41d1-81d1-d1d1d1d1d1d1',
     path: '/fixture/created-92.txt', text: 'must-not-write', overwrite: true,
   });
   assert.equal(blockedWrite.value.error, 'capacity_reached', 'a full host quota rejects SFTP write before SSH');
   assert.equal(blockedWrite.value.partial_write, undefined);
-  const blockedRename = await call(240, 'sftp_rename', {
+  const blockedRename = await call(240, 'file_move', {
     host_id: hostId, operation_id: 'd6d6d6d6-d6d6-46d6-86d6-d6d6d6d6d6d6',
     old_path: '/fixture/created-92.txt', new_path: '/fixture/renamed-93.txt', overwrite: false,
   });
   assert.equal(blockedRename.value.error, 'capacity_reached', 'a full host quota rejects SFTP rename before SSH');
-  const blockedDelete = await call(241, 'sftp_delete', {
+  const blockedDelete = await call(241, 'file_delete', {
     host_id: hostId, operation_id: 'd7d7d7d7-d7d7-47d7-87d7-d7d7d7d7d7d7',
     path: '/fixture/created-92.txt', kind: 'file', confirm: true,
   });
   assert.equal(blockedDelete.value.error, 'capacity_reached', 'a full host quota rejects SFTP delete before SSH');
-  const blockedMkdir = await call(242, 'sftp_mkdir', {
+  const blockedMkdir = await call(242, 'file_mkdir', {
     host_id: hostId, operation_id: 'd8d8d8d8-d8d8-48d8-88d8-d8d8d8d8d8d8', path: '/fixture/created-dir-93',
   });
   assert.equal(blockedMkdir.value.error, 'capacity_reached', 'a full host quota rejects SFTP mkdir before SSH');
@@ -928,100 +928,100 @@ try {
   await mutateHost({ action: 'insert', hostId: privateHostId, accountId, encryptedPayload: await encryptedHost(privateHostId, 'synthetic-password-do-not-use', { host: '10.1.2.3' }) });
   await mutateHost({ action: 'insert', hostId: wrongPinHostId, accountId, encryptedPayload: await encryptedHost(wrongPinHostId, 'synthetic-password-do-not-use', { fingerprint: `SHA256:${'A'.repeat(43)}` }) });
   await mutateHost({ action: 'insert', hostId: missingCredentialHostId, accountId, encryptedPayload: await encryptedHost(missingCredentialHostId, '', {}) });
-  const privateTarget = await call(201, 'sftp_list', { host_id: privateHostId, path: '/fixture' });
+  const privateTarget = await call(201, 'file_list', { host_id: privateHostId, path: '/fixture' });
   assert.equal(privateTarget.value.error, 'invalid_target');
-  const wrongPin = await call(202, 'sftp_read_text', { host_id: wrongPinHostId, path: '/fixture/hello.txt' });
+  const wrongPin = await call(202, 'file_read_text', { host_id: wrongPinHostId, path: '/fixture/hello.txt' });
   assert.equal(wrongPin.value.error, 'host_untrusted');
   assert.equal(wrongPin.value.text, undefined);
-  const missingCredential = await call(203, 'sftp_read_text', { host_id: missingCredentialHostId, path: '/fixture/hello.txt' });
+  const missingCredential = await call(203, 'file_read_text', { host_id: missingCredentialHostId, path: '/fixture/hello.txt' });
   assert.equal(missingCredential.value.error, 'host_record_invalid');
-  const unauthenticated = await authedCall('wrong-bearer', 204, 'sftp_read_text', { host_id: secondHostId, path: '/fixture/hello.txt' });
+  const unauthenticated = await authedCall('wrong-bearer', 204, 'file_read_text', { host_id: secondHostId, path: '/fixture/hello.txt' });
   assert.equal(unauthenticated, 401);
-  const overlongPath = await call(205, 'sftp_list', { host_id: secondHostId, path: '😀'.repeat(1025) });
+  const overlongPath = await call(205, 'file_list', { host_id: secondHostId, path: '😀'.repeat(1025) });
   assert.equal(overlongPath.isError, true);
   assert.equal(overlongPath.value.error, 'invalid_args');
-  const overlongWrite = await call(216, 'sftp_write_text', {
+  const overlongWrite = await call(216, 'file_write_text', {
     host_id: secondHostId, operation_id: 'd2d2d2d2-d2d2-42d2-82d2-d2d2d2d2d2d2',
     path: '😀'.repeat(1025), text: 'x', overwrite: false,
   });
   assert.equal(overlongWrite.isError, true);
   assert.equal(overlongWrite.value.error, 'invalid_args');
-  const hugeWrite = await call(217, 'sftp_write_text', {
+  const hugeWrite = await call(217, 'file_write_text', {
     host_id: secondHostId, operation_id: 'd3d3d3d3-d3d3-43d3-83d3-d3d3d3d3d3d3',
     path: '/fixture/created-92.txt', text: 'x'.repeat(64 * 1024 + 1), overwrite: false,
   });
   assert.equal(hugeWrite.isError, true);
   assert.equal(hugeWrite.value.error, 'invalid_args');
-  const missingOverwrite = await call(218, 'sftp_write_text', {
+  const missingOverwrite = await call(218, 'file_write_text', {
     host_id: secondHostId, operation_id: 'd4d4d4d4-d4d4-44d4-84d4-d4d4d4d4d4d4',
     path: '/fixture/created-92.txt', text: 'x',
   });
   assert.equal(missingOverwrite.isError, true);
   assert.equal(missingOverwrite.value.error, 'invalid_args');
-  const unauthenticatedWrite = await authedCall('wrong-bearer', 219, 'sftp_write_text', {
+  const unauthenticatedWrite = await authedCall('wrong-bearer', 219, 'file_write_text', {
     host_id: secondHostId, operation_id: 'd5d5d5d5-d5d5-45d5-85d5-d5d5d5d5d5d5',
     path: '/fixture/created-92.txt', text: 'x', overwrite: true,
   });
   assert.equal(unauthenticatedWrite, 401);
-  const overlongRename = await call(243, 'sftp_rename', {
+  const overlongRename = await call(243, 'file_move', {
     host_id: secondHostId, operation_id: 'd9d9d9d9-d9d9-49d9-89d9-d9d9d9d9d9d9',
     old_path: '😀'.repeat(1025), new_path: '/fixture/b.txt', overwrite: false,
   });
   assert.equal(overlongRename.isError, true);
   assert.equal(overlongRename.value.error, 'invalid_args');
-  const overlongDestination = await call(244, 'sftp_rename', {
+  const overlongDestination = await call(244, 'file_move', {
     host_id: secondHostId, operation_id: 'dadadada-dada-4ada-8ada-dadadadadada',
     old_path: '/fixture/a.txt', new_path: '😀'.repeat(1025), overwrite: true,
   });
   assert.equal(overlongDestination.isError, true);
   assert.equal(overlongDestination.value.error, 'invalid_args');
-  const missingOverwriteRename = await call(245, 'sftp_rename', {
+  const missingOverwriteRename = await call(245, 'file_move', {
     host_id: secondHostId, operation_id: 'dbdbdbdb-dbdb-4bdb-8bdb-dbdbdbdbdbdb',
     old_path: '/fixture/a.txt', new_path: '/fixture/b.txt',
   });
   assert.equal(missingOverwriteRename.isError, true);
   assert.equal(missingOverwriteRename.value.error, 'invalid_args');
-  const unauthenticatedRename = await authedCall('wrong-bearer', 246, 'sftp_rename', {
+  const unauthenticatedRename = await authedCall('wrong-bearer', 246, 'file_move', {
     host_id: secondHostId, operation_id: 'dcdcdcdc-dcdc-4cdc-8cdc-dcdcdcdcdcdc',
     old_path: '/fixture/a.txt', new_path: '/fixture/b.txt', overwrite: false,
   });
   assert.equal(unauthenticatedRename, 401);
-  const implicitDelete = await call(247, 'sftp_delete', {
+  const implicitDelete = await call(247, 'file_delete', {
     host_id: secondHostId, operation_id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
     path: '/fixture/a.txt', kind: 'file',
   });
   assert.equal(implicitDelete.isError, true);
   assert.equal(implicitDelete.value.error, 'invalid_args');
-  const recursiveDelete = await call(248, 'sftp_delete', {
+  const recursiveDelete = await call(248, 'file_delete', {
     host_id: secondHostId, operation_id: 'dededede-dede-4ede-8ede-dededededede',
     path: '/fixture/a.txt', kind: 'file', confirm: true, recursive: true,
   });
   assert.equal(recursiveDelete.isError, true);
   assert.equal(recursiveDelete.value.error, 'invalid_args');
-  const wrongDeleteKind = await call(249, 'sftp_delete', {
+  const wrongDeleteKind = await call(249, 'file_delete', {
     host_id: secondHostId, operation_id: 'dfdfdfdf-dfdf-4fdf-8fdf-dfdfdfdfdfdf',
     path: '/fixture/a.txt', kind: 'directory', confirm: true,
   });
   assert.equal(wrongDeleteKind.isError, true);
   assert.equal(wrongDeleteKind.value.error, 'invalid_args');
-  const unauthenticatedDelete = await authedCall('wrong-bearer', 250, 'sftp_delete', {
+  const unauthenticatedDelete = await authedCall('wrong-bearer', 250, 'file_delete', {
     host_id: secondHostId, operation_id: 'e0e0e0e0-e0e0-40e0-80e0-e0e0e0e0e0e0',
     path: '/fixture/a.txt', kind: 'file', confirm: true,
   });
   assert.equal(unauthenticatedDelete, 401);
-  const overlongMkdir = await call(251, 'sftp_mkdir', {
+  const overlongMkdir = await call(251, 'file_mkdir', {
     host_id: secondHostId, operation_id: 'e1e1e1e1-e1e1-41e1-81e1-e1e1e1e1e1e1', path: '😀'.repeat(1025),
   });
   assert.equal(overlongMkdir.isError, true);
   assert.equal(overlongMkdir.value.error, 'invalid_args');
-  const unauthenticatedMkdir = await authedCall('wrong-bearer', 252, 'sftp_mkdir', {
+  const unauthenticatedMkdir = await authedCall('wrong-bearer', 252, 'file_mkdir', {
     host_id: secondHostId, operation_id: 'e2e2e2e2-e2e2-42e2-82e2-e2e2e2e2e2e2', path: '/fixture/new-dir',
   });
   assert.equal(unauthenticatedMkdir, 401);
   assert.equal((await readFile(authLog, 'utf8')).match(/sftp-subsystem/g)?.length ?? 0, sftpCallsBefore.sftp, 'rejected SFTP targets must not open a subsystem');
   assert.equal(await passwordAuths(), sftpCallsBefore.auth, 'capacity, private, wrong pin, missing credential, and bad bearer must not authenticate');
 
-  const sftpListed = await call(206, 'sftp_list', { host_id: secondHostId, path: '/fixture' });
+  const sftpListed = await call(206, 'file_list', { host_id: secondHostId, path: '/fixture' });
   assert.equal(sftpListed.value.status, 'completed', JSON.stringify(sftpListed));
   assert.deepEqual(sftpListed.value.entries, [
     { name: 'hello.txt', type: 'file', size: Buffer.byteLength('héllo SSH\n') },
@@ -1032,31 +1032,31 @@ try {
     { name: 'many', type: 'directory', size: 0 },
   ]);
   assert.equal(sftpListed.value.truncated, false);
-  const readText = await call(207, 'sftp_read_text', { host_id: secondHostId, path: '/fixture/hello.txt' });
+  const readText = await call(207, 'file_read_text', { host_id: secondHostId, path: '/fixture/hello.txt' });
   assert.equal(readText.value.status, 'completed', JSON.stringify(readText));
   assert.equal(readText.value.text, 'héllo SSH\n');
   assert.equal(readText.value.bytes, Buffer.byteLength('héllo SSH\n'));
   assert.equal(readText.value.cursor, readText.value.bytes);
   assert.equal(readText.value.truncated, false);
-  const many = await call(208, 'sftp_list', { host_id: secondHostId, path: '/fixture/many' });
+  const many = await call(208, 'file_list', { host_id: secondHostId, path: '/fixture/many' });
   assert.equal(many.value.status, 'completed', JSON.stringify(many));
   assert.equal((many.value.entries as unknown[]).length, 100);
   assert.equal(many.value.truncated, true);
   assert.equal((many.value.entries as Array<{ name: string }>).some(entry => entry.name === 'item-100.txt'), false);
-  const binary = await call(209, 'sftp_read_text', { host_id: secondHostId, path: '/fixture/binary.bin' });
+  const binary = await call(209, 'file_read_text', { host_id: secondHostId, path: '/fixture/binary.bin' });
   assert.equal(binary.value.error, 'output_truncated');
   assert.equal(binary.value.text, undefined);
-  const oversized = await call(210, 'sftp_read_text', { host_id: secondHostId, path: '/fixture/big.txt' });
+  const oversized = await call(210, 'file_read_text', { host_id: secondHostId, path: '/fixture/big.txt' });
   assert.equal(oversized.value.error, 'output_truncated');
   assert.equal(oversized.value.truncated, true);
   assert.equal(oversized.value.text, undefined);
-  const envelope = await call(214, 'sftp_read_text', { host_id: secondHostId, path: '/fixture/envelope.txt' });
+  const envelope = await call(214, 'file_read_text', { host_id: secondHostId, path: '/fixture/envelope.txt' });
   assert.equal(envelope.value.status, 'failed');
   assert.equal(envelope.value.error, 'output_truncated');
   assert.equal(envelope.value.text, undefined);
   assert.equal(envelope.value.cursor, undefined);
   assert.doesNotMatch(JSON.stringify(envelope.value), /a{64}/, 'an over-budget UTF-8 file must not return a partial body');
-  const missingFile = await call(211, 'sftp_read_text', { host_id: secondHostId, path: '/fixture/missing.txt' });
+  const missingFile = await call(211, 'file_read_text', { host_id: secondHostId, path: '/fixture/missing.txt' });
   assert.equal(missingFile.value.status, 'failed');
   assert.equal(missingFile.value.error, 'host_unreachable');
   assert.equal(missingFile.value.text, undefined);
@@ -1067,7 +1067,7 @@ try {
   const operationsAfter = await fixtureRequest<{ count: number }>('operation-count', {});
   assert.equal(operationsAfter?.count, operationsBefore?.count, 'SFTP list and read do not write a mutation receipt');
   const subsystemsBeforePrivateRename = (await readFile(authLog, 'utf8')).match(/sftp-subsystem/g)?.length ?? 0;
-  const privateRename = await call(253, 'sftp_rename', {
+  const privateRename = await call(253, 'file_move', {
     host_id: privateHostId, operation_id: 'e3e3e3e3-e3e3-43e3-83e3-e3e3e3e3e3e3',
     old_path: '/fixture/a.txt', new_path: '/fixture/b.txt', overwrite: false,
   });
@@ -1080,7 +1080,7 @@ try {
   const sftpLogBeforeStall = await readFile(authLog, 'utf8');
   const closedBeforeStall = sftpLogBeforeStall.match(/connection-closed:/g)?.length ?? 0;
   const sessionsBeforeStall = sftpLogBeforeStall.match(/sftp-session-closed:/g)?.length ?? 0;
-  const stalledList = call(212, 'sftp_list', { host_id: secondHostId, path: '/fixture/stall', timeout_ms: 1_000 });
+  const stalledList = call(212, 'file_list', { host_id: secondHostId, path: '/fixture/stall', timeout_ms: 1_000 });
   let stallConnectionId: string | undefined;
   for (let attempt = 0; attempt < 40; attempt++) {
     stallConnectionId = (await readFile(authLog, 'utf8')).match(/sftp-stall:(\d+)/)?.[1];
@@ -1105,7 +1105,7 @@ try {
     await delay(50);
   }
   assert.equal(stallClosed, true, 'SFTP timeout closes the short SSH connection');
-  const afterSftp = await call(213, 'sftp_read_text', { host_id: secondHostId, path: '/fixture/hello.txt' });
+  const afterSftp = await call(213, 'file_read_text', { host_id: secondHostId, path: '/fixture/hello.txt' });
   assert.equal(afterSftp.value.text, 'héllo SSH\n', 'a later read can connect after the timed-out lease is released');
   const finalSftpLog = await readFile(authLog, 'utf8');
   assert.doesNotMatch(finalSftpLog, /unexpected-fixture-error:/, 'only the intentional stalled SFTP connection may absorb ECONNRESET');
@@ -1114,7 +1114,7 @@ try {
   const writeTextBody = 'héllo write';
   const writePath = '/fixture/created-92.txt';
   const writeOperationId = 'c1c1c1c1-c1c1-41c1-81c1-c1c1c1c1c1c1';
-  const created = await call(220, 'sftp_write_text', {
+  const created = await call(220, 'file_write_text', {
     host_id: secondHostId, operation_id: writeOperationId, path: writePath, text: writeTextBody, overwrite: false,
   });
   assert.equal(created.value.status, 'completed', JSON.stringify(created));
@@ -1130,62 +1130,62 @@ try {
     tool: 'sftp_write', hostId: secondHostId, sessionId: null, normalizedArgs: [writePath, writeTextBody, false],
   });
   assert.equal(writeReceipt.digest, expectedWriteDigest.digest);
-  const readCreated = await call(221, 'sftp_read_text', { host_id: secondHostId, path: writePath });
+  const readCreated = await call(221, 'file_read_text', { host_id: secondHostId, path: writePath });
   assert.equal(readCreated.value.text, writeTextBody);
-  const replayWrite = await call(222, 'sftp_write_text', {
+  const replayWrite = await call(222, 'file_write_text', {
     host_id: secondHostId, operation_id: writeOperationId, path: writePath, text: writeTextBody, overwrite: false, timeout_ms: 15_000,
   });
   assert.equal(replayWrite.value.status, 'completed');
   assert.equal(replayWrite.value.bytes, Buffer.byteLength(writeTextBody));
   assert.equal(replayWrite.value.text, undefined);
-  const conflictWrite = await call(223, 'sftp_write_text', {
+  const conflictWrite = await call(223, 'file_write_text', {
     host_id: secondHostId, operation_id: writeOperationId, path: writePath, text: 'changed', overwrite: false,
   });
   assert.equal(conflictWrite.value.error, 'receipt_conflict');
-  const overwriteFlagConflict = await call(224, 'sftp_write_text', {
+  const overwriteFlagConflict = await call(224, 'file_write_text', {
     host_id: secondHostId, operation_id: writeOperationId, path: writePath, text: writeTextBody, overwrite: true,
   });
   assert.equal(overwriteFlagConflict.value.error, 'receipt_conflict');
   assert.equal((await readFile(authLog, 'utf8')).match(/sftp-write:\/fixture\/created-92.txt:/g)?.length ?? 0, 1,
     'same-id replay and argument conflicts must not write again');
 
-  const exists = await call(225, 'sftp_write_text', {
+  const exists = await call(225, 'file_write_text', {
     host_id: secondHostId, operation_id: 'c2c2c2c2-c2c2-42c2-82c2-c2c2c2c2c2c2',
     path: '/fixture/hello.txt', text: 'nope', overwrite: false,
   });
   assert.equal(exists.value.status, 'failed', JSON.stringify(exists));
   assert.equal(exists.value.error, 'conflict');
   assert.equal(exists.value.partial_write, undefined);
-  const helloStill = await call(226, 'sftp_read_text', { host_id: secondHostId, path: '/fixture/hello.txt' });
+  const helloStill = await call(226, 'file_read_text', { host_id: secondHostId, path: '/fixture/hello.txt' });
   assert.equal(helloStill.value.text, 'héllo SSH\n');
   assert.equal((await readFile(authLog, 'utf8')).match(/sftp-write:\/fixture\/hello.txt:/g)?.length ?? 0, 0);
 
-  const replaced = await call(227, 'sftp_write_text', {
+  const replaced = await call(227, 'file_write_text', {
     host_id: secondHostId, operation_id: 'c3c3c3c3-c3c3-43c3-83c3-c3c3c3c3c3c3',
     path: '/fixture/out.txt', text: 'first overwrite', overwrite: true,
   });
   assert.equal(replaced.value.status, 'completed', JSON.stringify(replaced));
   assert.equal(replaced.value.text, undefined);
-  const replacedAgain = await call(228, 'sftp_write_text', {
+  const replacedAgain = await call(228, 'file_write_text', {
     host_id: secondHostId, operation_id: 'c4c4c4c4-c4c4-44c4-84c4-c4c4c4c4c4c4',
     path: '/fixture/out.txt', text: 'second', overwrite: true,
   });
   assert.equal(replacedAgain.value.status, 'completed');
-  const readReplaced = await call(229, 'sftp_read_text', { host_id: secondHostId, path: '/fixture/out.txt' });
+  const readReplaced = await call(229, 'file_read_text', { host_id: secondHostId, path: '/fixture/out.txt' });
   assert.equal(readReplaced.value.text, 'second');
 
-  const privateWrite = await call(230, 'sftp_write_text', {
+  const privateWrite = await call(230, 'file_write_text', {
     host_id: privateHostId, operation_id: 'c5c5c5c5-c5c5-45c5-85c5-c5c5c5c5c5c5',
     path: writePath, text: 'x', overwrite: true,
   });
   assert.equal(privateWrite.value.error, 'invalid_target');
-  const wrongPinWrite = await call(231, 'sftp_write_text', {
+  const wrongPinWrite = await call(231, 'file_write_text', {
     host_id: wrongPinHostId, operation_id: 'c6c6c6c6-c6c6-46c6-86c6-c6c6c6c6c6c6',
     path: writePath, text: 'x', overwrite: true,
   });
   assert.equal(wrongPinWrite.value.error, 'host_untrusted');
   assert.doesNotMatch(JSON.stringify(wrongPinWrite), /synthetic-password|privateKey|ENCRYPTION_KEY/);
-  const missingCredentialWrite = await call(232, 'sftp_write_text', {
+  const missingCredentialWrite = await call(232, 'file_write_text', {
     host_id: missingCredentialHostId, operation_id: 'c7c7c7c7-c7c7-47c7-87c7-c7c7c7c7c7c7',
     path: writePath, text: 'x', overwrite: true,
   });
@@ -1193,7 +1193,7 @@ try {
 
   const dropId = 'c8c8c8c8-c8c8-48c8-88c8-c8c8c8c8c8c8';
   const dropBody = 'partial-body-must-not-persist';
-  const drop = await call(233, 'sftp_write_text', {
+  const drop = await call(233, 'file_write_text', {
     host_id: secondHostId, operation_id: dropId, path: '/fixture/drop-write', text: dropBody, overwrite: true, timeout_ms: 10_000,
   });
   assert.equal(drop.value.status, 'unknown', JSON.stringify(drop));
@@ -1201,7 +1201,7 @@ try {
   assert.equal(drop.value.partial_write, 'possible');
   assert.equal(drop.value.text, undefined);
   assert.doesNotMatch(JSON.stringify(drop), /partial-body-must-not-persist|synthetic-password/);
-  const dropReplay = await call(234, 'sftp_write_text', {
+  const dropReplay = await call(234, 'file_write_text', {
     host_id: secondHostId, operation_id: dropId, path: '/fixture/drop-write', text: dropBody, overwrite: true,
   });
   assert.equal(dropReplay.value.status, 'unknown');
@@ -1210,7 +1210,7 @@ try {
   assert.doesNotMatch(JSON.stringify(dropReceipt), /partial-body-must-not-persist/);
 
   const stallWriteId = 'c9c9c9c9-c9c9-49c9-89c9-c9c9c9c9c9c9';
-  const stalledWrite = call(235, 'sftp_write_text', {
+  const stalledWrite = call(235, 'file_write_text', {
     host_id: secondHostId, operation_id: stallWriteId, path: '/fixture/stall-write', text: 'stalled', overwrite: true, timeout_ms: 1_000,
   });
   let stallWriteConnection: string | undefined;
@@ -1230,7 +1230,7 @@ try {
   await clearPtyResets();
   const releasedWrite = await fixtureRequest<{ perHost: Record<string, number> }>('lease-count', {});
   assert.equal(releasedWrite?.perHost[secondHostId] ?? 0, 0, 'a timed-out SFTP write releases the connection lease');
-  const stallReplay = await call(236, 'sftp_write_text', {
+  const stallReplay = await call(236, 'file_write_text', {
     host_id: secondHostId, operation_id: stallWriteId, path: '/fixture/stall-write', text: 'stalled', overwrite: true, timeout_ms: 1_000,
   });
   assert.equal(stallReplay.value.status, 'unknown');
@@ -1239,18 +1239,18 @@ try {
   const commitWriteId = 'cacacaca-caca-4aca-8aca-cacacacacaca';
   const commitBody = 'commit-body-must-not-persist';
   await control('PUT', 'terminal-update-failure');
-  const commitWrite = await call(237, 'sftp_write_text', {
+  const commitWrite = await call(237, 'file_write_text', {
     host_id: secondHostId, operation_id: commitWriteId, path: '/fixture/commit-write.txt', text: commitBody, overwrite: false,
   });
   assert.equal(commitWrite.value.status, 'unknown', JSON.stringify(commitWrite));
   assert.equal(commitWrite.value.partial_write, 'possible');
   assert.doesNotMatch(JSON.stringify(commitWrite), /commit-body-must-not-persist|synthetic-password/);
   await control('DELETE', 'terminal-update-failure');
-  const commitReplay = await call(238, 'sftp_write_text', {
+  const commitReplay = await call(238, 'file_write_text', {
     host_id: secondHostId, operation_id: commitWriteId, path: '/fixture/commit-write.txt', text: commitBody, overwrite: false,
   });
   assert.equal(commitReplay.value.status, 'unknown');
-  const commitRead = await call(239, 'sftp_read_text', { host_id: secondHostId, path: '/fixture/commit-write.txt' });
+  const commitRead = await call(239, 'file_read_text', { host_id: secondHostId, path: '/fixture/commit-write.txt' });
   assert.equal(commitRead.value.text, commitBody, 'the remote write happened once before the receipt failure');
   const commitReceipt = await fixtureRequest('read-receipt', { operationId: commitWriteId });
   assert.doesNotMatch(JSON.stringify(commitReceipt), /commit-body-must-not-persist/);
@@ -1260,12 +1260,12 @@ try {
   const renameSource = '/fixture/rename-src-93.txt';
   const renameDestination = '/fixture/rename-dst-93.txt';
   const renameOperationId = 'e4e4e4e4-e4e4-44e4-84e4-e4e4e4e4e4e4';
-  const seeded = await call(260, 'sftp_write_text', {
+  const seeded = await call(260, 'file_write_text', {
     host_id: secondHostId, operation_id: 'e5e5e5e5-e5e5-45e5-85e5-e5e5e5e5e5e5',
     path: renameSource, text: renameBody, overwrite: false,
   });
   assert.equal(seeded.value.status, 'completed', JSON.stringify(seeded));
-  const renamedFile = await call(261, 'sftp_rename', {
+  const renamedFile = await call(261, 'file_move', {
     host_id: secondHostId, operation_id: renameOperationId,
     old_path: renameSource, new_path: renameDestination, overwrite: false,
   });
@@ -1280,16 +1280,16 @@ try {
   });
   assert.equal(renameReceipt.digest, expectedRenameDigest.digest);
   assert.doesNotMatch(renameReceipt.result_json ?? '', /rename-body-93|synthetic-password|privateKey|ENCRYPTION_KEY|rename-src-93/);
-  const readRenamed = await call(262, 'sftp_read_text', { host_id: secondHostId, path: renameDestination });
+  const readRenamed = await call(262, 'file_read_text', { host_id: secondHostId, path: renameDestination });
   assert.equal(readRenamed.value.text, renameBody);
-  const readOld = await call(263, 'sftp_read_text', { host_id: secondHostId, path: renameSource });
+  const readOld = await call(263, 'file_read_text', { host_id: secondHostId, path: renameSource });
   assert.equal(readOld.value.error, 'host_unreachable');
-  const replayRename = await call(264, 'sftp_rename', {
+  const replayRename = await call(264, 'file_move', {
     host_id: secondHostId, operation_id: renameOperationId,
     old_path: renameSource, new_path: renameDestination, overwrite: false, timeout_ms: 15_000,
   });
   assert.equal(replayRename.value.status, 'completed');
-  const conflictRename = await call(265, 'sftp_rename', {
+  const conflictRename = await call(265, 'file_move', {
     host_id: secondHostId, operation_id: renameOperationId,
     old_path: renameSource, new_path: '/fixture/elsewhere-93.txt', overwrite: false,
   });
@@ -1297,25 +1297,25 @@ try {
   assert.equal((await readFile(authLog, 'utf8')).match(/sftp-rename:\/fixture\/rename-src-93.txt:\/fixture\/rename-dst-93.txt/g)?.length ?? 0, 1,
     'same-id replay and argument conflicts must not rename again');
 
-  const occupied = await call(266, 'sftp_rename', {
+  const occupied = await call(266, 'file_move', {
     host_id: secondHostId, operation_id: 'e6e6e6e6-e6e6-46e6-86e6-e6e6e6e6e6e6',
     old_path: '/fixture/out.txt', new_path: renameDestination, overwrite: false,
   });
   assert.equal(occupied.value.status, 'failed', JSON.stringify(occupied));
   assert.equal(occupied.value.error, 'conflict');
-  const stillThere = await call(267, 'sftp_read_text', { host_id: secondHostId, path: '/fixture/out.txt' });
+  const stillThere = await call(267, 'file_read_text', { host_id: secondHostId, path: '/fixture/out.txt' });
   assert.equal(stillThere.value.text, 'second');
-  const replacedName = await call(268, 'sftp_rename', {
+  const replacedName = await call(268, 'file_move', {
     host_id: secondHostId, operation_id: 'e7e7e7e7-e7e7-47e7-87e7-e7e7e7e7e7e7',
     old_path: '/fixture/out.txt', new_path: renameDestination, overwrite: true,
   });
   assert.equal(replacedName.value.status, 'completed', JSON.stringify(replacedName));
   assert.equal(replacedName.value.partial_write, undefined);
-  const readReplacedName = await call(269, 'sftp_read_text', { host_id: secondHostId, path: renameDestination });
+  const readReplacedName = await call(269, 'file_read_text', { host_id: secondHostId, path: renameDestination });
   assert.equal(readReplacedName.value.text, 'second');
-  const oldOut = await call(270, 'sftp_read_text', { host_id: secondHostId, path: '/fixture/out.txt' });
+  const oldOut = await call(270, 'file_read_text', { host_id: secondHostId, path: '/fixture/out.txt' });
   assert.equal(oldOut.value.error, 'host_unreachable');
-  const missingRename = await call(271, 'sftp_rename', {
+  const missingRename = await call(271, 'file_move', {
     host_id: secondHostId, operation_id: 'e8e8e8e8-e8e8-48e8-88e8-e8e8e8e8e8e8',
     old_path: '/fixture/missing-93.txt', new_path: '/fixture/missing-dst-93.txt', overwrite: false,
   });
@@ -1323,7 +1323,7 @@ try {
   assert.equal(missingRename.value.error, 'host_unreachable');
 
   const mkdirId = 'e9e9e9e9-e9e9-49e9-89e9-e9e9e9e9e9e9';
-  const made = await call(272, 'sftp_mkdir', {
+  const made = await call(272, 'file_mkdir', {
     host_id: secondHostId, operation_id: mkdirId, path: '/fixture/tree-93',
   });
   assert.equal(made.value.status, 'completed', JSON.stringify(made));
@@ -1333,28 +1333,28 @@ try {
   });
   assert.equal(mkdirReceipt?.digest, expectedMkdirDigest.digest);
   assert.doesNotMatch(mkdirReceipt?.result_json ?? '', /synthetic-password|privateKey|ENCRYPTION_KEY/);
-  const madeChild = await call(273, 'sftp_mkdir', {
+  const madeChild = await call(273, 'file_mkdir', {
     host_id: secondHostId, operation_id: 'eaeaeaea-eaea-4aea-8aea-eaeaeaeaeaea', path: '/fixture/tree-93/child',
   });
   assert.equal(madeChild.value.status, 'completed', JSON.stringify(madeChild));
-  const missingParent = await call(274, 'sftp_mkdir', {
+  const missingParent = await call(274, 'file_mkdir', {
     host_id: secondHostId, operation_id: 'ebebebeb-ebeb-4beb-8beb-ebebebebebeb', path: '/fixture/tree-93/missing/leaf',
   });
   assert.equal(missingParent.value.status, 'failed', JSON.stringify(missingParent));
   assert.equal(missingParent.value.error, 'host_unreachable');
-  const missingParentList = await call(275, 'sftp_list', { host_id: secondHostId, path: '/fixture/tree-93/missing' });
+  const missingParentList = await call(275, 'file_list', { host_id: secondHostId, path: '/fixture/tree-93/missing' });
   assert.equal(missingParentList.value.error, 'host_unreachable');
-  const mkdirAgain = await call(276, 'sftp_mkdir', {
+  const mkdirAgain = await call(276, 'file_mkdir', {
     host_id: secondHostId, operation_id: 'ecececec-ecec-4cec-8cec-ecececececec', path: '/fixture/tree-93',
   });
   assert.equal(mkdirAgain.value.error, 'conflict');
-  const mkdirFile = await call(277, 'sftp_mkdir', {
+  const mkdirFile = await call(277, 'file_mkdir', {
     host_id: secondHostId, operation_id: 'edededed-eded-4ded-8ded-edededededed', path: '/fixture/hello.txt',
   });
   assert.equal(mkdirFile.value.error, 'conflict');
-  const helloAfterMkdir = await call(278, 'sftp_read_text', { host_id: secondHostId, path: '/fixture/hello.txt' });
+  const helloAfterMkdir = await call(278, 'file_read_text', { host_id: secondHostId, path: '/fixture/hello.txt' });
   assert.equal(helloAfterMkdir.value.text, 'héllo SSH\n');
-  const listedRoot = await call(279, 'sftp_list', { host_id: secondHostId, path: '/fixture' });
+  const listedRoot = await call(279, 'file_list', { host_id: secondHostId, path: '/fixture' });
   assert.deepEqual(listedRoot.value.entries, [
     { name: 'hello.txt', type: 'file', size: Buffer.byteLength('héllo SSH\n') },
     { name: 'binary.bin', type: 'file', size: 3 },
@@ -1368,40 +1368,40 @@ try {
     { name: 'tree-93', type: 'directory', size: 0 },
     { name: 'many', type: 'directory', size: 0 },
   ]);
-  const listedTree = await call(280, 'sftp_list', { host_id: secondHostId, path: '/fixture/tree-93' });
+  const listedTree = await call(280, 'file_list', { host_id: secondHostId, path: '/fixture/tree-93' });
   assert.equal(listedTree.value.status, 'completed', JSON.stringify(listedTree));
   assert.deepEqual(listedTree.value.entries, [{ name: 'child', type: 'directory', size: 0 }]);
-  const replayMkdir = await call(281, 'sftp_mkdir', {
+  const replayMkdir = await call(281, 'file_mkdir', {
     host_id: secondHostId, operation_id: mkdirId, path: '/fixture/tree-93',
   });
   assert.equal(replayMkdir.value.status, 'completed');
-  const mkdirConflict = await call(282, 'sftp_mkdir', {
+  const mkdirConflict = await call(282, 'file_mkdir', {
     host_id: secondHostId, operation_id: mkdirId, path: '/fixture/tree-93/other',
   });
   assert.equal(mkdirConflict.value.error, 'receipt_conflict');
   assert.equal((await readFile(authLog, 'utf8')).match(/sftp-mkdir:\/fixture\/tree-93\n/g)?.length ?? 0, 1,
     'same-id replay and argument conflicts must not create the directory again');
 
-  const childFile = await call(283, 'sftp_write_text', {
+  const childFile = await call(283, 'file_write_text', {
     host_id: secondHostId, operation_id: 'a93a93a9-93a9-493a-893a-93a93a93a93a',
     path: '/fixture/tree-93/child/note.txt', text: 'kept', overwrite: false,
   });
   assert.equal(childFile.value.status, 'completed', JSON.stringify(childFile));
-  const deleteTree = await call(284, 'sftp_delete', {
+  const deleteTree = await call(284, 'file_delete', {
     host_id: secondHostId, operation_id: 'efefefef-efef-4fef-8fef-efefefefefef',
     path: '/fixture/tree-93/child', kind: 'empty_directory', confirm: true,
   });
   assert.equal(deleteTree.value.status, 'failed', JSON.stringify(deleteTree));
   assert.equal(deleteTree.value.error, 'conflict');
-  const keptNote = await call(285, 'sftp_read_text', { host_id: secondHostId, path: '/fixture/tree-93/child/note.txt' });
+  const keptNote = await call(285, 'file_read_text', { host_id: secondHostId, path: '/fixture/tree-93/child/note.txt' });
   assert.equal(keptNote.value.text, 'kept');
-  const deleteFileAsDir = await call(286, 'sftp_delete', {
+  const deleteFileAsDir = await call(286, 'file_delete', {
     host_id: secondHostId, operation_id: 'f0f0f0f0-f0f0-40f0-80f0-f0f0f0f0f0f0',
     path: '/fixture/tree-93/child/note.txt', kind: 'empty_directory', confirm: true,
   });
   assert.equal(deleteFileAsDir.value.error, 'conflict');
   const deleteNoteId = 'f1f1f1f1-f1f1-41f1-81f1-f1f1f1f1f1f1';
-  const deletedNote = await call(287, 'sftp_delete', {
+  const deletedNote = await call(287, 'file_delete', {
     host_id: secondHostId, operation_id: deleteNoteId,
     path: '/fixture/tree-93/child/note.txt', kind: 'file', confirm: true,
   });
@@ -1415,26 +1415,26 @@ try {
   });
   assert.equal(noteReceipt?.digest, expectedDeleteDigest.digest);
   assert.doesNotMatch(noteReceipt?.result_json ?? '', /kept|note\.txt|synthetic-password|privateKey|ENCRYPTION_KEY/);
-  const replayDelete = await call(288, 'sftp_delete', {
+  const replayDelete = await call(288, 'file_delete', {
     host_id: secondHostId, operation_id: deleteNoteId,
     path: '/fixture/tree-93/child/note.txt', kind: 'file', confirm: true,
   });
   assert.equal(replayDelete.value.status, 'completed');
-  const deleteKindConflict = await call(289, 'sftp_delete', {
+  const deleteKindConflict = await call(289, 'file_delete', {
     host_id: secondHostId, operation_id: deleteNoteId,
     path: '/fixture/tree-93/child/note.txt', kind: 'empty_directory', confirm: true,
   });
   assert.equal(deleteKindConflict.value.error, 'receipt_conflict');
   assert.equal((await readFile(authLog, 'utf8')).match(/sftp-delete:file:\/fixture\/tree-93\/child\/note.txt/g)?.length ?? 0, 1,
     'same-id replay and argument conflicts must not delete again');
-  const deletedChild = await call(290, 'sftp_delete', {
+  const deletedChild = await call(290, 'file_delete', {
     host_id: secondHostId, operation_id: 'f2f2f2f2-f2f2-42f2-82f2-f2f2f2f2f2f2',
     path: '/fixture/tree-93/child', kind: 'empty_directory', confirm: true,
   });
   assert.equal(deletedChild.value.status, 'completed', JSON.stringify(deletedChild));
-  const childGone = await call(291, 'sftp_list', { host_id: secondHostId, path: '/fixture/tree-93/child' });
+  const childGone = await call(291, 'file_list', { host_id: secondHostId, path: '/fixture/tree-93/child' });
   assert.equal(childGone.value.error, 'host_unreachable');
-  const wrongPinRename = await call(292, 'sftp_rename', {
+  const wrongPinRename = await call(292, 'file_move', {
     host_id: wrongPinHostId, operation_id: 'f3f3f3f3-f3f3-43f3-83f3-f3f3f3f3f3f3',
     old_path: renameDestination, new_path: '/fixture/nope-93.txt', overwrite: false,
   });
@@ -1442,7 +1442,7 @@ try {
   assert.doesNotMatch(JSON.stringify(wrongPinRename), /synthetic-password|privateKey|ENCRYPTION_KEY/);
 
   const stallRenameId = 'f4f4f4f4-f4f4-44f4-84f4-f4f4f4f4f4f4';
-  const stalledRename = call(293, 'sftp_rename', {
+  const stalledRename = call(293, 'file_move', {
     host_id: secondHostId, operation_id: stallRenameId,
     old_path: '/fixture/stall-rename', new_path: '/fixture/stall-rename-dst', overwrite: false, timeout_ms: 1_000,
   });
@@ -1463,7 +1463,7 @@ try {
   await clearPtyResets();
   const releasedRename = await fixtureRequest<{ perHost: Record<string, number> }>('lease-count', {});
   assert.equal(releasedRename?.perHost[secondHostId] ?? 0, 0, 'a timed-out SFTP rename releases the connection lease');
-  const stallRenameReplay = await call(294, 'sftp_rename', {
+  const stallRenameReplay = await call(294, 'file_move', {
     host_id: secondHostId, operation_id: stallRenameId,
     old_path: '/fixture/stall-rename', new_path: '/fixture/stall-rename-dst', overwrite: false, timeout_ms: 1_000,
   });
@@ -1471,13 +1471,13 @@ try {
   assert.equal((await readFile(authLog, 'utf8')).match(/sftp-stall-rename:/g)?.length ?? 0, 1, 'replaying an uncertain rename must not open SFTP again');
 
   const dropRenameId = 'f5f5f5f5-f5f5-45f5-85f5-f5f5f5f5f5f5';
-  const droppedRename = await call(295, 'sftp_rename', {
+  const droppedRename = await call(295, 'file_move', {
     host_id: secondHostId, operation_id: dropRenameId,
     old_path: '/fixture/drop-rename', new_path: '/fixture/drop-rename-dst', overwrite: false, timeout_ms: 10_000,
   });
   assert.equal(droppedRename.value.status, 'unknown', JSON.stringify(droppedRename));
   assert.equal(droppedRename.value.partial_write, undefined);
-  const droppedReplay = await call(296, 'sftp_rename', {
+  const droppedReplay = await call(296, 'file_move', {
     host_id: secondHostId, operation_id: dropRenameId,
     old_path: '/fixture/drop-rename', new_path: '/fixture/drop-rename-dst', overwrite: false,
   });
@@ -1486,7 +1486,7 @@ try {
 
   await control('PUT', 'terminal-update-failure');
   const commitRenameId = 'f6f6f6f6-f6f6-46f6-86f6-f6f6f6f6f6f6';
-  const commitRename = await call(297, 'sftp_rename', {
+  const commitRename = await call(297, 'file_move', {
     host_id: secondHostId, operation_id: commitRenameId,
     old_path: renameDestination, new_path: '/fixture/commit-rename-93.txt', overwrite: false,
   });
@@ -1494,12 +1494,12 @@ try {
   assert.equal(commitRename.value.partial_write, undefined);
   assert.doesNotMatch(JSON.stringify(commitRename), /synthetic-password|privateKey|ENCRYPTION_KEY/);
   await control('DELETE', 'terminal-update-failure');
-  const commitRenameReplay = await call(298, 'sftp_rename', {
+  const commitRenameReplay = await call(298, 'file_move', {
     host_id: secondHostId, operation_id: commitRenameId,
     old_path: renameDestination, new_path: '/fixture/commit-rename-93.txt', overwrite: false,
   });
   assert.equal(commitRenameReplay.value.status, 'unknown');
-  const commitRenamed = await call(299, 'sftp_read_text', { host_id: secondHostId, path: '/fixture/commit-rename-93.txt' });
+  const commitRenamed = await call(299, 'file_read_text', { host_id: secondHostId, path: '/fixture/commit-rename-93.txt' });
   assert.equal(commitRenamed.value.text, 'second', 'the remote rename happened once before the receipt failure');
   const commitRenameReceipt = await fixtureRequest('read-receipt', { operationId: commitRenameId });
   assert.doesNotMatch(commitRenameReceipt?.result_json ?? '', /second|synthetic-password|privateKey/);
@@ -1519,7 +1519,7 @@ try {
   await mutateHost({ action: 'insert', hostId: fourthHostId, accountId, encryptedPayload: await encryptedHost(fourthHostId, 'synthetic-password-do-not-use') });
   const authsBeforeSlowDns = await passwordAuths();
   const slowStarted = Date.now();
-  const slowDns = await call(400, 'sftp_list', { host_id: slowHostId, path: '/fixture', timeout_ms: 1_000 });
+  const slowDns = await call(400, 'file_list', { host_id: slowHostId, path: '/fixture', timeout_ms: 1_000 });
   const slowElapsed = Date.now() - slowStarted;
   assert.equal(slowDns.value.error, 'host_unreachable', JSON.stringify(slowDns));
   assert.ok(slowElapsed < 3_000, `SFTP setup must be inside the 1s deadline, took ${slowElapsed}ms`);
@@ -1541,12 +1541,12 @@ try {
   }
   assert.equal(hostLeases, 0, 'the stalled shell open releases its lease when the shell deadline expires');
   const mixedSession = sessionStart(401, '1d1d1d1d-1d1d-41d1-81d1-1d1d1d1d1d1d', undefined, secondHostId);
-  const mixedList = call(402, 'sftp_list', { host_id: secondHostId, path: '/fixture/stall', timeout_ms: 4_000 });
-  const mixedWrite = call(403, 'sftp_write_text', {
+  const mixedList = call(402, 'file_list', { host_id: secondHostId, path: '/fixture/stall', timeout_ms: 4_000 });
+  const mixedWrite = call(403, 'file_write_text', {
     host_id: thirdHostId, operation_id: '1e1e1e1e-1e1e-41e1-81e1-1e1e1e1e1e1e',
     path: '/fixture/stall-write', text: 'hold', overwrite: true, timeout_ms: 4_000,
   });
-  const mixedRead = call(404, 'sftp_list', { host_id: thirdHostId, path: '/fixture/stall', timeout_ms: 4_000 });
+  const mixedRead = call(404, 'file_list', { host_id: thirdHostId, path: '/fixture/stall', timeout_ms: 4_000 });
   for (const pending of [mixedSession, mixedList, mixedWrite, mixedRead]) pending.catch(() => undefined);
   let mixedLeases: { total: number; perHost: Record<string, number> } | undefined;
   for (let attempt = 0; attempt < 50; attempt++) {
@@ -1576,7 +1576,7 @@ try {
   const [mixedExec, mixedStart, mixedMkdir] = await Promise.all([
     exec(405, '1f1f1f1f-1f1f-41f1-81f1-1f1f1f1f1f1f', 'fixture-output', 10_000, secondHostId),
     sessionStart(406, '2a2a2a2a-2a2a-42a2-82a2-2a2a2a2a2a2a', undefined, fourthHostId),
-    call(407, 'sftp_mkdir', { host_id: thirdHostId, operation_id: '2b2b2b2b-2b2b-42b2-82b2-2b2b2b2b2b2b', path: '/fixture/mixed-dir' }),
+    call(407, 'file_mkdir', { host_id: thirdHostId, operation_id: '2b2b2b2b-2b2b-42b2-82b2-2b2b2b2b2b2b', path: '/fixture/mixed-dir' }),
   ]);
   assert.ok(Date.now() - rejectStarted < 1_000, 'over quota rejects without waiting for an in-flight connection');
   assert.equal(mixedExec.value.error, 'capacity_reached');
@@ -1608,7 +1608,7 @@ try {
   const closedBeforeRecovery = (await readFile(authLog, 'utf8')).match(/connection-closed:/g)?.length ?? 0;
   const recovered = await exec(413, '2d2d2d2d-2d2d-42d2-82d2-2d2d2d2d2d2d', 'fixture-output', 10_000, secondHostId);
   assert.equal(recovered.value.status, 'completed', JSON.stringify(recovered));
-  const failedRead = await call(414, 'sftp_read_text', { host_id: secondHostId, path: '/fixture/missing-mixed.txt' });
+  const failedRead = await call(414, 'file_read_text', { host_id: secondHostId, path: '/fixture/missing-mixed.txt' });
   assert.equal(failedRead.value.error, 'host_unreachable');
   let closedAfterFailure = false;
   for (let attempt = 0; attempt < 40; attempt++) {

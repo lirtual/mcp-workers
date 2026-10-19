@@ -8,17 +8,20 @@ const call = (name: string, args: Record<string, unknown> = {}) =>
 test('G5 default broker scope admits benign metadata and specific exec/sftp reads', () => {
   for (const name of ['list_hosts', 'get_host', 'get_operation_status']) assert.equal(allowed(call(name)), true);
   for (const command of ['pwd', 'printf G5_SSH_OK']) assert.equal(allowed(call('ssh_exec', { command })), true);
-  assert.equal(allowed(call('sftp_list', { path: '/etc' })), true);
-  assert.equal(allowed(call('sftp_read_text', { path: '/etc/hostname' })), true);
+  assert.equal(allowed(call('file_list', { path: '/etc' })), true);
+  assert.equal(allowed(call('file_read_text', { path: '/etc/hostname' })), true);
 });
 test('denies shell arbitrary execution, PTY, file writes/deletes, batch RPC and malformed inputs', () => {
   for (const command of ['whoami', 'pwd; id', 'echo hello', 'printf G5_SSH_OK; touch /tmp/x']) {
     assert.equal(allowed(call('ssh_exec', { command })), false);
   }
-  for (const name of ['ssh_session_start', 'ssh_session_input', 'sftp_write_text', 'sftp_mkdir',
-    'sftp_rename', 'sftp_delete', 'unknown_tool']) assert.equal(allowed(call(name)), false);
-  assert.equal(allowed(call('sftp_list', { path: '/' })), false);
-  assert.equal(allowed(call('sftp_read_text', { path: '/etc/shadow' })), false);
+  for (const name of ['ssh_session_start', 'ssh_session_send', 'file_write_text', 'file_mkdir',
+    'file_move', 'file_delete', 'unknown_tool']) assert.equal(allowed(call(name)), false);
+  assert.equal(allowed(call('file_list', { path: '/' })), false);
+  assert.equal(allowed(call('file_read_text', { path: '/etc/shadow' })), false);
+  for (const obsolete of ['sftp_list', 'sftp_read_text', 'sftp_write_text', 'sftp_rename', 'sftp_delete', 'sftp_mkdir', 'ssh_session_input', 'ssh_session_output']) {
+    assert.equal(allowed(call(obsolete, { path: '/etc' })), false);
+  }
   assert.equal(allowed([call('ssh_exec', { command: 'pwd' })]), false);
   assert.equal(allowed(null), false);
   assert.equal(allowed({ method: 'tools/call', params: { name: 'ssh_exec' } }), false);

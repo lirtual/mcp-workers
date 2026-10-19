@@ -104,7 +104,7 @@ test('the authenticated MCP boundary rejects commands over 16 KiB UTF-8 before D
       accept: 'application/json, text/event-stream',
     },
     body: JSON.stringify({ jsonrpc: '2.0', id: 45, method: 'tools/call', params: {
-      name: 'sftp_read_text', arguments: { host_id: fixture.hostId, path: '😀'.repeat(1025) },
+      name: 'file_read_text', arguments: { host_id: fixture.hostId, path: '😀'.repeat(1025) },
     } }),
   }), env);
   assert.equal(sftpResponse.status, 200);
@@ -121,7 +121,7 @@ test('the authenticated MCP boundary rejects commands over 16 KiB UTF-8 before D
       accept: 'application/json, text/event-stream',
     },
     body: JSON.stringify({ jsonrpc: '2.0', id: 46, method: 'tools/call', params: {
-      name: 'sftp_write_text', arguments: {
+      name: 'file_write_text', arguments: {
         host_id: fixture.hostId, operation_id: '33333333-3333-4333-8333-333333333333',
         path: '/fixture/out.txt', text: 'x'.repeat(64 * 1024 + 1), overwrite: false,
       },
@@ -141,7 +141,7 @@ test('the authenticated MCP boundary rejects commands over 16 KiB UTF-8 before D
       accept: 'application/json, text/event-stream',
     },
     body: JSON.stringify({ jsonrpc: '2.0', id: 47, method: 'tools/call', params: {
-      name: 'sftp_write_text', arguments: {
+      name: 'file_write_text', arguments: {
         host_id: fixture.hostId, operation_id: '33333333-3333-4333-8333-333333333333', path: '/fixture/out.txt', text: 'x',
       },
     } }),
@@ -158,7 +158,7 @@ test('the authenticated MCP boundary rejects commands over 16 KiB UTF-8 before D
       accept: 'application/json, text/event-stream',
     },
     body: JSON.stringify({ jsonrpc: '2.0', id: 48, method: 'tools/call', params: {
-      name: 'sftp_rename', arguments: {
+      name: 'file_move', arguments: {
         host_id: fixture.hostId, operation_id: '33333333-3333-4333-8333-333333333333',
         old_path: '😀'.repeat(1025), new_path: '/fixture/b.txt', overwrite: false,
       },
@@ -175,7 +175,7 @@ test('the authenticated MCP boundary rejects commands over 16 KiB UTF-8 before D
       accept: 'application/json, text/event-stream',
     },
     body: JSON.stringify({ jsonrpc: '2.0', id: 49, method: 'tools/call', params: {
-      name: 'sftp_delete', arguments: {
+      name: 'file_delete', arguments: {
         host_id: fixture.hostId, operation_id: '33333333-3333-4333-8333-333333333333',
         path: '/fixture/a.txt', kind: 'file', recursive: true,
       },
@@ -269,7 +269,7 @@ test('the real /mcp outer handler rejects missing/bad bearer and Origin before a
   assert.ok(payload, eventStream);
   const response = JSON.parse(payload) as { result?: { tools?: Array<{ name: string }> } };
   assert.deepEqual(response.result?.tools?.map(tool => tool.name), [
-    'list_hosts', 'get_host', 'ssh_exec', 'sftp_list', 'sftp_read_text', 'sftp_write_text', 'sftp_rename', 'sftp_delete', 'sftp_mkdir', 'get_operation_status', 'ssh_session_start', 'ssh_session_input', 'ssh_session_stop', 'ssh_session_output', 'ssh_session_status',
+    'list_hosts', 'get_host', 'ssh_exec', 'file_list', 'file_read_text', 'file_write_text', 'file_move', 'file_delete', 'file_mkdir', 'get_operation_status', 'ssh_session_start', 'ssh_session_send', 'ssh_session_stop', 'ssh_session_read', 'ssh_session_status',
   ]);
   const callTool = async (id: number, name: string, args: Record<string, unknown>) => {
     const result = await worker.fetch(new Request('https://worker.example/mcp', {

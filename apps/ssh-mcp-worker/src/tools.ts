@@ -90,7 +90,7 @@ function failure(error: unknown) {
 export function buildMcpServer(env: Env): McpServer {
   const server = new McpServer({ name: 'ssh-mcp-worker', version: '0.1.0' }, {
     capabilities: { tools: {} },
-    instructions: 'Discover saved EdgeSSH hosts and run bounded SSH commands, managed shells, or short SFTP directory, UTF-8 read, explicit UTF-8 write, rename, delete, and single-level mkdir calls. Credentials are never returned. SFTP reads do not keep a shell open. sftp_write_text admits one operation id before creating or explicitly overwriting a file of at most 64 KiB and does not promise that every SFTP server applies that write atomically. sftp_rename requires old_path, new_path, overwrite, and one operation id; it does not promise a universally atomic rename. sftp_delete requires kind file or empty_directory and confirm true, and it never deletes recursively. sftp_mkdir creates only the named directory. A managed shell can outlive one call, but output polling does not extend it and a lost shell is not reconnected. Interactive input is admitted once per operation id and is never rewritten. Stopping a shell closes only that owned channel and does not promise remote descendants were reaped.',
+    instructions: 'Discover saved EdgeSSH hosts and run bounded SSH commands, managed shells, or short SFTP directory, UTF-8 read, explicit UTF-8 write, rename, delete, and single-level mkdir calls. Credentials are never returned. SFTP reads do not keep a shell open. file_write_text admits one operation id before creating or explicitly overwriting a file of at most 64 KiB and does not promise that every SFTP server applies that write atomically. file_move requires old_path, new_path, overwrite, and one operation id; it does not promise a universally atomic rename. file_delete requires kind file or empty_directory and confirm true, and it never deletes recursively. file_mkdir creates only the named directory. A managed shell can outlive one call, but output polling does not extend it and a lost shell is not reconnected. Interactive input is admitted once per operation id and is never rewritten. Stopping a shell closes only that owned channel and does not promise remote descendants were reaped.',
   });
   server.registerTool('list_hosts', {
     description: 'List saved hosts with bounded pagination and sanitized SSH trust readiness.',
@@ -133,28 +133,28 @@ export function buildMcpServer(env: Env): McpServer {
     path: z.string().min(1),
     timeout_ms: z.number().int().min(1_000).max(60_000).optional(),
   }).strict();
-  const runSftp = async (name: 'sftp_list' | 'sftp_read_text', hostId: string, path: string, timeoutMs: number) => {
+  const runSftp = async (name: 'file_list' | 'file_read_text', hostId: string, path: string, timeoutMs: number) => {
     const invalid = validSftpInput(hostId, path, timeoutMs);
     if (invalid) return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify({ error: invalid }) }] };
     try {
       const stub = env.SSH_OPERATIONS.getByName('single-admin-operations');
       const request = { hostId, path, timeoutMs };
-      return name === 'sftp_list' ? fitSftpList(await stub.listDirectory(request)) : fitSftpRead(await stub.readText(request));
+      return name === 'file_list' ? fitSftpList(await stub.listDirectory(request)) : fitSftpRead(await stub.readText(request));
     } catch {
       return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify({ error: 'receipt_store_unavailable' }) }] };
     }
   };
-  server.registerTool('sftp_list', {
+  server.registerTool('file_list', {
     description: 'List at most 100 entries in one remote directory over a short SSH connection. The connection closes when the call finishes and no mutation receipt is written.',
     inputSchema: sftpSchema,
     annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
-  }, async ({ host_id, path, timeout_ms }) => runSftp('sftp_list', host_id, path, timeout_ms ?? 30_000));
-  server.registerTool('sftp_read_text', {
+  }, async ({ host_id, path, timeout_ms }) => runSftp('file_list', host_id, path, timeout_ms ?? 30_000));
+  server.registerTool('file_read_text', {
     description: 'Read one remote UTF-8 text file up to 64 KiB over a short SSH connection. Oversized, non-UTF-8, or over-budget content is refused without a file body. The connection closes when the call finishes.',
     inputSchema: sftpSchema,
     annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
-  }, async ({ host_id, path, timeout_ms }) => runSftp('sftp_read_text', host_id, path, timeout_ms ?? 30_000));
-  server.registerTool('sftp_write_text', {
+  }, async ({ host_id, path, timeout_ms }) => runSftp('file_read_text', host_id, path, timeout_ms ?? 30_000));
+  server.registerTool('file_write_text', {
     description: 'Create or explicitly overwrite one remote UTF-8 file of at most 64 KiB. overwrite is required. The same operation id is not written twice; a changed path, text, or overwrite conflicts. A disconnect, timeout, or receipt failure after the write starts is unknown and may be a partial write. The result does not include the file text, and not every SFTP server applies the write atomically. The connection closes when the call finishes.',
     inputSchema: z.object({
       host_id: z.string().uuid(),
@@ -182,8 +182,8 @@ export function buildMcpServer(env: Env): McpServer {
     }
   });
   const rejectedArgs = (error: string) => ({ isError: true, content: [{ type: 'text' as const, text: JSON.stringify({ error }) }] });
-  server.registerTool('sftp_rename', {
-    description: 'Rename one remote file or directory. old_path, new_path, and overwrite are required. Each path must be at most 4 KiB of UTF-8. The same operation id is not renamed twice; changed paths or overwrite conflict. A disconnect or timeout after the rename starts is unknown and is not replayed. This does not promise that every SFTP server renames atomically. The connection closes when the call finishes.',
+  server.registerTool('file_move', {
+    description: 'Move or rename one remote file or directory. old_path, new_path, and overwrite are required. Each path must be at most 4 KiB of UTF-8. The same operation id is not renamed twice; changed paths or overwrite conflict. A disconnect or timeout after the rename starts is unknown and is not replayed. This does not promise that every SFTP server renames atomically. The connection closes when the call finishes.',
     inputSchema: z.object({
       host_id: z.string().uuid(),
       operation_id: z.string().uuid(),
@@ -207,7 +207,7 @@ export function buildMcpServer(env: Env): McpServer {
       return rejectedArgs('receipt_store_unavailable');
     }
   });
-  server.registerTool('sftp_delete', {
+  server.registerTool('file_delete', {
     description: 'Delete one remote file or one empty directory. kind must be file or empty_directory and confirm must be true. Recursive delete is rejected. The same operation id is not deleted twice; a changed path or kind conflicts. A disconnect or timeout after the delete starts is unknown and is not replayed or repaired. The connection closes when the call finishes.',
     inputSchema: z.object({
       host_id: z.string().uuid(),
@@ -233,7 +233,7 @@ export function buildMcpServer(env: Env): McpServer {
       return rejectedArgs('receipt_store_unavailable');
     }
   });
-  server.registerTool('sftp_mkdir', {
+  server.registerTool('file_mkdir', {
     description: 'Create one remote directory and no parents. An existing file or directory returns conflict. The same operation id is not created twice; a changed path conflicts. A disconnect or timeout after the create starts is unknown and is not replayed. The connection closes when the call finishes.',
     inputSchema: z.object({
       host_id: z.string().uuid(),
@@ -286,7 +286,7 @@ export function buildMcpServer(env: Env): McpServer {
       return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify({ error: 'receipt_store_unavailable' }) }] };
     }
   });
-  server.registerTool('ssh_session_input', {
+  server.registerTool('ssh_session_send', {
     description: 'Send one UTF-8 PTY batch of at most 16 KiB to a live owned shell. The same operation id is never written twice; a changed batch conflicts. Uncertain bytes are not replayed.',
     inputSchema: z.object({
       session_id: z.string().uuid(),
@@ -321,7 +321,7 @@ export function buildMcpServer(env: Env): McpServer {
       return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify({ error: 'receipt_store_unavailable' }) }] };
     }
   });
-  server.registerTool('ssh_session_output', {
+  server.registerTool('ssh_session_read', {
     description: 'Read at most 64 KiB of retained PTY output. Polling does not extend the session idle deadline or open a connection.',
     inputSchema: z.object({
       session_id: z.string().uuid(),
