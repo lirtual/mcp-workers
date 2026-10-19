@@ -193,3 +193,17 @@ test("SSH production release requires Broker service, own DO, and least-privileg
   assert.throws(() => verifyBindings(worker, settings, [{ name: "MCP_ACCESS_TOKEN" }]),
     /Secret missing/);
 });
+
+test("manual release selects GitHub Environment directly from the allowlisted Worker name", () => {
+  const workflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+  assert.ok(workflow.includes("      name: ${{ inputs.worker }}"),
+    "selected Worker must resolve the same-named GitHub Environment");
+  assert.doesNotMatch(workflow, /WORKER_CONFIG_SCOPE/,
+    "no duplicated manually configured Environment name marker");
+  assert.match(workflow, /github\.event_name == 'workflow_dispatch'/,
+    "only manually dispatched workflow can publish");
+  assert.match(workflow, /github\.ref == 'refs\/heads\/main'/,
+    "only main branch may publish");
+  assert.match(workflow, /Stage bootstrap Secrets for a missing Worker/,
+    "missing Worker must still pass required secret validation");
+});
