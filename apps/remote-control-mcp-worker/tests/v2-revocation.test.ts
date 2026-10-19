@@ -35,7 +35,7 @@ function setup() {
   const closes = new Map<string, Array<{ code: number; reason: string }>>();
   const socket = (device_id: string, epoch: string) => ({
     readyState: WebSocket.OPEN,
-    deserializeAttachment: () => ({ device_id, epoch }),
+    deserializeAttachment: () => ({ device_id, epoch, last_auth_check_at: Date.now() - 60_000 }),
     serializeAttachment() { /* mock Hibernation checkpoint */ },
     close(code: number, reason: string) {
       closes.set(device_id, [...(closes.get(device_id) ?? []), { code, reason }]);

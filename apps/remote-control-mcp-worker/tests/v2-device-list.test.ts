@@ -19,7 +19,7 @@ test("list_devices requires Portal bearer and reports only current, approved WSS
   rows.set("session:epoch:" + staleId, "new-epoch");
   const socket = (id: string, epoch: string): WebSocket => ({
     readyState: WebSocket.OPEN,
-    deserializeAttachment() { return { device_id: id, epoch }; },
+    deserializeAttachment() { return { device_id: id, epoch, last_auth_check_at: Date.now() - 1_000 }; },
   }) as unknown as WebSocket;
   const sockets = new Map([
     ["device:" + onlineId, [socket(onlineId, "old-epoch"), socket(onlineId, "new-epoch")]],
@@ -88,6 +88,45 @@ test("list_devices requires Portal bearer and reports only current, approved WSS
     body: JSON.stringify({ jsonrpc: "2.0", id: 6, method: "tools/list" }),
   }), env);
   assert.equal((await tools.json() as {result:{tools:Array<{name:string}>}}).result.tools.some(t=>t.name==="list_devices"),true);
+});
+
+test("silent network partition makes an OPEN socket offline after the server auth lease", async () => {
+  const id = randomUUID();
+  const rows = new Map<string, unknown>([
+    ["device:" + id, { device_id: id, name: "partitioned", revoked: false }],
+    ["session:epoch:" + id, "epoch-1"],
+  ]);
+  let lastAuth: number | undefined = Date.now();
+  const fakeSocket = {
+    readyState: WebSocket.OPEN, // Blackholed transport: no close event arrives.
+    deserializeAttachment: () => ({ device_id: id, epoch: "epoch-1", last_auth_check_at: lastAuth }),
+  };
+  const owner = new V2OwnerCoordinator({
+    storage: {
+      get: async (key: string) => rows.get(key),
+      list: async ({ prefix }: { prefix: string }) => new Map([...rows].filter(([key]) => key.startsWith(prefix))),
+    },
+    getWebSockets: () => [fakeSocket],
+  } as unknown as DurableObjectState);
+  const status = async () => {
+    const response = await owner.fetch(new Request("https://v2.internal/devices", {
+      method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+    }));
+    assert.equal(response.status, 200);
+    const entries = await response.json() as Array<{ status: string }>;
+    return entries[0]?.status;
+  };
+  assert.equal(await status(), "online", "fresh signed session should be selectable");
+  lastAuth = Date.now() - 15 * 60_000;
+  assert.equal(await status(), "online", "the existing 15-minute auth probe has room to refresh");
+  lastAuth = Date.now() - 17 * 60_000;
+  assert.equal(await status(), "offline", "stale OPEN socket must not remain indefinitely online");
+  lastAuth = Date.now() + 60_000;
+  assert.equal(await status(), "offline", "future/corrupt timestamps must fail closed");
+  lastAuth = undefined;
+  assert.equal(await status(), "offline", "old attachments without a verified timestamp fail closed");
+  lastAuth = Date.now();
+  assert.equal(await status(), "online", "a fresh authenticated epoch can recover without re-pairing");
 });
 
 test("v2 Preview lists per-device Shell and files but never implicitly routes to v1", async () => {
@@ -204,11 +243,11 @@ test("WSL2 distro shutdown is offline after WSS close; restored signed epoch can
   let wslReady: number = WebSocket.OPEN;
   const wslSocket = (epoch: string) => ({
     get readyState() { return wslReady; },
-    deserializeAttachment: () => ({ device_id: id, epoch }),
+    deserializeAttachment: () => ({ device_id: id, epoch, last_auth_check_at: Date.now() - 1_000 }),
   }) as unknown as WebSocket;
   const nativeSocket = ({
     readyState: WebSocket.OPEN,
-    deserializeAttachment: () => ({ device_id: other, epoch: "linux-epoch" }),
+    deserializeAttachment: () => ({ device_id: other, epoch: "linux-epoch", last_auth_check_at: Date.now() - 1_000 }),
   }) as unknown as WebSocket;
   const sockets = new Map<string, WebSocket[]>([
     ["device:" + id, [wslSocket("wsl-epoch-1")]],

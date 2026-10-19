@@ -214,7 +214,7 @@ export async function acceptAuthenticatedSocket(
   const client = pair[0], server = pair[1];
   try {
     state.acceptWebSocket(server, ["device:" + proof.device_id]);
-    server.serializeAttachment({ device_id: auth.device_id, epoch: auth.epoch });
+    server.serializeAttachment({ device_id: auth.device_id, epoch: auth.epoch, last_auth_check_at: Date.now() });
   } catch {
     // An accepted socket without a persisted Hibernation identity must never
     // remain live. Refuse the HTTP upgrade and close any accepted half with a
@@ -284,6 +284,11 @@ export async function handleIdleSocketMessage(state: DurableObjectState, socket:
   }
 }
 
+// The Agent sends a persisted auth check every 15 min. A blackholed TCP/WebSocket
+// can remain OPEN at Cloudflare long after its Agent has disconnected. Bound the
+// observable status without waking a hibernating DO or adding a timer.
+const ONLINE_AUTH_LEASE_MS = 16 * 60_000;
+
 /** Bounded, observational device status. No heartbeat, session mutation or secret disclosure. */
 export async function listApprovedDevices(state: DurableObjectState):
   Promise<{ status: number; body: object }> {
@@ -296,6 +301,7 @@ export async function listApprovedDevices(state: DurableObjectState):
         typeof device.name !== "string" || typeof device.revoked !== "boolean") continue;
     if (!deviceIsAuthorized(device)) continue; // Deleted/expired/legacy revoked rows are never selectable.
     let online = false;
+    const now = Date.now();
     // Socket attachments can survive DO Hibernation, while JS Map state cannot.
     // A socket alone does not establish current authority: check its stored epoch.
     const sockets = state.getWebSockets?.("device:" + device.device_id) ?? [];
@@ -303,9 +309,14 @@ export async function listApprovedDevices(state: DurableObjectState):
       const currentEpoch = await state.storage.get<string>("session:epoch:" + device.device_id);
       for (const socket of sockets) {
         try {
-          const attachment = socket.deserializeAttachment() as { device_id?: unknown; epoch?: unknown } | null;
+          const attachment = socket.deserializeAttachment() as {
+              device_id?: unknown; epoch?: unknown; last_auth_check_at?: unknown;
+            } | null;
+          const age = now - Number(attachment?.last_auth_check_at);
           if (socket.readyState === WebSocket.OPEN && currentEpoch &&
-              attachment?.device_id === device.device_id && attachment.epoch === currentEpoch) {
+              typeof attachment?.last_auth_check_at === "number" &&
+              Number.isFinite(age) && age >= 0 && age < ONLINE_AUTH_LEASE_MS &&
+              attachment.device_id === device.device_id && attachment.epoch === currentEpoch) {
             online = true;
             break;
           }
