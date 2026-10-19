@@ -27,8 +27,8 @@ test("reject multiline, excessive, or negative numeric configuration before Wran
 });
 
 test("IMA URL must be HTTPS and cannot contain userinfo, hashes or newlines", () => {
-  assert.deepEqual(collectWorkerVars("ima-mcp-worker", { IMA_BASE_URL: "https://ima.example.com/api" }),
-    ["IMA_BASE_URL:https://ima.example.com/api"]);
+  assert.deepEqual(collectWorkerVars("ima-mcp-worker", { CLIENT_ID: "ima-client-123", IMA_BASE_URL: "https://ima.example.com/api" }),
+    ["CLIENT_ID:ima-client-123", "IMA_BASE_URL:https://ima.example.com/api"]);
   for (const value of ["http://ima.example.com", "https://user:pass@ima.example.com",
     "https://ima.example.com/#frag", "https://ima.example.com/\nX"]) {
     assert.throws(() => collectWorkerVars("ima-mcp-worker", { IMA_BASE_URL: value }), /IMA_BASE_URL/);
