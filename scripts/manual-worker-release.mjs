@@ -47,28 +47,33 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
       Number(limiter.simple?.limit) === 120 && Number(limiter.simple?.period) === 60,
       "Database RATE_LIMITER binding/policy drift");
   }
-  const remoteLegacy = worker === "remote-control-mcp-worker" &&
-    options.mode === "preflight" && !!find("REMOTE_CONTROL_DEVICE", "vpc_service");
-  if (remoteLegacy) {
-    invariant(secretNames.has("REMOTE_CONTROL_DEVICE_TOKEN"),
-      "Legacy VPC rollback credential missing");
-    const id = find("REMOTE_CONTROL_DEVICE", "vpc_service")?.service_id;
-    invariant(typeof id === "string" && /^[a-fA-F0-9-]{36}$/.test(id),
-      "Legacy Remote VPC identity missing");
-  } else if (worker === "remote-control-mcp-worker") {
-    const owner = find("V2_OWNER", "durable_object_namespace");
-    invariant(typeof options.v2OwnerNamespaceId === "string" &&
-      owner?.namespace_id === options.v2OwnerNamespaceId,
-      "Production V2_OWNER must reference current Preview owner namespace");
-    invariant(find("REMOTE_CONTROL_V2_ONLY", "plain_text")?.text === "true",
-      "Production must be strictly v2-only");
-    invariant(!bindings.some(x => x.type === "vpc_service" || x.name === "REMOTE_CONTROL_DEVICE"),
-      "Production VPC binding must be removed");
+  if (worker === "remote-control-mcp-worker") {
+    const coordinator = find("DEVICE_COORDINATOR", "durable_object_namespace");
+    const previous = find("V2_OWNER", "durable_object_namespace");
+    const isPreflightPrevious = options.mode === "preflight" && !coordinator &&
+      (previous?.namespace_id === options.v2OwnerNamespaceId ||
+        !!find("REMOTE_CONTROL_DEVICE", "vpc_service"));
+    if (!isPreflightPrevious) {
+      invariant(coordinator?.class_name === "DeviceCoordinator" &&
+        typeof coordinator.namespace_id === "string" &&
+        coordinator.namespace_id !== options.v2OwnerNamespaceId,
+        "Production must have its own DeviceCoordinator namespace distinct from Preview");
+      invariant(!previous && !find("REMOTE_CONTROL_V2_ONLY", "plain_text") &&
+        !find("REMOTE_CONTROL_V2_PREVIEW_ONLY", "plain_text"),
+        "Production must not retain Preview binding or v1/v2 runtime switches");
+      invariant(!secretNames.has("REMOTE_CONTROL_DEVICE_TOKEN"),
+        "Legacy VPC device token must be removed after cutover");
+      invariant(!bindings.some(x => x.type === "vpc_service" ||
+        x.name === "REMOTE_CONTROL_DEVICE"), "Production VPC binding must be absent");
+    }
   }
   const allowed = new Set(worker === "ima-mcp-worker"
     ? ["IMA_IMAGE_REFRESH_SHARD"]
     : worker === "database-mcp-worker" ? ["RATE_LIMITER"]
-      : worker === "remote-control-mcp-worker" ? [remoteLegacy ? "REMOTE_CONTROL_DEVICE" : "V2_OWNER"] : []);
+      : worker === "remote-control-mcp-worker"
+        ? (options.mode === "preflight"
+          ? ["DEVICE_COORDINATOR", "V2_OWNER", "REMOTE_CONTROL_DEVICE"]
+          : ["DEVICE_COORDINATOR"]) : []);
   for (const item of bindings) {
     if (!["plain_text", "secret_text"].includes(item.type)) {
       invariant(allowed.has(item.name), "Unexpected production resource binding: " + item.name);
@@ -127,16 +132,17 @@ function readConfiguration(worker, content) {
       Number(b.simple?.period) === 60), "Source RATE_LIMITER policy changed");
   }
   if (worker === "remote-control-mcp-worker") {
-    invariant(conf.vars?.REMOTE_CONTROL_V2_ONLY === "true" &&
-      conf.vars?.REMOTE_CONTROL_V2_PREVIEW_ONLY === undefined &&
-      !conf.vpc_services && !conf.exports && conf.preview_urls === false,
-      "Production must be v2-only without VPC or new DO class exports");
+    invariant(!conf.vars?.REMOTE_CONTROL_V2_ONLY &&
+      !conf.vars?.REMOTE_CONTROL_V2_PREVIEW_ONLY &&
+      !conf.vpc_services && conf.preview_urls === false,
+      "Production must have no runtime mode switch or VPC");
     const bindings = conf.durable_objects?.bindings;
     invariant(Array.isArray(bindings) && bindings.length === 1 &&
-      bindings[0]?.name === "V2_OWNER" &&
-      bindings[0]?.class_name === "V2OwnerCoordinator" &&
-      bindings[0]?.script_name === "remote-control-v2-preview",
-      "Production must reference existing Preview DO owner, no new namespace");
+      bindings[0]?.name === "DEVICE_COORDINATOR" &&
+      bindings[0]?.class_name === "DeviceCoordinator" &&
+      !bindings[0]?.script_name &&
+      conf.exports?.DeviceCoordinator?.storage === "sqlite",
+      "Production must declare a local SQLite DeviceCoordinator");
   }
   return conf;
 }
