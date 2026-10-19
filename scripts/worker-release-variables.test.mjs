@@ -1,12 +1,34 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { collectWorkerVars, WORKER_VARIABLES } from "./worker-release-variables.mjs";
+import { collectWorkerVars, remoteControlInstallOrigin, WORKER_VARIABLES } from "./worker-release-variables.mjs";
+
+const remoteConfig = { routes: [
+  { pattern: "rca.lirtual.dpdns.org", custom_domain: true },
+] };
+
+test("Remote Control installer origin comes only from its configured Custom Domain", () => {
+  assert.equal(remoteControlInstallOrigin(remoteConfig), "https://rca.lirtual.dpdns.org");
+  assert.deepEqual(collectWorkerVars("remote-control-mcp-worker", {}, { config: remoteConfig }),
+    ["REMOTE_CONTROL_INSTALL_ORIGIN:https://rca.lirtual.dpdns.org"]);
+  assert.throws(() => collectWorkerVars("remote-control-mcp-worker", {}), /Custom Domain/);
+  for (const bad of [
+    { routes: [] },
+    { routes: [{ pattern: "*.example.com", custom_domain: true }] },
+    { routes: [{ pattern: "foo.example.com/*", custom_domain: true }] },
+    { routes: [{ pattern: "example.com:8443", custom_domain: true }] },
+    { routes: [{ pattern: "foo.example.com", custom_domain: false }] },
+    { routes: [{ pattern: "foo.example.com", custom_domain: true }, { pattern: "bar.example.com", custom_domain: true }] },
+  ]) {
+    assert.throws(() => remoteControlInstallOrigin(bad), /Custom Domain|hostname/);
+  }
+});
 
 test("each Worker owns an explicit non-secret variable allowlist", () => {
   assert.deepEqual(WORKER_VARIABLES["ssh-mcp-worker"], []);
   assert.deepEqual(WORKER_VARIABLES["remote-control-mcp-worker"], []);
   assert.deepEqual(collectWorkerVars("remote-control-mcp-worker",
-    { MAX_ROWS: "100", REMOTE_CONTROL_V2_ONLY: "false" }), []);
+    { MAX_ROWS: "100", REMOTE_CONTROL_V2_ONLY: "false", REMOTE_CONTROL_INSTALL_ORIGIN: "https://evil.example" }, { config: remoteConfig }),
+    ["REMOTE_CONTROL_INSTALL_ORIGIN:https://rca.lirtual.dpdns.org"]);
   assert.throws(() => collectWorkerVars("not-a-worker", {}), /Unsupported/);
 });
 

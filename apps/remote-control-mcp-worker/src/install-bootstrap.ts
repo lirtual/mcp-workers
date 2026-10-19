@@ -64,11 +64,17 @@ export const REVIEWED_V018_RELEASE_PIN: InstallReleasePin = Object.freeze({
   arm64Sha256: "73f159fe722cec4e8d354160f8975532b4f07fe9538772b6ed64c95ae4576184",
 });
 const VERIFIED_PYTHON_FREE_RELEASE: InstallReleasePin = REVIEWED_V018_RELEASE_PIN;
-const APPROVED_ORIGINS = new Set([
-  "https://remote-control-v2-preview.aiyaya.workers.dev",
-  "https://remote-control-mcp-worker.aiyaya.workers.dev",
-  "https://rca.lirtual.dpdns.org",
-]);
+// Never trust request Host alone: the allowed origin is supplied by the
+// deployment's validated Custom Domain binding, not a source-code hostname.
+export function validInstallerOrigin(value: unknown): value is string {
+  if (typeof value !== "string" || value.length > 255) return false;
+  try {
+    const u = new URL(value);
+    return u.protocol === "https:" && !!u.hostname && !u.port &&
+      !u.username && !u.password && !u.search && !u.hash &&
+      u.pathname === "/" && u.origin === value;
+  } catch { return false; }
+}
 
 function validPin(p: InstallReleasePin): boolean {
   return p.pairingProtocol === "single-code-v1" &&
@@ -79,7 +85,7 @@ function validPin(p: InstallReleasePin): boolean {
 }
 
 export function renderAgentInstallShell(origin: string, p: InstallReleasePin): string {
-  if (!APPROVED_ORIGINS.has(origin) || !validPin(p))
+  if (!validInstallerOrigin(origin) || !validPin(p))
     throw new Error("Unapproved immutable Agent release or install origin");
   // All interpolation is restricted to validated ASCII pins and origin.
   return [
@@ -134,13 +140,16 @@ export function renderAgentInstallShell(origin: string, p: InstallReleasePin): s
 export function handleAgentInstallerRequest(
   request: Request,
   release: InstallReleasePin | null = VERIFIED_PYTHON_FREE_RELEASE,
+  trustedOrigin?: string,
 ): Response {
   const u = new URL(request.url);
   const headers = { "cache-control": "no-store", "x-content-type-options": "nosniff" };
   if (u.pathname !== "/install.sh") return new Response("Not found.\n", { status:404, headers });
   if (request.method !== "GET" || u.search || u.hash || request.headers.has("origin"))
     return new Response("Invalid installation request.\n", { status:405, headers });
-  if (u.protocol !== "https:" || !APPROVED_ORIGINS.has(u.origin) ||
+  if (!validInstallerOrigin(trustedOrigin))
+    return new Response("Installer origin is not configured.\n", { status:503, headers });
+  if (u.protocol !== "https:" || u.origin !== trustedOrigin ||
       (request.headers.has("host") && request.headers.get("host") !== u.host) ||
       request.headers.has("forwarded") || request.headers.has("x-forwarded-host"))
     return new Response("Unapproved Worker origin.\n", { status:403, headers });

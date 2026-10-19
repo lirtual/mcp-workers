@@ -4,13 +4,17 @@ import { test } from "node:test";
 import { handleAgentInstallerRequest, renderAgentInstallShell, REVIEWED_V012_RELEASE_PIN, REVIEWED_V014_RELEASE_PIN, REVIEWED_V016_RELEASE_PIN, REVIEWED_V017_RELEASE_PIN, REVIEWED_V018_RELEASE_PIN } from "../src/install-bootstrap.ts";
 
 const origin = "https://remote-control-v2-preview.aiyaya.workers.dev";
+function requestInstall(request: Request, release?: Parameters<typeof handleAgentInstallerRequest>[1],
+  configuredOrigin: string | undefined = origin) {
+  return handleAgentInstallerRequest(request, release, configuredOrigin);
+}
 const pin = Object.freeze({
   tag:"v0.1.4", commit:"a".repeat(40), pairingProtocol:"single-code-v1" as const,
   x64Sha256:"b".repeat(64), arm64Sha256:"c".repeat(64),
 });
 
 test("reviewed immutable single-code Worker installation route is enabled", async()=>{
-  const response=handleAgentInstallerRequest(new Request(origin+"/install.sh"));
+  const response=requestInstall(new Request(origin+"/install.sh"));
   assert.equal(response.status,200);
   assert.equal(response.headers.get("cache-control"),"no-store");
   assert.equal(REVIEWED_V018_RELEASE_PIN.commit,"4d58ffe33e560d6f5f1c375aacf02a774b51a6c0");
@@ -23,15 +27,24 @@ test("reviewed immutable single-code Worker installation route is enabled", asyn
 
 test("production custom hostname serves pinned installer with same-domain Agent endpoint",async()=>{
   const custom="https://rca.lirtual.dpdns.org";
-  const response=handleAgentInstallerRequest(new Request(custom+"/install.sh"));
+  const response=requestInstall(new Request(custom+"/install.sh"), undefined, custom);
   assert.equal(response.status,200);
   const shell=await response.text();
   assert.ok(shell.startsWith("#!/bin/sh"));
   assert.ok(shell.includes('--endpoint "https://rca.lirtual.dpdns.org/"'));
   assert.equal(shell.includes("--endpoint \"https://remote-control-v2-preview"),false);
-  assert.equal(handleAgentInstallerRequest(new Request("http://rca.lirtual.dpdns.org/install.sh")).status,403);
-  assert.equal(handleAgentInstallerRequest(new Request(custom+"/install.sh",{headers:{host:"evil.test"}})).status,403);
-  assert.throws(()=>renderAgentInstallShell("https://evil.lirtual.dpdns.org",pin),/Unapproved/);
+  assert.equal(requestInstall(new Request("http://rca.lirtual.dpdns.org/install.sh"), undefined, custom).status,403);
+  assert.equal(requestInstall(new Request(custom+"/install.sh",{headers:{host:"evil.test"}}), undefined, custom).status,403);
+  assert.equal(requestInstall(new Request("https://evil.lirtual.dpdns.org/install.sh"), undefined, custom).status,403);
+});
+
+test("unconfigured installer origin fails closed without trusting arbitrary Host",()=>{
+  assert.equal(handleAgentInstallerRequest(new Request(origin+"/install.sh"), undefined, undefined).status,503);
+  assert.equal(requestInstall(new Request(origin+"/install.sh"), undefined, "").status,503);
+  assert.equal(requestInstall(new Request(origin+"/install.sh"), undefined, "http://bad.example").status,503);
+  assert.equal(requestInstall(new Request(origin+"/install.sh"), undefined, "https://bad.example/path").status,503);
+  assert.equal(requestInstall(new Request(origin+"/install.sh"), undefined,
+    "https://unrelated.example").status,403);
 });
 
 test("historical two-code v0.1.2 cannot be served by single-code Worker even when explicitly passed",async()=>{
@@ -40,17 +53,17 @@ test("historical two-code v0.1.2 cannot be served by single-code Worker even whe
   assert.equal(reviewed.commit,"00aaf200107e42a1b7cede3db51f9a16edea5b09");
   assert.equal(reviewed.x64Sha256,"b895f8133a03a53f4eacbf4fa6d0619f59ad722064c5e2e8ca469f9fc637221a");
   assert.equal(reviewed.arm64Sha256,"ec16343f50b20b762b04a06039164c0f3a7f42bdeb597ab8e04ecc4b3e40724c");
-  const nowEnabled=handleAgentInstallerRequest(new Request(origin+"/install.sh"));
+  const nowEnabled=requestInstall(new Request(origin+"/install.sh"));
   assert.equal(nowEnabled.status,200);
   assert.equal(reviewed.pairingProtocol,"two-code-v1");
-  const incompatible=handleAgentInstallerRequest(new Request(origin+"/install.sh"),reviewed);
+  const incompatible=requestInstall(new Request(origin+"/install.sh"),reviewed);
   assert.equal(incompatible.status,503);
   assert.doesNotMatch(await incompatible.text(),/#!/);
   assert.throws(()=>renderAgentInstallShell(origin,reviewed),/Unapproved/);
 });
 
 test("future reviewed route binds its own validated origin and pins both ABIs", async()=>{
-  const response=handleAgentInstallerRequest(new Request(origin+"/install.sh"),pin);
+  const response=requestInstall(new Request(origin+"/install.sh"),pin);
   assert.equal(response.status,200);
   assert.match(response.headers.get("content-type")??"",/text\/x-shellscript/);
   const shell=await response.text();
@@ -99,7 +112,7 @@ test("fake Host, Forwarded, scheme, path, query and method are refused",async()=
     new Request(origin+"/install.sh",{headers:{"origin":"https://evil.example"}}),
   ];
   for(const request of bad){
-    const response=handleAgentInstallerRequest(request,pin);
+    const response=requestInstall(request,pin);
     assert.notEqual(response.status,200,request.url);
     assert.doesNotMatch(await response.text(),/#!/);
   }
@@ -115,5 +128,5 @@ test("untrusted pinned release metadata cannot interpolate shell commands",async
   for(const candidate of bad){
     assert.throws(()=>renderAgentInstallShell(origin,candidate),/Unapproved/);
   }
-  assert.throws(()=>renderAgentInstallShell("https://unknown.example",pin),/Unapproved/);
+  assert.throws(()=>renderAgentInstallShell("https://unknown.example/path",pin),/Unapproved/);
 });

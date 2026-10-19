@@ -1,7 +1,7 @@
 // Only explicitly supported GitHub Variables may override non-secret Worker vars.
 // The selected Worker is the sole target. Never forward the whole GitHub vars context.
-import { writeFile } from "node:fs/promises";
-import { resolve, sep } from "node:path";
+import { readFile, writeFile } from "node:fs/promises";
+import { join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const INTEGER_LIMITS = Object.freeze({
@@ -24,10 +24,30 @@ export const WORKER_VARIABLES = Object.freeze({
   "remote-control-mcp-worker": [],
 });
 
-export function collectWorkerVars(worker, env) {
+// The Wrangler Custom Domain is the one authoritative installation origin.
+// Deriving it removes duplicated hostnames in application code and GitHub vars.
+export function remoteControlInstallOrigin(config) {
+  const routes = config?.routes;
+  if (!Array.isArray(routes) || routes.length !== 1 ||
+      routes[0]?.custom_domain !== true ||
+      typeof routes[0]?.pattern !== "string") {
+    throw new Error("Remote Control requires exactly one Custom Domain");
+  }
+  const host = routes[0].pattern;
+  if (host.length > 253 ||
+      !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(host)) {
+    throw new Error("Invalid Remote Control Custom Domain hostname");
+  }
+  return "https://" + host;
+}
+
+export function collectWorkerVars(worker, env, options = {}) {
   const allowed = WORKER_VARIABLES[worker];
   if (!allowed) throw new Error("Unsupported Worker release target");
   const variables = [];
+  if (worker === "remote-control-mcp-worker") {
+    variables.push("REMOTE_CONTROL_INSTALL_ORIGIN:" + remoteControlInstallOrigin(options.config));
+  }
   for (const name of allowed) {
     const value = env[name];
     if (name === "CLIENT_ID" && worker === "ima-mcp-worker" &&
@@ -67,7 +87,11 @@ async function main() {
   if (!outputPath || !root || !resolve(outputPath).startsWith(resolve(root) + sep)) {
     throw new Error("Worker vars must be staged inside runner temporary directory");
   }
-  const flags = collectWorkerVars(worker, process.env);
+  // Source config drives the single trusted origin; no extra GitHub Variable is required.
+  const config = worker === "remote-control-mcp-worker"
+    ? JSON.parse((await readFile(join(process.cwd(), "apps", worker, "wrangler.jsonc"), "utf8"))
+      .replace(/^\s*\/\/.*$/gm, "")) : undefined;
+  const flags = collectWorkerVars(worker, process.env, { config });
   await writeFile(outputPath, flags.length ? flags.join("\n") + "\n" : "",
     { flag: "wx", mode: 0o600 });
   console.log("Selected Worker Variables validated: " + flags.length + " override(s)");
