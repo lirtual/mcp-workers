@@ -15,7 +15,7 @@ const INTEGER_LIMITS = Object.freeze({
 
 export const WORKER_VARIABLES = Object.freeze({
   "raindrop-mcp-worker": ["RAINDROP_RATE_LIMIT_MAX_RETRIES"],
-  "ima-mcp-worker": ["IMA_BASE_URL"],
+  "ima-mcp-worker": ["CLIENT_ID", "IMA_BASE_URL"],
   "database-mcp-worker": [
     "MAX_ROWS", "MAX_RESULT_BYTES", "MAX_SCHEMA_BYTES", "QUERY_TIMEOUT_MS",
     "MAX_WRITE_AFFECTED_ROWS",
