@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 
 export const BOOTSTRAP_SECRETS = Object.freeze({
   "raindrop-mcp-worker": ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN"],
-  "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "API_KEY", "CLIENT_ID"],
+  "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "API_KEY"],
   "database-mcp-worker": ["MCP_ACCESS_TOKEN", "DATABASE_CONFIG"],
   "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "MCP_BROKER_TOKEN"],
   "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
