@@ -8,6 +8,7 @@ type V2Env = Env & {
   V2_OWNER?: DurableObjectNamespace;
   DEVICE_COORDINATOR?: DurableObjectNamespace;
   REMOTE_CONTROL_V2_PREVIEW_ONLY?: string;
+  REMOTE_CONTROL_INSTALL_ORIGIN?: string;
 };
 function pairedOnly(env: Env): boolean {
   return Boolean((env as V2Env).DEVICE_COORDINATOR || (env as V2Env).V2_OWNER);
@@ -1049,7 +1050,7 @@ export default {
           status: 503, headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" },
         });
       }
-      return handleAgentInstallerRequest(request);
+      return handleAgentInstallerRequest(request, undefined, (env as V2Env).REMOTE_CONTROL_INSTALL_ORIGIN);
     }
     if (url.pathname.startsWith("/agent/connect/") && pendingOwner(env)) {
       const deviceId = url.pathname.slice("/agent/connect/".length);
