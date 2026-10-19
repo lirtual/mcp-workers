@@ -17,7 +17,7 @@ test('pinned public Agent staging selects existing Remote Control Worker compati
 });
 
 test('shared package and lockfile changes select every app, including ssh-mcp-worker', () => {
-  for (const file of ['packages/portal-auth/src/index.ts', 'pnpm-lock.yaml']) {
+  for (const file of ['packages/portal-auth/src/index.ts', 'pnpm-lock.yaml', 'scripts/worker-release-variables.mjs', 'scripts/bootstrap-worker-secrets.mjs']) {
     const selection = selectionDetails([file]);
     assert.ok(selection.apps.includes('ssh-mcp-worker'), file);
     assert.equal(selection.portalAuthChanged, file.startsWith('packages/portal-auth/'));

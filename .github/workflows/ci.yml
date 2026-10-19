@@ -88,7 +88,7 @@ jobs:
 
       - name: Check manual release safeguards offline
         if: steps.scope.outputs.apps != ''
-        run: node --test scripts/manual-worker-release.test.mjs scripts/bootstrap-worker-secrets.test.mjs
+        run: node --test scripts/manual-worker-release.test.mjs scripts/bootstrap-worker-secrets.test.mjs scripts/worker-release-variables.test.mjs
 
       - name: Check shared portal-auth package
         if: steps.scope.outputs.portal_auth_changed == 'true'
@@ -206,7 +206,10 @@ jobs:
            inputs.worker == 'ssh-mcp-worker' ||
            inputs.worker == 'remote-control-mcp-worker') }}
     runs-on: ubuntu-latest
-    environment: production
+    # A GitHub Environment is a Worker-scoped configuration namespace, not a
+    # staging/production selector. Only manual dispatch on main can deploy.
+    environment:
+      name: ${{ inputs.worker }}
     concurrency:
       group: worker-release-${{ inputs.worker }}
       cancel-in-progress: false
@@ -219,6 +222,19 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Require explicitly configured Worker scope
+        shell: bash
+        env:
+          WORKER_CONFIG_SCOPE: ${{ vars.WORKER_CONFIG_SCOPE }}
+        run: |
+          set -euo pipefail
+          # A missing Environment is silently auto-created by GitHub; this
+          # Worker-specific marker prevents deployment through an empty scope.
+          [[ "$WORKER_CONFIG_SCOPE" == "$SELECTED_WORKER" ]] || {
+            echo "Selected Worker Environment is not configured (WORKER_CONFIG_SCOPE mismatch)" >&2
+            exit 1
+          }
 
       - name: Validate current trusted main without deployment credentials
         shell: bash
@@ -260,11 +276,33 @@ jobs:
         if: steps.preflight.outputs.bootstrap == 'true'
         shell: bash
         env:
-          WORKER_SECRETS_JSON: ${{ (inputs.worker == 'raindrop-mcp-worker' && secrets.RAINDROP_MCP_SECRETS_JSON) || (inputs.worker == 'ima-mcp-worker' && secrets.IMA_MCP_SECRETS_JSON) || (inputs.worker == 'database-mcp-worker' && secrets.DATABASE_MCP_SECRETS_JSON) || (inputs.worker == 'ssh-mcp-worker' && secrets.SSH_MCP_SECRETS_JSON) || '' }}
+          # GitHub automatically uses same-name Environment Secrets over
+          # Repository Secrets. Values are scoped to this one bootstrap step.
+          MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
+          RAINDROP_ACCESS_TOKEN: ${{ secrets.RAINDROP_ACCESS_TOKEN }}
+          API_KEY: ${{ secrets.API_KEY }}
+          CLIENT_ID: ${{ secrets.CLIENT_ID }}
+          DATABASE_CONFIG: ${{ secrets.DATABASE_CONFIG }}
+          MCP_BROKER_TOKEN: ${{ secrets.MCP_BROKER_TOKEN }}
         run: |
           set -euo pipefail
           umask 077
           node scripts/bootstrap-worker-secrets.mjs "$SELECTED_WORKER" "$RUNNER_TEMP/mcp-bootstrap-secrets.json"
+
+      - name: Stage approved Worker variables
+        shell: bash
+        env:
+          RAINDROP_RATE_LIMIT_MAX_RETRIES: ${{ vars.RAINDROP_RATE_LIMIT_MAX_RETRIES }}
+          IMA_BASE_URL: ${{ vars.IMA_BASE_URL }}
+          MAX_ROWS: ${{ vars.MAX_ROWS }}
+          MAX_RESULT_BYTES: ${{ vars.MAX_RESULT_BYTES }}
+          MAX_SCHEMA_BYTES: ${{ vars.MAX_SCHEMA_BYTES }}
+          QUERY_TIMEOUT_MS: ${{ vars.QUERY_TIMEOUT_MS }}
+          MAX_WRITE_AFFECTED_ROWS: ${{ vars.MAX_WRITE_AFFECTED_ROWS }}
+        run: |
+          set -euo pipefail
+          umask 077
+          node scripts/worker-release-variables.mjs "$SELECTED_WORKER" "$RUNNER_TEMP/mcp-worker-variables.txt"
 
       - name: Recheck current main inside acquired release lock
         shell: bash
@@ -306,6 +344,10 @@ jobs:
           else
             deploy_args=()
           fi
+          test -f "$RUNNER_TEMP/mcp-worker-variables.txt"
+          while IFS= read -r variable_pair; do
+            deploy_args+=(--var "$variable_pair")
+          done < "$RUNNER_TEMP/mcp-worker-variables.txt"
           if ! (cd "apps/$SELECTED_WORKER" && pnpm exec wrangler deploy "${deploy_args[@]}") >"$log" 2>&1; then
             echo "Wrangler deploy failed (stage=deploy); no automated rollback attempted" >&2
             # Report only a whitelisted error code and a bounded, sanitized summary.
@@ -317,10 +359,10 @@ jobs:
           echo "version_id=$deployed_version" >> "$GITHUB_OUTPUT"
           echo "Wrangler reported a version ID; verifying Cloudflare active deployment next"
 
-      - name: Remove temporary bootstrap Secrets
-        if: always() && steps.preflight.outputs.bootstrap == 'true'
+      - name: Remove temporary deployment configuration
+        if: always()
         shell: bash
-        run: rm -f "$RUNNER_TEMP/mcp-bootstrap-secrets.json"
+        run: rm -f "$RUNNER_TEMP/mcp-bootstrap-secrets.json" "$RUNNER_TEMP/mcp-worker-variables.txt"
 
       - name: Verify exact active version and required production bindings
         env:

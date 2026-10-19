@@ -21,7 +21,9 @@ function requiresAllApps(file) {
     || file.startsWith('packages/')
     || file === '.github/workflows/ci.yml'
     || file.startsWith('scripts/select-affected-apps')
-    || file.startsWith('scripts/manual-worker-release');
+    || file.startsWith('scripts/manual-worker-release')
+    || file.startsWith('scripts/bootstrap-worker-secrets')
+    || file.startsWith('scripts/worker-release-variables');
 }
 
 export function selectAffectedApps(changedFiles) {
