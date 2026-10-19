@@ -309,12 +309,8 @@ import {
   type LocalProcessTermination,
 } from "./local-read.ts";
 
-/** Fixed v1 VPC Service target. Re-exporting arbitrary constants from a DO entrypoint breaks workerd. */
-import { DEVICE_CALL_URL } from "./device-target.ts";
-
 const MAX_MCP_BODY_BYTES = 65_536;
 const MAX_DEVICE_BODY_BYTES = 512_000;
-const MAX_DEVICE_REQUEST_BYTES = 65_536;
 const SERVER_NAME = "remote-control-mcp-worker";
 const SERVER_VERSION = "0.0.0";
 const PROTOCOL_VERSION = "2025-11-25";
@@ -813,13 +809,6 @@ function upstreamArguments(call: LocalCall): Record<string, unknown> {
   if (call.tool === "interact_with_process") return { session_id: call.arguments.sessionId, input: call.arguments.input };
   if (call.tool === "force_terminate") return { session_id: call.arguments.sessionId };
   return { session_id: call.arguments.sessionId };
-}
-
-function deviceUrl(call: LocalCall): string {
-  if (call.tool === "get_operation_status") {
-    return `http://remote-control-device.invalid/internal/operations/${encodeURIComponent(call.arguments.operationId)}`;
-  }
-  return DEVICE_CALL_URL;
 }
 
 const PUBLIC_TO_AGENT_TOOL: Record<string, string> = {
