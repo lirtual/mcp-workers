@@ -8,7 +8,7 @@
 
 - 仅由 GitHub Actions → CI → `workflow_dispatch` 在当前 `main` 触发；PR 和 push CI 只运行检查，不执行发布。
 - 只能选择一个明确白名单 Worker。数据库必须通过真正的 PostgreSQL/MySQL 集成检查；其他 Worker 不得被数据库集成步骤错误阻挡。
-- 每个 Worker 使用与脚本同名的 GitHub Environment，例如 `ima-mcp-worker`。必须存在同名 `WORKER_CONFIG_SCOPE` Environment Variable；缺失即停止，防止 GitHub 静默建立空环境后执行发布。
+- 每个 Worker 使用与脚本同名的 GitHub Environment，例如 `ima-mcp-worker`。Actions 自动选择该名称，无须维护 `WORKER_CONFIG_SCOPE`。GitHub 可能自动建立尚不存在的空 Environment，首次发布前需配置 Worker 专属 Secrets、审批与分支保护；缺少必要首次部署密钥会在发布前失败。
 - Repository Secrets 放 `CLOUDFLARE_API_TOKEN`、默认的 `MCP_ACCESS_TOKEN`；Repository Variable 放 `CLOUDFLARE_ACCOUNT_ID`。Worker 自己的 Environment 保存其余敏感字段。对应同名 Environment Secret 可覆盖全局 Portal Token。
 - 用户需自行将旧 `production` Environment 的已保存密钥与保护规则迁移。**在迁移成功前不要运行新的手动发布，也不要删除旧 Environment**。所有敏感值不得出现在代码/日志/PR 中。
 - 发布前检查当前 `main` SHA，校验 Cloudflare 状态及 Worker 是否存在；仅允许 Raindrop/IMA/Database/SSH 走首次部署。Remote Control 必须保持 existing-Worker-only。
