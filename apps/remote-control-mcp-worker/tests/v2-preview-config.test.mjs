@@ -35,6 +35,8 @@ test("dedicated v2 preview cannot inherit the v1 VPC binding, token or DO namesp
   assert.equal(v2Prod.name, "remote-control-mcp-worker");
   assert.equal(v2Prod.vars?.REMOTE_CONTROL_V2_ONLY, undefined);
   assert.equal(v2Prod.keep_vars, false);
+  assert.deepEqual(v2Prod.routes, [{ pattern: "rca.lirtual.dpdns.org", custom_domain: true }],
+    "production RCA must use a true Custom Domain, not a Worker Route");
   assert.deepEqual(v2Prod.secrets.required, ["MCP_ACCESS_TOKEN"]);
   assert.deepEqual(v2Prod.durable_objects.bindings, [{
     name: "DEVICE_COORDINATOR", class_name: "DeviceCoordinator",
