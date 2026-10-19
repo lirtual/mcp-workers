@@ -20,8 +20,7 @@
 
 ## 2. 每个 Worker 对应自己的同名 GitHub Environment
 
-打开 [Settings → Environments](https://github.com/lirtual/mcp-workers/settings/environments)，建立下表所列的**环境名称**（名称只是配置作用域，不代表 staging/production）。在每个环境里添加 **Environment variable**：
-`WORKER_CONFIG_SCOPE`，值必须与**环境名称完全一致**。此标记用于防止 GitHub 自动生成空 Environment 时意外发布。
+打开 [Settings → Environments](https://github.com/lirtual/mcp-workers/settings/environments)，建立下表所列的**环境名称**（名称只是配置作用域，不代表 staging/production）。Actions 根据 `inputs.worker` 自动选择同名 Environment，无须配置 `WORKER_CONFIG_SCOPE` 或其他环境名称标记。请注意：GitHub 可能自动创建尚不存在的空 Environment，因此应在首次手动发布前配置专属 Secrets 和必要的审批/分支保护规则。缺失的首次部署密钥仍会阻止部署。
 
 | Environment 名称 | 所需 Environment Secrets | 可选 Environment Variables |
 | --- | --- | --- |
@@ -60,7 +59,7 @@ GitHub Environment Variables 只影响对应 Worker。工作流显式允许下�
 
 1. 完成上述全局配置和对应 Worker 的配置空间迁移；不用删除旧 `production` 环境。
 2. 打开 [GitHub Actions → CI](https://github.com/lirtual/mcp-workers/actions/workflows/ci.yml)，选择 `main`，每次只选择一个 Worker。
-3. 若 `WORKER_CONFIG_SCOPE` 不是所选 Worker 名称，任务在取得 Cloudflare 部署权限之前中止。
+3. GitHub 自动选择与所选 Worker 同名的 Environment；缺少首次部署所需 Secrets 时将在发布前停止。
 4. Preflight 严格检查 Cloudflare 账户与 Worker 是否存在。若缺失且属于 Raindrop/IMA/Database/SSH，安全校验选中 Worker 的非空 Secrets 后一次性写入权限 0600 的 runner 临时文件，并用 `wrangler deploy --secrets-file` 新建 Worker。
 5. 若 Worker 已存在，则沿用当前 Secret，不重复覆盖或轮换。**Remote Control 仍不可使用首次部署模式**，且不更改已有 DeviceCoordinator/Agent 状态。
 6. 部署后核对 Cloudflare 100% 活跃版本、所需绑定与安全设置。最后通过原 Portal 做一次认证读取验收。不得误将未认证 401/403 当作已通过端到端验收。
