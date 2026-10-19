@@ -118,6 +118,9 @@ test("readback must match exact newly published Wrangler version", () => {
   assert.throws(() => verifyPublishedVersion(old, current, ""), /missing or malformed/);
   assert.throws(() => verifyPublishedVersion(old, current, undefined), /missing or malformed/);
   assert.throws(() => verifyPublishedVersion(old, old, old.version_id), /did not change/);
+  assert.equal(verifyPublishedVersion({ mode: "bootstrap" }, current, id), true);
+  assert.throws(() => verifyPublishedVersion({ mode: "bootstrap" }, current,
+    "22222222-2222-4222-8222-222222222222"), /does not match/);
 });
 
 test("manual release scope stages the pinned Agent only for Remote Control", () => {
@@ -140,7 +143,7 @@ test("manual release scope stages the pinned Agent only for Remote Control", () 
     }
   }
   for (const worker of ["remote-control-mcp-worker", "database-mcp-worker",
-    "ima-mcp-worker", "raindrop-mcp-worker"]) {
+    "ima-mcp-worker", "raindrop-mcp-worker", "ssh-mcp-worker"]) {
     const values = runManual(worker);
     assert.match(values, new RegExp("^apps=" + worker + "$", "m"));
     assert.match(values, new RegExp("^remote_control_changed=" +
@@ -148,7 +151,32 @@ test("manual release scope stages the pinned Agent only for Remote Control", () 
     assert.match(values, new RegExp("^database_changed=" +
       (worker === "database-mcp-worker" ? "true" : "false") + "$", "m"));
   }
-  // SSH may be CI-tested but must never become a manual production release target.
-  assert.throws(() => runManual("ssh-mcp-worker"), (error) => error.status !== 0);
+  assert.throws(() => runManual("missing-worker"), (error) => error.status !== 0);
   assert.throws(() => runManual("remote-control-mcp-worker", "refs/heads/feature"), (error) => error.status !== 0);
+});
+
+test("SSH production release requires Broker service, own DO, and least-privileged secret bindings", () => {
+  const worker = "ssh-mcp-worker";
+  const secrets = [{ name: "MCP_ACCESS_TOKEN" }, { name: "MCP_BROKER_TOKEN" }];
+  const settings = {
+    bindings: [
+      { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
+      { name: "MCP_BROKER_TOKEN", type: "secret_text" },
+      { name: "EDGE_SSH_BROKER", type: "service", service: "edgessh",
+        entrypoint: "HostBrokerEntrypoint" },
+      { name: "SSH_OPERATIONS", type: "durable_object_namespace", class_name: "SshOperationsDO" },
+    ],
+    observability: { enabled: false },
+  };
+  assert.equal(verifyBindings(worker, settings, secrets), true);
+  assert.throws(() => verifyBindings(worker, { ...settings, bindings: settings.bindings.slice(0, 3) },
+    secrets), /SSH Durable Object/);
+  assert.throws(() => verifyBindings(worker, { ...settings,
+    bindings: [...settings.bindings, { name: "ENCRYPTION_KEY", type: "secret_text" }] },
+    secrets), /SSH must not copy/);
+  assert.throws(() => verifyBindings(worker, { ...settings,
+    bindings: settings.bindings.map(x => x.name === "EDGE_SSH_BROKER" ?
+      { ...x, service: "wrong" } : x) }, secrets), /SSH Broker/);
+  assert.throws(() => verifyBindings(worker, settings, [{ name: "MCP_ACCESS_TOKEN" }]),
+    /Secret missing/);
 });
