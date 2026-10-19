@@ -1,21 +1,22 @@
 import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
 import { handleAgentInstallerRequest } from "./install-bootstrap.ts";
 export { V2OwnerCoordinator } from "./v2-pairing.ts";
+import { V2OwnerCoordinator as PreviewCoordinator } from "./v2-pairing.ts";
+export class DeviceCoordinator extends PreviewCoordinator {}
 
 type V2Env = Env & {
   V2_OWNER?: DurableObjectNamespace;
+  DEVICE_COORDINATOR?: DurableObjectNamespace;
   REMOTE_CONTROL_V2_PREVIEW_ONLY?: string;
-  REMOTE_CONTROL_V2_ONLY?: string;
 };
-function previewOnly(env: Env): boolean {
-  return (env as V2Env).REMOTE_CONTROL_V2_PREVIEW_ONLY === "true" ||
-    (env as V2Env).REMOTE_CONTROL_V2_ONLY === "true";
+function pairedOnly(env: Env): boolean {
+  return Boolean((env as V2Env).DEVICE_COORDINATOR || (env as V2Env).V2_OWNER);
 }
 // Preview operations use existing authenticated per-device WSS routing.
 // The paired Agent, not a temporary Worker secret, opts into write/Shell.
 const OWNER_TOOLS = new Set(["pairing_lookup", "pairing_approve", "list_devices", "revoke_device"]);
 function pendingOwner(env: Env): DurableObjectStub | null {
-  const ns = (env as V2Env).V2_OWNER;
+  const ns = (env as V2Env).DEVICE_COORDINATOR ?? (env as V2Env).V2_OWNER;
   return ns ? ns.get(ns.idFromName("single-owner-v2")) : null;
 }
 
@@ -308,12 +309,7 @@ import {
   type LocalProcessTermination,
 } from "./local-read.ts";
 
-/** Fixed v1 VPC Service target. Re-exporting arbitrary constants from a DO entrypoint breaks workerd. */
-import { DEVICE_CALL_URL } from "./device-target.ts";
-
 const MAX_MCP_BODY_BYTES = 65_536;
-const MAX_DEVICE_BODY_BYTES = 512_000;
-const MAX_DEVICE_REQUEST_BYTES = 65_536;
 const SERVER_NAME = "remote-control-mcp-worker";
 const SERVER_VERSION = "0.0.0";
 const PROTOCOL_VERSION = "2025-11-25";
@@ -336,7 +332,7 @@ const READ_FILE_TOOL = {
         type: "string",
         description: "Local filesystem path. URL schemes are rejected.",
       },
-      device_id: { type: "string", description: "Explicit paired v2 device ID. Omit for the existing v1 device." },
+      device_id: { type: "string", description: "Explicit authorized device ID; required for every device operation." },
       offset: {
         type: "integer",
         minimum: -100_000,
@@ -369,7 +365,7 @@ const READ_MULTIPLE_TOOL = {
   inputSchema: {
     type: "object",
     properties: {
-      device_id: { type: "string", description: "Explicit v2 device ID; omit for v1." },
+      device_id: { type: "string", description: "Explicit authorized device ID; required." },
       paths: {
         type: "array",
         minItems: 1,
@@ -397,7 +393,7 @@ const LIST_DIRECTORY_TOOL = {
   inputSchema: {
     type: "object",
     properties: {
-      device_id: { type: "string", description: "Explicit v2 device ID; omit for v1." },
+      device_id: { type: "string", description: "Explicit authorized device ID; required." },
       path: { type: "string", description: "Local directory path. URL schemes are rejected." },
       depth: { type: "integer", minimum: 1, maximum: 3, description: "Optional directory depth, from 1 to 3." },
     },
@@ -419,7 +415,7 @@ const FILE_INFO_TOOL = {
   inputSchema: {
     type: "object",
     properties: {
-      device_id: { type: "string", description: "Explicit v2 device ID; omit for v1." },
+      device_id: { type: "string", description: "Explicit authorized device ID; required." },
       path: { type: "string", description: "Local filesystem path. URL schemes are rejected." },
     },
     required: ["path"],
@@ -441,7 +437,7 @@ const START_SEARCH_TOOL = {
   inputSchema: {
     type: "object",
     properties: {
-      device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." },
+      device_id: { type: "string", description: "Explicit authorized device ID; required." },
       path: { type: "string", description: "Local directory path to search. URL schemes are rejected." },
       pattern: { type: "string", minLength: 1, maxLength: 256, description: "Literal case-sensitive substring." },
       search_type: { type: "string", enum: ["filename", "content"] },
@@ -464,7 +460,7 @@ const GET_MORE_SEARCH_RESULTS_TOOL = {
   inputSchema: {
     type: "object",
     properties: {
-      device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." },
+      device_id: { type: "string", description: "Explicit authorized device ID; required." },
       session_id: { type: "string", format: "uuid" },
     },
     required: ["session_id"],
@@ -485,7 +481,7 @@ const STOP_SEARCH_TOOL = {
   inputSchema: {
     type: "object",
     properties: {
-      device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." },
+      device_id: { type: "string", description: "Explicit authorized device ID; required." },
       session_id: { type: "string", format: "uuid" },
     },
     required: ["session_id"],
@@ -506,7 +502,7 @@ const WRITE_FILE_TOOL = {
     "Rewrite or append a local file. Supply a stable operation_id and reuse it only for the same intent after a lost response; use a new ID for a new intent. Query get_operation_status with the same ID before considering a retry.",
   inputSchema: {
     type: "object",
-    properties: { device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." },
+    properties: { device_id: { type: "string", description: "Explicit authorized device ID; required." },
       operation_id: { type: "string", minLength: 1, maxLength: 128, description: "Stable ID for this exact write intent." },
       path: { type: "string" },
       content: { type: "string", maxLength: 49152, description: "UTF-8 text up to the bounded internal request size." },
@@ -521,21 +517,21 @@ const WRITE_FILE_TOOL = {
 const CREATE_DIRECTORY_TOOL = {
   name: "create_directory", title: "Create local directory",
   description: "Create one local directory. Use a stable operation_id for this exact intent and query get_operation_status after an uncertain response.",
-  inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." }, operation_id: { type: "string", minLength: 1, maxLength: 128 }, path: { type: "string" } }, required: ["operation_id", "path"], additionalProperties: false },
+  inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit authorized device ID; required." }, operation_id: { type: "string", minLength: 1, maxLength: 128 }, path: { type: "string" } }, required: ["operation_id", "path"], additionalProperties: false },
   annotations: { title: "Create local directory", readOnlyHint: false, destructiveHint: true, openWorldHint: false },
 } as const;
 
 const EDIT_BLOCK_TOOL = {
   name: "replace_text", title: "Replace text in local file",
   description: "Replace exact text occurrences in a local UTF-8 file. expected_replacements defaults to 1; the file is unchanged if the count differs. Use a stable operation_id and query status after an uncertain response.",
-  inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." }, operation_id: { type: "string", minLength: 1, maxLength: 128 }, file_path: { type: "string" }, old_string: { type: "string", minLength: 1, maxLength: 49152 }, new_string: { type: "string", maxLength: 49152 }, expected_replacements: { type: "integer", minimum: 1, maximum: 1000 } }, required: ["operation_id", "file_path", "old_string", "new_string"], additionalProperties: false },
+  inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit authorized device ID; required." }, operation_id: { type: "string", minLength: 1, maxLength: 128 }, file_path: { type: "string" }, old_string: { type: "string", minLength: 1, maxLength: 49152 }, new_string: { type: "string", maxLength: 49152 }, expected_replacements: { type: "integer", minimum: 1, maximum: 1000 } }, required: ["operation_id", "file_path", "old_string", "new_string"], additionalProperties: false },
   annotations: { title: "Replace text in local file", readOnlyHint: false, destructiveHint: true, openWorldHint: false },
 } as const;
 
 const MOVE_FILE_TOOL = {
   name: "move_file", title: "Move or rename local file",
   description: "Move or rename a local regular file on the same filesystem to a destination that does not already exist. Use a stable operation_id and query status after an uncertain response.",
-  inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." }, operation_id: { type: "string", minLength: 1, maxLength: 128 }, source: { type: "string" }, destination: { type: "string" } }, required: ["operation_id", "source", "destination"], additionalProperties: false },
+  inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit authorized device ID; required." }, operation_id: { type: "string", minLength: 1, maxLength: 128 }, source: { type: "string" }, destination: { type: "string" } }, required: ["operation_id", "source", "destination"], additionalProperties: false },
   annotations: { title: "Move or rename local file", readOnlyHint: false, destructiveHint: true, openWorldHint: false },
 } as const;
 
@@ -546,7 +542,7 @@ const DELETE_FILE_TOOL = {
   inputSchema: {
     type: "object",
     properties: {
-      device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." },
+      device_id: { type: "string", description: "Explicit authorized device ID; required." },
       operation_id: { type: "string", minLength: 1, maxLength: 128 },
       path: { type: "string" },
     },
@@ -562,7 +558,7 @@ const GET_OPERATION_STATUS_TOOL = {
   description: "Query a previously submitted operation by its stable operation_id. This only reads the local receipt and never dispatches work.",
   inputSchema: {
     type: "object",
-    properties: { device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." }, operation_id: { type: "string", minLength: 1, maxLength: 128 } },
+    properties: { device_id: { type: "string", description: "Explicit authorized device ID; required." }, operation_id: { type: "string", minLength: 1, maxLength: 128 } },
     required: ["operation_id"],
     additionalProperties: false,
   },
@@ -572,35 +568,35 @@ const GET_OPERATION_STATUS_TOOL = {
 const START_PROCESS_TOOL = {
   name: "run_command", title: "Start development command",
   description: "Start a development command with the Agent account's fixed local Shell. Commands run with that Linux account's full OS permissions. Every start requires a stable operation_id; after an uncertain response, query that ID before considering a new intent. A running command returns an Agent-owned session_id. Shell commands use the authorized Linux Agent account's current OS permissions.",
-  inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." }, operation_id: { type: "string", minLength: 1, maxLength: 128 }, command: { type: "string", minLength: 1, maxLength: 8192 }, timeout_ms: { type: "integer", minimum: 0, maximum: 30000, description: "Maximum time to wait before returning a running session; defaults to 1000 ms." } }, required: ["operation_id", "command"], additionalProperties: false },
+  inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit authorized device ID; required." }, operation_id: { type: "string", minLength: 1, maxLength: 128 }, command: { type: "string", minLength: 1, maxLength: 8192 }, timeout_ms: { type: "integer", minimum: 0, maximum: 30000, description: "Maximum time to wait before returning a running session; defaults to 1000 ms." } }, required: ["operation_id", "command"], additionalProperties: false },
   annotations: { title: "Start development command", readOnlyHint: false, destructiveHint: true, openWorldHint: true },
 } as const;
 
 const LIST_SESSIONS_TOOL = {
   name: "list_sessions", title: "List managed sessions",
   description: "List only development command sessions started and tracked by this Agent. Completed sessions are retained for a bounded period.",
-  inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." } }, additionalProperties: false },
+  inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit authorized device ID; required." } }, additionalProperties: false },
   annotations: { title: "List managed sessions", readOnlyHint: true, destructiveHint: false, openWorldHint: false },
 } as const;
 
 const READ_PROCESS_OUTPUT_TOOL = {
   name: "read_session_output", title: "Read managed session output",
   description: "Read a bounded byte page from a session started by this Agent. Includes session state, next offset, truncation, and EOF. Stale or unknown session IDs are rejected.",
-  inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." }, session_id: { type: "string", format: "uuid" }, offset: { type: "integer", minimum: 0, maximum: 262144 }, length: { type: "integer", minimum: 1, maximum: 65536 } }, required: ["session_id"], additionalProperties: false },
+  inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit authorized device ID; required." }, session_id: { type: "string", format: "uuid" }, offset: { type: "integer", minimum: 0, maximum: 262144 }, length: { type: "integer", minimum: 1, maximum: 65536 } }, required: ["session_id"], additionalProperties: false },
   annotations: { title: "Read managed session output", readOnlyHint: true, destructiveHint: false, openWorldHint: false },
 } as const;
 
 const INTERACT_WITH_PROCESS_TOOL = {
   name: "send_input", title: "Send input to managed session",
   description: "Send a bounded UTF-8 input page to a session started by this Agent. Each input requires a stable operation_id; uncertain input is never replayed. Only a currently tracked session can receive input.",
-  inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." }, operation_id: { type: "string", minLength: 1, maxLength: 128 }, session_id: { type: "string", format: "uuid" }, input: { type: "string", minLength: 1, maxLength: 8192 } }, required: ["operation_id", "session_id", "input"], additionalProperties: false },
+  inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit authorized device ID; required." }, operation_id: { type: "string", minLength: 1, maxLength: 128 }, session_id: { type: "string", format: "uuid" }, input: { type: "string", minLength: 1, maxLength: 8192 } }, required: ["operation_id", "session_id", "input"], additionalProperties: false },
   annotations: { title: "Send input to managed session", readOnlyHint: false, destructiveHint: true, openWorldHint: true },
 } as const;
 
 const FORCE_TERMINATE_TOOL = {
   name: "stop_session", title: "Stop managed session",
   description: "Stop only a session started and still owned by this Agent. Uses a graceful signal followed by bounded escalation after rechecking the same process identity. A stale or unverified session is rejected.",
-  inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit paired v2 device ID; omit for v1." }, operation_id: { type: "string", minLength: 1, maxLength: 128 }, session_id: { type: "string", format: "uuid" } }, required: ["operation_id", "session_id"], additionalProperties: false },
+  inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit authorized device ID; required." }, operation_id: { type: "string", minLength: 1, maxLength: 128 }, session_id: { type: "string", format: "uuid" } }, required: ["operation_id", "session_id"], additionalProperties: false },
   annotations: { title: "Stop managed session", readOnlyHint: false, destructiveHint: true, openWorldHint: true },
 } as const;
 
@@ -746,10 +742,6 @@ async function readBounded(
   return new TextDecoder().decode(merged);
 }
 
-async function readResponseText(response: Response): Promise<string | null> {
-  return readBounded(response, MAX_DEVICE_BODY_BYTES);
-}
-
 type LocalCall =
   | { tool: "read_file"; arguments: LocalRead }
   | { tool: "read_multiple_files"; arguments: LocalReadMultiple }
@@ -768,10 +760,6 @@ type LocalCall =
   | { tool: "read_process_output"; arguments: LocalProcessOutput }
   | { tool: "interact_with_process"; arguments: LocalProcessInteraction }
   | { tool: "force_terminate"; arguments: LocalProcessTermination };
-
-function mutationTool(call: LocalCall): boolean {
-  return call.tool === "write_file" || call.tool === "create_directory" || call.tool === "edit_block" || call.tool === "move_file" || call.tool === "delete_file" || call.tool === "start_process" || call.tool === "interact_with_process" || call.tool === "force_terminate";
-}
 
 function callOperationId(call: LocalCall): string | undefined {
   if (call.tool === "get_operation_status") return call.arguments.operationId;
@@ -812,13 +800,6 @@ function upstreamArguments(call: LocalCall): Record<string, unknown> {
   if (call.tool === "interact_with_process") return { session_id: call.arguments.sessionId, input: call.arguments.input };
   if (call.tool === "force_terminate") return { session_id: call.arguments.sessionId };
   return { session_id: call.arguments.sessionId };
-}
-
-function deviceUrl(call: LocalCall): string {
-  if (call.tool === "get_operation_status") {
-    return `http://remote-control-device.invalid/internal/operations/${encodeURIComponent(call.arguments.operationId)}`;
-  }
-  return DEVICE_CALL_URL;
 }
 
 const PUBLIC_TO_AGENT_TOOL: Record<string, string> = {
@@ -920,196 +901,6 @@ function failureMessage(tool: LocalCall["tool"]): string {
   return "The file read failed.";
 }
 
-function successEvent(tool: LocalCall["tool"]): string {
-  if (tool === "list_directory") return "list_completed";
-  if (tool === "get_file_info") return "info_completed";
-  if (tool === "start_search" || tool === "get_more_search_results") return "search_completed";
-  if (tool === "stop_search") return "search_stopped";
-  if (tool === "start_process") return "process_started";
-  if (tool === "list_sessions") return "process_listed";
-  if (tool === "read_process_output") return "process_output_read";
-  if (tool === "interact_with_process") return "process_input_sent";
-  if (tool === "force_terminate") return "process_terminated";
-  return "read_completed";
-}
-
-function failureEvent(tool: LocalCall["tool"]): string {
-  if (tool === "list_directory") return "list_failed";
-  if (tool === "get_file_info") return "info_failed";
-  if (tool === "start_search" || tool === "get_more_search_results" || tool === "stop_search") return "search_failed";
-  return "read_failed";
-}
-
-function completedText(body: unknown): string | null {
-  if (body === null || typeof body !== "object") return null;
-  const record = body as { status?: unknown; result?: unknown };
-  if (record.status !== "completed" || record.result === null || typeof record.result !== "object") {
-    return null;
-  }
-  const content = (record.result as { content?: unknown }).content;
-  if (!Array.isArray(content) || content.length === 0) return null;
-  const parts: string[] = [];
-  for (const block of content) {
-    if (block === null || typeof block !== "object") return null;
-    const textBlock = block as { type?: unknown; text?: unknown };
-    if (textBlock.type !== "text" || typeof textBlock.text !== "string") return null;
-    parts.push(textBlock.text);
-  }
-  return parts.join("");
-}
-
-function publicReceipt(value: unknown): Record<string, unknown> | null {
-  if (value === null || typeof value !== "object") return null;
-  const receipt = value as Record<string, unknown>;
-  const allowed = ["operation_id", "tool_name", "state", "created_at", "updated_at", "safe_result_summary", "session_id"];
-  const projection: Record<string, unknown> = {};
-  for (const key of allowed) if (receipt[key] !== undefined) projection[key] = receipt[key];
-  if (typeof projection.tool_name === "string") {
-    const publicName = AGENT_TO_PUBLIC_TOOL[projection.tool_name] ?? projection.tool_name;
-    if (LOCAL_TOOLS.some((tool) => tool.name === publicName)) projection.public_tool_name = publicName;
-  }
-  return projection.operation_id && projection.state ? projection : null;
-}
-
-async function callDevice(env: Env, call: LocalCall, id: unknown, signal: AbortSignal): Promise<Response> {
-  const operationId = callOperationId(call);
-  const isMutation = mutationTool(call);
-  const deviceToken = env.REMOTE_CONTROL_DEVICE_TOKEN;
-  const binding = env.REMOTE_CONTROL_DEVICE;
-  if (!deviceToken || !binding) {
-    log("device_not_configured");
-    return operationId
-      ? toolText(id, JSON.stringify({ operation_id: operationId, status: "unavailable" }))
-      : toolError(id, "The remote device is unavailable.");
-  }
-
-  let response: Response;
-  const requestBody = call.tool === "get_operation_status"
-    ? undefined
-    : JSON.stringify({
-        tool: call.tool,
-        ...(operationId ? { operation_id: operationId } : {}),
-        arguments: upstreamArguments(call),
-      });
-  if (requestBody !== undefined && new TextEncoder().encode(requestBody).byteLength > MAX_DEVICE_REQUEST_BYTES) {
-    return operationId
-      ? toolError(id, JSON.stringify({ operation_id: operationId, status: "bad_request" }))
-      : toolError(id, "The requested tool call was rejected.");
-  }
-  try {
-    response = await binding.fetch(deviceUrl(call), {
-      method: call.tool === "get_operation_status" ? "GET" : "POST",
-      signal,
-      headers: {
-        "content-type": "application/json",
-        "x-device-credential": deviceToken,
-      },
-      ...(requestBody === undefined ? {} : { body: requestBody }),
-    });
-  } catch {
-    log("device_unavailable");
-    return operationId
-      ? toolText(id, JSON.stringify({ operation_id: operationId, status: isMutation ? "timeout_unknown" : "unavailable" }))
-      : toolError(id, "The remote device is unavailable.");
-  }
-
-  const raw = await readResponseText(response);
-  if (raw === null) {
-    log("device_unavailable");
-    return operationId
-      ? toolText(id, JSON.stringify({ operation_id: operationId, status: isMutation ? "timeout_unknown" : "unavailable" }))
-      : toolError(id, "The remote device is unavailable.");
-  }
-
-  if (!response.ok) {
-    if (isMutation && operationId && response.status === 409) {
-      log("operation_conflict");
-      return toolError(id, JSON.stringify({ operation_id: operationId, status: "conflict" }));
-    }
-    if (call.tool === "get_operation_status" && response.status === 404) {
-      return toolText(id, JSON.stringify({ operation_id: call.arguments.operationId, status: "not_found" }));
-    }
-    if (call.tool === "read_process_output" && response.status === 404) {
-      log("not_found");
-      return toolError(id, "The managed session was not found.");
-    }
-    if ((call.tool === "interact_with_process" || call.tool === "force_terminate") && response.status === 404) {
-      log("not_found");
-      return toolError(id, "The managed session was not found.");
-    }
-    if (operationId && response.status === 503) {
-      let knownUnavailable = false;
-      try {
-        const failed = JSON.parse(raw) as { status?: unknown };
-        knownUnavailable = failed.status === "unavailable";
-      } catch { /* An unreadable submitted-write response has an unknown outcome. */ }
-      return toolText(id, JSON.stringify({
-        operation_id: operationId,
-        status: knownUnavailable || !isMutation ? "unavailable" : "timeout_unknown",
-      }));
-    }
-    if (operationId) {
-      const status = response.status === 400 ? "bad_request" : "unavailable";
-      return isMutation
-        ? toolError(id, JSON.stringify({ operation_id: operationId, status }))
-        : toolText(id, JSON.stringify({ operation_id: operationId, status }));
-    }
-    log(response.status === 400 ? "rejected" : "device_unavailable");
-    const message =
-      response.status === 400
-        ? "The requested tool call was rejected."
-        : "The remote device is unavailable.";
-    return toolError(id, message);
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw) as unknown;
-  } catch {
-    log("device_unavailable");
-    return operationId
-      ? toolText(id, JSON.stringify({ operation_id: operationId, status: "timeout_unknown" }))
-      : toolError(id, "The remote device is unavailable.");
-  }
-
-  const text = completedText(parsed);
-  if (isMutation && parsed !== null && typeof parsed === "object") {
-    const operation = parsed as { operation_id?: unknown; status?: unknown; receipt?: unknown; session_id?: unknown };
-    if (call.tool === "start_process") {
-      log(operation.status === "failed" ? "process_failed" : "process_started");
-      return toolText(id, JSON.stringify({ operation_id: operationId, status: operation.status, session_id: operation.session_id, receipt: publicReceipt(operation.receipt) }));
-    }
-    if (call.tool === "interact_with_process" || call.tool === "force_terminate") {
-      const event = call.tool === "force_terminate" ? "process_terminated" : "process_input_sent";
-      log(operation.status === "failed" ? "process_action_failed" : event);
-      return toolText(id, JSON.stringify({ operation_id: operationId, status: operation.status, session_id: call.arguments.sessionId, receipt: publicReceipt(operation.receipt) }));
-    }
-    const category = call.tool === "create_directory" ? "directory" : call.tool === "edit_block" ? "edit" : call.tool === "move_file" ? "move" : "write";
-    log(operation.status === "failed" ? `${category}_failed` : `${category}_completed`);
-    return toolText(id, JSON.stringify({ operation_id: operationId, status: operation.status, receipt: publicReceipt(operation.receipt) }));
-  }
-  if (call.tool === "get_operation_status") {
-    const record = parsed as Record<string, unknown>;
-    return toolText(id, JSON.stringify(publicReceipt(record)));
-  }
-  if (text !== null) {
-    log(successEvent(call.tool));
-    return toolText(id, text);
-  }
-
-  const status =
-    parsed !== null && typeof parsed === "object"
-      ? (parsed as { status?: unknown }).status
-      : undefined;
-  if (status === "failed") {
-    log(failureEvent(call.tool));
-    return toolError(id, failureMessage(call.tool));
-  }
-
-  log("device_unavailable");
-  return toolError(id, "The remote device is unavailable.");
-}
-
 async function handleMcp(request: Request, env: Env): Promise<Response> {
   const raw = await readBounded(request, MAX_MCP_BODY_BYTES);
   if (raw === null) return rpcError(null, -32600, "Invalid request.");
@@ -1151,7 +942,7 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
   }
 
   if (rpcMessage.method === "tools/list") {
-    if (previewOnly(env)) {
+    if (pairedOnly(env)) {
       return rpc(rpcMessage.id, { tools: [
         ...LOCAL_TOOLS.map(tool => ({
           ...tool,
@@ -1172,7 +963,7 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
       return toolError(rpcMessage.id, "The requested tool call was rejected.");
     }
     const call = params as { name?: unknown; arguments?: unknown };
-    if (previewOnly(env)) {
+    if (pairedOnly(env)) {
       const name = typeof call.name === "string" ? call.name : "";
       const requiresDevice = V2_READ_TOOLS.has(name) || V2_OPERATION_TOOLS.has(name);
       const target = call.arguments && typeof call.arguments === "object" && !Array.isArray(call.arguments)
@@ -1181,7 +972,7 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
       if ((!requiresDevice && !OWNER_TOOLS.has(name)) ||
           (requiresDevice && (typeof target !== "string" ||
             !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(target)))) {
-        return toolError(rpcMessage.id, "The v2 preview requires a valid explicit device_id.");
+        return toolError(rpcMessage.id, "The requested tool call was rejected: a valid device_id is required.");
       }
     }
     if (typeof call.name === "string" && V2_OPERATION_TOOLS.has(call.name) &&
@@ -1211,8 +1002,8 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
       }
       return lookupPendingDevice(env, (args as { code?: unknown }).code, rpcMessage.id);
     }
-    // Preview has no legacy v1 VPC fallback, even if its owner DO is missing.
-    if (previewOnly(env)) return toolError(rpcMessage.id, "The requested v2 tool is unavailable.");
+    // A production or Preview owner never falls back to the v1 VPC.
+    if (pairedOnly(env)) return toolError(rpcMessage.id, "The requested paired-device tool is unavailable.");
     if (!isKnownTool(call.name)) {
       log("rejected");
       return toolError(rpcMessage.id, "The requested tool call was rejected.");
@@ -1236,7 +1027,7 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
       log("rejected");
       return toolError(rpcMessage.id, "The requested tool call was rejected.");
     }
-    return callDevice(env, localCall, rpcMessage.id, request.signal);
+    return toolError(rpcMessage.id, "The requested tool call was rejected: a valid device_id is required.");
   }
 
   return rpcError(rpcMessage.id, -32601, "Method not found.");
@@ -1246,14 +1037,14 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     // A newly uploaded public preview must not expose even the bounded
     // unauthenticated Agent bootstrap until its distinct owner key is set.
-    if (previewOnly(env) && !env.MCP_ACCESS_TOKEN) {
+    if (pairedOnly(env) && !env.MCP_ACCESS_TOKEN) {
       return jsonError(503, "preview_unconfigured", "The preview is not yet configured.");
     }
     const url = new URL(request.url);
     if (url.pathname === "/install.sh") {
       // Only the owner-configured v2 Preview may serve the reviewed immutable
       // test installer. Keep every other environment fail-closed (503).
-      if (!previewOnly(env) || !env.MCP_ACCESS_TOKEN || !pendingOwner(env)) {
+      if (!pairedOnly(env) || !env.MCP_ACCESS_TOKEN || !pendingOwner(env)) {
         return new Response("Preview installer is disabled.\n", {
           status: 503, headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" },
         });

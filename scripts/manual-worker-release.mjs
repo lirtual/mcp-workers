@@ -60,29 +60,38 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
       Number(limiter.simple?.limit) === 120 && Number(limiter.simple?.period) === 60,
       "Database RATE_LIMITER binding/policy drift");
   }
-  const remoteLegacy = worker === "remote-control-mcp-worker" &&
-    options.mode === "preflight" && !!find("REMOTE_CONTROL_DEVICE", "vpc_service");
-  if (remoteLegacy) {
-    invariant(secretNames.has("REMOTE_CONTROL_DEVICE_TOKEN"),
-      "Legacy VPC rollback credential missing");
-    const id = find("REMOTE_CONTROL_DEVICE", "vpc_service")?.service_id;
-    invariant(typeof id === "string" && /^[a-fA-F0-9-]{36}$/.test(id),
-      "Legacy Remote VPC identity missing");
-  } else if (worker === "remote-control-mcp-worker") {
-    const owner = find("V2_OWNER", "durable_object_namespace");
-    invariant(typeof options.v2OwnerNamespaceId === "string" &&
-      owner?.namespace_id === options.v2OwnerNamespaceId,
-      "Production V2_OWNER must reference current Preview owner namespace");
-    invariant(find("REMOTE_CONTROL_V2_ONLY", "plain_text")?.text === "true",
-      "Production must be strictly v2-only");
-    invariant(!bindings.some(x => x.type === "vpc_service" || x.name === "REMOTE_CONTROL_DEVICE"),
-      "Production VPC binding must be removed");
+  if (worker === "remote-control-mcp-worker") {
+    const coordinator = find("DEVICE_COORDINATOR", "durable_object_namespace");
+    const previous = find("V2_OWNER", "durable_object_namespace");
+    // Preflight may inspect the currently deployed Preview-backed v2 or legacy VPC
+    // version. Identify the previous namespace from THIS Worker, not from a
+    // separate Preview Worker that may already have been deleted.
+    const isPreflightPrevious = options.mode === "preflight" && !coordinator &&
+      ((previous?.class_name === "V2OwnerCoordinator" &&
+        previous?.script_name === "remote-control-v2-preview" &&
+        typeof previous.namespace_id === "string") ||
+        !!find("REMOTE_CONTROL_DEVICE", "vpc_service"));
+    if (!isPreflightPrevious) {
+      invariant(coordinator?.class_name === "DeviceCoordinator" &&
+        typeof coordinator.namespace_id === "string" &&
+        !coordinator.script_name &&
+        coordinator.namespace_id !== options.previousNamespaceId,
+        "Production must have its own DeviceCoordinator namespace distinct from Preview");
+      invariant(!previous && !find("REMOTE_CONTROL_V2_ONLY", "plain_text") &&
+        !find("REMOTE_CONTROL_V2_PREVIEW_ONLY", "plain_text"),
+        "Production must not retain Preview binding or v1/v2 runtime switches");
+      invariant(!bindings.some(x => x.type === "vpc_service" ||
+        x.name === "REMOTE_CONTROL_DEVICE"), "Production VPC binding must be absent");
+    }
   }
   const allowed = new Set(worker === "ima-mcp-worker"
     ? ["IMA_IMAGE_REFRESH_SHARD"]
     : worker === "database-mcp-worker" ? ["RATE_LIMITER"]
-      : worker === "remote-control-mcp-worker" ? [remoteLegacy ? "REMOTE_CONTROL_DEVICE" : "V2_OWNER"]
-        : worker === "ssh-mcp-worker" ? ["EDGE_SSH_BROKER", "SSH_OPERATIONS"] : []);
+      : worker === "ssh-mcp-worker" ? ["EDGE_SSH_BROKER", "SSH_OPERATIONS"]
+      : worker === "remote-control-mcp-worker"
+        ? (options.mode === "preflight"
+          ? ["DEVICE_COORDINATOR", "V2_OWNER", "REMOTE_CONTROL_DEVICE"]
+          : ["DEVICE_COORDINATOR"]) : []);
   for (const item of bindings) {
     if (!["plain_text", "secret_text"].includes(item.type)) {
       invariant(allowed.has(item.name), "Unexpected production resource binding: " + item.name);
@@ -161,16 +170,17 @@ function readConfiguration(worker, content) {
       "SSH must be broker-only and read-only by default");
   }
   if (worker === "remote-control-mcp-worker") {
-    invariant(conf.vars?.REMOTE_CONTROL_V2_ONLY === "true" &&
-      conf.vars?.REMOTE_CONTROL_V2_PREVIEW_ONLY === undefined &&
-      !conf.vpc_services && !conf.exports && conf.preview_urls === false,
-      "Production must be v2-only without VPC or new DO class exports");
+    invariant(!conf.vars?.REMOTE_CONTROL_V2_ONLY &&
+      !conf.vars?.REMOTE_CONTROL_V2_PREVIEW_ONLY &&
+      !conf.vpc_services && conf.preview_urls === false,
+      "Production must have no runtime mode switch or VPC");
     const bindings = conf.durable_objects?.bindings;
     invariant(Array.isArray(bindings) && bindings.length === 1 &&
-      bindings[0]?.name === "V2_OWNER" &&
-      bindings[0]?.class_name === "V2OwnerCoordinator" &&
-      bindings[0]?.script_name === "remote-control-v2-preview",
-      "Production must reference existing Preview DO owner, no new namespace");
+      bindings[0]?.name === "DEVICE_COORDINATOR" &&
+      bindings[0]?.class_name === "DeviceCoordinator" &&
+      !bindings[0]?.script_name &&
+      conf.exports?.DeviceCoordinator?.storage === "sqlite",
+      "Production must declare a local SQLite DeviceCoordinator");
   }
   return conf;
 }
@@ -212,17 +222,18 @@ async function current(account, worker, token, options) {
     cfGet(account, worker, token, "/deployments?per_page=1"),
     cfGet(account, worker, token, "/script-settings"),
   ]);
-  let v2OwnerNamespaceId;
-  if (worker === "remote-control-mcp-worker") {
-    const preview = await cfGet(account, "remote-control-v2-preview", token, "/settings");
-    const owners = preview.bindings?.filter(x =>
-      x.name === "V2_OWNER" && x.type === "durable_object_namespace" &&
-      x.class_name === "V2OwnerCoordinator");
-    invariant(owners?.length === 1 && typeof owners[0].namespace_id === "string",
-      "Preview V2_OWNER identity unavailable");
-    v2OwnerNamespaceId = owners[0].namespace_id;
-  }
-  verifyBindings(worker, settings, secrets, { ...options, v2OwnerNamespaceId });
+  const existingOwner = worker === "remote-control-mcp-worker" &&
+    Array.isArray(settings.bindings)
+    ? settings.bindings.find(x => x.name === "V2_OWNER" &&
+      x.type === "durable_object_namespace" &&
+      x.class_name === "V2OwnerCoordinator" &&
+      x.script_name === "remote-control-v2-preview")
+    : null;
+  // Capture the namespace before cutover in the protected release state file.
+  // After a successful release, validation must work even if Preview is gone.
+  const previousNamespaceId = options.mode === "preflight"
+    ? existingOwner?.namespace_id : options.previousNamespaceId;
+  verifyBindings(worker, settings, secrets, { ...options, previousNamespaceId });
   if (options.sourceConfig) {
     invariant(settings.compatibility_date === options.sourceConfig.compatibility_date,
       "Compatibility date drift");
@@ -239,7 +250,11 @@ async function current(account, worker, token, options) {
   if (worker === "ima-mcp-worker") {
     invariant(scriptSettings?.observability?.traces?.enabled === true, "IMA script tracing drift");
   }
-  return activeVersion(deployments);
+  return {
+    ...activeVersion(deployments),
+    ...(options.mode === "preflight" && typeof previousNamespaceId === "string"
+      ? { previousNamespaceId } : {}),
+  };
 }
 
 async function main() {
@@ -270,11 +285,15 @@ async function main() {
   const rawConfig = await readFile(configPath, "utf8");
   const sourceConfig = readConfiguration(worker, rawConfig);
   invariant(account && token && statePath && sourceSha, "Required release environment missing");
+  const previous = mode === "readback"
+    ? JSON.parse(await readFile(statePath, "utf8")) : null;
+  if (previous) invariant(previous.worker === worker && previous.sourceSha === sourceSha,
+    "Release source changed");
   const exists = mode === "preflight" ? await scriptExists(account, worker, token) : true;
   invariant(exists || worker !== "remote-control-mcp-worker",
     "Remote Control may not be created through bootstrap");
   const observed = exists ? await current(account, worker, token, {
-    mode, sourceConfig,
+    mode, sourceConfig, previousNamespaceId: previous?.previousNamespaceId,
   }) : { mode: "bootstrap" };
   if (mode === "preflight") {
     await writeFile(statePath, JSON.stringify({ worker, sourceSha, ...observed }), { mode: 0o600 });
@@ -284,8 +303,6 @@ async function main() {
     console.log("Preflight OK: " + worker + " (" + (exists ? "update" : "bootstrap") +
       "; source " + sourceSha.slice(0, 12) + ")");
   } else {
-    const previous = JSON.parse(await readFile(statePath, "utf8"));
-    invariant(previous.worker === worker && previous.sourceSha === sourceSha, "Release source changed");
     verifyPublishedVersion(previous, observed, process.env.EXPECTED_VERSION_ID);
     console.log("Release verified: " + worker + " version " + observed.version_id +
       " source " + sourceSha.slice(0, 12) +
