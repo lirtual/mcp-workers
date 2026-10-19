@@ -75,7 +75,7 @@ test("production DO binding lists per-device tools without v1 fallback", async (
 test("production installer is pinned to the public v0.1.8 release and its own origin", async () => {
   const { default: worker } = await import("../src/worker.ts");
   const prod = "https://remote-control-mcp-worker.aiyaya.workers.dev";
-  const env = { MCP_ACCESS_TOKEN: "owner-only",
+  const env = { MCP_ACCESS_TOKEN: "owner-only", REMOTE_CONTROL_INSTALL_ORIGIN: prod,
     
     DEVICE_COORDINATOR: { idFromName: () => "single-owner-v2", get: () => ({}) } };
   const response = await worker.fetch(new Request(prod + "/install.sh"), env);
