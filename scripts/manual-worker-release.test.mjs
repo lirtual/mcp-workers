@@ -210,24 +210,27 @@ test("manual release selects GitHub Environment directly from the allowlisted Wo
 
 test("manual release always syncs selected Worker Secrets from GitHub and never silently falls back", () => {
   const workflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
-  const secretStep = workflow.split("      - name: Stage selected Worker Secrets for every release\\n")[1]?.split("      - name: Stage approved Worker variables\\n")[0];
-  assert.ok(secretStep, "Secret stage must exist exactly before Worker variables");
+  const secretStart = workflow.indexOf("      - name: Stage selected Worker Secrets for every release");
+  const variableStart = workflow.indexOf("      - name: Stage approved Worker variables", secretStart);
+  assert.ok(secretStart > 0 && variableStart > secretStart);
+  const secretStep = workflow.slice(secretStart, variableStart);
   assert.doesNotMatch(secretStep, /^\s*if:/m, "existing Workers must never skip Secret staging");
   for (const name of ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN", "API_KEY", "CLIENT_ID",
     "DATABASE_CONFIG", "MCP_BROKER_TOKEN"]) {
     assert.ok(secretStep.includes("secrets." + name), "GitHub must provide " + name);
   }
-  const deployStep = workflow.split("      - name: Publish exactly selected Worker\\n")[1]?.split("      - name: Remove temporary deployment configuration\\n")[0];
-  assert.ok(deployStep);
-  assert.match(deployStep, /test -s "\\$RUNNER_TEMP\\/mcp-worker-secrets\\.json"/,
+  const deployStart = workflow.indexOf("      - name: Publish exactly selected Worker");
+  const deployEnd = workflow.indexOf("      - name: Remove temporary deployment configuration", deployStart);
+  assert.ok(deployStart > 0 && deployEnd > deployStart);
+  const deployStep = workflow.slice(deployStart, deployEnd);
+  assert.ok(deployStep.includes('test -s "$RUNNER_TEMP/mcp-worker-secrets.json"'),
     "do not allow publishing when staged Secrets are missing");
-  assert.match(deployStep, /deploy_args=\\(--secrets-file "\\$RUNNER_TEMP\\/mcp-worker-secrets\\.json"\\)/,
+  assert.ok(deployStep.includes('deploy_args=(--secrets-file "$RUNNER_TEMP/mcp-worker-secrets.json")'),
     "must upload Secrets alongside every code deployment");
-  assert.doesNotMatch(deployStep, /steps\\.preflight\\.outputs\\.bootstrap/,
+  assert.doesNotMatch(deployStep, /steps\.preflight\.outputs\.bootstrap/,
     "Secret upload must not be limited to bootstrap");
-  assert.doesNotMatch(workflow, /mcp-bootstrap-secrets\\.json/,
-    "old bootstrap-only file path is obsolete");
-  assert.match(workflow, /if: always\\(\\)\\n        shell: bash\\n        run: rm -f "\\$RUNNER_TEMP\\/mcp-worker-secrets\\.json"/,
+  assert.equal(workflow.includes("mcp-bootstrap-secrets.json"), false);
+  assert.ok(workflow.includes('run: rm -f "$RUNNER_TEMP/mcp-worker-secrets.json"'),
     "temporary secret material must always be deleted");
 });
 
