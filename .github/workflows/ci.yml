@@ -103,6 +103,7 @@ jobs:
           # existing affected-application `remote-control-mcp-worker check`.
 
       - name: Run affected application checks
+        timeout-minutes: 12
         if: steps.scope.outputs.apps != ''
         env:
           APPS: ${{ steps.scope.outputs.apps }}
