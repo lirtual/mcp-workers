@@ -65,42 +65,39 @@ test("Database RATE_LIMITER and required runtime Secret names are a strict gate"
     secrets), /RATE_LIMITER/);
 });
 
-test("Remote v2 production has no VPC, shares exact Preview namespace, checks legacy cutover", () => {
+test("Remote production requires its own DO and rejects Preview namespace reuse", () => {
   const worker = "remote-control-mcp-worker";
-  const ownerNs = "c086eb6384ad41df9de13765d868324a";
-  const v2 = { bindings: [
+  const previewNs = "c086eb6384ad41df9de13765d868324a";
+  const productionNs = "abcd1234abcd1234abcd1234abcd1234";
+  const prod = { bindings: [
     { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
-    { name: "REMOTE_CONTROL_V2_ONLY", type: "plain_text", text: "true" },
-    { name: "V2_OWNER", type: "durable_object_namespace", namespace_id: ownerNs },
+    { name: "DEVICE_COORDINATOR", class_name: "DeviceCoordinator",
+      type: "durable_object_namespace", namespace_id: productionNs },
   ], observability: { enabled: true, logs: { invocation_logs: false } } };
   const secrets = [{ name: "MCP_ACCESS_TOKEN" }];
-  const options = { mode: "readback", v2OwnerNamespaceId: ownerNs };
-  assert.equal(verifyBindings(worker, v2, secrets, options), true);
-  assert.throws(() => verifyBindings(worker, v2, [], options), /Secret missing/);
-  assert.throws(() => verifyBindings(worker, v2, secrets,
-    { ...options, v2OwnerNamespaceId: "wrong" }), /V2_OWNER/);
-  assert.throws(() => verifyBindings(worker, { ...v2,
-    bindings: v2.bindings.filter(x => x.name !== "V2_OWNER") }, secrets, options), /V2_OWNER/);
-  assert.throws(() => verifyBindings(worker, { ...v2,
-    bindings: [...v2.bindings, { name: "REMOTE_CONTROL_DEVICE", type: "vpc_service" }] },
-    secrets, options), /VPC/);
-  assert.throws(() => verifyBindings(worker, { ...v2,
-    bindings: v2.bindings.filter(x => x.name !== "REMOTE_CONTROL_V2_ONLY") },
-    secrets, options), /v2-only/);
-  // First production cutover must accept old VPC as the PREVIOUS version
-  // while verifying that the NEW version is strict v2-only.
-  const legacy = { bindings: [
+  const options = { mode: "readback", v2OwnerNamespaceId: previewNs };
+  assert.equal(verifyBindings(worker, prod, secrets, options), true);
+  assert.throws(() => verifyBindings(worker, prod, [], options), /Secret missing/);
+  assert.throws(() => verifyBindings(worker, {
+    ...prod, bindings: prod.bindings.map(x => x.name === "DEVICE_COORDINATOR"
+      ? { ...x, namespace_id: previewNs } : x),
+  }, secrets, options), /distinct from Preview/);
+  assert.throws(() => verifyBindings(worker, {
+    ...prod, bindings: [...prod.bindings,
+      { name: "REMOTE_CONTROL_V2_ONLY", type: "plain_text", text: "true" }],
+  }, secrets, options), /runtime switches/);
+  assert.throws(() => verifyBindings(worker, {
+    ...prod, bindings: [...prod.bindings,
+      { name: "REMOTE_CONTROL_DEVICE", type: "vpc_service" }],
+  }, secrets, options), /VPC/);
+  const previous = { ...prod, bindings: [
     { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
-    { name: "REMOTE_CONTROL_DEVICE_TOKEN", type: "secret_text" },
-    { name: "REMOTE_CONTROL_DEVICE", type: "vpc_service",
-      service_id: "11111111-1111-4111-8111-111111111111" },
-  ], observability: { enabled: true, logs: { invocation_logs: false } } };
-  assert.equal(verifyBindings(worker, legacy,
-    [{ name: "MCP_ACCESS_TOKEN" }, { name: "REMOTE_CONTROL_DEVICE_TOKEN" }],
-    { mode: "preflight", v2OwnerNamespaceId: ownerNs }), true);
-  assert.throws(() => verifyBindings(worker, legacy,
-    [{ name: "MCP_ACCESS_TOKEN" }, { name: "REMOTE_CONTROL_DEVICE_TOKEN" }],
-    { mode: "readback", v2OwnerNamespaceId: ownerNs }), /V2_OWNER/);
+    { name: "REMOTE_CONTROL_V2_ONLY", type: "plain_text", text: "true" },
+    { name: "V2_OWNER", type: "durable_object_namespace", namespace_id: previewNs },
+  ] };
+  assert.equal(verifyBindings(worker, previous, secrets,
+    { mode: "preflight", v2OwnerNamespaceId: previewNs }), true);
+  assert.throws(() => verifyBindings(worker, previous, secrets, options), /DeviceCoordinator/);
 });
 
 test("Wrangler output requires a parseable release id, not upload-only success", () => {
