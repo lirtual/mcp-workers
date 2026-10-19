@@ -35,7 +35,7 @@ export function remoteControlInstallOrigin(config) {
   }
   const host = routes[0].pattern;
   if (host.length > 253 ||
-      !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,63}$/.test(host)) {
+      !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(host)) {
     throw new Error("Invalid Remote Control Custom Domain hostname");
   }
   return "https://" + host;
@@ -81,7 +81,7 @@ async function main() {
   // Source config drives the single trusted origin; no extra GitHub Variable is required.
   const config = worker === "remote-control-mcp-worker"
     ? JSON.parse((await readFile(join(process.cwd(), "apps", worker, "wrangler.jsonc"), "utf8"))
-      .replace(/^\\s*\\/\\/.*$/gm, "")) : undefined;
+      .replace(/^\s*\/\/.*$/gm, "")) : undefined;
   const flags = collectWorkerVars(worker, process.env, { config });
   await writeFile(outputPath, flags.length ? flags.join("\n") + "\n" : "",
     { flag: "wx", mode: 0o600 });
