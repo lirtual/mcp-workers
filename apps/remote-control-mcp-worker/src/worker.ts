@@ -1,21 +1,22 @@
 import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
 import { handleAgentInstallerRequest } from "./install-bootstrap.ts";
-export { V2OwnerCoordinator } from "./v2-pairing.ts";
+export { V2OwnerCoordinator, V2OwnerCoordinator as DeviceCoordinator } from "./v2-pairing.ts";
 
 type V2Env = Env & {
   V2_OWNER?: DurableObjectNamespace;
+  DEVICE_COORDINATOR?: DurableObjectNamespace;
   REMOTE_CONTROL_V2_PREVIEW_ONLY?: string;
   REMOTE_CONTROL_V2_ONLY?: string;
 };
 function previewOnly(env: Env): boolean {
-  return (env as V2Env).REMOTE_CONTROL_V2_PREVIEW_ONLY === "true" ||
-    (env as V2Env).REMOTE_CONTROL_V2_ONLY === "true";
+  return Boolean((env as V2Env).DEVICE_COORDINATOR) ||
+    (env as V2Env).REMOTE_CONTROL_V2_PREVIEW_ONLY === "true";
 }
 // Preview operations use existing authenticated per-device WSS routing.
 // The paired Agent, not a temporary Worker secret, opts into write/Shell.
 const OWNER_TOOLS = new Set(["pairing_lookup", "pairing_approve", "list_devices", "revoke_device"]);
 function pendingOwner(env: Env): DurableObjectStub | null {
-  const ns = (env as V2Env).V2_OWNER;
+  const ns = (env as V2Env).DEVICE_COORDINATOR ?? (env as V2Env).V2_OWNER;
   return ns ? ns.get(ns.idFromName("single-owner-v2")) : null;
 }
 
