@@ -25,6 +25,31 @@ test("reviewed immutable single-code Worker installation route is enabled", asyn
   assert.match(script,/1\) \[ "\$1" = "--upgrade"/);
 });
 
+test("one-line installer reports genuine download progress and each checked stage", () => {
+  const shell=renderAgentInstallShell(origin,REVIEWED_V018_RELEASE_PIN);
+  const stage=(n: number): number => {
+    const position=shell.indexOf(`[${n}/5]`);
+    assert.ok(position>=0);
+    return position;
+  };
+  assert.ok(stage(1)<stage(2) && stage(2)<stage(3) &&
+    stage(3)<stage(4) && stage(4)<stage(5));
+  assert.match(shell,/effective=\$\(curl -fL --progress-bar /);
+  assert.doesNotMatch(shell,/effective=\$\(curl -fsSL /);
+  assert.match(shell,/--max-redirs 3 --max-time 180 --max-filesize 180000000/);
+  assert.match(shell,/SHA-256 verification passed/);
+  const download=shell.indexOf("effective=$(curl");
+  const verify=shell.indexOf("sha256sum -c");
+  const unpack=shell.indexOf("tar -xOzf");
+  const launch=shell.indexOf('"$stage/node" "$stage/bootstrap-node.mjs"');
+  assert.ok(stage(2)<download && download<stage(3));
+  assert.ok(stage(3)<verify && verify<stage(4));
+  assert.ok(stage(4)<unpack && unpack<stage(5));
+  assert.ok(stage(5)<launch);
+  const syntax=spawnSync("sh",["-n"],{input:shell,encoding:"utf8",timeout:3000});
+  assert.equal(syntax.status,0,syntax.stderr);
+});
+
 test("production custom hostname serves pinned installer with same-domain Agent endpoint",async()=>{
   const custom="https://rca.lirtual.dpdns.org";
   const response=requestInstall(new Request(custom+"/install.sh"), undefined, custom);
