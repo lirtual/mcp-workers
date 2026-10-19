@@ -8,7 +8,7 @@ const REQUIRED_SECRETS = {
   "raindrop-mcp-worker": ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN"],
   "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "API_KEY", "CLIENT_ID"],
   "database-mcp-worker": ["MCP_ACCESS_TOKEN", "DATABASE_CONFIG"],
-  "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN", "REMOTE_CONTROL_DEVICE_TOKEN"],
+  "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
 };
 const WORKER_ENTRIES = {
   "raindrop-mcp-worker": "src/worker.ts",
@@ -47,17 +47,28 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
       Number(limiter.simple?.limit) === 120 && Number(limiter.simple?.period) === 60,
       "Database RATE_LIMITER binding/policy drift");
   }
-  if (worker === "remote-control-mcp-worker") {
-    const id = options.vpcId;
-    invariant(typeof id === "string" && /^[a-fA-F0-9-]{36}$/.test(id) &&
-      id !== "00000000-0000-4000-8000-000000000000", "Valid Remote VPC identity missing");
-    invariant(find("REMOTE_CONTROL_DEVICE", "vpc_service")?.service_id === id,
-      "Remote VPC Service binding/type mismatch");
+  const remoteLegacy = worker === "remote-control-mcp-worker" &&
+    options.mode === "preflight" && !!find("REMOTE_CONTROL_DEVICE", "vpc_service");
+  if (remoteLegacy) {
+    invariant(secretNames.has("REMOTE_CONTROL_DEVICE_TOKEN"),
+      "Legacy VPC rollback credential missing");
+    const id = find("REMOTE_CONTROL_DEVICE", "vpc_service")?.service_id;
+    invariant(typeof id === "string" && /^[a-fA-F0-9-]{36}$/.test(id),
+      "Legacy Remote VPC identity missing");
+  } else if (worker === "remote-control-mcp-worker") {
+    const owner = find("V2_OWNER", "durable_object_namespace");
+    invariant(typeof options.v2OwnerNamespaceId === "string" &&
+      owner?.namespace_id === options.v2OwnerNamespaceId,
+      "Production V2_OWNER must reference current Preview owner namespace");
+    invariant(find("REMOTE_CONTROL_V2_ONLY", "plain_text")?.text === "true",
+      "Production must be strictly v2-only");
+    invariant(!bindings.some(x => x.type === "vpc_service" || x.name === "REMOTE_CONTROL_DEVICE"),
+      "Production VPC binding must be removed");
   }
   const allowed = new Set(worker === "ima-mcp-worker"
     ? ["IMA_IMAGE_REFRESH_SHARD"]
     : worker === "database-mcp-worker" ? ["RATE_LIMITER"]
-      : worker === "remote-control-mcp-worker" ? ["REMOTE_CONTROL_DEVICE"] : []);
+      : worker === "remote-control-mcp-worker" ? [remoteLegacy ? "REMOTE_CONTROL_DEVICE" : "V2_OWNER"] : []);
   for (const item of bindings) {
     if (!["plain_text", "secret_text"].includes(item.type)) {
       invariant(allowed.has(item.name), "Unexpected production resource binding: " + item.name);
@@ -96,7 +107,8 @@ function readConfiguration(worker, content) {
   const conf = JSON.parse(content.replace(/^\s*\/\/.*$/gm, ""));
   invariant(conf.name === worker && conf.main === WORKER_ENTRIES[worker],
     "Worker script name or entry differs from selected target");
-  invariant(conf.keep_vars === true, "Runtime variable/Secret preservation must stay enabled");
+  invariant(conf.keep_vars === (worker !== "remote-control-mcp-worker"),
+    "Runtime variable cleanup must match selected Worker release contract");
   const logs = worker === "remote-control-mcp-worker" ? false : true;
   invariant(conf.observability?.logs?.invocation_logs === logs,
     "Source Invocation Logs setting differs from production");
@@ -115,11 +127,16 @@ function readConfiguration(worker, content) {
       Number(b.simple?.period) === 60), "Source RATE_LIMITER policy changed");
   }
   if (worker === "remote-control-mcp-worker") {
-    const expected = "00000000-0000-4000-8000-000000000000";
-    invariant(conf.vpc_services?.length === 1 &&
-      conf.vpc_services[0]?.binding === "REMOTE_CONTROL_DEVICE" &&
-      conf.vpc_services[0]?.service_id === expected,
-      "Remote VPC source must retain one safe placeholder");
+    invariant(conf.vars?.REMOTE_CONTROL_V2_ONLY === "true" &&
+      conf.vars?.REMOTE_CONTROL_V2_PREVIEW_ONLY === undefined &&
+      !conf.vpc_services && !conf.exports && conf.preview_urls === false,
+      "Production must be v2-only without VPC or new DO class exports");
+    const bindings = conf.durable_objects?.bindings;
+    invariant(Array.isArray(bindings) && bindings.length === 1 &&
+      bindings[0]?.name === "V2_OWNER" &&
+      bindings[0]?.class_name === "V2OwnerCoordinator" &&
+      bindings[0]?.script_name === "remote-control-v2-preview",
+      "Production must reference existing Preview DO owner, no new namespace");
   }
   return conf;
 }
@@ -145,7 +162,17 @@ async function current(account, worker, token, options) {
     cfGet(account, worker, token, "/deployments?per_page=1"),
     cfGet(account, worker, token, "/script-settings"),
   ]);
-  verifyBindings(worker, settings, secrets, options);
+  let v2OwnerNamespaceId;
+  if (worker === "remote-control-mcp-worker") {
+    const preview = await cfGet(account, "remote-control-v2-preview", token, "/settings");
+    const owners = preview.bindings?.filter(x =>
+      x.name === "V2_OWNER" && x.type === "durable_object_namespace" &&
+      x.class_name === "V2OwnerCoordinator");
+    invariant(owners?.length === 1 && typeof owners[0].namespace_id === "string",
+      "Preview V2_OWNER identity unavailable");
+    v2OwnerNamespaceId = owners[0].namespace_id;
+  }
+  verifyBindings(worker, settings, secrets, { ...options, v2OwnerNamespaceId });
   if (options.sourceConfig) {
     invariant(settings.compatibility_date === options.sourceConfig.compatibility_date,
       "Compatibility date drift");
@@ -165,7 +192,7 @@ async function current(account, worker, token, options) {
 
 async function main() {
   const [mode, worker] = process.argv.slice(2);
-  invariant(["preflight", "readback", "prepare-remote", "version", "diagnostic"].includes(mode), "Unknown release validation mode");
+  invariant(["preflight", "readback", "version", "diagnostic"].includes(mode), "Unknown release validation mode");
   if (mode === "diagnostic") {
     invariant(worker, "Wrangler log path missing");
     const log = await readFile(worker, "utf8");
@@ -190,22 +217,9 @@ async function main() {
   const configPath = join(process.cwd(), "apps", worker, "wrangler.jsonc");
   const rawConfig = await readFile(configPath, "utf8");
   const sourceConfig = readConfiguration(worker, rawConfig);
-  if (mode === "prepare-remote") {
-    invariant(worker === "remote-control-mcp-worker", "Temporary config is Remote-only");
-    const placeholder = "00000000-0000-4000-8000-000000000000";
-    const id = process.env.REMOTE_CONTROL_VPC_SERVICE_ID;
-    invariant(typeof id === "string" && id !== placeholder && /^[a-fA-F0-9-]{36}$/.test(id),
-      "Remote VPC identity missing");
-    invariant(rawConfig.split(placeholder).length === 2, "Expected one Remote VPC placeholder");
-    const target = join(process.cwd(), "apps", worker, ".wrangler-release.jsonc");
-    await writeFile(target, rawConfig.replace(placeholder, id), { mode: 0o600, flag: "wx" });
-    console.log("Temporary Remote VPC deploy configuration ready");
-    return;
-  }
   invariant(account && token && statePath && sourceSha, "Required release environment missing");
   const observed = await current(account, worker, token, {
     mode,
-    vpcId: process.env.REMOTE_CONTROL_VPC_SERVICE_ID,
     sourceConfig,
   });
   if (mode === "preflight") {

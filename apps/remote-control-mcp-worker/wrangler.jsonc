@@ -3,10 +3,24 @@
   "name": "remote-control-mcp-worker",
   "main": "src/worker.ts",
   "compatibility_date": "2026-10-12",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
   "workers_dev": true,
   "preview_urls": false,
-  "keep_vars": true,
+  "keep_vars": false,
+  "vars": {
+    "REMOTE_CONTROL_V2_ONLY": "true"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "V2_OWNER",
+        "class_name": "V2OwnerCoordinator",
+        "script_name": "remote-control-v2-preview"
+      }
+    ]
+  },
   "observability": {
     "enabled": true,
     "logs": {
@@ -15,14 +29,8 @@
     }
   },
   "secrets": {
-    "required": ["MCP_ACCESS_TOKEN", "REMOTE_CONTROL_DEVICE_TOKEN"]
-  },
-  // Placeholder only. The real VPC service id is provisioned later and is not a secret value,
-  // but this repository must not contain a live service id or tunnel token.
-  "vpc_services": [
-    {
-      "binding": "REMOTE_CONTROL_DEVICE",
-      "service_id": "00000000-0000-4000-8000-000000000000"
-    }
-  ]
+    "required": [
+      "MCP_ACCESS_TOKEN"
+    ]
+  }
 }

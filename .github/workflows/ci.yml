@@ -250,7 +250,6 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          REMOTE_CONTROL_VPC_SERVICE_ID: ${{ vars.REMOTE_CONTROL_VPC_SERVICE_ID }}
         run: node scripts/manual-worker-release.mjs preflight "$SELECTED_WORKER"
 
       - name: Recheck current main inside acquired release lock
@@ -270,7 +269,6 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          REMOTE_CONTROL_VPC_SERVICE_ID: ${{ vars.REMOTE_CONTROL_VPC_SERVICE_ID }}
         run: |
           set -euo pipefail
           case "$SELECTED_WORKER" in
@@ -281,21 +279,13 @@ jobs:
           chmod 600 "$log"
           cleanup() {
             rm -f "$log"
-            if [[ "$SELECTED_WORKER" == "remote-control-mcp-worker" ]]; then
-              rm -f apps/remote-control-mcp-worker/.wrangler-release.jsonc
-            fi
           }
           trap cleanup EXIT
-          config_args=()
-          if [[ "$SELECTED_WORKER" == "remote-control-mcp-worker" ]]; then
-            node scripts/manual-worker-release.mjs prepare-remote "$SELECTED_WORKER"
-            config_args=(--config .wrangler-release.jsonc)
-          fi
           [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]] || {
             echo "Source became stale immediately before publication" >&2
             exit 1
           }
-          if ! (cd "apps/$SELECTED_WORKER" && pnpm exec wrangler deploy "${config_args[@]}") >"$log" 2>&1; then
+          if ! (cd "apps/$SELECTED_WORKER" && pnpm exec wrangler deploy) >"$log" 2>&1; then
             echo "Wrangler deploy failed (stage=deploy); no automated rollback attempted" >&2
             # Report only a whitelisted error code and a bounded, sanitized summary.
             # Never print raw Wrangler output (may contain secrets or configuration).
@@ -310,7 +300,6 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          REMOTE_CONTROL_VPC_SERVICE_ID: ${{ vars.REMOTE_CONTROL_VPC_SERVICE_ID }}
           EXPECTED_VERSION_ID: ${{ steps.publish.outputs.version_id }}
         run: node scripts/manual-worker-release.mjs readback "$SELECTED_WORKER"
 

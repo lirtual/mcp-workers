@@ -64,7 +64,10 @@ export const REVIEWED_V018_RELEASE_PIN: InstallReleasePin = Object.freeze({
   arm64Sha256: "73f159fe722cec4e8d354160f8975532b4f07fe9538772b6ed64c95ae4576184",
 });
 const VERIFIED_PYTHON_FREE_RELEASE: InstallReleasePin = REVIEWED_V018_RELEASE_PIN;
-const APPROVED_ORIGINS = new Set(["https://remote-control-v2-preview.aiyaya.workers.dev"]);
+const APPROVED_ORIGINS = new Set([
+  "https://remote-control-v2-preview.aiyaya.workers.dev",
+  "https://remote-control-mcp-worker.aiyaya.workers.dev",
+]);
 
 function validPin(p: InstallReleasePin): boolean {
   return p.pairingProtocol === "single-code-v1" &&

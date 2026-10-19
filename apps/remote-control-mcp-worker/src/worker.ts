@@ -5,9 +5,11 @@ export { V2OwnerCoordinator } from "./v2-pairing.ts";
 type V2Env = Env & {
   V2_OWNER?: DurableObjectNamespace;
   REMOTE_CONTROL_V2_PREVIEW_ONLY?: string;
+  REMOTE_CONTROL_V2_ONLY?: string;
 };
 function previewOnly(env: Env): boolean {
-  return (env as V2Env).REMOTE_CONTROL_V2_PREVIEW_ONLY === "true";
+  return (env as V2Env).REMOTE_CONTROL_V2_PREVIEW_ONLY === "true" ||
+    (env as V2Env).REMOTE_CONTROL_V2_ONLY === "true";
 }
 // Preview operations use existing authenticated per-device WSS routing.
 // The paired Agent, not a temporary Worker secret, opts into write/Shell.
