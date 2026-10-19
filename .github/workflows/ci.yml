@@ -259,12 +259,13 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: node scripts/manual-worker-release.mjs preflight "$SELECTED_WORKER"
 
-      - name: Stage bootstrap Secrets for a missing Worker
-        if: steps.preflight.outputs.bootstrap == 'true'
+      # GitHub Secrets are the source of truth for all five Workers, on every
+      # explicitly authorized manual release, not just during bootstrap.
+      - name: Stage selected Worker Secrets for every release
         shell: bash
         env:
           # GitHub automatically uses same-name Environment Secrets over
-          # Repository Secrets. Values are scoped to this one bootstrap step.
+          # Repository Secrets. Values are scoped to this one staging step.
           MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
           RAINDROP_ACCESS_TOKEN: ${{ secrets.RAINDROP_ACCESS_TOKEN }}
           API_KEY: ${{ secrets.API_KEY }}
@@ -274,7 +275,7 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          node scripts/bootstrap-worker-secrets.mjs "$SELECTED_WORKER" "$RUNNER_TEMP/mcp-bootstrap-secrets.json"
+          node scripts/bootstrap-worker-secrets.mjs "$SELECTED_WORKER" "$RUNNER_TEMP/mcp-worker-secrets.json"
 
       - name: Stage approved Worker variables
         shell: bash
@@ -324,12 +325,11 @@ jobs:
             echo "Source became stale immediately before publication" >&2
             exit 1
           }
-          if [[ "${{ steps.preflight.outputs.bootstrap }}" == "true" ]]; then
-            test -s "$RUNNER_TEMP/mcp-bootstrap-secrets.json"
-            deploy_args=(--secrets-file "$RUNNER_TEMP/mcp-bootstrap-secrets.json")
-          else
-            deploy_args=()
-          fi
+          # Fail closed if any selected Worker Secret is absent. Wrangler
+          # atomically uploads the staged values with the selected deployment,
+          # including existing Workers; unspecified secrets are preserved.
+          test -s "$RUNNER_TEMP/mcp-worker-secrets.json"
+          deploy_args=(--secrets-file "$RUNNER_TEMP/mcp-worker-secrets.json")
           test -f "$RUNNER_TEMP/mcp-worker-variables.txt"
           while IFS= read -r variable_pair; do
             deploy_args+=(--var "$variable_pair")
@@ -348,7 +348,7 @@ jobs:
       - name: Remove temporary deployment configuration
         if: always()
         shell: bash
-        run: rm -f "$RUNNER_TEMP/mcp-bootstrap-secrets.json" "$RUNNER_TEMP/mcp-worker-variables.txt"
+        run: rm -f "$RUNNER_TEMP/mcp-worker-secrets.json" "$RUNNER_TEMP/mcp-worker-variables.txt"
 
       - name: Verify exact active version and required production bindings
         env:
