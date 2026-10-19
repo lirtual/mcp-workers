@@ -325,7 +325,6 @@ jobs:
             exit 1
           }
           if [[ "${{ steps.preflight.outputs.bootstrap }}" == "true" ]]; then
-            [[ "$SELECTED_WORKER" != "remote-control-mcp-worker" ]]
             test -s "$RUNNER_TEMP/mcp-bootstrap-secrets.json"
             deploy_args=(--secrets-file "$RUNNER_TEMP/mcp-bootstrap-secrets.json")
           else
