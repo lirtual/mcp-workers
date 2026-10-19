@@ -62,7 +62,7 @@ async function rpc(env: Env, method: string, params: unknown, opts: {
 test("production Portal authentication fails closed before DO dispatch", async () => {
   const f = fixture(async () => Response.json([]));
   const request = { name: "list_devices", arguments: {} };
-  const missing = await rpc({ ...f.env, MCP_ACCESS_TOKEN: undefined } as Env,
+  const missing = await rpc({ ...f.env, MCP_ACCESS_TOKEN: undefined } as unknown as Env,
     "tools/call", request);
   assert.equal(missing.status, 503);
   const wrong = await rpc(f.env, "tools/call", request, { token: "wrong" });
