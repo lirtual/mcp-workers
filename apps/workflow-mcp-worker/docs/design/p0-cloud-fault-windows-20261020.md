@@ -45,4 +45,4 @@ With the `global_fetch_strictly_public` compatibility flag, a freshly deployed t
 
 These are experimental observations, not a change to owner-approved architecture Q1–Q50. Source file names, numeric limits and API contract details remain design proposals, not implicit implementation approval.
 
-**Cleanup requirement:** after capturing evidence, remove the new isolated Workers, Workflow, D1 and test secret; independently verify the account returns to its preflight inventory of 12 Workers, 4 D1 and 1 Workflow.
+**Cleanup completed and independently verified:** deleted the isolated main Worker, effect Worker, read-only public Worker, Workflow, and D1. Subsequent Cloudflare account listings were **12 Workers, 4 D1 databases and 1 Workflow**, with no names matching this test. The temporary WSL test-secret file was deleted; sanitized aggregate outputs remain in the isolated WSL scratch directory for audit. Existing resources were not modified.
