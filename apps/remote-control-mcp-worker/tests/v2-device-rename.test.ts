@@ -14,14 +14,21 @@ test("owner rename changes only the label; duplicate names require UUID disambig
     ["session:epoch:" + one, "unchanged-epoch"],
   ]);
   const original = structuredClone(rows.get("device:" + one));
-  const storage = {
+  type TestStorage = {
+    get<T>(key: string): Promise<T | undefined>;
+    put(key: string, value: unknown): Promise<void>;
+    delete(key: string): Promise<boolean>;
+    list<T>(opts: {prefix: string; limit: number}): Promise<Map<string, T>>;
+    transaction<T>(fn: (txn: TestStorage) => Promise<T>): Promise<T>;
+  };
+  const storage: TestStorage = {
     async get<T>(key: string): Promise<T | undefined> { return rows.get(key) as T | undefined; },
     async put(key: string, value: unknown) { rows.set(key, value); },
     async delete(key: string) { return rows.delete(key); },
     async list<T>({prefix, limit}: {prefix: string;limit: number}) {
       return new Map([...rows].filter(([key]) => key.startsWith(prefix)).slice(0, limit)) as Map<string, T>;
     },
-    async transaction<T>(fn: (txn: typeof storage) => Promise<T>): Promise<T> { return fn(storage); },
+    async transaction<T>(fn: (txn: TestStorage) => Promise<T>): Promise<T> { return fn(storage); },
   };
   const owner = new V2OwnerCoordinator({
     storage,
