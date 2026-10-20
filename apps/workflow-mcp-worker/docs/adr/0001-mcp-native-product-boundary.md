@@ -17,4 +17,4 @@ This ADR captures **only** Grill With Docs Round 1 decisions Q1=A, Q2=A, Q3=A. T
 
 ## Consequences
 
-Future design questions must respect the independently owned context and MCP-first interaction model. Definition publishing, capability discovery, trust policy, executor choice, runtime state, retries, and operational security remain open for subsequent Grill With Docs rounds. No code implementation, deploy, merge, or production change is authorized by this ADR.
+Future design questions must respect the independently owned context and MCP-first interaction model. Round 2 has since settled runtime-managed definition publishing (**ADR-0002**), unrestricted preregistration-free dynamic MCP targets (**ADR-0003**), and bounded DAG orchestration via Cloudflare Workflows (**ADR-0004**). Trust policy, executor choice, runtime state, retries, and operational security remain open for subsequent Grill With Docs rounds. No code implementation, deploy, merge, or production change is authorized by this ADR.
