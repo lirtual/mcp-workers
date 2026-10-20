@@ -176,6 +176,12 @@ This single draft records (1) decided boundaries, (2) proposed implementation co
 
 The design tree remains closed as product/architecture preference choices. Feasibility tests remain **not executed**, so the work is a reviewable implementation draft, **not** a production-ready proven design. The next approval should be for the whole revised spec or narrow P0 feasibility probes, not a new series of routine field-name/limit interviews.
 
+## P0 local feasibility evidence — first isolated experiments
+
+The [P0 local PoC evidence](p0-local-poc-evidence.md) records actual WSL2 local Wrangler/Workflows/D1 fault injection: unguarded retries created duplicate mock side effects; a durable D1 guard prevented the second effect; simulated post-create acknowledgement loss reconciled by deterministic instance ID; repeated and concurrent admissions remained one Run. Local restart preserved D1 guard and instance results. The isolated test code was **not committed** to this docs PR; its services have been stopped.
+
+**Evidence level: LOCAL_PASS only**, not cloud, real network-loss, remote MCP interoperability, actual instance-expiry or production P0 acceptance. Q1–Q50 remain unchanged; AC-23–AC-26 still require their full applicable cloud/crash proofs.
+
 ## Working rules
 
 1. Ask the complete current frontier in a round; offer one recommended choice per question.
