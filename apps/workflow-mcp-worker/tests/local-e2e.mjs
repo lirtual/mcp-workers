@@ -94,5 +94,22 @@ try{
   const winningVersion=JSON.parse(winners[0].content[0].text).published_version_id;
   ok(JSON.parse(winners[1].content[0].text).published_version_id===winningVersion,'concurrent Publish must not create a second Version');
   ok((await tool('workflow_get',{workflow_id:competing.workflow_id})).published_version_id===winningVersion,'CAS active version stable');
+  // A rejected read-only tool argument fails the prerequisite; dependent Step is skipped.
+  const failingDef={version:1,name:'Failed prerequisite',steps:[
+    {id:'read',uses:'s1.readonly_mcp',with:{tool:'echo',arguments:{value:123}}},
+    {id:'dependent',uses:'result.emit',needs:['read'],with:{data:'never emitted'}}
+  ]};
+  const f=await tool('workflow_create',{definition:JSON.stringify(failingDef)});
+  await tool('workflow_publish',{workflow_id:f.workflow_id,expected_revision:1});
+  const fr=await tool('workflow_run',{workflow_id:f.workflow_id,inputs:{}});
+  const fs=await awaitOutcome(fr.run_id);
+  ok(fs.status==='failed','invalid read-only target input fails the Run');
+  ok(fs.steps.some(x=>x.step_id==='read'&&x.status==='failed')&&fs.steps.some(x=>x.step_id==='dependent'&&x.status==='skipped'),'failed prerequisite does not execute dependent Step');
+  // A runtime string used as an if predicate is not silently coerced to true.
+  const conditionDef={version:1,name:'Runtime boolean only',steps:[{id:'emit',uses:'result.emit',if:{ref:'inputs.flag'},with:{data:'wrong'}}]};
+  const c=await tool('workflow_create',{definition:JSON.stringify(conditionDef)});
+  await tool('workflow_publish',{workflow_id:c.workflow_id,expected_revision:1});
+  const cr=await tool('workflow_run',{workflow_id:c.workflow_id,inputs:{flag:'false'}});
+  ok((await awaitOutcome(cr.run_id)).status==='failed','non-boolean runtime condition fails safely');
   console.log('S1_LOCAL_E2E_PASS',JSON.stringify({assertions:tests,workflow_id:id,run_id:first.run_id,step_count:done.steps.length}));
 }finally{await cli.close();}

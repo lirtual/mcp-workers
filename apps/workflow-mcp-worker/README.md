@@ -43,10 +43,11 @@ validation need separate authorization.
 ## Evidence and remaining work
 
 Local Wrangler E2E (2026-10-20), including the **current MCP SDK adapter**, passed
-32 assertions at the Portal-authenticated MCP seam: Draft editing and invalid-Draft
+35 assertions at the Portal-authenticated MCP seam: Draft editing and invalid-Draft
 preview, YAML readback, compile/Publish, concurrent identical Publish idempotency,
 revision conflicts, pinned Run after republish, pause/replay, two successful read-only
-MCP Steps and result retrieval. The local-only `tests/local-e2e.mjs` needs both local
+MCP Steps and result retrieval, failed-dependency skipping and non-boolean runtime
+conditions failing safely. The local-only `tests/local-e2e.mjs` needs both local
 Wrangler processes and `S1_LOCAL_TOKEN` set to the same disposable auth token.
 
 `tests/local-reserved-recovery.mjs` uses **isolated local D1 fault injection** (never
