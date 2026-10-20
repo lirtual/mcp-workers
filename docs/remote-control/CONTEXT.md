@@ -99,6 +99,14 @@ _Avoid_: Assuming that device pairing grants blanket access to every personal br
 A specifically selected authorized device and browser session, narrowed to a tab where the operation requires one.
 _Avoid_: An implicit default device or an unspecified global browser.
 
+**High-Impact Browser Action**:
+A proposed browser interaction that would commit a consequential external effect such as a purchase, sent communication, data deletion or permission change.
+_Avoid_: Treating ordinary form preparation as already committed, or considering page text or device pairing to be owner approval.
+
+**Browser Action Confirmation**:
+The owner's explicit approval of one identified High-Impact Browser Action before its consequential effect is committed.
+_Avoid_: Assuming that a previous general workflow approval, the browser's logged-in state or an untrusted webpage is confirmation.
+
 **Graphical Desktop Control**:
 Remote viewing or manipulation of a desktop screen, mouse or keyboard. This is excluded from the first release.
 
@@ -145,11 +153,17 @@ The controlled transfer of existing authoritative Operation Receipts to a replac
 _Avoid_: Treating a successful new-store startup as sufficient evidence that historical operation identities were preserved.
 
 
+## Browser interaction defaults and consequential effects — accepted fourth round (2026-10-20)
+
+[ADR-0024](./adr/0024-browser-observation-and-confirmation.md) records four design choices: an Automation Browser Session is eligible for Agent-local cleanup after 30 idle minutes without clearing its Automation Browser Profile; headless browser mode is the default, with headed mode available only on a device with a usable graphical desktop; bounded semantic page inspection comes before on-demand screenshots; and every High-Impact Browser Action needs its own explicit Browser Action Confirmation before the external effect is committed. Ordinary navigation, observation and form preparation do not require confirmation for every interaction. Untrusted page content or prior device pairing cannot approve consequential actions.
+
+Exact activity tracking, confirmation mechanism, page-data/secret bounds, screenshot fallback, tool interfaces and platform acceptance remain open. The decisions are documentation-only and do not establish deployed browser capability.
+
 ## Browser automation provisioning, exclusivity and interruption — accepted third round (2026-10-20)
 
 [ADR-0023](./adr/0023-browser-runtime-profile-interruption.md) records the accepted boundaries: on-demand Playwright-compatible Chromium installation on the Agent with no silent elevation for missing OS prerequisites; one active Automation Browser Session per persistent Automation Browser Profile; initially one dedicated Automation Browser Profile per device; and caller-disconnect retention until Agent-local idle cleanup without automatic action replay. Revoking device authorization prevents subsequent dispatch and requests best-effort shutdown of browser sessions on reachable Agents. Offline or compromised Agents cannot be confirmed stopped, and locally retained profile data is not implicitly erased.
 
-Exact timeout values, profile lock recovery, download trust, session observation and user confirmations are open; these are design decisions only, not deployed features.
+ADR-0024 subsequently fixes the initial 30-minute idle threshold, headless default, semantic-first observation and per-high-impact-action confirmation boundary. Exact activity accounting, profile lock recovery, download trust, screenshot/page-data limits and confirmation implementation remain open; these are design decisions only, not deployed features.
 
 ## Browser automation runtime and session choices — accepted second round (2026-10-20)
 
