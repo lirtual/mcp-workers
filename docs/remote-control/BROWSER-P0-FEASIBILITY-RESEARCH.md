@@ -181,3 +181,16 @@ At later interface design time, prefer the *existing* stable Operation ID/local 
 4. The source-only [Browser Automation Design](./BROWSER-AUTOMATION-DESIGN.md) remains Draft #117. No new product decision, implementation Ticket, PR merge, production deployment or broadened privilege grant is made by these results.
 
 **Do not re-run successful Windows read/write/Shell or offline browser tests without a relevant code, browser binary, OS/runtime or protocol change.** Focus any future acceptance on the still-unmet request-policy and verifiable approval gates.
+
+
+## J. Draft offline-only core implementation checkpoint (2026-10-20)
+
+A separate **unmerged source Draft**, [remote-control-agent PR #15](https://github.com/lirtual/remote-control-agent/pull/15), now contains a small **internal-only, injected Playwright-compatible** `BrowserOfflineCore` candidate on top of the existing Windows full-tools source branch. It is **not** a newly accepted design choice, not a Browser MCP Worker, and not an installed feature.
+
+- **Included:** one Agent-private, persistent offline-profile session; explicit start/status/close; one fixed synthetic HTML tab; at most 8,000 characters from the page's ARIA snapshot; 30-minute idle close with profile retained.
+- **Deny-first behavior:** `headless: true`, `offline: true`, disabled JavaScript, disabled Service Worker registration, disabled downloads and page permissions; fail-closed requirement for both HTTP route denial and WebSocket denial registered **before** the first page is created.
+- **Intentionally excluded:** any public URL navigation; arbitrary user HTML/JavaScript; click/fill/keyboard/upload/download; live browser MCP exposure; new dependency installation or browser binary management; sensitive-effect owner approval; an assertion of complete network isolation. The driver is injected for type-safe contract tests, not loaded from an npm Playwright runtime; real Playwright integration remains untested.
+- **Verification boundary:** the candidate's unit tests verify options, denial registration ordering, denial callbacks, bounded snapshot, no navigation method, duplicate-session refusal, and cleanup on setup failure. A unit test/mock passing is **not evidence** that an actual installed Chromium + Playwright process provides complete network isolation or that Client→Worker→Agent can execute browser tools.
+- **Status:** source Draft, explicitly not deployed or merged. Treat the CI run referenced in PR #15 as ordinary source regression evidence, not security/network or client-to-Agent approval acceptance.
+
+**Unchanged P0 blockers:** (1) actual effective-destination network safety across redirects/DNS/subresources/Service Workers/WebSockets is still unimplemented/unverified for any HTTP(S) navigation, and (2) Agent-verifiable exact-action one-use ChatGPT human approval has not been demonstrated. Do not enable new external browsing tools until these independent gates are met. Existing §I Windows offline Chromium and synthetic redirect baseline should be reused, not rerun without a relevant change.
