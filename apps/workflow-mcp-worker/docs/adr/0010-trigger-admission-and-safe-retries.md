@@ -15,6 +15,6 @@ Workflow MCP requires webhook-specific authentication and a stable event identif
 
 ## Consequences
 
-The exact webhook identity namespace/retention, scheduler's timezone and DST interpretation, trigger admission atomicity, unknown-outcome reconciliation, which operation metadata is trustworthy, retry quotas and terminal-state vocabulary remain undecided. D1 may hold admission and query facts but **Cloudflare Workflows alone** progresses the DAG (ADR-0004). This ADR does not create a second event queue, retry scheduler or event-sourcing platform.
+Round 5 **Q31=A** fixes webhook deduplication identity to the combination of **Workflow, Trigger, event source and stable event ID**, with a **finite** retention period (duration not yet selected). **Q32=A** fixes Cron daylight-saving behavior: skip nonexistent local times and admit a repeated local time only once. Trigger admission atomicity, practical retention duration, intended-occurrence identity under timezone updates, unknown-outcome reconciliation, trustworthy operation metadata, retry quotas and terminal-state vocabulary remain undecided. D1 may hold admission and query facts but **Cloudflare Workflows alone** progresses the DAG (ADR-0004). This ADR does not create a second event queue, retry scheduler or event-sourcing platform.
 
 Design only: no implementation, merge, deployment, or Tickets.
