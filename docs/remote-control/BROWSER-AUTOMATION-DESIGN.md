@@ -1,6 +1,6 @@
 # Remote Control — Browser Automation Design (Grill With Docs)
 
-Status: **design interview in progress; rounds 1–5 agreed 2026-10-20**. This document records decisions, not shipped behavior, authorization to implement, a release gate or a new development Ticket. The existing v1/v2 specs remain authoritative for their implemented scope. Do not infer that browser tools, native Windows browser automation coverage, or personal-profile access exist today.
+Status: **design interview in progress; rounds 1–6 agreed 2026-10-20**. This document records decisions, not shipped behavior, authorization to implement, a release gate or a new development Ticket. The existing v1/v2 specs remain authoritative for their implemented scope. Do not infer that browser tools, native Windows browser automation coverage, or personal-profile access exist today.
 
 ## Goal
 
@@ -61,6 +61,17 @@ See [ADR-0024](./adr/0024-browser-observation-and-confirmation.md). No particula
 
 See [ADR-0025](./adr/0025-atomic-browser-actions-and-receipts.md). These agreements do **not** approve individual tool names, exact locator syntax, file permissions, receipt algorithms or bypass of the Q16 per-high-impact-action confirmation.
 
+## Accepted common workflow, tab identity, and approval scope (round 6)
+
+| Question | Decision | Consequence |
+| --- | --- | --- |
+| Q21 — Initial capability groups | **A**: complete common browser workflows via curated atomic operations | First scope includes session/tab management, navigation, page observation, click/fill/select/keyboard, screenshot, and browser-scoped uploads/downloads; do not expose unrestricted scripting or all Playwright features. Final tool names and schemas remain undecided |
+| Q22 — Tab identity | **A**: stable Tab ID, explicitly scoped to device/session | An exact `device_id`, `session_id` and `tab_id` identify a tab-dependent action. Navigation preserves the Tab ID, close invalidates it; tab index/title/URL are not substitutes. Restart and race semantics remain open |
+| Q23 — High-impact confirmation | **A**: one-use approval bound to a concrete action and target | Approval covers the reviewed device, session, tab, action and material arguments only; material target changes require re-approval. Confirmation transport, expiry, and consumption/replay mechanics remain open |
+| Q24 — Profile clearing | **A**: owner request with safe-state check | Clear retained local automation Profile data only when no active browser session or unresolved/unknown-effect operation exists; if safety cannot be established, refuse and report. Session close and device revoke do not imply deletion |
+
+See [ADR-0026](./adr/0026-browser-capabilities-tab-and-approval-scope.md). These decisions do not select exact tools, introduce a new confirmation system, or make browser actions available in the deployed Agent.
+
 ## Invariants carried forward
 
 - Use the established authenticated device path and explicit `device_id`; never accept an arbitrary remote address or publish a CDP endpoint.
@@ -72,14 +83,14 @@ See [ADR-0025](./adr/0025-atomic-browser-actions-and-receipts.md). These agreeme
 
 ## Open design-tree branches
 
-**Next-round frontier (Q21–Q24; no choices accepted yet)**
+**Next-round frontier (Q25–Q28; no choices accepted yet)**
 
-- Q21 — Which browser capability groups must form the initial minimal atomic MCP tool contract rather than being deferred?
-- Q22 — How should a client identify and reselect an exact tab within the explicit device/browser-session target, including tab closure or navigation changes?
-- Q23 — How should one high-impact action's explicit owner confirmation be bound to the intended target and execution request without authorizing a later or changed action?
-- Q24 — Under what conditions may the owner clear the retained automation profile, especially if a session is active or its operation outcome is unknown?
+- Q25 — What exact first-release atomic tool inventory should expose the accepted complete common workflows, without redundant synonyms or a generic action gateway?
+- Q26 — What fallback should be permitted when accessibility/semantic locators cannot uniquely reach a visual-only control, without enabling arbitrary page scripts?
+- Q27 — How should the one-use owner confirmation be delivered and consumed across ChatGPT/MCP, Worker and Agent, and how should the system fail if confirmed human intent cannot be established?
+- Q28 — How should the Agent recover from a browser process crash or stale Profile lock without using an uncertain state as permission to discard receipts, switch Profile or replay actions?
 
-**Downstream (not yet at the frontier; depends on Q21–Q24):** precise tool names/argument schemas; element locator freshness and visual-coordinate fallback; screenshot/page-data bounds and secret redaction; upload-path/download-directory safety and retention; approval replay resistance and ambiguous website outcomes; profile lock/crash recovery and browser integrity checks; Linux/native Windows acceptance and staged rollout; future explicitly authorized personal-browser attachment.
+**Downstream (not yet at the frontier; depends on Q25–Q28):** exact arguments and result schemas; tab creation/close races and re-attach behavior; screenshot/snapshot token and secret exposure limits; upload/download directory permissions and cleanup; action-specific confirmation expiry/replay proof, website-outcome reconciliation, trusted browser download/install provenance, per-platform acceptance and rollout, and explicitly authorized future personal-browser attachment.
 
 ## Documentation and scope rules
 
