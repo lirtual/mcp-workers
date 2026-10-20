@@ -652,3 +652,29 @@ describe("Legacy bookmark_manage cannot bypass Trash protections", () => {
     }
   });
 });
+
+
+describe("T03 unsafe source-state preflight", () => {
+  it("rejects a global/unknown collection marker before update or move", async () => {
+    const service = new RaindropMCPService({ accessToken: "test-token" });
+    const get = vi.spyOn(service.raindropService, "getBookmark")
+      .mockResolvedValue({ _id: 23, link: "https://example.com", title: "Old",
+        tags: [], collection: { $id: 0 } } as Awaited<ReturnType<typeof service.raindropService.getBookmark>>);
+    const put = vi.spyOn(service.raindropService, "updateBookmark");
+    const getCollection = vi.spyOn(service.raindropService, "getCollection");
+    const client = new Client({ name: "source-state-preflight", version: "1.0.0" });
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    try {
+      await Promise.all([service.getServer().connect(st), client.connect(ct)]);
+      expect((await client.callTool({ name: "bookmark_update",
+        arguments: { id: 23, title: "Edited" } })).isError).toBe(true);
+      expect((await client.callTool({ name: "bookmark_move",
+        arguments: { id: 23, collectionId: 22 } })).isError).toBe(true);
+      expect(put).not.toHaveBeenCalled();
+      expect(getCollection).not.toHaveBeenCalled();
+    } finally {
+      await client.close(); await service.cleanup();
+      get.mockRestore(); put.mockRestore(); getCollection.mockRestore();
+    }
+  });
+});

@@ -392,7 +392,7 @@ const bookmarkUpdateTool = defineTool({
     const current = await raindropService.getBookmark(args.id, true);
     const sourceId = current.collection?.$id;
     if (typeof sourceId !== "number" || !Number.isSafeInteger(sourceId) ||
-        sourceId === -99)
+        (sourceId !== -1 && sourceId <= 0))
       throw new ValidationError("Bookmark location is unverified or in Trash");
     const { id, url, ...fields } = args;
     const updates = {
@@ -426,7 +426,7 @@ const bookmarkMoveTool = defineTool({
     const current = await raindropService.getBookmark(args.id, true);
     const sourceId = current.collection?.$id;
     if (typeof sourceId !== "number" || !Number.isSafeInteger(sourceId) ||
-        sourceId === -99)
+        (sourceId !== -1 && sourceId <= 0))
       throw new ValidationError("Bookmark location is unverified or in Trash");
     await raindropService.getCollection(args.collectionId, true);
     const result = await atomicBookmarkWriteResult(async () => {
