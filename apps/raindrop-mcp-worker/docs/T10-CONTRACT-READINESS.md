@@ -207,3 +207,13 @@ bash -c 'set -eu; IFS= read -rsp "Raindrop API Token: " RAINDROP_ACCESS_TOKEN </
 - **只有取得另一次明确的切换授权**，才可在另外的实施中移除旧别名、Sampling、library_audit、公开 diagnostics 并刷新测试清单；本轮 T10 不执行这些动作。关闭评估 Ticket 也不是生产发布许可。
 
 **证据范围：** #124–#132 的 Draft 代码、Mock API/SDK MCP/Portal 测试；T10 新增对安全旧入口的 SDK tools/list 与 tools/call 验证。GitHub Actions/CI 仅证明对应源码通过自动化；**本轮另有对生产 Raindrop 账号隔离可丢弃数据的真实读写验收**（详情见 P1 生产账号隔离验收章节），未修改生产 Worker 或 PR CI 凭据。
+
+
+## P0 补充安全复核：Environment 授权边界与真实验收门槛（2026-10-20）
+
+- **复核范围（源码层，不冒充外部独立审查）**：当前 Draft 41 个名称（26 新候选 + 15 旧兼容）；对照官方 Raindrop API 核对原集合限定的 `DELETE /raindrops/{collectionId}`、显式 ID 批量 `PUT/DELETE /raindrops/{collectionId}`、`PUT/DELETE /tags/{collectionId}`、书签范围内高亮补丁、`DELETE /collection/{id}` 和全局回收站 `DELETE /collection/-99`。源码及已运行 Mock/SDK 测试显示旧 `empty_trash`、`cleanup_collections`、`remove_duplicates`、`bulk_edit_raindrops` 的危险意图均被拒绝，旧 `collection_manage(delete)` 被禁用，旧 `bookmark_manage(delete)` 与原子入口复用有原集合核验的 Service 方法。此项是针对性审查证据，**不等于整份 PR 的独立安全审查签字**。
+- **官方 API 的真实回执限制**：官方批量更新仅返回聚合 `modified`，不足以证明每个 ID 都成功；Draft 的 `bookmark_batch_update/delete` 对单项结果仍返回 `unknown`，禁止以聚合数捏造逐项成功。标签官方契约使用 `{tags,replace}` 重命名/合并及 `{tags}` 删除。若真实写入的结果与 Mock 不一致，先停下来核对原因，不新增兼容层。
+- **已观察到的 GitHub Environment 配置风险**：对 `raindrop-mcp-worker` 的只读 GitHub Environment 元数据查询返回 `deployment_branch_policy: null`、`protection_rules: []`，即没有单独的 Environment 分支/审批保护；当前唯一 CI `.github/workflows/ci.yml` 的正式发布作业通过 `workflow_dispatch + refs/heads/main` 和预检进行代码级发布限制。**这不证明密钥泄露或当前 CI 绕过**，但未来若修改同仓 PR 工作流以引用该 Environment，可能新增接触生产密钥的路径。建议在另行明确批准后为现有 Environment 评估/配置受限分支，不新建密钥系统；本次不改 Environment。
+- **不以部署换验收**：当前仅有的正常 CI 无受控 Draft 写入验收作业；`RAINDROP_ACCESS_TOKEN` 未注入 WSL 会话，且生产密钥不应复制到工作树或日志。不得用 `main` 的正式发布 dispatch、放宽保护规则、长期保留 PR 密钥作业来规避真实验收门槛。
+- **剩余最小真实验收**：在明确安全授权的既有受控密钥通道中，仅创建两份可丢弃 collection、少量唯一 URL bookmark 与隔离 tag；依次验证 collection 创建/更新/定向删除，bookmark 更新/移动/软删，tag 重命名/合并/删，以及严格显式 ID 的批量作用域拒绝。每次以官方 GET 独立核实目标 ID 与修改后状态；未知回执不重试，停止并检查。只能清理本轮精确新建的 ID，绝不执行 `trash_empty(confirm:true)` 或影响其他回收站项目。
+- **验收结论**：离线合同和模拟保护通过，Draft 的上述关键真实写入、部署链路端到端认证及独立全 PR 安全审查仍未完成，保持 **NO-GO / Draft**，不合并、不部署、不移除旧兼容工具。
