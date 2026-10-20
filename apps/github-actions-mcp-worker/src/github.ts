@@ -65,7 +65,10 @@ export class GitHubActionsClient {
     assertRepo(this.allowlist, repo);
     if (!this.env.GH_TOKEN) throw new ActionError('github_token_not_configured');
     const url = 'https://api.github.com/repos/' + repo + '/' + path;
-    const response = await this.requestFetch(url, {
+    // Cloudflare Workers' native fetch rejects a non-global `this` receiver.
+    // Keep the injectable transport but invoke it as a standalone function.
+    const requestFetch = this.requestFetch;
+    const response = await requestFetch(url, {
       ...init,
       redirect: 'manual',
       headers: {
