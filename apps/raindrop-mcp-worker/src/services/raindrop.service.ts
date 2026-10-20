@@ -32,6 +32,8 @@ export default class RaindropService {
   private cacheBookmarks = new Map<string, unknown>();
   private cacheSearch = new Map<string, unknown>();
   private readonly maxRateLimitRetries: number;
+  // One Service instance per incoming MCP request in the Worker.
+  private upstreamRequestCount = 0;
 
   constructor(config: string | RaindropServiceConfig = {}) {
     const normalized: RaindropServiceConfig =
@@ -54,7 +56,13 @@ export default class RaindropService {
     });
 
     this.client.use({
-      onRequest({ request }) {
+      onRequest: ({ request }) => {
+        // Count every actual HTTP attempt, including the retry calls below.
+        // Reject request 61 before dispatch; this is not an account-wide limiter.
+        if (this.upstreamRequestCount >= 60) {
+          throw new ValidationError("Per-invocation upstream request budget of 60 exhausted");
+        }
+        this.upstreamRequestCount++;
         if (debugHttp) {
           // Use the application logger so request diagnostics follow the same redaction path.
           const logger = createLogger("raindrop-service");
