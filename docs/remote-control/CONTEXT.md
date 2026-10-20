@@ -143,6 +143,10 @@ _Avoid_: Equating a download with an MCP file attachment or assuming it may be d
 The normal period before an unreferenced file in the Agent-managed browser download area becomes eligible for cleanup, distinct from Browser Profile data or the owner's other files.
 _Avoid_: Erasing a download still referenced by active work or an unresolved operation.
 
+**Managed Download Reference**:
+A known connection between a Managed Browser Download and an active browser session or unresolved operation that may still need the file.
+_Avoid_: Assuming an expired file is safe to delete when that connection cannot be determined.
+
 **Browser Action Receipt**:
 An Agent-local record of the known execution outcome of a potentially effectful browser operation, independently of whether the remote website completed the intended business transaction.
 _Avoid_: Equating a click result with a confirmed purchase, submission or remote service commit.
@@ -225,11 +229,17 @@ The controlled transfer of existing authoritative Operation Receipts to a replac
 _Avoid_: Treating a successful new-store startup as sufficient evidence that historical operation identities were preserved.
 
 
+## Browser initial low-impact scope and bounded output — accepted eleventh round (2026-10-20)
+
+Q41=A narrows the **candidate** low-impact browser operations to authorized browser/session/tab status or listing, bounded semantic observations, and on-demand screenshots, all subject to content/privacy controls. Explicit-target navigation needs a separate conservative effect review; a generic click/fill/keyboard/select is not low-impact simply because its name or visible label seems routine. Q42=A selects minimal shared device/session/tab targeting and compact structured status, error, bounded data, truncation and Operation ID results with operation-specific inputs. Q43=A selects an initial approximately 8,000-character semantic snapshot budget with explicit truncation and follow-up focused reads, and no more than one on-demand screenshot per request initially; screenshots may reveal secrets. Q44=A uses minimal existing Agent-local session and operation metadata to identify Managed Download References, retaining a download when reference absence cannot be proven and allowing seven-day cleanup only when positively unreferenced.
+
+These decisions amend the existing [ADR-0030](./adr/0030-browser-conservative-gating-consent-evidence-acceptance.md), [ADR-0025](./adr/0025-atomic-browser-actions-and-receipts.md), [ADR-0028](./adr/0028-browser-data-files-provenance-platform-acceptance.md), and [ADR-0029](./adr/0029-browser-results-outcomes-downloads-gated-release.md). They do not prove safe classification, implement browser tools, create a new file index, define complete schemas, or authorize rollout.
+
 ## Conservative effects, verified approval and platform release — accepted tenth round (2026-10-20)
 
 [ADR-0030](./adr/0030-browser-conservative-gating-consent-evidence-acceptance.md) confirms four design directions: only Conservatively Classified Browser Actions can be enabled without consequential-action approval, and unknown impact fails closed; a Verified Browser Approval for a one-use high-impact action must be demonstrated through a real ChatGPT/MCP/Worker/Agent end-to-end acceptance path before enabling that capability; browser effects reuse existing Agent-local Operation IDs and Receipts, preserving Unknown Outcome without blind replay or a second website ledger; and each platform's Browser Platform Release Gate depends on relevant real-device launch, interaction, file, recovery, authorization and upgrade/rollback evidence, reusing unchanged tests where valid.
 
-The exact safe low-impact subset, supported human-confirmation evidence channel, typed receipt states and platform cases remain unsettled. These accepted designs are **not** claims that proof, implementation, or rollout exists.
+ADR-0030 and the round-11 decision now narrow the candidate low-impact subset, but safe classification enforcement, the supported human-confirmation evidence channel, exact typed receipt/tool schema and platform cases remain unsettled. These accepted designs are **not** claims that proof, implementation or rollout exists.
 
 ## Browser results, outcome evidence, retention and gating — accepted ninth round (2026-10-20)
 
