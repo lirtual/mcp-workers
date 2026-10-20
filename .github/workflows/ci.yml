@@ -275,7 +275,6 @@ jobs:
           MCP_BROKER_TOKEN: ${{ secrets.MCP_BROKER_TOKEN }}
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           GH_TOKEN_SECONDARY: ${{ secrets.GH_TOKEN_SECONDARY }}
-          GITHUB_REPOS_SECONDARY: ${{ vars.GH_ACTIONS_REPOS_SECONDARY }}
         run: |
           set -euo pipefail
           umask 077
@@ -292,8 +291,6 @@ jobs:
           MAX_SCHEMA_BYTES: ${{ vars.MAX_SCHEMA_BYTES }}
           QUERY_TIMEOUT_MS: ${{ vars.QUERY_TIMEOUT_MS }}
           MAX_WRITE_AFFECTED_ROWS: ${{ vars.MAX_WRITE_AFFECTED_ROWS }}
-          GITHUB_REPOS: ${{ vars.GH_ACTIONS_REPOS }}
-          GITHUB_REPOS_SECONDARY: ${{ vars.GH_ACTIONS_REPOS_SECONDARY }}
         run: |
           set -euo pipefail
           umask 077
@@ -362,8 +359,6 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           EXPECTED_VERSION_ID: ${{ steps.publish.outputs.version_id }}
-          GITHUB_REPOS: ${{ vars.GH_ACTIONS_REPOS }}
-          GITHUB_REPOS_SECONDARY: ${{ vars.GH_ACTIONS_REPOS_SECONDARY }}
         run: node scripts/manual-worker-release.mjs readback "$SELECTED_WORKER"
 
       - name: Check existing public health endpoint
