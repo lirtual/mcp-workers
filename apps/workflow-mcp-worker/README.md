@@ -158,6 +158,18 @@ in their descriptions. This is an annotation/contract fix, not a new execution
 path. Local SDK tool-list and execution regression: **38/38 assertions passed**;
 the cloud-edge **36/36** evidence above applies to the earlier tool metadata.
 
+**Independent DAG Step progression acceptance (Issue #141 story 15, 2026-10-20):**
+The existing owner-facing MCP E2E now proves that two ready read-only Steps
+actually progress concurrently: one fixture deliberately waits nine seconds,
+while the unrelated fast Step reaches persisted `succeeded` before the slow Step
+finishes; both eventually succeed. **40/40 MCP SDK assertions passed locally and
+on a real isolated Cloudflare Worker/Workflows/D1/fixture deployment.** This
+closes a specific parallelism evidence gap, not an implementation feature gap.
+The disposable Worker, Workflow, fixture and D1 were deleted and absence from
+remote D1/Workflows lists verified; local test secrets/config were removed.
+Real Cloudflare internal control-plane partition and incompatible engine upgrades
+remain unproven; this test does not claim either.
+
 Still required before closing S1: final standards/spec code review, latest-commit
 CI verification, remaining network interruption cases where warranted, and
 explicit final merge/release authorization. S2/S3 are not implemented.

@@ -118,5 +118,25 @@ try{
   await tool('workflow_publish',{workflow_id:c.workflow_id,expected_revision:1});
   const cr=await tool('workflow_run',{workflow_id:c.workflow_id,inputs:{flag:'false'}});
   ok((await awaitOutcome(cr.run_id)).status==='failed','non-boolean runtime condition fails safely');
+  // Story #15: a slow independent read-only Step cannot block a ready fast Step.
+  // Assert observable durable Step progress, not only use of Promise.all in source.
+  const parallelDef={version:1,name:'Independent read-only Steps',steps:[
+    {id:'slow',uses:'s1.readonly_mcp',with:{tool:'echo',arguments:{value:'slow',delay_ms:9000}}},
+    {id:'fast',uses:'s1.readonly_mcp',with:{tool:'echo',arguments:{value:'fast'}}}
+  ]};
+  const parallelDraft=await tool('workflow_create',{definition:JSON.stringify(parallelDef)});
+  await tool('workflow_publish',{workflow_id:parallelDraft.workflow_id,expected_revision:1});
+  const parallelRun=await tool('workflow_run',{workflow_id:parallelDraft.workflow_id,inputs:{},idempotency_key:'parallel-'+parallelDraft.workflow_id});
+  let fastBeforeSlow=false;
+  for(let i=0;i<22;i++){
+    const partial=await tool('workflow_status',{run_id:parallelRun.run_id});
+    if(partial.steps.some(s=>s.step_id==='fast'&&s.status==='succeeded') &&
+      !partial.steps.some(s=>s.step_id==='slow'&&s.status==='succeeded')){fastBeforeSlow=true;break;}
+    await new Promise(r=>setTimeout(r,200));
+  }
+  ok(fastBeforeSlow,'independent fast Step must persist success before 9s slow Step finishes');
+  const parallelDone=await awaitOutcome(parallelRun.run_id);
+  ok(parallelDone.status==='succeeded'&&parallelDone.steps.filter(s=>s.status==='succeeded').length===2,
+    'both independently progressing read-only Steps finish successfully');
   console.log('S1_LOCAL_E2E_PASS',JSON.stringify({assertions:tests,workflow_id:id,run_id:first.run_id,step_count:done.steps.length}));
 }finally{await cli.close();}
