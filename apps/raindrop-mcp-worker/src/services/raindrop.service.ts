@@ -2,6 +2,10 @@
 import createClient from "openapi-fetch";
 import { z } from "zod";
 import {
+  TrashEmptyInputSchema,
+  type TrashEmptyOutcome,
+} from "../types/trash.schemas.js";
+import {
   AuthError,
   NotFoundError,
   RateLimitError,
@@ -1518,12 +1522,155 @@ export default class RaindropService {
     });
   }
 
-  /**
-   * Empty trash
-   * Raindrop.io API: DELETE /raindrops/-99
-   */
+  /** Legacy service entry point also fails closed. */
   async emptyTrash(): Promise<boolean> {
-    return this.batchDeleteBookmarksInCollection(-99);
+    throw new ValidationError(
+      "Legacy empty_trash disabled; use trash_empty preview/confirm",
+    );
+  }
+
+  async emptyTrashPreviewFirst(
+    input: z.infer<typeof TrashEmptyInputSchema>,
+  ): Promise<TrashEmptyOutcome> {
+    const args = TrashEmptyInputSchema.parse(input);
+    const confirming = "confirm" in args;
+    const reserveWrite = confirming ? 1 : 0;
+    const budget = (remainingReads: number) => {
+      if (this.upstreamRequestCount + remainingReads + reserveWrite > 60)
+        throw new ValidationError(
+          "Complete Trash enumeration exceeds remaining 60 HTTP attempt budget; use bookmark_delete permanent:true with explicit limited IDs",
+        );
+    };
+    const pageSchema = z.object({
+      result: z.literal(true),
+      count: z.number().int().nonnegative().safe(),
+      items: z.array(z.object({ _id: z.number().int().positive().safe() })),
+    });
+    const read = (page: number, remainingReads: number) =>
+      this.withRateLimit(async () => {
+        // Recheck planning on retries too; keep all remaining pages and the write feasible.
+        budget(remainingReads);
+        const { data } = await this.client.GET("/raindrops/{collectionId}", {
+          params: {
+            path: { id: -99, collectionId: -99 },
+            query: { page, perpage: 50, nested: false },
+          },
+        });
+        const parsed = pageSchema.safeParse(data);
+        if (!parsed.success)
+          throw new ValidationError(
+            "Invalid Trash page: require result:true, reliable count and positive safe IDs",
+          );
+        return parsed.data;
+      });
+    let snapshot: { total: number; ids: number[]; digest: string };
+    try {
+      const first = await read(0, 1);
+      const total = first.count;
+      const pages = Math.ceil(total / 50);
+      // Page zero itself is the terminal empty page for an empty Trash.
+      budget(pages === 0 ? 0 : pages);
+      const ids: number[] = [];
+      const seen = new Set<number>();
+      const accept = (data: z.infer<typeof pageSchema>, page: number) => {
+        const expectedLength =
+          page < pages ? Math.min(50, total - page * 50) : 0;
+        if (data.count !== total || data.items.length !== expectedLength)
+          throw new ValidationError(
+            "Trash count drift or incomplete pagination",
+          );
+        for (const item of data.items) {
+          if (seen.has(item._id))
+            throw new ValidationError(
+              "Overlapping Trash pages or duplicate ID",
+            );
+          seen.add(item._id);
+          ids.push(item._id);
+        }
+      };
+      accept(first, 0);
+      for (let page = 1; page <= pages; page++)
+        accept(await read(page, pages - page + 1), page);
+      if (ids.length !== total)
+        throw new ValidationError("Trash membership count mismatch");
+      ids.sort((a, b) => a - b);
+      const hash = await crypto.subtle.digest(
+        "SHA-256",
+        new TextEncoder().encode(
+          JSON.stringify({ version: 1, collectionId: -99, total, ids }),
+        ),
+      );
+      const digest = `trash-v1:sha256:${Array.from(new Uint8Array(hash), (b) => b.toString(16).padStart(2, "0")).join("")}`;
+      snapshot = { total, ids, digest };
+    } catch (error) {
+      return {
+        status: "notExecuted",
+        collectionId: -99,
+        reason: `No write attempted: ${error instanceof Error ? error.message : "Trash verification failed"}`,
+      };
+    }
+    const outcome = (
+      status: TrashEmptyOutcome["status"],
+      reason: string,
+    ): TrashEmptyOutcome => ({
+      status,
+      collectionId: -99,
+      ...snapshot,
+      reason,
+    });
+    if (!("confirm" in args))
+      return outcome(
+        "preview",
+        "Complete Trash preview; nothing deleted. Confirm with collectionId:-99, expectedTotal and digest. Digest is not a transaction lock.",
+      );
+    if (
+      args.expectedTotal !== snapshot.total ||
+      args.digest !== snapshot.digest
+    )
+      return outcome(
+        "notExecuted",
+        "Trash confirmation mismatch; nothing deleted. Request a new preview.",
+      );
+    if (snapshot.total === 0)
+      return outcome(
+        "notExecuted",
+        "Trash is already empty; no write attempted.",
+      );
+    // Planning above reserves this single write, including any read retries.
+    return this.withWriteRateLimit(async () => {
+      let status: "succeeded" | "failed" | "unknown" = "unknown";
+      try {
+        const { data } = await this.client.DELETE("/collection/{id}", {
+          params: { path: { id: -99 } },
+        });
+        const ack = z.object({ result: z.boolean() }).safeParse(data);
+        if (ack.success) status = ack.data.result ? "succeeded" : "failed";
+      } catch (error) {
+        const httpStatus =
+          error instanceof UpstreamError
+            ? (error.cause as { status?: number } | undefined)?.status
+            : undefined;
+        if (
+          error instanceof AuthError ||
+          error instanceof NotFoundError ||
+          (httpStatus !== undefined && [400, 422].includes(httpStatus))
+        )
+          status = "failed";
+      }
+      if (status !== "failed") {
+        this.cacheCollections.clear();
+        this.cacheBookmarks.clear();
+        this.cacheSearch.clear();
+      }
+      return outcome(
+        status,
+        status === "succeeded"
+          ? "Irreversible Trash emptying acknowledged by Raindrop."
+          : status === "failed"
+            ? "Raindrop rejected Trash emptying."
+            : "Trash write outcome unknown; never blindly retry. No rollback is claimed; inspect upstream state.",
+      );
+    });
   }
 
   /**

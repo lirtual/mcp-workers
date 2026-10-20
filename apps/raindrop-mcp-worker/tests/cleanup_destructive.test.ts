@@ -37,35 +37,13 @@ describe("preview-first cleanup contracts", () => {
   const context = () =>
     ({ raindropService: service }) as unknown as ToolHandlerContext;
 
-  it("empty_trash {} is a read-only preview", async () => {
-    expect(emptyTrash.inputSchema.parse({})).toEqual({});
-    const result = await emptyTrash.handler({}, context());
-    expect(message(result.content)).toContain("Preview only");
-    expect(message(result.content)).toContain("7 items");
-    expect(message(result.content)).toContain("confirm: true");
-    expect(service.emptyTrash).not.toHaveBeenCalled();
-    expect(emptyTrash.annotations).toMatchObject({
-      readOnlyHint: false, destructiveHint: true,
-    });
-  });
-
-  it("empty_trash confirm:false previews, confirm:true deletes", async () => {
-    const preview = await emptyTrash.handler({ confirm: false }, context());
-    expect(message(preview.content)).toContain("Nothing deleted");
-    expect(service.emptyTrash).not.toHaveBeenCalled();
-    const confirmed = await emptyTrash.handler({ confirm: true }, context());
-    expect(message(confirmed.content)).toContain("7 items removed");
-    expect(service.emptyTrash).toHaveBeenCalledTimes(1);
-  });
-
-  it("empty_trash verifies count before deletion and skips known empty trash", async () => {
-    service.getUserStats.mockResolvedValueOnce({ trash: 0 });
-    expect(message((await emptyTrash.handler({ confirm: true }, context())).content))
-      .toContain("already empty");
-    expect(service.emptyTrash).not.toHaveBeenCalled();
-    service.getUserStats.mockResolvedValueOnce({});
-    await expect(emptyTrash.handler({ confirm: true }, context()))
-      .rejects.toThrow(/verify trash count/);
+  it("legacy empty_trash only guides migration without any reads or writes", async () => {
+    for (const args of [{}, { confirm: false }]) {
+      const result = await emptyTrash.handler(args, context());
+      expect(message(result.content)).toContain("trash_empty");
+    }
+    await expect(emptyTrash.handler({ confirm: true }, context())).rejects.toThrow(/disabled/);
+    expect(service.getUserStats).not.toHaveBeenCalled();
     expect(service.emptyTrash).not.toHaveBeenCalled();
   });
 

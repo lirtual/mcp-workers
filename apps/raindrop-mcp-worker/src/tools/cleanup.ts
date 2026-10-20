@@ -80,43 +80,12 @@ const libraryAuditTool = defineTool({
 const emptyTrashTool = defineTool({
   name: "empty_trash",
   description:
-    "Preview the trash count by default; permanently empty the trash only with confirm: true. Deletion is irreversible.",
-  annotations: {
-    readOnlyHint: false,
-    destructiveHint: true,
-    idempotentHint: false,
-    openWorldHint: true,
-  },
-  inputSchema: z.object({
-    confirm: z.boolean().optional().describe("Default false: preview only. Set true to permanently empty trash."),
-  }).strict(),
-  handler: async (
-    args: { confirm?: boolean },
-    { raindropService }: ToolHandlerContext,
-  ) => {
-    const stats = await raindropService.getUserStats();
-    const trashCount = stats?.trash;
-    if (typeof trashCount !== "number" || !Number.isSafeInteger(trashCount) || trashCount < 0) {
-      throw new Error("Cannot verify trash count; deletion was not attempted.");
-    }
-    if (trashCount === 0) {
-      return { content: [textContent("Trash is already empty.")] };
-    }
-    if (args.confirm !== true) {
-      return { content: [textContent(
-        `Preview only: trash contains ${trashCount} items. Nothing deleted. To permanently empty it, call again with confirm: true.`,
-      )] };
-    }
-    const success = await raindropService.emptyTrash();
-    return {
-      content: [
-        textContent(
-          success
-            ? `Successfully emptied trash (${trashCount} items removed).`
-            : "Trash deletion was not confirmed by Raindrop; outcome may be uncertain. Do not retry blindly.",
-        ),
-      ],
-    };
+    "Legacy preview guidance only. Use trash_empty preview/confirm for irreversible emptying; confirm:true is disabled.",
+  annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  inputSchema: z.object({ confirm: z.boolean().optional() }).strict(),
+  handler: async (args: { confirm?: boolean }) => {
+    if (args.confirm === true) throw new Error("Legacy empty_trash deletion disabled. Use trash_empty preview/confirm with collectionId:-99, expectedTotal and digest; nothing deleted.");
+    return { content: [textContent("Preview only: Nothing deleted and no scope scanned. Use trash_empty({}) then confirm with collectionId:-99, expectedTotal and the exact digest.")] };
   },
 });
 

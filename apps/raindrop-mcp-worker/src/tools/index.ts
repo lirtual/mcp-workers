@@ -1,3 +1,4 @@
+import { trashEmptyTool } from "./trash.js";
 import { bookmarkRemoveDuplicatesTool } from "./duplicates.js";
 import { bookmarkBatchTools } from "./bookmark-batch.js";
 import { bookmarkTools } from "./bookmarks.js";
@@ -31,6 +32,7 @@ export const buildToolConfigs = (options: { serverVersion: string }) => {
     ...bookmarkBatchTools,
     ...cleanupTools,
     bookmarkRemoveDuplicatesTool,
+    trashEmptyTool,
     ...suggestionTools,
   ];
 
