@@ -199,7 +199,7 @@ bash -c 'set -eu; IFS= read -rsp "Raindrop API Token: " RAINDROP_ACCESS_TOKEN </
 
 已在受控 GitHub Actions 中复用现有 `raindrop-mcp-worker` Environment Secret 完成上述实测，**无需另建 Token 或要求用户再次在 WSL 输入密钥**。临时只读/写入验收作业均已从 Draft 删除；未来如需补充真实测试，继续短时、明确限制作用域，不复制生产 Token 到 PR 日志或 WSL。
 
-**当前判定：NO-GO / BLOCKED，保留 Draft。** 不能切换公开工具列表，不能将 42 直接删为 27，不能将任何 Mock 成功描述为真实上游成功。
+**当前判定：NO-GO / BLOCKED，保留 Draft。** 当前源代码共 **41 个注册名称 = 26 个候选 + 15 个旧兼容**；42/27 只是更早提交的历史数量。未经单独批准，不得将 41 项直接删减为 26 项，也不能将任何 Mock 成功描述为真实上游成功。
 
 - **已完成**两处 Schema 缺口及对应 MCP tools/call 回归；下列真实验收门槛依然有效。
 - 已用现有认证环境完成只读 9/10 与可丢弃高亮写入验收；其余需要安全证明的关键写入和异常响应仍需按需补足，不修改普通用户书签；不可安全实测的 Trash 全局永久清空保留 acceptance-limited。
