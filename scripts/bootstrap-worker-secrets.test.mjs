@@ -49,14 +49,15 @@ test("SSH broker token must be at least 32 chars and root encryption key is not 
     { ...input, ENCRYPTION_KEY: "root-key", EDGE_SSH_DB: "root-db" }), input);
 });
 
-test("GitHub Actions optional PATs are staged separately with no repository variables", () => {
+test("one GH_TOKEN Secret stages multiple PATs without additional secret names", () => {
   const primary = fixtures["github-actions-mcp-worker"];
-  const dual = { ...primary, GH_TOKEN_SECONDARY: "secondary-github-token",
-    GITHUB_REPOS_SECONDARY: "irrelevant" };
-  assert.deepEqual(collectBootstrapSecrets("github-actions-mcp-worker", dual),
-    { ...primary, GH_TOKEN_SECONDARY: "secondary-github-token" });
-  assert.deepEqual(collectBootstrapSecrets("github-actions-mcp-worker",
-    { ...primary, GITHUB_REPOS_SECONDARY: "do-not-forward" }), primary);
+  const mixed = { ...primary, GH_TOKEN: "pat1\\npat2\\npat3",
+    GH_TOKEN_SECONDARY: "do-not-forward", GITHUB_REPOS: "ignored" };
+  assert.deepEqual(collectBootstrapSecrets("github-actions-mcp-worker", mixed),
+    { ...primary, GH_TOKEN: "pat1\\npat2\\npat3" });
   assert.throws(() => collectBootstrapSecrets("github-actions-mcp-worker",
-    { ...primary, GH_TOKEN_SECONDARY: primary.GH_TOKEN }), /Duplicate GitHub PAT/);
+    { ...primary, GH_TOKEN: "same\\nsame" }), /Invalid or duplicate/);
+  assert.throws(() => collectBootstrapSecrets("github-actions-mcp-worker",
+    { ...primary, GH_TOKEN: Array(9).fill("different").map((x,i) => x + i).join("\\n") }),
+    /Invalid or duplicate/);
 });
