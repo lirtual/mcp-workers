@@ -4,7 +4,7 @@ The active repository contains independently owned MCP Worker bounded contexts:
 
 - [GitHub Actions MCP](./apps/github-actions-mcp-worker/CONTEXT.md): owns allowlisted GitHub Actions management solely through GitHub REST API.
 
-- [Workflow MCP (planned)](./apps/workflow-mcp-worker/CONTEXT.md): AI/MCP-first orchestration context; composes existing capabilities without owning upstream Workers' credentials, business semantics, or lifecycle. Rounds 1–6 decisions are recorded in app-scoped ADRs and the grilling log (runtime publishing/version pinning, non-preregistered MCP targets with operation approval waits, bounded typed DAG, encrypted target credentials, asynchronous Runs with truthful indeterminate outcomes, D1/R2 results and GitHub Attempt Claim); no implementation exists yet.
+- [Workflow MCP (planned)](./apps/workflow-mcp-worker/CONTEXT.md): AI/MCP-first orchestration context; composes existing capabilities without owning upstream Workers' credentials, business semantics, or lifecycle. Rounds 1–7 (Q1–Q50) are recorded in app-scoped ADRs, the closed design tree and one proposed technical specification (compiled immutable Plans, non-preregistered MCP calls with approvals, durable callback receipts, bounded DAG, application admission limits, D1/R2 results and GitHub Attempt Claim); no implementation exists yet.
 
 - [Database MCP](./apps/database-mcp-worker/README.md): owns database connection configuration, SQL safety, and database tool semantics.
 - [IMA MCP](./apps/ima-mcp-worker/CONTEXT.md): owns IMA knowledge and notes operations.
