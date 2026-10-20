@@ -2,8 +2,6 @@ export interface Env {
   MCP_ACCESS_TOKEN: string;
   GITHUB_TOKEN: string;
   GITHUB_REPOS: string;
-  SESSION_DECK_URL?: string;
-  SESSION_PASSWORD?: string;
 }
 
 export class ActionError extends Error {
@@ -181,83 +179,3 @@ function runView(x: any) {
   };
 }
 
-// Session Deck owns discovery, input validation, exclusive session transitions,
-// locator artifacts, and decryption. This bridge does not duplicate that logic.
-export class SessionDeckClient {
-  private readonly baseUrl: string;
-  private readonly env: Env;
-  private readonly allowlist: string[];
-  private readonly requestFetch: typeof fetch;
-  constructor(env: Env, allowlist: string[], requestFetch: typeof fetch = fetch) {
-    this.env = env;
-    this.allowlist = allowlist;
-    this.requestFetch = requestFetch;
-    const raw = env.SESSION_DECK_URL;
-    if (!raw || !env.SESSION_PASSWORD) throw new ActionError('session_deck_not_configured');
-    let url: URL;
-    try { url = new URL(raw); } catch { throw new ActionError('invalid_session_deck_url'); }
-    if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || url.pathname !== '/') {
-      throw new ActionError('invalid_session_deck_url');
-    }
-    this.baseUrl = url.origin;
-  }
-
-  private async request(path: string, method = 'GET', input?: Record<string, unknown>): Promise<any> {
-    const response = await this.requestFetch(this.baseUrl + '/api/targets' + path, {
-      method, redirect: 'manual',
-      headers: {
-        Authorization: 'Bearer ' + this.env.SESSION_PASSWORD,
-        Accept: 'application/json',
-        ...(input ? { 'Content-Type': 'application/json' } : {}),
-      },
-      ...(input ? { body: JSON.stringify(input) } : {}),
-    });
-    if (!response.ok) throw new ActionError('session_deck_http_' + response.status);
-    return boundedJson(response);
-  }
-
-  private allowedTarget(target: any): boolean {
-    return !!target && typeof target.repo === 'string' &&
-      this.allowlist.some((repo) => repo.toLowerCase() === target.repo.toLowerCase());
-  }
-
-  private project(target: any, revealSensitive = false): any {
-    const facts = Array.isArray(target.facts) ? target.facts : [];
-    return {
-      id: target.id, label: target.label, repo: target.repo, state: target.state,
-      runUrl: target.runUrl, startedAt: target.startedAt, openedBy: target.openedBy,
-      onCaption: target.onCaption, inputs: target.inputs,
-      facts: facts.map((f: any) => ({
-        label: f.label, sensitive: !!f.sensitive,
-        value: f.sensitive && !revealSensitive ? '[redacted]' : f.value,
-      })),
-    };
-  }
-
-  async list() {
-    const value = await this.request('');
-    return { targets: (value.targets ?? []).filter((target: any) => this.allowedTarget(target))
-      .map((target: any) => this.project(target)) };
-  }
-
-  async get(id: string, revealSensitive = false) {
-    const target = await this.request('/' + targetPath(id));
-    if (!this.allowedTarget(target)) throw new ActionError('target_not_allowed');
-    return this.project(target, revealSensitive);
-  }
-
-  async change(id: string, action: 'start' | 'stop', inputs?: Record<string, unknown>) {
-    // Validate ownership before mutation: the Session Deck may expose more repos than this MCP.
-    await this.get(id);
-    const target = await this.request('/' + targetPath(id) + '/' + action, 'POST', inputs ?? {});
-    if (!this.allowedTarget(target)) throw new ActionError('target_not_allowed');
-    return this.project(target);
-  }
-}
-
-function targetPath(id: string): string {
-  if (!/^[A-Za-z0-9_.\/-]+$/.test(id) || id.includes('..') || id.startsWith('/') || id.endsWith('/')) {
-    throw new ActionError('invalid_target_id');
-  }
-  return id.split('/').map(encodeURIComponent).join('/');
-}
