@@ -59,7 +59,7 @@ test("signed current epoch reports minimal metadata, not credentials or an infer
   assert.equal(active.device_info.os, "windows");
   assert.deepEqual(active.capabilities, ["read"]);
   assert.ok(Number.isSafeInteger(active.last_seen));
-  assert.match(active.display_name, /windows\\/native/);
+  assert.ok(active.display_name.includes("windows/native"));
   assert.equal(active.name_ambiguous, true);
   assert.equal(legacy.status, "offline");
   assert.equal(legacy.capabilities, undefined);
