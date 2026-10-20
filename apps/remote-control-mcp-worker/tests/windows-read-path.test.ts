@@ -57,12 +57,12 @@ test("Windows absolute paths are allowed for paired full file operations", () =>
 test("Windows file mutations still reject URLs, UNC/device namespaces, ADS, relative drives and bad paths", () => {
   const operation_id = "windows-full-2";
   const invalid = [
-    "https://example.org/write", "file:///C:/Windows/win.ini",
-    "C:Windows\\\\win.ini", "C://Windows/win.ini",
-    String.raw`\\\\server\\share\\file.txt`,
-    String.raw`\\\\?\\C:\\Windows\\win.ini`,
-    String.raw`C:\\Windows\\win.ini:evil`,
-    String.raw`C:\\Windows\\a?.txt`,
+    "https://example.org/read", "file:///C:/Windows/win.ini",
+    "C:Windows\\win.ini", "C://Windows/win.ini",
+    String.raw`\\server\share\file.txt`,
+    String.raw`\\?\C:\Windows\win.ini`,
+    String.raw`C:\Windows\win.ini:evil`,
+    String.raw`C:\Windows\a?.txt`,
     "C:/Windows/a" + String.fromCharCode(0) + "b.txt",
   ];
   for (const path of invalid) {
