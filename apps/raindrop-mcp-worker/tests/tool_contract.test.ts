@@ -285,3 +285,44 @@ describe("bookmark_get over MCP tools/list and tools/call", () => {
     }
   });
 });
+
+describe("bookmark_search strict pagination over public MCP", () => {
+  it("accepts empty query with page zero and rejects oversized, malformed and unknown arguments", async () => {
+    const service = new RaindropMCPService({ accessToken: "test-token" });
+    const get = vi.spyOn(service.raindropService, "getBookmarks")
+      .mockResolvedValue({ count: 0, items: [] });
+    const client = new Client({ name: "bookmark-search-contract", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    try {
+      await Promise.all([
+        service.getServer().connect(serverTransport),
+        client.connect(clientTransport),
+      ]);
+      const { tools } = await client.listTools();
+      expect(tools.find(tool => tool.name === "bookmark_search")?.annotations?.readOnlyHint).toBe(true);
+      const result = await client.callTool({
+        name: "bookmark_search",
+        arguments: { search: "", page: 0, perPage: 50, collection: -1 },
+      });
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toEqual({ count: 0, items: [] });
+      expect(get).toHaveBeenCalledWith({
+        search: "", page: 0, perPage: 50, collection: -1,
+      }, undefined);
+
+      for (const args of [
+        { perPage: 51 }, { perPage: 0 }, { page: -1 }, { page: 0.5 },
+        { collection: -2 }, { perPage: "50" }, { unexpected: "ignored?" },
+      ]) {
+        expect((await client.callTool({
+          name: "bookmark_search", arguments: args,
+        })).isError).toBe(true);
+      }
+      expect(get).toHaveBeenCalledTimes(1);
+    } finally {
+      await client.close();
+      await service.cleanup();
+      get.mockRestore();
+    }
+  });
+});
