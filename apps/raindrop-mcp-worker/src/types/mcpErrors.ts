@@ -44,5 +44,17 @@ export class UpstreamError extends McpError {
   }
 }
 
+export class UnknownWriteError extends McpError {
+  constructor(message: string, cause?: unknown) {
+    super("UNKNOWN_WRITE_RESULT", message, cause);
+    this.name = "UnknownWriteError";
+  }
+}
+
 export type KnownMcpError =
-  NotFoundError | ValidationError | AuthError | RateLimitError | UpstreamError;
+  | NotFoundError
+  | ValidationError
+  | AuthError
+  | RateLimitError
+  | UpstreamError
+  | UnknownWriteError;

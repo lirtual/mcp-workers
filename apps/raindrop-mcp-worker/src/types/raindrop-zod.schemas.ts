@@ -96,12 +96,55 @@ export const HighlightOutputSchema = z.object({
  * Input schema for Raindrop tag tools.
  * @see {@link https://developer.raindrop.io/}
  */
-export const TagInputSchema = z.object({
-  collectionId: z.number().optional(),
-  tagNames: z.array(z.string()),
-  newName: z.string().optional(),
-  operation: z.enum(["rename", "merge", "delete"]),
+export const TagScopeSchema = z
+  .number()
+  .int()
+  .nonnegative()
+  .max(Number.MAX_SAFE_INTEGER);
+export const TagNameSchema = z
+  .string()
+  .min(1)
+  .refine(
+    (name) => name.trim() === name && name.trim().length > 0,
+    "Tag names must be nonempty and have no surrounding whitespace",
+  );
+export const TagNamesSchema = z
+  .array(TagNameSchema)
+  .min(1)
+  .refine(
+    (names) => new Set(names).size === names.length,
+    "Tag names must be distinct",
+  );
+export const TagListInputSchema = z.strictObject({
+  collectionId: TagScopeSchema.optional(),
 });
+export const TagRenameInputSchema = z.strictObject({
+  collectionId: TagScopeSchema.optional(),
+  oldName: TagNameSchema,
+  newName: TagNameSchema,
+});
+export const TagMergeInputSchema = z.strictObject({
+  collectionId: TagScopeSchema.optional(),
+  tagNames: TagNamesSchema.refine(
+    (names) => names.length >= 2,
+    "Merge requires at least two sources",
+  ),
+  newName: TagNameSchema,
+});
+export const TagDeleteInputSchema = z.strictObject({
+  collectionId: TagScopeSchema.optional(),
+  tagNames: TagNamesSchema,
+});
+export const TagInputSchema = z.discriminatedUnion("operation", [
+  TagDeleteInputSchema.extend({ operation: z.literal("delete") }),
+  TagMergeInputSchema.extend({ operation: z.literal("merge") }),
+  z.strictObject({
+    operation: z.literal("rename"),
+    collectionId: TagScopeSchema.optional(),
+    tagNames: z.array(TagNameSchema).length(1),
+    newName: TagNameSchema,
+  }),
+]);
 
 /**
  * Output schema for Raindrop tag tools.

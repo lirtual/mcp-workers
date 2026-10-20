@@ -1,5 +1,5 @@
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { RaindropMCPService } from "../src/services/raindropmcp.service.js";
 
 const EXPECTED_TOOL_NAMES = [
@@ -31,10 +31,14 @@ const EXPECTED_TOOL_NAMES = [
   "remove_duplicates",
   "suggest_tags",
   "tag_manage",
+  "tag_list",
+  "tag_rename",
+  "tag_merge",
+  "tag_delete",
 ].sort();
 
 describe("Raindrop MCP capability contract", () => {
-  it("retains legacy tools while adding T01 and T02 atomic tools", async () => {
+  it("retains legacy tools while adding T01 through T04 atomic tools", async () => {
     const service = new RaindropMCPService({ accessToken: "test-token" });
 
     try {
@@ -42,7 +46,7 @@ describe("Raindrop MCP capability contract", () => {
       const actual = tools.map((tool) => tool.id).sort();
 
       expect(actual).toEqual(EXPECTED_TOOL_NAMES);
-      expect(actual).toHaveLength(28);
+      expect(actual).toHaveLength(32);
       expect(actual).toContain("diagnostics");
     } finally {
       await service.cleanup();
@@ -677,4 +681,178 @@ describe("T03 unsafe source-state preflight", () => {
       get.mockRestore(); put.mockRestore(); getCollection.mockRestore();
     }
   });
+});
+
+const items = ["a", "b", "target"].map((_id) => ({ _id, count: 2 }));
+const json = (body: unknown) =>
+  new Response(JSON.stringify(body), {
+    headers: { "content-type": "application/json" },
+  });
+function mockHttp(
+  write: () => Response | Promise<Response> = () => json({ result: true }),
+) {
+  const fetch = vi.fn(async (request: Request) =>
+    request.method === "GET" ? json({ result: true, items }) : write(),
+  );
+  vi.stubGlobal("fetch", fetch);
+  return fetch;
+}
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
+
+async function withMcp(work: (client: Client) => Promise<void>) {
+  const service = new RaindropMCPService({
+    accessToken: "test",
+    maxReadRetries: 0,
+  });
+  const client = new Client({ name: "tag-contract", version: "1.0.0" });
+  const [ct, st] = InMemoryTransport.createLinkedPair();
+  try {
+    await Promise.all([service.getServer().connect(st), client.connect(ct)]);
+    await work(client);
+  } finally {
+    await client.close();
+    await service.cleanup();
+  }
+}
+
+describe("tag MCP tools/list and tools/call contract", () => {
+  it("advertises strict independent tools and validates their successful outputs over HTTP mocks", async () => {
+    const fetch = mockHttp();
+    await withMcp(async (client) => {
+      const { tools } = await client.listTools();
+      for (const name of [
+        "tag_list",
+        "tag_rename",
+        "tag_merge",
+        "tag_delete",
+      ]) {
+        const tool = tools.find((tool) => tool.name === name)!;
+        expect(tool.inputSchema.additionalProperties).toBe(false);
+        expect(tool.outputSchema).toBeDefined();
+        expect(tool.annotations?.readOnlyHint).toBe(name === "tag_list");
+      }
+      const listed = await client.callTool({ name: "tag_list", arguments: {} });
+      expect(listed.isError).not.toBe(true);
+      expect(listed.structuredContent).toEqual({
+        collectionId: 0,
+        tags: items,
+      });
+      for (const [name, args] of [
+        ["tag_rename", { oldName: "a", newName: "fresh" }],
+        ["tag_merge", { tagNames: ["a", "b"], newName: "target" }],
+        ["tag_delete", { tagNames: ["b"] }],
+        [
+          "tag_manage",
+          { operation: "rename", tagNames: ["a"], newName: "fresh" },
+        ],
+      ] as const) {
+        const result = await client.callTool({
+          name,
+          arguments: { ...args, collectionId: 42 },
+        });
+        expect(result.isError).not.toBe(true);
+        expect(result.structuredContent).toMatchObject({
+          status: "succeeded",
+          success: true,
+          collectionId: 42,
+        });
+      }
+    });
+    expect(fetch).toHaveBeenCalledTimes(9);
+  });
+
+  it("rejects strict, empty, duplicate, nonexistent and conflicting inputs including legacy bypasses", async () => {
+    const fetch = mockHttp();
+    await withMcp(async (client) => {
+      for (const [name, args] of [
+        ["tag_list", { collectionId: -1 }],
+        ["tag_list", { collectionId: 1.5 }],
+        ["tag_list", { collectionId: "42" }],
+        ["tag_list", { collectionId: Number.MAX_SAFE_INTEGER + 1 }],
+        ["tag_list", { extra: true }],
+        ["tag_rename", { oldName: "", newName: "fresh" }],
+        ["tag_rename", { oldName: "a", newName: "target" }],
+        ["tag_rename", { oldName: "a", newName: "a" }],
+        ["tag_merge", { tagNames: ["a"], newName: "fresh" }],
+        ["tag_merge", { tagNames: ["a", "a"], newName: "fresh" }],
+        ["tag_merge", { tagNames: ["a", "b"], newName: "a" }],
+        ["tag_merge", { tagNames: ["a", "missing"], newName: "target" }],
+        ["tag_delete", { tagNames: [] }],
+        ["tag_delete", { tagNames: [" "] }],
+        ["tag_delete", { tagNames: ["a", "a"] }],
+        ["tag_delete", { tagNames: ["missing"], collectionId: 42 }],
+        ["tag_delete", { tagNames: ["a"], newName: "ignored" }],
+        [
+          "tag_manage",
+          { operation: "rename", tagNames: ["a", "b"], newName: "fresh" },
+        ],
+        [
+          "tag_manage",
+          { operation: "delete", tagNames: ["a"], newName: "ignored" },
+        ],
+        [
+          "tag_manage",
+          { operation: "rename", tagNames: ["a"], newName: "target" },
+        ],
+        [
+          "tag_manage",
+          { operation: "merge", tagNames: ["a"], newName: "fresh" },
+        ],
+      ] as const) {
+        expect((await client.callTool({ name, arguments: args })).isError).toBe(
+          true,
+        );
+      }
+    });
+    expect(
+      fetch.mock.calls.every(([request]) => request.method === "GET"),
+    ).toBe(true);
+  });
+
+  it.each(["false", "unknown", "429", "preflight"])(
+    "reports %s without claiming completion or replaying",
+    async (failure) => {
+      const fetch =
+        failure === "preflight"
+          ? vi.fn(async () => json({ result: false }))
+          : mockHttp(() => {
+              if (failure === "unknown") throw new TypeError("connection lost");
+              if (failure === "429")
+                return new Response("limited", { status: 429 });
+              return json({ result: false });
+            });
+      vi.stubGlobal("fetch", fetch);
+      await withMcp(async (client) => {
+        for (const [name, args] of [
+          ["tag_rename", { oldName: "a", newName: "fresh" }],
+          ["tag_merge", { tagNames: ["a", "b"], newName: "target" }],
+          ["tag_delete", { tagNames: ["a"] }],
+          [
+            "tag_manage",
+            { operation: "rename", tagNames: ["a"], newName: "fresh" },
+          ],
+          [
+            "tag_manage",
+            { operation: "merge", tagNames: ["a", "b"], newName: "target" },
+          ],
+          ["tag_manage", { operation: "delete", tagNames: ["a"] }],
+        ] as const) {
+          const result = await client.callTool({ name, arguments: args });
+          if (failure === "unknown") {
+            expect(result.structuredContent).toMatchObject({
+              status: "unknown",
+              success: false,
+            });
+          } else {
+            expect(result.isError).toBe(true);
+            expect(result.structuredContent).toBeUndefined();
+          }
+        }
+      });
+      expect(fetch).toHaveBeenCalledTimes(failure === "preflight" ? 6 : 12);
+    },
+  );
 });

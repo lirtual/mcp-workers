@@ -5,8 +5,14 @@ import {
   NotFoundError,
   RateLimitError,
   UpstreamError,
+  UnknownWriteError,
   ValidationError,
 } from "../types/mcpErrors.js";
+import {
+  TagScopeSchema,
+  TagNameSchema,
+  TagNamesSchema,
+} from "../types/raindrop-zod.schemas.js";
 import type { components, paths } from "../types/raindrop.schema.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -959,105 +965,159 @@ export default class RaindropService {
     });
   }
 
-  /**
-   * Fetch tags for a collection or all
-   * Raindrop.io API: GET /tags/{collectionId} or /tags/0
-   */
+  private tagScope(collectionId?: number): number {
+    const parsed = TagScopeSchema.safeParse(
+      collectionId === undefined ? 0 : collectionId,
+    );
+    if (!parsed.success)
+      throw new ValidationError(
+        "collectionId must be a nonnegative safe integer",
+      );
+    return parsed.data;
+  }
+
+  /** Always fetch current scoped tags; mutation preflights must not use a cache. */
   async getTags(
     collectionId?: number,
   ): Promise<{ _id: string; count: number }[]> {
+    const scope = this.tagScope(collectionId);
     return this.withRateLimit(async () => {
-      const endpoint = collectionId ? "/tags/{collectionId}" : "/tags/0";
-      const options = collectionId
-        ? { params: { path: { id: collectionId } } }
-        : undefined;
-      const { data } = await (this.client as any).GET(endpoint, options);
-      return data?.items || [];
+      // The generated upstream schema incorrectly calls this path parameter `id`.
+      const { data } = await (this.client as any).GET("/tags/{collectionId}", {
+        params: { path: { collectionId: scope } },
+      });
+      if (
+        data?.result !== true ||
+        !Array.isArray(data.items) ||
+        !data.items.every(
+          (tag: { _id?: unknown; count?: unknown }) =>
+            tag &&
+            typeof tag._id === "string" &&
+            TagNameSchema.safeParse(tag._id).success &&
+            typeof tag.count === "number" &&
+            Number.isSafeInteger(tag.count) &&
+            tag.count >= 0,
+        ) ||
+        new Set(data.items.map((tag: { _id: string }) => tag._id)).size !==
+          data.items.length
+      ) {
+        throw new UpstreamError(
+          "Invalid tag list from Raindrop; preflight cannot establish current tags",
+        );
+      }
+      return data.items;
     });
   }
 
-  /**
-   * Fetch tags for a specific collection
-   * Raindrop.io API: GET /tags/{collectionId}
-   */
   async getTagsByCollection(
     collectionId: number,
   ): Promise<{ _id: string; count: number }[]> {
     return this.getTags(collectionId);
   }
 
-  /**
-   * Delete tags from a collection
-   * Raindrop.io API: DELETE /tags/{collectionId}
-   */
+  private async mutateTags(
+    operation: "rename" | "merge" | "delete",
+    collectionId: number | undefined,
+    tags: string[],
+    replacement?: string,
+  ): Promise<boolean> {
+    const scope = this.tagScope(collectionId);
+    if (!TagNamesSchema.safeParse(tags).success) {
+      throw new ValidationError(
+        "Provide explicit nonempty distinct tag names without surrounding whitespace",
+      );
+    }
+    if (operation !== "delete") {
+      if (
+        !TagNameSchema.safeParse(replacement).success ||
+        tags.includes(replacement!)
+      ) {
+        throw new ValidationError(
+          "Replacement must be a nonempty name distinct from every source",
+        );
+      }
+      if (
+        (operation === "rename" && tags.length !== 1) ||
+        (operation === "merge" && tags.length < 2)
+      ) {
+        throw new ValidationError(
+          "Rename requires exactly one source; merge requires at least two distinct sources",
+        );
+      }
+    }
+    const existing = new Set((await this.getTags(scope)).map((tag) => tag._id));
+    for (const tag of tags) {
+      if (!existing.has(tag))
+        throw new ValidationError(
+          `Tag ${JSON.stringify(tag)} does not exist in scope ${scope}`,
+        );
+    }
+    if (operation === "rename" && existing.has(replacement!)) {
+      throw new ValidationError(
+        "Target tag already exists; use tag_merge instead",
+      );
+    }
+
+    return this.withWriteRateLimit(async () => {
+      let data;
+      try {
+        const options = {
+          params: { path: { collectionId: scope } },
+          body:
+            operation === "delete" ? { tags } : { tags, replace: replacement },
+        };
+        // Official tags/replace contract differs from the generated upstream schema.
+        const response =
+          operation === "delete"
+            ? await (this.client as any).DELETE("/tags/{collectionId}", options)
+            : await (this.client as any).PUT("/tags/{collectionId}", options);
+        data = response.data;
+      } catch (error) {
+        if (
+          error instanceof RateLimitError ||
+          error instanceof AuthError ||
+          error instanceof NotFoundError ||
+          error instanceof ValidationError
+        )
+          throw error;
+        throw new UnknownWriteError(
+          "Tag write result unknown; inspect current tags before deciding whether to retry",
+          error,
+        );
+      }
+      if (data?.result === false) return false;
+      if (data?.result !== true) {
+        throw new UnknownWriteError(
+          "Tag write result unknown: upstream did not confirm result:true; do not automatically retry",
+        );
+      }
+      this.cacheSearch.clear();
+      this.cacheBookmarks.clear();
+      return true;
+    });
+  }
+
   async deleteTags(
     collectionId: number | undefined,
     tags: string[],
   ): Promise<boolean> {
-    return this.withWriteRateLimit(async () => {
-      const endpoint = collectionId ? "/tags/{collectionId}" : "/tags/0";
-      const options = {
-        ...(collectionId && { params: { path: { id: collectionId } } }),
-        body: { tags },
-      };
-      const { data } = await (this.client as any).DELETE(endpoint, options);
-
-      // Invalidate search and bookmark caches
-      await this.cacheSearch.clear();
-      await this.cacheBookmarks.clear();
-
-      return !!data?.result;
-    });
+    return this.mutateTags("delete", collectionId, tags);
   }
 
-  /**
-   * Rename a tag in a collection
-   * Raindrop.io API: PUT /tags/{collectionId}
-   */
   async renameTag(
     collectionId: number | undefined,
     oldName: string,
     newName: string,
   ): Promise<boolean> {
-    return this.withWriteRateLimit(async () => {
-      const endpoint = collectionId ? "/tags/{collectionId}" : "/tags/0";
-      const options = {
-        ...(collectionId && { params: { path: { id: collectionId } } }),
-        body: { from: oldName, to: newName },
-      };
-      const { data } = await (this.client as any).PUT(endpoint, options);
-
-      // Invalidate search and bookmark caches
-      await this.cacheSearch.clear();
-      await this.cacheBookmarks.clear();
-
-      return !!data?.result;
-    });
+    return this.mutateTags("rename", collectionId, [oldName], newName);
   }
 
-  /**
-   * Merge tags in a collection
-   * Raindrop.io API: PUT /tags/{collectionId}
-   */
   async mergeTags(
     collectionId: number | undefined,
     tags: string[],
     newName: string,
   ): Promise<boolean> {
-    return this.withWriteRateLimit(async () => {
-      const endpoint = collectionId ? "/tags/{collectionId}" : "/tags/0";
-      const options = {
-        ...(collectionId && { params: { path: { id: collectionId } } }),
-        body: { tags, to: newName },
-      };
-      const { data } = await (this.client as any).PUT(endpoint, options);
-
-      // Invalidate search and bookmark caches
-      await this.cacheSearch.clear();
-      await this.cacheBookmarks.clear();
-
-      return !!data?.result;
-    });
+    return this.mutateTags("merge", collectionId, tags, newName);
   }
 
   /**

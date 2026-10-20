@@ -144,3 +144,217 @@ describe("RaindropService retry safety", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
+
+const items = ["a", "b", "target"].map((_id) => ({ _id, count: 2 }));
+const json = (body: unknown) =>
+  new Response(JSON.stringify(body), {
+    headers: { "content-type": "application/json" },
+  });
+function mockHttp(
+  write: () => Response | Promise<Response> = () => json({ result: true }),
+) {
+  const fetch = vi.fn(async (request: Request) =>
+    request.method === "GET" ? json({ result: true, items }) : write(),
+  );
+  vi.stubGlobal("fetch", fetch);
+  return fetch;
+}
+const newService = () =>
+  new RaindropService({ accessToken: "test", maxReadRetries: 0 });
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
+
+describe("tag Service HTTP contract", () => {
+  it.each([undefined, 0, 42])(
+    "lists and renames with exact path/body in scope %s",
+    async (scope) => {
+      const fetch = mockHttp();
+      const service = newService();
+      expect(await service.getTags(scope)).toEqual(items);
+      expect(await service.renameTag(scope, "a", "fresh")).toBe(true);
+      expect(fetch).toHaveBeenCalledTimes(3);
+      for (const [request] of fetch.mock.calls) {
+        expect(request.url).toBe(
+          `https://api.raindrop.io/rest/v1/tags/${scope ?? 0}`,
+        );
+      }
+      expect(fetch.mock.calls.map(([request]) => request.method)).toEqual([
+        "GET",
+        "GET",
+        "PUT",
+      ]);
+      expect(await fetch.mock.calls[2]![0].json()).toEqual({
+        tags: ["a"],
+        replace: "fresh",
+      });
+    },
+  );
+
+  it.each([undefined, 0, 17])(
+    "merges into an existing target and deletes explicit names in scope %s",
+    async (scope) => {
+      const fetch = mockHttp();
+      const service = newService();
+      await expect(
+        service.mergeTags(scope, ["a", "b"], "target"),
+      ).resolves.toBe(true);
+      await expect(service.deleteTags(scope, ["a", "b"])).resolves.toBe(true);
+      expect(fetch.mock.calls.map(([request]) => request.method)).toEqual([
+        "GET",
+        "PUT",
+        "GET",
+        "DELETE",
+      ]);
+      expect(await fetch.mock.calls[1]![0].json()).toEqual({
+        tags: ["a", "b"],
+        replace: "target",
+      });
+      expect(await fetch.mock.calls[3]![0].json()).toEqual({
+        tags: ["a", "b"],
+      });
+      for (const [request] of fetch.mock.calls)
+        expect(request.url).toContain(`/tags/${scope ?? 0}`);
+    },
+  );
+
+  it.each([-1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, "42", null])(
+    "rejects invalid scope %s before any HTTP",
+    async (scope) => {
+      const fetch = mockHttp();
+      const service = newService();
+      await expect(service.getTags(scope as number)).rejects.toThrow(
+        /safe integer/,
+      );
+      await expect(service.deleteTags(scope as number, ["a"])).rejects.toThrow(
+        /safe integer/,
+      );
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it("accepts the largest safe integer scope without rounding", async () => {
+    const fetch = mockHttp();
+    await newService().getTags(Number.MAX_SAFE_INTEGER);
+    expect(fetch.mock.calls[0]![0].url).toContain(
+      `/tags/${Number.MAX_SAFE_INTEGER}`,
+    );
+  });
+
+  it("rejects missing sources, rename conflicts and ambiguous merge inputs without writing", async () => {
+    const fetch = mockHttp();
+    const service = newService();
+    await expect(service.renameTag(12, "missing", "fresh")).rejects.toThrow(
+      /does not exist.*12/,
+    );
+    await expect(service.renameTag(12, "a", "target")).rejects.toThrow(
+      /tag_merge/,
+    );
+    await expect(service.renameTag(12, "a", "a")).rejects.toThrow();
+    for (const names of [
+      [],
+      [""],
+      [" "],
+      ["a", "a"],
+      [" a"],
+      ["a", "missing"],
+    ]) {
+      await expect(service.deleteTags(12, names)).rejects.toThrow();
+      await expect(service.mergeTags(12, names, "fresh")).rejects.toThrow();
+    }
+    await expect(service.mergeTags(12, ["a"], "fresh")).rejects.toThrow();
+    await expect(service.mergeTags(12, ["a", "b"], "a")).rejects.toThrow();
+    await expect(service.mergeTags(12, ["a", "b"], " ")).rejects.toThrow();
+    expect(
+      fetch.mock.calls.every(([request]) => request.method === "GET"),
+    ).toBe(true);
+  });
+
+  it.each([
+    { result: false, items },
+    {},
+    { result: true },
+    { result: true, items: [{ _id: "a", count: "2" }] },
+    { result: true, items: [items[0], items[0]] },
+  ])("fails closed on invalid preflight %j", async (body) => {
+    const fetch = vi.fn(async () => json(body));
+    vi.stubGlobal("fetch", fetch);
+    await expect(newService().deleteTags(42, ["a"])).rejects.toThrow(
+      /preflight/,
+    );
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses scoped existence, never global fallback", async () => {
+    const fetch = vi.fn(async () => json({ result: true, items: [] }));
+    vi.stubGlobal("fetch", fetch);
+    await expect(newService().deleteTags(42, ["a"])).rejects.toThrow(
+      /does not exist/,
+    );
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch.mock.calls[0]).toBeDefined();
+  });
+
+  it.each(["rename", "merge", "delete"] as const)(
+    "invalidates caches only after confirmed %s",
+    async (operation) => {
+      for (const confirmed of [false, true]) {
+        mockHttp(() => json({ result: confirmed }));
+        const service = newService();
+        const search = vi.spyOn((service as any).cacheSearch, "clear");
+        const bookmarks = vi.spyOn((service as any).cacheBookmarks, "clear");
+        const result =
+          operation === "rename"
+            ? await service.renameTag(0, "a", "fresh")
+            : operation === "merge"
+              ? await service.mergeTags(0, ["a", "b"], "target")
+              : await service.deleteTags(0, ["a"]);
+        expect(result).toBe(confirmed);
+        expect(search).toHaveBeenCalledTimes(confirmed ? 1 : 0);
+        expect(bookmarks).toHaveBeenCalledTimes(confirmed ? 1 : 0);
+      }
+    },
+  );
+
+  it.each(["network", "500", "malformed", "missing", "truthy", "429"])(
+    "never replays %s after dispatch",
+    async (failure) => {
+      const fetch = mockHttp(() => {
+        if (failure === "network") throw new TypeError("connection lost");
+        if (failure === "500") return new Response("error", { status: 500 });
+        if (failure === "429")
+          return new Response("rate limited", {
+            status: 429,
+            headers: { "retry-after": "1" },
+          });
+        if (failure === "malformed")
+          return new Response("{", {
+            headers: { "content-type": "application/json" },
+          });
+        return json(failure === "truthy" ? { result: "true" } : {});
+      });
+      const service = new RaindropService({
+        accessToken: "test",
+        maxReadRetries: 3,
+      });
+      const clear = vi.spyOn((service as any).cacheSearch, "clear");
+      await expect(service.deleteTags(0, ["a"])).rejects.toMatchObject({
+        code: failure === "429" ? "RATE_LIMITED" : "UNKNOWN_WRITE_RESULT",
+      });
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(clear).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not dispatch a write after failed 429 preflight", async () => {
+    const fetch = vi.fn(
+      async () => new Response("rate limited", { status: 429 }),
+    );
+    vi.stubGlobal("fetch", fetch);
+    await expect(newService().renameTag(0, "a", "fresh")).rejects.toMatchObject(
+      { code: "RATE_LIMITED" },
+    );
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+});
