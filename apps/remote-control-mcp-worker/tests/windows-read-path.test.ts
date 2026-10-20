@@ -3,7 +3,7 @@ import test from "node:test";
 import {
   parseFileInfo, parseListDirectory, parseLocalRead,
   parseReadMultiple, parseSearchStart,
-  parseWriteFile,
+  parseLocalWriteFile,
 } from "../src/local-read.ts";
 
 const win = String.raw`C:\Windows\win.ini`;
@@ -27,7 +27,7 @@ test("Windows read parser rejects URL schemes, UNC/device namespaces, ADS and re
     String.raw`\\?\C:\Windows\win.ini`,
     String.raw`C:\Windows\win.ini:evil`,
     String.raw`C:\Windows\a?.txt`,
-    "C:/Windows/a\\u0000b.txt",
+    "C:/Windows/a" + String.fromCharCode(0) + "b.txt",
   ];
   for (const path of invalid) {
     assert.equal(parseLocalRead({ path }), null, path);
@@ -40,5 +40,6 @@ test("Windows read parser rejects URL schemes, UNC/device namespaces, ADS and re
 
 test("Windows read support must never loosen mutation path validation", () => {
   const write = { operation_id: "windows-read-check-1", path: win, content: "never", mode: "rewrite" };
-  assert.equal(parseWriteFile(write), null);
+  assert.equal(parseLocalWriteFile({ ...write, path: unix })?.path, unix);
+  assert.equal(parseLocalWriteFile(write), null);
 });
