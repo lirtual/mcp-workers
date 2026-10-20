@@ -112,7 +112,7 @@ export function parseLocalCreateDirectory(input: unknown): LocalCreateDirectory 
   if (input === null || typeof input !== "object" || Array.isArray(input)) return null;
   const record = input as Record<string, unknown>;
   if (Object.keys(record).some((key) => !["operation_id", "path"].includes(key))) return null;
-  const filePath = parsePath(record.path);
+  const filePath = parseDevicePath(record.path);
   if (typeof record.operation_id !== "string" || !OPERATION_ID.test(record.operation_id) || !filePath) return null;
   return { operationId: record.operation_id, path: filePath };
 }
