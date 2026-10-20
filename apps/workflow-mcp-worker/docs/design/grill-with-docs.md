@@ -225,6 +225,10 @@ Existing evidence reports were **extended in place** (no extra ADR or new entity
 - **P0-5:** GitHub 2026-03-10 REST workflow dispatch returned a true `workflow_run_id` on normal success; a separate acknowledged dispatch response was deliberately ignored to simulate ACK loss. GitHub REST run discovery identified a matching candidate but **no Claim authority was granted based on a run name/opaque marker alone**. True network response loss and independently proven dispatch-to-Job linkage remain OPEN.
 - **Minimal-entity conclusion:** manual redirects rejection, exact origin-scoped credentials, direct returned GitHub Run ID and fail-closed `dispatch_unknown` require no independent credential proxy, per-Attempt token issuer, dispatch queue or extra persistence table for the tested use cases. Both isolated test environments were torn down; Cloudflare baseline restored, temporary private GitHub repo deleted. Q1–Q50 remain unchanged.
 
+## `to-spec` handoff — minimal S1 (2026-10-20)
+
+After the owner agreed to end open-ended PoC expansion and converge phase-specific fail-closed gates, Matt Pocock `to-spec` published the **single** [S1 implementation specification, GitHub Issue #141](https://github.com/lirtual/mcp-workers/issues/141), labelled `ready-for-agent`. It covers Draft/Validate/explicit immutable Publish → manual asynchronous bounded DAG Run → safe Status/Result, using Portal ingress, D1 and Cloudflare Workflows, with a read-only test fixture only. **S2** dynamic public MCP/Cron/webhook and **S3** GitHub heavy executor remain feature-gated until their P0 tests are satisfied. This is a specification handoff, **not** authorization for implementation, `to-tickets`, merge or deployment. No extra ADR, service, table or credential was created by this handoff. See the phase gates in the unified spec §11.2.
+
 ## Working rules
 
 1. Ask the complete current frontier in a round; offer one recommended choice per question.
