@@ -381,12 +381,36 @@ jobs:
 
       - name: Check unauthenticated MCP surface without credentials
         shell: bash
+        env:
+          FIRST_DEPLOY: ${{ steps.preflight.outputs.bootstrap }}
         run: |
           set -euo pipefail
           response="$(mktemp)"
           trap 'rm -f "$response"' EXIT
-          status="$(curl --silent --show-error --max-time 12 --output "$response" --write-out '%{http_code}'             --header 'Content-Type: application/json'             --data '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'             "https://${SELECTED_WORKER}.aiyaya.workers.dev/mcp")"
-          case "$status" in
-            401|403) echo "Unauthenticated MCP request denied (HTTP $status); human Portal acceptance still required" ;;
-            *) echo "Unexpected unauthenticated MCP status: $status" >&2; exit 1 ;;
-          esac
+          # A new Workers.dev hostname may briefly return 404 after the first publish.
+          # Do not retry any non-404 status or hide a persistent routing failure.
+          max_attempts=1
+          if [[ "$SELECTED_WORKER" == "github-actions-mcp-worker" && "$FIRST_DEPLOY" == "true" ]]; then
+            max_attempts=12
+          fi
+          for ((attempt=1; attempt<=max_attempts; attempt++)); do
+            status="$(curl --silent --show-error --max-time 12 --output "$response" --write-out '%{http_code}' \
+              --header 'Content-Type: application/json' \
+              --data '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
+              "https://${SELECTED_WORKER}.aiyaya.workers.dev/mcp")"
+            case "$status" in
+              401|403)
+                echo "Unauthenticated MCP request denied (HTTP $status); human Portal acceptance still required"
+                exit 0
+                ;;
+              404)
+                if ((attempt < max_attempts)); then
+                  echo "New Workers.dev route not yet visible (HTTP 404; attempt $attempt/$max_attempts)"
+                  sleep 5
+                  continue
+                fi
+                ;;
+            esac
+            echo "Unexpected unauthenticated MCP status: $status" >&2
+            exit 1
+          done
