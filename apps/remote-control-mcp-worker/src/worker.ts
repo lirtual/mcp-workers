@@ -15,7 +15,7 @@ function pairedOnly(env: Env): boolean {
 }
 // Preview operations use existing authenticated per-device WSS routing.
 // The paired Agent, not a temporary Worker secret, opts into write/Shell.
-const OWNER_TOOLS = new Set(["pairing_lookup", "pairing_approve", "list_devices", "revoke_device"]);
+const OWNER_TOOLS = new Set(["pairing_lookup", "pairing_approve", "list_devices", "device_rename", "revoke_device"]);
 function pendingOwner(env: Env): DurableObjectStub | null {
   const ns = (env as V2Env).DEVICE_COORDINATOR ?? (env as V2Env).V2_OWNER;
   return ns ? ns.get(ns.idFromName("single-owner-v2")) : null;
@@ -129,6 +129,42 @@ async function revokePairedDevice(env: Env, id: unknown, args: unknown): Promise
   } catch { return toolError(id, "Device revocation was not confirmed."); }
 }
 
+const DEVICE_RENAME_TOOL = {
+  name: "device_rename",
+  title: "Rename a paired device",
+  description: "Change only the display label of an approved device. Use the exact full device_id from list_devices; duplicate names are allowed and do not identify a unique device.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      device_id: { type: "string", description: "Exact full device UUID, never a label or shortened ID" },
+      name: { type: "string", minLength: 1, maxLength: 64, description: "New display label" },
+    },
+    required: ["device_id", "name"],
+    additionalProperties: false,
+  },
+  annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+} as const;
+
+async function renamePairedDevice(env: Env, id: unknown, args: unknown): Promise<Response> {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return toolError(id, "Invalid device rename request.");
+  const record = args as Record<string, unknown>;
+  if (Object.keys(record).length !== 2 || typeof record.device_id !== "string" ||
+      !/^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(record.device_id) ||
+      typeof record.name !== "string" || record.name.length < 1 || record.name.length > 64 ||
+      record.name.trim() !== record.name || /[\x00-\x1f]/.test(record.name)) {
+    return toolError(id, "Invalid device rename request.");
+  }
+  const owner = pendingOwner(env);
+  if (!owner) return toolError(id, "Device renaming is disabled.");
+  try {
+    const response = await owner.fetch("https://v2.internal/rename", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(record),
+    });
+    if (!response.ok) return toolError(id, "Device rename was rejected or the device is no longer approved.");
+    return toolText(id, JSON.stringify(await response.json()));
+  } catch { return toolError(id, "Device renaming is unavailable."); }
+}
+
 // T07 staged file/command capability; managed-session actions remain disabled.
 const V2_OPERATION_TOOLS = new Set(["write_file", "create_directory", "replace_text", "move_file", "delete_file", "run_command", "send_input", "stop_session", "get_operation_status"]);
 const V2_AGENT_OPERATION_TOOLS = new Set(["write_file", "create_directory", "edit_block", "move_file", "delete_file", "start_process", "interact_with_process", "force_terminate", "get_operation_status"]);
@@ -179,7 +215,7 @@ async function callPairedDeviceOperation(env: Env, id: unknown, name: string, ar
 const LIST_DEVICES_TOOL = {
   name: "list_devices",
   title: "List paired v2 devices",
-  description: "List approved v2 device IDs, labels and observed WSS status. Does not authorize a device or execute a remote command.",
+  description: "List approved device labels, full UUIDs and connection status. Duplicate labels have display_name and name_ambiguous. If a user names a device and multiple labels match, ask them to choose an exact device_id; never choose the first match. Does not execute commands.",
   inputSchema: { type: "object", properties: {}, additionalProperties: false },
   annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
 } as const;
@@ -938,7 +974,7 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
       capabilities: { tools: { listChanged: false } },
       serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
       instructions:
-        "File and Shell tools execute with the authorized Linux Agent account's actual OS permissions. Each mutation requires a stable operation ID; query the original ID after an uncertain response, and use a new ID only for a new intent. Managed sessions accept bounded stdin and stop requests only while the Agent can verify ownership; after restart, stale session actions are rejected and uncertain operations are never replayed.",
+        "File and Shell tools execute with the authorized Agent account's OS permissions. When a user identifies a device by name, list devices first; if names are duplicated, ask for an exact device choice rather than guessing. Always use a full device_id for calls. Each mutation requires a stable operation ID; query the original ID after an uncertain response, and use a new ID only for a new intent. Managed sessions accept bounded stdin and stop requests only while the Agent can verify ownership; after restart, stale session actions are rejected and uncertain operations are never replayed.",
     });
   }
 
@@ -951,10 +987,10 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
             required: [...("required" in tool.inputSchema ? tool.inputSchema.required : []), "device_id"],
           },
         })),
-        PAIRING_LOOKUP_TOOL, PAIRING_APPROVE_TOOL, LIST_DEVICES_TOOL, REVOKE_DEVICE_TOOL,
+        PAIRING_LOOKUP_TOOL, PAIRING_APPROVE_TOOL, LIST_DEVICES_TOOL, DEVICE_RENAME_TOOL, REVOKE_DEVICE_TOOL,
       ] });
     }
-    return rpc(rpcMessage.id, { tools: pendingOwner(env) ? [...LOCAL_TOOLS, PAIRING_LOOKUP_TOOL, PAIRING_APPROVE_TOOL, LIST_DEVICES_TOOL, REVOKE_DEVICE_TOOL] : LOCAL_TOOLS });
+    return rpc(rpcMessage.id, { tools: pendingOwner(env) ? [...LOCAL_TOOLS, PAIRING_LOOKUP_TOOL, PAIRING_APPROVE_TOOL, LIST_DEVICES_TOOL, DEVICE_RENAME_TOOL, REVOKE_DEVICE_TOOL] : LOCAL_TOOLS });
   }
 
   if (rpcMessage.method === "tools/call") {
@@ -985,6 +1021,9 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
         call.arguments && typeof call.arguments === "object" && !Array.isArray(call.arguments) &&
         Object.hasOwn(call.arguments, "device_id")) {
       return callPairedDeviceRead(env, rpcMessage.id, call.name, call.arguments);
+    }
+    if (call.name === "device_rename" && pendingOwner(env)) {
+      return renamePairedDevice(env, rpcMessage.id, call.arguments);
     }
     if (call.name === "revoke_device" && pendingOwner(env)) {
       return revokePairedDevice(env, rpcMessage.id, call.arguments);
