@@ -441,3 +441,45 @@ describe("highlight write retry safety", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("Official collection mutation acknowledgments", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const json = (body: unknown) => new Response(JSON.stringify(body), {
+    status: 200, headers: { "content-type": "application/json" },
+  });
+
+  it.each([
+    ["result:false with item", { result: false, item: { _id: 42, title: "Disposable" } }],
+    ["missing success field", { item: { _id: 42, title: "Disposable" } }],
+    ["invalid collection ID", { result: true, item: { _id: 0, title: "Disposable" } }],
+  ])("rejects collection_create %s without claiming success", async (_label, response) => {
+    const fetch = vi.fn(async (_request: Request) => json(response));
+    vi.stubGlobal("fetch", fetch);
+    const service = new RaindropService({ accessToken: "test-token", maxReadRetries: 3 });
+    await expect(service.createCollection("Disposable")).rejects.toThrow(/could not be verified/);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch.mock.calls[0]![0].method).toBe("POST");
+  });
+
+  it.each([
+    ["result:false with item", { result: false, item: { _id: 42, title: "Renamed" } }],
+    ["mismatched collection ID", { result: true, item: { _id: 43, title: "Renamed" } }],
+    ["stale field in response", { result: true, item: { _id: 42, title: "Old name" } }],
+  ])("rejects collection_update %s without claiming success", async (_label, response) => {
+    const fetch = vi.fn(async (_request: Request) => json(response));
+    vi.stubGlobal("fetch", fetch);
+    const service = new RaindropService({ accessToken: "test-token", maxReadRetries: 3 });
+    await expect(service.updateCollection(42, { title: "Renamed" })).rejects.toThrow(/not confirmed|could not be verified/);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch.mock.calls[0]![0].method).toBe("PUT");
+  });
+
+  it("accepts an identity-matched collection update with result:true", async () => {
+    const fetch = vi.fn(async () => json({ result: true, item: { _id: 42, title: "Renamed" } }));
+    vi.stubGlobal("fetch", fetch);
+    const service = new RaindropService({ accessToken: "test-token", maxReadRetries: 0 });
+    await expect(service.updateCollection(42, { title: "Renamed" })).resolves.toMatchObject({ _id: 42, title: "Renamed" });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+});

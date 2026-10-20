@@ -422,7 +422,12 @@ export default class RaindropService {
           ...(parentId !== undefined ? { parent: { $id: parentId } } : {}),
         },
       });
-      if (!data?.item) throw new UpstreamError("Failed to create collection");
+      // Official mutation acknowledgment requires result:true and a usable item.
+      // A response containing item alongside result:false is not success.
+      if (data?.result !== true ||
+          !Number.isSafeInteger(data.item?._id) || data.item._id <= 0 ||
+          typeof data.item?.title !== "string" || !data.item.title.trim())
+        throw new UpstreamError("Collection creation outcome could not be verified");
       return data.item as Collection;
     });
 
@@ -444,7 +449,14 @@ export default class RaindropService {
         params: { path: { id } },
         body: updates,
       });
-      if (!data?.item) throw new UpstreamError("Failed to update collection");
+      if (data?.result !== true || data.item?._id !== id ||
+          typeof data.item?.title !== "string" || !data.item.title.trim())
+        throw new UpstreamError("Collection update outcome could not be verified");
+      // Never report success when the returned collection contradicts a field
+      // that this caller explicitly requested to change.
+      if (Object.entries(updates).some(([field, expected]) =>
+        JSON.stringify(data.item[field as keyof Collection]) !== JSON.stringify(expected)))
+        throw new UpstreamError("Collection update was not confirmed by the returned item");
       return data.item as Collection;
     });
 

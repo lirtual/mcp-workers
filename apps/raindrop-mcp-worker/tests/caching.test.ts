@@ -76,7 +76,7 @@ describe("RaindropService Caching Logic", () => {
   it("modifying collections should clear collection cache", async () => {
     const mockGet = (service as any).client.GET;
     const mockPost = (service as any).client.POST;
-    mockPost.mockResolvedValue({ data: { item: { _id: 1, title: "New" } } });
+    mockPost.mockResolvedValue({ data: { result: true, item: { _id: 1, title: "New" } } });
 
     await service.getCollections();
     expect(mockGet).toHaveBeenCalledTimes(1);
