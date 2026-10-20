@@ -213,6 +213,10 @@ The owner agreed that additional entities or durable mechanisms must be justifie
 
 See [technical-spec-draft.md](technical-spec-draft.md), sections 1.3 and 7.4, and [ADR-0011](../adr/0011-github-runner-claim-and-least-privilege.md).
 
+## P0-5 post-audit GitHub candidate fencing (2026-10-20)
+
+[Candidate-fencing test evidence](p0-github-candidate-fencing-isolated-20261020.md): three real GitHub physical executions were tested with official OIDC. Authorized Run `39408539052` attempt 1 owned the existing logical Attempt; unrelated Run `39408589882` attempt 1 from the **same repository/workflow** was denied HTTP 403; the authorized Run's rerun (same ID, `run_attempt=2`) was also denied HTTP 403. Exactly one D1 effect remained. No new authentication platform, candidate registry or Claim service is needed for this case. **Remain OPEN:** uncertain GitHub dispatch-ID correlation without harness delay, check-run/job retries within an attempt, external effects and fencing after cancellation. All ephemeral resources removed.
+
 ## Working rules
 
 1. Ask the complete current frontier in a round; offer one recommended choice per question.
