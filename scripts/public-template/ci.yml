@@ -1,0 +1,35 @@
+name: Public source checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Install without lifecycle scripts
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Stage pinned public Agent for compatibility checks
+        run: bash scripts/stage-public-remote-control-agent.sh
+      - name: Run offline application checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          for app in database-mcp-worker github-actions-mcp-worker ima-mcp-worker raindrop-mcp-worker remote-control-mcp-worker ssh-mcp-worker; do
+            pnpm --filter "$app" check
+          done
