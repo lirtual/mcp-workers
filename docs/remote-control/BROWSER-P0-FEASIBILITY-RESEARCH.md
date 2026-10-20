@@ -61,3 +61,26 @@ Use harmless, controlled local/test endpoints (including **simulated** metadata 
 - **One critical boundary:** A browser tool being *defined* or *advertised* is not the same as a browser action being *accepted, enabled or owner-authorized*.
 
 **Next appropriate step:** a **separately scoped non-destructive real-client and isolated test-browser acceptance session**, only after its proposed device/environment, synthetic test endpoints and scope have been approved. Completing this document does **not** perform those tests or grant permission to implement, deploy, merge or create Tickets.
+
+
+## D. Non-destructive feasibility observations — same-session local probe (2026-10-20)
+
+**Environment boundary:** The following checks used a **separate ephemeral local sandbox**, not either real Remote Control device, the project repository, Cloudflare Worker, or production. No project code was changed; no remote Shell, CI or deployment was run. This is **not** a platform/browser acceptance test.
+
+| Check | Observed result | What it proves / does not prove |
+| --- | --- | --- |
+| Connected MCP tool discovery | The connected Remote Control plugin exposes paired-device/file/process tools, **not** any browser automation or verifiable one-use owner-confirmation test tool. Read-only `list_devices` reported **two online devices with identical display names**. | The plugin is reachable for read-only discovery. It provides no supported way to test browser approval, and ambiguous labels must not select a device implicitly. No device commands were issued |
+| Sandbox Chromium startup | The local sandbox's installed Playwright Python package launched `/usr/bin/chromium` headlessly. | A local browser executable runs in this sandbox. **Not** evidence of the remote Linux, WSL2 or native Windows Agent browser, provenance, or version-match acceptance |
+| Controlled direct sensitive HTTP URL | Navigating Chromium to a **synthetic** `127.0.0.1` local test endpoint returned `net::ERR_BLOCKED_BY_ADMINISTRATOR`. The browser route callback saw **zero** requests and the local server saw **zero** requests. | This sandbox already enforces a separate administrator/network restriction before the Playwright route can be meaningfully tested. It does **not** prove our Q45/Q49 policy or confirm Agent egress safety |
+| Controlled redirect to sensitive URL | The initial `127.0.0.1` test URL returned the same browser administrator block; route callback and local server again saw **zero** requests. | **Inconclusive** for redirect per-hop routing/bypass: the browser could not reach the initial test endpoint. Do **not** claim PASS or FAIL for project network interception |
+| Offline screenshot | A new synthetic HTML page rendered without network requests. Result: **PNG 12,063 bytes** and **JPEG (quality 65, CSS scale) 10,553 bytes**. | Screenshot generation/compression works in this sandbox for a **tiny** page. This is not a realistic-image-size benchmark and does **not** test WSS/DO/MCP image delivery, which has different framing and existing message bounds |
+
+The local synthetic probe had no interaction with real metadata services, real user sites, any credentials, or remote devices. Do **not** disable the sandbox's browser security just to make a test pass. If a true redirect/egress test is authorized later, run it only in a **separately identified isolated target** with controlled local HTTP endpoints and explicit permission for that environment.
+
+### E. Additional actual transport constraint: existing read call timeout
+
+The [current Durable Object dispatch](https://github.com/lirtual/mcp-workers/blob/main/apps/remote-control-mcp-worker/src/v2-pairing.ts) uses a **5,000 ms** per-read/operation response timeout; [the Agent socket handler](https://github.com/lirtual/remote-control-agent/blob/main/apps/remote-control-agent/src/v2-connection-lifecycle.ts) validates bounded JSON/text frames and returns bounded read text. Browser navigation/screenshot work could naturally exceed five seconds, so **simply renaming a file read tool into a browser tool is not evidence it will work**.
+
+At later interface design time, prefer the *existing* stable Operation ID/local Receipt and explicit status-query pattern for uncertain or genuinely long-running browser effects, and define timeouts/cancellation for safe reads. **Do not** blindly increase every timeout, replay an effectful action after `timeout_unknown`, or create a second workflow/execution service without evidence. This is a source-grounded implementation issue, not a new owner-approved design choice.
+
+**Status after local probe:** P0 owner approval **BLOCKED / untestable with available plugin tools**; P0 browser network interception **INCONCLUSIVE due to sandbox administrator policy**; remote-device/platform acceptance **NOT RUN**. A result remains **unverified** until run in the actual supported client and approved isolated browser environment.
