@@ -249,6 +249,14 @@ The controlled transfer of existing authoritative Operation Receipts to a replac
 _Avoid_: Treating a successful new-store startup as sufficient evidence that historical operation identities were preserved.
 
 
+## Browser feasibility review interpretation — not an accepted decision
+
+The owner requested a source-grounded feasibility and overengineering check **after** accepting Q1–Q52. Review conclusions are indexed in the [post-convergence feasibility audit](./BROWSER-AUTOMATION-DESIGN.md#post-convergence-feasibility-audit--recommendations-not-new-decisions). This does not change any settled domain meaning or approve new architecture.
+
+A browser action's **tool annotation or ChatGPT approval UI** is not synonymous with a Verified Browser Approval at Agent execution. A browser's **effective outbound network traffic**, including redirects and subresources, is broader than the initial Browser Navigation Destination. A screenshot returned by Playwright is an **image buffer**, not proof that the existing Agent/Worker MCP text protocol can deliver it. Agent OS authority to read a local file is not necessarily owner authorization to **upload that file to a website**. Existing Agent receipt/file tools are reusable foundations, not evidence that binary browser downloads or browser-specific receipts are currently implemented.
+
+These are evidence/implementation contracts only. Browser capability activation, native Windows acceptance, CI, Tickets, merging and deployment remain outside this documentation review.
+
 ## Browser final navigation/logging/approval and convergence choices — accepted thirteenth round (2026-10-20)
 
 Q49=A requires the Effective Browser Navigation Target to be reassessed on each redirect, host or relevant DNS/resolved-address change, not only once at the initial URL; the concrete coverage of subresources, service workers and rebinding remains an unproven enforcement detail. Q50=A keeps routine Browser Diagnostic Records small, without persisting DOM dumps, screenshots, credentials or untrusted tool payloads by default; explicitly requested content can still contain private information and never authorizes actions. Q51=A makes Verified Browser Approval, **if a supported end-to-end client path can actually verify it**, short-lived, single-use and bound to the exact consequential operation; changed, expired, consumed or unverifiable approvals fail closed. Q52=A closes the current product-design decision interview through a documented consistency/overengineering review, with **separate explicit owner confirmation of shared understanding still required** and no implementation, Issues/Tickets, CI changes, PR merge or deployment approved.
