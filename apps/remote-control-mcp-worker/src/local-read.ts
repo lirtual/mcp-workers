@@ -32,7 +32,7 @@ export function parseLocalRead(input: unknown): LocalRead | null {
   const filePath = record.path;
   if (typeof filePath !== "string") return null;
   if (filePath.length === 0 || filePath.length > MAX_PATH_LENGTH) return null;
-  if (filePath.includes("\0") || filePath.startsWith("//") || hasUriScheme(filePath)) return null;
+  if (!parseReadablePath(filePath)) return null;
 
   const read: LocalRead = { path: filePath };
   if (record.offset !== undefined) {
@@ -208,6 +208,27 @@ function parsePath(value: unknown): string | null {
   return value;
 }
 
+/**
+ * Keep the existing POSIX route unchanged, but allow a drive-absolute Windows
+ * path for read-only v2 calls. A drive prefix is NOT a URL scheme.
+ * Reject UNC/device paths, drive-relative paths, ADS, malformed roots, and
+ * Win32 special characters before passing the path to the Agent, which
+ * independently enforces platform-local filesystem rules.
+ *
+ * Mutation path validation intentionally continues to use parsePath().
+ */
+function parseReadablePath(value: unknown): string | null {
+  if (typeof value !== "string" || value.length === 0 || value.length > MAX_PATH_LENGTH) return null;
+  if (/^[a-zA-Z]:[\\/]/.test(value)) {
+    if (/^[a-zA-Z]:[\\/]{2}/.test(value) ||
+        /[<>:"|?*\u0000-\u001f]/.test(value.slice(2)) ||
+        value.startsWith("\\\\")) return null;
+    return value;
+  }
+  if (value.startsWith("\\\\")) return null;
+  return parsePath(value);
+}
+
 export function parseReadMultiple(input: unknown): LocalReadMultiple | null {
   if (input === null || typeof input !== "object" || Array.isArray(input)) return null;
   const record = input as Record<string, unknown>;
@@ -217,7 +238,7 @@ export function parseReadMultiple(input: unknown): LocalReadMultiple | null {
   }
   const paths: string[] = [];
   for (const entry of record.paths) {
-    const filePath = parsePath(entry);
+    const filePath = parseReadablePath(entry);
     if (!filePath) return null;
     paths.push(filePath);
   }
@@ -228,7 +249,7 @@ export function parseListDirectory(input: unknown): LocalListDirectory | null {
   if (input === null || typeof input !== "object" || Array.isArray(input)) return null;
   const record = input as Record<string, unknown>;
   if (Object.keys(record).some((key) => key !== "path" && key !== "depth")) return null;
-  const directoryPath = parsePath(record.path);
+  const directoryPath = parseReadablePath(record.path);
   if (!directoryPath) return null;
   if (record.depth === undefined) return { path: directoryPath, depth: DEFAULT_DIRECTORY_DEPTH };
   if (!isIntegerInRange(record.depth, 1, MAX_DIRECTORY_DEPTH)) return null;
@@ -239,7 +260,7 @@ export function parseFileInfo(input: unknown): LocalFileInfo | null {
   if (input === null || typeof input !== "object" || Array.isArray(input)) return null;
   const record = input as Record<string, unknown>;
   if (Object.keys(record).some((key) => key !== "path")) return null;
-  const filePath = parsePath(record.path);
+  const filePath = parseReadablePath(record.path);
   if (!filePath) return null;
   return { path: filePath };
 }
@@ -248,7 +269,7 @@ export function parseSearchStart(input: unknown): LocalSearch | null {
   if (input === null || typeof input !== "object" || Array.isArray(input)) return null;
   const record = input as Record<string, unknown>;
   if (Object.keys(record).some((key) => !["path", "pattern", "search_type"].includes(key))) return null;
-  const searchPath = parsePath(record.path);
+  const searchPath = parseReadablePath(record.path);
   const pattern = record.pattern;
   const searchType = record.search_type;
   if (!searchPath || typeof pattern !== "string" || pattern.length === 0 || pattern.length > MAX_SEARCH_PATTERN_LENGTH) {
