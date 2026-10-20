@@ -305,7 +305,7 @@ const invalidInputs = [
   { confirm: true, collectionId: -99, expectedTotal: 0, digest: "garbage" },
 ];
 describe("T09 public MCP contract", () => {
-  it("lists 42 tools, enforces strict input, previews and confirms via tools/call, closes legacy bypass", async () => {
+  it("lists 41 tools, enforces strict input, previews and confirms via tools/call, closes legacy bypass", async () => {
     const f = fixture(51);
     const server = new RaindropMCPService({
       accessToken: "mock-only",
@@ -317,7 +317,7 @@ describe("T09 public MCP contract", () => {
       await server.getServer().connect(st);
       await client.connect(ct);
       const { tools } = await client.listTools();
-      expect(tools).toHaveLength(42);
+      expect(tools).toHaveLength(41);
       expect(tools.find((t) => t.name === "trash_empty")).toMatchObject({
         outputSchema: expect.any(Object),
         annotations: { destructiveHint: true, idempotentHint: false },

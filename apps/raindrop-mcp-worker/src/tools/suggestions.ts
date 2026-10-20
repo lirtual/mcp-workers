@@ -2,44 +2,6 @@ import { z } from "zod";
 import type { ToolHandlerContext } from "./common.js";
 import { defineTool, textContent } from "./common.js";
 
-// Direct Raindrop organization suggestions. No MCP Sampling or invented AI tags.
-const BookmarkSuggestInputSchema = z.object({
-  url: z.string().url()
-    .refine(url => /^https?:\/\//i.test(url), "Expected an HTTP(S) URL")
-    .optional(),
-  bookmarkId: z.number().int().positive().safe().optional(),
-}).strict().refine(
-  input => (input.url !== undefined) !== (input.bookmarkId !== undefined),
-  "Provide exactly one of url or bookmarkId",
-);
-
-const BookmarkSuggestOutputSchema = z.object({
-  suggestions: z.object({
-    tags: z.array(z.string()),
-    collectionIds: z.array(z.number().int().positive()),
-  }),
-});
-
-const bookmarkSuggestTool = defineTool({
-  name: "bookmark_suggest",
-  description: "Read Raindrop.io official tags and collection suggestions for exactly one URL or bookmark.",
-  inputSchema: BookmarkSuggestInputSchema,
-  outputSchema: BookmarkSuggestOutputSchema,
-  annotations: { readOnlyHint: true, idempotentHint: true },
-  handler: async (
-    args: z.infer<typeof BookmarkSuggestInputSchema>,
-    { raindropService }: ToolHandlerContext,
-  ) => {
-    const target = args.bookmarkId ?? args.url;
-    if (target === undefined) throw new Error("Suggestion target is required");
-    const suggestions = await raindropService.getOfficialSuggestions(target);
-    return {
-      content: [textContent("Raindrop official organization suggestions")],
-      structuredContent: { suggestions },
-    };
-  },
-});
-
 const GetSuggestionsInputSchema = z.object({
   url: z.string().url().optional().describe("URL to get suggestions for"),
   raindropId: z
@@ -192,4 +154,4 @@ const suggestTagsTool = defineTool({
   },
 });
 
-export const suggestionTools = [bookmarkSuggestTool, getSuggestionsTool, suggestTagsTool];
+export const suggestionTools = [getSuggestionsTool, suggestTagsTool];

@@ -495,7 +495,7 @@ describe("official atomic duplicate removal", () => {
       await mcp.getServer().connect(st);
       await client.connect(ct);
       const { tools } = await client.listTools();
-      expect(tools).toHaveLength(42);
+      expect(tools).toHaveLength(41);
       const listed = tools.find((t) => t.name === tool.name)!;
       expect(listed.outputSchema).toBeDefined();
       expect(listed.outputSchema?.type).toBe("object");

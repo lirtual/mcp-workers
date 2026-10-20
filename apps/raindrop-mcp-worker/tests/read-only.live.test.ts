@@ -50,7 +50,7 @@ suite("Spec #123 authenticated read-only MCP smoke", () => {
 
   it("checks candidate tool registration without calling writes", async () => {
     const listed = await client.listTools();
-    for (const name of ["collection_list", "collection_get", "bookmark_search", "bookmark_get", "tag_list", "highlight_list", "bookmark_filters_get", "bookmark_suggest"]) {
+    for (const name of ["collection_list", "collection_get", "bookmark_search", "bookmark_get", "tag_list", "highlight_list", "bookmark_filters_get"]) {
       expect(listed.tools.some((tool) => tool.name === name && tool.annotations?.readOnlyHint === true)).toBe(true);
     }
     expect(readCount).toBe(0);
@@ -87,7 +87,7 @@ suite("Spec #123 authenticated read-only MCP smoke", () => {
     expect(items.every((value) => Number.isSafeInteger(value.id) &&
       typeof value.url === "string" && Array.isArray(value.tags))).toBe(true);
     // The existing production account has saved bookmarks. A zero-result
-    // page cannot validate the subsequent get, highlights or suggestions.
+    // page cannot validate the subsequent get or highlights.
     expect(items.length).toBe(1);
     bookmarkId = items[0]!.id as number;
   });
@@ -106,14 +106,6 @@ suite("Spec #123 authenticated read-only MCP smoke", () => {
     const result = await read("highlight_list", { bookmarkId });
     expect(result.bookmarkId).toBe(bookmarkId);
     expect(Array.isArray(result.highlights)).toBe(true);
-  });
-
-  it("gets official suggestions for an existing bookmark via GET", async () => {
-    if (bookmarkId === undefined) throw new Error("Bookmark-dependent live smoke was not exercised");
-    const result = await read("bookmark_suggest", { bookmarkId });
-    const suggestions = result.suggestions as Record<string, unknown>;
-    expect(Array.isArray(suggestions.tags)).toBe(true);
-    expect(Array.isArray(suggestions.collectionIds)).toBe(true);
   });
 
   it("gets tag metadata without changing data", async () => {

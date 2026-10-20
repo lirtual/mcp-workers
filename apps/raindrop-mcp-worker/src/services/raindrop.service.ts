@@ -1135,39 +1135,6 @@ export default class RaindropService {
   }
 
   /**
-   * Normalize verified official organization suggestions. The bundled OpenAPI
-   * schema models collection IDs as _id, while the official response uses $id.
-   * This adapter keeps that discrepancy within the existing service layer.
-   */
-  async getOfficialSuggestions(
-    target: string | number,
-  ): Promise<{ collectionIds: number[]; tags: string[] }> {
-    const response = await this.getSuggestions(target);
-    if (response?.result !== true || !response.item) {
-      throw new UpstreamError("Raindrop organization suggestions were not verified");
-    }
-    const item = response.item as unknown as {
-      collections?: Array<{ $id?: unknown }>;
-      tags?: unknown;
-    };
-    if (item.tags !== undefined &&
-        (!Array.isArray(item.tags) ||
-         !item.tags.every((tag: unknown) => typeof tag === "string"))) {
-      throw new UpstreamError("Invalid suggested tags from Raindrop");
-    }
-    if (item.collections !== undefined &&
-        (!Array.isArray(item.collections) ||
-         !item.collections.every((collection: { $id?: unknown }) =>
-           Number.isSafeInteger(collection?.$id) && (collection.$id as number) > 0))) {
-      throw new UpstreamError("Invalid suggested collection IDs from Raindrop");
-    }
-    return {
-      collectionIds: (item.collections ?? []).map(collection => collection.$id as number),
-      tags: (item.tags ?? []) as string[],
-    };
-  }
-
-  /**
    * Create a new bookmark
    * Raindrop.io API: POST /raindrop
    */

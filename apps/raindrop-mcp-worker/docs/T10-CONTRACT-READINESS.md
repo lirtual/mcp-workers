@@ -1,13 +1,20 @@
 # T10 — Spec #123 公开契约切换就绪审查（2026-10-20）
 
-**最新结论：公开契约切换仍 BLOCKED。** Draft PR #134 当前共注册 **42 个工具 = 27 个目标候选 + 15 个其余旧工具**；其中 bookmark_search 与 collection_list 属于同名原有工具。此前已在用户授权下使用**现有生产 Raindrop Token**完成受控只读与可丢弃高亮真实 API 验收（见下方最新状态和运行证据）。本文件不授权合并 main、移除旧工具、部署 Worker 或刷新插件。
+**最新结论：公开契约切换仍 BLOCKED。** Draft PR #134 当前共注册 **41 个工具 = 26 个目标候选 + 15 个其余旧工具**；其中 bookmark_search 与 collection_list 属于同名原有工具。此前已在用户授权下使用**现有生产 Raindrop Token**完成受控只读与可丢弃高亮真实 API 验收（见下方最新状态和运行证据）。本文件不授权合并 main、移除旧工具、部署 Worker 或刷新插件。
+
+## 最新范围收敛：删除不可用的建议候选（2026-10-20）
+
+- **已经删除**：`bookmark_suggest` 的新候选注册、输入/输出 Schema、工具处理器和候选专用 `getOfficialSuggestions` 转换逻辑，不再出现在 `tools/list`；直接调用已删除名称会得到 MCP `Tool not found`，不访问上游。移除其正式 Mock 测试与认证只读 smoke 中的相关步骤。
+- **新的准确数量**：**41 个工具 = 26 个新候选 + 15 个旧兼容工具**。并没有执行全面 41→26 切换；当前独立兼容 `get_suggestions`、`suggest_tags` 保留，前者仍调用旧 API、可能 403，这不是候选功能恢复。
+- **验收证据**：下方原始 10 项生产验收日志是删除前的历史事实。原 9 项已通过，其中 1 项是被移除的新建议工具导致的 403；当前只读脚本不再发起这项请求，**没有因此宣称新版本已重新进行 9/9 的真实认证验收**。其余真实 API 证据仍有效。
+- **限制**：本次只移除明确点名的一个候选工具及其独占代码，不改旧工具名、凭据、Portal、Worker 部署或破坏性写入权限。
 
 ## 最新真实验收快照（以本节为准，以下 T10 原始记录保留审查历史）
 
 - **SDK MCP → 真实 API 的只读验证**：10 项 smoke 中 9 项通过，包含工具注册/无写入断言；`collection_list`、`collection_get`、`bookmark_search`、`bookmark_get`、`highlight_list`、`tag_list`、`bookmark_filters_get` 的实际调用成功。[运行 #39437631284](https://github.com/lirtual/mcp-workers/actions/runs/39437631284)。
 - **Draft Service → 真实 API 的隔离写入验证**：在随机新建的可丢弃书签上，高亮创建、读取、更新、删除和书签精确清理成功；这是 Service 真实 API 验收，**不是通过线上 Portal 的 MCP 写入验收**。[运行 #39439062465](https://github.com/lirtual/mcp-workers/actions/runs/39439062465)。
-- **官方建议仍未通过**：`GET /raindrop/{id}/suggest` 返回 HTTP 403；已部署旧版的 `POST /raindrop/suggest` 也收到 403。没有官方原因说明，不宣称一定是 Pro、Token 失效或其他特定原因；不虚构建议，错误不自动重试。
-- **发布边界**：大部分其它候选写入仅 Mock/SDK 测试；`trash_empty` 全局永久清空不可拿真实生产库作测试。当前正常 CI 和 Environment 原有分支限制已恢复，无常驻 Draft 生产 Secret 测试入口。**42→27 工具切换需另外明确授权。**
+- **建议功能已从新候选移除**：原候选的 `GET /raindrop/{id}/suggest` 真实测试返回 HTTP 403，旧版 `POST /raindrop/suggest` 也收到 403。新候选完全不再公开；独立旧兼容 `get_suggestions` 暂保留（同样可能遇到 403），不伪造建议。
+- **发布边界**：大部分其它候选写入仅 Mock/SDK 测试；`trash_empty` 全局永久清空不可拿真实生产库作测试。当前正常 CI 和 Environment 原有分支限制已恢复，无常驻 Draft 生产 Secret 测试入口。**41→26 工具切换需另外明确授权。**
 
 ## 验收含义
 
@@ -17,7 +24,7 @@
 - **Live**：已有部分 Draft 真实认证 Raindrop API 验收；尚未完成全部工具的生产 MCP/Portal 端到端验证。写入仅对获授权的可丢弃对象测试。
 - **破坏性受限**：尤其 trash_empty 是不可逆全局操作，不能用生产库做破坏性验收；必须记录 acceptance-limited 和预览后并发变化的竞态风险。
 
-## 27 候选工具逐项状态
+## 26 候选工具逐项状态
 
 表中“通过*”仅表示 Mock/API 夹具与 SDK MCP 测试。真实 API 列区分 **MCP 实测**（Draft 内存 MCP→真实 API）、**Service 实测**（Draft Service→真实 API）、**未实测**以及 **403 未通过**；不能混为已部署 Worker 的在线能力。
 
@@ -46,7 +53,6 @@
 | highlight_update | 已实现 | 通过* | 通过* | Service 实测通过 | 字符串 ID/所属校验 |
 | highlight_delete | 已实现 | 通过* | 通过* | Service 实测通过 | 一条高亮删除 |
 | bookmark_filters_get | 已实现 | 通过* | 通过* | MCP 实测通过 | 无统计不能填 0 |
-| bookmark_suggest | 已实现 | 通过* | 通过* | HTTP 403（未通过） | 官方建议/无 Sampling |
 | trash_empty | 已实现 | 通过* | 通过* | **受限** | 不可逆全局清空/完整范围 |
 | collection_remove_empty | 已实现 | 通过* | 通过* | 待验收 | 已批准空叶子范围 |
 | bookmark_remove_duplicates | 已实现 | 通过* | 通过* | 待验收 | 已验证输出 Schema；副本保护仍待真实数据验收 |
@@ -66,10 +72,10 @@
 | tag_manage | tag_list / rename / merge / delete | 避免重命名和合并混淆 |
 | highlight_manage | highlight_list / create / update / delete | 指定书签和字符串高亮 ID |
 | bulk_edit_raindrops | bookmark_batch_update / batch_delete | **旧写入已拒绝无预检/缺 ID 路径**；新 update 同时支持批量移动 |
-| get_suggestions | bookmark_suggest | 官方建议，验证字段含义 |
-| suggest_tags | 有意不保留服务端 Sampling | AI 推断留在对话端，官方建议来自 bookmark_suggest |
+| get_suggestions | 暂保留旧工具，无新候选替代 | 现有生产账号建议 API 曾返回 403；兼容入口保留，移除需另行授权 |
+| suggest_tags | 暂保留旧工具，不纳入 26 项候选 | AI Sampling 兼容行为独立于已移除的官方建议候选，未来切换另审 |
 | library_audit | bookmark_filters_get + bookmark_search | 通过官方筛选加分页组合；不再提供单调用整库审计 |
-| diagnostics | 内部观测，不再作为业务工具 | 不属于 27 项，需要另行获准的公开入口清理 |
+| diagnostics | 内部观测，不再作为业务工具 | 不属于 26 项，需要另行获准的公开入口清理 |
 | empty_trash | trash_empty | 旧 confirm:true 已安全禁止；新工具绑定完整 Trash ID 摘要 |
 | cleanup_collections | collection_remove_empty | 旧 PUT /collections/clean 全球清理入口已安全禁止；限定根、空叶子和摘要 |
 | remove_duplicates | bookmark_remove_duplicates | 旧 dryRun:false 已安全禁止；单集合候选与副本保留 |
@@ -84,19 +90,19 @@
 4. **已封堵（先前 T03/T08/T09）**：bookmark_manage 的 Trash 永久删绕过、remove_duplicates 的无摘要清理、empty_trash 的计数式清空分别已拒绝危险路径。
 5. **已修复（后续补丁）**：collection_list 使用 strict 输入 Schema，真实 MCP tools/call 已验证未知字段及错误类型被拒绝，且不访问上游。
 6. **已修复（后续补丁）**：bookmark_remove_duplicates 已为预览、无需执行及批量失败/未知结果声明并校验输出 Schema；仍需真实 API 验收。
-7. **后续已部分推进**：最初 27 项均缺此 Draft 版本的真实认证 MCP/API 验收；最新局部成果详见本文顶部快照；涉及写入的需经单独授权的可丢弃测试对象；全局永久清空记录 acceptance-limited。前述测试矩阵只覆盖模拟场景。
+7. **后续已部分推进**：最初 26 项均缺此 Draft 版本的真实认证 MCP/API 验收；最新局部成果详见本文顶部快照；涉及写入的需经单独授权的可丢弃测试对象；全局永久清空记录 acceptance-limited。前述测试矩阵只覆盖模拟场景。
 
 ## P0 独立审查后续修复（2026-10-20）
 
 - **已修复单书签删除竞态**：`bookmark_delete` 与旧 `bookmark_manage` 的安全软删入口均改为调用同一 Service 删除方法，必须传入明确原始集合。Service 再次无缓存读取并校验原始集合后，使用官方 `DELETE /raindrops/{collectionId}` + `{ids:[id]}`；仅在调用者显式传入 `-99` 时允许执行永久删除。即使书签在预检和 DELETE 之间转入 Trash，也不会从原集合的 DELETE 升级为永久删除。仅 `result:true` 且 `modified:1` 视作确认，否则返回不确定结果、不得自动重试。
 - **已修复重复书签内容保护**：对不同 `title` 或 `excerpt` 的相同 URL 记录拒绝自动清理，缺少上述字段也默认保护；保留现有标签、笔记、高亮、收藏、提醒保护机制。
 - **独立 HTTP/SDK Mock 回归**：新增原集合限定、预检过期、不重试及摘要/标题差异等测试；本地 WSL Node22 共 353 passed / 3 skipped / 0 failed，源码/测试 typecheck、lint（0 errors）及 diff-check 通过。Node24 CI 和真实 API 验收仍另行核查。
-- **发布门槛不变**：虽然代码级 P0 修复完成，认证只读 smoke、可丢弃数据写入验收、27 项工具最终切换授权均仍缺失；`NO-GO` 保持有效。
+- **发布门槛不变**：虽然代码级 P0 修复完成，认证只读 smoke、可丢弃数据写入验收、26 项工具最终切换授权均仍缺失；`NO-GO` 保持有效。
 
 ## P1 真实只读验收边界（2026-10-20）
 
 - **生产基线已完成（旧版插件，非 Draft）**：通过已连接的 Raindrop MCP 插件诊断版本 `2.4.5`、17 个工具；`collection_list(skipCache:true)` 返回 4 个集合；新鲜的不存在关键词搜索返回 0 条；`list_raindrops(0, perPage:1)` 及 `get_raindrop` 的单条读取响应一致。只记录结构、数量与是否成功，不保留个人书签正文或凭据。
-- **严格区分版本**：以上结果来自**已部署的旧版插件**，不能填写 27 个候选工具的 Draft「真实 API」为通过。当前 WSL Shell 无 `RAINDROP_ACCESS_TOKEN` / `MCP_ACCESS_TOKEN`，仓库亦只有 `.env.example`；现有 GitHub Actions 仅在受保护的 main 手动发布作业注入生产密钥，PR CI 无此权限。不得在 PR 作业中暴露生产密钥来凑验收结果。
+- **严格区分版本**：以上结果来自**已部署的旧版插件**，不能填写 26 个候选工具的 Draft「真实 API」为通过。当前 WSL Shell 无 `RAINDROP_ACCESS_TOKEN` / `MCP_ACCESS_TOKEN`，仓库亦只有 `.env.example`；现有 GitHub Actions 仅在受保护的 main 手动发布作业注入生产密钥，PR CI 无此权限。不得在 PR 作业中暴露生产密钥来凑验收结果。
 - **只读测试入口**：新增 `tests/read-only.live.test.ts`，从此 Draft 源码启动内存 MCP 客户端调用 8 个只读候选工具；只在明确设置 `RUN_LIVE_API_TESTS=true` 时运行，并要求已安全注入 `RAINDROP_ACCESS_TOKEN`。其 `fetch` 守卫拦截任何非 GET 请求、非 HTTPS/非 Raindrop API 目标和跳转请求；此守卫另外通过 7 项离线用例，不调用创建、删除、建议 POST 或破坏性清理；无令牌时不做外网请求；测试中不打印个人收藏内容。
 - **执行命令**：在凭据经既有授权渠道以环境变量安全注入、且明确设置 `RUN_LIVE_API_TESTS=true` 的独立测试进程中运行 `pnpm --filter raindrop-mcp-worker run test:read-only-live`。命令入口自身拒绝遗漏开关或令牌，避免跳过用例时误报通过。不得在命令行明文写 token、写入 .env、提交日志或把主账户 Token 复制到 GitHub PR 上下文。只读 smoke 完成后仍需另行授权的可丢弃数据环境检验写入，全球 Trash 永久清理继续标记受限。
 - **状态**：本次仅编制和本地验证可执行的只读验收入口；Draft 源码**尚未**进行授权的真实上游请求，保持 **NO-GO**。
@@ -146,7 +152,7 @@ bash -c 'set -eu; IFS= read -rsp "Raindrop API Token: " RAINDROP_ACCESS_TOKEN </
 
 ## 认证验收可信度修正（2026-10-20）
 
-- `tests/read-only.live.test.ts` 原来在未选出真实集合/书签时返回成功，导致 `collection_get`、`bookmark_get`、`highlight_list`、`bookmark_suggest` 有可能未实际调用就被记为通过。现要求本账号至少有 1 个集合和 1 条书签；缺少目标 ID 时对应场景**明确失败**，不会出现「空数据假绿灯」。只读测试仍仅允许 HTTPS 官方 GET 且不跟随重定向。
+- `tests/read-only.live.test.ts` 原来在未选出真实集合/书签时返回成功，导致 `collection_get`、`bookmark_get`、`highlight_list`、当时尚存在的 `bookmark_suggest` 有可能未实际调用就被记为通过。现要求本账号至少有 1 个集合和 1 条书签；缺少目标 ID 时对应场景**明确失败**，不会出现「空数据假绿灯」。只读测试仍仅允许 HTTPS 官方 GET 且不跟随重定向。
 - 旧 `test:e2e` 命令原先在没有凭据或显式开关时得到全体 skipped，却可能以 0 退出。现与 `test:read-only-live` 一致，要求 `RUN_LIVE_API_TESTS=true` 和安全注入 `RAINDROP_ACCESS_TOKEN`，否则在 Vitest 启动前退出非零；未额外增加服务或配置键。
 - 上述均是**验收工具准确性改进**，不涉及外部账号数据。本轮没有触发新版 Draft 的实际认证请求、上线或工具切换；`NO-GO` 保持。
 
@@ -162,8 +168,8 @@ bash -c 'set -eu; IFS= read -rsp "Raindrop API Token: " RAINDROP_ACCESS_TOKEN </
 
 - [首次真实只读验收 #39436009140](https://github.com/lirtual/mcp-workers/actions/runs/39436009140)：10 项中 7 通过、3 失败。真正调用了 Raindrop API，不属于 Mock 测试。
 - [类型/状态排障 #39436971993](https://github.com/lirtual/mcp-workers/actions/runs/39436971993)：`GET /collections` 与 `GET /collections/childrens` 均 200 且 `result:true`；两个数组分别有 4 和 1 条记录，但同一个 ID 跨接口重复出现 1 次。新版 `collection_list` 此前错误地拒绝所有重复，因此实际用户的列表和依赖列表的 `collection_get` 验收失败。已按同 ID、同标题及父级不冲突的限制合并跨接口重叠项，并为相互矛盾的条目保留明确拒绝。
-- [修复后真实只读复测 #39437631284](https://github.com/lirtual/mcp-workers/actions/runs/39437631284)：**10 项中 9 通过、1 失败**。`collection_list`、`collection_get`、`bookmark_search`、`bookmark_get`、`highlight_list`、`tag_list`、`bookmark_filters_get` 及工具注册/无写入校验均通过；`bookmark_suggest` 调用官方 `GET /raindrop/{id}/suggest` 获得上游 **HTTP 403**。接口路径与官方文档相符，但该 Token/目标书签的建议能力暂无法通过；不推断 403 的具体授权原因，也不把它改标为通过。
-- **安全与发布结论**：上述请求只访问现有生产账号、不写入数据；没有运行新版创建、编辑、高亮写入或永久删除的真实验收。27 项候选工具尚不满足全部真实 API 发布门槛，`NO-GO`，PR 保持 Draft。不得把原生产旧版插件的读写成功结果作为此 Draft 写入通过。
+- [移除前真实只读复测 #39437631284](https://github.com/lirtual/mcp-workers/actions/runs/39437631284)：**当时 10 项中 9 通过、1 失败**。`collection_list`、`collection_get`、`bookmark_search`、`bookmark_get`、`highlight_list`、`tag_list`、`bookmark_filters_get` 及工具注册/无写入校验均通过；`bookmark_suggest` 调用官方 `GET /raindrop/{id}/suggest` 获得上游 **HTTP 403**。接口路径与官方文档相符，但该 Token/目标书签的建议能力暂无法通过；不推断 403 的具体授权原因，也不把它改标为通过。
+- **安全与发布结论**：上述请求只访问现有生产账号、不写入数据；没有运行新版创建、编辑、高亮写入或永久删除的真实验收。26 项候选工具尚不满足全部真实 API 发布门槛，`NO-GO`，PR 保持 Draft。不得把原生产旧版插件的读写成功结果作为此 Draft 写入通过。
 
 ## P1 新版高亮真实写入验收及建议 403 复现（2026-10-20）
 
@@ -171,7 +177,7 @@ bash -c 'set -eu; IFS= read -rsp "Raindrop API Token: " RAINDROP_ACCESS_TOKEN </
 - **真实写入 PASS**：[GitHub Actions #39439062465](https://github.com/lirtual/mcp-workers/actions/runs/39439062465) 成功，明确 `1 passed / 1 skipped`。在生产 Raindrop 账号中随机创建**一条自有可丢弃书签**，执行新版高亮创建、按 ID 读取、更新备注、删除高亮、核对空结果。测试的精确 ID+唯一 URL 清理和永久删除后 404 验证也通过；不对用户其他书签或整个回收站操作。
 - **建议接口限制，仍不通过**：此前 [#39437631284](https://github.com/lirtual/mcp-workers/actions/runs/39437631284) Draft 的 `GET /raindrop/{id}/suggest` 返回上游 HTTP 403。通过已部署的**旧版生产 Raindrop MCP 插件**对公开示例 URL `https://example.com` 请求官方建议（关闭 AI Sampling），也得到 403 Forbidden；两者使用现有生产账号，但分别调用现有书签 GET 建议和 URL POST 建议。这说明 403 不是 Draft 的集合去重/建议输出 Schema 特有的故障。不能由此确定具体权限、账号等级或 Raindrop 服务策略；该工具仍标记真实验收未通过，不构造或猜测建议。
 - **临时入口恢复**：完成真实验收后，从 Draft 恢复原始 `.github/workflows/ci.yml`，删除临时生产 Secret 写入验收作业与 Draft 手动测试分支豁免。保持正常 PR 仅做无密钥自动化、受保护 `main` 上的既有手动部署条件。
-- **结论**：新版核心高亮路径的生产读写已验收通过；真实只读 9/10 通过，唯一未通过的是上游建议接口 403；还未覆盖全部其它破坏性操作的真实生产验收。仍不应自动标记 27 工具全部通过，不合并或部署，不执行 42→27 工具切换。
+- **结论**：新版核心高亮路径的生产读写已验收通过；真实只读 9/10 通过，唯一未通过的是上游建议接口 403；还未覆盖全部其它破坏性操作的真实生产验收。仍不应自动标记 27 工具全部通过，不合并或部署，不执行 41→26 工具切换。
 
 ## 发布风险核对
 
@@ -183,8 +189,8 @@ bash -c 'set -eu; IFS= read -rsp "Raindrop API Token: " RAINDROP_ACCESS_TOKEN </
 | ID/来源/权限 | T03/T06/T07/T08/T09 全量预检、根/子级、保留副本、Empty Trash 全成员摘要 | Mock 通过；仍有确认与执行间竞态 |
 | 写入不确定性 | 不自动重放写入；聚合修改数不冒充逐条成功；unknown 须人工检查 | Mock 通过；真实错误形态待测 |
 | 旧工具安全绕过 | 三个清理旧入口、旧集合 delete 和旧批量写入口拒绝危险行为 | 必须继续由公开 MCP 协议回归测试锁定 |
-| 关键能力迁移 | 17→27 映射已列；创建/编辑/移动、层级、标签、高亮、软删及单独授权永久删都有候选路径 | **不能仅凭 Mock 证明现有真实工作流无回归** |
-| 工具数量与说明 | 42 个共存是过渡状态；27 是候选清单，不是发布配额 | 未获授权，不移除旧别名 |
+| 关键能力迁移 | 17→26 映射已列；创建/编辑/移动、层级、标签、高亮、软删及单独授权永久删都有候选路径 | **不能仅凭 Mock 证明现有真实工作流无回归** |
+| 工具数量与说明 | 41 个共存是过渡状态；26 是候选清单，不是发布配额 | 未获授权，不移除旧别名 |
 | 预览哈希 | 稳定成员摘要能阻止确认阶段的成员替换 | 非锁、非事务；不能保证确认后的零竞态 |
 
 ## 最小后续门槛与切换结论
@@ -197,7 +203,7 @@ bash -c 'set -eu; IFS= read -rsp "Raindrop API Token: " RAINDROP_ACCESS_TOKEN </
 
 - **已完成**两处 Schema 缺口及对应 MCP tools/call 回归；下列真实验收门槛依然有效。
 - 已用现有认证环境完成只读 9/10 与可丢弃高亮写入验收；其余需要安全证明的关键写入和异常响应仍需按需补足，不修改普通用户书签；不可安全实测的 Trash 全局永久清空保留 acceptance-limited。
-- 将旧生产关键工作流与新工具逐项比对并进行独立代码审查；任何无法确认的候选工具在切换时必须安全排除，不为了 27 项配额强行公开。
+- 将旧生产关键工作流与新工具逐项比对并进行独立代码审查；任何无法确认的候选工具在切换时必须安全排除，不为了 26 项配额强行公开。
 - **只有取得另一次明确的切换授权**，才可在另外的实施中移除旧别名、Sampling、library_audit、公开 diagnostics 并刷新测试清单；本轮 T10 不执行这些动作。关闭评估 Ticket 也不是生产发布许可。
 
 **证据范围：** #124–#132 的 Draft 代码、Mock API/SDK MCP/Portal 测试；T10 新增对安全旧入口的 SDK tools/list 与 tools/call 验证。GitHub Actions/CI 仅证明对应源码通过自动化；**本轮另有对生产 Raindrop 账号隔离可丢弃数据的真实读写验收**（详情见 P1 生产账号隔离验收章节），未修改生产 Worker 或 PR CI 凭据。

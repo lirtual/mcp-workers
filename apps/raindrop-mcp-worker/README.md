@@ -33,7 +33,7 @@ It is not published as an npm package and does not support standalone STDIO, sta
 
 ## MCP tools
 
-The regression-tested tool inventory contains 42 tools, including the original 17. T10 assesses release readiness only; see [contract readiness and cutover blockers](docs/T10-CONTRACT-READINESS.md). Selected tools:
+The regression-tested tool inventory contains 41 tools, including the original 17. T10 assesses release readiness only; see [contract readiness and cutover blockers](docs/T10-CONTRACT-READINESS.md). Selected tools:
 
 - `diagnostics`
 - `collection_list`

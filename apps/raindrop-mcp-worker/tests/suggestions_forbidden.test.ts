@@ -19,7 +19,7 @@ describe("Raindrop suggestions upstream 403 (both documented routes)", () => {
     });
     vi.stubGlobal("fetch", network);
     const service = new RaindropService({ accessToken: "test-only", maxReadRetries: 3 });
-    await expect(service.getOfficialSuggestions(target)).rejects.toMatchObject({
+    await expect(service.getSuggestions(target)).rejects.toMatchObject({
       code: "AUTH_ERROR",
       message: "Raindrop API denied this operation (HTTP 403 Forbidden); cause not specified",
     } satisfies Partial<AuthError>);

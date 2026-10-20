@@ -11,7 +11,6 @@ const EXPECTED_TOOL_NAMES = [
   "bookmark_move",
   "bookmark_update",
   "bookmark_filters_get",
-  "bookmark_suggest",
   "bookmark_get",
   "bookmark_manage",
   "bookmark_search",
@@ -54,12 +53,12 @@ const CANONICAL_TOOL_NAMES = [
   "bookmark_batch_delete", "collection_list", "collection_get", "collection_create",
   "collection_update", "collection_delete", "tag_list", "tag_rename", "tag_merge",
   "tag_delete", "highlight_list", "highlight_create", "highlight_update",
-  "highlight_delete", "bookmark_filters_get", "bookmark_suggest", "trash_empty",
+  "highlight_delete", "bookmark_filters_get", "trash_empty",
   "collection_remove_empty", "bookmark_remove_duplicates",
 ];
 const READ_ONLY_TOOL_NAMES = new Set([
   "bookmark_search", "bookmark_get", "bookmark_exists", "collection_list",
-  "collection_get", "tag_list", "highlight_list", "bookmark_filters_get", "bookmark_suggest",
+  "collection_get", "tag_list", "highlight_list", "bookmark_filters_get",
 ]);
 const DESTRUCTIVE_TOOL_NAMES = new Set([
   "bookmark_delete", "bookmark_batch_update", "bookmark_batch_delete",
@@ -77,7 +76,7 @@ function objectBranches(schema: Record<string, unknown>): Array<Record<string, u
 }
 
 describe("T10 public contract release readiness (no cutover)", () => {
-  it("lists all 27 candidates once, 15 legacy names, schemas and appropriate hints through the SDK", async () => {
+  it("lists all 26 candidates once, 15 legacy names, schemas and appropriate hints through the SDK", async () => {
     const service = new RaindropMCPService({ accessToken: "mock-only" });
     const client = new Client({ name: "t10-readiness", version: "1.0.0" });
     const [ct, st] = InMemoryTransport.createLinkedPair();
@@ -86,10 +85,10 @@ describe("T10 public contract release readiness (no cutover)", () => {
       const { tools } = await client.listTools();
       const names = tools.map(tool => tool.name);
       expect(names.toSorted()).toEqual(EXPECTED_TOOL_NAMES);
-      expect(names).toHaveLength(42);
-      expect(new Set(names).size).toBe(42);
-      expect(CANONICAL_TOOL_NAMES).toHaveLength(27);
-      expect(new Set(CANONICAL_TOOL_NAMES).size).toBe(27);
+      expect(names).toHaveLength(41);
+      expect(new Set(names).size).toBe(41);
+      expect(CANONICAL_TOOL_NAMES).toHaveLength(26);
+      expect(new Set(CANONICAL_TOOL_NAMES).size).toBe(26);
       expect(names.filter(name => CANONICAL_TOOL_NAMES.includes(name)).toSorted())
         .toEqual(CANONICAL_TOOL_NAMES.toSorted());
       expect(names.filter(name => !CANONICAL_TOOL_NAMES.includes(name))).toHaveLength(15);
@@ -174,7 +173,7 @@ describe("Raindrop MCP capability contract", () => {
       const actual = tools.map((tool) => tool.id).sort();
 
       expect(actual).toEqual(EXPECTED_TOOL_NAMES);
-      expect(actual).toHaveLength(42);
+      expect(actual).toHaveLength(41);
       expect(actual).toContain("diagnostics");
     } finally {
       await service.cleanup();
@@ -529,12 +528,10 @@ describe("bookmark_search strict pagination over public MCP", () => {
 });
 
 describe("Official Raindrop helper tools over public MCP", () => {
-  it("reads filter statistics and organization suggestions without client Sampling", async () => {
+  it("reads filter statistics without client Sampling", async () => {
     const service = new RaindropMCPService({ accessToken: "test-token" });
     const filters = vi.spyOn(service.raindropService, "getBookmarkFilters")
       .mockResolvedValue({ important: 5 });
-    const suggestions = vi.spyOn(service.raindropService, "getOfficialSuggestions")
-      .mockResolvedValue({ collectionIds: [24], tags: ["backend"] });
     const client = new Client({ name: "bookmark-helpers-contract", version: "1.0.0" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     try {
@@ -543,9 +540,11 @@ describe("Official Raindrop helper tools over public MCP", () => {
         client.connect(clientTransport),
       ]);
       const { tools } = await client.listTools();
-      for (const name of ["bookmark_filters_get", "bookmark_suggest"]) {
-        expect(tools.find(tool => tool.name === name)?.annotations?.readOnlyHint).toBe(true);
-      }
+      expect(tools.find(tool => tool.name === "bookmark_filters_get")?.annotations?.readOnlyHint).toBe(true);
+      expect(tools.some(tool => tool.name === "bookmark_suggest")).toBe(false);
+      await expect(client.callTool({
+        name: "bookmark_suggest", arguments: { bookmarkId: 123 },
+      })).rejects.toThrow(/Tool bookmark_suggest not found/);
       const stats = await client.callTool({
         name: "bookmark_filters_get",
         arguments: { collectionId: 0, tagsSort: "-count" },
@@ -554,27 +553,6 @@ describe("Official Raindrop helper tools over public MCP", () => {
       expect(stats.structuredContent).toEqual({ filters: { important: 5 } });
       expect(filters).toHaveBeenCalledWith(0, "-count", undefined);
 
-      const suggested = await client.callTool({
-        name: "bookmark_suggest",
-        arguments: { bookmarkId: 123 },
-      });
-      expect(suggested.isError).not.toBe(true);
-      expect(suggested.structuredContent).toEqual({
-        suggestions: { collectionIds: [24], tags: ["backend"] },
-      });
-      expect(suggestions).toHaveBeenCalledWith(123);
-
-      for (const bad of [
-        {},
-        { url: "https://example.com", bookmarkId: 123 },
-        { url: "file:///etc/passwd" },
-        { bookmarkId: "123" },
-      ]) {
-        expect((await client.callTool({
-          name: "bookmark_suggest", arguments: bad,
-        })).isError).toBe(true);
-      }
-      expect(suggestions).toHaveBeenCalledTimes(1);
       expect((await client.callTool({
         name: "bookmark_filters_get", arguments: { collectionId: -99 },
       })).isError).toBe(true);
@@ -583,7 +561,6 @@ describe("Official Raindrop helper tools over public MCP", () => {
       await client.close();
       await service.cleanup();
       filters.mockRestore();
-      suggestions.mockRestore();
     }
   });
 });
@@ -1143,7 +1120,7 @@ describe("highlight atomic and Draft compatibility contracts", () => {
       await service.getServer().connect(serverTransport);
       await client.connect(clientTransport);
       const tools = await client.listTools();
-      expect(tools.tools).toHaveLength(42);
+      expect(tools.tools).toHaveLength(41);
       for (const name of ["highlight_list", "highlight_create", "highlight_update", "highlight_delete"]) {
         const tool = tools.tools.find(t => t.name === name)!;
         expect(tool.inputSchema.required).toContain("bookmarkId");
