@@ -247,7 +247,7 @@ describe("bookmark_get over MCP tools/list and tools/call", () => {
         _id: 123, title: "Example", link: "https://example.com/a",
         tags: ["test"], important: false, excerpt: "Excerpt", note: "Note",
         collection: { $id: 456 },
-        highlights: [{ _id: "highlight-string-id", text: "Quote", note: "My note" }],
+        highlights: [{ _id: "highlight-string-id", text: "Quote", color: "yellow", note: "My note" }],
       } as Awaited<ReturnType<typeof service.raindropService.getBookmark>>);
     const client = new Client({ name: "bookmark-get-contract", version: "1.0.0" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -266,7 +266,7 @@ describe("bookmark_get over MCP tools/list and tools/call", () => {
           id: 123, title: "Example", url: "https://example.com/a",
           tags: ["test"], important: false, excerpt: "Excerpt", note: "Note",
           collectionId: 456,
-          highlights: [{ id: "highlight-string-id", text: "Quote", note: "My note" }],
+          highlights: [{ id: "highlight-string-id", text: "Quote", color: "yellow", note: "My note" }],
         },
       });
       expect(get).toHaveBeenCalledWith(123, undefined);
