@@ -18,6 +18,8 @@ const EXPECTED_TOOL_NAMES = [
   "bulk_edit_raindrops",
   "cleanup_collections",
   "collection_create",
+  "collection_delete",
+  "collection_remove_empty",
   "collection_get",
   "collection_update",
   "collection_list",
@@ -44,7 +46,7 @@ const EXPECTED_TOOL_NAMES = [
 ].sort();
 
 describe("Raindrop MCP capability contract", () => {
-  it("retains legacy tools while adding T01 through T06 atomic tools", async () => {
+  it("retains legacy tools while adding T01 through T07 atomic tools", async () => {
     const service = new RaindropMCPService({ accessToken: "test-token" });
 
     try {
@@ -52,7 +54,7 @@ describe("Raindrop MCP capability contract", () => {
       const actual = tools.map((tool) => tool.id).sort();
 
       expect(actual).toEqual(EXPECTED_TOOL_NAMES);
-      expect(actual).toHaveLength(38);
+      expect(actual).toHaveLength(40);
       expect(actual).toContain("diagnostics");
     } finally {
       await service.cleanup();
@@ -940,7 +942,7 @@ describe("highlight atomic and Draft compatibility contracts", () => {
       await service.getServer().connect(serverTransport);
       await client.connect(clientTransport);
       const tools = await client.listTools();
-      expect(tools.tools).toHaveLength(38);
+      expect(tools.tools).toHaveLength(40);
       for (const name of ["highlight_list", "highlight_create", "highlight_update", "highlight_delete"]) {
         const tool = tools.tools.find(t => t.name === name)!;
         expect(tool.inputSchema.required).toContain("bookmarkId");

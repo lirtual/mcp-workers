@@ -1,6 +1,11 @@
 import { z } from "zod";
 import { ValidationError } from "../types/mcpErrors.js";
-import { CollectionManageInputSchema } from "../types/raindrop-zod.schemas.js";
+import {
+  CollectionDeleteInputSchema,
+  CollectionRemoveEmptyInputSchema,
+  CollectionDeletionOutputSchema,
+  CollectionManageInputSchema,
+} from "../types/raindrop-zod.schemas.js";
 import type { ToolHandlerContext } from "./common.js";
 import {
   defineTool,
@@ -301,7 +306,53 @@ const collectionManageTool = defineTool({
   },
 });
 
+const deletionDescription =
+  "Preview-first; confirm requires the exact preview total, ascending collectionIds and digest. Digest is not authorization or a lock; concurrent changes remain possible. Writes are never automatically replayed.";
+const collectionDeleteTool = defineTool({
+  name: "collection_delete",
+  description:
+    "Delete one explicit positive collection and its complete descendant subtree, moving bookmarks to Trash. " +
+    deletionDescription,
+  inputSchema: CollectionDeleteInputSchema,
+  outputSchema: CollectionDeletionOutputSchema,
+  annotations: {
+    readOnlyHint: false,
+    destructiveHint: true,
+    idempotentHint: false,
+  },
+  handler: async (
+    args: z.infer<typeof CollectionDeleteInputSchema>,
+    { raindropService }: ToolHandlerContext,
+  ) => {
+    const result = await raindropService.deleteCollectionPreviewFirst(args);
+    return { content: [textContent(result.reason)], structuredContent: result };
+  },
+});
+const collectionRemoveEmptyTool = defineTool({
+  name: "collection_remove_empty",
+  description:
+    "Remove only verified empty leaves within an explicit positive rootId scope (including the root if it is an empty leaf). Newly emptied parents are excluded. " +
+    deletionDescription,
+  inputSchema: CollectionRemoveEmptyInputSchema,
+  outputSchema: CollectionDeletionOutputSchema,
+  annotations: {
+    readOnlyHint: false,
+    destructiveHint: true,
+    idempotentHint: false,
+  },
+  handler: async (
+    args: z.infer<typeof CollectionRemoveEmptyInputSchema>,
+    { raindropService }: ToolHandlerContext,
+  ) => {
+    const result =
+      await raindropService.removeEmptyCollectionsPreviewFirst(args);
+    return { content: [textContent(result.reason)], structuredContent: result };
+  },
+});
+
 export const collectionTools = [
+  collectionDeleteTool,
+  collectionRemoveEmptyTool,
   collectionListTool,
   collectionGetTool,
   collectionCreateTool,

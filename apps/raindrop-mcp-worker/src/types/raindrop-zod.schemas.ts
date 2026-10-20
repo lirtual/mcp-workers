@@ -232,3 +232,47 @@ export const BookmarkBatchOutcomeSchema = z.object({
   unknown: z.array(BatchPositiveIdSchema),
   notExecuted: z.array(BatchPositiveIdSchema),
 });
+
+// T07: confirmation binds a fresh snapshot, not an authorization token or lock.
+const CollectionDeleteIdSchema = z.number().int().positive().safe();
+const CollectionDeleteIdsSchema = z.array(CollectionDeleteIdSchema).max(60).refine(
+  ids => ids.every((id, index) => index === 0 || ids[index - 1]! < id),
+  "IDs must be unique and sorted ascending",
+);
+const CollectionDigestSchema = z.string().regex(/^v1:sha256:[a-f0-9]{64}$/);
+const CollectionConfirmationShape = {
+  confirm: z.literal(true),
+  expectedTotal: z.number().int().nonnegative().safe(),
+  collectionIds: CollectionDeleteIdsSchema,
+  digest: CollectionDigestSchema,
+};
+export const CollectionDeleteInputSchema = z.union([
+  z.strictObject({ id: CollectionDeleteIdSchema, confirm: z.literal(false).optional() }),
+  z.strictObject({ id: CollectionDeleteIdSchema, ...CollectionConfirmationShape }),
+]);
+export const CollectionRemoveEmptyInputSchema = z.union([
+  z.strictObject({ rootId: CollectionDeleteIdSchema, confirm: z.literal(false).optional() }),
+  z.strictObject({ rootId: CollectionDeleteIdSchema, ...CollectionConfirmationShape }),
+]);
+export const CollectionDeletionMemberSchema = z.strictObject({
+  id: CollectionDeleteIdSchema,
+  parentId: CollectionDeleteIdSchema.nullable(),
+  title: z.string(),
+  count: z.number().int().nonnegative().safe(),
+});
+export const CollectionDeletionOutputSchema = z.strictObject({
+  preview: z.boolean(),
+  rootId: CollectionDeleteIdSchema,
+  target: CollectionDeletionMemberSchema,
+  total: z.number().int().nonnegative().safe().describe("Number of approved collection IDs"),
+  collectionIds: CollectionDeleteIdsSchema,
+  // Complete verified scoped subtree, including root, in ascending ID order.
+  collections: z.array(CollectionDeletionMemberSchema),
+  bookmarkCount: z.number().int().nonnegative().safe().describe("Verified direct bookmark total across the complete scoped subtree; empty-leaf deletion affects zero bookmarks"),
+  digest: CollectionDigestSchema,
+  succeeded: z.array(CollectionDeleteIdSchema),
+  failed: z.array(CollectionDeleteIdSchema),
+  unknown: z.array(CollectionDeleteIdSchema),
+  notExecuted: z.array(CollectionDeleteIdSchema),
+  reason: z.string(),
+});

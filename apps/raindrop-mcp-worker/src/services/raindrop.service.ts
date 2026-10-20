@@ -10,6 +10,10 @@ import {
   ValidationError,
 } from "../types/mcpErrors.js";
 import {
+  CollectionDeleteInputSchema,
+  CollectionRemoveEmptyInputSchema,
+  CollectionDeletionMemberSchema,
+  CollectionDeletionOutputSchema,
   BookmarkBatchDeleteInputSchema,
   BookmarkBatchUpdateInputSchema,
   BookmarkBatchOutcomeSchema,
@@ -458,6 +462,336 @@ export default class RaindropService {
 
     // Invalidate collections cache
     await this.cacheCollections.clear();
+  }
+
+  /** Reserve minimum remaining calls before starting a bounded destructive phase. */
+  private requireCollectionBudget(attempts: number): void {
+    if (this.upstreamRequestCount + attempts > 60)
+      throw new ValidationError(
+        "Collection preflight exceeds remaining 60 upstream HTTP attempt budget; no further writes dispatched",
+      );
+  }
+
+  /** Strict fresh hierarchy adapter; generated types omit /collections/childrens. */
+  private async deletionTree() {
+    const row = z.object({
+      _id: z.number().int().positive().safe(),
+      title: z.string(),
+      parent: z
+        .object({ $id: z.number().int().positive().safe() })
+        .nullable()
+        .optional(),
+    });
+    const envelope = z.object({ result: z.literal(true), items: z.array(row) });
+    const read = async (path: "/collections" | "/collections/childrens") => {
+      const data = await this.withRateLimit(async () => {
+        // Narrow adapter for the missing official nested-collections path.
+        const response = await this.client.GET(path as "/collections");
+        return response.data;
+      });
+      const parsed = envelope.safeParse(data);
+      if (!parsed.success)
+        throw new ValidationError("Malformed collection hierarchy response");
+      return parsed.data.items;
+    };
+    const roots = await read("/collections");
+    const children = await read("/collections/childrens");
+    if (roots.some((r) => r.parent != null) || children.some((r) => !r.parent))
+      throw new ValidationError("Invalid root/child collection scope");
+    const rows = [...roots, ...children];
+    const tree = new Map(
+      rows.map((r) => [
+        r._id,
+        { id: r._id, title: r.title, parentId: r.parent?.$id ?? null },
+      ]),
+    );
+    if (tree.size !== rows.length)
+      throw new ValidationError("Duplicate collection IDs");
+    for (const node of tree.values()) {
+      const seen = new Set<number>([node.id]);
+      let parent = node.parentId;
+      while (parent !== null) {
+        if (seen.has(parent) || !tree.has(parent))
+          throw new ValidationError(
+            "Incomplete or cyclic collection hierarchy",
+          );
+        seen.add(parent);
+        parent = tree.get(parent)!.parentId;
+      }
+    }
+    return tree;
+  }
+
+  /** Metadata count is cross-checked against the official direct-only bookmark count. */
+  private async deletionMember(node: {
+    id: number;
+    parentId: number | null;
+    title: string;
+  }) {
+    const data = await this.withRateLimit(
+      async () =>
+        (
+          await this.client.GET("/collection/{id}", {
+            params: { path: { id: node.id } },
+          })
+        ).data,
+    );
+    const parsed = z
+      .object({
+        result: z.literal(true),
+        item: z.object({
+          _id: z.literal(node.id),
+          title: z.string(),
+          count: z.number().int().nonnegative().safe(),
+          parent: z
+            .object({ $id: z.number().int().positive().safe() })
+            .nullable()
+            .optional(),
+          access: z.object({ level: z.literal(4) }),
+        }),
+      })
+      .safeParse(data);
+    if (
+      !parsed.success ||
+      (parsed.data.item.parent?.$id ?? null) !== node.parentId
+    )
+      throw new ValidationError(
+        `Cannot verify owner, parent or direct count for collection ${node.id}`,
+      );
+    const direct = await this.withRateLimit(
+      async () =>
+        (
+          await this.client.GET("/raindrops/{collectionId}", {
+            params: {
+              path: { collectionId: node.id, id: node.id },
+              query: { perpage: 1, nested: false },
+            },
+          })
+        ).data,
+    );
+    const bookmarks = z
+      .object({
+        result: z.literal(true),
+        count: z.number().int().nonnegative().safe(),
+        items: z
+          .array(
+            z.object({
+              _id: z.number().int().positive().safe(),
+              collection: z.object({ $id: z.literal(node.id) }),
+            }),
+          )
+          .max(1),
+      })
+      .safeParse(direct);
+    if (
+      !bookmarks.success ||
+      bookmarks.data.count !== parsed.data.item.count ||
+      bookmarks.data.items.length !== Math.min(1, bookmarks.data.count)
+    )
+      throw new ValidationError(
+        `Cannot verify direct bookmarks for collection ${node.id}`,
+      );
+    return {
+      ...node,
+      title: parsed.data.item.title,
+      count: parsed.data.item.count,
+    };
+  }
+
+  /** Only the exact boolean acknowledgement establishes a successful cascade. */
+  private async deleteVerifiedCollection(
+    id: number,
+  ): Promise<"succeeded" | "failed" | "unknown"> {
+    this.requireCollectionBudget(1);
+    return this.withWriteRateLimit(async () => {
+      let status: "succeeded" | "failed" | "unknown" = "unknown";
+      try {
+        const { data } = await this.client.DELETE("/collection/{id}", {
+          params: { path: { id } },
+        });
+        const ack = z
+          .object({ result: z.boolean() })
+          .safeParse(data as unknown);
+        if (ack.success) status = ack.data.result ? "succeeded" : "failed";
+      } catch (error) {
+        if (
+          error instanceof AuthError ||
+          error instanceof NotFoundError ||
+          error instanceof RateLimitError
+        )
+          status = "failed";
+      }
+      if (status !== "failed") {
+        this.cacheCollections.clear();
+        this.cacheBookmarks.clear();
+        this.cacheSearch.clear();
+      }
+      return status;
+    });
+  }
+
+  async deleteCollectionPreviewFirst(
+    input: z.infer<typeof CollectionDeleteInputSchema>,
+  ) {
+    return this.collectionDeletion(
+      CollectionDeleteInputSchema.parse(input),
+      "delete",
+    );
+  }
+
+  async removeEmptyCollectionsPreviewFirst(
+    input: z.infer<typeof CollectionRemoveEmptyInputSchema>,
+  ) {
+    return this.collectionDeletion(
+      CollectionRemoveEmptyInputSchema.parse(input),
+      "empty",
+    );
+  }
+
+  private async collectionDeletion(
+    args:
+      | z.infer<typeof CollectionDeleteInputSchema>
+      | z.infer<typeof CollectionRemoveEmptyInputSchema>,
+    operation: "delete" | "empty",
+  ): Promise<z.infer<typeof CollectionDeletionOutputSchema>> {
+    const rootId = "id" in args ? args.id : args.rootId;
+    this.requireCollectionBudget(2);
+    const tree = await this.deletionTree();
+    const target = tree.get(rootId);
+    if (!target)
+      throw new ValidationError("Explicit positive root collection not found");
+    const inScope = (id: number): boolean => {
+      let current: number | null = id;
+      while (current !== null) {
+        if (current === rootId) return true;
+        current = tree.get(current)!.parentId;
+      }
+      return false;
+    };
+    const scoped = [...tree.values()]
+      .filter((n) => inScope(n.id))
+      .sort((a, b) => a.id - b.id);
+    const parents = new Set([...tree.values()].map((n) => n.parentId));
+    // Reserve every scoped metadata/direct-count pair before enumerating it.
+    this.requireCollectionBudget(scoped.length * 2 + (args.confirm ? 1 : 0));
+    const collections: z.infer<typeof CollectionDeletionMemberSchema>[] = [];
+    for (const node of scoped)
+      collections.push(await this.deletionMember(node));
+    const candidates =
+      operation === "delete"
+        ? collections
+        : collections.filter((n) => n.count === 0 && !parents.has(n.id));
+    const collectionIds = candidates.map((n) => n.id);
+    const bookmarkCount = collections.reduce((sum, n) => sum + n.count, 0);
+    if (!Number.isSafeInteger(bookmarkCount))
+      throw new ValidationError("Bookmark total exceeds safe integer range");
+    // Canonical membership is numeric-ID sorted, with stable tuple field order.
+    // Bind the full scoped hierarchy even when only empty leaves are candidates.
+    const canonical = JSON.stringify([
+      "collection-deletion-v1",
+      operation,
+      rootId,
+      collections.map((n) => [n.id, n.parentId, n.count]),
+      collectionIds,
+    ]);
+    const hash = await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(canonical),
+    );
+    const digest =
+      "v1:sha256:" +
+      Array.from(new Uint8Array(hash), (b) =>
+        b.toString(16).padStart(2, "0"),
+      ).join("");
+    const result: z.infer<typeof CollectionDeletionOutputSchema> = {
+      preview: !args.confirm,
+      rootId,
+      target: collections.find((n) => n.id === rootId)!,
+      total: collectionIds.length,
+      collectionIds,
+      collections,
+      bookmarkCount,
+      digest,
+      succeeded: [],
+      failed: [],
+      unknown: [],
+      notExecuted: [],
+      reason:
+        "Preview only. DELETE cascades descendants and moves bookmarks to Trash. Digest is neither authorization nor a transaction lock; concurrent changes remain possible.",
+    };
+    if (!args.confirm) return result;
+    if (
+      args.expectedTotal !== result.total ||
+      args.digest !== digest ||
+      JSON.stringify(args.collectionIds) !== JSON.stringify(collectionIds)
+    )
+      throw new ValidationError(
+        "Collection snapshot mismatch; preview again. No writes dispatched",
+      );
+    // Empty candidates were leaves at preview; none can be ancestors of another.
+    // Descending depth still makes the execution order explicitly bottom-up.
+    const depth = (id: number) => {
+      let value = 0;
+      let parent = tree.get(id)!.parentId;
+      while (parent !== null) {
+        value++;
+        parent = tree.get(parent)!.parentId;
+      }
+      return value;
+    };
+    const execution =
+      operation === "delete"
+        ? [rootId]
+        : [...collectionIds].sort((a, b) => depth(b) - depth(a) || a - b);
+    this.requireCollectionBudget(
+      operation === "delete" ? 1 : execution.length * 5,
+    );
+    for (let index = 0; index < execution.length; index++) {
+      const id = execution[index]!;
+      try {
+        if (operation === "empty") {
+          this.requireCollectionBudget((execution.length - index) * 5);
+          const fresh = await this.deletionTree();
+          const node = fresh.get(id);
+          if (
+            !node ||
+            fresh.get(rootId)?.parentId !== tree.get(rootId)!.parentId ||
+            node.parentId !== tree.get(id)!.parentId ||
+            [...fresh.values()].some((n) => n.parentId === id)
+          )
+            throw new ValidationError(
+              "Candidate moved, missing or no longer a leaf",
+            );
+          // Verify the entire ancestry still belongs to the approved root scope.
+          let ancestor: number | null = id;
+          while (ancestor !== null && ancestor !== rootId) {
+            if (fresh.get(ancestor)!.parentId !== tree.get(ancestor)?.parentId)
+              throw new ValidationError("Candidate ancestry changed");
+            ancestor = fresh.get(ancestor)!.parentId;
+          }
+          if (
+            ancestor !== rootId ||
+            (await this.deletionMember(node)).count !== 0
+          )
+            throw new ValidationError(
+              "Candidate is no longer an empty scoped leaf",
+            );
+        }
+        const status = await this.deleteVerifiedCollection(id);
+        result[status].push(id);
+        if (status === "succeeded") continue;
+        result.reason = `Stopped on ${status} write; do not automatically retry. Inspect upstream state.`;
+      } catch (error) {
+        result.failed.push(id);
+        result.reason = `Stopped before this write: ${error instanceof Error ? error.message : "preflight failed"}`;
+      }
+      result.notExecuted = execution.slice(index + 1);
+      return result;
+    }
+    result.reason = execution.length === 0
+      ? "No approved empty leaves; no writes dispatched."
+      : "All approved DELETE requests acknowledged result:true. Concurrent upstream changes are not transactionally excluded.";
+    return result;
   }
 
   /**

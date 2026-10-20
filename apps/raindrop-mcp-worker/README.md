@@ -33,10 +33,12 @@ It is not published as an npm package and does not support standalone STDIO, sta
 
 ## MCP tools
 
-The regression-tested tool inventory contains 38 tools, including the original 17. Selected tools:
+The regression-tested tool inventory contains 40 tools, including the original 17. Selected tools:
 
 - `diagnostics`
 - `collection_list`
+- `collection_delete`
+- `collection_remove_empty`
 - `get_collection_tree`
 - `collection_manage`
 - `bookmark_search`
@@ -60,6 +62,8 @@ The regression-tested tool inventory contains 38 tools, including the original 1
 - `remove_duplicates`
 
 `bookmark_batch_update` and `bookmark_batch_delete` require one positive source `collectionId` and 1–50 explicit unique positive safe-integer `ids`. Every bookmark is freshly checked for source membership before a single bulk write; moves also freshly verify the positive `destinationCollectionId`. Updates support `tagsToAdd` (nonempty, distinct names), `clearTags: true` (mutually exclusive with `tagsToAdd`), `destinationCollectionId`, and `important`, with at least one change required. Delete moves bookmarks to Trash; system source collections, search and nesting are rejected. The Service caps total HTTP attempts including read retries at 60 and never replays writes. Results partition IDs into `succeeded`, `failed`, `unknown` and `notExecuted`; preflight failure means no write. Aggregate `result: true` / `modified` cannot prove individual outcomes, so acknowledged bulk writes still return per-ID `unknown`, including when the count matches. Inspect current state before deciding whether to retry. See the [official bulk API contract](https://developer.raindrop.io/v1/raindrops/multiple).
+
+`collection_delete({id})` previews a complete subtree (root included), ascending `collectionIds`, `total` collection count, verified direct bookmark counts and `bookmarkCount`. `collection_remove_empty({rootId})` previews only empty leaves within that explicit positive scope; `collections` still describes the complete verified scoped subtree. Confirm either with the same scope plus `confirm: true`, `expectedTotal`, exact ordered `collectionIds`, and `digest`. The versioned SHA-256 digest binds the operation, root, canonical sorted membership (ID, parent ID, direct count), and candidates. Fresh owner-level (`access.level: 4`) metadata and direct-only bookmark counts must agree. Confirm recomputes everything before any writes; empty-leaf removal also rechecks the fresh hierarchy and metadata before each individual DELETE, without expanding the approved set to newly emptied parents. No global cleanup endpoint is used by these two tools. Large scopes fail preflight within the shared 60 HTTP-attempt budget. DELETE cascades descendants and moves bookmarks to Trash. Outcome arrays identify actual DELETE targets; one successful root DELETE covers its previewed subtree. Execution stops on the first failure or unknown acknowledgement. A digest is neither authorization nor a transactional lock, and concurrent upstream changes remain possible.
 
 Cleanup tools use preview-first semantics: `empty_trash({})` and `cleanup_collections({})` do not delete anything; only `confirm: true` executes. `remove_duplicates({})` and `dryRun: true` preview verified candidates; only `dryRun: false` deletes. All three retain `destructiveHint: true` and the existing safe-candidate, batch, fail-closed and no-blind-retry protections. A preview is not a transaction lock: recheck the target state before confirmed operations. Tests and acceptance checks must not mutate a real Raindrop library without separate explicit authorization.
 
