@@ -23,7 +23,8 @@
     "test:read-only-live": "node -e 'if (process.env.RUN_LIVE_API_TESTS !== \"true\" || !process.env.RAINDROP_ACCESS_TOKEN?.trim()) { console.error(\"Explicit RUN_LIVE_API_TESTS=true and an injected RAINDROP_ACCESS_TOKEN are required\"); process.exit(1) }' && vitest run tests/read-only.live.test.ts",
     "generate:schema": "openapi-typescript ./raindrop-complete.yaml -o ./src/types/raindrop.schema.d.ts --tsconfig ./tsconfig.json --export-type --useUnionTypes --immutable",
     "check:schema": "pnpm run generate:schema && git diff --exit-code -- src/types/raindrop.schema.d.ts",
-    "check": "pnpm run typecheck && pnpm run lint && pnpm test && pnpm run check:schema && pnpm run deploy:dry-run"
+    "check": "pnpm run typecheck && pnpm run lint && pnpm test && pnpm run check:schema && pnpm run deploy:dry-run",
+    "test:live:spec123": "node -e 'const e=process.env;if(!e.RAINDROP_ACCESS_TOKEN?.trim() || e.RUN_DESTRUCTIVE_LIVE_TESTS!==\"true\" || e.CONFIRM_DESTRUCTIVE_LIVE_TESTS!==\"DELETE_ONLY_TEST_BOOKMARKS\"){console.error(\"G0 NOT RUN: authorized token and both explicit disposable-test flags required\");process.exit(1)}' && vitest run tests/spec123-disposable.live.test.ts"
   },
   "license": "MIT",
   "dependencies": {

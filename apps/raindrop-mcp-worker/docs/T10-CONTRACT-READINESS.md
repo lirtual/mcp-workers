@@ -278,3 +278,10 @@ bash -c 'set -eu; IFS= read -rsp "Raindrop API Token: " RAINDROP_ACCESS_TOKEN </
 - G2 验收成功后再处理剩余 Tickets 与父 Spec 关闭；单项源码 Ticket 可以按其原验收标准先行独立关闭。
 
 **当前阶段：G0 NO-GO。** Draft 关键 collection/bookmark/tag/batch 的隔离真实写入仍未取得证据；G1/G2 均未执行。以上仅为发布顺序澄清，不改变生产配置或密钥权限。
+
+
+### G0 可执行入口与真实 Favorite 正负样本（2026-10-21）
+
+- 在现有 `tests/spec123-disposable.live.test.ts` 的随机命名私有测试集合中，三个原本必须创建的书签现在显式标记为 **1 个 `important:true` 与 2 个 `important:false`**。真实执行时，先用不缓存的 Draft `bookmark_search(collection=a,important:true/false)` 分别核对包含/排除的精确 ID，再进入原有移动/批量/tag/删除阶段。**无需额外真实写入**，同时补齐原先缺失的 Favorite 正负对照。失败则停止后续正常操作并按已核实身份清理。
+- 新增唯一建议使用的安全入口：`pnpm --filter raindrop-mcp-worker run test:live:spec123`。此命令启动前必须同时看到经授权注入的进程环境变量 `RAINDROP_ACCESS_TOKEN`、`RUN_DESTRUCTIVE_LIVE_TESTS=true` 及 `CONFIRM_DESTRUCTIVE_LIVE_TESTS=DELETE_ONLY_TEST_BOOKMARKS`。否则**退出非零并注明 G0 NOT RUN**，避免直接执行 Vitest 时把 skipped 误认为真实验收通过。不得把 Token 贴进 PR、工作流日志、聊天或文档。
+- 当前 WSL 未有可用 Token，**只实际验证了非零拒绝路径**，本地 TypeScript、ESLint 与 377 passed / 3 skipped 的 Mock 套件通过；尚未执行真实写入、Favorite 过滤或精确清理。此更新不修改生产代码、Runner、GitHub Environment 或发布流程。G0 仍 NO-GO。

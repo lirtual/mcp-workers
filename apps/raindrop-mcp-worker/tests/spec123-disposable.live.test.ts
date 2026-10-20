@@ -47,13 +47,13 @@ live("Spec 123 disposable real API acceptance", () => {
       expect(result.status).toBe("succeeded");
       return result;
     };
-    const create = async (collectionId: number, suffix: string, tag: string) => {
+    const create = async (collectionId: number, suffix: string, tag: string, important = false) => {
       const url = "https://example.org/spec123/" + nonce + "/" + suffix;
       // Record the URL before POST: lost replies may leave an untracked
       // bookmark. Never announce a clean run if its ID cannot be verified.
       attemptedUrls.add(url);
       const result = await success("bookmark_create", {
-        collectionId, url, title: "spec123 " + nonce + " " + suffix, tags: [tag],
+        collectionId, url, title: "spec123 " + nonce + " " + suffix, tags: [tag], important,
       });
       const id = Number(result.bookmark?.id);
       if (!Number.isSafeInteger(id) || id <= 0)
@@ -134,9 +134,26 @@ live("Spec 123 disposable real API acceptance", () => {
       await success("collection_update", { id: a, title: titles[0] + "-renamed" });
       expect((await service.raindropService.getCollection(a, true)).title).toBe(titles[0] + "-renamed");
       const ta = "s123a" + nonce, tb = "s123b" + nonce, tc = "s123c" + nonce;
-      const x = await create(a, "x", ta);
-      const y = await create(a, "y", tb);
-      const z = await create(a, "z", tc);
+      // Create one Favorite and two non-Favorites in the same isolated scope.
+      // This checks both sides of the real important:false exclusion without
+      // modifying any existing bookmarks or increasing write operations.
+      const x = await create(a, "x", ta, true);
+      const y = await create(a, "y", tb, false);
+      const z = await create(a, "z", tc, false);
+      expect((await owned(x)).important).toBe(true);
+      expect((await owned(y)).important).toBe(false);
+      const favorites = await call("bookmark_search", {
+        collection: a, important: true, page: 0, perPage: 10, skipCache: true,
+      });
+      const nonFavorites = await call("bookmark_search", {
+        collection: a, important: false, page: 0, perPage: 10, skipCache: true,
+      });
+      expect(favorites.count).toBe(1);
+      expect((favorites.items as { id: number }[]).map(item => item.id)).toEqual([x]);
+      expect(nonFavorites.count).toBe(2);
+      expect((nonFavorites.items as { id: number }[]).map(item => item.id).sort((l, r) => l - r))
+        .toEqual([y, z].sort((l, r) => l - r));
+      console.log("LIVE_FAVORITE_EXCLUSION_PASS");
       await success("bookmark_update", { id: x, note: "spec123-note-" + nonce });
       expect((await owned(x)).note).toBe("spec123-note-" + nonce);
       await success("bookmark_move", { id: x, collectionId: b });
