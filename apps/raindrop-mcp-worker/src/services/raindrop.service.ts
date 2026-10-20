@@ -558,6 +558,68 @@ export default class RaindropService {
   }
 
   /**
+   * Read only the officially reported filter counts for an explicit scope.
+   * Missing statistics are omitted; an unknown count must not become zero.
+   * Official API: GET /filters/{collectionId}.
+   */
+  async getBookmarkFilters(
+    collectionId = 0,
+    tagsSort?: "-count" | "_id",
+    search?: string,
+  ): Promise<{
+    broken?: number;
+    duplicates?: number;
+    important?: number;
+    notag?: number;
+    tags?: Array<{ name: string; count: number }>;
+    types?: Array<{ name: string; count: number }>;
+  }> {
+    if (!Number.isSafeInteger(collectionId) || collectionId < 0) {
+      throw new ValidationError("filters collectionId must be 0 or a positive integer");
+    }
+    return this.withRateLimit(async () => {
+      const query: { tagsSort?: string; search?: string } = {};
+      if (tagsSort !== undefined) query.tagsSort = tagsSort;
+      if (search !== undefined) query.search = search;
+      const { data, error } = await (this.client as any).GET(
+        "/filters/{collectionId}",
+        { params: { path: { collectionId }, query } },
+      );
+      if (error || !data || data.result !== true) {
+        throw new UpstreamError("Raindrop filter statistics could not be verified");
+      }
+
+      const stats: {
+        broken?: number; duplicates?: number; important?: number; notag?: number;
+        tags?: Array<{ name: string; count: number }>;
+        types?: Array<{ name: string; count: number }>;
+      } = {};
+      for (const key of ["broken", "duplicates", "important", "notag"] as const) {
+        if (data[key] === undefined) continue;
+        const count = data[key]?.count;
+        if (!Number.isSafeInteger(count) || count < 0) {
+          throw new UpstreamError(`Raindrop filter ${key} count was invalid`);
+        }
+        stats[key] = count;
+      }
+      for (const key of ["tags", "types"] as const) {
+        if (data[key] === undefined) continue;
+        if (!Array.isArray(data[key])) {
+          throw new UpstreamError(`Raindrop filter ${key} was invalid`);
+        }
+        stats[key] = data[key].map((item: any) => {
+          if (typeof item?._id !== "string" ||
+              !Number.isSafeInteger(item.count) || item.count < 0) {
+            throw new UpstreamError(`Raindrop filter ${key} entry was invalid`);
+          }
+          return { name: item._id, count: item.count as number };
+        });
+      }
+      return stats;
+    });
+  }
+
+  /**
    * Read-only URL existence check. Raindrop's endpoint is a POST, but it does
    * not mutate bookmarks and may use the bounded read retry policy.
    * Official API: POST /import/url/exists, body { urls: [url] }.
