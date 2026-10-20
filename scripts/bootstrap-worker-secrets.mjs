@@ -30,12 +30,15 @@ export function collectBootstrapSecrets(worker, env) {
     throw new Error("SSH Broker token must be at least 32 characters");
   }
   if (worker === "github-actions-mcp-worker") {
-    if (typeof env.GH_TOKEN_SECONDARY === "string" && env.GH_TOKEN_SECONDARY.trim()) {
-      if (env.GH_TOKEN_SECONDARY.trim() === payload.GH_TOKEN.trim()) {
-        throw new Error("Duplicate GitHub PAT is not allowed");
-      }
-      payload.GH_TOKEN_SECONDARY = env.GH_TOKEN_SECONDARY;
+    // Preserve the single, multiline GitHub Environment Secret unchanged.
+    // Reject malformed/duplicated entries before any Worker deployment.
+    const tokens = payload.GH_TOKEN.split(/\r?\n/).map((t) => t.trim()).filter(Boolean);
+    if (!tokens.length || tokens.length > 8 ||
+      tokens.some((t) => t.length > 512 || /\s/.test(t)) ||
+      new Set(tokens).size !== tokens.length) {
+      throw new Error("Invalid or duplicate GitHub PAT in GH_TOKEN");
     }
+    // Avoid copying older secondary Secret even when it remains in GitHub settings.
   }
   return payload;
 }
