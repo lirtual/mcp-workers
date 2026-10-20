@@ -61,13 +61,8 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     invariant(!find("GITHUB_REPOS", "plain_text") &&
       !find("GITHUB_REPOS_SECONDARY", "plain_text"),
       "Legacy GitHub Actions repository allowlists must be removed");
-    const secondary = !!find("GH_TOKEN_SECONDARY", "secret_text");
-    const expectedSecondary = options.expectGithubTokenSecondary === true;
-    invariant(secondary === expectedSecondary &&
-      secretNames.has("GH_TOKEN") &&
-      (secondary ? secretNames.has("GH_TOKEN_SECONDARY") :
-        !secretNames.has("GH_TOKEN_SECONDARY")),
-      "GitHub Actions PAT bindings do not match selected deployment");
+    invariant(secretNames.has("GH_TOKEN") && !!find("GH_TOKEN", "secret_text"),
+      "GitHub Actions GH_TOKEN Secret binding missing");
   }
   if (worker === "ima-mcp-worker") {
     // During preflight, accept a legacy CLIENT_ID secret because it will be
@@ -278,9 +273,6 @@ async function current(account, worker, token, options) {
     ? existingOwner?.namespace_id : options.previousNamespaceId;
   verifyBindings(worker, settings, secrets, {
     ...options, previousNamespaceId,
-    ...(worker === "github-actions-mcp-worker" && options.mode === "readback"
-      ? { expectGithubTokenSecondary: process.env.GH_TOKEN_SECONDARY_PRESENT === "true" }
-      : {}),
   });
   if (options.sourceConfig) {
     invariant(settings.compatibility_date === options.sourceConfig.compatibility_date,
