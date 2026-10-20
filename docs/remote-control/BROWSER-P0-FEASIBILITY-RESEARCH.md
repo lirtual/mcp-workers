@@ -84,3 +84,49 @@ The [current Durable Object dispatch](https://github.com/lirtual/mcp-workers/blo
 At later interface design time, prefer the *existing* stable Operation ID/local Receipt and explicit status-query pattern for uncertain or genuinely long-running browser effects, and define timeouts/cancellation for safe reads. **Do not** blindly increase every timeout, replay an effectful action after `timeout_unknown`, or create a second workflow/execution service without evidence. This is a source-grounded implementation issue, not a new owner-approved design choice.
 
 **Status after local probe:** P0 owner approval **BLOCKED / untestable with available plugin tools**; P0 browser network interception **INCONCLUSIVE due to sandbox administrator policy**; remote-device/platform acceptance **NOT RUN**. A result remains **unverified** until run in the actual supported client and approved isolated browser environment.
+
+
+## F. User-selected paired device readiness — read-only check (2026-10-20)
+
+**Owner-selected target:** one exact existing Remote Control device ID supplied in the conversation. For privacy and to avoid publishing a durable identifier for a personal device in repository documentation, the full UUID and machine label are **intentionally omitted here**. A second paired device has the same name, and **must never** be substituted based on label matching.
+
+**Tools used:** only the connected Remote Control `list_devices`, `read_file`, `list_directory`, `stat_file` and `list_sessions` **read-only** capabilities; no Shell/process start, filesystem write, network browsing or browser launch. These results reflect the point-in-time connected tool response, not a platform diagnosis.
+
+| Probe | Observed result | Inference boundary |
+| --- | --- | --- |
+| Exact device identity and connectivity | The intended UUID is in the paired device list as `online`; another device has the same label | The device-selection target is unambiguous by ID, but list-level online status **does not prove its file capabilities or OS** |
+| Linux version/WSL clues | Reads of `/etc/os-release`, `/proc/sys/kernel/osrelease`, `/etc/wsl.conf`, `/proc/1/comm` all returned the remote file-read-failed error | OS type, whether WSL2, Agent account visibility and runtime remain **unknown**; an absent optional WSL config alone would not have proven incompatibility |
+| Binary-directory existence | Read-only directory listing for `/usr/bin` returned remote directory-listing failure | No evidence for or against Chromium, Chrome, Node, Playwright installation |
+| Path availability independent of text reading | `stat_file` for `/`, `/home`, `/etc/os-release` returned remote file-info failure | Not merely a text-content issue, but the provider's generic `read_failed` mapping **does not distinguish** missing Linux path, unsupported platform, permissions or Agent read implementation |
+| Managed session status | Read-only `list_sessions` returned a generic managed-session failure, with possible Shell/session support missing | This does **not** prove the device is offline or identify the platform |
+
+**Relevant source interpretation:** [Worker error mapper](https://github.com/lirtual/mcp-workers/blob/main/apps/remote-control-mcp-worker/src/worker.ts) renders a generic “read failed / check path and permissions” message when the DO read result is `read_failed`; [Agent WSS code](https://github.com/lirtual/remote-control-agent/blob/main/apps/remote-control-agent/src/v2-connection-lifecycle.ts) implements bounded allowlisted read operations but has no dedicated OS/browser readiness tool. The observed response alone cannot establish whether this UUID refers to a native Windows Agent, WSL distro, Linux host with path restrictions, or an Agent-version mismatch.
+
+**Readiness verdict: BLOCKED / unknown environment.** The chosen device is the **only** approved target for future inspection, but **is not yet qualified as an isolated browser-test target**. There is no permission to assume that a personal/work machine is disposable. No browser or network acceptance was attempted there. Do not retry many arbitrary paths, run a mutation-capable Shell just because a command would be read-only, alter the remote Agent or silently select the identically named sibling.
+
+## G. Conditional controlled acceptance sequence — planned, NOT run
+
+**Stage 0 — unblock OS and read-only capability discovery first.**
+
+1. Identify the **exact selected device's** native OS / WSL2-vs-Linux runtime and whether its installed Agent supports the existing Linux path/file protocol, through an available trustworthy **read-only** platform-capability indication. The current `list_devices` only reports identity/connection, not OS/Agent version.
+2. Confirm non-sensitive browser-runtime facts (Playwright/Chromium package/binary presence, executable version/architecture and a *separate* writable ephemeral profile location) **without launching a browser or modifying the host**. A file existing is not sufficient proof of safe test setup.
+3. If the existing connected plugin has no read-only OS/capability surface—as this probe suggests—**stop and return that instrumentation/diagnostic gap for separately scoped owner approval**. Do not promote `run_command` to “read-only” merely because a proposed command contains only `uname` or `stat`.
+4. Establish that the eventual test will run inside a genuinely **isolated** user-selected environment rather than the owner's personal browser Profile; record disposable-profile and cleanup boundaries. **No sandbox qualification was shown by this read-only check.**
+
+**Stage 1 — controlled browser network-target test, only after Stage 0 and separate scoped test authorization.**
+
+- **Environment:** a disposable independent browser Profile with an isolated synthetic HTTP origin, a second simulated private/admin target, and a test-controlled DNS/redirect fixture. Test harness should capture whether requests actually hit the sensitive fixture. It must not access real cloud-instance metadata, personal LAN services, credentials, production accounts or devices other than the selected test instance.
+- **Cases:** direct approved public-simulated HTTP(S); ordinary public → private redirect; multi-hop redirects; host DNS public→sensitive change; iframe, XHR/fetch, image/script, WebSocket; existing/new Service Worker or prefetch; unsupported-scheme and DNS-failure denial. An explicitly approved internal target must not grant blanket subresource permission.
+- **PASS:** forbidden targets receive **zero requests**, with safe fail-closed errors; permitted test origin is still usable. **INCONCLUSIVE:** test browser is blocked by sandbox policy before reaching its first controlled public fixture, or the harness cannot distinguish request paths. **FAIL:** any forbidden fixture receives an unauthorized request. A Playwright `route()` callback count alone is not sufficient proof of network protection.
+- Any need for process-level egress isolation, a proxy or privileged sandbox **requires a future owner architecture decision** and must not be smuggled into a document-only test.
+
+**Stage 2 — real-client one-use owner-authorization verification, independent of Stage 1 but requiring an actual verifiable client execution path.**
+
+- **Environment:** the supported ChatGPT plugin connected to the exact selected approved device/runtime, using a **synthetic local high-impact-labelled no-op**. The no-op must not send mail, transfer a file, make a purchase, delete data or invoke a production action.
+- **First blocker:** the current plugin exposes **no** browser action proposal / verifiable human approval test tool, and its MCP implementation does not demonstrate a client-to-Agent approval proof. Without a separately authorized safe test seam or real supported capability, mark this **NOT TESTABLE**, not failed or passed.
+- **Cases if available later:** owner sees exact selected device/session/tab/operation/meaningful parameters; explicit accept runs exactly once; rejection and absent/mismatched proof are denied; altered target/arguments, expired approval, duplicate/parallel replay, disconnection/restart and receipt uncertainty do **not** reauthorize or retry.
+- **PASS:** the Agent execution boundary validates the original owner intent for one exact action and denies all invalid/replayed cases; only safe non-content identifiers retained. **FAIL:** a model-generated “yes” or ordinary MCP bearer credential alone permits a high-impact execution. **NOT TESTABLE:** client transport exposes no verifiable owner confirmation. High-impact browser actions stay disabled.
+
+**After both stages:** separately evaluate screenshot MCP image round-trip, real-browser workflow gaps, Agent-local safe upload/download semantics, trusted browser provenance and Linux/WSL2/native Windows acceptance. **Do not extend or repeat a failed/blocked test loop without a material change in the target, instrumentation or policy.**
+
+**Current checkpoint (2026-10-20):** Stage 0 **BLOCKED** at read-only OS/file capability. Stage 1 **NOT RUN** on selected device. Stage 2 **NOT TESTABLE** on current plugin surface. No selected device was modified, and no code, development Ticket, CI, merge or deployment was authorized.
