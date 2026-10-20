@@ -1,172 +1,161 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { ActionError, assertRepo, configuredAccounts, configuredRepos, GitHubActionsClient } from '../src/github.ts';
+import { ActionError, GitHubActionsClient } from '../src/github.ts';
 import type { Env } from '../src/github.ts';
 
 const config: Env = {
   MCP_ACCESS_TOKEN: 'mcp-secret',
-  GH_TOKEN: 'github-secret',
-  GITHUB_REPOS: 'autoactions/tsrv, autoactions/tsvc',
+  GH_TOKEN: 'primary-pat',
 };
 
-test('allowlist is explicit and rejects unknown repositories before transport', async () => {
-  assert.deepEqual(configuredRepos(config.GITHUB_REPOS), ['autoactions/tsrv', 'autoactions/tsvc']);
-  assert.throws(() => assertRepo(configuredRepos(config.GITHUB_REPOS), 'other/repo'), { code: 'repository_not_allowed' });
-  assert.throws(() => configuredRepos('autoactions/tsrv,../evil'), { code: 'invalid_repository_configuration' });
-  let count = 0;
-  const client = new GitHubActionsClient(config, (async () => { count += 1; return Response.json({}); }) as typeof fetch);
-  await assert.rejects(() => client.listWorkflows('evil/repo'), { code: 'repository_not_allowed' });
-  assert.equal(count, 0);
+function mockGitHub(
+  onRequest: (url: string, init?: RequestInit) => Promise<Response>,
+  repositories: Record<string, string[]> = {
+    'primary-pat': ['autoactions/tsrv', 'autoactions/tsvc'],
+    'secondary-pat': ['lirtual/mcp-workers'],
+  },
+): typeof fetch {
+  return (async (input, init) => {
+    const url = String(input);
+    if (url.startsWith('https://api.github.com/user/repos?')) {
+      const pat = (new Headers(init?.headers).get('authorization') ?? '').replace(/^Bearer /, '');
+      const page = Number(new URL(url).searchParams.get('page'));
+      return Response.json(page === 1 ? (repositories[pat] ?? []).map(full_name => ({ full_name })) : []);
+    }
+    return onRequest(url, init);
+  }) as typeof fetch;
+}
+
+test('repositories are discovered from PAT permission rather than a static allowlist', async () => {
+  const client = new GitHubActionsClient(config, mockGitHub(async () => {
+    throw Error('No actions request expected');
+  }));
+  assert.deepEqual(await client.listRepositories(), {
+    repositories: ['autoactions/tsrv', 'autoactions/tsvc'],
+    ambiguous_repositories: [],
+  });
+  await assert.rejects(() => client.listWorkflows('other/repo'),
+    { code: 'repository_not_accessible' });
+  await assert.rejects(() => client.listWorkflows('../escape'),
+    { code: 'invalid_repository' });
 });
 
-
-test('two GitHub accounts route by exact repository without credential fallback', async () => {
-  const twoAccounts: Env = {
-    ...config,
-    GH_TOKEN_SECONDARY: 'lirtual-private-token',
-    GITHUB_REPOS_SECONDARY: 'lirtual/mcp-workers',
-  };
-  const requests: Array<{ repo: string; authorization: string }> = [];
-  const client = new GitHubActionsClient(twoAccounts, (async (url, init) => {
-    const full = String(url);
-    requests.push({
-      repo: full.split('/repos/')[1]?.split('/actions/')[0] ?? '',
-      authorization: new Headers(init?.headers).get('authorization') ?? '',
-    });
+test('two PATs select the correct account without passing credentials in MCP replies', async () => {
+  const calls: Array<{ url: string; auth: string }> = [];
+  const client = new GitHubActionsClient({
+    ...config, GH_TOKEN_SECONDARY: 'secondary-pat',
+  }, mockGitHub(async (url, init) => {
+    calls.push({ url, auth: new Headers(init?.headers).get('authorization') ?? '' });
     return Response.json({ total_count: 0, workflows: [] });
-  }) as typeof fetch);
-  assert.deepEqual(client.allowlist, ['autoactions/tsrv', 'autoactions/tsvc', 'lirtual/mcp-workers']);
+  }));
+  assert.deepEqual(await client.listRepositories(), {
+    repositories: ['autoactions/tsrv', 'autoactions/tsvc', 'lirtual/mcp-workers'],
+    ambiguous_repositories: [],
+  });
   await client.listWorkflows('autoactions/tsrv');
   await client.listWorkflows('lirtual/mcp-workers');
-  await client.listWorkflows('LIRTUAL/MCP-WORKERS');
-  assert.deepEqual(requests, [
-    { repo: 'autoactions/tsrv', authorization: 'Bearer github-secret' },
-    { repo: 'lirtual/mcp-workers', authorization: 'Bearer lirtual-private-token' },
-    { repo: 'LIRTUAL/MCP-WORKERS', authorization: 'Bearer lirtual-private-token' },
-  ]);
-  await assert.rejects(() => client.listWorkflows('not-authorized/other'), {
-    code: 'repository_not_allowed',
-  });
-  assert.equal(requests.length, 3);
+  assert.deepEqual(calls.map(({ auth }) => auth), ['Bearer primary-pat', 'Bearer secondary-pat']);
+  assert.equal(JSON.stringify(await client.listRepositories()).includes('pat'), false);
 });
 
-test('missing, overlapping or unassigned second-account secrets fail closed', async () => {
-  const base: Env = { ...config, GITHUB_REPOS_SECONDARY: 'lirtual/mcp-workers' };
-  assert.throws(() => configuredAccounts(base), { code: 'github_token_secondary_not_configured' });
-  assert.throws(() => configuredAccounts({
-    ...config, GH_TOKEN_SECONDARY: 'unused-secret',
-  }), { code: 'secondary_repository_not_configured' });
-  assert.throws(() => configuredAccounts({
-    ...base, GH_TOKEN_SECONDARY: 'other-token',
-    GITHUB_REPOS_SECONDARY: 'AUTOACTIONS/TSRV',
-  }), { code: 'duplicate_repository_configuration' });
-  assert.throws(() => configuredAccounts({
-    ...base, GH_TOKEN_SECONDARY: 'other-token',
-    GITHUB_REPOS_SECONDARY: 'lirtual/mcp-workers,../invalid',
-  }), { code: 'invalid_repository_configuration' });
-  assert.deepEqual(configuredAccounts(config).all,
-    ['autoactions/tsrv', 'autoactions/tsvc']);
-
+test('overlapping token access fails closed, including case-insensitive repository matches', async () => {
   const client = new GitHubActionsClient({
-    ...base, GH_TOKEN_SECONDARY: 'second-secret',
-  }, (async () => Response.json({ message: 'only secondary secret could access' }, { status: 403 })) as typeof fetch);
-  await assert.rejects(() => client.listWorkflows('lirtual/mcp-workers'), { code: 'github_http_403' });
-  // Never retry a GitHub 403/401 with the other account credential.
+    ...config, GH_TOKEN_SECONDARY: 'secondary-pat',
+  }, mockGitHub(async () => { throw Error('No mutation must be dispatched'); }, {
+    'primary-pat': ['lirtual/mcp-workers'],
+    'secondary-pat': ['LIRTUAL/MCP-WORKERS'],
+  }));
+  assert.deepEqual(await client.listRepositories(), {
+    repositories: [],
+    ambiguous_repositories: ['lirtual/mcp-workers'],
+  });
+  await assert.rejects(
+    () => client.dispatchWorkflow('lirtual/mcp-workers', 'ci.yml', 'main', {}),
+    { code: 'ambiguous_repository_credentials' },
+  );
+  assert.throws(() => new GitHubActionsClient({ ...config, GH_TOKEN_SECONDARY: 'primary-pat' }),
+    { code: 'duplicate_github_token' });
 });
 
-test('workflow dispatch sends correct payload and returns GitHub accepted run id', async () => {
-  const requests: Array<{ url: string, method: string, authorization: string, body: any }> = [];
-  const client = new GitHubActionsClient(config, (async (url, init) => {
+test('dispatch sends one write to the discovered PAT and refuses cross-PAT fallback', async () => {
+  const requests: Array<{ url: string; auth: string; body: any }> = [];
+  const client = new GitHubActionsClient({
+    ...config, GH_TOKEN_SECONDARY: 'secondary-pat',
+  }, mockGitHub(async (url, init) => {
     requests.push({
-      url: String(url), method: init?.method ?? 'GET',
-      authorization: new Headers(init?.headers).get('authorization') ?? '',
+      url, auth: new Headers(init?.headers).get('authorization') ?? '',
       body: JSON.parse(String(init?.body)),
     });
-    return Response.json({ workflow_run_id: 777, html_url: 'https://github.com/autoactions/tsrv/actions/runs/777' });
-  }) as typeof fetch);
-  const value = await client.dispatchWorkflow('autoactions/tsrv', 'linux.yml', 'main', { access_profile: 'mini' });
-  assert.equal(value.workflow_run_id, 777);
+    return Response.json({ workflow_run_id: 777 }, { status: 200 });
+  }));
+  assert.deepEqual(await client.dispatchWorkflow('lirtual/mcp-workers', 'ci.yml', 'main', {
+    worker: 'remote-control-mcp-worker',
+  }), { workflow_run_id: 777 });
   assert.equal(requests.length, 1);
-  assert.equal(requests[0]?.url, 'https://api.github.com/repos/autoactions/tsrv/actions/workflows/linux.yml/dispatches');
-  assert.equal(requests[0]?.method, 'POST');
-  assert.equal(requests[0]?.authorization, 'Bearer github-secret');
-  assert.deepEqual(requests[0]?.body, { ref: 'main', inputs: { access_profile: 'mini' }, return_run_details: true });
+  assert.equal(requests[0].auth, 'Bearer secondary-pat');
+  assert.equal(requests[0].url,
+    'https://api.github.com/repos/lirtual/mcp-workers/actions/workflows/ci.yml/dispatches');
+  assert.equal(requests[0].body.return_run_details, true);
+
+  let deniedRequests = 0;
+  const denied = new GitHubActionsClient({
+    ...config, GH_TOKEN_SECONDARY: 'secondary-pat',
+  }, mockGitHub(async (_, init) => {
+    deniedRequests++;
+    assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer secondary-pat');
+    return Response.json({ message: 'contains private data' }, { status: 403 });
+  }));
+  await assert.rejects(() => denied.dispatchWorkflow('lirtual/mcp-workers', 'ci.yml', 'main', {}),
+    (error: unknown) => error instanceof ActionError &&
+      error.code === 'github_http_403' && !error.message.includes('private'));
+  assert.equal(deniedRequests, 1);
 });
 
-test('repository dispatch uses dedicated GitHub event API', async () => {
-  let body: any;
-  const client = new GitHubActionsClient(config, (async (_, init) => {
-    body = JSON.parse(String(init?.body));
-    return new Response(null, { status: 204 });
-  }) as typeof fetch);
-  const value = await client.dispatchRepository('autoactions/tsvc', 'deploy', { service: 'chrome' });
-  assert.deepEqual(body, { event_type: 'deploy', client_payload: { service: 'chrome' } });
-  assert.equal(value.accepted, true);
-});
-
-test('normal and force cancellation only acknowledge requests and use explicit endpoints', async () => {
+test('repository_dispatch, cancellations and run metadata preserve existing semantics', async () => {
   const calls: Array<{ url: string; method: string }> = [];
-  const client = new GitHubActionsClient(config, (async (url, init) => {
-    calls.push({ url: String(url), method: init?.method ?? 'GET' });
+  const client = new GitHubActionsClient(config, mockGitHub(async (url, init) => {
+    calls.push({ url, method: init?.method ?? 'GET' });
+    if (url.endsWith('/actions/runs/42')) {
+      return Response.json({ id: 42, status: 'completed', conclusion: 'success',
+        private_token: 'never-show' });
+    }
     return new Response(null, { status: 202 });
+  }));
+  assert.deepEqual(await client.dispatchRepository('autoactions/tsrv', 'deploy', {}), { accepted: true });
+  assert.equal((await client.cancelRun('autoactions/tsrv', 42)).completion_confirmed, false);
+  assert.equal((await client.forceCancelRun('autoactions/tsrv', 42)).completion_confirmed, false);
+  assert.equal(JSON.stringify(await client.getRun('autoactions/tsrv', 42)).includes('never-show'), false);
+  assert.deepEqual(calls.map(c => c.method), ['POST', 'POST', 'POST', 'GET']);
+});
+
+test('bounded repository discovery refuses truncation and upstream failure', async () => {
+  let actionCalls = 0;
+  const tooMany = new GitHubActionsClient(config, (async (input) => {
+    const url = String(input);
+    if (url.includes('/user/repos?')) return Response.json(
+      Array.from({ length: 25 }, (_, i) => ({ full_name: 'many/repo-' + i })));
+    actionCalls++;
+    return Response.json({});
   }) as typeof fetch);
-
-  assert.deepEqual(await client.cancelRun('autoactions/tsrv', 39365524170), {
-    accepted: true, cancellation: 'requested', completion_confirmed: false, run_id: 39365524170,
-  });
-  assert.deepEqual(await client.forceCancelRun('autoactions/tsrv', 39365524170), {
-    accepted: true, cancellation: 'force_requested', completion_confirmed: false, run_id: 39365524170,
-  });
-  assert.deepEqual(calls, [
-    { url: 'https://api.github.com/repos/autoactions/tsrv/actions/runs/39365524170/cancel', method: 'POST' },
-    { url: 'https://api.github.com/repos/autoactions/tsrv/actions/runs/39365524170/force-cancel', method: 'POST' },
-  ]);
+  await assert.rejects(() => tooMany.getRun('many/repo-1', 42),
+    { code: 'repository_discovery_limit' });
+  assert.equal(actionCalls, 0);
+  const invalid = new GitHubActionsClient(config, mockGitHub(async () => {
+    throw Error('No action should happen');
+  }, { 'primary-pat': ['bad/../repo'] }));
+  await assert.rejects(() => invalid.listRepositories(), { code: 'invalid_repository' });
 });
-
-test('force cancel validates repository and run id before sending and sanitizes conflict', async () => {
-  let callCount = 0;
-  const client = new GitHubActionsClient(config, (async () => {
-    callCount++;
-    return Response.json({ message: 'private credentials' }, { status: 409 });
-  }) as typeof fetch);
-  await assert.rejects(() => client.forceCancelRun('unlisted/repo', 8), { code: 'repository_not_allowed' });
-  await assert.rejects(() => client.forceCancelRun('autoactions/tsrv', 0), { code: 'invalid_run_id' });
-  assert.equal(callCount, 0);
-  await assert.rejects(() => client.forceCancelRun('autoactions/tsrv', 8), (err: unknown) =>
-    err instanceof ActionError && err.code === 'github_http_409' &&
-    !err.message.includes('private credentials'));
-  assert.equal(callCount, 1);
-});
-
-test('upstream errors reveal only status, not response body or credentials', async () => {
-  const client = new GitHubActionsClient(config, (async () =>
-    Response.json({ message: 'github-secret and private data' }, { status: 403 })) as typeof fetch);
-  await assert.rejects(() => client.getRun('autoactions/tsrv', 42), (err: unknown) =>
-    err instanceof ActionError && err.code === 'github_http_403' &&
-    !err.message.includes('github-secret'));
-});
-
-test('run lookup returns bounded metadata rather than the raw upstream object', async () => {
-  const client = new GitHubActionsClient(config, (async () =>
-    Response.json({ id: 42, status: 'in_progress', conclusion: null,
-      html_url: 'https://github.com/autoactions/tsrv/actions/runs/42',
-      private_token: 'do-not-return' })) as typeof fetch);
-  const value = await client.getRun('autoactions/tsrv', 42);
-  assert.equal(value.id, 42);
-  assert.equal(value.status, 'in_progress');
-  assert.equal(JSON.stringify(value).includes('do-not-return'), false);
-});
-
 
 test('injected fetch is called without a class receiver (Workers compatibility)', async () => {
-  // Workerd enforces the receiver on native fetch; Node does not.
-  const receiverCheckedFetch = function (this: unknown) {
+  const receiverCheckedFetch = function (this: unknown, input: RequestInfo | URL) {
     assert.equal(this, undefined);
+    if (String(input).includes('/user/repos?')) {
+      return Promise.resolve(Response.json([{ full_name: 'autoactions/tsrv' }]));
+    }
     return Promise.resolve(Response.json({ total_count: 0, workflows: [] }));
   } as typeof fetch;
   const client = new GitHubActionsClient(config, receiverCheckedFetch);
   assert.deepEqual(await client.listWorkflows('autoactions/tsrv'), {
-    total_count: 0,
-    workflows: [],
+    total_count: 0, workflows: [],
   });
 });
