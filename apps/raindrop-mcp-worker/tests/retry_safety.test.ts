@@ -7,6 +7,24 @@ describe("RaindropService retry safety", () => {
     vi.unstubAllGlobals();
   });
 
+  it("caps upstream HTTP requests at 60 even when callers bypass the cache", async () => {
+    const fetchMock = vi.fn(async () => new Response(
+      JSON.stringify({ result: true, items: [], count: 0 }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    const service = new RaindropService({ accessToken: "test-token", maxReadRetries: 0 });
+
+    for (let index = 0; index < 60; index++) {
+      await expect(service.getBookmarks({ page: 0 }, true)).resolves.toEqual({
+        items: [], count: 0,
+      });
+    }
+    await expect(service.getBookmarks({ page: 0 }, true))
+      .rejects.toThrow(/upstream request budget/i);
+    expect(fetchMock).toHaveBeenCalledTimes(60);
+  });
+
   it("does not retry an upstream failure after submitting a write", async () => {
     const fetchMock = vi.fn(async () =>
       new Response("upstream failure", {
