@@ -38,6 +38,8 @@ Target: already-paired Windows device `71b4b4d8-6496-4898-9b80-1ea3a03f6ccd`, di
 
 PoC execution was **via the already-authorized Remote Control Shell**, **not** through newly implemented/browser-specific MCP tools. This proves **basic real-device CLI feasibility**, not end-to-end browser-specific MCP transport, production startup/upgrade/rollback, arbitrary site compatibility, idle-reaping, crash/forced-kill cleanup, screenshot transfer or one-use high-impact approval. The synthetic TodoMVC interactions only modify the disposable browser session's demo state.
 
+**Cleanup confirmation:** both named browser sessions reported closed; agent-browser subsequently reported no active sessions and Playwright CLI listed no browsers. All tagged Chrome processes were gone. The isolated TEMP package directory/Profiles and five specifically identified test output files were deleted; no personal browser Profile was selected or altered. No browser CLI package was retained as a permanent Agent dependency.
+
 The preexisting `playwright-core@1.64.1` Agent Draft PR #15 offline prototype is separate source/test work, **not** a reason to maintain a second production browser backend.
 
 ## 4. Slim first-release shape
