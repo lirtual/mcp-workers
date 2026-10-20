@@ -2,7 +2,7 @@ import { compilePlan, PlanError, canonicalJsonString } from './plan.ts';
 import {observeInstance, shouldExpireUnconfirmedOutcome, unresolvedNativeTerminalError, OUTCOME_SETTLE_WINDOW_MS} from './instance-observation.ts';
 import YAML from 'yaml';
 function draftName(definition:string):string {
-  if(!definition || definition.length>32768)throw new StateError('definition_too_large');
+  if(!definition || new TextEncoder().encode(definition).byteLength>32768)throw new StateError('definition_too_large');
   try {
     const parsed=YAML.parse(definition,{uniqueKeys:true});
     if(parsed && typeof parsed==='object' && typeof parsed.name==='string' && parsed.name.trim())

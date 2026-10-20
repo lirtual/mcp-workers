@@ -170,6 +170,17 @@ remote D1/Workflows lists verified; local test secrets/config were removed.
 Real Cloudflare internal control-plane partition and incompatible engine upgrades
 remain unproven; this test does not claim either.
 
+**UTF-8 payload boundary audit (2026-10-20):** Input Draft size and compiled
+YAML/JSON size must be capped in **UTF-8 bytes**, not JavaScript code units;
+MCP response serialization must enforce its 64 KiB limit the same way.
+A red-to-green public-MCP test exercises a long multibyte Chinese Draft that
+was previously admitted despite exceeding 32 KiB, and a contract test covers a
+multibyte response beyond 64 KiB. Updated local evidence: **41/41 owner-facing
+MCP assertions, 18/18 unit/contract tests** and reserved-instance/recovery
+fault injection passed. This is a data-boundary bug fix only; it does not alter
+S1 scope or any Cloudflare execution architecture. The 41-assertion suite has
+not been rerun on real edge for this particular revision.
+
 Still required before closing S1: final standards/spec code review, latest-commit
 CI verification, remaining network interruption cases where warranted, and
 explicit final merge/release authorization. S2/S3 are not implemented.

@@ -10,7 +10,7 @@ const read={readOnlyHint:true,idempotentHint:true,openWorldHint:false};
 // These queries may reconcile an already admitted Run, mutate D1 and resume
 // its deterministic Workflow instance. Do not advertise them as read-only.
 const reconcile={readOnlyHint:false,idempotentHint:true,openWorldHint:false};
-function success(body:unknown){const text=JSON.stringify(body);if(text.length>64*1024)return {isError:true,content:[{type:'text' as const,text:'{"error":"result_too_large"}'}]};return {content:[{type:'text' as const,text}]};}
+export function success(body:unknown){const text=JSON.stringify(body);if(new TextEncoder().encode(text).byteLength>64*1024)return {isError:true,content:[{type:'text' as const,text:'{"error":"result_too_large"}'}]};return {content:[{type:'text' as const,text}]};}
 async function safe(f:()=>Promise<unknown>){try{return success(await f());}catch(e){return {isError:true,content:[{type:'text' as const,text:JSON.stringify({error:cleanError(e)})}]};}}
 export function buildMcpServer(env:Env){
  const service=new WorkflowService(env);

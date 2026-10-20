@@ -91,7 +91,7 @@ export const evaluateArguments=evaluateExpression;
 export async function compilePlan(source: string|unknown): Promise<{plan:Plan; digest:string}>{
   let raw:unknown=source;
   if(typeof source==='string'){
-    if(source.length>32*1024)throw new PlanError('definition_too_large');
+    if(new TextEncoder().encode(source).byteLength>32*1024)throw new PlanError('definition_too_large');
     try{ const doc=YAML.parseDocument(source,{uniqueKeys:true,strict:true});if(doc.errors.length)throw Error('invalid_yaml');raw=doc.toJS({maxAliasCount:16}); }
     catch{throw new PlanError('invalid_yaml_or_json');}
   }

@@ -83,6 +83,8 @@ try{
   ok(invalidPreview.valid===false&&invalidPreview.issues?.length>0,'validation returns actionable issues instead of losing Draft');
   await tool('workflow_publish',{workflow_id:invalidDraft.workflow_id,expected_revision:1},'invalid_definition');
   ok((await tool('workflow_get',{workflow_id:invalidDraft.workflow_id})).published_version_id===null,'rejected Publish leaves prior state unchanged');
+  await tool('workflow_create',{definition:'name: Wide\nnotes: '+'汉'.repeat(13000)},'definition_too_large');
+  ok(true,'multi-byte Draft exceeds UTF-8 byte budget even if JS string length is below 32 KiB');
   const yaml='version: 1\nname: YAML Draft\nsteps:\n  - id: emit\n    uses: result.emit\n    with:\n      data: hello-yaml\n';
   const yamlDraft=await tool('workflow_create',{definition:yaml});
   ok((await tool('workflow_get',{workflow_id:yamlDraft.workflow_id})).definition===yaml,'YAML Draft can be read back exactly');
