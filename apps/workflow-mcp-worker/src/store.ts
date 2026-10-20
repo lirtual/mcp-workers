@@ -1,4 +1,14 @@
 import { compilePlan, PlanError } from './plan.ts';
+import YAML from 'yaml';
+function draftName(definition:string):string {
+  if(!definition || definition.length>32768)throw new StateError('definition_too_large');
+  try {
+    const parsed=YAML.parse(definition,{uniqueKeys:true});
+    if(parsed && typeof parsed==='object' && typeof parsed.name==='string' && parsed.name.trim())
+      return parsed.name.slice(0,120);
+  }catch{}
+  return 'Untitled Draft';
+}
 import type { Plan } from './plan.ts';
 
 export type Env = {
@@ -38,7 +48,7 @@ export function applyStatus(native:string, outcome:string):string {
 type WorkflowRow={id:string;name:string;draft:string;draft_revision:number;active_version_id:string|null;state:string};
 type VersionRow={id:string;plan:string;digest:string};
 type RunRow={id:string;workflow_id:string;version_id:string;instance_id:string;request_digest:string;start_state:string;outcome:string;result:string|null;error_code:string|null;inputs:string;created_at:number};
-const workflowView=(row:WorkflowRow)=>({workflow_id:row.id,name:row.name,draft_revision:row.draft_revision,definition:JSON.parse(row.draft),published_version_id:row.active_version_id,state:row.state});
+const workflowView=(row:WorkflowRow)=>({workflow_id:row.id,name:row.name,draft_revision:row.draft_revision,definition:row.draft,published_version_id:row.active_version_id,state:row.state});
 export class WorkflowService {
   private env:Env;
   constructor(env:Env){this.env=env;}
@@ -48,35 +58,53 @@ export class WorkflowService {
   async get(workflow_id:string){assertId(workflow_id);const row=await this.row(workflow_id);return workflowView(row);}
   private async row(id:string){const row=await this.db.prepare('SELECT * FROM workflows WHERE id=?').bind(id).first<WorkflowRow>();if(!row)throw new StateError('workflow_not_found');return row;}
   async create(definition:string){
-    const {plan}=await compilePlan(definition);
+    const name=draftName(definition);
     const id=crypto.randomUUID(),time=now();
-    await this.db.prepare('INSERT INTO workflows(id,name,draft,draft_revision,state,created_at,updated_at) VALUES(?,?,?,1,\'draft\',?,?)').bind(id,plan.name,definition,time,time).run();
+    await this.db.prepare('INSERT INTO workflows(id,name,draft,draft_revision,state,created_at,updated_at) VALUES(?,?,?,1,\'draft\',?,?)').bind(id,name,definition,time,time).run();
     return {workflow_id:id,draft_revision:1,state:'draft'};
   }
   async update(workflow_id:string,expected_revision:number,definition:string){
     assertId(workflow_id);if(!Number.isSafeInteger(expected_revision)||expected_revision<1)throw new StateError('invalid_revision');
-    const {plan}=await compilePlan(definition);
-    const x=await this.db.prepare('UPDATE workflows SET draft=?,name=?,draft_revision=draft_revision+1,updated_at=? WHERE id=? AND draft_revision=?').bind(definition,plan.name,now(),workflow_id,expected_revision).run();
+    const name=draftName(definition);
+    const x=await this.db.prepare('UPDATE workflows SET draft=?,name=?,draft_revision=draft_revision+1,updated_at=? WHERE id=? AND draft_revision=?').bind(definition,name,now(),workflow_id,expected_revision).run();
     if(!x.meta.changes) {await this.row(workflow_id);throw new StateError('revision_conflict');}
     return {workflow_id,draft_revision:expected_revision+1};
   }
   async validate(workflow_id:string,revision:number){
     assertId(workflow_id);const row=await this.row(workflow_id);
     if(row.draft_revision!==revision)throw new StateError('revision_conflict');
-    const {digest,plan}=await compilePlan(row.draft);
-    return {valid:true,digest,steps:plan.steps.length};
+    try {
+      const {digest,plan}=await compilePlan(row.draft);
+      return {valid:true,digest,steps:plan.steps.length,issues:[]};
+    }catch(error){
+      if(!(error instanceof PlanError))throw error;
+      return {valid:false,issues:[{code:error.message.split(':')[0]}]};
+    }
   }
   async publish(workflow_id:string,expected_revision:number){
     assertId(workflow_id);const row=await this.row(workflow_id);
     if(row.draft_revision!==expected_revision)throw new StateError('revision_conflict');
     const {plan,digest:plan_digest}=await compilePlan(row.draft);
+    // Repeated Publish of an unchanged Draft resolves to its existing Version.
+    if(row.active_version_id){
+      const current=await this.db.prepare('SELECT digest FROM workflow_versions WHERE id=? AND workflow_id=?').bind(row.active_version_id,workflow_id).first<{digest:string}>();
+      if(current?.digest===plan_digest)return {workflow_id,published_version_id:row.active_version_id,digest:plan_digest,state:row.state};
+    }
     const version=crypto.randomUUID(),t=now();
     const batch=await this.db.batch([
-      this.db.prepare('UPDATE workflows SET active_version_id=?,state=\'active\',updated_at=? WHERE id=? AND draft_revision=?').bind(version,t,workflow_id,expected_revision),
+      this.db.prepare('UPDATE workflows SET active_version_id=?,state=CASE WHEN state=\'paused\' THEN \'paused\' ELSE \'active\' END,updated_at=? WHERE id=? AND draft_revision=? AND active_version_id IS ?').bind(version,t,workflow_id,expected_revision,row.active_version_id),
       this.db.prepare('INSERT INTO workflow_versions(id,workflow_id,digest,plan,created_at) SELECT ?,id,?,?,? FROM workflows WHERE id=? AND active_version_id=?').bind(version,plan_digest,json(plan),t,workflow_id,version),
     ]);
-    if(!batch[0].meta.changes||!batch[1].meta.changes)throw new StateError('revision_conflict');
-    return {workflow_id,published_version_id:version,digest:plan_digest,state:'active'};
+    if(!batch[0].meta.changes||!batch[1].meta.changes){
+      // A concurrent identical Publish can win the CAS; never report a second version.
+      const latest=await this.row(workflow_id);
+      if(latest.draft_revision===expected_revision&&latest.active_version_id){
+        const current=await this.db.prepare('SELECT digest FROM workflow_versions WHERE id=? AND workflow_id=?').bind(latest.active_version_id,workflow_id).first<{digest:string}>();
+        if(current?.digest===plan_digest)return {workflow_id,published_version_id:latest.active_version_id,digest:plan_digest,state:latest.state};
+      }
+      throw new StateError('revision_conflict');
+    }
+    return {workflow_id,published_version_id:version,digest:plan_digest,state:row.state==='paused'?'paused':'active'};
   }
   async pause(workflow_id:string){assertId(workflow_id);const x=await this.db.prepare("UPDATE workflows SET state='paused',updated_at=? WHERE id=? AND state='active'").bind(now(),workflow_id).run();if(!x.meta.changes)throw new StateError('not_active');return {workflow_id,state:'paused'};}
   async resume(workflow_id:string){assertId(workflow_id);const x=await this.db.prepare("UPDATE workflows SET state='active',updated_at=? WHERE id=? AND state='paused' AND active_version_id IS NOT NULL").bind(now(),workflow_id).run();if(!x.meta.changes)throw new StateError('not_paused');return {workflow_id,state:'active'};}
@@ -111,11 +139,26 @@ export class WorkflowService {
     }
   }
   private async reconcileStart(row:RunRow){
-    if(row.start_state==='started')return {run_id:row.id,published_version_id:row.version_id,status:row.outcome,start_state:'started',idempotent_replay:true};
-    try{const instance=await this.env.WORKFLOW.get(row.instance_id);await instance.status();
-      await this.db.prepare("UPDATE runs SET start_state='started' WHERE id=? AND start_state IN ('reserved','start_unknown')").bind(row.id).run();
-      return {run_id:row.id,published_version_id:row.version_id,status:row.outcome,start_state:'started',idempotent_replay:true};
-    }catch{return {run_id:row.id,published_version_id:row.version_id,status:'start_unknown',start_state:'start_unknown',idempotent_replay:true};}
+    const started=()=>({run_id:row.id,published_version_id:row.version_id,status:row.outcome,start_state:'started',idempotent_replay:true});
+    if(row.start_state==='started')return started();
+    const lookup=async()=>{
+      try{
+        const instance=await this.env.WORKFLOW.get(row.instance_id);
+        const state=await instance.status();
+        if(!state?.status) return false;
+        await this.db.prepare("UPDATE runs SET start_state='started',updated_at=? WHERE id=? AND start_state IN ('reserved','start_unknown')").bind(now(),row.id).run();
+        return true;
+      }catch{return false;}
+    };
+    if(await lookup())return started();
+    // A crash after the D1 reservation but before create() is repairable with
+    // the SAME deterministic instance ID, not another Run or capacity slot.
+    // Never recreate a terminal/old Run after platform ID retention may expire.
+    if(row.outcome==='queued' && now()-row.created_at<10*60*1000){
+      try{await this.env.WORKFLOW.create({id:row.instance_id,params:{run_id:row.id}});}catch{}
+      if(await lookup())return started();
+    }
+    return {run_id:row.id,published_version_id:row.version_id,status:'start_unknown',start_state:'start_unknown',idempotent_replay:true};
   }
   async status(run_id:string){
     assertId(run_id);let row=await this.db.prepare('SELECT * FROM runs WHERE id=?').bind(run_id).first<RunRow>();
@@ -126,7 +169,7 @@ export class WorkflowService {
     }
     let native='unknown';if(row.start_state==='started')try{native=(await (await this.env.WORKFLOW.get(row.instance_id)).status()).status;}catch{}
     const steps=(await this.db.prepare('SELECT step_id,status,error_code FROM run_steps WHERE run_id=? ORDER BY step_id').bind(run_id).all<{step_id:string;status:string;error_code:string|null}>()).results;
-    return {run_id,workflow_id:row.workflow_id,published_version_id:row.version_id,start_state:row.start_state,status:row.start_state==='start_unknown'?'start_unknown':applyStatus(native,row.outcome),steps};
+    return {run_id,workflow_id:row.workflow_id,published_version_id:row.version_id,start_state:row.start_state,status:row.start_state!=='started'?'start_unknown':applyStatus(native,row.outcome),steps};
   }
   async result(run_id:string){
     const meta=await this.status(run_id);

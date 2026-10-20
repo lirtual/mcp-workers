@@ -42,15 +42,23 @@ validation need separate authorization.
 
 ## Evidence and remaining work
 
-Local Wrangler E2E (2026-10-20) returned an immutable Published Version,
-an idempotently replayed Run ID, two successful Steps and the read-only
-`hello S1` MCP output. This is **local evidence only**; no S1 production deployment
-or Cloudflare-edge end-to-end acceptance has been performed.
+Local Wrangler E2E (2026-10-20), including the **current MCP SDK adapter**, passed
+32 assertions at the Portal-authenticated MCP seam: Draft editing and invalid-Draft
+preview, YAML readback, compile/Publish, concurrent identical Publish idempotency,
+revision conflicts, pinned Run after republish, pause/replay, two successful read-only
+MCP Steps and result retrieval. The local-only `tests/local-e2e.mjs` needs both local
+Wrangler processes and `S1_LOCAL_TOKEN` set to the same disposable auth token.
 
-Still required before S1 is complete: comprehensive public-MCP-tool seam integration
-cases (revision conflict, concurrent Publish, Run pinning after republish, restart/instance
-create ambiguity, capacity overflow), full repo test suite, independent standards/spec
-code review, isolated Cloudflare real Run acceptance and an explicit release decision.
+`tests/local-reserved-recovery.mjs` uses **isolated local D1 fault injection** (never
+production D1) and passed: D1 reserved Run without a Workflow instance, same-ID
+recovery, lost-ack reconciliation and explicit 8-slot capacity rejection; cleanup
+removes injected capacity rows. Both programs are manual local integration suites,
+not automatically invoked by ordinary unit tests.
+
+This evidence remains **local only**; no production deployment or real Cloudflare-edge
+acceptance has been performed. Still required before S1 can close: true restart
+faults with instance-creation ambiguity, independent standards/spec review, real
+isolated Cloudflare acceptance, and final release/merge authorization.
 
 Q1–Q50 design remains in [Draft PR #135](https://github.com/lirtual/mcp-workers/pull/135);
 new S2/S3 facilities are not to be provisioned here.
