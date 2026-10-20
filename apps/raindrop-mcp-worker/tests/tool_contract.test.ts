@@ -4,6 +4,8 @@ import { RaindropMCPService } from "../src/services/raindropmcp.service.js";
 
 const EXPECTED_TOOL_NAMES = [
   "bookmark_exists",
+  "bookmark_filters_get",
+  "bookmark_suggest",
   "bookmark_get",
   "bookmark_manage",
   "bookmark_search",
@@ -25,7 +27,7 @@ const EXPECTED_TOOL_NAMES = [
 ].sort();
 
 describe("Raindrop MCP capability contract", () => {
-  it("retains the 17 legacy tools while introducing two strict read-only tools", async () => {
+  it("retains the 17 legacy tools while adding four read-only T01 tools", async () => {
     const service = new RaindropMCPService({ accessToken: "test-token" });
 
     try {
@@ -33,7 +35,7 @@ describe("Raindrop MCP capability contract", () => {
       const actual = tools.map((tool) => tool.id).sort();
 
       expect(actual).toEqual(EXPECTED_TOOL_NAMES);
-      expect(actual).toHaveLength(19);
+      expect(actual).toHaveLength(21);
       expect(actual).toContain("diagnostics");
     } finally {
       await service.cleanup();
@@ -323,6 +325,66 @@ describe("bookmark_search strict pagination over public MCP", () => {
       await client.close();
       await service.cleanup();
       get.mockRestore();
+    }
+  });
+});
+
+describe("Official Raindrop helper tools over public MCP", () => {
+  it("reads filter statistics and organization suggestions without client Sampling", async () => {
+    const service = new RaindropMCPService({ accessToken: "test-token" });
+    const filters = vi.spyOn(service.raindropService, "getBookmarkFilters")
+      .mockResolvedValue({ important: 5 });
+    const suggestions = vi.spyOn(service.raindropService, "getOfficialSuggestions")
+      .mockResolvedValue({ collectionIds: [24], tags: ["backend"] });
+    const client = new Client({ name: "bookmark-helpers-contract", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    try {
+      await Promise.all([
+        service.getServer().connect(serverTransport),
+        client.connect(clientTransport),
+      ]);
+      const { tools } = await client.listTools();
+      for (const name of ["bookmark_filters_get", "bookmark_suggest"]) {
+        expect(tools.find(tool => tool.name === name)?.annotations?.readOnlyHint).toBe(true);
+      }
+      const stats = await client.callTool({
+        name: "bookmark_filters_get",
+        arguments: { collectionId: 0, tagsSort: "-count" },
+      });
+      expect(stats.isError).not.toBe(true);
+      expect(stats.structuredContent).toEqual({ filters: { important: 5 } });
+      expect(filters).toHaveBeenCalledWith(0, "-count", undefined);
+
+      const suggested = await client.callTool({
+        name: "bookmark_suggest",
+        arguments: { bookmarkId: 123 },
+      });
+      expect(suggested.isError).not.toBe(true);
+      expect(suggested.structuredContent).toEqual({
+        suggestions: { collectionIds: [24], tags: ["backend"] },
+      });
+      expect(suggestions).toHaveBeenCalledWith(123);
+
+      for (const bad of [
+        {},
+        { url: "https://example.com", bookmarkId: 123 },
+        { url: "file:///etc/passwd" },
+        { bookmarkId: "123" },
+      ]) {
+        expect((await client.callTool({
+          name: "bookmark_suggest", arguments: bad,
+        })).isError).toBe(true);
+      }
+      expect(suggestions).toHaveBeenCalledTimes(1);
+      expect((await client.callTool({
+        name: "bookmark_filters_get", arguments: { collectionId: -99 },
+      })).isError).toBe(true);
+      expect(filters).toHaveBeenCalledTimes(1);
+    } finally {
+      await client.close();
+      await service.cleanup();
+      filters.mockRestore();
+      suggestions.mockRestore();
     }
   });
 });
