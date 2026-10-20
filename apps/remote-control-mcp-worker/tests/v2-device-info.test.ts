@@ -37,7 +37,7 @@ function harness() {
   const state = {
     storage, getWebSockets: (tag: string) => sockets.get(tag) ?? [],
   } as unknown as DurableObjectState;
-  return { activeId, otherId, rows, live, makeSocket, state };
+  return { activeId, otherId, rows, live, makeSocket, state, sockets };
 }
 
 const deviceInfo = JSON.stringify({
@@ -65,6 +65,13 @@ test("signed current epoch reports minimal metadata, not credentials or an infer
   assert.equal(legacy.capabilities, undefined);
   assert.match(legacy.display_name, new RegExp(h.otherId.slice(0, 8)));
   assert.equal(JSON.stringify(listed).includes("never-disclose"), false);
+  // New authenticated epoch must not claim previous Agent's capabilities.
+  h.rows.set("session:epoch:" + h.activeId, "epoch-new");
+  h.sockets.set("device:" + h.activeId, [h.makeSocket(h.activeId, "epoch-new")]);
+  const afterReconnect = (await listApprovedDevices(h.state)).body as Array<Record<string, any>>;
+  const refreshed = afterReconnect.find(row => row.device_id === h.activeId)!;
+  assert.equal(refreshed.status, "online");
+  assert.equal(refreshed.capabilities, undefined);
   // Cannot overwrite the same epoch's identity facts repeatedly.
   assert.equal(await handleDeviceInfoMessage(h.state, h.live as unknown as WebSocket, deviceInfo), true);
   assert.equal(h.live.closeCode, 1008);
