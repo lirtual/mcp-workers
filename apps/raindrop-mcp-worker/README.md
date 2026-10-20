@@ -132,6 +132,6 @@ This Worker was migrated and adapted from an MIT-licensed Raindrop MCP implement
 
 ### T10 release readiness
 
-See docs/T10-CONTRACT-READINESS.md for the 27-tool matrix, the legacy 17-name migration plan and the blocked cutover verdict. No merge, published-tool cutover or real API mutation is authorized.
+See docs/T10-CONTRACT-READINESS.md for the **current 26-candidate tool matrix**, the **15 retained legacy-compatible names** (41 registered names in the Draft), historical migration evidence, and the blocked production cutover verdict. The withdrawn `bookmark_suggest` candidate must not be reintroduced without separate approval. No merge, published-tool cutover, or global destructive action is authorized; limited disposable-data acceptance is separately scoped.
 
 The Draft follow-up fixes strict unknown-field rejection for collection_list and declares a validated structured output schema for bookmark_remove_duplicates. These mock/SDK contract fixes are not live Raindrop acceptance or release permission.
