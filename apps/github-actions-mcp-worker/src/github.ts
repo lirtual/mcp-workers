@@ -7,8 +7,10 @@ export interface Env {
 }
 
 export class ActionError extends Error {
-  constructor(public readonly code: string) {
+  readonly code: string;
+  constructor(code: string) {
     super(code);
+    this.code = code;
   }
 }
 
@@ -53,7 +55,11 @@ async function boundedJson(response: Response): Promise<any> {
 
 export class GitHubActionsClient {
   readonly allowlist: string[];
-  constructor(private readonly env: Env, private readonly requestFetch: typeof fetch = fetch) {
+  private readonly env: Env;
+  private readonly requestFetch: typeof fetch;
+  constructor(env: Env, requestFetch: typeof fetch = fetch) {
+    this.env = env;
+    this.requestFetch = requestFetch;
     this.allowlist = configuredRepos(env.GITHUB_REPOS);
   }
 
@@ -179,11 +185,13 @@ function runView(x: any) {
 // locator artifacts, and decryption. This bridge does not duplicate that logic.
 export class SessionDeckClient {
   private readonly baseUrl: string;
-  constructor(
-    private readonly env: Env,
-    private readonly allowlist: string[],
-    private readonly requestFetch: typeof fetch = fetch,
-  ) {
+  private readonly env: Env;
+  private readonly allowlist: string[];
+  private readonly requestFetch: typeof fetch;
+  constructor(env: Env, allowlist: string[], requestFetch: typeof fetch = fetch) {
+    this.env = env;
+    this.allowlist = allowlist;
+    this.requestFetch = requestFetch;
     const raw = env.SESSION_DECK_URL;
     if (!raw || !env.SESSION_PASSWORD) throw new ActionError('session_deck_not_configured');
     let url: URL;
