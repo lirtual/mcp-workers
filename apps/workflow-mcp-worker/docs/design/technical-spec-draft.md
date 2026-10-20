@@ -4,6 +4,7 @@
 **Status:** Proposed implementation contract for review; **not implementation authorization**  
 **Source of decisions:** Grill With Docs Q1–Q50 in [decision log](grill-with-docs.md); [domain vocabulary](../../CONTEXT.md); [ADRs](../adr/)  
 **Change authority:** Documentation-only Draft PR #135. No source code, infrastructure, credentials, Tickets, merge, or deployment authorized.
+**Adversarial review revision (2026-10-20):** H1–H8 below clarify execution safety, admission consistency and staged delivery. These are technical proposals and proof obligations, **not additional approved Q decisions**.
 
 ## How to read this specification
 
@@ -158,7 +159,7 @@ Status names are **candidate values**, not owner-approved enum strings. A Run ma
 
 **DECIDED Q47=A:** when the *application's* active/queued Run budget has been exhausted, the trigger admission fails with a distinct capacity error. No custom persistent overflow queue is built. **VERIFY:** Cloudflare Workflows has its *own* queue for instances over platform concurrency limits; the app limit must be enforced before calling `create()` and must not claim to disable Cloudflare's internal queue.
 
-**PROPOSED:** D1 admission CAS or conditional insert includes dedup key and active-count reservation. Deterministic Workflow instance ID derived from `run_id`, so retrying a lost `create()` response does not create a second logical Run. A tiny reconciliation check resolves `D1 admitted / Workflow create unknown`, without adding a second scheduler. If admission was rejected, do not silently queue the request in D1.
+**PROPOSED:** D1 admission CAS or conditional insert reserves capacity and records the idempotency key, `run_id`, deterministic Workflow instance ID and `start_state`. D1 commit and Workflow `create()` are separate transactions. Use H2's reserved/started/start_unknown reconciliation; repeat only with the SAME instance ID, query `get(id)` before declaring success, never silently queue capacity-rejected runs, and never assume a missing expired platform instance authorizes repeating external effects.
 
 ### 4.3 Step decision table — PROPOSED for final spec review
 
@@ -206,7 +207,7 @@ These are suggested detailed rows consistent with Q25/Q33/Q37/Q41/Q44; error enu
 ### 7.1 Candidate dispatch/claim sequence — PROPOSED
 
 1. Cloudflare orchestrator creates logical `attempt_id` with fixed `run_id,step_id,plan_digest,capability_id` and `dispatch_id`.
-2. Dispatcher requests registered `workflow_dispatch` to a pinned executor workflow/ref with *non-secret opaque inputs*. Mark dispatch result `accepted` or `unknown`; neither proves execution success.
+2. Dispatcher requests registered `workflow_dispatch` to a pinned executor workflow/ref with *non-secret opaque inputs*. On a response returning trustworthy run details, persist the physical GitHub Run ID/URL without searching; otherwise record `dispatch_unknown` and reconcile. Neither dispatch acceptance nor a GitHub Run ID proves execution success.
 3. Each physical GitHub job obtains GitHub OIDC and presents it to callback/claim endpoint; verify signature, issuer, audience, repository identity, selected workflow/ref and freshness.
 4. One atomic D1 `UPDATE ... WHERE owner IS NULL` or equivalent Claim grants the **one** candidate permission to do business work. A losing candidate exits without calling external business capability.
 5. Owner executes pinned capability and produces safe bounded result or R2 Artifact reference. Secrets must not be passed in GitHub dispatch inputs.
@@ -244,8 +245,8 @@ This is **illustrative**. Actual D1 semantics, authorization race handling, immu
 | --- | --- | --- |
 | `workflows` | workflow_id, active_version_id, draft_revision, lifecycle | atomic published pointer and pause/archive flag |
 | `workflow_versions` | published_version_id, workflow_id, plan_digest, compiled_plan | immutable, referenced by Runs |
-| `runs` | run_id, workflow_id, version_id, instance_id, status | immutable version reference and admission identity |
-| `step_attempts` | attempt_id, run_id, step_id, owner_candidate_id, state | one claimed executor owner per logical Attempt |
+| `runs` | run_id, workflow_id, version_id, instance_id, admission_key, start_state, status | immutable version reference, atomic admission/reservation and start-result reconciliation |
+| `step_attempts` | attempt_id, run_id, step_id, dispatch_kind, call_fingerprint, dispatch_state, owner_candidate_id?, outcome | one durable dispatch guard for effectful MCP calls; one claimed executor candidate only for heavy Actions jobs |
 | `trigger_receipts` | workflow_id, trigger_id, source, event_id | unique within retention window |
 | `operation_grants` | target identity, tool, scope fingerprint, version | deny expired/revoked/widened grants |
 | `target_credentials` | credential_id, encrypted_envelope, key_version | no plaintext, target ownership bound |
@@ -265,7 +266,7 @@ This is **illustrative**. Actual D1 semantics, authorization race handling, immu
 
 **PROPOSED manifest:** `engine_protocol_version`, `plan_format_version`, `executor_protocol_version`, required capability revisions, minimum supported plan format. Deployment checks all **nonterminal** Runs and any waiting external callbacks before promotion; if unsupported, fail the release gate. Avoid an additional CD control plane: extend the existing selected-Worker GitHub Actions release path only after explicit implementation authorization. A release or merge does not itself authorize production migrations or credential changes.
 
-## 10. Failure modes / acceptance matrix (proposal; no tests executed)
+## 10. Failure modes / acceptance matrix (original AC-01–AC-22; supplemental AC-23–AC-30 in H8; none executed)
 
 | ID | Scenario | Required pass evidence |
 | --- | --- | --- |
@@ -319,6 +320,90 @@ Do **not** interpret these as already passed. Production write-capable launch mu
 | RISK-09 | External callbacks before wait and after terminal Run | **P0 correctness** | prove fact-first + safe early delivery + re-notification/dedup behavior |
 | RISK-10 | Dynamic MCP auth grant binding across redirects/tool changes/credential rotation | **P0 security** | pin target identity and grant scope across invocation and reject drift or unresolved identity |
 | RISK-11 | Registered heavy capability vs arbitrary code execution | **P0 security** | prove only pinned approved capability/ref can run; no shell source injection or inherited multi-PAT privileges |
+
+
+## 11.1 Adversarial review hardening — proposed execution invariants
+
+**Review date: 2026-10-20.** This section supplements the owner-approved Q1–Q50 decisions; it is **PROPOSED/VERIFY**, not a new owner decision. It resolves implementation gaps that otherwise make the consolidated spec unsafe to implement as written. Existing platform components remain unchanged.
+
+### H1. Non-idempotent MCP tool invocation and Workflow replay — P0 BLOCKER
+
+Cloudflare Workflows applies documented default `step.do()` retries (`retries.limit = 5` with exponential backoff) unless configured otherwise. A durable step result prevents replay of already-*completed* steps; it does **not** establish exactly-once effects for calls that committed remotely and lost their response.
+
+**Proposed minimal rule:** reuse the logical `step_attempts` model for both effectful MCP calls and GitHub heavy jobs; only GitHub physical-job candidates require OIDC/Claim. For every potentially effectful MCP operation:
+
+1. Evaluate the pinned plan and validate target, tool, arguments, scope, active grant and required permission; classify as verified read-only, idempotent with proven end-to-end key/receipt, or effectful with unknown idempotence. Never treat an upstream MCP annotation alone as proof.
+2. Before the network call, atomically reserve one **logical dispatch** using `run_id + step_id + attempt_id + call_fingerprint`. Persist `not_sent / possibly_sent / confirmed / indeterminate` (candidate state names). This is a *dispatch guard*, not a second DAG scheduler.
+3. Explicitly configure and test step retry behavior. If a callback is replayed after `possibly_sent`, **do not reissue** an effectful call unless the specific target provides a verified idempotency or result-query contract. A crash after recording `possibly_sent` but before sending may conservatively yield `indeterminate`; honest uncertainty is safer than duplicate side effects.
+4. A definite remote receipt can transition to `confirmed`; a timeout/reset after a possibly issued request transitions to `indeterminate` with a safe reconciliation explanation. Normal read-only work may use bounded Workflows retries.
+5. Cancellation does not restore the ability to retry an uncertain write and does not retroactively undo the effect. Keep Run, Step and Attempt outcomes distinct.
+
+**Proof:** inject transport loss immediately before and after remote commit, Worker termination between dispatch reservation and send, and a Workflows replay with default retries. Assert no second non-idempotent outbound invocation for the *same logical Attempt*, truthful `indeterminate`, and no target-level exactly-once claim without the target's own transaction/idempotency evidence. Verify in the pinned SDK that configured retry suppression plus the persisted dispatch guard actually survives restart.
+
+### H2. D1 admission versus Workflow instance creation — P0 BLOCKER
+
+D1 commit and `WORKFLOW.create()` are **not one atomic transaction**. The existing deterministic ID idea must be specified as an explicit recovery protocol:
+
+1. Atomically reserve one quota slot and record a unique `run_id`, immutable `published_version_id`, admission idempotency key, a deterministic globally unique Workflow `instance_id`, and `start_state=reserved` in D1. Same admission key resolves to the same logical Run.
+2. Call the bound Workflow's `create({id: instance_id, params: {run_id, published_version_id}})`. On confirmed success, conditionally set `started`. A response timeout is `start_unknown`, **not** `started` and not definitive failure.
+3. Reconcile by `get(instance_id)` / `status()`. If the existing ID is found, finalize `started`. If lookup is inconclusive, retry boundedly. Only retry `create` with the **same ID**, and never create a second Run/slot; treat duplicate-ID rejection as a reason to query the existing instance, not as success evidence.
+4. Release the reserved slot exactly once only after a definitive failure/no-instance outcome and no outstanding creation ambiguity; otherwise preserve `start_unknown` for ingress reconciliation.
+5. Reconcile unresolved starts using a bounded ingress repair pass (for example, in the same fixed trigger tick), not a separate DAG scheduler or unlimited retry queue.
+
+**Edge:** Cloudflare instance ID uniqueness is bounded by instance retention. After platform retention, D1 must remain the admission idempotency authority for its own selected window and must not allow replay of an old side-effecting Run solely because `get()` no longer finds the instance. Actual create/lookup visibility, retention expiry and duplicate errors are **VERIFY** items.
+
+### H3. Dynamic safe MCP HTTP invocation — P0 BLOCKER
+
+Keep **Q7=B**: no static mandatory preregistration of MCP Server URLs. A public URL is not inherently safe to fetch.
+
+- Exercise the actual deployed Cloudflare Worker path for public HTTPS MCP, same-account and cross-Worker public endpoints. Cloudflare documents Worker-to-Worker access through Service Bindings or `global_fetch_strictly_public`. Bindings to known services can be an optimization, **not a required registry** for arbitrary supported targets.
+- Verify allowed scheme and redirect policy, all-hop target checks, DNS rebinding/private/loopback/metadata defenses, TLS/origin, scoped credentials and rejection of forwarding credentials across origin. Disable unreviewed redirect following. A hostname string check does **not** establish DNS pinning.
+- Use/test the current MCP client SDK rather than writing a new transport stack. Current 2025 and 2026 Streamable HTTP protocol eras have different `initialize` vs `server/discover` paths and behavior. Produce an *actual tested compatibility matrix* covering client/server handshake, transport sessions, tool discovery, errors and auth.
+- Preauthorization discovery can contact an otherwise safe MCP endpoint **only for protected discovery/negotiation**; it must never execute an unapproved external business tool. When target/tool/scope is new, transition the Run to Authorization Wait.
+- If the chosen Worker networking stack cannot enforce a required SSRF safety property, **fail closed for that dynamic target path**. Neither secretly weaken safety nor silently convert Q7 into a static whitelist.
+
+**Proof:** deployed public Worker-to-Worker and external MCP calls succeed; localhost, metadata, private targets, redirect-to-private and rebinding attempts are rejected; no credential crosses into a different target origin; tested 2025/2026 protocol endpoints negotiate correctly or fail safely.
+
+### H4. Runtime Cron without a second scheduler — P0 feasibility / P1 cost
+
+Runtime-created Cron definitions must not require a Worker redeploy per Workflow. Use **one deployed scheduled ingress** (Worker Cron or an equivalent fixed tick). On each tick, read D1 active schedule definitions, calculate intended occurrences in declared zones, atomically deduplicate/admit Runs and apply `misfire: latest`, skipped nonexistent DST time and single execution of duplicated wall time. Do **not** progress DAG Steps in that tick.
+
+The ticker's interval is a **proposed, configurable** value derived from required schedule granularity, Cloudflare quota and D1 scan cost. Do not promise precision finer than the tick/processing limits, and do not assume per-definition Cloudflare Workflow `schedules` are dynamically writable without redeployment. Measure cost on the intended plan.
+
+### H5. Heavy runner, callbacks and capacity: simplify the normal path
+
+- **GitHub dispatch:** for the actual REST API version, request returned Run details where supported. On success persist returned `workflow_run_id`/URL; do not waste cycles searching for an ID you already have. Dispatch response loss or absent usable ID remains `dispatch_unknown` and enters bounded reconciliation. Dispatch acceptance never proves business completion.
+- **Single Claim and receipt:** only an authenticated, correctly scoped OIDC physical candidate may win the existing atomic D1 Attempt Claim. One durable callback receipt is inserted **before** Workflow notification. A failed notification requires bounded replay/reconciliation of that receipt, not a new broker or another scheduler.
+- **Capacity:** when app-level Run capacity is full, return a clear retryable error (suggest HTTP 429/503 and `Retry-After` where appropriate) *without acknowledging event acceptance*. Under Q47=A no durable overflow queue exists; sources that never retry may lose those events. Do not promise lossless at-least-once ingress in that case. Cloudflare's internal instance queue is separate from the application's admission policy.
+
+### H6. Result limits and release compatibility
+
+Cloudflare currently documents a **1 MiB non-stream `step.do()` output limit** and bounded instance storage. An application-defined inline output threshold must be **below platform limits**; large files, screenshots and outputs move to R2 and return an authorized reference (Q34). No blanket upload of all JSON to R2. Retain active Run plans and essential evidence until the nonterminal Run completes (Q49), even across compatible deployments and instance-retention expiry. Blocking unsafe upgrades (Q35) must be demonstrated without inventing a general migration framework.
+
+### H7. Three implementation slices — PROPOSED sequence, not implementation permission
+
+| Slice | Include | Exit evidence | Not yet permitted from earlier slice |
+| --- | --- | --- | --- |
+| S1 — safe orchestration | Draft/Publish compiled plan, bounded DAG, manual async Run, one read-only MCP target, D1 queries, deterministic instance start | compiler replay and revision conflict, idempotent Run admission, crash-after-D1 create recovery, read-only execution | production writes, GitHub heavy side effects |
+| S2 — reliable MCP automation | authenticated Webhook, one dynamic Cron tick, target-specific encrypted credentials and approval wait, dynamic protocol interoperability, safe writes and uncertain outcomes | deployed SSRF probes, 2025/2026 interoperability, duplicate events, DST/misfire, write-after-commit lost response, revocation | arbitrary GitHub heavy execution |
+| S3 — heavy execution & production closure | registered GitHub heavy executor, separate dispatch credentials, OIDC Claim, callback inbox, R2, cancellation, release gates | duplicate physical jobs, callback losses, true cancellation, Artifact permission/retention, incompatible deploy rejected | generalized plugin marketplace, n8n UI, new queue/scheduler/vault |
+
+Q1–Q50 still define the **full v0.1 design scope**. Passing S1 does not certify production write operations or full v0.1 readiness. All three slices require explicit future implementation authorization; this PR changes documentation only.
+
+### H8. Additional mandatory acceptance tests (proposed, not executed)
+
+| ID | Adversarial failure | Required observable result |
+| --- | --- | --- |
+| AC-23 | Default Workflows step retry after committed but unanswered MCP write | no duplicate non-idempotent dispatch; truthful indeterminate/reconcilable result |
+| AC-24 | Worker crashes before/after dispatch guard and after remote commit | durable Attempt guard prevents silent duplicate outbound side effect |
+| AC-25 | D1 reservation succeeds but Workflow `create()` response is lost | one Run, one reserved slot, same instance ID lookup, no duplicate start |
+| AC-26 | Workflow instance past platform retention | D1 prevents unapproved replay or idempotency-key reuse within chosen retention window |
+| AC-27 | Actual Cloudflare Worker-to-Worker and 2025/2026 MCP endpoints | supported calls work; unsupported revisions and unsafe targets fail closed |
+| AC-28 | Webhook source does not retry when application capacity full | explicit rejection, documented delivery limitation, no false accepted receipt |
+| AC-29 | Runtime-created Cron with simultaneous ticks / DST / outage | unique intended occurrence, correct latest misfire and no per-definition deploy |
+| AC-30 | GitHub API returns Run ID, versus response lost | direct success path records ID; unknown path reconciles; Claim prevents duplicate business work |
+
+**Mandatory release condition:** S1–S3 exit evidence is reused when unchanged. P0 failures block the related execution capability; no blanket production-success claim is allowed. Future implementation may optimize the mechanisms while preserving every confirmed Q1–Q50 invariant and the proofs above.
 
 ## 12. Final design-tree disposition
 
