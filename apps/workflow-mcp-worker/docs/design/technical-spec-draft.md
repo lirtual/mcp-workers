@@ -267,7 +267,7 @@ This is **illustrative**. Actual D1 semantics, authorization race handling, immu
 
 **PROPOSED manifest:** `engine_protocol_version`, `plan_format_version`, `executor_protocol_version`, required capability revisions, minimum supported plan format. Deployment checks all **nonterminal** Runs and any waiting external callbacks before promotion; if unsupported, fail the release gate. Avoid an additional CD control plane: extend the existing selected-Worker GitHub Actions release path only after explicit implementation authorization. A release or merge does not itself authorize production migrations or credential changes.
 
-## 10. Failure modes / acceptance matrix (original AC-01–AC-22; supplemental AC-23–AC-30 in H8; none executed)
+## 10. Failure modes / acceptance matrix (full acceptance not executed; preliminary local P0 results linked above)
 
 | ID | Scenario | Required pass evidence |
 | --- | --- | --- |
@@ -391,7 +391,7 @@ Cloudflare currently documents a **1 MiB non-stream `step.do()` output limit** a
 
 Q1–Q50 still define the **full v0.1 design scope**. Passing S1 does not certify production write operations or full v0.1 readiness. All three slices require explicit future implementation authorization; this PR changes documentation only.
 
-### H8. Additional mandatory acceptance tests (proposed, not executed)
+### H8. Additional mandatory acceptance tests (proposed; some preliminary local observations, no full cloud acceptance)
 
 | ID | Adversarial failure | Required observable result |
 | --- | --- | --- |
