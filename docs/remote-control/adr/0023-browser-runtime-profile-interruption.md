@@ -12,6 +12,8 @@ The Agent will **provision a Playwright-compatible Chromium on demand** when bro
 
 **Why:** on-demand provisioning keeps regular Agent packages small while requiring honest dependency checks; single-profile exclusivity avoids file/identity collisions and reduces unnecessary multi-account complexity; retaining sessions across transient network loss supports multi-step workflows without creating accidental repeated external actions. Revocation's cloud-side authority is stronger than its best-effort effect on already-running local processes.
 
-**Unsettled:** precise idle duration, default headless/headed behavior, page-observation strategy, action confirmation rules, error and receipt contracts, cleanup and profile reset preconditions, session lock recovery, download provenance, platform acceptance and release rollout. This document creates no runtime changes, new MCP tools, new Worker, issues or tickets.
+**Follow-on decision:** [ADR-0024](./0024-browser-observation-and-confirmation.md) accepts a 30-minute idle threshold, headless-first operation with optional headed mode, semantic-first page inspection with on-demand screenshots, and explicit confirmation for each high-impact external effect.
+
+**Unsettled:** exact idle activity accounting and timer races, browser-action error and receipt contracts, consent mechanism and classification edge cases, cleanup/profile reset preconditions, session lock recovery, download provenance, platform acceptance and release rollout. This document creates no runtime changes, new MCP tools, new Worker, issues or tickets.
 
 Related: [ADR-0021](./0021-browser-automation-extension.md), [ADR-0022](./0022-playwright-managed-browser-sessions.md), [Browser Automation Design](../BROWSER-AUTOMATION-DESIGN.md), [Remote Control Context](../CONTEXT.md).
