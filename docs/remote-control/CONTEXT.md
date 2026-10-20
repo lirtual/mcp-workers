@@ -79,6 +79,22 @@ _Avoid_: Assuming that arbitrary direct remote MCP clients support static Bearer
 A static, independently generated high-entropy secret recognized by only the Remote Control MCP ingress. It grants access to curated remote operations under the Agent's OS-user permissions.
 _Avoid_: Confusing a static Bearer credential with OAuth authorization or sharing it with lower-privilege MCP Workers.
 
+**Browser Automation**:
+Device-scoped inspection and interaction with web pages and browser tabs through an authorized remote browser session; it does not imply control of the rest of the graphical desktop.
+_Avoid_: Remote desktop control, arbitrary OS mouse/keyboard control.
+
+**Automation Browser Session**:
+A browser session established for automated work, distinct from the owner's everyday interactive browser session.
+_Avoid_: Treating a newly automated session as implicit permission to inspect the owner's personal browser profile.
+
+**Personal Browser Session**:
+An existing owner-used browser session whose tabs or signed-in state may be accessed only within explicitly authorized scope.
+_Avoid_: Assuming that device pairing grants blanket access to every personal browser tab or profile.
+
+**Browser Target**:
+A specifically selected authorized device and browser session, narrowed to a tab where the operation requires one.
+_Avoid_: An implicit default device or an unspecified global browser.
+
 **Graphical Desktop Control**:
 Remote viewing or manipulation of a desktop screen, mouse or keyboard. This is excluded from the first release.
 
@@ -124,6 +140,12 @@ _Avoid_: General-purpose host process killing, unauthenticated overrides, or cla
 The controlled transfer of existing authoritative Operation Receipts to a replacement local store without discarding unresolved Operation IDs or weakening outcome reconciliation.
 _Avoid_: Treating a successful new-store startup as sufficient evidence that historical operation identities were preserved.
 
+
+## Browser automation extension — accepted first-round decisions (2026-10-20)
+
+[ADR-0021](./adr/0021-browser-automation-extension.md) records the agreed architectural boundary: browser automation is an additional **Remote Control MCP** capability, not a separate MCP Worker; an independently managed Automation Browser Session comes before access to a Personal Browser Session; control is restricted to browser interactions rather than the full graphical desktop; existing pairing is reused but an explicit Browser Target is required and personal-session/sensitive actions have separate authorization boundaries.
+
+These decisions are design-only. The [Browser Automation Design](./BROWSER-AUTOMATION-DESIGN.md) records the unresolved design tree; no browser tools, agent runtime, Windows coverage or production release are approved by this decision alone. The historical first-release exclusion of Graphical Desktop Control is unchanged.
 
 ## Settled product boundaries
 
