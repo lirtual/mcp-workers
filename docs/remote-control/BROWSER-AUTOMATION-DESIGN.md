@@ -1,6 +1,6 @@
 # Remote Control — Browser Automation Design (Grill With Docs)
 
-Status: **design interview in progress; rounds 1–6 agreed 2026-10-20**. This document records decisions, not shipped behavior, authorization to implement, a release gate or a new development Ticket. The existing v1/v2 specs remain authoritative for their implemented scope. Do not infer that browser tools, native Windows browser automation coverage, or personal-profile access exist today.
+Status: **design interview in progress; rounds 1–7 agreed 2026-10-20**. This document records decisions, not shipped behavior, authorization to implement, a release gate or a new development Ticket. The existing v1/v2 specs remain authoritative for their implemented scope. Do not infer that browser tools, native Windows browser automation coverage, or personal-profile access exist today.
 
 ## Goal
 
@@ -72,6 +72,17 @@ See [ADR-0025](./adr/0025-atomic-browser-actions-and-receipts.md). These agreeme
 
 See [ADR-0026](./adr/0026-browser-capabilities-tab-and-approval-scope.md). These decisions do not select exact tools, introduce a new confirmation system, or make browser actions available in the deployed Agent.
 
+## Accepted tool inventory, visual fallback, consent flow, and safe recovery (round 7)
+
+| Question | Decision | Consequence |
+| --- | --- | --- |
+| Q25 — Atomic inventory | **A**: compact, complete curated tools | Session start/status/close; tab list/create/close; page navigate/semantic snapshot/screenshot; interaction click/fill/select/keyboard; local file upload/download-result access. Actual names, signatures and download initiation remain unselected |
+| Q26 — Semantic fallback | **A**: bounded visual fallback from current tab | When semantic target resolution is insufficient, use a recent screenshot bound to the explicit tab/page state and intended visible region; fail and re-observe on ambiguity or staleness. Never bypass high-impact approval or introduce arbitrary desktop control |
+| Q27 — Confirmation protocol | **A**: prepare → owner confirm → execute, fail closed | Proposed high-impact action is not executable until an action-specific single-use approval is carried and validated by the execution boundary; if reliable confirmation is unavailable, refuse. The approval transport and cryptographic authority are not assumed to exist yet |
+| Q28 — Crash/lock recovery | **A**: verify process ownership and operation safety first | Recover only after safely resolving process/Profile access and relevant uncertain actions; refuse ambiguous locks, no forced lock deletion, Profile wipe, switch or action replay |
+
+See [ADR-0027](./adr/0027-browser-tools-visual-consent-and-recovery.md). These decisions are design boundaries, not a shipped tool API or a claim that today's ChatGPT client already supports independent verified confirmation.
+
 ## Invariants carried forward
 
 - Use the established authenticated device path and explicit `device_id`; never accept an arbitrary remote address or publish a CDP endpoint.
@@ -83,14 +94,14 @@ See [ADR-0026](./adr/0026-browser-capabilities-tab-and-approval-scope.md). These
 
 ## Open design-tree branches
 
-**Next-round frontier (Q25–Q28; no choices accepted yet)**
+**Next-round frontier (Q29–Q32; no choices accepted yet)**
 
-- Q25 — What exact first-release atomic tool inventory should expose the accepted complete common workflows, without redundant synonyms or a generic action gateway?
-- Q26 — What fallback should be permitted when accessibility/semantic locators cannot uniquely reach a visual-only control, without enabling arbitrary page scripts?
-- Q27 — How should the one-use owner confirmation be delivered and consumed across ChatGPT/MCP, Worker and Agent, and how should the system fail if confirmed human intent cannot be established?
-- Q28 — How should the Agent recover from a browser process crash or stale Profile lock without using an uncertain state as permission to discard receipts, switch Profile or replay actions?
+- Q29 — What is the default privacy and output-budget boundary for semantic page snapshots, screenshots, inputs and secret-bearing page data returned to ChatGPT?
+- Q30 — How should upload source paths and browser download directories be authorized and cleaned up without introducing a parallel general file manager?
+- Q31 — How should the Agent verify on-demand Chromium download provenance and compatible binaries, including offline or integrity-failure behavior?
+- Q32 — Which independent Linux, WSL2 and native Windows acceptance evidence and deployment stages must pass before enabling browser tools in production?
 
-**Downstream (not yet at the frontier; depends on Q25–Q28):** exact arguments and result schemas; tab creation/close races and re-attach behavior; screenshot/snapshot token and secret exposure limits; upload/download directory permissions and cleanup; action-specific confirmation expiry/replay proof, website-outcome reconciliation, trusted browser download/install provenance, per-platform acceptance and rollout, and explicitly authorized future personal-browser attachment.
+**Downstream (not yet at the frontier; depends on Q29–Q32):** concrete argument/result schemas and tool descriptions; page freshness and visual target proof; screenshot/token limits and sensitive field handling; high-impact approval transport/expiry/consumption; action receipt status, website-effect verification and idempotency; crash/lock ownership probes, tab lifecycle races, and future explicitly authorized personal-browser attachment. Finish by auditing for overengineering, scope inconsistencies and unresolved safety assumptions before requesting final owner approval to implement.
 
 ## Documentation and scope rules
 
