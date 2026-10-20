@@ -235,3 +235,11 @@ bash -c 'set -eu; IFS= read -rsp "Raindrop API Token: " RAINDROP_ACCESS_TOKEN </
 - 独立 Codex `exec review --commit 0d91249` 发现：收藏夹写入工具的 `unknown` 包装错误吞掉了明确的上游 `RateLimitError`（HTTP 429）及其等待提示，尤其可能将父收藏夹预检的 429 误报为写入结果未知。
 - 最小修正为将 `RateLimitError` 与 Validation/Auth/NotFound 一起直接抛出；禁止重试已提交的写入、其他未知回执行为和工具数量均不变。对应 `collection_create/update` 的 MCP 测试增加模拟限流与等待信息保留断言。
 - 此改动尚须按最新源提交跑完整 Mock/SDK、typecheck、Node24 CI；**不可凭单次局部审查宣告整个 Worker 生产验收完成**。
+
+## S1 最小真实写入验收入口（待执行，2026-10-20）
+
+- 新增单场景 `tests/spec123-disposable.live.test.ts`，**只用于显式授权的可信终端/作业**；普通 CI 无 Raindrop Token 时自动跳过，单独的 TypeScript 检查不涉及真实 API。
+- 复用现有 `RAINDROP_ACCESS_TOKEN` 和两项显式开关 `RUN_DESTRUCTIVE_LIVE_TESTS=true`、`CONFIRM_DESTRUCTIVE_LIVE_TESTS=DELETE_ONLY_TEST_BOOKMARKS`。不创建额外密钥、Worker、数据库或持久化任务。
+- 仅生成随机命名的两个私有集合、三个唯一 URL 书签与唯一标签，测试创建/更新、移动/软删、限定标签重命名合并删除、批量显式 ID 修改及错误作用域拒绝；逐 ID 使用真实 GET 独立复核聚合写入返回的 `unknown`。清理只能在再次验证原始 ID、URL、集合标题和空集合预览一致后执行，且仅永久删除此次创建的书签；从不运行全局 Trash 清空。任何不确定结果停止盲目重试，输出失败证据。
+- 当前标准 CI 只在 `main` 发布作业注入生产 Secret，**不能把 `main` 发布视为 Draft 验收**。复核曾成功使用的临时受控 Actions 方案后，当前操作接口的安全检查未批准新增引用该生产 Secret 的 Draft 作业；本轮未创建、触发或隐藏此作业，也未部署。避免换其他路径绕过该授权限制。
+- 在获许可的可信终端可以用不回显的方式显式注入 Token 后运行单个测试文件（例如终端内执行 `read -rs RAINDROP_ACCESS_TOKEN`，随后导出变量及两个显式开关）。**不要把 Token 粘贴到 ChatGPT、Issue、PR 或工作流日志中**。在实际运行结果及最终清理证据未获得前继续 **NO-GO / Draft**。
