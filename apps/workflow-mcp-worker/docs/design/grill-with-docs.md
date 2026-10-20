@@ -194,6 +194,25 @@ The [P0 local PoC evidence](p0-local-poc-evidence.md) records actual WSL2 local 
 
 [Evidence report](p0-github-oidc-claim-isolated-20261020.md): isolated **private** GitHub repo ran two actual Actions Jobs for the same Attempt. GitHub JWKS-verified OIDC identity/audience/issuer/repo/ref/workflow checks passed; wrong audiences were rejected; D1 `INSERT OR IGNORE` authorized exactly one owner; losing Job callback was forbidden; duplicated winning callback persisted one receipt. A subsequent independent recovery job triggered one real Cloudflare Workflow waiter from the previously persisted, unsent receipt and the receipt was confirmed delivered by independent Cloudflare API queries. This does **not** close real external side effects, timeout/fencing, ambiguous dispatch or forced cancellation acceptance. Test-only repo and all Cloudflare resources were deleted; **12 Workers / 4 D1 / 1 Workflow** baseline restored. Q1–Q50 unchanged.
 
+## Minimum-entity audit and Portal / GitHub Runner boundary (owner-confirmed, 2026-10-20)
+
+The owner agreed that additional entities or durable mechanisms must be justified against existing capabilities before introduction. This is an **implementation-selection constraint**, not a new Grill decision or a reopening of Q10/Q26/Q27.
+
+| Question | Finding / retained choice | Extra moving parts |
+| --- | --- | --- |
+| Why not only existing Portal? | `packages/portal-auth` presently verifies an owner Portal bearer token and Origin, not a signed GitHub workload identity. Reusing it for Runner callbacks would mean exposing broad owner authority or inventing scoped delegation. | No Portal extension; continue existing owner ingress |
+| Why GitHub OIDC? | GitHub already issues short-lived signed job identity and exposes issuer/audience, repository, workflow/ref and Run identity; verify inside the same Workflow MCP Worker. | Small verification module, **no** identity service, signing secret, token issuer, token table or long-lived Runner token |
+| Why D1 Claim? | Identity does not make a physical candidate the unique owner; reuse logical `step_attempts` atomic Claim. | No independent Claim server or lock service |
+| Why callback receipt? | Persist validated result once before a best-effort notification; reuse the existing D1 callback receipt and Cloudflare Workflows waiter. | No event bus, extra callback daemon or queue |
+| Why not reuse existing GitHub Actions MCP `GH_TOKEN` for everything? | Reuse dispatch code and patterns; Q27 protects against silently inheriting a broad multi-PAT account/repository authority. Evaluate a **narrow, proven delegation** first; otherwise justify one minimally scoped dispatch credential, **not** a second management Worker. | No new credential until a concrete scoped path is selected and approved |
+| Why no OIDC for normal MCP steps? | Owner Portal authorization and target/tool/scope grant already apply; only GitHub-hosted heavy execution introduces a new workload origin. | Zero GitHub-specific coupling in S1/S2 ordinary runs |
+
+**Security-correctness gap observed on review:** earlier P0-5 tests had *two different GitHub Run IDs*. Those tests prove one winner for that scenario but **not** that any signed Job in an approved repo can claim an arbitrary Attempt, or that GitHub Job re-runs sharing `run_id` are fenced. Final spec now explicitly requires proof that the physical candidate was actually authorized for the **specific** logical Attempt, with `run_attempt`/verified job identity where relevant. GitHub documents `workflow_ref` for ordinary workflows and `job_workflow_ref` for reusable workflows; don't impose a reusable-workflow-only claim on all Jobs.
+
+**Remaining verification, not new infrastructure:** (a) authorized repo but unrelated physical Run must be rejected; (b) same-Run re-run does not inherit or steal execution authority; (c) dispatch-with-unknown-response authorization must fail closed until correlated. Continue to reuse existing evidence for already proven JWT verification, Claim atomicity, and receipt-first recovery. No new test service, ADR, Ticket, implementation or deployment has been authorized by this review.
+
+See [technical-spec-draft.md](technical-spec-draft.md), sections 1.3 and 7.4, and [ADR-0011](../adr/0011-github-runner-claim-and-least-privilege.md).
+
 ## Working rules
 
 1. Ask the complete current frontier in a round; offer one recommended choice per question.
