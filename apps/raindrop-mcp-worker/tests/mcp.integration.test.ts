@@ -6,7 +6,8 @@ import { RaindropMCPService } from "../src/services/raindropmcp.service.js";
 config();
 
 const hasToken = Boolean(process.env.RAINDROP_ACCESS_TOKEN?.trim());
-const describeIf = hasToken ? describe : describe.skip;
+const explicitlyEnabled = process.env.RUN_LIVE_API_TESTS === "true";
+const describeIf = hasToken && explicitlyEnabled ? describe : describe.skip;
 
 const isDiagnosticsResource = (
   content: unknown,

@@ -20,6 +20,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "vitest run tests/mcp.integration.test.ts",
+    "test:read-only-live": "node -e 'if (process.env.RUN_LIVE_API_TESTS !== \"true\" || !process.env.RAINDROP_ACCESS_TOKEN?.trim()) { console.error(\"Explicit RUN_LIVE_API_TESTS=true and an injected RAINDROP_ACCESS_TOKEN are required\"); process.exit(1) }' && vitest run tests/read-only.live.test.ts",
     "generate:schema": "openapi-typescript ./raindrop-complete.yaml -o ./src/types/raindrop.schema.d.ts --tsconfig ./tsconfig.json --export-type --useUnionTypes --immutable",
     "check:schema": "pnpm run generate:schema && git diff --exit-code -- src/types/raindrop.schema.d.ts",
     "check": "pnpm run typecheck && pnpm run lint && pnpm test && pnpm run check:schema && pnpm run deploy:dry-run"

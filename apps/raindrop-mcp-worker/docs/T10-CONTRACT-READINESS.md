@@ -86,6 +86,14 @@
 - **独立 HTTP/SDK Mock 回归**：新增原集合限定、预检过期、不重试及摘要/标题差异等测试；本地 WSL Node22 共 353 passed / 3 skipped / 0 failed，源码/测试 typecheck、lint（0 errors）及 diff-check 通过。Node24 CI 和真实 API 验收仍另行核查。
 - **发布门槛不变**：虽然代码级 P0 修复完成，认证只读 smoke、可丢弃数据写入验收、27 项工具最终切换授权均仍缺失；`NO-GO` 保持有效。
 
+## P1 真实只读验收边界（2026-10-20）
+
+- **生产基线已完成（旧版插件，非 Draft）**：通过已连接的 Raindrop MCP 插件诊断版本 `2.4.5`、17 个工具；`collection_list(skipCache:true)` 返回 4 个集合；新鲜的不存在关键词搜索返回 0 条；`list_raindrops(0, perPage:1)` 及 `get_raindrop` 的单条读取响应一致。只记录结构、数量与是否成功，不保留个人书签正文或凭据。
+- **严格区分版本**：以上结果来自**已部署的旧版插件**，不能填写 27 个候选工具的 Draft「真实 API」为通过。当前 WSL Shell 无 `RAINDROP_ACCESS_TOKEN` / `MCP_ACCESS_TOKEN`，仓库亦只有 `.env.example`；现有 GitHub Actions 仅在受保护的 main 手动发布作业注入生产密钥，PR CI 无此权限。不得在 PR 作业中暴露生产密钥来凑验收结果。
+- **只读测试入口**：新增 `tests/read-only.live.test.ts`，从此 Draft 源码启动内存 MCP 客户端调用 5 个只读候选工具；只在明确设置 `RUN_LIVE_API_TESTS=true` 时运行，并要求已安全注入 `RAINDROP_ACCESS_TOKEN`。其 `fetch` 守卫拦截任何非 GET 请求，不调用创建、删除、建议 POST 或破坏性清理；无令牌时不做外网请求；测试中不打印个人收藏内容。
+- **执行命令**：在凭据经既有授权渠道以环境变量安全注入、且明确设置 `RUN_LIVE_API_TESTS=true` 的独立测试进程中运行 `pnpm --filter raindrop-mcp-worker run test:read-only-live`。命令入口自身拒绝遗漏开关或令牌，避免跳过用例时误报通过。不得在命令行明文写 token、写入 .env、提交日志或把主账户 Token 复制到 GitHub PR 上下文。只读 smoke 完成后仍需另行授权的可丢弃数据环境检验写入，全球 Trash 永久清理继续标记受限。
+- **状态**：本次仅编制和本地验证可执行的只读验收入口；Draft 源码**尚未**进行授权的真实上游请求，保持 **NO-GO**。
+
 ## 发布风险核对
 
 | 风险 | 已有控制 / 证据 | 结论 |
