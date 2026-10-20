@@ -47,6 +47,30 @@ test('real MCP protocol advertises all 11 tools and enforces the repository allo
   }
 });
 
+test('MCP lists repositories across both accounts without ever showing credentials', async () => {
+  const dual: Env = {
+    ...env, GH_TOKEN_SECONDARY: 'synthetic-other-github-token',
+    GITHUB_REPOS_SECONDARY: 'lirtual/mcp-workers',
+  };
+  const transport = new StreamableHTTPClientTransport(new URL('https://worker.example/mcp'), {
+    fetch: async (input, init) => worker.fetch(
+      input instanceof Request ? input : new Request(input, init), dual),
+    requestInit: { headers: { authorization: 'Bearer synthetic-mcp-token' } },
+  });
+  const client = new Client({ name: 'github-actions-multi-account-test', version: '0.1.0' });
+  await client.connect(transport);
+  try {
+    const result = await client.callTool({ name: 'repositories_list', arguments: {} });
+    assert.equal(result.isError, undefined);
+    const text = JSON.stringify(result);
+    assert.match(text, /autoactions\\/tsrv/);
+    assert.match(text, /lirtual\\/mcp-workers/);
+    assert.doesNotMatch(text, /synthetic-other-github-token|synthetic-github-token/);
+  } finally {
+    await client.close();
+  }
+});
+
 test('MCP endpoint fails closed for missing or wrong bearer and untrusted Origin', async () => {
   const request = (headers: Record<string, string>) => new Request('https://worker.example/mcp', {
     method: 'POST',
@@ -57,4 +81,10 @@ test('MCP endpoint fails closed for missing or wrong bearer and untrusted Origin
   assert.equal((await worker.fetch(request({ authorization: 'Bearer wrong' }), env)).status, 401);
   assert.equal((await worker.fetch(request({ authorization: 'Bearer synthetic-mcp-token', origin: 'https://not-allowed.example' }), env)).status, 403);
   assert.equal((await worker.fetch(request({ authorization: 'Bearer synthetic-mcp-token' }), { ...env, GH_TOKEN: '' })).status, 503);
+  assert.equal((await worker.fetch(request({ authorization: 'Bearer synthetic-mcp-token' }), {
+    ...env, GITHUB_REPOS_SECONDARY: 'lirtual/mcp-workers',
+  })).status, 503);
+  assert.equal((await worker.fetch(request({ authorization: 'Bearer synthetic-mcp-token' }), {
+    ...env, GH_TOKEN_SECONDARY: 'secondary-secret',
+  })).status, 503);
 });
