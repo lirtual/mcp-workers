@@ -12,8 +12,8 @@ export class ActionError extends Error {
   }
 }
 
-const REPOSITORY = /^[A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+$/;
-const WORKFLOW = /^(?:[1-9][0-9]*|[A-Za-z0-9_.-]+\\.ya?ml)$/;
+const REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const WORKFLOW = /^(?:[1-9][0-9]*|[A-Za-z0-9_.-]+\.ya?ml)$/;
 const MAX_RESPONSE_BYTES = 512 * 1024;
 // Bound discovery rather than exhaust a large account's entire repository list.
 // Failing closed is safer than treating truncated discovery as comprehensive.
