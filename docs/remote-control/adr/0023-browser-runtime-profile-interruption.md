@@ -14,6 +14,8 @@ The Agent will **provision a Playwright-compatible Chromium on demand** when bro
 
 **Follow-on decision:** [ADR-0024](./0024-browser-observation-and-confirmation.md) accepts a 30-minute idle threshold, headless-first operation with optional headed mode, semantic-first page inspection with on-demand screenshots, and explicit confirmation for each high-impact external effect.
 
-**Unsettled:** exact idle activity accounting and timer races, browser-action error and receipt contracts, consent mechanism and classification edge cases, cleanup/profile reset preconditions, session lock recovery, download provenance, platform acceptance and release rollout. This document creates no runtime changes, new MCP tools, new Worker, issues or tickets.
+**Follow-on decision (round 8):** [ADR-0028](./0028-browser-data-files-provenance-platform-acceptance.md) requires trusted, compatible and verifiably sourced on-demand Chromium and separate real Linux/WSL2/native Windows acceptance, without choosing a distribution-verification mechanism or deployment pipeline.
+
+**Unsettled:** exact idle activity accounting and timer races, browser-action error and receipt contracts, consent mechanism and classification edge cases, cleanup/profile reset implementation, session lock checks, browser artifact integrity metadata, per-platform acceptance evidence format and release rollout. This document creates no runtime changes, new MCP tools, new Worker, issues or tickets.
 
 Related: [ADR-0021](./0021-browser-automation-extension.md), [ADR-0022](./0022-playwright-managed-browser-sessions.md), [Browser Automation Design](../BROWSER-AUTOMATION-DESIGN.md), [Remote Control Context](../CONTEXT.md).
