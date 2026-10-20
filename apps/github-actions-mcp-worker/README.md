@@ -1,67 +1,57 @@
 # GitHub Actions MCP Worker
 
-A separate Cloudflare Streamable HTTP MCP app to control GitHub Actions in explicitly approved repositories. It also supports an optional bridge to the existing Session Deck control plane for tsrv, tsvc and later session projects.
-
-## Source of truth
-
-GitHub owns workflows, run state, jobs, status and artifacts. Session Deck owns exclusive session startup, target discovery, input validation, readiness, Locator Artifacts and decryption of Sensitive Facts. This worker reuses those APIs rather than duplicating their application logic.
+A standalone Cloudflare Streamable HTTP MCP server that uses **only the GitHub REST API** to manage GitHub Actions. Repositories such as `autoactions/tsrv` and `autoactions/tsvc` are ordinary workflow repositories; no dependency on Session Deck, runner agent, session service, D1, R2 or Durable Objects exists.
 
 ## Configuration
 
 | Name | Type | Usage |
 | --- | --- | --- |
-| MCP_ACCESS_TOKEN | Required runtime Secret | Reuse the shared single-user MCP Portal bearer token |
-| GITHUB_TOKEN | Required runtime Secret | Token for GitHub API (permitted repositories only) |
-| GITHUB_REPOS | Wrangler variable | Comma-separated exact repository allowlist |
-| SESSION_DECK_URL | Optional Wrangler variable | URL such as https://sd.lirtual.dpdns.org |
-| SESSION_PASSWORD | Optional runtime Secret | Existing Session Deck password for authenticated API calls |
+| `MCP_ACCESS_TOKEN` | Required runtime Secret | Reuse existing single-user MCP Portal Bearer token |
+| `GITHUB_TOKEN` | Required runtime Secret | GitHub fine-grained PAT with Actions Read & Write in permitted repositories; `repository_dispatch` also requires Contents Write |
+| `GITHUB_REPOS` | Wrangler variable | Comma-separated repository allowlist |
 
-Default allowlist in wrangler.jsonc is autoactions/tsrv,autoactions/tsvc. GitHub fine-grained token or GitHub App installation token needs Actions Read & Write on those repos. The repository_dispatch endpoint additionally needs Contents Write permission. No credentials are checked into source control.
-
-Missing Session Deck configuration disables only Session Deck tools; GitHub Actions operations remain functional. Do not add a user-provided target URL or bypass the allowlist.
+The default allowlist is `autoactions/tsrv,autoactions/tsvc`. Add another `owner/repo` to this single variable when needed. Do not check tokens into source control. A GitHub App installation token is short-lived; the first release uses a PAT, avoiding token-generation machinery.
 
 ## Tools
 
 | Tool | Purpose |
 | --- | --- |
-| repositories_list | Show allowed repos |
-| workflows_list | List workflow files and states |
-| runs_list | Recent runs, optionally filtered |
-| run_get | Run state and URL |
-| run_jobs_list | Job and step status, not raw logs |
-| run_artifacts_list | Run artifact metadata |
-| workflow_dispatch | Trigger a workflow on an explicit ref |
-| repository_dispatch | Emit a custom event on default branch |
-| run_cancel | Cancel a specified run after confirm=true |
-| run_rerun | Rerun all or failed jobs |
-| session_targets_list | Session Deck targets and masked locators |
-| session_target_get | Session state, optionally reveal sensitive facts |
-| session_target_start | Start selected Session Deck target |
-| session_target_stop | Stop selected Session Deck target after confirm=true |
+| `repositories_list` | Show allowed repositories |
+| `workflows_list` | List GitHub Actions workflows |
+| `runs_list` | List recent runs with optional workflow/status filter |
+| `run_get` | Get one run's status and URL |
+| `run_jobs_list` | Get job and step outcomes (not logs) |
+| `run_artifacts_list` | List run artifact metadata |
+| `workflow_dispatch` | Trigger a workflow on an explicit branch or tag |
+| `repository_dispatch` | Emit a custom repository event |
+| `run_cancel` | Cancel one run with `confirm: true` |
+| `run_rerun` | Rerun all jobs or failed jobs |
 
-Workflow dispatch examples:
+Examples:
 
-- Repo: autoactions/tsrv; workflow: linux.yml; ref: main; inputs: {"access_profile":"mini","session_profile":"developer"}.
-- Repo: autoactions/tsrv; workflow: windows.yml; ref: main; inputs: {"session_profile":"core","enable_wsl":"false"}.
-- Repo: autoactions/tsvc; workflow: tsvc.yml; ref: main; inputs: {"service":"code-server"}.
+- `workflow_dispatch(repo="autoactions/tsrv", workflow="linux.yml", ref="main", inputs={"access_profile":"mini","session_profile":"developer"})`
+- `workflow_dispatch(repo="autoactions/tsrv", workflow="windows.yml", ref="main", inputs={"session_profile":"core","enable_wsl":"false"})`
+- `workflow_dispatch(repo="autoactions/tsvc", workflow="tsvc.yml", ref="main", inputs={"service":"code-server"})`
 
-For temporary sessions, prefer session_targets_list followed by session_target_start/stop; only Session Deck handles exclusive target admission and session readiness. An accepted GitHub dispatch does not prove that the runner is ready.
+`workflow_dispatch` merely requests execution; query `runs_list` and `run_get` for actual run state, then use `run_cancel` if necessary. The MCP does not claim session readiness, exclusivity, or a working SSH/HTTP endpoint. It deliberately does **not** replicate Session Deck's session catalog, readiness observer, locator parsing or decryption features. Artifact names, IDs and sizes can be queried, but artifact content and raw runner logs are outside this MVP.
 
-## Development
+## Local checks
 
-At monorepo root, install frozen workspace dependencies and run the app checks:
+At monorepo root:
 
-    pnpm install --frozen-lockfile
-    pnpm --filter github-actions-mcp-worker check
+```bash
+pnpm install --frozen-lockfile
+pnpm --filter github-actions-mcp-worker check
+```
 
-For local testing:
+`check` covers typecheck, Node/MCP protocol tests and Cloudflare bundling dry-run. It is safe and does not invoke GitHub workflow mutations.
 
-    pnpm --filter github-actions-mcp-worker dev
+```bash
+pnpm --filter github-actions-mcp-worker dev
+```
 
-The app uses only a stateless /mcp endpoint and a credential-free /health endpoint. Tool output is bounded; arbitrary GitHub logs and artifact ZIP payloads are intentionally not exposed. The bearer gate applies to all /mcp methods. Any supplied Origin must be allowlisted by the shared ingress package (current allowlist is empty, matching the other private Workers).
+All `/mcp` requests require the shared Bearer token; `/health` returns only basic service liveness. Github credentials are never returned through MCP results.
 
-## Deployment boundary
+## Release boundary
 
-This PR adds CI checks only. It does not add this app to the existing GitHub Actions production deployment selection, does not create production secrets or Portal connections, and does not publish a Cloudflare Worker.
-
-After a separate deployment change and runtime configuration, the expected endpoint would be https://github-actions-mcp-worker.aiyaya.workers.dev/mcp. Do not treat it as live before deployment and authenticated testing.
+This draft PR is **source-only**. It registers application CI checks but intentionally leaves this app out of the existing production Worker release choices. No Cloudflare Worker, Secrets, Portal plugin, or GitHub Actions run is provisioned by merging this source alone. Deployment is a separate reviewed action.
