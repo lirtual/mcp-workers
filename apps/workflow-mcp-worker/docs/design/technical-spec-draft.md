@@ -5,6 +5,7 @@
 **Source of decisions:** Grill With Docs Q1–Q50 in [decision log](grill-with-docs.md); [domain vocabulary](../../CONTEXT.md); [ADRs](../adr/)  
 **Change authority:** Documentation-only Draft PR #135. No source code, infrastructure, credentials, Tickets, merge, or deployment authorized.
 **Adversarial review revision (2026-10-20):** H1–H8 below clarify execution safety, admission consistency and staged delivery. These are technical proposals and proof obligations, **not additional approved Q decisions**.
+**P0 feasibility evidence (local, not cloud acceptance):** [Isolated P0-1/P0-2 WSL/Miniflare tests](p0-local-poc-evidence.md) reproduced duplicate remote effects without a dispatch guard, prevented the second send with a D1 guard, and reconciled simulated Workflow-create acknowledgement loss. True cloud interruptions, real network loss, and production guarantees remain **unverified**.
 
 ## How to read this specification
 
