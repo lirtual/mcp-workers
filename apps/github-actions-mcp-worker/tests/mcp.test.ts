@@ -10,7 +10,7 @@ const env: Env = {
   GITHUB_REPOS: 'autoactions/tsrv,autoactions/tsvc',
 };
 
-test('real MCP protocol advertises all 10 tools and enforces the repository allowlist', async () => {
+test('real MCP protocol advertises all 11 tools and enforces the repository allowlist', async () => {
   const transport = new StreamableHTTPClientTransport(new URL('https://worker.example/mcp'), {
     fetch: async (input, init) => {
       const request = input instanceof Request ? input : new Request(input, init);
@@ -23,12 +23,19 @@ test('real MCP protocol advertises all 10 tools and enforces the repository allo
   try {
     const { tools } = await client.listTools();
     const names = tools.map((x) => x.name);
-    assert.equal(names.length, 10);
+    assert.equal(names.length, 11);
     for (const expected of [
       'repositories_list', 'workflows_list', 'runs_list', 'run_get',
       'run_jobs_list', 'run_artifacts_list', 'workflow_dispatch',
-      'repository_dispatch', 'run_cancel', 'run_rerun',
+      'repository_dispatch', 'run_cancel', 'run_force_cancel', 'run_rerun',
     ]) assert.ok(names.includes(expected), expected);
+    const force = tools.find((tool) => tool.name === 'run_force_cancel');
+    assert.ok(force, 'force cancellation must be exposed through MCP');
+    assert.equal(force.inputSchema.required?.includes('confirm'), true);
+    const refused = await client.callTool({
+      name: 'run_force_cancel', arguments: { repo: 'autoactions/tsrv', run_id: 2, confirm: false },
+    });
+    assert.equal(refused.isError, true);
     const result = await client.callTool({ name: 'repositories_list', arguments: {} });
     assert.match(JSON.stringify(result), /autoactions\/tsrv/);
     assert.doesNotMatch(JSON.stringify(result), /synthetic-github-token|synthetic-mcp-token/);

@@ -161,9 +161,18 @@ export class GitHubActionsClient {
     });
   }
 
-  cancelRun(repo: string, runId: number) {
+  async cancelRun(repo: string, runId: number) {
     assertRunId(runId);
-    return this.api(repo, 'actions/runs/' + runId + '/cancel', { method: 'POST' });
+    await this.api(repo, 'actions/runs/' + runId + '/cancel', { method: 'POST' });
+    // HTTP 202 acknowledges the request; it does not prove the job has stopped.
+    return { accepted: true, cancellation: 'requested', completion_confirmed: false, run_id: runId };
+  }
+
+  async forceCancelRun(repo: string, runId: number) {
+    assertRunId(runId);
+    await this.api(repo, 'actions/runs/' + runId + '/force-cancel', { method: 'POST' });
+    // Force-cancel can bypass cleanup conditions; verify final status using getRun.
+    return { accepted: true, cancellation: 'force_requested', completion_confirmed: false, run_id: runId };
   }
 
   rerunRun(repo: string, runId: number, failedOnly: boolean) {
