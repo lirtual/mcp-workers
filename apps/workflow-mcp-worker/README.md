@@ -107,7 +107,11 @@ observed **vendor runtime signature**, not a formally documented stable type.
 If it changes, recovery fails closed to `start_unknown`, preserves the logical
 Run and application capacity; it will not blindly dispatch. Real network
 partitions and incompatible-engine-version migrations have not been simulated.
-Two independent code reviewers remain outstanding. The current tests include **16
+Two independent code reviewers remain outstanding. A final single-context
+Standards/Spec audit also identified locale-dependent topological sorting of
+independent Step IDs. Compiler sort now uses the same fixed character order as
+canonical JSON; a red-to-green test checks mixed-case IDs and equal digests when
+input Step order is reversed. The current tests include **17
 S1 unit/contract tests** and the existing 36-assertion owner-facing local E2E checks.
 
 **Final status semantics audit:** per Cloudflare's documented native states,

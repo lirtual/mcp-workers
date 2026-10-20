@@ -36,6 +36,17 @@ steps:
   assert.equal(evaluateExpression(json.plan.steps[1].if, {inputs:{}, steps:{read:{status:'succeeded'}}}), true);
 });
 
+test('independent DAG Step order is canonical and locale-independent', async () => {
+  const definition={version:1,name:'Ordering',steps:[
+    {id:'a',uses:'result.emit',with:{data:'a'}},
+    {id:'Z',uses:'result.emit',with:{data:'Z'}}
+  ]};
+  const compiled=await compilePlan(definition);
+  assert.deepEqual(compiled.plan.steps.map(s=>s.id),['Z','a']);
+  const reversed=await compilePlan({...definition,steps:[...definition.steps].reverse()});
+  assert.equal(compiled.digest,reversed.digest);
+});
+
 test('S1 validation refuses arbitrary code, dynamic networks, missing refs and cycles', async () => {
   for (const definition of [
     {...one, steps:[{id:'x',uses:'shell.run',with:{command:'rm -rf /'}}]},

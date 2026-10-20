@@ -129,7 +129,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
   }
   const sorted:Step[]=[], pending=new Map(steps.map(s=>[s.id,s]));
   while(pending.size){
-    const ready=[...pending.values()].filter(s=>s.needs.every(n=>sorted.some(t=>t.id===n))).sort((a,b)=>a.id.localeCompare(b.id));
+    const ready=[...pending.values()].filter(s=>s.needs.every(n=>sorted.some(t=>t.id===n))).sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0);
     if(!ready.length)throw new PlanError('cyclic_dependencies');
     if(ready.length>8)throw new PlanError('excessive_parallelism');
     for(const s of ready){sorted.push(s);pending.delete(s.id);}
