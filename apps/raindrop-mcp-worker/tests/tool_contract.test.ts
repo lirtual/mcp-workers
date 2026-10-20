@@ -4,6 +4,7 @@ import { RaindropMCPService } from "../src/services/raindropmcp.service.js";
 
 const EXPECTED_TOOL_NAMES = [
   "bookmark_exists",
+  "bookmark_get",
   "bookmark_manage",
   "bookmark_search",
   "bulk_edit_raindrops",
@@ -24,7 +25,7 @@ const EXPECTED_TOOL_NAMES = [
 ].sort();
 
 describe("Raindrop MCP capability contract", () => {
-  it("retains the 17 legacy tools and adds one independently verified read-only tool", async () => {
+  it("retains the 17 legacy tools while introducing two strict read-only tools", async () => {
     const service = new RaindropMCPService({ accessToken: "test-token" });
 
     try {
@@ -32,7 +33,7 @@ describe("Raindrop MCP capability contract", () => {
       const actual = tools.map((tool) => tool.id).sort();
 
       expect(actual).toEqual(EXPECTED_TOOL_NAMES);
-      expect(actual).toHaveLength(18);
+      expect(actual).toHaveLength(19);
       expect(actual).toContain("diagnostics");
     } finally {
       await service.cleanup();
@@ -234,6 +235,53 @@ describe("bookmark_exists over MCP tools/list and tools/call", () => {
       await client.close();
       await service.cleanup();
       exists.mockRestore();
+    }
+  });
+});
+
+describe("bookmark_get over MCP tools/list and tools/call", () => {
+  it("requires an integer ID and returns available full bookmark metadata", async () => {
+    const service = new RaindropMCPService({ accessToken: "test-token" });
+    const get = vi.spyOn(service.raindropService, "getBookmark")
+      .mockResolvedValue({
+        _id: 123, title: "Example", link: "https://example.com/a",
+        tags: ["test"], important: false, excerpt: "Excerpt", note: "Note",
+        collection: { $id: 456 },
+        highlights: [{ _id: "highlight-string-id", text: "Quote", note: "My note" }],
+      } as Awaited<ReturnType<typeof service.raindropService.getBookmark>>);
+    const client = new Client({ name: "bookmark-get-contract", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    try {
+      await Promise.all([
+        service.getServer().connect(serverTransport),
+        client.connect(clientTransport),
+      ]);
+      const result = await client.callTool({
+        name: "bookmark_get", arguments: { id: 123 },
+      });
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toEqual({
+        bookmark: {
+          id: 123, title: "Example", url: "https://example.com/a",
+          tags: ["test"], important: false, excerpt: "Excerpt", note: "Note",
+          collectionId: 456,
+          highlights: [{ id: "highlight-string-id", text: "Quote", note: "My note" }],
+        },
+      });
+      expect(get).toHaveBeenCalledWith(123, undefined);
+
+      for (const badId of [0, -1, 1.5, "123abc"]) {
+        const invalid = await client.callTool({
+          name: "bookmark_get", arguments: { id: badId },
+        });
+        expect(invalid.isError).toBe(true);
+      }
+      expect(get).toHaveBeenCalledTimes(1);
+    } finally {
+      await client.close();
+      await service.cleanup();
+      get.mockRestore();
     }
   });
 });
