@@ -14,4 +14,4 @@ Workflow MCP allows its authenticated owner to create, edit, and publish declara
 
 ## Consequences
 
-The historical 2026-09-18 v0.1 specification excluded runtime workflow authoring and editing. That exclusion is superseded by Q5=B. Draft vs active states, definition versioning and snapshots, publication validation, destructive changes, authorization details, and behavior of already-running workflows are **not yet decided**; this ADR must not be read as a choice for immediate activation, a particular database schema, or a specific set of MCP tool names.
+The historical 2026-09-18 v0.1 specification excluded runtime workflow authoring and editing. That exclusion is superseded by Q5=B. Round 3 **Q11=A, Q12=A, Q13=A** (ADR-0005) subsequently established draft-first publication, version-pinned Runs and D1 definition/version metadata. The exact validation contract, publishing transaction, deletion/disable semantics, migration support, and MCP tool names remain **unsettled**. This ADR must not be read as allowing immediate activation of every edit.
