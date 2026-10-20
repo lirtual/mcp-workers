@@ -45,7 +45,9 @@ export function limitResult<T>(value:T):T {if(new TextEncoder().encode(JSON.stri
 export function applyStatus(native:string, outcome:string):string {
   if(['succeeded','failed','indeterminate','cancelled'].includes(outcome))return outcome;
   if(native==='errored')return 'failed';
-  if(native==='complete')return 'indeterminate';
+  // Workflows may report platform completion before D1's business outcome is
+  // visible to this request. Do not prematurely freeze a still-settling Run.
+  if(native==='complete')return outcome;
   return outcome;
 }
 type WorkflowRow={id:string;name:string;draft:string;draft_revision:number;active_version_id:string|null;state:string};

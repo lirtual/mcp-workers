@@ -69,8 +69,17 @@ try{
  try{
     // This is intentionally the FIRST access to the stale unknown Run;
     // a new admission must reconcile it instead of permanently rejecting quota.
-    const replacement=await tool('workflow_run',{workflow_id:wf.workflow_id,inputs:{subject:'fresh allowed'},idempotency_key:'fresh-'+staleId});
+    const requests=[
+      tool('workflow_run',{workflow_id:wf.workflow_id,inputs:{subject:'fresh allowed'},idempotency_key:'fresh-'+staleId}),
+      tool('workflow_run',{workflow_id:wf.workflow_id,inputs:{subject:'fresh allowed'},idempotency_key:'fresh-'+staleId}),
+      tool('workflow_status',{run_id:staleId}),
+      tool('workflow_run',{workflow_id:wf.workflow_id,inputs:{},idempotency_key:staleKey})
+    ];
+    const [replacement,duplicateFresh,concurrentStatus,concurrentOld]=await Promise.all(requests);
     assert.ok(replacement.run_id && replacement.run_id!==staleId,'old unknown no longer holds capacity forever');
+    assert.equal(duplicateFresh.run_id,replacement.run_id,'concurrent admissions with same key return one logical Run');
+    assert.equal(concurrentOld.run_id,staleId,'concurrent old-key replay cannot create a replacement Run');
+    assert.ok(['start_unknown','indeterminate'].includes(concurrentStatus.status),'concurrent recovery remains truthful');
     const staleStatus=await tool('workflow_status',{run_id:staleId});
     assert.equal(staleStatus.status,'indeterminate','stale unresolved Run must be reported indeterminate');
     const staleResult=await tool('workflow_result',{run_id:staleId});

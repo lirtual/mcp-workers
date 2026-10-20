@@ -72,6 +72,25 @@ subsequently succeeded with its original Published Version and expected output.
 These are actual edge tests, not the local Wrangler simulator. The tests did not
 exercise real network partitioning or all cross-engine incompatible migrations.
 
+**Follow-up isolated Cloudflare edge evidence (2026-10-20, commit 4fa3849 and
+isolated status-projection fix):** 36/36 public MCP end-to-end assertions passed.
+Remote D1 fault injection also passed for an 11-minute-old `start_unknown` Run,
+restored admission capacity, retained original idempotency identity, and
+concurrent same-key new Run creation / old-Run status queries (no duplicate Run).
+The edge test exposed a real Cloudflare/D1 visibility race: the Workflow native
+status could be `complete` before the business outcome write became visible in D1.
+Previously `workflow_status` prematurely returned `indeterminate`, even though
+the Step's durable final state soon became `failed`. A failing contract test and
+edge retry confirmed the fix: native `complete` alone does not establish the
+business outcome; queued/running stays nonterminal while D1 settles. This new
+fix has been proven against actual Cloudflare edge, not just local Wrangler.
+
+**Remaining risk:** Cloudflare Workflow `get(id)` errors can mean either absent
+instance or transient lookup failure; S1's bounded uncertainty handling is
+conservative about replay but does not yet prove network-partition classification
+or a long-stuck native-complete/D1-nonterminal repair policy. Treat that as
+additional acceptance/review work before claiming universal recovery guarantees.
+
 The temporary Cloudflare D1, Workflow, test Worker and fixture Worker were all
 deleted afterward. The public test token and untracked deployment configuration
 were removed locally; no production deployment or secret was modified. The optional

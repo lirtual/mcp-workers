@@ -5,7 +5,8 @@ import { applyStatus, StateError, limitResult, cleanError } from '../src/store.t
 test('client-facing Run state distinguishes platform complete from business failure/uncertainty', () => {
   assert.equal(applyStatus('complete', 'indeterminate'), 'indeterminate');
   assert.equal(applyStatus('complete', 'failed'), 'failed');
-  assert.equal(applyStatus('complete', 'queued'), 'indeterminate');
+  assert.equal(applyStatus('complete', 'queued'), 'queued');
+  assert.equal(applyStatus('complete', 'running'), 'running');
   assert.equal(applyStatus('complete', 'succeeded'), 'succeeded');
   assert.equal(applyStatus('running', 'running'), 'running');
   assert.equal(applyStatus('errored', 'running'), 'failed');
