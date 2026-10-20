@@ -29,6 +29,17 @@ export function collectBootstrapSecrets(worker, env) {
   if (worker === "ssh-mcp-worker" && payload.MCP_BROKER_TOKEN.length < 32) {
     throw new Error("SSH Broker token must be at least 32 characters");
   }
+  if (worker === "github-actions-mcp-worker") {
+    const secondary = env.GITHUB_REPOS_SECONDARY?.trim();
+    if (secondary) {
+      const token = env.GH_TOKEN_SECONDARY;
+      if (typeof token !== "string" || !token.trim()) {
+        throw new Error("Secondary GitHub repositories require GH_TOKEN_SECONDARY");
+      }
+      payload.GH_TOKEN_SECONDARY = token;
+    }
+    // Never ship an unused secondary token or fall back to the primary PAT.
+  }
   return payload;
 }
 
