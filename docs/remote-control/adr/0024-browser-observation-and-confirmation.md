@@ -16,6 +16,8 @@ Status: **accepted design choices (Grill With Docs round 4, 2026-10-20); documen
 
 **Follow-on decision (round 6):** [ADR-0026](./0026-browser-capabilities-tab-and-approval-scope.md) fixes one-use confirmation scoped to the intended device, session, tab, action and material target; changed targets require a new approval. Safe-state Profile clearing and stable tab identity are also accepted.
 
-**Unsettled:** concrete tool/element schemas; screenshot/page-data privacy bounds; local-path authorization and transfer cleanup; receipt details, confirmation delivery/consumption and ambiguous website outcomes; browser download trust, profile lock recovery and platform rollout acceptance. No feature code, new issues/tickets, CI, configuration or production deployment is authorized by this document.
+**Follow-on decision (round 7):** [ADR-0027](./0027-browser-tools-visual-consent-and-recovery.md) confirms semantic-first inspection with constrained current-tab screenshot fallback, and a prepare → owner confirm → execute path that refuses high-impact execution if the specific authorization cannot be reliably validated.
+
+**Unsettled:** concrete tool/element schemas; screenshot/page-data privacy bounds and freshness proofs; local-path authorization and transfer cleanup; receipt details, approval transport/consumption and ambiguous website outcomes; browser download trust, lock-ownership recovery implementation and platform rollout acceptance. No feature code, new issues/tickets, CI, configuration or production deployment is authorized by this document.
 
 Related: [ADR-0021](./0021-browser-automation-extension.md), [ADR-0022](./0022-playwright-managed-browser-sessions.md), [ADR-0023](./0023-browser-runtime-profile-interruption.md), [Browser Automation Design](../BROWSER-AUTOMATION-DESIGN.md).
