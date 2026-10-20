@@ -15,4 +15,4 @@ Workflow MCP uses **Cloudflare Workflows** for durable workflow progression and 
 
 ## Consequences
 
-This ADR does not select any heavy-task executor, finalize D1 schemas, choose DAG syntax, define parallelism limits, or settle event admission/misfire/cancellation/recovery policies. Those are later dependent decisions. Round 2 **Q10=A** independently establishes a single-owner product using the existing Portal authentication boundary without multi-tenant/RBAC infrastructure; it does not settle the permissions of individual external operations.
+Round 3 **Q18=A** has since selected GitHub Actions for registered heavy capabilities (ADR-0007). This ADR still does not finalize the D1 runtime schema, DAG syntax, parallelism limits, event admission/misfire/cancellation/recovery policies, or executor identity/callback protocol; those are later decisions. Round 2 **Q10=A** independently establishes a single-owner product using the existing Portal authentication boundary without multi-tenant/RBAC infrastructure; it does not settle the permissions of individual external operations.
