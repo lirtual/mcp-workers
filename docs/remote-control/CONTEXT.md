@@ -159,6 +159,14 @@ _Avoid_: Treating a successful click, a timeout or an unverified page change as 
 The distinction between browser actions allowed for the selected device/platform now and actions disabled pending trustworthy owner authorization or acceptance evidence.
 _Avoid_: Inferring that a tool's planned interface makes all its potentially high-impact actions safe to execute.
 
+**Conservatively Classified Browser Action**:
+A proposed browser operation known to meet the limited low-impact execution boundary without relying on untrusted webpage claims; uncertain consequential effects do not qualify.
+_Avoid_: Declaring an arbitrary click, fill, key press, URL or model-assessed button harmless solely because its visible label appears innocuous.
+
+**Verified Browser Approval**:
+An owner confirmation whose applicability to the exact one-use consequential operation is reliably established at the Agent execution boundary through the supported client and MCP path.
+_Avoid_: Equating a chat response or possession of the MCP credential alone with end-to-end verified owner authorization.
+
 **Browser Recovery Conflict**:
 A state in which the browser's ownership, retained Profile availability or effectful operation outcome is insufficiently known to resume safely.
 _Avoid_: Treating an uncertain lock, crash or lost response as evidence that restarting or repeating work is safe.
@@ -166,6 +174,10 @@ _Avoid_: Treating an uncertain lock, crash or lost response as evidence that res
 **Platform Browser Acceptance**:
 Evidence that a named supported operating-system/runtime target actually satisfies the browser capability's agreed behavior and safety boundaries.
 _Avoid_: Treating Linux acceptance as proof of native Windows readiness, or repeating unchanged evidence without a material reason.
+
+**Browser Platform Release Gate**:
+The readiness decision for one named platform based on applicable real browser behavior, authority-denial, interruption/recovery and upgrade/rollback acceptance evidence.
+_Avoid_: Treating a design agreement as deployment authorization, or making an already-tested target repeat unrelated unchanged evidence because a different platform is not ready.
 
 **Graphical Desktop Control**:
 Remote viewing or manipulation of a desktop screen, mouse or keyboard. This is excluded from the first release.
@@ -213,11 +225,17 @@ The controlled transfer of existing authoritative Operation Receipts to a replac
 _Avoid_: Treating a successful new-store startup as sufficient evidence that historical operation identities were preserved.
 
 
+## Conservative effects, verified approval and platform release — accepted tenth round (2026-10-20)
+
+[ADR-0030](./adr/0030-browser-conservative-gating-consent-evidence-acceptance.md) confirms four design directions: only Conservatively Classified Browser Actions can be enabled without consequential-action approval, and unknown impact fails closed; a Verified Browser Approval for a one-use high-impact action must be demonstrated through a real ChatGPT/MCP/Worker/Agent end-to-end acceptance path before enabling that capability; browser effects reuse existing Agent-local Operation IDs and Receipts, preserving Unknown Outcome without blind replay or a second website ledger; and each platform's Browser Platform Release Gate depends on relevant real-device launch, interaction, file, recovery, authorization and upgrade/rollback evidence, reusing unchanged tests where valid.
+
+The exact safe low-impact subset, supported human-confirmation evidence channel, typed receipt states and platform cases remain unsettled. These accepted designs are **not** claims that proof, implementation, or rollout exists.
+
 ## Browser results, outcome evidence, retention and gating — accepted ninth round (2026-10-20)
 
 [ADR-0029](./adr/0029-browser-results-outcomes-downloads-gated-release.md) records four decisions: use a small structured Browser Tool Result identifying the target, status/error, necessary bounded payload, truncation, and an Operation ID for potentially effectful calls; distinguish an Agent-local Browser Action Receipt from independent, read-only Website Effect Evidence without blind replay or website-level exactly-once promises; apply seven-day default Managed Download Retention only to unreferenced files in the dedicated directory; and allow an independently accepted low-impact Browser Capability Gate while any high-impact effect without reliably validated one-use owner approval remains denied.
 
-Precise result schemas, website-effect observations, managed-download reference tracking and criteria for safely classifying page effects remain unsettled. A generic webpage click may itself be consequential despite innocent labels. These are documented decisions, not implemented tools or rollout approval.
+ADR-0030 now accepts conservative classification, genuine end-to-end owner-approval acceptance, reuse of existing Agent receipt states, and lean independent platform checks. The precise safe subset, result/receipt schemas, verified approval transport, website-effect observations, managed-download reference tracking and rollout evidence remain unsettled. A generic webpage click may be consequential despite innocent labels. These are design decisions only.
 
 ## Browser privacy, file authority, trust and platforms — accepted eighth round (2026-10-20)
 
