@@ -1,6 +1,6 @@
 # ADR-0022 — Playwright-backed, cross-platform browser sessions
 
-> **Superseded for phase-one runtime selection (2026-10-20):** The direct Playwright-library runtime choice below is part of the earlier Q5 design history, **not** the present phase-one decision. Real Windows [CLI head-to-head PoC](../BROWSER-BACKEND-POC-20261020.md) passed with **agent-browser** and Microsoft Playwright CLI on separate Profiles. Select **agent-browser as the single first integration candidate**, with Playwright CLI only a fallback if integration evidence reveals a blocker. Reuse its mature Snapshot Ref/session semantics instead of building a custom registry. Keep all previous identity, isolation, authorization and non-replay boundaries; no CLI/Shell pass-through or production runtime is approved by this docs edit.
+> **Current phase-one runtime direction (2026-10-20):** The [architecture review](../BROWSER-ARCHITECTURE-REVIEW-20261020.md) supersedes the intermediate CLI-first preface. Prefer direct **`playwright-core` in the existing Agent** after Windows/WSL P0. Playwright 1.64 provides AI ARIA Snapshot refs and `page.getByRef`, so no extra CLI/Ref registry is justified absent a reproducible blocker. Below are historical Q5/Q6 decisions, **not** a claim that the offline-only PR #15 already supports ordinary navigation or that the feature is deployed.
 
 
 Status: **accepted design choices (Grill With Docs round 2, 2026-10-20); documentation only; implementation and release not authorized**.
