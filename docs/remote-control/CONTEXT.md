@@ -127,9 +127,17 @@ _Avoid_: Guessing which duplicate control to click or treating a stale page posi
 A specific visible control or region in the selected browser tab identified from current visual evidence when meaningful semantic identification is insufficient.
 _Avoid_: Treating a stale screenshot coordinate as a durable element identity or using it to control arbitrary desktop applications.
 
+**Browser Page Observation**:
+A bounded, task-relevant account of a selected page's semantic content or explicitly requested visual appearance, distinct from authorization or a guarantee that private data is absent.
+_Avoid_: Treating an untrusted webpage as instructions or assuming a screenshot cannot reveal sensitive information.
+
 **Browser Local Transfer**:
 An upload or download initiated through an automation browser where the source or destination file stays on the Agent's device.
 _Avoid_: Assuming browser file contents must pass through the remote MCP transport.
+
+**Managed Browser Download**:
+A website-originated file saved to the Agent's designated local browser download area for later owner-directed access using existing file capabilities.
+_Avoid_: Equating a download with an MCP file attachment or assuming it may be deleted while needed for unresolved work.
 
 **Browser Action Receipt**:
 An Agent-local record of the known execution outcome of a potentially effectful browser operation, independently of whether the remote website completed the intended business transaction.
@@ -138,6 +146,10 @@ _Avoid_: Equating a click result with a confirmed purchase, submission or remote
 **Browser Recovery Conflict**:
 A state in which the browser's ownership, retained Profile availability or effectful operation outcome is insufficiently known to resume safely.
 _Avoid_: Treating an uncertain lock, crash or lost response as evidence that restarting or repeating work is safe.
+
+**Platform Browser Acceptance**:
+Evidence that a named supported operating-system/runtime target actually satisfies the browser capability's agreed behavior and safety boundaries.
+_Avoid_: Treating Linux acceptance as proof of native Windows readiness, or repeating unchanged evidence without a material reason.
 
 **Graphical Desktop Control**:
 Remote viewing or manipulation of a desktop screen, mouse or keyboard. This is excluded from the first release.
@@ -185,11 +197,17 @@ The controlled transfer of existing authoritative Operation Receipts to a replac
 _Avoid_: Treating a successful new-store startup as sufficient evidence that historical operation identities were preserved.
 
 
+## Browser privacy, file authority, trust and platforms — accepted eighth round (2026-10-20)
+
+[ADR-0028](./adr/0028-browser-data-files-provenance-platform-acceptance.md) records four agreed boundaries. A Browser Page Observation is task-relevant and bounded; password/Cookie/token extraction is not a default output, and an on-demand screenshot may nevertheless disclose sensitive data. Browser Local Transfers reuse existing Agent filesystem permission and tools: explicit local upload paths and Managed Browser Downloads in a dedicated area, without a second browser file manager or new user-configured allowlist. Playwright-compatible Chromium must come from a reviewed trusted source with genuinely available integrity/provenance verification; absence, mismatch or offline unavailability fails rather than silently trusting a substitute. Platform Browser Acceptance is separate for Linux, WSL2 and native Windows, with staged enablement, real evidence and reuse of applicable unchanged tests.
+
+No numeric output budgets, file cleanup lifetime, exact verification mechanism, platform rollout schedule or CI configuration has yet been accepted. These decisions do not implement browser functionality.
+
 ## Browser tool and safe-execution choices — accepted seventh round (2026-10-20)
 
 [ADR-0027](./adr/0027-browser-tools-visual-consent-and-recovery.md) records the accepted compact, curated atomic browser tool inventory across sessions, tabs, page observation/navigation, interaction and local file operations; bounded visual fallback for a Visual Browser Target when semantic identification fails; the Proposed Browser Action → explicit Browser Action Confirmation → execution boundary for each High-Impact Browser Action, with refusal if confirmation cannot be reliably established; and verification of retained browser/Profile state before recovering from a Browser Recovery Conflict. A screenshot location cannot be assumed fresh, an unverified confirmation is not authority, and an unknown outcome never authorizes blind replay or destruction of Profile/Receipt data.
 
-Exact tool signatures, visual freshness criteria, approval delivery and consumption, crash ownership probes, privacy limits and release gates remain unsettled. These are design decisions only.
+ADR-0028 subsequently settles the direction for minimal browser data, reused Agent file authority, trusted compatible Chromium and independent platform acceptance. Exact tool signatures, visual freshness criteria, approval delivery and consumption, crash ownership probes, numeric privacy limits, file retention and release gates remain unsettled. These are design decisions only.
 
 ## Browser workflow coverage, tab targeting and safe clearing — accepted sixth round (2026-10-20)
 
