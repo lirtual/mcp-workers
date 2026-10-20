@@ -1,6 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { observeInstance, shouldExpireUnconfirmedOutcome } from '../src/instance-observation.ts';
+import { observeInstance, shouldExpireUnconfirmedOutcome, unresolvedNativeTerminalError } from '../src/instance-observation.ts';
+
+test('unexpected terminal Workflow status retains business uncertainty without inventing failure', () => {
+ assert.equal(unresolvedNativeTerminalError('errored','running'),'orchestration_errored');
+ assert.equal(unresolvedNativeTerminalError('terminated','queued'),'orchestration_terminated');
+ assert.equal(unresolvedNativeTerminalError('complete','queued'),null);
+ assert.equal(unresolvedNativeTerminalError('running','running'),null);
+ assert.equal(unresolvedNativeTerminalError('errored','succeeded'),null);
+});
 
 test('existing Workflow instance observation confirms its actual state', async () => {
  const observed=await observeInstance({get:async()=>({status:async()=>({status:'running'})})},'run-id');

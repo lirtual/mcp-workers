@@ -18,6 +18,14 @@ export async function observeInstance(binding:WorkflowLookup,id:string):Promise<
     return {kind:'unavailable'};
   }
 }
+// A native terminal error is not proof of business failure or side-effect rollback.
+// When D1 never recorded its own result, preserve an explicit uncertain outcome.
+export function unresolvedNativeTerminalError(native:string,outcome:string):string|null {
+  if(outcome!=='queued' && outcome!=='running')return null;
+  if(native==='errored')return 'orchestration_errored';
+  if(native==='terminated')return 'orchestration_terminated';
+  return null;
+}
 export const OUTCOME_SETTLE_WINDOW_MS=10*60_000;
 export function shouldExpireUnconfirmedOutcome(native:string,outcome:string,firstSeen:number|null,now:number):boolean {
   return native==='complete'

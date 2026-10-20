@@ -1,5 +1,5 @@
 import { compilePlan, PlanError, canonicalJsonString } from './plan.ts';
-import {observeInstance, shouldExpireUnconfirmedOutcome, OUTCOME_SETTLE_WINDOW_MS} from './instance-observation.ts';
+import {observeInstance, shouldExpireUnconfirmedOutcome, unresolvedNativeTerminalError, OUTCOME_SETTLE_WINDOW_MS} from './instance-observation.ts';
 import YAML from 'yaml';
 function draftName(definition:string):string {
   if(!definition || definition.length>32768)throw new StateError('definition_too_large');
@@ -45,7 +45,7 @@ export function cleanError(e:unknown):string {return e instanceof StateError||e 
 export function limitResult<T>(value:T):T {if(new TextEncoder().encode(JSON.stringify(value)).byteLength>MAX_RESULT)throw new StateError('result_too_large');return value;}
 export function applyStatus(native:string, outcome:string):string {
   if(['succeeded','failed','indeterminate','cancelled'].includes(outcome))return outcome;
-  if(native==='errored')return 'failed';
+  // Native failure alone is not a durable business failure. Reconcile D1 first.
   // Workflows may report platform completion before D1's business outcome is
   // visible to this request. Do not prematurely freeze a still-settling Run.
   if(native==='complete')return outcome;
@@ -191,6 +191,12 @@ export class WorkflowService {
   }
   private async settleNativeOutcome(row:RunRow, native:string):Promise<RunRow>{
     if(row.start_state!=='started'||!['queued','running'].includes(row.outcome))return row;
+    const terminalError=unresolvedNativeTerminalError(native,row.outcome);
+    if(terminalError){
+      await this.db.prepare("UPDATE runs SET outcome='indeterminate',error_code=?,updated_at=? WHERE id=? AND outcome IN ('queued','running')")
+        .bind(terminalError,now(),row.id).run();
+      return (await this.db.prepare('SELECT * FROM runs WHERE id=?').bind(row.id).first<RunRow>())!;
+    }
     if(native==='complete'){
       if(row.native_complete_seen_at===null){
         await this.db.prepare("UPDATE runs SET native_complete_seen_at=? WHERE id=? AND native_complete_seen_at IS NULL AND outcome IN ('queued','running')")

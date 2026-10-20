@@ -9,7 +9,8 @@ test('client-facing Run state distinguishes platform complete from business fail
   assert.equal(applyStatus('complete', 'running'), 'running');
   assert.equal(applyStatus('complete', 'succeeded'), 'succeeded');
   assert.equal(applyStatus('running', 'running'), 'running');
-  assert.equal(applyStatus('errored', 'running'), 'failed');
+  assert.equal(applyStatus('errored', 'running'), 'running');
+  assert.equal(applyStatus('terminated', 'queued'), 'queued');
 });
 test('result and error responses stay bounded and secret-free', () => {
   assert.equal(limitResult({value:'safe'}).value, 'safe');

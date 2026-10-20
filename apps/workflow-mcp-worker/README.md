@@ -107,8 +107,16 @@ observed **vendor runtime signature**, not a formally documented stable type.
 If it changes, recovery fails closed to `start_unknown`, preserves the logical
 Run and application capacity; it will not blindly dispatch. Real network
 partitions and incompatible-engine-version migrations have not been simulated.
-Two independent code reviewers remain outstanding. This change includes **15
+Two independent code reviewers remain outstanding. The current tests include **16
 S1 unit/contract tests** and the existing 36-assertion owner-facing local E2E checks.
+
+**Final status semantics audit:** per Cloudflare's documented native states,
+`errored` and `terminated` are terminal orchestration outcomes, but cannot prove
+business-side effects were safely rolled back. If D1 still has a nonterminal
+business outcome, record `indeterminate` with `orchestration_errored` or
+`orchestration_terminated` and release S1 capacity, retaining the original Run
+identity. Unit/contract tests cover this classification; live network partition,
+absent post-retention instances and incompatible engine upgrades remain unproven.
 
 The temporary Cloudflare D1, Workflow, test Worker and fixture Worker were all
 deleted afterward. The public test token and untracked deployment configuration
