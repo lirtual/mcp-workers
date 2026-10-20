@@ -13,4 +13,4 @@ New Workflow MCP engine/runner deployments check whether the candidate versions 
 
 ## Consequences
 
-The precise compatibility matrix, definition snapshot retention, checking source of truth, deploy rollback/migration procedure, migration authority and automated-gate wiring remain **open**. GitHub executor jobs cannot be treated as proof that the orchestrator's stored protocol and Run state are compatible. Only compatibility checks are authorized as design decisions here; no code, release automation changes, deployment, merge or Tickets are authorized.
+Round 6 **Q39=A** further requires archived workflows' pinned versions/history to remain usable while nonterminal Runs reference them. The precise compatibility matrix, archived-version snapshot retention, checking source of truth, deploy rollback/migration procedure, migration authority and automated-gate wiring remain **open**. GitHub executor jobs cannot be treated as proof that the orchestrator's stored protocol and Run state are compatible. Only compatibility checks are authorized as design decisions here; no code, release automation changes, deployment, merge or Tickets are authorized.
