@@ -182,6 +182,10 @@ The [P0 local PoC evidence](p0-local-poc-evidence.md) records actual WSL2 local 
 
 **Evidence level: LOCAL_PASS only**, not cloud, real network-loss, remote MCP interoperability, actual instance-expiry or production P0 acceptance. Q1–Q50 remain unchanged; AC-23–AC-26 still require their full applicable cloud/crash proofs.
 
+## Real Cloudflare isolated P0 feasibility evidence (2026-10-20)
+
+[Cloud P0 report](p0-cloud-poc-evidence.md): six scenario groups passed using new isolated D1 + Workflow + mock Worker. Direct Cloudflare API reads confirmed 2 effect records without a guard vs 1 with a guard; the guarded app outcome was `indeterminate` even though the native Workflow status was `complete`. Eight simultaneous identical admissions resulted in one actual execution. The simulated create-acknowledgement loss was recovered through deterministic ID lookup. This **supports** H1/H2, but true connection drops, abrupt cloud termination, platform retention, deployment compatibility and all other P0s are still unverified; neither AC-23–AC-26 nor production reliability gates are marked fully passed.
+
 ## Working rules
 
 1. Ask the complete current frontier in a round; offer one recommended choice per question.
