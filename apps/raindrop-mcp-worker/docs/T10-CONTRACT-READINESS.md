@@ -90,7 +90,7 @@
 
 - **生产基线已完成（旧版插件，非 Draft）**：通过已连接的 Raindrop MCP 插件诊断版本 `2.4.5`、17 个工具；`collection_list(skipCache:true)` 返回 4 个集合；新鲜的不存在关键词搜索返回 0 条；`list_raindrops(0, perPage:1)` 及 `get_raindrop` 的单条读取响应一致。只记录结构、数量与是否成功，不保留个人书签正文或凭据。
 - **严格区分版本**：以上结果来自**已部署的旧版插件**，不能填写 27 个候选工具的 Draft「真实 API」为通过。当前 WSL Shell 无 `RAINDROP_ACCESS_TOKEN` / `MCP_ACCESS_TOKEN`，仓库亦只有 `.env.example`；现有 GitHub Actions 仅在受保护的 main 手动发布作业注入生产密钥，PR CI 无此权限。不得在 PR 作业中暴露生产密钥来凑验收结果。
-- **只读测试入口**：新增 `tests/read-only.live.test.ts`，从此 Draft 源码启动内存 MCP 客户端调用 5 个只读候选工具；只在明确设置 `RUN_LIVE_API_TESTS=true` 时运行，并要求已安全注入 `RAINDROP_ACCESS_TOKEN`。其 `fetch` 守卫拦截任何非 GET 请求，不调用创建、删除、建议 POST 或破坏性清理；无令牌时不做外网请求；测试中不打印个人收藏内容。
+- **只读测试入口**：新增 `tests/read-only.live.test.ts`，从此 Draft 源码启动内存 MCP 客户端调用 5 个只读候选工具；只在明确设置 `RUN_LIVE_API_TESTS=true` 时运行，并要求已安全注入 `RAINDROP_ACCESS_TOKEN`。其 `fetch` 守卫拦截任何非 GET 请求、非 HTTPS/非 Raindrop API 目标和跳转请求；此守卫另外通过 7 项离线用例，不调用创建、删除、建议 POST 或破坏性清理；无令牌时不做外网请求；测试中不打印个人收藏内容。
 - **执行命令**：在凭据经既有授权渠道以环境变量安全注入、且明确设置 `RUN_LIVE_API_TESTS=true` 的独立测试进程中运行 `pnpm --filter raindrop-mcp-worker run test:read-only-live`。命令入口自身拒绝遗漏开关或令牌，避免跳过用例时误报通过。不得在命令行明文写 token、写入 .env、提交日志或把主账户 Token 复制到 GitHub PR 上下文。只读 smoke 完成后仍需另行授权的可丢弃数据环境检验写入，全球 Trash 永久清理继续标记受限。
 - **状态**：本次仅编制和本地验证可执行的只读验收入口；Draft 源码**尚未**进行授权的真实上游请求，保持 **NO-GO**。
 
@@ -115,6 +115,17 @@
 | 预览哈希 | 稳定成员摘要能阻止确认阶段的成员替换 | 非锁、非事务；不能保证确认后的零竞态 |
 
 ## 最小后续门槛与切换结论
+
+### 最小凭据注入方式（仅在用户 WSL 终端交互执行）
+
+已有的生产 Portal 插件凭据不会导出到 PR、GitHub Actions 或 Remote Control 日志。若用户允许使用其 Raindrop API Access Token 执行**只读**测试，可在 WSL 本机终端执行以下命令，输入时不回显，Token 仅存在于该次 Bash 子进程及其测试子进程环境中，不写入 .env、源码或 shell 历史：
+
+```bash
+cd apps/raindrop-mcp-worker  # 从 mcp-workers 仓库根目录执行
+bash -c 'set -eu; IFS= read -rsp "Raindrop API Token: " RAINDROP_ACCESS_TOKEN </dev/tty; printf "\n"; export RAINDROP_ACCESS_TOKEN RUN_LIVE_API_TESTS=true; npm run test:read-only-live'
+```
+
+没有可用的交互终端或 Token 时**不自动执行**；不可让远控 Agent 读取既有生产 Worker Secret 或自动把其复制到 WSL。上述过程也不测试生产 Portal 鉴权（内存 MCP 仅验证 Draft Service→真实 Raindrop API）；这两条验收路径必须单独记录。
 
 **当前判定：NO-GO / BLOCKED，保留 Draft。** 不能切换公开工具列表，不能将 42 直接删为 27，不能将任何 Mock 成功描述为真实上游成功。
 

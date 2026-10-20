@@ -1,6 +1,7 @@
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { RaindropMCPService } from "../src/services/raindropmcp.service.js";
+import { createReadOnlyRaindropFetch } from "./read-only-fetch-guard.js";
 
 // Explicit manual gate. This test must NEVER be enabled merely by providing
 // a token to the normal CI/build process.
@@ -11,21 +12,21 @@ suite("Spec #123 authenticated read-only MCP smoke", () => {
   let client: Client;
   let service: RaindropMCPService;
   let bookmarkId: number | undefined;
+  let collectionId: number | undefined;
   let readCount = 0;
 
   beforeAll(async () => {
     const token = process.env.RAINDROP_ACCESS_TOKEN?.trim();
     if (!token) throw new Error("RUN_LIVE_API_TESTS requires an injected RAINDROP_ACCESS_TOKEN");
 
-    // Guard the entire MCP-to-HTTP boundary against accidental upstream
-    // mutation. POST /raindrops/0/exist is intentionally not exercised here.
+    // Guard against writes, unexpected upstream hosts and redirects carrying
+    // Authorization. Read-only POST /import/url/exists is not exercised here.
     const networkFetch = globalThis.fetch;
+    const readOnlyFetch = createReadOnlyRaindropFetch(networkFetch);
     vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
-      const request = new Request(input, init);
-      if (request.method !== "GET")
-        throw new Error("Read-only acceptance blocked an upstream non-GET request");
+      const response = await readOnlyFetch(input, init);
       readCount++;
-      return networkFetch(request);
+      return response;
     });
 
     service = new RaindropMCPService({ accessToken: token });
@@ -49,7 +50,7 @@ suite("Spec #123 authenticated read-only MCP smoke", () => {
 
   it("checks candidate tool registration without calling writes", async () => {
     const listed = await client.listTools();
-    for (const name of ["collection_list", "bookmark_search", "bookmark_get", "tag_list", "bookmark_filters_get"]) {
+    for (const name of ["collection_list", "collection_get", "bookmark_search", "bookmark_get", "tag_list", "highlight_list", "bookmark_filters_get", "bookmark_suggest"]) {
       expect(listed.tools.some((tool) => tool.name === name && tool.annotations?.readOnlyHint === true)).toBe(true);
     }
     expect(readCount).toBe(0);
@@ -62,6 +63,15 @@ suite("Spec #123 authenticated read-only MCP smoke", () => {
     expect(result.count).toBe(collections.length);
     expect(collections.every((value) => Number.isSafeInteger(value.id) &&
       (value.id as number) > 0 && typeof value.title === "string")).toBe(true);
+    if (collections.length > 0) collectionId = collections[0]!.id as number;
+  });
+
+  it("reads the first available real collection with collection_get", async () => {
+    if (collectionId === undefined) return;
+    const result = await read("collection_get", { id: collectionId, skipCache: true });
+    const collection = result.collection as Record<string, unknown>;
+    expect(collection.id).toBe(collectionId);
+    expect(typeof collection.title).toBe("string");
   });
 
   it("pages the library through the candidate bookmark_search", async () => {
@@ -84,6 +94,21 @@ suite("Spec #123 authenticated read-only MCP smoke", () => {
     expect(bookmark.id).toBe(bookmarkId);
     expect(typeof bookmark.url).toBe("string");
     expect(Array.isArray(bookmark.tags)).toBe(true);
+  });
+
+  it("reads a bookmark's highlights without writing", async () => {
+    if (bookmarkId === undefined) return;
+    const result = await read("highlight_list", { bookmarkId });
+    expect(result.bookmarkId).toBe(bookmarkId);
+    expect(Array.isArray(result.highlights)).toBe(true);
+  });
+
+  it("gets official suggestions for an existing bookmark via GET", async () => {
+    if (bookmarkId === undefined) return;
+    const result = await read("bookmark_suggest", { bookmarkId });
+    const suggestions = result.suggestions as Record<string, unknown>;
+    expect(Array.isArray(suggestions.tags)).toBe(true);
+    expect(Array.isArray(suggestions.collectionIds)).toBe(true);
   });
 
   it("gets tag metadata without changing data", async () => {
