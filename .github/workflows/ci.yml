@@ -29,6 +29,7 @@ env:
 jobs:
   checks:
     name: Application checks
+    if: ${{ github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main' }}
     concurrency:
       group: ci-checks-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.event.pull_request.number || github.ref }}
       cancel-in-progress: true
@@ -412,3 +413,48 @@ jobs:
             echo "Unexpected unauthenticated MCP status: $status" >&2
             exit 1
           done
+
+  # Temporary one-off: existing production Environment token, owner/manual only.
+  # Only the explicitly named disposable-bookmark highlight case runs.
+  raindrop-draft-write-acceptance:
+    name: Raindrop Draft isolated highlight write acceptance
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' &&
+          github.repository == 'lirtual/mcp-workers' &&
+          github.actor == 'lirtual' &&
+          github.ref == 'refs/heads/implement/spec-123-raindrop' &&
+          inputs.worker == 'raindrop-mcp-worker' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    environment:
+      name: raindrop-mcp-worker
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify manual owner-only Draft execution
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_ACTOR" == 'lirtual' ]]
+          [[ "$GITHUB_EVENT_NAME" == 'workflow_dispatch' ]]
+          [[ "$GITHUB_REF" == 'refs/heads/implement/spec-123-raindrop' ]]
+          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Install lockfile-pinned dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Run only disposable-bookmark highlight lifecycle
+        env:
+          RAINDROP_ACCESS_TOKEN: ${{ secrets.RAINDROP_ACCESS_TOKEN }}
+          RUN_DESTRUCTIVE_LIVE_TESTS: "true"
+          CONFIRM_DESTRUCTIVE_LIVE_TESTS: DELETE_ONLY_TEST_BOOKMARKS
+        working-directory: apps/raindrop-mcp-worker
+        run: ./node_modules/.bin/vitest run tests/destructive.live.test.ts -t "creates, updates and removes one highlight on its own test bookmark"
