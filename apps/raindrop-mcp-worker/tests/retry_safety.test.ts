@@ -116,6 +116,16 @@ describe("RaindropService retry safety", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("never replays a failed single-bookmark DELETE", async () => {
+    const fetchMock = vi.fn(async () => new Response("upstream failure", {
+      status: 500, statusText: "Internal Server Error",
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const service = new RaindropService({ accessToken: "test-token", maxReadRetries: 3 });
+    await expect(service.deleteBookmark(78)).rejects.toThrow();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("does not retry an upstream 429 after submitting a write", async () => {
     const fetchMock = vi.fn(async () =>
       new Response("rate limited", {

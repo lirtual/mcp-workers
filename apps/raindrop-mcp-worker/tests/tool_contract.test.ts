@@ -3,7 +3,11 @@ import { describe, expect, it, vi } from "vitest";
 import { RaindropMCPService } from "../src/services/raindropmcp.service.js";
 
 const EXPECTED_TOOL_NAMES = [
+  "bookmark_create",
+  "bookmark_delete",
   "bookmark_exists",
+  "bookmark_move",
+  "bookmark_update",
   "bookmark_filters_get",
   "bookmark_suggest",
   "bookmark_get",
@@ -38,7 +42,7 @@ describe("Raindrop MCP capability contract", () => {
       const actual = tools.map((tool) => tool.id).sort();
 
       expect(actual).toEqual(EXPECTED_TOOL_NAMES);
-      expect(actual).toHaveLength(24);
+      expect(actual).toHaveLength(28);
       expect(actual).toContain("diagnostics");
     } finally {
       await service.cleanup();
@@ -508,6 +512,117 @@ describe("T02 atomic collection mutations through MCP", () => {
       await service.cleanup();
       create.mockRestore();
       update.mockRestore();
+    }
+  });
+});
+
+
+describe("T03 atomic bookmark writes over public MCP", () => {
+  it("rejects invalid schemas and verifies small create/update/move effects", async () => {
+    const service = new RaindropMCPService({ accessToken: "test-token" });
+    const existing = { _id: 23, link: "https://example.com", title: "Old",
+      tags: [], collection: { $id: 11 } };
+    const get = vi.spyOn(service.raindropService, "getBookmark")
+      .mockResolvedValue(existing as Awaited<ReturnType<typeof service.raindropService.getBookmark>>);
+    const getCollection = vi.spyOn(service.raindropService, "getCollection")
+      .mockResolvedValue({ _id: 22, title: "Target" } as Awaited<ReturnType<typeof service.raindropService.getCollection>>);
+    const create = vi.spyOn(service.raindropService, "createBookmark")
+      .mockResolvedValue({ ...existing, _id: 24, title: "Created" } as Awaited<ReturnType<typeof service.raindropService.createBookmark>>);
+    const update = vi.spyOn(service.raindropService, "updateBookmark")
+      .mockResolvedValueOnce({ ...existing, title: "Edited" } as Awaited<ReturnType<typeof service.raindropService.updateBookmark>>)
+      .mockResolvedValueOnce({ ...existing, collection: { $id: 22 } } as Awaited<ReturnType<typeof service.raindropService.updateBookmark>>);
+    const client = new Client({ name: "t03-write-contract", version: "1.0.0" });
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    try {
+      await Promise.all([service.getServer().connect(st), client.connect(ct)]);
+      const { tools } = await client.listTools();
+      for (const name of ["bookmark_create", "bookmark_update", "bookmark_move", "bookmark_delete"]) {
+        expect(tools.find(tool => tool.name === name)?.annotations?.readOnlyHint).toBe(false);
+      }
+      for (const bad of [{}, { title: "No URL" },
+        { url: "file:///x" }, { url: "https://example.com", extra: 1 },
+        { url: "https://example.com", collectionId: -99 }]) {
+        expect((await client.callTool({ name: "bookmark_create", arguments: bad })).isError).toBe(true);
+      }
+      const made = await client.callTool({
+        name: "bookmark_create", arguments: { url: "https://example.com" },
+      });
+      expect(made.isError).not.toBe(true);
+      expect(made.structuredContent).toMatchObject({ status: "succeeded",
+        bookmark: { id: 24, title: "Created" } });
+      expect(create).toHaveBeenCalledWith(undefined, { link: "https://example.com" });
+      for (const bad of [{ id: 23 }, { id: 23, extra: 1 },
+        { id: "23", title: "Edited" }, { id: 0, title: "Edited" }]) {
+        expect((await client.callTool({ name: "bookmark_update", arguments: bad })).isError).toBe(true);
+      }
+      const edited = await client.callTool({
+        name: "bookmark_update", arguments: { id: 23, title: "Edited" },
+      });
+      expect(edited.isError).not.toBe(true);
+      expect(edited.structuredContent).toMatchObject({ status: "succeeded" });
+      expect(update).toHaveBeenCalledWith(23, { title: "Edited" });
+      for (const bad of [{ id: 23, collectionId: 0 },
+        { id: 23, collectionId: -99 }, { id: 23, collectionId: 22, extra: true }]) {
+        expect((await client.callTool({ name: "bookmark_move", arguments: bad })).isError).toBe(true);
+      }
+      const moved = await client.callTool({
+        name: "bookmark_move", arguments: { id: 23, collectionId: 22 },
+      });
+      expect(moved.structuredContent).toMatchObject({ status: "succeeded" });
+      expect(getCollection).toHaveBeenCalledWith(22, true);
+      expect(update).toHaveBeenCalledWith(23, { collection: { $id: 22 } });
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(update).toHaveBeenCalledTimes(2);
+      expect(get).toHaveBeenCalledTimes(2);
+    } finally {
+      await client.close(); await service.cleanup();
+      get.mockRestore(); getCollection.mockRestore(); create.mockRestore(); update.mockRestore();
+    }
+  });
+
+  it("prevents accidental permanent deletion and reports uncertain writes without replay", async () => {
+    const service = new RaindropMCPService({ accessToken: "test-token" });
+    const normal = { _id: 7, link: "https://example.com", title: "Example",
+      tags: [], collection: { $id: 11 } };
+    const trash = { ...normal, collection: { $id: -99 } };
+    const get = vi.spyOn(service.raindropService, "getBookmark");
+    const remove = vi.spyOn(service.raindropService, "deleteBookmark")
+      .mockResolvedValue(undefined);
+    const client = new Client({ name: "t03-delete-safety", version: "1.0.0" });
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    try {
+      await Promise.all([service.getServer().connect(st), client.connect(ct)]);
+      get.mockResolvedValueOnce(trash as Awaited<ReturnType<typeof service.raindropService.getBookmark>>);
+      const unsafe = await client.callTool({ name: "bookmark_delete", arguments: { id: 7 } });
+      expect(unsafe.isError).toBe(true);
+      expect(remove).not.toHaveBeenCalled();
+
+      get.mockResolvedValueOnce(normal as Awaited<ReturnType<typeof service.raindropService.getBookmark>>);
+      const mismatched = await client.callTool({
+        name: "bookmark_delete", arguments: { id: 7, permanent: true },
+      });
+      expect(mismatched.isError).toBe(true);
+      expect(remove).not.toHaveBeenCalled();
+
+      get.mockResolvedValueOnce(normal as Awaited<ReturnType<typeof service.raindropService.getBookmark>>);
+      const soft = await client.callTool({ name: "bookmark_delete", arguments: { id: 7 } });
+      expect(soft.structuredContent).toEqual({ status: "succeeded", id: 7, outcome: "trashed" });
+
+      get.mockResolvedValueOnce(trash as Awaited<ReturnType<typeof service.raindropService.getBookmark>>);
+      const permanent = await client.callTool({
+        name: "bookmark_delete", arguments: { id: 7, permanent: true },
+      });
+      expect(permanent.structuredContent).toEqual({ status: "succeeded", id: 7, outcome: "permanently_deleted" });
+
+      get.mockResolvedValueOnce(normal as Awaited<ReturnType<typeof service.raindropService.getBookmark>>);
+      remove.mockRejectedValueOnce(new Error("network acknowledgement lost"));
+      const uncertain = await client.callTool({ name: "bookmark_delete", arguments: { id: 7 } });
+      expect(uncertain.structuredContent).toMatchObject({ status: "unknown", id: 7 });
+      expect(remove).toHaveBeenCalledTimes(3);
+      expect(get).toHaveBeenCalledTimes(5);
+    } finally {
+      await client.close(); await service.cleanup();
+      get.mockRestore(); remove.mockRestore();
     }
   });
 });

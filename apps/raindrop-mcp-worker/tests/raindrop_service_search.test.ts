@@ -6,6 +6,8 @@ vi.mock("openapi-fetch", () => ({
   default: vi.fn(() => ({
     GET: vi.fn().mockResolvedValue({ data: { items: [], count: 0 } }),
     POST: vi.fn().mockResolvedValue({ data: { result: false, ids: [] } }),
+    PUT: vi.fn(),
+    DELETE: vi.fn(),
     use: vi.fn(),
   })),
 }));
@@ -162,5 +164,45 @@ describe("RaindropService official organization suggestions", () => {
     await expect(service.getOfficialSuggestions(123)).rejects.toThrow();
     get.mockResolvedValueOnce({ data: { result: true, item: { collections: [{ _id: 10 }] } } });
     await expect(service.getOfficialSuggestions(123)).rejects.toThrow();
+  });
+});
+
+
+describe("T03 Raindrop single-write HTTP contracts", () => {
+  it("creates URL-only without unwanted default updates", async () => {
+    const service = new RaindropService("fake-token");
+    const post = (service as any).client.POST;
+    post.mockResolvedValueOnce({ data: { result: true,
+      item: { _id: 78, link: "https://example.com", title: "Example", tags: [] } } });
+    const created = await service.createBookmark(undefined, { link: "https://example.com" });
+    expect(created._id).toBe(78);
+    expect(post).toHaveBeenCalledWith("/raindrop", {
+      body: { link: "https://example.com" },
+    });
+  });
+
+  it("updates only explicit fields and refuses an unsuccessful result", async () => {
+    const service = new RaindropService("fake-token");
+    const put = (service as any).client.PUT;
+    put.mockResolvedValueOnce({ data: { result: true,
+      item: { _id: 78, link: "https://example.com", title: "After" } } });
+    const result = await service.updateBookmark(78, { title: "After" });
+    expect(result.title).toBe("After");
+    expect(put).toHaveBeenCalledWith("/raindrop/{id}", {
+      params: { path: { id: 78 } }, body: { title: "After" },
+    });
+
+    put.mockResolvedValueOnce({ data: { result: false, item: { _id: 78, title: "After" } } });
+    await expect(service.updateBookmark(78, { title: "Not saved" })).rejects.toThrow();
+  });
+
+  it("requires an explicit Raindrop result:true before reporting deletion", async () => {
+    const service = new RaindropService("fake-token");
+    const remove = (service as any).client.DELETE;
+    remove.mockResolvedValueOnce({ data: { result: true } });
+    await expect(service.deleteBookmark(78)).resolves.toBeUndefined();
+    expect(remove).toHaveBeenCalledWith("/raindrop/{id}", { params: { path: { id: 78 } } });
+    remove.mockResolvedValueOnce({ data: { result: false } });
+    await expect(service.deleteBookmark(78)).rejects.toThrow(/could not be verified/);
   });
 });

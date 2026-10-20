@@ -761,30 +761,37 @@ export default class RaindropService {
    * Raindrop.io API: POST /raindrop
    */
   async createBookmark(
-    collectionId: number,
+    collectionId: number | undefined,
     bookmark: {
       link: string;
       title?: string;
       excerpt?: string;
+      note?: string;
       tags?: string[];
       important?: boolean;
     },
   ): Promise<Bookmark> {
+    if (!bookmark.link)
+      throw new ValidationError("Bookmark link is required");
+    if (collectionId !== undefined &&
+        (!Number.isSafeInteger(collectionId) || collectionId <= 0))
+      throw new ValidationError("Invalid destination collection ID");
     const newBookmark = await this.withWriteRateLimit(async () => {
-      if (!bookmark.link)
-        throw new ValidationError("Bookmark link is required");
-      const { data } = await this.client.POST("/raindrop", {
+      const { data, error } = await this.client.POST("/raindrop", {
         body: {
           link: bookmark.link,
-          ...(bookmark.title && { title: bookmark.title }),
-          ...(bookmark.excerpt && { excerpt: bookmark.excerpt }),
-          ...(bookmark.tags && { tags: bookmark.tags }),
-          important: bookmark.important || false,
-          collection: { $id: collectionId },
-          pleaseParse: {},
+          ...(bookmark.title !== undefined ? { title: bookmark.title } : {}),
+          ...(bookmark.excerpt !== undefined ? { excerpt: bookmark.excerpt } : {}),
+          ...(bookmark.note !== undefined ? { note: bookmark.note } : {}),
+          ...(bookmark.tags !== undefined ? { tags: bookmark.tags } : {}),
+          ...(bookmark.important !== undefined ? { important: bookmark.important } : {}),
+          ...(collectionId !== undefined ? { collection: { $id: collectionId } } : {}),
         },
       });
-      if (!data?.item) throw new UpstreamError("Failed to create bookmark");
+      if (error || data?.result !== true ||
+          !Number.isSafeInteger(data?.item?._id) ||
+          (data?.item?._id ?? 0) <= 0)
+        throw new UpstreamError("Bookmark creation outcome could not be verified");
       return data.item as Bookmark;
     });
 
@@ -802,11 +809,12 @@ export default class RaindropService {
     updates: Partial<Bookmark>,
   ): Promise<Bookmark> {
     const updated = await this.withWriteRateLimit(async () => {
-      const { data } = await this.client.PUT("/raindrop/{id}", {
+      const { data, error } = await this.client.PUT("/raindrop/{id}", {
         params: { path: { id } },
         body: updates,
       });
-      if (!data?.item) throw new UpstreamError("Failed to update bookmark");
+      if (error || data?.result !== true || data?.item?._id !== id)
+        throw new UpstreamError("Bookmark update outcome could not be verified");
       return data.item as Bookmark;
     });
 
@@ -822,9 +830,11 @@ export default class RaindropService {
    */
   async deleteBookmark(id: number): Promise<void> {
     await this.withWriteRateLimit(async () => {
-      await this.client.DELETE("/raindrop/{id}", {
+      const { data, error } = await this.client.DELETE("/raindrop/{id}", {
         params: { path: { id } },
       });
+      if (error || data?.result !== true)
+        throw new UpstreamError("Bookmark deletion outcome could not be verified");
     });
 
     // Invalidate bookmark and search caches
