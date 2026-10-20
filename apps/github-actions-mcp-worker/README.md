@@ -24,7 +24,8 @@ The default allowlist is `autoactions/tsrv,autoactions/tsvc`. For production ove
 | `run_artifacts_list` | List run artifact metadata |
 | `workflow_dispatch` | Trigger a workflow on an explicit branch or tag |
 | `repository_dispatch` | Emit a custom repository event |
-| `run_cancel` | Cancel one run with `confirm: true` |
+| `run_cancel` | Request cancellation of one run with `confirm: true` (does not confirm stopped) |
+| `run_force_cancel` | Force cancellation of an unresponsive run with `confirm: true` |
 | `run_rerun` | Rerun all jobs or failed jobs |
 
 Examples:
@@ -33,7 +34,7 @@ Examples:
 - `workflow_dispatch(repo="autoactions/tsrv", workflow="windows.yml", ref="main", inputs={"session_profile":"core","enable_wsl":"false"})`
 - `workflow_dispatch(repo="autoactions/tsvc", workflow="tsvc.yml", ref="main", inputs={"service":"code-server"})`
 
-`workflow_dispatch` opts in to the GitHub API's run details response (`workflow_run_id`, `run_url`, `html_url`) for exact follow-up. Query `run_get` for actual run state, then use `run_cancel` if necessary. A legacy 204 response indicates acceptance without a run ID. The MCP does not claim session readiness, exclusivity, or a working SSH/HTTP endpoint. It deliberately does **not** replicate Session Deck's session catalog, readiness observer, locator parsing or decryption features. Artifact names, IDs and sizes can be queried, but artifact content and raw runner logs are outside this MVP.
+`workflow_dispatch` opts in to the GitHub API's run details response (`workflow_run_id`, `run_url`, `html_url`) for exact follow-up. Query `run_get` for actual run state, then use `run_cancel` if necessary. A cancellation response with `accepted: true` and `completion_confirmed: false` means **GitHub accepted the request, not that the job stopped**. Use `run_get` to verify `status: completed` and `conclusion: cancelled`. If an active run does not respond to normal cancellation, `run_force_cancel(repo, run_id, confirm=true)` calls GitHub's force-cancel endpoint. This is a deliberate escalation: it can bypass `always()` cleanup and should not be invoked as the default cancellation path. A legacy 204 response indicates acceptance without a run ID. The MCP does not claim session readiness, exclusivity, or a working SSH/HTTP endpoint. It deliberately does **not** replicate Session Deck's session catalog, readiness observer, locator parsing or decryption features. Artifact names, IDs and sizes can be queried, but artifact content and raw runner logs are outside this MVP.
 
 ## Local checks
 
