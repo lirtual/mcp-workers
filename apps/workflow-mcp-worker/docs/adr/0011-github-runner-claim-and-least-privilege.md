@@ -14,6 +14,6 @@ Registered GitHub Actions heavy-executor jobs prove their identity using GitHub 
 
 ## Consequences
 
-OIDC issuer/audience/repository/workflow/ref validation, dispatch-unknown recovery, exact Claim schema and atomicity, lease scope, callback authenticity and deduplication, cancellation, result reconciliation, executor versioning and Artifact handling remain to be specified. Claim ownership must not transfer merely because a timeout expires unless separately and safely resolved. The heavy-capability registry is **not** a static registry of callable MCP Servers; Q7=B remains unchanged.
+OIDC issuer/audience/repository/workflow/ref validation, dispatch-unknown recovery, exact Claim schema and atomicity, lease scope, callback authenticity and deduplication, cancellation, result reconciliation, executor versioning and Artifact handling remain to be specified. The effect of Claim timeouts and whether/how ownership can be reconciled or transferred remain unresolved; a timeout alone is not evidence that the original physical task stopped. The heavy-capability registry is **not** a static registry of callable MCP Servers; Q7=B remains unchanged.
 
 Design only: no GitHub Actions workflow code, PAT provisioning, release, deployment, merge, or Tickets.
