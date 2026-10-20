@@ -100,7 +100,7 @@ describe("T10 public contract release readiness (no cutover)", () => {
 
         for (const branch of objectBranches(tool.inputSchema)) {
           expect(branch.properties, name).toBeDefined();
-          if (name !== "collection_list") expect(branch.additionalProperties, name).toBe(false);
+          expect(branch.additionalProperties, name).toBe(false);
         }
         expect(tool.annotations?.readOnlyHint, name).toBe(READ_ONLY_TOOL_NAMES.has(name));
         // Omitted destructiveHint defaults to true in MCP; all writes explicitly declare it.
@@ -120,10 +120,10 @@ describe("T10 public contract release readiness (no cutover)", () => {
         }
       }
       expect(tools.filter(tool => CANONICAL_TOOL_NAMES.includes(tool.name) && objectBranches(tool.inputSchema).some(branch => branch.additionalProperties !== false))
-        .map(tool => tool.name)).toEqual(["collection_list"]);
+        .map(tool => tool.name)).toEqual([]);
       // A passing assessment records known blockers; it does not certify cutover readiness.
       expect(tools.filter(tool => CANONICAL_TOOL_NAMES.includes(tool.name) && !tool.outputSchema)
-        .map(tool => tool.name)).toEqual(["bookmark_remove_duplicates"]);
+        .map(tool => tool.name)).toEqual([]);
     } finally { await client.close(); await service.cleanup(); }
   });
 
@@ -141,6 +141,8 @@ describe("T10 public contract release readiness (no cutover)", () => {
       expect(result.isError).not.toBe(true);
       expect(result.structuredContent).toEqual({ exists: false, ids: [] });
       for (const [name, args] of [
+        ["collection_list", { skipCache: true, extra: true }],
+        ["collection_list", { skipCache: "true" }],
         ["bookmark_exists", { url: "https://example.com", extra: true }],
         ["bookmark_get", { id: "42" }],
         ["bookmark_create", { url: "https://example.com", extra: true }],

@@ -21,6 +21,39 @@ const inputSchema = z
   .object({ collectionId: id, confirm: confirmation.optional() })
   .strict();
 
+// The public MCP result is an actual bounded, typed object. Aggregate batch
+// acknowledgements cannot identify which individual bookmark succeeded.
+export const DuplicateRemovalOutputSchema = z.strictObject({
+  status: z.enum(["preview", "notExecuted", "failed", "unknown"]),
+  collectionId: id,
+  observedTotal: z.number().int().nonnegative().max(50),
+  protectedCount: z.number().int().nonnegative().max(50),
+  unknownCount: z.number().int().nonnegative().max(50),
+  items: z.array(z.strictObject({
+    id,
+    url: z.string(),
+    protected: z.boolean(),
+    unknown: z.boolean(),
+    candidate: z.boolean(),
+    keeper: z.boolean(),
+  })).max(50),
+  groups: z.array(z.strictObject({
+    url: z.string(),
+    ids,
+    keeperId: id.optional(),
+  })).max(50),
+  confirmation,
+  warning: z.string().min(1),
+  reason: z.string().optional(),
+  dispatched: z.boolean().optional(),
+  acknowledged: z.boolean().optional(),
+  modified: z.number().int().nonnegative().safe().optional(),
+  succeeded: ids.optional(),
+  failed: ids.optional(),
+  unknown: ids.optional(),
+  notExecuted: ids.optional(),
+});
+
 // Stable object keys preserve all observed metadata, including unknown/missing fields.
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
@@ -54,6 +87,7 @@ export const bookmarkRemoveDuplicatesTool = defineTool({
   description:
     "Preview official duplicate:true candidates in one required positive collectionId (max 50 results, max 10 deletions). Exact URL only; preserve a fresh verified keeper, prefer protected copies. Confirm with the exact returned confirmation object (versioned SHA-256 digest, sorted candidateIds, keeperIds, total). Recomputes all metadata fresh. Aggregate deletion acknowledgement leaves individual outcomes unknown; never automatically retry. Digest is neither permission nor a transaction lock; concurrent changes remain possible.",
   inputSchema,
+  outputSchema: DuplicateRemovalOutputSchema,
   annotations: {
     readOnlyHint: false,
     destructiveHint: true,
@@ -142,7 +176,7 @@ export const bookmarkRemoveDuplicatesTool = defineTool({
             `Preview only: ${preview.observedTotal} official candidates, ${candidateIds.length} eligible deletions, ${preview.protectedCount} protected, ${preview.unknownCount} unknown. Nothing deleted. Supply the exact structured confirmation object as confirm to execute.`,
           ),
         ],
-        structuredContent: { ...preview, status: "preview" },
+        structuredContent: DuplicateRemovalOutputSchema.parse({ ...preview, status: "preview" }),
       };
     if (canonical(args.confirm) !== canonical(confirm))
       throw new Error(
@@ -151,11 +185,11 @@ export const bookmarkRemoveDuplicatesTool = defineTool({
     if (candidateIds.length === 0)
       return {
         content: [textContent("No eligible duplicates; nothing deleted.")],
-        structuredContent: {
+        structuredContent: DuplicateRemovalOutputSchema.parse({
           ...preview,
           status: "notExecuted",
           notExecuted: [],
-        },
+        }),
       };
     // Check every deletion candidate and every retained keeper again immediately
     // before T06's independent membership preflight and single batch DELETE.
@@ -176,7 +210,7 @@ export const bookmarkRemoveDuplicatesTool = defineTool({
     });
     return {
       content: [textContent(outcome.reason)],
-      structuredContent: { ...preview, ...outcome },
+      structuredContent: DuplicateRemovalOutputSchema.parse({ ...preview, ...outcome }),
       ...(outcome.status === "failed" ? { isError: true } : {}),
     };
   },

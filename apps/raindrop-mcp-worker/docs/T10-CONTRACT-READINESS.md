@@ -25,7 +25,7 @@
 | bookmark_move | 已实现 | 通过* | 通过* | 待验收 | 目标收藏夹及归属 |
 | bookmark_batch_update | 已实现 | 通过* | 通过* | 待验收 | ≤50 ID、单源、聚合未知 |
 | bookmark_batch_delete | 已实现 | 通过* | 通过* | 待验收 | 预检与按 ID 真实结果 |
-| collection_list | 已实现/扩展 | 通过* | 通过* | 待验收 | 尚缺 strict 未知字段限制 |
+| collection_list | 已实现/扩展 | 通过* | 通过* | 待验收 | 已严格拒绝未知字段（MCP 已验证）；仍待真实 API |
 | collection_get | 已实现 | 通过* | 通过* | 待验收 | 完整子集合/父级 |
 | collection_create | 已实现 | 通过* | 通过* | 待验收 | 测试收藏夹 |
 | collection_update | 已实现 | 通过* | 通过* | 待验收 | 只更新明确字段 |
@@ -42,7 +42,7 @@
 | bookmark_suggest | 已实现 | 通过* | 通过* | 待验收 | 官方建议/无 Sampling |
 | trash_empty | 已实现 | 通过* | 通过* | **受限** | 不可逆全局清空/完整范围 |
 | collection_remove_empty | 已实现 | 通过* | 通过* | 待验收 | 已批准空叶子范围 |
-| bookmark_remove_duplicates | 已实现 | 通过* | 通过* | 待验收 | 尚缺 outputSchema；副本保护 |
+| bookmark_remove_duplicates | 已实现 | 通过* | 通过* | 待验收 | 已验证输出 Schema；副本保护仍待真实数据验收 |
 
 
 ## 旧 17 项到候选契约的迁移映射
@@ -75,8 +75,8 @@
 2. **已封堵**：原有 collection_manage(operation:delete) 可直接级联删除收藏夹；现拒绝该旧操作，指向 collection_delete 的完整子树预览/摘要确认。旧 create/update 暂保留。
 3. **已封堵**：原有 bulk_edit_raindrops 可用缺省 ID 更新整集合，且 remove/move 未通过 T06 新鲜逐条成员核验。为避免隐式全量/跨集合写入，旧批量工具保留名称但拒绝全部写入意图，明确指向两个 T06 新工具。
 4. **已封堵（先前 T03/T08/T09）**：bookmark_manage 的 Trash 永久删绕过、remove_duplicates 的无摘要清理、empty_trash 的计数式清空分别已拒绝危险路径。
-5. **未解决**：collection_list 输入对象仍没有禁止未知字段（strict）；这是接口严谨性缺口，不应依赖客户端自觉。
-6. **未解决**：bookmark_remove_duplicates 尚无明确 outputSchema，不能在正式切换时声称结构化输出已完全校验。
+5. **已修复（后续补丁）**：collection_list 使用 strict 输入 Schema，真实 MCP tools/call 已验证未知字段及错误类型被拒绝，且不访问上游。
+6. **已修复（后续补丁）**：bookmark_remove_duplicates 已为预览、无需执行及批量失败/未知结果声明并校验输出 Schema；仍需真实 API 验收。
 7. **未解决**：27 项均缺此 Draft 版本的真实认证 MCP/API 验收；涉及写入的需经单独授权的可丢弃测试对象；全局永久清空记录 acceptance-limited。前述测试矩阵只覆盖模拟场景。
 
 ## 发布风险核对
@@ -97,7 +97,7 @@
 
 **当前判定：NO-GO / BLOCKED，保留 Draft。** 不能切换公开工具列表，不能将 42 直接删为 27，不能将任何 Mock 成功描述为真实上游成功。
 
-- 修复上面两处独立工具 Schema 缺口并添加 MCP tools/call 的对应回归。
+- **已完成**两处 Schema 缺口及对应 MCP tools/call 回归；下列真实验收门槛依然有效。
 - 在可控认证环境中完成只读 smoke；使用**明确授权的可丢弃测试数据**验证关键写入和异常响应，不修改普通用户书签；不可安全实测的 Trash 全局永久清空保留 acceptance-limited。
 - 将旧生产关键工作流与新工具逐项比对并进行独立代码审查；任何无法确认的候选工具在切换时必须安全排除，不为了 27 项配额强行公开。
 - **只有取得另一次明确的切换授权**，才可在另外的实施中移除旧别名、Sampling、library_audit、公开 diagnostics 并刷新测试清单；本轮 T10 不执行这些动作。关闭评估 Ticket 也不是生产发布许可。

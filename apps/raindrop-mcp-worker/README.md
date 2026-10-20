@@ -133,3 +133,5 @@ This Worker was migrated and adapted from an MIT-licensed Raindrop MCP implement
 ### T10 release readiness
 
 See docs/T10-CONTRACT-READINESS.md for the 27-tool matrix, the legacy 17-name migration plan and the blocked cutover verdict. No merge, published-tool cutover or real API mutation is authorized.
+
+The Draft follow-up fixes strict unknown-field rejection for collection_list and declares a validated structured output schema for bookmark_remove_duplicates. These mock/SDK contract fixes are not live Raindrop acceptance or release permission.

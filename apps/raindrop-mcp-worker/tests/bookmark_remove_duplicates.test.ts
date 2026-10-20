@@ -2,7 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import RaindropService from "../src/services/raindrop.service.js";
 import { RaindropMCPService } from "../src/services/raindropmcp.service.js";
-import { bookmarkRemoveDuplicatesTool as tool } from "../src/tools/duplicates.js";
+import {
+  DuplicateRemovalOutputSchema,
+  bookmarkRemoveDuplicatesTool as tool,
+} from "../src/tools/duplicates.js";
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
@@ -109,6 +112,9 @@ describe("official atomic duplicate removal", () => {
     expect(p.confirmation.digest).toMatch(
       /^duplicates-v1:sha256:[a-f0-9]{64}$/,
     );
+    expect(DuplicateRemovalOutputSchema.safeParse(p).success).toBe(true);
+    expect(DuplicateRemovalOutputSchema.safeParse({ ...p, items: [{ id: "invalid" }] }).success).toBe(false);
+    expect(DuplicateRemovalOutputSchema.safeParse({ ...p, notInContract: 123 }).success).toBe(false);
     expect((await preview(api())).confirmation).toEqual(p.confirmation);
     expect(mock.writes()).toHaveLength(0);
     const result = await call(api(), { confirm: p.confirmation });
@@ -120,6 +126,7 @@ describe("official atomic duplicate removal", () => {
       acknowledged: true,
       dispatched: true,
     });
+    expect(DuplicateRemovalOutputSchema.safeParse(result.structuredContent).success).toBe(true);
     expect(mock.writes()).toHaveLength(1);
     expect(mock.detailReads.get(1)).toBe(4); // two previews, confirm scan, final keeper
     expect(mock.detailReads.get(2)).toBe(5); // includes T06 independent preflight
@@ -452,6 +459,9 @@ describe("official atomic duplicate removal", () => {
       const { tools } = await client.listTools();
       expect(tools).toHaveLength(42);
       const listed = tools.find((t) => t.name === tool.name)!;
+      expect(listed.outputSchema).toBeDefined();
+      expect(listed.outputSchema?.type).toBe("object");
+      expect(listed.outputSchema?.additionalProperties).toBe(false);
       expect(listed.inputSchema.required).toEqual(["collectionId"]);
       expect(listed.inputSchema.additionalProperties).toBe(false);
       for (const args of [
@@ -478,6 +488,8 @@ describe("official atomic duplicate removal", () => {
         name: tool.name,
         arguments: { collectionId: 7 },
       });
+      expect(p.isError).not.toBe(true);
+      expect(DuplicateRemovalOutputSchema.safeParse(p.structuredContent).success).toBe(true);
       const confirm = (p.structuredContent as Record<string, unknown>)
         .confirmation as Record<string, unknown>;
       for (const bad of [
@@ -507,6 +519,7 @@ describe("official atomic duplicate removal", () => {
         unknown: [2],
         notExecuted: [],
       });
+      expect(DuplicateRemovalOutputSchema.safeParse(result.structuredContent).success).toBe(true);
       expect(mock.writes()).toHaveLength(1);
     } finally {
       await client.close();

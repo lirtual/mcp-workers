@@ -18,7 +18,7 @@ const CollectionListInputSchema = z.object({
     .boolean()
     .optional()
     .describe("Force a fresh fetch from the API, bypassing the local cache"),
-});
+}).strict();
 
 const CollectionReadSummarySchema = z.object({
   id: z.number().int().positive(),
