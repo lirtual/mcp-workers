@@ -1,4 +1,5 @@
 import { compilePlan, PlanError, canonicalJsonString } from './plan.ts';
+import {observeInstance, shouldExpireUnconfirmedOutcome, OUTCOME_SETTLE_WINDOW_MS} from './instance-observation.ts';
 import YAML from 'yaml';
 function draftName(definition:string):string {
   if(!definition || definition.length>32768)throw new StateError('definition_too_large');
@@ -52,7 +53,7 @@ export function applyStatus(native:string, outcome:string):string {
 }
 type WorkflowRow={id:string;name:string;draft:string;draft_revision:number;active_version_id:string|null;state:string};
 type VersionRow={id:string;plan:string;digest:string};
-type RunRow={id:string;workflow_id:string;version_id:string;instance_id:string;request_digest:string;start_state:string;outcome:string;result:string|null;error_code:string|null;inputs:string;created_at:number};
+type RunRow={id:string;workflow_id:string;version_id:string;instance_id:string;request_digest:string;start_state:string;outcome:string;result:string|null;error_code:string|null;inputs:string;created_at:number;updated_at:number;native_complete_seen_at:number|null};
 const workflowView=(row:WorkflowRow)=>({workflow_id:row.id,name:row.name,draft_revision:row.draft_revision,definition:row.draft,published_version_id:row.active_version_id,state:row.state});
 export class WorkflowService {
   private env:Env;
@@ -127,6 +128,16 @@ export class WorkflowService {
     const stale=await this.db.prepare("SELECT * FROM runs WHERE outcome='queued' AND start_state IN ('reserved','start_unknown') AND created_at<=? ORDER BY created_at ASC LIMIT 8")
       .bind(now()-START_RECONCILE_WINDOW_MS).all<RunRow>();
     for(const old of stale.results)await this.reconcileStart(old);
+    // When all eight slots are occupied, bounded ingress repair also checks
+    // started Workflows whose native engine completed but D1 never finalized.
+    const capacity=await this.db.prepare("SELECT COUNT(*) AS count FROM runs WHERE outcome IN ('queued','running')").first<{count:number}>();
+    if((capacity?.count??0)>=8){
+      const active=await this.db.prepare("SELECT * FROM runs WHERE start_state='started' AND outcome IN ('queued','running') ORDER BY created_at ASC LIMIT 8").all<RunRow>();
+      for(const run of active.results){
+        const observed=await observeInstance(this.env.WORKFLOW,run.instance_id);
+        if(observed.kind==='found')await this.settleNativeOutcome(run,observed.status);
+      }
+    }
     const wf=await this.row(workflow_id);
     if(wf.state!=='active'||!wf.active_version_id)throw new StateError('workflow_not_active');
     const version=wf.active_version_id;
@@ -152,34 +163,47 @@ export class WorkflowService {
     const started=()=>({run_id:row.id,published_version_id:row.version_id,status:row.outcome,start_state:'started',idempotent_replay:true});
     if(row.start_state==='started')return started();
     if(row.outcome==='indeterminate')return {run_id:row.id,published_version_id:row.version_id,status:'indeterminate',start_state:row.start_state,idempotent_replay:true};
-    const lookup=async()=>{
-      try{
-        const instance=await this.env.WORKFLOW.get(row.instance_id);
-        const state=await instance.status();
-        if(!state?.status) return false;
-        await this.db.prepare("UPDATE runs SET start_state='started',updated_at=? WHERE id=? AND start_state IN ('reserved','start_unknown')").bind(now(),row.id).run();
-        return true;
-      }catch{return false;}
-    };
-    if(await lookup())return started();
-    // A crash after the D1 reservation but before create() is repairable with
-    // the SAME deterministic instance ID, not another Run or capacity slot.
-    // Never recreate a terminal/old Run after platform ID retention may expire.
-    if(row.outcome==='queued' && now()-row.created_at<START_RECONCILE_WINDOW_MS){
+    // A generic get/status rejection is NOT evidence that an instance is absent.
+    // In particular, network failures must never cause an automatic create.
+    let observation=await observeInstance(this.env.WORKFLOW,row.instance_id);
+    if(observation.kind==='found'){
+      await this.db.prepare("UPDATE runs SET start_state='started',updated_at=? WHERE id=? AND start_state IN ('reserved','start_unknown')").bind(now(),row.id).run();
+      return started();
+    }
+    if(observation.kind==='missing' && row.outcome==='queued' && now()-row.created_at<START_RECONCILE_WINDOW_MS){
+      // Positive missing evidence: create only with the ORIGINAL deterministic ID.
       try{await this.env.WORKFLOW.create({id:row.instance_id,params:{run_id:row.id}});}catch{}
-      if(await lookup())return started();
-    }else if(row.outcome==='queued'){
-      // No confirmed instance after the bounded retry window. Do not create
-      // another instance: the first request might have executed remotely.
-      // Terminal uncertainty releases application capacity but never erases
-      // the idempotency key or claims the business operation did not happen.
+      observation=await observeInstance(this.env.WORKFLOW,row.instance_id);
+      if(observation.kind==='found'){
+        await this.db.prepare("UPDATE runs SET start_state='started',updated_at=? WHERE id=? AND start_state IN ('reserved','start_unknown')").bind(now(),row.id).run();
+        return started();
+      }
+    }
+    if(observation.kind==='missing' && row.outcome==='queued' && now()-row.created_at>=START_RECONCILE_WINDOW_MS){
       await this.db.prepare("UPDATE runs SET outcome='indeterminate',error_code='start_unconfirmed',updated_at=? WHERE id=? AND outcome='queued' AND start_state IN ('reserved','start_unknown') AND created_at<=?")
         .bind(now(),row.id,now()-START_RECONCILE_WINDOW_MS).run();
     }
     const latest=await this.db.prepare('SELECT * FROM runs WHERE id=?').bind(row.id).first<RunRow>();
     if(latest?.outcome==='indeterminate')return {run_id:row.id,published_version_id:row.version_id,status:'indeterminate',start_state:latest.start_state,idempotent_replay:true};
     if(latest?.start_state==='started')return {run_id:row.id,published_version_id:row.version_id,status:latest.outcome,start_state:'started',idempotent_replay:true};
+    // Unknown lookup error: retain quota and audit identity until observation works.
     return {run_id:row.id,published_version_id:row.version_id,status:'start_unknown',start_state:'start_unknown',idempotent_replay:true};
+  }
+  private async settleNativeOutcome(row:RunRow, native:string):Promise<RunRow>{
+    if(row.start_state!=='started'||!['queued','running'].includes(row.outcome))return row;
+    if(native==='complete'){
+      if(row.native_complete_seen_at===null){
+        await this.db.prepare("UPDATE runs SET native_complete_seen_at=? WHERE id=? AND native_complete_seen_at IS NULL AND outcome IN ('queued','running')")
+          .bind(now(),row.id).run();
+      }else if(shouldExpireUnconfirmedOutcome(native,row.outcome,row.native_complete_seen_at,now())){
+        await this.db.prepare("UPDATE runs SET outcome='indeterminate',error_code='outcome_unconfirmed',updated_at=? WHERE id=? AND native_complete_seen_at<=? AND outcome IN ('queued','running')")
+          .bind(now(),row.id,now()-OUTCOME_SETTLE_WINDOW_MS).run();
+      }
+    }else if(row.native_complete_seen_at!==null){
+      await this.db.prepare("UPDATE runs SET native_complete_seen_at=NULL WHERE id=? AND outcome IN ('queued','running')")
+        .bind(row.id).run();
+    }
+    return (await this.db.prepare('SELECT * FROM runs WHERE id=?').bind(row.id).first<RunRow>())!;
   }
   async status(run_id:string){
     assertId(run_id);let row=await this.db.prepare('SELECT * FROM runs WHERE id=?').bind(run_id).first<RunRow>();
@@ -188,7 +212,14 @@ export class WorkflowService {
       await this.reconcileStart(row);
       row=(await this.db.prepare('SELECT * FROM runs WHERE id=?').bind(run_id).first<RunRow>())!;
     }
-    let native='unknown';if(row.start_state==='started')try{native=(await (await this.env.WORKFLOW.get(row.instance_id)).status()).status;}catch{}
+    let native='unknown';
+    if(row.start_state==='started' && ['queued','running'].includes(row.outcome)){
+      const observed=await observeInstance(this.env.WORKFLOW,row.instance_id);
+      if(observed.kind==='found'){
+        native=observed.status;
+        row=await this.settleNativeOutcome(row,native);
+      }
+    }
     const steps=(await this.db.prepare('SELECT step_id,status,error_code FROM run_steps WHERE run_id=? ORDER BY step_id').bind(run_id).all<{step_id:string;status:string;error_code:string|null}>()).results;
     return {run_id,workflow_id:row.workflow_id,published_version_id:row.version_id,start_state:row.start_state,status:row.outcome==='indeterminate'?'indeterminate':row.start_state!=='started'?'start_unknown':applyStatus(native,row.outcome),steps};
   }

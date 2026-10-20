@@ -85,11 +85,30 @@ edge retry confirmed the fix: native `complete` alone does not establish the
 business outcome; queued/running stays nonterminal while D1 settles. This new
 fix has been proven against actual Cloudflare edge, not just local Wrangler.
 
-**Remaining risk:** Cloudflare Workflow `get(id)` errors can mean either absent
-instance or transient lookup failure; S1's bounded uncertainty handling is
-conservative about replay but does not yet prove network-partition classification
-or a long-stuck native-complete/D1-nonterminal repair policy. Treat that as
-additional acceptance/review work before claiming universal recovery guarantees.
+**Latest isolated edge verification (2026-10-20, next S1 change):**
+The new `0002_native_complete_seen.sql` migration was applied to disposable D1.
+The strict Workflow lookup adapter was tested against the real edge exception
+`(instance.not_found) Instance not found`; generic timeout, unavailable, and
+substring-only errors remain **unavailable**, not evidence of absence.
+The first remote D1 reserved-start replay correctly stayed `reserved` due to a
+local-only missing-error spelling mismatch. A disposable authenticated diagnostic
+endpoint established the exact edge marker, was removed, and the isolated
+worker was redeployed without the probe. Subsequent **36/36 full edge MCP
+assertions** and remote fault injection passed: same-ID reserved recovery,
+lost-ACK reconciliation, capacity pressure and aged unknown starts, plus native
+Workflow complete with a simulated permanently missing D1 business outcome.
+The last case returns terminal `indeterminate` / `outcome_unconfirmed` only
+after 10 minutes from **first seeing native complete**, never merely from Run
+creation. A bounded ingress pass handles already-observed stale active Runs
+without adding an independent scheduler.
+
+**Remaining risk:** the exact Cloudflare missing-instance exception is an
+observed **vendor runtime signature**, not a formally documented stable type.
+If it changes, recovery fails closed to `start_unknown`, preserves the logical
+Run and application capacity; it will not blindly dispatch. Real network
+partitions and incompatible-engine-version migrations have not been simulated.
+Two independent code reviewers remain outstanding. This change includes **15
+S1 unit/contract tests** and the existing 36-assertion owner-facing local E2E checks.
 
 The temporary Cloudflare D1, Workflow, test Worker and fixture Worker were all
 deleted afterward. The public test token and untracked deployment configuration

@@ -90,5 +90,12 @@ try{
  }finally{
     executeSql('DELETE FROM runs WHERE id IN ('+[staleId,...freshBlockers].map(sqlLiteral).join(',')+')');
  }
+ // Fault-inject an interrupted D1 terminal write after a genuinely complete
+ // Workflow instance. Use the first *already finished* read-only Run.
+ executeSql('UPDATE runs SET outcome=\'running\',result=NULL,native_complete_seen_at='+ (Date.now()-11*60_000) +' WHERE id='+sqlLiteral(runId));
+ const stalled=await tool('workflow_status',{run_id:runId});
+ assert.equal(stalled.status,'indeterminate','native complete with D1 stuck past the observation window settles to explicit uncertainty');
+ const stalledResult=await tool('workflow_result',{run_id:runId});
+ assert.equal(stalledResult.error_code,'outcome_unconfirmed','stalled completion has stable machine-readable error');
  console.log('S1_RESERVED_RECOVERY_PASS',JSON.stringify({run_id:runId,status:status.status,ack_recovery:true,capacity_rejected:true,stale_capacity_recovered:true}));
 }finally{await client.close();}
