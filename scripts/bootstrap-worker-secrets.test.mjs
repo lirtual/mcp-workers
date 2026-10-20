@@ -8,6 +8,7 @@ const fixtures = {
   "database-mcp-worker": { MCP_ACCESS_TOKEN: "portal", DATABASE_CONFIG: '{"sample":"mysql://user:pass@host/db"}' },
   "ssh-mcp-worker": { MCP_ACCESS_TOKEN: "portal", MCP_BROKER_TOKEN: "x".repeat(32) },
   "remote-control-mcp-worker": { MCP_ACCESS_TOKEN: "portal" },
+  "github-actions-mcp-worker": { MCP_ACCESS_TOKEN: "portal", GITHUB_TOKEN: "github-test-token" },
 };
 
 test("bootstrap supports all selected Workers, including isolated Remote Control", () => {

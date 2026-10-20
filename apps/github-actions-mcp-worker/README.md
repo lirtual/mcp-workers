@@ -8,9 +8,9 @@ A standalone Cloudflare Streamable HTTP MCP server that uses **only the GitHub R
 | --- | --- | --- |
 | `MCP_ACCESS_TOKEN` | Required runtime Secret | Reuse existing single-user MCP Portal Bearer token |
 | `GITHUB_TOKEN` | Required runtime Secret | GitHub fine-grained PAT with Actions Read & Write in permitted repositories; `repository_dispatch` also requires Contents Write |
-| `GITHUB_REPOS` | Wrangler variable | Comma-separated repository allowlist |
+| `GITHUB_REPOS` | Optional GitHub Environment variable / Wrangler default | Comma-separated exact repository allowlist |
 
-The default allowlist is `autoactions/tsrv,autoactions/tsvc`. Add another `owner/repo` to this single variable when needed. Do not check tokens into source control. A GitHub App installation token is short-lived; the first release uses a PAT, avoiding token-generation machinery.
+The default allowlist is `autoactions/tsrv,autoactions/tsvc`. For production overrides, set `GITHUB_REPOS` as a Variable in the GitHub Environment named `github-actions-mcp-worker`; use comma-separated `owner/repo` values without whitespace (max 30 entries). No override means the Wrangler default. Set `GITHUB_TOKEN` as an Environment Secret there. Existing `MCP_ACCESS_TOKEN` may come from the shared repository Secret or a Worker-specific Environment Secret. The release flow verifies the exact deployed repository list. Do not check tokens into source control. A GitHub App installation token is short-lived; the first release uses a PAT, avoiding token-generation machinery.
 
 ## Tools
 
@@ -54,4 +54,4 @@ All `/mcp` requests require the shared Bearer token; `/health` returns only basi
 
 ## Release boundary
 
-This draft PR is **source-only**. It registers application CI checks but intentionally leaves this app out of the existing production Worker release choices. No Cloudflare Worker, Secrets, Portal plugin, or GitHub Actions run is provisioned by merging this source alone. Deployment is a separate reviewed action.
+This draft PR is **source-only**. It adds this app to the existing manual, main-only GitHub Actions Worker release selector, with scoped GitHub Environment Secrets/Variables, preflight, deployment, and active-version readback. Merging source alone does **not** deploy: a separately authorized manual release must select `github-actions-mcp-worker`. No Cloudflare Worker, Secrets, Portal plugin, or GitHub Actions run is provisioned by this PR alone.

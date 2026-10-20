@@ -68,3 +68,15 @@ test("IMA CLIENT_ID must be present as a non-secret GitHub Variable", () => {
   assert.throws(() => collectWorkerVars("ima-mcp-worker",
     { API_KEY: "secret", IMA_BASE_URL: "https://ima.qq.com" }), /CLIENT_ID/);
 });
+
+
+test("GitHub Actions repo overrides come only from the selected Worker Environment", () => {
+  assert.deepEqual(collectWorkerVars("github-actions-mcp-worker", {}), []);
+  assert.deepEqual(collectWorkerVars("github-actions-mcp-worker",
+    { GITHUB_REPOS: "autoactions/tsrv,autoactions/tsvc", API_KEY: "never-pass" }),
+    ["GITHUB_REPOS:autoactions/tsrv,autoactions/tsvc"]);
+  for (const bad of ["../test", "a/repo, ../evil", "a/repo\\nb/repo", "a", "a/repo:", "a/repo,"]) {
+    assert.throws(() => collectWorkerVars("github-actions-mcp-worker", { GITHUB_REPOS: bad }),
+      /GITHUB_REPOS/);
+  }
+});

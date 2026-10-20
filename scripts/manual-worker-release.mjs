@@ -3,13 +3,14 @@
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-const WORKERS = new Set(["raindrop-mcp-worker", "ima-mcp-worker", "database-mcp-worker", "ssh-mcp-worker", "remote-control-mcp-worker"]);
+const WORKERS = new Set(["raindrop-mcp-worker", "ima-mcp-worker", "database-mcp-worker", "ssh-mcp-worker", "remote-control-mcp-worker", "github-actions-mcp-worker"]);
 const REQUIRED_SECRETS = {
   "raindrop-mcp-worker": ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN"],
   "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "API_KEY"],
   "database-mcp-worker": ["MCP_ACCESS_TOKEN", "DATABASE_CONFIG"],
   "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "MCP_BROKER_TOKEN"],
   "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
+  "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "GITHUB_TOKEN"],
 };
 const WORKER_ENTRIES = {
   "raindrop-mcp-worker": "src/worker.ts",
@@ -17,6 +18,7 @@ const WORKER_ENTRIES = {
   "database-mcp-worker": "src/index.ts",
   "ssh-mcp-worker": "src/index.ts",
   "remote-control-mcp-worker": "src/worker.ts",
+  "github-actions-mcp-worker": "src/index.ts",
 };
 
 function invariant(value, message) {
@@ -52,6 +54,16 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     invariant(settings.observability?.enabled === true &&
       settings.observability?.logs?.invocation_logs === logs,
       "Unexpected Invocation Logs configuration");
+  }
+  if (worker === "github-actions-mcp-worker" && options.mode === "readback") {
+    const repos = find("GITHUB_REPOS", "plain_text")?.text;
+    invariant(typeof repos === "string" && repos.length > 0 && repos.length <= 1024 &&
+      repos.split(",").length <= 30 &&
+      repos.split(",").every((repo) => /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) && !repo.includes("..")),
+      "GitHub Actions GITHUB_REPOS allowlist missing or invalid");
+    if (options.expectedGithubRepos) {
+      invariant(repos === options.expectedGithubRepos, "GitHub Actions GITHUB_REPOS readback mismatch");
+    }
   }
   if (worker === "ima-mcp-worker") {
     // During preflight, accept a legacy CLIENT_ID secret because it will be
@@ -260,7 +272,12 @@ async function current(account, worker, token, options) {
   // After a successful release, validation must work even if Preview is gone.
   const previousNamespaceId = options.mode === "preflight"
     ? existingOwner?.namespace_id : options.previousNamespaceId;
-  verifyBindings(worker, settings, secrets, { ...options, previousNamespaceId });
+  verifyBindings(worker, settings, secrets, {
+    ...options, previousNamespaceId,
+    ...(worker === "github-actions-mcp-worker" && options.mode === "readback"
+      ? { expectedGithubRepos: process.env.GITHUB_REPOS || options.sourceConfig?.vars?.GITHUB_REPOS }
+      : {}),
+  });
   if (options.sourceConfig) {
     invariant(settings.compatibility_date === options.sourceConfig.compatibility_date,
       "Compatibility date drift");

@@ -179,7 +179,7 @@ test("manual release scope stages the pinned Agent only for Remote Control", () 
     }
   }
   for (const worker of ["remote-control-mcp-worker", "database-mcp-worker",
-    "ima-mcp-worker", "raindrop-mcp-worker", "ssh-mcp-worker"]) {
+    "ima-mcp-worker", "raindrop-mcp-worker", "ssh-mcp-worker", "github-actions-mcp-worker"]) {
     const values = runManual(worker);
     assert.match(values, new RegExp("^apps=" + worker + "$", "m"));
     assert.match(values, new RegExp("^remote_control_changed=" +
@@ -239,7 +239,7 @@ test("manual release always syncs selected Worker Secrets from GitHub and never 
   const secretStep = workflow.slice(secretStart, variableStart);
   assert.doesNotMatch(secretStep, /^\s*if:/m, "existing Workers must never skip Secret staging");
   for (const name of ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN", "API_KEY",
-    "DATABASE_CONFIG", "MCP_BROKER_TOKEN"]) {
+    "DATABASE_CONFIG", "MCP_BROKER_TOKEN", "GITHUB_TOKEN"]) {
     assert.ok(secretStep.includes("secrets." + name), "GitHub must provide " + name);
   }
   assert.equal(secretStep.includes("secrets.CLIENT_ID"), false,
@@ -265,7 +265,7 @@ test("manual release always syncs selected Worker Secrets from GitHub and never 
 
 test("Wrangler never preserves unmanaged dashboard Variables on any selected Worker", () => {
   for (const worker of ["raindrop-mcp-worker", "ima-mcp-worker", "database-mcp-worker",
-    "ssh-mcp-worker", "remote-control-mcp-worker"]) {
+    "ssh-mcp-worker", "remote-control-mcp-worker", "github-actions-mcp-worker"]) {
     const file = readFileSync(new URL("../apps/" + worker + "/wrangler.jsonc", import.meta.url), "utf8");
     assert.match(file, /"keep_vars": false/, worker);
   }
@@ -287,4 +287,26 @@ test("preflight allows GitHub to restore a missing runtime Secret, but readback 
   assert.equal(verifyBindings("raindrop-mcp-worker", filled,
     [{ name: "MCP_ACCESS_TOKEN" }, { name: "RAINDROP_ACCESS_TOKEN" }],
     { mode: "readback" }), true);
+});
+
+
+test("GitHub Actions Worker release requires scoped secrets and reviewed repository list", () => {
+  const worker = "github-actions-mcp-worker";
+  const secrets = [{ name: "MCP_ACCESS_TOKEN" }, { name: "GITHUB_TOKEN" }];
+  const settings = { bindings: [
+    { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
+    { name: "GITHUB_TOKEN", type: "secret_text" },
+    { name: "GITHUB_REPOS", type: "plain_text", text: "autoactions/tsrv,autoactions/tsvc" },
+  ], observability: { enabled: true, logs: { invocation_logs: true } } };
+  const options = { mode: "readback", expectedGithubRepos: "autoactions/tsrv,autoactions/tsvc" };
+  assert.equal(verifyBindings(worker, settings, secrets, options), true);
+  assert.throws(() => verifyBindings(worker, settings, [{ name: "MCP_ACCESS_TOKEN" }], options), /Secret missing/);
+  assert.throws(() => verifyBindings(worker, settings, secrets,
+    { ...options, expectedGithubRepos: "other/repo" }), /readback mismatch/);
+  assert.throws(() => verifyBindings(worker, { ...settings, bindings: settings.bindings.slice(0, 2) },
+    secrets, options), /GITHUB_REPOS/);
+  assert.throws(() => verifyBindings(worker, { ...settings, bindings: [...settings.bindings,
+    { name: "DANGEROUS_RESOURCE", type: "service" }] }, secrets, options), /Unexpected production resource/);
+  assert.match(readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
+    /GITHUB_TOKEN: \$\{\{ secrets\.GITHUB_TOKEN \}\}/);
 });

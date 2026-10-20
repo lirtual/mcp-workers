@@ -22,6 +22,7 @@ export const WORKER_VARIABLES = Object.freeze({
   ],
   "ssh-mcp-worker": [],
   "remote-control-mcp-worker": [],
+  "github-actions-mcp-worker": ["GITHUB_REPOS"],
 });
 
 // The Wrangler Custom Domain is the one authoritative installation origin.
@@ -50,6 +51,11 @@ export function collectWorkerVars(worker, env, options = {}) {
   }
   for (const name of allowed) {
     const value = env[name];
+    if (name === "GITHUB_REPOS" &&
+        (value.length > 1024 || value.split(",").length > 30 ||
+          !value.split(",").every((repo) => /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) && !repo.includes("..")))) {
+      throw new Error("Invalid GITHUB_REPOS allowlist");
+    }
     if (name === "CLIENT_ID" && worker === "ima-mcp-worker" &&
         (typeof value !== "string" || value.trim().length === 0)) {
       throw new Error("Missing or empty required Worker Variable: CLIENT_ID");

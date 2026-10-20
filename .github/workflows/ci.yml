@@ -17,6 +17,7 @@ on:
           - raindrop-mcp-worker
           - ssh-mcp-worker
           - remote-control-mcp-worker
+          - github-actions-mcp-worker
 
 permissions:
   contents: read
@@ -204,7 +205,8 @@ jobs:
            inputs.worker == 'ima-mcp-worker' ||
            inputs.worker == 'database-mcp-worker' ||
            inputs.worker == 'ssh-mcp-worker' ||
-           inputs.worker == 'remote-control-mcp-worker') }}
+           inputs.worker == 'remote-control-mcp-worker' ||
+           inputs.worker == 'github-actions-mcp-worker') }}
     runs-on: ubuntu-latest
     # A GitHub Environment is a Worker-scoped configuration namespace, not a
     # staging/production selector. Only manual dispatch on main can deploy.
@@ -259,7 +261,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: node scripts/manual-worker-release.mjs preflight "$SELECTED_WORKER"
 
-      # GitHub Secrets are the source of truth for all five Workers, on every
+      # GitHub Secrets are the source of truth for all selected Workers, on every
       # explicitly authorized manual release, not just during bootstrap.
       - name: Stage selected Worker Secrets for every release
         shell: bash
@@ -271,6 +273,7 @@ jobs:
           API_KEY: ${{ secrets.API_KEY }}
           DATABASE_CONFIG: ${{ secrets.DATABASE_CONFIG }}
           MCP_BROKER_TOKEN: ${{ secrets.MCP_BROKER_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           umask 077
@@ -287,6 +290,7 @@ jobs:
           MAX_SCHEMA_BYTES: ${{ vars.MAX_SCHEMA_BYTES }}
           QUERY_TIMEOUT_MS: ${{ vars.QUERY_TIMEOUT_MS }}
           MAX_WRITE_AFFECTED_ROWS: ${{ vars.MAX_WRITE_AFFECTED_ROWS }}
+          GITHUB_REPOS: ${{ vars.GITHUB_REPOS }}
         run: |
           set -euo pipefail
           umask 077
@@ -312,7 +316,7 @@ jobs:
         run: |
           set -euo pipefail
           case "$SELECTED_WORKER" in
-            raindrop-mcp-worker|ima-mcp-worker|database-mcp-worker|ssh-mcp-worker|remote-control-mcp-worker) ;;
+            raindrop-mcp-worker|ima-mcp-worker|database-mcp-worker|ssh-mcp-worker|remote-control-mcp-worker|github-actions-mcp-worker) ;;
             *) echo "Invalid Worker target" >&2; exit 1 ;;
           esac
           log="$(mktemp)"
@@ -355,6 +359,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           EXPECTED_VERSION_ID: ${{ steps.publish.outputs.version_id }}
+          GITHUB_REPOS: ${{ vars.GITHUB_REPOS }}
         run: node scripts/manual-worker-release.mjs readback "$SELECTED_WORKER"
 
       - name: Check existing public health endpoint
