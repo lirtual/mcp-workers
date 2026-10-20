@@ -540,3 +540,33 @@ An attempt to read the Windows Application event log for a more specific browser
 - Once isolated Chromium **can actually render the offline marker**, verify Playwright with an **exact browser-binary/runtime match** inside the sandbox. Only afterwards use the proven §T proxy-only no-bypass fixture as a *candidate test* for Chromium child-process/network behavior. Full HTTP(S), redirect/DNS/subresource/WebSocket/UDP/IPv6 effective-target controls and one-use owner approval remain independent unverified P0 gates.
 
 **State:** Draft research/real-device diagnostic only; no PR merge, new Ticket/ADR/worker, production release, device upgrade, permanent SDK/host config change or website access.
+
+
+## V. Native MXC block-mode denial capture: Chromium render-versus-version differential (2026-10-20)
+
+This is a targeted follow-up to §U on the **same, previously authorized Windows 11 25H2 device** `71b4b4d8-6496-4898-9b80-1ea3a03f6ccd`. It **does not** fix or approve Chromium-in-ProcessContainer startup. The purpose was to obtain actual deny-in-place evidence without modifying Windows global ACLs, running as administrator, weakening browser sandbox flags, installing permanent tools, accessing a real website or enabling outbound network.
+
+### Availability and recording
+
+- The native, ordinary-user `@microsoft/mxc-sdk@1.0.1` `probe()` with **`containment.type=processcontainer`**, `captureDenials: { mode: "block", retainEtl: false }`, `ui.disable=false`, egress/host-loopback **deny-all**, container-local read access to `ms-playwright` and `System32`, and a unique writable Temp/profile directory returned **`tier=base-container`**, `nativeCaptureAvailable=true`, `guardedCaptureAvailable=false`, **no errors and no warnings**. This initial capability check **did not** create a sandbox or capture trace.
+- With that same policy, an actual `chrome-headless-shell.exe` fixed `data:text/html` render was executed under native **block-mode** denial capture. It still exited **`0x80000003`** before rendering; the native capture completed without error, recorded **3 denials**, and produced a non-truncated short JSON report. No `mode=allow` was used.
+- A second block-mode capture extracted the 3 denied resource identities and types, while masking user profile details. An additional direct **differential test** executed `--version` (successful, exit **0**) and offline HTML rendering (failed, `0x80000003`) using the **same** sandbox policy and per-run capture. Both reports were complete and `captureDenialsError=null`.
+
+### Server-side native capture evidence, comparing successful and failed paths
+
+| Denied resource (redacted/summarized) | Access recorded by native trace | Successful `--version` | Failed offline render |
+| --- | --- | --- | --- |
+| Current user's `\\REGISTRY\\USER\\<USER_SID>\\Console` | `other / read` | Yes | Yes |
+| Windows Chinese language-pack `conhost.exe.mui` | `file / write` | Yes | Yes |
+| Existing `%LOCALAPPDATA%\\ms-playwright\\chromium_headless_shell-1200\\chrome-headless-shell-win64\\chrome-headless-shell.exe` | `file / unknown` | **No** | **Yes** |
+
+**Interpretation:** The two common console/localization denials **cannot alone explain the unique rendering failure** because the browser's successful version-printing path encountered both. The **sole render-only denial** concerned the Headless Shell binary itself, but the recorder reports the access type as **`unknown`** and does not supply a causative failure stack. It is a high-value lead, **not proof** that a particular executable-image mapping, process launch, OS syscall, child-process IPC, or policy setting caused the breakpoint. The `0x80000003` remains unrooted.
+
+### Safety, cleanup, and next gate
+
+- The normal-user Agent command reported **0 tagged leftover Chromium processes** and removed the disposable SDK/npm cache, per-run Profile, small denial report(s) and scripts. The Agent operation receipts completed, with no persistent capture ETL requested. No production source, installed Agent, firewall, global host permission, process policy, credentials, user browser Profile or non-local HTTP target was modified.
+- **Do not widen access based merely on `unknown`**, add `--no-sandbox`, switch capture to `mode=allow`, rerun identical tests, or silently launch the browser outside the native sandbox.
+- A justified future next step requires **specific image/child-process denial semantics** from native OS documentation or a bounded test that differentiates the `file / unknown` case without increasing privileges (for example, a dedicated process-start/image-load diagnostic supported by this Windows build). If this cannot be established, explicitly mark the native Windows Chromium launch route **unsupported for now** and retain offline-only source/CI tests rather than introducing a proxy or whole new runtime.
+- **Still open:** browser-in-MXC startup, identity-bound proxy plus browser subprocess egress/redirect/DNS/UDP safety, and separately the Agent-verifiable one-use owner-authorization P0. Existing offline Chromium outside MXC and Linux CI mock/real smoke results are unaffected.
+
+**Disposition:** **Native block-mode denial capture PASS**, diagnostic isolation narrowed to one render-only `file/unknown` denial, **root cause NOT ESTABLISHED**, browser-in-MXC and public browsing **NOT ACCEPTED**. Neither Draft PR is merged/released/deployed; no new ADR, Ticket, production dependency or device configuration change.
