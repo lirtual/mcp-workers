@@ -137,6 +137,73 @@ const collectionGetTool = defineTool({
   },
 });
 
+const CollectionCreateInputSchema = z.object({
+  title: z.string().trim().min(1).max(255),
+  public: z.boolean().optional(),
+  parentId: z.number().int().positive().safe().optional(),
+}).strict();
+
+const CollectionUpdateInputSchema = z.object({
+  id: z.number().int().positive().safe(),
+  title: z.string().trim().min(1).max(255).optional(),
+  description: z.string().max(4096).optional(),
+  color: z.string().min(1).max(64).optional(),
+  public: z.boolean().optional(),
+}).strict().refine(
+  args => args.title !== undefined || args.description !== undefined ||
+    args.color !== undefined || args.public !== undefined,
+  "At least one collection field must be updated",
+);
+
+const CollectionMutationOutputSchema = z.object({
+  collection: CollectionReadSummarySchema,
+});
+
+const collectionCreateTool = defineTool({
+  name: "collection_create",
+  description: "Create exactly one collection with a title and optional parent/public flag.",
+  inputSchema: CollectionCreateInputSchema,
+  outputSchema: CollectionMutationOutputSchema,
+  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+  handler: async (
+    args: z.infer<typeof CollectionCreateInputSchema>,
+    { raindropService }: ToolHandlerContext,
+  ) => {
+    const created = args.parentId === undefined
+      ? await raindropService.createCollection(args.title, args.public ?? false)
+      : await raindropService.createCollection(args.title, args.public ?? false, args.parentId);
+    const collection = collectionReadSummary(created);
+    return {
+      content: [textContent(`Created collection ${collection.id}`)],
+      structuredContent: { collection },
+    };
+  },
+});
+
+const collectionUpdateTool = defineTool({
+  name: "collection_update",
+  description: "Update explicit fields of one collection without clearing unspecified fields.",
+  inputSchema: CollectionUpdateInputSchema,
+  outputSchema: CollectionMutationOutputSchema,
+  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+  handler: async (
+    args: z.infer<typeof CollectionUpdateInputSchema>,
+    { raindropService }: ToolHandlerContext,
+  ) => {
+    const updates: Record<string, string | boolean> = {};
+    setIfDefined(updates, "title", args.title);
+    setIfDefined(updates, "description", args.description);
+    setIfDefined(updates, "color", args.color);
+    setIfDefined(updates, "public", args.public);
+    const updated = await raindropService.updateCollection(args.id, updates);
+    const collection = collectionReadSummary(updated);
+    return {
+      content: [textContent(`Updated collection ${collection.id}`)],
+      structuredContent: { collection },
+    };
+  },
+});
+
 const getCollectionTreeTool = defineTool({
   name: "get_collection_tree",
   description:
@@ -236,6 +303,8 @@ const collectionManageTool = defineTool({
 export const collectionTools = [
   collectionListTool,
   collectionGetTool,
+  collectionCreateTool,
+  collectionUpdateTool,
   getCollectionTreeTool,
   collectionManageTool,
 ];
