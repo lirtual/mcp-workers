@@ -145,7 +145,7 @@ export class GitHubActionsClient {
       throw new ActionError('invalid_ref');
     }
     return this.api(repo, 'actions/workflows/' + encodeURIComponent(workflow) + '/dispatches', {
-      method: 'POST', body: JSON.stringify({ ref, inputs }),
+      method: 'POST', body: JSON.stringify({ ref, inputs, return_run_details: true }),
     });
   }
 
