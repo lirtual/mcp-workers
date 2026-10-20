@@ -120,6 +120,8 @@
 
 **高亮失败的可解释线索**：仓库 `main` 的旧 Service 实现通过 `POST /highlights` 创建、`PUT /highlights/{id}` 更新，但 Raindrop [官方 Highlights 文档](https://developer.raindrop.io/v1/highlights) 当前要求在目标书签上执行 `PUT /raindrop/{id}`，通过 `highlights` 数组创建/修改/删除。Draft T07 已采用官方目标书签 PUT 的方法并有 HTTP Mock 验证。这一旧实现的路径差异**可能**解释生产旧插件的 404；未取得生产 HTTP 请求日志，不能仅凭返回信息断言根因已经完全证实。不能把旧版失败归咎为 Draft 失败，也不能把 Draft Mock 成功当真实修复已通过。
 
+**官方端点核查与防回归（2026-10-20）**：官方 [Highlights API](https://developer.raindrop.io/v1/highlights) 明确规定高亮创建、修改、删除都使用 `PUT /raindrop/{id}` 的 `highlights` 补丁，且高亮 `_id` 是字符串；对照当前生产 `main` 的旧 Service，旧实现创建为 `POST /highlights`，是与官方规范不一致的明确代码事实。生产工具返回 404 与此一致，但未取得请求追踪，仍不宣称完全证实该 404 的唯一原因。Draft T07 新代码已经走官方 PUT，本轮新增 `tests/highlight_contract_replay.test.ts` 三项从 SDK `tools/call` 走到真实 Service HTTP 请求构造的 Mock 回归：新 `highlight_create`、兼容 `highlight_manage(create)` 均只产生 `GET → PUT /raindrop/{id}`，绝不重走旧 `POST /highlights`；目标 GET 返回 404 时仅一条 GET，拒绝写入/不自动重试。属于**凭据隔离的 HTTP Mock 验证**，不是 Draft 现网写入验证。
+
 **后续验收结论**：现有已部署插件的一部分生产读写链路可用；Draft 专用的 8 项认证只读 smoke、Draft 新版高亮 PUT 的真实验收、其他具有破坏性的候选操作仍待安全注入 Token 或经单独授权的部署执行。此生产账号虽可用于可丢弃对象验收，但 `NO-GO` 与明确的工具切换授权门槛不变。
 
 ## 发布风险核对
