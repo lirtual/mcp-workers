@@ -251,6 +251,19 @@ Separate [remote-control-agent Draft PR #15](https://github.com/lirtual/remote-c
 - **One process boundary, not two MCP systems:** The desired enforcement must apply to **all Chromium/browser child-process sockets**, not only page requests; it must block direct egress when a conditional request broker or proxy is bypassed. A user-level browser `--proxy-server` flag by itself is not proof of no-bypass enforcement. Reuse the existing Agent lifecycle and paired device; no additional Cloudflare Worker, browser CDP server, authorization database or general machine-wide firewall modification is approved.
 - **Fail-closed first:** Keep browser external navigation absent until a platform-specific enforcement mechanism is proven, and return an explicit unavailable/not-accepted status if the chosen mechanism cannot be established. Keep the current offline-only tool-free core as a known safe subset, **without claiming it is an OS network sandbox**.
 
+### Read-only Windows API availability probe on the previously authorized device
+
+The exact previously selected native Windows Agent was queried through an **Agent-owned, short-lived read-only PowerShell command**. The probe dynamically loaded only the known System32 `processmodel.dll` with `LOAD_LIBRARY_SEARCH_SYSTEM32`, checked exports with `GetProcAddress`, unloaded the module, and exited with status 0. Its bounded output was:
+
+```text
+PROCESSMODEL_LOAD=True
+CREATE_IN_SANDBOX_EXPORT=True
+CREATE_AS_USER_IN_SANDBOX_EXPORT=True
+NOTE=Export availability only; no sandbox process launched
+```
+
+This is **ABI symbol availability only** on the owner's currently selected Windows installation. It rules out a missing DLL/export, **not** unsupported sandbox semantics, multi-process Chromium startup, required FlatBuffer `SBOX` policy compilation, non-admin permissions, Playwright IPC, effective link-local/private-network filtering, or revocation. No sandbox was created, no file/registry/firewall setting changed, and no other paired device was contacted. Microsoft explicitly marks this API [experimental](https://learn.microsoft.com/en-us/windows/win32/secauthz/createprocessinsandbox). Do not implement based solely on the export check.
+
 ### Smallest platform acceptance contract for any future public-browsing enablement
 
 1. A **positive** synthetic public HTTP(S) target must receive a request and render a page. A **different** forbidden fixture, reached via a cross-origin 302 or new resolved/private/link-local IP, must receive **zero** requests—not merely a Playwright blocked event. Include IPv4 and IPv6.
