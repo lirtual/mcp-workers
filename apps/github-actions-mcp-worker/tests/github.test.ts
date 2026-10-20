@@ -35,7 +35,7 @@ test('workflow dispatch sends correct payload and returns GitHub accepted run id
   assert.equal(requests[0]?.url, 'https://api.github.com/repos/autoactions/tsrv/actions/workflows/linux.yml/dispatches');
   assert.equal(requests[0]?.method, 'POST');
   assert.equal(requests[0]?.authorization, 'Bearer github-secret');
-  assert.deepEqual(requests[0]?.body, { ref: 'main', inputs: { access_profile: 'mini' } });
+  assert.deepEqual(requests[0]?.body, { ref: 'main', inputs: { access_profile: 'mini' }, return_run_details: true });
 });
 
 test('repository dispatch uses dedicated GitHub event API', async () => {
