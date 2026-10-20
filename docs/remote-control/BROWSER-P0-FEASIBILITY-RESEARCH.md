@@ -1,5 +1,8 @@
 # Browser automation P0 feasibility research — owner confirmation and network egress
 
+> **2026-10-20 — subsequent owner-directed scope reset and real Windows CLI PoC:** This is the preserved **historical MXC/WFP/Proxy-only feasibility evidence**, not the current first-stage implementation backlog. Further Chromium-in-MXC work is paused. See [BROWSER-BACKEND-POC-20261020.md](./BROWSER-BACKEND-POC-20261020.md) for a successful native paired-Windows CLI comparison, selection of agent-browser as the single first integration candidate, and the narrower **personal trusted-device** acceptance gates. The original strict hostile-execution network P0 remains **unverified/deferred, not PASS**. High-impact owner approval remains unverified and mandatory before consequential operations.
+
+
 **Research date:** 2026-10-20  
 **Status:** source/specification review only; **no live client or browser traffic acceptance performed**, no implementation decision, no deployment authorization.  
 **Method:** Matt Skills `research` using the project's existing code and primary OpenAI/MCP/Playwright references. This is **one technical research note**, not an ADR, product decision (Q53), implementation Ticket or replacement for the [Q1–Q52 accepted design](./BROWSER-AUTOMATION-DESIGN.md).
