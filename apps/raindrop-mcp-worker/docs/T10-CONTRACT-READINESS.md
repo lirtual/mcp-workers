@@ -124,6 +124,19 @@
 
 **后续验收结论**：现有已部署插件的一部分生产读写链路可用；Draft 专用的 8 项认证只读 smoke、Draft 新版高亮 PUT 的真实验收、其他具有破坏性的候选操作仍待安全注入 Token 或经单独授权的部署执行。此生产账号虽可用于可丢弃对象验收，但 `NO-GO` 与明确的工具切换授权门槛不变。
 
+## P1 新版真实调用准备：修复测试入口（2026-10-20）
+
+- 发现两个既有真实 API 测试隐患：`tests/mcp.integration.test.ts` 和 `tests/destructive.live.test.ts` 虽通过环境变量决定是否启用测试，却实例化未传入 Access Token 的 Service；后者还传入新版 Service 已拒绝的 `createBookmark(0,...)`。两处现已显式从测试进程的 `RAINDROP_ACCESS_TOKEN` 注入，创建书签时不传入集合 ID，使用 Raindrop 默认 Unsorted 位置。两个测试移除了自动读取本地 `.env` 的逻辑，防止凭据来源不透明。
+- `destructive.live.test.ts` 现使用**只属于本次测试的随机唯一 URL + 返回的书签 ID**进行完整高亮创建/读取/更新/删除真实接口验收。仅通过精确 ID 和原 URL 再次核对后进行测试书签清理；先限定原集合软删，确认已进入 Trash，才限定 Trash 删除该测试书签。绝不调用全局 `trash_empty` 或对未知书签动手。清理失败必须报告测试失败，不再静默忽略。
+- 运行仍采用原有显式开关，不新增服务、Worker、环境变量名或 CI Secret：`RUN_DESTRUCTIVE_LIVE_TESTS=true`、`CONFIRM_DESTRUCTIVE_LIVE_TESTS=DELETE_ONLY_TEST_BOOKMARKS` 和测试进程 `RAINDROP_ACCESS_TOKEN` 缺一不会发出测试请求。只需在持有 Token 的本机 WSL 终端进入仓库根目录后运行：
+
+```bash
+cd apps/raindrop-mcp-worker
+bash -c 'set -eu; IFS= read -rsp "Raindrop API Token: " RAINDROP_ACCESS_TOKEN </dev/tty; printf "\n"; export RAINDROP_ACCESS_TOKEN RUN_DESTRUCTIVE_LIVE_TESTS=true CONFIRM_DESTRUCTIVE_LIVE_TESTS=DELETE_ONLY_TEST_BOOKMARKS; ./node_modules/.bin/vitest run tests/destructive.live.test.ts'
+```
+
+- **证据等级**：本轮仅静态检查及无令牌跳过验证；由于 Remote Control WSL Shell 无 Raindrop Token，尚未执行 Draft 的认证读写。生产旧版插件此前已实测，但它的连接凭据无法直接交由另一进程使用。不得以为本段已经完成了新版的真实高亮验收。
+
 ## 发布风险核对
 
 | 风险 | 已有控制 / 证据 | 结论 |
