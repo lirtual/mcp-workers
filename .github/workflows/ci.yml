@@ -29,6 +29,7 @@ env:
 jobs:
   checks:
     name: Application checks
+    if: ${{ github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main' }}
     concurrency:
       group: ci-checks-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.event.pull_request.number || github.ref }}
       cancel-in-progress: true
@@ -458,4 +459,5 @@ jobs:
         env:
           RAINDROP_ACCESS_TOKEN: ${{ secrets.RAINDROP_ACCESS_TOKEN }}
           RUN_LIVE_API_TESTS: "true"
+          RAINDROP_LIVE_SHAPE_TRACE: "true"
         run: pnpm --filter raindrop-mcp-worker run test:read-only-live

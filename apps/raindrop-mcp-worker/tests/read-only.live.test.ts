@@ -26,6 +26,21 @@ suite("Spec #123 authenticated read-only MCP smoke", () => {
     vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
       const response = await readOnlyFetch(input, init);
       readCount++;
+      if (process.env.RAINDROP_LIVE_SHAPE_TRACE === "true") {
+        const path = new URL(new Request(input, init).url).pathname.replace(/\d+/g, ":id");
+        if (path.includes("/collections") || path.endsWith("/suggest")) {
+          // Field names and HTTP status only. Never log values, URL query,
+          // user data, Authorization, or server-provided response bodies.
+          const value = await response.clone().json().catch(() => null);
+          const obj = value && typeof value === "object" ? value as Record<string, unknown> : {};
+          const item = obj.item && typeof obj.item === "object" ? obj.item as Record<string, unknown> : {};
+          console.info("RAINDROP_LIVE_SHAPE", JSON.stringify({
+            path, status: response.status, resultType: typeof obj.result,
+            resultTrue: obj.result === true, rootKeys: Object.keys(obj).sort(),
+            itemsArray: Array.isArray(obj.items), itemKeys: Object.keys(item).sort(),
+          }));
+        }
+      }
       return response;
     });
 
