@@ -19,8 +19,11 @@ describeDestructive("RaindropService destructive live integration", () => {
 
     try {
       // First delete moves the bookmark to Trash; second delete permanently removes it.
-      await service.deleteBookmark(createdBookmarkId);
-      await service.deleteBookmark(createdBookmarkId);
+      const source = (await service.getBookmark(createdBookmarkId, true)).collection?.$id;
+      if (typeof source !== "number" || (source !== -1 && source <= 0))
+        throw new Error("Cannot verify disposable bookmark source");
+      await service.deleteBookmark(createdBookmarkId, source);
+      await service.deleteBookmark(createdBookmarkId, -99);
     } catch {
       // Cleanup is best-effort: the assertion below reports an unexpected survivor.
     }

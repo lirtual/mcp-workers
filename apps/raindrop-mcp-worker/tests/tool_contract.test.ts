@@ -765,6 +765,9 @@ describe("T03 atomic bookmark writes over public MCP", () => {
       const uncertain = await client.callTool({ name: "bookmark_delete", arguments: { id: 7 } });
       expect(uncertain.structuredContent).toMatchObject({ status: "unknown", id: 7 });
       expect(remove).toHaveBeenCalledTimes(3);
+      expect(remove).toHaveBeenNthCalledWith(1, 7, 11);
+      expect(remove).toHaveBeenNthCalledWith(2, 7, -99);
+      expect(remove).toHaveBeenNthCalledWith(3, 7, 11);
       expect(get).toHaveBeenCalledTimes(5);
     } finally {
       await client.close(); await service.cleanup();

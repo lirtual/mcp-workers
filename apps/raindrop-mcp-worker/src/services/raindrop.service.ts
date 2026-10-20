@@ -1239,22 +1239,48 @@ export default class RaindropService {
 
   /**
    * Delete a bookmark
-   * Raindrop.io API: DELETE /raindrop/{id}
+   * Raindrop.io API: DELETE /raindrops/{collectionId} with ids:[id].
+   * Unscoped single-item DELETE could permanently delete after a Trash race.
    */
-  async deleteBookmark(id: number): Promise<void> {
-    await this.withWriteRateLimit(async () => {
-      // The local generated schema incorrectly types DELETE response as never.
-      // Official REST contract returns { result: true } on success.
-      const { data, error } = await (this.client as any).DELETE("/raindrop/{id}", {
-        params: { path: { id } },
-      });
-      if (error || data?.result !== true)
-        throw new UpstreamError("Bookmark deletion outcome could not be verified");
-    });
+  async deleteBookmark(id: number, sourceCollectionId: number): Promise<void> {
+    if (!Number.isSafeInteger(id) || id <= 0 ||
+        !Number.isSafeInteger(sourceCollectionId) ||
+        (sourceCollectionId !== -1 && sourceCollectionId !== -99 && sourceCollectionId <= 0))
+      throw new ValidationError("Exact positive bookmark ID and explicit source collection required");
 
-    // Invalidate bookmark and search caches
-    await this.cacheBookmarks.delete(`id:${id}`);
-    await this.cacheSearch.clear();
+    // Check the original source again inside the Service. Even if another client
+    // moves it after this GET, the collection-scoped DELETE can no longer turn
+    // an ordinary Trash move into a permanent single-item deletion.
+    const current = await this.getBookmark(id, true);
+    if (current._id !== id || current.collection?.$id !== sourceCollectionId)
+      throw new ValidationError("Bookmark source changed; nothing deleted");
+
+    try {
+      await this.withWriteRateLimit(async () => {
+        // Official: DELETE /raindrops/{collectionId} with exact IDs.
+        // Source -99 is deliberately explicit for permanent deletion.
+        // Generated OpenAPI types misname this path variable and omit
+        // nested/modified; the runtime endpoint follows the official API.
+        const { data } = await (this.client as any).DELETE("/raindrops/{collectionId}", {
+          params: {
+            path: { collectionId: sourceCollectionId },
+            query: { nested: false },
+          },
+          body: { ids: [id] },
+        });
+        // One supplied ID makes a reported single modification attributable.
+        // Any aggregate/missing acknowledgement is NOT a verified deletion.
+        if (!z.object({ result: z.literal(true), modified: z.literal(1) }).safeParse(data).success)
+          throw new UnknownWriteError(
+            "Scoped bookmark deletion was not individually acknowledged; inspect upstream before retrying",
+          );
+      });
+    } finally {
+      // Unknown results can still have mutated upstream state.
+      this.cacheBookmarks.delete(`id:${id}`);
+      this.cacheSearch.clear();
+      this.cacheCollections.clear();
+    }
   }
 
   async updateBookmarkBatch(

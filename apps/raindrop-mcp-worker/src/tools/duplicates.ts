@@ -66,6 +66,8 @@ function canonical(value: unknown): string {
 }
 function flags(item: Record<string, unknown>) {
   const unknown =
+    typeof item.title !== "string" ||
+    typeof item.excerpt !== "string" ||
     typeof item.note !== "string" ||
     !Array.isArray(item.highlights) ||
     !Array.isArray(item.tags) ||
@@ -118,9 +120,18 @@ export const bookmarkRemoveDuplicatesTool = defineTool({
     for (const group of groups.values()) {
       const keeper = group.find((item) => item.flags.protected) ?? group[0]!;
       keeperIds.push(keeper.id);
-      for (const item of group)
+      for (const item of group) {
+        // Same URL is not evidence of identical user-authored content.
+        // Preserve an item whose title or excerpt differs from the keeper.
+        // Missing values are already classified unknown in flags().
+        if (item.metadata.title !== keeper.metadata.title ||
+            item.metadata.excerpt !== keeper.metadata.excerpt) {
+          item.flags.protected = true;
+          item.flags.eligible = false;
+        }
         if (item.id !== keeper.id && item.flags.eligible)
           candidateIds.push(item.id);
+      }
     }
     candidateIds.sort((a, b) => a - b);
     keeperIds.sort((a, b) => a - b);
@@ -167,7 +178,7 @@ export const bookmarkRemoveDuplicatesTool = defineTool({
       })),
       confirmation: confirm,
       warning:
-        "Only the complete observed official filter snapshot is covered; canonical originals may be omitted. Missing metadata is protected. Snapshot digest is neither permission nor a transaction lock; concurrent upstream changes remain possible.",
+        "Only the complete observed official filter snapshot is covered; canonical originals may be omitted. Different title/excerpt and missing metadata are protected. Snapshot digest is neither permission nor a transaction lock; concurrent upstream changes remain possible.",
     };
     if (!args.confirm)
       return {

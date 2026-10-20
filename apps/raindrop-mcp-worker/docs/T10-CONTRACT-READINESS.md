@@ -79,6 +79,13 @@
 6. **已修复（后续补丁）**：bookmark_remove_duplicates 已为预览、无需执行及批量失败/未知结果声明并校验输出 Schema；仍需真实 API 验收。
 7. **未解决**：27 项均缺此 Draft 版本的真实认证 MCP/API 验收；涉及写入的需经单独授权的可丢弃测试对象；全局永久清空记录 acceptance-limited。前述测试矩阵只覆盖模拟场景。
 
+## P0 独立审查后续修复（2026-10-20）
+
+- **已修复单书签删除竞态**：`bookmark_delete` 与旧 `bookmark_manage` 的安全软删入口均改为调用同一 Service 删除方法，必须传入明确原始集合。Service 再次无缓存读取并校验原始集合后，使用官方 `DELETE /raindrops/{collectionId}` + `{ids:[id]}`；仅在调用者显式传入 `-99` 时允许执行永久删除。即使书签在预检和 DELETE 之间转入 Trash，也不会从原集合的 DELETE 升级为永久删除。仅 `result:true` 且 `modified:1` 视作确认，否则返回不确定结果、不得自动重试。
+- **已修复重复书签内容保护**：对不同 `title` 或 `excerpt` 的相同 URL 记录拒绝自动清理，缺少上述字段也默认保护；保留现有标签、笔记、高亮、收藏、提醒保护机制。
+- **独立 HTTP/SDK Mock 回归**：新增原集合限定、预检过期、不重试及摘要/标题差异等测试；本地 WSL Node22 共 353 passed / 3 skipped / 0 failed，源码/测试 typecheck、lint（0 errors）及 diff-check 通过。Node24 CI 和真实 API 验收仍另行核查。
+- **发布门槛不变**：虽然代码级 P0 修复完成，认证只读 smoke、可丢弃数据写入验收、27 项工具最终切换授权均仍缺失；`NO-GO` 保持有效。
+
 ## 发布风险核对
 
 | 风险 | 已有控制 / 证据 | 结论 |

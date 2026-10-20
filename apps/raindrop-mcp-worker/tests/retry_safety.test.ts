@@ -116,14 +116,51 @@ describe("RaindropService retry safety", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("never replays a failed single-bookmark DELETE", async () => {
-    const fetchMock = vi.fn(async () => new Response("upstream failure", {
-      status: 500, statusText: "Internal Server Error",
-    }));
+  it("never replays a failed collection-scoped single-bookmark DELETE", async () => {
+    const fetchMock = vi.fn(async (request: Request) => {
+      if (request.method === "GET")
+        return new Response(JSON.stringify({ result: true, item: {
+          _id: 78, collection: { $id: 11 },
+        } }), { headers: { "content-type": "application/json" } });
+      return new Response("upstream failure", {
+        status: 500, statusText: "Internal Server Error",
+      });
+    });
     vi.stubGlobal("fetch", fetchMock);
     const service = new RaindropService({ accessToken: "test-token", maxReadRetries: 3 });
-    await expect(service.deleteBookmark(78)).rejects.toThrow();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await expect(service.deleteBookmark(78, 11)).rejects.toThrow();
+    const deletes = fetchMock.mock.calls.filter(([request]) => request.method === "DELETE");
+    expect(deletes).toHaveLength(1);
+    expect(new URL(deletes[0]![0].url).pathname).toBe("/rest/v1/raindrops/11");
+  });
+
+  it("never turns an ordinary deletion into permanent deletion after a Trash race", async () => {
+    let location = 11;
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (request.method === "GET")
+        return new Response(JSON.stringify({ result: true, item: {
+          _id: 78, collection: { $id: location },
+        } }), { headers: { "content-type": "application/json" } });
+      expect(request.method).toBe("DELETE");
+      expect(url.pathname).toBe("/rest/v1/raindrops/11");
+      expect(url.searchParams.get("nested")).toBe("false");
+      expect(await request.json()).toEqual({ ids: [78] });
+      // Another client moved this bookmark to Trash after our last GET.
+      location = -99;
+      // Scoped DELETE of collection 11 no longer targets the moved item.
+      return new Response(JSON.stringify({ result: true, modified: 0 }), {
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const service = new RaindropService({ accessToken: "test-token", maxReadRetries: 0 });
+    await expect(service.deleteBookmark(78, 11)).rejects.toThrow(/individually acknowledged/);
+    expect(location).toBe(-99);
+    expect(fetchMock.mock.calls.filter(([r]) => r.method === "DELETE")).toHaveLength(1);
+    // A stale former source is rejected before dispatching another write.
+    await expect(service.deleteBookmark(78, 11)).rejects.toThrow(/source changed/);
+    expect(fetchMock.mock.calls.filter(([r]) => r.method === "DELETE")).toHaveLength(1);
   });
 
   it("does not retry an upstream 429 after submitting a write", async () => {

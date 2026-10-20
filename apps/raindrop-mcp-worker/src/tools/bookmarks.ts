@@ -462,7 +462,7 @@ const bookmarkDeleteTool = defineTool({
     if (sourceCollection !== -99 && sourceCollection !== -1 && sourceCollection <= 0)
       throw new ValidationError("Bookmark is not in a verified writable collection");
     try {
-      await raindropService.deleteBookmark(args.id);
+      await raindropService.deleteBookmark(args.id, sourceCollection);
       const outcome = args.permanent ? "permanently_deleted" as const : "trashed" as const;
       return {
         content: [textContent(outcome)],
@@ -544,7 +544,7 @@ const bookmarkManageTool = defineTool({
         if (typeof source !== "number" || !Number.isSafeInteger(source) ||
             source === -99 || (source !== -1 && source <= 0))
           throw new ValidationError("Legacy delete only supports a verified non-Trash bookmark");
-        await raindropService.deleteBookmark(args.id);
+        await raindropService.deleteBookmark(args.id, source);
         return {
           content: [textContent(`Moved bookmark ${args.id} to Trash`)],
           structuredContent: { operation: "delete" as const, deleted: true },

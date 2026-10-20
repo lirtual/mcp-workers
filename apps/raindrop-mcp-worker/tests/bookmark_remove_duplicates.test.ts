@@ -16,6 +16,8 @@ const item = (id: number, extra: Record<string, unknown> = {}) => ({
   _id: id,
   link: "https://example.test/exact",
   collection: { $id: 7 },
+  title: "Exact duplicate",
+  excerpt: "",
   note: "",
   highlights: [],
   tags: [],
@@ -130,6 +132,22 @@ describe("official atomic duplicate removal", () => {
     expect(mock.writes()).toHaveLength(1);
     expect(mock.detailReads.get(1)).toBe(4); // two previews, confirm scan, final keeper
     expect(mock.detailReads.get(2)).toBe(5); // includes T06 independent preflight
+  });
+
+  it.each([
+    ["different title", { title: "Unique edited title" }],
+    ["different excerpt", { excerpt: "Unique saved summary" }],
+    ["missing title", { title: undefined }],
+    ["missing excerpt", { excerpt: undefined }],
+  ])("preserves distinct user content: %s", async (_name, changed) => {
+    const mock = new OfficialMock();
+    mock.items.set(2, item(2, changed));
+    const p = await preview(api());
+    expect(p.confirmation.candidateIds).toEqual([]);
+    expect(p.protectedCount + p.unknownCount).toBeGreaterThan(0);
+    expect((await call(api(), { confirm: p.confirmation })).structuredContent.status)
+      .toBe("notExecuted");
+    expect(mock.writes()).toHaveLength(0);
   });
 
   it("sorts official IDs and preserves the same digest across result order changes", async () => {

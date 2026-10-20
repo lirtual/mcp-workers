@@ -196,13 +196,27 @@ describe("T03 Raindrop single-write HTTP contracts", () => {
     await expect(service.updateBookmark(78, { title: "Not saved" })).rejects.toThrow();
   });
 
-  it("requires an explicit Raindrop result:true before reporting deletion", async () => {
+  it("requires a scoped, single-ID modification before confirming deletion", async () => {
     const service = new RaindropService("fake-token");
+    const get = (service as any).client.GET;
     const remove = (service as any).client.DELETE;
+    get.mockResolvedValue({ data: { result: true,
+      item: { _id: 78, collection: { $id: 11 } } } });
+    remove.mockResolvedValueOnce({ data: { result: true, modified: 1 } });
+    await expect(service.deleteBookmark(78, 11)).resolves.toBeUndefined();
+    expect(remove).toHaveBeenCalledWith("/raindrops/{collectionId}", {
+      params: { path: { collectionId: 11 }, query: { nested: false } },
+      body: { ids: [78] },
+    });
+
     remove.mockResolvedValueOnce({ data: { result: true } });
-    await expect(service.deleteBookmark(78)).resolves.toBeUndefined();
-    expect(remove).toHaveBeenCalledWith("/raindrop/{id}", { params: { path: { id: 78 } } });
-    remove.mockResolvedValueOnce({ data: { result: false } });
-    await expect(service.deleteBookmark(78)).rejects.toThrow(/could not be verified/);
+    await expect(service.deleteBookmark(78, 11)).rejects.toThrow(/individually acknowledged/);
+    remove.mockResolvedValueOnce({ data: { result: false, modified: 0 } });
+    await expect(service.deleteBookmark(78, 11)).rejects.toThrow(/individually acknowledged/);
+    get.mockResolvedValueOnce({ data: { result: true,
+      item: { _id: 78, collection: { $id: -99 } } } });
+    await expect(service.deleteBookmark(78, 11)).rejects.toThrow(/source changed/);
+    expect(remove).toHaveBeenCalledTimes(3);
+    await expect(service.deleteBookmark(78, 0)).rejects.toThrow(/source collection/);
   });
 });
