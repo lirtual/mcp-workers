@@ -49,6 +49,40 @@ test('repository dispatch uses dedicated GitHub event API', async () => {
   assert.equal(value.accepted, true);
 });
 
+test('normal and force cancellation only acknowledge requests and use explicit endpoints', async () => {
+  const calls: Array<{ url: string; method: string }> = [];
+  const client = new GitHubActionsClient(config, (async (url, init) => {
+    calls.push({ url: String(url), method: init?.method ?? 'GET' });
+    return new Response(null, { status: 202 });
+  }) as typeof fetch);
+
+  assert.deepEqual(await client.cancelRun('autoactions/tsrv', 39365524170), {
+    accepted: true, cancellation: 'requested', completion_confirmed: false, run_id: 39365524170,
+  });
+  assert.deepEqual(await client.forceCancelRun('autoactions/tsrv', 39365524170), {
+    accepted: true, cancellation: 'force_requested', completion_confirmed: false, run_id: 39365524170,
+  });
+  assert.deepEqual(calls, [
+    { url: 'https://api.github.com/repos/autoactions/tsrv/actions/runs/39365524170/cancel', method: 'POST' },
+    { url: 'https://api.github.com/repos/autoactions/tsrv/actions/runs/39365524170/force-cancel', method: 'POST' },
+  ]);
+});
+
+test('force cancel validates repository and run id before sending and sanitizes conflict', async () => {
+  let callCount = 0;
+  const client = new GitHubActionsClient(config, (async () => {
+    callCount++;
+    return Response.json({ message: 'private credentials' }, { status: 409 });
+  }) as typeof fetch);
+  await assert.rejects(() => client.forceCancelRun('unlisted/repo', 8), { code: 'repository_not_allowed' });
+  await assert.rejects(() => client.forceCancelRun('autoactions/tsrv', 0), { code: 'invalid_run_id' });
+  assert.equal(callCount, 0);
+  await assert.rejects(() => client.forceCancelRun('autoactions/tsrv', 8), (err: unknown) =>
+    err instanceof ActionError && err.code === 'github_http_409' &&
+    !err.message.includes('private credentials'));
+  assert.equal(callCount, 1);
+});
+
 test('upstream errors reveal only status, not response body or credentials', async () => {
   const client = new GitHubActionsClient(config, (async () =>
     Response.json({ message: 'github-secret and private data' }, { status: 403 })) as typeof fetch);
