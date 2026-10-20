@@ -26,6 +26,8 @@ Existing **device pairing is necessary but insufficient as blanket browser autho
 
 **Follow-on decision (round 8):** [ADR-0028](./0028-browser-data-files-provenance-platform-acceptance.md) selects minimized page output without routine credential extraction, existing Agent-local file authority, trusted compatible Chromium with real provenance/integrity verification, and independent real-device acceptance by platform.
 
-**Still open:** exact browser artifact/source verification method and OS dependency checks, numeric page/screenshot limits, download cleanup, idle activity accounting, recovery implementation and offline cleanup, personal-profile attachment authorization, concrete approval transport and classification edge cases, tool parameter/result schemas and action reconciliation, packaging and rollout gates. No coding, Issue creation, production change, or deployment is authorized by this ADR.
+**Follow-on decision (round 9):** [ADR-0029](./0029-browser-results-outcomes-downloads-gated-release.md) establishes compact browser results, separated execution/website-effect evidence, seven-day unreferenced-download retention and the ability to stage proven safe low-impact capabilities independently while unverified high-impact operations remain disabled.
+
+**Still open:** browser artifact/source verification and OS dependencies, numeric page/screenshot limits, download reference cleanup, idle accounting, safe recovery and offline cleanup, personal-profile attach authorization, concrete one-use approval transport and low-impact classifier, tool schemas and effect reconciliation, packaging/rollout gates. No coding, Issue creation, production change, or deployment is authorized by this ADR.
 
 Related: [Remote Control Domain Context](../CONTEXT.md), [v2 multi-device transport ADR-0014](./0014-v2-multi-device-ws-do.md), [local mutation receipts ADR-0007](./0007-local-receipts-and-no-blind-replay.md).
