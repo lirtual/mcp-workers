@@ -26,21 +26,6 @@ suite("Spec #123 authenticated read-only MCP smoke", () => {
     vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
       const response = await readOnlyFetch(input, init);
       readCount++;
-      if (process.env.RAINDROP_LIVE_SHAPE_TRACE === "true") {
-        const path = new URL(new Request(input, init).url).pathname.replace(/\d+/g, ":id");
-        if (path.includes("/collections") || path.endsWith("/suggest")) {
-          // Field names and HTTP status only. Never log values, URL query,
-          // user data, Authorization, or server-provided response bodies.
-          const value = await response.clone().json().catch(() => null);
-          const obj = value && typeof value === "object" ? value as Record<string, unknown> : {};
-          const item = obj.item && typeof obj.item === "object" ? obj.item as Record<string, unknown> : {};
-          console.info("RAINDROP_LIVE_SHAPE", JSON.stringify({
-            path, status: response.status, resultType: typeof obj.result,
-            resultTrue: obj.result === true, rootKeys: Object.keys(obj).sort(),
-            itemsArray: Array.isArray(obj.items), itemKeys: Object.keys(item).sort(),
-          }));
-        }
-      }
       return response;
     });
 
@@ -58,37 +43,8 @@ suite("Spec #123 authenticated read-only MCP smoke", () => {
 
   const read = async (name: string, args: Record<string, unknown>) => {
     const result = await client.callTool({ name, arguments: args });
-    if (result.isError || !result.structuredContent) {
-      if (process.env.RAINDROP_LIVE_SHAPE_TRACE === "true") {
-        const message = result.content.filter((entry) => entry.type === "text")
-          .map((entry) => entry.text).join(" ");
-        const categories = [
-          "Duplicate collection IDs", "Unable to enumerate nested collections",
-          "Invalid suggested collection IDs", "organization suggestions were not verified",
-          "Invalid collection", "output schema", "validation error", "forbidden",
-          "unauthorized", "Resource not found", "UpstreamError", "ZodError",
-        ];
-        console.info("RAINDROP_LIVE_ERROR_CATEGORY", JSON.stringify({
-          tool: name,
-          category: categories.find((kind) => message.toLowerCase().includes(kind.toLowerCase())) ?? "unclassified",
-          isError: result.isError === true,
-          hasStructuredContent: Boolean(result.structuredContent),
-        }));
-        if (name === "collection_list") {
-          const roots = await service.raindropService.getCollections(true);
-          const children = await service.raindropService.getAllChildCollections(true);
-          const all = [...roots, ...children];
-          console.info("RAINDROP_COLLECTION_SCHEMA_COUNTS", JSON.stringify({
-            roots: roots.length, children: children.length,
-            duplicates: all.length - new Set(all.map((x) => x._id)).size,
-            nonPositiveIds: all.filter((x) => !Number.isSafeInteger(x._id) || x._id <= 0).length,
-            invalidTitle: all.filter((x) => typeof x.title !== "string").length,
-            invalidCount: all.filter((x) => x.count !== undefined && (!Number.isSafeInteger(x.count) || x.count < 0)).length,
-          }));
-        }
-      }
+    if (result.isError || !result.structuredContent)
       throw new Error(`Read-only MCP smoke failed for ${name} (response content withheld)`);
-    }
     return result.structuredContent as Record<string, unknown>;
   };
 

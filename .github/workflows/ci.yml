@@ -29,7 +29,6 @@ env:
 jobs:
   checks:
     name: Application checks
-    if: ${{ github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main' }}
     concurrency:
       group: ci-checks-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.event.pull_request.number || github.ref }}
       cancel-in-progress: true
@@ -413,51 +412,3 @@ jobs:
             echo "Unexpected unauthenticated MCP status: $status" >&2
             exit 1
           done
-
-  # One-off owner-authorized Draft source acceptance. The existing production
-  # Environment supplies the Raindrop secret only to the final GET-only step.
-  # Does not deploy Workers; never runs on pull_request/push events.
-  raindrop-draft-readonly:
-    name: Raindrop Draft authenticated read-only smoke
-    if: >-
-      ${{ github.event_name == 'workflow_dispatch' &&
-          github.repository == 'lirtual/mcp-workers' &&
-          github.actor == 'lirtual' &&
-          github.ref == 'refs/heads/implement/spec-123-raindrop' &&
-          inputs.worker == 'raindrop-mcp-worker' }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    environment:
-      name: raindrop-mcp-worker
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Verify pinned Draft source and manual execution
-        shell: bash
-        env:
-          EXPECTED_OWNER: lirtual
-        run: |
-          set -euo pipefail
-          [[ "$GITHUB_ACTOR" == "$EXPECTED_OWNER" ]]
-          [[ "$GITHUB_EVENT_NAME" == 'workflow_dispatch' ]]
-          [[ "$GITHUB_REF" == 'refs/heads/implement/spec-123-raindrop' ]]
-          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10.17.1
-          run_install: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
-      - name: Install trusted locked dependencies
-        run: pnpm install --frozen-lockfile --ignore-scripts
-      - name: Run Draft GET-only acceptance with existing Environment secret
-        env:
-          RAINDROP_ACCESS_TOKEN: ${{ secrets.RAINDROP_ACCESS_TOKEN }}
-          RUN_LIVE_API_TESTS: "true"
-          RAINDROP_LIVE_SHAPE_TRACE: "true"
-        run: pnpm --filter raindrop-mcp-worker run test:read-only-live

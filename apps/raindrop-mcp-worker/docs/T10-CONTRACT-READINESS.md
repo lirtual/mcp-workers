@@ -149,6 +149,15 @@ bash -c 'set -eu; IFS= read -rsp "Raindrop API Token: " RAINDROP_ACCESS_TOKEN </
 - **最小修复**：高亮写入请求 Promise 一旦结束（成功、拒绝或网络异常），一律失效当前书签 ID 与搜索缓存；预检失败时仍不执行写入、也不失效缓存。此举只影响本地缓存，不新增上游调用、不改变目标或 payload、不自动重试写入。
 - **验证**：`highlights.service.test.ts` 加入完整路径的缓存回归，先填充书签读取缓存，再模拟 `PUT` 返回不完整结果，确认 `status:unknown` 后下一次 `getBookmark` 必须再次 GET；成功与未知结果的缓存断言均已更新。该修复属于本地 HTTP Mock 检验，**Draft 真实 API 写入验收仍未完成**。
 
+## Draft 源码生产账号认证只读验收（2026-10-20）
+
+使用现有 GitHub Environment `raindrop-mcp-worker` 中的 `RAINDROP_ACCESS_TOKEN`，由仓库所有者手动触发**临时、仅 GET**的 Actions 验收作业，以 Draft 源码运行内存 MCP Client；没有向 WSL 或日志导出明文 Token，也没有部署 Worker、合并 PR 或操作生产书签。临时 CI 验收入口及脱敏排障代码在验收结束后已撤销，不保留扩大 Draft Secret 使用范围的常驻权限。
+
+- [首次真实只读验收 #39436009140](https://github.com/lirtual/mcp-workers/actions/runs/39436009140)：10 项中 7 通过、3 失败。真正调用了 Raindrop API，不属于 Mock 测试。
+- [类型/状态排障 #39436971993](https://github.com/lirtual/mcp-workers/actions/runs/39436971993)：`GET /collections` 与 `GET /collections/childrens` 均 200 且 `result:true`；两个数组分别有 4 和 1 条记录，但同一个 ID 跨接口重复出现 1 次。新版 `collection_list` 此前错误地拒绝所有重复，因此实际用户的列表和依赖列表的 `collection_get` 验收失败。已按同 ID、同标题及父级不冲突的限制合并跨接口重叠项，并为相互矛盾的条目保留明确拒绝。
+- [修复后真实只读复测 #39437631284](https://github.com/lirtual/mcp-workers/actions/runs/39437631284)：**10 项中 9 通过、1 失败**。`collection_list`、`collection_get`、`bookmark_search`、`bookmark_get`、`highlight_list`、`tag_list`、`bookmark_filters_get` 及工具注册/无写入校验均通过；`bookmark_suggest` 调用官方 `GET /raindrop/{id}/suggest` 获得上游 **HTTP 403**。接口路径与官方文档相符，但该 Token/目标书签的建议能力暂无法通过；不推断 403 的具体授权原因，也不把它改标为通过。
+- **安全与发布结论**：上述请求只访问现有生产账号、不写入数据；没有运行新版创建、编辑、高亮写入或永久删除的真实验收。27 项候选工具尚不满足全部真实 API 发布门槛，`NO-GO`，PR 保持 Draft。不得把原生产旧版插件的读写成功结果作为此 Draft 写入通过。
+
 ## 发布风险核对
 
 | 风险 | 已有控制 / 证据 | 结论 |
