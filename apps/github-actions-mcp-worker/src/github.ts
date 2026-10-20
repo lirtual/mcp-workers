@@ -1,7 +1,6 @@
 export interface Env {
   MCP_ACCESS_TOKEN: string;
   GH_TOKEN: string;
-  GH_TOKEN_SECONDARY?: string;
 }
 
 export class ActionError extends Error {
@@ -19,6 +18,19 @@ const MAX_RESPONSE_BYTES = 512 * 1024;
 // Failing closed is safer than treating truncated discovery as comprehensive.
 const REPO_PAGE_SIZE = 25;
 const MAX_REPO_PAGES = 8;
+const MAX_GITHUB_TOKENS = 8;
+
+/** One GH_TOKEN Secret supports one PAT per line. Existing single-line values work unchanged. */
+export function parseGithubTokens(value: string | undefined): string[] {
+  if (!value || !value.trim()) throw new ActionError('github_token_not_configured');
+  const tokens = value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+  if (tokens.length < 1 || tokens.length > MAX_GITHUB_TOKENS ||
+      tokens.some((token) => token.length > 512 || /\s/.test(token))) {
+    throw new ActionError('invalid_github_tokens');
+  }
+  if (new Set(tokens).size !== tokens.length) throw new ActionError('duplicate_github_token');
+  return tokens;
+}
 
 export function assertRepoName(repo: string): void {
   if (!REPOSITORY.test(repo) || repo.includes('..')) throw new ActionError('invalid_repository');
@@ -50,11 +62,7 @@ export class GitHubActionsClient {
   private repositoriesPromise?: Promise<Map<string, string | null>>;
 
   constructor(env: Env, requestFetch: typeof fetch = fetch) {
-    const primary = env.GH_TOKEN?.trim();
-    const secondary = env.GH_TOKEN_SECONDARY?.trim();
-    if (!primary) throw new ActionError('github_token_not_configured');
-    if (secondary && secondary === primary) throw new ActionError('duplicate_github_token');
-    this.tokens = secondary ? [primary, secondary] : [primary];
+    this.tokens = parseGithubTokens(env.GH_TOKEN);
     this.requestFetch = requestFetch;
   }
 
