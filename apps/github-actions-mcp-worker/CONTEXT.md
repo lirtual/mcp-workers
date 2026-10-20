@@ -1,7 +1,9 @@
 # GitHub Actions MCP context
 
-Owns an independently deployed, stateless MCP ingress for GitHub Actions on an explicit repository allowlist. GitHub is the source of truth for workflows, run states, jobs and artifact metadata. Mutations use GitHub's official dispatch, cancel and rerun endpoints; returned acceptance is not evidence that a run completed.
+This bounded context owns an independently deployed, stateless MCP ingress that calls **only GitHub REST API** endpoints for GitHub Actions. It never calls Session Deck or any other management API. GitHub is the source of truth for workflows, runs, jobs and artifacts; `tsrv` and `tsvc` require no special adapter.
 
-Session Deck is a separate optional control plane and remains the owner of session-target discovery, exclusive-target admission, workflow input validation, readiness observation, locator artifact parsing and Sensitive Facts decryption. This app only proxies its documented authenticated API after confirming the returned target repo appears in the same configured allowlist. It does not directly attach to GitHub runners or persist session passwords, credentials, or command output.
+Runtime inputs are the existing `MCP_ACCESS_TOKEN`, one `GITHUB_TOKEN`, and a comma-separated `GITHUB_REPOS` allowlist. No database, queue, background state, session password, cloud executor, D1, R2 or Durable Object is introduced.
 
-Boundaries: no arbitrary repo URL, no generic HTTP proxy, no shell access, no unbounded logs or artifact downloads, no Cloudflare deployment actions. The app never logs upstream bodies, secrets, or private facts. No production deployment is performed by a source PR.
+MCP tool boundaries: allowlisted workflow/run discovery, metadata-only job/artifact reads, explicit-ref workflow dispatch, repository dispatch, individual run cancellation, and reruns. Upstream acceptance does not prove a run started or completed. For runner address or session readiness, this MCP does not interpret artifacts; that remains outside this generic Actions manager.
+
+Never log upstream bodies, tokens, or repository private data. Production deployment is a separate approval step.
