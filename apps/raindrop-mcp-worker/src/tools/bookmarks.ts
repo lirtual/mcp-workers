@@ -106,6 +106,68 @@ const bookmarkSummary = (bookmark: any) => ({
   tags: bookmark.tags || [],
 });
 
+const BookmarkGetInputSchema = z.object({
+  id: z.number().int().positive()
+    .refine(Number.isSafeInteger, "Expected a safe positive integer ID"),
+  skipCache: z.boolean().optional(),
+}).strict();
+
+const BookmarkGetOutputSchema = z.object({
+  bookmark: z.object({
+    id: z.number().int().positive(),
+    title: z.string(),
+    url: z.string().url(),
+    tags: z.array(z.string()),
+    excerpt: z.string().optional(),
+    note: z.string().optional(),
+    important: z.boolean().optional(),
+    collectionId: z.number().int().positive().optional(),
+    highlights: z.array(z.object({
+      id: z.string(),
+      text: z.string(),
+      color: z.string().optional(),
+      note: z.string().optional(),
+    })).optional(),
+  }),
+});
+
+const bookmarkGetTool = defineTool({
+  name: "bookmark_get",
+  description: "Fetch a bookmark by its exact positive integer ID, including available notes and highlights.",
+  inputSchema: BookmarkGetInputSchema,
+  outputSchema: BookmarkGetOutputSchema,
+  annotations: { readOnlyHint: true, idempotentHint: true },
+  handler: async (
+    args: z.infer<typeof BookmarkGetInputSchema>,
+    { raindropService }: ToolHandlerContext,
+  ) => {
+    const raw = await raindropService.getBookmark(args.id, args.skipCache);
+    const bookmark = {
+      id: raw._id,
+      title: raw.title || "Untitled",
+      url: raw.link,
+      tags: raw.tags || [],
+      ...(typeof raw.excerpt === "string" ? { excerpt: raw.excerpt } : {}),
+      ...(typeof raw.note === "string" ? { note: raw.note } : {}),
+      ...(typeof raw.important === "boolean" ? { important: raw.important } : {}),
+      ...(typeof raw.collection?.$id === "number" && raw.collection.$id > 0
+        ? { collectionId: raw.collection.$id } : {}),
+      ...(Array.isArray(raw.highlights)
+        ? { highlights: raw.highlights.map((h) => ({
+            id: h._id,
+            text: h.text,
+            ...(typeof h.color === "string" ? { color: h.color } : {}),
+            ...(typeof h.note === "string" ? { note: h.note } : {}),
+          })) }
+        : {}),
+    };
+    return {
+      content: [textContent(`Bookmark ${bookmark.id}: ${bookmark.title}`)],
+      structuredContent: { bookmark },
+    };
+  },
+});
+
 // Single URL only: the official exists endpoint returns an aggregate ID list,
 // not a proven per-URL mapping for bulk input.
 const BookmarkExistsInputSchema = z.object({
@@ -313,6 +375,7 @@ const listRaindropsTool = defineTool({
 });
 
 export const bookmarkTools = [
+  bookmarkGetTool,
   bookmarkExistsTool,
   bookmarkSearchTool,
   bookmarkManageTool,
