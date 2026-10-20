@@ -251,14 +251,15 @@ export async function handleDeviceInfoMessage(
       socket.close(1008, "invalid session");
       return true;
     }
+    const sessionEpoch = attached.epoch as string;
     const stored = await state.storage.transaction(async tx => {
       const [device, epoch] = await Promise.all([
         tx.get<V2Device>("device:" + attached.device_id),
         tx.get<string>("session:epoch:" + attached.device_id),
       ]);
-      if (!deviceIsAuthorized(device) || epoch !== attached.epoch) return false;
+      if (!deviceIsAuthorized(device) || epoch !== sessionEpoch) return false;
       await tx.put("device:" + attached.device_id, {
-        ...device, device_info: info, device_info_epoch: attached.epoch, last_seen: Date.now(),
+        ...device, device_info: info, device_info_epoch: sessionEpoch, last_seen: Date.now(),
       } satisfies V2Device);
       return true;
     });
