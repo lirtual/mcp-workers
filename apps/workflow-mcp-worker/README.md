@@ -181,6 +181,15 @@ fault injection passed. This is a data-boundary bug fix only; it does not alter
 S1 scope or any Cloudflare execution architecture. The 41-assertion suite has
 not been rerun on real edge for this particular revision.
 
+**Final input-type validation (2026-10-21):** S1's fixed `s1.readonly_mcp`
+`with.arguments` must be an object (a valid structured `ref` expression remains
+allowed). Previously numeric, null, string or array values could be Published
+and fail only at execution time. This was reproduced by a failing compiler test
+and repaired with one validation check. Local validation/Publish MCP regression:
+**42/42 E2E assertions**, **19/19 unit/contract tests**, and same-ID recovery /
+capacity fault injection passed. The change requires no extra service or D1
+migration. The new case is locally tested, not independently edge-retested.
+
 Final initial-release versus active-upgrade gate decisions and 27-story evidence
 are consolidated in [S1-RELEASE-READINESS.md](S1-RELEASE-READINESS.md).
 

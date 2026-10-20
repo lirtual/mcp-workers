@@ -47,6 +47,15 @@ test('independent DAG Step order is canonical and locale-independent', async () 
   assert.equal(compiled.digest,reversed.digest);
 });
 
+test('S1 readonly MCP arguments must be an object before Publish', async () => {
+  for(const argumentsValue of [null,42,'not an object',['list']]) {
+    const definition={version:1,name:'Invalid MCP args',steps:[
+      {id:'read',uses:'s1.readonly_mcp',with:{tool:'echo',arguments:argumentsValue}}
+    ]};
+    await assert.rejects(()=>compilePlan(definition),PlanError);
+  }
+});
+
 test('S1 validation refuses arbitrary code, dynamic networks, missing refs and cycles', async () => {
   for (const definition of [
     {...one, steps:[{id:'x',uses:'shell.run',with:{command:'rm -rf /'}}]},

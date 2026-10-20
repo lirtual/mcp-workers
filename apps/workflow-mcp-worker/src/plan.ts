@@ -115,6 +115,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       keys(withData,['tool','arguments']);
       if(withData.tool!=='echo')throw new PlanError('unsupported_readonly_tool');
       if(withData.arguments===undefined)throw new PlanError('missing_arguments');
+      object(withData.arguments,'invalid_step_arguments');
     }else keys(withData,['data']);
     steps.push({id:s.id,uses:s.uses,needs:needs as string[],with:withData,...(s.if===undefined?{}:{if:s.if})});
   }

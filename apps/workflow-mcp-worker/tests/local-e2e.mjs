@@ -82,6 +82,12 @@ try{
   const invalidPreview=await tool('workflow_validate',{workflow_id:invalidDraft.workflow_id,revision:1});
   ok(invalidPreview.valid===false&&invalidPreview.issues?.length>0,'validation returns actionable issues instead of losing Draft');
   await tool('workflow_publish',{workflow_id:invalidDraft.workflow_id,expected_revision:1},'invalid_definition');
+  const wrongArgsDraft=await tool('workflow_create',{definition:JSON.stringify({version:1,name:'Invalid arguments',steps:[
+    {id:'read',uses:'s1.readonly_mcp',with:{tool:'echo',arguments:42}}
+  ]})});
+  ok((await tool('workflow_validate',{workflow_id:wrongArgsDraft.workflow_id,revision:1})).valid===false,
+    'non-object MCP arguments are rejected during validation, before execution');
+  await tool('workflow_publish',{workflow_id:wrongArgsDraft.workflow_id,expected_revision:1},'invalid_definition');
   ok((await tool('workflow_get',{workflow_id:invalidDraft.workflow_id})).published_version_id===null,'rejected Publish leaves prior state unchanged');
   await tool('workflow_create',{definition:'name: Wide\nnotes: '+'汉'.repeat(13000)},'definition_too_large');
   ok(true,'multi-byte Draft exceeds UTF-8 byte budget even if JS string length is below 32 KiB');
