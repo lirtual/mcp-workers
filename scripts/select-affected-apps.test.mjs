@@ -33,3 +33,10 @@ test('SSH remains CI-checked and can be manually selected for production release
     assert.equal(selectAffectedApps(files).includes('ssh-mcp-worker'), true, files.join(','));
   }
 });
+
+test('GitHub Actions MCP is checked but is not in production release choices', async () => {
+  assert.deepEqual(selectAffectedApps(['apps/github-actions-mcp-worker/src/index.ts']), ['github-actions-mcp-worker']);
+  assert.equal(selectAffectedApps(['pnpm-lock.yaml']).includes('github-actions-mcp-worker'), true);
+  const workflow = await readFile(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  assert.equal(workflow.includes('\n          - github-actions-mcp-worker\n'), false);
+});
