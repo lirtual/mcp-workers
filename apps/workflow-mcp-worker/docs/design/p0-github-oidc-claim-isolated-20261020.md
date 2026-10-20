@@ -58,4 +58,4 @@ This is concrete evidence for **Q26 atomic single-owner Claim** and **Q48 receip
 
 Related decisions: Q18, Q25–Q27, Q33, Q44, Q48, Q50; ADR-0011, ADR-0012, ADR-0018; [unified spec](technical-spec-draft.md), AC-15/16/17.
 
-The temporary private repo and cloud resources must be deleted after evidence capture. Status will be updated in this report when deletion is independently verified. Never include OIDC raw JWT, GitHub OAuth PAT or any test secret in the PR.
+**Cleanup completed and independently verified:** test Worker `wf-p05-claim-20261020`, Workflow `wf-p05-notifier-20261020`, dedicated D1 `wf-p05-claim-20261020`, and temporary private GitHub repo `lirtual/wf-p05-oidc-20261020-5bcc50` were deleted. Cloudflare account counts returned to the initial **12 Workers, 4 D1 databases and 1 Workflow**, with zero named P0-5 resources. GitHub CLI confirmed the private repo no longer resolves. Run IDs above remain documentary evidence; their GitHub URLs will not remain available after repository deletion. No raw OIDC JWT, PAT or production token was stored in this PR.
