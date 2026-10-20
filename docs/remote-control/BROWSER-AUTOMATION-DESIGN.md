@@ -1,6 +1,6 @@
 # Remote Control — Browser Automation Design (Grill With Docs)
 
-Status: **design interview in progress; rounds 1–10 agreed 2026-10-20**. This document records decisions, not shipped behavior, authorization to implement, a release gate or a new development Ticket. The existing v1/v2 specs remain authoritative for their implemented scope. Do not infer that browser tools, native Windows browser automation coverage, or personal-profile access exist today.
+Status: **design interview in progress; rounds 1–11 agreed 2026-10-20**. This document records decisions, not shipped behavior, authorization to implement, a release gate or a new development Ticket. The existing v1/v2 specs remain authoritative for their implemented scope. Do not infer that browser tools, native Windows browser automation coverage, or personal-profile access exist today.
 
 ## Goal
 
@@ -116,6 +116,17 @@ See [ADR-0029](./adr/0029-browser-results-outcomes-downloads-gated-release.md). 
 
 See [ADR-0030](./adr/0030-browser-conservative-gating-consent-evidence-acceptance.md). Approval channel feasibility, result schemas and safe-subset details are not yet proven. These choices do not approve new tests, tickets, tools or deployments.
 
+## Accepted initial safe surface, compact contracts, and local download references (round 11)
+
+| Question | Decision | Consequence |
+| --- | --- | --- |
+| Q41 — Initially safe surface | **A**: conservative candidate low-impact subset | Status/list of sessions/tabs, bounded read-only semantic observation, and explicitly requested screenshots are initial candidates; navigation needs explicit target and effect-safety review, and no ordinary click/fill/keyboard/select is safe solely by tool name. Content, identity and read exposure still require authorization. Uncertain effects fail closed |
+| Q42 — Atomic tool interface | **A**: minimal shared targeting/results | Explicit `device_id`, relevant `session_id` and `tab_id`; each tool has its own focused parameters. Results supply known status, errors, required data/truncation and effectful `operation_id` without universal complex envelopes or a generic action router. Exact schemas remain open |
+| Q43 — Page observation budget | **A**: bounded follow-up reading | Initial default approximately **8,000 characters** in a semantic snapshot, explicit truncation, focused follow-up reads as needed; screenshots on demand, initially **one per request**. No routine credentials extraction; screenshots may still expose secrets. Image format and measurement details remain open |
+| Q44 — Download reference tracking | **A**: reuse existing Agent-local session/operation metadata | Auto-delete after seven days only if the file is positively unreferenced; retain on unknown references or outstanding operations. Do not introduce another file index/database, bulk cloud transport or duplicate file manager. Exact reference/race implementation remains open |
+
+See [ADR-0030](./adr/0030-browser-conservative-gating-consent-evidence-acceptance.md) for Q41, [ADR-0025](./adr/0025-atomic-browser-actions-and-receipts.md) for Q42, [ADR-0028](./adr/0028-browser-data-files-provenance-platform-acceptance.md) for Q43 and [ADR-0029](./adr/0029-browser-results-outcomes-downloads-gated-release.md) for Q44. No new ADR, feature code, runtime behavior, tickets or deployment is authorized by these decisions.
+
 ## Invariants carried forward
 
 - Use the established authenticated device path and explicit `device_id`; never accept an arbitrary remote address or publish a CDP endpoint.
@@ -127,26 +138,27 @@ See [ADR-0030](./adr/0030-browser-conservative-gating-consent-evidence-acceptanc
 
 ## Open design-tree branches
 
-**Next-round frontier (Q41–Q44; no choices accepted yet)**
+**Next-round frontier (Q45–Q48; no choices accepted yet)**
 
-- Q41 — Which *specific* first-stage browser operations can be classified as low-impact without weakening Q37, given that a generic click/fill/keypress can commit external effects and even navigation may trigger mutations?
-- Q42 — Which smallest common typed input and result fields should become the first-release MCP tool interface for targeting, statuses, truncation, errors, and effectful operation reconciliation, without unnecessary wrapping or duplicate tools?
-- Q43 — What bounded default snapshot/screenshot policy and secret-aware behavior should reduce Token and private-data exposure without pretending arbitrary screenshots can be fully sanitized?
-- Q44 — How should managed-download references and seven-day cleanup eligibility be tracked with the minimum existing Agent-local state, avoiding both premature file deletion and a parallel file-manager database?
+- Q45 — What navigation URL/scheme and local-network boundary is appropriate for a paired remote browser, given potentially side-effecting GET requests and access to local administrative services, without building a global site allowlist?
+- Q46 — Which page/tab/viewport state changes invalidate a screenshot-derived visual target so that a coordinate action cannot be applied to a stale or different page?
+- Q47 — What is the smallest safe rule for managed-download filenames, collisions and unsafe paths to prevent overwriting host files while reusing existing Agent file tools?
+- Q48 — How should a client distinguish tools merely **documented**, **implemented**, **platform-accepted** and actually **enabled** (including high-impact operations withheld for lack of verified confirmation) without creating a second capability registry?
 
-**Still downstream (requires further evidence/decisions, not secretly assumed):** actual owner-confirmation channel issuance/expiry/consumption and negative end-to-end proof cases; compact receipt transitions and website evidence rules; screenshot coordinate freshness; tab crash/stale-lock ownership and restart reconciliation; real upstream Chromium artifact-verification metadata; per-platform acceptance evidence, automated publishing boundaries and final cross-document overengineering audit. Personal Chrome/Edge attachment remains a separate, later product decision. No functionality, Tickets, merge or deploy may begin from this documentation-only discussion.
+**Unresolved feasibility gates to research rather than guess:** actual supported ChatGPT/MCP one-use human-confirmation evidence path to Agent; exact installed versus source Agent receipt capability by platform; actual Playwright Chromium artifact verification metadata; result-field schema and resource constraints; Windows/Linux real-browser acceptance. Review code/docs for facts before proposing implementation. The frontier is design decisions, not development Tickets.
 
 ## Design review observations — not accepted decisions (2026-10-20)
 
 These are **review findings and remaining feasibility or detail gaps**, *not* further accepted decisions, implementation evidence, issue tickets or permission to act. Round-10 choices resolve design direction, **not proof that safety mechanisms exist**.
 
-1. **High — conservative classification accepted (Q37), safe tool subset not proven.** A generic click/fill/keyboard event or even navigation can have externally consequential effects. Q37 now forbids label-only/model-only low-impact classification and requires failure closed on uncertainty; Q41 must specify the truly eligible operations without claiming that all arbitrary website actions are safe.
+1. **High — conservative classification and narrow candidate subset accepted (Q37/Q41), runtime proof still absent.** Session/tab status and task-bounded semantic observations or on-demand screenshots are candidate low-impact operations, not universal claims of harmlessness: page loads, navigation, local-network access and sensitive data exposure may still be consequential. Generic click/fill/keyboard/select are not automatically safe. Q45 must decide explicit navigation boundary; actual enforcement and safe enabled subset still require validation.
 2. **High — E2E owner authorization gate accepted (Q38), actual transport unverified.** Q38 now requires a demonstrated action-specific, single-use proof from ChatGPT via MCP/Worker to Agent and rejection of invalid approvals. Such a client capability has **not** been established here. High-impact actions must remain disabled if proof is unavailable; no new portal is automatically justified.
 3. **Medium — existing local receipts accepted (Q39), exact outcome representation open.** Q39 reuses existing receipt semantics for progress and unknown outcomes and rejects a new website transaction ledger. Read-only website confirmation may be inconclusive. Q42 and subsequent evidence review must preserve this distinction instead of inventing exactly-once guarantees.
-4. **Medium — cleanup races and privacy.** Q24 protects the retained Profile, while Q35 permits timed cleanup of managed downloads only if unreferenced. Safe reference tracking, directory permissions and sensitive output handling remain open. Avoid a separate file manager, tracking database or cloud binary proxy unless an accepted requirement later demands one.
+4. **Medium — bounded observations and conservative cleanup direction accepted (Q43/Q44), implementation gaps remain.** A semantic default of approximately 8,000 characters and one on-demand screenshot per request does not guarantee private content is absent or an optimal token budget. Downloads may be deleted after seven days only when references are provably absent; existing Agent-local metadata may not yet record those links. Exact reference races, path collisions, directory permissions and sensitive output handling remain open. No separate file-manager database or cloud binary proxy is justified.
 5. **Medium — installation and rollout evidence.** Q31 requires genuine trusted Chromium provenance, which must be established from actual available metadata rather than inventing a checksum. Q32 requires platform-specific proof; previous Windows preview work is not proof of browser support. A new distribution pipeline or cross-platform lockstep release would exceed accepted scope without further justification.
 6. **Complexity watch — first-release coverage vs staged enablement (Q40).** Q21/Q25 identify intended *tool capability*, while Q36/Q37/Q40 permit only safety-classified, platform-accepted operations to become *enabled* under separate release authorization. Keep defined, implemented, tested and enabled states distinct. No new Worker/DO, profile manager, general scripting gateway, approval service, independent website ledger or cross-platform lockstep release is justified by these decisions. Q40 permits reusing relevant unchanged test evidence, not skipping changed behavior.
 7. **Complexity watch — documentation and existing runtime drift.** ADR-0021–0030 now cover one browser feature and repeat some cross-references; a final editorial pass should reduce redundant wording *without overturning approved decisions*. [Existing receipt ADR-0007](./adr/0007-local-receipts-and-no-blind-replay.md) already describes minimal not-started, running, completed, failed and unknown distinctions, while [ADR-0016](./adr/0016-agent-local-receipts-and-bounded-commands.md) distinguishes merged Agent source from an installed Agent that may still use prior local receipt storage. Do not mistake an accepted shared architecture for verified native-Windows or installed-device receipt compatibility; reconcile only the affected code path and evidence before any later rollout. This is a review note, not approval of a migration or refactor.
+8. **Complexity watch — do not multiply decisions into ADRs.** Round 11 amends existing ADR-0025/0028/0029/0030 rather than creating ADR-0031 for parameter defaults and reuse constraints. Later final consolidation may further shorten repeated cross-references without merging already agreed scopes or changing the meaning of earlier decisions.
 
 ## Documentation and scope rules
 
