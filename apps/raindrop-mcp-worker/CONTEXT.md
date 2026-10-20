@@ -78,3 +78,19 @@ The approved specification is published as a GitHub specification issue rather t
 - **Q19=A — current-state preflight for destructive confirmations:** before confirmed deletion, freshly read the target and affected scope. Refuse when material changes or unverifiable scope prevent a safe decision and require another preview. This is a best-effort preflight, not a lock, transaction, or guarantee against changes between check and mutation. Do not add persisted snapshots, approval tokens, or a new server-side confirmation service.
 
 **Still open after round 5:** verification of exact Raindrop endpoints/payloads and special collection IDs, concrete safe limits, error/partial-write reporting contract, and the final public tool inventory and acceptance boundary. These decisions authorize docs only: no implementation, merge, deployment, production data action, or development Tickets.
+
+## Grill With Docs — confirmed sixth-round decisions (2026-10-20)
+
+- **Q20=A — official API mapping:** retain the existing Raindrop API service boundary. Correct paths, parameters, payloads, and result checks against current official Raindrop API documentation and focused contract fixtures/tests; neither regenerate a full client from the local OpenAPI file nor scatter raw HTTP calls through each tool. The local API description is not authoritative evidence of upstream behavior.
+- **Q21=A — write outcome integrity:** allow only bounded retries for reads; do not automatically replay an upstream-submitted write, including when the response is lost. Inspect HTTP status and documented response bodies; an explicit `result: false` is not success. For individual or multi-request operations, report only what is supported by upstream evidence: succeeded, failed, unknown outcome, and not executed; do not imply atomic rollback or invent per-item success when unavailable.
+- **Q22=A — batch delete scope:** `bookmark_batch_delete` requires one explicit source collection and a nonempty, deduplicated explicit ID list. Before issuing the batch mutation, verify every item's collection membership and state. If any ID belongs elsewhere, cannot be verified, or risks unapproved permanent deletion from Trash, reject the entire requested batch before mutation rather than silently skipping, splitting across collections, or deleting a subset.
+- **Q23=A — candidate public tool inventory:** use the following **27** core MCP business tools as the public contract baseline (not a claim that they are implemented or live-accepted). Do not expose `diagnostics` among normal user-facing bookmark tools; keep diagnostics internal. Remove redundant `library_audit`, `suggest_tags`, and legacy aliases in the replacement contract, without an indefinite compatibility layer.
+
+  - **Bookmark (9):** `bookmark_search`, `bookmark_get`, `bookmark_exists`, `bookmark_create`, `bookmark_update`, `bookmark_delete`, `bookmark_move`, `bookmark_batch_update`, `bookmark_batch_delete`.
+  - **Collection (5):** `collection_list`, `collection_get`, `collection_create`, `collection_update`, `collection_delete`.
+  - **Tag (4):** `tag_list`, `tag_rename`, `tag_merge`, `tag_delete`.
+  - **Highlight (4):** `highlight_list`, `highlight_create`, `highlight_update`, `highlight_delete`.
+  - **Upstream-backed helpers (2):** `bookmark_filters_get`, `bookmark_suggest`.
+  - **Cleanup (3):** `trash_empty`, `collection_remove_empty`, `bookmark_remove_duplicates`.
+
+**Still open after round 6:** semantics and preflight scope of upstream global cleanup endpoints; a bounded request/scan budget for cross-collection reads, duplicate checks, and destructive previews; specific operational limits and errors; acceptance/release evidence and final overengineering review. Round 6 authorizes documentation only—no implementation, development Tickets, merge, deployment, or production-data changes.
