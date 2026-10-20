@@ -114,3 +114,28 @@ describe("RaindropService search semantics and pagination", () => {
     expect(query.search).toContain("rust");
   });
 });
+
+describe("RaindropService official filters", () => {
+  it("queries the /filters/{collectionId} scope and omits absent statistics", async () => {
+    const service = new RaindropService("fake-token");
+    const get = (service as any).client.GET;
+    get.mockResolvedValueOnce({
+      data: { result: true, important: { count: 3 },
+        tags: [{ _id: "backend", count: 2 }] },
+    });
+    await expect(service.getBookmarkFilters(0, "-count", "dev"))
+      .resolves.toEqual({ important: 3, tags: [{ name: "backend", count: 2 }] });
+    expect(get).toHaveBeenCalledWith("/filters/{collectionId}", {
+      params: { path: { collectionId: 0 }, query: { tagsSort: "-count", search: "dev" } },
+    });
+  });
+
+  it("fails closed for an upstream result:false or fabricated count", async () => {
+    const service = new RaindropService({ accessToken: "fake-token", maxReadRetries: 0 });
+    const get = (service as any).client.GET;
+    get.mockResolvedValueOnce({ data: { result: false } });
+    await expect(service.getBookmarkFilters(0)).rejects.toThrow();
+    get.mockResolvedValueOnce({ data: { result: true, duplicates: { count: "0" } } });
+    await expect(service.getBookmarkFilters(0)).rejects.toThrow();
+  });
+});
