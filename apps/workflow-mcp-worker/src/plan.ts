@@ -48,10 +48,23 @@ function expression(v: unknown, step?: {id:string; needs:string[]}, depth=0): vo
     expression(x,step,depth+1);
   }
 }
+// YAML accepts .nan/.inf, but JSON persistence silently changes them to null.
+// Reject these before computing an immutable Published Plan digest.
+function validateFiniteNumbers(v: unknown, depth=0): void {
+  if(depth>32)throw new PlanError('definition_too_deep');
+  if(typeof v==='number' && !Number.isFinite(v))throw new PlanError('non_finite_number');
+  if(Array.isArray(v)) {for(const child of v)validateFiniteNumbers(child,depth+1);}
+  else if(v && typeof v==='object') {
+    for(const child of Object.values(v))validateFiniteNumbers(child,depth+1);
+  }
+}
 function canonical(v: unknown): unknown {
   if(Array.isArray(v)) return v.map(canonical);
-  if(v && typeof v==='object') return Object.fromEntries(Object.entries(v as Record<string,unknown>).sort(([a],[b])=>a.localeCompare(b)).map(([k,x])=>[k,canonical(x)]));
+  if(v && typeof v==='object') return Object.fromEntries(Object.entries(v as Record<string,unknown>).sort(([a],[b])=>a<b?-1:a>b?1:0).map(([k,x])=>[k,canonical(x)]));
   return v;
+}
+export function canonicalJsonString(value: unknown): string {
+  return JSON.stringify(canonical(value));
 }
 export function evaluateExpression(v: unknown, ctx: {inputs:Record<string,unknown>;steps:Record<string,{status:string;output?:unknown}>}): any {
   if(Array.isArray(v))return v.map(x=>evaluateExpression(x,ctx));
@@ -82,6 +95,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     try{ const doc=YAML.parseDocument(source,{uniqueKeys:true,strict:true});if(doc.errors.length)throw Error('invalid_yaml');raw=doc.toJS({maxAliasCount:16}); }
     catch{throw new PlanError('invalid_yaml_or_json');}
   }
+  validateFiniteNumbers(raw);
   const o=object(raw,'invalid_definition');keys(o,['version','name','inputs','steps']);
   if(o.version!==1)throw new PlanError('invalid_version');
   if(typeof o.name!=='string'||!o.name.trim()||o.name.length>120)throw new PlanError('invalid_name');

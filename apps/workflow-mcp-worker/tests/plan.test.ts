@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { compilePlan, evaluateExpression, evaluateArguments, evaluateCondition, PlanError } from '../src/plan.ts';
+import { compilePlan, evaluateExpression, evaluateArguments, evaluateCondition, canonicalJsonString, PlanError } from '../src/plan.ts';
 
 const one = {
   version: 1, name: 'Inspect', steps: [
@@ -55,6 +55,17 @@ test('S1 rejects duplicate YAML keys, unknown executable fields and oversized DA
   await assert.rejects(() => compilePlan({...one, steps:Array.from({length:33},(_,i)=>({id:'step'+i,uses:'result.emit',with:{data:i}}))}), PlanError);
 });
 
+
+test('S1 canonical JSON uses locale-independent key ordering for version and Run hashes', () => {
+  assert.equal(canonicalJsonString({a:1,B:2}),'{"B":2,"a":1}');
+});
+
+test('S1 published Plan rejects non-finite YAML numbers rather than converting them to null', async () => {
+  for (const scalar of ['.nan', '.inf', '-.inf']) {
+    await assert.rejects(() => compilePlan(`version: 1\nname: Non-finite\nsteps:\n  - id: result\n    uses: result.emit\n    with:\n      data: ${scalar}\n`), PlanError);
+  }
+  await assert.rejects(() => compilePlan({version:1,name:'Input',inputs:{limit:Infinity},steps:[{id:'result',uses:'result.emit',with:{data:'ok'}}]}),PlanError);
+});
 
 test('S1 conditions reject string truthiness and require boolean runtime values', async () => {
   await assert.rejects(()=>compilePlan({version:1,name:'Condition',steps:[{id:'emit',uses:'result.emit',if:'false',with:{data:'must not execute'}}]}),PlanError);

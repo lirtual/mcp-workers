@@ -43,7 +43,7 @@ validation need separate authorization.
 ## Evidence and remaining work
 
 Local Wrangler E2E (2026-10-20), including the **current MCP SDK adapter**, passed
-35 assertions at the Portal-authenticated MCP seam: Draft editing and invalid-Draft
+36 assertions at the Portal-authenticated MCP seam: Draft editing and invalid-Draft
 preview, YAML readback, compile/Publish, concurrent identical Publish idempotency,
 revision conflicts, pinned Run after republish, pause/replay, two successful read-only
 MCP Steps and result retrieval, failed-dependency skipping and non-boolean runtime
@@ -75,7 +75,7 @@ and a throwaway `wrangler.s1-cloud.jsonc` that is intentionally not committed.
 Focused test-first review additionally closed two expression-safety gaps: references
 may only access own data fields (not inherited JavaScript prototype members),
 reserved Step IDs are rejected, and `if`/logical conditions require actual boolean
-values rather than JavaScript string truthiness. S1 now has 10 unit/contract tests.
+values rather than JavaScript string truthiness. S1 now has 12 unit/contract tests. A later final review also rejects YAML non-finite numbers (`.nan`, `.inf`) before JSON canonicalization (avoiding silent `null` conversion), and normalizes Run input-object key order before computing the admission idempotency digest. Canonical Plan and Run hashes use locale-independent key comparison, avoiding runtime-locale-dependent hashes.
 
 Still required before closing S1: final standards/spec code review, latest-commit
 CI verification, remaining network interruption cases where warranted, and

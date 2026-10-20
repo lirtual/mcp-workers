@@ -1,4 +1,4 @@
-import { compilePlan, PlanError } from './plan.ts';
+import { compilePlan, PlanError, canonicalJsonString } from './plan.ts';
 import YAML from 'yaml';
 function draftName(definition:string):string {
   if(!definition || definition.length>32768)throw new StateError('definition_too_large');
@@ -111,7 +111,7 @@ export class WorkflowService {
   async start(workflow_id:string,inputs:Record<string,unknown>={},idempotency_key?:string){
     assertId(workflow_id);if(idempotency_key!==undefined&&(idempotency_key.length>128||!safeId(idempotency_key)))throw new StateError('invalid_idempotency_key');
     const inputJson=json(inputs);
-    const request_digest=await digest(inputJson);
+    const request_digest=await digest(canonicalJsonString(inputs));
     // An accepted admission keeps its pinned version across republish/pause.
     if(idempotency_key){
       const original=await this.db.prepare('SELECT * FROM runs WHERE workflow_id=? AND admission_key=?').bind(workflow_id,idempotency_key).first<RunRow>();

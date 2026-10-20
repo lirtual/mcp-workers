@@ -45,6 +45,9 @@ try{
   ok(first.published_version_id===published.published_version_id,'Run pins published plan');
   const same=await tool('workflow_run',{workflow_id:id,inputs:{subject:'sdk fixture local success'},idempotency_key:'s1-local-'+id});
   ok(same.run_id===first.run_id,'idempotency reuses logical Run');
+  const keyed=await tool('workflow_run',{workflow_id:id,inputs:{subject:'same content',count:2},idempotency_key:'key-order-'+id});
+  const reordered=await tool('workflow_run',{workflow_id:id,inputs:{count:2,subject:'same content'},idempotency_key:'key-order-'+id});
+  ok(reordered.run_id===keyed.run_id,'same input object with reordered JSON keys reuses admitted Run');
   await tool('workflow_run',{workflow_id:id,inputs:{subject:'different'},idempotency_key:'s1-local-'+id},'idempotency_conflict');
   const done=await awaitOutcome(first.run_id);
   ok(done.status==='succeeded','real SDK fixture call: '+JSON.stringify(done));
