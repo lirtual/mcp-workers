@@ -10,9 +10,11 @@ export const APPLICATIONS = [
   'raindrop-mcp-worker',
   'remote-control-mcp-worker',
   'ssh-mcp-worker',
+  'workflow-mcp-worker',
 ];
 
-const RELEASE_WORKERS = [...APPLICATIONS];
+// S1 is test-only; do not expose its Worker in the production dispatch gate.
+const RELEASE_WORKERS = APPLICATIONS.filter(name => name !== 'workflow-mcp-worker');
 
 function requiresAllApps(file) {
   return file === 'package.json'
