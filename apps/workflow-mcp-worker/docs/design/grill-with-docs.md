@@ -1,6 +1,6 @@
 # Workflow MCP — Grill With Docs design record
 
-Status: **Rounds 1–2 accepted; Round 3 in progress**  
+Status: **Rounds 1–3 accepted; Round 4 in progress**  
 Owner confirmation: **2026-10-20**  
 Repository target: `lirtual/mcp-workers`  
 Authority: **design documentation only** — no implementation, merge, deployment, credential changes, or Tickets.
@@ -19,27 +19,68 @@ Authority: **design documentation only** — no implementation, merge, deploymen
 | Q8 | Durable orchestrator | **A — Cloudflare Workflows with D1 coordination/query facts** | Reuse Cloudflare Workflows for progression and waiting, not GitHub Actions-only orchestration or a D1/Queues scheduler. Heavy-task executor unchosen. |
 | Q9 | Trigger types | **A — manual + webhook + Cron** | All three supported initially; precise admission semantics remain open. |
 | Q10 | Ownership model | **A — single owner using existing Portal auth** | Avoid multi-tenant workspaces/RBAC; external operation permissions still need explicit design. |
+| Q11 | Definition publication lifecycle | **A — Draft, validate, explicit Publish** | Saving a definition does not immediately activate it; auto triggers use published definitions. |
+| Q12 | Run definition identity | **A — version pinned on start** | Subsequent publication must not alter an in-flight Run's definition. |
+| Q13 | Definition/metadata storage | **A — D1** | Use existing D1 for definitions, published versions and metadata; no second definition store. |
+| Q14 | Initial MCP transport | **A — Streamable HTTP first** | Non-preregistered supported HTTP targets; legacy SSE/stdio are later scope, not an implicit static allowlist. |
+| Q15 | MCP target credentials | **A — on-demand target-specific grant with secure persistence** | Unattended scheduled workflows can reuse authorized credentials; never forward Portal token automatically. |
+| Q16 | Network safety | **A — SSRF protection for dynamic targets** | Reject metadata, loopback, unintended private access and DNS-rebinding/redirect bypasses. |
+| Q17 | External operation authority | **A — confirmation at enablement** | Confirm allowed external actions before unattended operation; new high-risk actions require re-approval. |
+| Q18 | Heavy executor | **A — GitHub Actions for registered heavy capabilities** | Cloudflare Workflows still orchestrates; heavy tasks are bounded rather than arbitrary injected shell. |
 
 ## Baseline and limits
 
-The historical Workflow MCP v0.1 technical specification dated 2026-09-18 was found in the owner's document library, not in the reviewed `main` tree. Q8=A now confirms Cloudflare Workflows with D1 coordination and query facts. Other architectural candidates (R2, GitHub executor), DSL details, persistence schemas, state transitions, transport, and security protocols remain **proposals to re-check** unless confirmed separately.
+The historical Workflow MCP v0.1 technical specification dated 2026-09-18 was found in the owner's document library, not in the reviewed `main` tree. Decisions Q1–Q18 now supersede the parts explicitly described below. The remaining earlier proposals are not automatically ratified.
 
-## Explicitly superseded historical assumptions
+The current `main` tree was checked before the original Draft PR: no implementation of `apps/workflow-mcp-worker` existed. Files in this PR are documentation only.
 
-- **Q5=B** overrides the older v0.1 **Git/source-controlled definitions only; no runtime authoring** restriction. A runtime-backed create/edit/publish path is now mandatory. The user did **not** decide whether editing is draft-first, whether publish is atomic, or what a live update does to in-flight Runs.
-- **Q7=B** overrides the older v0.1 **static MCP Connection metadata, no runtime connection administration, no arbitrary MCP endpoint** restriction. Any MCP Server may be discovered and invoked without preregistration. The user did **not** decide transport support, credential delegation, SSRF boundaries, tool approval rules, or error/retry semantics.
-- **Q6=A** rejects both sequential-only execution and full n8n-style dynamic graph/loop features at first release.
-- **Q8=A** confirms the orchestrator, but does **not** approve GitHub Actions as a heavy executor or specify an executor protocol.
-- **Q9=A and Q10=A** settle available trigger families and single-owner scope, not specific network/webhook security or authorization mechanics.
+## Explicitly superseded or refined historical assumptions
 
-The current `main` tree was checked before this document: no `apps/workflow-mcp-worker` application existed. This branch is documentation-only; do not treat docs folders as implementation.
+- **Q5=B + Q11=A** override v0.1's static Git-only definitions: owner creates/edits in runtime and explicitly publishes validated definitions, not immediate save-to-production.
+- **Q12=A** requires in-flight Runs to use their starting Published Version. Exact artifact/version retention and engine/runner compatibility remain open.
+- **Q13=A** selects D1 as the definition/version metadata store; it does **not** authorize plaintext credential storage.
+- **Q7=B + Q14=A** remove static MCP Connection preregistration while scoping initial compatibility to any supported Streamable HTTP endpoint. Neither all transports nor all historical MCP protocol versions were approved.
+- **Q15=A** allows secure, target-specific stored credentials for recurring operation; it does **not** approve auto-forwarding Portal tokens or a particular vault implementation.
+- **Q16=A** makes network SSRF/DNS/redirect protections mandatory without recreating a static target allowlist.
+- **Q17=A** makes activation-time operation authority explicit; it does **not** decide approval identity granularity or grant drift rules.
+- **Q18=A** selects GitHub Actions as a heavy-task executor for **registered heavy capabilities only**, not the DAG orchestrator; it does **not** restrict discovery of external MCP Servers under Q7=B.
+- **Q6=A, Q8=A, Q9=A, Q10=A** continue to mean bounded DAG/Cloudflare orchestrator/manual+webhook+Cron/single owner. None of these decisions adds a custom scheduler, multi-tenant system, visual editor, or arbitrary script plugin engine.
+
+## Round 3 consistency and over-engineering review
+
+| Topic | Review result | Boundary / remaining question |
+| --- | --- | --- |
+| Dynamic target vs registered heavy capability | **Compatible, different domains** | MCP targets need no preregistration; the platform's privileged GitHub runner capabilities are registered. |
+| Dynamic target vs SSRF protection | **Compatible** | Network safety is a target-class prohibition, not a preapproved host list. Precise DNS/redirect enforcement requires an implementation feasibility check. |
+| Runtime publication vs version pinning | **Compatible and necessary** | D1 Published Version identity must be immutable; the Run references it. Physical snapshot/retention remains open. |
+| Published vs enabled | **Terminology gap** | Q11 requires Publish, Q17 requires authorization on Enable. Whether publication itself enables manual runs/automated triggers, or Enable is a distinct state, is **not settled**. |
+| Dynamic tool changes vs unattended approval | **Unresolved authority risk** | Approval of unknown future tools or dynamically computed endpoints could bypass Q17. Decide the identity/approval boundary in Round 4. |
+| D1 definitions vs target credentials | **Do not conflate** | Q13 selects D1 for definitions; Q15 only requires secure target-specific credential retention. No plaintext D1, vault architecture or Cloudflare admin API token was approved. |
+| GitHub Actions admin MCP vs heavy executor | **Must remain separate** | The user-facing GitHub Actions MCP has multi-PAT repository privileges. Do not silently reuse these broad privileges for heavy execution. |
+| D1 + Cloudflare Workflows responsibilities | **No duplicate engine** | Cloudflare Workflows advances the DAG; D1 holds durable coordination/query facts and definitions, not an independent scheduler. |
+| Platform-feature creep | **Deferred** | Avoid a visual editor, generic sandbox, loop/fan-out engine, Redis/Queues/Temporal duplication, OAuth broker for all providers, multi-tenant RBAC, or new secrets-management service until proved necessary. |
+
+### External technical facts to check before implementation (not decisions)
+
+- The 2026-07-28 MCP Streamable HTTP revision has important compatibility differences from older 2025 revisions; transport name alone is insufficient to define protocol interoperability. Reference: https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/docs/specification/2026-07-28/basic/transports/streamable-http.mdx
+- Cloudflare Secrets Store read bindings are configured/deployed resources; runtime owner-created target credentials should not be assumed to be writable as bound secrets without an account-level management API and added privileges. References: https://developers.cloudflare.com/secrets-store/integrations/workers/ and https://developers.cloudflare.com/secrets-store/access-control/
+- Cloudflare Workflows instance retention is finite; pinning a Run to a definition and resuming through deployments requires an explicit compatibility/retention design. Reference: https://developers.cloudflare.com/workflows/build/workers-api/
 
 ## Design tree
 
-- **R1: Product & scope — settled**: Q1 product, Q2 interaction, Q3 repository boundary, Q4 review baseline.
-- **R2: Definition / publishing / capability boundaries — settled**: Q5 runtime publish, Q6 bounded DAG, Q7 dynamic any MCP, Q8 Cloudflare Workflows, Q9 trigger types, Q10 single-owner.
-- **R3: Unblocked dependent questions — open**: publication lifecycle, immutable run snapshots, transport coverage, dynamic MCP authentication, SSRF/network policy, side-effect authority, and heavy executor scope.
-- **Later branches (blocked on R3 answers)**: schema/API detail, credential persistence and rotation, redaction, precise reliability, idempotency/retry policies, external claims, scheduler misfires, migration/release compatibility and acceptance.
+- **R1: Product & scope — settled**: Q1–Q4.
+- **R2: Definition / publishing / capability boundaries — settled**: Q5–Q10.
+- **R3: Dynamic runtime + security architecture — settled**: Q11–Q18.
+- **R4: Unblocked dependent questions — open**:
+  - publication/enable distinction and how existing Runs behave on disable/delete;
+  - authority of discovered target/tool drift and unattended approval;
+  - credential-at-rest mechanism for owner-managed target credentials;
+  - webhook identity/deduplication requirements;
+  - Cron timezone and missed-trigger policy;
+  - retry policy for uncertain externally-effectful operations;
+  - GitHub heavy-executor dispatch duplication/Claim ownership protocol;
+  - compatibility boundaries between MCP transport protocol revisions.
+- **Later branches**: exact MCP tool/API/DSL syntax, auth grants/credential rotation, workflow-version garbage collection, error state machine, callback/cancel/reconciliation, GitHub runner authorization, quotas, CI/releases, integration tests and acceptance.
 
 ## Working rules
 
