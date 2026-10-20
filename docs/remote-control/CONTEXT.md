@@ -84,8 +84,12 @@ Device-scoped inspection and interaction with web pages and browser tabs through
 _Avoid_: Remote desktop control, arbitrary OS mouse/keyboard control.
 
 **Automation Browser Session**:
-A browser session established for automated work, distinct from the owner's everyday interactive browser session.
-_Avoid_: Treating a newly automated session as implicit permission to inspect the owner's personal browser profile.
+An identifiable browser session for a remote automation workflow, reusable across interactions but not indefinitely active.
+_Avoid_: Equating it to the Agent's Shell Managed Session, or treating it as implicit permission to inspect the owner's personal browser profile.
+
+**Automation Browser Profile**:
+A dedicated owner-controlled browser identity whose sign-in state may be retained locally across automation sessions, separate from the owner's everyday browser profile.
+_Avoid_: Treating the owner's default Chrome/Edge profile as an automation profile.
 
 **Personal Browser Session**:
 An existing owner-used browser session whose tabs or signed-in state may be accessed only within explicitly authorized scope.
@@ -140,6 +144,12 @@ _Avoid_: General-purpose host process killing, unauthenticated overrides, or cla
 The controlled transfer of existing authoritative Operation Receipts to a replacement local store without discarding unresolved Operation IDs or weakening outcome reconciliation.
 _Avoid_: Treating a successful new-store startup as sufficient evidence that historical operation identities were preserved.
 
+
+## Browser automation runtime and session choices — accepted second round (2026-10-20)
+
+[ADR-0022](./adr/0022-playwright-managed-browser-sessions.md) selects a Playwright-backed Agent browser adapter under the existing curated Remote Control MCP tool surface; it does not introduce a nested browser MCP Server. Linux and native Windows are the first supported **targets** (WSL2 belongs to the Linux path), with macOS later and **separate platform acceptance required**. An Automation Browser Profile retains local sign-in state independently of a Personal Browser Session. An Automation Browser Session has explicit identity, supports multiple MCP calls and explicit close, and is eligible for idle cleanup. Unknown or interrupted browser actions must not be blindly replayed.
+
+Browser binary installation, profile/session concurrency, profile data controls, concrete timeouts, disconnection/revocation behavior, exact tools and release criteria are not yet agreed. This extension does not change the Linux-only assumptions of historical v1 shipped functionality and does not constitute native Windows browser support.
 
 ## Browser automation extension — accepted first-round decisions (2026-10-20)
 
