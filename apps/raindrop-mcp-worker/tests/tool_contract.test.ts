@@ -11,7 +11,9 @@ const EXPECTED_TOOL_NAMES = [
   "bookmark_search",
   "bulk_edit_raindrops",
   "cleanup_collections",
+  "collection_create",
   "collection_get",
+  "collection_update",
   "collection_list",
   "collection_manage",
   "diagnostics",
@@ -28,7 +30,7 @@ const EXPECTED_TOOL_NAMES = [
 ].sort();
 
 describe("Raindrop MCP capability contract", () => {
-  it("retains legacy tools while adding T01 helpers and T02 collection_get", async () => {
+  it("retains legacy tools while adding T01 and T02 atomic tools", async () => {
     const service = new RaindropMCPService({ accessToken: "test-token" });
 
     try {
@@ -36,7 +38,7 @@ describe("Raindrop MCP capability contract", () => {
       const actual = tools.map((tool) => tool.id).sort();
 
       expect(actual).toEqual(EXPECTED_TOOL_NAMES);
-      expect(actual).toHaveLength(22);
+      expect(actual).toHaveLength(24);
       expect(actual).toContain("diagnostics");
     } finally {
       await service.cleanup();
@@ -449,6 +451,65 @@ describe("T02 full collection hierarchy and exact get", () => {
       roots.mockRestore();
       children.mockRestore();
       get.mockRestore();
+    }
+  });
+});
+
+describe("T02 atomic collection mutations through MCP", () => {
+  it("uses minimal create/update schemas and no hidden writes", async () => {
+    const service = new RaindropMCPService({ accessToken: "test-token" });
+    const create = vi.spyOn(service.raindropService, "createCollection")
+      .mockResolvedValue({ _id: 55, title: "Test", public: false }
+        as Awaited<ReturnType<typeof service.raindropService.createCollection>>);
+    const update = vi.spyOn(service.raindropService, "updateCollection")
+      .mockResolvedValue({ _id: 55, title: "Renamed" }
+        as Awaited<ReturnType<typeof service.raindropService.updateCollection>>);
+    const client = new Client({ name: "collection-mutations-contract", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    try {
+      await Promise.all([
+        service.getServer().connect(serverTransport),
+        client.connect(clientTransport),
+      ]);
+      const { tools } = await client.listTools();
+      expect(tools.find(t => t.name === "collection_create")?.annotations?.readOnlyHint).toBe(false);
+      expect(tools.find(t => t.name === "collection_update")?.annotations?.readOnlyHint).toBe(false);
+
+      for (const args of [{}, { title: "" }, { title: "Test", extra: 123 }]) {
+        expect((await client.callTool({
+          name: "collection_create", arguments: args,
+        })).isError).toBe(true);
+      }
+      expect(create).not.toHaveBeenCalled();
+      const made = await client.callTool({ name: "collection_create", arguments: { title: "Test" } });
+      expect(made.isError).not.toBe(true);
+      expect(made.structuredContent).toEqual({
+        collection: { id: 55, title: "Test" },
+      });
+      expect(create).toHaveBeenCalledWith("Test", false);
+
+      for (const args of [
+        { id: 55 }, { id: "55", title: "Renamed" }, { id: 0, title: "Renamed" },
+        { id: 55, unknownField: "bad" },
+      ]) {
+        expect((await client.callTool({
+          name: "collection_update", arguments: args,
+        })).isError).toBe(true);
+      }
+      expect(update).not.toHaveBeenCalled();
+      const renamed = await client.callTool({
+        name: "collection_update", arguments: { id: 55, title: "Renamed" },
+      });
+      expect(renamed.isError).not.toBe(true);
+      expect(renamed.structuredContent).toEqual({
+        collection: { id: 55, title: "Renamed" },
+      });
+      expect(update).toHaveBeenCalledWith(55, { title: "Renamed" });
+    } finally {
+      await client.close();
+      await service.cleanup();
+      create.mockRestore();
+      update.mockRestore();
     }
   });
 });
