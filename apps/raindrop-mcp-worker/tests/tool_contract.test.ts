@@ -11,6 +11,7 @@ const EXPECTED_TOOL_NAMES = [
   "bookmark_search",
   "bulk_edit_raindrops",
   "cleanup_collections",
+  "collection_get",
   "collection_list",
   "collection_manage",
   "diagnostics",
@@ -27,7 +28,7 @@ const EXPECTED_TOOL_NAMES = [
 ].sort();
 
 describe("Raindrop MCP capability contract", () => {
-  it("retains the 17 legacy tools while adding four read-only T01 tools", async () => {
+  it("retains legacy tools while adding T01 helpers and T02 collection_get", async () => {
     const service = new RaindropMCPService({ accessToken: "test-token" });
 
     try {
@@ -35,7 +36,7 @@ describe("Raindrop MCP capability contract", () => {
       const actual = tools.map((tool) => tool.id).sort();
 
       expect(actual).toEqual(EXPECTED_TOOL_NAMES);
-      expect(actual).toHaveLength(21);
+      expect(actual).toHaveLength(22);
       expect(actual).toContain("diagnostics");
     } finally {
       await service.cleanup();
@@ -50,6 +51,8 @@ describe("collection_list MCP response contract", () => {
       { _id: 123, title: "Work", count: 8, description: "Articles" },
       { _id: 456, title: "Empty", count: 0 },
     ] as Awaited<ReturnType<typeof service.raindropService.getCollections>>);
+    const getChildren = vi.spyOn(service.raindropService, "getAllChildCollections")
+      .mockResolvedValue([]);
 
     try {
       for (const skipCache of [true, false]) {
@@ -68,6 +71,7 @@ describe("collection_list MCP response contract", () => {
       }
     } finally {
       getCollections.mockRestore();
+      getChildren.mockRestore();
       await service.cleanup();
     }
   });
@@ -80,6 +84,8 @@ describe("collection_list over MCP tools/call", () => {
       { _id: 123, title: "Work", count: 8, description: "Articles" },
       { _id: 456, title: "Empty", count: 0 },
     ] as Awaited<ReturnType<typeof service.raindropService.getCollections>>);
+    const getChildren = vi.spyOn(service.raindropService, "getAllChildCollections")
+      .mockResolvedValue([]);
     const client = new Client({ name: "collection-list-regression", version: "1.0.0" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 
@@ -116,6 +122,7 @@ describe("collection_list over MCP tools/call", () => {
       await client.close();
       await service.cleanup();
       getCollections.mockRestore();
+      getChildren.mockRestore();
     }
   });
 });
@@ -385,6 +392,63 @@ describe("Official Raindrop helper tools over public MCP", () => {
       await service.cleanup();
       filters.mockRestore();
       suggestions.mockRestore();
+    }
+  });
+});
+
+describe("T02 full collection hierarchy and exact get", () => {
+  it("includes all nested collection IDs with their verifiable parents", async () => {
+    const service = new RaindropMCPService({ accessToken: "test-token" });
+    const roots = vi.spyOn(service.raindropService, "getCollections").mockResolvedValue([
+      { _id: 11, title: "Root", count: 2 },
+    ] as Awaited<ReturnType<typeof service.raindropService.getCollections>>);
+    const children = vi.spyOn(service.raindropService, "getAllChildCollections").mockResolvedValue([
+      { _id: 12, title: "Child", parent: { $id: 11 }, count: 1 },
+      { _id: 13, title: "Grandchild", parent: { $id: 12 } },
+    ] as Awaited<ReturnType<typeof service.raindropService.getAllChildCollections>>);
+    const get = vi.spyOn(service.raindropService, "getCollection").mockResolvedValue({
+      _id: 13, title: "Grandchild", parent: { $id: 12 }, count: 0,
+    } as Awaited<ReturnType<typeof service.raindropService.getCollection>>);
+    const client = new Client({ name: "collections-t02-contract", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    try {
+      await Promise.all([
+        service.getServer().connect(serverTransport),
+        client.connect(clientTransport),
+      ]);
+      const { tools } = await client.listTools();
+      expect(tools.find(t => t.name === "collection_list")?.annotations?.readOnlyHint).toBe(true);
+      expect(tools.find(t => t.name === "collection_get")?.annotations?.readOnlyHint).toBe(true);
+      const listed = await client.callTool({ name: "collection_list", arguments: {} });
+      expect(listed.isError).not.toBe(true);
+      expect(listed.structuredContent).toEqual({
+        count: 3,
+        collections: [
+          { id: 11, title: "Root", count: 2 },
+          { id: 12, title: "Child", count: 1, parentId: 11 },
+          { id: 13, title: "Grandchild", parentId: 12 },
+        ],
+      });
+      const exact = await client.callTool({
+        name: "collection_get", arguments: { id: 13 },
+      });
+      expect(exact.isError).not.toBe(true);
+      expect(exact.structuredContent).toEqual({
+        collection: { id: 13, title: "Grandchild", count: 0, parentId: 12 },
+      });
+      expect(get).toHaveBeenCalledWith(13, undefined);
+      for (const bad of [{ id: "13" }, { id: 0 }, { id: -99 }, { id: 13, extra: 1 }]) {
+        expect((await client.callTool({
+          name: "collection_get", arguments: bad,
+        })).isError).toBe(true);
+      }
+      expect(get).toHaveBeenCalledTimes(1);
+    } finally {
+      await client.close();
+      await service.cleanup();
+      roots.mockRestore();
+      children.mockRestore();
+      get.mockRestore();
     }
   });
 });
