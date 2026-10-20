@@ -63,11 +63,13 @@ suite("Spec #123 authenticated read-only MCP smoke", () => {
     expect(result.count).toBe(collections.length);
     expect(collections.every((value) => Number.isSafeInteger(value.id) &&
       (value.id as number) > 0 && typeof value.title === "string")).toBe(true);
-    if (collections.length > 0) collectionId = collections[0]!.id as number;
+    // Do not treat the untested collection_get as a successful smoke.
+    expect(collections.length).toBeGreaterThan(0);
+    collectionId = collections[0]!.id as number;
   });
 
   it("reads the first available real collection with collection_get", async () => {
-    if (collectionId === undefined) return;
+    if (collectionId === undefined) throw new Error("Collection GET was not exercised: no collection ID");
     const result = await read("collection_get", { id: collectionId, skipCache: true });
     const collection = result.collection as Record<string, unknown>;
     expect(collection.id).toBe(collectionId);
@@ -84,11 +86,14 @@ suite("Spec #123 authenticated read-only MCP smoke", () => {
     expect(items.length).toBeLessThanOrEqual(1);
     expect(items.every((value) => Number.isSafeInteger(value.id) &&
       typeof value.url === "string" && Array.isArray(value.tags))).toBe(true);
-    if (items.length > 0) bookmarkId = items[0]!.id as number;
+    // The existing production account has saved bookmarks. A zero-result
+    // page cannot validate the subsequent get, highlights or suggestions.
+    expect(items.length).toBe(1);
+    bookmarkId = items[0]!.id as number;
   });
 
   it("reads a real bookmark through the candidate bookmark_get when one exists", async () => {
-    if (bookmarkId === undefined) return;
+    if (bookmarkId === undefined) throw new Error("Bookmark-dependent live smoke was not exercised");
     const result = await read("bookmark_get", { id: bookmarkId, skipCache: true });
     const bookmark = result.bookmark as Record<string, unknown>;
     expect(bookmark.id).toBe(bookmarkId);
@@ -97,14 +102,14 @@ suite("Spec #123 authenticated read-only MCP smoke", () => {
   });
 
   it("reads a bookmark's highlights without writing", async () => {
-    if (bookmarkId === undefined) return;
+    if (bookmarkId === undefined) throw new Error("Bookmark-dependent live smoke was not exercised");
     const result = await read("highlight_list", { bookmarkId });
     expect(result.bookmarkId).toBe(bookmarkId);
     expect(Array.isArray(result.highlights)).toBe(true);
   });
 
   it("gets official suggestions for an existing bookmark via GET", async () => {
-    if (bookmarkId === undefined) return;
+    if (bookmarkId === undefined) throw new Error("Bookmark-dependent live smoke was not exercised");
     const result = await read("bookmark_suggest", { bookmarkId });
     const suggestions = result.suggestions as Record<string, unknown>;
     expect(Array.isArray(suggestions.tags)).toBe(true);

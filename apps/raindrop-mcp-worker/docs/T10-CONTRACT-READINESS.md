@@ -137,6 +137,12 @@ bash -c 'set -eu; IFS= read -rsp "Raindrop API Token: " RAINDROP_ACCESS_TOKEN </
 
 - **证据等级**：本轮仅静态检查及无令牌跳过验证；由于 Remote Control WSL Shell 无 Raindrop Token，尚未执行 Draft 的认证读写。生产旧版插件此前已实测，但它的连接凭据无法直接交由另一进程使用。不得以为本段已经完成了新版的真实高亮验收。
 
+## 认证验收可信度修正（2026-10-20）
+
+- `tests/read-only.live.test.ts` 原来在未选出真实集合/书签时返回成功，导致 `collection_get`、`bookmark_get`、`highlight_list`、`bookmark_suggest` 有可能未实际调用就被记为通过。现要求本账号至少有 1 个集合和 1 条书签；缺少目标 ID 时对应场景**明确失败**，不会出现「空数据假绿灯」。只读测试仍仅允许 HTTPS 官方 GET 且不跟随重定向。
+- 旧 `test:e2e` 命令原先在没有凭据或显式开关时得到全体 skipped，却可能以 0 退出。现与 `test:read-only-live` 一致，要求 `RUN_LIVE_API_TESTS=true` 和安全注入 `RAINDROP_ACCESS_TOKEN`，否则在 Vitest 启动前退出非零；未额外增加服务或配置键。
+- 上述均是**验收工具准确性改进**，不涉及外部账号数据。本轮没有触发新版 Draft 的实际认证请求、上线或工具切换；`NO-GO` 保持。
+
 ## 发布风险核对
 
 | 风险 | 已有控制 / 证据 | 结论 |
