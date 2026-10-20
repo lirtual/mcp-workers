@@ -239,7 +239,7 @@ test("manual release always syncs selected Worker Secrets from GitHub and never 
   const secretStep = workflow.slice(secretStart, variableStart);
   assert.doesNotMatch(secretStep, /^\s*if:/m, "existing Workers must never skip Secret staging");
   for (const name of ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN", "API_KEY",
-    "DATABASE_CONFIG", "MCP_BROKER_TOKEN", "GITHUB_TOKEN"]) {
+    "DATABASE_CONFIG", "MCP_BROKER_TOKEN", "GH_ACTIONS_PAT"]) {
     assert.ok(secretStep.includes("secrets." + name), "GitHub must provide " + name);
   }
   assert.equal(secretStep.includes("secrets.CLIENT_ID"), false,
