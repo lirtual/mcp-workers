@@ -471,13 +471,27 @@ describe("bookmark_get over MCP tools/list and tools/call", () => {
       });
       expect(get).toHaveBeenCalledWith(123, undefined);
 
+      for (const systemId of [-1, -99]) {
+        get.mockResolvedValueOnce({
+          _id: 123, title: "Example", link: "https://example.com/a",
+          tags: [], collection: { $id: systemId },
+        } as Awaited<ReturnType<typeof service.raindropService.getBookmark>>);
+        const systemResult = await client.callTool({
+          name: "bookmark_get", arguments: { id: 123 },
+        });
+        expect(systemResult.isError).not.toBe(true);
+        expect(systemResult.structuredContent).toMatchObject({
+          bookmark: { id: 123, collectionId: systemId },
+        });
+      }
+
       for (const badId of [0, -1, 1.5, "123abc"]) {
         const invalid = await client.callTool({
           name: "bookmark_get", arguments: { id: badId },
         });
         expect(invalid.isError).toBe(true);
       }
-      expect(get).toHaveBeenCalledTimes(1);
+      expect(get).toHaveBeenCalledTimes(3);
     } finally {
       await client.close();
       await service.cleanup();
@@ -649,7 +663,7 @@ describe("T02 atomic collection mutations through MCP", () => {
       const made = await client.callTool({ name: "collection_create", arguments: { title: "Test" } });
       expect(made.isError).not.toBe(true);
       expect(made.structuredContent).toEqual({
-        collection: { id: 55, title: "Test" },
+        status: "succeeded", collection: { id: 55, title: "Test" },
       });
       expect(create).toHaveBeenCalledWith("Test", false);
 
@@ -667,9 +681,27 @@ describe("T02 atomic collection mutations through MCP", () => {
       });
       expect(renamed.isError).not.toBe(true);
       expect(renamed.structuredContent).toEqual({
-        collection: { id: 55, title: "Renamed" },
+        status: "succeeded", collection: { id: 55, title: "Renamed" },
       });
       expect(update).toHaveBeenCalledWith(55, { title: "Renamed" });
+
+      // A lost write reply must not look like a proven rejection or a success.
+      create.mockRejectedValueOnce(new TypeError("connection lost after POST"));
+      const uncertainCreate = await client.callTool({
+        name: "collection_create", arguments: { title: "Disposable" },
+      });
+      expect(uncertainCreate.isError).not.toBe(true);
+      expect(uncertainCreate.structuredContent).toMatchObject({
+        status: "unknown", reason: expect.stringMatching(/do not automatically retry/),
+      });
+      update.mockRejectedValueOnce(new TypeError("connection lost after PUT"));
+      const uncertainUpdate = await client.callTool({
+        name: "collection_update", arguments: { id: 55, title: "After" },
+      });
+      expect(uncertainUpdate.isError).not.toBe(true);
+      expect(uncertainUpdate.structuredContent).toMatchObject({
+        status: "unknown", id: 55, reason: expect.stringMatching(/do not automatically retry/),
+      });
     } finally {
       await client.close();
       await service.cleanup();

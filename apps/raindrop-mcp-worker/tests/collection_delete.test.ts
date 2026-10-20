@@ -321,6 +321,38 @@ describe("T07 collection_delete fresh verified cascade", () => {
     },
   );
 
+  it("accepts consistent root/child overlap without widening the deletion scope", async () => {
+    const f = fixture([row(10), row(20, 10), row(99)]);
+    f.state.override = (req) => {
+      if (new URL(req.url).pathname === "/rest/v1/collections")
+        return json({ result: true, items: [row(10), row(20, 10), row(99)] });
+      return undefined;
+    };
+    const preview = await f.service().deleteCollectionPreviewFirst({ id: 10 });
+    expect(preview).toMatchObject({
+      preview: true, rootId: 10, total: 2, collectionIds: [10, 20],
+    });
+    expect(preview.collections.map(c => [c.id, c.parentId])).toEqual([[10, null], [20, 10]]);
+    expect(f.state.writes).toEqual([]);
+    const result = await f.service().deleteCollectionPreviewFirst({
+      id: 10, ...confirmation(preview),
+    });
+    expect(result.succeeded).toEqual([10]);
+    expect(f.state.writes).toEqual([10]);
+  });
+
+  it("rejects conflicting overlap before any deletion", async () => {
+    const f = fixture([row(10), row(20, 10)]);
+    f.state.override = (req) => {
+      if (new URL(req.url).pathname === "/rest/v1/collections")
+        return json({ result: true, items: [row(10), { ...row(20, 10), title: "Conflicting" }] });
+      return undefined;
+    };
+    await expect(f.service().deleteCollectionPreviewFirst({ id: 10 }))
+      .rejects.toThrow(/Conflicting collection metadata/);
+    expect(f.state.writes).toEqual([]);
+  });
+
   it("rejects a large subtree before metadata enumeration or writes", async () => {
     const f = fixture([
       row(10),

@@ -122,7 +122,7 @@ const BookmarkGetOutputSchema = z.object({
     excerpt: z.string().optional(),
     note: z.string().optional(),
     important: z.boolean().optional(),
-    collectionId: z.number().int().positive().optional(),
+    collectionId: z.union([z.number().int().positive().safe(), z.literal(-1), z.literal(-99)]).optional(),
     highlights: z.array(z.object({
       id: z.string(),
       text: z.string(),
@@ -151,7 +151,9 @@ const bookmarkGetTool = defineTool({
       ...(typeof raw.excerpt === "string" ? { excerpt: raw.excerpt } : {}),
       ...(typeof raw.note === "string" ? { note: raw.note } : {}),
       ...(typeof raw.important === "boolean" ? { important: raw.important } : {}),
-      ...(typeof raw.collection?.$id === "number" && raw.collection.$id > 0
+      ...(typeof raw.collection?.$id === "number" &&
+          Number.isSafeInteger(raw.collection.$id) &&
+          (raw.collection.$id > 0 || raw.collection.$id === -1 || raw.collection.$id === -99)
         ? { collectionId: raw.collection.$id } : {}),
       ...(Array.isArray(raw.highlights)
         ? { highlights: raw.highlights.map((h) => ({

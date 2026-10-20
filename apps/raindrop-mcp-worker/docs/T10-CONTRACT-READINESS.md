@@ -217,3 +217,14 @@ bash -c 'set -eu; IFS= read -rsp "Raindrop API Token: " RAINDROP_ACCESS_TOKEN </
 - **不以部署换验收**：当前仅有的正常 CI 无受控 Draft 写入验收作业；`RAINDROP_ACCESS_TOKEN` 未注入 WSL 会话，且生产密钥不应复制到工作树或日志。不得用 `main` 的正式发布 dispatch、放宽保护规则、长期保留 PR 密钥作业来规避真实验收门槛。
 - **剩余最小真实验收**：在明确安全授权的既有受控密钥通道中，仅创建两份可丢弃 collection、少量唯一 URL bookmark 与隔离 tag；依次验证 collection 创建/更新/定向删除，bookmark 更新/移动/软删，tag 重命名/合并/删，以及严格显式 ID 的批量作用域拒绝。每次以官方 GET 独立核实目标 ID 与修改后状态；未知回执不重试，停止并检查。只能清理本轮精确新建的 ID，绝不执行 `trash_empty(confirm:true)` 或影响其他回收站项目。
 - **验收结论**：离线合同和模拟保护通过，Draft 的上述关键真实写入、部署链路端到端认证及独立全 PR 安全审查仍未完成，保持 **NO-GO / Draft**，不合并、不部署、不移除旧兼容工具。
+
+
+## 完整 Draft 独立只读审查与最小修复（2026-10-20）
+
+- 通过 WSL 已安装的 Codex CLI `exec review --base origin/main` 对 PR #134 完整差异做只读独立审查，**没有访问真实 Raindrop 数据、改动生产环境或创建 Tickets**。
+- 审查提出 3 项可定位的 **P2 正确性问题**，均在现有 Service / MCP 工具契约处修复，不新增依赖或架构：
+  1. `deletionTree` 原本会拒绝 `/collections` 与 `/collections/childrens` 返回的合法一致重叠；现在接受一致记录、使用明确的父级，仍拒绝单接口重复、冲突元数据、孤儿或循环结构。补充正常重叠预览/确认和冲突拒绝 Mock。
+  2. `bookmark_get` 原本从输出丢弃系统收藏夹 `-1` / `-99`；现在其只读输出 Schema 允许真实返回的这两个 ID，供软删除后状态核对；写入工具的来源作用域及危险系统 ID 禁止规则**不变**。
+  3. `collection_create/update` 原本在上游写入回执丢失时返回普通 MCP 错误；现结构化标记 `status:unknown` 并禁止盲目重试，确定的前置验证/鉴权/不存在仍直接错误。成功返回 `status:succeeded` 和精确收藏夹数据，不将响应未证实的写入报成功。补充 MCP 客户端模拟回执丢失回归。
+- 本轮此前还修复官方收藏夹 `result:true`、正整数 `_id` 及更新字段回执核验缺口，补充 7 个 Service HTTP 样本；Mock 和 SDK 仅证明响应处理正确，不代表真实 API 已验收。
+- **发布门槛保持**：本地及 Node24 CI 状态单独记录；缺少此 Draft 对现有生产 Token 的隔离 collection/bookmark/tag/batch 真实写入验收，以及部署后 Portal 真实新版工具调用。全局 `trash_empty` 永久清空仍属 `acceptance-limited`。**NO-GO**，维持 Draft，不删除旧兼容工具、不合并或部署。

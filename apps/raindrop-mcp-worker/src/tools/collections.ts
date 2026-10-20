@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ValidationError } from "../types/mcpErrors.js";
+import { AuthError, NotFoundError, ValidationError } from "../types/mcpErrors.js";
 import {
   CollectionDeleteInputSchema,
   CollectionRemoveEmptyInputSchema,
@@ -178,9 +178,42 @@ const CollectionUpdateInputSchema = z.object({
   "At least one collection field must be updated",
 );
 
-const CollectionMutationOutputSchema = z.object({
-  collection: CollectionReadSummarySchema,
-});
+const CollectionMutationOutputSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("succeeded"), collection: CollectionReadSummarySchema }),
+  z.object({
+    status: z.literal("unknown"),
+    reason: z.string(),
+    id: z.number().int().positive().safe().optional(),
+  }),
+]);
+
+// A dispatched collection write can apply even if its response is lost.
+// Preserve definite validation/auth/not-found failures, but never imply that
+// a transport or unverifiable upstream response means the write did not run.
+const guardedCollectionWrite = async <T extends { _id: number; title: string }>(
+  work: () => Promise<T>,
+  id?: number,
+) => {
+  try {
+    const collection = collectionReadSummary(await work());
+    return {
+      content: [textContent(`Collection ${collection.id} write confirmed`)],
+      structuredContent: { status: "succeeded" as const, collection },
+    };
+  } catch (error) {
+    if (error instanceof ValidationError ||
+        error instanceof AuthError || error instanceof NotFoundError)
+      throw error;
+    const reason = "Collection write outcome unknown. Inspect the current collection list before retrying; do not automatically retry.";
+    return {
+      content: [textContent(reason)],
+      structuredContent: {
+        status: "unknown" as const, reason,
+        ...(id !== undefined ? { id } : {}),
+      },
+    };
+  }
+};
 
 const collectionCreateTool = defineTool({
   name: "collection_create",
@@ -192,14 +225,9 @@ const collectionCreateTool = defineTool({
     args: z.infer<typeof CollectionCreateInputSchema>,
     { raindropService }: ToolHandlerContext,
   ) => {
-    const created = args.parentId === undefined
-      ? await raindropService.createCollection(args.title, args.public ?? false)
-      : await raindropService.createCollection(args.title, args.public ?? false, args.parentId);
-    const collection = collectionReadSummary(created);
-    return {
-      content: [textContent(`Created collection ${collection.id}`)],
-      structuredContent: { collection },
-    };
+    return guardedCollectionWrite(() => args.parentId === undefined
+      ? raindropService.createCollection(args.title, args.public ?? false)
+      : raindropService.createCollection(args.title, args.public ?? false, args.parentId));
   },
 });
 
@@ -219,12 +247,8 @@ const collectionUpdateTool = defineTool({
       ...(args.color !== undefined ? { color: args.color } : {}),
       ...(args.public !== undefined ? { public: args.public } : {}),
     };
-    const updated = await raindropService.updateCollection(args.id, updates);
-    const collection = collectionReadSummary(updated);
-    return {
-      content: [textContent(`Updated collection ${collection.id}`)],
-      structuredContent: { collection },
-    };
+    return guardedCollectionWrite(
+      () => raindropService.updateCollection(args.id, updates), args.id);
   },
 });
 
