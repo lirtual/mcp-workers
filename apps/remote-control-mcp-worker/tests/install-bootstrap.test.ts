@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
-import { handleAgentInstallerRequest, renderAgentInstallShell, REVIEWED_V012_RELEASE_PIN, REVIEWED_V014_RELEASE_PIN, REVIEWED_V016_RELEASE_PIN, REVIEWED_V017_RELEASE_PIN, REVIEWED_V018_RELEASE_PIN, REVIEWED_V0110_RELEASE_PIN } from "../src/install-bootstrap.ts";
+import { handleAgentInstallerRequest, renderAgentInstallShell, REVIEWED_V012_RELEASE_PIN, REVIEWED_V014_RELEASE_PIN, REVIEWED_V016_RELEASE_PIN, REVIEWED_V017_RELEASE_PIN, REVIEWED_V018_RELEASE_PIN, REVIEWED_V0110_RELEASE_PIN, REVIEWED_V0111_RELEASE_PIN } from "../src/install-bootstrap.ts";
 
 const origin = "https://remote-control-v2-preview.aiyaya.workers.dev";
 function requestInstall(request: Request, release?: Parameters<typeof handleAgentInstallerRequest>[1],
@@ -22,9 +22,14 @@ test("reviewed immutable single-code Worker installation route is enabled", asyn
   assert.equal(REVIEWED_V0110_RELEASE_PIN.commit,"8b78294a2fbff18a53d6e3ce0a13e6992ea63478");
   assert.equal(REVIEWED_V0110_RELEASE_PIN.x64Sha256,"ad995f987c6f2cc428baadae92a330fe43ef5f0d52652e1fe582e332b9e26ba9");
   assert.equal(REVIEWED_V0110_RELEASE_PIN.arm64Sha256,"bdb52cb83d0186127fc0ea65248d97701fe6cbc2d0d1ac9984b9e8eedf9a7397");
-  assert.ok(script.includes("remote-control-agent-v0.1.10"));
-  assert.match(script,/ad995f987c6f2cc4/);
-  assert.match(script,/bdb52cb83d018612/);
+  assert.equal(REVIEWED_V0111_RELEASE_PIN.tag, "v0.1.11");
+  assert.equal(REVIEWED_V0111_RELEASE_PIN.commit, "c558ac6a9f2ecc0129234790bf4f3b3a3a4aa191");
+  assert.equal(REVIEWED_V0111_RELEASE_PIN.x64Sha256, "641efcefe08d8bd4a70a1b3511d498d48a21687f05f167122219262bda9db6ec");
+  assert.equal(REVIEWED_V0111_RELEASE_PIN.arm64Sha256, "45d17c77c8fe37f7838f8015ad14518412161552e2d01f48e021788fb9a088dd");
+  assert.ok(script.includes("remote-control-agent-v0.1.11"));
+  assert.match(script,/641efcefe08d8bd4a/);
+  assert.match(script,/45d17c77c8fe37f7/);
+  assert.doesNotMatch(script,/remote-control-agent-v0.1.10/);
   assert.match(script,/1\) \[ "\$1" = "--upgrade"/);
 });
 
