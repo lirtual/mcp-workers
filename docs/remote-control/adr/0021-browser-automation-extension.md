@@ -28,6 +28,8 @@ Existing **device pairing is necessary but insufficient as blanket browser autho
 
 **Follow-on decision (round 9):** [ADR-0029](./0029-browser-results-outcomes-downloads-gated-release.md) establishes compact browser results, separated execution/website-effect evidence, seven-day unreferenced-download retention and the ability to stage proven safe low-impact capabilities independently while unverified high-impact operations remain disabled.
 
-**Still open:** browser artifact/source verification and OS dependencies, numeric page/screenshot limits, download reference cleanup, idle accounting, safe recovery and offline cleanup, personal-profile attach authorization, concrete one-use approval transport and low-impact classifier, tool schemas and effect reconciliation, packaging/rollout gates. No coding, Issue creation, production change, or deployment is authorized by this ADR.
+**Follow-on decision (round 10):** [ADR-0030](./0030-browser-conservative-gating-consent-evidence-acceptance.md) requires low-impact eligibility to be positively established, actual end-to-end verification before high-impact approval is used, existing local receipts without website-level exactly-once claims, and lean independent real-platform acceptance.
+
+**Still open:** real low-impact tool subset and owner approval evidence channel, browser source verification and OS dependencies, page/screenshot budgets, download reference cleanup, idle accounting, process recovery, personal browser attachment authorization, tool/receipt schemas, and separately authorized rollout. No coding, Issue creation, production change, or deployment is authorized by this ADR.
 
 Related: [Remote Control Domain Context](../CONTEXT.md), [v2 multi-device transport ADR-0014](./0014-v2-multi-device-ws-do.md), [local mutation receipts ADR-0007](./0007-local-receipts-and-no-blind-replay.md).
