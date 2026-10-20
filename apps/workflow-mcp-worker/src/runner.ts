@@ -1,6 +1,6 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { evaluateArguments, evaluateExpression } from './plan.ts';
+import { evaluateArguments, evaluateCondition } from './plan.ts';
 import type { Plan, Step } from './plan.ts';
 import type { Env } from './store.ts';
 import { limitResult } from './store.ts';
@@ -42,7 +42,7 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
           const result=(await step.do('s1-'+s.id,{retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},async ():Promise<Outcome>=>{
             try{
               if(s.needs.some(n=>ctx.steps[n].status!=='succeeded'))return {status:'skipped'};
-              if(s.if!==undefined&&!Boolean(evaluateExpression(s.if,ctx)))return {status:'skipped'};
+              if(s.if!==undefined&&!evaluateCondition(s.if,ctx))return {status:'skipped'};
               if(s.uses==='s1.readonly_mcp'){
                 const a=evaluateArguments(s.with.arguments,ctx);
                 return {status:'succeeded',output:await callFixture(this.env,a as Record<string,unknown>)};

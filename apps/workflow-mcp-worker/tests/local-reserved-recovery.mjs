@@ -1,4 +1,4 @@
-// Local-only failure injection at the public MCP seam and isolated local D1.
+// Isolated local or temporary Cloudflare-edge failure injection at the public MCP seam.
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import {execFileSync} from 'node:child_process';
@@ -6,7 +6,7 @@ import {Client,StreamableHTTPClientTransport} from '@modelcontextprotocol/client
 const token=process.env.S1_LOCAL_TOKEN;
 if(!token)throw Error('missing local-only auth token');
 const client=new Client({name:'s1-local-start-recovery-test',version:'0.1.0'});
-const transport=new StreamableHTTPClientTransport(new URL('http://127.0.0.1:8787/mcp'),{requestInit:{headers:{authorization:'Bearer '+token}}});
+const transport=new StreamableHTTPClientTransport(new URL((process.env.S1_LOCAL_URL??'http://127.0.0.1:8787')+'/mcp'),{requestInit:{headers:{authorization:'Bearer '+token}}});
 async function tool(name,args){
  const response=await client.callTool({name,arguments:args});
  if(response.isError)throw Error(name+' error '+JSON.stringify(response.content));
@@ -14,7 +14,8 @@ async function tool(name,args){
 }
 function sqlLiteral(s){return "'"+s.replaceAll("'","''")+"'";}
 function executeSql(sql){
- const text=execFileSync('/usr/bin/corepack',['pnpm','exec','wrangler','d1','execute','workflow-mcp-worker','--local','--persist-to','/tmp/workflow-s1-141-local','--command',sql,'--json'],{encoding:'utf8',timeout:15000});
+ const config=process.env.S1_EDGE_REMOTE==='1'?['--remote','--config','wrangler.s1-cloud.jsonc']:['--local','--persist-to','/tmp/workflow-s1-141-local'];
+ const text=execFileSync('/usr/bin/corepack',['pnpm','exec','wrangler','d1','execute',process.env.S1_EDGE_REMOTE==='1'?'DB':'workflow-mcp-worker',...config,'--command',sql,'--json'],{encoding:'utf8',timeout:30000});
  const result=JSON.parse(text);
  assert.equal(result[0]?.success,true);
 }

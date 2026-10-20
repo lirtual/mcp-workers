@@ -55,10 +55,30 @@ recovery, lost-ack reconciliation and explicit 8-slot capacity rejection; cleanu
 removes injected capacity rows. Both programs are manual local integration suites,
 not automatically invoked by ordinary unit tests.
 
-This evidence remains **local only**; no production deployment or real Cloudflare-edge
-acceptance has been performed. Still required before S1 can close: true restart
-faults with instance-creation ambiguity, independent standards/spec review, real
-isolated Cloudflare acceptance, and final release/merge authorization.
+**Isolated real Cloudflare edge evidence (2026-10-20):** a temporary, separately named
+D1, S1 Worker, Workflows binding and private read-only fixture passed the same **32**
+owner-facing MCP assertions through the current SDK. A remote-D1 fault injection
+also passed: same-ID recovery of a reserved Run, lost-start-ack reconciliation,
+and capacity-full admission rejection. A 15-second read-only fixture Step was
+started and the isolated Worker redeployed while the Run was active; both Steps
+subsequently succeeded with its original Published Version and expected output.
+These are actual edge tests, not the local Wrangler simulator. The tests did not
+exercise real network partitioning or all cross-engine incompatible migrations.
+
+The temporary Cloudflare D1, Workflow, test Worker and fixture Worker were all
+deleted afterward. The public test token and untracked deployment configuration
+were removed locally; no production deployment or secret was modified. The optional
+`S1_EDGE_REMOTE=1` fault-test path requires a freshly provisioned **isolated** D1
+and a throwaway `wrangler.s1-cloud.jsonc` that is intentionally not committed.
+
+Focused test-first review additionally closed two expression-safety gaps: references
+may only access own data fields (not inherited JavaScript prototype members),
+reserved Step IDs are rejected, and `if`/logical conditions require actual boolean
+values rather than JavaScript string truthiness. S1 now has 10 unit/contract tests.
+
+Still required before closing S1: final standards/spec code review, latest-commit
+CI verification, remaining network interruption cases where warranted, and
+explicit final merge/release authorization. S2/S3 are not implemented.
 
 Q1–Q50 design remains in [Draft PR #135](https://github.com/lirtual/mcp-workers/pull/135);
 new S2/S3 facilities are not to be provisioned here.

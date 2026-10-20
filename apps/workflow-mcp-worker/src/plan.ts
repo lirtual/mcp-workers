@@ -10,6 +10,7 @@ export type Step = {
 };
 export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown> };
 const SAFE_ID = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
+const OBJECT_PROTOTYPE_KEYS = new Set(['constructor','toString','toLocaleString','valueOf','hasOwnProperty','isPrototypeOf','propertyIsEnumerable']);
 const RESERVED = new Set(['eval','javascript','script','code','shell','endpoint','url','command','function']);
 const keys = (o: Record<string, unknown>, allowed: string[]) => {
   for(const key of Object.keys(o)) if(!allowed.includes(key)) throw new PlanError('unsupported_field:'+key);
@@ -57,16 +58,21 @@ export function evaluateExpression(v: unknown, ctx: {inputs:Record<string,unknow
   if(v===null||typeof v!=='object')return v;
   const o=v as Record<string,unknown>;
   if(Object.keys(o).length===1){
-    if('ref' in o) {let parts=String(o.ref).split('.');let value:any=parts[0]==='inputs'?ctx.inputs:ctx.steps; for(const p of parts.slice(1))value=value?.[p];return value;}
+    if('ref' in o) {let parts=String(o.ref).split('.');let value:any=parts[0]==='inputs'?ctx.inputs:ctx.steps; for(const p of parts.slice(1)) {if(value===null||(typeof value!=='object'&&typeof value!=='function')||!Object.hasOwn(value,p))return undefined;value=value[p];}return value;}
     if('eq' in o) {const [a,b]=(o.eq as unknown[]).map(x=>evaluateExpression(x,ctx));return a===b;}
     if('ne' in o) {const [a,b]=(o.ne as unknown[]).map(x=>evaluateExpression(x,ctx));return a!==b;}
     if('gt' in o) {const [a,b]=(o.gt as unknown[]).map(x=>evaluateExpression(x,ctx));return typeof a==='number'&&typeof b==='number'&&a>b;}
     if('lt' in o) {const [a,b]=(o.lt as unknown[]).map(x=>evaluateExpression(x,ctx));return typeof a==='number'&&typeof b==='number'&&a<b;}
-    if('and' in o)return (o.and as unknown[]).every(x=>Boolean(evaluateExpression(x,ctx)));
-    if('or' in o)return (o.or as unknown[]).some(x=>Boolean(evaluateExpression(x,ctx)));
-    if('not' in o)return !Boolean(evaluateExpression(o.not,ctx));
+    if('and' in o)return (o.and as unknown[]).every(x=>evaluateCondition(x,ctx));
+    if('or' in o)return (o.or as unknown[]).some(x=>evaluateCondition(x,ctx));
+    if('not' in o)return !evaluateCondition(o.not,ctx);
   }
   return Object.fromEntries(Object.entries(o).map(([k,x])=>[k,evaluateExpression(x,ctx)]));
+}
+export function evaluateCondition(condition: unknown, ctx: {inputs:Record<string,unknown>;steps:Record<string,{status:string;output?:unknown}>}): boolean {
+  const value=evaluateExpression(condition,ctx);
+  if(typeof value!=='boolean')throw new PlanError('non_boolean_condition');
+  return value;
 }
 export const evaluateArguments=evaluateExpression;
 export async function compilePlan(source: string|unknown): Promise<{plan:Plan; digest:string}>{
@@ -85,7 +91,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
   const ids=new Set<string>();
   for(const s0 of o.steps){
     const s=object(s0,'invalid_step');keys(s,['id','uses','needs','if','with']);
-    if(typeof s.id!=='string'||!SAFE_ID.test(s.id)||ids.has(s.id))throw new PlanError('invalid_step_id');
+    if(typeof s.id!=='string'||!SAFE_ID.test(s.id)||ids.has(s.id)||OBJECT_PROTOTYPE_KEYS.has(s.id))throw new PlanError('invalid_step_id');
     ids.add(s.id);
     if(s.uses!=='s1.readonly_mcp'&&s.uses!=='result.emit')throw new PlanError('unsupported_capability');
     const needs=s.needs===undefined?[]:s.needs;
@@ -101,7 +107,11 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
   for(const s of steps){
     for(const dep of s.needs)if(!ids.has(dep)||dep===s.id)throw new PlanError('invalid_dependencies');
     expression(s.with,s);
-    if(s.if!==undefined)expression(s.if,s);
+    if(s.if!==undefined){
+      expression(s.if,s);
+      const op=s.if && typeof s.if==='object' && !Array.isArray(s.if)?Object.keys(s.if):[];
+      if(typeof s.if!=='boolean' && !(op.length===1 && ['ref','eq','ne','gt','lt','and','or','not'].includes(op[0])))throw new PlanError('invalid_condition');
+    }
   }
   const sorted:Step[]=[], pending=new Map(steps.map(s=>[s.id,s]));
   while(pending.size){

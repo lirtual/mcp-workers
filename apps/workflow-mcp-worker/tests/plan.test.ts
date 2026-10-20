@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { compilePlan, evaluateExpression, evaluateArguments, PlanError } from '../src/plan.ts';
+import { compilePlan, evaluateExpression, evaluateArguments, evaluateCondition, PlanError } from '../src/plan.ts';
 
 const one = {
   version: 1, name: 'Inspect', steps: [
@@ -55,6 +55,23 @@ test('S1 rejects duplicate YAML keys, unknown executable fields and oversized DA
   await assert.rejects(() => compilePlan({...one, steps:Array.from({length:33},(_,i)=>({id:'step'+i,uses:'result.emit',with:{data:i}}))}), PlanError);
 });
 
+
+test('S1 conditions reject string truthiness and require boolean runtime values', async () => {
+  await assert.rejects(()=>compilePlan({version:1,name:'Condition',steps:[{id:'emit',uses:'result.emit',if:'false',with:{data:'must not execute'}}]}),PlanError);
+  assert.throws(()=>evaluateCondition({ref:'inputs.flag'},{inputs:{flag:'false'},steps:{}}),PlanError);
+});
+
+test('S1 references cannot read inherited Object prototype values', async () => {
+  const plan=await compilePlan({version:1,name:'Own input only',steps:[{id:'x',uses:'result.emit',with:{data:{ref:'inputs.toString'}}}]});
+  assert.equal(evaluateArguments(plan.plan.steps[0].with.data,{inputs:{},steps:{}}),undefined);
+});
+
+test('S1 rejects reserved Step names that could masquerade as completed dependencies', async () => {
+  await assert.rejects(()=>compilePlan({version:1,name:'Reserved Step',steps:[
+    {id:'constructor',uses:'result.emit',with:{data:'unsafe'}},
+    {id:'result',needs:['constructor'],uses:'result.emit',with:{data:'downstream'}}
+  ]}),PlanError);
+});
 
 test('S1 refuses prototype traversal in expression references', async () => {
   await assert.rejects(() => compilePlan({...one, steps:[
