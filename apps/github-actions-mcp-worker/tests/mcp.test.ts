@@ -10,7 +10,7 @@ const env: Env = {
   GITHUB_REPOS: 'autoactions/tsrv,autoactions/tsvc',
 };
 
-test('real MCP protocol advertises all 14 tools and enforces the repository allowlist', async () => {
+test('real MCP protocol advertises all 10 tools and enforces the repository allowlist', async () => {
   const transport = new StreamableHTTPClientTransport(new URL('https://worker.example/mcp'), {
     fetch: async (input, init) => {
       const request = input instanceof Request ? input : new Request(input, init);
@@ -23,12 +23,11 @@ test('real MCP protocol advertises all 14 tools and enforces the repository allo
   try {
     const { tools } = await client.listTools();
     const names = tools.map((x) => x.name);
-    assert.equal(names.length, 14);
+    assert.equal(names.length, 10);
     for (const expected of [
       'repositories_list', 'workflows_list', 'runs_list', 'run_get',
       'run_jobs_list', 'run_artifacts_list', 'workflow_dispatch',
       'repository_dispatch', 'run_cancel', 'run_rerun',
-      'session_targets_list', 'session_target_get', 'session_target_start', 'session_target_stop',
     ]) assert.ok(names.includes(expected), expected);
     const result = await client.callTool({ name: 'repositories_list', arguments: {} });
     assert.match(JSON.stringify(result), /autoactions\/tsrv/);
