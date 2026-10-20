@@ -158,6 +158,14 @@ bash -c 'set -eu; IFS= read -rsp "Raindrop API Token: " RAINDROP_ACCESS_TOKEN </
 - [修复后真实只读复测 #39437631284](https://github.com/lirtual/mcp-workers/actions/runs/39437631284)：**10 项中 9 通过、1 失败**。`collection_list`、`collection_get`、`bookmark_search`、`bookmark_get`、`highlight_list`、`tag_list`、`bookmark_filters_get` 及工具注册/无写入校验均通过；`bookmark_suggest` 调用官方 `GET /raindrop/{id}/suggest` 获得上游 **HTTP 403**。接口路径与官方文档相符，但该 Token/目标书签的建议能力暂无法通过；不推断 403 的具体授权原因，也不把它改标为通过。
 - **安全与发布结论**：上述请求只访问现有生产账号、不写入数据；没有运行新版创建、编辑、高亮写入或永久删除的真实验收。27 项候选工具尚不满足全部真实 API 发布门槛，`NO-GO`，PR 保持 Draft。不得把原生产旧版插件的读写成功结果作为此 Draft 写入通过。
 
+## P1 新版高亮真实写入验收及建议 403 复现（2026-10-20）
+
+- **生产认证链路**：临时 owner-only 的 Actions 作业复用现有 GitHub Environment `raindrop-mcp-worker` 的 `RAINDROP_ACCESS_TOKEN`，在 Draft 源码上执行 `tests/destructive.live.test.ts` 的**唯一高亮生命周期场景**，不是运行整个破坏性测试套件；密钥未导出到 WSL 或 Git 日志，没有部署 Worker。
+- **真实写入 PASS**：[GitHub Actions #39439062465](https://github.com/lirtual/mcp-workers/actions/runs/39439062465) 成功，明确 `1 passed / 1 skipped`。在生产 Raindrop 账号中随机创建**一条自有可丢弃书签**，执行新版高亮创建、按 ID 读取、更新备注、删除高亮、核对空结果。测试的精确 ID+唯一 URL 清理和永久删除后 404 验证也通过；不对用户其他书签或整个回收站操作。
+- **建议接口限制，仍不通过**：此前 [#39437631284](https://github.com/lirtual/mcp-workers/actions/runs/39437631284) Draft 的 `GET /raindrop/{id}/suggest` 返回上游 HTTP 403。通过已部署的**旧版生产 Raindrop MCP 插件**对公开示例 URL `https://example.com` 请求官方建议（关闭 AI Sampling），也得到 403 Forbidden；两者使用现有生产账号，但分别调用现有书签 GET 建议和 URL POST 建议。这说明 403 不是 Draft 的集合去重/建议输出 Schema 特有的故障。不能由此确定具体权限、账号等级或 Raindrop 服务策略；该工具仍标记真实验收未通过，不构造或猜测建议。
+- **临时入口恢复**：完成真实验收后，从 Draft 恢复原始 `.github/workflows/ci.yml`，删除临时生产 Secret 写入验收作业与 Draft 手动测试分支豁免。保持正常 PR 仅做无密钥自动化、受保护 `main` 上的既有手动部署条件。
+- **结论**：新版核心高亮路径的生产读写已验收通过；真实只读 9/10 通过，唯一未通过的是上游建议接口 403；还未覆盖全部其它破坏性操作的真实生产验收。仍不应自动标记 27 工具全部通过，不合并或部署，不执行 42→27 工具切换。
+
 ## 发布风险核对
 
 | 风险 | 已有控制 / 证据 | 结论 |
