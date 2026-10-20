@@ -1,7 +1,7 @@
 import { createMcpHandler } from '@modelcontextprotocol/server';
 import { authenticatePortalRequest } from '@mcp-workers/portal-auth';
 import { buildMcpServer } from './tools.ts';
-import { configuredAccounts } from './github.ts';
+
 import type { Env } from './github.ts';
 
 function jsonError(status: number, error: string): Response {
@@ -32,10 +32,8 @@ export default {
       if (auth.reason === 'invalid_origin') return jsonError(403, 'invalid_origin');
       return jsonError(401, 'unauthorized');
     }
-    let accounts: ReturnType<typeof configuredAccounts>;
-    try { accounts = configuredAccounts(env); }
-    catch { return jsonError(503, 'invalid_repository_configuration'); }
-    if (!env.GH_TOKEN || accounts.primary.length === 0) {
+    if (!env.GH_TOKEN?.trim() ||
+        (env.GH_TOKEN_SECONDARY?.trim() && env.GH_TOKEN_SECONDARY.trim() === env.GH_TOKEN.trim())) {
       return jsonError(503, 'github_not_configured');
     }
     const handler = createMcpHandler(() => buildMcpServer(env), { legacy: 'stateless' });
