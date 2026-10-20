@@ -1,0 +1,9 @@
+# Browser MCP tools — inactive first-stage contract
+
+This Draft adds only the explicit, minimal `browser_start`, `browser_status`, `browser_navigate`, `browser_snapshot`, `browser_close` schemas and compatible **existing** device owner Durable Object / WSS read and operation paths. There is no additional Worker, table, proxy, job system, generic command dispatcher or browser runtime here.
+
+`BROWSER_TOOLS_ACCEPTED = false` is a source-level acceptance gate. All five browser tools are **excluded from public `tools/list` and fail public `tools/call`**, including for already paired devices, until a packaged Agent and platform-security acceptance explicitly justify enabling them. This is not a user-configurable additional deployment variable. The Agent implementation is separately staged in `lirtual/remote-control-agent` Draft PR #19.
+
+Staged tests check strict arguments, explicit `device_id` and effectful `operation_id`, no executable/Profile/JS/CDP passthrough and public deny-by-default. An isolated internal Durable Object ↔ signed Agent socket ↔ existing SQLite receipts fixture passed against the new Agent Draft code, but is **not** a live ChatGPT client/production plugin test and is not kept as a cross-repository CI dependency before the Agent candidate is integrated.
+
+Do not claim `browser_navigate` read-only: even an HTTP GET or page subresource can have effects. The current CLI URL hygiene cannot guarantee redirect/DNS/private-network isolation. Consequential/ambiguous actions remain disallowed without genuinely verifiable owner approval. Native CLI packaging, 5-second reply reconciliation via original `get_operation_status`, crash/revocation cleanup and full Windows Agent-installed E2E must be proven before enabling the five tools. Historic MXC/WFP hostile-execution P0 remains deferred and unpassed.

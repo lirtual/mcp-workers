@@ -9,6 +9,7 @@ const MAX_LOOKUPS_PER_MINUTE = 30;
 const MAX_APPROVALS_PER_MINUTE = 8;
 const te = new TextEncoder();
 import { issueSessionChallenge, authorizeSession, acceptAuthenticatedSocket, handleIdleSocketMessage, handleDeviceInfoMessage, listApprovedDevices, deviceIsAuthorized, listLiveGrants, TEMPORARY_GRANT_MS, type V2Device } from "./v2-session.ts";
+import { parseBrowserDoArguments } from "./browser-tools.ts";
 import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId, parseLocalWriteFile, parseLocalCreateDirectory, parseLocalEditBlock, parseLocalMoveFile, parseLocalDeleteFile, parseStartProcess, parseLocalProcessOutput, parseListSessions, parseLocalProcessInteraction, parseLocalProcessTermination, parseOperationId } from "./local-read.ts";
 
 export interface PendingDevice {
@@ -309,6 +310,8 @@ export class V2OwnerCoordinator {
       start_search: parseSearchStart, get_more_search_results: parseSearchSessionId,
       stop_search: parseSearchSessionId,
       list_sessions: parseListSessions, read_process_output: parseLocalProcessOutput,
+      browser_status: args => parseBrowserDoArguments("browser_status", args),
+      browser_snapshot: args => parseBrowserDoArguments("browser_snapshot", args),
     };
     const operationId = isOperation ? arg.operation_id : undefined;
     const mutationParsers: Record<string, (input: unknown) => unknown> = {
@@ -316,6 +319,9 @@ export class V2OwnerCoordinator {
       edit_block: parseLocalEditBlock, move_file: parseLocalMoveFile,
       delete_file: parseLocalDeleteFile, start_process: parseStartProcess,
       interact_with_process: parseLocalProcessInteraction, force_terminate: parseLocalProcessTermination,
+      browser_start: args => parseBrowserDoArguments("browser_start", args),
+      browser_navigate: args => parseBrowserDoArguments("browser_navigate", args),
+      browser_close: args => parseBrowserDoArguments("browser_close", args),
     };
     const validOperation = typeof operationId === "string" &&
       Boolean(parseOperationId({ operation_id: operationId })) &&

@@ -1,4 +1,7 @@
 import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
+import { BROWSER_TOOLS, BROWSER_EFFECT_TOOLS, BROWSER_READ_TOOLS, parseBrowserCall } from "./browser-tools.ts";
+/** Source staged only: no browser surface advertised before native packaging and E2E acceptance. */
+const BROWSER_TOOLS_ACCEPTED = false;
 import { handleAgentInstallerRequest } from "./install-bootstrap.ts";
 export { V2OwnerCoordinator } from "./v2-pairing.ts";
 import { V2OwnerCoordinator as PreviewCoordinator } from "./v2-pairing.ts";
@@ -53,6 +56,40 @@ function pairedReadErrorMessage(tool: string, code: unknown): string {
     return "The remote file read failed; check the path and the Agent account's read permissions.";
   }
   return "The requested v2 device is unavailable.";
+}
+
+async function callPairedBrowser(env: Env, id: unknown, name: string, args: unknown): Promise<Response> {
+  const parsed = parseBrowserCall(name,args);
+  if (!parsed) return toolError(id,"Invalid browser request or device target.");
+  const owner = pendingOwner(env);
+  if (!owner) return toolError(id,"Browser device is unavailable.");
+  try {
+    const response = await owner.fetch("https://v2.internal/"+parsed.kind,{
+      method:"POST",headers:{"content-type":"application/json"},
+      body:JSON.stringify({device_id:parsed.device_id,tool:parsed.tool,
+        ...(parsed.operation_id?{operation_id:parsed.operation_id}:{}),arguments:parsed.arguments}),
+    });
+    if (!response.ok) {
+      return parsed.kind==="operation"
+        ? toolText(id,JSON.stringify({operation_id:parsed.operation_id,status:"timeout_unknown"}))
+        : toolError(id,"Browser observation unavailable.");
+    }
+    if (parsed.kind==="read") {
+      const value=await response.json() as {status?:unknown;text?:unknown};
+      return value.status==="completed"&&typeof value.text==="string"&&value.text.length<=65536
+        ? toolText(id,value.text) : toolError(id,"Browser observation unavailable.");
+    }
+    const value=await response.json() as {operation_id?:unknown,status?:unknown;session_id?:unknown};
+    if (value.operation_id!==parsed.operation_id||typeof value.status!=="string") {
+      return toolText(id,JSON.stringify({operation_id:parsed.operation_id,status:"timeout_unknown"}));
+    }
+    return toolText(id,JSON.stringify({operation_id:parsed.operation_id,status:value.status,
+      ...(typeof value.session_id==="string"?{session_id:value.session_id}:{})}));
+  } catch {
+    return parsed.kind==="operation"
+      ? toolText(id,JSON.stringify({operation_id:parsed.operation_id,status:"timeout_unknown"}))
+      : toolError(id,"Browser observation unavailable.");
+  }
 }
 
 const V2_READ_TOOLS = new Set(["read_file", "read_files", "list_directory", "stat_file", "search_files", "search_next", "stop_search", "list_sessions", "read_session_output"]);
@@ -981,6 +1018,7 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
   if (rpcMessage.method === "tools/list") {
     if (pairedOnly(env)) {
       return rpc(rpcMessage.id, { tools: [
+        ...(BROWSER_TOOLS_ACCEPTED ? BROWSER_TOOLS : []),
         ...LOCAL_TOOLS.map(tool => ({
           ...tool,
           inputSchema: { ...tool.inputSchema,
@@ -1002,7 +1040,8 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
     const call = params as { name?: unknown; arguments?: unknown };
     if (pairedOnly(env)) {
       const name = typeof call.name === "string" ? call.name : "";
-      const requiresDevice = V2_READ_TOOLS.has(name) || V2_OPERATION_TOOLS.has(name);
+      const requiresDevice = V2_READ_TOOLS.has(name) || V2_OPERATION_TOOLS.has(name) ||
+        (BROWSER_TOOLS_ACCEPTED && (BROWSER_EFFECT_TOOLS.has(name) || BROWSER_READ_TOOLS.has(name)));
       const target = call.arguments && typeof call.arguments === "object" && !Array.isArray(call.arguments)
         ? (call.arguments as Record<string, unknown>).device_id : undefined;
       // Never fall back to the v1 VPC. A caller must choose a paired device.
@@ -1011,6 +1050,10 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
             !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(target)))) {
         return toolError(rpcMessage.id, "The requested tool call was rejected: a valid device_id is required.");
       }
+    }
+    if (BROWSER_TOOLS_ACCEPTED && typeof call.name === "string" &&
+        (BROWSER_EFFECT_TOOLS.has(call.name)||BROWSER_READ_TOOLS.has(call.name))) {
+      return callPairedBrowser(env,rpcMessage.id,call.name,call.arguments);
     }
     if (typeof call.name === "string" && V2_OPERATION_TOOLS.has(call.name) &&
         call.arguments && typeof call.arguments === "object" && !Array.isArray(call.arguments) &&
