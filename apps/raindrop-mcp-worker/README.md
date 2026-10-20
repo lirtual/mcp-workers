@@ -33,21 +33,21 @@ It is not published as an npm package and does not support standalone STDIO, sta
 
 ## MCP tools
 
-The regression-tested tool inventory contains 42 tools, including the original 17. Selected tools:
+The regression-tested tool inventory contains 42 tools, including the original 17. T10 assesses release readiness only; see [contract readiness and cutover blockers](docs/T10-CONTRACT-READINESS.md). Selected tools:
 
 - `diagnostics`
 - `collection_list`
 - `collection_delete`
 - `collection_remove_empty`
 - `get_collection_tree`
-- `collection_manage`
+- collection_manage (legacy delete disabled; use collection_delete preview/confirm)
 - `bookmark_search`
 - `bookmark_manage`
 - `get_raindrop`
 - `list_raindrops`
 - `get_suggestions`
 - `suggest_tags`
-- `bulk_edit_raindrops`
+- bulk_edit_raindrops (legacy writes disabled; use bookmark_batch_update/delete)
 - `bookmark_batch_update`
 - `bookmark_batch_delete`
 - `tag_manage`
@@ -67,7 +67,7 @@ The regression-tested tool inventory contains 42 tools, including the original 1
 
 `collection_delete({id})` previews a complete subtree (root included), ascending `collectionIds`, `total` collection count, verified direct bookmark counts and `bookmarkCount`. `collection_remove_empty({rootId})` previews only empty leaves within that explicit positive scope; `collections` still describes the complete verified scoped subtree. Confirm either with the same scope plus `confirm: true`, `expectedTotal`, exact ordered `collectionIds`, and `digest`. The versioned SHA-256 digest binds the operation, root, canonical sorted membership (ID, parent ID, direct count), and candidates. Fresh owner-level (`access.level: 4`) metadata and direct-only bookmark counts must agree. Confirm recomputes everything before any writes; empty-leaf removal also rechecks the fresh hierarchy and metadata before each individual DELETE, without expanding the approved set to newly emptied parents. No global cleanup endpoint is used by these two tools. Large scopes fail preflight within the shared 60 HTTP-attempt budget. DELETE cascades descendants and moves bookmarks to Trash. Outcome arrays identify actual DELETE targets; one successful root DELETE covers its previewed subtree. Execution stops on the first failure or unknown acknowledgement. A digest is neither authorization nor a transactional lock, and concurrent upstream changes remain possible.
 
-Trash emptying uses `trash_empty({})` to enumerate all IDs with stable counts via fresh `GET /raindrops/-99` pages (50 items, nested=false) and an empty terminal page. Confirm with `{confirm:true, collectionId:-99, expectedTotal:preview.total, digest:preview.digest}`; a fresh full enumeration must match before one bodyless `DELETE /collection/-99`. The 60 HTTP attempt budget includes retries and the write; infeasible scopes fail closed with guidance to `bookmark_delete permanent:true` using explicit limited IDs. Empty Trash confirmation sends no write. Outcomes are `preview`, `notExecuted`, `succeeded`, `failed`, or `unknown`; only result:true establishes success. Unverified preflight failures omit total/ids/digest rather than inventing an empty snapshot. Never blindly retry unknown outcomes. The digest is not a transactional lock; concurrent changes between reread and deletion remain possible. Legacy `empty_trash` provides guidance without reads and rejects `confirm:true`. `cleanup_collections({})` remains preview-first and executes only with `confirm:true`. Legacy `remove_duplicates` provides migration guidance only and rejects `dryRun: false` before any upstream call. Use `bookmark_remove_duplicates({collectionId: 123})` for a fresh, single-collection official `duplicate:true` preview, then pass its exact `confirmation` object as `confirm`. This object contains a versioned SHA-256 digest, sorted `candidateIds`, `keeperIds`, and deletion `total`, bound to the complete observed filter snapshot and full fresh metadata. The tool caps the scope at 50 filtered results and 10 eligible deletions, failing closed rather than truncating. It compares exact URL strings, preserves a verified keeper per group (preferring protected copies), and protects notes, highlights, tags, favorites, reminders and missing metadata. A sole official candidate is retained because the filter may omit canonical originals. Reads and retries share a 60-attempt budget. Confirmation recomputes the snapshot and rechecks candidates and keepers before one T06 batch DELETE. Aggregate acknowledgement still leaves individual outcomes unknown; inspect results before any manual retry. A digest is neither permission nor a transaction lock: concurrent upstream mutations remain possible. Tests use mocks; live writes require separate authorization.
+Trash emptying uses `trash_empty({})` to enumerate all IDs with stable counts via fresh `GET /raindrops/-99` pages (50 items, nested=false) and an empty terminal page. Confirm with `{confirm:true, collectionId:-99, expectedTotal:preview.total, digest:preview.digest}`; a fresh full enumeration must match before one bodyless `DELETE /collection/-99`. The 60 HTTP attempt budget includes retries and the write; infeasible scopes fail closed with guidance to `bookmark_delete permanent:true` using explicit limited IDs. Empty Trash confirmation sends no write. Outcomes are `preview`, `notExecuted`, `succeeded`, `failed`, or `unknown`; only result:true establishes success. Unverified preflight failures omit total/ids/digest rather than inventing an empty snapshot. Never blindly retry unknown outcomes. The digest is not a transactional lock; concurrent changes between reread and deletion remain possible. Legacy `empty_trash` provides guidance without reads and rejects `confirm:true`. Legacy `cleanup_collections` provides migration guidance without scanning and rejects `confirm:true` before any upstream call; use `collection_remove_empty` with an explicit positive `rootId` and its exact preview/confirm contract. Legacy `remove_duplicates` provides migration guidance only and rejects `dryRun: false` before any upstream call. Use `bookmark_remove_duplicates({collectionId: 123})` for a fresh, single-collection official `duplicate:true` preview, then pass its exact `confirmation` object as `confirm`. This object contains a versioned SHA-256 digest, sorted `candidateIds`, `keeperIds`, and deletion `total`, bound to the complete observed filter snapshot and full fresh metadata. The tool caps the scope at 50 filtered results and 10 eligible deletions, failing closed rather than truncating. It compares exact URL strings, preserves a verified keeper per group (preferring protected copies), and protects notes, highlights, tags, favorites, reminders and missing metadata. A sole official candidate is retained because the filter may omit canonical originals. Reads and retries share a 60-attempt budget. Confirmation recomputes the snapshot and rechecks candidates and keepers before one T06 batch DELETE. Aggregate acknowledgement still leaves individual outcomes unknown; inspect results before any manual retry. A digest is neither permission nor a transaction lock: concurrent upstream mutations remain possible. Tests use mocks; live writes require separate authorization.
 
 ## Configuration
 
@@ -129,3 +129,7 @@ Account-level Cloudflare deployment, publisher cutover, Portal upstream changes,
 ## Source attribution
 
 This Worker was migrated and adapted from an MIT-licensed Raindrop MCP implementation. The immutable source repository, frozen commit, and license provenance are recorded in `SOURCE.md`; the preserved license is in `LICENSE`.
+
+### T10 release readiness
+
+See docs/T10-CONTRACT-READINESS.md for the 27-tool matrix, the legacy 17-name migration plan and the blocked cutover verdict. No merge, published-tool cutover or real API mutation is authorized.

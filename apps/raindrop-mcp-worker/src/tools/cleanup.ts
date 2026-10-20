@@ -92,7 +92,7 @@ const emptyTrashTool = defineTool({
 const cleanupCollectionsTool = defineTool({
   name: "cleanup_collections",
   description:
-    "Preview collections reporting zero bookmarks by default; remove empty collections only with confirm: true. Actual upstream cleanup may also consider nested collections.",
+    "Legacy preview guidance only; no scope scanned. Use collection_remove_empty with an explicit positive rootId and its preview/confirm contract. confirm:true is disabled.",
   annotations: {
     readOnlyHint: false,
     destructiveHint: true,
@@ -100,49 +100,13 @@ const cleanupCollectionsTool = defineTool({
     openWorldHint: true,
   },
   inputSchema: z.object({
-    confirm: z.boolean().optional().describe("Default false: preview only. Set true to remove empty collections."),
+    confirm: z.boolean().optional().describe("Legacy confirmation is disabled; use collection_remove_empty."),
   }).strict(),
-  handler: async (
-    args: { confirm?: boolean },
-    { raindropService }: ToolHandlerContext,
-  ) => {
-    if (args.confirm !== true) {
-      // Read both endpoints: /collections excludes nested child collections.
-      const [roots, children] = await Promise.all([
-        raindropService.getCollections(true),
-        raindropService.getAllChildCollections(true),
-      ]);
-      if (!Array.isArray(roots) || !Array.isArray(children)) {
-        throw new Error("Cannot enumerate collections for preview; nothing deleted.");
-      }
-      const empty = new Map<number, string>();
-      let unknown = 0;
-      for (const collection of [...roots, ...children]) {
-        if (!Number.isSafeInteger(collection._id) || collection._id <= 0) {
-          throw new Error("Invalid collection in preview; nothing deleted.");
-        }
-        if (collection.count === 0) {
-          empty.set(collection._id, collection.title);
-        } else if (typeof collection.count !== "number" || !Number.isSafeInteger(collection.count) || collection.count < 0) {
-          unknown++;
-        }
-      }
-      const lines = [...empty].slice(0, 20).map(([id, title]) => `- ${title} (ID: ${id})`);
-      const suffix = empty.size > 20 ? `\n... and ${empty.size - 20} more.` : "";
-      return { content: [textContent(
-        `Preview only: ${empty.size} collections report zero direct bookmarks; ${unknown} have unverified counts. Nothing deleted.\n${lines.join("\n")}${suffix}\nUpstream cleanup determines the final deletion set, which may differ. To remove empty collections, call again with confirm: true.`,
-      )] };
+  handler: async (args: { confirm?: boolean }) => {
+    if (args.confirm === true) {
+      throw new Error("Legacy cleanup_collections deletion disabled. Use collection_remove_empty with an explicit positive rootId and its exact preview/confirm digest; nothing deleted and no scope scanned.");
     }
-    const success = await raindropService.removeEmptyCollections();
-    return {
-      content: [
-        textContent(
-          success
-            ? "Empty collections removed successfully."
-            : "Empty-collection cleanup was not confirmed by Raindrop; outcome may be uncertain. Do not retry blindly.",
-        ),
-      ],
-    };
+    return { content: [textContent("Preview guidance only: no scope scanned and nothing deleted. Use collection_remove_empty with an explicit positive rootId, then its exact preview/confirm contract and digest.")] };
   },
 });
 

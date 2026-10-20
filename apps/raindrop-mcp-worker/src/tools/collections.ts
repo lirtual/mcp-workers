@@ -291,12 +291,10 @@ const collectionManageTool = defineTool({
         };
       }
       case "delete": {
-        if (!args.id) throw new ValidationError("id is required for delete");
-        await raindropService.deleteCollection(args.id);
-        return {
-          content: [textContent(`Deleted collection ${args.id}`)],
-          structuredContent: { operation: "delete" as const, deleted: true },
-        };
+        // Preserve the legacy tool name, not its unsafe subtree deletion.
+        throw new ValidationError(
+          "Legacy collection_manage delete disabled. Use collection_delete with an explicit id, preview and matching confirmation digest; nothing deleted.",
+        );
       }
       default:
         throw new ValidationError(

@@ -47,6 +47,122 @@ const EXPECTED_TOOL_NAMES = [
   "tag_delete",
 ].sort();
 
+// T10 assessment only: pin the candidate surface without removing legacy names.
+const CANONICAL_TOOL_NAMES = [
+  "bookmark_search", "bookmark_get", "bookmark_exists", "bookmark_create",
+  "bookmark_update", "bookmark_delete", "bookmark_move", "bookmark_batch_update",
+  "bookmark_batch_delete", "collection_list", "collection_get", "collection_create",
+  "collection_update", "collection_delete", "tag_list", "tag_rename", "tag_merge",
+  "tag_delete", "highlight_list", "highlight_create", "highlight_update",
+  "highlight_delete", "bookmark_filters_get", "bookmark_suggest", "trash_empty",
+  "collection_remove_empty", "bookmark_remove_duplicates",
+];
+const READ_ONLY_TOOL_NAMES = new Set([
+  "bookmark_search", "bookmark_get", "bookmark_exists", "collection_list",
+  "collection_get", "tag_list", "highlight_list", "bookmark_filters_get", "bookmark_suggest",
+]);
+const DESTRUCTIVE_TOOL_NAMES = new Set([
+  "bookmark_delete", "bookmark_batch_update", "bookmark_batch_delete",
+  "collection_delete", "collection_remove_empty", "tag_rename", "tag_merge",
+  "tag_delete", "highlight_update", "highlight_delete", "trash_empty",
+  "bookmark_remove_duplicates",
+]);
+
+// Preview/confirm schemas emit unions; inspect each object branch as well as flat objects.
+function objectBranches(schema: Record<string, unknown>): Array<Record<string, unknown>> {
+  const alternatives = schema.anyOf ?? schema.oneOf;
+  return Array.isArray(alternatives)
+    ? alternatives.flatMap(branch => objectBranches(branch as Record<string, unknown>))
+    : [schema];
+}
+
+describe("T10 public contract release readiness (no cutover)", () => {
+  it("lists all 27 candidates once, 15 legacy names, schemas and appropriate hints through the SDK", async () => {
+    const service = new RaindropMCPService({ accessToken: "mock-only" });
+    const client = new Client({ name: "t10-readiness", version: "1.0.0" });
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    try {
+      await Promise.all([service.getServer().connect(st), client.connect(ct)]);
+      const { tools } = await client.listTools();
+      const names = tools.map(tool => tool.name);
+      expect(names.toSorted()).toEqual(EXPECTED_TOOL_NAMES);
+      expect(names).toHaveLength(42);
+      expect(new Set(names).size).toBe(42);
+      expect(CANONICAL_TOOL_NAMES).toHaveLength(27);
+      expect(new Set(CANONICAL_TOOL_NAMES).size).toBe(27);
+      expect(names.filter(name => CANONICAL_TOOL_NAMES.includes(name)).toSorted())
+        .toEqual(CANONICAL_TOOL_NAMES.toSorted());
+      expect(names.filter(name => !CANONICAL_TOOL_NAMES.includes(name))).toHaveLength(15);
+      for (const name of CANONICAL_TOOL_NAMES) {
+        const tool = tools.find(entry => entry.name === name)!;
+        expect(tool.description?.length, name).toBeGreaterThan(0);
+        expect(tool.inputSchema.type, name).toBe("object");
+
+        for (const branch of objectBranches(tool.inputSchema)) {
+          expect(branch.properties, name).toBeDefined();
+          if (name !== "collection_list") expect(branch.additionalProperties, name).toBe(false);
+        }
+        expect(tool.annotations?.readOnlyHint, name).toBe(READ_ONLY_TOOL_NAMES.has(name));
+        // Omitted destructiveHint defaults to true in MCP; all writes explicitly declare it.
+        if (!READ_ONLY_TOOL_NAMES.has(name)) {
+          expect(tool.annotations?.destructiveHint, name).toBe(DESTRUCTIVE_TOOL_NAMES.has(name));
+          expect(tool.annotations?.idempotentHint, name).toBe(false);
+        } else if (tool.annotations?.idempotentHint !== undefined) {
+          expect(tool.annotations.idempotentHint, name).toBe(true);
+        }
+        // External Raindrop state: an omitted openWorldHint has the correct MCP default.
+        expect(tool.annotations?.openWorldHint, name).not.toBe(false);
+        if (tool.outputSchema) {
+          expect(tool.outputSchema.type, name).toBe("object");
+          for (const branch of objectBranches(tool.outputSchema)) {
+            expect(branch.properties, name).toBeDefined();
+          }
+        }
+      }
+      expect(tools.filter(tool => CANONICAL_TOOL_NAMES.includes(tool.name) && objectBranches(tool.inputSchema).some(branch => branch.additionalProperties !== false))
+        .map(tool => tool.name)).toEqual(["collection_list"]);
+      // A passing assessment records known blockers; it does not certify cutover readiness.
+      expect(tools.filter(tool => CANONICAL_TOOL_NAMES.includes(tool.name) && !tool.outputSchema)
+        .map(tool => tool.name)).toEqual(["bookmark_remove_duplicates"]);
+    } finally { await client.close(); await service.cleanup(); }
+  });
+
+  it("enforces representative read/write/destructive schemas before upstream access over tools/call", async () => {
+    const fetch = vi.fn(() => { throw new Error("Unexpected HTTP"); });
+    vi.stubGlobal("fetch", fetch);
+    const service = new RaindropMCPService({ accessToken: "mock-only" });
+    const exists = vi.spyOn(service.raindropService, "bookmarkExists")
+      .mockResolvedValue({ exists: false, ids: [] });
+    const client = new Client({ name: "t10-strict-calls", version: "1.0.0" });
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    try {
+      await Promise.all([service.getServer().connect(st), client.connect(ct)]);
+      const result = await client.callTool({ name: "bookmark_exists", arguments: { url: "https://example.com" } });
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toEqual({ exists: false, ids: [] });
+      for (const [name, args] of [
+        ["bookmark_exists", { url: "https://example.com", extra: true }],
+        ["bookmark_get", { id: "42" }],
+        ["bookmark_create", { url: "https://example.com", extra: true }],
+        ["collection_create", { title: "Test", extra: true }],
+        ["tag_delete", { tagNames: ["test"], extra: true }],
+        ["highlight_delete", { bookmarkId: 42, highlightId: 123 }],
+        ["bookmark_batch_delete", { collectionId: -99, ids: [42] }],
+        ["collection_remove_empty", { rootId: 42, confirm: true }],
+        ["trash_empty", { confirm: true, collectionId: -99 }],
+        ["bookmark_remove_duplicates", { collectionId: 42, confirm: true }],
+      ] as const) {
+        expect((await client.callTool({ name, arguments: args })).isError, name).toBe(true);
+      }
+      expect(exists).toHaveBeenCalledExactlyOnceWith("https://example.com");
+      expect(fetch).not.toHaveBeenCalled();
+    } finally {
+      await client.close(); await service.cleanup();
+      exists.mockRestore(); vi.unstubAllGlobals();
+    }
+  });
+});
+
 describe("Raindrop MCP capability contract", () => {
   it("retains legacy tools while adding T01 through T07 atomic tools", async () => {
     const service = new RaindropMCPService({ accessToken: "test-token" });
@@ -148,7 +264,9 @@ describe("collection_list over MCP tools/call", () => {
 });
 
 describe("preview-first cleanup MCP tools/list and tools/call entry contract", () => {
-  it("advertises explicit confirmation, keeps {} read-only, and rejects unknown arguments", async () => {
+  it("retains legacy names, blocks all three destructive bypasses, and makes no upstream requests", async () => {
+    const fetch = vi.fn(() => { throw new Error("Unexpected HTTP"); });
+    vi.stubGlobal("fetch", fetch);
     const service = new RaindropMCPService({ accessToken: "test-token" });
     const getStats = vi.spyOn(service.raindropService, "getUserStats")
       .mockResolvedValue({ trash: 7, collections: 5 } as Awaited<ReturnType<typeof service.raindropService.getUserStats>>);
@@ -180,6 +298,16 @@ describe("preview-first cleanup MCP tools/list and tools/call entry contract", (
         expect(preview.isError).not.toBe(true);
         expect(preview.content?.[0]).toMatchObject({ type: "text" });
       }
+      for (const [name, args, replacement] of [
+        ["empty_trash", { confirm: true }, "trash_empty"],
+        ["cleanup_collections", { confirm: true }, "collection_remove_empty"],
+        ["remove_duplicates", { dryRun: false }, "bookmark_remove_duplicates"],
+      ] as const) {
+        const blocked = await client.callTool({ name, arguments: args });
+        expect(blocked.isError).toBe(true);
+        expect(JSON.stringify(blocked.content)).toContain(replacement);
+        expect(JSON.stringify(blocked.content)).toMatch(/disabled/i);
+      }
       // Non-executing flags must also be safe at protocol boundary.
       for (const name of ["empty_trash", "cleanup_collections"]) {
         const preview = await client.callTool({ name, arguments: { confirm: false } });
@@ -207,12 +335,13 @@ describe("preview-first cleanup MCP tools/list and tools/call entry contract", (
         expect(rejected).toBe(true);
       }
       expect(getStats).not.toHaveBeenCalled();
-      expect(roots).toHaveBeenCalled();
-      expect(children).toHaveBeenCalled();
+      expect(roots).not.toHaveBeenCalled();
+      expect(children).not.toHaveBeenCalled();
       expect(getBookmarks).not.toHaveBeenCalled();
       expect(trashDelete).not.toHaveBeenCalled();
       expect(collectionDelete).not.toHaveBeenCalled();
       expect(duplicateDelete).not.toHaveBeenCalled();
+      expect(fetch).not.toHaveBeenCalled();
     } finally {
       await client.close();
       await service.cleanup();
@@ -223,6 +352,7 @@ describe("preview-first cleanup MCP tools/list and tools/call entry contract", (
       trashDelete.mockRestore();
       collectionDelete.mockRestore();
       duplicateDelete.mockRestore();
+      vi.unstubAllGlobals();
     }
   });
 });
@@ -970,5 +1100,45 @@ describe("highlight atomic and Draft compatibility contracts", () => {
       update.mockRejectedValue(new Error("403 permission denied"));
       expect((await client.callTool({ name: "highlight_update", arguments: { bookmarkId: 42, highlightId: highlight._id, note: "" } })).isError).toBe(true);
     } finally { await client.close(); await service.cleanup(); }
+  });
+});
+
+describe("T10 deprecated write entry points cannot bypass safer atomic contracts", () => {
+  it("blocks unconfirmed collection_manage deletion and all legacy bulk mutations before any upstream access", async () => {
+    const service = new RaindropMCPService({ accessToken: "test-token" });
+    const upstream = vi.fn(() => { throw new Error("Unexpected upstream request"); });
+    vi.stubGlobal("fetch", upstream);
+    const collectionDelete = vi.spyOn(service.raindropService, "deleteCollection");
+    const collectionPreview = vi.spyOn(service.raindropService, "deleteCollectionPreviewFirst");
+    const bulkUpdate = vi.spyOn(service.raindropService, "batchUpdateBookmarksInCollection");
+    const bulkDelete = vi.spyOn(service.raindropService, "batchDeleteBookmarksInCollection");
+    const client = new Client({ name: "t10-write-bypass-regression", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    try {
+      await Promise.all([service.getServer().connect(serverTransport), client.connect(clientTransport)]);
+      for (const [name, args, replacement] of [
+        ["collection_manage", { operation: "delete", id: 55 }, "collection_delete"],
+        ["bulk_edit_raindrops", { operation: "remove", collectionId: 55, ids: [101] }, "bookmark_batch_delete"],
+        ["bulk_edit_raindrops", { operation: "move", collectionId: 55, toCollectionId: 56, ids: [101] }, "bookmark_batch_update"],
+        ["bulk_edit_raindrops", { operation: "update", collectionId: 55, important: true }, "bookmark_batch_update"],
+      ] as const) {
+        const result = await client.callTool({ name, arguments: args });
+        expect(result.isError, name).toBe(true);
+        expect(JSON.stringify(result.content), name).toContain(replacement);
+      }
+      expect(upstream).not.toHaveBeenCalled();
+      expect(collectionDelete).not.toHaveBeenCalled();
+      expect(collectionPreview).not.toHaveBeenCalled();
+      expect(bulkUpdate).not.toHaveBeenCalled();
+      expect(bulkDelete).not.toHaveBeenCalled();
+    } finally {
+      await client.close();
+      await service.cleanup();
+      collectionDelete.mockRestore();
+      collectionPreview.mockRestore();
+      bulkUpdate.mockRestore();
+      bulkDelete.mockRestore();
+      vi.unstubAllGlobals();
+    }
   });
 });
