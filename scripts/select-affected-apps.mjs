@@ -5,13 +5,14 @@ import { pathToFileURL } from 'node:url';
 
 export const APPLICATIONS = [
   'database-mcp-worker',
+  'github-actions-mcp-worker',
   'ima-mcp-worker',
   'raindrop-mcp-worker',
   'remote-control-mcp-worker',
   'ssh-mcp-worker',
 ];
 
-const RELEASE_WORKERS = APPLICATIONS;
+const RELEASE_WORKERS = APPLICATIONS.filter(app => app !== 'github-actions-mcp-worker');
 
 function requiresAllApps(file) {
   return file === 'package.json'
