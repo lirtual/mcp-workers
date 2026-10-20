@@ -200,6 +200,8 @@ See [ADR-0030](./adr/0030-browser-conservative-gating-consent-evidence-acceptanc
 
 Both are **unverified, evidence-required** as of this source review. No real client approval, browser traffic or installed-platform acceptance was exercised.
 
+**Additional same-session read-only and sandbox evidence:** [P0 research §D–E](./BROWSER-P0-FEASIBILITY-RESEARCH.md#d-non-destructive-feasibility-observations--same-session-local-probe-2026-10-20) records connected plugin tool discovery, two ambiguous same-named online devices (**no remote execution**), local Chromium startup, a synthetic redirect test **blocked by the sandbox administrator before a request could reach Playwright or the server**, and small offline screenshot sizes (PNG **12,063 B**, JPEG **10,553 B**). **Neither** remote high-impact approval nor remote browser egress interception has passed a real acceptance test. Existing DO dispatch also times out after **5 seconds**, which is a concrete future browser-call lifetime/design constraint; do not convert read calls naively or blindly retry unknown work. These are observations, not accepted Q decisions.
+
 ### Findings and minimum readiness contracts
 
 | Priority | Finding verified against existing code/documentation | Recommended minimal disposition | Evidence gate before the affected feature |
