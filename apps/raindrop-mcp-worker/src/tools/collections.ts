@@ -190,11 +190,12 @@ const collectionUpdateTool = defineTool({
     args: z.infer<typeof CollectionUpdateInputSchema>,
     { raindropService }: ToolHandlerContext,
   ) => {
-    const updates: Record<string, string | boolean> = {};
-    setIfDefined(updates, "title", args.title);
-    setIfDefined(updates, "description", args.description);
-    setIfDefined(updates, "color", args.color);
-    setIfDefined(updates, "public", args.public);
+    const updates = {
+      ...(args.title !== undefined ? { title: args.title } : {}),
+      ...(args.description !== undefined ? { description: args.description } : {}),
+      ...(args.color !== undefined ? { color: args.color } : {}),
+      ...(args.public !== undefined ? { public: args.public } : {}),
+    };
     const updated = await raindropService.updateCollection(args.id, updates);
     const collection = collectionReadSummary(updated);
     return {
