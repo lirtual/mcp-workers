@@ -14,6 +14,6 @@ A manual MCP workflow start is **always asynchronous**: it admits the Run and re
 
 ## Consequences
 
-This is consistent with Q25=A (no blind retry of uncertain writes), Q33=A (truthful external cancellation) and Q36=A (granular atomic tools). The accepted distinction does **not** establish an exact enum hierarchy for Run/Step/Attempt, event schema, reconciliation protocol, polling limits or failure-handling DSL semantics; those remain technical-spec questions. An indeterminate state is not proof that effects were rolled back.
+This is consistent with Q25=A (no blind retry of uncertain writes), Q33=A (truthful external cancellation) and Q36=A (granular atomic tools). Round 7 **Q50=A** keeps the first-release MCP surface limited to required atomic owner-facing operations (definitions, authorization, start, status, logs, result, cancellation, pause/resume) and rejects exposing arbitrary internal Attempt/D1/GitHub job management. The accepted distinctions do **not** establish an exact tool inventory, enum hierarchy for Run/Step/Attempt, event schema, reconciliation protocol, polling limits or failure-handling DSL semantics; those remain technical-spec questions. An indeterminate state is not proof that effects were rolled back.
 
 Design only: no runtime code, merge, deploy, credentials change, or Tickets.
