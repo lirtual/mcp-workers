@@ -1,6 +1,6 @@
 # Remote Control — Browser Automation Design (Grill With Docs)
 
-Status: **design interview in progress; rounds 1–4 agreed 2026-10-20**. This document records decisions, not shipped behavior, authorization to implement, a release gate or a new development Ticket. The existing v1/v2 specs remain authoritative for their implemented scope. Do not infer that browser tools, native Windows browser automation coverage, or personal-profile access exist today.
+Status: **design interview in progress; rounds 1–5 agreed 2026-10-20**. This document records decisions, not shipped behavior, authorization to implement, a release gate or a new development Ticket. The existing v1/v2 specs remain authoritative for their implemented scope. Do not infer that browser tools, native Windows browser automation coverage, or personal-profile access exist today.
 
 ## Goal
 
@@ -50,6 +50,17 @@ See [ADR-0023](./adr/0023-browser-runtime-profile-interruption.md). These do not
 
 See [ADR-0024](./adr/0024-browser-observation-and-confirmation.md). No particular tool interface, consent plumbing, screenshot quota or action-classification algorithm has been approved.
 
+## Accepted browser operation and remote-effect boundaries (round 5)
+
+| Question | Decision | Consequence |
+| --- | --- | --- |
+| Q17 — Tool granularity | **A**: curated, minimal atomic browser tools | Single-purpose operations for browser sessions/tabs/navigation/observation/interaction; no generic unchecked browser-action dispatcher or arbitrary JS/Playwright execution. Exact first-release tool list and schemas remain open |
+| Q18 — Element selection | **A**: semantic/accessibility-first with unique resolution | Prefer roles/names/labels/text; reject ambiguous, missing or stale matches and re-observe rather than guess/click. Fallback selector rules remain open |
+| Q19 — File boundary | **A**: device-local upload paths and Agent-managed local downloads | Reuse existing Remote Control file operations for subsequent access/transfer as applicable; do not send complete browser file payloads through MCP by default. Local path permissions and cleanup remain open |
+| Q20 — Action recovery | **A**: stable Operation IDs and Agent-local Receipts for potentially effectful browser actions | Lost response means query status, never automatically replay. A successful browser click receipt is not proof of the remote site's completed business effect. Exact receipt schema and reconciliation still need design |
+
+See [ADR-0025](./adr/0025-atomic-browser-actions-and-receipts.md). These agreements do **not** approve individual tool names, exact locator syntax, file permissions, receipt algorithms or bypass of the Q16 per-high-impact-action confirmation.
+
 ## Invariants carried forward
 
 - Use the established authenticated device path and explicit `device_id`; never accept an arbitrary remote address or publish a CDP endpoint.
@@ -61,14 +72,14 @@ See [ADR-0024](./adr/0024-browser-observation-and-confirmation.md). No particula
 
 ## Open design-tree branches
 
-**Next-round frontier (Q17–Q20; no choices accepted yet)**
+**Next-round frontier (Q21–Q24; no choices accepted yet)**
 
-- Q17 — Should browser MCP calls expose a compact curated set of atomic actions, a generic browser-action dispatcher, or whole workflows?
-- Q18 — How should the assistant identify the target page element and handle ambiguous or stale matches?
-- Q19 — What boundary should govern local browser file uploads/downloads versus transferring file bytes through MCP?
-- Q20 — What operation-ID and receipt contract should cover potentially effectful browser actions, including uncertain remote outcomes?
+- Q21 — Which browser capability groups must form the initial minimal atomic MCP tool contract rather than being deferred?
+- Q22 — How should a client identify and reselect an exact tab within the explicit device/browser-session target, including tab closure or navigation changes?
+- Q23 — How should one high-impact action's explicit owner confirmation be bound to the intended target and execution request without authorizing a later or changed action?
+- Q24 — Under what conditions may the owner clear the retained automation profile, especially if a session is active or its operation outcome is unknown?
 
-**Downstream (not yet at the frontier; depends on Q17–Q20):** concrete tool names and argument schemas, managed tab IDs, action-specific consent binding, safe screenshot/snapshot bounds, page prompt-injection handling, profile clearing and lock recovery, download provenance, platform acceptance and rollout gates, and future personal-browser-profile attachment. No implementation or new development Tickets until the complete design tree has been reviewed and the owner explicitly authorizes execution.
+**Downstream (not yet at the frontier; depends on Q21–Q24):** precise tool names/argument schemas; element locator freshness and visual-coordinate fallback; screenshot/page-data bounds and secret redaction; upload-path/download-directory safety and retention; approval replay resistance and ambiguous website outcomes; profile lock/crash recovery and browser integrity checks; Linux/native Windows acceptance and staged rollout; future explicitly authorized personal-browser attachment.
 
 ## Documentation and scope rules
 
