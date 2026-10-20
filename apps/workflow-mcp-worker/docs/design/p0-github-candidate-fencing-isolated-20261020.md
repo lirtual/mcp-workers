@@ -36,3 +36,17 @@ The two distinct GitHub runs and the rerun all reached the intended assertions. 
 Relevant docs: [GitHub OIDC JWT claims](https://docs.github.com/en/actions/reference/security/oidc) (`run_id`, `run_attempt`, `check_run_id`, `workflow_ref`). Results are recorded **before teardown** because the temporary private repo's Actions pages will not remain accessible after deletion.
 
 **Cleanup completed and independently verified:** the isolated test Worker and D1 returned deletion success; temporary private GitHub repository `lirtual/wf-p05-fencing-20261020-1efa98` was deleted and later lookup reported it absent. Cloudflare inventory returned to **12 Workers, 4 D1 and 1 Workflow**, with no P0-5 fencing resources. There were no OIDC token or persistent Runner-secret artifacts in the PR. Other P0 items (full SSRF, Cron native `scheduled()` → Workflow Run, dispatch ambiguity, external cancellation) remain OPEN at this evidence stage.
+
+## Further P0-5 workflow dispatch acknowledgement test — 2026-10-20
+
+A **new temporary private GitHub repo**, `lirtual/wf-p05-dispatch-20261020-9a52fc`, hosted an innocuous `workflow_dispatch` with a random opaque `correlation_id` visible in the run name (harmless `echo` Job, no OIDC or business side effects). The actual GitHub REST API `X-GitHub-Api-Version: 2026-03-10` was called twice. This API **normally returned HTTP 200 with a trustworthy `workflow_run_id`**, as confirmed by GitHub's [2026 dispatch change](https://github.blog/changelog/2026-02-19-workflow-dispatch-api-now-returns-run-ids/) and [REST documentation](https://docs.github.com/en/rest/actions/workflows?apiVersion=2026-03-10#create-a-workflow-dispatch-event).
+
+| Test | Observed physical Run | Intended policy verdict |
+| --- | --- | --- |
+| Normal dispatch response | Run `39410780231` obtained **directly from API** | Persist Run ID from acknowledgement; no polling/search required |
+| Response-loss *simulation* | Another dispatch created Run `39410784869`; success response deliberately ignored locally | Record `dispatch_unknown`; **do not** blindly re-dispatch |
+| REST reconciliation read | GitHub run list exposed the unique synthetic run name, expected workflow path and ref for Run `39410784869` | Correlation **candidate found**, but **not yet eligible for Claim** solely from a name/nonce |
+
+**Explicit distinction:** this was **intentional loss of an already returned JSON response**, **not** actual socket failure or process death. A run name or opaque nonsecret dispatch marker is *discovery metadata*, not a bearer authorization credential. A trusted repository's own Actions-write principal might dispatch a copy. Production acceptance must link the physical Job from its signed OIDC plus verifiable GitHub run metadata to a **specific, authorized dispatch candidate**, or remain `dispatch_unknown` and refuse Claim. Do not introduce a second queue, retry dispatcher, per-Attempt signing secret, table, or broker merely to chase a rare lost acknowledgement.
+
+**Verified teardown:** the private test repository was deleted and lookup returned absent. The separate P0-3 Cloudflare test Workers and D1 were also deleted; baseline account counts returned to **12 Workers, 4 D1 and 1 Workflow**. No existing business workflows or `lirtual/mcp-workers` source files were changed by these PoCs.
