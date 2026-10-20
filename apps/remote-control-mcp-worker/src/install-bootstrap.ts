@@ -75,7 +75,18 @@ export const REVIEWED_V0110_RELEASE_PIN: InstallReleasePin = Object.freeze({
   x64Sha256: "ad995f987c6f2cc428baadae92a330fe43ef5f0d52652e1fe582e332b9e26ba9",
   arm64Sha256: "bdb52cb83d0186127fc0ea65248d97701fe6cbc2d0d1ac9984b9e8eedf9a7397",
 });
-const VERIFIED_PYTHON_FREE_RELEASE: InstallReleasePin = REVIEWED_V0110_RELEASE_PIN;
+// Official immutable v0.1.11 Release, exact reviewed source and dual-native assets.
+// This is also the supported one-time v0.1.8 readonly -> paired-full migration
+// entrypoint: /install.sh --upgrade. Never use the legacy installed rca upgrade.
+export const REVIEWED_V0111_RELEASE_PIN: InstallReleasePin = Object.freeze({
+  tag: "v0.1.11",
+  pairingProtocol: "single-code-v1",
+  upgradeMode: "explicit-v1",
+  commit: "c558ac6a9f2ecc0129234790bf4f3b3a3a4aa191",
+  x64Sha256: "641efcefe08d8bd4a70a1b3511d498d48a21687f05f167122219262bda9db6ec",
+  arm64Sha256: "45d17c77c8fe37f7838f8015ad14518412161552e2d01f48e021788fb9a088dd",
+});
+const VERIFIED_PYTHON_FREE_RELEASE: InstallReleasePin = REVIEWED_V0111_RELEASE_PIN;
 // Never trust request Host alone: the allowed origin is supplied by the
 // deployment's validated Custom Domain binding, not a source-code hostname.
 export function validInstallerOrigin(value: unknown): value is string {

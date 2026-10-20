@@ -72,7 +72,7 @@ test("production DO binding lists per-device tools without v1 fallback", async (
   assert.equal(unscoped.result.isError, true, "never allow implicit fallback to the old VPC");
 });
 
-test("production installer is pinned to the public v0.1.10 release and its own origin", async () => {
+test("production installer is pinned to the public v0.1.11 release and its own origin", async () => {
   const { default: worker } = await import("../src/worker.ts");
   const prod = "https://remote-control-mcp-worker.aiyaya.workers.dev";
   const env = { MCP_ACCESS_TOKEN: "owner-only", REMOTE_CONTROL_INSTALL_ORIGIN: prod,
@@ -81,7 +81,7 @@ test("production installer is pinned to the public v0.1.10 release and its own o
   const response = await worker.fetch(new Request(prod + "/install.sh"), env);
   assert.equal(response.status, 200);
   const content = await response.text();
-  assert.match(content, /remote-control-agent-v0\.1\.10/);
+  assert.match(content, /remote-control-agent-v0\.1\.11/);
   assert.ok(content.includes("--endpoint") && content.includes(prod + "/"));
   const rejected = await worker.fetch(new Request("https://unauthorized.test/install.sh"), env);
   assert.equal(rejected.status, 403);
@@ -264,7 +264,7 @@ test("single-code Worker Preview installer enabled only for reviewed immutable A
   const enabled = await worker.fetch(request,configured);
   assert.equal(enabled.status,200);
   assert.equal(enabled.headers.get("cache-control"),"no-store");
-  assert.match(await enabled.text(),/remote-control-agent-v0\.1\.10/);
+  assert.match(await enabled.text(),/remote-control-agent-v0\.1\.11/);
   const disabled = await worker.fetch(new Request(origin+"/install.sh"),{
     MCP_ACCESS_TOKEN: "test-only", REMOTE_CONTROL_V2_PREVIEW_ONLY:"false"
   });
