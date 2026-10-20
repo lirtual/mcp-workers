@@ -1,6 +1,6 @@
 # Workflow MCP — Grill With Docs design record
 
-Status: **Rounds 1–3 accepted; Round 4 in progress**  
+Status: **Rounds 1–4 accepted; Round 5 in progress**  
 Owner confirmation: **2026-10-20**  
 Repository target: `lirtual/mcp-workers`  
 Authority: **design documentation only** — no implementation, merge, deployment, credential changes, or Tickets.
@@ -27,6 +27,15 @@ Authority: **design documentation only** — no implementation, merge, deploymen
 | Q16 | Network safety | **A — SSRF protection for dynamic targets** | Reject metadata, loopback, unintended private access and DNS-rebinding/redirect bypasses. |
 | Q17 | External operation authority | **A — confirmation at enablement** | Confirm allowed external actions before unattended operation; new high-risk actions require re-approval. |
 | Q18 | Heavy executor | **A — GitHub Actions for registered heavy capabilities** | Cloudflare Workflows still orchestrates; heavy tasks are bounded rather than arbitrary injected shell. |
+| Q19 | Publish and activation | **A — validate, authorize, then activate in Publish** | Do not require a second mandatory Enable step; pause/disable remains available. |
+| Q20 | Dynamic MCP tool drift | **A — reapprove widened/high-risk authority** | New high-risk tools, wider permissions or material contract changes require renewed approval; harmless compatible changes do not. |
+| Q21 | Dynamic target credential storage | **A — D1 encrypted values + independent Worker Secret key** | Secure owner-managed target credentials without launching a new Vault or Secrets Store service. |
+| Q22 | Streamable HTTP compatibility | **A — validated current and recent protocol versions** | Explicit version negotiation/compatibility, not support for every legacy transport or a latest-only assumption. |
+| Q23 | Webhook event identity | **A — trigger-specific auth and stable event ID** | Duplicate delivery resolves to one logical Run; body hash is not a reliable event identity. |
+| Q24 | Cron misfire | **A — timezone and `misfire: latest`** | When downtime causes missed schedules, do not automatically replay the entire backlog. |
+| Q25 | Retry eligibility | **A — bounded retries only for safe operations** | Read-only or proven idempotent work may retry; uncertain external writes are never blindly replayed. |
+| Q26 | Heavy executor ownership | **A — GitHub OIDC + atomic D1 Attempt Claim** | Multiple physical candidates cannot all execute one logical Attempt's business work. |
+| Q27 | Heavy executor credentials | **A — distinct minimal-scope credential** | Do not reuse the GitHub Actions MCP multi-PAT management authority. |
 
 ## Baseline and limits
 
@@ -46,41 +55,52 @@ The current `main` tree was checked before the original Draft PR: no implementat
 - **Q18=A** selects GitHub Actions as a heavy-task executor for **registered heavy capabilities only**, not the DAG orchestrator; it does **not** restrict discovery of external MCP Servers under Q7=B.
 - **Q6=A, Q8=A, Q9=A, Q10=A** continue to mean bounded DAG/Cloudflare orchestrator/manual+webhook+Cron/single owner. None of these decisions adds a custom scheduler, multi-tenant system, visual editor, or arbitrary script plugin engine.
 
-## Round 3 consistency and over-engineering review
+## Round 4 consistency and over-engineering review
 
-| Topic | Review result | Boundary / remaining question |
+| Topic | Finding | Open dependency / interpretation |
 | --- | --- | --- |
-| Dynamic target vs registered heavy capability | **Compatible, different domains** | MCP targets need no preregistration; the platform's privileged GitHub runner capabilities are registered. |
-| Dynamic target vs SSRF protection | **Compatible** | Network safety is a target-class prohibition, not a preapproved host list. Precise DNS/redirect enforcement requires an implementation feasibility check. |
-| Runtime publication vs version pinning | **Compatible and necessary** | D1 Published Version identity must be immutable; the Run references it. Physical snapshot/retention remains open. |
-| Published vs enabled | **Terminology gap** | Q11 requires Publish, Q17 requires authorization on Enable. Whether publication itself enables manual runs/automated triggers, or Enable is a distinct state, is **not settled**. |
-| Dynamic tool changes vs unattended approval | **Unresolved authority risk** | Approval of unknown future tools or dynamically computed endpoints could bypass Q17. Decide the identity/approval boundary in Round 4. |
-| D1 definitions vs target credentials | **Do not conflate** | Q13 selects D1 for definitions; Q15 only requires secure target-specific credential retention. No plaintext D1, vault architecture or Cloudflare admin API token was approved. |
-| GitHub Actions admin MCP vs heavy executor | **Must remain separate** | The user-facing GitHub Actions MCP has multi-PAT repository privileges. Do not silently reuse these broad privileges for heavy execution. |
-| D1 + Cloudflare Workflows responsibilities | **No duplicate engine** | Cloudflare Workflows advances the DAG; D1 holds durable coordination/query facts and definitions, not an independent scheduler. |
-| Platform-feature creep | **Deferred** | Avoid a visual editor, generic sandbox, loop/fan-out engine, Redis/Queues/Temporal duplication, OAuth broker for all providers, multi-tenant RBAC, or new secrets-management service until proved necessary. |
+| Q11 vs Q17 vs Q19 (Publish/Enable) | **Resolved** | Publish validates, obtains required Operation Authorization and activates. No separate mandatory Enable action. Pause/disable is allowed, but its effect on in-flight Runs is not decided. |
+| Q7 vs Q20 (any MCP vs tool approval) | **Compatible** | No preregistered Server allowlist. Operation authorization must not silently expand to new high-risk tools, stronger permissions or incompatible contracts. Identity/grant binding of dynamic targets is unresolved. |
+| Q13 vs Q21 (D1 definitions vs credentials) | **Compatible, separated concerns** | D1 stores definitions and encrypted target credentials; no plaintext credentials or global Portal-token forwarding. Key lifecycle and credential-grant identity remain unresolved. |
+| Q14 vs Q22 (transport vs versions) | **Compatible** | Streamable HTTP first, with validated current/recent protocol versions. Old SSE/stdio transport support remains deferred. Supported exact revisions/negotiation are not yet selected. |
+| Q23 vs Q25 (duplicate delivery vs repeated side effect) | **Both needed** | Event admission deduplication prevents two logical Runs from the same webhook, but cannot substitute for per-step idempotency and uncertain-write reconciliation. |
+| Q24 vs bounded Cron | **Compatible** | Explicit timezone and `misfire: latest` avoid unbounded catch-up. DST, intended occurrence identity and dedup retention are still unsettled. |
+| Q26 vs GitHub dispatch ambiguity | **Relevant safety cost** | OIDC + atomic Attempt Claim addresses multiple candidates after ambiguous dispatch. The rest of the lease/callback/cancel protocol is not approved by this choice. |
+| Q27 vs existing management MCP | **Privilege boundary confirmed** | GitHub Actions management MCP may hold multi-account PATs; Workflow executor gets its own minimum-scope identity. Avoid a new PAT router or redundant repository authorization layer. |
+| New infrastructure | **Reject unnecessary complexity** | No separate Vault, Redis/BullMQ, Temporal deployment, full AI-agent sandbox, generic Saga engine, custom DAG scheduler, standalone plugin marketplace or multitenant RBAC were selected. |
+| Runtime security feasibility | **Must still prove at implementation** | Encryption key bootstrap/rotation, SSRF redirect/rebinding enforcement in Workers, MCP version compatibility, claim atomicity and engine upgrade safety are real constraints. A design vote is not a successful integration test. |
 
-### External technical facts to check before implementation (not decisions)
+## Refined historical v0.1 relationship
 
-- The 2026-07-28 MCP Streamable HTTP revision has important compatibility differences from older 2025 revisions; transport name alone is insufficient to define protocol interoperability. Reference: https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/docs/specification/2026-07-28/basic/transports/streamable-http.mdx
-- Cloudflare Secrets Store read bindings are configured/deployed resources; runtime owner-created target credentials should not be assumed to be writable as bound secrets without an account-level management API and added privileges. References: https://developers.cloudflare.com/secrets-store/integrations/workers/ and https://developers.cloudflare.com/secrets-store/access-control/
-- Cloudflare Workflows instance retention is finite; pinning a Run to a definition and resuming through deployments requires an explicit compatibility/retention design. Reference: https://developers.cloudflare.com/workflows/build/workers-api/
+- **Superseded**: Git-only definitions, fixed MCP Connection registration, no runtime authoring (Q5=B, Q7=B).
+- **Newly settled**: Draft/Publish/version pinning (Q11–Q13); dynamic Streamable HTTP plus stored targeted credentials/network safeguards/approval (Q14–Q17); registered GitHub heavy execution (Q18); Publish-and-authorize activation, reapproval on tool drift, encrypted D1 credentials, current/recent Streamable HTTP compatibility, stable webhook event identity, timezone and latest Cron misfires, safety-sensitive retries, OIDC Claim and execution credential isolation (Q19–Q27).
+- **Not yet approved**: exact DSL/API schemas, target/operation binding, key rotation/revocation, Webhook dedup retention, DST semantics, cancellation behavior, run/result retention, multi-version engine upgrade rules, precise GitHub Claim/lease/callback implementation, R2 usage, and validation/acceptance gates.
+- **No silent reinterpretation**: A worker can reach an arbitrary *safe network* Streamable HTTP MCP target without prior registration. Enforcing secure operation grants and SSRF boundaries is not a static MCP connection allowlist. Only **heavy runner capabilities** require preregistration.
 
 ## Design tree
 
-- **R1: Product & scope — settled**: Q1–Q4.
-- **R2: Definition / publishing / capability boundaries — settled**: Q5–Q10.
-- **R3: Dynamic runtime + security architecture — settled**: Q11–Q18.
-- **R4: Unblocked dependent questions — open**:
-  - publication/enable distinction and how existing Runs behave on disable/delete;
-  - authority of discovered target/tool drift and unattended approval;
-  - credential-at-rest mechanism for owner-managed target credentials;
-  - webhook identity/deduplication requirements;
-  - Cron timezone and missed-trigger policy;
-  - retry policy for uncertain externally-effectful operations;
-  - GitHub heavy-executor dispatch duplication/Claim ownership protocol;
-  - compatibility boundaries between MCP transport protocol revisions.
-- **Later branches**: exact MCP tool/API/DSL syntax, auth grants/credential rotation, workflow-version garbage collection, error state machine, callback/cancel/reconciliation, GitHub runner authorization, quotas, CI/releases, integration tests and acceptance.
+- **R1 — settled (Q1–Q4)**: product positioning, AI/MCP interface, independent monorepo context, historical review baseline.
+- **R2 — settled (Q5–Q10)**: runtime authoring, bounded DAG, arbitrary unregistered MCP targets, Cloudflare Workflows, triggers, single owner.
+- **R3 — settled (Q11–Q18)**: draft/publish, run version identity, D1, Streamable HTTP, target credentials, SSRF defense, operation authority, GitHub heavy executor.
+- **R4 — settled (Q19–Q27)**: publish activation; tool drift reauthorization; encrypted D1 credentials; tested recent protocol versions; webhook event ID; Cron misfire; safe retry; OIDC claim; distinct runner credentials.
+- **R5 — newly unblocked frontier (open for owner)**:
+  - binding of an Operation Authorization to a dynamic target/tool and its behavior when target/tool selection varies at runtime;
+  - pause/disable behavior for in-flight Runs;
+  - target credential rotation/revocation and already-approved workflow operation;
+  - webhook event identity scope and deduplication retention;
+  - timezone/DST semantics for Cron intended occurrences;
+  - external task cancellation and unknown-outcome reporting;
+  - large outputs/artifact storage and retention;
+  - compatibility gates for engine/runner deployments while Runs remain active;
+  - runtime management versus run-observation MCP tool granularity.
+- **Later dependent branches**: detailed DSL/expression/schema compile rules, input/parameter validation, bounded DAG errors/parallelism, exact encryption and identity protocol, GitHub dispatch Claim lease/callback/reconciliation, lifecycle event/API schemas, quotas, CI/release test gates and final acceptance.
+
+### Technical verification notes (not settled decisions)
+
+- Cloudflare Worker networking must support the required SSRF defenses; hostname-only checks and trusting redirects are not enough.
+- Choose concrete supported MCP Streamable HTTP protocol revisions from tested interoperability, not guessed version strings. Reference: https://modelcontextprotocol.io/specification
+- D1 encrypted credential storage still requires appropriate authenticated encryption, key lifecycle and redaction tests. Never treat the Portal bearer token as the encryption master key.
+- A GitHub dispatch acknowledgement is not proof of business execution or success; Attempt Claim and result/callback validation have different responsibilities.
 
 ## Working rules
 
