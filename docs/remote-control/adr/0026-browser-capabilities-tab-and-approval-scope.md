@@ -14,6 +14,8 @@ Status: **accepted design choices (Grill With Docs round 6, 2026-10-20); documen
 
 **Follow-on decision (round 7):** [ADR-0027](./0027-browser-tools-visual-consent-and-recovery.md) selects the compact first-release atomic tool inventory by capability, current-tab visual fallback where semantic targeting is insufficient, prepare → confirm → execute with failure closed when authorization cannot be verified, and state-checked rather than destructive crash/lock recovery.
 
-**Still open:** exact tool signatures/result schemas; tab lifecycle and restart-specific identity details; confirmation UX, secure consumption and expiry; process/lock ownership probes; locator freshness and screenshot safety limits; local transfer authorization; binary provenance, operation receipt state details, Windows/Linux acceptance and deployment gates. This document authorizes no feature code, Issue/Ticket, CI, Worker configuration or production change.
+**Follow-on decision (round 9):** [ADR-0029](./0029-browser-results-outcomes-downloads-gated-release.md) distinguishes the intended complete common workflow capability from a potentially narrower initially enabled low-impact subset when reliable high-impact approval is unavailable. This does not authorize treating a generic click as low-impact by default.
+
+**Still open:** exact tool signatures/results; tab/restart identity lifecycle; low-impact classification; confirmation UX/consumption/expiry; lock-ownership probes; locator freshness and screenshot safety; local transfer authorization; binary provenance, receipt details and per-platform rollout gates. This document authorizes no feature code, Issue/Ticket, CI, Worker configuration or production change.
 
 Related: [ADR-0021](./0021-browser-automation-extension.md), [ADR-0024](./0024-browser-observation-and-confirmation.md), [ADR-0025](./0025-atomic-browser-actions-and-receipts.md), [browser design](../BROWSER-AUTOMATION-DESIGN.md), [domain context](../CONTEXT.md).
