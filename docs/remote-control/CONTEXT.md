@@ -107,6 +107,18 @@ _Avoid_: Treating ordinary form preparation as already committed, or considering
 The owner's explicit approval of one identified High-Impact Browser Action before its consequential effect is committed.
 _Avoid_: Assuming that a previous general workflow approval, the browser's logged-in state or an untrusted webpage is confirmation.
 
+**Browser Element Target**:
+An unambiguous identifiable page element in the specifically selected browser tab, resolved using its meaningful semantic identity where possible.
+_Avoid_: Guessing which duplicate control to click or treating a stale page position as a reliable identity.
+
+**Browser Local Transfer**:
+An upload or download initiated through an automation browser where the source or destination file stays on the Agent's device.
+_Avoid_: Assuming browser file contents must pass through the remote MCP transport.
+
+**Browser Action Receipt**:
+An Agent-local record of the known execution outcome of a potentially effectful browser operation, independently of whether the remote website completed the intended business transaction.
+_Avoid_: Equating a click result with a confirmed purchase, submission or remote service commit.
+
 **Graphical Desktop Control**:
 Remote viewing or manipulation of a desktop screen, mouse or keyboard. This is excluded from the first release.
 
@@ -153,11 +165,17 @@ The controlled transfer of existing authoritative Operation Receipts to a replac
 _Avoid_: Treating a successful new-store startup as sufficient evidence that historical operation identities were preserved.
 
 
+## Browser tool atomicity and local action evidence — accepted fifth round (2026-10-20)
+
+[ADR-0025](./adr/0025-atomic-browser-actions-and-receipts.md) accepts a minimal set of curated atomic browser MCP tools rather than unrestricted script or generic action dispatch; semantically identified, uniquely resolved Browser Element Targets with fail-safe handling of ambiguity and stale page state; Browser Local Transfers using explicitly authorized Agent-side upload paths and an Agent-managed download directory rather than default bulk MCP file forwarding; and stable Operation IDs / Browser Action Receipts for potentially effectful interactions. An uncertain action is never automatically replayed, and a browser-level success receipt is not proof of a website-side business commitment.
+
+The concrete tool list, locator argument forms, path authorization, business outcome reconciliation and confirmation mechanics remain unsettled; this is documentation only.
+
 ## Browser interaction defaults and consequential effects — accepted fourth round (2026-10-20)
 
 [ADR-0024](./adr/0024-browser-observation-and-confirmation.md) records four design choices: an Automation Browser Session is eligible for Agent-local cleanup after 30 idle minutes without clearing its Automation Browser Profile; headless browser mode is the default, with headed mode available only on a device with a usable graphical desktop; bounded semantic page inspection comes before on-demand screenshots; and every High-Impact Browser Action needs its own explicit Browser Action Confirmation before the external effect is committed. Ordinary navigation, observation and form preparation do not require confirmation for every interaction. Untrusted page content or prior device pairing cannot approve consequential actions.
 
-Exact activity tracking, confirmation mechanism, page-data/secret bounds, screenshot fallback, tool interfaces and platform acceptance remain open. The decisions are documentation-only and do not establish deployed browser capability.
+ADR-0025 now resolves atomic tool granularity, semantic target preference, local file-transfer boundary and general operation-receipt policy. Exact activity tracking, confirmation mechanism, page-data/secret bounds, screenshot fallback, concrete tool schemas and platform acceptance remain open. The decisions are documentation-only and do not establish deployed browser capability.
 
 ## Browser automation provisioning, exclusivity and interruption — accepted third round (2026-10-20)
 
