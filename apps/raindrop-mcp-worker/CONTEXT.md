@@ -41,4 +41,13 @@ The approved specification is published as a GitHub specification issue rather t
 - **Q3=A — atomicity:** expose distinct operations for distinct read/write/delete intents, while retaining justified bulk operations; do not wrap every action in one `manage(operation)` tool or mirror each HTTP endpoint blindly.
 - **Q4=A — scope:** implement reliable core workflows and necessary lightweight helpers first; additional official API families are opt-in, not required for completeness.
 
-**Not yet decided:** the exact future tool inventory, deduplication of overlapping tools, exceptions to the default naming convention, and which optional helpers belong in the first release. This round authorizes documentation only—not implementation, release, deployment, or production-data changes.
+**Still open after round 1:** specific tool inventory, overlap consolidation, naming exceptions, and optional helpers. This design process authorizes documentation only—not implementation, release, deployment, or production-data changes.
+
+## Grill With Docs — confirmed second-round decisions (2026-10-20)
+
+- **Q5=A — bookmark query consolidation:** a single `bookmark_search` handles both list and search. An empty query means normal paginated listing; collection, sorting, and supported official filters are inputs. Remove the redundant standalone list surface from the future public contract.
+- **Q6=A — collection query consolidation:** use one `collection_list` that supplies enough parent/child information to build a full hierarchy. Do not maintain a second public tree-list tool.
+- **Q7 — partially settled:** `trash_empty` is accepted as a clearer resource-first name. The candidate names `collection_delete_empty` and `bookmark_duplicates_remove` were explicitly questioned as unnatural and are **not approved**; final alternatives remain a pending naming decision. Existing preview-first and deletion protections are preserved.
+- **Q8=A — justified lightweight reads:** include label listing, highlight listing, official bookmark/filter statistics, and official URL-existence checks in the first-phase design. Exact tool names, input shapes, and official endpoint constraints remain for later rounds; no independent AI or storage service is implied.
+
+**Still open after round 2:** Q7's two cleanup names; exact full tool inventory, helper schemas and API semantics, batch rules, error outcomes, and rollout acceptance. Do not treat proposed names as confirmed until explicitly accepted.
