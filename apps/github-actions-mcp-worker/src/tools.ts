@@ -35,7 +35,7 @@ export function buildMcpServer(env: Env): McpServer {
   const server = new McpServer(
     { name: 'github-actions-mcp-worker', version: '0.1.0' },
     { capabilities: { tools: {} },
-      instructions: 'Operate GitHub Actions only in the configured GITHUB_REPOS allowlist. Dispatch, cancellation, and rerun are effectful. Use run_get to inspect before canceling, and workflow_dispatch with an explicit ref. Workflows such as tsrv and tsvc are regular Actions workflows, not special session APIs.' },
+      instructions: 'Operate GitHub Actions only in the configured GITHUB_REPOS allowlist. Dispatch, cancellation, and rerun are effectful. Use run_get before canceling. run_cancel and run_force_cancel only acknowledge cancellation requests, never confirm a run stopped; check run_get for status=completed and conclusion=cancelled. Use run_force_cancel only when normal cancellation fails to stop a run; force cancellation can bypass cleanup. Use workflow_dispatch with an explicit ref. Workflows such as tsrv and tsvc are regular Actions workflows, not special session APIs.' },
   );
   const api = new GitHubActionsClient(env);
 
@@ -95,10 +95,16 @@ export function buildMcpServer(env: Env): McpServer {
   }));
 
   server.registerTool('run_cancel', {
-    description: 'Cancel a specific GitHub Actions run. Requires explicit confirm=true; cannot cancel a whole repository implicitly.',
+    description: 'Request cancellation of one run. Requires confirm=true. Accepted only means GitHub received the request; verify completion with run_get (status=completed, conclusion=cancelled).',
     inputSchema: z.object({ repo, run_id: runId, confirm: z.literal(true) }).strict(),
     annotations: { ...annotationsWrite, destructiveHint: true },
   }, async ({ repo, run_id }) => safe(() => api.cancelRun(repo, run_id)));
+
+  server.registerTool('run_force_cancel', {
+    description: 'Force cancellation of one unresponsive run, bypassing conditions that may prevent normal cancellation (including cleanup). Use only after run_cancel has failed to stop it. Requires explicit confirm=true; verify completion with run_get.',
+    inputSchema: z.object({ repo, run_id: runId, confirm: z.literal(true) }).strict(),
+    annotations: { ...annotationsWrite, destructiveHint: true },
+  }, async ({ repo, run_id }) => safe(() => api.forceCancelRun(repo, run_id)));
 
   server.registerTool('run_rerun', {
     description: 'Retry a workflow run, either all jobs or only failed jobs. Starts execution and may incur GitHub Actions usage.',
