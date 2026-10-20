@@ -68,3 +68,16 @@ test('run lookup returns bounded metadata rather than the raw upstream object', 
   assert.equal(JSON.stringify(value).includes('do-not-return'), false);
 });
 
+
+test('injected fetch is called without a class receiver (Workers compatibility)', async () => {
+  // Workerd enforces the receiver on native fetch; Node does not.
+  const receiverCheckedFetch = function (this: unknown) {
+    assert.equal(this, undefined);
+    return Promise.resolve(Response.json({ total_count: 0, workflows: [] }));
+  } as typeof fetch;
+  const client = new GitHubActionsClient(config, receiverCheckedFetch);
+  assert.deepEqual(await client.listWorkflows('autoactions/tsrv'), {
+    total_count: 0,
+    workflows: [],
+  });
+});
