@@ -189,7 +189,7 @@ These are suggested detailed rows consistent with Q25/Q33/Q37/Q41/Q44; error enu
 **PROPOSED invocation pipeline:**
 
 1. Evaluate endpoint/tool/arguments from pinned plan and Run input through restricted expressions.
-2. Check URL/redirect/network class and origin binding before connecting; on a computed new target, check specific grant. Missing grant means Authorization Wait; no outbound target call.
+2. Check URL/redirect/network class and origin binding before connecting; on a computed new target, check specific grant. Missing grant means Authorization Wait before any external *business tool invocation*. Limited, protected capability discovery and authentication negotiation may still be required to identify a target/tool for approval; discovery must not itself trigger a privileged operation.
 3. Resolve target-specific credential by opaque reference; decrypt only at invocation; do not persist plaintext in logs/Run payloads or pass it to another target.
 4. Negotiate a tested Streamable HTTP revision; perform tool discovery/schema contract comparison. Incompatible schema means stop with contract error, not AI auto-remapping.
 5. Enforce target+tool+operation-scope grant; call only with validated arguments and a bounded response-size/time budget.
