@@ -12,7 +12,9 @@ Status: **accepted design choices (Grill With Docs round 8, 2026-10-20); documen
 
 **Why:** bounded output reduces data exposure and token/transport costs without rigid site lists; reusing host-level file authority avoids duplicate configuration and file management; fixed verified binaries reduce supply-chain and compatibility risks; independent platform acceptance avoids premature claims or unnecessary cross-platform release blocking.
 
-**Still open:** concrete output budgets and redaction behavior; download-path permissions, collisions and retention; verifiable upstream provenance and offline/error details; exact browser tool input/result schemas; owner confirmation transport and authorization checks; action receipt and website-outcome evidence; actual Linux/WSL2/Windows test matrix, rollout stages and release gates; future separately authorized personal-browser attachment.
+**Follow-on decision (round 9):** [ADR-0029](./0029-browser-results-outcomes-downloads-gated-release.md) selects structured compact tool results, separation of Agent execution evidence from website effects, a seven-day default cleanup threshold only for unreferenced managed downloads, and separately gated safe low-impact capabilities when high-impact approval is not verifiable.
+
+**Still open:** concrete output budgets/redaction, managed-download reference tracking and collisions, verifiable upstream provenance, exact tool schemas, owner approval transport and effect classification, receipt evidence/reconciliation details, Linux/WSL2/Windows acceptance matrix and rollout gates; future personal-browser attachment.
 
 Related: [ADR-0021](./0021-browser-automation-extension.md), [ADR-0023](./0023-browser-runtime-profile-interruption.md), [ADR-0025](./0025-atomic-browser-actions-and-receipts.md), [ADR-0027](./0027-browser-tools-visual-consent-and-recovery.md), [Browser Automation Design](../BROWSER-AUTOMATION-DESIGN.md), [Domain Context](../CONTEXT.md).
 
