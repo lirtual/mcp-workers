@@ -91,6 +91,10 @@ _Avoid_: Equating it to the Agent's Shell Managed Session, or treating it as imp
 A dedicated owner-controlled browser identity whose sign-in state may be retained locally across automation sessions, separate from the owner's everyday browser profile.
 _Avoid_: Treating the owner's default Chrome/Edge profile as an automation profile.
 
+**Automation Profile Clearing**:
+An owner-requested removal of the retained local automation browser identity and its browser data, distinct from simply closing the browser session.
+_Avoid_: Implicit clearing on logout, disconnect, browser-session close or device revocation.
+
 **Personal Browser Session**:
 An existing owner-used browser session whose tabs or signed-in state may be accessed only within explicitly authorized scope.
 _Avoid_: Assuming that device pairing grants blanket access to every personal browser tab or profile.
@@ -99,13 +103,17 @@ _Avoid_: Assuming that device pairing grants blanket access to every personal br
 A specifically selected authorized device and browser session, narrowed to a tab where the operation requires one.
 _Avoid_: An implicit default device or an unspecified global browser.
 
+**Browser Tab ID**:
+The stable identity of a managed browser tab within one device and Automation Browser Session, retained across navigation and invalidated when that tab closes.
+_Avoid_: A tab's list position, page URL or title as a substitute for identity.
+
 **High-Impact Browser Action**:
 A proposed browser interaction that would commit a consequential external effect such as a purchase, sent communication, data deletion or permission change.
 _Avoid_: Treating ordinary form preparation as already committed, or considering page text or device pairing to be owner approval.
 
 **Browser Action Confirmation**:
-The owner's explicit approval of one identified High-Impact Browser Action before its consequential effect is committed.
-_Avoid_: Assuming that a previous general workflow approval, the browser's logged-in state or an untrusted webpage is confirmation.
+The owner's explicit, single-use approval for a particular High-Impact Browser Action, bound to the intended device, browser session, tab and consequential action target.
+_Avoid_: Assuming that a previous general workflow approval, a changed execution target, the browser's logged-in state or an untrusted webpage is confirmation.
 
 **Browser Element Target**:
 An unambiguous identifiable page element in the specifically selected browser tab, resolved using its meaningful semantic identity where possible.
@@ -165,11 +173,17 @@ The controlled transfer of existing authoritative Operation Receipts to a replac
 _Avoid_: Treating a successful new-store startup as sufficient evidence that historical operation identities were preserved.
 
 
+## Browser workflow coverage, tab targeting and safe clearing — accepted sixth round (2026-10-20)
+
+[ADR-0026](./adr/0026-browser-capabilities-tab-and-approval-scope.md) confirms that the initial curated atomic tool scope covers ordinary end-to-end browser workflows (session and tab lifecycle, navigation, observation, click/fill/select/keyboard, screenshot, and local browser uploads/downloads) without unrestricted scripting. A stable Browser Tab ID belongs to the exact device/session, survives navigation and becomes invalid when its tab closes. Each High-Impact Browser Action requires one specific, non-transferable Browser Action Confirmation bound to device, session, tab, intended action and material target; changed targets must be re-approved. Automation Profile Clearing requires an explicit owner request and a provably inactive, resolved-operation state; ambiguous state fails closed rather than destroying local evidence or credentials.
+
+Exact tool contracts, human-confirmation transport/consumption, stale-lock recovery and cleanup implementation remain open. These are design choices, not deployed functionality.
+
 ## Browser tool atomicity and local action evidence — accepted fifth round (2026-10-20)
 
 [ADR-0025](./adr/0025-atomic-browser-actions-and-receipts.md) accepts a minimal set of curated atomic browser MCP tools rather than unrestricted script or generic action dispatch; semantically identified, uniquely resolved Browser Element Targets with fail-safe handling of ambiguity and stale page state; Browser Local Transfers using explicitly authorized Agent-side upload paths and an Agent-managed download directory rather than default bulk MCP file forwarding; and stable Operation IDs / Browser Action Receipts for potentially effectful interactions. An uncertain action is never automatically replayed, and a browser-level success receipt is not proof of a website-side business commitment.
 
-The concrete tool list, locator argument forms, path authorization, business outcome reconciliation and confirmation mechanics remain unsettled; this is documentation only.
+ADR-0026 has since resolved first-release capability coverage, stable tab targeting, one-use scoped confirmation and safe-state Profile clearing. Concrete tool names/schemas, locator fallback, path authorization, business outcome reconciliation and confirmation mechanics remain unsettled; this is documentation only.
 
 ## Browser interaction defaults and consequential effects — accepted fourth round (2026-10-20)
 
