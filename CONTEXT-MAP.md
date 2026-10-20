@@ -4,6 +4,8 @@ The active repository contains independently owned MCP Worker bounded contexts:
 
 - [GitHub Actions MCP](./apps/github-actions-mcp-worker/CONTEXT.md): owns allowlisted GitHub Actions management solely through GitHub REST API.
 
+- [Workflow MCP (planned)](./apps/workflow-mcp-worker/CONTEXT.md): AI/MCP-first orchestration context; composes existing capabilities without owning upstream Workers' credentials, business semantics, or lifecycle. Round 1 design decisions are recorded in an app-scoped ADR and grilling log; no implementation exists yet.
+
 - [Database MCP](./apps/database-mcp-worker/README.md): owns database connection configuration, SQL safety, and database tool semantics.
 - [IMA MCP](./apps/ima-mcp-worker/CONTEXT.md): owns IMA knowledge and notes operations.
 - [Raindrop MCP](./apps/raindrop-mcp-worker/CONTEXT.md): owns Raindrop.io bookmark, collection, tag, highlight, and upstream API semantics.
