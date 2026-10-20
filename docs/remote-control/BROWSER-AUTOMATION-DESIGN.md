@@ -1,5 +1,8 @@
 # Remote Control — Browser Automation Design (Grill With Docs)
 
+> **Phase-one scope reset — 2026-10-20 (newer owner decision):** The accepted Q1–Q52 tree below remains historical context for a *broader* browser threat model. For the first personal trusted-device delivery, [Windows CLI PoC and revised gates](./BROWSER-BACKEND-POC-20261020.md) now govern: reuse one mature browser CLI (initial candidate agent-browser) on the paired Agent, not an in-house Playwright library adapter; no MXC/WFP/proxy prerequisite for this limited scope. Strict hostile-execution/network containment remains unverified/deferred, **not passed**. High-impact verified one-use approval remains a hard requirement before enabling consequential operations. The below older assertions of unmodified Q5/P0 release gates are superseded **for phase one**, not silently erased.
+
+
 Status: **rounds 1–13 recorded (Q1–Q52=A, 2026-10-20); design-tree convergence review completed, separate owner confirmation of shared understanding pending**. This document records decisions, not shipped behavior, authorization to implement, a release gate or a new development Ticket. The existing v1/v2 specs remain authoritative for their implemented scope. Do not infer that browser tools, native Windows browser automation coverage, or personal-profile access exist today.
 
 ## Goal
