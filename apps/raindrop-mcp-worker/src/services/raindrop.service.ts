@@ -371,12 +371,26 @@ export default class RaindropService {
    * Create a new collection
    * Raindrop.io API: POST /collection
    */
-  async createCollection(title: string, isPublic = false): Promise<Collection> {
+  async createCollection(
+    title: string,
+    isPublic = false,
+    parentId?: number,
+  ): Promise<Collection> {
+    if (!title?.trim()) throw new ValidationError("Collection title is required");
+    if (parentId !== undefined) {
+      if (!Number.isSafeInteger(parentId) || parentId <= 0) {
+        throw new ValidationError("parentId must be a positive collection ID");
+      }
+      // Validate target parent exists before posting any write.
+      await this.getCollection(parentId, true);
+    }
     const collection = await this.withWriteRateLimit(async () => {
-      if (!title?.trim())
-        throw new ValidationError("Collection title is required");
       const { data } = await this.client.POST("/collection", {
-        body: { title, public: isPublic },
+        body: {
+          title,
+          public: isPublic,
+          ...(parentId !== undefined ? { parent: { $id: parentId } } : {}),
+        },
       });
       if (!data?.item) throw new UpstreamError("Failed to create collection");
       return data.item as Collection;
