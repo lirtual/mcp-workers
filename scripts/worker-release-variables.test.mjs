@@ -80,3 +80,17 @@ test("GitHub Actions repo overrides come only from the selected Worker Environme
       /GITHUB_REPOS/);
   }
 });
+
+test("GitHub Actions optional second-account repository group is validated independently", () => {
+  assert.deepEqual(collectWorkerVars("github-actions-mcp-worker", {
+    GITHUB_REPOS: "autoactions/tsrv,autoactions/tsvc",
+    GITHUB_REPOS_SECONDARY: "lirtual/mcp-workers",
+  }), [
+    "GITHUB_REPOS:autoactions/tsrv,autoactions/tsvc",
+    "GITHUB_REPOS_SECONDARY:lirtual/mcp-workers",
+  ]);
+  for (const bad of ["../bad", "x/repo,../invalid", "bad repository", "a/repo,"]) {
+    assert.throws(() => collectWorkerVars("github-actions-mcp-worker",
+      { GITHUB_REPOS_SECONDARY: bad }), /GITHUB_REPOS/);
+  }
+});
