@@ -146,5 +146,26 @@ try{
   const parallelDone=await awaitOutcome(parallelRun.run_id);
   ok(parallelDone.status==='succeeded'&&parallelDone.steps.filter(s=>s.status==='succeeded').length===2,
     'both independently progressing read-only Steps finish successfully');
+  // Story #13: sixteen unique concurrent admissions must respect the shared
+  // eight-slot limit even under interleaving. These harmless read-only runs
+  // hold their slot for 15s; the second eight must receive explicit rejection.
+  const burstDefinition={version:1,name:'Shared admission capacity burst',steps:[
+    {id:'hold',uses:'s1.readonly_mcp',with:{tool:'echo',arguments:{value:'capacity',delay_ms:15000}}}
+  ]};
+  const burstDraft=await tool('workflow_create',{definition:JSON.stringify(burstDefinition)});
+  await tool('workflow_publish',{workflow_id:burstDraft.workflow_id,expected_revision:1});
+  const burst=await Promise.all(Array.from({length:16},(_,i)=>cli.callTool({name:'workflow_run',arguments:{
+    workflow_id:burstDraft.workflow_id,inputs:{index:i},idempotency_key:'capacity-burst-'+burstDraft.workflow_id+'-'+i
+  }})));
+  const admitted=burst.filter(x=>!x.isError).map(x=>JSON.parse(x.content[0].text));
+  const rejected=burst.filter(x=>x.isError).map(x=>JSON.parse(x.content[0].text).error);
+  ok(admitted.length===8,'simultaneous different-key admissions never overrun the eight-slot cap');
+  ok(rejected.length===8 && rejected.every(x=>x==='run_capacity_exceeded'),
+    'every overflow admission returns explicit capacity rejection rather than silently queuing');
+  // Existing awaitOutcome polls for roughly ten seconds, shorter than the
+  // deliberate 15s fixture hold. Let the admitted runs finish before polling.
+  await new Promise(r=>setTimeout(r,16000));
+  const settled=await Promise.all(admitted.map(run=>awaitOutcome(run.run_id)));
+  ok(settled.every(x=>x.status==='succeeded'),'all eight admitted read-only Runs finish without an overflow queue');
   console.log('S1_LOCAL_E2E_PASS',JSON.stringify({assertions:tests,workflow_id:id,run_id:first.run_id,step_count:done.steps.length}));
 }finally{await cli.close();}

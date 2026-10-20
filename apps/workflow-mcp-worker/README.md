@@ -202,6 +202,17 @@ unit/contract** tests, plus the extended D1 fault suite, passed. This is local
 fault-injection evidence, **not** proof that an actual instance was aged past
 Cloudflare's retention window on the live platform.
 
+**Concurrent admission capacity acceptance (2026-10-21):** A new public-MCP
+local E2E case concurrently submits **16 different idempotency keys** to a
+read-only Published Version with a 15-second Step. Precisely **8 Runs are
+admitted**, all 8 excess requests return `run_capacity_exceeded`, and all 8
+admitted Runs eventually succeed. The existing local suite now passes **45/45
+owner-facing MCP assertions**; the D1 lost-ACK/reserved-start/capacity recovery
+fault suite, **19/19 S1 unit/contract**, Portal Auth **6/6**, selector **6/6**,
+TypeScript and Wrangler dry-run also pass. This is **local Wrangler D1
+concurrency evidence**, not a new real Cloudflare-edge stress test; it adds
+no runtime code, queue, scheduler or second execution system.
+
 Final initial-release versus active-upgrade gate decisions and 27-story evidence
 are consolidated in [S1-RELEASE-READINESS.md](S1-RELEASE-READINESS.md).
 
