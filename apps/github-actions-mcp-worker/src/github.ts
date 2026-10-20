@@ -2,6 +2,8 @@ export interface Env {
   MCP_ACCESS_TOKEN: string;
   GH_TOKEN: string;
   GITHUB_REPOS: string;
+  GH_TOKEN_SECONDARY?: string;
+  GITHUB_REPOS_SECONDARY?: string;
 }
 
 export class ActionError extends Error {
@@ -23,6 +25,30 @@ export function configuredRepos(value: string | undefined): string[] {
     throw new ActionError('invalid_repository_configuration');
   }
   return [...new Set(repos)];
+}
+
+/** Strict repository-to-credential routing, without fallback between accounts. */
+export function configuredAccounts(env: Env): {
+  primary: string[];
+  secondary: string[];
+  all: string[];
+} {
+  const primary = configuredRepos(env.GITHUB_REPOS);
+  const secondary = configuredRepos(env.GITHUB_REPOS_SECONDARY);
+  const primarySet = new Set(primary.map((repo) => repo.toLowerCase()));
+  if (secondary.some((repo) => primarySet.has(repo.toLowerCase()))) {
+    throw new ActionError('duplicate_repository_configuration');
+  }
+  if (primary.length + secondary.length > 30) {
+    throw new ActionError('invalid_repository_configuration');
+  }
+  if (secondary.length && !env.GH_TOKEN_SECONDARY?.trim()) {
+    throw new ActionError('github_token_secondary_not_configured');
+  }
+  if (!secondary.length && env.GH_TOKEN_SECONDARY?.trim()) {
+    throw new ActionError('secondary_repository_not_configured');
+  }
+  return { primary, secondary, all: [...primary, ...secondary] };
 }
 
 export function assertRepo(allowlist: string[], repo: string): void {
@@ -53,17 +79,22 @@ async function boundedJson(response: Response): Promise<any> {
 
 export class GitHubActionsClient {
   readonly allowlist: string[];
+  private readonly accounts: ReturnType<typeof configuredAccounts>;
   private readonly env: Env;
   private readonly requestFetch: typeof fetch;
   constructor(env: Env, requestFetch: typeof fetch = fetch) {
     this.env = env;
     this.requestFetch = requestFetch;
-    this.allowlist = configuredRepos(env.GITHUB_REPOS);
+    this.accounts = configuredAccounts(env);
+    this.allowlist = this.accounts.all;
   }
 
   async api(repo: string, path: string, init: RequestInit = {}): Promise<any> {
     assertRepo(this.allowlist, repo);
-    if (!this.env.GH_TOKEN) throw new ActionError('github_token_not_configured');
+    const secondary = this.accounts.secondary.some((configured) =>
+      configured.toLowerCase() === repo.toLowerCase());
+    const token = secondary ? this.env.GH_TOKEN_SECONDARY : this.env.GH_TOKEN;
+    if (!token) throw new ActionError('github_token_not_configured');
     const url = 'https://api.github.com/repos/' + repo + '/' + path;
     // Cloudflare Workers' native fetch rejects a non-global `this` receiver.
     // Keep the injectable transport but invoke it as a standalone function.
@@ -72,7 +103,7 @@ export class GitHubActionsClient {
       ...init,
       redirect: 'manual',
       headers: {
-        'Authorization': 'Bearer ' + this.env.GH_TOKEN,
+        'Authorization': 'Bearer ' + token,
         'Accept': 'application/vnd.github+json',
         'X-GitHub-Api-Version': '2022-11-28',
         'User-Agent': 'github-actions-mcp-worker',
