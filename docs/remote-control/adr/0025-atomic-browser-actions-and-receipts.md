@@ -18,6 +18,8 @@ Status: **accepted design choices (Grill With Docs round 5, 2026-10-20); documen
 
 **Follow-on decision (round 8):** [ADR-0028](./0028-browser-data-files-provenance-platform-acceptance.md) resolves the default privacy direction, existing Agent file authority, trusted/version-compatible Chromium requirement and independent real-platform acceptance, while leaving exact implementation limits open.
 
-**Still open:** precise tool names/parameters/results and tab identity implementation; visual freshness, numeric screenshot and page-output bounds; local file retention/collision handling; approval delivery/expiry/consumption and action receipt/business-outcome verification; sensitive-data redaction behavior; process/lock checks; binary verification data and platform rollout gates. No code, runtime changes, new implementation Issues/Tickets, or deployment is authorized.
+**Follow-on decision (round 9):** [ADR-0029](./0029-browser-results-outcomes-downloads-gated-release.md) selects a compact result envelope with Operation IDs for effectful calls, separate website-effect evidence, and refusal to blindly retry unknown browser operations; seven-day cleanup applies only to unreferenced managed downloads.
+
+**Still open:** precise tool names/arguments and tab identity implementation; visual freshness, numeric screenshot/page-output limits; cleanup reference tracking; approval delivery/expiry/consumption and receipt/website evidence schemas; sensitive-data redaction; process/lock checks; binary verification and rollout gates. No code, runtime changes, new implementation Issues/Tickets, or deployment is authorized.
 
 Related: [ADR-0021](./0021-browser-automation-extension.md), [ADR-0024](./0024-browser-observation-and-confirmation.md), [browser design tree](../BROWSER-AUTOMATION-DESIGN.md), [Remote Control domain](../CONTEXT.md), [existing operation receipt ADR-0007](./0007-local-receipts-and-no-blind-replay.md).
