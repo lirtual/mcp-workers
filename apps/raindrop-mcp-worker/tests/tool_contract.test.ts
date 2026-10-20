@@ -221,7 +221,8 @@ describe("bookmark_exists over MCP tools/list and tools/call", () => {
       });
       expect(absent.isError).not.toBe(true);
       expect(absent.structuredContent).toEqual({ exists: false, ids: [] });
-      expect(exists).toHaveBeenCalledExactlyOnceWith("https://example.com/a");
+      expect(exists).toHaveBeenCalledTimes(1);
+      expect(exists).toHaveBeenCalledWith("https://example.com/a");
 
       const invalid = await client.callTool({
         name: "bookmark_exists",
