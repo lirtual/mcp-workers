@@ -139,9 +139,25 @@ _Avoid_: Assuming browser file contents must pass through the remote MCP transpo
 A website-originated file saved to the Agent's designated local browser download area for later owner-directed access using existing file capabilities.
 _Avoid_: Equating a download with an MCP file attachment or assuming it may be deleted while needed for unresolved work.
 
+**Managed Download Retention**:
+The normal period before an unreferenced file in the Agent-managed browser download area becomes eligible for cleanup, distinct from Browser Profile data or the owner's other files.
+_Avoid_: Erasing a download still referenced by active work or an unresolved operation.
+
 **Browser Action Receipt**:
 An Agent-local record of the known execution outcome of a potentially effectful browser operation, independently of whether the remote website completed the intended business transaction.
 _Avoid_: Equating a click result with a confirmed purchase, submission or remote service commit.
+
+**Browser Tool Result**:
+The compact, structured response for an operation on an identified device/browser session and, when relevant, tab, distinguishing known execution status, error identity, bounded output and associated Operation ID for an effectful operation.
+_Avoid_: Arbitrary Playwright internals, unbounded page dumps, or assuming a browser tool result confirms a remote business outcome.
+
+**Website Effect Evidence**:
+A separately observed, read-only indication that a website may have committed the intended operation, distinct from the Agent's execution receipt.
+_Avoid_: Treating a successful click, a timeout or an unverified page change as conclusive proof of a website transaction.
+
+**Browser Capability Gate**:
+The distinction between browser actions allowed for the selected device/platform now and actions disabled pending trustworthy owner authorization or acceptance evidence.
+_Avoid_: Inferring that a tool's planned interface makes all its potentially high-impact actions safe to execute.
 
 **Browser Recovery Conflict**:
 A state in which the browser's ownership, retained Profile availability or effectful operation outcome is insufficiently known to resume safely.
@@ -197,11 +213,17 @@ The controlled transfer of existing authoritative Operation Receipts to a replac
 _Avoid_: Treating a successful new-store startup as sufficient evidence that historical operation identities were preserved.
 
 
+## Browser results, outcome evidence, retention and gating — accepted ninth round (2026-10-20)
+
+[ADR-0029](./adr/0029-browser-results-outcomes-downloads-gated-release.md) records four decisions: use a small structured Browser Tool Result identifying the target, status/error, necessary bounded payload, truncation, and an Operation ID for potentially effectful calls; distinguish an Agent-local Browser Action Receipt from independent, read-only Website Effect Evidence without blind replay or website-level exactly-once promises; apply seven-day default Managed Download Retention only to unreferenced files in the dedicated directory; and allow an independently accepted low-impact Browser Capability Gate while any high-impact effect without reliably validated one-use owner approval remains denied.
+
+Precise result schemas, website-effect observations, managed-download reference tracking and criteria for safely classifying page effects remain unsettled. A generic webpage click may itself be consequential despite innocent labels. These are documented decisions, not implemented tools or rollout approval.
+
 ## Browser privacy, file authority, trust and platforms — accepted eighth round (2026-10-20)
 
 [ADR-0028](./adr/0028-browser-data-files-provenance-platform-acceptance.md) records four agreed boundaries. A Browser Page Observation is task-relevant and bounded; password/Cookie/token extraction is not a default output, and an on-demand screenshot may nevertheless disclose sensitive data. Browser Local Transfers reuse existing Agent filesystem permission and tools: explicit local upload paths and Managed Browser Downloads in a dedicated area, without a second browser file manager or new user-configured allowlist. Playwright-compatible Chromium must come from a reviewed trusted source with genuinely available integrity/provenance verification; absence, mismatch or offline unavailability fails rather than silently trusting a substitute. Platform Browser Acceptance is separate for Linux, WSL2 and native Windows, with staged enablement, real evidence and reuse of applicable unchanged tests.
 
-No numeric output budgets, file cleanup lifetime, exact verification mechanism, platform rollout schedule or CI configuration has yet been accepted. These decisions do not implement browser functionality.
+ADR-0029 now fixes the default seven-day retention period for unreferenced managed downloads and the ability to gate safely classified low-impact functions separately. Numeric output budgets, download reference/cleanup mechanics, browser provenance verification details, platform rollout schedule and CI configuration remain unsettled. These decisions do not implement browser functionality.
 
 ## Browser tool and safe-execution choices — accepted seventh round (2026-10-20)
 
