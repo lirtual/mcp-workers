@@ -14,6 +14,6 @@ When the single owner publishes a Workflow Definition, the system validates the 
 
 ## Consequences
 
-These decisions do **not** mandate a static MCP Server registry or hostname allowlist (Q7=B remains intact). The exact target/tool identity captured in an approval, safe/unsafe classification, handling of runtime-dynamic tool selection, what occurs when approval expires or an endpoint changes, disable/delete behavior for existing Runs, and the publication commit/authorization transaction still need explicit design. This ADR approves the *policy*, not a fully implemented security guarantee.
+Round 5 **Q28=A** further fixes the authorization boundary to the **concrete target identity, tool and allowed operation scope**. A tool of the same name exposed by a different MCP Server does not inherit the original authorization. A dynamically discovered target need not have been registered beforehand (**Q7=B remains intact**). The exact stable identity representation, allowed scope normalization, safe/unsafe classification, handling of targets/tools whose values are computed only at Run time, changes in endpoint identity, and authorization expiration remain **open**. Round 5 **Q29=A** separately clarifies that pause/disable stops new triggers but does not cancel in-flight Runs (ADR-0012). The publication commit/authorization transaction remains unspecified. This ADR approves the *policy*, not a fully implemented security guarantee.
 
 Design only: no source implementation, merge, deployment, credentials change, or Tickets.
