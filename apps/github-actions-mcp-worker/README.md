@@ -1,58 +1,44 @@
 # GitHub Actions MCP Worker
 
-Cloudflare Streamable HTTP MCP server using only GitHub REST API for workflow and run management. No Session Deck API, D1, R2 or background runner service.
+A standalone Cloudflare Streamable HTTP MCP server that manages GitHub Actions through GitHub REST. No Session Deck API, D1, R2, or runner-state service is needed.
 
-## Configuration
+## One Secret, multiple GitHub accounts
 
-Only these GitHub Environment Secrets are used:
+Keep the existing GitHub Environment Secret **`GH_TOKEN`**. Its value may contain one or more fine-grained GitHub Personal Access Tokens, **one PAT per line**, for example:
 
-| Secret | Purpose |
-| --- | --- |
-| `MCP_ACCESS_TOKEN` | Existing Portal Bearer authentication |
-| `GH_TOKEN` | First fine-grained GitHub PAT (required) |
-| `GH_TOKEN_SECONDARY` | Second fine-grained GitHub PAT (optional) |
+```text
+github_pat_<PAT_FOR_FIRST_ACCOUNT>
+github_pat_<PAT_FOR_SECOND_ACCOUNT>
+github_pat_<PAT_FOR_THIRD_ACCOUNT>
+```
 
-The two PATs can belong to different GitHub accounts. Select repositories using each token's own GitHub fine-grained repository access settings; grant **Actions Read and Write** when dispatching, cancelling or rerunning runs. Add **Contents Write** only when `repository_dispatch` is needed. Metadata Read is required for repository discovery and is normally included with fine-grained PATs.
+Those are placeholders, not real credentials. A single PAT on one line continues to work with no migration. The Worker supports up to **8** distinct PATs in the same Secret. The existing `MCP_ACCESS_TOKEN` remains a separate Portal authentication Secret.
 
-**There is no `GH_ACTIONS_REPOS`, `GITHUB_REPOS` or per-repository token map.** The server queries GitHub `GET /user/repos` independently for each PAT, and `repositories_list` returns the combined accessible repository list. Existing tools continue accepting `repo: "owner/repo"`, and the server selects the correct PAT before sending the operation.
+No `GH_TOKEN_SECONDARY`, `GH_ACTIONS_REPOS`, `GITHUB_REPOS`, JSON wrapper, or repository-to-token map is required.
 
-If both tokens enumerate the same repository, the repository appears in `ambiguous_repositories` and the server refuses actions on it. Narrow one PAT's repository selection rather than allowing fallback. If repository discovery, validation, or an upstream request fails, operations fail closed. A failed mutation is **never** replayed through another PAT. No token value, raw GitHub error body or private response content is returned to MCP clients.
+Set the permitted repositories **in each PAT's GitHub fine-grained repository access settings**. Grant repository **Metadata: Read** (for discovery), **Actions: Read/Write** when controlling workflows, and **Contents: Write** only when `repository_dispatch` is used. GitHub is the final authority for read/write permission checks.
 
-To keep discovery bounded, the current implementation supports at most 200 enumerated repositories per PAT; exceeding this limit reports `repository_discovery_limit` instead of silently using a partial list. The current version provides a maximum of two PAT slots, with no multi-user OAuth, database, token vault, JSON secrets or extra MCP tools.
+`repositories_list` performs read-only `GET /user/repos` for each PAT and combines the accessible repositories. All existing tools still take `repo: "owner/repo"`. For actions, the Worker resolves that exact repository against the PAT discoveries before making **one** GitHub API call. If multiple PATs enumerate the same repository, the entry is reported under `ambiguous_repositories` and operations fail closed. Fix the overlap by narrowing PAT access on GitHub. A GitHub HTTP 401/403/404 never causes a mutation to retry through a different PAT.
 
-### Setup
+A discovery failure or a list exceeding **200 repositories per PAT** fails closed instead of operating against partial results. The Worker does not return tokens or GitHub error bodies to MCP clients. A single secret contains all PATs, so limit who can edit/read its deployment configuration, and understand that rotating one token requires updating the composite Secret.
 
-In the GitHub Environment `github-actions-mcp-worker`, retain `GH_TOKEN` and optionally add `GH_TOKEN_SECONDARY`. The existing selected-Worker GitHub Actions deployment stages these named Secrets for only this Worker. Do not place real tokens in variables, configuration files, Issues, PR descriptions or source code. Repository selection and PAT expiry/rotation remain managed directly at GitHub.
-
-This Draft change does not itself publish a Worker. Merge and production release are separate actions; existing Worker operation is unchanged until the selected-Worker deployment executes.
+GitHub Actions Environment Secret values are limited to 48 KB. Avoid logging the value. The selected-Worker release workflow transfers this one `GH_TOKEN` Secret without printing its contents.
 
 ## MCP tools
 
-| Tool | Action |
-| --- | --- |
-| `repositories_list` | Discover GitHub repositories through configured PATs |
-| `workflows_list` | List workflows in a permitted repo |
-| `runs_list` | List workflow runs |
-| `run_get` | Read a run's status and source |
-| `run_jobs_list` | List jobs and step statuses |
-| `run_artifacts_list` | List artifact metadata only |
-| `workflow_dispatch` | Start a workflow on a specified ref |
-| `repository_dispatch` | Emit repository event |
-| `run_cancel` | Request a cancellation with confirmation |
-| `run_force_cancel` | Force cancellation with confirmation |
-| `run_rerun` | Restart failed or all jobs |
+The existing 11 tools are unchanged: `repositories_list`, `workflows_list`, `runs_list`, `run_get`, `run_jobs_list`, `run_artifacts_list`, `workflow_dispatch`, `repository_dispatch`, `run_cancel`, `run_force_cancel`, and `run_rerun`.
 
-For example: `workflow_dispatch(repo="lirtual/mcp-workers", workflow="ci.yml", ref="main", inputs={"worker":"remote-control-mcp-worker"})`. Only when that repository is accessible to a configured PAT with the required GitHub Actions permission can GitHub accept the dispatch.
+Example: `workflow_dispatch(repo="lirtual/mcp-workers", workflow="ci.yml", ref="main", inputs={"worker":"remote-control-mcp-worker"})`. The PAT that actually has permission for `lirtual/mcp-workers` is selected automatically. GitHub's accepted response does not prove that a workflow completed; use `run_get` to check.
 
-Cancellation and dispatch acknowledgements are **not** completed-run evidence; verify using `run_get`. Force cancellation may bypass cleanup. No raw logs or artifact downloads are exposed.
+For cancellation, `run_cancel` and `run_force_cancel` only acknowledge a request. Confirm `status=completed` and `conclusion=cancelled` via `run_get`. Force cancellation may bypass cleanup.
 
-## Local checks
+## Testing and release
 
-Run from the monorepo root:
+At the repo root:
 
 ```bash
 pnpm install --frozen-lockfile
 pnpm --filter github-actions-mcp-worker check
 ```
 
-These checks are synthetic; they do not call the user's actual GitHub Actions or change live devices.
+Unit/MCP tests use synthetic PATs and never dispatch real workflows. This PR remains source-only and Draft until reviewed. Merging does not deploy: use the existing selected-Worker release workflow separately. Do not paste real PATs into code, PRs, messages, or logs.
