@@ -1,6 +1,6 @@
 # Remote Control — Browser Automation Design (Grill With Docs)
 
-Status: **design interview in progress; rounds 1–3 agreed 2026-10-20**. This document records decisions, not shipped behavior, authorization to implement, a release gate or a new development Ticket. The existing v1/v2 specs remain authoritative for their implemented scope. Do not infer that browser tools, native Windows browser automation coverage, or personal-profile access exist today.
+Status: **design interview in progress; rounds 1–4 agreed 2026-10-20**. This document records decisions, not shipped behavior, authorization to implement, a release gate or a new development Ticket. The existing v1/v2 specs remain authoritative for their implemented scope. Do not infer that browser tools, native Windows browser automation coverage, or personal-profile access exist today.
 
 ## Goal
 
@@ -39,6 +39,17 @@ See [ADR-0022](./adr/0022-playwright-managed-browser-sessions.md) for the browse
 
 See [ADR-0023](./adr/0023-browser-runtime-profile-interruption.md). These do not prescribe exact idle limits, browser display mode or recovery mechanics.
 
+## Accepted interaction defaults and approval boundary (round 4)
+
+| Question | Decision | Consequence |
+| --- | --- | --- |
+| Q13 — Idle lifetime | **A**: 30 minutes without activity | Agent-local browser session/process becomes eligible for cleanup; retained automation profile and sign-in state survive. Exact activity accounting and offline cleanup timing are unsettled |
+| Q14 — Display mode | **A**: headless by default; headed on request | Only use a visible browser when the selected device supports a usable graphical desktop; headed mode is not general remote desktop control |
+| Q15 — Page observation | **A**: bounded semantic/accessibility/page structure first; screenshot on demand | Avoid unconditional image output for every interaction; use visual fallback when semantic structure is insufficient. Specific limits/secret handling remain open |
+| Q16 — High-impact operations | **A**: explicit approval before each consequential external action | Ordinary navigation and form preparation may proceed; payment/purchase, send, delete and permission changes require action-specific owner confirmation. Page instructions or device pairing are not confirmation |
+
+See [ADR-0024](./adr/0024-browser-observation-and-confirmation.md). No particular tool interface, consent plumbing, screenshot quota or action-classification algorithm has been approved.
+
 ## Invariants carried forward
 
 - Use the established authenticated device path and explicit `device_id`; never accept an arbitrary remote address or publish a CDP endpoint.
@@ -50,14 +61,14 @@ See [ADR-0023](./adr/0023-browser-runtime-profile-interruption.md). These do not
 
 ## Open design-tree branches
 
-**Next-round frontier (Q13–Q16; no choices accepted yet)**
+**Next-round frontier (Q17–Q20; no choices accepted yet)**
 
-- Q13 — What fixed initial local browser-session idle timeout should trigger cleanup, separately from retained profile data?
-- Q14 — Should the independent browser default to headless automation with optional visible mode, default visible mode, or headless-only?
-- Q15 — How should the assistant normally inspect page contents: bounded semantic/accessible structure, screenshot-first, or both for every operation?
-- Q16 — Which category of externally consequential browser actions needs explicit owner approval before execution, as distinct from ordinary observation and navigation?
+- Q17 — Should browser MCP calls expose a compact curated set of atomic actions, a generic browser-action dispatcher, or whole workflows?
+- Q18 — How should the assistant identify the target page element and handle ambiguous or stale matches?
+- Q19 — What boundary should govern local browser file uploads/downloads versus transferring file bytes through MCP?
+- Q20 — What operation-ID and receipt contract should cover potentially effectful browser actions, including uncertain remote outcomes?
 
-**Downstream (not yet at the frontier; depends on Q13–Q16):** exact browser/session/tab MCP tool schemas, start/close/clear and lock-recovery behavior, page locator stability and screenshot fallback, file upload/download exposure, limits/quotas, durable mutation receipts and outcome reconciliation, prompt injection and personal-browser attach authorization, browser download provenance/compatibility, platform acceptance and rollout gates. The project must not implement or create development Tickets until the decision tree is exhausted and the owner explicitly authorizes the resulting plan.
+**Downstream (not yet at the frontier; depends on Q17–Q20):** concrete tool names and argument schemas, managed tab IDs, action-specific consent binding, safe screenshot/snapshot bounds, page prompt-injection handling, profile clearing and lock recovery, download provenance, platform acceptance and rollout gates, and future personal-browser-profile attachment. No implementation or new development Tickets until the complete design tree has been reviewed and the owner explicitly authorizes execution.
 
 ## Documentation and scope rules
 
