@@ -199,6 +199,48 @@ const bookmarkExistsTool = defineTool({
   },
 });
 
+const BookmarkFiltersInputSchema = z.object({
+  collectionId: z.number().int().safe().min(0).optional()
+    .describe("Collection scope; 0 means all bookmarks"),
+  tagsSort: z.enum(["-count", "_id"]).optional(),
+  search: z.string().max(500).optional(),
+}).strict();
+
+const FilterCountSchema = z.number().int().nonnegative();
+const NamedFilterSchema = z.object({
+  name: z.string(), count: FilterCountSchema,
+});
+const BookmarkFiltersOutputSchema = z.object({
+  filters: z.object({
+    broken: FilterCountSchema.optional(),
+    duplicates: FilterCountSchema.optional(),
+    important: FilterCountSchema.optional(),
+    notag: FilterCountSchema.optional(),
+    tags: z.array(NamedFilterSchema).optional(),
+    types: z.array(NamedFilterSchema).optional(),
+  }),
+});
+
+const bookmarkFiltersTool = defineTool({
+  name: "bookmark_filters_get",
+  description: "Read Raindrop's official filter statistics for a collection, without inventing missing counts.",
+  inputSchema: BookmarkFiltersInputSchema,
+  outputSchema: BookmarkFiltersOutputSchema,
+  annotations: { readOnlyHint: true, idempotentHint: true },
+  handler: async (
+    args: z.infer<typeof BookmarkFiltersInputSchema>,
+    { raindropService }: ToolHandlerContext,
+  ) => {
+    const filters = await raindropService.getBookmarkFilters(
+      args.collectionId ?? 0, args.tagsSort, args.search,
+    );
+    return {
+      content: [textContent("Raindrop filter statistics")],
+      structuredContent: { filters },
+    };
+  },
+});
+
 const bookmarkSearchTool = defineTool({
   name: "bookmark_search",
   description:
@@ -377,6 +419,7 @@ const listRaindropsTool = defineTool({
 });
 
 export const bookmarkTools = [
+  bookmarkFiltersTool,
   bookmarkGetTool,
   bookmarkExistsTool,
   bookmarkSearchTool,
