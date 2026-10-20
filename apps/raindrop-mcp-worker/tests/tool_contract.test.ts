@@ -37,6 +37,7 @@ const EXPECTED_TOOL_NAMES = [
   "library_audit",
   "list_raindrops",
   "remove_duplicates",
+  "bookmark_remove_duplicates",
   "suggest_tags",
   "tag_manage",
   "tag_list",
@@ -54,7 +55,7 @@ describe("Raindrop MCP capability contract", () => {
       const actual = tools.map((tool) => tool.id).sort();
 
       expect(actual).toEqual(EXPECTED_TOOL_NAMES);
-      expect(actual).toHaveLength(40);
+      expect(actual).toHaveLength(41);
       expect(actual).toContain("diagnostics");
     } finally {
       await service.cleanup();
@@ -207,7 +208,7 @@ describe("preview-first cleanup MCP tools/list and tools/call entry contract", (
       expect(getStats).toHaveBeenCalled();
       expect(roots).toHaveBeenCalled();
       expect(children).toHaveBeenCalled();
-      expect(getBookmarks).toHaveBeenCalled();
+      expect(getBookmarks).not.toHaveBeenCalled();
       expect(trashDelete).not.toHaveBeenCalled();
       expect(collectionDelete).not.toHaveBeenCalled();
       expect(duplicateDelete).not.toHaveBeenCalled();
@@ -942,7 +943,7 @@ describe("highlight atomic and Draft compatibility contracts", () => {
       await service.getServer().connect(serverTransport);
       await client.connect(clientTransport);
       const tools = await client.listTools();
-      expect(tools.tools).toHaveLength(40);
+      expect(tools.tools).toHaveLength(41);
       for (const name of ["highlight_list", "highlight_create", "highlight_update", "highlight_delete"]) {
         const tool = tools.tools.find(t => t.name === name)!;
         expect(tool.inputSchema.required).toContain("bookmarkId");
