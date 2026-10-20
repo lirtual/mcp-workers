@@ -308,5 +308,5 @@ test("GitHub Actions Worker release requires scoped secrets and reviewed reposit
   assert.throws(() => verifyBindings(worker, { ...settings, bindings: [...settings.bindings,
     { name: "DANGEROUS_RESOURCE", type: "service" }] }, secrets, options), /Unexpected production resource/);
   assert.match(readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
-    /GITHUB_TOKEN: \$\{\{ secrets\.GITHUB_TOKEN \}\}/);
+    /GITHUB_TOKEN: \$\{\{ secrets\.GH_ACTIONS_PAT \}\}/);
 });
