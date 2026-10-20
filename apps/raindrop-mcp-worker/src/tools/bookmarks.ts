@@ -10,16 +10,17 @@ import {
 } from "./common.js";
 
 const BookmarkSearchInputSchema = z.object({
-  search: z.string().optional().describe("Full-text search query"),
-  collection: z.number().optional().describe("Collection ID to search within"),
-  tags: z.array(z.string()).optional().describe("Tags to filter by"),
-  important: z.boolean().optional().describe("Filter by important bookmarks"),
-  page: z.number().optional().describe("Page number for pagination"),
-  perPage: z.number().optional().describe("Items per page (max 50)"),
-  sort: z
-    .string()
-    .optional()
-    .describe("Sort order (score, title, -created, created)"),
+  search: z.string().max(500).optional().describe("Search text (empty or omitted lists bookmarks)"),
+  collection: z.number().int().safe()
+    .refine(id => id === 0 || id === -1 || id === -99 || id > 0,
+      "Expected a collection ID or a valid read-only system collection")
+    .optional().describe("Collection ID; 0=All, -1=Unsorted, -99=Trash"),
+  tags: z.array(z.string().trim().min(1).max(100)).max(20).optional().describe("Tags to filter by"),
+  important: z.boolean().optional().describe("Filter by favorites (false excludes favorites)"),
+  page: z.number().int().min(0).safe().optional().describe("Zero-based page (default 0)"),
+  perPage: z.number().int().min(1).max(50).optional().describe("Page size (1–50)"),
+  sort: z.enum(["-created", "created", "score", "-sort", "title", "-title", "domain", "-domain"])
+    .optional().describe("Official Raindrop sort order"),
   tag: z.string().optional().describe("Single tag to filter by"),
   duplicates: z.boolean().optional().describe("Include duplicate bookmarks"),
   broken: z.boolean().optional().describe("Include broken links"),
@@ -42,7 +43,7 @@ const BookmarkSearchInputSchema = z.object({
     .boolean()
     .optional()
     .describe("Force a fresh fetch from the API, bypassing the local cache"),
-});
+}).strict();
 
 const BookmarkSearchOutputSchema = z.object({
   items: z.array(
@@ -204,6 +205,7 @@ const bookmarkSearchTool = defineTool({
     "Searches bookmarks with advanced filters, tags, and full-text search.",
   inputSchema: BookmarkSearchInputSchema,
   outputSchema: BookmarkSearchOutputSchema,
+  annotations: { readOnlyHint: true, idempotentHint: true },
   handler: async (
     args: z.infer<typeof BookmarkSearchInputSchema>,
     { raindropService }: ToolHandlerContext,
