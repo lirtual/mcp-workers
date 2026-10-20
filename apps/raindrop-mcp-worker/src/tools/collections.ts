@@ -15,16 +15,24 @@ const CollectionListInputSchema = z.object({
     .describe("Force a fresh fetch from the API, bypassing the local cache"),
 });
 
+const CollectionReadSummarySchema = z.object({
+  id: z.number().int().positive(),
+  title: z.string(),
+  count: z.number().int().nonnegative().optional(),
+  description: z.string().optional(),
+  color: z.string().optional(),
+  parentId: z.number().int().positive().optional(),
+});
 const CollectionListOutputSchema = z.object({
-  count: z.number(),
-  collections: z.array(
-    z.object({
-      id: z.number(),
-      title: z.string(),
-      count: z.number(),
-      description: z.string().optional(),
-    }),
-  ),
+  count: z.number().int().nonnegative(),
+  collections: z.array(CollectionReadSummarySchema),
+});
+const CollectionGetInputSchema = z.object({
+  id: z.number().int().positive().safe(),
+  skipCache: z.boolean().optional(),
+}).strict();
+const CollectionGetOutputSchema = z.object({
+  collection: CollectionReadSummarySchema,
 });
 
 const CollectionSummarySchema = z.object({
@@ -51,6 +59,20 @@ const collectionSummary = (collection: any) => ({
   parentId: collection.parent?.$id,
 });
 
+// Count is omitted when upstream does not provide it. Parent IDs describe
+// the entire hierarchy without creating a separate public tree operation.
+const collectionReadSummary = (collection: any) => ({
+  id: collection._id,
+  title: collection.title || "Untitled Collection",
+  ...(Number.isSafeInteger(collection.count) && collection.count >= 0
+    ? { count: collection.count } : {}),
+  ...(typeof collection.description === "string"
+    ? { description: collection.description } : {}),
+  ...(typeof collection.color === "string" ? { color: collection.color } : {}),
+  ...(Number.isSafeInteger(collection.parent?.$id) && collection.parent.$id > 0
+    ? { parentId: collection.parent.$id } : {}),
+});
+
 type CollectionManageArgs = z.infer<typeof CollectionManageInputSchema> & {
   color?: string;
   description?: string;
@@ -61,24 +83,21 @@ const collectionListTool = defineTool({
   description: "Lists all Raindrop.io collections as a flat list.",
   inputSchema: CollectionListInputSchema,
   outputSchema: CollectionListOutputSchema,
+  annotations: { readOnlyHint: true, idempotentHint: true },
   handler: async (
     args: z.infer<typeof CollectionListInputSchema>,
     { raindropService }: ToolHandlerContext,
   ) => {
-    const collections = await raindropService.getCollections(args.skipCache);
-    // Keep the list response text-only for MCP hosts. Resource links can be
-    // read separately via mcp://collection/{id}, but embedded resource content
-    // in a tools/call response is not accepted consistently by clients.
-    // Project upstream values into the declared output schema, avoiding
-    // undefined or non-numeric fields in structuredContent.
-    const summaries = collections.map((collection) => ({
-      id: collection._id,
-      title: collection.title || "Untitled Collection",
-      count: Number(collection.count ?? 0),
-      ...(typeof collection.description === "string"
-        ? { description: collection.description }
-        : {}),
-    }));
+    // Official endpoints separate root and *all* nested collections.
+    const [roots, children] = await Promise.all([
+      raindropService.getCollections(args.skipCache),
+      raindropService.getAllChildCollections(args.skipCache),
+    ]);
+    const collections = [...roots, ...children];
+    if (new Set(collections.map(collection => collection._id)).size !== collections.length) {
+      throw new ValidationError("Duplicate collection IDs in upstream hierarchy");
+    }
+    const summaries = collections.map(collectionReadSummary);
     return {
       content: [
         textContent(
@@ -86,7 +105,7 @@ const collectionListTool = defineTool({
             `Found ${summaries.length} collections`,
             ...summaries.map(
               (collection) =>
-                `- ${collection.title} (ID: ${collection.id}, Items: ${collection.count}) — mcp://collection/${collection.id}`,
+                `- ${collection.title} (ID: ${collection.id}, Items: ${collection.count ?? "unknown"}) — mcp://collection/${collection.id}`,
             ),
           ].join("\n"),
         ),
@@ -95,6 +114,25 @@ const collectionListTool = defineTool({
         count: summaries.length,
         collections: summaries,
       },
+    };
+  },
+});
+
+const collectionGetTool = defineTool({
+  name: "collection_get",
+  description: "Read one collection by its exact positive ID and return available parent, count and description.",
+  inputSchema: CollectionGetInputSchema,
+  outputSchema: CollectionGetOutputSchema,
+  annotations: { readOnlyHint: true, idempotentHint: true },
+  handler: async (
+    args: z.infer<typeof CollectionGetInputSchema>,
+    { raindropService }: ToolHandlerContext,
+  ) => {
+    const collection = await raindropService.getCollection(args.id, args.skipCache);
+    const summary = collectionReadSummary(collection);
+    return {
+      content: [textContent(`Collection ${summary.id}: ${summary.title}`)],
+      structuredContent: { collection: summary },
     };
   },
 });
@@ -197,6 +235,7 @@ const collectionManageTool = defineTool({
 
 export const collectionTools = [
   collectionListTool,
+  collectionGetTool,
   getCollectionTreeTool,
   collectionManageTool,
 ];
