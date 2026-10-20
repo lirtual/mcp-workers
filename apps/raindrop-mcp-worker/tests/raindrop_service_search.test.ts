@@ -139,3 +139,28 @@ describe("RaindropService official filters", () => {
     await expect(service.getBookmarkFilters(0)).rejects.toThrow();
   });
 });
+
+describe("RaindropService official organization suggestions", () => {
+  it("extracts official collection $id values without inventing titles or IDs", async () => {
+    const service = new RaindropService("fake-token");
+    const post = (service as any).client.POST;
+    post.mockResolvedValueOnce({
+      data: { result: true, item: { collections: [{ $id: 11 }, { $id: 12 }], tags: ["backend"] } },
+    });
+    await expect(service.getOfficialSuggestions("https://example.com")).resolves.toEqual({
+      collectionIds: [11, 12], tags: ["backend"],
+    });
+    expect(post).toHaveBeenCalledWith("/raindrop/suggest", {
+      body: { link: "https://example.com" },
+    });
+  });
+
+  it("rejects failed and unverifiable suggestion responses", async () => {
+    const service = new RaindropService("fake-token");
+    const get = (service as any).client.GET;
+    get.mockResolvedValueOnce({ data: { result: false, item: {} } });
+    await expect(service.getOfficialSuggestions(123)).rejects.toThrow();
+    get.mockResolvedValueOnce({ data: { result: true, item: { collections: [{ _id: 10 }] } } });
+    await expect(service.getOfficialSuggestions(123)).rejects.toThrow();
+  });
+});
