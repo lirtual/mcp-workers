@@ -909,9 +909,33 @@ describe("tag MCP tools/list and tools/call contract", () => {
     expect(fetch).toHaveBeenCalledTimes(9);
   });
 
+  it("supports an explicit global tag mutation only with collectionId:0", async () => {
+    const fetch = mockHttp();
+    await withMcp(async (client) => {
+      const result = await client.callTool({
+        name: "tag_rename",
+        arguments: { collectionId: 0, oldName: "a", newName: "fresh" },
+      });
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        collectionId: 0, status: "succeeded", success: true,
+      });
+    });
+    expect(fetch.mock.calls.some(([request]) => request.method === "PUT")).toBe(true);
+  });
+
   it("rejects strict, empty, duplicate, nonexistent and conflicting inputs including legacy bypasses", async () => {
     const fetch = mockHttp();
     await withMcp(async (client) => {
+      // No tag mutation may silently turn an omitted scope into global /tags/0.
+      for (const [name, args] of [
+        ["tag_rename", { oldName: "a", newName: "fresh" }],
+        ["tag_merge", { tagNames: ["a", "b"], newName: "target" }],
+        ["tag_delete", { tagNames: ["a"] }],
+        ["tag_manage", { operation: "delete", tagNames: ["a"] }],
+      ] as const) {
+        expect((await client.callTool({ name, arguments: args })).isError).toBe(true);
+      }
       for (const [name, args] of [
         ["tag_list", { collectionId: -1 }],
         ["tag_list", { collectionId: 1.5 }],
@@ -985,7 +1009,7 @@ describe("tag MCP tools/list and tools/call contract", () => {
           ],
           ["tag_manage", { operation: "delete", tagNames: ["a"] }],
         ] as const) {
-          const result = await client.callTool({ name, arguments: args });
+          const result = await client.callTool({ name, arguments: { ...args, collectionId: 42 } });
           if (failure === "unknown") {
             expect(result.structuredContent).toMatchObject({
               status: "unknown",

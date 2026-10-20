@@ -141,12 +141,12 @@ export const TagListInputSchema = z.strictObject({
   collectionId: TagScopeSchema.optional(),
 });
 export const TagRenameInputSchema = z.strictObject({
-  collectionId: TagScopeSchema.optional(),
+  collectionId: TagScopeSchema,
   oldName: TagNameSchema,
   newName: TagNameSchema,
 });
 export const TagMergeInputSchema = z.strictObject({
-  collectionId: TagScopeSchema.optional(),
+  collectionId: TagScopeSchema,
   tagNames: TagNamesSchema.refine(
     (names) => names.length >= 2,
     "Merge requires at least two sources",
@@ -154,7 +154,7 @@ export const TagMergeInputSchema = z.strictObject({
   newName: TagNameSchema,
 });
 export const TagDeleteInputSchema = z.strictObject({
-  collectionId: TagScopeSchema.optional(),
+  collectionId: TagScopeSchema,
   tagNames: TagNamesSchema,
 });
 export const TagInputSchema = z.discriminatedUnion("operation", [
@@ -162,7 +162,7 @@ export const TagInputSchema = z.discriminatedUnion("operation", [
   TagMergeInputSchema.extend({ operation: z.literal("merge") }),
   z.strictObject({
     operation: z.literal("rename"),
-    collectionId: TagScopeSchema.optional(),
+    collectionId: TagScopeSchema,
     tagNames: z.array(TagNameSchema).length(1),
     newName: TagNameSchema,
   }),

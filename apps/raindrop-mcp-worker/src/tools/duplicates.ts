@@ -139,6 +139,25 @@ export const bookmarkRemoveDuplicatesTool = defineTool({
       throw new Error(
         "Scope requires more than 10 deletions; bounded batch refused in full, nothing deleted.",
       );
+    // Recheck only candidates and the keeper of a group that actually has
+    // a deletion. Singleton/non-candidate groups cannot lose their copies.
+    // Reserve one HTTP call for scoped batch DELETE, plus a fresh membership
+    // preflight for every candidate. Reject an unexecutable confirmation
+    // at preview time instead of presenting an impossible action.
+    const recheckIds = new Set(candidateIds);
+    for (const group of groups.values()) {
+      if (group.some((item) => candidateIds.includes(item.id))) {
+        const keeper = keeperIds.find((value) => group.some((item) => item.id === value));
+        if (keeper !== undefined) recheckIds.add(keeper);
+      }
+    }
+    const confirmationRequests = 3 + observedIds.length +
+      recheckIds.size + candidateIds.length + 1;
+    if (candidateIds.length > 0 && confirmationRequests > 60)
+      throw new Error(
+        "Duplicate confirmation exceeds 60 upstream requests; narrow the collection scope. Nothing deleted.",
+      );
+
     const snapshot = {
       version: 1,
       collectionId: args.collectionId,
@@ -202,10 +221,9 @@ export const bookmarkRemoveDuplicatesTool = defineTool({
           notExecuted: [],
         }),
       };
-    // Check every deletion candidate and every retained keeper again immediately
+    // Recheck each candidate and the keeper of every affected group immediately
     // before T06's independent membership preflight and single batch DELETE.
-    const recheck = new Set([...candidateIds, ...keeperIds]);
-    for (const itemId of recheck) {
+    for (const itemId of recheckIds) {
       const fresh = await api.getDuplicateMetadata(itemId, args.collectionId);
       if (
         canonical(fresh) !==

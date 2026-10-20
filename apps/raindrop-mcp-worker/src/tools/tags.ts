@@ -35,7 +35,7 @@ async function manageTags(
   args = TagInputSchema.parse(args);
   const details = {
     operation: args.operation,
-    collectionId: args.collectionId ?? 0,
+    collectionId: args.collectionId,
     tags: args.tagNames,
     ...(args.operation !== "delete" ? { replacement: args.newName } : {}),
   };
@@ -109,7 +109,7 @@ const tagListTool = defineTool({
 const tagRenameTool = defineTool({
   name: "tag_rename",
   description:
-    "Rename exactly one existing oldName to a fresh newName; if the target exists use tag_merge. Omitted collectionId or 0 is global; positive IDs scope the write. Preflight is not a lock; unknown writes are never replayed.",
+    "Rename exactly one existing oldName to a fresh newName; if the target exists use tag_merge. Explicit collectionId:0 is global; positive IDs scope the write. Omitted scope is rejected. Preflight is not a lock; unknown writes are never replayed.",
   inputSchema: TagRenameInputSchema,
   outputSchema: TagMutationOutputSchema,
   annotations: writeAnnotations,
@@ -131,7 +131,7 @@ const tagRenameTool = defineTool({
 const tagMergeTool = defineTool({
   name: "tag_merge",
   description:
-    "Merge two or more distinct existing tagNames into newName, which may already exist but must differ from all sources. Omitted collectionId or 0 is global; positive IDs scope the write. Preflight is not a lock; unknown writes are never replayed.",
+    "Merge two or more distinct existing tagNames into newName, which may already exist but must differ from all sources. Explicit collectionId:0 is global; positive IDs scope the write. Omitted scope is rejected. Preflight is not a lock; unknown writes are never replayed.",
   inputSchema: TagMergeInputSchema,
   outputSchema: TagMutationOutputSchema,
   annotations: writeAnnotations,
@@ -144,7 +144,7 @@ const tagMergeTool = defineTool({
 const tagDeleteTool = defineTool({
   name: "tag_delete",
   description:
-    "Delete only explicit nonempty distinct existing tagNames. Omitted collectionId or 0 is global; positive IDs scope the write. Preflight is not a lock; unknown writes are never replayed.",
+    "Delete only explicit nonempty distinct existing tagNames. Explicit collectionId:0 is global; positive IDs scope the write. Omitted scope is rejected. Preflight is not a lock; unknown writes are never replayed.",
   inputSchema: TagDeleteInputSchema,
   outputSchema: TagMutationOutputSchema,
   annotations: writeAnnotations,
@@ -157,7 +157,7 @@ const tagDeleteTool = defineTool({
 const tagManageTool = defineTool({
   name: "tag_manage",
   description:
-    "Legacy alias for tag_rename, tag_merge, tag_delete with the same validation. Prefer the independent tools. Omitted collectionId or 0 means global scope; positive IDs limit scope.",
+    "Legacy alias for tag_rename, tag_merge, tag_delete with the same validation. Prefer the independent tools. Explicit collectionId:0 means global scope; positive IDs limit scope. Omitted scope is rejected.",
   inputSchema: TagInputSchema,
   outputSchema: TagMutationOutputSchema,
   annotations: writeAnnotations,

@@ -32,6 +32,7 @@ class OfficialMock {
     [2, item(2)],
   ]);
   ids = [1, 2];
+  expectedDeleteIds?: number[];
   pageOverride?: (page: number) => unknown;
   detailOverride?: (id: number, read: number) => unknown;
   detailReads = new Map<number, number>();
@@ -42,11 +43,11 @@ class OfficialMock {
       expect(url.pathname).toBe("/rest/v1/raindrops/7");
       expect(url.search).toBe("");
       expect(await request.json()).toEqual({
-        ids: this.ids.filter((id) => id !== 1),
+        ids: this.expectedDeleteIds ?? this.ids.filter((id) => id !== 1),
       });
       if (this.write === "lost") throw new TypeError("lost response");
       if (this.write === "429") return json({}, 429);
-      return json({ result: true, modified: this.ids.length - 1 });
+      return json({ result: true, modified: this.expectedDeleteIds?.length ?? this.ids.length - 1 });
     }
     expect(request.method).toBe("GET");
     if (url.pathname === "/rest/v1/collection/7")
@@ -148,6 +149,29 @@ describe("official atomic duplicate removal", () => {
     expect((await call(api(), { confirm: p.confirmation })).structuredContent.status)
       .toBe("notExecuted");
     expect(mock.writes()).toHaveLength(0);
+  });
+
+  it("allows a 50-item preview with one actual duplicate and a feasible confirmation budget", async () => {
+    const mock = new OfficialMock();
+    mock.ids = Array.from({ length: 50 }, (_, i) => i + 1);
+    for (const id of mock.ids)
+      mock.items.set(id, item(id, {
+        link: id <= 2 ? "https://example.test/exact" : `https://example.test/unique/${id}`,
+      }));
+    const result = await preview(api());
+    expect(result.observedTotal).toBe(50);
+    expect(result.confirmation.candidateIds).toEqual([2]);
+    expect(mock.writes()).toHaveLength(0);
+    mock.fetch.mockClear();
+    mock.expectedDeleteIds = [2];
+    const done = await call(api(), { confirm: result.confirmation });
+    expect(done.structuredContent).toMatchObject({
+      status: "unknown", dispatched: true, unknown: [2],
+    });
+    // 3 list requests + 50 metadata + 2 affected items + 1 candidate
+    // membership preflight + 1 scoped write = 57.
+    expect(mock.fetch).toHaveBeenCalledTimes(57);
+    expect(mock.writes()).toHaveLength(1);
   });
 
   it("sorts official IDs and preserves the same digest across result order changes", async () => {
@@ -401,7 +425,7 @@ describe("official atomic duplicate removal", () => {
     expect(mock.writes()).toHaveLength(0);
   });
 
-  it("refuses a confirm phase that exhausts 60 reads without dispatching deletion", async () => {
+  it("refuses a confirmation that cannot fit the 60-request budget at preview", async () => {
     const mock = new OfficialMock();
     mock.ids = Array.from({ length: 50 }, (_, i) => i + 1);
     mock.items = new Map(
@@ -410,13 +434,9 @@ describe("official atomic duplicate removal", () => {
         item(id, { link: id <= 11 ? "same" : `url-${id}` }),
       ]),
     );
-    const p = await preview(api());
-    expect(p.confirmation.candidateIds).toHaveLength(10);
-    mock.fetch.mockClear();
-    await expect(call(api(), { confirm: p.confirmation })).rejects.toThrow(
-      /60/,
-    );
-    expect(mock.fetch).toHaveBeenCalledTimes(60);
+    await expect(preview(api())).rejects.toThrow(/exceeds 60 upstream requests/);
+    // Rejection happens during preview, not after issuing an impossible confirm.
+    expect(mock.fetch).toHaveBeenCalledTimes(53);
     expect(mock.writes()).toHaveLength(0);
   });
 
