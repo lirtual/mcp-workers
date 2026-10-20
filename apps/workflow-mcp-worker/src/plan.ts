@@ -20,7 +20,7 @@ function object(value: unknown, message: string): Record<string, unknown> {
 }
 function refCheck(ref: string, step?: {id:string;needs:string[]}) {
   const parts=ref.split('.');
-  if(parts.length<2 || !SAFE_ID.test(parts[1])) throw new PlanError('invalid_reference');
+  if(parts.length<2 || parts.slice(1).some(p=>!SAFE_ID.test(p)||['__proto__','constructor','prototype'].includes(p))) throw new PlanError('invalid_reference');
   if(parts[0]==='inputs') return;
   if(parts[0]==='steps' && step && step.needs.includes(parts[1]) && parts.length>=3 && ['status','output'].includes(parts[2])) return;
   throw new PlanError('invalid_step_reference');
@@ -73,7 +73,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
   let raw:unknown=source;
   if(typeof source==='string'){
     if(source.length>32*1024)throw new PlanError('definition_too_large');
-    try{ const doc=YAML.parseDocument(source,{uniqueKeys:true,strict:true});if(doc.errors.length)throw Error('invalid_yaml');raw=doc.toJS(); }
+    try{ const doc=YAML.parseDocument(source,{uniqueKeys:true,strict:true});if(doc.errors.length)throw Error('invalid_yaml');raw=doc.toJS({maxAliasCount:16}); }
     catch{throw new PlanError('invalid_yaml_or_json');}
   }
   const o=object(raw,'invalid_definition');keys(o,['version','name','inputs','steps']);

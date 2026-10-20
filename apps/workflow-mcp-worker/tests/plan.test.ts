@@ -54,3 +54,10 @@ test('S1 rejects duplicate YAML keys, unknown executable fields and oversized DA
   await assert.rejects(() => compilePlan({...one, javascript:'unsafe'}), PlanError);
   await assert.rejects(() => compilePlan({...one, steps:Array.from({length:33},(_,i)=>({id:'step'+i,uses:'result.emit',with:{data:i}}))}), PlanError);
 });
+
+
+test('S1 refuses prototype traversal in expression references', async () => {
+  await assert.rejects(() => compilePlan({...one, steps:[
+    {id:'x', uses:'result.emit', with:{data:{ref:'inputs.constructor'}}},
+  ]}), PlanError);
+});
