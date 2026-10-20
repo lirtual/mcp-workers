@@ -115,8 +115,25 @@ S1 unit/contract tests** and the existing 36-assertion owner-facing local E2E ch
 business-side effects were safely rolled back. If D1 still has a nonterminal
 business outcome, record `indeterminate` with `orchestration_errored` or
 `orchestration_terminated` and release S1 capacity, retaining the original Run
-identity. Unit/contract tests cover this classification; live network partition,
-absent post-retention instances and incompatible engine upgrades remain unproven.
+identity. Unit/contract tests cover this classification.
+
+**Isolated Cloudflare native terminal proof (2026-10-20, commit `54e5e45`):**
+a six-Step delayed read-only Run was **actually terminated** using Wrangler's
+Workflow-instance API. The Portal-authenticated MCP result became
+`indeterminate` / `orchestration_terminated`; replay of its original admission
+key returned the identical Run ID. Separately, Wrangler started a Workflow
+with a missing D1 Run payload and verified its actual native `errored` state
+(`run_missing`). An isolated D1-only fault record with that exact UUID instance
+ID and a nonterminal business outcome was then read through the public MCP API;
+it became `indeterminate` / `orchestration_errored`. These are real native
+Cloudflare states, with a deliberate D1 fault injection in the second case.
+The previous 36/36 S1 public MCP edge assertions were rerun successfully.
+Only temporary, separately named resources were used, and the D1, Workflow,
+Workers and temporary test configuration/credential were deleted and checked.
+
+Actual network partition, missing instances after native retention expiry, and
+incompatible engine upgrade behavior remain unproven; the new tests must not
+be described as exactly-once external-effect guarantees.
 
 The temporary Cloudflare D1, Workflow, test Worker and fixture Worker were all
 deleted afterward. The public test token and untracked deployment configuration
