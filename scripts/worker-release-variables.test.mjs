@@ -70,13 +70,9 @@ test("IMA CLIENT_ID must be present as a non-secret GitHub Variable", () => {
 });
 
 
-test("GitHub Actions repo overrides come only from the selected Worker Environment", () => {
+test("GitHub Actions has no redundant repository allowlist variables", () => {
   assert.deepEqual(collectWorkerVars("github-actions-mcp-worker", {}), []);
-  assert.deepEqual(collectWorkerVars("github-actions-mcp-worker",
-    { GITHUB_REPOS: "autoactions/tsrv,autoactions/tsvc", API_KEY: "never-pass" }),
-    ["GITHUB_REPOS:autoactions/tsrv,autoactions/tsvc"]);
-  for (const bad of ["../test", "a/repo, ../evil", "a/repo\\nb/repo", "a", "a/repo:", "a/repo,"]) {
-    assert.throws(() => collectWorkerVars("github-actions-mcp-worker", { GITHUB_REPOS: bad }),
-      /GITHUB_REPOS/);
-  }
+  assert.deepEqual(collectWorkerVars("github-actions-mcp-worker", {
+    GITHUB_REPOS: "ignored", GITHUB_REPOS_SECONDARY: "ignored",
+  }), []);
 });

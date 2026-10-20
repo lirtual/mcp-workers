@@ -1,6 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
-import { ActionError, configuredRepos, GitHubActionsClient } from './github.ts';
+import { ActionError, GitHubActionsClient } from './github.ts';
 import type { Env } from './github.ts';
 
 const repo = z.string().min(3).max(150);
@@ -31,18 +31,18 @@ async function safe(work: () => Promise<unknown>) {
   try { return reply(await work()); } catch (error) { return failure(error); }
 }
 
-export function buildMcpServer(env: Env): McpServer {
+export function buildMcpServer(env: Env, requestFetch: typeof fetch = fetch): McpServer {
   const server = new McpServer(
     { name: 'github-actions-mcp-worker', version: '0.1.0' },
     { capabilities: { tools: {} },
-      instructions: 'Operate GitHub Actions only in the configured GITHUB_REPOS allowlist. Dispatch, cancellation, and rerun are effectful. Use run_get before canceling. run_cancel and run_force_cancel only acknowledge cancellation requests, never confirm a run stopped; check run_get for status=completed and conclusion=cancelled. Use run_force_cancel only when normal cancellation fails to stop a run; force cancellation can bypass cleanup. Use workflow_dispatch with an explicit ref. Workflows such as tsrv and tsvc are regular Actions workflows, not special session APIs.' },
+      instructions: 'Operate GitHub Actions only in repositories surfaced through the configured fine-grained PATs. Never retry GitHub writes with a second credential if the assigned token fails. Dispatch, cancellation, and rerun are effectful. Use run_get before canceling. run_cancel and run_force_cancel only acknowledge cancellation requests, never confirm a run stopped; check run_get for status=completed and conclusion=cancelled. Use run_force_cancel only when normal cancellation fails to stop a run; force cancellation can bypass cleanup. Use workflow_dispatch with an explicit ref. Workflows such as tsrv and tsvc are regular Actions workflows, not special session APIs.' },
   );
-  const api = new GitHubActionsClient(env);
+  const api = new GitHubActionsClient(env, requestFetch);
 
   server.registerTool('repositories_list', {
-    description: 'List the explicitly allowed repositories. No GitHub discovery or arbitrary repository access.',
+    description: 'List repositories discovered from the configured PATs and flag any ambiguous account overlaps; GitHub permissions control access.',
     inputSchema: z.object({}).strict(), annotations: annotationsRead,
-  }, async () => reply({ repositories: configuredRepos(env.GITHUB_REPOS) }));
+  }, async () => safe(() => api.listRepositories()));
 
   server.registerTool('workflows_list', {
     description: 'List GitHub Actions workflows and their enabled/disabled states in one allowed repository.',

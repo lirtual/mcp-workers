@@ -1,58 +1,44 @@
 # GitHub Actions MCP Worker
 
-A standalone Cloudflare Streamable HTTP MCP server that uses **only the GitHub REST API** to manage GitHub Actions. Repositories such as `autoactions/tsrv` and `autoactions/tsvc` are ordinary workflow repositories; no dependency on Session Deck, runner agent, session service, D1, R2 or Durable Objects exists.
+A standalone Cloudflare Streamable HTTP MCP server that manages GitHub Actions through GitHub REST. No Session Deck API, D1, R2, or runner-state service is needed.
 
-## Configuration
+## One Secret, multiple GitHub accounts
 
-| Name | Type | Usage |
-| --- | --- | --- |
-| `MCP_ACCESS_TOKEN` | Required runtime Secret | Reuse existing single-user MCP Portal Bearer token |
-| `GH_TOKEN` | Required runtime Secret | GitHub fine-grained PAT with Actions Read & Write in permitted repositories; `repository_dispatch` also requires Contents Write |
-| `GITHUB_REPOS` | Optional GitHub Environment variable / Wrangler default | Comma-separated exact repository allowlist |
+Keep the existing GitHub Environment Secret **`GH_TOKEN`**. Its value may contain one or more fine-grained GitHub Personal Access Tokens, **one PAT per line**, for example:
 
-The default allowlist is `autoactions/tsrv,autoactions/tsvc`. For production overrides, set `GH_ACTIONS_REPOS` as a Variable in the GitHub Environment named `github-actions-mcp-worker`; use comma-separated `owner/repo` values without whitespace (max 30 entries). No override means the Wrangler default. Set `GH_TOKEN` as an Environment Secret there. The release workflow passes `GH_TOKEN` under the same name from the GitHub Environment to the Worker; only `GH_ACTIONS_REPOS` is mapped to the Worker's `GITHUB_REPOS` variable because GitHub reserves user-defined names starting with `GITHUB_`. Existing `MCP_ACCESS_TOKEN` may come from the shared repository Secret or a Worker-specific Environment Secret. The release flow verifies the exact deployed repository list. Do not check tokens into source control. A GitHub App installation token is short-lived; the first release uses a PAT, avoiding token-generation machinery.
+```text
+github_pat_<PAT_FOR_FIRST_ACCOUNT>
+github_pat_<PAT_FOR_SECOND_ACCOUNT>
+github_pat_<PAT_FOR_THIRD_ACCOUNT>
+```
 
-## Tools
+Those are placeholders, not real credentials. A single PAT on one line continues to work with no migration. The Worker supports up to **8** distinct PATs in the same Secret. The existing `MCP_ACCESS_TOKEN` remains a separate Portal authentication Secret.
 
-| Tool | Purpose |
-| --- | --- |
-| `repositories_list` | Show allowed repositories |
-| `workflows_list` | List GitHub Actions workflows |
-| `runs_list` | List recent runs with optional workflow/status filter |
-| `run_get` | Get one run's status and URL |
-| `run_jobs_list` | Get job and step outcomes (not logs) |
-| `run_artifacts_list` | List run artifact metadata |
-| `workflow_dispatch` | Trigger a workflow on an explicit branch or tag |
-| `repository_dispatch` | Emit a custom repository event |
-| `run_cancel` | Request cancellation of one run with `confirm: true` (does not confirm stopped) |
-| `run_force_cancel` | Force cancellation of an unresponsive run with `confirm: true` |
-| `run_rerun` | Rerun all jobs or failed jobs |
+No `GH_TOKEN_SECONDARY`, `GH_ACTIONS_REPOS`, `GITHUB_REPOS`, JSON wrapper, or repository-to-token map is required.
 
-Examples:
+Set the permitted repositories **in each PAT's GitHub fine-grained repository access settings**. Grant repository **Metadata: Read** (for discovery), **Actions: Read/Write** when controlling workflows, and **Contents: Write** only when `repository_dispatch` is used. GitHub is the final authority for read/write permission checks.
 
-- `workflow_dispatch(repo="autoactions/tsrv", workflow="linux.yml", ref="main", inputs={"access_profile":"mini","session_profile":"developer"})`
-- `workflow_dispatch(repo="autoactions/tsrv", workflow="windows.yml", ref="main", inputs={"session_profile":"core","enable_wsl":"false"})`
-- `workflow_dispatch(repo="autoactions/tsvc", workflow="tsvc.yml", ref="main", inputs={"service":"code-server"})`
+`repositories_list` performs read-only `GET /user/repos` for each PAT and combines the accessible repositories. All existing tools still take `repo: "owner/repo"`. For actions, the Worker resolves that exact repository against the PAT discoveries before making **one** GitHub API call. If multiple PATs enumerate the same repository, the entry is reported under `ambiguous_repositories` and operations fail closed. Fix the overlap by narrowing PAT access on GitHub. A GitHub HTTP 401/403/404 never causes a mutation to retry through a different PAT.
 
-`workflow_dispatch` opts in to the GitHub API's run details response (`workflow_run_id`, `run_url`, `html_url`) for exact follow-up. Query `run_get` for actual run state, then use `run_cancel` if necessary. A cancellation response with `accepted: true` and `completion_confirmed: false` means **GitHub accepted the request, not that the job stopped**. Use `run_get` to verify `status: completed` and `conclusion: cancelled`. If an active run does not respond to normal cancellation, `run_force_cancel(repo, run_id, confirm=true)` calls GitHub's force-cancel endpoint. This is a deliberate escalation: it can bypass `always()` cleanup and should not be invoked as the default cancellation path. A legacy 204 response indicates acceptance without a run ID. The MCP does not claim session readiness, exclusivity, or a working SSH/HTTP endpoint. It deliberately does **not** replicate Session Deck's session catalog, readiness observer, locator parsing or decryption features. Artifact names, IDs and sizes can be queried, but artifact content and raw runner logs are outside this MVP.
+A discovery failure or a list exceeding **200 repositories per PAT** fails closed instead of operating against partial results. The Worker does not return tokens or GitHub error bodies to MCP clients. A single secret contains all PATs, so limit who can edit/read its deployment configuration, and understand that rotating one token requires updating the composite Secret.
 
-## Local checks
+GitHub Actions Environment Secret values are limited to 48 KB. Avoid logging the value. The selected-Worker release workflow transfers this one `GH_TOKEN` Secret without printing its contents.
 
-At monorepo root:
+## MCP tools
+
+The existing 11 tools are unchanged: `repositories_list`, `workflows_list`, `runs_list`, `run_get`, `run_jobs_list`, `run_artifacts_list`, `workflow_dispatch`, `repository_dispatch`, `run_cancel`, `run_force_cancel`, and `run_rerun`.
+
+Example: `workflow_dispatch(repo="lirtual/mcp-workers", workflow="ci.yml", ref="main", inputs={"worker":"remote-control-mcp-worker"})`. The PAT that actually has permission for `lirtual/mcp-workers` is selected automatically. GitHub's accepted response does not prove that a workflow completed; use `run_get` to check.
+
+For cancellation, `run_cancel` and `run_force_cancel` only acknowledge a request. Confirm `status=completed` and `conclusion=cancelled` via `run_get`. Force cancellation may bypass cleanup.
+
+## Testing and release
+
+At the repo root:
 
 ```bash
 pnpm install --frozen-lockfile
 pnpm --filter github-actions-mcp-worker check
 ```
 
-`check` covers typecheck, Node/MCP protocol tests and Cloudflare bundling dry-run. It is safe and does not invoke GitHub workflow mutations.
-
-```bash
-pnpm --filter github-actions-mcp-worker dev
-```
-
-All `/mcp` requests require the shared Bearer token; `/health` returns only basic service liveness. Github credentials are never returned through MCP results.
-
-## Release boundary
-
-This draft PR is **source-only**. It adds this app to the existing manual, main-only GitHub Actions Worker release selector, with scoped GitHub Environment Secrets/Variables, preflight, deployment, and active-version readback. Merging source alone does **not** deploy: a separately authorized manual release must select `github-actions-mcp-worker`. No Cloudflare Worker, Secrets, Portal plugin, or GitHub Actions run is provisioned by this PR alone.
+Unit/MCP tests use synthetic PATs and never dispatch real workflows. This PR remains source-only and Draft until reviewed. Merging does not deploy: use the existing selected-Worker release workflow separately. Do not paste real PATs into code, PRs, messages, or logs.

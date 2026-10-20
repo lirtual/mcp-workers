@@ -1,9 +1,11 @@
 # GitHub Actions MCP context
 
-This bounded context owns an independently deployed, stateless MCP ingress that calls **only GitHub REST API** endpoints for GitHub Actions. It never calls Session Deck or any other management API. GitHub is the source of truth for workflows, runs, jobs and artifacts; `tsrv` and `tsvc` require no special adapter.
+This stateless MCP Worker manages GitHub Actions exclusively using GitHub REST and existing owner Portal authentication.
 
-Runtime inputs are the existing `MCP_ACCESS_TOKEN`, one `GH_TOKEN`, and a comma-separated `GITHUB_REPOS` allowlist. No database, queue, background state, session password, cloud executor, D1, R2 or Durable Object is introduced.
+`GH_TOKEN` is one GitHub Environment Secret containing up to eight distinct PATs separated by lines. A legacy one-token value remains supported. No `GH_TOKEN_SECONDARY`, repository allowlist variable, account switcher, JSON secret object, database, GitHub App or second Worker is required.
 
-MCP tool boundaries: allowlisted workflow/run discovery, metadata-only job/artifact reads, explicit-ref workflow dispatch, repository dispatch, individual run cancellation with force-cancel escalation, and reruns. Upstream acceptance does not prove a run started, a cancellation completed, or a run finished. A `run_cancel` or `run_force_cancel` receipt is only a request acknowledgment; inspect `run_get` for final state. Force cancel is reserved for runs unresponsive to normal cancellation because it may bypass `always()` cleanup. For runner address or session readiness, this MCP does not interpret artifacts; that remains outside this generic Actions manager.
+The Worker discovers accessible repositories independently with authenticated GitHub `GET /user/repos` on each PAT. Discovery is bounded to 200 repositories per PAT and fails closed on errors. `repositories_list` combines results and flags any ambiguous overlap. Every operation resolves the exact `owner/repo` to precisely one PAT before calling GitHub Actions. Upstream failures do not trigger write retries under another PAT. Permissions remain enforced by GitHub, not duplicated in MCP configuration.
 
-Never log upstream bodies, tokens, or repository private data. Production deployment is a separate approval step.
+Tools retain the current 11 discovery, dispatch, cancellation, and rerun operations. Sensitive token values and untrusted GitHub errors are never sent in MCP responses. A dispatched/cancelled acknowledgement does not establish final state.
+
+Only the selected GitHub Actions Worker release may carry the single `GH_TOKEN` Secret; other Workers are unaffected. This PR is source-only, with no deploy or live credentials change.

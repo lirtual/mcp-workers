@@ -290,28 +290,6 @@ test("preflight allows GitHub to restore a missing runtime Secret, but readback 
 });
 
 
-test("GitHub Actions Worker release requires scoped secrets and reviewed repository list", () => {
-  const worker = "github-actions-mcp-worker";
-  const secrets = [{ name: "MCP_ACCESS_TOKEN" }, { name: "GH_TOKEN" }];
-  const settings = { bindings: [
-    { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
-    { name: "GH_TOKEN", type: "secret_text" },
-    { name: "GITHUB_REPOS", type: "plain_text", text: "autoactions/tsrv,autoactions/tsvc" },
-  ], observability: { enabled: true, logs: { invocation_logs: true } } };
-  const options = { mode: "readback", expectedGithubRepos: "autoactions/tsrv,autoactions/tsvc" };
-  assert.equal(verifyBindings(worker, settings, secrets, options), true);
-  assert.throws(() => verifyBindings(worker, settings, [{ name: "MCP_ACCESS_TOKEN" }], options), /Secret missing/);
-  assert.throws(() => verifyBindings(worker, settings, secrets,
-    { ...options, expectedGithubRepos: "other/repo" }), /readback mismatch/);
-  assert.throws(() => verifyBindings(worker, { ...settings, bindings: settings.bindings.slice(0, 2) },
-    secrets, options), /GITHUB_REPOS/);
-  assert.throws(() => verifyBindings(worker, { ...settings, bindings: [...settings.bindings,
-    { name: "DANGEROUS_RESOURCE", type: "service" }] }, secrets, options), /Unexpected production resource/);
-  assert.match(readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
-    /GH_TOKEN: \$\{\{ secrets\.GH_TOKEN \}\}/);
-});
-
-
 test("first GitHub Actions Worker release retries only transient 404s without weakening ingress check", () => {
   const workflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
   const step = workflow.slice(workflow.indexOf("      - name: Check unauthenticated MCP surface without credentials"));
@@ -323,4 +301,28 @@ test("first GitHub Actions Worker release retries only transient 404s without we
   assert.match(step, /404\)/);
   assert.match(step, /attempt < max_attempts/);
   assert.match(step, /Unexpected unauthenticated MCP status/);
+});
+
+test("GitHub Actions deploy requires only one PAT Secret and no repository lists", () => {
+  const worker = "github-actions-mcp-worker";
+  const secrets = [{ name: "MCP_ACCESS_TOKEN" }, { name: "GH_TOKEN" }];
+  const bindings = [
+    { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
+    { name: "GH_TOKEN", type: "secret_text" },
+  ];
+  const settings = { bindings, observability: { enabled: true,
+    logs: { invocation_logs: true } } };
+  assert.equal(verifyBindings(worker, settings, secrets, { mode: "readback" }), true);
+  assert.throws(() => verifyBindings(worker, { ...settings,
+    bindings: [...bindings, { name: "GITHUB_REPOS", type: "plain_text",
+      text: "autoactions/tsrv" }],
+  }, secrets, { mode: "readback" }), /Legacy GitHub Actions repository allowlists/);
+  assert.throws(() => verifyBindings(worker, settings,
+    [{ name: "MCP_ACCESS_TOKEN" }], { mode: "readback" }), /Required runtime Secret missing/);
+  const release = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+  assert.ok(release.includes("GH_TOKEN: ${{ secrets.GH_TOKEN }}"));
+  assert.ok(!release.includes("GH_TOKEN_SECONDARY"));
+  assert.throws(() => verifyBindings(worker, { ...settings,
+    bindings: [...bindings, { name: "DANGEROUS_RESOURCE", type: "service" }] },
+    secrets, { mode: "readback" }), /Unexpected production resource/);
 });

@@ -56,14 +56,13 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
       "Unexpected Invocation Logs configuration");
   }
   if (worker === "github-actions-mcp-worker" && options.mode === "readback") {
-    const repos = find("GITHUB_REPOS", "plain_text")?.text;
-    invariant(typeof repos === "string" && repos.length > 0 && repos.length <= 1024 &&
-      repos.split(",").length <= 30 &&
-      repos.split(",").every((repo) => /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) && !repo.includes("..")),
-      "GitHub Actions GITHUB_REPOS allowlist missing or invalid");
-    if (options.expectedGithubRepos) {
-      invariant(repos === options.expectedGithubRepos, "GitHub Actions GITHUB_REPOS readback mismatch");
-    }
+    // GitHub PATs alone authorize repositories. No repository lists should
+    // survive from the old Worker configuration.
+    invariant(!find("GITHUB_REPOS", "plain_text") &&
+      !find("GITHUB_REPOS_SECONDARY", "plain_text"),
+      "Legacy GitHub Actions repository allowlists must be removed");
+    invariant(secretNames.has("GH_TOKEN") && !!find("GH_TOKEN", "secret_text"),
+      "GitHub Actions GH_TOKEN Secret binding missing");
   }
   if (worker === "ima-mcp-worker") {
     // During preflight, accept a legacy CLIENT_ID secret because it will be
@@ -274,9 +273,6 @@ async function current(account, worker, token, options) {
     ? existingOwner?.namespace_id : options.previousNamespaceId;
   verifyBindings(worker, settings, secrets, {
     ...options, previousNamespaceId,
-    ...(worker === "github-actions-mcp-worker" && options.mode === "readback"
-      ? { expectedGithubRepos: process.env.GITHUB_REPOS || options.sourceConfig?.vars?.GITHUB_REPOS }
-      : {}),
   });
   if (options.sourceConfig) {
     invariant(settings.compatibility_date === options.sourceConfig.compatibility_date,

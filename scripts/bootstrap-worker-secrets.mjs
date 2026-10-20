@@ -29,6 +29,17 @@ export function collectBootstrapSecrets(worker, env) {
   if (worker === "ssh-mcp-worker" && payload.MCP_BROKER_TOKEN.length < 32) {
     throw new Error("SSH Broker token must be at least 32 characters");
   }
+  if (worker === "github-actions-mcp-worker") {
+    // Preserve the single, multiline GitHub Environment Secret unchanged.
+    // Reject malformed/duplicated entries before any Worker deployment.
+    const tokens = payload.GH_TOKEN.split(/\r?\n/).map((t) => t.trim()).filter(Boolean);
+    if (!tokens.length || tokens.length > 8 ||
+      tokens.some((t) => t.length > 512 || /\s/.test(t)) ||
+      new Set(tokens).size !== tokens.length) {
+      throw new Error("Invalid or duplicate GitHub PAT in GH_TOKEN");
+    }
+    // Avoid copying older secondary Secret even when it remains in GitHub settings.
+  }
   return payload;
 }
 
