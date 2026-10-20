@@ -47,7 +47,16 @@ The approved specification is published as a GitHub specification issue rather t
 
 - **Q5=A — bookmark query consolidation:** a single `bookmark_search` handles both list and search. An empty query means normal paginated listing; collection, sorting, and supported official filters are inputs. Remove the redundant standalone list surface from the future public contract.
 - **Q6=A — collection query consolidation:** use one `collection_list` that supplies enough parent/child information to build a full hierarchy. Do not maintain a second public tree-list tool.
-- **Q7 — partially settled:** `trash_empty` is accepted as a clearer resource-first name. The candidate names `collection_delete_empty` and `bookmark_duplicates_remove` were explicitly questioned as unnatural and are **not approved**; final alternatives remain a pending naming decision. Existing preview-first and deletion protections are preserved.
+- **Q7 — final choice confirmed in round 3:** `trash_empty`, `collection_remove_empty`, and `bookmark_remove_duplicates` are the accepted names for the existing cleanup intents. This naming change does not change their preview-first defaults or deletion protections.
 - **Q8=A — justified lightweight reads:** include label listing, highlight listing, official bookmark/filter statistics, and official URL-existence checks in the first-phase design. Exact tool names, input shapes, and official endpoint constraints remain for later rounds; no independent AI or storage service is implied.
 
-**Still open after round 2:** Q7's two cleanup names; exact full tool inventory, helper schemas and API semantics, batch rules, error outcomes, and rollout acceptance. Do not treat proposed names as confirmed until explicitly accepted.
+**Still open after round 2:** exact full tool inventory, helper schemas and API semantics, batch rules, error outcomes, and rollout acceptance. Subsequent rounds may settle individual tool names before finalizing the inventory.
+
+## Grill With Docs — confirmed third-round decisions (2026-10-20)
+
+- **Q7=A — cleanup tool names:** use `trash_empty`, `collection_remove_empty`, and `bookmark_remove_duplicates` in the replacement MCP contract. These replace the previous awkward candidates; this is a naming decision, not approval to alter the established cleanup safety behavior.
+- **Q9=A — bookmark movement:** expose `bookmark_move` for a single explicit move. Use `bookmark_batch_update` for multi-bookmark movement only insofar as its documented, verified official update semantics support it; do not add a redundant `bookmark_batch_move` public tool.
+- **Q10=A — tags:** expose four distinct intents: `tag_list`, `tag_rename`, `tag_merge`, and `tag_delete`. Their request shapes and mapping to official API behavior are pending separate technical review.
+- **Q11=A — highlights:** expose `highlight_list`, `highlight_create`, `highlight_update`, and `highlight_delete` separately; the implementation must conform to verified official Raindrop API semantics. Specific input and output schemas remain unresolved.
+
+**Still open after round 3:** precise remaining tool inventory, official API-specific mutation behavior and input validation, destructive-operation targeting and safeguards beyond the already settled defaults, output/error schema, and acceptance/release decisions. This design round does not approve implementation, deployment, merge, or development Tickets.
