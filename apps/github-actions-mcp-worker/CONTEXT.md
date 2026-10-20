@@ -1,11 +1,11 @@
 # GitHub Actions MCP context
 
-An independently deployed, stateless MCP ingress that manages GitHub Actions exclusively through GitHub REST. There is no Session Deck dependency or separate runner state.
+This stateless MCP Worker manages GitHub Actions exclusively using GitHub REST and existing owner Portal authentication.
 
-Authentication is the existing owner-only Portal Bearer plus a required `GH_TOKEN` and optional `GH_TOKEN_SECONDARY`. Each GitHub fine-grained PAT independently defines the accessible repositories. There is **no repository allowlist variable or manually maintained repository-to-credential mapping**.
+`GH_TOKEN` is one GitHub Environment Secret containing up to eight distinct PATs separated by lines. A legacy one-token value remains supported. No `GH_TOKEN_SECONDARY`, repository allowlist variable, account switcher, JSON secret object, database, GitHub App or second Worker is required.
 
-Repository discovery uses `GET /user/repos` authenticated independently by each PAT; results are bounded. The union appears in `repositories_list`; overlaps are marked ambiguous and rejected. A tool request resolves an exact repository to exactly one PAT via read-only discovery **before** contacting the requested GitHub Actions endpoint. Invalid requests, unavailable discovery, ambiguous access, revoked permissions, and upstream failures fail closed. No write request is retried with another PAT; credential values and upstream response bodies are never returned.
+The Worker discovers accessible repositories independently with authenticated GitHub `GET /user/repos` on each PAT. Discovery is bounded to 200 repositories per PAT and fails closed on errors. `repositories_list` combines results and flags any ambiguous overlap. Every operation resolves the exact `owner/repo` to precisely one PAT before calling GitHub Actions. Upstream failures do not trigger write retries under another PAT. Permissions remain enforced by GitHub, not duplicated in MCP configuration.
 
-MCP tools are workflow/run discovery, metadata-only jobs/artifacts, explicit-ref workflow dispatch, repository dispatch, cancel/force-cancel and reruns. Acknowledgement of a dispatched or cancelled run is not proof of completion; inspect `run_get` for final status. This MCP does not fetch raw logs or artifacts, expose GitHub PATs, decrypt session credentials, or manage runner connections.
+Tools retain the current 11 discovery, dispatch, cancellation, and rerun operations. Sensitive token values and untrusted GitHub errors are never sent in MCP responses. A dispatched/cancelled acknowledgement does not establish final state.
 
-Runtime needs no database, queue, background state, account selector, JSON secrets, GitHub App or new external dependency. Publishing code is separate from selected-Worker production deployment and needs explicit review.
+Only the selected GitHub Actions Worker release may carry the single `GH_TOKEN` Secret; other Workers are unaffected. This PR is source-only, with no deploy or live credentials change.
