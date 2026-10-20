@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { ActionError, assertRepo, configuredRepos, GitHubActionsClient } from '../src/github.ts';
+import { ActionError, assertRepo, configuredAccounts, configuredRepos, GitHubActionsClient } from '../src/github.ts';
 import type { Env } from '../src/github.ts';
 
 const config: Env = {
@@ -17,6 +17,61 @@ test('allowlist is explicit and rejects unknown repositories before transport', 
   const client = new GitHubActionsClient(config, (async () => { count += 1; return Response.json({}); }) as typeof fetch);
   await assert.rejects(() => client.listWorkflows('evil/repo'), { code: 'repository_not_allowed' });
   assert.equal(count, 0);
+});
+
+
+test('two GitHub accounts route by exact repository without credential fallback', async () => {
+  const twoAccounts: Env = {
+    ...config,
+    GH_TOKEN_SECONDARY: 'lirtual-private-token',
+    GITHUB_REPOS_SECONDARY: 'lirtual/mcp-workers',
+  };
+  const requests: Array<{ repo: string; authorization: string }> = [];
+  const client = new GitHubActionsClient(twoAccounts, (async (url, init) => {
+    const full = String(url);
+    requests.push({
+      repo: full.split('/repos/')[1]?.split('/actions/')[0] ?? '',
+      authorization: new Headers(init?.headers).get('authorization') ?? '',
+    });
+    return Response.json({ total_count: 0, workflows: [] });
+  }) as typeof fetch);
+  assert.deepEqual(client.allowlist, ['autoactions/tsrv', 'autoactions/tsvc', 'lirtual/mcp-workers']);
+  await client.listWorkflows('autoactions/tsrv');
+  await client.listWorkflows('lirtual/mcp-workers');
+  await client.listWorkflows('LIRTUAL/MCP-WORKERS');
+  assert.deepEqual(requests, [
+    { repo: 'autoactions/tsrv', authorization: 'Bearer github-secret' },
+    { repo: 'lirtual/mcp-workers', authorization: 'Bearer lirtual-private-token' },
+    { repo: 'LIRTUAL/MCP-WORKERS', authorization: 'Bearer lirtual-private-token' },
+  ]);
+  await assert.rejects(() => client.listWorkflows('not-authorized/other'), {
+    code: 'repository_not_allowed',
+  });
+  assert.equal(requests.length, 3);
+});
+
+test('missing, overlapping or unassigned second-account secrets fail closed', async () => {
+  const base: Env = { ...config, GITHUB_REPOS_SECONDARY: 'lirtual/mcp-workers' };
+  assert.throws(() => configuredAccounts(base), { code: 'github_token_secondary_not_configured' });
+  assert.throws(() => configuredAccounts({
+    ...config, GH_TOKEN_SECONDARY: 'unused-secret',
+  }), { code: 'secondary_repository_not_configured' });
+  assert.throws(() => configuredAccounts({
+    ...base, GH_TOKEN_SECONDARY: 'other-token',
+    GITHUB_REPOS_SECONDARY: 'AUTOACTIONS/TSRV',
+  }), { code: 'duplicate_repository_configuration' });
+  assert.throws(() => configuredAccounts({
+    ...base, GH_TOKEN_SECONDARY: 'other-token',
+    GITHUB_REPOS_SECONDARY: 'lirtual/mcp-workers,../invalid',
+  }), { code: 'invalid_repository_configuration' });
+  assert.deepEqual(configuredAccounts(config).all,
+    ['autoactions/tsrv', 'autoactions/tsvc']);
+
+  const client = new GitHubActionsClient({
+    ...base, GH_TOKEN_SECONDARY: 'second-secret',
+  }, (async () => Response.json({ message: 'only secondary secret could access' }, { status: 403 })) as typeof fetch);
+  await assert.rejects(() => client.listWorkflows('lirtual/mcp-workers'), { code: 'github_http_403' });
+  // Never retry a GitHub 403/401 with the other account credential.
 });
 
 test('workflow dispatch sends correct payload and returns GitHub accepted run id', async () => {
