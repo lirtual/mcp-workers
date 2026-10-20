@@ -1,0 +1,25 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "github-actions-mcp-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-10",
+  "workers_dev": true,
+  "preview_urls": false,
+  "keep_vars": false,
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "invocation_logs": true,
+      "head_sampling_rate": 1
+    }
+  },
+  "vars": {
+    "GITHUB_REPOS": "autoactions/tsrv,autoactions/tsvc"
+  },
+  "secrets": {
+    "required": [
+      "MCP_ACCESS_TOKEN",
+      "GITHUB_TOKEN"
+    ]
+  }
+}
