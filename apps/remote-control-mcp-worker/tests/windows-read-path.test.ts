@@ -42,8 +42,8 @@ test("Windows read parser rejects URL schemes, UNC/device namespaces, ADS and re
 test("Windows absolute paths are allowed for paired full file operations", () => {
   const operation_id = "windows-full-1";
   const write = { operation_id, path: win, content: "safe-test", mode: "rewrite" };
-  const directory = String.raw`C:\\Users\\0\\AppData\\Local\\Temp\\rca-test`;
-  const destination = String.raw`C:\\Windows\\renamed.ini`;
+  const directory = "C:/Users/0/AppData/Local/Temp/rca-test";
+  const destination = "C:/Windows/renamed.ini";
   assert.equal(parseLocalWriteFile(write)?.path, win);
   assert.equal(parseLocalCreateDirectory({ operation_id, path: directory })?.path, directory);
   assert.equal(parseLocalDeleteFile({ operation_id, path: win })?.path, win);
