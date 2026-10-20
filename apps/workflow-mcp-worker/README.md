@@ -52,7 +52,13 @@ Wrangler processes and `S1_LOCAL_TOKEN` set to the same disposable auth token.
 
 `tests/local-reserved-recovery.mjs` uses **isolated local D1 fault injection** (never
 production D1) and passed: D1 reserved Run without a Workflow instance, same-ID
-recovery, lost-ack reconciliation and explicit 8-slot capacity rejection; cleanup
+recovery, lost-ack reconciliation and explicit 8-slot capacity rejection.
+A new aged-unknown fault case (11 minutes old) first fails on `run_capacity_exceeded`,
+then passes after the fix: ingress admission reconciles the old instance ID,
+marks an unconfirmed start `indeterminate` with `start_unconfirmed`, keeps the
+original Run/idempotency key, releases its app capacity, and permits a fresh Run.
+The same key never automatically creates a replacement instance; expired unknown
+Runs cannot be silently rewritten to `succeeded` by a late Runner. Cleanup
 removes injected capacity rows. Both programs are manual local integration suites,
 not automatically invoked by ordinary unit tests.
 

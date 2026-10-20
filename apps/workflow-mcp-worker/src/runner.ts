@@ -24,13 +24,19 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
   async run(event:WorkflowEvent<{run_id:string}>,step:WorkflowStep){
     const id=event.payload.run_id;
     const db=this.env.DB;
-    const row=await db.prepare('SELECT version_id,inputs FROM runs WHERE id=?').bind(id).first<{version_id:string;inputs:string}>();
+    const row=await db.prepare('SELECT version_id,inputs,outcome FROM runs WHERE id=?').bind(id).first<{version_id:string;inputs:string;outcome:string}>();
     if(!row)throw Error('run_missing');
+    // An expired ambiguous admission is terminally uncertain. A Workflow
+    // started much later must not run the abandoned queued S1 plan.
+    if(row.outcome!=='queued'&&row.outcome!=='running')return;
     const version=await db.prepare('SELECT plan FROM workflow_versions WHERE id=?').bind(row.version_id).first<{plan:string}>();
     if(!version)throw Error('version_missing');
     const plan=JSON.parse(version.plan) as Plan;
     const ctx:{inputs:Record<string,unknown>;steps:Record<string,Outcome>}={inputs:JSON.parse(row.inputs),steps:{}};
-    await db.prepare("UPDATE runs SET outcome='running',updated_at=? WHERE id=? AND outcome='queued'").bind(now(),id).run();
+    if(row.outcome==='queued'){
+      const transition=await db.prepare("UPDATE runs SET outcome='running',updated_at=? WHERE id=? AND outcome='queued'").bind(now(),id).run();
+      if(!transition.meta.changes)return;
+    }
     const pending=new Map(plan.steps.map(s=>[s.id,s]));
     let emitted:unknown=null;
     let failed=false;
@@ -58,9 +64,9 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
           if(s.uses==='result.emit'&&outcomes[i].status==='succeeded')emitted=outcomes[i].output;});
       }
       const output=limitResult(emitted??ctx.steps[plan.steps.at(-1)!.id]?.output??null);
-      await db.prepare("UPDATE runs SET outcome=?,result=?,updated_at=? WHERE id=?").bind(failed?'failed':'succeeded',JSON.stringify(output),now(),id).run();
+      await db.prepare("UPDATE runs SET outcome=?,result=?,updated_at=? WHERE id=? AND outcome='running'").bind(failed?'failed':'succeeded',JSON.stringify(output),now(),id).run();
     }catch{
-      await db.prepare("UPDATE runs SET outcome='indeterminate',error_code='execution_interrupted',updated_at=? WHERE id=?").bind(now(),id).run();
+      await db.prepare("UPDATE runs SET outcome='indeterminate',error_code='execution_interrupted',updated_at=? WHERE id=? AND outcome='running'").bind(now(),id).run();
       throw Error('execution_interrupted');
     }
   }

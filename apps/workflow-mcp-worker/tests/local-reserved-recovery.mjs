@@ -54,5 +54,32 @@ try{
  }finally{
    executeSql('DELETE FROM runs WHERE id IN ('+blockers.map(sqlLiteral).join(',')+')');
  }
- console.log('S1_RESERVED_RECOVERY_PASS',JSON.stringify({run_id:runId,status:status.status,ack_recovery:true,capacity_rejected:true}));
+ // A stale uncertain start must remain the SAME Run, become transparently
+ // indeterminate, and free its quota slot for fresh S1 read-only work.
+ const staleId=crypto.randomUUID(), staleKey='stale-'+staleId;
+ const staleAt=Date.now()-11*60*1000;
+ const staleInputs='{}', staleDigest=crypto.createHash('sha256').update(staleInputs).digest('hex');
+ const oldValues=[staleId,wf.workflow_id,published.published_version_id,staleId,staleKey,staleDigest,staleInputs,'start_unknown','queued'];
+ const oldInsert='INSERT INTO runs(id,workflow_id,version_id,instance_id,admission_key,request_digest,inputs,start_state,outcome,created_at,updated_at) VALUES ('+
+    oldValues.map(sqlLiteral).join(',')+','+staleAt+','+staleAt+')';
+ const freshBlockers=Array.from({length:7},()=>crypto.randomUUID());
+ const freshSql=freshBlockers.map(id=>'INSERT INTO runs(id,workflow_id,version_id,instance_id,admission_key,request_digest,inputs,start_state,outcome,created_at,updated_at) VALUES ('+
+    [id,wf.workflow_id,published.published_version_id,id,'fresh-'+id,staleDigest,staleInputs,'reserved','queued'].map(sqlLiteral).join(',')+','+Date.now()+','+Date.now()+')');
+ executeSql([oldInsert,...freshSql].join(';'));
+ try{
+    // This is intentionally the FIRST access to the stale unknown Run;
+    // a new admission must reconcile it instead of permanently rejecting quota.
+    const replacement=await tool('workflow_run',{workflow_id:wf.workflow_id,inputs:{subject:'fresh allowed'},idempotency_key:'fresh-'+staleId});
+    assert.ok(replacement.run_id && replacement.run_id!==staleId,'old unknown no longer holds capacity forever');
+    const staleStatus=await tool('workflow_status',{run_id:staleId});
+    assert.equal(staleStatus.status,'indeterminate','stale unresolved Run must be reported indeterminate');
+    const staleResult=await tool('workflow_result',{run_id:staleId});
+    assert.equal(staleResult.error_code,'start_unconfirmed','ambiguous start error remains explicit');
+    const replay=await tool('workflow_run',{workflow_id:wf.workflow_id,inputs:{},idempotency_key:staleKey});
+    assert.equal(replay.run_id,staleId,'idempotent replay preserves original uncertain Run ID');
+    assert.equal(replay.status,'indeterminate','replay cannot create another Workflow instance');
+ }finally{
+    executeSql('DELETE FROM runs WHERE id IN ('+[staleId,...freshBlockers].map(sqlLiteral).join(',')+')');
+ }
+ console.log('S1_RESERVED_RECOVERY_PASS',JSON.stringify({run_id:runId,status:status.status,ack_recovery:true,capacity_rejected:true,stale_capacity_recovered:true}));
 }finally{await client.close();}

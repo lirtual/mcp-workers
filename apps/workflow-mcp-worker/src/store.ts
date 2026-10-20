@@ -26,6 +26,9 @@ export class StateError extends Error {
 }
 const now=()=>Date.now();
 const MAX_RESULT=64*1024;
+// A reserved start older than this window is no longer safe to retry.
+// Preserve its identity and report uncertainty instead of holding quota forever.
+const START_RECONCILE_WINDOW_MS=10*60*1000;
 const safeId=(v:string)=>/^[a-zA-Z0-9_-]{1,128}$/.test(v);
 function assertId(v:string){if(!safeId(v))throw new StateError('invalid_id');}
 function json(value:unknown):string {
@@ -117,6 +120,11 @@ export class WorkflowService {
       const original=await this.db.prepare('SELECT * FROM runs WHERE workflow_id=? AND admission_key=?').bind(workflow_id,idempotency_key).first<RunRow>();
       if(original){if(original.request_digest!==request_digest)throw new StateError('idempotency_conflict');return this.reconcileStart(original);}
     }
+    // Reconcile only the bounded number of stale starts occupying the eight
+    // S1 admission slots. This is ingress repair, not a new scheduler.
+    const stale=await this.db.prepare("SELECT * FROM runs WHERE outcome='queued' AND start_state IN ('reserved','start_unknown') AND created_at<=? ORDER BY created_at ASC LIMIT 8")
+      .bind(now()-START_RECONCILE_WINDOW_MS).all<RunRow>();
+    for(const old of stale.results)await this.reconcileStart(old);
     const wf=await this.row(workflow_id);
     if(wf.state!=='active'||!wf.active_version_id)throw new StateError('workflow_not_active');
     const version=wf.active_version_id;
@@ -141,6 +149,7 @@ export class WorkflowService {
   private async reconcileStart(row:RunRow){
     const started=()=>({run_id:row.id,published_version_id:row.version_id,status:row.outcome,start_state:'started',idempotent_replay:true});
     if(row.start_state==='started')return started();
+    if(row.outcome==='indeterminate')return {run_id:row.id,published_version_id:row.version_id,status:'indeterminate',start_state:row.start_state,idempotent_replay:true};
     const lookup=async()=>{
       try{
         const instance=await this.env.WORKFLOW.get(row.instance_id);
@@ -154,10 +163,20 @@ export class WorkflowService {
     // A crash after the D1 reservation but before create() is repairable with
     // the SAME deterministic instance ID, not another Run or capacity slot.
     // Never recreate a terminal/old Run after platform ID retention may expire.
-    if(row.outcome==='queued' && now()-row.created_at<10*60*1000){
+    if(row.outcome==='queued' && now()-row.created_at<START_RECONCILE_WINDOW_MS){
       try{await this.env.WORKFLOW.create({id:row.instance_id,params:{run_id:row.id}});}catch{}
       if(await lookup())return started();
+    }else if(row.outcome==='queued'){
+      // No confirmed instance after the bounded retry window. Do not create
+      // another instance: the first request might have executed remotely.
+      // Terminal uncertainty releases application capacity but never erases
+      // the idempotency key or claims the business operation did not happen.
+      await this.db.prepare("UPDATE runs SET outcome='indeterminate',error_code='start_unconfirmed',updated_at=? WHERE id=? AND outcome='queued' AND start_state IN ('reserved','start_unknown') AND created_at<=?")
+        .bind(now(),row.id,now()-START_RECONCILE_WINDOW_MS).run();
     }
+    const latest=await this.db.prepare('SELECT * FROM runs WHERE id=?').bind(row.id).first<RunRow>();
+    if(latest?.outcome==='indeterminate')return {run_id:row.id,published_version_id:row.version_id,status:'indeterminate',start_state:latest.start_state,idempotent_replay:true};
+    if(latest?.start_state==='started')return {run_id:row.id,published_version_id:row.version_id,status:latest.outcome,start_state:'started',idempotent_replay:true};
     return {run_id:row.id,published_version_id:row.version_id,status:'start_unknown',start_state:'start_unknown',idempotent_replay:true};
   }
   async status(run_id:string){
@@ -169,7 +188,7 @@ export class WorkflowService {
     }
     let native='unknown';if(row.start_state==='started')try{native=(await (await this.env.WORKFLOW.get(row.instance_id)).status()).status;}catch{}
     const steps=(await this.db.prepare('SELECT step_id,status,error_code FROM run_steps WHERE run_id=? ORDER BY step_id').bind(run_id).all<{step_id:string;status:string;error_code:string|null}>()).results;
-    return {run_id,workflow_id:row.workflow_id,published_version_id:row.version_id,start_state:row.start_state,status:row.start_state!=='started'?'start_unknown':applyStatus(native,row.outcome),steps};
+    return {run_id,workflow_id:row.workflow_id,published_version_id:row.version_id,start_state:row.start_state,status:row.outcome==='indeterminate'?'indeterminate':row.start_state!=='started'?'start_unknown':applyStatus(native,row.outcome),steps};
   }
   async result(run_id:string){
     const meta=await this.status(run_id);
