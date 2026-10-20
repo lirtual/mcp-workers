@@ -251,3 +251,30 @@ bash -c 'set -eu; IFS= read -rsp "Raindrop API Token: " RAINDROP_ACCESS_TOKEN </
 - 为避免将多个候选工具调用和末尾清理累计到同一个 60 次上游请求预算，清理流程改用独立且无需额外凭据的 Service 实例；不增加上游 Worker 或服务层。
 - 清理只根据事前记录的随机测试 URL、精确 ID、原集合与唯一测试集合名执行；某条清理失败会继续尝试其他已经核实身份的测试对象，但最终必须汇总失败并判 FAIL。若 POST 回执丢失而尚未获得书签 ID，会明确报告原测试 URL 需要人工核查，**绝不凭模糊匹配删除他人书签，也不虚报清理通过**。
 - 本地 TypeScript、ESLint 与 `test:local` 通过；无 Token 场景正确跳过 Live，用于验证隔离门槛而非真实写入完成。只读独立复审没有发现此补丁新增明确缺陷。依然 **NO-GO**，只在现有授权途径真正完成测试、核实所有测试对象清理后更新发布状态。
+
+## 发布门槛顺序收敛（2026-10-21：仅文档，不授权执行）
+
+以前部分说明将“新版 Portal 真实端到端验收”列在“首次部署之前”。这形成循环依赖：新版 Worker 不部署就无法进行新版生产 Portal 验收。本节明确 G0/G1/G2 三阶段，历史 NO-GO 均按实际阶段解读，不增加 staging、Worker、密钥或部署流程。
+
+### G0 — 合并与部署前
+
+- 当前 Draft：26 个新候选 + 15 个兼容名称 = 41 个工具名称；现网 17 个旧工具中有两个名称与新候选重合（collection_list 和 bookmark_search），**其余 15 个均仍在 Draft 保留**，包含 get_suggestions 和 suggest_tags。首次上线建议原样保留，单独批准前不删旧工具，也不把 26 当发布必须达到的上限。
+- 复用完整源码独立审查、TypeScript、SDK/Mock、鉴权拒绝、60 次请求预算、受保护删除和最新 Node24 CI 证据；CI/Mock 不等于真实上游操作。
+- 在**已授权且凭据隔离**的环境中对 Draft 完成最小真实上游验收：只使用新建可丢弃的两个 collection、三个有唯一 URL 的 bookmark、随机 tag；验证创建/更新/移动/软删、定向空集合删除、tag 重命名/合并/删、显式 ID 批量作用域拒绝与聚合回执逐 ID GET 核实。任何写入结果未知时不自动重试；测试对象无法确证或清理失败即报告阻塞。之前成功的高亮实测证据复用。
+- trash_empty 全局永久清空已明确只要求安全模拟（#132 acceptance-limited）；不为 G0 做真实全局清空，不处理历史回收站测试书签。
+- GitHub PR CI 不接触生产 Environment Secret；先前尝试新增带生产 Secret 的 Draft 作业未获安全许可。不能通过同义临时作业、复制凭据到 WSL、或触发 main 发布来绕过限制。
+- G0 完成只表明具备**请求另一次明确合并/生产发布授权**的条件，不是默认授权。
+
+### G1 — 单独授权后才执行合并与发布
+
+- 将 PR #134 切换为 Ready、合并 main，并只通过现有 ci.yml 的 main workflow_dispatch 选择 raindrop-mcp-worker；保留现有 GitHub Environment、Wrangler、全部 15 个兼容入口。不新增部署机制。
+- 记录源码 SHA、Actions run、Cloudflare active version。CI 与部署动作成功不代表 G2 自动验收成功。
+- 未达到 G0 或尚无明确合并/部署授权时，不执行 G1。
+
+### G2 — 真正部署之后
+
+- 用现有 MCP Portal 鉴权与 Worker 请求检查工具列表确有 41 个名称，真实无效 Bearer 拒绝，并经授权验证少量真实读写与旧兼容调用。刷新 MCP 插件，核对实际工具清单。此阶段才有条件声明**新版 Portal 真实 E2E**，不能反过来作为 G0 的硬前置。
+- 若新版 Portal/写入/工具列表不符合预期，立即停止收尾并记录实际版本。现有 CI 明确不做自动回滚；只评估已有 Cloudflare 版本恢复手段，需要相应操作授权，不得虚称自动恢复。
+- G2 验收成功后再处理剩余 Tickets 与父 Spec 关闭；单项源码 Ticket 可以按其原验收标准先行独立关闭。
+
+**当前阶段：G0 NO-GO。** Draft 关键 collection/bookmark/tag/batch 的隔离真实写入仍未取得证据；G1/G2 均未执行。以上仅为发布顺序澄清，不改变生产配置或密钥权限。
