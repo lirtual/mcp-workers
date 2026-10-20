@@ -305,3 +305,29 @@ RCA_NETNS_PROBE={"status":"UNAVAILABLE","reason":"unshare-or-child-exit",
 4. Treat these as independent from the still-**unverified** exact-action one-use ChatGPT→Agent owner approval gate. The offline-only Chromium zero-hit test and the initial-URL route redirect bypass are already proven and should not be repeated absent changes.
 
 **Architecture/state:** Q1–Q52 unchanged. OS isolation **P0 NOT ACCEPTED**; no public browser tools, new production dependencies, releases, merges, deployments, host configuration modifications or new Tickets.
+
+## P. Windows MXC request-tier probe — no sandbox launched (2026-10-20)
+
+The follow-up to §O has now run on an **ephemeral GitHub Actions Windows x64 Runner**, not on the user's paired Windows 11 device. The separate, source-only [remote-control-agent Draft PR #15](https://github.com/lirtual/remote-control-agent/pull/15) adds `probe-windows-mxc.mjs` and a conditional read-only CI step. This exact-version **Microsoft `@microsoft/mxc-sdk@1.0.1`** is installed using `--ignore-scripts` under `RUNNER_TEMP` and removed after inspection; it does **not** enter the Agent package, bundle, lockfile, Windows scheduled task or device.
+
+The code invokes MXC's documented **`probe(ContainerRequest)` only**, with a synthetic `cmd.exe` command that is **never run** and a requested `network.egress.default = deny` plus an allow rule for IANA documentation-only `198.51.100.1/32:443`. That CIDR is only a policy selector; no real socket, sandbox/AppContainer profile, firewall rule, elevated command or production process is created.
+
+[Agent CI #39401072265](https://github.com/lirtual/remote-control-agent/actions/runs/39401072265): **3/3 completed successfully**, including unchanged Linux x64/ARM64 and native Windows full-tools/browser-candidate/upgrade tests. The **actual Windows tier probe** returned:
+
+```text
+RCA_WINDOWS_MXC_PROBE={
+  "status":"WEAKER_TIER_NOT_ACCEPTED",
+  "sdk_version":"1.0.1",
+  "tier":"appcontainer-dacl",
+  "base_container_api":false,
+  "error":null,
+  "process_spawned":false,
+  "network_tested":false
+}
+```
+
+Its warning identifies the **BaseContainer tier as unavailable on this Runner** and an AppContainer + DACL compatibility fallback as the selected tier. It also warns that some program startup/file metadata paths may need **elevated** host preparation (e.g., system drive root / NUL device). No such preparation was performed. Per [MXC's official networking guide](https://github.com/microsoft/mxc/blob/main/docs/backends/process-container/networking.md), the compatibility tier is **not equivalent to native ProcessContainer WFP per-target network enforcement**.
+
+**Scope and interpretation:** A successful SDK `probe()` API call does **not** mean the process or network is isolated. **The Windows GitHub Runner's tier is insufficient for target-specific conditional public browsing; OS network P0 remains NOT ACCEPTED.** This does not determine what tier the *owner's Windows 11 machine* supports. The owner's earlier `processmodel.dll` export presence only proved symbols exist, not native enforcement availability. Do not extrapolate one host's tier to the other, do not auto-install host-prep, do not lower the target/network acceptance contract, and do not ship MXC or an external proxy as a workaround without explicit separate design review.
+
+**Next decision gate:** Any actual Windows process isolation launch must first show **native, non-admin, per-process no-bypass egress** capability on the intended Windows platform; only then test real Chromium/children against reachable/forbidden synthetic fixtures, verify zero forbidden hits, and preserve private Profile/IPC. Linux/WSL2 has its independent ordinary-user namespace gate (see §O). Both remain independent of one-use owner approval. Current PRs stay Draft; no public navigation, code merge, release, deployment, Agent/device modification or Tickets.
