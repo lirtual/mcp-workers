@@ -22,6 +22,8 @@ Existing **device pairing is necessary but insufficient as blanket browser autho
 
 **Follow-on decision (round 6):** [ADR-0026](./0026-browser-capabilities-tab-and-approval-scope.md) establishes first-release common browser workflow categories, stable tab IDs for explicit device/session targeting, one-use action-bound approval, and owner-only Profile clearing after safe-state checks.
 
-**Still open:** download provenance and OS dependency checks, exact idle activity accounting, conflict/lock recovery, offline cleanup guarantees, personal-profile attachment authorization, concrete high-impact consent mechanism and classification edge cases, tool parameter/result schemas and action reconciliation details, packaging, acceptance and rollout gates. No coding, Issue creation, production change, or deployment is authorized by this ADR.
+**Follow-on decision (round 7):** [ADR-0027](./0027-browser-tools-visual-consent-and-recovery.md) fixes the compact tool inventory, fresh visual fallback when semantics are insufficient, fail-closed prepare/confirm/execute for high-impact actions, and verified non-destructive Profile-lock recovery.
+
+**Still open:** download provenance and OS dependency checks, exact idle activity accounting, recovery implementation and offline cleanup guarantees, personal-profile attachment authorization, concrete confirmation credential/transport and classification edge cases, tool parameter/result schemas and action reconciliation details, packaging, acceptance and rollout gates. No coding, Issue creation, production change, or deployment is authorized by this ADR.
 
 Related: [Remote Control Domain Context](../CONTEXT.md), [v2 multi-device transport ADR-0014](./0014-v2-multi-device-ws-do.md), [local mutation receipts ADR-0007](./0007-local-receipts-and-no-blind-replay.md).
