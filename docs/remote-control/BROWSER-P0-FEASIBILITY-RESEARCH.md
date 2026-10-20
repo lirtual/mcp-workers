@@ -364,3 +364,47 @@ The Agent-owned command/session completed with **exit code 0** and durable `comp
 **Next smallest step:** a disposable, strictly bounded **Windows-only** MXC `base-container` process experiment, with two synthetic 127.0.0.1 listeners bound to distinct ephemeral ports and an explicit *allowed* endpoint (positive control). Establish the platform's documented loopback capability/egress interaction **before** constructing an allowlist; demonstrate the denied endpoint receives **zero** actual requests even after cross-origin 302 and child-process startup, verify cleanup on timeout/revocation, and abort on any tier downgrade or native policy failure. Avoid private LAN, cloud metadata, production sites, elevated host-prep, machine-wide firewall changes or a new proxy/Worker. Only then attempt real Playwright Chromium inside that isolated process. Reuse prior baseline tests, not repeat them needlessly. The unrelated one-use owner-approval P0 remains separately blocked.
 
 PR #15 and this design PR remain Draft; this investigation did not merge, release, deploy, change the Agent or create Tickets.
+
+## R. Actual Windows BaseContainer launch and WFP fixture attempt — process startup blocks network acceptance (2026-10-20)
+
+Following the successful **read-only** native MXC capability probe in §Q, the user authorized proceeding with the next, explicitly controlled step on the **same paired native Windows device** `71b4b4d8-6496-4898-9b80-1ea3a03f6ccd` (25H2 build `26200.9711`, ordinary user). This iteration used `@microsoft/mxc-sdk@1.0.1` via a **separate, unique `%TEMP%` installation with `--ignore-scripts`**. Each experiment ended with removal of its scripts, installed SDK and separate npm cache. No administrator, UAC, MXC host-prep, host-global firewall/ACL/registry change, Agent reinstall, Worker deploy or actual private/public network target was used.
+
+### Phase 1 — genuine native ProcessContainer execution: PASS (basic command only)
+
+A strict request (`network.egress.default="deny"`, `ingress.default="deny"`, `hostLoopback="deny"`) returned `tier="base-container"` from `probe()`. A **real** `run()` invoked `cmd.exe` inside the sandbox, printed `RCA_MXC_SANDBOX_STARTED`, returned `exitCode=0`, `timedOut=false`, and produced no warnings or errors. The parent Agent-owned command exited 0 with `TEST_TEMP_REMOVED=True`.
+
+**Meaning:** ordinary-user native Windows ProcessContainer process creation and a basic `cmd.exe` payload **are confirmed on the selected host**. This is more than mere ABI/tier discovery. It does **not** establish that the process could transmit network traffic, or that a Chromium/Playwright child can start.
+
+### Phase 2 — synthetic two-port network policy: NOT ACCEPTED
+
+A Node HTTP fixture bound two different random TCP ports on **`127.0.0.1`**: the *allowed* endpoint returned content and HTTP 302 to the *denied* endpoint. The **unsandboxed host** successfully accessed *both* fixtures (positive control).
+
+MXC again returned `tier=base-container`, no warnings/error for a per-process rule with `network.egress.default="deny"` and an **allow for only `127.0.0.1/32` TCP at the source port**, using `ingress.default="allow"` and `hostLoopback="allow"` to meet Windows' documented loopback requirement. The intended success condition was: **allowed server receives `/allowed` and `/redirect`; denied server receives zero requests**, even after following the redirect. Attempts and actual observations:
+
+| Attempt | Sandbox child | Actual result | Server hits |
+| --- | --- | --- | --- |
+| A | Installed normal Node.js running a dedicated temp script with an Agent-private working context and restricted file path | Process terminated with signed code `-1073741502` (`0xC0000142`, DLL initialization failure) before producing output | Allowed **0**, denied **0** |
+| B | Windows system `curl.exe` launched from the original Agent working directory | Three client invocations reported invalid current directory | Allowed **0**, denied **0** |
+| C | The same built-in `curl.exe` after explicitly using `C:\Windows\System32` as sandbox working directory | Invalid-CWD error disappeared, but three client invocations failed with Access Denied | Allowed **0**, denied **0** |
+
+**Fail-closed conclusion:** zero denied-server hits are **not proof of WFP filtering**, because no allowed-server request was delivered. The sandbox's **child-tool startup/file access environment** must be resolved before meaningful positive/negative network enforcement can be measured. The distinction between `run()` being available and a particular executable being runnable is important; do not mark external browsing P0 passed.
+
+### Phase 3 — minimal child launch diagnostics: results scoped to the tested policy
+
+A final **default-deny sandbox, no network listener** compared startup of existing Windows executables, with System32 as working directory:
+
+- `powershell.exe -NoProfile -NonInteractive`: exits `-1073741502` (`0xC0000142`) before printing its marker.
+- `curl.exe --version` via `cmd.exe`: reports Access Denied, exit 1.
+- The previous simple `cmd.exe echo` in BaseContainer remains PASS.
+
+Those errors suggest a **process initialization / filesystem access compatibility issue**, but they do **not** yet identify a specific ACL, DLL, or MXC bug. In particular, the probe's native-tier selection is not itself proof that a requested filesystem policy makes these executables runnable. Do **not** run elevated `wxc-host-prep`, broaden the host system-drive ACL, add an arbitrary proxy, grant machine-wide firewall exceptions or downgrade isolation just to make the test green.
+
+All temporary installations and scripts reported successful deletion, and all Agent-owned tool sessions returned completed receipts. No long-running test process was intentionally left running. PR #15 and PR #117 remain Draft; this iteration changed **no** browser feature source, merged code, release, installed Agent or production Worker.
+
+### Smallest next gate — targeted startup compatibility before any more WFP requests
+
+1. Using Microsoft's documented **container filesystem policy helpers** or the minimum explicit read-only paths, identify why `powershell.exe` or `curl.exe` fails in **native BaseContainer under a normal user**, with a bounded offline-only startup test and no admin/system policy changes. Verify changes do **not** broaden host permissions or fallback to `appcontainer-dacl`.
+2. Only after **one** network-capable executable reliably starts inside the isolated process, rerun a two-port synthetic listener test and require **allowed hits > 0**, **denied hits = 0** including redirect, with independent parent-server counting. Extend IPv6, DNS, WebSockets/UDP and all browser child processes **only** after this minimal positive/negative enforcement works.
+3. Exact-bound ChatGPT-to-Agent one-time authorization remains an **independent P0**. Do not enable arbitrary public browser navigation or claim full egress protection from these results.
+
+**Current classification:** Windows **normal-user native ProcessContainer launch PASS**; Windows conditional WFP/network enforcement **NOT ACCEPTED / NOT TESTABLE with present client startup**; Chromium in sandbox **NOT TESTED**; one-use user authorization **UNVERIFIED**.
