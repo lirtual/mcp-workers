@@ -143,6 +143,12 @@ bash -c 'set -eu; IFS= read -rsp "Raindrop API Token: " RAINDROP_ACCESS_TOKEN </
 - 旧 `test:e2e` 命令原先在没有凭据或显式开关时得到全体 skipped，却可能以 0 退出。现与 `test:read-only-live` 一致，要求 `RUN_LIVE_API_TESTS=true` 和安全注入 `RAINDROP_ACCESS_TOKEN`，否则在 Vitest 启动前退出非零；未额外增加服务或配置键。
 - 上述均是**验收工具准确性改进**，不涉及外部账号数据。本轮没有触发新版 Draft 的实际认证请求、上线或工具切换；`NO-GO` 保持。
 
+## 高亮未知回执缓存安全修复（2026-10-20）
+
+- **问题**：高亮 PUT 已发送，但响应缺少可验证的结果或网络出现异常时，Service 返回 `status:unknown` 且禁止自动重试，但旧版仅在确认成功后失效 `cacheBookmarks` 和 `cacheSearch`。如果此前读过这个书签，后续 `bookmark_get` 可能直接返回**写入前缓存**，干扰用户对「未知写入」的人工复核。
+- **最小修复**：高亮写入请求 Promise 一旦结束（成功、拒绝或网络异常），一律失效当前书签 ID 与搜索缓存；预检失败时仍不执行写入、也不失效缓存。此举只影响本地缓存，不新增上游调用、不改变目标或 payload、不自动重试写入。
+- **验证**：`highlights.service.test.ts` 加入完整路径的缓存回归，先填充书签读取缓存，再模拟 `PUT` 返回不完整结果，确认 `status:unknown` 后下一次 `getBookmark` 必须再次 GET；成功与未知结果的缓存断言均已更新。该修复属于本地 HTTP Mock 检验，**Draft 真实 API 写入验收仍未完成**。
+
 ## 发布风险核对
 
 | 风险 | 已有控制 / 证据 | 结论 |

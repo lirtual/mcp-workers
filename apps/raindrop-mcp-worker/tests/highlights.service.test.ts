@@ -252,7 +252,7 @@ describe("bookmark-scoped highlight Service", () => {
             ? await svc.updateHighlight(42, quote._id, { note: "new" })
             : await svc.deleteHighlight(42, quote._id);
       expect(result.status).toBe("unknown");
-      expect(clear).not.toHaveBeenCalled();
+      expect(clear).toHaveBeenCalledOnce();
       expect(fetch).toHaveBeenCalledTimes(2);
     },
   );
@@ -275,8 +275,25 @@ describe("bookmark-scoped highlight Service", () => {
       bookmarkId: 42,
       highlightId: quote._id,
     });
-    expect(clear).not.toHaveBeenCalled();
-    expect(invalidate).not.toHaveBeenCalled();
+    expect(clear).toHaveBeenCalledOnce();
+    expect(invalidate).toHaveBeenCalledExactlyOnceWith("id:42");
+  });
+
+  it("refreshes a bookmark read after an ambiguous highlighter write", async () => {
+    const fetch = mock({});
+    const svc = service();
+    const initial = await svc.getBookmark(42);
+    expect(initial._id).toBe(42);
+
+    const outcome = await svc.updateHighlight(42, quote._id, { note: "new" });
+    expect(outcome.status).toBe("unknown");
+
+    // The upstream may have committed even though its response was incomplete.
+    // A fresh user read must not reuse the cached pre-write bookmark.
+    const after = await svc.getBookmark(42);
+    expect(after._id).toBe(42);
+    expect(fetch.mock.calls.map(([request]) => request.method))
+      .toEqual(["GET", "GET", "PUT", "GET"]);
   });
 
   it("does not guess the created ID when multiple new highlights match", async () => {
@@ -300,7 +317,7 @@ describe("bookmark-scoped highlight Service", () => {
     await expect(svc.deleteHighlight(42, quote._id)).rejects.toMatchObject({
       code: "UPSTREAM_ERROR",
     });
-    expect(clear).not.toHaveBeenCalled();
+    expect(clear).toHaveBeenCalledOnce();
   });
 });
 

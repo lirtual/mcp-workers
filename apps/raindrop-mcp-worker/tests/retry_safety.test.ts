@@ -424,7 +424,9 @@ describe("highlight write retry safety", () => {
         if (code) await expect(result).rejects.toMatchObject({ code });
         else await expect(result).resolves.toMatchObject({ status: "unknown", bookmarkId: 42 });
         expect(fetch.mock.calls.map(([r]) => r.method)).toEqual(["GET", "PUT"]);
-        expect(clear).not.toHaveBeenCalled(); expect(invalidate).not.toHaveBeenCalled();
+        // Even an ambiguous PUT may have committed; no stale reads afterward.
+        expect(clear).toHaveBeenCalledOnce();
+        expect(invalidate).toHaveBeenCalledExactlyOnceWith("id:42");
       }
     },
   );

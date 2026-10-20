@@ -1981,6 +1981,11 @@ export default class RaindropService {
         const response = await this.client.PUT("/raindrop/{id}", {
           params: { path: { id: bookmarkId } },
           body: { highlights: [patch] } as components["schemas"]["UpdateBookmarkRequest"],
+        }).finally(() => {
+          // A dispatched write may have succeeded even when its response is
+          // missing or malformed. Never serve a stale cached bookmark then.
+          this.cacheBookmarks.delete(`id:${bookmarkId}`);
+          this.cacheSearch.clear();
         });
         data = response.data;
       } catch (error) {
@@ -2016,8 +2021,6 @@ export default class RaindropService {
           key === "lastUpdate" || (key in fields && fields[key as keyof typeof fields] !== undefined) || JSON.stringify(target![key]) === JSON.stringify(value)))
           return unknown();
       }
-      this.cacheBookmarks.delete(`id:${bookmarkId}`);
-      this.cacheSearch.clear();
       return {
         status: "succeeded", bookmarkId, highlightId: target?._id ?? highlightId!,
         highlight: target ?? null, deleted: operation === "delete",
