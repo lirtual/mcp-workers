@@ -191,6 +191,15 @@ See [ADR-0030](./adr/0030-browser-conservative-gating-consent-evidence-acceptanc
 
 **Scope:** Owner approved a deeper feasibility and overengineering review following Q1–Q52. The recommendations below are **not** newly accepted Q-decisions, a license to code, a claim of live successful acceptance, or a change to the feature scope. Source inspection covered the `main` branches of `lirtual/mcp-workers` and `lirtual/remote-control-agent` plus relevant official Playwright/MCP/OpenAI guidance. **No implementation or runtime probe was executed.** Each proposed correction must be confirmed at the appropriate future design/implementation approval stage if it changes an accepted trade-off.
 
+### Primary-source P0 research — source-only, no runtime acceptance
+
+[Browser P0 Feasibility Research](./BROWSER-P0-FEASIBILITY-RESEARCH.md) now records two narrower, falsifiable evidence matrices **without implementing them**:
+
+- **P0-A / owner confirmation:** current Worker advertises only MCP tools and routes allowlisted operations to the paired Agent; no observed per-action owner-attestation field or browser consent handshake. OpenAI host tool approvals and MCP elicitation are documented possibilities, **not proof that this particular ChatGPT client delivers a single-use user confirmation that Agent can reliably validate**. Establish actual supported capability and negative replay/expiry/parameter-change behavior on a harmless synthetic action; otherwise consequential effects stay disabled.
+- **P0-B / network boundary:** official Playwright docs confirm ordinary route handlers see the initial redirect URL only; service-worker and separate WebSocket request handling further limit claims of full interception. Validate the **effective browser network destination**, including controlled private-address redirects, DNS changes, subresources, service workers and sockets. If the current browser library is insufficient, any additional host network isolation is **a new trade-off for owner approval**, not silently included.
+
+Both are **unverified, evidence-required** as of this source review. No real client approval, browser traffic or installed-platform acceptance was exercised.
+
 ### Findings and minimum readiness contracts
 
 | Priority | Finding verified against existing code/documentation | Recommended minimal disposition | Evidence gate before the affected feature |
