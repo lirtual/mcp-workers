@@ -90,7 +90,7 @@
 
 - **生产基线已完成（旧版插件，非 Draft）**：通过已连接的 Raindrop MCP 插件诊断版本 `2.4.5`、17 个工具；`collection_list(skipCache:true)` 返回 4 个集合；新鲜的不存在关键词搜索返回 0 条；`list_raindrops(0, perPage:1)` 及 `get_raindrop` 的单条读取响应一致。只记录结构、数量与是否成功，不保留个人书签正文或凭据。
 - **严格区分版本**：以上结果来自**已部署的旧版插件**，不能填写 27 个候选工具的 Draft「真实 API」为通过。当前 WSL Shell 无 `RAINDROP_ACCESS_TOKEN` / `MCP_ACCESS_TOKEN`，仓库亦只有 `.env.example`；现有 GitHub Actions 仅在受保护的 main 手动发布作业注入生产密钥，PR CI 无此权限。不得在 PR 作业中暴露生产密钥来凑验收结果。
-- **只读测试入口**：新增 `tests/read-only.live.test.ts`，从此 Draft 源码启动内存 MCP 客户端调用 5 个只读候选工具；只在明确设置 `RUN_LIVE_API_TESTS=true` 时运行，并要求已安全注入 `RAINDROP_ACCESS_TOKEN`。其 `fetch` 守卫拦截任何非 GET 请求、非 HTTPS/非 Raindrop API 目标和跳转请求；此守卫另外通过 7 项离线用例，不调用创建、删除、建议 POST 或破坏性清理；无令牌时不做外网请求；测试中不打印个人收藏内容。
+- **只读测试入口**：新增 `tests/read-only.live.test.ts`，从此 Draft 源码启动内存 MCP 客户端调用 8 个只读候选工具；只在明确设置 `RUN_LIVE_API_TESTS=true` 时运行，并要求已安全注入 `RAINDROP_ACCESS_TOKEN`。其 `fetch` 守卫拦截任何非 GET 请求、非 HTTPS/非 Raindrop API 目标和跳转请求；此守卫另外通过 7 项离线用例，不调用创建、删除、建议 POST 或破坏性清理；无令牌时不做外网请求；测试中不打印个人收藏内容。
 - **执行命令**：在凭据经既有授权渠道以环境变量安全注入、且明确设置 `RUN_LIVE_API_TESTS=true` 的独立测试进程中运行 `pnpm --filter raindrop-mcp-worker run test:read-only-live`。命令入口自身拒绝遗漏开关或令牌，避免跳过用例时误报通过。不得在命令行明文写 token、写入 .env、提交日志或把主账户 Token 复制到 GitHub PR 上下文。只读 smoke 完成后仍需另行授权的可丢弃数据环境检验写入，全球 Trash 永久清理继续标记受限。
 - **状态**：本次仅编制和本地验证可执行的只读验收入口；Draft 源码**尚未**进行授权的真实上游请求，保持 **NO-GO**。
 
@@ -99,6 +99,28 @@
 - **重复书签 60 次预算**：`bookmark_remove_duplicates` 只额外复核实际待删除项及其所属分组的保留副本，不对完全无关的单例分组重复获取元数据；保留确认时完整新鲜快照、T06 独立成员核验和写入不重试。确认阶段预估 HTTP 次数为 `3 + 已观察记录数 + 实际复核 ID 数 + 删除候选数 + 1`，超过 60 时在预览中拒绝提供不可执行的确认。本估算不预留 GET 失败重试；实际发生重试仍由现有 Service 全程 60 次上限安全阻断，不能保证每次都执行写入。Mock 证实 50 条已观察记录、1 条待删可以按 57 次请求完成确认；50 条、10 条待删会在预览阶段拒绝。
 - **标签写入范围**：`tag_rename` / `tag_merge` / `tag_delete` 以及兼容的 `tag_manage` 都要求显式 `collectionId`：`0` 表示用户主动选择全局操作，正整数限定具体集合，遗漏直接在工具参数边界拒绝。仅只读 `tag_list` 保留省略参数查询全库。新旧工具都受同一严格 Schema 约束，没有新增配置项或服务。
 - **验证边界**：均为本地 MCP SDK/HTTP Mock 回归，不是 Draft 的真实认证现网验收；`NO-GO` 不变。
+
+## P1 生产 Raindrop 账号隔离验收（2026-10-20，已部署旧版插件）
+
+用户已明确允许直接使用现有生产 Raindrop 账号进行验收。本轮只操作**专门创建的可丢弃测试对象**，不改动普通用户集合/书签；本节结果**仅验证目前连接的旧版 17 工具 MCP 插件**，并非 Draft PR #134 新代码的真实 API 验收。
+
+| 场景 | 生产实测 | 证据与边界 |
+|---|---|---|
+| 生产集合列表 | 通过 | 基线 4 个集合，测试前后原有集合 ID 与数量保持一致 |
+| 创建测试集合 | 通过 | 创建 ID `76274543`，仅用于本轮隔离验收 |
+| 创建测试书签 | 通过 | ID `1895524020`，仅归属测试集合，特殊 URL/tag 易辨认 |
+| 单集合分页与 ID 详情 | 通过 | `count=1`，详情 ID、标题、标签一致 |
+| 更新标题、描述与标签 | 通过 | 无缓存重新读取，确认更新后的值 |
+| 高亮创建（旧 `highlight_manage`） | **失败** | 旧插件返回 `Resource not found`，未取得创建成功回执；不要将此项标为通过 |
+| 仅删除测试书签 | 通过软删除 | 精确 ID 删除回执为 `deleted:true`，从源集合消失，在回收站中可查 |
+| 更新测试集合标题 | 通过 | 仅更新测试集合 |
+| 删除已确认空的测试集合 | 通过 | 源集合核对为 0 项后按 ID 删除，重新列出只有原有 4 个集合 |
+
+**回收站保护**：删除测试书签前回收站已有 2,550 条记录；本轮精确软删除后变为 2,551，其中包含测试书签 ID `1895524020`。**没有执行全局清空**，测试书签留在回收站，不声明已被永久销毁；其他既有回收站记录没有被批量处理。
+
+**高亮失败的可解释线索**：仓库 `main` 的旧 Service 实现通过 `POST /highlights` 创建、`PUT /highlights/{id}` 更新，但 Raindrop [官方 Highlights 文档](https://developer.raindrop.io/v1/highlights) 当前要求在目标书签上执行 `PUT /raindrop/{id}`，通过 `highlights` 数组创建/修改/删除。Draft T07 已采用官方目标书签 PUT 的方法并有 HTTP Mock 验证。这一旧实现的路径差异**可能**解释生产旧插件的 404；未取得生产 HTTP 请求日志，不能仅凭返回信息断言根因已经完全证实。不能把旧版失败归咎为 Draft 失败，也不能把 Draft Mock 成功当真实修复已通过。
+
+**后续验收结论**：现有已部署插件的一部分生产读写链路可用；Draft 专用的 8 项认证只读 smoke、Draft 新版高亮 PUT 的真实验收、其他具有破坏性的候选操作仍待安全注入 Token 或经单独授权的部署执行。此生产账号虽可用于可丢弃对象验收，但 `NO-GO` 与明确的工具切换授权门槛不变。
 
 ## 发布风险核对
 
@@ -134,4 +156,4 @@ bash -c 'set -eu; IFS= read -rsp "Raindrop API Token: " RAINDROP_ACCESS_TOKEN </
 - 将旧生产关键工作流与新工具逐项比对并进行独立代码审查；任何无法确认的候选工具在切换时必须安全排除，不为了 27 项配额强行公开。
 - **只有取得另一次明确的切换授权**，才可在另外的实施中移除旧别名、Sampling、library_audit、公开 diagnostics 并刷新测试清单；本轮 T10 不执行这些动作。关闭评估 Ticket 也不是生产发布许可。
 
-**证据范围：** #124–#132 的 Draft 代码、Mock API/SDK MCP/Portal 测试；T10 新增对安全旧入口的 SDK tools/list 与 tools/call 验证。GitHub Actions/CI 仅证明对应源码通过自动化，用户数据、凭据与生产 Worker 均未修改。
+**证据范围：** #124–#132 的 Draft 代码、Mock API/SDK MCP/Portal 测试；T10 新增对安全旧入口的 SDK tools/list 与 tools/call 验证。GitHub Actions/CI 仅证明对应源码通过自动化；**本轮另有对生产 Raindrop 账号隔离可丢弃数据的真实读写验收**（详情见 P1 生产账号隔离验收章节），未修改生产 Worker 或 PR CI 凭据。
