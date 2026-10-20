@@ -784,7 +784,9 @@ export default class RaindropService {
           ...(bookmark.excerpt !== undefined ? { excerpt: bookmark.excerpt } : {}),
           ...(bookmark.note !== undefined ? { note: bookmark.note } : {}),
           ...(bookmark.tags !== undefined ? { tags: bookmark.tags } : {}),
-          ...(bookmark.important !== undefined ? { important: bookmark.important } : {}),
+          // Generated local schema requires a creation default; explicit
+          // false remains false and does not affect other saved bookmarks.
+          important: bookmark.important ?? false,
           ...(collectionId !== undefined ? { collection: { $id: collectionId } } : {}),
         },
       });
@@ -830,7 +832,9 @@ export default class RaindropService {
    */
   async deleteBookmark(id: number): Promise<void> {
     await this.withWriteRateLimit(async () => {
-      const { data, error } = await this.client.DELETE("/raindrop/{id}", {
+      // The local generated schema incorrectly types DELETE response as never.
+      // Official REST contract returns { result: true } on success.
+      const { data, error } = await (this.client as any).DELETE("/raindrop/{id}", {
         params: { path: { id } },
       });
       if (error || data?.result !== true)

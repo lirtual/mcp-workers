@@ -390,8 +390,9 @@ const bookmarkUpdateTool = defineTool({
     { raindropService }: ToolHandlerContext,
   ) => {
     const current = await raindropService.getBookmark(args.id, true);
-    if (!Number.isSafeInteger(current.collection?.$id) ||
-        current.collection.$id === -99)
+    const sourceId = current.collection?.$id;
+    if (typeof sourceId !== "number" || !Number.isSafeInteger(sourceId) ||
+        sourceId === -99)
       throw new ValidationError("Bookmark location is unverified or in Trash");
     const { id, url, ...fields } = args;
     const updates = {
@@ -423,8 +424,9 @@ const bookmarkMoveTool = defineTool({
     { raindropService }: ToolHandlerContext,
   ) => {
     const current = await raindropService.getBookmark(args.id, true);
-    if (!Number.isSafeInteger(current.collection?.$id) ||
-        current.collection.$id === -99)
+    const sourceId = current.collection?.$id;
+    if (typeof sourceId !== "number" || !Number.isSafeInteger(sourceId) ||
+        sourceId === -99)
       throw new ValidationError("Bookmark location is unverified or in Trash");
     await raindropService.getCollection(args.collectionId, true);
     const result = await atomicBookmarkWriteResult(async () => {
@@ -451,7 +453,7 @@ const bookmarkDeleteTool = defineTool({
   ) => {
     const current = await raindropService.getBookmark(args.id, true);
     const sourceCollection = current.collection?.$id;
-    if (!Number.isSafeInteger(sourceCollection))
+    if (typeof sourceCollection !== "number" || !Number.isSafeInteger(sourceCollection))
       throw new ValidationError("Cannot verify the bookmark's current collection");
     if (sourceCollection === -99 && !args.permanent)
       throw new ValidationError("Bookmark is already in Trash; permanent:true is required");

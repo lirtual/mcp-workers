@@ -153,7 +153,7 @@ describe("RaindropService official organization suggestions", () => {
       collectionIds: [11, 12], tags: ["backend"],
     });
     expect(post).toHaveBeenCalledWith("/raindrop/suggest", {
-      body: { link: "https://example.com" },
+      body: { link: "https://example.com", important: false },
     });
   });
 
