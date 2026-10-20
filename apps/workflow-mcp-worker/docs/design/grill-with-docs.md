@@ -1,6 +1,6 @@
 # Workflow MCP — Grill With Docs design record
 
-Status: **Rounds 1–6 accepted; Round 7 in progress**  
+Status: **Rounds 1–7 accepted; design tree converged; consolidated spec under review**  
 Owner confirmation: **2026-10-20**  
 Repository target: `lirtual/mcp-workers`  
 Authority: **design documentation only** — no implementation, merge, deployment, credential changes, or Tickets.
@@ -53,6 +53,12 @@ Authority: **design documentation only** — no implementation, merge, deploymen
 | Q42 | Step and parallelism bounds | **A — finite total Steps + concurrent ready-Step cap** | Validate graph size and enforce runtime concurrency; exact thresholds still unresolved. |
 | Q43 | Manual MCP Run start | **A — always asynchronous** | Return Run ID; status, logs and results are separate tools. |
 | Q44 | Uncertain external outcome | **A — explicit indeterminate** | Distinct from failed/cancelled, with safe reasons for reconciliation. |
+| Q45 | Published executable-plan identity | **A — validate/canonicalize/compile immutable plan at Publish** | A Run references its frozen Published Plan and never reinterprets mutable latest DSL. |
+| Q46 | MCP Tool Schema incompatibility | **A — stop invocation on incompatible drift** | No autonomous AI rewrite or unapproved argument remapping of a running plan. |
+| Q47 | Run capacity saturation | **A — explicit application admission rejection** | No new application-owned persistent overflow queue; native Cloudflare Workflows queue is separate. |
+| Q48 | Durable external callback | **A — persist receipt before signaling orchestrator** | Idempotent/late callback processing and recoverable notification failure. |
+| Q49 | Retention protection | **A — pin live references, finite post-terminal retention** | Never GC necessary plans/Artifacts while a nonterminal Run needs them. |
+| Q50 | First-release MCP surface | **A — necessary atomic owner-facing tools only** | No arbitrary internal Attempt, D1 or GitHub physical-job management tools. |
 
 ## Baseline and limits
 
@@ -72,67 +78,69 @@ The current `main` tree was checked before the original Draft PR: no implementat
 - **Q18=A** selects GitHub Actions as a heavy-task executor for **registered heavy capabilities only**, not the DAG orchestrator; it does **not** restrict discovery of external MCP Servers under Q7=B.
 - **Q6=A, Q8=A, Q9=A, Q10=A** continue to mean bounded DAG/Cloudflare orchestrator/manual+webhook+Cron/single owner. None of these decisions adds a custom scheduler, multi-tenant system, visual editor, or arbitrary script plugin engine.
 
-## Round 6 consistency, overlap and over-engineering review
+## Final cross-round consistency and over-engineering audit (Q1–Q50)
 
-| Seam | Result | Reason / remaining detail |
+| Subject | Final finding | Guardrail / technical proof |
 | --- | --- | --- |
-| Q7=B + Q20=A + Q28=A + Q37=A | **Compatible** | Any safely reachable Streamable HTTP MCP Server may be discovered without preregistration, but an unapproved computed target/tool/scope cannot execute. Run waits for approval; this is not a static endpoint whitelist. Approval and wake-up protocol remain unspecified. |
-| Q19=A + Q38=A | **Compatible** | Publishing validates and authorizes once and activates atomically; stale Draft writes fail and unsuccessful Publish leaves prior version active. No separate Enable lifecycle or distributed editor is introduced. |
-| Q12=A + Q29=A + Q35=A + Q39=A | **Compatible** | Pause blocks admission; archive prevents new Runs; nonterminal Runs still use retained immutable plans. Deployment compatibility checks remain mandatory. Retention/garbage-collection policy is unresolved. |
-| Q6=A + Q18=A + Q40=A + Q41=A + Q42=A | **Compatible** | Bounded DAG with restricted typed conditions, dependency-success default, and enforced limits. This is not an arbitrary `run:` code engine, generic loop engine or code sandbox. |
-| Q25=A + Q33=A + Q41=A + Q44=A | **Compatible, correctness-critical** | Explicit failure-handling steps cannot bypass cancellation. Lost write replies and uncertain stop requests remain `indeterminate`, not normal failures to blindly retry. Detailed predicates and terminal-state transitions are still pending. |
-| Q36=A + Q43=A | **Compatible** | Dedicated start/status/result/log/cancel and draft-management tools provide predictable asynchronous behavior; don't add synchronous/async dual-mode complexity or one generic `workflow_manage` tool. |
-| Q37=A vs Q29=A | **Terminology resolved** | Authorization Wait is a **Run** waiting for permission, while Paused Workflow is a **Workflow** denying new admissions. A paused Workflow does not necessarily cancel a waiting Run. |
-| Q38=A vs Q35=A | **Different compatibility checks** | Draft revision CAS prevents concurrent author updates; deployment compatibility protects already-pinned plans. They do not require duplicate transaction coordinators. |
-| Redundancy review | **No new platform** | No separate orchestration/queue service, multiuser RBAC, optional generic JS sandbox, static MCP host registry, visual editor, general Saga compensation or dynamic execution marketplace. Two ADRs (0015–0016) cover irreversible DSL and Run-output contracts; Q37–Q39 refine existing ADRs. |
+| Q5/Q11/Q12/Q19/Q38/Q45 — dynamic publishing, version pinning | **Compatible** | Runtime Draft authoring remains. Compile immutable plan at Publish, atomically activate on authorization, keep old plan for existing Runs. No Git-only definition registry or separate Enable step. |
+| Q7/Q16/Q20/Q28/Q37/Q46 — any MCP endpoint vs authorization and schema drift | **Compatible with P0 caveat** | Dynamic discovery does not require pre-registration. Network SSRF guard and concrete target+tool+scope grant enforce execution safety. Unknown target waits; incompatible schema stops. This does not authorize automatic AI contract repair. Validate actual Worker networking before implementing. |
+| Q6/Q40/Q41/Q42/Q45 — dynamic DAG interpreter | **Compatible, replay-sensitive** | Restricted typed expression AST, bounded DAG and Publish-time canonical plan. The Cloudflare Workflow step identifiers must be deterministic across retries and code versions; prove in integration tests. |
+| Q23/Q25/Q26/Q33/Q44/Q48 — callback and idempotence | **Compatible, distinct layers** | Webhook event identity, logical Attempt Claim, durable callback receipt and truthful external result status are independent safeguards. A persisted callback is not proof that arbitrary effects are reversible or that a Run finished. |
+| Q42/Q47 — admission saturation | **Compatible** | Reject at application capacity, but do not falsely claim Cloudflare Workflows has no internal queue; no custom queue controller. |
+| Q12/Q29/Q35/Q39/Q49 — archive, pause, releases, retention | **Compatible** | Stop new admission without killing existing Runs; nonterminal Run required version/Artifact cannot be GC'd. Release gate blocks incompatible engine/runner versions; terminated data subject to finite retention. |
+| Q13/Q21/Q34/Q49 — D1/R2 and credential storage | **Compatible** | D1 query/coordination and encrypted secrets, R2 large bytes; keep a dedicated Worker encryption key. No external vault, plaintext secrets, or second workflow state engine. |
+| Q18/Q27/Q36/Q43/Q50 — owner tools vs runner internals | **Compatible** | Public MCP atomic tools cover lifecycle/run/approval; no `workflow_manage` mega-tool and no broad internal Attempt manipulation. Registered GitHub runner permissions remain separate from GitHub Actions management MCP multi-PAT pool. |
+| Hidden infrastructure creep | **Rejected** | Do not invent Redis/BullMQ, Temporal, a separate Vault, another CD platform, generic Saga rollback engine, arbitrary scripting sandbox, full n8n editor or role-based multi-tenancy. |
+| Technical feasibility | **Unproven until validated** | SSRF/redirect/DNS, deterministic Workflows replay, dynamic Cron ingress, secrets lifecycle and single-Claim callback protocol are P0 proof obligations, not user-confirmed implementations. |
 
-## Technical specification convergence — *confirmed requirements only*
+### Final accepted Round 7 decisions
 
-| Contract area | Settled from decisions | Undetermined technical values/protocols (not approved) |
-| --- | --- | --- |
-| Definitions | Runtime Draft create/update; validated authorized atomic Publish; revision conflict detection; immutable pinned Published Versions; archive retains live references | Exact definition schema and digest, edit version keys, API payloads, deletion/GC intervals |
-| DAG | Finite acyclic Steps; explicit dependencies and parallelism; restricted typed conditions; success default; explicit failure/always conditions; cancellation outer gate | Expression grammar/type inference, outputs/reference syntax, skipped/failed/indeterminate dependency truth table, numeric limits |
-| MCP capabilities | Dynamic safe Streamable HTTP discovery; target+tool+scope authorization; first unknown operation waits; stored target credentials encrypted in D1 | Stable target/tool identity, wait/approval/resume protocol, real transport version matrix, credential envelope and revocation race |
-| Triggers | Manual/Webhook/Cron; stable scoped event IDs; timezone, misfire latest, DST skip/dedupe | Request/header schemas, timezone representation, event TTL, admission CAS, scheduler recovery batch sizes |
-| Execution | Cloudflare Workflows authoritative DAG; GitHub OIDC + one atomic Attempt Claim for registered heavy work; safe-only retries | Dispatch-unknown, claim/lease/callback protocol, Step/Attempt state transitions, retry budgets, external reconciliation |
-| Client tools | Granular draft/run tools; manual Run starts always async returning ID; status/result/log retrieval; truthful indeterminate outcomes | Concrete tool inventory, input/output JSON schemas, pagination, status enums, idempotency and error response schema |
-| Storage | D1 definitions/query facts/encrypted secrets/small outputs; R2 large Artifacts; preserve active versions | Byte thresholds, retention windows, encryption key rotation, artifact access/signed URL protocol, cleanup |
-| Release | Existing automated release path; block incompatible engine/runner for nonterminal Runs | Plan/protocol version matrix, compatibility probe, rollback and migration proof |
+- **Q45=A:** Publish validates/canonicalizes/compiles and fixes an immutable plan. Existing Runs never read mutable latest definitions.
+- **Q46=A:** incompatible MCP Tool Schema stops invocation; no silent AI rewriting of an active plan.
+- **Q47=A:** application-level admission explicitly rejects excess Run creation and does not build an overflow queue; Cloudflare platform queuing is distinct.
+- **Q48=A:** authenticate/persist external callback facts before notifying Cloudflare Workflow; support deduplication and notification recovery.
+- **Q49=A:** retain nonterminal Run dependencies and referenced plans/Artifacts; after termination enforce finite retention and safe cleanup.
+- **Q50=A:** smallest sufficient atomic owner-facing MCP API; do not expose internal Attempt/D1/GitHub Job admin tools.
 
-**Convergence rule:** After Round 7, remaining numeric defaults, field names and other reversible implementation details should be proposed together in **one** technical-spec review, not turned into endless design-tree questions. Still escalate unresolved authorization/unsafe execution guarantees or irreversible public semantics rather than silently invent them.
+### Historical baseline supersession
 
-## Reconciled historical v0.1 relationship
+- Original Git-only definition publication superseded by **Q5=B**; static MCP preregistration superseded by **Q7=B**.
+- Original read/run-only seven-tool surface superseded by **Q36=A** plus required runtime authoring/authorization controls; **Q50=A** prevents unrestricted tool proliferation.
+- Original potential D1/R2/executor implementation details are approved only where explicitly confirmed by Q1–Q50. Numeric limits, key versions, timeouts, SQL layout, names and sample payloads in the spec are **proposals**.
 
-- **Superseded**: Git-only definitions/static preregistered MCP Connections (Q5=B/Q7=B); read/run-only seven-tool surface (Q36=A); a model that lacks runtime approval waits, atomic publication or archive of active references (Q37–Q39).
-- **Settled through Round 5**: Q1–Q36 establish product scope, runtime authoring, dynamic safely approved MCP calls, Cloudflare+GitHub execution, idempotency/Claim, encrypted D1 credentials, D1/R2 results, trigger/cancellation semantics and atomic management tools.
-- **Settled in Round 6**: Q37 Run authorization wait; Q38 optimistic Draft revision/atomic Publish; Q39 archive and immutable version retention; Q40 typed restricted expressions; Q41 dependency-success default/explicit exceptional conditions; Q42 step/parallel bounds; Q43 asynchronous Run admission; Q44 distinct indeterminate outcome.
-- **Not yet confirmed**: concrete DSL, public MCP tool schemas, approval/resumption protocol, byte/count/TTL limits, complete Run/Step/Attempt transition table, callback/Claim/lease schemas, deployment protocol version/retention gates and acceptance fault matrix.
-- **Design authority**: Decisions are design documentation only; no runtime implementation, merge, deploy, credential action or Tickets.
+## Canonical consolidated technical specification
 
-## Design tree
+**Document:** [technical-spec-draft.md](technical-spec-draft.md)
 
-- **R1 — settled (Q1–Q4)**: product/interface/context/baseline.
-- **R2 — settled (Q5–Q10)**: runtime authoring/DAG/dynamic MCP/orchestration/triggers/ownership.
-- **R3 — settled (Q11–Q18)**: drafts, pinning, D1, Streamable HTTP, credentials, SSRF/authorization, GitHub heavy executor.
-- **R4 — settled (Q19–Q27)**: Publish activation/tool drift/secure secrets/protocol compat/trigger dedup/misfire/retry/OIDC/credentials.
-- **R5 — settled (Q28–Q36)**: approval identity, pause, rotations, dedup namespace, DST, cancellation, result tiers, release gate, atomic tools.
-- **R6 — settled (Q37–Q44)**: unknown-target authorization wait, atomic Publish, archive, restricted typed expressions, failure dependencies, quotas, async run, indeterminate state.
-- **R7 — narrowed frontier requiring owner-level choices**:
-  - Validate and freeze a canonical executable plan before publishing, or interpret the editable DSL each Run (depends on Q11/Q12/Q38/Q40).
-  - Incompatible tool-schema drift at invocation: stop for repair/authorization or auto-adapt with AI (depends on Q20/Q28/Q37/Q40).
-  - Saturation when limits are reached: explicit bounded rejection or introduce a persistent pending queue (depends on Q42).
-  - Durable external callback correlation/recovery vs direct ephemeral notification (depends on Q26/Q33/Q44).
-  - Required retention protection for active plans and artifacts vs fixed TTL even for active references (depends on Q12/Q34/Q39/Q35).
-  - Granular MCP tool surface including workflow authoring and run inspection vs opportunistic proliferation of similarly named management tools (depends on Q36/Q43).
-- **After R7**: propose **one consolidated technical specification**, including exact DSL/JSON Schema, MCP API schemas, state table, adapters/transport tests, D1/R2 schemas, GitHub Claim/callback contract, fault matrix, security measures, and CI/acceptance gates; highlight genuinely blocked items only. Seek explicit final consensus, not implementation approval.
+This single draft records (1) decided boundaries, (2) proposed implementation contracts, (3) testable failure matrix and (4) remaining P0/P1 feasibility risks. Proposed items are **not owner-approved**. The draft covers:
 
-### Technical feasibility / proof obligations (not settled decisions)
+1. End-to-end logical architecture and invariant ownership (Cloudflare Workflows vs D1 vs GitHub Actions).
+2. Candidate YAML/JSON DSL, typed AST, compile/publish/immutable-plan path and schema drift safety.
+3. Candidate atomic MCP tools and asynchronous Run API.
+4. Candidate Run/Step/Attempt transition tables, uncertain outcomes and admission semantics.
+5. Webhook/Cron identities and runtime Cron scheduling feasibility.
+6. Dynamic Streamable HTTP, target+tool+scope grants, encrypted target credentials and SSRF enforcement.
+7. GitHub OIDC, one Attempt Claim owner, durable callback inbox, lost-notification recovery and cancellation truth.
+8. Candidate D1 logical model, R2 Artifacts, retention and release version gating.
+9. 22 acceptance/fault scenarios, staged evidence gates and enumerated platform blockers.
 
-- Verify runtime HTTP networking protects against DNS rebinding and redirect/metadata SSRF; hostname string checks alone are insufficient.
-- Verify recent/current MCP Streamable HTTP protocol versions by compatibility tests rather than assuming a certain revision.
-- Specify authenticated encryption and Worker Secret lifecycle, redaction and revoke semantics without exposing the Portal bearer token.
-- Verify GitHub OIDC authority, atomic single-claim, callback re-notification on lost signal, and truthful duplicate/late callback behavior.
-- Prove that active immutable plans survive compatible deployments and that unsafe deployments fail closed.
+**Important:** A conceptual design tree being empty does not mean all technical assumptions are proved. Approval to implement is **not** granted by the drafting or review of the specification.
+
+## Design tree closure
+
+- **Rounds 1–7 settled:** all Q1–Q50 user choices are accepted and documented; the decision list has no known unanswered branch requiring a further Grill With Docs question.
+- **No Round 8 by default.** Reopen only a material architectural contradiction or a genuinely unavoidable owner-level trade-off found during specification review or feasibility research.
+- **Next step is one holistic technical-spec review**, not endless questioning about byte limits, field names, retry counts, table names or SDK trivia. Such details remain clearly marked PROPOSED/VERIFY/BLOCKER in the draft.
+- **Current authority:** continue only documentation review. No code, migrations, CI/infra change, merge, production deployment, credential operations or Tickets.
+
+### External verification references (not additional decisions)
+
+- Cloudflare Workflow deterministic steps/replay: https://developers.cloudflare.com/workflows/build/rules-of-workflows/
+- Cloudflare Workflow waitForEvent/early event buffer: https://developers.cloudflare.com/workflows/build/events-and-parameters/
+- Cloudflare platform concurrency and queue limits: https://developers.cloudflare.com/workflows/reference/limits/
+- Cloudflare D1 atomic transactions and platform limits: https://developers.cloudflare.com/d1/worker-api/d1-database/
+- MCP current/legacy Streamable HTTP version negotiation: https://modelcontextprotocol.io/specification
+- GitHub OIDC identity: https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments
 
 ## Working rules
 
