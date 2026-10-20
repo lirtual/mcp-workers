@@ -49,14 +49,14 @@ test("SSH broker token must be at least 32 chars and root encryption key is not 
     { ...input, ENCRYPTION_KEY: "root-key", EDGE_SSH_DB: "root-db" }), input);
 });
 
-test("GitHub Actions second account requires an isolated PAT only when configured", () => {
+test("GitHub Actions optional PATs are staged separately with no repository variables", () => {
   const primary = fixtures["github-actions-mcp-worker"];
-  const dual = { ...primary, GITHUB_REPOS_SECONDARY: "lirtual/mcp-workers",
-    GH_TOKEN_SECONDARY: "secondary-github-token" };
+  const dual = { ...primary, GH_TOKEN_SECONDARY: "secondary-github-token",
+    GITHUB_REPOS_SECONDARY: "irrelevant" };
   assert.deepEqual(collectBootstrapSecrets("github-actions-mcp-worker", dual),
     { ...primary, GH_TOKEN_SECONDARY: "secondary-github-token" });
-  assert.throws(() => collectBootstrapSecrets("github-actions-mcp-worker",
-    { ...primary, GITHUB_REPOS_SECONDARY: "lirtual/mcp-workers" }), /GH_TOKEN_SECONDARY/);
   assert.deepEqual(collectBootstrapSecrets("github-actions-mcp-worker",
-    { ...primary, GH_TOKEN_SECONDARY: "unused-token" }), primary);
+    { ...primary, GITHUB_REPOS_SECONDARY: "do-not-forward" }), primary);
+  assert.throws(() => collectBootstrapSecrets("github-actions-mcp-worker",
+    { ...primary, GH_TOKEN_SECONDARY: primary.GH_TOKEN }), /Duplicate GitHub PAT/);
 });
