@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AuthError, NotFoundError, ValidationError } from "../types/mcpErrors.js";
+import { AuthError, NotFoundError, RateLimitError, ValidationError } from "../types/mcpErrors.js";
 import {
   CollectionDeleteInputSchema,
   CollectionRemoveEmptyInputSchema,
@@ -201,7 +201,7 @@ const guardedCollectionWrite = async <T extends { _id: number; title: string }>(
       structuredContent: { status: "succeeded" as const, collection },
     };
   } catch (error) {
-    if (error instanceof ValidationError ||
+    if (error instanceof ValidationError || error instanceof RateLimitError ||
         error instanceof AuthError || error instanceof NotFoundError)
       throw error;
     const reason = "Collection write outcome unknown. Inspect the current collection list before retrying; do not automatically retry.";

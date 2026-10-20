@@ -1,6 +1,7 @@
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RaindropMCPService } from "../src/services/raindropmcp.service.js";
+import { RateLimitError } from "../src/types/mcpErrors.js";
 
 const EXPECTED_TOOL_NAMES = [
   "bookmark_batch_update",
@@ -702,6 +703,21 @@ describe("T02 atomic collection mutations through MCP", () => {
       expect(uncertainUpdate.structuredContent).toMatchObject({
         status: "unknown", id: 55, reason: expect.stringMatching(/do not automatically retry/),
       });
+
+      // 429 is an explicit upstream refusal, not a lost response. Keep the
+      // rate-limit error and its retry guidance, but do not replay a write.
+      create.mockRejectedValueOnce(new RateLimitError("Retry after 30s"));
+      const rateLimitedCreate = await client.callTool({
+        name: "collection_create", arguments: { title: "RateLimited" },
+      });
+      expect(rateLimitedCreate.isError).toBe(true);
+      expect(JSON.stringify(rateLimitedCreate)).toMatch(/Retry after 30s/);
+      update.mockRejectedValueOnce(new RateLimitError("Retry after 30s"));
+      const rateLimitedUpdate = await client.callTool({
+        name: "collection_update", arguments: { id: 55, title: "RateLimited" },
+      });
+      expect(rateLimitedUpdate.isError).toBe(true);
+      expect(JSON.stringify(rateLimitedUpdate)).toMatch(/Retry after 30s/);
     } finally {
       await client.close();
       await service.cleanup();

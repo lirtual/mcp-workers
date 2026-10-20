@@ -228,3 +228,10 @@ bash -c 'set -eu; IFS= read -rsp "Raindrop API Token: " RAINDROP_ACCESS_TOKEN </
   3. `collection_create/update` 原本在上游写入回执丢失时返回普通 MCP 错误；现结构化标记 `status:unknown` 并禁止盲目重试，确定的前置验证/鉴权/不存在仍直接错误。成功返回 `status:succeeded` 和精确收藏夹数据，不将响应未证实的写入报成功。补充 MCP 客户端模拟回执丢失回归。
 - 本轮此前还修复官方收藏夹 `result:true`、正整数 `_id` 及更新字段回执核验缺口，补充 7 个 Service HTTP 样本；Mock 和 SDK 仅证明响应处理正确，不代表真实 API 已验收。
 - **发布门槛保持**：本地及 Node24 CI 状态单独记录；缺少此 Draft 对现有生产 Token 的隔离 collection/bookmark/tag/batch 真实写入验收，以及部署后 Portal 真实新版工具调用。全局 `trash_empty` 永久清空仍属 `acceptance-limited`。**NO-GO**，维持 Draft，不删除旧兼容工具、不合并或部署。
+
+
+### 修复提交二次聚焦复审（2026-10-20）
+
+- 独立 Codex `exec review --commit 0d91249` 发现：收藏夹写入工具的 `unknown` 包装错误吞掉了明确的上游 `RateLimitError`（HTTP 429）及其等待提示，尤其可能将父收藏夹预检的 429 误报为写入结果未知。
+- 最小修正为将 `RateLimitError` 与 Validation/Auth/NotFound 一起直接抛出；禁止重试已提交的写入、其他未知回执行为和工具数量均不变。对应 `collection_create/update` 的 MCP 测试增加模拟限流与等待信息保留断言。
+- 此改动尚须按最新源提交跑完整 Mock/SDK、typecheck、Node24 CI；**不可凭单次局部审查宣告整个 Worker 生产验收完成**。
