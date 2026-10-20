@@ -134,6 +134,8 @@ Acceptance tests must assert **externally observable behavior and refusal/recove
 
 ## Further Notes
 
+**Post-research factual update (not implementation approval):** [P0 research](./BROWSER-P0-FEASIBILITY-RESEARCH.md) now includes a safe local ephemeral Playwright probe and read-only plugin discovery. The connected Remote Control tool surface did not expose browser actions or an approval-proof test. A synthetic loopback HTTP redirect test was **blocked by this sandbox's administrator policy before reaching the route callback** and is **inconclusive** for project network security; no Remote Control device command was run. Offline small-page screenshot generation (PNG 12,063 B; JPEG 10,553 B) is **not** an MCP image round-trip. Also, existing DO dispatch has a 5-second timeout, so browser reads/effects will need explicit operation lifetime/error handling rather than assuming current remote file-read semantics are sufficient. All P0 gates remain unverified.
+
 **Critical feasibility gates before any affected capability may be activated:**
 
 | Gate | Status at document creation | Required evidence |
