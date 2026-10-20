@@ -32,7 +32,7 @@ export function parseLocalRead(input: unknown): LocalRead | null {
   const filePath = record.path;
   if (typeof filePath !== "string") return null;
   if (filePath.length === 0 || filePath.length > MAX_PATH_LENGTH) return null;
-  if (!parseReadablePath(filePath)) return null;
+  if (!parseDevicePath(filePath)) return null;
 
   const read: LocalRead = { path: filePath };
   if (record.offset !== undefined) {
@@ -101,7 +101,7 @@ export function parseLocalWriteFile(input: unknown): LocalWriteFile | null {
   if (input === null || typeof input !== "object" || Array.isArray(input)) return null;
   const record = input as Record<string, unknown>;
   if (Object.keys(record).some((key) => !["operation_id", "path", "content", "mode"].includes(key))) return null;
-  const filePath = parsePath(record.path);
+  const filePath = parseDevicePath(record.path);
   if (typeof record.operation_id !== "string" || !OPERATION_ID.test(record.operation_id)) return null;
   if (!filePath || typeof record.content !== "string" || new TextEncoder().encode(record.content).byteLength > MAX_WRITE_CONTENT_BYTES) return null;
   if (record.content.includes("\0") || (record.mode !== "rewrite" && record.mode !== "append")) return null;
@@ -125,7 +125,7 @@ export function parseLocalEditBlock(input: unknown): LocalEditBlock | null {
   if (input === null || typeof input !== "object" || Array.isArray(input)) return null;
   const record = input as Record<string, unknown>;
   if (Object.keys(record).some((key) => !["operation_id", "file_path", "old_string", "new_string", "expected_replacements"].includes(key))) return null;
-  const filePath = parsePath(record.file_path);
+  const filePath = parseDevicePath(record.file_path);
   if (typeof record.operation_id !== "string" || !OPERATION_ID.test(record.operation_id) || !filePath || typeof record.old_string !== "string" || record.old_string.length === 0 || typeof record.new_string !== "string") return null;
   if (record.old_string.includes("\0") || record.new_string.includes("\0") || new TextEncoder().encode(record.old_string).byteLength > MAX_WRITE_CONTENT_BYTES || new TextEncoder().encode(record.new_string).byteLength > MAX_WRITE_CONTENT_BYTES) return null;
   const expected = record.expected_replacements === undefined ? 1 : record.expected_replacements;
@@ -137,7 +137,7 @@ export function parseLocalMoveFile(input: unknown): LocalMoveFile | null {
   if (input === null || typeof input !== "object" || Array.isArray(input)) return null;
   const record = input as Record<string, unknown>;
   if (Object.keys(record).some((key) => !["operation_id", "source", "destination"].includes(key))) return null;
-  const source = parsePath(record.source); const destination = parsePath(record.destination);
+  const source = parseDevicePath(record.source); const destination = parseDevicePath(record.destination);
   if (typeof record.operation_id !== "string" || !OPERATION_ID.test(record.operation_id) || !source || !destination || source === destination) return null;
   return { operationId: record.operation_id, source, destination };
 }
@@ -210,14 +210,16 @@ function parsePath(value: unknown): string | null {
 
 /**
  * Keep the existing POSIX route unchanged, but allow a drive-absolute Windows
- * path for read-only v2 calls. A drive prefix is NOT a URL scheme.
- * Reject UNC/device paths, drive-relative paths, ADS, malformed roots, and
- * Win32 special characters before passing the path to the Agent, which
+ * path for both read and mutation v2 calls. A drive prefix is NOT a URL
+ * scheme. Reject UNC/device paths, drive-relative paths, ADS, malformed roots,
+ * and Win32 special characters before passing the path to the Agent, which
  * independently enforces platform-local filesystem rules.
  *
- * Mutation path validation intentionally continues to use parsePath().
+ * Previously mutation parsers called parsePath(), incorrectly treating C: as
+ * a URL scheme even for the fully paired native Windows Agent. Share the
+ * same strict validation rather than weakening the scheme/UNC safeguards.
  */
-function parseReadablePath(value: unknown): string | null {
+function parseDevicePath(value: unknown): string | null {
   if (typeof value !== "string" || value.length === 0 || value.length > MAX_PATH_LENGTH) return null;
   if (/^[a-zA-Z]:[\\/]/.test(value)) {
     if (/^[a-zA-Z]:[\\/]{2}/.test(value) ||
@@ -238,7 +240,7 @@ export function parseReadMultiple(input: unknown): LocalReadMultiple | null {
   }
   const paths: string[] = [];
   for (const entry of record.paths) {
-    const filePath = parseReadablePath(entry);
+    const filePath = parseDevicePath(entry);
     if (!filePath) return null;
     paths.push(filePath);
   }
@@ -249,7 +251,7 @@ export function parseListDirectory(input: unknown): LocalListDirectory | null {
   if (input === null || typeof input !== "object" || Array.isArray(input)) return null;
   const record = input as Record<string, unknown>;
   if (Object.keys(record).some((key) => key !== "path" && key !== "depth")) return null;
-  const directoryPath = parseReadablePath(record.path);
+  const directoryPath = parseDevicePath(record.path);
   if (!directoryPath) return null;
   if (record.depth === undefined) return { path: directoryPath, depth: DEFAULT_DIRECTORY_DEPTH };
   if (!isIntegerInRange(record.depth, 1, MAX_DIRECTORY_DEPTH)) return null;
@@ -260,7 +262,7 @@ export function parseFileInfo(input: unknown): LocalFileInfo | null {
   if (input === null || typeof input !== "object" || Array.isArray(input)) return null;
   const record = input as Record<string, unknown>;
   if (Object.keys(record).some((key) => key !== "path")) return null;
-  const filePath = parseReadablePath(record.path);
+  const filePath = parseDevicePath(record.path);
   if (!filePath) return null;
   return { path: filePath };
 }
@@ -269,7 +271,7 @@ export function parseSearchStart(input: unknown): LocalSearch | null {
   if (input === null || typeof input !== "object" || Array.isArray(input)) return null;
   const record = input as Record<string, unknown>;
   if (Object.keys(record).some((key) => !["path", "pattern", "search_type"].includes(key))) return null;
-  const searchPath = parseReadablePath(record.path);
+  const searchPath = parseDevicePath(record.path);
   const pattern = record.pattern;
   const searchType = record.search_type;
   if (!searchPath || typeof pattern !== "string" || pattern.length === 0 || pattern.length > MAX_SEARCH_PATTERN_LENGTH) {
