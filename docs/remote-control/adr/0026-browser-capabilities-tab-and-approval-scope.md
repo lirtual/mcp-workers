@@ -16,6 +16,8 @@ Status: **accepted design choices (Grill With Docs round 6, 2026-10-20); documen
 
 **Follow-on decision (round 9):** [ADR-0029](./0029-browser-results-outcomes-downloads-gated-release.md) distinguishes the intended complete common workflow capability from a potentially narrower initially enabled low-impact subset when reliable high-impact approval is unavailable. This does not authorize treating a generic click as low-impact by default.
 
-**Still open:** exact tool signatures/results; tab/restart identity lifecycle; low-impact classification; confirmation UX/consumption/expiry; lock-ownership probes; locator freshness and screenshot safety; local transfer authorization; binary provenance, receipt details and per-platform rollout gates. This document authorizes no feature code, Issue/Ticket, CI, Worker configuration or production change.
+**Follow-on decision (round 10):** [ADR-0030](./0030-browser-conservative-gating-consent-evidence-acceptance.md) requires unknown webpage action effects to fail closed without an actually verified approval, and sets a lean real E2E authorization/per-platform acceptance gate rather than a new approval service or all-platform lockstep release.
+
+**Still open:** exact low-impact operation subset and tool signatures/results; tab/restart identity lifecycle; real owner approval channel/consumption/expiry; lock ownership; screenshot/locator freshness; file access; trusted Chromium data; local receipt mappings and per-platform evidence. This document authorizes no feature code, Issue/Ticket, CI, Worker configuration or production change.
 
 Related: [ADR-0021](./0021-browser-automation-extension.md), [ADR-0024](./0024-browser-observation-and-confirmation.md), [ADR-0025](./0025-atomic-browser-actions-and-receipts.md), [browser design](../BROWSER-AUTOMATION-DESIGN.md), [domain context](../CONTEXT.md).
