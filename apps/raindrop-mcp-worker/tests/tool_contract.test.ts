@@ -459,11 +459,9 @@ describe("T02 atomic collection mutations through MCP", () => {
   it("uses minimal create/update schemas and no hidden writes", async () => {
     const service = new RaindropMCPService({ accessToken: "test-token" });
     const create = vi.spyOn(service.raindropService, "createCollection")
-      .mockResolvedValue({ _id: 55, title: "Test", public: false }
-        as Awaited<ReturnType<typeof service.raindropService.createCollection>>);
+      .mockResolvedValue({ _id: 55, title: "Test", public: false } as unknown as Awaited<ReturnType<typeof service.raindropService.createCollection>>);
     const update = vi.spyOn(service.raindropService, "updateCollection")
-      .mockResolvedValue({ _id: 55, title: "Renamed" }
-        as Awaited<ReturnType<typeof service.raindropService.updateCollection>>);
+      .mockResolvedValue({ _id: 55, title: "Renamed" } as unknown as Awaited<ReturnType<typeof service.raindropService.updateCollection>>);
     const client = new Client({ name: "collection-mutations-contract", version: "1.0.0" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     try {
