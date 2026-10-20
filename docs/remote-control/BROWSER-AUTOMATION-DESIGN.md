@@ -1,6 +1,6 @@
 # Remote Control — Browser Automation Design (Grill With Docs)
 
-Status: **design interview in progress; rounds 1–7 agreed 2026-10-20**. This document records decisions, not shipped behavior, authorization to implement, a release gate or a new development Ticket. The existing v1/v2 specs remain authoritative for their implemented scope. Do not infer that browser tools, native Windows browser automation coverage, or personal-profile access exist today.
+Status: **design interview in progress; rounds 1–8 agreed 2026-10-20**. This document records decisions, not shipped behavior, authorization to implement, a release gate or a new development Ticket. The existing v1/v2 specs remain authoritative for their implemented scope. Do not infer that browser tools, native Windows browser automation coverage, or personal-profile access exist today.
 
 ## Goal
 
@@ -83,6 +83,17 @@ See [ADR-0026](./adr/0026-browser-capabilities-tab-and-approval-scope.md). These
 
 See [ADR-0027](./adr/0027-browser-tools-visual-consent-and-recovery.md). These decisions are design boundaries, not a shipped tool API or a claim that today's ChatGPT client already supports independent verified confirmation.
 
+## Accepted data, file authority, provenance, and platform boundaries (round 8)
+
+| Question | Decision | Consequence |
+| --- | --- | --- |
+| Q29 — Page/privacy budget | **A**: minimal bounded task-relevant semantic output | Avoid routine extraction of passwords/cookies/tokens; screenshots on demand, may expose secrets and cannot be presumed redacted. No website allowlist. Numeric budgets/redaction/truncation behavior remain open |
+| Q30 — Local files | **A**: reuse Agent OS account authority and existing file tools | Explicit local upload path; downloads land in Agent-managed directory, then use existing Remote Control file operations. No second browser file manager, path allowlist or additional privilege system. Permissions/collision/retention remain open |
+| Q31 — Chromium provenance | **A**: pinned Playwright-compatible browser from trusted verified source | Validate genuine available provenance/integrity evidence; fail clearly on offline absence, missing trust, corruption or mismatch. Never invent checksums, silently fallback to untrusted sources or execute unknown builds. Specific upstream artifact/verification scheme remains open |
+| Q32 — Platform acceptance | **A**: independent platform-specific real acceptance and staged enablement | Linux, WSL2 and native Windows must each substantiate browser startup, interaction, file transfer, reconnect, authorization, upgrade compatibility. Reuse unchanged prior evidence where relevant; pass on one platform need not block another. Release gates remain open |
+
+See [ADR-0028](./adr/0028-browser-data-files-provenance-platform-acceptance.md). The privacy, supply-chain and platform commitments are design choices, not proof of deployed capability, tested compatibility or availability of source-provided integrity metadata.
+
 ## Invariants carried forward
 
 - Use the established authenticated device path and explicit `device_id`; never accept an arbitrary remote address or publish a CDP endpoint.
@@ -94,14 +105,14 @@ See [ADR-0027](./adr/0027-browser-tools-visual-consent-and-recovery.md). These d
 
 ## Open design-tree branches
 
-**Next-round frontier (Q29–Q32; no choices accepted yet)**
+**Next-round frontier (Q33–Q36; no choices accepted yet)**
 
-- Q29 — What is the default privacy and output-budget boundary for semantic page snapshots, screenshots, inputs and secret-bearing page data returned to ChatGPT?
-- Q30 — How should upload source paths and browser download directories be authorized and cleaned up without introducing a parallel general file manager?
-- Q31 — How should the Agent verify on-demand Chromium download provenance and compatible binaries, including offline or integrity-failure behavior?
-- Q32 — Which independent Linux, WSL2 and native Windows acceptance evidence and deployment stages must pass before enabling browser tools in production?
+- Q33 — What standard result contract should each atomic browser tool return for device/session/tab identity, bounded page data, errors and effectful Operation IDs?
+- Q34 — How should browser execution status, independently observed website-side effect and unknown outcomes be represented and reconciled without blind replay or claims of exactly-once web transactions?
+- Q35 — When and how should browser-downloaded files be cleaned from the Agent-managed directory while preserving explicit owner access and unsettled operations?
+- Q36 — If the deployed ChatGPT/MCP client cannot carry a trustworthy one-use high-impact approval through to the execution boundary, should safe low-impact browser tools be released separately while the unsupported high-impact action remains disabled, or should release of all browser tools be blocked?
 
-**Downstream (not yet at the frontier; depends on Q29–Q32):** concrete argument/result schemas and tool descriptions; page freshness and visual target proof; screenshot/token limits and sensitive field handling; high-impact approval transport/expiry/consumption; action receipt status, website-effect verification and idempotency; crash/lock ownership probes, tab lifecycle races, and future explicitly authorized personal-browser attachment. Finish by auditing for overengineering, scope inconsistencies and unresolved safety assumptions before requesting final owner approval to implement.
+**Downstream (not yet at the frontier; depends on Q33–Q36):** detailed locator freshness and visual target proof, concrete screenshot size and secret-exposure limits, trusted browser binary verification-source availability, exact confirmation binding and consumption, profile and tab recovery race tests, per-platform evidence matrix and release thresholds, and future separately authorized personal-browser attachment. After the frontier is exhausted, conduct a final overengineering, feasibility, security and contradiction audit before requesting express owner approval for implementation.
 
 ## Documentation and scope rules
 
