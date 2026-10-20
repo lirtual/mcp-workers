@@ -24,6 +24,8 @@ Existing **device pairing is necessary but insufficient as blanket browser autho
 
 **Follow-on decision (round 7):** [ADR-0027](./0027-browser-tools-visual-consent-and-recovery.md) fixes the compact tool inventory, fresh visual fallback when semantics are insufficient, fail-closed prepare/confirm/execute for high-impact actions, and verified non-destructive Profile-lock recovery.
 
-**Still open:** download provenance and OS dependency checks, exact idle activity accounting, recovery implementation and offline cleanup guarantees, personal-profile attachment authorization, concrete confirmation credential/transport and classification edge cases, tool parameter/result schemas and action reconciliation details, packaging, acceptance and rollout gates. No coding, Issue creation, production change, or deployment is authorized by this ADR.
+**Follow-on decision (round 8):** [ADR-0028](./0028-browser-data-files-provenance-platform-acceptance.md) selects minimized page output without routine credential extraction, existing Agent-local file authority, trusted compatible Chromium with real provenance/integrity verification, and independent real-device acceptance by platform.
+
+**Still open:** exact browser artifact/source verification method and OS dependency checks, numeric page/screenshot limits, download cleanup, idle activity accounting, recovery implementation and offline cleanup, personal-profile attachment authorization, concrete approval transport and classification edge cases, tool parameter/result schemas and action reconciliation, packaging and rollout gates. No coding, Issue creation, production change, or deployment is authorized by this ADR.
 
 Related: [Remote Control Domain Context](../CONTEXT.md), [v2 multi-device transport ADR-0014](./0014-v2-multi-device-ws-do.md), [local mutation receipts ADR-0007](./0007-local-receipts-and-no-blind-replay.md).
