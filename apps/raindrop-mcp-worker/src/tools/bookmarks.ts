@@ -106,6 +106,36 @@ const bookmarkSummary = (bookmark: any) => ({
   tags: bookmark.tags || [],
 });
 
+// Single URL only: the official exists endpoint returns an aggregate ID list,
+// not a proven per-URL mapping for bulk input.
+const BookmarkExistsInputSchema = z.object({
+  url: z.string().max(2048).url()
+    .refine((value) => /^https?:\/\//i.test(value), "Expected an HTTP(S) URL"),
+}).strict();
+
+const BookmarkExistsOutputSchema = z.object({
+  exists: z.boolean(),
+  ids: z.array(z.number().int().positive()),
+});
+
+const bookmarkExistsTool = defineTool({
+  name: "bookmark_exists",
+  description: "Check whether exactly one HTTP(S) URL is already bookmarked, without changing data.",
+  inputSchema: BookmarkExistsInputSchema,
+  outputSchema: BookmarkExistsOutputSchema,
+  annotations: { readOnlyHint: true, idempotentHint: true },
+  handler: async (
+    args: z.infer<typeof BookmarkExistsInputSchema>,
+    { raindropService }: ToolHandlerContext,
+  ) => {
+    const result = await raindropService.bookmarkExists(args.url);
+    return {
+      content: [textContent(result.exists ? "URL is bookmarked" : "URL is not bookmarked")],
+      structuredContent: result,
+    };
+  },
+});
+
 const bookmarkSearchTool = defineTool({
   name: "bookmark_search",
   description:
@@ -283,6 +313,7 @@ const listRaindropsTool = defineTool({
 });
 
 export const bookmarkTools = [
+  bookmarkExistsTool,
   bookmarkSearchTool,
   bookmarkManageTool,
   getRaindropTool,
