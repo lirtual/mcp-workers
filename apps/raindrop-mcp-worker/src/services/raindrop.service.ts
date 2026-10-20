@@ -102,7 +102,7 @@ export default class RaindropService {
           if (response.status === 401)
             throw new AuthError("Unauthorized: check RAINDROP_ACCESS_TOKEN");
           if (response.status === 403)
-            throw new AuthError("API Error: 403; insufficient Raindrop permissions");
+            throw new AuthError("Raindrop API denied this operation (HTTP 403 Forbidden); cause not specified");
           if (response.status === 429) {
             const retryAfterMs =
               RaindropService.parseRetryAfterMs(

@@ -1,45 +1,52 @@
 # T10 — Spec #123 公开契约切换就绪审查（2026-10-20）
 
-**结论：BLOCKED（不得执行公开契约切换）。** Draft PR #134 当前共注册 **42 个工具 = 27 个目标候选 + 15 个其余旧工具**；其中 bookmark_search 与 collection_list 属于同名原有工具。此文只证明就绪状态与缺口，不授权合并 main、移除旧工具、部署 Worker、刷新插件、使用真实数据或调用真实 Raindrop。
+**最新结论：公开契约切换仍 BLOCKED。** Draft PR #134 当前共注册 **42 个工具 = 27 个目标候选 + 15 个其余旧工具**；其中 bookmark_search 与 collection_list 属于同名原有工具。此前已在用户授权下使用**现有生产 Raindrop Token**完成受控只读与可丢弃高亮真实 API 验收（见下方最新状态和运行证据）。本文件不授权合并 main、移除旧工具、部署 Worker 或刷新插件。
+
+## 最新真实验收快照（以本节为准，以下 T10 原始记录保留审查历史）
+
+- **SDK MCP → 真实 API 的只读验证**：10 项 smoke 中 9 项通过，包含工具注册/无写入断言；`collection_list`、`collection_get`、`bookmark_search`、`bookmark_get`、`highlight_list`、`tag_list`、`bookmark_filters_get` 的实际调用成功。[运行 #39437631284](https://github.com/lirtual/mcp-workers/actions/runs/39437631284)。
+- **Draft Service → 真实 API 的隔离写入验证**：在随机新建的可丢弃书签上，高亮创建、读取、更新、删除和书签精确清理成功；这是 Service 真实 API 验收，**不是通过线上 Portal 的 MCP 写入验收**。[运行 #39439062465](https://github.com/lirtual/mcp-workers/actions/runs/39439062465)。
+- **官方建议仍未通过**：`GET /raindrop/{id}/suggest` 返回 HTTP 403；已部署旧版的 `POST /raindrop/suggest` 也收到 403。没有官方原因说明，不宣称一定是 Pro、Token 失效或其他特定原因；不虚构建议，错误不自动重试。
+- **发布边界**：大部分其它候选写入仅 Mock/SDK 测试；`trash_empty` 全局永久清空不可拿真实生产库作测试。当前正常 CI 和 Environment 原有分支限制已恢复，无常驻 Draft 生产 Secret 测试入口。**42→27 工具切换需另外明确授权。**
 
 ## 验收含义
 
 - **源码**：已在 Draft 集成分支实现，并非已经发布或真实 API 可用。
 - **Mock**：现有 T01–T09 HTTP 样本、失败/重试/安全单测通过；不等于官方现网响应验证。
-- **SDK MCP**：现有 Client + InMemoryTransport 通过真实 MCP 注册与 tools/list、tools/call 边界验证，但 Service/HTTP 仍使用 Mock，不能称为已连接真实部署。
-- **Live**：全部候选功能尚无此 Draft 修订版的真实认证 Raindrop / Portal 上游验收。只可在单独批准的可丢弃环境验证写入。
+- **SDK MCP**：常规 Client + InMemoryTransport 测试走真实 MCP 注册与 tools/list、tools/call 边界，通常以 Mock Service/HTTP 验证；另有上文记录的部分 Draft SDK MCP→真实 API 测试，但都不是已部署的生产 Worker。
+- **Live**：已有部分 Draft 真实认证 Raindrop API 验收；尚未完成全部工具的生产 MCP/Portal 端到端验证。写入仅对获授权的可丢弃对象测试。
 - **破坏性受限**：尤其 trash_empty 是不可逆全局操作，不能用生产库做破坏性验收；必须记录 acceptance-limited 和预览后并发变化的竞态风险。
 
 ## 27 候选工具逐项状态
 
-表中“通过*”仅表示 Mock/API 夹具与 SDK MCP 测试，不代表已真实接入官方账户。真实状态若为“受限”，也不等于验收失败。
+表中“通过*”仅表示 Mock/API 夹具与 SDK MCP 测试。真实 API 列区分 **MCP 实测**（Draft 内存 MCP→真实 API）、**Service 实测**（Draft Service→真实 API）、**未实测**以及 **403 未通过**；不能混为已部署 Worker 的在线能力。
 
 | 候选工具 | 源码 | HTTP Mock | SDK MCP | 真实 API | 切换残余门槛 |
 |---|---|---|---|---|---|
-| bookmark_search | 已实现/修正 | 通过* | 通过* | 待验收 | 空查询、分页、过滤算符 |
-| bookmark_get | 已实现 | 通过* | 通过* | 待验收 | 完整书签及高亮 ID |
+| bookmark_search | 已实现/修正 | 通过* | 通过* | MCP 实测通过 | 空查询、分页、过滤算符 |
+| bookmark_get | 已实现 | 通过* | 通过* | MCP 实测通过 | 完整书签及高亮 ID |
 | bookmark_exists | 已实现 | 通过* | 通过* | 待验收 | 单 URL 存在与否 |
-| bookmark_create | 已实现 | 通过* | 通过* | 待验收 | 测试书签写入 |
+| bookmark_create | 已实现 | 通过* | 通过* | Service 实测（临时书签） | 测试书签写入 |
 | bookmark_update | 已实现 | 通过* | 通过* | 待验收 | 仅显式更新字段 |
-| bookmark_delete | 已实现 | 通过* | 通过* | 待验收 | Trash 状态/永久删除受限 |
+| bookmark_delete | 已实现 | 通过* | 通过* | Service 实测（仅临时书签） | Trash 状态/永久删除受限 |
 | bookmark_move | 已实现 | 通过* | 通过* | 待验收 | 目标收藏夹及归属 |
 | bookmark_batch_update | 已实现 | 通过* | 通过* | 待验收 | ≤50 ID、单源、聚合未知 |
 | bookmark_batch_delete | 已实现 | 通过* | 通过* | 待验收 | 预检与按 ID 真实结果 |
-| collection_list | 已实现/扩展 | 通过* | 通过* | 待验收 | 已严格拒绝未知字段（MCP 已验证）；仍待真实 API |
-| collection_get | 已实现 | 通过* | 通过* | 待验收 | 完整子集合/父级 |
+| collection_list | 已实现/扩展 | 通过* | 通过* | MCP 实测通过 | 已严格拒绝未知字段；真实根/子集合重叠已修复 |
+| collection_get | 已实现 | 通过* | 通过* | MCP 实测通过 | 完整子集合/父级 |
 | collection_create | 已实现 | 通过* | 通过* | 待验收 | 测试收藏夹 |
 | collection_update | 已实现 | 通过* | 通过* | 待验收 | 只更新明确字段 |
 | collection_delete | 已实现 | 通过* | 通过* | 待验收 | 级联删除、权限、摘要受限 |
-| tag_list | 已实现 | 通过* | 通过* | 待验收 | 官方 Tag 结构 |
+| tag_list | 已实现 | 通过* | 通过* | MCP 实测通过 | 官方 Tag 结构 |
 | tag_rename | 已实现 | 通过* | 通过* | 待验收 | 重命名不得误合并 |
 | tag_merge | 已实现 | 通过* | 通过* | 待验收 | 多来源合并与回执 |
 | tag_delete | 已实现 | 通过* | 通过* | 待验收 | 测试标签删除 |
-| highlight_list | 已实现 | 通过* | 通过* | 待验收 | 属于指定书签 |
-| highlight_create | 已实现 | 通过* | 通过* | 待验收 | 定向 PUT/其他高亮不变 |
-| highlight_update | 已实现 | 通过* | 通过* | 待验收 | 字符串 ID/所属校验 |
-| highlight_delete | 已实现 | 通过* | 通过* | 待验收 | 一条高亮删除 |
-| bookmark_filters_get | 已实现 | 通过* | 通过* | 待验收 | 无统计不能填 0 |
-| bookmark_suggest | 已实现 | 通过* | 通过* | 待验收 | 官方建议/无 Sampling |
+| highlight_list | 已实现 | 通过* | 通过* | MCP 实测通过 | 属于指定书签 |
+| highlight_create | 已实现 | 通过* | 通过* | Service 实测通过 | 定向 PUT/其他高亮不变 |
+| highlight_update | 已实现 | 通过* | 通过* | Service 实测通过 | 字符串 ID/所属校验 |
+| highlight_delete | 已实现 | 通过* | 通过* | Service 实测通过 | 一条高亮删除 |
+| bookmark_filters_get | 已实现 | 通过* | 通过* | MCP 实测通过 | 无统计不能填 0 |
+| bookmark_suggest | 已实现 | 通过* | 通过* | HTTP 403（未通过） | 官方建议/无 Sampling |
 | trash_empty | 已实现 | 通过* | 通过* | **受限** | 不可逆全局清空/完整范围 |
 | collection_remove_empty | 已实现 | 通过* | 通过* | 待验收 | 已批准空叶子范围 |
 | bookmark_remove_duplicates | 已实现 | 通过* | 通过* | 待验收 | 已验证输出 Schema；副本保护仍待真实数据验收 |
@@ -77,7 +84,7 @@
 4. **已封堵（先前 T03/T08/T09）**：bookmark_manage 的 Trash 永久删绕过、remove_duplicates 的无摘要清理、empty_trash 的计数式清空分别已拒绝危险路径。
 5. **已修复（后续补丁）**：collection_list 使用 strict 输入 Schema，真实 MCP tools/call 已验证未知字段及错误类型被拒绝，且不访问上游。
 6. **已修复（后续补丁）**：bookmark_remove_duplicates 已为预览、无需执行及批量失败/未知结果声明并校验输出 Schema；仍需真实 API 验收。
-7. **未解决**：27 项均缺此 Draft 版本的真实认证 MCP/API 验收；涉及写入的需经单独授权的可丢弃测试对象；全局永久清空记录 acceptance-limited。前述测试矩阵只覆盖模拟场景。
+7. **后续已部分推进**：最初 27 项均缺此 Draft 版本的真实认证 MCP/API 验收；最新局部成果详见本文顶部快照；涉及写入的需经单独授权的可丢弃测试对象；全局永久清空记录 acceptance-limited。前述测试矩阵只覆盖模拟场景。
 
 ## P0 独立审查后续修复（2026-10-20）
 
@@ -182,21 +189,14 @@ bash -c 'set -eu; IFS= read -rsp "Raindrop API Token: " RAINDROP_ACCESS_TOKEN </
 
 ## 最小后续门槛与切换结论
 
-### 最小凭据注入方式（仅在用户 WSL 终端交互执行）
+### 凭据和发布门槛
 
-已有的生产 Portal 插件凭据不会导出到 PR、GitHub Actions 或 Remote Control 日志。若用户允许使用其 Raindrop API Access Token 执行**只读**测试，可在 WSL 本机终端执行以下命令，输入时不回显，Token 仅存在于该次 Bash 子进程及其测试子进程环境中，不写入 .env、源码或 shell 历史：
-
-```bash
-cd apps/raindrop-mcp-worker  # 从 mcp-workers 仓库根目录执行
-bash -c 'set -eu; IFS= read -rsp "Raindrop API Token: " RAINDROP_ACCESS_TOKEN </dev/tty; printf "\n"; export RAINDROP_ACCESS_TOKEN RUN_LIVE_API_TESTS=true; npm run test:read-only-live'
-```
-
-没有可用的交互终端或 Token 时**不自动执行**；不可让远控 Agent 读取既有生产 Worker Secret 或自动把其复制到 WSL。上述过程也不测试生产 Portal 鉴权（内存 MCP 仅验证 Draft Service→真实 Raindrop API）；这两条验收路径必须单独记录。
+已在受控 GitHub Actions 中复用现有 `raindrop-mcp-worker` Environment Secret 完成上述实测，**无需另建 Token 或要求用户再次在 WSL 输入密钥**。临时只读/写入验收作业均已从 Draft 删除；未来如需补充真实测试，继续短时、明确限制作用域，不复制生产 Token 到 PR 日志或 WSL。
 
 **当前判定：NO-GO / BLOCKED，保留 Draft。** 不能切换公开工具列表，不能将 42 直接删为 27，不能将任何 Mock 成功描述为真实上游成功。
 
 - **已完成**两处 Schema 缺口及对应 MCP tools/call 回归；下列真实验收门槛依然有效。
-- 在可控认证环境中完成只读 smoke；使用**明确授权的可丢弃测试数据**验证关键写入和异常响应，不修改普通用户书签；不可安全实测的 Trash 全局永久清空保留 acceptance-limited。
+- 已用现有认证环境完成只读 9/10 与可丢弃高亮写入验收；其余需要安全证明的关键写入和异常响应仍需按需补足，不修改普通用户书签；不可安全实测的 Trash 全局永久清空保留 acceptance-limited。
 - 将旧生产关键工作流与新工具逐项比对并进行独立代码审查；任何无法确认的候选工具在切换时必须安全排除，不为了 27 项配额强行公开。
 - **只有取得另一次明确的切换授权**，才可在另外的实施中移除旧别名、Sampling、library_audit、公开 diagnostics 并刷新测试清单；本轮 T10 不执行这些动作。关闭评估 Ticket 也不是生产发布许可。
 
