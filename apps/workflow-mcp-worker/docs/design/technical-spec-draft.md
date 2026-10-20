@@ -306,6 +306,10 @@ This is **illustrative**. Actual D1 semantics, authorization race handling, immu
 
 Do **not** interpret these as already passed. Production write-capable launch must not proceed with P0 BLOCKER failures.
 
+## P0-3 / P0-4 isolated SDK and runtime schedule evidence (2026-10-20)
+
+[Isolated SDK/Cloudflare Cron report](p0-mcp-cron-isolated-20261020.md): official MCP TypeScript SDK v2.3.1 server deployed on a throwaway Cloudflare Worker; both SDK v2.3.1 and legacy SDK v1.32.1 clients completed Streamable HTTP handshake, tool discovery and one read-only call over real HTTPS (also passed in-process). This is not a complete protocol negotiation/auth/session matrix. A separate throwaway Worker with one fixed `* * * * *` Cron binding stored runtime plans in D1. Synthetic cloud tick tests passed for spring-forward skipped local time, fall-back one local occurrence, eight concurrent duplicates and runtime schedule edits. **Actual scheduled() invocations: zero observed at audit; real Cron firing NOT verified.** The proof-of-concept 181-minute backward scan is intentionally not a production scheduling algorithm. Security probes against private targets/redirects/DNS were not executed, so P0-3 SSRF remains OPEN. All temporary Workers/D1/secrets were removed, account inventories restored to 12/4/1.
+
 ## 11. Explicit open technical risks (not further owner decisions by default)
 
 | ID | Risk / missing fact | Severity | Required closure |
