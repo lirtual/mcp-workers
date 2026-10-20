@@ -331,3 +331,36 @@ Its warning identifies the **BaseContainer tier as unavailable on this Runner** 
 **Scope and interpretation:** A successful SDK `probe()` API call does **not** mean the process or network is isolated. **The Windows GitHub Runner's tier is insufficient for target-specific conditional public browsing; OS network P0 remains NOT ACCEPTED.** This does not determine what tier the *owner's Windows 11 machine* supports. The owner's earlier `processmodel.dll` export presence only proved symbols exist, not native enforcement availability. Do not extrapolate one host's tier to the other, do not auto-install host-prep, do not lower the target/network acceptance contract, and do not ship MXC or an external proxy as a workaround without explicit separate design review.
 
 **Next decision gate:** Any actual Windows process isolation launch must first show **native, non-admin, per-process no-bypass egress** capability on the intended Windows platform; only then test real Chromium/children against reachable/forbidden synthetic fixtures, verify zero forbidden hits, and preserve private Profile/IPC. Linux/WSL2 has its independent ordinary-user namespace gate (see §O). Both remain independent of one-use owner approval. Current PRs stay Draft; no public navigation, code merge, release, deployment, Agent/device modification or Tickets.
+
+## Q. Owner's exact Windows device: native ProcessContainer capability confirmed (2026-10-20)
+
+The owner explicitly continued the already selected **read-only OS-tier preflight** on paired native Windows device **`71b4b4d8-6496-4898-9b80-1ea3a03f6ccd`**. Device discovery confirmed it is **online**; do not confuse it with the separate online WSL2 Ubuntu device that has the same hostname. The existing full-tools Remote Control Agent executed a temporary local PowerShell command **as the normal user**, not administrator, without invoking any sandbox creation.
+
+Preflight observed:
+- Windows 11 **25H2**, exact version/build **26200.9711**, ordinary user (`IS_ADMIN=False`); Node `v24.12.0`, npm `11.6.2`, bundled Agent Node exists.
+- Installed **exact-pinned `@microsoft/mxc-sdk@1.0.1` only under a unique private `%TEMP%` folder** using npm `--ignore-scripts --no-save --no-audit --no-fund`, with a separate temporary npm cache. Loaded the documented `@microsoft/mxc-sdk/v1` `probe()` code in a temporary Node script and requested a **default-deny plus per-CIDR/per-port egress policy**. The example CIDR `198.51.100.1/32:443` is a documentation-only policy selector; there was **no socket, browser process or AppContainer created**.
+- Returned a materially different result from the Windows GitHub Runner (§P):
+
+```text
+RCA_MXC_TARGET={
+ "tier":"base-container",
+ "baseContainerApiPresent":true,
+ "status":"OS_TIER_CANDIDATE",
+ "warnings":[],
+ "error":null,
+ "process_spawned":false,
+ "network_tested":false
+}
+MXC_PROBE_EXIT=0
+PROBE_TEMP_CLEANED=True
+```
+
+The Agent-owned command/session completed with **exit code 0** and durable `completed` receipt. The entire probe directory and npm cache were removed; no system firewall policy, task, registry, Agent program, device identity or production Worker was changed.
+
+**Supported conclusion:** this particular Windows host can report the MXC **native `base-container` tier** for a strict CIDR/port-selective network policy under its existing ordinary-user account. Microsoft's [Windows OS support matrix](https://github.com/microsoft/mxc/blob/main/docs/backends/process-container/os-version-support.md) lists minimum 25H2 Process Isolation build `26200.9278`; this device is at `26200.9711`, consistent with the result.
+
+**NOT YET ACCEPTED:** the probe is **not** a successful `run()/spawn()` or a WFP traffic-enforcement observation. It does not prove the policy can be applied to the actual browser, that Chromium multi-process helpers remain isolated, or that *any* forbidden HTTP/TCP/UDP endpoint receives zero packets. Any native AppContainer/ProcessContainer process creation, ephemeral network listeners and Playwright launch require a separately scoped, controlled next-stage real-device test; this read-only phase intentionally did not launch them. External browser navigation and approval-dependent actions remain disabled.
+
+**Next smallest step:** a disposable, strictly bounded **Windows-only** MXC `base-container` process experiment, with two synthetic 127.0.0.1 listeners bound to distinct ephemeral ports and an explicit *allowed* endpoint (positive control). Establish the platform's documented loopback capability/egress interaction **before** constructing an allowlist; demonstrate the denied endpoint receives **zero** actual requests even after cross-origin 302 and child-process startup, verify cleanup on timeout/revocation, and abort on any tier downgrade or native policy failure. Avoid private LAN, cloud metadata, production sites, elevated host-prep, machine-wide firewall changes or a new proxy/Worker. Only then attempt real Playwright Chromium inside that isolated process. Reuse prior baseline tests, not repeat them needlessly. The unrelated one-use owner-approval P0 remains separately blocked.
+
+PR #15 and this design PR remain Draft; this investigation did not merge, release, deploy, change the Agent or create Tickets.
