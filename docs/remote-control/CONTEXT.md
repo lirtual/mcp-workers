@@ -103,6 +103,10 @@ _Avoid_: Assuming that device pairing grants blanket access to every personal br
 A specifically selected authorized device and browser session, narrowed to a tab where the operation requires one.
 _Avoid_: An implicit default device or an unspecified global browser.
 
+**Browser Navigation Destination**:
+The actual webpage endpoint a browser is requested to visit, distinct from authority to act on the page or an assumption that an internal address is safe.
+_Avoid_: Equating reachability, a plausible hostname or a page's own claim with authorization for a consequential destination.
+
 **Browser Tab ID**:
 The stable identity of a managed browser tab within one device and Automation Browser Session, retained across navigation and invalidated when that tab closes.
 _Avoid_: A tab's list position, page URL or title as a substitute for identity.
@@ -126,6 +130,10 @@ _Avoid_: Guessing which duplicate control to click or treating a stale page posi
 **Visual Browser Target**:
 A specific visible control or region in the selected browser tab identified from current visual evidence when meaningful semantic identification is insufficient.
 _Avoid_: Treating a stale screenshot coordinate as a durable element identity or using it to control arbitrary desktop applications.
+
+**Visual Target Freshness**:
+The confidence that a visually located browser target still refers to the same intended control in the same tab and page/viewport context.
+_Avoid_: Equating a recent screenshot timestamp with target stability after navigation, scrolling, resizing or layout changes.
 
 **Browser Page Observation**:
 A bounded, task-relevant account of a selected page's semantic content or explicitly requested visual appearance, distinct from authorization or a guarantee that private data is absent.
@@ -162,6 +170,10 @@ _Avoid_: Treating a successful click, a timeout or an unverified page change as 
 **Browser Capability Gate**:
 The distinction between browser actions allowed for the selected device/platform now and actions disabled pending trustworthy owner authorization or acceptance evidence.
 _Avoid_: Inferring that a tool's planned interface makes all its potentially high-impact actions safe to execute.
+
+**Browser Capability Availability**:
+The present ability to perform a specified browser operation on a selected paired device and platform, separate from its documentation, implementation or acceptance history.
+_Avoid_: Treating a listed or designed MCP tool as permission or proof that the action is currently enabled.
 
 **Conservatively Classified Browser Action**:
 A proposed browser operation known to meet the limited low-impact execution boundary without relying on untrusted webpage claims; uncertain consequential effects do not qualify.
@@ -229,11 +241,17 @@ The controlled transfer of existing authoritative Operation Receipts to a replac
 _Avoid_: Treating a successful new-store startup as sufficient evidence that historical operation identities were preserved.
 
 
+## Browser navigation, visual freshness, safe downloads and availability — accepted twelfth round (2026-10-20)
+
+Q45=A selects ordinary HTTP(S) Browser Navigation Destinations; executable/local schemes such as `javascript:` and `file:` are not ordinary allowed navigation. Loopback, link-local, metadata and sensitive internal/admin targets need distinct owner authorization and an effect/target review rather than receiving automatic low-impact status, without a global website allowlist. Q46=A requires Visual Target Freshness to track the exact tab and current page/viewport/scroll context; after material navigation, tab, scroll or layout changes or unprovable freshness, locate again from a new screenshot. Q47=A confines new downloads to Agent-managed directory names that cannot overwrite existing files or traverse/escape through links; further owner-directed file movement/replacement remains an existing Remote Control operation. Q48=A distinguishes Browser Capability Availability through existing device status and MCP tool error feedback: only documented, implemented, accepted for the platform, and actually enabled are different situations; no second capability registry is chosen.
+
+[ADR-0030](./adr/0030-browser-conservative-gating-consent-evidence-acceptance.md), [ADR-0027](./adr/0027-browser-tools-visual-consent-and-recovery.md), [ADR-0028](./adr/0028-browser-data-files-provenance-platform-acceptance.md) and [ADR-0029](./adr/0029-browser-results-outcomes-downloads-gated-release.md) were amended rather than adding an ADR. DNS/redirect checks, page freshness algorithm, platform-specific safe file creation and precise availability error schema remain unsettled. These are documentation decisions only, not deployed browser functionality.
+
 ## Browser initial low-impact scope and bounded output — accepted eleventh round (2026-10-20)
 
 Q41=A narrows the **candidate** low-impact browser operations to authorized browser/session/tab status or listing, bounded semantic observations, and on-demand screenshots, all subject to content/privacy controls. Explicit-target navigation needs a separate conservative effect review; a generic click/fill/keyboard/select is not low-impact simply because its name or visible label seems routine. Q42=A selects minimal shared device/session/tab targeting and compact structured status, error, bounded data, truncation and Operation ID results with operation-specific inputs. Q43=A selects an initial approximately 8,000-character semantic snapshot budget with explicit truncation and follow-up focused reads, and no more than one on-demand screenshot per request initially; screenshots may reveal secrets. Q44=A uses minimal existing Agent-local session and operation metadata to identify Managed Download References, retaining a download when reference absence cannot be proven and allowing seven-day cleanup only when positively unreferenced.
 
-These decisions amend the existing [ADR-0030](./adr/0030-browser-conservative-gating-consent-evidence-acceptance.md), [ADR-0025](./adr/0025-atomic-browser-actions-and-receipts.md), [ADR-0028](./adr/0028-browser-data-files-provenance-platform-acceptance.md), and [ADR-0029](./adr/0029-browser-results-outcomes-downloads-gated-release.md). They do not prove safe classification, implement browser tools, create a new file index, define complete schemas, or authorize rollout.
+These decisions amend existing ADR-0030/0025/0028/0029. Q45–Q48 subsequently clarify navigation schemes and sensitive destinations, visual context freshness, non-overwriting local downloads and truthful capability availability. They do not prove safe classification, implement browser tools, create a new file index, define complete schemas, or authorize rollout.
 
 ## Conservative effects, verified approval and platform release — accepted tenth round (2026-10-20)
 
