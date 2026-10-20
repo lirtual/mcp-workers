@@ -464,6 +464,21 @@ export default class RaindropService {
     } = {},
     skipCache = false,
   ): Promise<{ items: Bookmark[]; count: number }> {
+    // The upstream list endpoint uses 0-based pagination and caps pages at 50.
+    if (params.page !== undefined &&
+      (!Number.isSafeInteger(params.page) || params.page < 0)) {
+      throw new ValidationError("page must be a non-negative integer");
+    }
+    if (params.perPage !== undefined &&
+      (!Number.isSafeInteger(params.perPage) || params.perPage < 1 || params.perPage > 50)) {
+      throw new ValidationError("perPage must be an integer between 1 and 50");
+    }
+    if (params.collection !== undefined &&
+      (!Number.isSafeInteger(params.collection) ||
+       !([0, -1, -99].includes(params.collection) || params.collection > 0))) {
+      throw new ValidationError("Invalid collection ID for bookmark search");
+    }
+
     // Generate cache key from sorted params
     const cacheKey = JSON.stringify(
       Object.keys(params)
@@ -487,13 +502,16 @@ export default class RaindropService {
       const query: any = {};
       const searchParts = params.search ? [params.search] : [];
 
-      if (params.tags) query.tag = params.tags.join(",");
-      if (params.tag) query.tag = params.tag;
-      if (params.important !== undefined) {
-        searchParts.push("important:true");
-      }
-      if (params.page) query.page = params.page;
-      if (params.perPage) query.perpage = params.perPage;
+      // GET /raindrops/{collectionId} documents search, sort, page, perpage
+      // and nested, not independent tag/domain query parameters.
+      const tagSearch = (tag: string) =>
+        "#" + (tag.includes(" ") ? JSON.stringify(tag) : tag);
+      for (const tag of params.tags ?? []) searchParts.push(tagSearch(tag));
+      if (params.tag) searchParts.push(tagSearch(params.tag));
+      if (params.important === true) searchParts.push("❤️");
+      if (params.important === false) searchParts.push("-❤️");
+      if (params.page !== undefined) query.page = params.page;
+      if (params.perPage !== undefined) query.perpage = params.perPage;
       if (params.sort) query.sort = params.sort;
 
       if (params.duplicates === true) {
@@ -519,11 +537,10 @@ export default class RaindropService {
         searchParts.push(`type:${params.media}`);
       }
 
+      if (params.domain) searchParts.push(`link:${params.domain}`);
       if (searchParts.length > 0) {
         query.search = searchParts.join(" ");
       }
-
-      if (params.domain) query.domain = params.domain;
       const endpoint = params.collection ? "/raindrops/{id}" : "/raindrops/0";
       const options = params.collection
         ? { params: { path: { id: params.collection }, query } }
