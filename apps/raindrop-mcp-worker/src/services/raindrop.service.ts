@@ -541,6 +541,41 @@ export default class RaindropService {
   }
 
   /**
+   * Read-only URL existence check. Raindrop's endpoint is a POST, but it does
+   * not mutate bookmarks and may use the bounded read retry policy.
+   * Official API: POST /import/url/exists, body { urls: [url] }.
+   *
+   * The generated local schema does not yet describe this official endpoint,
+   * so it is called through the existing centralized client, not a second fetch
+   * implementation. Do not infer a per-URL mapping from aggregate ids.
+   */
+  async bookmarkExists(url: string): Promise<{ exists: boolean; ids: number[] }> {
+    return this.withRateLimit(async () => {
+      const { data, error } = await (this.client as any).POST(
+        "/import/url/exists",
+        { body: { urls: [url] } },
+      );
+      if (error || !data || typeof data !== "object") {
+        throw new UpstreamError("URL existence response was not verified");
+      }
+
+      const body = data as { result?: unknown; ids?: unknown };
+      if (
+        typeof body.result !== "boolean" ||
+        !Array.isArray(body.ids) ||
+        !body.ids.every(
+          (id: unknown) => typeof id === "number" && Number.isSafeInteger(id) && id > 0,
+        ) ||
+        body.result !== (body.ids.length > 0)
+      ) {
+        throw new UpstreamError("Invalid URL existence response from Raindrop");
+      }
+
+      return { exists: body.result, ids: body.ids as number[] };
+    }, "read");
+  }
+
+  /**
    * Fetch a single bookmark by ID
    * Raindrop.io API: GET /raindrop/{id}
    */
