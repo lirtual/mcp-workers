@@ -112,7 +112,7 @@ Standards/Spec audit also identified locale-dependent topological sorting of
 independent Step IDs. Compiler sort now uses the same fixed character order as
 canonical JSON; a red-to-green test checks mixed-case IDs and equal digests when
 input Step order is reversed. The current tests include **17
-S1 unit/contract tests** and the existing 36-assertion owner-facing local E2E checks.
+S1 unit/contract tests** and the existing 38-assertion owner-facing local E2E checks.
 
 **Final status semantics audit:** per Cloudflare's documented native states,
 `errored` and `terminated` are terminal orchestration outcomes, but cannot prove
@@ -148,7 +148,15 @@ and a throwaway `wrangler.s1-cloud.jsonc` that is intentionally not committed.
 Focused test-first review additionally closed two expression-safety gaps: references
 may only access own data fields (not inherited JavaScript prototype members),
 reserved Step IDs are rejected, and `if`/logical conditions require actual boolean
-values rather than JavaScript string truthiness. S1 now has 12 unit/contract tests. A later final review also rejects YAML non-finite numbers (`.nan`, `.inf`) before JSON canonicalization (avoiding silent `null` conversion), and normalizes Run input-object key order before computing the admission idempotency digest. Canonical Plan and Run hashes use locale-independent key comparison, avoiding runtime-locale-dependent hashes.
+values rather than JavaScript string truthiness. S1 now has 17 unit/contract tests. A later final review also rejects YAML non-finite numbers (`.nan`, `.inf`) before JSON canonicalization (avoiding silent `null` conversion), and normalizes Run input-object key order before computing the admission idempotency digest. Canonical Plan and Run hashes use locale-independent key comparison, avoiding runtime-locale-dependent hashes.
+
+**MCP Tool metadata audit:** `workflow_status` and `workflow_result` can reconcile
+an already admitted Run, write D1 and start its original deterministic Workflow
+instance. They must not advertise `readOnlyHint: true`; both now accurately
+report `readOnlyHint: false`, `idempotentHint: true` and disclose reconciliation
+in their descriptions. This is an annotation/contract fix, not a new execution
+path. Local SDK tool-list and execution regression: **38/38 assertions passed**;
+the cloud-edge **36/36** evidence above applies to the earlier tool metadata.
 
 Still required before closing S1: final standards/spec code review, latest-commit
 CI verification, remaining network interruption cases where warranted, and

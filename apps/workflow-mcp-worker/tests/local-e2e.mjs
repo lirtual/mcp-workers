@@ -32,6 +32,10 @@ try{
   await cli.connect(transport);
   const listed=await cli.listTools();
   ok(listed.tools.some(x=>x.name==='workflow_publish'),'publish tool exposed');
+  for(const name of ['workflow_status','workflow_result']){
+    const metadata=listed.tools.find(x=>x.name===name);
+    ok(metadata?.annotations?.readOnlyHint===false,`${name} must not claim to be read-only because reconciliation may mutate D1 or resume an admitted Run`);
+  }
   ok(!listed.tools.some(x=>x.name.includes('webhook')||x.name.includes('github')),'no S2/S3 tools');
   let w=await tool('workflow_create',{definition:JSON.stringify(definition)});
   ok(w.state==='draft'&&w.draft_revision===1,'creates only Draft');
