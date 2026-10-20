@@ -63,8 +63,8 @@ test('MCP lists repositories across both accounts without ever showing credentia
     const result = await client.callTool({ name: 'repositories_list', arguments: {} });
     assert.equal(result.isError, undefined);
     const text = JSON.stringify(result);
-    assert.match(text, /autoactions\\/tsrv/);
-    assert.match(text, /lirtual\\/mcp-workers/);
+    assert.ok(text.includes('autoactions/tsrv'));
+    assert.ok(text.includes('lirtual/mcp-workers'));
     assert.doesNotMatch(text, /synthetic-other-github-token|synthetic-github-token/);
   } finally {
     await client.close();
