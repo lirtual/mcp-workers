@@ -1,0 +1,16 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "workflow-mcp-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-10",
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": true },
+  "d1_databases": [
+    { "binding": "DB", "database_name": "workflow-mcp-worker",
+      "database_id": "00000000-0000-0000-0000-000000000000", "migrations_dir": "migrations" }
+  ],
+  "workflows": [{ "name": "workflow-mcp-s1", "binding": "WORKFLOW", "class_name": "WorkflowRunner" }],
+  "services": [{ "binding": "READONLY_TARGET", "service": "workflow-s1-readonly-fixture" }],
+  "secrets": { "required": ["MCP_ACCESS_TOKEN"] }
+}
