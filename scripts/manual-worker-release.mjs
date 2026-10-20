@@ -69,7 +69,7 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     if (expectedSecondary) {
       invariant(typeof secondary === "string" && secondary === expectedSecondary &&
         secondary.length <= 1024 && secondary.split(",").length <= 30 &&
-        secondary.split(",").every((repo) => /^[A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+$/.test(repo) && !repo.includes("..")),
+        secondary.split(",").every((repo) => /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) && !repo.includes("..")),
         "GitHub Actions secondary repository list missing or invalid");
       const primarySet = new Set(repos.split(",").map((repo) => repo.toLowerCase()));
       invariant(secondary.split(",").every((repo) => !primarySet.has(repo.toLowerCase())),
