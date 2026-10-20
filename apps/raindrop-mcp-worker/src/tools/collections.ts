@@ -98,11 +98,29 @@ const collectionListTool = defineTool({
       raindropService.getCollections(args.skipCache),
       raindropService.getAllChildCollections(args.skipCache),
     ]);
-    const collections = [...roots, ...children];
-    if (new Set(collections.map(collection => collection._id)).size !== collections.length) {
-      throw new ValidationError("Duplicate collection IDs in upstream hierarchy");
+    // The live API can repeat a collection in both root and nested results.
+    // Collapse cross-endpoint overlap; never silently merge inconsistent IDs.
+    if (new Set(roots.map(item => item._id)).size !== roots.length ||
+        new Set(children.map(item => item._id)).size !== children.length)
+      throw new ValidationError("Duplicate collection IDs within one upstream list");
+    const unique = new Map(roots.map(collection => [collection._id, collection]));
+    for (const child of children) {
+      const root = unique.get(child._id);
+      if (root) {
+        if (root.title !== child.title ||
+            (root.parent?.$id !== undefined && child.parent?.$id !== undefined &&
+             root.parent.$id !== child.parent.$id))
+          throw new ValidationError("Conflicting collection metadata across upstream lists");
+        // Prefer the nested record when it carries a verified parent.
+        const nestedParentId = child.parent?.$id;
+        if (typeof nestedParentId === "number" &&
+            Number.isSafeInteger(nestedParentId) && nestedParentId > 0)
+          unique.set(child._id, child);
+      } else {
+        unique.set(child._id, child);
+      }
     }
-    const summaries = collections.map(collectionReadSummary);
+    const summaries = [...unique.values()].map(collectionReadSummary);
     return {
       content: [
         textContent(

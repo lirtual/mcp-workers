@@ -215,6 +215,46 @@ describe("collection_list MCP response contract", () => {
   });
 });
 
+describe("collection_list live cross-endpoint overlap", () => {
+  it("deduplicates the same collection across roots and children while keeping its parent", async () => {
+    const service = new RaindropMCPService({ accessToken: "mock-only" });
+    vi.spyOn(service.raindropService, "getCollections").mockResolvedValue([
+      { _id: 123, title: "Shared", count: 4 },
+      { _id: 456, title: "Other", count: 0 },
+    ] as Awaited<ReturnType<typeof service.raindropService.getCollections>>);
+    vi.spyOn(service.raindropService, "getAllChildCollections").mockResolvedValue([
+      { _id: 123, title: "Shared", count: 4, parent: { $id: 456 } },
+    ] as Awaited<ReturnType<typeof service.raindropService.getAllChildCollections>>);
+    const client = new Client({ name: "overlap-read", version: "1.0.0" });
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    try {
+      await Promise.all([service.getServer().connect(b), client.connect(a)]);
+      const response = await client.callTool({ name: "collection_list", arguments: { skipCache: true } });
+      expect(response.isError).not.toBe(true);
+      expect(response.structuredContent).toMatchObject({
+        count: 2, collections: [
+          { id: 123, title: "Shared", parentId: 456 },
+          { id: 456, title: "Other" },
+        ],
+      });
+    } finally { await client.close(); await service.cleanup(); }
+  });
+
+  it("rejects same ID with conflicting titles instead of hiding API inconsistency", async () => {
+    const service = new RaindropMCPService({ accessToken: "mock-only" });
+    vi.spyOn(service.raindropService, "getCollections").mockResolvedValue([
+      { _id: 123, title: "Before" },
+    ] as Awaited<ReturnType<typeof service.raindropService.getCollections>>);
+    vi.spyOn(service.raindropService, "getAllChildCollections").mockResolvedValue([
+      { _id: 123, title: "After" },
+    ] as Awaited<ReturnType<typeof service.raindropService.getAllChildCollections>>);
+    try {
+      await expect(service.callTool("collection_list", {}))
+        .rejects.toThrow("Conflicting collection metadata");
+    } finally { await service.cleanup(); }
+  });
+});
+
 describe("collection_list over MCP tools/call", () => {
   it("accepts the declared output schema with an SDK client, with and without cache bypass", async () => {
     const service = new RaindropMCPService({ accessToken: "test-token" });
