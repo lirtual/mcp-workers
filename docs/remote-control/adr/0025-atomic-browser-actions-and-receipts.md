@@ -14,6 +14,8 @@ Status: **accepted design choices (Grill With Docs round 5, 2026-10-20); documen
 
 **Follow-on decision (round 6):** [ADR-0026](./0026-browser-capabilities-tab-and-approval-scope.md) confirms initial end-to-end common workflow coverage, stable tab IDs explicitly scoped to device/session, one-use consequential-action confirmation bound to the intended target, and explicit Profile clearing only in a provably safe state.
 
-**Still open:** precise atomic tool names/parameter and result schemas; tab identity lifecycle implementation; semantic locator fallback and screenshot bounds; file-path authorization/retention; confirmation mechanism/consumption and action receipt/business-outcome verification; snapshot/secret limits; profile crash/lock recovery; runtime download provenance, platform acceptance and rollout gates. No code, runtime changes, new implementation Issues/Tickets, or deployment is authorized.
+**Follow-on decision (round 7):** [ADR-0027](./0027-browser-tools-visual-consent-and-recovery.md) selects a compact curated tool inventory, bounded fresh visual fallback, fail-closed action-specific approval, and non-destructive crash/lock recovery.
+
+**Still open:** precise tool names/parameters/results and tab identity implementation; visual page-state freshness and screenshot bounds; file-path authorization/retention; approval delivery/expiry/consumption and action receipt/business-outcome verification; snapshot/secret limits; process/lock verification mechanics; runtime download provenance, platform acceptance and rollout gates. No code, runtime changes, new implementation Issues/Tickets, or deployment is authorized.
 
 Related: [ADR-0021](./0021-browser-automation-extension.md), [ADR-0024](./0024-browser-observation-and-confirmation.md), [browser design tree](../BROWSER-AUTOMATION-DESIGN.md), [Remote Control domain](../CONTEXT.md), [existing operation receipt ADR-0007](./0007-local-receipts-and-no-blind-replay.md).
