@@ -20,17 +20,41 @@ _Avoid_: n8n replacement, unified MCP platform
 An MCP Server selected as a source of tools for a Workflow; prior registration is not required.
 _Avoid_: Pre-registered Connection (when referring to every callable MCP Server)
 
+**Draft**:
+An editable Workflow Definition that has not been published as an executable version.
+_Avoid_: Active workflow, Published Version
+
+**Published Version**:
+A fixed version of a Workflow Definition made available for execution by explicit publication.
+_Avoid_: Live draft, latest mutable definition
+
+**Run**:
+One execution of a Workflow bound to a particular Published Version for its lifetime.
+_Avoid_: Definition, GitHub Actions job
+
+**Target Credential**:
+An owner-authorized credential associated with a specific MCP Target rather than the Workflow MCP Portal identity.
+_Avoid_: Portal token, global upstream credential
+
+**Operation Authorization**:
+The owner's approval of a Workflow's external operation authority when enabling that Workflow for execution.
+_Avoid_: Portal login, blanket approval of every discovered tool
+
 ## Boundaries
 
 - This context is planned under `apps/workflow-mcp-worker` in the existing `lirtual/mcp-workers` monorepo; implementation has **not** been authorized by the design discussion.
 - Workflow MCP composes other capabilities. It does not take ownership of upstream MCP Workers' tools, credentials, business rules, or release lifecycles.
 - ChatGPT / AI agents using MCP are the primary interaction surface. A visual editor is not a prerequisite.
-- YAML/JSON is the intended declarative definition format. The authenticated owner can create, edit, and publish definitions **at runtime through MCP**, with definition data held by the runtime system rather than published only through Git.
-- Workflow MCP supports **dynamic discovery and invocation of arbitrary MCP Servers without preregistration**. This does not itself decide transport/authentication, secret handling, network egress/SSRF defense, or side-effect approvals.
+- YAML/JSON is the intended declarative definition format. The authenticated owner can **create/edit Drafts through MCP**, validate and **explicitly Publish** them; simply saving a change does not automatically activate it. D1 stores definitions, Published Versions, and necessary metadata; Git commits/deployments are not required for definition publication.
+- A **Run is pinned to the Published Version at admission**; edits/new publications do not mutate in-flight Run behavior. Retention, rollback, retirement and deploy-version compatibility still require design.
+- Workflow MCP supports **dynamic discovery and invocation of arbitrary MCP Servers without preregistration**, initially via **Streamable HTTP**. SSE/stdio compatibility is deferred; this is a transport scope decision, not a static target allowlist.
+- Target-specific authorization may **securely persist credentials for unattended recurring Workflows**; Portal credentials are not forwarded automatically. The specific secret storage/rotation protocol remains open.
+- Dynamic targets are still subject to **SSRF/network safeguards** (metadata, loopback, unintended private ranges, DNS rebinding and redirect bypass defense). These safety controls do not become preregistration rules.
+- When enabling a Workflow, the owner **confirms external operation authority**. Previously approved scheduled executions need no repeated manual approval, but introducing new high-risk operations requires re-approval. Exact authorization identity and invalidation semantics remain open.
 - The initial workflow graph is a **bounded DAG** with dependencies, conditions, and parallel steps; arbitrary loops and full dynamic graph semantics are out of initial scope.
-- **Cloudflare Workflows** owns durable orchestration, while **D1** holds coordination and queryable state. Heavy-task execution and its boundaries are not yet decided.
+- **Cloudflare Workflows** owns durable DAG orchestration, while **D1** holds definitions/versions, coordination and queryable state. **GitHub Actions** executes registered heavy capabilities (browser, CLI, Python) under an execution contract still to be designed; definitions do not receive arbitrary shell-execution authority.
 - Supported trigger types are **manual**, **webhook**, and **Cron**; delivery and recovery semantics are still open.
-- The initial product uses a **single owner** authenticated through the existing MCP Portal; no multi-user/RBAC system is required. Operation-specific access policy is still open.
-- The 2026-09-18 Workflow MCP v0.1 technical specification remains the review baseline. Its Git-only/static-definition and static MCP Connection assumptions are **superseded by Q5=B and Q7=B**, respectively. All other unconfirmed design details remain open.
+- The initial product uses a **single owner** authenticated through the existing MCP Portal; no multi-user/RBAC system is required. Target-specific permissions and execution identity still require explicit design.
+- The 2026-09-18 Workflow MCP v0.1 technical specification remains the review baseline. Git-only definitions and static MCP Connection requirements were superseded by Q5=B and Q7=B. Q11–Q18 now settle publishing lifecycle basics, version pinning, D1 storage, Streamable HTTP, per-target credentials, network safeguards, activation-time operation approval and GitHub Actions heavy execution. Exact protocols, failure guarantees and unconfirmed details remain open.
 
-See [ADR-0001](docs/adr/0001-mcp-native-product-boundary.md), [ADR-0002](docs/adr/0002-runtime-managed-definitions.md), [ADR-0003](docs/adr/0003-dynamic-mcp-targets.md), [ADR-0004](docs/adr/0004-cloudflare-workflows-and-bounded-dag.md), and [Grill With Docs decisions](docs/design/grill-with-docs.md).
+See [ADR-0001](docs/adr/0001-mcp-native-product-boundary.md), [ADR-0002](docs/adr/0002-runtime-managed-definitions.md), [ADR-0003](docs/adr/0003-dynamic-mcp-targets.md), [ADR-0004](docs/adr/0004-cloudflare-workflows-and-bounded-dag.md), [ADR-0005](docs/adr/0005-runtime-publication-and-run-versioning.md), [ADR-0006](docs/adr/0006-dynamic-mcp-boundaries.md), [ADR-0007](docs/adr/0007-registered-github-heavy-executor.md), and [Grill With Docs decisions](docs/design/grill-with-docs.md).
