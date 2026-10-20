@@ -26,7 +26,7 @@ function githubFor(secondary = false): typeof fetch {
 
 async function connectedClient(settings: Env) {
   const handler = createMcpHandler(
-    () => buildMcpServer(settings, githubFor(!!settings.GH_TOKEN_SECONDARY)),
+    () => buildMcpServer(settings, githubFor(settings.GH_TOKEN.includes('\n'))),
     { legacy: 'stateless' },
   );
   const transport = new StreamableHTTPClientTransport(new URL('https://worker.example/mcp'), {
@@ -70,7 +70,7 @@ test('real MCP protocol advertises eleven tools and rejects unauthorized reposit
 
 test('MCP lists all PAT-accessible repositories without exposing PATs', async () => {
   const dual: Env = {
-    ...env, GH_TOKEN_SECONDARY: 'synthetic-other-github-token',
+    ...env, GH_TOKEN: env.GH_TOKEN + '\nsynthetic-other-github-token',
   };
   const client = await connectedClient(dual);
   try {
@@ -96,6 +96,6 @@ test('Worker MCP endpoint still fails closed without trusted owner authenticatio
   assert.equal((await worker.fetch(request({ authorization: 'Bearer synthetic-mcp-token', origin: 'https://not-allowed.example' }), env)).status, 403);
   assert.equal((await worker.fetch(request({ authorization: 'Bearer synthetic-mcp-token' }), { ...env, GH_TOKEN: '' })).status, 503);
   assert.equal((await worker.fetch(request({ authorization: 'Bearer synthetic-mcp-token' }), {
-    ...env, GH_TOKEN_SECONDARY: env.GH_TOKEN,
+    ...env, GH_TOKEN: env.GH_TOKEN + '\n' + env.GH_TOKEN,
   })).status, 503);
 });
