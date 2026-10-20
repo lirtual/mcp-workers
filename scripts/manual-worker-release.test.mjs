@@ -325,38 +325,29 @@ test("first GitHub Actions Worker release retries only transient 404s without we
   assert.match(step, /Unexpected unauthenticated MCP status/);
 });
 
-test("GitHub Actions multi-account deployment checks secondary secret and exact routing", () => {
+test("GitHub Actions deploy readback validates credential slots without repository allowlists", () => {
   const worker = "github-actions-mcp-worker";
-  const primarySecrets = [{ name: "MCP_ACCESS_TOKEN" }, { name: "GH_TOKEN" }];
-  const primaryBindings = [
+  const secrets = [{ name: "MCP_ACCESS_TOKEN" }, { name: "GH_TOKEN" }];
+  const bindings = [
     { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
     { name: "GH_TOKEN", type: "secret_text" },
-    { name: "GITHUB_REPOS", type: "plain_text", text: "autoactions/tsrv,autoactions/tsvc" },
   ];
-  const secondaryVar = { name: "GITHUB_REPOS_SECONDARY", type: "plain_text",
-    text: "lirtual/mcp-workers" };
-  const secondarySecret = { name: "GH_TOKEN_SECONDARY", type: "secret_text" };
-  const options = { mode: "readback", expectedGithubRepos: "autoactions/tsrv,autoactions/tsvc",
-    expectedGithubReposSecondary: "lirtual/mcp-workers" };
-  const goodSettings = {
-    bindings: [...primaryBindings, secondaryVar, secondarySecret],
-    observability: { enabled: true, logs: { invocation_logs: true } },
-  };
-  const secrets = [...primarySecrets, { name: "GH_TOKEN_SECONDARY" }];
-  assert.equal(verifyBindings(worker, goodSettings, secrets, options), true);
-  assert.throws(() => verifyBindings(worker, goodSettings, primarySecrets, options),
-    /secondary Token binding missing/);
-  assert.throws(() => verifyBindings(worker, { ...goodSettings,
-    bindings: [...primaryBindings, secondaryVar] }, secrets, options),
-    /secondary Token binding missing/);
-  assert.throws(() => verifyBindings(worker, { ...goodSettings,
-    bindings: [...primaryBindings,
-      { ...secondaryVar, text: "autoactions/tsrv" }, secondarySecret] }, secrets,
-    { ...options, expectedGithubReposSecondary: "autoactions/tsrv" }),
-    /duplicate repository/);
-  assert.throws(() => verifyBindings(worker, goodSettings, secrets,
-    { ...options, expectedGithubReposSecondary: "" }), /unexpected secondary/);
-  const action = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
-  assert.ok(action.includes("GH_TOKEN_SECONDARY: ${{ secrets.GH_TOKEN_SECONDARY }}"));
-  assert.ok(action.includes("GITHUB_REPOS_SECONDARY: ${{ vars.GH_ACTIONS_REPOS_SECONDARY }}"));
+  const settings = { bindings, observability: { enabled: true,
+    logs: { invocation_logs: true } } };
+  assert.equal(verifyBindings(worker, settings, secrets, { mode: "readback" }), true);
+  assert.throws(() => verifyBindings(worker, {
+    ...settings, bindings: [...bindings,
+      { name: "GITHUB_REPOS", type: "plain_text", text: "autoactions/tsrv" }],
+  }, secrets, { mode: "readback" }), /Legacy GitHub Actions repository allowlists/);
+  assert.throws(() => verifyBindings(worker, settings, secrets,
+    { mode: "readback", expectGithubTokenSecondary: true }), /PAT bindings/);
+  const dualSettings = { ...settings, bindings: [...bindings,
+    { name: "GH_TOKEN_SECONDARY", type: "secret_text" }] };
+  const dualSecrets = [...secrets, { name: "GH_TOKEN_SECONDARY" }];
+  assert.equal(verifyBindings(worker, dualSettings, dualSecrets,
+    { mode: "readback", expectGithubTokenSecondary: true }), true);
+  assert.throws(() => verifyBindings(worker, dualSettings, dualSecrets,
+    { mode: "readback" }), /PAT bindings/);
+  assert.match(readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
+    /GH_TOKEN_SECONDARY: \\$\\{\\{ secrets\\.GH_TOKEN_SECONDARY \\}\\}/);
 });
