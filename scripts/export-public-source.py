@@ -16,7 +16,7 @@ REPLACE = {
     b"aiyaya.workers.dev": b"example-account.workers.dev",
     b"RAY-WORKSPACE": b"EXAMPLE-DEVICE",
     b"CloudCone": b"ExampleProvider",
-    b"cloudcone": b"example-provider",
+    b"cloudcone": b"examplehost",
 }
 BAD = {
     "GitHub credential": rb"\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{30,})\b",
