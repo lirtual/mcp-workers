@@ -153,10 +153,16 @@ try{
     {id:'hold',uses:'s1.readonly_mcp',with:{tool:'echo',arguments:{value:'capacity',delay_ms:15000}}}
   ]};
   const burstDraft=await tool('workflow_create',{definition:JSON.stringify(burstDefinition)});
-  await tool('workflow_publish',{workflow_id:burstDraft.workflow_id,expected_revision:1});
-  const burst=await Promise.all(Array.from({length:16},(_,i)=>cli.callTool({name:'workflow_run',arguments:{
-    workflow_id:burstDraft.workflow_id,inputs:{index:i},idempotency_key:'capacity-burst-'+burstDraft.workflow_id+'-'+i
-  }})));
+  const secondBurstDraft=await tool('workflow_create',{definition:JSON.stringify({...burstDefinition,name:'Second shared-capacity Workflow'})});
+  await Promise.all([burstDraft,secondBurstDraft].map(w=>tool('workflow_publish',{workflow_id:w.workflow_id,expected_revision:1})));
+  // Alternate owners of the eight slots across TWO Workflows. Capacity is
+  // application-global, not eight additional slots per Workflow definition.
+  const burst=await Promise.all(Array.from({length:16},(_,i)=>{
+    const wf=i%2===0?burstDraft:secondBurstDraft;
+    return cli.callTool({name:'workflow_run',arguments:{
+      workflow_id:wf.workflow_id,inputs:{index:i},idempotency_key:'capacity-burst-'+wf.workflow_id+'-'+i
+    }});
+  }));
   const admitted=burst.filter(x=>!x.isError).map(x=>JSON.parse(x.content[0].text));
   const rejected=burst.filter(x=>x.isError).map(x=>JSON.parse(x.content[0].text).error);
   ok(admitted.length===8,'simultaneous different-key admissions never overrun the eight-slot cap');

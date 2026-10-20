@@ -203,10 +203,12 @@ fault-injection evidence, **not** proof that an actual instance was aged past
 Cloudflare's retention window on the live platform.
 
 **Concurrent admission capacity acceptance (2026-10-21):** A new public-MCP
-local E2E case concurrently submits **16 different idempotency keys** to a
-read-only Published Version with a 15-second Step. Precisely **8 Runs are
-admitted**, all 8 excess requests return `run_capacity_exceeded`, and all 8
-admitted Runs eventually succeed. The existing local suite now passes **45/45
+local E2E case concurrently submits **16 different idempotency keys** across
+**two Published Workflows**, alternating targets with identical 15-second
+read-only Steps. Exactly **8 Runs are admitted across the whole application**,
+all 8 excess requests return `run_capacity_exceeded`, and all 8 admitted Runs
+eventually succeed. The earlier same-Workflow test is thus strengthened to prove
+that the 8-slot cap is global, not 8 slots per Workflow. The existing local suite now passes **45/45
 owner-facing MCP assertions**; the D1 lost-ACK/reserved-start/capacity recovery
 fault suite, **19/19 S1 unit/contract**, Portal Auth **6/6**, selector **6/6**,
 TypeScript and Wrangler dry-run also pass. This is **local Wrangler D1
