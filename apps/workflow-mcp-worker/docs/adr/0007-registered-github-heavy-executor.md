@@ -17,6 +17,6 @@ Cloudflare Workflows remains the sole durable orchestrator (**Q8=A**) and may de
 
 Dynamic MCP Server discovery (**Q7=B**) and the restriction to **registered heavy executor capabilities** are distinct boundaries: the latter does not create a registration requirement for MCP Servers. The GitHub Actions management MCP and Workflow MCP's heavy executor have distinct operational responsibilities and are not assumed to share token authority.
 
-The executor protocol, job registration format, runner permissions, OIDC/claim identity, dispatch reconciliation, callback ordering, cancellation and large output/artifact transport remain **open**. Historical v0.1 mechanisms are design candidates, not automatically re-approved by Q18.
+Round 4 **Q26=A and Q27=A** (ADR-0011) further confirms GitHub OIDC plus atomic D1 Attempt Claim and a separate minimal-scope execution credential, not the management MCP multi-PAT pool. The exact executor protocol, job registration, OIDC issuer/audience/ref checks, dispatch reconciliation, callback ordering, cancellation and large output/artifact transport remain **open**. Historical v0.1 implementation details are candidates, not automatically approved.
 
 Design decision only. No implementation, merge, deployment, credentials, or Tickets are authorized.
