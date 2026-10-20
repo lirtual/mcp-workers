@@ -107,6 +107,10 @@ _Avoid_: An implicit default device or an unspecified global browser.
 The actual webpage endpoint a browser is requested to visit, distinct from authority to act on the page or an assumption that an internal address is safe.
 _Avoid_: Equating reachability, a plausible hostname or a page's own claim with authorization for a consequential destination.
 
+**Effective Browser Navigation Target**:
+The browser navigation destination actually reached after redirects and address resolution, which may differ from the originally requested URL.
+_Avoid_: Treating initial-URL approval as automatic approval of a redirected or re-resolved sensitive target.
+
 **Browser Tab ID**:
 The stable identity of a managed browser tab within one device and Automation Browser Session, retained across navigation and invalidated when that tab closes.
 _Avoid_: A tab's list position, page URL or title as a substitute for identity.
@@ -138,6 +142,10 @@ _Avoid_: Equating a recent screenshot timestamp with target stability after navi
 **Browser Page Observation**:
 A bounded, task-relevant account of a selected page's semantic content or explicitly requested visual appearance, distinct from authorization or a guarantee that private data is absent.
 _Avoid_: Treating an untrusted webpage as instructions or assuming a screenshot cannot reveal sensitive information.
+
+**Browser Diagnostic Record**:
+The minimal operation identity, status and safe error information needed for ordinary browser activity diagnosis without retaining page contents or credentials by default.
+_Avoid_: Confusing operational telemetry with authorization to persist full DOM, screenshots, cookies, tokens or untrusted webpage instructions.
 
 **Browser Local Transfer**:
 An upload or download initiated through an automation browser where the source or destination file stays on the Agent's device.
@@ -180,8 +188,8 @@ A proposed browser operation known to meet the limited low-impact execution boun
 _Avoid_: Declaring an arbitrary click, fill, key press, URL or model-assessed button harmless solely because its visible label appears innocuous.
 
 **Verified Browser Approval**:
-An owner confirmation whose applicability to the exact one-use consequential operation is reliably established at the Agent execution boundary through the supported client and MCP path.
-_Avoid_: Equating a chat response or possession of the MCP credential alone with end-to-end verified owner authorization.
+An owner confirmation for one specific consequential browser operation, reliably checked at the Agent execution boundary through a supported client/MCP path, with a short validity period and no authorization to replay after consumption, expiry or material target change.
+_Avoid_: Equating an ordinary chat response, old approval or possession of an MCP credential with current verifiable owner authorization.
 
 **Browser Recovery Conflict**:
 A state in which the browser's ownership, retained Profile availability or effectful operation outcome is insufficiently known to resume safely.
@@ -241,11 +249,17 @@ The controlled transfer of existing authoritative Operation Receipts to a replac
 _Avoid_: Treating a successful new-store startup as sufficient evidence that historical operation identities were preserved.
 
 
+## Browser final navigation/logging/approval and convergence choices — accepted thirteenth round (2026-10-20)
+
+Q49=A requires the Effective Browser Navigation Target to be reassessed on each redirect, host or relevant DNS/resolved-address change, not only once at the initial URL; the concrete coverage of subresources, service workers and rebinding remains an unproven enforcement detail. Q50=A keeps routine Browser Diagnostic Records small, without persisting DOM dumps, screenshots, credentials or untrusted tool payloads by default; explicitly requested content can still contain private information and never authorizes actions. Q51=A makes Verified Browser Approval, **if a supported end-to-end client path can actually verify it**, short-lived, single-use and bound to the exact consequential operation; changed, expired, consumed or unverifiable approvals fail closed. Q52=A closes the current product-design decision interview through a documented consistency/overengineering review, with **separate explicit owner confirmation of shared understanding still required** and no implementation, Issues/Tickets, CI changes, PR merge or deployment approved.
+
+See [ADR-0030](./adr/0030-browser-conservative-gating-consent-evidence-acceptance.md), [ADR-0028](./adr/0028-browser-data-files-provenance-platform-acceptance.md), [ADR-0026](./adr/0026-browser-capabilities-tab-and-approval-scope.md), and [ADR-0021](./adr/0021-browser-automation-extension.md). Missing real ChatGPT approval transport, binary integrity metadata, installed Agent parity, logging enforcement and platform browser acceptance are *evidence gaps*, not proof of design implementation. The authoritative convergence and evidence-gate record is [BROWSER-AUTOMATION-DESIGN.md](./BROWSER-AUTOMATION-DESIGN.md).
+
 ## Browser navigation, visual freshness, safe downloads and availability — accepted twelfth round (2026-10-20)
 
 Q45=A selects ordinary HTTP(S) Browser Navigation Destinations; executable/local schemes such as `javascript:` and `file:` are not ordinary allowed navigation. Loopback, link-local, metadata and sensitive internal/admin targets need distinct owner authorization and an effect/target review rather than receiving automatic low-impact status, without a global website allowlist. Q46=A requires Visual Target Freshness to track the exact tab and current page/viewport/scroll context; after material navigation, tab, scroll or layout changes or unprovable freshness, locate again from a new screenshot. Q47=A confines new downloads to Agent-managed directory names that cannot overwrite existing files or traverse/escape through links; further owner-directed file movement/replacement remains an existing Remote Control operation. Q48=A distinguishes Browser Capability Availability through existing device status and MCP tool error feedback: only documented, implemented, accepted for the platform, and actually enabled are different situations; no second capability registry is chosen.
 
-[ADR-0030](./adr/0030-browser-conservative-gating-consent-evidence-acceptance.md), [ADR-0027](./adr/0027-browser-tools-visual-consent-and-recovery.md), [ADR-0028](./adr/0028-browser-data-files-provenance-platform-acceptance.md) and [ADR-0029](./adr/0029-browser-results-outcomes-downloads-gated-release.md) were amended rather than adding an ADR. DNS/redirect checks, page freshness algorithm, platform-specific safe file creation and precise availability error schema remain unsettled. These are documentation decisions only, not deployed browser functionality.
+[ADR-0030](./adr/0030-browser-conservative-gating-consent-evidence-acceptance.md), [ADR-0027](./adr/0027-browser-tools-visual-consent-and-recovery.md), [ADR-0028](./adr/0028-browser-data-files-provenance-platform-acceptance.md) and [ADR-0029](./adr/0029-browser-results-outcomes-downloads-gated-release.md) were amended rather than adding an ADR. Q49 subsequently settles the policy that redirects and resolved-address changes must be rechecked, while exact DNS/request interception, page freshness algorithm, platform-specific safe file creation and availability-error schema remain unsettled. These are design decisions only, not deployed browser functionality.
 
 ## Browser initial low-impact scope and bounded output — accepted eleventh round (2026-10-20)
 
