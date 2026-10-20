@@ -273,3 +273,35 @@ This is **ABI symbol availability only** on the owner's currently selected Windo
 5. Reuse this exact synthetic fixture and previous Linux/Windows acceptance evidence; do not add a new general-purpose proxy or complex declarative policy engine speculatively. If the platform's suitable isolation is not possible with current Agent privileges, seek an explicit owner architectural trade-off instead of weakening the network P0.
 
 **Status:** route-only allowlisting is **disqualified**, offline-only negative regression **passed**, cross-platform OS-backed conditional external access **not implemented or accepted**; one-use owner confirmation separately **not testable**. This is a research and CI evidence update inside existing Draft PRs; no product decision Q53, new ADR/Ticket, production code merge, release or deployment.
+
+## O. Ordinary-user Linux namespace feasibility and reuse-first sandbox options (2026-10-20)
+
+[remote-control-agent Draft PR #15](https://github.com/lirtual/remote-control-agent/pull/15) adds a **source-only/CI-only normal-user Linux process/network namespace probe**, `apps/remote-control-agent/scripts/probe-linux-network-namespace.mjs`, to the existing Ubuntu x64 real Playwright smoke. It neither modifies the host nor elevates privileges: **no sudo, sysctl, AppArmor exceptions, Docker daemon, host firewall, iptables or production Agent changes**.
+
+### Actual CI execution and conclusion
+
+The probe first creates an ephemeral **127.0.0.1 TCP listener** and confirms that a normal host process reaches it (positive control, exactly one connection). It then tries `unshare --user --map-root-user --net -- <node> <probe> --child ...` to create an unprivileged child network namespace. Its design is to assert **zero additional listener hits**, and only if namespace creation succeeds, attempt real Playwright headless Chromium offline rendering within that process namespace.
+
+The first CI attempt revealed a **test-fixture-only** unhandled TCP `ECONNRESET` from an eagerly closed positive-control socket, not a network isolation bypass. The server now handles that teardown error. On the corrected run, [Agent CI #39399956790](https://github.com/lirtual/remote-control-agent/actions/runs/39399956790) **3/3 jobs passed** — Windows x64 stock/optional browser candidate, Ubuntu ARM64 and Ubuntu x64 regression. The actual **Linux sandbox probe returned**:
+
+```text
+RCA_NETNS_PROBE={"status":"UNAVAILABLE","reason":"unshare-or-child-exit",
+ "code":1,"detail":"unshare: write failed /proc/self/uid_map: Operation not permitted"}
+```
+
+**Interpretation: Linux ordinary-user namespace creation was denied by this specific Ubuntu 24.04 CI Runner.** No isolated Chromium child was started, so neither Linux network containment nor browser-in-container usability **was accepted**. The green CI verifies the source and the **correct fail-closed report**, NOT this OS containment P0. Ubuntu 24.04's unprivileged namespace restrictions and AppArmor policy are documented in [Ubuntu's release notes](https://documentation.ubuntu.com/release-notes/24.04/). Do **not** disable the system restrictions to make the probe green. WSL2 and the user's actual WSL account have **not** been probed by this test; do not extrapolate CI's negative result to those installations.
+
+### Existing runtime worth evaluating instead of writing a second sandbox engine
+
+[Microsoft MXC (Microsoft eXecution Container)](https://github.com/microsoft/mxc) is an open-source **candidate**, not a selected dependency. The repository advertises a typed [Node SDK](https://github.com/microsoft/mxc/tree/main/sdk/node) and platform-specific ProcessContainer (Windows 11) / Bubblewrap (Linux) backends with `network.egress.default: "deny"` support and an existing container lifecycle. The source `sdk/node/package.json` currently declares `@microsoft/mxc-sdk` **version 1.0.1** and Node >=24; this is a *source version observation*, **not yet an npm registry/provenance validation or integrated Agent acceptance**. Its own [Windows support matrix](https://github.com/microsoft/mxc/blob/main/docs/backends/process-container/os-version-support.md) documents minimum Windows 11 24H2 process-isolation build **26100.9278**, but OS version alone does not establish whether the target host offers MXC's **native WFP enforcement tier** versus a less capable AppContainer fallback. Its [networking guide](https://github.com/microsoft/mxc/blob/main/docs/backends/process-container/networking.md) explicitly warns that AppContainer compatibility does not provide the same IP/CIDR-specific or no-bypass proxy rules as newer ProcessContainer runtime capabilities.
+
+**Do not assume the SDK bypasses Linux AppArmor:** Bubblewrap and its namespace capabilities still depend on host permissions, so this CI result remains a platform blocker until the provider is actually validated. **Do not introduce MXC as a production dependency merely because it offers a JavaScript API**, and do not introduce a second Worker, dedicated proxy or firewall daemon at this stage.
+
+### Next smallest decisive experiment
+
+1. On a **disposable Windows 11 Runner meeting the documented build requirements**, inspect MXC ProcessContainer feature availability and its **actual enforcement tier** under an ordinary user (including whether no-bypass egress can be enforced). If unavailable or only a weaker fallback is returned, report **UNAVAILABLE/NOT ACCEPTED** and stop without weakening controls.
+2. Only if the process-sandbox backend is genuinely usable, perform an **ephemeral, no-real-address** baseline with a source listener that is deliberately allowed and a forbidden redirect target that records **zero hits**. Require real Chromium multi-process startup, profile access and IPC, not only `cmd.exe` execution. Confirm that the restriction also covers browser helper processes; no admin/UAC or global host rule changes.
+3. On Linux/WSL2, keep unprivileged namespace support a platform preflight gate; do not auto-fallback to unrestricted Chromium or silently use the Docker root daemon. If unavailable, **external navigation stays off** while the offline-only core may remain testable.
+4. Treat these as independent from the still-**unverified** exact-action one-use ChatGPT→Agent owner approval gate. The offline-only Chromium zero-hit test and the initial-URL route redirect bypass are already proven and should not be repeated absent changes.
+
+**Architecture/state:** Q1–Q52 unchanged. OS isolation **P0 NOT ACCEPTED**; no public browser tools, new production dependencies, releases, merges, deployments, host configuration modifications or new Tickets.
