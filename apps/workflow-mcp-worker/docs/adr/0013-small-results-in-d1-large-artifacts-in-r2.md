@@ -13,6 +13,6 @@ The Workflow MCP execution result contract stores small structured results and s
 
 ## Consequences
 
-Specific inline size limits, artifact naming and access control, retention, redaction, upload verification, integrity and GC policies remain **open**. D1 records must not expose sensitive R2 objects or reusable upload tokens to unauthorized callers. This decision does not create an additional R2-based workflow definition store and does not approve mirroring all GitHub stdout/stderr into R2.
+Round 7 **Q49=A** requires preserving Artifacts and their references while nonterminal Runs need them, with finite retention and safe cleanup after termination; indefinite storage of all historical output is not required. Specific inline size limits, artifact naming and access control, post-terminal retention, redaction, upload verification, integrity and GC mechanisms remain **open**. D1 records must not expose sensitive R2 objects or reusable upload tokens to unauthorized callers. This decision does not create an additional R2-based workflow definition store and does not approve mirroring all GitHub stdout/stderr into R2.
 
 Documentation-only agreement. No source implementation, infrastructure provisioning, merge, deploy, or Tickets.
