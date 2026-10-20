@@ -465,6 +465,32 @@ export class V2OwnerCoordinator {
     return true;
   }
 
+  /** Owner-only rename: update a display label without touching keys, grants or live sockets. */
+  private async renameDevice(request: Request): Promise<Response> {
+    const body = await limitedJson(request);
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return Response.json({ error: "invalid_request" }, { status: 400 });
+    }
+    const args = body as Record<string, unknown>;
+    if (Object.keys(args).length !== 2 ||
+        typeof args.device_id !== "string" ||
+        !/^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(args.device_id) ||
+        typeof args.name !== "string" || args.name.length < 1 || args.name.length > 64 ||
+        args.name.trim() !== args.name || /[\x00-\x1f]/.test(args.name)) {
+      return Response.json({ error: "invalid_request" }, { status: 400 });
+    }
+    const deviceId = args.device_id, name = args.name;
+    const result = await this.state.storage.transaction(async txn => {
+      const device = await txn.get<V2Device>("device:" + deviceId);
+      if (!deviceIsAuthorized(device)) return null;
+      await txn.put("device:" + deviceId, { ...device, name });
+      return { device_id: deviceId, name };
+    });
+    return result
+      ? Response.json(result, { headers: { "cache-control": "no-store" } })
+      : Response.json({ error: "not_found" }, { status: 404 });
+  }
+
   /** Delete durable grant/epoch before touching any live sockets or in-flight requests. */
   private async revokeDevice(request: Request): Promise<Response> {
     const body = await limitedJson(request);
@@ -586,6 +612,10 @@ export class V2OwnerCoordinator {
     }
     if (request.method !== "POST") return new Response(null, { status: 405 });
     const path = new URL(request.url).pathname;
+    if (path === "/rename") {
+      try { return await this.renameDevice(request); }
+      catch { return Response.json({ error: "unavailable" }, { status: 503 }); }
+    }
     if (path === "/revoke") {
       try { return await this.revokeDevice(request); }
       catch { return Response.json({ error: "unavailable" }, { status: 503 }); }
