@@ -44,4 +44,6 @@ Test resources: throwaway D1 `wf-p04-schedule-20261020` and a single isolated Wo
 - P0-4: real Cloudflare scheduled invocation, D1 due selection without O(N*minutes) repeated scans, repeatability at DST and downtime, unique actual Run creation, and cost/precision measurements.
 - P0-5: real GitHub OIDC + atomic Claim/callback fact persistence tests remain pending.
 
+**Cleanup verified:** both temporary Cloudflare Workers and the throwaway D1 database were deleted. Direct account listing returned **12 Workers, 4 D1 databases and 1 Workflow**, with no `wf-p03-*` or `wf-p04-*` resources left. Both WSL temporary secret-key files were deleted. Redacted/synthetic test results remain in the isolated WSL scratch directories; no test code or secrets were committed to the PR.
+
 **Q1–Q50 unchanged.** All code and test keys are scoped to scratch/throwaway resources. Do not claim AC-08/27 or AC-11/29 fully closed on these results.
