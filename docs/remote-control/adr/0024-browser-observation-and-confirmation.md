@@ -12,6 +12,8 @@ Status: **accepted design choices (Grill With Docs round 4, 2026-10-20); documen
 
 **Trade-offs:** a fixed idle duration balances multi-step reuse with Agent resources; headless-first supports unattended operation without forcing a GUI; semantic-first cuts unnecessary screenshots while retaining visual fallbacks; per-high-impact-action confirmation slows consequential workflows deliberately to avoid granting ambient authority to untrusted webpages. These choices do not add a general desktop-control surface.
 
-**Unsettled:** exact tool and element contracts; local file transfer; screenshot/page-data privacy bounds; action operation IDs and receipts; confirmation binding and ambiguous-outcome recovery; browser download trust, profile lock recovery and platform rollout acceptance. No feature code, new issues/tickets, CI, configuration or production deployment is authorized by this document.
+**Follow-on decision:** [ADR-0025](./0025-atomic-browser-actions-and-receipts.md) selects atomic curated browser tools, semantic-first uniquely resolved element targets, device-local upload/download boundaries, and Agent-local Operation IDs/Receipts for potentially effectful browser actions. Browser-level execution is not website-side success.
+
+**Unsettled:** concrete tool/element schemas; screenshot/page-data privacy bounds; local-path authorization and transfer cleanup; receipt details, confirmation binding and ambiguous website outcomes; browser download trust, profile lock recovery and platform rollout acceptance. No feature code, new issues/tickets, CI, configuration or production deployment is authorized by this document.
 
 Related: [ADR-0021](./0021-browser-automation-extension.md), [ADR-0022](./0022-playwright-managed-browser-sessions.md), [ADR-0023](./0023-browser-runtime-profile-interruption.md), [Browser Automation Design](../BROWSER-AUTOMATION-DESIGN.md).
