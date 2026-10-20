@@ -535,10 +535,18 @@ const bookmarkManageTool = defineTool({
         };
       }
       case "delete": {
-        if (!args.id) throw new ValidationError("id is required for delete");
+        if (!args.id || !Number.isSafeInteger(args.id) || args.id <= 0)
+          throw new ValidationError("A positive bookmark ID is required for delete");
+        // Legacy tool stays registered until the approved public-contract
+        // cutover, but must not bypass the new Trash-only permanent-delete rule.
+        const current = await raindropService.getBookmark(args.id, true);
+        const source = current.collection?.$id;
+        if (typeof source !== "number" || !Number.isSafeInteger(source) ||
+            source === -99 || (source !== -1 && source <= 0))
+          throw new ValidationError("Legacy delete only supports a verified non-Trash bookmark");
         await raindropService.deleteBookmark(args.id);
         return {
-          content: [textContent(`Deleted bookmark ${args.id}`)],
+          content: [textContent(`Moved bookmark ${args.id} to Trash`)],
           structuredContent: { operation: "delete" as const, deleted: true },
         };
       }

@@ -626,3 +626,29 @@ describe("T03 atomic bookmark writes over public MCP", () => {
     }
   });
 });
+
+
+describe("Legacy bookmark_manage cannot bypass Trash protections", () => {
+  it("refuses an already-trashed bookmark before dispatching DELETE", async () => {
+    const service = new RaindropMCPService({ accessToken: "test-token" });
+    const get = vi.spyOn(service.raindropService, "getBookmark")
+      .mockResolvedValue({ _id: 7, title: "Old", link: "https://example.com",
+        collection: { $id: -99 }, tags: [] } as Awaited<ReturnType<typeof service.raindropService.getBookmark>>);
+    const remove = vi.spyOn(service.raindropService, "deleteBookmark").mockResolvedValue();
+    const client = new Client({ name: "legacy-trash-guard", version: "1.0.0" });
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    try {
+      await Promise.all([service.getServer().connect(st), client.connect(ct)]);
+      const response = await client.callTool({
+        name: "bookmark_manage",
+        arguments: { operation: "delete", id: 7, title: "Old", url: "https://example.com" },
+      });
+      expect(response.isError).toBe(true);
+      expect(get).toHaveBeenCalledWith(7, true);
+      expect(remove).not.toHaveBeenCalled();
+    } finally {
+      await client.close(); await service.cleanup();
+      get.mockRestore(); remove.mockRestore();
+    }
+  });
+});
