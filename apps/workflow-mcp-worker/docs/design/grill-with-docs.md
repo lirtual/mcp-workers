@@ -190,6 +190,10 @@ The [P0 local PoC evidence](p0-local-poc-evidence.md) records actual WSL2 local 
 
 [Isolated evidence report](p0-mcp-cron-isolated-20261020.md) confirms real official MCP SDK v2.3.1 Server–Client interoperability over Cloudflare HTTPS with both v2.3.1 and legacy v1.32.1 clients for the read-only `ping` tool. Runtime D1 plans used a single fixed Cron configuration and conditional occurrence receipts; deterministic simulated ticks verified DST gap/overlap, concurrency dedup and runtime edit without redeploy. One initial faulty total-count assertion was corrected by inspecting keys per calendar day, not by changing the scheduler. **No real native scheduled handler firing had been observed**, and the mini PoC is not a general/efficient Cron compiler. SSRF, redirect/credential isolation and complete MCP protocol versions are NOT approved. Temporary resources deleted; original 12 Workers/4 D1/1 Workflow inventory restored.
 
+## P0-5 actual isolated GitHub Actions OIDC and durable callback evidence (2026-10-20)
+
+[Evidence report](p0-github-oidc-claim-isolated-20261020.md): isolated **private** GitHub repo ran two actual Actions Jobs for the same Attempt. GitHub JWKS-verified OIDC identity/audience/issuer/repo/ref/workflow checks passed; wrong audiences were rejected; D1 `INSERT OR IGNORE` authorized exactly one owner; losing Job callback was forbidden; duplicated winning callback persisted one receipt. A subsequent independent recovery job triggered one real Cloudflare Workflow waiter from the previously persisted, unsent receipt and the receipt was confirmed delivered by independent Cloudflare API queries. This does **not** close real external side effects, timeout/fencing, ambiguous dispatch or forced cancellation acceptance. Test-only repo and all Cloudflare resources were deleted; **12 Workers / 4 D1 / 1 Workflow** baseline restored. Q1–Q50 unchanged.
+
 ## Working rules
 
 1. Ask the complete current frontier in a round; offer one recommended choice per question.
