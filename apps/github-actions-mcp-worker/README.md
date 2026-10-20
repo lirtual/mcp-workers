@@ -7,8 +7,21 @@ A standalone Cloudflare Streamable HTTP MCP server that uses **only the GitHub R
 | Name | Type | Usage |
 | --- | --- | --- |
 | `MCP_ACCESS_TOKEN` | Required runtime Secret | Reuse existing single-user MCP Portal Bearer token |
-| `GH_TOKEN` | Required runtime Secret | GitHub fine-grained PAT with Actions Read & Write in permitted repositories; `repository_dispatch` also requires Contents Write |
-| `GITHUB_REPOS` | Optional GitHub Environment variable / Wrangler default | Comma-separated exact repository allowlist |
+| `GH_TOKEN` | Required runtime Secret | Primary GitHub account's fine-grained PAT with Actions Read & Write; `repository_dispatch` also requires Contents Write |
+| `GITHUB_REPOS` | GitHub Environment variable / Wrangler default | Primary account's exact repository allowlist |
+| `GH_TOKEN_SECONDARY` | Optional runtime Secret | Separate fine-grained PAT for a second GitHub account; never falls back to `GH_TOKEN` |
+| `GITHUB_REPOS_SECONDARY` | Optional Worker Variable | Only repositories authorized by `GH_TOKEN_SECONDARY` |
+
+### Multiple GitHub accounts (no JSON Secrets or new MCP tools)
+
+For the existing `autoactions` and an additional `lirtual` account, keep primary `GH_TOKEN` and `GH_ACTIONS_REPOS` as before. In the **same** `github-actions-mcp-worker` GitHub Environment, add:
+
+- Secret `GH_TOKEN_SECONDARY`: a separate PAT issued by the GitHub account allowed to manage `lirtual/mcp-workers`, with repository-scoped Actions Read/Write. Add Contents Write only if invoking `repository_dispatch`.
+- Variable `GH_ACTIONS_REPOS_SECONDARY`: `lirtual/mcp-workers` (or a comma-separated list of repositories that exact secondary PAT can access).
+
+Deployment maps this variable to the Worker's `GITHUB_REPOS_SECONDARY`. Run `repositories_list` to see the union of both explicit lists. All tools keep the existing `repo: "owner/repo"` input; credential selection is internal and **strictly bound to the matching list**. Duplicate assignments (including case-insensitive duplicates) are refused; secondary repositories never retry with the primary token on authorization errors. The secondary token is not required for existing single-account deployments. No GitHub user discovery, GitHub App, database, account selector or new tool is needed.
+
+**Operational boundary:** A second GitHub PAT is a real additional credential, so creating that PAT and storing it in the GitHub Environment is an explicit owner action. Review required workflow permissions and GitHub Environments before deployment. This initial extension supports one optional additional account credential; a third independent account needs an explicit scoped extension, not an implicit fallback.
 
 The default allowlist is `autoactions/tsrv,autoactions/tsvc`. For production overrides, set `GH_ACTIONS_REPOS` as a Variable in the GitHub Environment named `github-actions-mcp-worker`; use comma-separated `owner/repo` values without whitespace (max 30 entries). No override means the Wrangler default. Set `GH_TOKEN` as an Environment Secret there. The release workflow passes `GH_TOKEN` under the same name from the GitHub Environment to the Worker; only `GH_ACTIONS_REPOS` is mapped to the Worker's `GITHUB_REPOS` variable because GitHub reserves user-defined names starting with `GITHUB_`. Existing `MCP_ACCESS_TOKEN` may come from the shared repository Secret or a Worker-specific Environment Secret. The release flow verifies the exact deployed repository list. Do not check tokens into source control. A GitHub App installation token is short-lived; the first release uses a PAT, avoiding token-generation machinery.
 
