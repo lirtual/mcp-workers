@@ -20,6 +20,8 @@ Status: **accepted design choices (Grill With Docs round 5, 2026-10-20); documen
 
 **Follow-on decision (round 9):** [ADR-0029](./0029-browser-results-outcomes-downloads-gated-release.md) selects a compact result envelope with Operation IDs for effectful calls, separate website-effect evidence, and refusal to blindly retry unknown browser operations; seven-day cleanup applies only to unreferenced managed downloads.
 
-**Still open:** precise tool names/arguments and tab identity implementation; visual freshness, numeric screenshot/page-output limits; cleanup reference tracking; approval delivery/expiry/consumption and receipt/website evidence schemas; sensitive-data redaction; process/lock checks; binary verification and rollout gates. No code, runtime changes, new implementation Issues/Tickets, or deployment is authorized.
+**Follow-on decision (round 10):** [ADR-0030](./0030-browser-conservative-gating-consent-evidence-acceptance.md) confirms existing local receipt reuse without a second transaction ledger, and no execution of uncertain-effect actions under a presumed low-impact classification. High-impact enablement depends on verified end-to-end one-use confirmation.
+
+**Still open:** low-impact subset, precise tool/receipt fields and tab identity implementation; visual freshness and snapshot limits; cleanup reference tracking; approval proof transport/expiry/consumption and website evidence; sensitive-data handling, lock checks, binary verification and rollout gates. No code, runtime changes, new implementation Issues/Tickets, or deployment is authorized.
 
 Related: [ADR-0021](./0021-browser-automation-extension.md), [ADR-0024](./0024-browser-observation-and-confirmation.md), [browser design tree](../BROWSER-AUTOMATION-DESIGN.md), [Remote Control domain](../CONTEXT.md), [existing operation receipt ADR-0007](./0007-local-receipts-and-no-blind-replay.md).
