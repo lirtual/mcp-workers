@@ -1,0 +1,327 @@
+# Workflow MCP — Consolidated Technical Specification (DRAFT)
+
+**Date:** 2026-10-20  
+**Status:** Proposed implementation contract for review; **not implementation authorization**  
+**Source of decisions:** Grill With Docs Q1–Q50 in [decision log](grill-with-docs.md); [domain vocabulary](../../CONTEXT.md); [ADRs](../adr/)  
+**Change authority:** Documentation-only Draft PR #135. No source code, infrastructure, credentials, Tickets, merge, or deployment authorized.
+
+## How to read this specification
+
+- **DECIDED**: directly follows an owner-confirmed Q1–Q50 choice. These are non-negotiable without explicitly reopening the corresponding question.
+- **PROPOSED**: precise field name, JSON structure, database layout, timeout, numerical limit or operational method suggested so the contract can be implemented and tested. **Not owner-approved yet**.
+- **VERIFY**: platform/API assumptions to establish experimentally or against authoritative documentation before implementation.
+- **BLOCKER**: an unproven safety/correctness property that must fail closed and prevent production side-effecting runs until verified.
+
+This document is one integrated draft rather than multiple competing specs. Prior v0.1 ideas are not adopted by implication. In particular, Git-only definitions, preregistered-only MCP connections and read/run-only tools are superseded by Q5=B, Q7=B and Q36=A.
+
+## 1. Product boundary and architecture
+
+**DECIDED (Q1–Q10, Q18, Q26–Q27, Q34):** MCP-native, AI-first, single-owner, independent \`apps/workflow-mcp-worker\` context in the existing monorepo. Runtime-owned definition authoring; bounded DAG; Cloudflare Workflows owns durable progression. D1 holds definitions, immutable plans, coordination/query facts, encrypted target credentials and small outputs; R2 holds large Artifacts. GitHub Actions runs only registered heavy capabilities and remains separate from the existing GitHub Actions *management* MCP.
+
+Proposed logical dataflow:
+
+~~~text
+ChatGPT / MCP client
+  -> Worker auth + atomic owner-facing tools
+  -> D1 Draft -> validate + authorize + compile -> immutable Published Plan
+  -> Manual / authenticated Webhook / scheduled ticker -> Run admission (D1 CAS)
+  -> Cloudflare Workflow instance -> DAG steps
+       -> dynamic safe Streamable HTTP MCP target (per-target credential + tool grant)
+       -> registered GitHub Actions heavy capability (independent dispatch credential)
+  -> step facts + outbox/inbox receipts -> D1 status/events
+  -> small result: D1; large Artifact: R2
+~~~
+
+**Non-goals:** general n8n UI, arbitrary JavaScript/shell from the DSL, static required MCP host registry, a second DAG scheduler, Redis/BullMQ, custom Saga rollback, multi-tenant RBAC, a separate Vault, an unbounded dynamic fan-out platform or arbitrary internal Attempt CRUD exposed via MCP.
+
+### 1.1 Single source of progression
+
+Cloudflare Workflows alone decides when a DAG Step may advance; D1 records admission, identity, immutable plan, claims, callback facts, query projections and results. D1 is not an independent step scheduler. Worker cron admission for dynamically managed schedules is trigger ingress, **not** a second DAG engine.
+
+**VERIFY/P0:** Cloudflare Workflows requires deterministic durable step names and may replay logic on wake/redeploy. Prove that this interpreter compiles stable step identifiers and does not reissue an already-completed side-effecting operation. See [Rules of Workflows](https://developers.cloudflare.com/workflows/build/rules-of-workflows/) and [Workflows Workers API](https://developers.cloudflare.com/workflows/build/workers-api/).
+
+### 1.2 Public identities
+
+**PROPOSED:** \`workflow_id\` is immutable; a mutable Draft carries \`draft_revision\`. A \`published_version_id\` identifies an immutable compiled plan and has its own \`plan_digest\` and \`plan_format_version\`. Each \`run_id\` permanently references one published version; each \`step_id\` is unique inside the plan; \`attempt_id\` belongs to a specific Run+Step; a GitHub physical job is a *candidate*, not the logical Attempt. Use opaque IDs, not human names, for matching or authorization.
+
+## 2. DSL and immutable executable plan
+
+**DECIDED (Q2, Q5–Q6, Q11–Q12, Q38, Q40–Q42, Q45):** YAML or JSON declarative definition, runtime Draft authoring, optimistic edits, validation plus required authorization then atomic Publish. Publish compiles a fixed plan. No \`eval\`, custom JS functions, arbitrary loops or unbounded parallelism. Dependencies are success-gated by default; failure/always conditions must not bypass cancellation.
+
+### 2.1 Candidate DSL — PROPOSED, not approved schema
+
+~~~yaml
+version: 1
+id: inspect-repository
+name: Inspect repository workflows
+inputs:
+  repo: { type: string, required: true }
+triggers:
+  - { id: manual, type: manual }
+steps:
+  - id: inspect
+    uses: mcp.call
+    with:
+      endpoint: "https://example.org/mcp"
+      tool: workflows_list
+      arguments:
+        repo: { ref: inputs.repo }
+    retry: { max_attempts: 1 }
+  - id: report
+    needs: [inspect]
+    if: { eq: [{ ref: steps.inspect.status }, succeeded] }
+    uses: result.emit
+    with:
+      data: { ref: steps.inspect.output }
+outputs:
+  result: { ref: steps.report.output }
+~~~
+
+\`endpoint\` above is an arbitrary safe HTTP MCP endpoint, **not** a static Connection registry key. \`result.emit\` is illustrative, not a newly approved capability implementation. For runtime-computed endpoints, the evaluated concrete target/tool/scope must have the owner's valid Operation Authorization before actual invocation.
+
+**PROPOSED:** restrict \`uses\` to \`mcp.call\`, an internal result operation, and named registered heavy capabilities (e.g., \`heavy.browser.snapshot\`). **No generic \`shell.run\`**, arbitrary code blobs, hidden script eval, importable function packages or unrestricted external HTTP plugin engine in v0.1. Exact capability inventory must be justified by actual first-slice tests rather than copied from n8n.
+
+### 2.2 Compile/publish algorithm — PROPOSED
+
+1. Read Draft using expected revision; parse strict YAML/JSON with duplicate-key detection.
+2. Validate structural schema, stable IDs, references and input/output type compatibility; fail on unknown top-level executable fields.
+3. Build DAG; detect cycles, unreachable/unknown dependencies, unsupported \`uses\`, excessive depth, total Step and ready-Step upper bounds.
+4. Compile a restricted expression AST. No user executable runtime code and no implicit conversion granting new capabilities.
+5. Discover relevant MCP tools on demand over supported Streamable HTTP protocol versions. Capture required \`target_identity\`, \`tool_name\`, compatible schema metadata/fingerprint and permitted \`operation_scope\`; **do not** require target preregistration. A computed target not known at Publish is represented as a runtime authorization gate, not silently approved.
+6. Validate explicit external-operation authorization. If absent, return required approvals and leave the existing Published Version effective; do not install a half-published plan.
+7. Canonicalize plan fields and calculate stable digest. Insert immutable Published Version and atomically switch the Workflow active-version pointer, conditional on original Draft revision and approval checks.
+8. Return published version identity/digest; no independent mandatory Enable action. Pause/resume affects future admission only. Existing Runs never change plans.
+
+**BLOCKER:** Prove compilation against Cloudflare's durable step replay and parallelism behavior; mere DAG topological sorting is insufficient for side-effect correctness.
+
+### 2.3 Contract error and drift
+
+**DECIDED (Q20, Q28, Q37, Q46):** compare effective target/tool/schema/scope before invocation; on incompatible schema, do **not** automatically have AI rewrite the active plan. Stop with a contract error or wait for new approval if the computed target/tool/scope is unknown. Compatible schema evolution is permitted only if it does not widen Operation Authorization.
+
+**PROPOSED:** classify errors \`TOOL_SCHEMA_INCOMPATIBLE\`, \`AUTHORIZATION_REQUIRED\`, \`TARGET_UNREACHABLE\`, \`TRANSPORT_UNSUPPORTED\`; keep user-safe details, never raw tokens or sensitive upstream bodies.
+
+## 3. MCP owner-facing API — atomic minimal closure
+
+**DECIDED (Q36, Q43, Q50):** separate atomic operations, always-asynchronous manual run start, no generic \`workflow_manage(action=...)\` or arbitrary Attempt/D1/GitHub job tools.
+
+**PROPOSED** names and minimal arguments; all methods require owner Portal auth unless trigger-specific authentication is explicitly stated:
+
+| Tool | Input (essential) | Output / behavior |
+| --- | --- | --- |
+| \`workflow_list\` | cursor?, limit? | paginated metadata, state, published_version |
+| \`workflow_get\` | workflow_id | current Draft and active version metadata |
+| \`workflow_create\` | definition | Draft ID, revision; no activation |
+| \`workflow_update\` | workflow_id, expected_revision, definition | new Draft revision or \`REVISION_CONFLICT\` |
+| \`workflow_validate\` | workflow_id, revision | issues and required external grants; no side effects |
+| \`workflow_publish\` | workflow_id, expected_revision, approvals | immutable version/digest; atomic validation+authorization+activation |
+| \`workflow_pause\` | workflow_id | prevents new triggers, leaves active Runs alone |
+| \`workflow_resume\` | workflow_id | restores new trigger admission under unchanged grants |
+| \`workflow_archive\` | workflow_id | retires from admission; keeps required history |
+| \`workflow_run\` | workflow_id, inputs, idempotency_key? | promptly returns \`run_id\`, \`published_version_id\`, admission status |
+| \`workflow_status\` | run_id | run + step summary, stable state, pending approval if any |
+| \`workflow_result\` | run_id | safe small output and authorized Artifact references |
+| \`workflow_logs\` | run_id, cursor?, limit? | paginated redacted lifecycle events |
+| \`workflow_cancel\` | run_id | accepted cancellation request, not proof of stop |
+
+**PROPOSED narrowly necessary additions (defer if embedded owner approval UX suffices):** \`workflow_approval_list\` and \`workflow_approval_resolve\` for Q37 waiting Runs; \`workflow_credential_set\` and \`workflow_credential_revoke\` for Q15/Q30 secrets. Their need is inherent in the accepted lifecycle; precise names and grouping are **not a Q50 mandate**. Avoid exposing raw decrypted credential values or internal attempts.
+
+Example Run start response (**PROPOSED**):
+
+~~~json
+{
+  "run_id": "run_opaque",
+  "workflow_id": "inspect-repository",
+  "published_version_id": "v_opaque",
+  "status": "queued",
+  "idempotent_replay": false
+}
+~~~
+
+**PROPOSED:** stable error envelope \`{code,message,details?,retryable,correlation_id}\` with no secrets, raw upstream credential-bearing error body, or concealed permission expansion. Paging for logs/list uses opaque cursors.
+
+## 4. Run, Step, Attempt and admission semantics
+
+**DECIDED (Q25, Q29, Q33, Q37, Q41, Q43–Q44, Q47):** states must distinguish successful/failed/cancelled/indeterminate, and an Authorization Wait is a **Run** that cannot continue a specific unauthorized operation; it is *not* Paused Workflow.
+
+### 4.1 Candidate state table — PROPOSED
+
+| Aggregate | Nonterminal | Terminal/other | Rules |
+| --- | --- | --- | --- |
+| Workflow | draft, active, paused | archived | paused/archived refuse *new* admissions; neither cancels existing Runs |
+| Run | queued, running, waiting_authorization, waiting_external, cancel_requested | succeeded, failed, cancelled, indeterminate | do not mark cancelled until confirmed external termination/stop where relevant |
+| Step | pending, ready, running, waiting_authorization, waiting_external | succeeded, skipped, failed, cancelled, indeterminate | dependency success is default; explicit handling modes remain behind cancellation gate |
+| Attempt | created, dispatched_unknown, claimed, executing, result_pending | succeeded, failed, cancelled, indeterminate | Claim does not establish side-effect completion |
+
+Status names are **candidate values**, not owner-approved enum strings. A Run may have \`cancel_requested\` and an indeterminate Step; the final aggregation must not disguise unverified external effects as a clean cancellation. Result snapshots should separately expose \`execution_outcome\` and \`cancellation_request_status\` where needed.
+
+### 4.2 Admission, capacity and platform queuing
+
+**DECIDED Q47=A:** when the *application's* active/queued Run budget has been exhausted, the trigger admission fails with a distinct capacity error. No custom persistent overflow queue is built. **VERIFY:** Cloudflare Workflows has its *own* queue for instances over platform concurrency limits; the app limit must be enforced before calling \`create()\` and must not claim to disable Cloudflare's internal queue.
+
+**PROPOSED:** D1 admission CAS or conditional insert includes dedup key and active-count reservation. Deterministic Workflow instance ID derived from \`run_id\`, so retrying a lost \`create()\` response does not create a second logical Run. A tiny reconciliation check resolves \`D1 admitted / Workflow create unknown\`, without adding a second scheduler. If admission was rejected, do not silently queue the request in D1.
+
+### 4.3 Step decision table — PROPOSED for final spec review
+
+| Dependency / event | Default outcome | Explicit alternative |
+| --- | --- | --- |
+| All dependencies succeeded | evaluate \`if\`, then run or skip | none needed |
+| Dependency failed | skip dependent Step | authorized failure handler |
+| Dependency skipped | skip unless predicate explicitly supports skip | explicit condition |
+| Dependency indeterminate | do not proceed with externally effectful dependent work | explicit owner reconciliation, not auto-retry |
+| Run cancelling | no new ordinary operations | authorized stop/receipt logic only |
+| Unknown target/tool/scope | authorization wait before call | approve concrete operation or refuse |
+| External effect possibly performed, response lost | indeterminate pending reconciliation | prove outcome; never blind replay |
+
+These are suggested detailed rows consistent with Q25/Q33/Q37/Q41/Q44; error enum, approval timeout and precise terminal aggregation still need technical sign-off.
+
+## 5. Triggers and scheduled execution
+
+**DECIDED (Q9, Q23–Q24, Q31–Q32):** Manual, authenticated Webhook with namespace \`workflow_id + trigger_id + source + event_id\` and finite dedup retention, and timezone-aware Cron with default \`misfire: latest\`; nonexistent DST local times skipped, repeated wall-clock time admitted once.
+
+**PROPOSED:** manual calls use authenticated \`workflow_run\`; Webhook ingress uses per-trigger signed secret/HMAC or equivalent trusted upstream proof (do not use shared Portal token as the Webhook secret); reject unsigned or invalid requests before admission, and enforce replay window/size limits. Duplicate known event returns original Run ID.
+
+**Important runtime-schedule issue (VERIFY/P0):** Cloudflare Worker Cron triggers are provisioned as deployed schedules, while Q5=B requires runtime-created Workflow Cron definitions. A *single* fixed Worker tick may query due definitions in D1 and admit due Runs with occurrence-based CAS keys; it must not become a second DAG progression engine or a per-definition dynamically deployed Worker Cron. Establish accurate timezone/DST/misfire semantics and plan-limit cost before selecting ticker frequency. This mechanism is a **proposal**, not user-confirmed architecture.
+
+## 6. Dynamic MCP connection, authorization and credentials
+
+**DECIDED (Q7, Q14–Q17, Q20–Q22, Q28, Q30, Q37, Q46):** any supported safely reachable Streamable HTTP MCP Server may be discovered without preregistration; tested current/recent protocol revisions; credentials stored target-specifically encrypted in D1 with separate Worker Secret; no Portal token forwarding; network SSRF defenses; owner grants apply to concrete target+tool+operation scope, with renewed approval for widened/high-risk drift.
+
+**PROPOSED invocation pipeline:**
+
+1. Evaluate endpoint/tool/arguments from pinned plan and Run input through restricted expressions.
+2. Check URL/redirect/network class and origin binding before connecting; on a computed new target, check specific grant. Missing grant means Authorization Wait; no outbound target call.
+3. Resolve target-specific credential by opaque reference; decrypt only at invocation; do not persist plaintext in logs/Run payloads or pass it to another target.
+4. Negotiate a tested Streamable HTTP revision; perform tool discovery/schema contract comparison. Incompatible schema means stop with contract error, not AI auto-remapping.
+5. Enforce target+tool+operation-scope grant; call only with validated arguments and a bounded response-size/time budget.
+6. Persist safe result/Attempt outcome and only retry when independently known read-only or proven idempotent; do not trust remote MCP tool annotations as sole evidence of idempotence.
+
+**BLOCKER:** cloud Worker \`fetch\` + DNS/redirect behavior must prove SSRF defense for loopback/private/metadata/redirect and rebinding. Hostname-only checks cannot guarantee DNS pinning. If a safe enforcement method is not available on the selected transport, the affected dynamic call path must fail closed rather than weaken Q7 or silently introduce host allowlisting.
+
+**PROPOSED encryption envelope:** \`{ciphertext,nonce,key_version,aad_target_id}\` using authenticated encryption and separated master-key material. Rotation keeps grants when scope unchanged, but revocation immediately denies subsequent invocation; already dispatched external effects cannot be undone. **VERIFY:** design backup restore and key loss/recovery before production data.
+
+## 7. GitHub Actions executor and callback protocol
+
+**DECIDED (Q18, Q26–Q27, Q33–Q35, Q48):** heavy capabilities only from a controlled registered set; independent minimal-scope dispatch credential, separate from existing GitHub Actions MCP PAT pool; GitHub OIDC identity; atomic D1 Attempt Claim; callback fact persisted before notification; best-effort cancellation; version compatibility gate; R2 for large Artifacts.
+
+### 7.1 Candidate dispatch/claim sequence — PROPOSED
+
+1. Cloudflare orchestrator creates logical \`attempt_id\` with fixed \`run_id,step_id,plan_digest,capability_id\` and \`dispatch_id\`.
+2. Dispatcher requests registered \`workflow_dispatch\` to a pinned executor workflow/ref with *non-secret opaque inputs*. Mark dispatch result \`accepted\` or \`unknown\`; neither proves execution success.
+3. Each physical GitHub job obtains GitHub OIDC and presents it to callback/claim endpoint; verify signature, issuer, audience, repository identity, selected workflow/ref and freshness.
+4. One atomic D1 \`UPDATE ... WHERE owner IS NULL\` or equivalent Claim grants the **one** candidate permission to do business work. A losing candidate exits without calling external business capability.
+5. Owner executes pinned capability and produces safe bounded result or R2 Artifact reference. Secrets must not be passed in GitHub dispatch inputs.
+6. Authenticated callback is validated and inserted idempotently into D1; only then send the matching event to Cloudflare Workflow.
+7. If signaling fails or callback is early/duplicated/late, a bounded reconcile reads the D1 receipt and safely re-notifies/correlates without triggering the original work twice.
+8. Cancellation sends a best-effort stop to owned work but reports completed stop only after confirmation; Claim timeout alone never transfers authority to a possibly still-running second owner.
+
+### 7.2 Candidate correlation and SQL invariant
+
+**PROPOSED callback identity:** \`(attempt_id, candidate_run_id, callback_id, event_type)\`, bound to pinned executor identity and plan. Enforce uniqueness for callback replay and monotonically valid outcome transitions.
+
+**PROPOSED D1 Claim invariant:**
+
+~~~sql
+UPDATE attempts
+SET owner_candidate_id = ?1, claim_state = 'claimed'
+WHERE attempt_id = ?2 AND owner_candidate_id IS NULL
+  AND claim_state IN ('created', 'dispatch_unknown');
+-- Exactly one row changed means this candidate owns execution.
+~~~
+
+This is **illustrative**. Actual D1 semantics, authorization race handling, immutable receipts, dispatch ambiguity, cancellation and claim timeout must be verified; never add a generic distributed lock service.
+
+### 7.3 Durable callback inbox
+
+**DECIDED Q48:** receipt-first. D1 callback record stores validation status, correlation, idempotency and delivery state. Event notification is an optimization for waking the orchestrator, not the only record of completion. Reconcile boundedly from persisted receipts when the first notification fails; ensure already-completed or cancelled Runs cannot be mutated by late callbacks.
+
+**VERIFY:** Cloudflare Workflows supports \`waitForEvent\`/ \`sendEvent\` and early buffering, but platform event receipt alone is not equivalent to durable application receipt. See [events and parameters](https://developers.cloudflare.com/workflows/build/events-and-parameters/).
+
+## 8. Proposed D1/R2 data model
+
+**DECIDED:** data categories and ownership, not SQL names or normalization choices. **PROPOSED minimal logical tables:**
+
+| Logical table | Primary role / keys | Key invariant |
+| --- | --- | --- |
+| \`workflows\` | workflow_id, active_version_id, draft_revision, lifecycle | atomic published pointer and pause/archive flag |
+| \`workflow_versions\` | published_version_id, workflow_id, plan_digest, compiled_plan | immutable, referenced by Runs |
+| \`runs\` | run_id, workflow_id, version_id, instance_id, status | immutable version reference and admission identity |
+| \`step_attempts\` | attempt_id, run_id, step_id, owner_candidate_id, state | one claimed executor owner per logical Attempt |
+| \`trigger_receipts\` | workflow_id, trigger_id, source, event_id | unique within retention window |
+| \`operation_grants\` | target identity, tool, scope fingerprint, version | deny expired/revoked/widened grants |
+| \`target_credentials\` | credential_id, encrypted_envelope, key_version | no plaintext, target ownership bound |
+| \`callback_receipts\` | callback_id, attempt_id, delivery_state | durable before signal, idempotent on replay |
+| \`artifacts\` | artifact_id, run_id, R2 object key, retention | access-check and active-reference protection |
+| \`run_events\` | run_id, sequence/time, safe event metadata | redacted audit and paginated logs |
+
+**PROPOSED:** Step status is derived from \`step_attempts\`/safe event projection rather than also inventing an independent Step scheduler table. Add separate Step projection only if query cost or semantics demonstrably require it. All writes involving Claim, trigger dedup and Draft CAS must use conditional atomic SQL/batched transactions; event notification happens **after** receipt commit. See [D1 batch transactions](https://developers.cloudflare.com/d1/worker-api/d1-database/) and [D1 limits](https://developers.cloudflare.com/d1/platform/limits/).
+
+**DECIDED Q49:** no cleanup of active Run-dependent plan, callback or Artifact references. Post-terminal history and large objects have bounded retention.
+
+**PROPOSED retention algorithm:** mark terminal timestamp; compute retention deadline by data class; never delete a version or Artifact with nonterminal Run references; mark R2 object pending purge before deleting corresponding metadata; delete idempotently, audit purge, and handle partial R2/D1 failure. Do not infer retention duration from Cloudflare Workflows' platform retention alone.
+
+## 9. Compatibility and rollback
+
+**DECIDED Q35, Q45, Q49:** automated releases must check active Run/plan compatibility and refuse unsafe versions absent explicitly reviewed migration. Immutable pinned plan and referenced Artifacts survive compatible deployment.
+
+**PROPOSED manifest:** \`engine_protocol_version\`, \`plan_format_version\`, \`executor_protocol_version\`, required capability revisions, minimum supported plan format. Deployment checks all **nonterminal** Runs and any waiting external callbacks before promotion; if unsupported, fail the release gate. Avoid an additional CD control plane: extend the existing selected-Worker GitHub Actions release path only after explicit implementation authorization. A release or merge does not itself authorize production migrations or credential changes.
+
+## 10. Failure modes / acceptance matrix (proposal; no tests executed)
+
+| ID | Scenario | Required pass evidence |
+| --- | --- | --- |
+| AC-01 | Two concurrent Draft updates | exactly one accepted at expected revision; other gets conflict, no lost edits |
+| AC-02 | Publish validation/authorization failure | old Published Version remains active; no partial activation |
+| AC-03 | Edit after Run admission | Run continues pinned plan/digest; new Runs see new version |
+| AC-04 | Cycle, unknown dependency, unsafe expression, over-size graph | Publish validation rejects with stable field errors; no arbitrary JS |
+| AC-05 | Independent DAG nodes and failed dependency | bounded parallelism and default success gating; explicit handler executes only as allowed |
+| AC-06 | Dynamically discovered unapproved target | Run waits before business tool invocation; approval applies to concrete target/tool/scope only |
+| AC-07 | MCP schema expands permissions or becomes incompatible | no implicit permission expansion; incompatible calls stop, AI cannot mutate pinned Run |
+| AC-08 | Private IP/metadata/redirect/DNS rebinding probe | all unsafe outbound calls denied without static host preregistration |
+| AC-09 | Credential rotated, revoked, or decrypt fails | same-scope rotation needs no republish; revoke blocks new use; secrets never appear in logs |
+| AC-10 | Duplicate authenticated Webhook event | one logical Run ID per workflow/trigger/source/event; distinct same-body events not conflated |
+| AC-11 | Cron DST gap/overlap and scheduler downtime | nonexistent time skipped, overlapping wall time executes once, latest misfire only |
+| AC-12 | Application admission capacity exceeded | explicit capacity failure, no custom queued Run created; internal Cloudflare queue not mistaken for app acceptance |
+| AC-13 | Manual start with long wait | prompt Run ID returned, status/log/result query works independently |
+| AC-14 | Network drops after external write may have committed | status indeterminate, no blind automatic replay |
+| AC-15 | Multiple GitHub jobs from ambiguous dispatch | exactly one verified OIDC candidate obtains D1 Claim; losers do no business work |
+| AC-16 | Callback duplicated, late, or notification lost | one durable receipt; failed wake-up reconciles, no stale state overwrite or duplicate business operation |
+| AC-17 | Cancel external work with no stop confirmation | truthful cancel-request/indeterminate status; never falsely report rolled back effects |
+| AC-18 | Pause then archive Workflow with active Run | no new admissions; old Run keeps pinned plan/results; protected references not GC'd |
+| AC-19 | Large screenshot / artifact result | D1 keeps metadata/reference, R2 keeps bytes, authorized retrieval and cleanup verified |
+| AC-20 | Incompatible engine/runner update with active Run | deployment gate refuses candidate; compatible release passes without replaying committed effects |
+| AC-21 | Retries after crashes and replay | completed durable Steps not reissued; tool/write idempotency honored |
+| AC-22 | Unauthorized / forged ingress and OIDC claims | fail closed, zero business side effect, safe errors with no token disclosure |
+
+### Evidence and release gates — PROPOSED
+
+- **G0 specification:** Q1–Q50 traceability complete, no hidden owner-level trade-off, explicit proposed schema/limits and unresolved risk list.
+- **G1 compiler:** deterministic IR/digest; schema validation, DAG cycle detection, restricted AST and safe expressions, property/negative tests.
+- **G2 control-plane:** D1 publication CAS, Run admission idempotency, dynamic target approval and credential encryption, safe query/redaction.
+- **G3 orchestration:** actual Cloudflare Workflows durable step replay, event buffering, waiting, schedule admission and late callback recovery.
+- **G4 external executor:** OIDC verification, atomic Claim, dispatch-unknown, callback inbox, cancellation and fencing of duplicate physical jobs.
+- **G5 production security and compatibility:** SSRF actual-network probes, protocol interoperability matrix, key rotation/revoke tests, version retention/deploy block, measured quotas.
+- **G6 release:** single selected-Worker pipeline and safe smoke runs; only close implementation Issues when real evidence demonstrates their own acceptance conditions, reusing unchanged test evidence.
+
+Do **not** interpret these as already passed. Production write-capable launch must not proceed with P0 BLOCKER failures.
+
+## 11. Explicit open technical risks (not further owner decisions by default)
+
+| ID | Risk / missing fact | Severity | Required closure |
+| --- | --- | --- | --- |
+| RISK-01 | Dynamic endpoint SSRF with Worker DNS, redirects and non-public targets | **P0 BLOCKER** | demonstrate safe network enforcement against rebinding, redirect and metadata probes; otherwise fail closed |
+| RISK-02 | Generic DAG interpreter replay and version-compatibility under Cloudflare Workflows | **P0 BLOCKER** | prove deterministic durable step naming, consistent branching and no duplicate external effects over restart/deploy |
+| RISK-03 | Dynamic runtime Cron authoring vs deployed Worker Cron schedule | **P0 design-feasibility** | validate one ticker/D1 due-admission plan and timezone/DST semantics without second DAG scheduler |
+| RISK-04 | Encrypted D1 credentials, key loss/rotation and revocation races | **P0 security** | authenticated encryption, no plaintext leakage, targeted grant revocation and backup restore tests |
+| RISK-05 | GitHub OIDC Claim races and ambiguous dispatch/callback completion | **P0 correctness** | real candidate identity validation, atomic single-owner Claim, durable inbox/reconcile and no owner transfer on timeout alone |
+| RISK-06 | Current/recent Streamable HTTP protocol differences | **P1 compatibility** | test actual supported revisions and SDK client behavior; publish explicit supported matrix |
+| RISK-07 | Run, Step, Attempt indeterminate/cancelled/failure aggregation | **P1 semantics** | publish transition truth table and verify with externally uncertain writes/cancels |
+| RISK-08 | Runtime limits, webhook receipt TTL, inline byte threshold, R2 retention | **P1 reversible values** | benchmark, pick configuration defaults and document quotas; don't turn every limit into a new ADR |
+| RISK-09 | External callbacks before wait and after terminal Run | **P0 correctness** | prove fact-first + safe early delivery + re-notification/dedup behavior |
+| RISK-10 | Dynamic MCP auth grant binding across redirects/tool changes/credential rotation | **P0 security** | pin target identity and grant scope across invocation and reject drift or unresolved identity |
+| RISK-11 | Registered heavy capability vs arbitrary code execution | **P0 security** | prove only pinned approved capability/ref can run; no shell source injection or inherited multi-PAT privileges |
+
+## 12. Final design-tree disposition
+
+Q1–Q50 are recorded as **settled architecture decisions**. The conceptual architecture tree has no known unresolved *product/architecture preference branch*. This does **not** mean there are no remaining engineering unknowns. The remaining values, schemas, test matrices and platform-feasibility questions above are explicitly **PROPOSED/VERIFY/BLOCKER**, not silently approved.
+
+**Next permissible action, only after owner review:** review this consolidated draft and its blocker/evidence list as a whole; either accept it as the source for a future implementation spec, or reopen only an identified meaningful conflict. The user's current authorization is **documents only**: do not implement, merge, deploy or create Tickets.
