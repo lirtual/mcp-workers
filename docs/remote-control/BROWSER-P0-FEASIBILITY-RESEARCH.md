@@ -442,3 +442,67 @@ All temporary installations and scripts reported successful deletion, and all Ag
 5. **No copy-paste source transfer yet.** If implementation later incorporates MIT-licensed code, review the exact files/dependencies and preserve required license/copyright notices; borrowing design ideas alone requires no new runtime license dependency.
 
 **Disposition:** valuable reference for Agent UX, semantic targeting and locally efficient workflows; **not a viable replacement for our current security architecture or a verified solution to the open egress and authorization P0s**. Q1–Q52 and their ADRs remain unchanged. No Ego Lite installation, feature code, Ticket, merge, Release, deployment or host permission change performed.
+
+## T. Native Windows ProcessContainer startup and host-loopback egress falsification (2026-10-20)
+
+This **supersedes §R's network-client startup blocker**, but **does not close the overall egress P0**. On the same explicitly selected paired native Windows 11 25H2 device `71b4b4d8-6496-4898-9b80-1ea3a03f6ccd`, ordinary Agent user, exact-pinned temporary `@microsoft/mxc-sdk@1.0.1`, each test used an isolated disposable `%TEMP%` project/cache. All ran with no administrator/elevation, global ACL/firewall/registry change, production Agent installation, second Worker or external/private LAN/metadata endpoint. The only network targets were synthetic Node HTTP listeners bound to `127.0.0.1` at random ports. Every Agent-owned session returned exit 0 and a cleanup marker; the temporary SDK/script/cache were removed.
+
+### A. Isolated process startup compatibility — independently verified
+
+Five bounded native `base-container` variants distinguish a **process startup restriction** from host networking:
+
+| Sandbox request | Observed outcome |
+| --- | --- |
+| `cmd.exe /d /c echo RCA_CMD_OK`, standard deny-all | Exit 0; marker printed |
+| `powershell.exe -NoProfile -NonInteractive`, default UI policy | Exit **-1073741502** (`0xC0000142`); no marker |
+| Same PowerShell with **`ui.disable=false`** | Exit 0; marker printed |
+| Same PowerShell with `ui.disable=false`, container-local `filesystem.readonlyPaths=[C:\\Windows\\System32]` | Exit 0; marker printed |
+| `curl.exe --version` via `cmd.exe` with `ui.disable=false` and the same restricted container-local read policy | Exit 0; printed installed `curl 8.21.0` |
+
+**Narrow inference:** The explicitly enabled UI policy was sufficient to resolve the observed PowerShell DLL-initialization failure in this controlled scenario; an actual network-capable `curl.exe` also starts with these options. **Do not conclude `ui.disable=false` is the least-privilege or production-suitable browser policy; disabling UI may be a desired requirement later and must be reviewed separately.** These filesystem rules authorize a path **inside the disposable sandbox policy only**, not a host-global ACL change.
+
+### B. WFP direct egress with `hostLoopback=allow`: **FAIL**
+
+Two independent loopback listeners represented allowed and forbidden ports. ProcessContainer `probe()` reported native `tier=base-container` with no errors/warnings for each configuration; `network.ingress.default=allow` and `hostLoopback=allow` allowed loopback use. Sandboxed `curl.exe` used explicit `--noproxy` to avoid relying on environment proxy configuration:
+
+| Native request variation | Expected protected outcome | Actual server-observed outcome |
+| --- | --- | --- |
+| `egress.default=deny` + allow only `127.0.0.1/32:7307` | Permitted listener receives a request | **PASS:** allowed listener received `/allowed` |
+| Same policy, curl `-L` follows `/redirect` to forbidden `127.0.0.1:7306` | Forbidden listener **0 hits** | **FAIL:** forbidden listener received `/forbidden`, curl rendered `RCA_FORBIDDEN_REACHED` |
+| Same policy, direct curl to forbidden port | Forbidden listener **0 hits** | **FAIL:** forbidden listener received `/forbidden-direct` |
+| Add **explicit `egress.deny`** for forbidden port (separate ephemeral ports) | Forbidden listener **0 hits** | **FAIL:** redirected `/redirect-target` and direct `/direct` each reached forbidden listener |
+| Change **only `hostLoopback=deny`**, retaining explicit allow/deny | Allowed target reachable, forbidden denied | **NOT ACCEPTED:** **both** allowed and forbidden listeners received **0 requests**, so the required positive control fails |
+
+**Security conclusion:** under this exact Windows host and MXC policy, `ingress.hostLoopback=allow` provided wider host-loopback connectivity than the intended egress port rule, and a standalone explicit deny rule did **not** repair the behavior. With `hostLoopback=deny`, the allowed host-loopback listener also became unreachable. **These tested direct-egress policies are disqualified for selective host-loopback authorization.** The observed results do not establish an all-address WFP flaw or prove what happens on a non-loopback synthetic network. No unrelated network endpoint was contacted.
+
+### C. OS-scoped `network.runtimeConfig.networkProxy` mode: **narrow positive/negative PASS**
+
+As a *test fixture only*, a temporary Node HTTP listener served as a deliberately simple proxy; a second listener represented an unrelated forbidden port. The **MXC V1 authoring API** requires `network.runtimeConfig.networkProxy`, not top-level `runtimeConfig` (an initial malformed request was rejected before creating a sandbox and then corrected). The tested request used:
+
+```ts
+network: {
+  egress: { default: "deny" },
+  ingress: { default: "allow", hostLoopback: "allow" },
+  runtimeConfig: { networkProxy: "http://127.0.0.1:<ephemeral-proxy-port>" }
+}
+```
+
+With the same restricted local filesystem policy and `ui.disable=false`, `probe()` returned **`base-container` with `baseContainerSupportsIdentitylessLoopbackProxy=true`**. Two real sandboxed `curl.exe` requests produced:
+
+| Test | Actual outcome |
+| --- | --- |
+| Explicit curl proxy pointed at the designated listener | `curl` exit 0, response `RCA_PROXY_ONLY_OK`; **proxy received 1 absolute-form HTTP request**, forbidden target received **0** |
+| Curl deliberately bypasses proxy via `--noproxy 127.0.0.1` and tries forbidden listener directly | `curl` exit 7 (`Could not connect to server`); **forbidden target received 0 requests**, proxy received no new request |
+
+**Accepted claim, deliberately narrow:** a native Windows `base-container` on this owner's Windows host was able to reach an explicitly configured localhost **proxy endpoint** while an ordinary client *attempting direct socket bypass* failed to reach another simultaneously listening localhost endpoint. This validates **only** the concrete tested ProcessContainer proxy-only TCP path. No additional production proxy implementation, browser executable, credential store, system firewall modification or user-visible browser navigation was created.
+
+**Major limitations:** This is the **identity-less, unpackaged host-proxy compatibility mode**: no OS-level peer identity binding, so an untrusted local process could race/spoof a configured proxy endpoint; it is not production-grade merely from its WFP endpoint test. The mock proxy returned a static response and performed **no** destination-resolution, DNS-rebinding, redirect-chain or HTTP body policy checks. The test used `curl.exe`, **not Chromium's network or child-process model**, and did not exercise WebSocket/UDP/WebRTC or IPv6. Neither effective-target authorization nor high-impact user-consent P0 is passed. MXC's [ProcessContainer networking guide](https://github.com/microsoft/mxc/blob/main/docs/backends/process-container/networking.md#model-2-proxy-only-egress-recommended) distinguishes identity-less test proxies from bound identity approaches.
+
+### Next smallest gate — do not commit to a second production service
+
+1. **Retire these direct host-loopback egress policy variants** for public browsing; they have a measured sensitive-endpoint bypass. Preserve the live negative tests as regression evidence without repeating identical executions.
+2. If conditional external navigation remains a required feature, perform an **explicit architecture/security trade-off review** before promoting proxy-only to production. It implies a long-lived and authenticated/identity-bound policy enforcement component, not merely a Playwright proxy flag. Prefer an existing system component or contained process over a second Worker or remote gateway; do not assume such a component is already available.
+3. Before considering any real release, verify **actual Playwright Chromium plus subprocesses** under a no-bypass boundary and independently measured allowed/forbidden request targets, including nested redirects, DNS address changes, HTTP(S), WebSockets, WebRTC/UDP and IPv6. Enforce both source and destination policy and test proxy replacement/termination behavior, temporary Profile/IPC access, failure cleanup and revocation. Do not use the fake proxy proof as a substitute.
+4. **One-use, exact-bound owner authorization is still a separate unverified P0.** Keep all external navigation and consequential browser effects disabled. The existing internal-only offline browser core may be tested without accepting a new production network architecture.
+
+**Disposition:** Windows sandbox startup compatibility **PASS**; direct host-loopback policy **FAIL**; identity-less proxy-endpoint/no-direct-bypass TCP fixture **PASS in a temporary test only**; full browser-wide conditional egress P0 **NOT ACCEPTED**. This round introduced **no new implementation, ADR, Ticket, release, merge, deployment or host-global configuration change**.
