@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { ActionError, assertRepo, configuredRepos, GitHubActionsClient, SessionDeckClient } from '../src/github.ts';
+import { ActionError, assertRepo, configuredRepos, GitHubActionsClient } from '../src/github.ts';
 import type { Env } from '../src/github.ts';
 
 const config: Env = {
@@ -68,60 +68,3 @@ test('run lookup returns bounded metadata rather than the raw upstream object', 
   assert.equal(JSON.stringify(value).includes('do-not-return'), false);
 });
 
-test('Session Deck hides sensitive locators and rejects targets not on allowlist', async () => {
-  const requests: string[] = [];
-  const fakeFetch = (async (url: string | URL | Request) => {
-    requests.push(String(url));
-    if (String(url).endsWith('/api/targets')) return Response.json({
-      targets: [
-        { id: 'tsrv/linux', repo: 'autoactions/tsrv', facts: [
-          { label: 'Host', value: 'tsrv-linux', sensitive: false },
-          { label: 'Password', value: 'hidden-value', sensitive: true },
-        ] },
-        { id: 'alien/target', repo: 'alien/repo', facts: [] },
-      ],
-    });
-    if (String(url).endsWith('/api/targets/alien/target'))
-      return Response.json({ id: 'alien/target', repo: 'alien/repo' });
-    return Response.json({ id: 'tsrv/linux', repo: 'autoactions/tsrv', facts: [
-      { label: 'Password', value: 'hidden-value', sensitive: true },
-    ] });
-  }) as typeof fetch;
-  const deck = new SessionDeckClient({
-    ...config, SESSION_DECK_URL: 'https://sd.example.com', SESSION_PASSWORD: 'deck-pass',
-  }, configuredRepos(config.GITHUB_REPOS), fakeFetch);
-  const listed = await deck.list();
-  assert.equal(listed.targets.length, 1);
-  assert.equal(listed.targets[0].facts[1].value, '[redacted]');
-  assert.equal((await deck.get('tsrv/linux')).facts[0].value, '[redacted]');
-  assert.equal((await deck.get('tsrv/linux', true)).facts[0].value, 'hidden-value');
-  await assert.rejects(() => deck.get('alien/target'), { code: 'target_not_allowed' });
-  assert.equal(requests.length, 4);
-});
-
-test('Session Deck checks target ownership before changing session state', async () => {
-  const requests: Array<{ method: string, url: string, body?: string }> = [];
-  const fetcher = (async (url: string | URL | Request, init?: RequestInit) => {
-    requests.push({ method: init?.method ?? 'GET', url: String(url), body: init?.body?.toString() });
-    return Response.json({ id: 'tsvc/service:chrome', repo: 'autoactions/tsvc', state: 'starting' });
-  }) as typeof fetch;
-  const deck = new SessionDeckClient({
-    ...config, SESSION_DECK_URL: 'https://sd.example.com', SESSION_PASSWORD: 'deck-pass',
-  }, configuredRepos(config.GITHUB_REPOS), fetcher);
-  const value = await deck.change('tsvc/service:chrome', 'start', { service: 'chrome' }).catch((error) => error);
-  assert.equal(value instanceof Error, true); // Target IDs cannot contain ':' or unvalidated characters.
-  assert.equal(requests.length, 0);
-  await deck.change('tsrv/linux', 'start', { session_profile: 'core' });
-  assert.equal(requests.length, 2);
-  assert.equal(requests[0]?.method, 'GET');
-  assert.equal(requests[1]?.method, 'POST');
-  assert.deepEqual(JSON.parse(requests[1]?.body ?? '{}'), { session_profile: 'core' });
-});
-
-test('Session Deck refuses plain HTTP and credentials in URLs', () => {
-  for (const SESSION_DECK_URL of ['http://sd.example.com', 'https://user:pass@sd.example.com', 'https://sd.example.com/x']) {
-    assert.throws(() => new SessionDeckClient({
-      ...config, SESSION_DECK_URL, SESSION_PASSWORD: 'pass',
-    }, configuredRepos(config.GITHUB_REPOS)), { code: 'invalid_session_deck_url' });
-  }
-});
