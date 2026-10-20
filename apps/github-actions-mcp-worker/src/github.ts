@@ -1,9 +1,7 @@
 export interface Env {
   MCP_ACCESS_TOKEN: string;
   GH_TOKEN: string;
-  GITHUB_REPOS: string;
   GH_TOKEN_SECONDARY?: string;
-  GITHUB_REPOS_SECONDARY?: string;
 }
 
 export class ActionError extends Error {
@@ -14,47 +12,16 @@ export class ActionError extends Error {
   }
 }
 
-const REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
-const WORKFLOW = /^(?:[1-9][0-9]*|[A-Za-z0-9_.-]+\.ya?ml)$/;
+const REPOSITORY = /^[A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+$/;
+const WORKFLOW = /^(?:[1-9][0-9]*|[A-Za-z0-9_.-]+\\.ya?ml)$/;
 const MAX_RESPONSE_BYTES = 512 * 1024;
+// Bound discovery rather than exhaust a large account's entire repository list.
+// Failing closed is safer than treating truncated discovery as comprehensive.
+const REPO_PAGE_SIZE = 25;
+const MAX_REPO_PAGES = 8;
 
-export function configuredRepos(value: string | undefined): string[] {
-  if (!value) return [];
-  const repos = value.split(',').map((repo) => repo.trim()).filter(Boolean);
-  if (repos.some((repo) => !REPOSITORY.test(repo) || repo.includes('..'))) {
-    throw new ActionError('invalid_repository_configuration');
-  }
-  return [...new Set(repos)];
-}
-
-/** Strict repository-to-credential routing, without fallback between accounts. */
-export function configuredAccounts(env: Env): {
-  primary: string[];
-  secondary: string[];
-  all: string[];
-} {
-  const primary = configuredRepos(env.GITHUB_REPOS);
-  const secondary = configuredRepos(env.GITHUB_REPOS_SECONDARY);
-  const primarySet = new Set(primary.map((repo) => repo.toLowerCase()));
-  if (secondary.some((repo) => primarySet.has(repo.toLowerCase()))) {
-    throw new ActionError('duplicate_repository_configuration');
-  }
-  if (primary.length + secondary.length > 30) {
-    throw new ActionError('invalid_repository_configuration');
-  }
-  if (secondary.length && !env.GH_TOKEN_SECONDARY?.trim()) {
-    throw new ActionError('github_token_secondary_not_configured');
-  }
-  if (!secondary.length && env.GH_TOKEN_SECONDARY?.trim()) {
-    throw new ActionError('secondary_repository_not_configured');
-  }
-  return { primary, secondary, all: [...primary, ...secondary] };
-}
-
-export function assertRepo(allowlist: string[], repo: string): void {
-  if (!REPOSITORY.test(repo) || !allowlist.some((allowed) => allowed.toLowerCase() === repo.toLowerCase())) {
-    throw new ActionError('repository_not_allowed');
-  }
+export function assertRepoName(repo: string): void {
+  if (!REPOSITORY.test(repo) || repo.includes('..')) throw new ActionError('invalid_repository');
 }
 
 export function assertWorkflow(value: string): void {
@@ -78,46 +45,89 @@ async function boundedJson(response: Response): Promise<any> {
 }
 
 export class GitHubActionsClient {
-  readonly allowlist: string[];
-  private readonly accounts: ReturnType<typeof configuredAccounts>;
-  private readonly env: Env;
+  private readonly tokens: string[];
   private readonly requestFetch: typeof fetch;
+  private repositoriesPromise?: Promise<Map<string, string | null>>;
+
   constructor(env: Env, requestFetch: typeof fetch = fetch) {
-    this.env = env;
+    const primary = env.GH_TOKEN?.trim();
+    const secondary = env.GH_TOKEN_SECONDARY?.trim();
+    if (!primary) throw new ActionError('github_token_not_configured');
+    if (secondary && secondary === primary) throw new ActionError('duplicate_github_token');
+    this.tokens = secondary ? [primary, secondary] : [primary];
     this.requestFetch = requestFetch;
-    this.accounts = configuredAccounts(env);
-    this.allowlist = this.accounts.all;
   }
 
-  async api(repo: string, path: string, init: RequestInit = {}): Promise<any> {
-    assertRepo(this.allowlist, repo);
-    const secondary = this.accounts.secondary.some((configured) =>
-      configured.toLowerCase() === repo.toLowerCase());
-    const token = secondary ? this.env.GH_TOKEN_SECONDARY : this.env.GH_TOKEN;
-    if (!token) throw new ActionError('github_token_not_configured');
-    const url = 'https://api.github.com/repos/' + repo + '/' + path;
-    // Cloudflare Workers' native fetch rejects a non-global `this` receiver.
-    // Keep the injectable transport but invoke it as a standalone function.
+  private async authenticatedJson(url: string, token: string, init: RequestInit = {}): Promise<any> {
     const requestFetch = this.requestFetch;
     const response = await requestFetch(url, {
-      ...init,
-      redirect: 'manual',
+      ...init, redirect: 'manual',
       headers: {
-        'Authorization': 'Bearer ' + token,
-        'Accept': 'application/vnd.github+json',
+        Authorization: 'Bearer ' + token,
+        Accept: 'application/vnd.github+json',
         'X-GitHub-Api-Version': '2022-11-28',
         'User-Agent': 'github-actions-mcp-worker',
         ...(init.body ? { 'Content-Type': 'application/json' } : {}),
       },
     });
-    if (!response.ok) {
-      // Never put untrusted GitHub error bodies, header values, or tokens in MCP results.
-      throw new ActionError('github_http_' + response.status);
-    }
-    if (response.status === 204 || response.status === 202 || response.status === 201 && response.headers.get('content-length') === '0') {
+    if (!response.ok) throw new ActionError('github_http_' + response.status);
+    if (response.status === 204 || response.status === 202 ||
+        (response.status === 201 && response.headers.get('content-length') === '0')) {
       return { accepted: true };
     }
     return boundedJson(response);
+  }
+
+  private async discoverRepositories(token: string): Promise<string[]> {
+    const found = new Set<string>();
+    for (let page = 1; page <= MAX_REPO_PAGES; page++) {
+      const data = await this.authenticatedJson(
+        'https://api.github.com/user/repos?per_page=' + REPO_PAGE_SIZE + '&page=' + page,
+        token,
+      );
+      if (!Array.isArray(data) || data.length > REPO_PAGE_SIZE) {
+        throw new ActionError('invalid_upstream_json');
+      }
+      for (const entry of data) {
+        if (typeof entry?.full_name !== 'string') throw new ActionError('invalid_upstream_json');
+        assertRepoName(entry.full_name);
+        found.add(entry.full_name.toLowerCase());
+      }
+      if (data.length < REPO_PAGE_SIZE) return [...found];
+    }
+    throw new ActionError('repository_discovery_limit');
+  }
+
+  private async repoTokens(): Promise<Map<string, string | null>> {
+    this.repositoriesPromise ??= (async () => {
+      // Never retry failed discovery with another account or silently omit it.
+      const lists = await Promise.all(this.tokens.map((token) => this.discoverRepositories(token)));
+      const owners = new Map<string, string | null>();
+      for (let i = 0; i < lists.length; i++) {
+        for (const repo of lists[i]) {
+          owners.set(repo, owners.has(repo) ? null : this.tokens[i]);
+        }
+      }
+      return owners;
+    })();
+    return this.repositoriesPromise;
+  }
+
+  async listRepositories(): Promise<{ repositories: string[]; ambiguous_repositories: string[] }> {
+    const owners = await this.repoTokens();
+    return {
+      repositories: [...owners].filter(([, token]) => token !== null).map(([repo]) => repo).sort(),
+      ambiguous_repositories: [...owners].filter(([, token]) => token === null)
+        .map(([repo]) => repo).sort(),
+    };
+  }
+
+  async api(repo: string, path: string, init: RequestInit = {}): Promise<any> {
+    assertRepoName(repo);
+    const token = (await this.repoTokens()).get(repo.toLowerCase());
+    if (token === null) throw new ActionError('ambiguous_repository_credentials');
+    if (!token) throw new ActionError('repository_not_accessible');
+    return this.authenticatedJson('https://api.github.com/repos/' + repo + '/' + path, token, init);
   }
 
   listWorkflows(repo: string) {
