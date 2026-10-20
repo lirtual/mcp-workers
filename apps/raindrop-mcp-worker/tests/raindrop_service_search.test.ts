@@ -153,7 +153,7 @@ describe("RaindropService official organization suggestions", () => {
       collectionIds: [11, 12], tags: ["backend"],
     });
     expect(post).toHaveBeenCalledWith("/raindrop/suggest", {
-      body: { link: "https://example.com", important: false },
+      body: { link: "https://example.com" },
     });
   });
 
@@ -177,7 +177,7 @@ describe("T03 Raindrop single-write HTTP contracts", () => {
     const created = await service.createBookmark(undefined, { link: "https://example.com" });
     expect(created._id).toBe(78);
     expect(post).toHaveBeenCalledWith("/raindrop", {
-      body: { link: "https://example.com" },
+      body: { link: "https://example.com", important: false },
     });
   });
 

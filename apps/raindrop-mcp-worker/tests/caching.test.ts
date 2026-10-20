@@ -97,7 +97,7 @@ describe("RaindropService Caching Logic", () => {
       data: { item: { _id: 123, title: "Initial" }, items: [], count: 0 },
     });
     mockPut.mockResolvedValue({
-      data: { item: { _id: 123, title: "Updated" } },
+      data: { result: true, item: { _id: 123, title: "Updated" } },
     });
 
     await service.getBookmark(123);
