@@ -46,6 +46,22 @@ Cloudflare Workflows alone decides when a DAG Step may advance; D1 records admis
 
 **PROPOSED:** `workflow_id` is immutable; a mutable Draft carries `draft_revision`. A `published_version_id` identifies an immutable compiled plan and has its own `plan_digest` and `plan_format_version`. Each `run_id` permanently references one published version; each `step_id` is unique inside the plan; `attempt_id` belongs to a specific Run+Step; a GitHub physical job is a *candidate*, not the logical Attempt. Use opaque IDs, not human names, for matching or authorization.
 
+### 1.3 Minimum-entity rule — owner-confirmed design-review constraint (2026-10-20)
+
+**Principle:** every new persistent entity, long-lived secret, background service, privilege surface or abstraction must state (1) the distinct invariant that current Portal/Workflows/D1/GitHub cannot uphold, (2) simpler reuse alternatives, (3) lifecycle/rotation/recovery and maintenance cost, and (4) a test proving its necessity. **Default: do not introduce it.** This constrains implementation selection; it does **not** reopen Q1–Q50, waive security requirements, or authorize code changes.
+
+| Existing responsibility | Reuse | New component? |
+| --- | --- | --- |
+| MCP owner/client ingress | `packages/portal-auth`; existing Portal bearer/Origin boundary (Q10) | **No** second login, RBAC or token authority |
+| GitHub-hosted job identity for Claim/callback | GitHub-issued, short-lived OIDC JWT + verification **inside** Workflow MCP (Q26) | **No** homegrown per-Attempt token issuer, vault, OAuth server, independent OIDC service or persistent JWKS table |
+| Unique authorization to execute an Attempt | One conditional D1 owner claim **within the existing logical Attempt model** (Q26) | **No** standalone lock service or separate Claim microservice |
+| Receipt-first callback | Existing D1 receipt state and Workflow notification (Q48) | **No** event broker or extra callback-processing daemon |
+| GitHub workflow dispatch | Bounded GitHub REST/Actions execution (Q18), with **distinct least-privilege execution authority** (Q27) | **No** extra dispatch Worker by default; **do not** casually share the management MCP's multi-PAT power |
+| Arbitrary routine MCP Steps | Existing Workflows orchestration, Portal owner grants and target-scoped credentials | **No** GitHub OIDC requirement unless the Step actually runs in GitHub Actions |
+
+**Important distinction:** the already-existing GitHub Actions management MCP can supply shared *REST client code, request/correlation logic and implementation experience*. Automatically calling that management Worker with its owner Portal token or passing its pooled multi-account `GH_TOKEN` into Workflow MCP would broaden privileged dispatch authority and conflict with Q27. Reuse the implementation first; delegate actual dispatch to the existing service **only if** an independently reviewed, capability-scoped call can uphold Q27 without exposing its broader token pool. If that cannot be proven, a single minimal-scope workflow-dispatch credential may be justified; assess and document its repository/workflow access, secret location and rotation before creating it. This does **not** authorize provisioning credentials now.
+
+
 ## 2. DSL and immutable executable plan
 
 **DECIDED (Q2, Q5–Q6, Q11–Q12, Q38, Q40–Q42, Q45):** YAML or JSON declarative definition, runtime Draft authoring, optimistic edits, validation plus required authorization then atomic Publish. Publish compiles a fixed plan. No `eval`, custom JS functions, arbitrary loops or unbounded parallelism. Dependencies are success-gated by default; failure/always conditions must not bypass cancellation.
@@ -209,7 +225,7 @@ These are suggested detailed rows consistent with Q25/Q33/Q37/Q41/Q44; error enu
 
 1. Cloudflare orchestrator creates logical `attempt_id` with fixed `run_id,step_id,plan_digest,capability_id` and `dispatch_id`.
 2. Dispatcher requests registered `workflow_dispatch` to a pinned executor workflow/ref with *non-secret opaque inputs*. On a response returning trustworthy run details, persist the physical GitHub Run ID/URL without searching; otherwise record `dispatch_unknown` and reconcile. Neither dispatch acceptance nor a GitHub Run ID proves execution success.
-3. Each physical GitHub job obtains GitHub OIDC and presents it to callback/claim endpoint; verify signature, issuer, audience, repository identity, selected workflow/ref and freshness.
+3. Each physical GitHub job obtains GitHub OIDC and presents it to callback/claim endpoint; verify signature, issuer, audience, repository identity, selected workflow/ref and freshness **and bind its physical run/attempt identity to an already authorized dispatch candidate** (7.4). An unrelated Job in the same trusted repo must not claim an arbitrary known `attempt_id`.
 4. One atomic D1 `UPDATE ... WHERE owner IS NULL` or equivalent Claim grants the **one** candidate permission to do business work. A losing candidate exits without calling external business capability.
 5. Owner executes pinned capability and produces safe bounded result or R2 Artifact reference. Secrets must not be passed in GitHub dispatch inputs.
 6. Authenticated callback is validated and inserted idempotently into D1; only then send the matching event to Cloudflare Workflow.
@@ -220,7 +236,9 @@ These are suggested detailed rows consistent with Q25/Q33/Q37/Q41/Q44; error enu
 
 **PROPOSED callback identity:** `(attempt_id, candidate_run_id, callback_id, event_type)`, bound to pinned executor identity and plan. Enforce uniqueness for callback replay and monotonically valid outcome transitions.
 
-**PROPOSED D1 Claim invariant:**
+**PROPOSED D1 Claim invariant:** Candidate authorization must be verified **before** executing the following atomic ownership update. The SQL uniqueness mechanism alone does not prove that a claimant was dispatched for the logical Attempt.
+
+
 
 ~~~sql
 UPDATE attempts
@@ -237,6 +255,21 @@ This is **illustrative**. Actual D1 semantics, authorization race handling, immu
 **DECIDED Q48:** receipt-first. D1 callback record stores validation status, correlation, idempotency and delivery state. Event notification is an optimization for waking the orchestrator, not the only record of completion. Reconcile boundedly from persisted receipts when the first notification fails; ensure already-completed or cancelled Runs cannot be mutated by late callbacks.
 
 **VERIFY:** Cloudflare Workflows supports `waitForEvent`/ `sendEvent` and early buffering, but platform event receipt alone is not equivalent to durable application receipt. See [events and parameters](https://developers.cloudflare.com/workflows/build/events-and-parameters/).
+
+### 7.4 Precise Portal vs Runner trust boundaries and candidate proof — PROPOSED
+
+**Portal auth is reused, not extended to become a GitHub identity issuer.** The current `packages/portal-auth` package checks a configured Bearer token and optional request Origin and strips the inbound Authorization header; it does not certify GitHub repository, workflow, Job or Run provenance. Do not send `MCP_ACCESS_TOKEN` (or target MCP credentials) to GitHub Actions, even as a `workflow_dispatch` input. Runner callbacks/Claim use the existing GitHub OIDC verification module within Workflow MCP, not owner Portal auth and not a parallel user account system.
+
+**Validate before D1 Claim**, using the hosted GitHub JWKS and short-lived JWT: valid signature, issuer `https://token.actions.githubusercontent.com`, exact intended `aud`, expiry/not-before/issued-at with bounded clock tolerance, repository identity (prefer stable `repository_id` in addition to name if available), intended `ref`, `event_name`, workflow identity, and physical candidate Run/Job identity. GitHub's documented `workflow_ref` identifies the normal workflow; `job_workflow_ref` is used for reusable workflows and **must only be required when the selected executor uses one**. Do not treat an optional claim as universally present. Prefer a pinned workflow revision or comparably strict controlled ref when the threat model requires it.
+
+**Critical authorization distinction:** a valid JWT from a trusted repository only proves *origin*. It is **not** permission to claim any user-supplied `attempt_id`. Before granting execution, atomically establish that the physical candidate corresponds to a specifically authorized dispatch of the pinned `attempt_id` / capability / repository / workflow / ref and to an admissible Candidate identity. On the normal GitHub REST dispatch path, correlate with its returned GitHub Run ID. If dispatch confirmation is lost, reconcile candidate evidence against GitHub's authoritative run/workflow metadata first; if that linkage cannot be proven, **fail closed / `dispatch_unknown` rather than accept any Job from the same repo**. A non-secret dispatch correlation input is not itself an authorization credential.
+
+**Physical identity is not just `run_id`:** retrying a Job can reuse a GitHub workflow Run ID while changing `run_attempt` and/or `check_run_id`. Use the strongest available verifiable physical candidate identifier; do not assume that the existing P0-5 test with two different Run IDs proves same-Run reruns are safely distinguished. Persist only fields necessary for identity and owner safety in the existing Attempt record / minimal justified candidate projection. A timeout does not release an owner to another candidate unless reliable evidence proves the first cannot still execute.
+
+**Privilege budget:** each GitHub Runner is granted only `id-token: write` and other specific job permissions required by its registered capability. An OIDC JWT should never become a general-purpose Workflow MCP API key. The verifier is a *small Worker module*, GitHub JWKS is fetched/cached as required by the library (not duplicated in D1), and the D1 Claim remains the single durable execution-ownership authority. Existing P0-5 evidence supports signature validation / one-Run-per-candidate competing for ownership / receipt recovery **only for its measured cases**; candidate-dispatch correlation and same-Run rerun fencing remain new acceptance proofs, not automatically passed.
+
+Official identity reference: [GitHub Actions OIDC claims](https://docs.github.com/en/actions/reference/security/oidc) (including `workflow_ref`, reusable-workflow-only `job_workflow_ref`, `run_id`, `run_attempt` and `check_run_id`).
+
 
 ## 8. Proposed D1/R2 data model
 
@@ -413,6 +446,8 @@ Q1–Q50 still define the **full v0.1 design scope**. Passing S1 does not certif
 | AC-30 | GitHub API returns Run ID, versus response lost | direct success path records ID; unknown path reconciles; Claim prevents duplicate business work |
 
 **Mandatory release condition:** S1–S3 exit evidence is reused when unchanged. P0 failures block the related execution capability; no blanket production-success claim is allowed. Future implementation may optimize the mechanisms while preserving every confirmed Q1–Q50 invariant and the proofs above.
+
+**Additional P0-5 proof to reuse only once:** send a correctly signed JWT from the same trusted repository but a **different, not-authorized** workflow Run and assert Claim denial; retry a GitHub Job under the same `run_id` with a different `run_attempt` / candidate identity and assert no second owner or external effect. These two missing cases are not covered by the earlier isolated P0-5 PASS. If a proposed candidate-correlation field/table is needed, justify its lifecycle under `1.3` rather than creating a new registry automatically.
 
 ## 12. Final design-tree disposition
 
