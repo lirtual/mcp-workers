@@ -5,6 +5,7 @@ import RaindropService from "../src/services/raindrop.service.js";
 vi.mock("openapi-fetch", () => ({
   default: vi.fn(() => ({
     GET: vi.fn().mockResolvedValue({ data: { items: [], count: 0 } }),
+    POST: vi.fn().mockResolvedValue({ data: { result: false, ids: [] } }),
     use: vi.fn(),
   })),
 }));
@@ -43,5 +44,42 @@ describe("RaindropService.getBookmarks filter mapping", () => {
     expect(searchString).toContain("created:<=2023-12-31");
     expect(searchString).toContain("type:video");
     expect(searchString).toContain("duplicate:true");
+  });
+});
+
+describe("RaindropService.bookmarkExists official URL existence contract", () => {
+  it("treats result:false as a normal, absent bookmark", async () => {
+    const service = new RaindropService("fake-token");
+    const post = (service as any).client.POST;
+    post.mockResolvedValueOnce({ data: { result: false, ids: [] } });
+
+    await expect(service.bookmarkExists("https://example.com/a")).resolves.toEqual({
+      exists: false,
+      ids: [],
+    });
+    expect(post).toHaveBeenCalledWith("/import/url/exists", {
+      body: { urls: ["https://example.com/a"] },
+    });
+  });
+
+  it("returns all IDs actually reported for a single URL", async () => {
+    const service = new RaindropService("fake-token");
+    const post = (service as any).client.POST;
+    post.mockResolvedValueOnce({ data: { result: true, ids: [123, 456] } });
+
+    await expect(service.bookmarkExists("https://example.com/a")).resolves.toEqual({
+      exists: true,
+      ids: [123, 456],
+    });
+  });
+
+  it("rejects contradictory or unverified upstream results", async () => {
+    const service = new RaindropService({ accessToken: "fake-token", maxReadRetries: 0 });
+    const post = (service as any).client.POST;
+    post.mockResolvedValueOnce({ data: { result: false, ids: [123] } });
+    await expect(service.bookmarkExists("https://example.com/a")).rejects.toThrow();
+
+    post.mockResolvedValueOnce({ data: { result: true, ids: ["123"] } });
+    await expect(service.bookmarkExists("https://example.com/a")).rejects.toThrow();
   });
 });
