@@ -1,6 +1,6 @@
 # Remote Control — Browser Automation Design (Grill With Docs)
 
-Status: **design interview in progress; rounds 1–8 agreed 2026-10-20**. This document records decisions, not shipped behavior, authorization to implement, a release gate or a new development Ticket. The existing v1/v2 specs remain authoritative for their implemented scope. Do not infer that browser tools, native Windows browser automation coverage, or personal-profile access exist today.
+Status: **design interview in progress; rounds 1–9 agreed 2026-10-20**. This document records decisions, not shipped behavior, authorization to implement, a release gate or a new development Ticket. The existing v1/v2 specs remain authoritative for their implemented scope. Do not infer that browser tools, native Windows browser automation coverage, or personal-profile access exist today.
 
 ## Goal
 
@@ -94,6 +94,17 @@ See [ADR-0027](./adr/0027-browser-tools-visual-consent-and-recovery.md). These d
 
 See [ADR-0028](./adr/0028-browser-data-files-provenance-platform-acceptance.md). The privacy, supply-chain and platform commitments are design choices, not proof of deployed capability, tested compatibility or availability of source-provided integrity metadata.
 
+## Accepted results, effect reconciliation, download retention, and capability gating (round 9)
+
+| Question | Decision | Consequence |
+| --- | --- | --- |
+| Q33 — Tool result contract | **A**: shared minimal structured result | Identify device/session and required tab, status/error, bounded task-specific payload, truncation and effectful `operation_id`. Exact field schema/transport remain open; no raw Playwright objects |
+| Q34 — Browser vs website outcome | **A**: separate Agent action receipt from read-only website-effect evidence | Click dispatch/execution does not establish website commit; unknown outcome stays unknown and cannot trigger automatic replay. Actual state machine and evidence contract remain open |
+| Q35 — Managed download cleanup | **A**: seven-day default retention for unreferenced files | Cleanup only Agent-managed browser downloads, never active/unresolved referenced files or other host/Profile content. Owner may explicitly manage downloaded files via existing tools; reference tracking and race behavior remain open |
+| Q36 — Enablement under missing confirmation support | **A**: independently enable verified safe low-impact capabilities while high-impact operations remain disabled without enforceable one-use approval | No downgrade of high-impact effects to ordinary clicks. Precise safe subset and ambiguous-action classifier are open; production rollout needs later owner authorization and platform evidence |
+
+See [ADR-0029](./adr/0029-browser-results-outcomes-downloads-gated-release.md). This accepts design boundaries, not exact schemas, live website-effect guarantees, an installed confirmation channel or permission to ship. Representative unsafe assumption to reject: a generic `click` is not automatically low-impact just because the visible button label looks harmless.
+
 ## Invariants carried forward
 
 - Use the established authenticated device path and explicit `device_id`; never accept an arbitrary remote address or publish a CDP endpoint.
@@ -105,14 +116,25 @@ See [ADR-0028](./adr/0028-browser-data-files-provenance-platform-acceptance.md).
 
 ## Open design-tree branches
 
-**Next-round frontier (Q33–Q36; no choices accepted yet)**
+**Next-round frontier (Q37–Q40; no choices accepted yet)**
 
-- Q33 — What standard result contract should each atomic browser tool return for device/session/tab identity, bounded page data, errors and effectful Operation IDs?
-- Q34 — How should browser execution status, independently observed website-side effect and unknown outcomes be represented and reconciled without blind replay or claims of exactly-once web transactions?
-- Q35 — When and how should browser-downloaded files be cleaned from the Agent-managed directory while preserving explicit owner access and unsettled operations?
-- Q36 — If the deployed ChatGPT/MCP client cannot carry a trustworthy one-use high-impact approval through to the execution boundary, should safe low-impact browser tools be released separately while the unsupported high-impact action remains disabled, or should release of all browser tools be blocked?
+- Q37 — How should the system classify inherently uncertain click/fill/keyboard effects for the low-impact-only enablement gate, without trusting button labels or letting a webpage authorize itself?
+- Q38 — What minimal acceptance proof is required before enabling the one-use high-impact owner-confirmation path on a real ChatGPT/MCP client, and what happens if no trustworthy confirmation transport exists?
+- Q39 — What minimal Agent-local receipt states and recovery queries reconcile an uncertain browser action without adding a new website-transaction ledger?
+- Q40 — What lean per-platform release gate should combine real browser behavior, denied sensitive operations, operational safety and upgrade rollback evidence, without blocking already-verified platforms or deploying from this design PR?
 
-**Downstream (not yet at the frontier; depends on Q33–Q36):** detailed locator freshness and visual target proof, concrete screenshot size and secret-exposure limits, trusted browser binary verification-source availability, exact confirmation binding and consumption, profile and tab recovery race tests, per-platform evidence matrix and release thresholds, and future separately authorized personal-browser attachment. After the frontier is exhausted, conduct a final overengineering, feasibility, security and contradiction audit before requesting express owner approval for implementation.
+**Downstream (not yet at the frontier; depends on Q37–Q40):** typed input/result field names, tab/viewport freshness evidence, bounded output defaults and sensitive screenshot handling, actual confirmation one-use consumption/expiry, managed-download cleanup references, upstream Chromium verification artifacts, final overengineering/feasibility audit and explicitly authorized later personal-browser attachment. The open tree is not an implementation backlog.
+
+## Design review observations — not accepted decisions (2026-10-20)
+
+These are **issues to clarify in later interviews**, not architecture decisions, implementation findings or authorization to create Tickets.
+
+1. **High — low-impact classification vs arbitrary page effects.** Q21 requires useful click/fill/keyboard interactions and Q36 allows safe operations to ship independently, but a normal-looking click could trigger payment, deletion, or network effects through webpage scripts. A label-only or model-only classifier cannot guarantee Q16/Q23/Q27. Q37 must make uncertain operations fail closed rather than silently classify them as safe.
+2. **High — authorization feasibility.** Q23/Q27 mandate a verified, action-specific one-use owner confirmation, but the current documents do not prove that a supported ChatGPT/MCP client exposes verifiable human-confirmation evidence through Worker and Agent. Q36 permits a limited safe surface in the meantime; Q38 must define a real gate rather than invent an approval protocol.
+3. **Medium — browser receipt is not website commit.** Q20/Q34 avoid blind replay but exact receipt states and observational website evidence remain undefined. No design can generally promise exactly-once effects across arbitrary websites; keep existing local receipts rather than creating an independent distributed transaction coordinator. Q39 must resolve the minimal contract.
+4. **Medium — cleanup races and privacy.** Q24 protects the retained Profile, while Q35 permits timed cleanup of managed downloads only if unreferenced. Safe reference tracking, directory permissions and sensitive output handling remain open. Avoid a separate file manager, tracking database or cloud binary proxy unless an accepted requirement later demands one.
+5. **Medium — installation and rollout evidence.** Q31 requires genuine trusted Chromium provenance, which must be established from actual available metadata rather than inventing a checksum. Q32 requires platform-specific proof; previous Windows preview work is not proof of browser support. A new distribution pipeline or cross-platform lockstep release would exceed accepted scope without further justification.
+6. **Complexity watch — feature promises vs initial rollout.** Q21/Q25 identify the intended complete *tool capability* while Q36 permits a safely restricted *enabled subset*. Distinguish defined, implemented, accepted and enabled functionality instead of representing a deferred high-impact capability as available. Avoid a new Worker, DO, profile manager, browser scripting gateway, human-approval service or workflow orchestrator by default.
 
 ## Documentation and scope rules
 
