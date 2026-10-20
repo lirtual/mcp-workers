@@ -341,7 +341,8 @@ test('D1 stays SELECT-only, quotas stay at the spec defaults, and secrets are no
   assert.match(pinned.slice(0, 800), new RegExp(`workerd: ${record.runtime.workerd}`));
   const workerConfig = await readFile(new URL('../wrangler.jsonc', import.meta.url), 'utf8');
   const config = JSON.parse(workerConfig);
-  assert.equal(config.observability.enabled, false);
+  assert.equal(config.observability.enabled, true);
+  assert.equal(config.observability.logs?.invocation_logs, true);
   assert.equal(config.d1_databases, undefined);
   assert.equal(config.vars?.MCP_BROKER_FULL_ACCESS, undefined);
   assert.deepEqual(config.services, [{

@@ -12,6 +12,7 @@ export const BOOTSTRAP_SECRETS = Object.freeze({
   "database-mcp-worker": ["MCP_ACCESS_TOKEN", "DATABASE_CONFIG"],
   "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "MCP_BROKER_TOKEN"],
   "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
+  "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "GH_TOKEN"],
 });
 
 export function collectBootstrapSecrets(worker, env) {

@@ -4,6 +4,8 @@ Private source monorepo for independently deployed Cloudflare MCP Worker apps.
 
 ## Applications
 
+- [GitHub Actions MCP](apps/github-actions-mcp-worker/README.md) — repository-scoped GitHub Actions controls using only GitHub REST API (source only; not production deployed).
+
 - [Database MCP](apps/database-mcp-worker/README.md)
 - [IMA MCP](apps/ima-mcp-worker/README.md)
 - [Raindrop MCP](apps/raindrop-mcp-worker/README.md)
