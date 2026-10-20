@@ -19,7 +19,7 @@
   "secrets": {
     "required": [
       "MCP_ACCESS_TOKEN",
-      "GITHUB_TOKEN"
+      "GH_TOKEN"
     ]
   }
 }

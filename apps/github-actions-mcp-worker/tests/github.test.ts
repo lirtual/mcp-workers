@@ -5,7 +5,7 @@ import type { Env } from '../src/github.ts';
 
 const config: Env = {
   MCP_ACCESS_TOKEN: 'mcp-secret',
-  GITHUB_TOKEN: 'github-secret',
+  GH_TOKEN: 'github-secret',
   GITHUB_REPOS: 'autoactions/tsrv, autoactions/tsvc',
 };
 

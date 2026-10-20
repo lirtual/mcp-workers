@@ -1,6 +1,6 @@
 export interface Env {
   MCP_ACCESS_TOKEN: string;
-  GITHUB_TOKEN: string;
+  GH_TOKEN: string;
   GITHUB_REPOS: string;
 }
 
@@ -63,13 +63,13 @@ export class GitHubActionsClient {
 
   async api(repo: string, path: string, init: RequestInit = {}): Promise<any> {
     assertRepo(this.allowlist, repo);
-    if (!this.env.GITHUB_TOKEN) throw new ActionError('github_token_not_configured');
+    if (!this.env.GH_TOKEN) throw new ActionError('github_token_not_configured');
     const url = 'https://api.github.com/repos/' + repo + '/' + path;
     const response = await this.requestFetch(url, {
       ...init,
       redirect: 'manual',
       headers: {
-        'Authorization': 'Bearer ' + this.env.GITHUB_TOKEN,
+        'Authorization': 'Bearer ' + this.env.GH_TOKEN,
         'Accept': 'application/vnd.github+json',
         'X-GitHub-Api-Version': '2022-11-28',
         'User-Agent': 'github-actions-mcp-worker',

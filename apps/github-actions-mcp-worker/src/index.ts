@@ -35,7 +35,7 @@ export default {
     let repositories: string[];
     try { repositories = configuredRepos(env.GITHUB_REPOS); }
     catch { return jsonError(503, 'invalid_repository_configuration'); }
-    if (!env.GITHUB_TOKEN || repositories.length === 0) {
+    if (!env.GH_TOKEN || repositories.length === 0) {
       return jsonError(503, 'github_not_configured');
     }
     const handler = createMcpHandler(() => buildMcpServer(env), { legacy: 'stateless' });

@@ -239,7 +239,7 @@ test("manual release always syncs selected Worker Secrets from GitHub and never 
   const secretStep = workflow.slice(secretStart, variableStart);
   assert.doesNotMatch(secretStep, /^\s*if:/m, "existing Workers must never skip Secret staging");
   for (const name of ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN", "API_KEY",
-    "DATABASE_CONFIG", "MCP_BROKER_TOKEN", "GH_ACTIONS_PAT"]) {
+    "DATABASE_CONFIG", "MCP_BROKER_TOKEN", "GH_TOKEN"]) {
     assert.ok(secretStep.includes("secrets." + name), "GitHub must provide " + name);
   }
   assert.equal(secretStep.includes("secrets.CLIENT_ID"), false,
@@ -292,10 +292,10 @@ test("preflight allows GitHub to restore a missing runtime Secret, but readback 
 
 test("GitHub Actions Worker release requires scoped secrets and reviewed repository list", () => {
   const worker = "github-actions-mcp-worker";
-  const secrets = [{ name: "MCP_ACCESS_TOKEN" }, { name: "GITHUB_TOKEN" }];
+  const secrets = [{ name: "MCP_ACCESS_TOKEN" }, { name: "GH_TOKEN" }];
   const settings = { bindings: [
     { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
-    { name: "GITHUB_TOKEN", type: "secret_text" },
+    { name: "GH_TOKEN", type: "secret_text" },
     { name: "GITHUB_REPOS", type: "plain_text", text: "autoactions/tsrv,autoactions/tsvc" },
   ], observability: { enabled: true, logs: { invocation_logs: true } } };
   const options = { mode: "readback", expectedGithubRepos: "autoactions/tsrv,autoactions/tsvc" };
@@ -308,5 +308,5 @@ test("GitHub Actions Worker release requires scoped secrets and reviewed reposit
   assert.throws(() => verifyBindings(worker, { ...settings, bindings: [...settings.bindings,
     { name: "DANGEROUS_RESOURCE", type: "service" }] }, secrets, options), /Unexpected production resource/);
   assert.match(readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
-    /GITHUB_TOKEN: \$\{\{ secrets\.GH_ACTIONS_PAT \}\}/);
+    /GH_TOKEN: \$\{\{ secrets\.GH_TOKEN \}\}/);
 });

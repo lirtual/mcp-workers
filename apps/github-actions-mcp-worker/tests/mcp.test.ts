@@ -6,7 +6,7 @@ import type { Env } from '../src/github.ts';
 
 const env: Env = {
   MCP_ACCESS_TOKEN: 'synthetic-mcp-token',
-  GITHUB_TOKEN: 'synthetic-github-token',
+  GH_TOKEN: 'synthetic-github-token',
   GITHUB_REPOS: 'autoactions/tsrv,autoactions/tsvc',
 };
 
@@ -49,5 +49,5 @@ test('MCP endpoint fails closed for missing or wrong bearer and untrusted Origin
   assert.equal((await worker.fetch(request({}), env)).status, 401);
   assert.equal((await worker.fetch(request({ authorization: 'Bearer wrong' }), env)).status, 401);
   assert.equal((await worker.fetch(request({ authorization: 'Bearer synthetic-mcp-token', origin: 'https://not-allowed.example' }), env)).status, 403);
-  assert.equal((await worker.fetch(request({ authorization: 'Bearer synthetic-mcp-token' }), { ...env, GITHUB_TOKEN: '' })).status, 503);
+  assert.equal((await worker.fetch(request({ authorization: 'Bearer synthetic-mcp-token' }), { ...env, GH_TOKEN: '' })).status, 503);
 });

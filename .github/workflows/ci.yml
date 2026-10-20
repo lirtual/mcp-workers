@@ -273,7 +273,7 @@ jobs:
           API_KEY: ${{ secrets.API_KEY }}
           DATABASE_CONFIG: ${{ secrets.DATABASE_CONFIG }}
           MCP_BROKER_TOKEN: ${{ secrets.MCP_BROKER_TOKEN }}
-          GITHUB_TOKEN: ${{ secrets.GH_ACTIONS_PAT }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           set -euo pipefail
           umask 077

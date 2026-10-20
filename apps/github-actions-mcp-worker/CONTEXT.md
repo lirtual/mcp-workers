@@ -2,7 +2,7 @@
 
 This bounded context owns an independently deployed, stateless MCP ingress that calls **only GitHub REST API** endpoints for GitHub Actions. It never calls Session Deck or any other management API. GitHub is the source of truth for workflows, runs, jobs and artifacts; `tsrv` and `tsvc` require no special adapter.
 
-Runtime inputs are the existing `MCP_ACCESS_TOKEN`, one `GITHUB_TOKEN`, and a comma-separated `GITHUB_REPOS` allowlist. No database, queue, background state, session password, cloud executor, D1, R2 or Durable Object is introduced.
+Runtime inputs are the existing `MCP_ACCESS_TOKEN`, one `GH_TOKEN`, and a comma-separated `GITHUB_REPOS` allowlist. No database, queue, background state, session password, cloud executor, D1, R2 or Durable Object is introduced.
 
 MCP tool boundaries: allowlisted workflow/run discovery, metadata-only job/artifact reads, explicit-ref workflow dispatch, repository dispatch, individual run cancellation, and reruns. Upstream acceptance does not prove a run started or completed. For runner address or session readiness, this MCP does not interpret artifacts; that remains outside this generic Actions manager.
 

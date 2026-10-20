@@ -10,7 +10,7 @@ const REQUIRED_SECRETS = {
   "database-mcp-worker": ["MCP_ACCESS_TOKEN", "DATABASE_CONFIG"],
   "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "MCP_BROKER_TOKEN"],
   "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
-  "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "GITHUB_TOKEN"],
+  "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "GH_TOKEN"],
 };
 const WORKER_ENTRIES = {
   "raindrop-mcp-worker": "src/worker.ts",
