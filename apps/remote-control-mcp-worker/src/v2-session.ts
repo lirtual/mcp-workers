@@ -295,7 +295,7 @@ export async function listApprovedDevices(state: DurableObjectState):
   const grants = await listLiveGrants(state.storage);
   if (!grants.complete || grants.active.size > 64) return { status: 503, body: { error: "capacity" } };
   const stored = grants.active;
-  const devices: Array<{ device_id: string; name: string; status: "online" | "offline"; expires_at?: number }> = [];
+  const devices: Array<{ device_id: string; name: string; status: "online" | "offline"; expires_at?: number; display_name?: string; name_ambiguous?: boolean }> = [];
   for (const [key, device] of stored) {
     if (!device || !isId(device.device_id) || key !== "device:" + device.device_id ||
         typeof device.name !== "string" || typeof device.revoked !== "boolean") continue;
@@ -326,6 +326,16 @@ export async function listApprovedDevices(state: DurableObjectState):
     devices.push({ device_id: device.device_id, name: device.name,
       status: online ? "online" : "offline",
       ...(device.grant_type === "temporary" ? { expires_at: device.expires_at } : {}) });
+  }
+  // Keep the original label and full UUID intact. Duplicate labels get a hint,
+  // but a caller must still use the full device_id for remote operations.
+  const labelCounts = new Map<string, number>();
+  for (const device of devices) labelCounts.set(device.name, (labelCounts.get(device.name) ?? 0) + 1);
+  for (const device of devices) {
+    if ((labelCounts.get(device.name) ?? 0) > 1) {
+      device.display_name = `${device.name} (${device.device_id.slice(0, 8)})`;
+      device.name_ambiguous = true;
+    }
   }
   devices.sort((a, b) => a.device_id.localeCompare(b.device_id));
   return { status: 200, body: devices };
