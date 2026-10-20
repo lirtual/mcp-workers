@@ -55,3 +55,21 @@ An additional **isolated** end-to-end PoC deployed one Cloudflare Worker `wf-p04
 **Directly observed:** Wrangler deployed the Worker, Workflow binding and fixed Cron successfully. Cloudflare management API independently confirmed the Cron schedule is installed. **However, before safe teardown no native scheduled invocation occurred:** remote D1 contained zero `ticks`, zero `runs`, zero `effects`, and the schedule remained enabled. Thus **the end-to-end native Cron chain was NOT verified and must remain OPEN.** This result is inconclusive, not a failure of the workflow admission design: Cloudflare documents that a newly created Cron Trigger can take **up to 15 minutes to propagate** ([Cron Trigger docs](https://developers.cloudflare.com/workers/configuration/cron-triggers/)). No local/synthetic `/tick` invocation was substituted as evidence of genuine scheduling.
 
 **Cleanup independently verified:** the temporary Cron Worker, Workflow and D1 were deleted successfully, with no persistent Cron Trigger left. Do not leave temporary cloud resources running only to await propagation, or claim P0-4 is complete based solely on deployment success. A future scheduled-window integration test can exercise the same minimal topology without creating another scheduling platform.
+
+## Further P0-3 destination credentials and redirect test — 2026-10-20
+
+**Scope:** one isolated local execution of the actual proposed gateway source under Node.js 22, contacting **two real temporary Cloudflare Workers** over HTTPS. One temporary D1 recorded received test-token *categories only*. All credentials were literal **test-only strings**, not secrets or real MCP credentials. These observations are **not** an end-to-end Cloudflare gateway Worker acceptance.
+
+| Experiment | Observation | Verdict |
+| --- | --- | --- |
+| Dynamic gateway calls test target A | HTTP 200, target reports A-only test credential | PASS within tested path |
+| Dynamic gateway calls test target B | HTTP 200, target reports B-only test credential | PASS within tested path |
+| Test target A returns 302 redirect to target B | Gateway returns `blocked_redirect`, does not follow | PASS within tested path |
+| Public target without a scoped credential grant | `blocked_no_target_grant`, no external call | PASS, proposed policy only |
+| Non-HTTPS target string | `blocked_preflight`, no outbound request | PASS, proposed policy only |
+
+Cloudflare D1 **independently confirmed** one request to A with credential category A and one to B with category B; no third request to B occurred after A's redirect. The proposed gateway used `fetch(..., {redirect:'manual'})` and scoped test credentials by **exact origin**; it never forwards the owner's Portal token. This aligns with [Cloudflare's explicit warning](https://developers.cloudflare.com/workers/runtime-apis/request/) that automatic redirects can forward **all** headers, including Authorization, even to a different host. Simple rejection of redirects is a valid fail-closed default rather than building a new proxy/rewrite mechanism.
+
+**Limitation and tool barrier:** the attempted Cloudflare secret setup for the isolated *gateway* Worker was blocked by execution safety checks. The deployed gateway had **no** `PROBE_KEY` and rejected all ingress. Rather than bypass that check, the **same transpiled gateway source** was executed locally with an in-memory test key and the real Cloudflare target Workers. These results do **not** demonstrate Cloudflare edge runtime egress correctness for this gateway. No actual private, metadata, loopback or DNS-rebinding traffic was sent; comprehensive SSRF and DNS/redirect-proof egress controls remain **OPEN**. The test code's hostname checks are expressly **not** sufficient for DNS rebinding defense.
+
+**Verified teardown:** all three temporary Workers (gateway and both targets) plus the temporary D1 were deleted. Cloudflare resource counts returned to **12 Workers, 4 D1, 1 Workflow**, with no named test resources left. No new long-lived token, proxy, durable record or production permission is justified by these limited tests.
