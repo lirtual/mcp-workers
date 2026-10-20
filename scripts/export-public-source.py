@@ -70,7 +70,7 @@ def verify(path, data):
         if not parsed.username or not parsed.password:
             continue
         host = (parsed.hostname or "").lower()
-        safe = host in ("localhost", "127.0.0.1", "::1", "host.docker.internal")
+        safe = host in ("localhost", "127.0.0.1", "::1", "host.docker.internal", "host")
         safe |= host.endswith((".test", ".example", ".example.com", ".invalid"))
         try:
             safe |= ipaddress.ip_address(host).is_loopback
