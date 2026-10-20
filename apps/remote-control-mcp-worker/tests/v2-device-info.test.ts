@@ -20,12 +20,12 @@ function harness() {
       return new Map([...rows].filter(([key]) => key.startsWith(prefix)).slice(0, limit)) as Map<string, T>;
     },
     async delete(key: string) { rows.delete(key); },
-    async transaction<T>(fn: (tx: typeof storage) => Promise<T>) { return fn(storage); },
+    async transaction<T>(fn: (tx: { get: (key: string) => Promise<unknown>; put: (key: string, value: unknown) => Promise<void> }) => Promise<T>) { return fn(storage); },
   };
   const makeSocket = (id: string, epoch: string) => {
     let attachment: Record<string, unknown> = { device_id: id, epoch, last_auth_check_at: Date.now() };
     return {
-      readyState: WebSocket.OPEN,
+      readyState: Number(WebSocket.OPEN),
       closeCode: 0,
       deserializeAttachment() { return attachment; },
       serializeAttachment(value: Record<string, unknown>) { attachment = value; },
