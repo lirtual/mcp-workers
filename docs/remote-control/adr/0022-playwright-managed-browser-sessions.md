@@ -1,5 +1,8 @@
 # ADR-0022 — Playwright-backed, cross-platform browser sessions
 
+> **Superseded for phase-one runtime selection (2026-10-20):** The direct Playwright-library runtime choice below is part of the earlier Q5 design history, **not** the present phase-one decision. Real Windows [CLI head-to-head PoC](../BROWSER-BACKEND-POC-20261020.md) passed with **agent-browser** and Microsoft Playwright CLI on separate Profiles. Select **agent-browser as the single first integration candidate**, with Playwright CLI only a fallback if integration evidence reveals a blocker. Reuse its mature Snapshot Ref/session semantics instead of building a custom registry. Keep all previous identity, isolation, authorization and non-replay boundaries; no CLI/Shell pass-through or production runtime is approved by this docs edit.
+
+
 Status: **accepted design choices (Grill With Docs round 2, 2026-10-20); documentation only; implementation and release not authorized**.
 
 Browser control will be implemented **inside the existing Remote Control Agent using the Playwright library**, wrapped by the Remote Control MCP's **curated, explicitly reviewed browser tool surface** (Q5=A). Chromium DevTools Protocol (CDP) may be used behind this adapter when appropriate; direct hand-written CDP as the primary product interface, nested Playwright MCP servers, publicly reachable debugging ports, and an arbitrary tool pass-through are not selected. The intent is to reuse mature page automation while retaining one MCP authorization and device-routing boundary.
