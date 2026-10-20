@@ -449,6 +449,10 @@ Q1–Q50 still define the **full v0.1 design scope**. Passing S1 does not certif
 
 **Additional P0-5 proof to reuse only once:** send a correctly signed JWT from the same trusted repository but a **different, not-authorized** workflow Run and assert Claim denial; retry a GitHub Job under the same `run_id` with a different `run_attempt` / candidate identity and assert no second owner or external effect. These two missing cases are not covered by the earlier isolated P0-5 PASS. If a proposed candidate-correlation field/table is needed, justify its lifecycle under `1.3` rather than creating a new registry automatically.
 
+## P0-5 candidate fencing after minimum-entity review (2026-10-20)
+
+[Isolated GitHub OIDC candidate-fencing evidence](p0-github-candidate-fencing-isolated-20261020.md) closes **two tested P0-5 negative scenarios**, not the whole P0 gate: a genuine signed GitHub Job from the same trusted repository/workflow with a *different, unauthorized* GitHub Run ID was rejected with HTTP **403**; rerunning the correctly authorized GitHub Run with unchanged `run_id` but `run_attempt=2` was also rejected with HTTP **403**. The initially authorized candidate (`run_attempt=1`) obtained one D1 owner claim and produced one simulated D1 effect. Cloudflare management D1 queries independently confirmed the exact sequence and one effect. This supports the existing Attempt candidate fields and **requires no new identity/Claim entity**. Test harness paused before Claim to register the known Run ID; **dispatch ambiguity still needs a real fail-closed correlation proof**, and the test did not model arbitrary external effects or cancellation. Temporary repository, Worker and D1 were deleted, with inventory restored.
+
 ## 12. Final design-tree disposition
 
 Q1–Q50 are recorded as **settled architecture decisions**. The conceptual architecture tree has no known unresolved *product/architecture preference branch*. This does **not** mean there are no remaining engineering unknowns. The remaining values, schemas, test matrices and platform-feasibility questions above are explicitly **PROPOSED/VERIFY/BLOCKER**, not silently approved.
