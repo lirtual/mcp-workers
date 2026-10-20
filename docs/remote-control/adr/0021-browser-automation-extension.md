@@ -20,6 +20,8 @@ Existing **device pairing is necessary but insufficient as blanket browser autho
 
 **Follow-on decision (round 5):** [ADR-0025](./0025-atomic-browser-actions-and-receipts.md) chooses curated atomic tools, semantic-first unique element targeting, local-only browser file transfers using authorized Agent paths, and existing operation IDs/Agent receipts for potentially effectful actions without claiming remote website success.
 
-**Still open:** download provenance and OS dependency checks, exact idle activity accounting, conflict/lock recovery, offline cleanup guarantees, tab and personal-profile permission UX, specific high-impact consent mechanism and classification edge cases, concrete tool schemas and action reconciliation details, packaging, acceptance and rollout gates. No coding, Issue creation, production change, or deployment is authorized by this ADR.
+**Follow-on decision (round 6):** [ADR-0026](./0026-browser-capabilities-tab-and-approval-scope.md) establishes first-release common browser workflow categories, stable tab IDs for explicit device/session targeting, one-use action-bound approval, and owner-only Profile clearing after safe-state checks.
+
+**Still open:** download provenance and OS dependency checks, exact idle activity accounting, conflict/lock recovery, offline cleanup guarantees, personal-profile attachment authorization, concrete high-impact consent mechanism and classification edge cases, tool parameter/result schemas and action reconciliation details, packaging, acceptance and rollout gates. No coding, Issue creation, production change, or deployment is authorized by this ADR.
 
 Related: [Remote Control Domain Context](../CONTEXT.md), [v2 multi-device transport ADR-0014](./0014-v2-multi-device-ws-do.md), [local mutation receipts ADR-0007](./0007-local-receipts-and-no-blind-replay.md).
