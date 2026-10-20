@@ -310,3 +310,17 @@ test("GitHub Actions Worker release requires scoped secrets and reviewed reposit
   assert.match(readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
     /GH_TOKEN: \$\{\{ secrets\.GH_TOKEN \}\}/);
 });
+
+
+test("first GitHub Actions Worker release retries only transient 404s without weakening ingress check", () => {
+  const workflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+  const step = workflow.slice(workflow.indexOf("      - name: Check unauthenticated MCP surface without credentials"));
+  assert.match(step, /FIRST_DEPLOY: \$\{\{ steps\.preflight\.outputs\.bootstrap \}\}/);
+  assert.match(step, /\[\[ "\$SELECTED_WORKER" == "github-actions-mcp-worker" && "\$FIRST_DEPLOY" == "true" \]\]/);
+  assert.match(step, /max_attempts=1/);
+  assert.match(step, /max_attempts=12/);
+  assert.match(step, /401\|403\)/);
+  assert.match(step, /404\)/);
+  assert.match(step, /attempt < max_attempts/);
+  assert.match(step, /Unexpected unauthenticated MCP status/);
+});
