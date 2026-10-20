@@ -115,9 +115,17 @@ _Avoid_: Treating ordinary form preparation as already committed, or considering
 The owner's explicit, single-use approval for a particular High-Impact Browser Action, bound to the intended device, browser session, tab and consequential action target.
 _Avoid_: Assuming that a previous general workflow approval, a changed execution target, the browser's logged-in state or an untrusted webpage is confirmation.
 
+**Proposed Browser Action**:
+A specific consequential browser action presented for the owner's review before it is authorized to execute.
+_Avoid_: Confusing a proposal with permission to execute, or treating the assistant's memory of approval as a verified confirmation.
+
 **Browser Element Target**:
 An unambiguous identifiable page element in the specifically selected browser tab, resolved using its meaningful semantic identity where possible.
 _Avoid_: Guessing which duplicate control to click or treating a stale page position as a reliable identity.
+
+**Visual Browser Target**:
+A specific visible control or region in the selected browser tab identified from current visual evidence when meaningful semantic identification is insufficient.
+_Avoid_: Treating a stale screenshot coordinate as a durable element identity or using it to control arbitrary desktop applications.
 
 **Browser Local Transfer**:
 An upload or download initiated through an automation browser where the source or destination file stays on the Agent's device.
@@ -126,6 +134,10 @@ _Avoid_: Assuming browser file contents must pass through the remote MCP transpo
 **Browser Action Receipt**:
 An Agent-local record of the known execution outcome of a potentially effectful browser operation, independently of whether the remote website completed the intended business transaction.
 _Avoid_: Equating a click result with a confirmed purchase, submission or remote service commit.
+
+**Browser Recovery Conflict**:
+A state in which the browser's ownership, retained Profile availability or effectful operation outcome is insufficiently known to resume safely.
+_Avoid_: Treating an uncertain lock, crash or lost response as evidence that restarting or repeating work is safe.
 
 **Graphical Desktop Control**:
 Remote viewing or manipulation of a desktop screen, mouse or keyboard. This is excluded from the first release.
@@ -173,11 +185,17 @@ The controlled transfer of existing authoritative Operation Receipts to a replac
 _Avoid_: Treating a successful new-store startup as sufficient evidence that historical operation identities were preserved.
 
 
+## Browser tool and safe-execution choices — accepted seventh round (2026-10-20)
+
+[ADR-0027](./adr/0027-browser-tools-visual-consent-and-recovery.md) records the accepted compact, curated atomic browser tool inventory across sessions, tabs, page observation/navigation, interaction and local file operations; bounded visual fallback for a Visual Browser Target when semantic identification fails; the Proposed Browser Action → explicit Browser Action Confirmation → execution boundary for each High-Impact Browser Action, with refusal if confirmation cannot be reliably established; and verification of retained browser/Profile state before recovering from a Browser Recovery Conflict. A screenshot location cannot be assumed fresh, an unverified confirmation is not authority, and an unknown outcome never authorizes blind replay or destruction of Profile/Receipt data.
+
+Exact tool signatures, visual freshness criteria, approval delivery and consumption, crash ownership probes, privacy limits and release gates remain unsettled. These are design decisions only.
+
 ## Browser workflow coverage, tab targeting and safe clearing — accepted sixth round (2026-10-20)
 
 [ADR-0026](./adr/0026-browser-capabilities-tab-and-approval-scope.md) confirms that the initial curated atomic tool scope covers ordinary end-to-end browser workflows (session and tab lifecycle, navigation, observation, click/fill/select/keyboard, screenshot, and local browser uploads/downloads) without unrestricted scripting. A stable Browser Tab ID belongs to the exact device/session, survives navigation and becomes invalid when its tab closes. Each High-Impact Browser Action requires one specific, non-transferable Browser Action Confirmation bound to device, session, tab, intended action and material target; changed targets must be re-approved. Automation Profile Clearing requires an explicit owner request and a provably inactive, resolved-operation state; ambiguous state fails closed rather than destroying local evidence or credentials.
 
-Exact tool contracts, human-confirmation transport/consumption, stale-lock recovery and cleanup implementation remain open. These are design choices, not deployed functionality.
+ADR-0027 now chooses a curated compact inventory, bounded visual fallback, prepare/confirm/execute with fail-closed enforcement, and verified crash recovery. Exact tool signatures, human-confirmation transport/consumption, visual freshness, stale-lock ownership probes and cleanup implementation remain open. These are design choices, not deployed functionality.
 
 ## Browser tool atomicity and local action evidence — accepted fifth round (2026-10-20)
 
