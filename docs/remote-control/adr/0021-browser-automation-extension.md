@@ -1,5 +1,8 @@
 # ADR-0021 — Browser automation is a scoped Remote Control capability
 
+> **Later phase-one scope amendment (2026-10-20):** [Windows PoC / trusted-device scope](../BROWSER-BACKEND-POC-20261020.md) replaces conflicting broad sandbox acceptance expectations with an explicit personal paired-device threat model. Existing Remote Control ownership and browser-only user interface scope remain unchanged. Strict hostile-execution containment is deferred/unverified, not waived as a passed test. High-impact actions still require verifiable user approval.
+
+
 Status: **accepted design boundary (Grill With Docs round 1, 2026-10-20); documentation only, no implementation or release approval**.
 
 Remote browser automation belongs to the existing **Remote Control MCP** product rather than a new `browser-mcp-worker`. It reuses the existing authorized device identity, explicit device routing, authenticated Agent transport, and ownership boundaries. The browser-specific runtime is an Agent-side capability, not a second device registration, Worker, Durable Object, public CDP endpoint, or browser-wide permission implied by pairing.
