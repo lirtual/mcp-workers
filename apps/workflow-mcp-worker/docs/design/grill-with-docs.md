@@ -142,6 +142,40 @@ This single draft records (1) decided boundaries, (2) proposed implementation co
 - MCP current/legacy Streamable HTTP version negotiation: https://modelcontextprotocol.io/specification
 - GitHub OIDC identity: https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments
 
+## Independent adversarial audit, after Q1–Q50 (2026-10-20)
+
+**Owner authorization:** revise docs only. No new Grill question, implementation, issue/Ticket, migration, merge or deployment. This audit **does not reopen** any accepted Q choice and does not treat its proposed engineering mechanisms as approved.
+
+**Verdict:** keep Cloudflare Worker + Workflows + D1, R2 on demand, and GitHub registered heavy executor. No replacement with a full n8n platform or second scheduler. Do **not** implement the previous draft wholesale without closing hard safety gaps.
+
+### Highest-priority corrections in the one canonical spec
+
+| Finding | Severity | Contract correction | Evidence required |
+| --- | --- | --- | --- |
+| Cloudflare default `step.do()` retry can replay MCP writes after remote commit | **P0** | D1 single-dispatch Attempt guard for effectful MCP calls; stop on possible-send ambiguity, report indeterminate; no blanket exactly-once promises | AC-23/24 under crash, retry and network-loss injection |
+| D1 Run reservation and Workflow instance creation are not atomic | **P0** | deterministic ID, reserved/started/start_unknown, same-ID lookup and bounded reconcile; no duplicate quota slot | AC-25/26 |
+| Dynamic MCP endpoints on real Workers have SSRF/cross-Worker/redirect complexities | **P0** | fail closed on unsafe network paths, test Worker-to-Worker fetch and current/legacy MCP client protocols; no required preregistration | AC-08/27 |
+| Dynamic Cron definitions vs deployed Worker Cron | **P0 feasibility** | one fixed tick handles D1 due occurrence admission; no parallel DAG scheduler or per-workflow deploy | AC-11/29 |
+| GitHub dispatch/Callback protocol overbuilt in normal path | **P1 simplify** | use returned Run ID on normal success; unknown only triggers recovery; one durable callback receipt | AC-16/30 |
+| Capacity rejection may lose non-retrying Webhooks | **P1 contract** | explicit nonacceptance and retry guidance; do not claim lossless events without queue | AC-12/28 |
+| Inline Step result limits / Artifact lifetime | **P1** | bound non-stream output, R2 only for large bytes, protect nonterminal references | AC-19/20 |
+| Full first release is too broad to implement as one batch | **P1 delivery** | S1 safe read-only → S2 reliable MCP automation → S3 GitHub heavy execution and production closure; reuse evidence | stage exits in H7 |
+
+**No new architectural primitive:** the MCP dispatch guard extends the already accepted logical Attempt model, not a new distributed scheduler, Saga engine or generalized inbox. The admission repair pass and fixed Cron tick are ingress coordination, not a competing DAG engine. These distinctions should be checked again at implementation review.
+
+**Reviewed official references (fact-check pointers):**
+- Cloudflare Workflows default retries, replay and instance ID lookup: https://developers.cloudflare.com/workflows/build/sleeping-and-retrying/ and https://developers.cloudflare.com/workflows/build/workers-api/
+- Cloudflare Workflows schedule bindings and platform limits: https://developers.cloudflare.com/workflows/build/trigger-workflows/ and https://developers.cloudflare.com/workflows/reference/limits/
+- Worker-to-Worker `fetch` behavior: https://developers.cloudflare.com/workers/runtime-apis/fetch/
+- MCP protocol revision differences: https://ts.sdk.modelcontextprotocol.io/v2/migration/support-2026-07-28
+- GitHub dispatch REST return behavior: https://docs.github.com/en/rest/actions/workflows
+
+**Single detailed source:** [technical-spec-draft.md](technical-spec-draft.md), especially H1–H8 and supplemental AC-23–AC-30. No new ADR is justified by this technical review alone; Q1–Q50 decisions remain captured in ADR-0001–0018.
+
+### Completion boundary
+
+The design tree remains closed as product/architecture preference choices. Feasibility tests remain **not executed**, so the work is a reviewable implementation draft, **not** a production-ready proven design. The next approval should be for the whole revised spec or narrow P0 feasibility probes, not a new series of routine field-name/limit interviews.
+
 ## Working rules
 
 1. Ask the complete current frontier in a round; offer one recommended choice per question.
