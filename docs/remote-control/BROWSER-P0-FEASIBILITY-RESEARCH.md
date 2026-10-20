@@ -506,3 +506,37 @@ With the same restricted local filesystem policy and `ui.disable=false`, `probe(
 4. **One-use, exact-bound owner authorization is still a separate unverified P0.** Keep all external navigation and consequential browser effects disabled. The existing internal-only offline browser core may be tested without accepting a new production network architecture.
 
 **Disposition:** Windows sandbox startup compatibility **PASS**; direct host-loopback policy **FAIL**; identity-less proxy-endpoint/no-direct-bypass TCP fixture **PASS in a temporary test only**; full browser-wide conditional egress P0 **NOT ACCEPTED**. This round introduced **no new implementation, ADR, Ticket, release, merge, deployment or host-global configuration change**.
+
+
+## U. Real Windows Chromium inside native MXC BaseContainer — sandboxed browser startup blocked (2026-10-20)
+
+**Direct continuation of §T, on the same user-authorized Windows 11 25H2 device** `71b4b4d8-6496-4898-9b80-1ea3a03f6ccd`. The prior MXC **proxy-only TCP** positive/negative fixture is **not** a browser-start or browser-wide networking result. This stage tested the next prerequisite: can the existing Chromium binaries start inside an actual native `base-container` without disabling their own sandbox?
+
+### Strict test scope
+
+- The installed `%LOCALAPPDATA%\ms-playwright\chromium_headless_shell-1200\chrome-headless-shell-win64\chrome-headless-shell.exe` (**188,361,216 bytes**, Chrome for Testing **143.0.7499.4**) and cached full `chromium-1200\chrome-win64\chrome.exe` already existed. **No browser binaries were downloaded or replaced**.
+- An Agent-owned Windows command installed exact-pinned `@microsoft/mxc-sdk@1.0.1` under a unique disposable user Temp directory; no SDK was installed into Agent, no release artifact changed, and the npm cache was under the same disposable directory.
+- All test launches used **native `base-container` with no probe errors or warnings**, `ui.disable=false` as separately demonstrated in §T, `network.egress.default=deny`, `network.ingress.default=deny`, `hostLoopback=deny`, and an isolated disposable `--user-data-dir`. Filesystem access was granted **inside the container request only** to the cached Chromium executable directory and `C:\Windows\System32` (read), and the unique Temp test root (write). No real network target, personal Chrome Profile, remote-debugging port, `--no-sandbox`, global ACL, UAC or host firewall modification was used.
+- **Target launch:** native `chrome-headless-shell.exe` with bounded offline `data:text/html` rendering and an expected `RCA_MXC_OFFLINE_CHROMIUM_OK` marker. The test did **not** call Playwright because the isolated raw browser executable itself had to pass first.
+
+### Real results
+
+| Native sandbox probe | Observed outcome | Verdict |
+| --- | --- | --- |
+| MXC `probe()` with the given deny-all network/profile/filesystem request | `tier=base-container`, no errors/warnings | **PASS — OS-tier request acceptance only** |
+| `chrome-headless-shell.exe --version` | Exit 0, printed `Google Chrome for Testing 143.0.7499.4` | **PASS — binary can load and answer a non-rendering command** |
+| `chrome-headless-shell.exe --headless --dump-dom data:text/html,...` | Immediate signed exit **-2147483645** (`0x80000003`, STATUS_BREAKPOINT), no HTML marker or diagnostic output | **FAIL — actual browser initialization/rendering** |
+| `chrome.exe --version` from existing full Chromium cache | Exit **-1073741790** (`0xC0000022`, STATUS_ACCESS_DENIED), no version string | **FAIL — full Chromium startup/access** |
+| Same tests with **sandbox-local read-only access expanded from individual Chromium executable directories to the whole `ms-playwright` cache parent** | **Unchanged**: Headless Shell offline render `0x80000003`; full Chromium version `0xC0000022` | **FAIL — simple parent-path grant did not solve compatibility** |
+| Orphan and Temp cleanup | Both runs found **0 tagged Chromium processes**, removed their unique Temp directories/scripts/npm cache and reported exit 0 from the outer **diagnostic runner** | **PASS — bounded local cleanup** |
+
+An attempt to read the Windows Application event log for a more specific browser faulting module returned `EVENT_READ_UNAVAILABLE=Exception`; no crash module was identified. **Do not infer a specific named-pipe, Mojo, GPU, DLL or Windows kernel defect from these exit codes alone.** The container may restrict one of those facilities, but the exact cause has **not** been established.
+
+### Decision and acceptance boundary
+
+- **Platform status:** Real *Chromium/Playwright inside MXC* **NOT ACCEPTED**. Because raw headless Chromium cannot render even fixed offline HTML under the tested native sandbox, a Playwright browser-context / ARIA / child-process test would not be a meaningful next acceptance without first repairing the sandbox startup compatibility. This does **not** invalidate separately passed Playwright+Chromium offline tests on Linux CI or raw Chromium offline tests on Windows **outside** MXC.
+- Do **not** try to “pass” by using `--no-sandbox`, globally granting directory permissions, auto-elevating Agent, using a personal browser Profile, opening a remote CDP debug listener, silently launching Chromium **outside** MXC, or relaxing egress. Do **not** add a permanent proxy from the §T proof.
+- **Next narrow engineering gate:** obtain trustworthy *deny-in-place* filesystem/process/IPC error evidence on this exact host using an already available OS/MXC diagnostic API and the least privilege needed; then fix the actual cause with a minimal, sandbox-local policy only if supported by evidence. [MXC ProcessContainer capture-denials](https://github.com/microsoft/mxc/blob/main/samples/run-with-logging-access-denied/node/src/main.ts) is a candidate, **not** validated on this Windows build, and its native capture implementation may be unavailable. Do not switch it to `mode=allow`.
+- Once isolated Chromium **can actually render the offline marker**, verify Playwright with an **exact browser-binary/runtime match** inside the sandbox. Only afterwards use the proven §T proxy-only no-bypass fixture as a *candidate test* for Chromium child-process/network behavior. Full HTTP(S), redirect/DNS/subresource/WebSocket/UDP/IPv6 effective-target controls and one-use owner approval remain independent unverified P0 gates.
+
+**State:** Draft research/real-device diagnostic only; no PR merge, new Ticket/ADR/worker, production release, device upgrade, permanent SDK/host config change or website access.
