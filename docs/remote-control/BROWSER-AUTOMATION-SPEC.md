@@ -1,5 +1,8 @@
 # Remote Control Browser Automation — Specification Draft
 
+> **Current phase-one specification amendment (2026-10-20):** [Trusted-device Windows PoC / latest applicable acceptance](./BROWSER-BACKEND-POC-20261020.md) supersedes conflicting direct-Playwright and strict MXC/browser-wide-egress requirements **for phase one only**. Integrate **one curated CLI adapter** in the existing Agent, initially agent-browser, using existing authenticated Worker route, receipts, and a dedicated Profile. Do not ship a generic CLI dispatcher. Recheck real integrated MCP acceptance separately; no browser-specific MCP tools are implemented or enabled. Consequential/ambiguous web effects remain disabled without verifiable exact one-use approval. Historical hostile-execution P0 is **deferred, never PASS**.
+
+
 **Status:** Specification synthesis from the approved Grill With Docs decisions Q1–Q52 and post-convergence feasibility review. **Draft documentation only; NOT implementation-ready, not an Issue/Ticket, not labeled `ready-for-agent`, and not authorization to code, run CI, merge or deploy.**
 
 **Source of truth:** Existing Remote Control Domain Context, browser-design decision tree and ADR-0021–0030. A proposal below must not override those owner-approved decisions. The attached feasibility-review findings are *unverified evidence requirements*, not already accepted implementation detail.
