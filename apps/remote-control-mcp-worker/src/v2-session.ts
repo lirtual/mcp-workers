@@ -12,6 +12,7 @@ export interface V2Device {
   approved_at: number;
   revoked: boolean;
   device_info?: DeviceInfo;
+  device_info_epoch?: string;
   last_seen?: number;
   grant_type?: "permanent" | "temporary";
   expires_at?: number;
@@ -257,7 +258,7 @@ export async function handleDeviceInfoMessage(
       ]);
       if (!deviceIsAuthorized(device) || epoch !== attached.epoch) return false;
       await tx.put("device:" + attached.device_id, {
-        ...device, device_info: info, last_seen: Date.now(),
+        ...device, device_info: info, device_info_epoch: attached.epoch, last_seen: Date.now(),
       } satisfies V2Device);
       return true;
     });
@@ -340,6 +341,7 @@ export async function listApprovedDevices(state: DurableObjectState):
         typeof device.name !== "string" || typeof device.revoked !== "boolean") continue;
     if (!deviceIsAuthorized(device)) continue; // Deleted/expired/legacy revoked rows are never selectable.
     let online = false;
+    let infoCurrent = false;
     const now = Date.now();
     // Socket attachments can survive DO Hibernation, while JS Map state cannot.
     // A socket alone does not establish current authority: check its stored epoch.
@@ -357,6 +359,7 @@ export async function listApprovedDevices(state: DurableObjectState):
               Number.isFinite(age) && age >= 0 && age < ONLINE_AUTH_LEASE_MS &&
               attachment.device_id === device.device_id && attachment.epoch === currentEpoch) {
             online = true;
+            infoCurrent = device.device_info_epoch === currentEpoch;
             break;
           }
         } catch { /* Corrupt or unavailable socket is never considered online. */ }
@@ -367,7 +370,7 @@ export async function listApprovedDevices(state: DurableObjectState):
       ...(device.grant_type === "temporary" ? { expires_at: device.expires_at } : {}),
       ...(device.device_info ? { device_info: device.device_info } : {}),
       ...(Number.isSafeInteger(device.last_seen) ? { last_seen: device.last_seen } : {}),
-      ...(online && device.device_info ? { capabilities: device.device_info.capabilities } : {}) });
+      ...(online && infoCurrent && device.device_info ? { capabilities: device.device_info.capabilities } : {}) });
   }
   // Keep the original label and full UUID intact. Duplicate labels get a hint,
   // but a caller must still use the full device_id for remote operations.
