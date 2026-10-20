@@ -64,6 +64,22 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     if (options.expectedGithubRepos) {
       invariant(repos === options.expectedGithubRepos, "GitHub Actions GITHUB_REPOS readback mismatch");
     }
+    const secondary = find("GITHUB_REPOS_SECONDARY", "plain_text")?.text;
+    const expectedSecondary = options.expectedGithubReposSecondary || "";
+    if (expectedSecondary) {
+      invariant(typeof secondary === "string" && secondary === expectedSecondary &&
+        secondary.length <= 1024 && secondary.split(",").length <= 30 &&
+        secondary.split(",").every((repo) => /^[A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+$/.test(repo) && !repo.includes("..")),
+        "GitHub Actions secondary repository list missing or invalid");
+      const primarySet = new Set(repos.split(",").map((repo) => repo.toLowerCase()));
+      invariant(secondary.split(",").every((repo) => !primarySet.has(repo.toLowerCase())),
+        "GitHub Actions duplicate repository credential assignment");
+      invariant(secretNames.has("GH_TOKEN_SECONDARY") && !!find("GH_TOKEN_SECONDARY", "secret_text"),
+        "GitHub Actions secondary Token binding missing");
+    } else {
+      invariant(!secondary && !find("GH_TOKEN_SECONDARY", "secret_text"),
+        "GitHub Actions unexpected secondary credentials");
+    }
   }
   if (worker === "ima-mcp-worker") {
     // During preflight, accept a legacy CLIENT_ID secret because it will be
@@ -275,7 +291,11 @@ async function current(account, worker, token, options) {
   verifyBindings(worker, settings, secrets, {
     ...options, previousNamespaceId,
     ...(worker === "github-actions-mcp-worker" && options.mode === "readback"
-      ? { expectedGithubRepos: process.env.GITHUB_REPOS || options.sourceConfig?.vars?.GITHUB_REPOS }
+      ? {
+          expectedGithubRepos: process.env.GITHUB_REPOS || options.sourceConfig?.vars?.GITHUB_REPOS,
+          expectedGithubReposSecondary: process.env.GITHUB_REPOS_SECONDARY ||
+            options.sourceConfig?.vars?.GITHUB_REPOS_SECONDARY || "",
+        }
       : {}),
   });
   if (options.sourceConfig) {
