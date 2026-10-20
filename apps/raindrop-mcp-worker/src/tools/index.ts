@@ -1,3 +1,4 @@
+import { bookmarkBatchTools } from "./bookmark-batch.js";
 import { bookmarkTools } from "./bookmarks.js";
 import { bulkTools } from "./bulk.js";
 import { cleanupTools } from "./cleanup.js";
@@ -26,6 +27,7 @@ export const buildToolConfigs = (options: { serverVersion: string }) => {
     ...tagTools,
     ...highlightTools,
     ...bulkTools,
+    ...bookmarkBatchTools,
     ...cleanupTools,
     ...suggestionTools,
   ];

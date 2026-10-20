@@ -33,7 +33,7 @@ It is not published as an npm package and does not support standalone STDIO, sta
 
 ## MCP tools
 
-The exact supported tool-name contract is regression-tested and currently contains 17 tools:
+The regression-tested tool inventory contains 38 tools, including the original 17. Selected tools:
 
 - `diagnostics`
 - `collection_list`
@@ -46,6 +46,8 @@ The exact supported tool-name contract is regression-tested and currently contai
 - `get_suggestions`
 - `suggest_tags`
 - `bulk_edit_raindrops`
+- `bookmark_batch_update`
+- `bookmark_batch_delete`
 - `tag_manage`
 - `highlight_list`
 - `highlight_create`
@@ -56,6 +58,8 @@ The exact supported tool-name contract is regression-tested and currently contai
 - `empty_trash`
 - `cleanup_collections`
 - `remove_duplicates`
+
+`bookmark_batch_update` and `bookmark_batch_delete` require one positive source `collectionId` and 1–50 explicit unique positive safe-integer `ids`. Every bookmark is freshly checked for source membership before a single bulk write; moves also freshly verify the positive `destinationCollectionId`. Updates support `tagsToAdd` (nonempty, distinct names), `clearTags: true` (mutually exclusive with `tagsToAdd`), `destinationCollectionId`, and `important`, with at least one change required. Delete moves bookmarks to Trash; system source collections, search and nesting are rejected. The Service caps total HTTP attempts including read retries at 60 and never replays writes. Results partition IDs into `succeeded`, `failed`, `unknown` and `notExecuted`; preflight failure means no write. Aggregate `result: true` / `modified` cannot prove individual outcomes, so acknowledged bulk writes still return per-ID `unknown`, including when the count matches. Inspect current state before deciding whether to retry. See the [official bulk API contract](https://developer.raindrop.io/v1/raindrops/multiple).
 
 Cleanup tools use preview-first semantics: `empty_trash({})` and `cleanup_collections({})` do not delete anything; only `confirm: true` executes. `remove_duplicates({})` and `dryRun: true` preview verified candidates; only `dryRun: false` deletes. All three retain `destructiveHint: true` and the existing safe-candidate, batch, fail-closed and no-blind-retry protections. A preview is not a transaction lock: recheck the target state before confirmed operations. Tests and acceptance checks must not mutate a real Raindrop library without separate explicit authorization.
 
@@ -95,7 +99,7 @@ pnpm install --frozen-lockfile
 pnpm --filter raindrop-mcp-worker check
 ```
 
-The application `check` runs TypeScript validation, lint, the local regression suite including the exact 17-tool contract, deterministic OpenAPI type regeneration, and Wrangler dry-run deployment validation.
+The application `check` runs TypeScript validation, lint, the local regression suite including the exact tool inventory, deterministic OpenAPI type regeneration, and Wrangler dry-run deployment validation.
 
 Optional tests that require a real `RAINDROP_ACCESS_TOKEN` remain outside the default CI-safe test set. `test:env` includes explicitly gated live checks, including a destructive lifecycle test; run those only with disposable/non-production test data and the documented opt-in flags, never as routine production cutover smoke.
 

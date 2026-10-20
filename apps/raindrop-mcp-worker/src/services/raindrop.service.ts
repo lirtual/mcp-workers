@@ -10,6 +10,9 @@ import {
   ValidationError,
 } from "../types/mcpErrors.js";
 import {
+  BookmarkBatchDeleteInputSchema,
+  BookmarkBatchUpdateInputSchema,
+  BookmarkBatchOutcomeSchema,
   HighlightBookmarkIdSchema,
   HighlightIdSchema,
   HighlightRecordSchema,
@@ -28,6 +31,8 @@ type Collection = components["schemas"]["Collection"];
 type Highlight = components["schemas"]["Highlight"];
 type HighlightRecord = z.infer<typeof HighlightRecordSchema>;
 export type HighlightWriteOutcome = z.infer<typeof HighlightWriteOutcomeSchema>;
+
+export type BookmarkBatchOutcome = z.infer<typeof BookmarkBatchOutcomeSchema>;
 
 export interface RaindropServiceConfig {
   accessToken?: string;
@@ -111,6 +116,7 @@ export default class RaindropService {
             throw new NotFoundError("Resource not found");
           throw new UpstreamError(
             `API Error: ${response.status} ${response.statusText}`,
+            { status: response.status },
           );
         }
         return response;
@@ -860,6 +866,181 @@ export default class RaindropService {
     // Invalidate bookmark and search caches
     await this.cacheBookmarks.delete(`id:${id}`);
     await this.cacheSearch.clear();
+  }
+
+  async updateBookmarkBatch(
+    input: z.infer<typeof BookmarkBatchUpdateInputSchema>,
+  ): Promise<BookmarkBatchOutcome> {
+    const parsed = BookmarkBatchUpdateInputSchema.safeParse(input);
+    if (!parsed.success)
+      throw new ValidationError("Invalid bookmark batch update", parsed.error);
+    const {
+      collectionId,
+      ids,
+      tagsToAdd,
+      clearTags,
+      destinationCollectionId,
+      important,
+    } = parsed.data;
+    return this.mutateBookmarkBatch(collectionId, ids, {
+      ...(tagsToAdd !== undefined ? { tags: tagsToAdd } : {}),
+      ...(clearTags === true ? { tags: [] } : {}),
+      ...(destinationCollectionId !== undefined
+        ? { collection: { $id: destinationCollectionId } }
+        : {}),
+      ...(important !== undefined ? { important } : {}),
+    });
+  }
+
+  async deleteBookmarkBatch(
+    input: z.infer<typeof BookmarkBatchDeleteInputSchema>,
+  ): Promise<BookmarkBatchOutcome> {
+    const parsed = BookmarkBatchDeleteInputSchema.safeParse(input);
+    if (!parsed.success)
+      throw new ValidationError("Invalid bookmark batch delete", parsed.error);
+    return this.mutateBookmarkBatch(parsed.data.collectionId, parsed.data.ids);
+  }
+
+  /**
+   * https://developer.raindrop.io/v1/raindrops/multiple
+   * Fresh membership checks, then exactly one official collection-scoped write.
+   * The aggregate acknowledgement cannot establish individual ID outcomes.
+   */
+  private async mutateBookmarkBatch(
+    collectionId: number,
+    ids: number[],
+    updates?: {
+      tags?: string[];
+      collection?: { $id: number };
+      important?: boolean;
+    },
+  ): Promise<BookmarkBatchOutcome> {
+    const outcome = (
+      status: "failed" | "unknown",
+      reason: string,
+      dispatched: boolean,
+      acknowledged = false,
+      modified?: number,
+    ): BookmarkBatchOutcome => ({
+      status,
+      reason,
+      dispatched,
+      acknowledged,
+      ...(modified !== undefined ? { modified } : {}),
+      succeeded: [],
+      failed: dispatched && status === "failed" ? [...ids] : [],
+      unknown: status === "unknown" ? [...ids] : [],
+      notExecuted: !dispatched ? [...ids] : [],
+    });
+    try {
+      // Deliberately bypass getBookmark/getCollection caches and validate raw
+      // acknowledgement, identity and membership; a cached item is insufficient.
+      for (const id of ids) {
+        await this.withRateLimit(async () => {
+          const { data } = await this.client.GET("/raindrop/{id}", {
+            params: { path: { id } },
+          });
+          if (
+            data?.result !== true ||
+            data.item?._id !== id ||
+            data.item?.collection?.$id !== collectionId
+          ) {
+            throw new ValidationError(
+              `Bookmark ${id} preflight cannot verify membership in source collection ${collectionId}`,
+            );
+          }
+        });
+      }
+      if (updates?.collection) {
+        const targetId = updates.collection.$id;
+        await this.withRateLimit(async () => {
+          const { data } = await this.client.GET("/collection/{id}", {
+            params: { path: { id: targetId } },
+          });
+          if (data?.result !== true || data.item?._id !== targetId)
+            throw new ValidationError(
+              `Destination collection ${targetId} preflight failed`,
+            );
+        });
+      }
+      // Retries consume the same Service HTTP budget. Leave the write entirely
+      // undispatched if preflight exhausted it; there is no readback loop.
+      if (this.upstreamRequestCount >= 60)
+        throw new ValidationError(
+          "Per-invocation upstream request budget of 60 exhausted before batch write",
+        );
+    } catch (error) {
+      return outcome(
+        "failed",
+        `Batch preflight failed; no write dispatched: ${error instanceof Error ? error.message : "invalid response"}`,
+        false,
+      );
+    }
+
+    return this.withWriteRateLimit(async () => {
+      let data: unknown;
+      try {
+        // The generated schema calls this path parameter id. Supply its typed
+        // placeholder too; openapi-fetch interpolates only collectionId in the
+        // official URL. Neither parameter becomes a query or body field.
+        const options = {
+          params: { path: { collectionId, id: collectionId } },
+          body: { ids, ...updates },
+        };
+        const response =
+          updates === undefined
+            ? await this.client.DELETE("/raindrops/{collectionId}", options)
+            : await this.client.PUT("/raindrops/{collectionId}", options);
+        data = response.data;
+      } catch (error) {
+        const status =
+          error instanceof UpstreamError
+            ? (error.cause as { status?: number } | undefined)?.status
+            : undefined;
+        const rejected =
+          error instanceof AuthError ||
+          error instanceof NotFoundError ||
+          error instanceof ValidationError ||
+          status === 400 ||
+          status === 422;
+        return outcome(
+          rejected ? "failed" : "unknown",
+          `Batch write ${rejected ? "rejected" : "outcome unknown"}: ${error instanceof Error ? error.message : "no acknowledgement"}. Do not automatically retry.`,
+          true,
+        );
+      } finally {
+        // Even a lost response may have mutated upstream state.
+        this.cacheBookmarks.clear();
+        this.cacheSearch.clear();
+        this.cacheCollections.clear();
+      }
+      const ack = z
+        .object({
+          result: z.boolean(),
+          modified: z
+            .number()
+            .int()
+            .nonnegative()
+            .max(Number.MAX_SAFE_INTEGER)
+            .optional(),
+        })
+        .safeParse(data);
+      if (z.object({ result: z.literal(false) }).safeParse(data).success)
+        return outcome(
+          "failed",
+          "Raindrop rejected the batch write (result:false); do not automatically retry.",
+          true,
+        );
+      // No per-ID attribution, including when modified equals ids.length:
+      // official docs do not define it as proof of every requested change.
+      return outcome(
+        "unknown",
+        "Batch per-ID outcomes unknown; aggregate acknowledgement does not identify modified IDs. Inspect current bookmarks before deciding whether to retry; do not automatically retry.",
+        true,
+        ack.success && ack.data.result === true,
+        ack.success ? ack.data.modified : undefined,
+      );
+    });
   }
 
   /**

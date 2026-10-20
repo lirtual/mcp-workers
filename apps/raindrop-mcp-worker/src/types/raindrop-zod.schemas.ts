@@ -197,3 +197,38 @@ export const tagSchema = z.object({
   count: z.number().optional(),
   name: z.string().optional(),
 });
+
+// Explicit, collection-scoped bulk writes only. Never accept search or nesting.
+const BatchPositiveIdSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
+const BatchIdsSchema = z.array(BatchPositiveIdSchema).min(1).max(50).refine(
+  ids => new Set(ids).size === ids.length, "IDs must be unique",
+);
+export const BookmarkBatchDeleteInputSchema = z.strictObject({
+  collectionId: BatchPositiveIdSchema,
+  ids: BatchIdsSchema,
+});
+export const BookmarkBatchUpdateInputSchema = z.strictObject({
+  ...BookmarkBatchDeleteInputSchema.shape,
+  tagsToAdd: TagNamesSchema.optional(),
+  clearTags: z.literal(true).optional(),
+  destinationCollectionId: BatchPositiveIdSchema.optional(),
+  important: z.boolean().optional(),
+}).refine(
+  args => !(args.tagsToAdd !== undefined && args.clearTags !== undefined),
+  "tagsToAdd and clearTags are mutually exclusive",
+).refine(
+  args => [args.tagsToAdd, args.clearTags, args.destinationCollectionId, args.important]
+    .some(value => value !== undefined),
+  "Provide at least one change",
+);
+export const BookmarkBatchOutcomeSchema = z.object({
+  status: z.enum(["failed", "unknown"]),
+  reason: z.string(),
+  dispatched: z.boolean(),
+  acknowledged: z.boolean(),
+  modified: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+  succeeded: z.array(BatchPositiveIdSchema),
+  failed: z.array(BatchPositiveIdSchema),
+  unknown: z.array(BatchPositiveIdSchema),
+  notExecuted: z.array(BatchPositiveIdSchema),
+});
