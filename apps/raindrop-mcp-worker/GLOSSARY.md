@@ -21,3 +21,11 @@ _Avoid_: Note as a synonym for a highlight
 **Trash**:
 The location for deleted bookmarks before their permanent removal.
 _Avoid_: Deleted collection as a public resource synonym
+
+**Permanent deletion**:
+Removal of a bookmark already in Trash such that it cannot be recovered through ordinary Trash restoration.
+_Avoid_: Ordinary bookmark deletion as a synonym
+
+**Collection subtree**:
+A collection together with all its nested descendant collections, which may be affected by deleting the parent collection.
+_Avoid_: The direct bookmarks of a parent as a complete impact scope
