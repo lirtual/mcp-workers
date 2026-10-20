@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { RaindropMCPService } from "../src/services/raindropmcp.service.js";
+import RaindropService from "../src/services/raindrop.service.js";
 
 // Only a manual, owner-authorized credential-bearing job can enable this.
 const enabled = Boolean(process.env.RAINDROP_ACCESS_TOKEN?.trim()) &&
@@ -14,24 +15,29 @@ live("Spec 123 disposable real API acceptance", () => {
     console.log("LIVE_DISPOSABLE_NONCE=" + nonce);
     const titles = ["spec123-a-" + nonce, "spec123-b-" + nonce];
     const ownedBookmarks = new Map<number, string>();
+    const attemptedUrls = new Set<string>();
     const ownedCollections = new Set<number>();
     const service = new RaindropMCPService({
       accessToken: process.env.RAINDROP_ACCESS_TOKEN?.trim(), maxReadRetries: 0,
     });
     const client = new Client({ name: "spec123-live", version: "1.0.0" });
     const [ct, st] = InMemoryTransport.createLinkedPair();
-    const get = (id: number) => service.raindropService.getBookmark(id, true);
-    const owned = async (id: number) => {
-      const item = await get(id);
+    const cleanupService = new RaindropService({
+      accessToken: process.env.RAINDROP_ACCESS_TOKEN?.trim(), maxReadRetries: 0,
+    });
+    const get = (id: number, source = service.raindropService) => source.getBookmark(id, true);
+    const owned = async (id: number, source = service.raindropService) => {
+      const item = await get(id, source);
       if (item._id !== id || item.link !== ownedBookmarks.get(id))
         throw new Error("Not a verified disposable bookmark: " + id);
       return item;
     };
-    const call = async (name: string, args: Record<string, unknown>) => {
+    const call = async (name: string, args: Record<string, unknown>, allowFailed = false) => {
       const result = await client.callTool({ name, arguments: args });
-      if (result.isError || !result.structuredContent)
-        throw new Error("MCP tool returned error: " + name);
-      return result.structuredContent as Record<string, unknown> & {
+      const body = result.structuredContent as Record<string, unknown> | undefined;
+      if (!body || (result.isError && !(allowFailed && body.status === "failed")))
+        throw new Error("Unexpected MCP tool error: " + name);
+      return body as Record<string, unknown> & {
         status?: string; bookmark?: { id: number }; collection?: { id: number };
         outcome?: string;
       };
@@ -43,6 +49,9 @@ live("Spec 123 disposable real API acceptance", () => {
     };
     const create = async (collectionId: number, suffix: string, tag: string) => {
       const url = "https://example.org/spec123/" + nonce + "/" + suffix;
+      // Record the URL before POST: lost replies may leave an untracked
+      // bookmark. Never announce a clean run if its ID cannot be verified.
+      attemptedUrls.add(url);
       const result = await success("bookmark_create", {
         collectionId, url, title: "spec123 " + nonce + " " + suffix, tags: [tag],
       });
@@ -55,37 +64,60 @@ live("Spec 123 disposable real API acceptance", () => {
     };
     // Keep cleanup failure observable without a return/throw inside finally.
     const cleanup = async () => {
-        for (const id of ownedBookmarks.keys()) {
-          const item = await owned(id);
+      const problems: string[] = [];
+      for (const url of attemptedUrls) {
+        if (![...ownedBookmarks.values()].includes(url))
+          problems.push("bookmark create not confirmed (inspect exact URL): " + url);
+      }
+      // Do not let one failed cleanup strand other independently verified
+      // objects. Every write remains restricted to exact test-owned IDs.
+      for (const id of ownedBookmarks.keys()) {
+        try {
+          const item = await owned(id, cleanupService);
           if (item.collection?.$id !== -99) {
             const sourceId = item.collection?.$id;
             if (typeof sourceId !== "number" || (sourceId !== -1 && sourceId <= 0))
-              throw new Error("Refuse to clean bookmark from an unknown source: " + id);
-            await service.raindropService.deleteBookmark(id, sourceId);
-            expect((await owned(id)).collection?.$id).toBe(-99);
+              throw new Error("Unverified source");
+            await cleanupService.deleteBookmark(id, sourceId);
+            expect((await owned(id, cleanupService)).collection?.$id).toBe(-99);
           }
-          await service.raindropService.deleteBookmark(id, -99);
-          await expect(get(id)).rejects.toMatchObject({ code: "NOT_FOUND" });
+          await cleanupService.deleteBookmark(id, -99);
+          await expect(get(id, cleanupService)).rejects.toMatchObject({ code: "NOT_FOUND" });
+        } catch (error) {
+          problems.push("bookmark " + id + ": " +
+            (error instanceof Error ? error.message : "unknown outcome"));
         }
-        const roots = await service.raindropService.getCollections(true);
+      }
+      try {
+        const roots = await cleanupService.getCollections(true);
         for (const root of roots) {
           if ([titles[0], titles[1], titles[0] + "-renamed"].includes(root.title))
             ownedCollections.add(root._id);
         }
-        for (const id of ownedCollections) {
-          const item = await service.raindropService.getCollection(id, true);
+      } catch (error) {
+        problems.push("collection discovery: " +
+          (error instanceof Error ? error.message : "unknown outcome"));
+      }
+      for (const id of ownedCollections) {
+        try {
+          const item = await cleanupService.getCollection(id, true);
           if (![titles[0], titles[1], titles[0] + "-renamed"].includes(item.title))
-            throw new Error("Collection identity mismatch: " + id);
-          const preview = await service.raindropService.deleteCollectionPreviewFirst({ id });
+            throw new Error("Identity changed");
+          const preview = await cleanupService.deleteCollectionPreviewFirst({ id });
           if (preview.total !== 1 || preview.collectionIds[0] !== id || preview.bookmarkCount !== 0)
-            throw new Error("Refusing unsafe collection cleanup: " + id);
-          const result = await service.raindropService.deleteCollectionPreviewFirst({
+            throw new Error("Refusing nonempty or expanded collection cleanup");
+          const result = await cleanupService.deleteCollectionPreviewFirst({
             id, confirm: true, expectedTotal: preview.total,
             collectionIds: preview.collectionIds, digest: preview.digest,
           });
           expect(result.succeeded).toEqual([id]);
+        } catch (error) {
+          problems.push("collection " + id + ": " +
+            (error instanceof Error ? error.message : "unknown outcome"));
         }
-        console.log("LIVE_ISOLATED_CLEANUP_PASS");
+      }
+      if (problems.length) throw new Error("Disposable cleanup incomplete: " + problems.join("; "));
+      console.log("LIVE_ISOLATED_CLEANUP_PASS");
     };
     await Promise.all([service.getServer().connect(st), client.connect(ct)]);
     try {
@@ -113,7 +145,7 @@ live("Spec 123 disposable real API acceptance", () => {
       // Wrong source membership must fail with no write.
       const rejected = await call("bookmark_batch_update", {
         collectionId: b, ids: [y], important: true,
-      });
+      }, true);
       expect(rejected).toMatchObject({ status: "failed", dispatched: false, notExecuted: [y] });
       expect((await owned(y)).collection?.$id).toBe(a);
       const batchTag = "s123batch" + nonce;
