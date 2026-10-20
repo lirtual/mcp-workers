@@ -7,7 +7,7 @@
 **/.cache/
 **/tmp/
 **/*.log
-apps/remote-control-agent/.build/
+apps/remote-control-agent/
 apps/remote-control-mcp-worker/.wrangler-release.jsonc
 
 # Secrets: examples remain trackable; actual values never belong in Git
