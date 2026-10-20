@@ -1,6 +1,6 @@
 # Remote Control — Browser Automation Design (Grill With Docs)
 
-Status: **design interview in progress; rounds 1 and 2 agreed 2026-10-20**. This document records decisions, not shipped behavior, authorization to implement, a release gate or a new development Ticket. The existing v1/v2 specs remain authoritative for their implemented scope. Do not infer that browser tools, native Windows browser automation coverage, or personal-profile access exist today.
+Status: **design interview in progress; rounds 1–3 agreed 2026-10-20**. This document records decisions, not shipped behavior, authorization to implement, a release gate or a new development Ticket. The existing v1/v2 specs remain authoritative for their implemented scope. Do not infer that browser tools, native Windows browser automation coverage, or personal-profile access exist today.
 
 ## Goal
 
@@ -28,6 +28,17 @@ See [ADR-0021](./adr/0021-browser-automation-extension.md) for the architectural
 
 See [ADR-0022](./adr/0022-playwright-managed-browser-sessions.md) for the browser engine, target-platform and local-session decisions. The detailed profile/session topology has not yet been selected.
 
+## Accepted provisioning, exclusivity, and interruption choices (round 3)
+
+| Question | Decision | Consequence |
+| --- | --- | --- |
+| Q9 — Browser provisioning | **A**: install a Playwright-version-compatible Chromium on demand if unavailable | Do not bundle a browser into every Agent release or depend exclusively on personal Chrome/Edge. Surface missing OS-level prerequisites without unattended privilege escalation. Download trust, layout and upgrade behavior still need design |
+| Q10 — Profile concurrency | **A**: only one active browser session per profile | One session can have several tabs. Do not run simultaneous browser processes against the same profile; lock/race recovery is not yet designed |
+| Q11 — Profile cardinality | **A**: one dedicated persistent automation profile per paired device at first | Keep sign-in state locally and support owner-triggered clearing; no initial multi-account profile manager or per-site automatic profile creation |
+| Q12 — Disconnection/revocation | **A**: retain local session through brief caller disconnect until local idle timeout; no action replay; revoke cloud authorization promptly and best-effort stop online sessions | Reconnect requires explicit status read. Local cleanup cannot be guaranteed for an offline, stopped or compromised Agent; revocation does not implicitly erase retained local profile data |
+
+See [ADR-0023](./adr/0023-browser-runtime-profile-interruption.md). These do not prescribe exact idle limits, browser display mode or recovery mechanics.
+
 ## Invariants carried forward
 
 - Use the established authenticated device path and explicit `device_id`; never accept an arbitrary remote address or publish a CDP endpoint.
@@ -39,14 +50,14 @@ See [ADR-0022](./adr/0022-playwright-managed-browser-sessions.md) for the browse
 
 ## Open design-tree branches
 
-**Next-round frontier (Q9–Q12; no choices accepted yet)**
+**Next-round frontier (Q13–Q16; no choices accepted yet)**
 
-- Q9 — How should compatible Playwright browser binaries and OS dependencies be provisioned on supported devices?
-- Q10 — What concurrency and exclusive ownership contract governs automation browser sessions that may share a persistent local profile?
-- Q11 — What is the intended relationship between the persistent automation profile and multiple sign-in/account identities?
-- Q12 — What should happen to an already-running browser session when the MCP caller disconnects, Agent reconnects, or the owner revokes the device?
+- Q13 — What fixed initial local browser-session idle timeout should trigger cleanup, separately from retained profile data?
+- Q14 — Should the independent browser default to headless automation with optional visible mode, default visible mode, or headless-only?
+- Q15 — How should the assistant normally inspect page contents: bounded semantic/accessible structure, screenshot-first, or both for every operation?
+- Q16 — Which category of externally consequential browser actions needs explicit owner approval before execution, as distinct from ordinary observation and navigation?
 
-**Downstream (not yet at the frontier; depends on Q9–Q12):** headless/headed defaults, exact installer/update compatibility, per-profile locking model, existing-personal-profile attach and permission flow, tab/tool schema and accessibility/screenshot fallbacks, upload/download scope, sensitive-action confirmation, operation ID/receipt reconciliation, detailed idle limits, testing and release gates, and final authorization to implement.
+**Downstream (not yet at the frontier; depends on Q13–Q16):** exact browser/session/tab MCP tool schemas, start/close/clear and lock-recovery behavior, page locator stability and screenshot fallback, file upload/download exposure, limits/quotas, durable mutation receipts and outcome reconciliation, prompt injection and personal-browser attach authorization, browser download provenance/compatibility, platform acceptance and rollout gates. The project must not implement or create development Tickets until the decision tree is exhausted and the owner explicitly authorizes the resulting plan.
 
 ## Documentation and scope rules
 
