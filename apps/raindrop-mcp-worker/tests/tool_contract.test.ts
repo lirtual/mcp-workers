@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { RaindropMCPService } from "../src/services/raindropmcp.service.js";
 
 const EXPECTED_TOOL_NAMES = [
+  "bookmark_exists",
   "bookmark_manage",
   "bookmark_search",
   "bulk_edit_raindrops",
@@ -23,7 +24,7 @@ const EXPECTED_TOOL_NAMES = [
 ].sort();
 
 describe("Raindrop MCP capability contract", () => {
-  it("preserves the exact 17-tool public tool-name set", async () => {
+  it("retains the 17 legacy tools and adds one independently verified read-only tool", async () => {
     const service = new RaindropMCPService({ accessToken: "test-token" });
 
     try {
@@ -31,7 +32,7 @@ describe("Raindrop MCP capability contract", () => {
       const actual = tools.map((tool) => tool.id).sort();
 
       expect(actual).toEqual(EXPECTED_TOOL_NAMES);
-      expect(actual).toHaveLength(17);
+      expect(actual).toHaveLength(18);
       expect(actual).toContain("diagnostics");
     } finally {
       await service.cleanup();
@@ -192,6 +193,46 @@ describe("preview-first cleanup MCP tools/list and tools/call entry contract", (
       trashDelete.mockRestore();
       collectionDelete.mockRestore();
       duplicateDelete.mockRestore();
+    }
+  });
+});
+
+describe("bookmark_exists over MCP tools/list and tools/call", () => {
+  it("uses strict input and returns verified URL existence without mutating bookmarks", async () => {
+    const service = new RaindropMCPService({ accessToken: "test-token" });
+    const exists = vi.spyOn(service.raindropService, "bookmarkExists")
+      .mockResolvedValue({ exists: false, ids: [] });
+    const client = new Client({ name: "bookmark-exists-contract", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    try {
+      await Promise.all([
+        service.getServer().connect(serverTransport),
+        client.connect(clientTransport),
+      ]);
+      const { tools } = await client.listTools();
+      const tool = tools.find(entry => entry.name === "bookmark_exists");
+      expect(tool?.annotations?.readOnlyHint).toBe(true);
+      expect(tool?.outputSchema).toBeDefined();
+
+      const absent = await client.callTool({
+        name: "bookmark_exists",
+        arguments: { url: "https://example.com/a" },
+      });
+      expect(absent.isError).not.toBe(true);
+      expect(absent.structuredContent).toEqual({ exists: false, ids: [] });
+      expect(exists).toHaveBeenCalledExactlyOnceWith("https://example.com/a");
+
+      const invalid = await client.callTool({
+        name: "bookmark_exists",
+        arguments: { url: "https://example.com/a", unexpected: true },
+      });
+      expect(invalid.isError).toBe(true);
+      expect(exists).toHaveBeenCalledTimes(1);
+    } finally {
+      await client.close();
+      await service.cleanup();
+      exists.mockRestore();
     }
   });
 });
