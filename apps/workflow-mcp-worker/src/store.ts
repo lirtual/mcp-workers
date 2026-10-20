@@ -162,7 +162,16 @@ export class WorkflowService {
   private async reconcileStart(row:RunRow){
     const started=()=>({run_id:row.id,published_version_id:row.version_id,status:row.outcome,start_state:'started',idempotent_replay:true});
     if(row.start_state==='started')return started();
-    if(row.outcome==='indeterminate')return {run_id:row.id,published_version_id:row.version_id,status:'indeterminate',start_state:row.start_state,idempotent_replay:true};
+    // D1 business terminal state is authoritative. An existing instance can
+    // still repair a lost start ACK; a missing/unknown instance must never
+    // downgrade the known result or cause a replacement execution.
+    if(['succeeded','failed','indeterminate','cancelled'].includes(row.outcome)){
+      const observation=await observeInstance(this.env.WORKFLOW,row.instance_id);
+      if(observation.kind==='found'){
+        await this.db.prepare("UPDATE runs SET start_state='started',updated_at=? WHERE id=? AND start_state IN ('reserved','start_unknown')").bind(now(),row.id).run();
+      }
+      return {run_id:row.id,published_version_id:row.version_id,status:row.outcome,start_state:observation.kind==='found'?'started':row.start_state,idempotent_replay:true};
+    }
     // A generic get/status rejection is NOT evidence that an instance is absent.
     // In particular, network failures must never cause an automatic create.
     let observation=await observeInstance(this.env.WORKFLOW,row.instance_id);
@@ -227,7 +236,7 @@ export class WorkflowService {
       }
     }
     const steps=(await this.db.prepare('SELECT step_id,status,error_code FROM run_steps WHERE run_id=? ORDER BY step_id').bind(run_id).all<{step_id:string;status:string;error_code:string|null}>()).results;
-    return {run_id,workflow_id:row.workflow_id,published_version_id:row.version_id,start_state:row.start_state,status:row.outcome==='indeterminate'?'indeterminate':row.start_state!=='started'?'start_unknown':applyStatus(native,row.outcome),steps};
+    return {run_id,workflow_id:row.workflow_id,published_version_id:row.version_id,start_state:row.start_state,status:['succeeded','failed','indeterminate','cancelled'].includes(row.outcome)?row.outcome:row.start_state!=='started'?'start_unknown':applyStatus(native,row.outcome),steps};
   }
   async result(run_id:string){
     const meta=await this.status(run_id);

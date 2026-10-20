@@ -90,6 +90,25 @@ try{
  }finally{
     executeSql('DELETE FROM runs WHERE id IN ('+[staleId,...freshBlockers].map(sqlLiteral).join(',')+')');
  }
+ // Retention-expired native Workflow: D1 already knows the final business
+ // outcome even though the original start acknowledgement was lost.
+ // No Workflow instance exists for this synthetic same-ID historical Run.
+ const finishedId=crypto.randomUUID(), finishedKey='completed-'+finishedId;
+ const finishedAt=Date.now()-5*24*60*60*1000;
+ const finishedSql='INSERT INTO runs(id,workflow_id,version_id,instance_id,admission_key,request_digest,inputs,start_state,outcome,result,created_at,updated_at) VALUES ('+
+   [finishedId,wf.workflow_id,published.published_version_id,finishedId,finishedKey,crypto.createHash('sha256').update('{}').digest('hex'),'{}','start_unknown','succeeded','"retained-result"'].map(sqlLiteral).join(',')+','+finishedAt+','+finishedAt+')';
+ executeSql(finishedSql);
+ try{
+   const observed=await tool('workflow_status',{run_id:finishedId});
+   assert.equal(observed.status,'succeeded','durable D1 success survives expired native instance with ambiguous start ack');
+   assert.equal(observed.start_state,'start_unknown','do not forge a recovered start acknowledgement');
+   const retained=await tool('workflow_result',{run_id:finishedId});
+   assert.equal(retained.status,'succeeded');
+   assert.equal(retained.result,'retained-result');
+   const replay=await tool('workflow_run',{workflow_id:wf.workflow_id,inputs:{},idempotency_key:finishedKey});
+   assert.equal(replay.run_id,finishedId);
+   assert.equal(replay.status,'succeeded','old key retains known business success and never recreates missing instance');
+ }finally{executeSql('DELETE FROM runs WHERE id='+sqlLiteral(finishedId));}
  // Fault-inject an interrupted D1 terminal write after a genuinely complete
  // Workflow instance. Use the first *already finished* read-only Run.
  executeSql('UPDATE runs SET outcome=\'running\',result=NULL,native_complete_seen_at='+ (Date.now()-11*60_000) +' WHERE id='+sqlLiteral(runId));

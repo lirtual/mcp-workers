@@ -190,6 +190,18 @@ and repaired with one validation check. Local validation/Publish MCP regression:
 capacity fault injection passed. The change requires no extra service or D1
 migration. The new case is locally tested, not independently edge-retested.
 
+**Retention-expired instance / lost-ACK business outcome regression (2026-10-21):**
+An injected historical Run with no native Workflow instance, a lost start ACK
+(`start_unknown`) and a known D1 `succeeded` business outcome previously reported
+`start_unknown`, concealing the durable result. The public MCP red→green test
+now verifies `workflow_status`, `workflow_result` and original-key replay report
+D1's actual terminal outcome while preserving the unresolved start ACK and never
+creating a replacement instance. When the native instance is still found, normal
+start-ACK reconciliation remains intact. Local **42/42 MCP E2E** and **19/19
+unit/contract** tests, plus the extended D1 fault suite, passed. This is local
+fault-injection evidence, **not** proof that an actual instance was aged past
+Cloudflare's retention window on the live platform.
+
 Final initial-release versus active-upgrade gate decisions and 27-story evidence
 are consolidated in [S1-RELEASE-READINESS.md](S1-RELEASE-READINESS.md).
 
