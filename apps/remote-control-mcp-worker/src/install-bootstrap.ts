@@ -63,7 +63,19 @@ export const REVIEWED_V018_RELEASE_PIN: InstallReleasePin = Object.freeze({
   x64Sha256: "e9116c0b1df5566d0ec49a187bf79e7e69e66698183db0da938eb355f82ed79f",
   arm64Sha256: "73f159fe722cec4e8d354160f8975532b4f07fe9538772b6ed64c95ae4576184",
 });
-const VERIFIED_PYTHON_FREE_RELEASE: InstallReleasePin = REVIEWED_V018_RELEASE_PIN;
+// Independently checked against the published immutable Agent v0.1.10 Release.
+// Source is merged Agent PR #11; both native packages passed native CI and
+// SHA-256 verification in release workflow #39372060345.
+// This selects the Agent only for future first installs; never re-pairs existing IDs.
+export const REVIEWED_V0110_RELEASE_PIN: InstallReleasePin = Object.freeze({
+  tag: "v0.1.10",
+  pairingProtocol: "single-code-v1",
+  upgradeMode: "explicit-v1",
+  commit: "8b78294a2fbff18a53d6e3ce0a13e6992ea63478",
+  x64Sha256: "ad995f987c6f2cc428baadae92a330fe43ef5f0d52652e1fe582e332b9e26ba9",
+  arm64Sha256: "bdb52cb83d0186127fc0ea65248d97701fe6cbc2d0d1ac9984b9e8eedf9a7397",
+});
+const VERIFIED_PYTHON_FREE_RELEASE: InstallReleasePin = REVIEWED_V0110_RELEASE_PIN;
 // Never trust request Host alone: the allowed origin is supplied by the
 // deployment's validated Custom Domain binding, not a source-code hostname.
 export function validInstallerOrigin(value: unknown): value is string {
