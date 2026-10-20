@@ -48,3 +48,15 @@ test("SSH broker token must be at least 32 chars and root encryption key is not 
   assert.deepEqual(collectBootstrapSecrets("ssh-mcp-worker",
     { ...input, ENCRYPTION_KEY: "root-key", EDGE_SSH_DB: "root-db" }), input);
 });
+
+test("GitHub Actions second account requires an isolated PAT only when configured", () => {
+  const primary = fixtures["github-actions-mcp-worker"];
+  const dual = { ...primary, GITHUB_REPOS_SECONDARY: "lirtual/mcp-workers",
+    GH_TOKEN_SECONDARY: "secondary-github-token" };
+  assert.deepEqual(collectBootstrapSecrets("github-actions-mcp-worker", dual),
+    { ...primary, GH_TOKEN_SECONDARY: "secondary-github-token" });
+  assert.throws(() => collectBootstrapSecrets("github-actions-mcp-worker",
+    { ...primary, GITHUB_REPOS_SECONDARY: "lirtual/mcp-workers" }), /GH_TOKEN_SECONDARY/);
+  assert.deepEqual(collectBootstrapSecrets("github-actions-mcp-worker",
+    { ...primary, GH_TOKEN_SECONDARY: "unused-token" }), primary);
+});
