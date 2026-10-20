@@ -47,7 +47,11 @@ The exact supported tool-name contract is regression-tested and currently contai
 - `suggest_tags`
 - `bulk_edit_raindrops`
 - `tag_manage`
-- `highlight_manage`
+- `highlight_list`
+- `highlight_create`
+- `highlight_update`
+- `highlight_delete`
+- `highlight_manage` (legacy adapter; requires bookmarkId and string highlightId for update/delete)
 - `library_audit`
 - `empty_trash`
 - `cleanup_collections`

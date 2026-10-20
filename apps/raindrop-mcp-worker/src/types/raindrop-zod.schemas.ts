@@ -69,28 +69,50 @@ export const CollectionOutputSchema = z.object({
   parentId: z.number().optional(),
 });
 
-/**
- * Input schema for Raindrop highlight tools.
- * @see {@link https://developer.raindrop.io/}
- */
-export const HighlightInputSchema = z.object({
-  bookmarkId: z.number(),
+// Official highlight IDs are opaque strings, scoped to a positive bookmark ID.
+export const HighlightBookmarkIdSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
+export const HighlightIdSchema = z.string().min(1).refine(value => value.trim() === value);
+export const HighlightColorSchema = z.enum([
+  "blue", "brown", "cyan", "gray", "green", "indigo", "orange", "pink",
+  "purple", "red", "teal", "yellow",
+]);
+const HighlightFields = {
+  text: z.string().refine(value => value.trim().length > 0, "text must not be empty"),
+  note: z.string().optional(),
+  color: HighlightColorSchema.optional(),
+};
+export const HighlightCreateFieldsSchema = z.strictObject(HighlightFields);
+export const HighlightUpdateFieldsSchema = z.strictObject({
+  ...HighlightFields,
+  text: HighlightFields.text.optional(),
+}).refine(value => Object.values(value).some(field => field !== undefined), "Provide at least one update field");
+export const HighlightInputSchema = z.strictObject({
+  bookmarkId: HighlightBookmarkIdSchema, ...HighlightFields,
+});
+export const HighlightRecordSchema = z.object({
+  _id: HighlightIdSchema,
   text: z.string(),
   note: z.string().optional(),
-  color: z.string().optional(),
-});
-
-/**
- * Output schema for Raindrop highlight tools.
- * @see {@link https://developer.raindrop.io/}
- */
+  color: HighlightColorSchema.optional(),
+}).passthrough();
 export const HighlightOutputSchema = z.object({
-  id: z.number(),
-  bookmarkId: z.number(),
+  id: HighlightIdSchema,
+  bookmarkId: HighlightBookmarkIdSchema,
   text: z.string(),
   note: z.string().optional(),
-  color: z.string().optional(),
+  color: HighlightColorSchema.optional(),
 });
+export const HighlightWriteOutcomeSchema = z.discriminatedUnion("status", [
+  z.object({
+    status: z.literal("succeeded"), bookmarkId: HighlightBookmarkIdSchema,
+    highlightId: HighlightIdSchema, highlight: HighlightRecordSchema.nullable(),
+    deleted: z.boolean(),
+  }),
+  z.object({
+    status: z.literal("unknown"), bookmarkId: HighlightBookmarkIdSchema,
+    highlightId: HighlightIdSchema.optional(), reason: z.string(),
+  }),
+]);
 
 /**
  * Input schema for Raindrop tag tools.

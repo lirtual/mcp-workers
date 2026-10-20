@@ -358,3 +358,47 @@ describe("tag Service HTTP contract", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("highlight write retry safety", () => {
+  const existing = { _id: "string-id", text: "quote", color: "yellow" };
+  const snapshot = { result: true, item: { _id: 42, highlights: [existing] } };
+  it.each(["create", "update", "delete"] as const)(
+    "dispatches %s once and distinguishes ambiguous and explicit failures",
+    async operation => {
+      for (const failure of ["network", "500", "malformed", "missing", "false", "403", "404", "429", "401"]) {
+        const fetch = vi.fn(async (request: Request) => {
+          if (request.method === "GET") return json(snapshot);
+          if (failure === "network") throw new TypeError("connection lost after dispatch");
+          if (failure === "malformed") return new Response("{");
+          if (failure === "missing") return json({ result: true });
+          if (failure === "false") return json({ result: false });
+          return new Response("failure", { status: Number(failure), headers: { "retry-after": "1" } });
+        });
+        vi.stubGlobal("fetch", fetch);
+        const service = new RaindropService({ accessToken: "mock-only", maxReadRetries: 3 });
+        const clear = vi.spyOn((service as any).cacheSearch, "clear");
+        const invalidate = vi.spyOn((service as any).cacheBookmarks, "delete");
+        const result = operation === "create" ? service.createHighlight(42, { text: "new" })
+          : operation === "update" ? service.updateHighlight(42, existing._id, { note: "new" })
+          : service.deleteHighlight(42, existing._id);
+        const code = failure === "403" || failure === "401" ? "AUTH_ERROR"
+          : failure === "404" ? "NOT_FOUND" : failure === "429" ? "RATE_LIMITED"
+          : failure === "false" ? "UPSTREAM_ERROR" : undefined;
+        if (code) await expect(result).rejects.toMatchObject({ code });
+        else await expect(result).resolves.toMatchObject({ status: "unknown", bookmarkId: 42 });
+        expect(fetch.mock.calls.map(([r]) => r.method)).toEqual(["GET", "PUT"]);
+        expect(clear).not.toHaveBeenCalled(); expect(invalidate).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it.each([401, 403, 404, 429])("never writes after %s preflight, or retries permission/not-found failures", async status => {
+    const fetch = vi.fn(async () => new Response("denied", { status, headers: { "retry-after": "60" } }));
+    vi.stubGlobal("fetch", fetch);
+    const service = new RaindropService({ accessToken: "mock-only", maxReadRetries: 3 });
+    await expect(service.deleteHighlight(42, existing._id)).rejects.toMatchObject({
+      code: status === 401 || status === 403 ? "AUTH_ERROR" : status === 404 ? "NOT_FOUND" : "RATE_LIMITED",
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+});

@@ -1,5 +1,6 @@
 // Simple, clean openapi-fetch REST client
 import createClient from "openapi-fetch";
+import { z } from "zod";
 import {
   AuthError,
   NotFoundError,
@@ -9,6 +10,12 @@ import {
   ValidationError,
 } from "../types/mcpErrors.js";
 import {
+  HighlightBookmarkIdSchema,
+  HighlightIdSchema,
+  HighlightRecordSchema,
+  HighlightCreateFieldsSchema,
+  HighlightUpdateFieldsSchema,
+  HighlightWriteOutcomeSchema,
   TagScopeSchema,
   TagNameSchema,
   TagNamesSchema,
@@ -19,7 +26,8 @@ import { createLogger } from "../utils/logger.js";
 type Bookmark = components["schemas"]["Bookmark"];
 type Collection = components["schemas"]["Collection"];
 type Highlight = components["schemas"]["Highlight"];
-type HighlightColor = NonNullable<Highlight["color"]>;
+type HighlightRecord = z.infer<typeof HighlightRecordSchema>;
+export type HighlightWriteOutcome = z.infer<typeof HighlightWriteOutcomeSchema>;
 
 export interface RaindropServiceConfig {
   accessToken?: string;
@@ -80,6 +88,8 @@ export default class RaindropService {
         if (!response.ok) {
           if (response.status === 401)
             throw new AuthError("Unauthorized: check RAINDROP_ACCESS_TOKEN");
+          if (response.status === 403)
+            throw new AuthError("API Error: 403; insufficient Raindrop permissions");
           if (response.status === 429) {
             const retryAfterMs =
               RaindropService.parseRetryAfterMs(
@@ -1164,18 +1174,29 @@ export default class RaindropService {
     });
   }
 
-  /**
-   * Fetch highlights for a specific bookmark
-   * Raindrop.io API: GET /raindrop/{id}/highlights
-   */
-  async getHighlights(raindropId: number): Promise<Highlight[]> {
+  /** Fresh owner-checked GET for listing and every highlight mutation preflight. */
+  async getHighlights(bookmarkId: number): Promise<HighlightRecord[]> {
+    if (!HighlightBookmarkIdSchema.safeParse(bookmarkId).success)
+      throw new ValidationError("bookmarkId must be a positive safe integer");
     return this.withRateLimit(async () => {
-      const { data } = await this.client.GET("/raindrop/{id}/highlights", {
-        params: { path: { id: raindropId } },
+      const { data } = await this.client.GET("/raindrop/{id}", {
+        params: { path: { id: bookmarkId } },
       });
-      if (!data?.items) throw new NotFoundError("No highlights found");
-      return [...((data.items as Highlight[]) || [])];
+      const parsed = this.parseHighlightBookmark(data, bookmarkId);
+      if (!parsed) throw new UpstreamError("Invalid highlight bookmark response; preflight cannot verify owner or highlights");
+      return parsed;
     });
+  }
+
+  private parseHighlightBookmark(data: unknown, bookmarkId: number): HighlightRecord[] | undefined {
+    const parsed = z.object({
+      result: z.literal(true),
+      item: z.object({ _id: z.literal(bookmarkId), highlights: z.array(HighlightRecordSchema) }),
+    }).safeParse(data);
+    if (!parsed.success) return undefined;
+    const highlights = parsed.data.item.highlights;
+    if (new Set(highlights.map(h => h._id)).size !== highlights.length) return undefined;
+    return highlights;
   }
 
   /**
@@ -1192,74 +1213,92 @@ export default class RaindropService {
     });
   }
 
-  /**
-   * Create a highlight for a bookmark
-   * Raindrop.io API: POST /highlights
-   */
-  async createHighlight(
+  /** Official targeted patches: never replay a write or submit the full snapshot. */
+  private async mutateHighlight(
+    operation: "create" | "update" | "delete",
     bookmarkId: number,
-    highlight: {
-      text: string;
-      note?: string;
-      color?: HighlightColor;
-    },
-  ): Promise<Highlight> {
+    highlightId: string | undefined,
+    fields: z.infer<typeof HighlightUpdateFieldsSchema>,
+  ): Promise<HighlightWriteOutcome> {
+    if (operation !== "create" && !HighlightIdSchema.safeParse(highlightId).success)
+      throw new ValidationError("highlightId must be a nonempty string without surrounding whitespace");
+    const before = await this.getHighlights(bookmarkId);
+    const previous = before.find(h => h._id === highlightId);
+    if (operation !== "create" && !previous)
+      throw new NotFoundError(`Highlight ${highlightId} not found in bookmark ${bookmarkId}`);
+    const patch = operation === "create" ? fields
+      : operation === "delete" ? { _id: highlightId!, text: "" }
+      : { _id: highlightId!, ...fields };
+    const unknown = (): HighlightWriteOutcome => ({
+      status: "unknown", bookmarkId,
+      ...(highlightId !== undefined ? { highlightId } : {}),
+      reason: "Highlight write result unknown; inspect current highlights before deciding whether to retry. Do not automatically retry.",
+    });
     return this.withWriteRateLimit(async () => {
-      const { data } = await this.client.POST("/highlights", {
-        body: {
-          ...highlight,
-          raindrop: { $id: bookmarkId },
-          color: (highlight.color ?? "yellow") as HighlightColor,
-        },
-      });
-
-      // Invalidate bookmark cache
-      await this.cacheBookmarks.delete(`id:${bookmarkId}`);
-
-      if (!data?.item) throw new UpstreamError("Failed to create highlight");
-      return data.item as Highlight;
+      let data: unknown;
+      try {
+        // Local generated schema omits the official partial highlights patch.
+        // Keep that discrepancy within this adapter; each request has one patch.
+        const response = await this.client.PUT("/raindrop/{id}", {
+          params: { path: { id: bookmarkId } },
+          body: { highlights: [patch] } as components["schemas"]["UpdateBookmarkRequest"],
+        });
+        data = response.data;
+      } catch (error) {
+        if (error instanceof AuthError || error instanceof NotFoundError ||
+            error instanceof RateLimitError || error instanceof ValidationError) throw error;
+        return unknown();
+      }
+      if (data && typeof data === "object" && "result" in data && data.result === false)
+        throw new UpstreamError("Raindrop rejected the highlight write (result:false)");
+      const after = this.parseHighlightBookmark(data, bookmarkId);
+      if (!after) return unknown();
+      // Confirm unaffected highlights retain every original field (timestamps may advance).
+      const unchanged = (old: HighlightRecord, current: HighlightRecord | undefined) =>
+        current !== undefined && Object.entries(old).every(([key, value]) =>
+          key === "lastUpdate" || JSON.stringify(current[key]) === JSON.stringify(value));
+      if (!before.filter(h => h._id !== highlightId).every(h => unchanged(h, after.find(a => a._id === h._id))))
+        return unknown();
+      let target: HighlightRecord | undefined;
+      if (operation === "create") {
+        const oldIds = new Set(before.map(h => h._id));
+        const added = after.filter(h => !oldIds.has(h._id));
+        if (added.length !== 1) return unknown();
+        target = added[0];
+      } else {
+        target = after.find(h => h._id === highlightId);
+      }
+      if (operation === "delete") {
+        if (target) return unknown();
+      } else {
+        if (!target || !Object.entries(fields).every(([key, value]) => value === undefined || target![key] === value))
+          return unknown();
+        if (previous && !Object.entries(previous).every(([key, value]) =>
+          key === "lastUpdate" || (key in fields && fields[key as keyof typeof fields] !== undefined) || JSON.stringify(target![key]) === JSON.stringify(value)))
+          return unknown();
+      }
+      this.cacheBookmarks.delete(`id:${bookmarkId}`);
+      this.cacheSearch.clear();
+      return {
+        status: "succeeded", bookmarkId, highlightId: target?._id ?? highlightId!,
+        highlight: target ?? null, deleted: operation === "delete",
+      };
     });
   }
 
-  /**
-   * Update a highlight
-   * Raindrop.io API: PUT /highlights/{id}
-   */
-  async updateHighlight(
-    id: number,
-    updates: {
-      text?: string;
-      note?: string;
-      color?: HighlightColor;
-    },
-  ): Promise<Highlight> {
-    return this.withWriteRateLimit(async () => {
-      const { data } = await this.client.PUT("/highlights/{id}", {
-        params: { path: { id } },
-        body: updates,
-      });
-
-      // We don't easily know the bookmark ID here, so clear all bookmark caches or just hope highlights are viewed via bookmark fetch
-      // For safety, clear all bookmarks cache since highlights are nested
-      await this.cacheBookmarks.clear();
-
-      if (!data?.item) throw new UpstreamError("Failed to update highlight");
-      return data.item as Highlight;
-    });
+  async createHighlight(bookmarkId: number, fields: z.infer<typeof HighlightCreateFieldsSchema>): Promise<HighlightWriteOutcome> {
+    const parsed = HighlightCreateFieldsSchema.safeParse(fields);
+    if (!parsed.success) throw new ValidationError("Invalid highlight creation fields", parsed.error);
+    return this.mutateHighlight("create", bookmarkId, undefined, parsed.data);
   }
 
-  /**
-   * Delete a highlight
-   * Raindrop.io API: DELETE /highlights/{id}
-   */
-  async deleteHighlight(id: number): Promise<void> {
-    await this.withWriteRateLimit(async () => {
-      await this.client.DELETE("/highlights/{id}", {
-        params: { path: { id } },
-      });
-    });
+  async updateHighlight(bookmarkId: number, highlightId: string, fields: z.infer<typeof HighlightUpdateFieldsSchema>): Promise<HighlightWriteOutcome> {
+    const parsed = HighlightUpdateFieldsSchema.safeParse(fields);
+    if (!parsed.success) throw new ValidationError("Invalid highlight update fields; provide at least one field", parsed.error);
+    return this.mutateHighlight("update", bookmarkId, highlightId, parsed.data);
+  }
 
-    // Same as update
-    await this.cacheBookmarks.clear();
+  async deleteHighlight(bookmarkId: number, highlightId: string): Promise<HighlightWriteOutcome> {
+    return this.mutateHighlight("delete", bookmarkId, highlightId, {});
   }
 }

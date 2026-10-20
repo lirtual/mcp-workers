@@ -26,6 +26,10 @@ const EXPECTED_TOOL_NAMES = [
   "get_raindrop",
   "get_suggestions",
   "highlight_manage",
+  "highlight_list",
+  "highlight_create",
+  "highlight_update",
+  "highlight_delete",
   "library_audit",
   "list_raindrops",
   "remove_duplicates",
@@ -38,7 +42,7 @@ const EXPECTED_TOOL_NAMES = [
 ].sort();
 
 describe("Raindrop MCP capability contract", () => {
-  it("retains legacy tools while adding T01 through T04 atomic tools", async () => {
+  it("retains legacy tools while adding T01 through T05 atomic tools", async () => {
     const service = new RaindropMCPService({ accessToken: "test-token" });
 
     try {
@@ -46,7 +50,7 @@ describe("Raindrop MCP capability contract", () => {
       const actual = tools.map((tool) => tool.id).sort();
 
       expect(actual).toEqual(EXPECTED_TOOL_NAMES);
-      expect(actual).toHaveLength(32);
+      expect(actual).toHaveLength(36);
       expect(actual).toContain("diagnostics");
     } finally {
       await service.cleanup();
@@ -855,4 +859,110 @@ describe("tag MCP tools/list and tools/call contract", () => {
       expect(fetch).toHaveBeenCalledTimes(failure === "preflight" ? 6 : 12);
     },
   );
+});
+
+describe("highlight atomic and Draft compatibility contracts", () => {
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+  const highlight = { _id: "string-highlight-id", text: "Quote", color: "yellow" as const };
+  const confirmed = { status: "succeeded" as const, bookmarkId: 42, highlightId: highlight._id, highlight, deleted: false };
+
+  it("delegates all atomic actions and safe legacy inputs to the centralized Service", async () => {
+    const service = new RaindropMCPService({ accessToken: "mock-only" });
+    const list = vi.spyOn(service.raindropService, "getHighlights").mockResolvedValue([highlight]);
+    const create = vi.spyOn(service.raindropService, "createHighlight").mockResolvedValue(confirmed);
+    const update = vi.spyOn(service.raindropService, "updateHighlight").mockResolvedValue(confirmed);
+    const deleted = { ...confirmed, highlight: null, deleted: true };
+    const remove = vi.spyOn(service.raindropService, "deleteHighlight").mockResolvedValue(deleted);
+    try {
+      expect((await service.callTool("highlight_list", { bookmarkId: 42 })).structuredContent).toEqual({ bookmarkId: 42, highlights: [highlight] });
+      expect((await service.callTool("highlight_create", { bookmarkId: 42, text: "Quote" })).structuredContent).toEqual(confirmed);
+      expect((await service.callTool("highlight_update", { bookmarkId: 42, highlightId: highlight._id, note: "" })).structuredContent).toEqual(confirmed);
+      expect((await service.callTool("highlight_delete", { bookmarkId: 42, highlightId: highlight._id })).structuredContent).toEqual(deleted);
+      for (const operation of ["create", "update", "delete"]) {
+        const args = operation === "create" ? { text: "Quote" } : operation === "update" ? { highlightId: highlight._id, note: "" } : { highlightId: highlight._id };
+        expect((await service.callTool("highlight_manage", { bookmarkId: 42, operation, ...args })).structuredContent).toEqual(operation === "delete" ? deleted : confirmed);
+      }
+      expect(list).toHaveBeenCalledExactlyOnceWith(42);
+      expect(create).toHaveBeenCalledWith(42, { text: "Quote" });
+      expect(update).toHaveBeenCalledWith(42, highlight._id, { note: "" });
+      expect(remove).toHaveBeenCalledWith(42, highlight._id);
+    } finally { await service.cleanup(); }
+  });
+
+  it("rejects invalid/legacy inputs before HTTP, including missing bookmark scope", async () => {
+    const fetch = vi.fn(() => { throw new Error("Unexpected HTTP"); });
+    vi.stubGlobal("fetch", fetch);
+    const service = new RaindropMCPService({ accessToken: "mock-only" });
+    try {
+      for (const tool of ["highlight_list", "highlight_create", "highlight_update", "highlight_delete", "highlight_manage"]) {
+        for (const bookmarkId of [undefined, null, "42", -1, 0, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+          const args = tool === "highlight_list" ? { bookmarkId }
+            : tool === "highlight_create" ? { bookmarkId, text: "Quote" }
+            : tool === "highlight_delete" ? { bookmarkId, highlightId: "id" }
+            : { bookmarkId, highlightId: "id", note: "", ...(tool === "highlight_manage" ? { operation: "update" } : {}) };
+          await expect(service.callTool(tool, args)).rejects.toThrow();
+        }
+      }
+      const invalid: Array<[string, Record<string, unknown>]> = [
+        ["highlight_list", { bookmarkId: 42, extra: true }],
+        ["highlight_create", { bookmarkId: 42, text: "" }],
+        ["highlight_create", { bookmarkId: 42, text: " " }],
+        ["highlight_create", { bookmarkId: 42, text: "Quote", color: "black" }],
+        ["highlight_create", { bookmarkId: 42, text: "Quote", highlightId: "injected" }],
+        ["highlight_update", { bookmarkId: 42, highlightId: "id" }],
+        ["highlight_update", { bookmarkId: 42, highlightId: "id", text: "" }],
+        ["highlight_update", { bookmarkId: 42, highlightId: 123, note: "" }],
+        ["highlight_delete", { bookmarkId: 42, highlightId: "" }],
+        ["highlight_delete", { bookmarkId: 42, highlightId: "id", note: "ignored?" }],
+        ["highlight_manage", { operation: "update", id: 123, text: "Quote" }],
+        ["highlight_manage", { operation: "delete", bookmarkId: 42, id: 123 }],
+        ["highlight_manage", { operation: "update", bookmarkId: 42, note: "" }],
+        ["highlight_manage", { operation: "update", bookmarkId: 42, highlightId: 123, note: "" }],
+        ["highlight_manage", { operation: "create", bookmarkId: 42, highlightId: "id", text: "Quote" }],
+        ["highlight_manage", { operation: "delete", bookmarkId: 42, highlightId: "id", text: "Quote" }],
+      ];
+      for (const [name, args] of invalid) await expect(service.callTool(name, args)).rejects.toThrow();
+      expect(fetch).not.toHaveBeenCalled();
+    } finally { await service.cleanup(); }
+  });
+
+  it("exposes atomic schemas and confirmed/unknown outcomes over MCP tools/call", async () => {
+    const service = new RaindropMCPService({ accessToken: "mock-only" });
+    vi.spyOn(service.raindropService, "getHighlights").mockResolvedValue([highlight]);
+    vi.spyOn(service.raindropService, "createHighlight").mockResolvedValue(confirmed);
+    const update = vi.spyOn(service.raindropService, "updateHighlight").mockResolvedValue(confirmed);
+    vi.spyOn(service.raindropService, "deleteHighlight").mockResolvedValue({ ...confirmed, highlight: null, deleted: true });
+    const client = new Client({ name: "highlights-contract", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    try {
+      await service.getServer().connect(serverTransport);
+      await client.connect(clientTransport);
+      const tools = await client.listTools();
+      expect(tools.tools).toHaveLength(36);
+      for (const name of ["highlight_list", "highlight_create", "highlight_update", "highlight_delete"]) {
+        const tool = tools.tools.find(t => t.name === name)!;
+        expect(tool.inputSchema.required).toContain("bookmarkId");
+        expect(tool.annotations?.readOnlyHint).toBe(name === "highlight_list");
+        if (name !== "highlight_list") expect(tool.annotations?.idempotentHint).toBe(false);
+      }
+      for (const [name, args] of [
+        ["highlight_list", { bookmarkId: 42 }],
+        ["highlight_create", { bookmarkId: 42, text: "Quote" }],
+        ["highlight_update", { bookmarkId: 42, highlightId: highlight._id, note: "" }],
+        ["highlight_delete", { bookmarkId: 42, highlightId: highlight._id }],
+      ] as const) {
+        const result = await client.callTool({ name, arguments: args });
+        expect(result.isError).not.toBe(true);
+        expect(result.structuredContent).toMatchObject({ bookmarkId: 42 });
+      }
+      update.mockResolvedValue({ status: "unknown", bookmarkId: 42, highlightId: highlight._id, reason: "Result unknown; inspect before retry" });
+      const unknown = await client.callTool({ name: "highlight_update", arguments: { bookmarkId: 42, highlightId: highlight._id, note: "" } });
+      expect(unknown.isError).not.toBe(true);
+      expect(unknown.structuredContent).toMatchObject({ status: "unknown" });
+      const invalid = await client.callTool({ name: "highlight_update", arguments: { bookmarkId: 42, highlightId: 123, note: "" } });
+      expect(invalid.isError).toBe(true);
+      update.mockRejectedValue(new Error("403 permission denied"));
+      expect((await client.callTool({ name: "highlight_update", arguments: { bookmarkId: 42, highlightId: highlight._id, note: "" } })).isError).toBe(true);
+    } finally { await client.close(); await service.cleanup(); }
+  });
 });
