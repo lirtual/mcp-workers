@@ -181,6 +181,9 @@ fault injection passed. This is a data-boundary bug fix only; it does not alter
 S1 scope or any Cloudflare execution architecture. The 41-assertion suite has
 not been rerun on real edge for this particular revision.
 
+Final initial-release versus active-upgrade gate decisions and 27-story evidence
+are consolidated in [S1-RELEASE-READINESS.md](S1-RELEASE-READINESS.md).
+
 Still required before closing S1: final standards/spec code review, latest-commit
 CI verification, remaining network interruption cases where warranted, and
 explicit final merge/release authorization. S2/S3 are not implemented.
