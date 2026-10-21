@@ -337,8 +337,9 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           set -euo pipefail
-          (cd apps/workflow-mcp-worker/tests/fixtures &&
-            pnpm exec wrangler deploy --config wrangler.jsonc)
+          # pnpm exec resets cwd to the workspace package root, not tests/fixtures.
+          (cd apps/workflow-mcp-worker &&
+            pnpm exec wrangler deploy --config tests/fixtures/wrangler.jsonc)
 
       - name: Read back private S1 Fixture public-route isolation
         if: inputs.worker == 'workflow-mcp-worker'
