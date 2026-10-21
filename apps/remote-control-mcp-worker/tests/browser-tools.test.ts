@@ -107,6 +107,21 @@ test("staged browser tools are neither advertised nor dispatchable on the curren
 });
 
 
+test("2026 capability hints do not silently upgrade the legacy MCP bridge",async()=>{
+  // Source compatibility probe, NOT a real ChatGPT client/elicitation test.
+  const env={MCP_ACCESS_TOKEN:"p11-local-protocol-only"} as unknown as Env;
+  const res=await worker.fetch(new Request("https://mcp.test/mcp",{
+    method:"POST",headers:{authorization:"Bearer p11-local-protocol-only","content-type":"application/json"},
+    body:JSON.stringify({jsonrpc:"2.0",id:23,method:"initialize",params:{
+      protocolVersion:"2026-07-28",capabilities:{elicitation:{}},
+    }}),
+  }),env);
+  const rpc=await res.json() as any;
+  assert.equal(rpc.result?.protocolVersion,"2025-11-25");
+  assert.deepEqual(rpc.result?.capabilities,{tools:{listChanged:false}});
+  // The new protocol's input_required multi-round-trip capability is not
+  // implemented. Never report this fallback as human-approval support.
+});
 test("first-hop URL rejection precedes any DO mutation admission; network-level isolation remains unproven",()=>{
   const publicUrl=parseBrowserCall("browser_navigate",{
     device_id,operation_id,session_id,url:"https://example.com/review?q=1",
