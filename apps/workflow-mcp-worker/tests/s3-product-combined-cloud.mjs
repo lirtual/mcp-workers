@@ -1,6 +1,6 @@
 // Disposable Cloudflare combined S2 test Portal -> GitHub S3 end-to-end acceptance.
 import assert from 'node:assert/strict';
-import {randomBytes,randomUUID} from 'node:crypto';
+import {randomBytes,randomUUID,createHash} from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 import {writeFileSync,unlinkSync} from 'node:fs';
 import {Client,StreamableHTTPClientTransport} from '@modelcontextprotocol/client';
@@ -43,11 +43,12 @@ async function run(){
   assert.ok(cand&&cand.annotations?.readOnlyHint===true&&cand.annotations?.destructiveHint!==true,'IMA read-only contract missing');
   const created=await api('POST','/accounts/'+account+'/d1/database',{name});dbId=created.uuid;
   assert.match(dbId,/^[a-f0-9-]{36}$/i);console.log('DISPOSABLE_DB_CREATED',name);
-  writeFileSync(new URL('../'+file,import.meta.url),JSON.stringify({name,main:'src/index.ts',compatibility_date:'2026-09-10',workers_dev:true,preview_urls:false,keep_vars:false,vars:{S2_READONLY_ENABLED:'true',S2_PORTAL_ENDPOINT:TRUSTED_PORTAL_ENDPOINT,
+  writeFileSync(new URL('../'+file,import.meta.url),JSON.stringify({name,main:'tests/fixtures/s3-product-test-entry.ts',compatibility_date:'2026-09-10',workers_dev:true,preview_urls:false,keep_vars:false,vars:{S2_READONLY_ENABLED:'true',S2_PORTAL_ENDPOINT:TRUSTED_PORTAL_ENDPOINT,
  S3_ENABLED:'true',S3_GITHUB_REPOSITORY:process.env.GITHUB_REPOSITORY,
  S3_GITHUB_REPOSITORY_ID:process.env.GITHUB_REPOSITORY_ID,
  S3_GITHUB_REF:process.env.GITHUB_REF,
- S3_GITHUB_AUDIENCE:'workflow-s3-claim:test',S3_TEST_WORKER_NAME:name},d1_databases:[{binding:'DB',database_name:name,database_id:dbId,migrations_dir:'migrations'}],workflows:[{name,binding:'WORKFLOW',class_name:'WorkflowRunner'}],services:[{binding:'READONLY_TARGET',service:'workflow-s1-readonly-fixture'}]}));
+ S3_GITHUB_AUDIENCE:'workflow-s3-claim:test',S3_TEST_WORKER_NAME:name,
+ S3_TEST_EXPECTED_TOKEN_SHA256:createHash('sha256').update(need('GITHUB_TOKEN')).digest('hex')},d1_databases:[{binding:'DB',database_name:name,database_id:dbId,migrations_dir:'migrations'}],workflows:[{name,binding:'WORKFLOW',class_name:'WorkflowRunner'}],services:[{binding:'READONLY_TARGET',service:'workflow-s1-readonly-fixture'}]}));
   wr(['d1','migrations','apply',name,'--remote','--config',file]);
   attempted=true;
   try{wr(['deploy','--config',file]);}
@@ -79,6 +80,28 @@ async function run(){
   }
   assert.equal(stable,3,'disposable_worker_route_unstable_after_secrets');
   console.log('S3_PRODUCT_STABLE_WORKER_HEALTH_OK',name);
+  // Fail closed before Draft/Publish/Run if the temporary Worker did not
+  // receive exactly the same Runner token with GitHub actions:write access.
+  // This route exists only in the disposable test wrapper, not product code.
+  let validIdentity=false;
+  for(let i=0;i<3;i++){
+    const check=await fetch('https://'+name+'.aiyaya.workers.dev/__test/github-identity',{
+      headers:{authorization:'Bearer '+ownerToken},signal:AbortSignal.timeout(15000),
+    });
+    assert.equal(check.status,200,'read-only test credential probe unavailable');
+    const observed=await check.json();
+    if(observed.tokenMatches===true&&observed.readStatus===200&&
+       observed.invalidDispatchStatus===422){
+      validIdentity=true;
+      break;
+    }
+    console.log('S3_PRODUCT_GITHUB_CREDENTIAL_GATE_PENDING',
+      JSON.stringify({matching:observed.tokenMatches,read:observed.readStatus,
+        deniedBranch:observed.invalidDispatchStatus}));
+    if(i<2)await pause(9000);
+  }
+  assert.ok(validIdentity,'S3 product Worker GitHub credential gate not ready');
+  console.log('S3_PRODUCT_GITHUB_CREDENTIAL_GATE_OK',name);
   let connected=false;for(let i=0;i<15;i++){
     const instance=mcp(endpoint,{requestInit:{headers:{authorization:'Bearer '+ownerToken}}});
     try{await instance.client.connect(instance.transport);owner=instance.client;connected=true;break;}catch{await instance.client.close().catch(()=>{});await pause(2000);}
