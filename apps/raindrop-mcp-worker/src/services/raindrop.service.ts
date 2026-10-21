@@ -282,8 +282,13 @@ export default class RaindropService {
 
     this.logger.debug("Cache MISS: getCollections");
     const collections = await this.withRateLimit(async () => {
-      const { data } = await this.client.GET("/collections");
-      return [...((data?.items as Collection[]) || [])];
+      const { data, error } = await this.client.GET("/collections");
+      // A missing or rejected list must never be treated as an empty account.
+      // G0 uses this fresh read to prove disposable collections are gone.
+      if (error || data?.result !== true || !Array.isArray(data?.items)) {
+        throw new UpstreamError("Raindrop root collection list response could not be verified");
+      }
+      return [...data.items] as Collection[];
     });
 
     this.cacheCollections.set("all", collections);
