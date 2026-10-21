@@ -10,9 +10,11 @@ export const APPLICATIONS = [
   'raindrop-mcp-worker',
   'remote-control-mcp-worker',
   'ssh-mcp-worker',
+  'workflow-mcp-worker',
 ];
 
-const RELEASE_WORKERS = [...APPLICATIONS];
+// Only the selected main-branch manual workflow may deploy; CI never deploys.
+const RELEASE_WORKERS = APPLICATIONS;
 
 function requiresAllApps(file) {
   return file === 'package.json'

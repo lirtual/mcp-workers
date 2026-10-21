@@ -3,7 +3,7 @@
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-const WORKERS = new Set(["raindrop-mcp-worker", "ima-mcp-worker", "database-mcp-worker", "ssh-mcp-worker", "remote-control-mcp-worker", "github-actions-mcp-worker"]);
+const WORKERS = new Set(["raindrop-mcp-worker", "ima-mcp-worker", "database-mcp-worker", "ssh-mcp-worker", "remote-control-mcp-worker", "github-actions-mcp-worker", "workflow-mcp-worker"]);
 const REQUIRED_SECRETS = {
   "raindrop-mcp-worker": ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN"],
   "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "API_KEY"],
@@ -11,6 +11,7 @@ const REQUIRED_SECRETS = {
   "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "MCP_BROKER_TOKEN"],
   "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "GH_TOKEN"],
+  "workflow-mcp-worker": ["MCP_ACCESS_TOKEN"],
 };
 const WORKER_ENTRIES = {
   "raindrop-mcp-worker": "src/worker.ts",
@@ -19,6 +20,7 @@ const WORKER_ENTRIES = {
   "ssh-mcp-worker": "src/index.ts",
   "remote-control-mcp-worker": "src/worker.ts",
   "github-actions-mcp-worker": "src/index.ts",
+  "workflow-mcp-worker": "src/index.ts",
 };
 
 function invariant(value, message) {
@@ -54,6 +56,19 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     invariant(settings.observability?.enabled === true &&
       settings.observability?.logs?.invocation_logs === logs,
       "Unexpected Invocation Logs configuration");
+  }
+  if (worker === "workflow-mcp-worker") {
+    const d1 = find("DB", "d1");
+    invariant((d1?.id || d1?.database_id) ===
+      "c76850db-b5e3-4128-9150-849a1c9e8d74", "S1 production D1 runtime binding drift");
+    const flow = find("WORKFLOW", "workflow");
+    invariant(flow?.workflow_name === "workflow-mcp-s1" &&
+      flow?.class_name === "WorkflowRunner", "S1 native Workflow binding drift");
+    const fixture = find("READONLY_TARGET", "service");
+    invariant(fixture?.service === "workflow-s1-readonly-fixture" &&
+      !fixture?.entrypoint, "S1 private Fixture service binding drift");
+    invariant(!find("S2_READONLY_ENABLED", "plain_text"),
+      "S2 must remain disabled in production S1");
   }
   if (worker === "github-actions-mcp-worker" && options.mode === "readback") {
     // GitHub PATs alone authorize repositories. No repository lists should
@@ -120,7 +135,8 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
         "Remote Control installer origin binding differs from Custom Domain");
     }
   }
-  const allowed = new Set(worker === "ima-mcp-worker"
+  const allowed = new Set(worker === "workflow-mcp-worker" ? ["DB", "WORKFLOW", "READONLY_TARGET"] :
+    worker === "ima-mcp-worker"
     ? ["IMA_IMAGE_REFRESH_SHARD"]
     : worker === "database-mcp-worker" ? ["RATE_LIMITER"]
       : worker === "ssh-mcp-worker" ? ["EDGE_SSH_BROKER", "SSH_OPERATIONS"]
@@ -133,6 +149,72 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
       invariant(allowed.has(item.name), "Unexpected production resource binding: " + item.name);
     }
   }
+  return true;
+}
+
+// Fail closed before any production Worker or private fixture deployment.
+export function verifyWorkflowReleaseConfig(conf, fixture) {
+  invariant(conf?.name === "workflow-mcp-worker" && conf.main === "src/index.ts",
+    "S1 source identity drift");
+  invariant(conf.keep_vars === false && conf.workers_dev === false &&
+    conf.preview_urls === false && conf.routes?.length === 1 &&
+    conf.routes[0]?.pattern === "workflow.lirtual.dpdns.org" &&
+    conf.routes[0]?.custom_domain === true, "S1 reviewed public route drift");
+  invariant(conf.observability?.enabled === true &&
+    conf.observability?.logs?.invocation_logs === true, "S1 Invocation Logs drift");
+  invariant(conf.d1_databases?.length === 1 &&
+    conf.d1_databases[0]?.binding === "DB" &&
+    conf.d1_databases[0]?.database_name === "workflow-mcp-worker" &&
+    conf.d1_databases[0]?.database_id === "c76850db-b5e3-4128-9150-849a1c9e8d74" &&
+    conf.d1_databases[0]?.migrations_dir === "migrations", "S1 approved production D1 drift");
+  invariant(conf.workflows?.length === 1 && conf.workflows[0]?.binding === "WORKFLOW" &&
+    conf.workflows[0]?.name === "workflow-mcp-s1" &&
+    conf.workflows[0]?.class_name === "WorkflowRunner", "S1 Workflow binding drift");
+  invariant(conf.services?.length === 1 && conf.services[0]?.binding === "READONLY_TARGET" &&
+    conf.services[0]?.service === "workflow-s1-readonly-fixture", "S1 private Fixture binding drift");
+  invariant(JSON.stringify(conf.secrets?.required) === JSON.stringify(["MCP_ACCESS_TOKEN"]),
+    "S1 Portal Secret declaration drift");
+  invariant(!conf.vars?.S2_READONLY_ENABLED && !(conf.compatibility_flags || []).includes("global_fetch_strictly_public"),
+    "S1 must never enable or import S2 dynamic-target behavior");
+  if(fixture) {
+    invariant(fixture.name === "workflow-s1-readonly-fixture" &&
+      fixture.main === "readonly-worker.ts" &&
+      fixture.workers_dev === false && fixture.preview_urls === false &&
+      !fixture.routes?.length && fixture.keep_vars === false &&
+      fixture.observability?.enabled === true &&
+      fixture.observability?.logs?.invocation_logs === true &&
+      !fixture.secrets?.required?.length && !fixture.d1_databases?.length &&
+      !fixture.services?.length && !fixture.workflows?.length && !fixture.vars,
+      "S1 Fixture must have no public route, data binding or Secrets");
+  }
+  return true;
+}
+
+// Review the actually deployed private Fixture, not just its source manifest.
+export function verifyFixtureExposure(subdomain, domains, routesByZone) {
+  invariant(subdomain?.enabled === false && subdomain?.previews_enabled === false,
+    "S1 private Fixture has public workers.dev or Preview exposure");
+  invariant(Array.isArray(domains) && Array.isArray(routesByZone),
+    "S1 Fixture public route inventory unavailable");
+  invariant(!domains.some(x => x.service === "workflow-s1-readonly-fixture"),
+    "S1 private Fixture has a Custom Domain");
+  invariant(!routesByZone.some(x => x.script === "workflow-s1-readonly-fixture"),
+    "S1 private Fixture has a public Worker route");
+  return true;
+}
+
+export function verifyWorkflowD1Readiness(response, bootstrap) {
+  invariant(Array.isArray(response) && response.length === 1 &&
+    response[0]?.success === true && response[0]?.results?.length === 1,
+    "S1 remote D1 readback unavailable");
+  const row = response[0].results[0];
+  invariant(row?.migration_count === 2 && row?.migration_v1 === 1 &&
+    row?.migration_v2 === 1 && row?.native_column === 1,
+    "S1 production D1 schema migrations missing or drifted");
+  invariant(Number.isSafeInteger(row?.active_runs) && row.active_runs === 0,
+    "S1 cannot redeploy while Runs are active or indeterminate");
+  if(bootstrap) invariant(row.run_count === 0 && row.workflow_count === 0,
+    "S1 first deployment requires empty production Run and Workflow state");
   return true;
 }
 
@@ -166,6 +248,7 @@ export function verifyPublishedVersion(previous, observed, expected) {
 
 function readConfiguration(worker, content) {
   const conf = JSON.parse(content.replace(/^\s*\/\/.*$/gm, ""));
+  if (worker === "workflow-mcp-worker") verifyWorkflowReleaseConfig(conf);
   invariant(conf.name === worker && conf.main === WORKER_ENTRIES[worker],
     "Worker script name or entry differs from selected target");
   invariant(conf.keep_vars === false,
@@ -221,6 +304,21 @@ function readConfiguration(worker, content) {
       "Production must declare a local SQLite DeviceCoordinator");
   }
   return conf;
+}
+
+async function cfListRead(path, token) {
+  const response = await fetch("https://api.cloudflare.com/client/v4" + path, {
+    headers: { Authorization: "Bearer " + token, Accept: "application/json" },
+    signal: AbortSignal.timeout(15_000),
+  });
+  invariant(response.ok, "S1 private Fixture route inventory HTTP " + response.status);
+  const data = await response.json();
+  invariant(data?.success === true && Array.isArray(data.result),
+    "S1 private Fixture route inventory missing");
+  invariant((data.result_info?.total_pages ?? 1) <= 1 &&
+    (!data.result_info?.total_count || data.result_info.total_count <= data.result.length),
+    "S1 private Fixture route inventory incomplete");
+  return data.result;
 }
 
 async function cfGet(account, worker, token, endpoint) {
@@ -299,7 +397,42 @@ async function current(account, worker, token, options) {
 
 async function main() {
   const [mode, worker] = process.argv.slice(2);
-  invariant(["preflight", "readback", "version", "diagnostic"].includes(mode), "Unknown release validation mode");
+  invariant(["preflight", "readback", "version", "diagnostic", "fixture-check", "fixture-readback", "d1-check"].includes(mode), "Unknown release validation mode");
+  if (mode === "fixture-readback") {
+    invariant(worker === "workflow-mcp-worker", "Private Fixture check restricted to S1");
+    const account = process.env.CLOUDFLARE_ACCOUNT_ID;
+    const token = process.env.CLOUDFLARE_API_TOKEN;
+    invariant(account && token, "S1 Cloudflare readback credentials missing");
+    const subdomain = await cfGet(account, "workflow-s1-readonly-fixture", token, "/subdomain");
+    const [domains, zones] = await Promise.all([
+      cfListRead("/accounts/" + encodeURIComponent(account) + "/workers/domains?per_page=100", token),
+      cfListRead("/zones?account.id=" + encodeURIComponent(account) + "&per_page=50", token),
+    ]);
+    const routes = (await Promise.all(zones.map(zone =>
+      cfListRead("/zones/" + encodeURIComponent(zone.id) + "/workers/routes?per_page=100", token)
+    ))).flat();
+    verifyFixtureExposure(subdomain, domains, routes);
+    console.log("S1 private Fixture has no Workers.dev, Preview, Custom Domain or Worker route");
+    return;
+  }
+  if (mode === "fixture-check") {
+    invariant(worker === "workflow-mcp-worker", "Private Fixture check restricted to S1");
+    const owner = JSON.parse(await readFile(join(process.cwd(),
+      "apps/workflow-mcp-worker/wrangler.jsonc"), "utf8"));
+    const fixture = JSON.parse(await readFile(join(process.cwd(),
+      "apps/workflow-mcp-worker/tests/fixtures/wrangler.jsonc"), "utf8"));
+    verifyWorkflowReleaseConfig(owner, fixture);
+    console.log("S1 private Fixture configuration verified; no public route");
+    return;
+  }
+  if (mode === "d1-check") {
+    invariant(worker === "workflow-mcp-worker", "D1 check restricted to S1");
+    const raw = await readFile("/dev/stdin", "utf8");
+    verifyWorkflowD1Readiness(JSON.parse(raw),
+      process.env.S1_FIRST_DEPLOY === "true");
+    console.log("S1 production D1 migrations and Run-state gate verified");
+    return;
+  }
   if (mode === "diagnostic") {
     invariant(worker, "Wrangler log path missing");
     const log = await readFile(worker, "utf8");

@@ -18,6 +18,7 @@ on:
           - ssh-mcp-worker
           - remote-control-mcp-worker
           - github-actions-mcp-worker
+          - workflow-mcp-worker
 
 permissions:
   contents: read
@@ -206,7 +207,8 @@ jobs:
            inputs.worker == 'database-mcp-worker' ||
            inputs.worker == 'ssh-mcp-worker' ||
            inputs.worker == 'remote-control-mcp-worker' ||
-           inputs.worker == 'github-actions-mcp-worker') }}
+           inputs.worker == 'github-actions-mcp-worker' ||
+           inputs.worker == 'workflow-mcp-worker') }}
     runs-on: ubuntu-latest
     # A GitHub Environment is a Worker-scoped configuration namespace, not a
     # staging/production selector. Only manual dispatch on main can deploy.
@@ -306,6 +308,46 @@ jobs:
             exit 1
           }
 
+      - name: Verify S1 private Fixture and remote D1 readiness
+        if: inputs.worker == 'workflow-mcp-worker'
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          S1_FIRST_DEPLOY: ${{ steps.preflight.outputs.bootstrap }}
+        run: |
+          set -euo pipefail
+          node scripts/manual-worker-release.mjs fixture-check workflow-mcp-worker
+          (cd apps/workflow-mcp-worker && pnpm exec wrangler d1 execute workflow-mcp-worker --remote --json --command \
+            "SELECT
+             (SELECT count(*) FROM d1_migrations) AS migration_count,
+             (SELECT count(*) FROM d1_migrations WHERE name='0001_s1.sql') AS migration_v1,
+             (SELECT count(*) FROM d1_migrations WHERE name='0002_native_complete_seen.sql') AS migration_v2,
+             (SELECT count(*) FROM pragma_table_info('runs') WHERE name='native_complete_seen_at') AS native_column,
+             (SELECT count(*) FROM runs WHERE outcome NOT IN ('succeeded','failed','cancelled')) AS active_runs,
+             (SELECT count(*) FROM runs) AS run_count,
+             (SELECT count(*) FROM workflows) AS workflow_count") |
+            node scripts/manual-worker-release.mjs d1-check workflow-mcp-worker
+
+      - name: Deploy existing private S1 read-only Fixture
+        if: inputs.worker == 'workflow-mcp-worker'
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          (cd apps/workflow-mcp-worker/tests/fixtures &&
+            pnpm exec wrangler deploy --config wrangler.jsonc)
+
+      - name: Read back private S1 Fixture public-route isolation
+        if: inputs.worker == 'workflow-mcp-worker'
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: node scripts/manual-worker-release.mjs fixture-readback workflow-mcp-worker
+
       - name: Publish exactly selected Worker
         id: publish
         shell: bash
@@ -315,7 +357,7 @@ jobs:
         run: |
           set -euo pipefail
           case "$SELECTED_WORKER" in
-            raindrop-mcp-worker|ima-mcp-worker|database-mcp-worker|ssh-mcp-worker|remote-control-mcp-worker|github-actions-mcp-worker) ;;
+            raindrop-mcp-worker|ima-mcp-worker|database-mcp-worker|ssh-mcp-worker|remote-control-mcp-worker|github-actions-mcp-worker|workflow-mcp-worker) ;;
             *) echo "Invalid Worker target" >&2; exit 1 ;;
           esac
           log="$(mktemp)"
@@ -361,19 +403,36 @@ jobs:
         run: node scripts/manual-worker-release.mjs readback "$SELECTED_WORKER"
 
       - name: Check existing public health endpoint
-        if: inputs.worker == 'ima-mcp-worker' || inputs.worker == 'raindrop-mcp-worker'
+        if: inputs.worker == 'ima-mcp-worker' || inputs.worker == 'raindrop-mcp-worker' || inputs.worker == 'workflow-mcp-worker'
         shell: bash
+        env:
+          FIRST_DEPLOY: ${{ steps.preflight.outputs.bootstrap }}
         run: |
           set -euo pipefail
           response="$(mktemp)"
           trap 'rm -f "$response"' EXIT
-          status="$(curl --silent --show-error --max-time 12 --output "$response" --write-out '%{http_code}' "https://${SELECTED_WORKER}.aiyaya.workers.dev/health")"
+          health_endpoint="https://${SELECTED_WORKER}.aiyaya.workers.dev/health"
+          if [[ "$SELECTED_WORKER" == "workflow-mcp-worker" ]]; then
+            health_endpoint="https://workflow.lirtual.dpdns.org/health"
+          fi
+          max_attempts=1
+          if [[ "$SELECTED_WORKER" == "workflow-mcp-worker" && "$FIRST_DEPLOY" == "true" ]]; then
+            max_attempts=12
+          fi
+          for ((attempt=1; attempt<=max_attempts; attempt++)); do
+            status="$(curl --silent --show-error --max-time 12 --output "$response" --write-out '%{http_code}' "$health_endpoint")"
+            if [[ "$status" == 404 && "$attempt" -lt "$max_attempts" ]]; then
+              sleep 5
+              continue
+            fi
+            break
+          done
           [[ "$status" == "200" ]] || { echo "Health check failed (HTTP $status)" >&2; exit 1; }
           node -e '
             const fs = require("node:fs");
             const body = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
             const worker = process.argv[2];
-            if (!body || (worker === "ima-mcp-worker" ? body.ok !== true : body.status !== "healthy")) process.exit(1);
+            if (!body || (worker === "workflow-mcp-worker" ? (body.ok !== true || body.scope !== "s1" || body.service !== "workflow-mcp-worker") : worker === "ima-mcp-worker" ? body.ok !== true : body.status !== "healthy")) process.exit(1);
           ' "$response" "$SELECTED_WORKER" || { echo "Health check failed (invalid response)" >&2; exit 1; }
           echo "Existing health endpoint verified (HTTP 200)"
 
@@ -388,14 +447,21 @@ jobs:
           # A new Workers.dev hostname may briefly return 404 after the first publish.
           # Do not retry any non-404 status or hide a persistent routing failure.
           max_attempts=1
+          if [[ "$SELECTED_WORKER" == "workflow-mcp-worker" && "$FIRST_DEPLOY" == "true" ]]; then
+            max_attempts=12
+          fi
           if [[ "$SELECTED_WORKER" == "github-actions-mcp-worker" && "$FIRST_DEPLOY" == "true" ]]; then
             max_attempts=12
+          fi
+          mcp_endpoint="https://${SELECTED_WORKER}.aiyaya.workers.dev/mcp"
+          if [[ "$SELECTED_WORKER" == "workflow-mcp-worker" ]]; then
+            mcp_endpoint="https://workflow.lirtual.dpdns.org/mcp"
           fi
           for ((attempt=1; attempt<=max_attempts; attempt++)); do
             status="$(curl --silent --show-error --max-time 12 --output "$response" --write-out '%{http_code}' \
               --header 'Content-Type: application/json' \
               --data '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
-              "https://${SELECTED_WORKER}.aiyaya.workers.dev/mcp")"
+              "$mcp_endpoint")"
             case "$status" in
               401|403)
                 echo "Unauthenticated MCP request denied (HTTP $status); human Portal acceptance still required"
