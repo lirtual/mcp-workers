@@ -1,9 +1,20 @@
-# Workflow MCP Worker — S1 only
+# Workflow MCP Worker — S1 baseline, S2 candidate gated
 
-Implementation branch for [Issue #141](https://github.com/lirtual/mcp-workers/issues/141).
-This is an **isolated S1 implementation** of Draft → Validate → Publish → Run → Result,
-not a deployment or acceptance of S2/S3. It must not be deployed to production
-without provisioning and reviewing the actual D1 database, binding and Portal secret.
+Implementation base: [Issue #141](https://github.com/lirtual/mcp-workers/issues/141) and [S1 Draft PR #142](https://github.com/lirtual/mcp-workers/pull/142).
+This branch also stages a **disabled-by-default S2 candidate** in [Draft PR #146](https://github.com/lirtual/mcp-workers/pull/146).
+Neither S1 nor S2 has production deployment authorization; do not deploy without the separate release gates and production binding review.
+
+## S2 network and authorization decision — 2026-10-21
+
+- Candidate S2 supports only a **fixed, canonical HTTPS URL + tool + read scope + pinned tool-schema digest** in an immutable Published Plan. The separate `S2_READONLY_ENABLED` runtime flag is absent from Wrangler; S2 Publish and Run reject requests without it. It remains **OFF**.
+- `scopedPublicMcpFetch` enforces the approved exact URL and `redirect: 'manual'`; `global_fetch_strictly_public` routes global fetches through the public Internet/front door rather than bypassing the Worker's own-zone rules. These measures are useful but **not** a DNS/IP/private-address/metadata or rebinding isolation guarantee.
+- In a throwaway Cloudflare `wrangler dev --remote` preview, ordinary HTTPS returned 200; cross-origin redirect was denied; literal private/loopback/metadata IP URLs were rejected locally; private-IP-shaped DNS hostnames were **accepted** by the syntax gate and received HTTP 530. A 530 response cannot establish general private-network isolation. The preview was stopped, local files removed, and the named persistent Worker was absent.
+- MCP `readOnlyHint` is **untrusted metadata**. Endpoint/tool/schema approval in `workflow_publish` is a matching application-level assertion, **not proof of a separate human confirmation event** or the target's side-effect safety. A lost acknowledgment after `tools/call` is recorded as `indeterminate` with `external_outcome_unknown`; no blind retries.
+- **P0-3 / AC-08 remains BLOCKED.** Arbitrary dynamic public endpoints cannot be honestly certified as private-network-isolated using current URL checks, redirects, or DNS preflight alone. Do not add heuristic host blacklists, a speculative DNS proxy, or other infrastructure to claim otherwise. Either produce independent platform-enforced evidence or separately obtain an explicit owner decision to narrow the product boundary/accept residual risks; until then do not enable S2.
+- Node 24 local suite and latest GitHub CI at `5e27838`: **47/47 tests pass**, typecheck and Wrangler dry-run pass; release job skipped. GitHub Copilot review requests via REST and CLI did **not** yield any recorded requested reviewer or submitted review on PR #146. **Independent formal review remains open**; do not count an accepted API response or this author-side inspection as approval.
+
+Platform references: [Cloudflare `global_fetch_strictly_public`](https://developers.cloudflare.com/workers/configuration/compatibility-flags/#global-fetch-strictly-public), [Workers fetch-to-IP known issues](https://developers.cloudflare.com/workers/platform/known-issues/#fetch-to-ip-addresses), [MCP tool annotations limits](https://blog.modelcontextprotocol.io/posts/2026-03-16-tool-annotations/).
+
 
 ## Boundaries
 
@@ -11,9 +22,10 @@ without provisioning and reviewing the actual D1 database, binding and Portal se
 - YAML or JSON Drafts; optimistic revision CAS; atomic explicit Publish of immutable Plans.
 - Finite DAG (32 nodes, at most 8 ready independent Steps), restricted references and conditions.
 - Manual asynchronous Run ID; D1 and Cloudflare Workflows state and result.
-- **Only** `s1.readonly_mcp` / `echo` through a fixed private Service Binding
-  and `result.emit`. No dynamic Internet URL, external write, Shell, code evaluation,
-  webhook, Cron, OAuth, stored target credential or GitHub heavy execution.
+- **Default-enabled S1 only:** `s1.readonly_mcp` / `echo` through a fixed private
+  Service Binding, plus `result.emit`. The compiled `mcp.call` S2 candidate is
+  runtime-gated and unapproved for use. No arbitrary external writes, Shell,
+  code evaluation, webhook, Cron, OAuth, stored target credentials, or GitHub heavy execution.
 - D1 Run admission idempotency, fixed instance IDs and bounded lookup after ambiguous create.
   S1 does not add an overflow queue, a second DAG engine or an external lock service.
 - Runtime execution must not be labeled production-proven based on unit tests or local Wrangler alone.
@@ -241,9 +253,9 @@ no runtime code, queue, scheduler or second execution system.
 Final initial-release versus active-upgrade gate decisions and 27-story evidence
 are consolidated in [S1-RELEASE-READINESS.md](S1-RELEASE-READINESS.md).
 
-Still required before closing S1: final standards/spec code review, latest-commit
-CI verification, remaining network interruption cases where warranted, and
-explicit final merge/release authorization. S2/S3 are not implemented.
+Still required before closing S1: final standards/spec code review, applicable
+network interruption acceptance and explicit merge/release authorization.
+S2 contains only the gated candidate above; S3 is not implemented.
 
 Q1–Q50 design remains in [Draft PR #135](https://github.com/lirtual/mcp-workers/pull/135);
 new S2/S3 facilities are not to be provisioned here.
