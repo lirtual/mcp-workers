@@ -23,6 +23,7 @@ export const WORKER_VARIABLES = Object.freeze({
   "ssh-mcp-worker": [],
   "remote-control-mcp-worker": [],
   "github-actions-mcp-worker": [],
+  "workflow-mcp-worker": [],
 });
 
 // The Wrangler Custom Domain is the one authoritative installation origin.

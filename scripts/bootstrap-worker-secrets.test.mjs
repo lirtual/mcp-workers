@@ -9,6 +9,7 @@ const fixtures = {
   "ssh-mcp-worker": { MCP_ACCESS_TOKEN: "portal", MCP_BROKER_TOKEN: "x".repeat(32) },
   "remote-control-mcp-worker": { MCP_ACCESS_TOKEN: "portal" },
   "github-actions-mcp-worker": { MCP_ACCESS_TOKEN: "portal", GH_TOKEN: "github-test-token" },
+  "workflow-mcp-worker": { MCP_ACCESS_TOKEN: "portal" },
 };
 
 test("bootstrap supports all selected Workers, including isolated Remote Control", () => {
