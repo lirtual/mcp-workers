@@ -523,3 +523,60 @@ test('S2 unresolved Run-input reference is rejected before any trusted-target re
   assert.equal(outcome.steps[0].status,'failed');
   assert.equal(networkRequests,0);
 });
+
+test('S2 stateful MCP DELETE cannot delay an already successful tools/call result',async t=>{
+  const {env,admit,run,service}=setup(t);
+  const grant:ReadonlyOperation={endpoint:'https://public.example.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
+  env.S2_READONLY_ENABLED='true';
+  const admitted=await admit([{id:'read',uses:'mcp.call',with:{
+    endpoint:grant.endpoint,tool:grant.tool,scope:'read',input_schema:PINNED_SCHEMA,
+    arguments:{value:'acknowledged stateful result'},
+  }}],{},[grant]);
+  const previousFetch=globalThis.fetch;
+  let calls=0,deletes=0;
+  globalThis.fetch=(async(input:RequestInfo|URL,init?:RequestInit)=>{
+    const request=new Request(input,init);
+    assert.equal(request.url,grant.endpoint);
+    assert.equal(request.redirect,'manual');
+    if(request.method==='DELETE'){
+      deletes++;
+      // Simulates a stateful MCP peer that hangs on its optional DELETE.
+      return new Promise<Response>(()=>{});
+    }
+    if(request.method==='GET')return new Response(null,{status:405});
+    const message=await request.clone().json() as {id?:number,method:string};
+    if(message.method==='notifications/initialized')return new Response(null,{status:202});
+    if(message.method==='initialize')return Response.json({
+      jsonrpc:'2.0',id:message.id,
+      result:{protocolVersion:'2025-06-18',capabilities:{tools:{}},
+        serverInfo:{name:'stateful-test',version:'1'}},
+    },{headers:{'mcp-session-id':'stateful-session'}});
+    if(message.method==='tools/list')return Response.json({
+      jsonrpc:'2.0',id:message.id,
+      result:{tools:[{name:'echo',inputSchema:PINNED_SCHEMA,
+        annotations:{readOnlyHint:true,destructiveHint:false}}]},
+    });
+    if(message.method==='tools/call'){
+      calls++;
+      return Response.json({jsonrpc:'2.0',id:message.id,
+        result:{content:[{type:'text',text:'acknowledged stateful result'}]}});
+    }
+    throw Error('unexpected_sdk_message:'+message.method);
+  }) as typeof fetch;
+  let timer:ReturnType<typeof setTimeout>|undefined;
+  try{
+    await Promise.race([
+      run(admitted.run_id),
+      new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('optional_session_cleanup_blocked_result')),400);}),
+    ]);
+  }finally{
+    if(timer)clearTimeout(timer);
+    globalThis.fetch=previousFetch;
+  }
+  const result=await service.result(admitted.run_id);
+  assert.equal(calls,1);
+  assert.equal(deletes,0,'optional remote DELETE should not delay the acknowledged result');
+  assert.equal(result.status,'succeeded');
+  assert.equal(result.steps[0].status,'succeeded');
+  assert.ok(JSON.stringify(result.result).includes('acknowledged stateful result'));
+});

@@ -65,10 +65,10 @@ async function callApprovedReadonly(env:Env,plan:Plan,step:Step,args:Record<stri
       return limitResult(output);
     }catch{throw Error('external_outcome_unknown');}
   }finally{
-    // close() does not automatically send DELETE. Termination is best effort;
-    // an unknown reply must never be interpreted as an undone external effect.
-    await transport.terminateSession().catch(()=>{});
-    // A failed teardown must not overwrite an already observed tool outcome.
+    // A stateful peer's optional HTTP DELETE can hang even after tools/call
+    // succeeded. Never block the durable Run result on remote teardown; the
+    // trusted peer owns expiration of its unused session.
+    // SDK close() releases local transport state without sending DELETE.
     await client.close().catch(()=>{});
   }
 }
