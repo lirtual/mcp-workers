@@ -4,6 +4,13 @@ import { registerHooks } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { WorkflowService, type Env } from '../src/store.ts';
+import { toolSchemaDigest, type ReadonlyOperation } from '../src/plan.ts';
+// Exact schema returned by the existing read-only echo MCP fixture.
+const PINNED_SCHEMA={type:'object',properties:{
+  value:{type:'string',maxLength:4096},
+  delay_ms:{type:'integer',minimum:0,maximum:15000},
+},required:['value'],'$schema':'https://json-schema.org/draft/2020-12/schema',additionalProperties:false};
+const PINNED_DIGEST=await toolSchemaDigest(PINNED_SCHEMA);
 import type { WorkflowEvent, WorkflowStep } from 'cloudflare:workers';
 import { success } from '../src/tools.ts';
 import readonlyWorker from './fixtures/readonly-worker.ts';
@@ -42,9 +49,9 @@ function setup(t:test.TestContext){
     READONLY_TARGET:{fetch:async(input:Request|string|URL,init?:RequestInit)=>readonlyWorker.fetch(new Request(input,init))},
   } as unknown as Env;
   const service=new WorkflowService(env);
-  async function admit(steps:unknown[],inputs:Record<string,unknown>={}){
+  async function admit(steps:unknown[],inputs:Record<string,unknown>={},approvals:ReadonlyOperation[]=[]){
     const w=await service.create(JSON.stringify({version:1,name:'Review regression',steps}));
-    await service.publish(w.workflow_id,1);
+    await service.publish(w.workflow_id,1,approvals);
     return service.start(w.workflow_id,inputs);
   }
   async function run(run_id:string){
@@ -172,4 +179,236 @@ test('native complete with an unsettled business outcome does not claim unfinish
   const status=await service.status(admitted.run_id);
   assert.equal(status.status,'queued'); // Preserve the existing business-outcome settle window.
   assert.deepEqual(status.steps.map(s=>[s.step_id,s.status]),[['emit','indeterminate']]);
+});
+
+test('unknown capability in a pinned Plan fails closed instead of becoming result.emit',async t=>{
+  const {service,admit,run,sqlite,env}=setup(t);
+  const admitted=await admit([{id:'emit',uses:'result.emit',with:{data:'safe'}}]);
+  const original=sqlite.prepare('SELECT version_id FROM runs WHERE id=?').get(admitted.run_id) as {version_id:string};
+  const tampered={version:1,name:'Untrusted future capability',steps:[{id:'emit',needs:[],uses:'mcp.call',with:{data:'should not succeed'}}]};
+  sqlite.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(tampered),original.version_id);
+  let privateFixtureCalls=0;
+  const originalFetch=env.READONLY_TARGET.fetch.bind(env.READONLY_TARGET);
+  env.READONLY_TARGET.fetch=(async(...args:Parameters<typeof originalFetch>)=>{
+    privateFixtureCalls++;
+    return originalFetch(...args);
+  }) as typeof env.READONLY_TARGET.fetch;
+  await run(admitted.run_id);
+  const result=await service.result(admitted.run_id);
+  assert.equal(result.status,'failed');
+  assert.equal(result.steps[0].status,'failed');
+  assert.equal(privateFixtureCalls,0);
+});
+
+test('S2 Publish requires explicit matching read approval and is disabled by default',async t=>{
+  const {service,env,sqlite}=setup(t);
+  const steps=[{id:'read',uses:'mcp.call',with:{
+    endpoint:'https://public.example.org/mcp',tool:'echo',scope:'read',
+    input_schema:PINNED_SCHEMA,arguments:{value:'hello'},
+  }}];
+  const plan=JSON.stringify({version:1,name:'S2 approval gate',steps});
+  const created=await service.create(plan);
+  const grant:ReadonlyOperation={endpoint:'https://public.example.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
+  await assert.rejects(()=>service.publish(created.workflow_id,1,[grant]),/s2_disabled/);
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM workflow_versions').get()?.n,0);
+  env.S2_READONLY_ENABLED='true';
+  await assert.rejects(()=>service.publish(created.workflow_id,1),/external_approval_required/);
+  await assert.rejects(()=>service.publish(created.workflow_id,1,[{...grant,tool:'other'}]),/external_approval_required/);
+  await assert.rejects(()=>service.publish(created.workflow_id,1,[grant,grant]),/external_approval_required/);
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM workflow_versions').get()?.n,0);
+  const published=await service.publish(created.workflow_id,1,[grant]);
+  const saved=sqlite.prepare('SELECT plan FROM workflow_versions WHERE id=?').get(published.published_version_id) as {plan:string};
+  assert.deepEqual(JSON.parse(saved.plan).s2_approvals,[grant]);
+});
+
+test('S2 previously approved Run fails closed if rollout flag is turned off',async t=>{
+  const {env,admit,run,service}=setup(t);
+  const grant:ReadonlyOperation={endpoint:'https://public.example.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
+  env.S2_READONLY_ENABLED='true';
+  const admitted=await admit([{id:'read',uses:'mcp.call',with:{endpoint:grant.endpoint,tool:grant.tool,scope:'read',input_schema:PINNED_SCHEMA,arguments:{value:'test'}}}],{},[grant]);
+  env.S2_READONLY_ENABLED=undefined;
+  const oldFetch=globalThis.fetch;
+  let requests=0;
+  globalThis.fetch=(async()=>{requests++;throw Error('unexpected_public_fetch');}) as typeof fetch;
+  try{
+    await run(admitted.run_id);
+  }finally{globalThis.fetch=oldFetch;}
+  const result=await service.result(admitted.run_id);
+  assert.equal(result.status,'failed');
+  assert.equal(result.steps[0].status,'failed');
+  assert.equal(requests,0);
+});
+
+test('S2 approved read-only MCP tool invokes actual SDK only through scoped public fetch',async t=>{
+  const {env,admit,run,service}=setup(t);
+  const grant:ReadonlyOperation={endpoint:'https://public.example.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
+  env.S2_READONLY_ENABLED='true';
+  const admitted=await admit([{id:'read',uses:'mcp.call',with:{
+    endpoint:grant.endpoint,tool:grant.tool,scope:'read',input_schema:PINNED_SCHEMA,arguments:{value:'hello',url:'https://example.org/opaque'},
+  }}],{},[grant]);
+  // The existing S1 echo fixture rejects extra args: this must prove the
+  // transport was reached without falsely marking an invalid tool call safe.
+  const originalFetch=globalThis.fetch;
+  let networkCalls=0,privateCalls=0,secretSeen=false;
+  const privateFetch=env.READONLY_TARGET.fetch.bind(env.READONLY_TARGET);
+  env.READONLY_TARGET.fetch=(async(...args:Parameters<typeof privateFetch>)=>{
+    privateCalls++;return privateFetch(...args);
+  }) as typeof env.READONLY_TARGET.fetch;
+  globalThis.fetch=(async(input:RequestInfo|URL,init?:RequestInit)=>{
+    const request=new Request(input,init);
+    networkCalls++;
+    assert.equal(new URL(request.url).origin,new URL(grant.endpoint).origin);
+    assert.equal(request.redirect,'manual');
+    if(request.headers.get('authorization')?.includes('PORTAL'))secretSeen=true;
+    return readonlyWorker.fetch(request);
+  }) as typeof fetch;
+  try{await run(admitted.run_id);}finally{globalThis.fetch=originalFetch;}
+  const result=await service.result(admitted.run_id);
+  assert.equal(result.status,'failed'); // target rejected extra arg: no write/false success
+  assert.ok(networkCalls>0);
+  assert.equal(privateCalls,0);
+  assert.equal(secretSeen,false);
+});
+
+test('approved S2 public read-only call succeeds without touching private S1 binding',async t=>{
+  const {env,admit,run,service}=setup(t);
+  const grant:ReadonlyOperation={endpoint:'https://public.example.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
+  env.S2_READONLY_ENABLED='true';
+  const admitted=await admit([{id:'read',uses:'mcp.call',with:{endpoint:grant.endpoint,tool:grant.tool,scope:'read',input_schema:PINNED_SCHEMA,arguments:{value:'hello S2'}}}],{},[grant]);
+  let publicCalls=0,privateCalls=0;
+  const originalPrivate=env.READONLY_TARGET.fetch.bind(env.READONLY_TARGET);
+  env.READONLY_TARGET.fetch=(async(...args:Parameters<typeof originalPrivate>)=>{
+    privateCalls++;return originalPrivate(...args);
+  }) as typeof env.READONLY_TARGET.fetch;
+  const originalFetch=globalThis.fetch;
+  globalThis.fetch=(async(input:RequestInfo|URL,init?:RequestInit)=>{
+    const request=new Request(input,init);
+    publicCalls++;
+    assert.equal(request.redirect,'manual');
+    assert.equal(request.url,grant.endpoint);
+    assert.equal(request.headers.get('authorization'),null);
+    return readonlyWorker.fetch(request);
+  }) as typeof fetch;
+  try{await run(admitted.run_id);}finally{globalThis.fetch=originalFetch;}
+  const result=await service.result(admitted.run_id);
+  assert.equal(result.status,'succeeded');
+  assert.equal(result.steps[0].status,'succeeded');
+  assert.ok(JSON.stringify(result.result).includes('hello S2'));
+  assert.ok(publicCalls>0);
+  assert.equal(privateCalls,0);
+});
+
+test('tampering immutable S2 approval cannot dispatch to a changed endpoint',async t=>{
+  const {env,admit,run,service,sqlite}=setup(t);
+  const grant:ReadonlyOperation={endpoint:'https://public.example.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
+  env.S2_READONLY_ENABLED='true';
+  const admitted=await admit([{id:'read',uses:'mcp.call',with:{endpoint:grant.endpoint,tool:grant.tool,scope:'read',input_schema:PINNED_SCHEMA,arguments:{value:'should not run'}}}],{},[grant]);
+  const ver=sqlite.prepare('SELECT version_id FROM runs WHERE id=?').get(admitted.run_id) as {version_id:string};
+  const row=sqlite.prepare('SELECT plan FROM workflow_versions WHERE id=?').get(ver.version_id) as {plan:string};
+  const changed=JSON.parse(row.plan);
+  changed.steps[0].with.endpoint='https://different.example.org/mcp';
+  sqlite.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(changed),ver.version_id);
+  const oldFetch=globalThis.fetch;let requests=0;
+  globalThis.fetch=(async()=>{requests++;throw Error('unexpected');}) as typeof fetch;
+  try{await run(admitted.run_id);}finally{globalThis.fetch=oldFetch;}
+  assert.equal((await service.result(admitted.run_id)).status,'failed');
+  assert.equal(requests,0);
+});
+
+test('remote tool without readOnlyHint is rejected before tools/call despite owner approval',async t=>{
+  const {env,admit,run,service}=setup(t);
+  const grant:ReadonlyOperation={endpoint:'https://public.example.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
+  env.S2_READONLY_ENABLED='true';
+  const admitted=await admit([{id:'read',uses:'mcp.call',with:{endpoint:grant.endpoint,tool:grant.tool,scope:'read',input_schema:PINNED_SCHEMA,arguments:{value:'do-not-invoke'}}}],{},[grant]);
+  const originalFetch=globalThis.fetch;let toolCallCount=0;
+  globalThis.fetch=(async(input:RequestInfo|URL,init?:RequestInit)=>{
+    const request=new Request(input,init);
+    if(request.method==='POST') {
+      const message=await request.clone().json() as {method:string};
+      if(message.method==='tools/call')toolCallCount++;
+    }
+    const response=await readonlyWorker.fetch(request);
+    if(request.method!=='POST')return response;
+    const message=await request.clone().json() as {method:string};
+    if(message.method!=='tools/list'||!response.ok)return response;
+    const body=await response.json() as {result:{tools:Array<{annotations?:unknown}>}};
+    for(const tool of body.result.tools)delete tool.annotations;
+    return Response.json(body);
+  }) as typeof fetch;
+  try{await run(admitted.run_id);}finally{globalThis.fetch=originalFetch;}
+  assert.equal((await service.result(admitted.run_id)).status,'failed');
+  assert.equal(toolCallCount,0);
+});
+
+test('S2 workflow_validate exposes exact schema-bound approval for owner review',async t=>{
+  const {service,env}=setup(t);
+  const created=await service.create(JSON.stringify({version:1,name:'Schema approval',steps:[{
+    id:'read',uses:'mcp.call',with:{
+      endpoint:'https://public.example.org/mcp',tool:'echo',scope:'read',
+      input_schema:PINNED_SCHEMA,arguments:{value:'hello'},
+    },
+  }]}));
+  const validation=await service.validate(created.workflow_id,1);
+  assert.equal(validation.valid,true);
+  if(!('required_approvals' in validation))throw Error('expected approval preview');
+  assert.deepEqual(validation.required_approvals,[{
+    endpoint:'https://public.example.org/mcp',tool:'echo',scope:'read',
+    schema_digest:PINNED_DIGEST,
+  }]);
+  env.S2_READONLY_ENABLED='true';
+  await assert.rejects(()=>service.publish(created.workflow_id,1,[{
+    endpoint:'https://public.example.org/mcp',tool:'echo',scope:'read',
+    schema_digest:'0'.repeat(64),
+  }]),/external_approval_required/);
+});
+
+test('S2 remote inputSchema drift prevents tools/call, even when target and tool still match',async t=>{
+  const {env,admit,run,service}=setup(t);
+  const grant:ReadonlyOperation={endpoint:'https://public.example.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
+  env.S2_READONLY_ENABLED='true';
+  const admitted=await admit([{id:'read',uses:'mcp.call',with:{
+    endpoint:grant.endpoint,tool:grant.tool,scope:grant.scope,
+    input_schema:PINNED_SCHEMA,arguments:{value:'no dispatch'},
+  }}],{},[grant]);
+  const originalFetch=globalThis.fetch;
+  let calls=0,toolCalls=0;
+  globalThis.fetch=(async(input:RequestInfo|URL,init?:RequestInit)=>{
+    const request=new Request(input,init);calls++;
+    if(request.method==='POST'){
+      const rpc=await request.clone().json() as {method:string};
+      if(rpc.method==='tools/call')toolCalls++;
+      const response=await readonlyWorker.fetch(request);
+      if(rpc.method!=='tools/list'||!response.ok)return response;
+      const discovered=await response.json() as {result:{tools:Array<{inputSchema:{properties:{value:{maxLength:number}}}}>}};
+      discovered.result.tools[0].inputSchema.properties.value.maxLength=123;
+      return Response.json(discovered);
+    }
+    return readonlyWorker.fetch(request);
+  }) as typeof fetch;
+  try{await run(admitted.run_id);}finally{globalThis.fetch=originalFetch;}
+  const result=await service.result(admitted.run_id);
+  assert.equal(result.status,'failed');
+  assert.equal(result.steps[0].status,'failed');
+  assert.ok(calls>0);
+  assert.equal(toolCalls,0);
+});
+
+test('S2 tampered published expected schema fails before network dispatch',async t=>{
+  const {env,admit,run,service,sqlite}=setup(t);
+  const grant:ReadonlyOperation={endpoint:'https://public.example.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
+  env.S2_READONLY_ENABLED='true';
+  const admitted=await admit([{id:'read',uses:'mcp.call',with:{
+    endpoint:grant.endpoint,tool:grant.tool,scope:grant.scope,
+    input_schema:PINNED_SCHEMA,arguments:{value:'no dispatch'},
+  }}],{},[grant]);
+  const {version_id}=sqlite.prepare('SELECT version_id FROM runs WHERE id=?').get(admitted.run_id) as {version_id:string};
+  const {plan}=sqlite.prepare('SELECT plan FROM workflow_versions WHERE id=?').get(version_id) as {plan:string};
+  const tampered=JSON.parse(plan);
+  tampered.steps[0].with.input_schema.properties.value.maxLength=1;
+  sqlite.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(tampered),version_id);
+  const original=globalThis.fetch;let network=0;
+  globalThis.fetch=(async()=>{network++;throw Error('unapproved');}) as typeof fetch;
+  try{await run(admitted.run_id);}finally{globalThis.fetch=original;}
+  assert.equal((await service.result(admitted.run_id)).status,'failed');
+  assert.equal(network,0);
 });

@@ -1,0 +1,81 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { publicMcpEndpoint, scopedPublicMcpFetch } from '../src/s2-public-fetch.ts';
+
+const TARGET = 'https://mcp.example.org/mcp?tenant=one';
+
+test('candidate S2 transport rejects non-public-shaped or unsafe target URLs', () => {
+  for (const target of [
+    'http://mcp.example.org/mcp', 'https://localhost/mcp',
+    'https://127.0.0.1/mcp', 'https://169.254.169.254/mcp',
+    'https://[::1]/mcp', 'https://mcp.local/mcp', 'https://mcp.internal/mcp',
+    'https://user:password@mcp.example.org/mcp', 'https://mcp.example.org:8443/mcp',
+    'https://mcp.example.org/mcp#fragment', 'https://mcp.example.org./mcp',
+  ]) assert.throws(() => publicMcpEndpoint(target), /mcp_target_invalid/);
+  assert.equal(publicMcpEndpoint(TARGET).href, TARGET);
+});
+
+test('candidate S2 transport rejects unapproved origin, path, and query before network', async () => {
+  let sent = 0;
+  const boundary = scopedPublicMcpFetch(TARGET, (async () => {
+    sent++;
+    return new Response('ok');
+  }) as typeof fetch);
+  for (const target of [
+    'https://other.example.org/mcp?tenant=one',
+    'https://mcp.example.org/other?tenant=one',
+    'https://mcp.example.org/mcp?tenant=two',
+    'https://mcp.example.org/mcp',
+  ]) await assert.rejects(boundary(target), /mcp_target_not_authorized/);
+  assert.equal(sent, 0);
+});
+
+test('candidate S2 transport neutralizes follow redirects and never contacts a second origin', async () => {
+  const seen: { url: string; redirect: string }[] = [];
+  const boundary = scopedPublicMcpFetch(TARGET, (async (req: Request) => {
+    seen.push({ url:req.url, redirect:req.redirect });
+    return new Response(null, { status:302, headers:{ location:'https://attacker.example.org/collect' } });
+  }) as typeof fetch);
+  await assert.rejects(
+    boundary(TARGET, { redirect:'follow', headers:{authorization:'Bearer local-test-only'} }),
+    /mcp_redirect_denied/,
+  );
+  assert.deepEqual(seen,[{url:TARGET,redirect:'manual'}]);
+});
+
+test('actual MCP SDK initialize/list/call/get/delete stay on the approved endpoint', async () => {
+  const seen: {url:string;method:string;redirect:string}[]=[];
+  const fakeFetch = async (request: Request): Promise<Response> => {
+    seen.push({url:request.url,method:request.method,redirect:request.redirect});
+    if (request.method==='GET') return new Response(null,{status:405});
+    if (request.method==='DELETE') return new Response(null,{status:202});
+    const message=await request.json() as {id?:number;method:string;params?:{arguments?:{value?:string}}};
+    if(message.method==='initialize') return Response.json({
+      jsonrpc:'2.0',id:message.id,
+      result:{protocolVersion:'2025-06-18',capabilities:{tools:{}},serverInfo:{name:'fixture',version:'1'}},
+    },{headers:{'mcp-session-id':'test-session'}});
+    if(message.method==='notifications/initialized') return new Response(null,{status:202});
+    if(message.method==='tools/list') return Response.json({jsonrpc:'2.0',id:message.id,result:{tools:[{name:'echo',inputSchema:{type:'object',properties:{value:{type:'string'}}}}]}});
+    if(message.method==='tools/call') return Response.json({jsonrpc:'2.0',id:message.id,result:{isError:false,content:[{type:'text',text:message.params?.arguments?.value??''}]}});
+    throw new Error('unexpected_message');
+  };
+  const client = new Client({ name:'candidate-s2-check',version:'0.1.0' });
+  const transport = new StreamableHTTPClientTransport(new URL(TARGET),{
+    fetch:scopedPublicMcpFetch(TARGET,fakeFetch as typeof fetch),
+    requestInit:{redirect:'follow'},
+  });
+  try {
+    await client.connect(transport);
+    assert.equal((await client.listTools()).tools[0].name,'echo');
+    const result=await client.callTool({name:'echo',arguments:{value:'hello'}});
+    assert.equal(result.content[0].type,'text');
+    await transport.terminateSession();
+  } finally {
+    await client.close();
+  }
+  assert.ok(seen.some(x=>x.method==='GET'));
+  assert.ok(seen.some(x=>x.method==='DELETE'));
+  assert.ok(seen.some(x=>x.method==='POST'));
+  assert.ok(seen.every(x=>x.url===TARGET && x.redirect==='manual'));
+});

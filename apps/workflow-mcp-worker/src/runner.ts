@@ -1,9 +1,10 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { evaluateArguments, evaluateCondition } from './plan.ts';
+import { evaluateArguments, evaluateCondition, toolSchemaDigest } from './plan.ts';
 import type { Plan, Step } from './plan.ts';
 import type { Env } from './store.ts';
 import { limitResult } from './store.ts';
+import { scopedPublicMcpFetch } from './s2-public-fetch.ts';
 
 type Outcome={status:'succeeded'|'failed'|'skipped';output?:any;error_code?:string};
 const now=()=>Date.now();
@@ -18,6 +19,45 @@ async function callFixture(env:Env,args:Record<string,unknown>):Promise<unknown>
     if(result.isError)throw Error('readonly_tool_failed');
     return limitResult(result);
   }finally{await client.close();}
+}
+
+async function callApprovedReadonly(env:Env,plan:Plan,step:Step,args:Record<string,unknown>):Promise<unknown>{
+  // No current Wrangler config sets this flag. Both Publish and invocation
+  // must opt in; disabling it later blocks previously published S2 plans.
+  if(env.S2_READONLY_ENABLED!=='true')throw Error('s2_disabled');
+  const endpoint=step.with.endpoint,tool=step.with.tool,schema_digest=step.with.schema_digest;
+  const grant=plan.s2_approvals?.some(g=>g.endpoint===endpoint&&g.tool===tool&&g.scope==='read'&&g.schema_digest===schema_digest);
+  if(!grant||step.with.scope!=='read'||typeof endpoint!=='string'||typeof tool!=='string'||
+     typeof schema_digest!=='string'||!/^[0-9a-f]{64}$/.test(schema_digest))
+    throw Error('external_approval_required');
+  // Recompute from the pinned contract so a tampered Plan cannot replace the
+  // expected schema while keeping an older authorized digest.
+  if(await toolSchemaDigest(step.with.input_schema,step.with.output_schema)!==schema_digest)
+    throw Error('approved_schema_changed');
+  const client=new Client({name:'workflow-s2-readonly-candidate',version:'0.1.0'});
+  // NEVER send a dynamic target through the S1 private READONLY_TARGET service.
+  const transport=new StreamableHTTPClientTransport(new URL(endpoint),{
+    fetch:scopedPublicMcpFetch(endpoint),
+  });
+  try{
+    await client.connect(transport);
+    const discovered=await client.listTools();
+    const candidate=discovered.tools.find(t=>t.name===tool);
+    // Tool annotations are untrusted claims, not a grant. This is a second
+    // restrictive gate on top of the owner's exact publish approval.
+    if(!candidate||candidate.annotations?.readOnlyHint!==true||
+       candidate.annotations?.destructiveHint===true)throw Error('readonly_tool_unconfirmed');
+    if(await toolSchemaDigest(candidate.inputSchema,candidate.outputSchema)!==schema_digest)
+      throw Error('tool_schema_drift');
+    const output=await client.callTool({name:tool,arguments:args});
+    if(output.isError)throw Error('remote_tool_failed');
+    return limitResult(output);
+  }finally{
+    // close() does not automatically send DELETE. Termination is best effort;
+    // an unknown reply must never be interpreted as an undone external effect.
+    await transport.terminateSession().catch(()=>{});
+    await client.close();
+  }
 }
 
 export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
@@ -58,7 +98,17 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
                 const a=evaluateArguments(s.with.arguments,ctx);
                 return {status:'succeeded',output:await callFixture(this.env,a as Record<string,unknown>)};
               }
-              return {status:'succeeded',output:limitResult(evaluateArguments(s.with.data,ctx))};
+              // Exhaustive runtime dispatch is required even for a pinned plan
+              // read from D1. Never reinterpret a future/unknown capability as
+              // a successful result.emit operation.
+              if(s.uses==='result.emit')
+                return {status:'succeeded',output:limitResult(evaluateArguments(s.with.data,ctx))};
+              if(s.uses==='mcp.call'){
+                const a=evaluateArguments(s.with.arguments,ctx);
+                if(!a||typeof a!=='object'||Array.isArray(a))throw Error('invalid_arguments');
+                return {status:'succeeded',output:await callApprovedReadonly(this.env,plan,s,a as Record<string,unknown>)};
+              }
+              throw Error('unsupported_capability');
             }catch{return {status:'failed',error_code:'step_execution_failed'};}
           })) as Outcome;
           await db.prepare("INSERT INTO run_steps(run_id,step_id,status,output,error_code,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(run_id,step_id) DO UPDATE SET status=excluded.status,output=excluded.output,error_code=excluded.error_code,updated_at=excluded.updated_at WHERE run_steps.status IN ('waiting','running')")

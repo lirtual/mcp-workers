@@ -1,14 +1,16 @@
 import YAML from 'yaml';
+import { publicMcpEndpoint } from './s2-public-fetch.ts';
 
 export class PlanError extends Error {
   code = 'invalid_definition';
   constructor(message: string) { super(message); this.name = 'PlanError'; }
 }
 export type Step = {
-  id: string; uses: 's1.readonly_mcp' | 'result.emit'; needs: string[];
+  id: string; uses: 's1.readonly_mcp' | 'result.emit' | 'mcp.call'; needs: string[];
   with: Record<string, unknown>; if?: unknown;
 };
-export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown> };
+export type ReadonlyOperation = { endpoint:string; tool:string; scope:'read'; schema_digest:string };
+export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown>; s2_approvals?: ReadonlyOperation[] };
 const SAFE_ID = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
 const OBJECT_PROTOTYPE_KEYS = new Set(['constructor','toString','toLocaleString','valueOf','hasOwnProperty','isPrototypeOf','propertyIsEnumerable']);
 const RESERVED = new Set(['eval','javascript','script','code','shell','endpoint','url','command','function']);
@@ -26,10 +28,10 @@ function refCheck(ref: string, step?: {id:string;needs:string[]}) {
   if(parts[0]==='steps' && step && step.needs.includes(parts[1]) && parts.length>=3 && ['status','output'].includes(parts[2])) return;
   throw new PlanError('invalid_step_reference');
 }
-function expression(v: unknown, step?: {id:string; needs:string[]}, depth=0): void {
+function expression(v: unknown, step?: {id:string; needs:string[]}, depth=0, opaqueKeys=false): void {
   if(depth>15) throw new PlanError('expression_too_deep');
   if(v===null || typeof v==='string'||typeof v==='number'||typeof v==='boolean') return;
-  if(Array.isArray(v)) { if(v.length>100) throw new PlanError('expression_too_large'); for(const x of v) expression(x,step,depth+1); return; }
+  if(Array.isArray(v)) { if(v.length>100) throw new PlanError('expression_too_large'); for(const x of v) expression(x,step,depth+1,opaqueKeys); return; }
   const o=object(v,'invalid_expression');
   const names=Object.keys(o);
   if(names.length===1 && names[0]==='ref'){
@@ -38,14 +40,15 @@ function expression(v: unknown, step?: {id:string; needs:string[]}, depth=0): vo
   }
   if(names.length===1 && ['eq','ne','gt','lt','and','or','not'].includes(names[0])) {
     const op=names[0], arg=o[op];
-    if(op==='not'){expression(arg,step,depth+1);return;}
+    if(op==='not'){expression(arg,step,depth+1,opaqueKeys);return;}
     if(!Array.isArray(arg)||arg.length<(op==='and'||op==='or'?1:2)||arg.length>(op==='and'||op==='or'?16:2))throw new PlanError('invalid_operator');
-    for(const x of arg)expression(x,step,depth+1);
+    for(const x of arg)expression(x,step,depth+1,opaqueKeys);
     return;
   }
   for(const [name,x] of Object.entries(o)){
-    if(RESERVED.has(name.toLowerCase()))throw new PlanError('unsafe_expression');
-    expression(x,step,depth+1);
+    if(name==='__proto__'||name==='prototype'||name==='constructor')throw new PlanError('invalid_argument_key');
+    if(!opaqueKeys&&RESERVED.has(name.toLowerCase()))throw new PlanError('unsafe_expression');
+    expression(x,step,depth+1,opaqueKeys);
   }
 }
 // YAML accepts .nan/.inf, but JSON persistence silently changes them to null.
@@ -65,6 +68,21 @@ function canonical(v: unknown): unknown {
 }
 export function canonicalJsonString(value: unknown): string {
   return JSON.stringify(canonical(value));
+}
+
+// Bind an owner's reviewed MCP tool contract to a Published Plan. Key order
+// is irrelevant; changes in either schema fail closed before tools/call.
+export async function toolSchemaDigest(inputSchema:unknown, outputSchema?:unknown):Promise<string>{
+  if(!inputSchema||typeof inputSchema!=='object'||Array.isArray(inputSchema)||
+     (inputSchema as Record<string,unknown>).type!=='object'||
+     (outputSchema!==undefined&&(!outputSchema||typeof outputSchema!=='object'||Array.isArray(outputSchema))))
+    throw new PlanError('invalid_tool_schema');
+  validateFiniteNumbers(inputSchema);
+  if(outputSchema!==undefined)validateFiniteNumbers(outputSchema);
+  const serial=canonicalJsonString({inputSchema,outputSchema:outputSchema??null});
+  if(new TextEncoder().encode(serial).byteLength>8192)throw new PlanError('tool_schema_too_large');
+  const hash=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(serial));
+  return [...new Uint8Array(hash)].map(v=>v.toString(16).padStart(2,'0')).join('');
 }
 export function evaluateExpression(v: unknown, ctx: {inputs:Record<string,unknown>;steps:Record<string,{status:string;output?:unknown}>}): any {
   if(Array.isArray(v))return v.map(x=>evaluateExpression(x,ctx));
@@ -107,7 +125,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     const s=object(s0,'invalid_step');keys(s,['id','uses','needs','if','with']);
     if(typeof s.id!=='string'||!SAFE_ID.test(s.id)||ids.has(s.id)||OBJECT_PROTOTYPE_KEYS.has(s.id))throw new PlanError('invalid_step_id');
     ids.add(s.id);
-    if(s.uses!=='s1.readonly_mcp'&&s.uses!=='result.emit')throw new PlanError('unsupported_capability');
+    if(s.uses!=='s1.readonly_mcp'&&s.uses!=='result.emit'&&s.uses!=='mcp.call')throw new PlanError('unsupported_capability');
     const needs=s.needs===undefined?[]:s.needs;
     if(!Array.isArray(needs)||needs.some(n=>typeof n!=='string'||!SAFE_ID.test(n))||new Set(needs).size!==needs.length)throw new PlanError('invalid_dependencies');
     const withData=object(s.with,'invalid_step_arguments');
@@ -116,12 +134,26 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       if(withData.tool!=='echo')throw new PlanError('unsupported_readonly_tool');
       if(withData.arguments===undefined)throw new PlanError('missing_arguments');
       object(withData.arguments,'invalid_step_arguments');
+    }else if(s.uses==='mcp.call'){
+      keys(withData,['endpoint','tool','scope','arguments','input_schema','output_schema']);
+      if(typeof withData.endpoint!=='string')throw new PlanError('invalid_endpoint');
+      try { if(publicMcpEndpoint(withData.endpoint).href!==withData.endpoint)throw Error('noncanonical'); }
+      catch { throw new PlanError('invalid_endpoint'); }
+      if(typeof withData.tool!=='string'||!/^[a-zA-Z0-9_-][a-zA-Z0-9_.-]{0,127}$/.test(withData.tool))throw new PlanError('invalid_tool');
+      if(withData.scope!=='read')throw new PlanError('unsupported_operation_scope');
+      object(withData.arguments,'invalid_step_arguments');
+      // Only explicit, bounded expected schema objects may be pinned; never a
+      // dynamic expression or network-fetched schema silently approved later.
+      await toolSchemaDigest(withData.input_schema,withData.output_schema);
     }else keys(withData,['data']);
-    steps.push({id:s.id,uses:s.uses,needs:needs as string[],with:withData,...(s.if===undefined?{}:{if:s.if})});
+    const compiledWith=s.uses==='mcp.call'?
+      {...withData,schema_digest:await toolSchemaDigest(withData.input_schema,withData.output_schema)}:withData;
+    steps.push({id:s.id,uses:s.uses,needs:needs as string[],with:compiledWith,...(s.if===undefined?{}:{if:s.if})});
   }
   for(const s of steps){
     for(const dep of s.needs)if(!ids.has(dep)||dep===s.id)throw new PlanError('invalid_dependencies');
-    expression(s.with,s);
+    if(s.uses==='mcp.call') expression(s.with.arguments,s,0,true);
+    else expression(s.with,s);
     if(s.if!==undefined){
       expression(s.if,s);
       const op=s.if && typeof s.if==='object' && !Array.isArray(s.if)?Object.keys(s.if):[];

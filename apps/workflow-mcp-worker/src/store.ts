@@ -10,7 +10,7 @@ function draftName(definition:string):string {
   }catch{}
   return 'Untitled Draft';
 }
-import type { Plan } from './plan.ts';
+import type { Plan, ReadonlyOperation } from './plan.ts';
 
 export type Env = {
   DB: D1Database;
@@ -20,6 +20,8 @@ export type Env = {
     get(id:string):Promise<{status():Promise<{status:string}>}>;
   };
   READONLY_TARGET: Fetcher;
+  // Absent in every existing Wrangler environment. Never enabled by default.
+  S2_READONLY_ENABLED?: string;
 };
 export class StateError extends Error {
   code:string;
@@ -84,16 +86,30 @@ export class WorkflowService {
     if(row.draft_revision!==revision)throw new StateError('revision_conflict');
     try {
       const {digest,plan}=await compilePlan(row.draft);
-      return {valid:true,digest,steps:plan.steps.length,issues:[]};
+      const required_approvals=[...new Map(plan.steps.filter(s=>s.uses==='mcp.call').map(s=>{
+        const grant:ReadonlyOperation={endpoint:s.with.endpoint as string,tool:s.with.tool as string,scope:'read',schema_digest:s.with.schema_digest as string};
+        return [JSON.stringify(grant),grant] as const;
+      })).values()];
+      return {valid:true,digest,steps:plan.steps.length,issues:[],...(required_approvals.length?{required_approvals}:{})};
     }catch(error){
       if(!(error instanceof PlanError))throw error;
       return {valid:false,issues:[{code:error.message.split(':')[0]}]};
     }
   }
-  async publish(workflow_id:string,expected_revision:number){
+  async publish(workflow_id:string,expected_revision:number,approved_operations:ReadonlyOperation[]=[]){
     assertId(workflow_id);const row=await this.row(workflow_id);
     if(row.draft_revision!==expected_revision)throw new StateError('revision_conflict');
     const {plan,digest:plan_digest}=await compilePlan(row.draft);
+    // The owner must explicitly approve the exact immutable URL + tool + scope.
+    // Publishing an arbitrary Draft is not itself an external-operation grant.
+    const required=[...new Map(plan.steps.filter(s=>s.uses==='mcp.call').map(s=>{
+      const grant:ReadonlyOperation={endpoint:s.with.endpoint as string,tool:s.with.tool as string,scope:'read',schema_digest:s.with.schema_digest as string};
+      return [JSON.stringify(grant),grant] as const;
+    })).values()].sort((a,b)=>JSON.stringify(a)<JSON.stringify(b)?-1:JSON.stringify(a)>JSON.stringify(b)?1:0);
+    const provided=approved_operations.slice().sort((a,b)=>JSON.stringify(a)<JSON.stringify(b)?-1:JSON.stringify(a)>JSON.stringify(b)?1:0);
+    if(JSON.stringify(required)!==JSON.stringify(provided))throw new StateError('external_approval_required');
+    if(required.length && this.env.S2_READONLY_ENABLED!=='true')throw new StateError('s2_disabled');
+    const publishedPlan:Plan=required.length?{...plan,s2_approvals:required}:plan;
     // Repeated Publish of an unchanged Draft resolves to its existing Version.
     if(row.active_version_id){
       const current=await this.db.prepare('SELECT digest FROM workflow_versions WHERE id=? AND workflow_id=?').bind(row.active_version_id,workflow_id).first<{digest:string}>();
@@ -102,7 +118,7 @@ export class WorkflowService {
     const version=crypto.randomUUID(),t=now();
     const batch=await this.db.batch([
       this.db.prepare('UPDATE workflows SET active_version_id=?,state=CASE WHEN state=\'paused\' THEN \'paused\' ELSE \'active\' END,updated_at=? WHERE id=? AND draft_revision=? AND active_version_id IS ?').bind(version,t,workflow_id,expected_revision,row.active_version_id),
-      this.db.prepare('INSERT INTO workflow_versions(id,workflow_id,digest,plan,created_at) SELECT ?,id,?,?,? FROM workflows WHERE id=? AND active_version_id=?').bind(version,plan_digest,json(plan),t,workflow_id,version),
+      this.db.prepare('INSERT INTO workflow_versions(id,workflow_id,digest,plan,created_at) SELECT ?,id,?,?,? FROM workflows WHERE id=? AND active_version_id=?').bind(version,plan_digest,json(publishedPlan),t,workflow_id,version),
     ]);
     if(!batch[0].meta.changes||!batch[1].meta.changes){
       // A concurrent identical Publish can win the CAS; never report a second version.
