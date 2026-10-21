@@ -15,7 +15,7 @@ test("unknown browser effects require receipt lookup, never implicit replay",()=
   }
 });
 
-test("strict 5-operation browser contract forwards only bounded typed arguments",()=>{
+test("strict typed browser contract forwards only bounded arguments",()=>{
   const start=parseBrowserCall("browser_start",{device_id,operation_id});
   assert.deepEqual(start,{device_id,tool:"browser_start",kind:"operation",operation_id,arguments:{}});
   const nav=parseBrowserCall("browser_navigate",{device_id,operation_id,session_id,url:"https://example.com/"});
@@ -25,6 +25,7 @@ test("strict 5-operation browser contract forwards only bounded typed arguments"
   assert.deepEqual(read?.arguments,{session_id});
   assert.deepEqual(BROWSER_TOOLS.map(t=>t.name),[
     "browser_start","browser_status","browser_navigate","browser_snapshot","browser_close",
+    "browser_tabs","browser_click","browser_fill","browser_press_key","browser_select_option",
   ]);
 });
 test("rejects arbitrary JS, CLI/path/profile, missing IDs, unexpected keys, and malformed URLs",()=>{
@@ -154,4 +155,45 @@ test("first-hop URL rejection precedes any DO mutation admission; network-level 
   }
   // Public-host redirects, hostile DNS resolution and HTML subresources
   // are outside these argument-only checks; never advertise SSRF safety.
+});
+
+test("browser_tabs list is read-only; selecting/creating/closing tabs always requires a durable operation ID",()=>{
+  const list=parseBrowserCall("browser_tabs",{device_id,session_id,action:"list"});
+  assert.equal(list?.kind,"read");
+  assert.deepEqual(list?.arguments,{session_id,action:"list"});
+  assert.equal(parseBrowserDoArguments("browser_tabs",{session_id,action:"list"}),true);
+  for(const action of ["select","close"]){
+    const valid=parseBrowserCall("browser_tabs",{device_id,session_id,operation_id,action,tab_id:"tab-2"});
+    assert.equal(valid?.kind,"operation",action);
+    assert.equal(parseBrowserDoArguments("browser_tabs",{session_id,operation_id,action,tab_id:"tab-2"}),true);
+    assert.equal(parseBrowserCall("browser_tabs",{device_id,session_id,action,tab_id:"tab-2"}),null);
+    assert.equal(parseBrowserCall("browser_tabs",{device_id,session_id,operation_id,action,tab_id:"tab-x"}),null);
+  }
+  assert.equal(parseBrowserCall("browser_tabs",{device_id,session_id,operation_id,action:"new"})?.kind,"operation");
+  assert.equal(parseBrowserCall("browser_tabs",{device_id,session_id,action:"new"}),null);
+  assert.equal(parseBrowserCall("browser_tabs",{device_id,session_id,operation_id,action:"list"}),null);
+  assert.equal(parseBrowserCall("browser_tabs",{device_id,session_id,operation_id,action:"new",tab_id:"tab-3"}),null);
+});
+
+test("semantic interaction calls validate exactly the user-observable target and bounded action data",()=>{
+  const target={device_id,session_id,operation_id,role:"button",name:"Next",snapshot_version:2};
+  assert.equal(parseBrowserCall("browser_click",target)?.kind,"operation");
+  assert.equal(parseBrowserCall("browser_fill",{...target,role:"textbox",name:"Search",text:"private example"})?.kind,"operation");
+  assert.equal(parseBrowserCall("browser_select_option",{...target,role:"combobox",name:"Size",value:"M"})?.kind,"operation");
+  assert.equal(parseBrowserCall("browser_press_key",{device_id,session_id,operation_id,key:"Enter",snapshot_version:2})?.kind,"operation");
+  for(const [tool,args] of [
+    ["browser_click",{...target,role:"script"}],
+    ["browser_click",{...target,snapshot_version:-1}],
+    ["browser_click",{...target,approved:true}],
+    ["browser_fill",{...target,role:"textbox",text:"x".repeat(5001)}],
+    ["browser_fill",{...target,role:"textbox",text:"secret",approval_token:"forged"}],
+    ["browser_select_option",{...target,role:"combobox",value:"x".repeat(513)}],
+    ["browser_press_key",{device_id,session_id,operation_id,key:"Alt+F4",snapshot_version:"stale"}],
+  ] as const) assert.equal(parseBrowserCall(tool,args),null,tool);
+});
+
+test("bounded page snapshot allows explicit offset to inspect long pages",()=>{
+  assert.deepEqual(parseBrowserCall("browser_snapshot",{device_id,session_id,offset:8000})?.arguments,{session_id,offset:8000});
+  for(const offset of [-1,200001,1.5,"8000"])
+    assert.equal(parseBrowserCall("browser_snapshot",{device_id,session_id,offset}),null);
 });

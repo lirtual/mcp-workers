@@ -312,6 +312,7 @@ export class V2OwnerCoordinator {
       list_sessions: parseListSessions, read_process_output: parseLocalProcessOutput,
       browser_status: args => parseBrowserDoArguments("browser_status", args),
       browser_snapshot: args => parseBrowserDoArguments("browser_snapshot", args),
+      browser_tabs: args => parseBrowserDoArguments("browser_tabs", args) && (args as {action:string}).action === "list",
     };
     const operationId = isOperation ? arg.operation_id : undefined;
     const mutationParsers: Record<string, (input: unknown) => unknown> = {
@@ -322,6 +323,11 @@ export class V2OwnerCoordinator {
       browser_start: args => parseBrowserDoArguments("browser_start", args),
       browser_navigate: args => parseBrowserDoArguments("browser_navigate", args),
       browser_close: args => parseBrowserDoArguments("browser_close", args),
+      browser_tabs: args => parseBrowserDoArguments("browser_tabs", args) && (args as {action:string}).action !== "list",
+      browser_click: args => parseBrowserDoArguments("browser_click", args),
+      browser_fill: args => parseBrowserDoArguments("browser_fill", args),
+      browser_press_key: args => parseBrowserDoArguments("browser_press_key", args),
+      browser_select_option: args => parseBrowserDoArguments("browser_select_option", args),
     };
     const validOperation = typeof operationId === "string" &&
       Boolean(parseOperationId({ operation_id: operationId })) &&
