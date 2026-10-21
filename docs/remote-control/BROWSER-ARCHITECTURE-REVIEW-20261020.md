@@ -1,4 +1,7 @@
-# Browser architecture: current phase-one decision (2026-10-20)
+# Browser architecture: historic phase-one design and review (2026-10-20 onward)
+
+> **Current architecture convergence — 2026-10-22:** The accepted [Issue #152](https://github.com/lirtual/mcp-workers/issues/152) **supersedes** this document's earlier Windows H1–H24 explicit handoff, Human Control privacy state and 30-minute inactivity requirements. The first-stage product is a **single reusable headed Chrome/Edge automation browser on a personally paired Windows device**, with a separate Agent-owned Profile, **no idle/absolute session deadline**, and **bounded on-demand MCP commands**. The person may use the visible browser without declaring a control-owner transition; this knowingly **does not guarantee human/AI strict exclusion or human-only page privacy**. Existing operation lock + SQLite receipts, current selected tab identity/fresh observations, explicit close/process death handling, no blind restart/unknown-effect replay, and conservative action-specific approval gate remain. About **13 proposed core logical tools** add everyday page interaction to the five existing Draft tools; screenshots/files/dialogs/hover are demand-led extensions. No new service/DB/browser engine/global input hook. The historical decision tree below remains **non-normative where inconsistent**; see the current [normative spec](./BROWSER-AUTOMATION-SPEC.md). No merge, release, production tool enablement or claim of SSRF isolation.
+
 
 ## Windows browser handoff and default selection — new Grill With Docs round 1 (2026-10-21)
 
