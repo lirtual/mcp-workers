@@ -1,9 +1,134 @@
-# Workflow MCP Worker — S1 only
+## S2 Portal selection (Draft, not production-enabled)
 
-Implementation branch for [Issue #141](https://github.com/lirtual/mcp-workers/issues/141).
-This is an **isolated S1 implementation** of Draft → Validate → Publish → Run → Result,
-not a deployment or acceptance of S2/S3. It must not be deployed to production
-without provisioning and reviewing the actual D1 database, binding and Portal secret.
+- Isolated acceptance and tests continue using `https://test-mcp.lirtual.dpdns.org/mcp`.
+- The proposed production target is `https://mcp.lirtual.dpdns.org/mcp`.
+  A future production S2 release must **explicitly** configure
+  `S2_PORTAL_ENDPOINT` to the production URL; it is not inferred from a
+  Workflow Draft or a user-supplied Run input.
+- Both endpoints are fixed in source. When the environment selects either one,
+  the runtime rejects a Plan targeting the other endpoint before network I/O.
+  The Portal Service Token is attached only to the selected exact URL; redirects
+  and credential-header overrides remain denied. The existing generic
+  owner-approved public-target path remains subject to its separate gates;
+  this change does not claim generic SSRF isolation.
+- Test-only Cloudflare Workers explicitly set `S2_PORTAL_ENDPOINT` to the
+  test URL. Production S1 does not add this Variable and
+  `S2_READONLY_ENABLED` remains absent/OFF.
+- GitHub Actions' existing read-only Portal probe supports selecting `test`
+  or `production` without changing Worker deployments, for credential and
+  IMA tool discovery checks. It never stores or prints Service Token values.
+- Production Portal Service Auth and IMA mapping must be positively accepted
+  before a production S2 activation is separately authorized.
+
+---
+
+## S2 real test-Portal Cloudflare acceptance (2026-10-21)
+
+The first exact owner candidate is `https://test-mcp.lirtual.dpdns.org/mcp`,
+using the existing Access Service Auth policy and Environment secrets.
+[Authenticated Portal acceptance #39589031472](https://github.com/lirtual/mcp-workers/actions/runs/39589031472)
+passed initialize, tools/list and `ima_list_notebooks` without writing IMA data.
+
+A separately named **isolated real Cloudflare Worker, Workflows and D1** then
+completed `Draft → Validate → exact approve → Publish → Run → Result` through
+that real Portal. Run `f9a359c0-a310-4ab6-95fc-b68f62e51b3c` returned
+`succeeded` for both `read` and `emit` steps with an IMA result, and Run
+idempotency passed. See [live Action #39591397557](https://github.com/lirtual/mcp-workers/actions/runs/39591397557).
+The original Action itself ended **cancelled**, because the temporary Worker
+cleanup command failed and lingering Node handles prevented the process from
+exiting. This remains historical feature-execution evidence rather than a
+successful CI verdict.
+
+A targeted [cleanup Action #39593329741](https://github.com/lirtual/mcp-workers/actions/runs/39593329741)
+then successfully removed and verified absence of the **exact** temporary
+Worker `workflow-s2-ima-aab86c737a`, matching Workflow and D1. The
+one-time cleanup job was removed afterward. The reusable isolated acceptance
+script now uses the verified Cloudflare API delete and verifies absence
+before exiting.
+
+**Full final Cloudflare retest PASS (2026-10-21):**
+[GitHub Actions #39596814131](https://github.com/lirtual/mcp-workers/actions/runs/39596814131)
+on commit `1545a07` returned **Success**. The isolated owner Worker
+`workflow-s2-ima-a78a6d2b8e` created its own D1/Workflow, successfully
+completed the full S2 Draft → Validate → explicit approval → Publish → Run →
+Result flow against `ima_list_notebooks` via test Portal. Run
+`1036d51f-7e3f-46a9-aea0-49ff29c89320` had both `read` and `emit`
+steps `succeeded`, with successful idempotency replay. Cleanup returned
+`DISPOSABLE_CLEANUP_OK` for that exact isolated resource set and the
+overall Action completed successfully. This is the first successful
+**whole-job verdict**, superseding the previous cancelled job and proving
+the revised cleanup path on the real edge.
+
+**No production merge, deployment or S2 flag enablement.** The original
+personal trusted-target residual DNS/IP risks remain accepted only in the
+explicit limited scope; these results do not establish general SSRF isolation.
+
+---
+
+## S2 Portal machine authentication (Draft only)
+
+The first owner-approved Portal candidate is
+`https://test-mcp.lirtual.dpdns.org/mcp` (IMA through the existing Portal).
+S2 is **disabled** in the checked-in Wrangler configuration and this Draft is
+not authorized for production. S1 does not require the following settings.
+
+When this S2 target is explicitly approved for enablement, configure the
+optional Worker **secrets** `S2_PORTAL_CLIENT_ID` and
+`S2_PORTAL_CLIENT_SECRET` with an Access service-token pair. The existing
+`MCP_ACCESS_TOKEN` is an **incoming** credential and must not be reused as
+a Portal outbound credential. Never put these values in a Workflow Draft,
+logs, tracked files, or test fixtures.
+
+The service token must have a Service Auth policy at **both** the Portal
+Access application and the IMA linked-server Access application. For IMA's
+Portal mapping, `Require user auth` must be **off** so the Portal uses its
+stored upstream admin credential. Do not change other servers' mappings.
+Only the exact Portal endpoint receives the service-token headers; all other
+S2 targets receive no Portal identity. URL pinning and manual redirects are
+not a proof of DNS/IP SSRF isolation. Exact endpoint + tool + schema-digest
+Publish approval, risk acknowledgement, `readOnlyHint`, and the
+`S2_READONLY_ENABLED` runtime gate remain required.
+
+Authenticated test Portal discovery and the isolated S2 Workflow calling
+`ima_list_notebooks` now have the evidence summarized above. Production
+`S2_READONLY_ENABLED` remains OFF; do not enable it as a side-effect of tests.
+
+# Workflow MCP Worker — S1 baseline, S2 candidate gated
+
+Implementation base: [Issue #141](https://github.com/lirtual/mcp-workers/issues/141) and [S1 Draft PR #142](https://github.com/lirtual/mcp-workers/pull/142).
+This branch also stages a **disabled-by-default S2 candidate** in [Draft PR #146](https://github.com/lirtual/mcp-workers/pull/146).
+**Current release state (verified 2026-10-21):** S1 is already deployed
+at `https://workflow.lirtual.dpdns.org/mcp` and passed the
+[authenticated S1 production smoke #39579055871](https://github.com/lirtual/mcp-workers/actions/runs/39579055871).
+The production `/health` returns HTTP 200 and `scope: s1`; an anonymous
+MCP POST returns 401. S2 remains Draft, unmerged, un-deployed and
+`S2_READONLY_ENABLED` absent/OFF in production. The **S2 pinned Portal URL
+is the testing domain** `test-mcp.lirtual.dpdns.org`, not a production
+Portal release decision. Enabling S2 requires a separate explicit release
+authorization and target decision, not a manual test dispatch.
+
+The S1 release preparation and earlier Draft/isolated evidence below are
+**historical** and may refer to resources that had not yet been deployed
+at the time of writing. The verified live status above supersedes them.
+
+## S2 personal trusted-target decision B — 2026-10-21
+
+- **Owner-approved scope change (B): personal trusted MCP targets only**, not unrestricted or verified-isolated dynamic targets. Each S2 Publish must first call `workflow_validate`, review the exact `required_approvals` (`endpoint`, `tool`, `scope: read`, `schema_digest`), then supply those exact values as `approved_operations` **and separately set** `accept_target_risks: true`. This acknowledges that the trusted target may access the wider network or perform side effects despite its claimed read-only metadata. No persistent target registry, new authentication layer, or approval service is introduced.
+- The acknowledgement is retained in the immutable Published Plan as `s2_target_risks_accepted: true` alongside the exact grants. A legacy S2 Plan without that acknowledgement fails closed **before network**. This is an authenticated API-level assertion, not proof that a person independently interacted with a confirmation UI. The standalone `S2_READONLY_ENABLED` flag remains absent from Wrangler and **OFF**; the user choosing B does not authorize enabling it or deploying to production.
+- `scopedPublicMcpFetch` enforces the approved exact URL and `redirect: 'manual'`. The `global_fetch_strictly_public` compatibility flag is **not enabled in the checked-in configuration**; it must not be claimed as an active protection. Neither URL checks nor redirect rejection prove DNS/IP/private-address/metadata or rebinding isolation.
+- In a throwaway Cloudflare `wrangler dev --remote` preview, ordinary HTTPS returned 200; cross-origin redirect was denied; literal private/loopback/metadata IP URLs were rejected locally; private-IP-shaped DNS hostnames were **accepted** by the syntax gate and received HTTP 530. A 530 response cannot establish general private-network isolation. The preview was stopped, local files removed, and the named persistent Worker was absent.
+- MCP `readOnlyHint` is **untrusted metadata**. Endpoint/tool/schema approval in `workflow_publish` is a matching application-level assertion, **not proof of a separate human confirmation event** or the target's side-effect safety. A lost acknowledgment after `tools/call` is recorded as `indeterminate` with `external_outcome_unknown`; no blind retries.
+- **Original P0-3 / AC-08 SSRF-isolation criterion remains UNPROVEN; it is not marked PASS.** Decision B explicitly **narrows the acceptable use case** to targets the owner chooses to trust and knowingly accepts the residual private-network/metadata/DNS and third-party-tool side-effect risks. Retain the existing URL/redirect defense and SDK/schema checks as defense in depth; they are not an isolation guarantee. Do not add speculative DNS proxies, VPCs, gateways, or suffix blacklists just to relabel P0-3. **Production enablement and merge still need separate approval and a trusted-target acceptance check.**
+- **Latest S2 checks:** at commit `db9578d`, **51/51 Node 24 tests PASS**, TypeScript and Wrangler dry-run PASS, and [GitHub CI #39558482188](https://github.com/lirtual/mcp-workers/actions/runs/39558482188) Application checks / GitGuardian PASS (release SKIPPED). The local owner-facing MCP SDK acceptance test covers Portal bearer and Origin denials, exact grant previews, rejected unapproved operations, immutable Publish, Run, Result, and token/service-binding separation. A prior disposable real Cloudflare edge run is independently documented below; neither test establishes arbitrary-network isolation or approves a third-party target.
+- **Independent review completed:** two separate read-only Codex AI contexts reviewed the pinned S2 diff at `1eb99d9`: Security / Standards found no verified P0–P2 blocker; Functional / Spec reproduced one P2 where hanging optional remote MCP session DELETE could hide an already acknowledged `tools/call` success. A red/green regression and the minimal fix are committed at `db9578d`; earlier unresolved Run input arguments also fail before network. These are independently produced AI reports, **not GitHub-submitted Reviews or human approvals**. As verified on 2026-10-21, `main` has neither branch protection nor a repository ruleset requiring GitHub Review. No paid review product is a release prerequisite; future reviews should use the existing independent Codex workflow and actual CI results.
+- **Actual remaining release gate is integration, not more review tooling:** S2 stacks on unmerged S1 [PR #142](https://github.com/lirtual/mcp-workers/pull/142). S1's [release-readiness record](S1-RELEASE-READINESS.md) confirms the D1 and GitHub Environment are prepared, while Workflow / Fixture deployment, live domain route and Actions release enablement remain outstanding. The existing `scripts/manual-worker-release.mjs` now exports a small **offline, fail-closed `verifyWorkflowReleaseConfig`** check for the future release path; it rejects placeholder D1 IDs, missing explicitly chosen Custom Domain, mismatched Workflows/Fixture bindings or secret declarations, and premature S2 enablement. The historical `readiness` CLI mode no longer exists in the production release script. Run its credential-free unit checks instead: `node --test scripts/manual-worker-release.test.mjs`. The actual release uses the existing guarded `preflight` / `readback` modes from `main`, not this Draft branch. The current configuration now has a **real, newly created empty production D1 UUID**, so offline static readiness can pass, but this is **not production deployment readiness**: live Workflow / Fixture and Custom Domain availability remain unverified or unprovisioned; D1 migrations are applied and directly verified; the inherited repository-level Portal credential has only been verified by Secret **name**, not plaintext or runtime acceptance. Workflow remains excluded from manual production dispatch. Even a passing offline result does not verify live D1 migrations, tokens, domain ownership or target safety. Before a first release, choose the intended production scope and **one concrete trusted MCP target** for owner approval; reuse the existing Actions release path and positively verify the initial D1 state. Merge, deploy, and enabling S2 each require separate explicit authorization. Do not add another deployment platform or start S3.
+
+**Controlled real Cloudflare S2 trusted-target end-to-end proof (2026-10-21, implementation `1931288`):** An independently named **disposable** S2 Owner Worker (test-only S2 flag, randomly generated short-lived Portal Token), public read-only MCP fixture, Cloudflare Workflow and D1 applied the two existing migrations and passed **20/20 actual MCP SDK edge checks**. The test invoked Portal bearer rejection, SDK tool discovery, validation showing the exact endpoint/tool/scope/schema grant, rejection of missing `accept_target_risks` and mismatched grants, immutable Publish, real Cloudflare Workflows Run and remote HTTPS `echo` MCP tool execution, and returned the expected Result. Separately querying remote D1 confirmed Run `succeeded`, `read` and `emit` Steps both `succeeded`, and Wrangler listed the native Workflow instance as **Completed** (Run ID `ac1589fd-63b3-4e95-a6d1-308ae1e89f91`). After verification, **both Workers, Workflow, and D1 were deleted**: remote Workflow and D1 lists no longer contained the names, and both Worker version lookups returned Cloudflare **10007 / does not exist**. Local Wrangler configurations and disposable token were removed; no production resource or stored secret was used.
+
+The reusable **manual** acceptance script is `tests/s2-edge-smoke.mjs`. Set `S2_EDGE_OWNER_URL` to a disposable isolated Owner origin, `S2_EDGE_TARGET_URL` to the exact disposable trusted MCP HTTPS endpoint and `S2_EDGE_ACCESS_TOKEN` to its disposable Portal test credential; run the script using Node 24. **Never point this acceptance at production.** This is genuine Cloudflare-edge behavior for an owner-controlled harmless target, **not** independent human confirmation, proof of SSRF isolation for arbitrary untrusted hosts, or acceptance of a real third-party MCP target. The original P0-3 / AC-08 guarantee remains unproven. No production enablement, merge or S3 is implied.
+
+Platform references: [Cloudflare `global_fetch_strictly_public`](https://developers.cloudflare.com/workers/configuration/compatibility-flags/#global-fetch-strictly-public), [Workers fetch-to-IP known issues](https://developers.cloudflare.com/workers/platform/known-issues/#fetch-to-ip-addresses), [MCP tool annotations limits](https://blog.modelcontextprotocol.io/posts/2026-03-16-tool-annotations/).
+
 
 ## Boundaries
 
@@ -11,9 +136,10 @@ without provisioning and reviewing the actual D1 database, binding and Portal se
 - YAML or JSON Drafts; optimistic revision CAS; atomic explicit Publish of immutable Plans.
 - Finite DAG (32 nodes, at most 8 ready independent Steps), restricted references and conditions.
 - Manual asynchronous Run ID; D1 and Cloudflare Workflows state and result.
-- **Only** `s1.readonly_mcp` / `echo` through a fixed private Service Binding
-  and `result.emit`. No dynamic Internet URL, external write, Shell, code evaluation,
-  webhook, Cron, OAuth, stored target credential or GitHub heavy execution.
+- **Default-enabled S1 only:** `s1.readonly_mcp` / `echo` through a fixed private
+  Service Binding, plus `result.emit`. The compiled `mcp.call` S2 candidate is
+  runtime-gated and unapproved for use. No arbitrary external writes, Shell,
+  code evaluation, webhook, Cron, OAuth, stored target credentials, or GitHub heavy execution.
 - D1 Run admission idempotency, fixed instance IDs and bounded lookup after ambiguous create.
   S1 does not add an overflow queue, a second DAG engine or an external lock service.
 - Runtime execution must not be labeled production-proven based on unit tests or local Wrangler alone.
@@ -241,9 +367,9 @@ no runtime code, queue, scheduler or second execution system.
 Final initial-release versus active-upgrade gate decisions and 27-story evidence
 are consolidated in [S1-RELEASE-READINESS.md](S1-RELEASE-READINESS.md).
 
-Still required before closing S1: final standards/spec code review, latest-commit
-CI verification, remaining network interruption cases where warranted, and
-explicit final merge/release authorization. S2/S3 are not implemented.
+Still required before closing S1: final standards/spec code review, applicable
+network interruption acceptance and explicit merge/release authorization.
+S2 contains only the gated candidate above; S3 is not implemented.
 
 Q1–Q50 design remains in [Draft PR #135](https://github.com/lirtual/mcp-workers/pull/135);
 new S2/S3 facilities are not to be provisioned here.

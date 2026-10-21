@@ -33,7 +33,7 @@ Latest implementation evidence at `e5fcbab` (2026-10-21): **27/27** S1 unit/cont
 
 **Platform facts:** Cloudflare Workflows finished instance state has bounded retention; Free is limited to 3 days, Workers Paid has an up-to-30-day maximum but, for Workflows newly created since 2026-09-10, the default on Paid is 7 days unless overridden. These are **instance-observability windows**, not a safe cutoff for D1 Run identities. See [Workers API](https://developers.cloudflare.com/workflows/build/workers-api/) and [retention changelog](https://developers.cloudflare.com/changelog/post/2026-09-10-paid-retention-default/). Workers deployments version code/bindings but **do not version D1 storage**; see [Workers versions and deployments](https://developers.cloudflare.com/workers/versions-and-deployments/).
 
-## Read-only release preflight — 2026-10-21
+## Historical read-only release preflight — 2026-10-21 (superseded below)
 
 Checked only via authenticated GitHub metadata and `wrangler` read/list commands on the existing authorized WSL device. **No Cloudflare resources, GitHub Secrets, workflow runs or deployment settings were created or changed.**
 
@@ -49,6 +49,10 @@ Checked only via authenticated GitHub metadata and `wrangler` read/list commands
 **Decision:** **STOP at release-selection gate.** S1 remains a read-only fixed-fixture implementation; production enablement needs a deliberate approved rollout target, real D1/Workflow/service/Portal bindings, an endpoint strategy and adaptation of the **existing** release/verification path if production is actually desired. Do not blindly add S1 to its allowlist: D1 migrations, Workflows and fixture/route acceptance differ from the six existing workers. Do not provision a permanent private fixture, issue another token, invent a queue/scheduler or create a second deployment system merely because those are technically possible.
 
 For a genuinely empty first installation, positively validate the newly chosen D1 before admitting Runs. For any discovered prior active Runs, **halt incompatible upgrade**: the latest 48 KiB limit may change execution semantics of an older pinned Plan/Run. This is a **conditional upgrade risk**, not proof of an already deployed old S1 engine.
+
+## Approved domain planning update — 2026-10-21
+
+The owner selected `workflow.lirtual.dpdns.org` for S1. The Custom Domain source, dedicated production D1 UUID (`c76850db-b5e3-4128-9150-849a1c9e8d74`), `keep_vars: false`, and Invocation Logs are now in S1 Draft PR #142 (`256cc7f`) and synchronized into S2 Draft PR #146. GitHub Environment `workflow-mcp-worker` exists and inherits existing repository-level Secret *names*; no new token was issued or exposed. Cloudflare domain routing, D1 migrations, Workflow and read-only Fixture have not been deployed. The existing Actions release selector still excludes Workflow; no production deployment is authorized.
 
 ## Isolated real Cloudflare edge verification — 2026-10-21
 

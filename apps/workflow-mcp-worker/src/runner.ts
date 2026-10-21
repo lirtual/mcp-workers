@@ -1,12 +1,18 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { evaluateArguments, evaluateCondition } from './plan.ts';
+import { evaluateArguments, evaluateCondition, toolSchemaDigest } from './plan.ts';
 import type { Plan, Step } from './plan.ts';
 import type { Env } from './store.ts';
 import { limitResult } from './store.ts';
+import { scopedPublicMcpFetch, TRUSTED_PORTAL_ENDPOINT, PRODUCTION_PORTAL_ENDPOINT, type PortalServiceToken } from './s2-public-fetch.ts';
 
-type Outcome={status:'succeeded'|'failed'|'skipped';output?:any;error_code?:string};
+type Outcome={status:'succeeded'|'failed'|'skipped'|'indeterminate';output?:any;error_code?:string};
 const now=()=>Date.now();
+// A missing Run-input reference must not silently disappear during JSON
+// serialization, changing the meaning of an approved external MCP call.
+const hasUnresolvedArgument=(value:unknown):boolean=>
+  value===undefined||(Array.isArray(value)?value.some(hasUnresolvedArgument):
+    value!==null&&typeof value==='object'&&Object.values(value).some(hasUnresolvedArgument));
 async function callFixture(env:Env,args:Record<string,unknown>):Promise<unknown>{
   const client=new Client({name:'workflow-s1-worker',version:'0.1.0'});
   const transport=new StreamableHTTPClientTransport(new URL('https://s1-fixture.invalid/mcp'),{
@@ -18,6 +24,72 @@ async function callFixture(env:Env,args:Record<string,unknown>):Promise<unknown>
     if(result.isError)throw Error('readonly_tool_failed');
     return limitResult(result);
   }finally{await client.close();}
+}
+
+async function callApprovedReadonly(env:Env,plan:Plan,step:Step,args:Record<string,unknown>):Promise<unknown>{
+  // No current Wrangler config sets this flag. Both Publish and invocation
+  // must opt in; disabling it later blocks previously published S2 plans.
+  if(env.S2_READONLY_ENABLED!=='true')throw Error('s2_disabled');
+  // A pre-existing candidate Plan without the trusted-target acknowledgement
+  // cannot start calling external MCP tools after a future flag change.
+  if(plan.s2_target_risks_accepted!==true)throw Error('target_risk_acknowledgment_required');
+  const endpoint=step.with.endpoint,tool=step.with.tool,schema_digest=step.with.schema_digest;
+  const grant=plan.s2_approvals?.some(g=>g.endpoint===endpoint&&g.tool===tool&&g.scope==='read'&&g.schema_digest===schema_digest);
+  if(!grant||step.with.scope!=='read'||typeof endpoint!=='string'||typeof tool!=='string'||
+     typeof schema_digest!=='string'||!/^[0-9a-f]{64}$/.test(schema_digest))
+    throw Error('external_approval_required');
+  // Recompute from the pinned contract so a tampered Plan cannot replace the
+  // expected schema while keeping an older authorized digest.
+  if(await toolSchemaDigest(step.with.input_schema,step.with.output_schema)!==schema_digest)
+    throw Error('approved_schema_changed');
+  const client=new Client({name:'workflow-s2-readonly-candidate',version:'0.1.0'});
+  // Environment-scoped Portal selection cannot be changed by a Draft, a
+  // Published Plan, or Run inputs. Production must explicitly select its own
+  // Portal; the test Portal is never its implicit fallback.
+  const chosenPortal=env.S2_PORTAL_ENDPOINT;
+  if(chosenPortal!==undefined){
+    if(chosenPortal!==TRUSTED_PORTAL_ENDPOINT && chosenPortal!==PRODUCTION_PORTAL_ENDPOINT)
+      throw Error('portal_target_not_authorized');
+    if(endpoint!==chosenPortal)throw Error('portal_target_not_authorized');
+  }
+  if(endpoint===PRODUCTION_PORTAL_ENDPOINT && chosenPortal!==PRODUCTION_PORTAL_ENDPOINT)
+    throw Error('portal_target_not_configured');
+  // NEVER send a dynamic target through the S1 private READONLY_TARGET service.
+  let portalToken:PortalServiceToken|undefined;
+  if(endpoint===TRUSTED_PORTAL_ENDPOINT || endpoint===PRODUCTION_PORTAL_ENDPOINT){
+    // Fail closed before making a network request; never fall back to
+    // unauthenticated access or pass credentials through Workflow inputs.
+    if(!env.S2_PORTAL_CLIENT_ID||!env.S2_PORTAL_CLIENT_SECRET)
+      throw Error('portal_auth_not_configured');
+    portalToken={clientId:env.S2_PORTAL_CLIENT_ID,clientSecret:env.S2_PORTAL_CLIENT_SECRET};
+  }
+  const transport=new StreamableHTTPClientTransport(new URL(endpoint),{
+    fetch:scopedPublicMcpFetch(endpoint,fetch,portalToken,chosenPortal??TRUSTED_PORTAL_ENDPOINT),
+  });
+  try{
+    await client.connect(transport);
+    const discovered=await client.listTools();
+    const candidate=discovered.tools.find(t=>t.name===tool);
+    // Tool annotations are untrusted claims, not a grant. This is a second
+    // restrictive gate on top of the owner's exact publish approval.
+    if(!candidate||candidate.annotations?.readOnlyHint!==true||
+       candidate.annotations?.destructiveHint===true)throw Error('readonly_tool_unconfirmed');
+    if(await toolSchemaDigest(candidate.inputSchema,candidate.outputSchema)!==schema_digest)
+      throw Error('tool_schema_drift');
+    // Once tools/call is attempted, a thrown error, remote error, or unreadable
+    // result does not prove the external tool had no side effects.
+    try{
+      const output=await client.callTool({name:tool,arguments:args});
+      if(output.isError)throw Error('remote_tool_failed');
+      return limitResult(output);
+    }catch{throw Error('external_outcome_unknown');}
+  }finally{
+    // A stateful peer's optional HTTP DELETE can hang even after tools/call
+    // succeeded. Never block the durable Run result on remote teardown; the
+    // trusted peer owns expiration of its unused session.
+    // SDK close() releases local transport state without sending DELETE.
+    await client.close().catch(()=>{});
+  }
 }
 
 export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
@@ -41,6 +113,7 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
     let emitted:unknown=null;
     let hasEmitted=false;
     let failed=false;
+    let uncertain=false;
     try{
       while(pending.size){
         const ready=[...pending.values()].filter(s=>s.needs.every(n=>ctx.steps[n])).slice(0,8);
@@ -58,7 +131,24 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
                 const a=evaluateArguments(s.with.arguments,ctx);
                 return {status:'succeeded',output:await callFixture(this.env,a as Record<string,unknown>)};
               }
-              return {status:'succeeded',output:limitResult(evaluateArguments(s.with.data,ctx))};
+              // Exhaustive runtime dispatch is required even for a pinned plan
+              // read from D1. Never reinterpret a future/unknown capability as
+              // a successful result.emit operation.
+              if(s.uses==='result.emit')
+                return {status:'succeeded',output:limitResult(evaluateArguments(s.with.data,ctx))};
+              if(s.uses==='mcp.call'){
+                const a=evaluateArguments(s.with.arguments,ctx);
+                if(!a||typeof a!=='object'||Array.isArray(a)||hasUnresolvedArgument(a))
+                  throw Error('invalid_arguments');
+                try{
+                  return {status:'succeeded',output:await callApprovedReadonly(this.env,plan,s,a as Record<string,unknown>)};
+                }catch(error){
+                  if(error instanceof Error&&error.message==='external_outcome_unknown')
+                    return {status:'indeterminate',error_code:'external_outcome_unknown'};
+                  throw error;
+                }
+              }
+              throw Error('unsupported_capability');
             }catch{return {status:'failed',error_code:'step_execution_failed'};}
           })) as Outcome;
           await db.prepare("INSERT INTO run_steps(run_id,step_id,status,output,error_code,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(run_id,step_id) DO UPDATE SET status=excluded.status,output=excluded.output,error_code=excluded.error_code,updated_at=excluded.updated_at WHERE run_steps.status IN ('waiting','running')")
@@ -66,10 +156,12 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
           return result;
         }));
         ready.forEach((s,i)=>{ctx.steps[s.id]=outcomes[i];pending.delete(s.id);if(outcomes[i].status==='failed')failed=true;
+          if(outcomes[i].status==='indeterminate')uncertain=true;
           if(s.uses==='result.emit'&&outcomes[i].status==='succeeded'){emitted=outcomes[i].output;hasEmitted=true;}});
       }
       const output=limitResult(hasEmitted?emitted:ctx.steps[plan.steps.at(-1)!.id]?.output??null);
-      await db.prepare("UPDATE runs SET outcome=?,result=?,updated_at=? WHERE id=? AND outcome='running'").bind(failed?'failed':'succeeded',JSON.stringify(output),now(),id).run();
+      await db.prepare("UPDATE runs SET outcome=?,result=?,error_code=?,updated_at=? WHERE id=? AND outcome='running'")
+        .bind(uncertain?'indeterminate':failed?'failed':'succeeded',JSON.stringify(output),uncertain?'external_outcome_unknown':null,now(),id).run();
     }catch{
       await db.prepare("UPDATE runs SET outcome='indeterminate',error_code='execution_interrupted',updated_at=? WHERE id=? AND outcome='running'").bind(now(),id).run();
       throw Error('execution_interrupted');

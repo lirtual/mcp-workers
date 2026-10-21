@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { compilePlan, evaluateExpression, evaluateArguments, evaluateCondition, canonicalJsonString, PlanError } from '../src/plan.ts';
+import { compilePlan, evaluateExpression, evaluateArguments, evaluateCondition, canonicalJsonString, PlanError, toolSchemaDigest } from '../src/plan.ts';
 
 const one = {
   version: 1, name: 'Inspect', steps: [
@@ -108,4 +108,75 @@ test('S1 refuses prototype traversal in expression references', async () => {
   await assert.rejects(() => compilePlan({...one, steps:[
     {id:'x', uses:'result.emit', with:{data:{ref:'inputs.constructor'}}},
   ]}), PlanError);
+});
+
+test('S2 public read-only MCP plans pin canonical endpoint, tool and scope',async()=>{
+  const step={id:'lookup',uses:'mcp.call',with:{
+    endpoint:'https://public.example.org/mcp',tool:'search',scope:'read',
+    input_schema:{type:'object',properties:{query:{type:'string'}}},
+    arguments:{url:'https://example.org/page',query:{ref:'inputs.query'}},
+  }};
+  const {plan}=await compilePlan({version:1,name:'S2 candidate',steps:[step]});
+  assert.equal(plan.steps[0].uses,'mcp.call');
+  assert.equal((plan.steps[0].with.arguments as Record<string,unknown>).url,'https://example.org/page');
+  assert.deepEqual(evaluateArguments(plan.steps[0].with.arguments,{inputs:{query:'q'},steps:{}}),
+    {url:'https://example.org/page',query:'q'});
+});
+
+test('S2 compiler blocks dynamic targets, writes, malformed target grants and executable control fields',async()=>{
+  const base={id:'lookup',uses:'mcp.call',with:{
+    endpoint:'https://public.example.org/mcp',tool:'search',scope:'read',
+    input_schema:{type:'object',properties:{query:{type:'string'}}},
+    arguments:{query:'q'},
+  }};
+  for(const bad of [
+    {endpoint:{ref:'inputs.url'}},
+    {endpoint:'http://public.example.org/mcp'},
+    {endpoint:'https://127.0.0.1/mcp'},
+    {endpoint:'https://public.example.org/mcp#fragment'},
+    {scope:'write'},
+    {scope:'read',command:'do-anything'},
+    {tool:'unsafe tool name'},
+    {arguments:null},
+    {arguments:{constructor:'bad'}},
+  ]) {
+    await assert.rejects(()=>compilePlan({version:1,name:'S2 bad',steps:[
+      {...base,with:{...base.with,...bad}},
+    ]}),PlanError);
+  }
+});
+
+test('S2 tool contract fingerprint ignores JSON key ordering but detects schema drift',async()=>{
+  const original={type:'object',properties:{value:{type:'string',maxLength:4096}},required:['value']};
+  const reordered={required:['value'],properties:{value:{maxLength:4096,type:'string'}},type:'object'};
+  assert.equal(await toolSchemaDigest(original),await toolSchemaDigest(reordered));
+  assert.notEqual(await toolSchemaDigest(original),await toolSchemaDigest({
+    ...original,properties:{value:{type:'string',maxLength:4095}},
+  }));
+  assert.notEqual(await toolSchemaDigest(original),await toolSchemaDigest(original,{type:'object'}));
+});
+
+test('S2 contract requires bounded, concrete JSON Schema; no user-supplied digest',async()=>{
+  const step={id:'read',uses:'mcp.call',with:{
+    endpoint:'https://public.example.org/mcp',tool:'echo',scope:'read',
+    input_schema:{type:'object',properties:{value:{type:'string'}}},
+    arguments:{value:'safe'},
+  }};
+  const plan={version:1,name:'S2 fingerprint required',steps:[step]};
+  const compiled=await compilePlan(plan);
+  const fingerprint=await toolSchemaDigest(step.with.input_schema);
+  assert.equal(compiled.plan.steps[0].with.schema_digest,fingerprint);
+  for(const extra of [
+    {input_schema:undefined},
+    {input_schema:'not-an-object'},
+    {input_schema:{}},
+    {input_schema:{type:'array'}},
+    {input_schema:{type:'object',description:'x'.repeat(9000)}},
+    {output_schema:{}},
+    {output_schema:{type:'array'}},
+    {output_schema:'not-an-object'},
+    {schema_digest:'0'.repeat(64)},
+  ])await assert.rejects(()=>compilePlan({...plan,steps:[{
+    ...step,with:{...step.with,...extra},
+  }]}),PlanError);
 });
