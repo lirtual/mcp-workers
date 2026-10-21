@@ -1,3 +1,34 @@
+## S3 dedicated executor registered on GitHub default branch (2026-10-22)
+
+**Registration complete, not production activation.** The isolated
+[one-file PR #153](https://github.com/lirtual/mcp-workers/pull/153) was
+squash-merged to `main` as commit `50724a58`. It added **only**
+`.github/workflows/workflow-s3-executor.yml`; no S1/S2/S3 application
+implementation or deployment was merged. GitHub now lists the registered
+`S3 Registered Echo Executor` as `active` (workflow ID `392010253`).
+
+[Non-executing dispatch proof #39648141107](https://github.com/lirtual/mcp-workers/actions/runs/39648141107)
+successfully reached the registered workflow with `--ref
+wip/workflow-s3-github-executor`; a deliberately unsupported capability
+made its only execution Job **skipped**. This proves registration,
+ref selection and the fixed capability allowlist reject path; it **does not**
+prove an actual dedicated Echo Job has run. The main push
+[CI #39648034389](https://github.com/lirtual/mcp-workers/actions/runs/39648034389)
+finished Success, with the existing manual Worker production release
+Job **skipped**.
+
+GitHub Environment `workflow-mcp-worker` is still missing
+`S3_CALLBACK_ORIGIN` and `S3_GITHUB_AUDIENCE`. They must be set to an
+explicitly approved, isolated test target and matching GitHub OIDC audience
+before running the registered dedicated Echo execution; **no variables or
+secrets were added during registration**. The earlier product S2 test
+Portal + S3 end-to-end Success using the pinned `ci.yml` isolation Job
+still stands, but does not substitute for this final dedicated-executor
+test. S2/S3 Draft PRs remain unmerged, production S1 unchanged, S3 OFF,
+and formal Portal HTTP 401 deferred.
+
+---
+
 ## S3 dedicated executor registration and compatibility preflight (2026-10-22)
 
 The source in [Draft PR #151](https://github.com/lirtual/mcp-workers/pull/151)
