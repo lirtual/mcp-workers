@@ -5,7 +5,7 @@ import RaindropService from "../src/services/raindrop.service.js";
 vi.mock("openapi-fetch", () => ({
   default: vi.fn(() => ({
     GET: vi.fn().mockResolvedValue({
-      data: { items: [{ _id: 1, title: "Test" }], count: 1 },
+      data: { result: true, items: [{ _id: 1, title: "Test" }], count: 1 },
     }),
     POST: vi.fn(),
     PUT: vi.fn(),
@@ -35,6 +35,41 @@ describe("RaindropService Caching Logic", () => {
     expect(cols2).toHaveLength(1);
     expect(cols2).toEqual(cols1);
     expect(mockGet).toHaveBeenCalledTimes(1); // Still 1
+  });
+
+  it("getCollections accepts a verified empty root list", async () => {
+    const mockGet = (service as any).client.GET;
+    mockGet.mockResolvedValueOnce({ data: { result: true, items: [] } });
+
+    await expect(service.getCollections(true)).resolves.toEqual([]);
+    expect(mockGet).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["upstream HTTP error", { error: { message: "rejected" }, data: undefined }],
+    ["missing response", { data: undefined }],
+    ["upstream result false", { data: { result: false, items: [] } }],
+    ["missing result", { data: { items: [] } }],
+    ["missing items", { data: { result: true } }],
+    ["non-array items", { data: { result: true, items: {} } }],
+  ])("getCollections rejects %s rather than claiming an empty account", async (_label, response) => {
+    const mockGet = (service as any).client.GET;
+    mockGet.mockResolvedValueOnce(response);
+
+    await expect(service.getCollections(true))
+      .rejects.toThrow("root collection list response could not be verified");
+  });
+
+  it("does not cache an invalid collection list as empty", async () => {
+    const mockGet = (service as any).client.GET;
+    mockGet.mockResolvedValueOnce({ data: { result: false, items: [] } });
+    mockGet.mockResolvedValueOnce({ data: { result: true, items: [{ _id: 1, title: "Valid" }] } });
+
+    await expect(service.getCollections()).rejects.toThrow(
+      "root collection list response could not be verified",
+    );
+    await expect(service.getCollections()).resolves.toEqual([{ _id: 1, title: "Valid" }]);
+    expect(mockGet).toHaveBeenCalledTimes(2);
   });
 
   it("getBookmark should use cache and only call API once", async () => {
