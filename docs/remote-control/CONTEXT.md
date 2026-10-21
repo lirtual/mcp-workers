@@ -1,5 +1,7 @@
 # Remote Control MCP — Domain Context
 
+> **浏览器当前术语**：本节定义单个持久 BrowserContext、多个稳定 Tab ID 与按需 MCP 操作。唯一实施规则见 [BROWSER-AUTOMATION-SPEC.md](./BROWSER-AUTOMATION-SPEC.md)，历史 Q1–Q52/H1–H24 不再约束实现。未修改既有 RCA WebSocket/DO 连接模型。
+
 > **Current browser domain model — 2026-10-22, supersedes older handoff/idle terminology below:** The owner-confirmed [Issue #152](https://github.com/lirtual/mcp-workers/issues/152) adopts **Persistent Automation Browser Session** (visible, Agent-private Chrome/Edge reused until explicit close, browser/Agent termination or revocation), **On-Demand Browser Operation** (one bounded MCP request, not exclusive continuous ownership), **Shared Manual/Agent Use** (human may directly use the same window; Agent-only operation serialization does not imply OS-level human exclusion), **Explicit Browser Tab Target** (a stable selected tab, never silently inferred from focus or newest tab), and **Operation Outcome Receipt** (durable completed/running/unknown effect evidence independent of the browser lifetime). There is **no active Agent Control/Human Control/handoff/resume state machine and no idle or absolute session expiry**. The former H1–H24 terms and historical Q1–Q52 paragraphs immediately following this note are retained for traceability and are **NOT active implementation instructions**. This domain description does not authorize runtime changes, deploy, or browser MCP enablement.
 
 > **Windows handoff vocabulary (H19–H24; 2026-10-21):** **Visible Automation Window** is the existing Agent-owned headed Chrome/Edge instance shown on the Windows desktop, reachable by the owner locally or through their own existing remote desktop; ChatGPT does not receive a desktop stream. **Human Control Privacy Boundary** allows AI-readable control/session status only, not screenshots, DOM, page text or element snapshots; internal content-free idle-activity/lifecycle accounting is permitted but does not prove human identity. **Explicit Takeover** is a control request through ChatGPT/MCP; manually clicking a browser during Agent Control does not itself change ownership. **Owner-Closed Session** terminates without auto-relaunch or Profile deletion. **Unlock Continuity** restores the previous control owner only if the session remains live, and never replays uncertain work. **Volatile Control Ownership** lives in the Agent-local browser session across temporary WSS disconnect, not in a new persistent store; durable effect receipts remain separate. See [fourth-round decisions and convergence](./BROWSER-ARCHITECTURE-REVIEW-20261020.md#grill-with-docs-fourth-round--h19h24-2026-10-21). These are agreed domain terms, not implemented features or deploy authorization.
@@ -95,140 +97,39 @@ A static, independently generated high-entropy secret recognized by only the Rem
 _Avoid_: Confusing a static Bearer credential with OAuth authorization or sharing it with lower-privilege MCP Workers.
 
 **Browser Automation**:
-Device-scoped inspection and interaction with web pages and browser tabs through an authorized remote browser session; it does not imply control of the rest of the graphical desktop.
-_Avoid_: Remote desktop control, arbitrary OS mouse/keyboard control.
+Authorized, device-scoped operation of the **entire Agent-owned Chrome/Edge BrowserContext**, including multiple explicitly targeted tabs, through existing Remote Control MCP. It does not control the whole Windows desktop or the owner's regular browser Profiles.
 
 **Automation Browser Session**:
-An identifiable, reusable Agent-owned browser session that may remain open across any number of separate, on-demand MCP operations and manual user interactions until intentionally closed or terminated; it has no forced idle/absolute lifetime.
-_Avoid_: Equating it to the Agent's Shell Managed Session, treating a tool call as the browser lifetime, or interpreting an open session as permission to inspect personal browser Profiles.
-
-**On-Demand Browser Operation**:
-A bounded, explicitly requested remote action or observation within an already identified browser session; it does not confer ongoing exclusive control of the browser.
-_Avoid_: Equating the completion of an MCP request with closing the browser, or assuming the absence of a handoff mode proves that no human is interacting.
-
-**Shared Manual/Agent Use**:
-A browser collaboration convention in which the owner may use the same visible automation window between or during Agent operations without any special control-owner transition.
-_Avoid_: Claiming strict mutual exclusion of physical mouse/keyboard input or a private human-only browsing mode.
-
-**Browser Operation Lock**:
-The exclusive execution slot for Agent-initiated operations on one automation browser session. It must remain occupied while an accepted asynchronous operation actually runs, even when the originating remote call has returned a running result.
-_Avoid_: Mistaking this for a Windows input lock, or for permission to retry an uncertain website effect.
+One identifiable, persistent Agent-local BrowserContext reused across independent MCP requests and manual interactions. No idle or absolute expiry; session ends on explicit close, process/Agent termination or existing revocation handling.
+_Avoid_: Confusing browser lifetime with one MCP request or with an RCA WSS/DO connection.
 
 **Automation Browser Profile**:
-A dedicated owner-controlled browser identity whose sign-in state may be retained locally across automation sessions, separate from the owner's everyday browser profile.
-_Avoid_: Treating the owner's default Chrome/Edge profile as an automation profile.
+A separate persistent Agent-owned Chrome or Edge browser data directory retaining local login state, never the user's daily personal Profile. Only one automation BrowserContext is active per paired device.
 
-**Automation Profile Clearing**:
-An owner-requested removal of the retained local automation browser identity and its browser data, distinct from simply closing the browser session.
-_Avoid_: Implicit clearing on logout, disconnect, browser-session close or device revocation.
+**On-Demand Browser Operation**:
+One bounded, typed MCP observation or effect on the current browser session. The Agent's operation lock serializes Agent commands, including still-running remote operations.
+_Avoid_: Claiming this prevents simultaneous physical mouse/keyboard actions or grants permanent control ownership.
 
-**Personal Browser Session**:
-An existing owner-used browser session whose tabs or signed-in state may be accessed only within explicitly authorized scope.
-_Avoid_: Assuming that device pairing grants blanket access to every personal browser tab or profile.
-
-**Browser Target**:
-A specifically selected authorized device and browser session, narrowed to a tab where the operation requires one.
-_Avoid_: An implicit default device or an unspecified global browser.
-
-**Browser Navigation Destination**:
-The actual webpage endpoint a browser is requested to visit, distinct from authority to act on the page or an assumption that an internal address is safe.
-_Avoid_: Equating reachability, a plausible hostname or a page's own claim with authorization for a consequential destination.
-
-**Effective Browser Navigation Target**:
-The browser navigation destination actually reached after redirects and address resolution, which may differ from the originally requested URL.
-_Avoid_: Treating initial-URL approval as automatic approval of a redirected or re-resolved sensitive target.
+**Shared Manual/Agent Use**:
+The owner can directly manipulate the visible automation browser and later request AI work without an explicit handoff/resume. This model has no private human-only control phase.
+_Avoid_: Claiming AI can detect when the owner is typing, or that one agent command establishes an exclusive human/agent lease.
 
 **Browser Tab ID**:
-The stable identity of a managed browser tab within one device and Automation Browser Session, retained across navigation and invalidated when that tab closes.
-_Avoid_: A tab's list position, page URL or title as a substitute for identity.
-
-**High-Impact Browser Action**:
-A proposed browser interaction that would commit a consequential external effect such as a purchase, sent communication, data deletion or permission change.
-_Avoid_: Treating ordinary form preparation as already committed, or considering page text or device pairing to be owner approval.
-
-**Browser Action Confirmation**:
-The owner's explicit, single-use approval for a particular High-Impact Browser Action, bound to the intended device, browser session, tab and consequential action target.
-_Avoid_: Assuming that a previous general workflow approval, a changed execution target, the browser's logged-in state or an untrusted webpage is confirmation.
-
-**Proposed Browser Action**:
-A specific consequential browser action presented for the owner's review before it is authorized to execute.
-_Avoid_: Confusing a proposal with permission to execute, or treating the assistant's memory of approval as a verified confirmation.
-
-**Browser Element Target**:
-An unambiguous identifiable page element in the specifically selected browser tab, resolved using its meaningful semantic identity where possible.
-_Avoid_: Guessing which duplicate control to click or treating a stale page position as a reliable identity.
-
-**Visual Browser Target**:
-A specific visible control or region in the selected browser tab identified from current visual evidence when meaningful semantic identification is insufficient.
-_Avoid_: Treating a stale screenshot coordinate as a durable element identity or using it to control arbitrary desktop applications.
-
-**Visual Target Freshness**:
-The confidence that a visually located browser target still refers to the same intended control in the same tab and page/viewport context.
-_Avoid_: Equating a recent screenshot timestamp with target stability after navigation, scrolling, resizing or layout changes.
+Stable identity of one Page within a particular device/session, preserved across navigation and invalid after close. Selected targets may include tabs manually created by the owner.
+_Avoid_: Treating page title, URL, foreground focus or list index as proof of which tab is intended.
 
 **Browser Page Observation**:
-A bounded, task-relevant account of a selected page's semantic content or explicitly requested visual appearance, distinct from authorization or a guarantee that private data is absent.
-_Avoid_: Treating an untrusted webpage as instructions or assuming a screenshot cannot reveal sensitive information.
-
-**Browser Diagnostic Record**:
-The minimal operation identity, status and safe error information needed for ordinary browser activity diagnosis without retaining page contents or credentials by default.
-_Avoid_: Confusing operational telemetry with authorization to persist full DOM, screenshots, cookies, tokens or untrusted webpage instructions.
-
-**Browser Local Transfer**:
-An upload or download initiated through an automation browser where the source or destination file stays on the Agent's device.
-_Avoid_: Assuming browser file contents must pass through the remote MCP transport.
-
-**Managed Browser Download**:
-A website-originated file saved to the Agent's designated local browser download area for later owner-directed access using existing file capabilities.
-_Avoid_: Equating a download with an MCP file attachment or assuming it may be deleted while needed for unresolved work.
-
-**Managed Download Retention**:
-The normal period before an unreferenced file in the Agent-managed browser download area becomes eligible for cleanup, distinct from Browser Profile data or the owner's other files.
-_Avoid_: Erasing a download still referenced by active work or an unresolved operation.
-
-**Managed Download Reference**:
-A known connection between a Managed Browser Download and an active browser session or unresolved operation that may still need the file.
-_Avoid_: Assuming an expired file is safe to delete when that connection cannot be determined.
+A bounded semantic or separately authorized visual read of one selected page. Untrusted site content does not carry instructions or authorization; page state may change between observation and action.
 
 **Browser Action Receipt**:
-An Agent-local record of the known execution outcome of a potentially effectful browser operation, independently of whether the remote website completed the intended business transaction.
-_Avoid_: Equating a click result with a confirmed purchase, submission or remote service commit.
+Agent-local execution status for one effectful browser operation, recorded with the existing durable Operation ID/Receipt mechanism. It does not prove a website purchase, message or other business effect succeeded.
+_Avoid_: Blindly retrying Unknown effects or treating a remote `running` response as operation completion.
 
-**Browser Tool Result**:
-The compact, structured response for an operation on an identified device/browser session and, when relevant, tab, distinguishing known execution status, error identity, bounded output and associated Operation ID for an effectful operation.
-_Avoid_: Arbitrary Playwright internals, unbounded page dumps, or assuming a browser tool result confirms a remote business outcome.
-
-**Website Effect Evidence**:
-A separately observed, read-only indication that a website may have committed the intended operation, distinct from the Agent's execution receipt.
-_Avoid_: Treating a successful click, a timeout or an unverified page change as conclusive proof of a website transaction.
-
-**Browser Capability Gate**:
-The distinction between browser actions allowed for the selected device/platform now and actions disabled pending trustworthy owner authorization or acceptance evidence.
-_Avoid_: Inferring that a tool's planned interface makes all its potentially high-impact actions safe to execute.
-
-**Browser Capability Availability**:
-The present ability to perform a specified browser operation on a selected paired device and platform, separate from its documentation, implementation or acceptance history.
-_Avoid_: Treating a listed or designed MCP tool as permission or proof that the action is currently enabled.
-
-**Conservatively Classified Browser Action**:
-A proposed browser operation known to meet the limited low-impact execution boundary without relying on untrusted webpage claims; uncertain consequential effects do not qualify.
-_Avoid_: Declaring an arbitrary click, fill, key press, URL or model-assessed button harmless solely because its visible label appears innocuous.
-
-**Verified Browser Approval**:
-An owner confirmation for one specific consequential browser operation, reliably checked at the Agent execution boundary through a supported client/MCP path, with a short validity period and no authorization to replay after consumption, expiry or material target change.
-_Avoid_: Equating an ordinary chat response, old approval or possession of an MCP credential with current verifiable owner authorization.
+**High-Impact Browser Action**:
+An operation that may make a consequential external change such as payment, message sending, deleting data or changing permissions. Without independently verified single-use approval bound to its intended operation and target, the Agent must refuse such effects.
 
 **Browser Recovery Conflict**:
-A state in which the browser's ownership, retained Profile availability or effectful operation outcome is insufficiently known to resume safely.
-_Avoid_: Treating an uncertain lock, crash or lost response as evidence that restarting or repeating work is safe.
-
-**Platform Browser Acceptance**:
-Evidence that a named supported operating-system/runtime target actually satisfies the browser capability's agreed behavior and safety boundaries.
-_Avoid_: Treating Linux acceptance as proof of native Windows readiness, or repeating unchanged evidence without a material reason.
-
-**Browser Platform Release Gate**:
-The readiness decision for one named platform based on applicable real browser behavior, authority-denial, interruption/recovery and upgrade/rollback acceptance evidence.
-_Avoid_: Treating a design agreement as deployment authorization, or making an already-tested target repeat unrelated unchanged evidence because a different platform is not ready.
+Uncertain Agent-managed process/Profile ownership or unknown effect after a crash/disconnect. Do not force-attach to surviving processes, delete lock files or replay effects.
 
 **Graphical Desktop Control**:
 Remote viewing or manipulation of a desktop screen, mouse or keyboard. This is excluded from the first release.
@@ -275,92 +176,6 @@ _Avoid_: General-purpose host process killing, unauthenticated overrides, or cla
 The controlled transfer of existing authoritative Operation Receipts to a replacement local store without discarding unresolved Operation IDs or weakening outcome reconciliation.
 _Avoid_: Treating a successful new-store startup as sufficient evidence that historical operation identities were preserved.
 
-
-## Browser feasibility review interpretation — not an accepted decision
-
-The owner requested a source-grounded feasibility and overengineering check **after** accepting Q1–Q52. Review conclusions are indexed in the [post-convergence feasibility audit](./BROWSER-AUTOMATION-DESIGN.md#post-convergence-feasibility-audit--recommendations-not-new-decisions). This does not change any settled domain meaning or approve new architecture.
-
-A browser action's **tool annotation or ChatGPT approval UI** is not synonymous with a Verified Browser Approval at Agent execution. A browser's **effective outbound network traffic**, including redirects and subresources, is broader than the initial Browser Navigation Destination. A screenshot returned by Playwright is an **image buffer**, not proof that the existing Agent/Worker MCP text protocol can deliver it. Agent OS authority to read a local file is not necessarily owner authorization to **upload that file to a website**. Existing Agent receipt/file tools are reusable foundations, not evidence that binary browser downloads or browser-specific receipts are currently implemented.
-
-These are evidence/implementation contracts only. Browser capability activation, native Windows acceptance, CI, Tickets, merging and deployment remain outside this documentation review.
-
-## Browser final navigation/logging/approval and convergence choices — accepted thirteenth round (2026-10-20)
-
-Q49=A requires the Effective Browser Navigation Target to be reassessed on each redirect, host or relevant DNS/resolved-address change, not only once at the initial URL; the concrete coverage of subresources, service workers and rebinding remains an unproven enforcement detail. Q50=A keeps routine Browser Diagnostic Records small, without persisting DOM dumps, screenshots, credentials or untrusted tool payloads by default; explicitly requested content can still contain private information and never authorizes actions. Q51=A makes Verified Browser Approval, **if a supported end-to-end client path can actually verify it**, short-lived, single-use and bound to the exact consequential operation; changed, expired, consumed or unverifiable approvals fail closed. Q52=A closes the current product-design decision interview through a documented consistency/overengineering review, with **separate explicit owner confirmation of shared understanding still required** and no implementation, Issues/Tickets, CI changes, PR merge or deployment approved.
-
-See [ADR-0030](./adr/0030-browser-conservative-gating-consent-evidence-acceptance.md), [ADR-0028](./adr/0028-browser-data-files-provenance-platform-acceptance.md), [ADR-0026](./adr/0026-browser-capabilities-tab-and-approval-scope.md), and [ADR-0021](./adr/0021-browser-automation-extension.md). Missing real ChatGPT approval transport, binary integrity metadata, installed Agent parity, logging enforcement and platform browser acceptance are *evidence gaps*, not proof of design implementation. The authoritative convergence and evidence-gate record is [BROWSER-AUTOMATION-DESIGN.md](./BROWSER-AUTOMATION-DESIGN.md).
-
-## Browser navigation, visual freshness, safe downloads and availability — accepted twelfth round (2026-10-20)
-
-Q45=A selects ordinary HTTP(S) Browser Navigation Destinations; executable/local schemes such as `javascript:` and `file:` are not ordinary allowed navigation. Loopback, link-local, metadata and sensitive internal/admin targets need distinct owner authorization and an effect/target review rather than receiving automatic low-impact status, without a global website allowlist. Q46=A requires Visual Target Freshness to track the exact tab and current page/viewport/scroll context; after material navigation, tab, scroll or layout changes or unprovable freshness, locate again from a new screenshot. Q47=A confines new downloads to Agent-managed directory names that cannot overwrite existing files or traverse/escape through links; further owner-directed file movement/replacement remains an existing Remote Control operation. Q48=A distinguishes Browser Capability Availability through existing device status and MCP tool error feedback: only documented, implemented, accepted for the platform, and actually enabled are different situations; no second capability registry is chosen.
-
-[ADR-0030](./adr/0030-browser-conservative-gating-consent-evidence-acceptance.md), [ADR-0027](./adr/0027-browser-tools-visual-consent-and-recovery.md), [ADR-0028](./adr/0028-browser-data-files-provenance-platform-acceptance.md) and [ADR-0029](./adr/0029-browser-results-outcomes-downloads-gated-release.md) were amended rather than adding an ADR. Q49 subsequently settles the policy that redirects and resolved-address changes must be rechecked, while exact DNS/request interception, page freshness algorithm, platform-specific safe file creation and availability-error schema remain unsettled. These are design decisions only, not deployed browser functionality.
-
-## Browser initial low-impact scope and bounded output — accepted eleventh round (2026-10-20)
-
-Q41=A narrows the **candidate** low-impact browser operations to authorized browser/session/tab status or listing, bounded semantic observations, and on-demand screenshots, all subject to content/privacy controls. Explicit-target navigation needs a separate conservative effect review; a generic click/fill/keyboard/select is not low-impact simply because its name or visible label seems routine. Q42=A selects minimal shared device/session/tab targeting and compact structured status, error, bounded data, truncation and Operation ID results with operation-specific inputs. Q43=A selects an initial approximately 8,000-character semantic snapshot budget with explicit truncation and follow-up focused reads, and no more than one on-demand screenshot per request initially; screenshots may reveal secrets. Q44=A uses minimal existing Agent-local session and operation metadata to identify Managed Download References, retaining a download when reference absence cannot be proven and allowing seven-day cleanup only when positively unreferenced.
-
-These decisions amend existing ADR-0030/0025/0028/0029. Q45–Q48 subsequently clarify navigation schemes and sensitive destinations, visual context freshness, non-overwriting local downloads and truthful capability availability. They do not prove safe classification, implement browser tools, create a new file index, define complete schemas, or authorize rollout.
-
-## Conservative effects, verified approval and platform release — accepted tenth round (2026-10-20)
-
-[ADR-0030](./adr/0030-browser-conservative-gating-consent-evidence-acceptance.md) confirms four design directions: only Conservatively Classified Browser Actions can be enabled without consequential-action approval, and unknown impact fails closed; a Verified Browser Approval for a one-use high-impact action must be demonstrated through a real ChatGPT/MCP/Worker/Agent end-to-end acceptance path before enabling that capability; browser effects reuse existing Agent-local Operation IDs and Receipts, preserving Unknown Outcome without blind replay or a second website ledger; and each platform's Browser Platform Release Gate depends on relevant real-device launch, interaction, file, recovery, authorization and upgrade/rollback evidence, reusing unchanged tests where valid.
-
-ADR-0030 and the round-11 decision now narrow the candidate low-impact subset, but safe classification enforcement, the supported human-confirmation evidence channel, exact typed receipt/tool schema and platform cases remain unsettled. These accepted designs are **not** claims that proof, implementation or rollout exists.
-
-## Browser results, outcome evidence, retention and gating — accepted ninth round (2026-10-20)
-
-[ADR-0029](./adr/0029-browser-results-outcomes-downloads-gated-release.md) records four decisions: use a small structured Browser Tool Result identifying the target, status/error, necessary bounded payload, truncation, and an Operation ID for potentially effectful calls; distinguish an Agent-local Browser Action Receipt from independent, read-only Website Effect Evidence without blind replay or website-level exactly-once promises; apply seven-day default Managed Download Retention only to unreferenced files in the dedicated directory; and allow an independently accepted low-impact Browser Capability Gate while any high-impact effect without reliably validated one-use owner approval remains denied.
-
-ADR-0030 now accepts conservative classification, genuine end-to-end owner-approval acceptance, reuse of existing Agent receipt states, and lean independent platform checks. The precise safe subset, result/receipt schemas, verified approval transport, website-effect observations, managed-download reference tracking and rollout evidence remain unsettled. A generic webpage click may be consequential despite innocent labels. These are design decisions only.
-
-## Browser privacy, file authority, trust and platforms — accepted eighth round (2026-10-20)
-
-[ADR-0028](./adr/0028-browser-data-files-provenance-platform-acceptance.md) records four agreed boundaries. A Browser Page Observation is task-relevant and bounded; password/Cookie/token extraction is not a default output, and an on-demand screenshot may nevertheless disclose sensitive data. Browser Local Transfers reuse existing Agent filesystem permission and tools: explicit local upload paths and Managed Browser Downloads in a dedicated area, without a second browser file manager or new user-configured allowlist. Playwright-compatible Chromium must come from a reviewed trusted source with genuinely available integrity/provenance verification; absence, mismatch or offline unavailability fails rather than silently trusting a substitute. Platform Browser Acceptance is separate for Linux, WSL2 and native Windows, with staged enablement, real evidence and reuse of applicable unchanged tests.
-
-ADR-0029 now fixes the default seven-day retention period for unreferenced managed downloads and the ability to gate safely classified low-impact functions separately. Numeric output budgets, download reference/cleanup mechanics, browser provenance verification details, platform rollout schedule and CI configuration remain unsettled. These decisions do not implement browser functionality.
-
-## Browser tool and safe-execution choices — accepted seventh round (2026-10-20)
-
-[ADR-0027](./adr/0027-browser-tools-visual-consent-and-recovery.md) records the accepted compact, curated atomic browser tool inventory across sessions, tabs, page observation/navigation, interaction and local file operations; bounded visual fallback for a Visual Browser Target when semantic identification fails; the Proposed Browser Action → explicit Browser Action Confirmation → execution boundary for each High-Impact Browser Action, with refusal if confirmation cannot be reliably established; and verification of retained browser/Profile state before recovering from a Browser Recovery Conflict. A screenshot location cannot be assumed fresh, an unverified confirmation is not authority, and an unknown outcome never authorizes blind replay or destruction of Profile/Receipt data.
-
-ADR-0028 subsequently settles the direction for minimal browser data, reused Agent file authority, trusted compatible Chromium and independent platform acceptance. Exact tool signatures, visual freshness criteria, approval delivery and consumption, crash ownership probes, numeric privacy limits, file retention and release gates remain unsettled. These are design decisions only.
-
-## Browser workflow coverage, tab targeting and safe clearing — accepted sixth round (2026-10-20)
-
-[ADR-0026](./adr/0026-browser-capabilities-tab-and-approval-scope.md) confirms that the initial curated atomic tool scope covers ordinary end-to-end browser workflows (session and tab lifecycle, navigation, observation, click/fill/select/keyboard, screenshot, and local browser uploads/downloads) without unrestricted scripting. A stable Browser Tab ID belongs to the exact device/session, survives navigation and becomes invalid when its tab closes. Each High-Impact Browser Action requires one specific, non-transferable Browser Action Confirmation bound to device, session, tab, intended action and material target; changed targets must be re-approved. Automation Profile Clearing requires an explicit owner request and a provably inactive, resolved-operation state; ambiguous state fails closed rather than destroying local evidence or credentials.
-
-ADR-0027 now chooses a curated compact inventory, bounded visual fallback, prepare/confirm/execute with fail-closed enforcement, and verified crash recovery. Exact tool signatures, human-confirmation transport/consumption, visual freshness, stale-lock ownership probes and cleanup implementation remain open. These are design choices, not deployed functionality.
-
-## Browser tool atomicity and local action evidence — accepted fifth round (2026-10-20)
-
-[ADR-0025](./adr/0025-atomic-browser-actions-and-receipts.md) accepts a minimal set of curated atomic browser MCP tools rather than unrestricted script or generic action dispatch; semantically identified, uniquely resolved Browser Element Targets with fail-safe handling of ambiguity and stale page state; Browser Local Transfers using explicitly authorized Agent-side upload paths and an Agent-managed download directory rather than default bulk MCP file forwarding; and stable Operation IDs / Browser Action Receipts for potentially effectful interactions. An uncertain action is never automatically replayed, and a browser-level success receipt is not proof of a website-side business commitment.
-
-ADR-0026 has since resolved first-release capability coverage, stable tab targeting, one-use scoped confirmation and safe-state Profile clearing. Concrete tool names/schemas, locator fallback, path authorization, business outcome reconciliation and confirmation mechanics remain unsettled; this is documentation only.
-
-## Browser interaction defaults and consequential effects — accepted fourth round (2026-10-20)
-
-[ADR-0024](./adr/0024-browser-observation-and-confirmation.md) records four design choices: an Automation Browser Session is eligible for Agent-local cleanup after 30 idle minutes without clearing its Automation Browser Profile; headless browser mode is the default, with headed mode available only on a device with a usable graphical desktop; bounded semantic page inspection comes before on-demand screenshots; and every High-Impact Browser Action needs its own explicit Browser Action Confirmation before the external effect is committed. Ordinary navigation, observation and form preparation do not require confirmation for every interaction. Untrusted page content or prior device pairing cannot approve consequential actions.
-
-ADR-0025 now resolves atomic tool granularity, semantic target preference, local file-transfer boundary and general operation-receipt policy. Exact activity tracking, confirmation mechanism, page-data/secret bounds, screenshot fallback, concrete tool schemas and platform acceptance remain open. The decisions are documentation-only and do not establish deployed browser capability.
-
-## Browser automation provisioning, exclusivity and interruption — accepted third round (2026-10-20)
-
-[ADR-0023](./adr/0023-browser-runtime-profile-interruption.md) records the accepted boundaries: on-demand Playwright-compatible Chromium installation on the Agent with no silent elevation for missing OS prerequisites; one active Automation Browser Session per persistent Automation Browser Profile; initially one dedicated Automation Browser Profile per device; and caller-disconnect retention until Agent-local idle cleanup without automatic action replay. Revoking device authorization prevents subsequent dispatch and requests best-effort shutdown of browser sessions on reachable Agents. Offline or compromised Agents cannot be confirmed stopped, and locally retained profile data is not implicitly erased.
-
-ADR-0024 subsequently fixes the initial 30-minute idle threshold, headless default, semantic-first observation and per-high-impact-action confirmation boundary. Exact activity accounting, profile lock recovery, download trust, screenshot/page-data limits and confirmation implementation remain open; these are design decisions only, not deployed features.
-
-## Browser automation runtime and session choices — accepted second round (2026-10-20)
-
-[ADR-0022](./adr/0022-playwright-managed-browser-sessions.md) selects a Playwright-backed Agent browser adapter under the existing curated Remote Control MCP tool surface; it does not introduce a nested browser MCP Server. Linux and native Windows are the first supported **targets** (WSL2 belongs to the Linux path), with macOS later and **separate platform acceptance required**. An Automation Browser Profile retains local sign-in state independently of a Personal Browser Session. An Automation Browser Session has explicit identity, supports multiple MCP calls and explicit close, and is eligible for idle cleanup. Unknown or interrupted browser actions must not be blindly replayed.
-
-ADR-0023 now resolves browser provisioning, initial profile cardinality, per-profile session exclusivity and disconnect/revocation policy. Concrete timeout durations, implementation-specific lock and cleanup recovery, profile data controls, exact tools and release criteria remain undecided. This extension does not change the Linux-only assumptions of historical v1 shipped functionality and does not constitute native Windows browser support.
-
-## Browser automation extension — accepted first-round decisions (2026-10-20)
-
-[ADR-0021](./adr/0021-browser-automation-extension.md) records the agreed architectural boundary: browser automation is an additional **Remote Control MCP** capability, not a separate MCP Worker; an independently managed Automation Browser Session comes before access to a Personal Browser Session; control is restricted to browser interactions rather than the full graphical desktop; existing pairing is reused but an explicit Browser Target is required and personal-session/sensitive actions have separate authorization boundaries.
-
-These decisions are design-only. The [Browser Automation Design](./BROWSER-AUTOMATION-DESIGN.md) records the unresolved design tree; no browser tools, agent runtime, Windows coverage or production release are approved by this decision alone. The historical first-release exclusion of Graphical Desktop Control is unchanged.
 
 ## Settled product boundaries
 
