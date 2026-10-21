@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { RaindropMCPService } from "../src/services/raindropmcp.service.js";
 import RaindropService from "../src/services/raindrop.service.js";
+import { raiseG0Failures, type RecordedFailure } from "./g0-failure-report.js";
 
 // Only a manual, owner-authorized credential-bearing job can enable this.
 const enabled = Boolean(process.env.RAINDROP_ACCESS_TOKEN?.trim()) &&
@@ -120,7 +121,7 @@ live("Spec 123 disposable real API acceptance", () => {
       console.log("LIVE_ISOLATED_CLEANUP_PASS");
     };
     await Promise.all([service.getServer().connect(st), client.connect(ct)]);
-    let primaryFailure: unknown;
+    let primaryFailure: RecordedFailure = null;
     try {
       for (const title of titles) {
         const result = await success("collection_create", { title, public: false });
@@ -194,32 +195,25 @@ live("Spec 123 disposable real API acceptance", () => {
       expect((await owned(x)).collection?.$id).toBe(-99);
       console.log("LIVE_SCOPED_WRITES_PASS");
     } catch (error) {
-      primaryFailure = error;
+      primaryFailure = { error };
     }
-    let cleanupFailure: unknown;
+    let cleanupFailure: RecordedFailure = null;
     try {
       await cleanup();
     } catch (error) {
-      cleanupFailure = error;
+      cleanupFailure = { error };
     } finally {
       try {
         await client.close();
         await service.cleanup();
       } catch (error) {
         cleanupFailure = cleanupFailure
-          ? new AggregateError([cleanupFailure, error], "Cleanup and connection close failed")
-          : error;
+          ? { error: new AggregateError(
+              [cleanupFailure.error, error], "Cleanup and connection close failed",
+            ) }
+          : { error };
       }
     }
-    if (primaryFailure && cleanupFailure) {
-      const message = (error: unknown) => error instanceof Error ? error.message : String(error);
-      throw new AggregateError(
-        [primaryFailure, cleanupFailure],
-        "G0 primary failure: " + message(primaryFailure) +
-          "; separate cleanup failure: " + message(cleanupFailure),
-      );
-    }
-    if (primaryFailure) throw primaryFailure;
-    if (cleanupFailure) throw cleanupFailure;
+    raiseG0Failures(primaryFailure, cleanupFailure);
   }, 120_000);
 });
