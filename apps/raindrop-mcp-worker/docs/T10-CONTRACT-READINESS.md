@@ -1,3 +1,13 @@
+## 最新 G0 门禁 · 根收藏夹清理回查修复（2026-10-21，优先于下文历史）
+
+- **最小修复已提交到 Draft（未合并、未部署）：** 业务代码修复在 `83f6cfd`，最终修正测试夹具后的代码提交为 `b8b086e`。根收藏夹 `getCollections(true)` 现在仅在 `GET /collections` 返回 `result:true` 且 `items` 为数组时认为列表有效；否则抛出可识别的 `UpstreamError`，不再把无效响应转换为空列表。严格校验由同一现有 Service 复用，没有新增依赖、存储、Runner 或 API 客户端。
+- **源码级测试证据：** [Node24 CI #39533924163](https://github.com/lirtual/mcp-workers/actions/runs/39533924163) **Success**；Raindrop 本地测试集合在 CI 中 **402 passed / 3 skipped**。覆盖合法空根列表、HTTP/缺失/错误响应、不可缓存无效结果，并保持已有读取有限重试语义。上一轮 CI #39533698716 曾因测试夹具缺少 `result:true` 与断言未关闭有限读取重试而失败；已修正后通过。CI 并非真实 G0。
+- **历史真实 G0 仍失败：** [#39526769234](https://github.com/lirtual/mcp-workers/actions/runs/39526769234) 使用旧代码 `e6fc4dd`，Favorite 断言失败（`count=0`）但清理 PASS。旧版可把异常查询响应误转成零结果；目前未取得足以归因 Favorite 搜索根因的真实响应证据。最新版增加有限范围的 `LIVE_FAVORITE_DIAGNOSTIC`，但尚未运行授权后的第三次真实验收。
+- **发布仍 NO-GO：** 当前仓库没有经安全审批获准、独立于发布工作流的 G0 Secret-bearing 入口。不得通过 Shell/WSL、其他连接器或提前部署规避平台安全限制。获准后需重新确认 **PR 最新提交 SHA**，仅在一次性隔离作业中运行 `pnpm --filter raindrop-mcp-worker run test:live:spec123`，记录退出码、Favorite 正反筛选、逐 ID 写入/核验、`LIVE_FAVORITE_EXCLUSION_PASS`、`LIVE_SCOPED_WRITES_PASS`、`LIVE_ISOLATED_CLEANUP_PASS` 和最终随机集合消失回执，并撤销临时入口；失败不得自动重放写入。
+- **阶段边界：** G0 尚未完成；G1 合并/原有 Actions 发布需要另外明确授权；G2 Portal/插件真实验收须在实际发布后执行。全局 Trash 永久清空与 Pro 正向去重仍按已接受的验收范围限制，不补造破坏性样本。
+
+---
+
 ## 当前 G0 状态（2026-10-21；此节优先于下文历史快照）
 
 - **遗留可丢弃集合已由用户在 Raindrop 网页端清理：** 用户明确确认删除测试集合 `76295923`（随机专属名称 `spec123-b-b84e8bfc4b00450f82ecbb560de0eaf8`），刷新后不存在；此前 `76295921` 已取得精确 ID 删除回执。这是**用户完成的网页端核对**，不是 ChatGPT 再次执行生产 API 读回；不应重复要求清理或跨接口绕过此前的安全限制。
