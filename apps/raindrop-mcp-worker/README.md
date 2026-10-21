@@ -33,7 +33,7 @@ It is not published as an npm package and does not support standalone STDIO, sta
 
 ## MCP tools
 
-The Agent-facing MCP contract follows [Spec #145](https://github.com/lirtual/mcp-workers/issues/145) and the accepted [ADR in PR #144](https://github.com/lirtual/mcp-workers/pull/144): **24 Free-plan atomic tools** replace the old 41-name compatibility inventory. The published API must be rechecked after release; this document describes the source contract.
+The Agent-facing MCP contract follows [Spec #145](https://github.com/lirtual/mcp-workers/issues/145) and the accepted [ADR in PR #144](https://github.com/lirtual/mcp-workers/pull/144): **24 Free-plan atomic tools** replace the old 41-name compatibility inventory. The production ChatGPT MCP directory was verified on 2026-10-21: exactly 24 Raindrop tools are exposed, separate from three MCP Portal management tools. This document also describes the matching source contract.
 
 - Collections: `collection_list`, `collection_get`, `collection_create`, `collection_update`, `collection_delete`, `collection_remove_empty`
 - Bookmarks: `bookmark_search`, `bookmark_get`, `bookmark_exists`, `bookmark_create`, `bookmark_update`, `bookmark_move`, `bookmark_delete`, `bookmark_filters_get`, `bookmark_batch_update`, `bookmark_batch_delete`
@@ -110,7 +110,7 @@ This Worker was migrated and adapted from an MIT-licensed Raindrop MCP implement
 
 ### T10 release readiness
 
-See [Spec #145](https://github.com/lirtual/mcp-workers/issues/145) for the historical 25-tool cutover contract (now 24 tools after removing Pro-only duplicates); [T10 readiness](docs/T10-CONTRACT-READINESS.md) records historical G0 evidence and earlier 41-name compatibility decisions. The original Draft did not authorize deployment or destructive live testing; the final 24-tool Free-plan source has since been merged and published ([PR #148](https://github.com/lirtual/mcp-workers/pull/148), [release run #39554129177](https://github.com/lirtual/mcp-workers/actions/runs/39554129177)). ChatGPT Portal tool discovery and the disposable-data smoke test remain separate, pending live acceptance.
+See [Spec #145](https://github.com/lirtual/mcp-workers/issues/145) for the historical 25-tool cutover contract (now 24 tools after removing Pro-only duplicates); [T10 readiness](docs/T10-CONTRACT-READINESS.md) records historical G0 evidence and earlier 41-name compatibility decisions. The original Draft did not authorize deployment or destructive live testing; the final 24-tool Free-plan source has since been merged and published ([PR #148](https://github.com/lirtual/mcp-workers/pull/148), [release run #39554129177](https://github.com/lirtual/mcp-workers/actions/runs/39554129177)). ChatGPT Portal tool discovery and a scoped disposable-data production smoke test were completed on 2026-10-21. The live test passed bookmark create/update, Favorite positive and negative filtering, keyword/tag search, highlight create/update/delete, collection create/delete, and cleanup readback. The test bookmark was moved to Trash and remains recoverable; this is not a claim that all 24 tools were individually tested. See the acceptance record on [Issue #145](https://github.com/lirtual/mcp-workers/issues/145).
 
 The Draft follow-up fixes strict unknown-field rejection for collection_list and previously declared a validated output schema for bookmark_remove_duplicates (now removed for Free plan). These mock/SDK contract fixes are not live Raindrop acceptance or release permission.
 
