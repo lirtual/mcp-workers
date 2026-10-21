@@ -1,3 +1,24 @@
+## S2 production routing safety (2026-10-22)
+
+S2 remains opt-in. **A permitted external MCP Step must route through the
+explicitly configured `S2_PORTAL_ENDPOINT` (exactly the test Portal or
+production Portal) at Publish and Run time.** Merely enabling
+`S2_READONLY_ENABLED` without selecting a Portal now fails closed with
+`portal_target_not_configured`; approving a Plan for another endpoint
+cannot override the selected Portal (`portal_target_not_authorized`).
+Old already-published Plans are checked again when they execute.
+
+The legacy personal direct-target path is retained only behind a
+**second explicit opt-in**, `S2_DIRECT_TARGETS_ENABLED=true`, when no
+Portal endpoint has been selected; it is absent from the checked-in Wrangler
+production configuration and is never a fallback when a Portal is pinned.
+Regression tests exercise that opt-in only with disposable local fixtures.
+This keeps the agreed default unified Portal architecture without changing
+S1 or adding a network proxy/second control plane. As before, S2 remains
+Draft and disabled in production pending final release authorization.
+
+---
+
 ## S2 Portal selection (Draft, not production-enabled)
 
 - Isolated acceptance and tests continue using `https://test-mcp.lirtual.dpdns.org/mcp`.

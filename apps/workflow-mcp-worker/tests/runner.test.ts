@@ -44,6 +44,9 @@ function setup(t:test.TestContext){
     };
   }
   const env={
+    // Legacy direct-target tests explicitly opt in; S2 production defaults
+    // to pinned Portal-only and must not inherit this test fixture setting.
+    S2_DIRECT_TARGETS_ENABLED:'true',
     DB:{prepare,async batch(statements:{run:()=>Promise<unknown>}[]){return Promise.all(statements.map(s=>s.run()));}},
     WORKFLOW:{async create(){},async get(){return {async status(){return {status:'running'};}};}},
     READONLY_TARGET:{fetch:async(input:Request|string|URL,init?:RequestInit)=>readonlyWorker.fetch(new Request(input,init))},
@@ -579,4 +582,61 @@ test('S2 stateful MCP DELETE cannot delay an already successful tools/call resul
   assert.equal(result.status,'succeeded');
   assert.equal(result.steps[0].status,'succeeded');
   assert.ok(JSON.stringify(result.result).includes('acknowledged stateful result'));
+});
+
+
+test('S2 fails closed when Portal is not pinned and direct-target opt-in is absent',async t=>{
+  const {service,env,sqlite}=setup(t);
+  delete env.S2_DIRECT_TARGETS_ENABLED;
+  env.S2_READONLY_ENABLED='true';
+  const grant:ReadonlyOperation={
+    endpoint:'https://public.example.org/mcp',tool:'echo',scope:'read',
+    schema_digest:PINNED_DIGEST,
+  };
+  const wf=await service.create(JSON.stringify({version:1,name:'portal required',steps:[
+    {id:'read',uses:'mcp.call',with:{
+      endpoint:grant.endpoint,tool:grant.tool,scope:grant.scope,
+      input_schema:PINNED_SCHEMA,arguments:{value:'must not dispatch'},
+    }},
+  ]}));
+  await assert.rejects(()=>service.publish(wf.workflow_id,1,[grant],true),
+    /portal_target_not_configured/);
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM workflow_versions').get()?.n,0);
+  env.S2_DIRECT_TARGETS_ENABLED='true';
+  await service.publish(wf.workflow_id,1,[grant],true);
+  const admitted=await service.start(wf.workflow_id,{});
+  env.S2_DIRECT_TARGETS_ENABLED=undefined;
+  const oldFetch=globalThis.fetch;
+  let calls=0;
+  globalThis.fetch=(async()=>{calls++;throw Error('no external network');}) as typeof fetch;
+  try{
+    await new WorkflowRunner({} as ExecutionContext,env).run(
+      {payload:{run_id:admitted.run_id}} as WorkflowEvent<{run_id:string}>,
+      {do:async(_n:unknown,_opts:unknown,fn:()=>Promise<unknown>)=>fn()} as unknown as WorkflowStep,
+    );
+  }finally{globalThis.fetch=oldFetch;}
+  const result=await service.result(admitted.run_id);
+  assert.equal(result.status,'failed');
+  assert.equal(result.steps[0].status,'failed');
+  assert.equal(calls,0);
+});
+
+
+test('S2 pinned Portal refuses a different approved endpoint at Publish',async t=>{
+  const {service,env,sqlite}=setup(t);
+  env.S2_READONLY_ENABLED='true';
+  env.S2_PORTAL_ENDPOINT='https://test-mcp.lirtual.dpdns.org/mcp';
+  const grant:ReadonlyOperation={
+    endpoint:'https://public.example.org/mcp',tool:'echo',scope:'read',
+    schema_digest:PINNED_DIGEST,
+  };
+  const wf=await service.create(JSON.stringify({version:1,name:'portal pinned',steps:[
+    {id:'read',uses:'mcp.call',with:{
+      endpoint:grant.endpoint,tool:grant.tool,scope:grant.scope,
+      input_schema:PINNED_SCHEMA,arguments:{value:'must not be published'},
+    }},
+  ]}));
+  await assert.rejects(()=>service.publish(wf.workflow_id,1,[grant],true),
+    /portal_target_not_authorized/);
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM workflow_versions').get()?.n,0);
 });
