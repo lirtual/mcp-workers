@@ -1,5 +1,7 @@
 # Browser architecture: current phase-one decision (2026-10-20)
 
+> **Current owner decision (P9, 2026-10-21):** Goal A (personally paired native Windows Chrome) is explicitly selected. The owner accepts residual public-page/redirect access to host loopback and LAN; **strict SSRF containment is NOT a Goal A release prerequisite and is NOT achieved**. Historical P6/P8 network hold/pending-choice language below is superseded *only on that point*. Existing confirmed high-impact action approval, browser MCP E2E, installed release and separate production enablement remain blocked. See [ADR-0030 P9 amendment](./adr/0030-browser-conservative-gating-consent-evidence-acceptance.md#p9--owner-approved-goal-a-risk-boundary-2026-10-21).
+
 **Status: direct-Playwright selection P0 verified on actual Windows + WSL devices (2026-10-20). This is NOT a packaged-Agent or real MCP E2E acceptance and does not authorize implementation, merge, release or deployment.** This review is the **latest applicable phase-one backend decision** and supersedes CLI-first guidance in the earlier browser PoC, specification, decision-tree prefaces and ADR-0022. All Q1–Q52 history and positive/negative MXC, WFP, Windows CLI and Playwright tests remain as historical evidence, not current platform acceptance.
 
 ## Product boundary and choice
@@ -158,3 +160,28 @@ Source contracts: [Playwright Network](https://playwright.dev/docs/network), [CD
 4. **Stop and return to selection** if a proof needs additional services or cross-platform protocol migration solely to pass a first-stage browser tool. No real site login, durable Agent profile change, Worker flag change, merge, deploy or release is authorized here.
 
 **P8 verdict:** current legacy protocol/version verified; modern MCP elicitation mechanism documented; actual ChatGPT support, server-verifiable one-use approval and private-network safety are **unverified**. The minimal implementation plan stays unchanged pending owner risk-scope choice and one isolated client proof.
+
+## P9 acceptance reconciliation — trusted Windows Goal A (2026-10-21)
+
+**Owner decision, not a safety-test success:** The personally paired Windows device is allowed to operate as a normal owner-trusted machine. Web content remains *untrusted*. Explicitly accepted residual network exposure includes redirects, DNS rebinding, WebSocket attempts, HTML subresources and requests made before the Playwright route hook; Chrome may contact loopback, LAN or device-reachable internal services. P5 real Windows 302 result **attempted=1, blocked=0, localHits=1** stays recorded as **redirect SSRF isolation FAIL / risk accepted for Goal A**. The private-network zero-hit acceptance criterion belongs to Goal B only. Never re-label this as network isolation passing.
+
+### What the first stage can and cannot do
+
+| Surface / gate | Accepted Goal A boundary | Status / evidence |
+| --- | --- | --- |
+| Paired Windows and transport | Explicit device, existing Portal owner, Ed25519 WSS, Durable Object and SQLite operation receipts | Existing P3 isolated signed WSS read and independent compiled native Chrome startup **PASS as separate paths**; actual signed browser-MCP operation **not tested** |
+| Browser local ownership | Single Agent-owned Chrome automation Profile; do not attach personal Chrome or import user profiles; context closing / revocation / no replay | P2/P3 real Chrome, disposable identity/profile and revocation checks provide existing evidence, but **not a newly installed production Agent** |
+| Initial navigation hygiene | Reject malformed/unsupported schemes and obvious direct local/private initial inputs, preserve existing context route as defense-in-depth | Existing parser and direct subresource tests pass; **redirect/DNS/WebSocket isolation NOT provided** |
+| External effect authorization | `browser_status`/`browser_snapshot` observational; `browser_start`/`browser_close` are owner-scoped lifecycle effects; **`browser_navigate` remains effectful**, not automatically read-only for any arbitrary URL | No verified ChatGPT→Worker→Agent action-specific human approval attestation. Consequential/ambiguous effects **disabled** |
+| Powerful interactions | No arbitrary JS/CDP, personal Profile, click/fill/keyboard/submit/upload/download tools in first five | Staged tools still `BROWSER_TOOLS_ACCEPTED=false` |
+| Platform/release | Windows-first; Linux/WSL/macOS browser rollout independent | CI and separate P3 Windows acceptance are **not** a published installed/pinned release |
+
+### Minimal nonproduction acceptance path (no new infrastructure)
+
+1. **Source/negative verification now:** verify the five-tool schema, exact device/session/operation IDs, malformed/direct-private URL rejection, disabled `tools/list` and denied `tools/call`, no arbitrary commands or Profile fields. Reuse existing checked-in P4/P5 tests and evidence unless changed. Do **not** use a public user-owned internal service as a test target.
+2. **Private browser lifecycle validation:** on the already owner-approved Windows test host, only from a disposable TEMP Profile/identity, reuse verified packaged BrowserManager evidence for start, public controlled test page, bounded snapshot, close, restart/revocation, clean process teardown. Keep original owner's Agent identity and scheduled task untouched; state exactly which segments were separately tested.
+3. **User approval proof:** independently check actual client protocol and client-initiated server interaction on a disposable endpoint. Require an authenticated *server-verifiable*, action-bound, short-lived, one-use result that cannot be model-forged; test denial/expiry/modified URL/replay. If unavailable, **leave high-impact and ambiguous navigation disabled** and record unsupported. Do not upgrade the entire MCP protocol or invent an approval backend by default.
+4. **Only after approval gate and separate test authorization:** run one authenticated, end-to-end *disposable* browser MCP call over actual Worker DO / signed WSS. The current Worker has the browser tool flag hardcoded **false**, which must not be overridden just to fake acceptance. This is a future isolated validation gate, **not permission now** to modify production or deploy.
+5. **Stop:** if the plan grows to require an OS firewall, proxy, DNS layer, another Worker, persistent approval server or cross-platform packaging only to support this first phase, return to an explicit selection decision. Never conflate a disconnected fixture, successful CI, and installed-agent production activation.
+
+**P9 status after documentation update:** Goal A network risk **explicitly accepted**; Goal B private-network isolation **not passed / not required for Goal A**; authentic one-use user confirmation **unverified**; browser MCP actual signed E2E **unverified**; all three PRs still Draft and browser tools disabled. No merge, deploy, publication or installed Agent upgrade.
