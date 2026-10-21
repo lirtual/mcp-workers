@@ -22,7 +22,17 @@ async function api(method,path,body){
 }
 function wr(args,input){
   const r=spawnSync('pnpm',['exec','wrangler',...args],{cwd,encoding:'utf8',input,timeout:120000,maxBuffer:2097152,env:{...process.env,CI:'true',WRANGLER_SEND_METRICS:'false'}});
-  if(r.status!==0)throw Error('wrangler '+args[0]+' '+(args[1]||'')+' failed '+r.status+' (details suppressed)');return r.stdout;
+  if(r.status!==0){
+    const safe=String(r.stderr||r.stdout||'')
+      .replaceAll(cf,'[redacted]')
+      .replaceAll(pair.clientSecret,'[redacted]')
+      .replaceAll(process.env.GITHUB_TOKEN||'__not_set__','[redacted]');
+    const lines=safe.split('\n').filter(x=>/error|failed|migration|workflow|script|name|binding|account|error code/i.test(x))
+      .slice(-8).map(x=>x.slice(0,220));
+    throw Error('wrangler '+args[0]+' '+(args[1]||'')+
+      ' exit '+r.status+' '+lines.join(' | ').slice(0,850));
+  }
+  return r.stdout;
 }
 function mcp(url,options){const client=new Client({name:'isolated-s2',version:'1'});return {client,transport:new StreamableHTTPClientTransport(new URL(url),options)};}
 async function tool(name,args,expect){const r=await owner.callTool({name,arguments:args});assert.equal(r.content?.[0]?.type,'text');const v=JSON.parse(r.content[0].text);if(expect){assert.equal(r.isError,true);assert.equal(v.error,expect);}else assert.notEqual(r.isError,true,name+' returned error');return v;}
@@ -109,26 +119,18 @@ async function removeExact(path){
 }
 async function cleanup(){
   try{await owner?.close();await portal?.client?.close();}catch{}
-  if(!/^workflow-s3-plan-[a-f0-9]{10}$/.test(name))throw Error('Unsafe cleanup identity');
-  const failed=[];
-  const worker='/accounts/'+account+'/workers/scripts/'+name;
-  const workflow='/accounts/'+account+'/workflows/'+name;
-  if(attempted){
-    try{
-      if(await resourcePresent(worker+'/script-settings'))
-        await api('DELETE',worker+'?force=true');
-      if(await resourcePresent(worker+'/script-settings'))throw Error('worker remains');
-    }catch{failed.push('worker');}
-    try{await removeExact(workflow);}catch{failed.push('workflow');}
-  }
-  if(dbId){
-    try{await removeExact('/accounts/'+account+'/d1/database/'+dbId);}
-    catch{failed.push('d1');}
-  }
+  if(!/^workflow-s3-plan-[a-f0-9]{10}$/.test(name))
+    throw Error('Unsafe cleanup identity');
+  const result=spawnSync('node',['tests/s3-disposable-cleanup.mjs',name],{
+    cwd,timeout:90000,encoding:'utf8',
+    env:process.env,
+  });
   try{unlinkSync(new URL('../'+file,import.meta.url));}catch{}
-  if(failed.length)throw Error('DISPOSABLE_CLEANUP_FAILED: '+failed.join(',')+' name='+name);
+  if(result.status!==0)throw Error('S3_PRODUCT_DISPOSABLE_CLEANUP_FAILED '+name+
+    ' exit '+String(result.status));
   console.log('S3_PRODUCT_DISPOSABLE_CLEANUP_OK',name);
 }
+
 let failure;
 try{await run()}catch(e){failure=e;console.error('S3_PRODUCT_CLOUD_E2E_FAILED',String(e.message).replaceAll(cf,'[redacted]').replaceAll(pair.clientSecret,'[redacted]'),'name='+name);}
 finally{try{await cleanup();}catch(e){failure??=e;console.error(String(e.message));}}
