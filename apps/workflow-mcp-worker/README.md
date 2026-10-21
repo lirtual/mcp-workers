@@ -1,3 +1,45 @@
+## S3 upgrade-safe OIDC callbacks and late-result acceptance (2026-10-22)
+
+**Isolated real product E2E is green on the upgraded callback code:**
+[Cloudflare Workflow coordinator #39652777599](https://github.com/lirtual/mcp-workers/actions/runs/39652777599)
+**Success** with [independent GitHub echo executor #39652927947](https://github.com/lirtual/mcp-workers/actions/runs/39652927947)
+**Success**, including S2 test Portal IMA read, confirmed physical dispatch,
+GitHub OIDC Claim, durable result emission, and verified disposable
+Worker/Workflow/D1 cleanup.
+
+Fix \`84ef561\` removes a cross-deployment identity mismatch: a signed
+callback for an already dispatched job is now validated against its
+**original immutable D1 Attempt** \`repository_id\`, \`workflow_ref\` and
+\`ref\`, instead of the latest Worker Environment ref. Only the same
+environment-authorized repository ID, known dedicated executor family,
+active parent Run and matching OIDC audience may succeed. A previous
+test-only \`ci.yml\` candidate still cannot be claimed from the
+production dedicated executor identity. **Rotating OIDC audience,
+repository or dedicated workflow family is not transparent:** drain
+active jobs before changing those environment identities. No schema
+migration or new service was introduced.
+
+Commit \`e323ebc\` adds terminal-late-callback regression tests and
+hardens **only the disposable E2E test harness**: a timed-out read-only
+\`workflow_result\` request is retried a bounded number of times,
+with a sanitized D1 business-outcome lookup for diagnostics.
+It never retries \`workflow_run\` or the GitHub dispatch. The first
+post-fix isolated coordinator [#39652043892](https://github.com/lirtual/mcp-workers/actions/runs/39652043892)
+did fail on a result-query timeout despite its [GitHub child
+#39652193430](https://github.com/lirtual/mcp-workers/actions/runs/39652193430)
+succeeding. The subsequent coordinator #39652777599 passed, confirming
+normal operation of the fixed callback path and successful cleanup.
+
+**Evidence:** 92/92 local Workflow tests, TypeScript checks and
+Wrangler dry-run passed. Physical GitHub Job cancellation and handling
+of callbacks *after* a terminal \`indeterminate\` Run remain explicit
+release decisions. Terminal results are not silently rewritten by a
+late signed callback; no retry or new executor is automatically created.
+The formal Portal HTTP 401 remains deferred. S1 production unchanged;
+S2/S3 implementations still Draft, unmerged, undeployed and disabled.
+
+---
+
 ## S3 dedicated registered executor — real isolated E2E PASS (2026-10-22)
 
 **The exact default-branch registered `workflow-s3-executor.yml` now has
