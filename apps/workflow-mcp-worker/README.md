@@ -1,3 +1,49 @@
+## S3 dedicated executor registration and compatibility preflight (2026-10-22)
+
+The source in [Draft PR #151](https://github.com/lirtual/mcp-workers/pull/151)
+includes `.github/workflows/workflow-s3-executor.yml`, but GitHub's
+default branch does **not** contain it and the GitHub Actions workflow
+directory does **not** register it yet. GitHub requires a
+`workflow_dispatch` workflow to exist on the default branch before it can
+be invoked with a selected ref. The existing pinned branch-local
+`ci.yml` isolated Echo tests do not remove that product registration gate.
+
+The existing GitHub Environment `workflow-mcp-worker` was checked
+read-only: its variable-name list currently does **not** include
+`S3_CALLBACK_ORIGIN` or `S3_GITHUB_AUDIENCE`. The dedicated Job consumes
+exactly these two scoped variables. No new permanent variable or secret has
+been created. Configure their narrowly approved, environment-specific
+values **only after** a separate release authorization and an identified
+registered test Worker endpoint. Do not reuse or blindly redirect the
+production Portal credentials; the executor receives no Cloudflare keys.
+
+Two immutable-version regressions are added: a queued S3 Run remains pinned
+to its original Published Version when the Draft is republished as an S1
+plan; and an older S1 Published Plan cannot acquire a GitHub dispatch grant
+by schema tampering. Two static contract tests pin the dedicated Job's
+three opaque inputs, fixed `heavy.github.echo` capability, bounded 3-minute
+runtime, read-only repository permission and `id-token:write`. The Job
+cannot accept arbitrary shell, repository or callback URL inputs.
+
+**Current evidence:** 87/87 Workflow tests, TypeScript typecheck and the
+Wrangler Worker bundle dry-run passed. This is **static/local acceptance**
+of the dedicated Job and version-pin invariants, not a claim that its live
+`workflow_dispatch` registration or long-running job cancellation has
+been verified. The full product S2 test Portal + S3 ephemeral `ci.yml`
+Executor end-to-end check remains green from
+[Actions #39643118492](https://github.com/lirtual/mcp-workers/actions/runs/39643118492)
+and [independent Job #39643255274](https://github.com/lirtual/mcp-workers/actions/runs/39643255274).
+
+**Still gated:** separate authorization for merging/activating the dedicated
+default-branch Workflow; approval of the two environment variables; isolated
+validation with the newly registered dedicated executor; physical GitHub Job
+cancellation (no cancellation MCP API exists), exceptionally late callbacks,
+reconciliation after terminal indeterminate and cross-deployment changes to
+executor identity while active jobs are running. Keep S1 production
+unchanged, S2/S3 Draft and OFF, formal Portal HTTP 401 deferred.
+
+---
+
 ## S3 pre-release resilience and terminal-state gates (2026-10-22)
 
 [Draft PR #151](https://github.com/lirtual/mcp-workers/pull/151)

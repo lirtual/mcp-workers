@@ -836,3 +836,76 @@ test('S3 missing callback remains indeterminate after bounded waits, never re-di
   assert.equal(dispatches,1);
   assert.equal(waits,8);
 });
+
+test('S3 admitted Run retains immutable heavy Plan across republish to an S1-only Plan',async t=>{
+  const {service,env}=setup(t);
+  env.S3_ENABLED='true';
+  const original=await service.create(JSON.stringify({
+    version:1,name:'S3 original',steps:[
+      {id:'heavy',uses:'github.run',with:{capability:'heavy.github.echo'}},
+    ],
+  }));
+  const v1=await service.publish(original.workflow_id,1,[],false,true);
+  const oldRun=await service.start(original.workflow_id,{});
+  const changed=await service.update(original.workflow_id,1,JSON.stringify({
+    version:1,name:'S1 replacement',steps:[
+      {id:'emit',uses:'result.emit',with:{data:{replacement:true}}},
+    ],
+  }));
+  assert.equal(changed.draft_revision,2);
+  const v2=await service.publish(original.workflow_id,2);
+  assert.notEqual(v1.published_version_id,v2.published_version_id);
+  const newRun=await service.start(original.workflow_id,{});
+  assert.equal(oldRun.published_version_id,v1.published_version_id);
+  assert.equal(newRun.published_version_id,v2.published_version_id);
+
+  // Shut down the heavy executor. An already admitted V1 Run must still
+  // execute *its own* pinned heavy Step, which fails closed and cannot be
+  // silently reinterpreted as the newly published S1-only Plan.
+  env.S3_ENABLED=undefined;
+  let external=0;
+  const previousFetch=globalThis.fetch;
+  globalThis.fetch=(async()=>{external++;throw Error('no external dispatch');}) as typeof fetch;
+  try{
+    const runner=new WorkflowRunner({} as ExecutionContext,env);
+    const steps={do:async(_n:unknown,_opts:unknown,fn:()=>Promise<unknown>)=>fn()} as unknown as WorkflowStep;
+    await runner.run({payload:{run_id:oldRun.run_id}} as WorkflowEvent<{run_id:string}>,steps);
+    await runner.run({payload:{run_id:newRun.run_id}} as WorkflowEvent<{run_id:string}>,steps);
+  }finally{globalThis.fetch=previousFetch;}
+  const before=await service.result(oldRun.run_id);
+  const after=await service.result(newRun.run_id);
+  assert.equal(before.status,'failed');
+  assert.deepEqual(before.steps.map(s=>s.step_id),['heavy']);
+  assert.equal(after.status,'succeeded');
+  assert.deepEqual(after.result,{replacement:true});
+  assert.deepEqual(after.steps.map(s=>s.step_id),['emit']);
+  assert.equal(external,0);
+});
+
+test('a legacy Published S1 Plan tampered to add github.run cannot gain a S3 grant',async t=>{
+  const {service,env,sqlite}=setup(t);
+  const wf=await service.create(JSON.stringify({version:1,name:'legacy S1',steps:[
+    {id:'emit',uses:'result.emit',with:{data:{safe:true}}},
+  ]}));
+  const v=await service.publish(wf.workflow_id,1);
+  const run=await service.start(wf.workflow_id,{});
+  sqlite.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(
+    JSON.stringify({version:1,name:'tampered',steps:[
+      {id:'heavy',needs:[],uses:'github.run',with:{capability:'heavy.github.echo'}},
+    ]}),v.published_version_id,
+  );
+  env.S3_ENABLED='true';
+  let outbound=0;
+  const original=globalThis.fetch;
+  globalThis.fetch=(async()=>{outbound++;throw Error('unauthorized request');}) as typeof fetch;
+  try{
+    await new WorkflowRunner({} as ExecutionContext,env).run(
+      {payload:{run_id:run.run_id}} as WorkflowEvent<{run_id:string}>,
+      {do:async(_n:unknown,_opts:unknown,fn:()=>Promise<unknown>)=>fn()} as unknown as WorkflowStep);
+  }finally{globalThis.fetch=original;}
+  const result=await service.result(run.run_id);
+  assert.equal(result.status,'failed');
+  assert.equal(result.steps[0].step_id,'heavy');
+  assert.equal(result.steps[0].status,'failed');
+  assert.equal(outbound,0);
+});
