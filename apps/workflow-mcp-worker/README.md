@@ -1,7 +1,7 @@
 ## S2 Portal machine authentication (Draft only)
 
 The first owner-approved Portal candidate is
-`https://mcp.lirtual.dpdns.org/mcp` (IMA through the existing Portal).
+`https://test-mcp.lirtual.dpdns.org/mcp` (IMA through the existing Portal).
 S2 is **disabled** in the checked-in Wrangler configuration and this Draft is
 not authorized for production. S1 does not require the following settings.
 

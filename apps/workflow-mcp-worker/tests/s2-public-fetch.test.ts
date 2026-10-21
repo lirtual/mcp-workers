@@ -5,6 +5,10 @@ import { publicMcpEndpoint, scopedPublicMcpFetch, TRUSTED_PORTAL_ENDPOINT } from
 
 const TARGET = 'https://mcp.example.org/mcp?tenant=one';
 
+test('owner-selected S2 Portal endpoint is the test Portal', () => {
+  assert.equal(TRUSTED_PORTAL_ENDPOINT,'https://test-mcp.lirtual.dpdns.org/mcp');
+});
+
 test('candidate S2 transport rejects non-public-shaped or unsafe target URLs', () => {
   for (const target of [
     'http://mcp.example.org/mcp', 'https://localhost/mcp',

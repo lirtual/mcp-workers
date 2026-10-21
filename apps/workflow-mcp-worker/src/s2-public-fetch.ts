@@ -26,7 +26,7 @@ export function publicMcpEndpoint(input: string | URL): URL {
 
 // S2 may authenticate only to the owner's explicitly chosen Portal.
 // Never send this credential to an arbitrary endpoint from a Draft.
-export const TRUSTED_PORTAL_ENDPOINT = 'https://mcp.lirtual.dpdns.org/mcp';
+export const TRUSTED_PORTAL_ENDPOINT = 'https://test-mcp.lirtual.dpdns.org/mcp';
 export type PortalServiceToken = {clientId:string;clientSecret:string};
 
 /** Only use with an endpoint already checked against an owner operation grant. */

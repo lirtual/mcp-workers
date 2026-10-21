@@ -24,6 +24,11 @@ on:
         required: false
         type: boolean
         default: false
+      s2_portal_probe:
+        description: Read-only S2 test Portal acceptance from existing Environment secrets (no deploy)
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -520,3 +525,35 @@ jobs:
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Verify authenticated S1 production and remove randomized test records
         run: node apps/workflow-mcp-worker/tests/production-smoke.mjs
+
+  workflow-s2-portal-probe:
+    name: Authenticated S2 test Portal read-only check (no deploy)
+    needs: [checks]
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/wip/workflow-s2-public-readonly' &&
+          inputs.worker == 'workflow-mcp-worker' &&
+          inputs.s2_portal_probe == true &&
+          inputs.smoke_only != true &&
+          needs.checks.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment:
+      name: workflow-mcp-worker
+    env:
+      S2_PORTAL_CLIENT_ID: ${{ secrets.S2_PORTAL_CLIENT_ID }}
+      S2_PORTAL_CLIENT_SECRET: ${{ secrets.S2_PORTAL_CLIENT_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Read-only MCP discovery and one IMA list call
+        run: node --experimental-strip-types apps/workflow-mcp-worker/tests/s2-portal-acceptance.mjs
