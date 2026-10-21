@@ -1,5 +1,7 @@
 # ADR-0030 — Conservative browser-effect gating, verified consent acceptance, and lean rollout evidence
 
+> **Windows Goal A round 3 (H18=A; 2026-10-21):** Ordinary Human Control → Agent Control resume follows an **explicit owner instruction through ChatGPT and existing authenticated Remote Control MCP**, scoped to the browser session. No new independent human-presence service is selected. Existing MCP authentication and the text of an instruction are **not independent proof of human presence**, and are **not** the existing exact one-use, action-bound approval for any high-impact or ambiguous website effect. The established consequential-action gate remains fail-closed. [Round 3](../BROWSER-ARCHITECTURE-REVIEW-20261020.md#grill-with-docs-round-3--h12h18-2026-10-21). Documentation only; no tool enablement.
+
 > **Later phase-one acceptance clarification (2026-10-20):** [Minimal trusted-device PoC and revised release gates](../BROWSER-BACKEND-POC-20261020.md) separate **Goal A** (personal paired-device browser control) from **Goal B** (strictly isolated hostile execution). Prior network isolation P0 is deferred/unverified for Goal A, **not passed**; browser restrictions cannot constrain existing authorized Shell networking. Verified exact single-use owner approval remains required for high-impact external actions in both goals; without a real verifiable approval channel they stay disabled. The older all-subresource/OS egress gates below apply to Goal B and are not claimed by a basic CLI launch.
 
 
