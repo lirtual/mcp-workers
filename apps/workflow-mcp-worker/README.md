@@ -1,3 +1,48 @@
+## S3 dedicated registered executor — real isolated E2E PASS (2026-10-22)
+
+**The exact default-branch registered `workflow-s3-executor.yml` now has
+a successful real GitHub Job acceptance**, not just a registration or
+no-op dispatch. On S3 Draft commit `c1a549e`:
+
+- [Product coordinator / Cloudflare Workflow #39650137200](https://github.com/lirtual/mcp-workers/actions/runs/39650137200)
+  **Success** for the three-Step `S2 test Portal IMA read →
+  github.run(heavy.github.echo) → result.emit` Plan.
+- [Registered dedicated Echo Job #39650305184](https://github.com/lirtual/mcp-workers/actions/runs/39650305184)
+  **Success**; GitHub-issued OIDC, D1 confirmed physical Run Claim and
+  authenticated callback completed. Its logs contain
+  `S3_REGISTERED_ECHO_EXECUTOR_SUCCESS`.
+- Coordinator logs confirm `S3_PRODUCT_GITHUB_CREDENTIAL_GATE_OK`,
+  `S3_PRODUCT_WORKFLOW_RUN_STARTED`,
+  `S3_PRODUCT_S2_PORTAL_GITHUB_WORKFLOW_RESULT_PASS` and
+  `S3_PRODUCT_DISPOSABLE_CLEANUP_OK`.
+- Exactly two temporary GitHub Environment **variables**
+  (`S3_CALLBACK_ORIGIN` to random disposable
+  `workflow-s3-plan-066f01db1f.aiyaya.workers.dev`, and
+  `S3_GITHUB_AUDIENCE=workflow-s3-claim:test`) were set under a
+  shell `EXIT`/failure cleanup trap. After the successful test,
+  both were deleted, and the GitHub Environment variables list was
+  independently checked **empty**. The randomly named Cloudflare Worker,
+  Workflow and D1 were deleted and verified by the coordinator.
+  No production secret or permanent environment configuration was added.
+- Local Workflow tests **88/88**, TypeScript checks, and Wrangler
+  bundle dry-run passed; GitHub Application checks and GitGuardian for
+  `c1a549e` both finished Success.
+- The dedicated test callback origin rule is limited to one exact S3
+  Draft ref, a fixed OIDC test audience and the randomized
+  `workflow-s3-plan-<10hex>` test host. Normal production dispatcher
+  rules stay unchanged.
+
+**Still not production activation:** S1 production has not changed;
+S2/S3 implementation remains Draft, unmerged and not deployed. The
+dedicated workflow is registered on `main` but has no recurring
+trigger; no production S3 flags were enabled. Remaining work concerns
+real physical GitHub cancellation, much-delayed/terminal uncertain
+reconciliation, cross-version upgrade validation and the formal
+Portal HTTP 401 at eventual release. Do not infer those gates from
+the successful normal-path dedicated Echo E2E.
+
+---
+
 ## S3 dedicated executor registered on GitHub default branch (2026-10-22)
 
 **Registration complete, not production activation.** The isolated
