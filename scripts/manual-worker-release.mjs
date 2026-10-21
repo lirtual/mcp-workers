@@ -136,6 +136,46 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
   return true;
 }
 
+// Preparation gate for a future Workflow release through THIS manual Actions
+// pipeline. Deliberately does not add Workflow to the dispatch allowlist.
+export function verifyWorkflowReleaseConfig(conf) {
+  invariant(conf?.name === "workflow-mcp-worker" && conf.main === "src/index.ts",
+    "Workflow release source identity drift");
+  invariant(conf.keep_vars === false,
+    "Workflow release Variables ownership must be explicit");
+  invariant(conf.workers_dev === false && conf.preview_urls === false &&
+    Array.isArray(conf.routes) && conf.routes.length === 1 &&
+    conf.routes[0]?.custom_domain === true &&
+    typeof conf.routes[0]?.pattern === "string" && conf.routes[0].pattern.length > 0,
+    "Workflow release public routing must be an explicitly reviewed Custom Domain");
+  const d1 = conf.d1_databases;
+  invariant(Array.isArray(d1) && d1.length === 1 &&
+    d1[0]?.binding === "DB" && d1[0]?.database_name === "workflow-mcp-worker" &&
+    d1[0]?.migrations_dir === "migrations" &&
+    /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(d1[0]?.database_id ?? "") &&
+    d1[0].database_id !== "00000000-0000-0000-0000-000000000000",
+    "Workflow release D1 database ID is not provisioned");
+  invariant(Array.isArray(conf.workflows) && conf.workflows.length === 1 &&
+    conf.workflows[0]?.binding === "WORKFLOW" &&
+    conf.workflows[0]?.name === "workflow-mcp-s1" &&
+    conf.workflows[0]?.class_name === "WorkflowRunner",
+    "Workflow release Workflows binding must match S1 runner");
+  invariant(Array.isArray(conf.services) && conf.services.length === 1 &&
+    conf.services[0]?.binding === "READONLY_TARGET" &&
+    conf.services[0]?.service === "workflow-s1-readonly-fixture",
+    "Workflow release read-only Fixture binding must match approved Worker");
+  invariant(conf.secrets?.required?.length === 1 &&
+    conf.secrets.required[0] === "MCP_ACCESS_TOKEN",
+    "Workflow release Portal token must be the sole declared Secret");
+  invariant(conf.vars?.S2_READONLY_ENABLED === undefined,
+    "Workflow release S2 must stay disabled until separately authorized");
+  invariant(conf.compatibility_flags?.includes("global_fetch_strictly_public"),
+    "Workflow release public fetch compatibility flag missing");
+  invariant(conf.observability?.enabled === true,
+    "Workflow release observability must be enabled");
+  return true;
+}
+
 export function parseWranglerVersion(output) {
   const match = output.match(/(?:Current )?Version ID:\s*([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i);
   invariant(!!match, "Wrangler did not report a release Version ID");
@@ -166,6 +206,7 @@ export function verifyPublishedVersion(previous, observed, expected) {
 
 function readConfiguration(worker, content) {
   const conf = JSON.parse(content.replace(/^\s*\/\/.*$/gm, ""));
+  if (worker === "workflow-mcp-worker") verifyWorkflowReleaseConfig(conf);
   invariant(conf.name === worker && conf.main === WORKER_ENTRIES[worker],
     "Worker script name or entry differs from selected target");
   invariant(conf.keep_vars === false,

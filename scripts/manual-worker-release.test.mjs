@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion } from "./manual-worker-release.mjs";
+import { activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig } from "./manual-worker-release.mjs";
 
 const required = [
   { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
@@ -325,4 +325,41 @@ test("GitHub Actions deploy requires only one PAT Secret and no repository lists
   assert.throws(() => verifyBindings(worker, { ...settings,
     bindings: [...bindings, { name: "DANGEROUS_RESOURCE", type: "service" }] },
     secrets, { mode: "readback" }), /Unexpected production resource/);
+});
+
+test("Workflow release config is blocked until real D1, route and explicit bindings exist", () => {
+  const source = JSON.parse(readFileSync(new URL("../apps/workflow-mcp-worker/wrangler.jsonc", import.meta.url), "utf8"));
+  assert.throws(() => verifyWorkflowReleaseConfig(source), /Workflow release/);
+  const complete = {
+    ...source,
+    keep_vars: false,
+    d1_databases: [{ ...source.d1_databases[0], database_id: "12345678-1234-4234-8234-123456789abc" }],
+    routes: [{ pattern: "workflow.example.org", custom_domain: true }],
+  };
+  assert.equal(verifyWorkflowReleaseConfig(complete), true);
+  const broken = [
+    [{ ...complete, workers_dev: true }, /public routing/],
+    [{ ...complete, routes: [] }, /public routing/],
+    [{ ...complete, routes: [{ pattern: "workflow.example.org", custom_domain: false }] }, /public routing/],
+    [{ ...complete, d1_databases: source.d1_databases }, /D1 database ID/],
+    [{ ...complete, workflows: [] }, /Workflows binding/],
+    [{ ...complete, services: [] }, /read-only Fixture binding/],
+    [{ ...complete, secrets: { required: [] } }, /Portal token/],
+    [{ ...complete, vars: { S2_READONLY_ENABLED: "true" } }, /S2 must stay disabled/],
+    [{ ...complete, keep_vars: true }, /Variables ownership/],
+    [{ ...complete, observability: { enabled: false } }, /observability/],
+  ];
+  for (const [conf, reason] of broken) {
+    assert.throws(() => verifyWorkflowReleaseConfig(conf), reason);
+  }
+});
+
+test("Unprovisioned Workflow Worker cannot enter existing production dispatch", () => {
+  const workflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+  const selector = readFileSync(new URL("./select-affected-apps.mjs", import.meta.url), "utf8");
+  const release = readFileSync(new URL("./manual-worker-release.mjs", import.meta.url), "utf8");
+  assert.ok(!workflow.includes("          - workflow-mcp-worker"), "no release choice before provisioning");
+  assert.ok(!selector.includes("RELEASE_WORKERS = APPLICATIONS;"), "application tests are not release authorization");
+  assert.match(selector, /name !== 'workflow-mcp-worker'/);
+  assert.doesNotMatch(release.split("const WORKERS = new Set(")[1].split(");")[0], /workflow-mcp-worker/);
 });
