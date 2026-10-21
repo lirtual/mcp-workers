@@ -101,3 +101,31 @@ Source contracts: [Playwright Network](https://playwright.dev/docs/network), [CD
 - **Stop** if achieving Goal B would require stacking CDP + custom DNS + privileged firewall/proxy + a new runtime. Return to the owner risk-scope decision and compare one established OS/network boundary against honest Goal A limitations rather than piling on mitigations. Cross-platform and production release decisions remain separate.
 
 **Current P6 conclusion:** zero additional entities selected, zero network-isolation success claims, zero new MCP tool exposure. Only the above review/validation plan is ready; actual policy acceptance, one-use user confirmation, browser MCP end-to-end activation and deployment are pending.
+
+
+## P7 verified approval-transport capability audit (2026-10-21)
+
+**Stage: audited API/source contract, NOT a verified human-presence flow or an accepted new design.** Source pinned to Agent [Draft PR #20](https://github.com/lirtual/remote-control-agent/pull/20) \`150b705\` and Worker [Draft PR #143](https://github.com/lirtual/mcp-workers/pull/143) \`f30f66a\`; cross-repository source review only, not a ChatGPT-client E2E experiment.
+
+### Concrete evidence through existing components
+
+| Boundary | Evidence from the pinned Draft source | Result for action-specific approval |
+| --- | --- | --- |
+| ChatGPT host → MCP tool | OpenAI documents ChatGPT tool confirmation and configurable app preferences; a tool-level approval may even be remembered for the same conversation. Tool annotations affect client handling but are **not server authorization**. | Host-side confirmation might happen, but does **not itself supply an independently verifiable one-use approval artifact** to this server. |
+| Worker \`initialize\` | \`apps/remote-control-mcp-worker/src/worker.ts\` advertises only \`capabilities: {tools:{listChanged:false}}\`; no elicitation client-capability negotiation, request, or approval token handling occurs in this route. | No proven live ChatGPT elicitation/approval transport. |
+| Public \`browser_navigate\` tool | \`src/browser-tools.ts\` accepts precisely \`device_id\`, \`operation_id\`, \`session_id\`, \`url\`; rejects unknown fields. | No approved action digest, target binding, nonce, proof issuer or expiry is transported. |
+| Worker → DO → authenticated WSS | \`v2-pairing.ts\` frames carry \`tool\`, \`arguments\`, \`operation_id\`, \`request_id\`, using already-paired device session checks. | Device connection/authentication and non-replay are reused; neither communicates a user approval decision. |
+| Agent acceptance | \`browser-operations.ts\` parses session/URL and invokes the backend through existing SQLite receipts; no human approval verifier. | \`operation_id\` deduplicates execution but cannot prove human authorization. |
+| Public activation | \`worker.ts\` has \`BROWSER_TOOLS_ACCEPTED = false\`; calls are not advertised/handled. | **Safe disabled gate preserved**, not an end-to-end browser approval test. |
+
+**Official capability distinction:** [OpenAI custom MCP guidance](https://developers.openai.com/api/docs/guides/custom-mcp-server) describes host approval that may be remembered in a conversation; [OpenAI Plugin tool guidance](https://developers.openai.com/plugins/plan/tools) explicitly says annotations are not authorization; [MCP Elicitation specification](https://modelcontextprotocol.io/specification/2025-11-25/client/elicitation) requires **client capability advertisement** and an authenticated user context; [MCP TypeScript SDK elicitation](https://ts.sdk.modelcontextprotocol.io/v2/servers/elicitation) shows how server-driven user input works when supported. \`elicitation/create\` and its \`accept\` response are **not a signed one-use proof by definition**, and URL-mode elicitation is not an implicit approval backend. ChatGPT support for the *specific client/plugin/protocol path* and a server-verifiable action binding remain **unverified**.
+
+### Minimal decision and validation gate
+
+- **No new implementation selected.** Do not add an \`approved: true\`/user-entered code tool field, a model-callable \`approve_action\` that could authorize itself, a new approval Worker, a second Portal, or a new database. The existing Portal owner credential alone is not specific human consent for a proposed website action.
+- **If future client capabilities allow:** in a disposable, authenticated non-production connection, prove the exact \`initialize\`/client capability exchange and a server-originated action-specific elicitation challenge that cannot be fabricated from ordinary tool arguments. Bind identity, device, session, tab, operation ID, intended effective destination and material parameters; expire and consume exactly once; reject denial, timeout, reuse, mismatched URL, and changed redirect target. Inspect the actual server receipt of the client decision; never assert support from documentation alone.
+- **If no supported client signal:** leave consequential and uncertain website effects disabled. An independent **local-owner Windows confirmation** is a possible later feasibility candidate using the existing Agent (no new cloud service), but its UX and exact user binding must first be evaluated; it is **not approved or implemented**.
+- **Keep network gate independent:** consent to an action is **not consent for arbitrary internal destinations** reached via redirect/DNS/WebSocket, and it is not a substitute for an explicitly decided trusted-host risk policy. P5's real redirect-to-loopback server hit remains a launch blocker under the current policy.
+- **Stop condition:** fail closed if exact user identity, proposed-action parameters or one-use enforcement cannot be proved at the execution boundary. Do not implement a separate confirmation platform merely to resolve a disabled Draft. No merge, release, installed Agent update or production tool enablement follows from this review.
+
+**P7 result:** the current Agent/Worker source does *not* implement or prove the ADR-0030 confirmation contract. Existing authentication and durable receipts are reusable but insufficient. No client E2E proof, feature work or security-policy weakening has been claimed.
