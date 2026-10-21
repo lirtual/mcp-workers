@@ -20,7 +20,7 @@ test('registered GitHub dispatch uses exact repo/ref and only opaque inputs',asy
     assert.equal(req.headers.get('authorization'),'Bearer test-token-not-real');
     assert.equal(req.headers.get('x-github-api-version'),'2026-03-10');
     assert.deepEqual(await req.json(),{
-      ref:'refs/heads/main',
+      ref:'main',return_run_details:true,
       inputs:{attempt_id:attempt.attemptId,dispatch_id:attempt.dispatchId,capability_id:attempt.capabilityId},
     });
     return Response.json({workflow_run_id:39410780231},{status:200});
@@ -88,4 +88,38 @@ test('verified job claims must exactly match confirmed physical Run and attempt'
     {...claims,run_attempt:'2'},
     {...claims,event_name:'push'},
   ]) assert.equal(matchCandidateIdentity(mutated,candidate),false);
+});
+
+
+test('isolation CI registration must be exact and never permits an arbitrary worker host',async()=>{
+  const isolation={...config,repository:'lirtual/mcp-workers',workflow:'ci.yml',
+    ref:'refs/heads/wip/workflow-s3-github-executor',workerName:'workflow-s3-oidc-aabbccddee'};
+  let calls=0;
+  const result=await dispatchGithubAttempt(isolation,attempt,async request=>{
+    calls++;
+    assert.equal(request.url,'https://api.github.com/repos/lirtual/mcp-workers/actions/workflows/ci.yml/dispatches');
+    const body=await request.json() as {ref:string;return_run_details:boolean;inputs:Record<string,string>};
+    assert.equal(body.ref,'wip/workflow-s3-github-executor');
+    assert.equal(body.return_run_details,true);
+    assert.deepEqual(body.inputs,{
+      attempt_id:attempt.attemptId,dispatch_id:attempt.dispatchId,
+      capability_id:'heavy.github.echo',worker_name:'workflow-s3-oidc-aabbccddee',
+      worker:'workflow-mcp-worker',s3_executor_worker:'true',
+    });
+    return Response.json({workflow_run_id:39410780231,run_url:'https://api.github.com/test',
+      html_url:'https://github.com/test'},{status:200});
+  });
+  assert.equal(calls,1);
+  assert.deepEqual(result,{status:'confirmed',runId:39410780231,runAttempt:1});
+  for(const cfg of [
+    {...isolation,workerName:'https://evil.example'},
+    {...isolation,workerName:'workflow-s3-oidc-../aaa'},
+    {...isolation,repository:'lirtual/other'},
+    {...isolation,ref:'refs/heads/main'},
+    {...isolation,workflow:'other.yml'},
+  ]){
+    await assert.rejects(()=>dispatchGithubAttempt(cfg,attempt,async()=>{
+      throw Error('network must not be contacted');
+    }),/github_executor_/);
+  }
 });

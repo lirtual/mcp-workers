@@ -47,6 +47,32 @@ on:
         required: false
         type: boolean
         default: false
+      s3_full_dispatch:
+        description: Test isolated S3 REST dispatch to independent GitHub Job (no production)
+        required: false
+        type: boolean
+        default: false
+      s3_executor_worker:
+        description: Internal S3 test-only echo executor, called by coordinator
+        required: false
+        type: boolean
+        default: false
+      worker_name:
+        description: Pinned isolated S3 Worker name
+        required: false
+        type: string
+      attempt_id:
+        description: Internal S3 opaque Attempt ID
+        required: false
+        type: string
+      dispatch_id:
+        description: Internal S3 opaque Dispatch ID
+        required: false
+        type: string
+      capability_id:
+        description: Internal S3 registered capability
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -66,7 +92,9 @@ jobs:
             (inputs.s2_portal_probe == true || inputs.s2_cloud_e2e == true)) &&
           !(github.event_name == 'workflow_dispatch' &&
             github.ref == 'refs/heads/wip/workflow-s3-github-executor' &&
-            inputs.s3_oidc_probe == true) }}
+            (inputs.s3_oidc_probe == true ||
+             inputs.s3_full_dispatch == true ||
+             inputs.s3_executor_worker == true)) }}
     concurrency:
       group: ci-checks-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.event.pull_request.number || github.ref }}
       cancel-in-progress: true
@@ -657,3 +685,72 @@ jobs:
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Accept real signed GitHub Runner against disposable Cloudflare D1
         run: node --experimental-strip-types apps/workflow-mcp-worker/tests/s3-real-oidc-cloud.mjs
+
+
+  workflow-s3-independent-dispatch:
+    name: Isolated S3 confirmed REST dispatch -> separate GitHub echo job
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/wip/workflow-s3-github-executor' &&
+          inputs.worker == 'workflow-mcp-worker' &&
+          inputs.s3_full_dispatch == true &&
+          inputs.s3_executor_worker != true &&
+          inputs.s3_oidc_probe != true &&
+          inputs.smoke_only != true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    environment:
+      name: workflow-mcp-worker
+    concurrency:
+      group: workflow-s3-isolated-rest-dispatch
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: write
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      S3_INDEPENDENT_DISPATCH: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Register confirmed GitHub REST Job and verify Cloudflare Result, then clean up
+        run: node --experimental-strip-types apps/workflow-mcp-worker/tests/s3-real-oidc-cloud.mjs
+
+  workflow-s3-independent-echo:
+    name: Independent GitHub S3 no-side-effect echo execution (OIDC only)
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/wip/workflow-s3-github-executor' &&
+          inputs.worker == 'workflow-mcp-worker' &&
+          inputs.s3_executor_worker == true &&
+          inputs.s3_full_dispatch != true &&
+          inputs.s3_oidc_probe != true &&
+          inputs.smoke_only != true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      S3_WORKER_NAME: ${{ inputs.worker_name }}
+      S3_ATTEMPT_ID: ${{ inputs.attempt_id }}
+      S3_DISPATCH_ID: ${{ inputs.dispatch_id }}
+      S3_CAPABILITY: ${{ inputs.capability_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Obtain signed OIDC identity, claim, echo and post durable result
+        run: node apps/workflow-mcp-worker/tests/s3-independent-executor.mjs

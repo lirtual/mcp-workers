@@ -11,6 +11,8 @@ export type RegisteredDispatchConfig={
   workflow:string;
   ref:string;
   dispatchToken:string;
+  /** Strictly registered isolated CI fixture, never a product capability. */
+  workerName?:string;
 };
 export type LogicalAttempt={
   attemptId:string;
@@ -41,7 +43,12 @@ const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]
 const REPO=/^[A-Za-z0-9_-][A-Za-z0-9_.-]*\/[A-Za-z0-9_-][A-Za-z0-9_.-]*$/;
 const BRANCH=/^refs\/heads\/[A-Za-z0-9][A-Za-z0-9._\/-]*$/;
 function assertRegistered(config:RegisteredDispatchConfig,attempt:LogicalAttempt) {
-  if(config.workflow!=='workflow-s3-executor.yml' ||
+  const isolated=config.workflow==='ci.yml';
+  if((isolated
+       ? (config.repository!=='lirtual/mcp-workers' ||
+          config.ref!=='refs/heads/wip/workflow-s3-github-executor' ||
+          !/^workflow-s3-oidc-[a-f0-9]{10}$/.test(config.workerName??''))
+       : (config.workflow!=='workflow-s3-executor.yml' || config.workerName!==undefined)) ||
      !REPO.test(config.repository) || config.repository.includes('..') ||
      !BRANCH.test(config.ref) || config.ref.includes('..') ||
      config.ref.endsWith('/') || typeof config.dispatchToken!=='string' ||
@@ -73,11 +80,17 @@ export async function dispatchGithubAttempt(
       'x-github-api-version':'2026-03-10',
     },
     body:JSON.stringify({
-      ref:config.ref,
+      ref:config.ref.slice('refs/heads/'.length),
+      return_run_details:true,
       inputs:{
         attempt_id:attempt.attemptId,
         dispatch_id:attempt.dispatchId,
         capability_id:attempt.capabilityId,
+        ...(config.workflow==='ci.yml'?{
+          worker_name:config.workerName,
+          worker:'workflow-mcp-worker',
+          s3_executor_worker:'true',
+        }:{}),
       },
     }),
   });

@@ -14,6 +14,7 @@ import { unlinkSync, writeFileSync } from 'node:fs';
 import {
   registerGithubAttempt,recordGithubDispatchResult,
 } from '../src/s3-github-claim.ts';
+import { dispatchGithubAttempt } from '../src/s3-github-dispatch.ts';
 
 const get=k=>{const v=process.env[k];assert.ok(v,'Missing '+k);return v;};
 const token=get('CLOUDFLARE_API_TOKEN');
@@ -36,6 +37,7 @@ const dir=new URL('..',import.meta.url).pathname;
 const file='wrangler.s3-oidc-'+suffix+'.json';
 const url='https://'+name+'.aiyaya.workers.dev';
 const audience='workflow-s3-claim:test';
+const independent=process.env.S3_INDEPENDENT_DISPATCH==='true';
 const workflowId='w-'+suffix,versionId='v-'+suffix,runId='r-'+suffix;
 const attemptId=randomUUID(),dispatchId=randomUUID(),callbackId=randomUUID();
 let databaseId=null,deployAttempted=false;
@@ -140,6 +142,36 @@ async function run(){
     attemptId,dispatchId,runId,stepId:'heavy',
     capabilityId:'heavy.github.echo',
   });
+  if(independent){
+    const githubToken=get('GITHUB_TOKEN');
+    const candidate=await dispatchGithubAttempt({
+      repository:repo,workflow:'ci.yml',ref,
+      workerName:name,dispatchToken:githubToken,
+    },{attemptId,dispatchId,capabilityId:'heavy.github.echo'});
+    const saved=await recordGithubDispatchResult(db,attemptId,candidate);
+    assert.equal(saved,true,'Dispatch result not saved');
+    assert.equal(candidate.status,'confirmed','Independent GitHub dispatch did not confirm a Run ID');
+    assert.notEqual(candidate.runId,githubRunId,'Executor must be a separate GitHub run');
+    console.log('S3_INDEPENDENT_GITHUB_REST_DISPATCH_CONFIRMED');
+    let finished=null;
+    for(let i=0;i<150;i++){
+      const row=(await d1('SELECT outcome,result FROM runs WHERE id=?',[runId])).results?.[0];
+      if(row?.outcome==='succeeded'){finished=row;break;}
+      if(row?.outcome==='failed')throw Error('Independent executor native Workflow failed');
+      await new Promise(resolve=>setTimeout(resolve,1000));
+    }
+    assert.ok(finished,'Independent executor did not complete');
+    assert.equal(JSON.parse(finished.result).source,'separate-github-workflow-dispatch');
+    const claimed=(await d1('SELECT state,owner_run_id,owner_run_attempt FROM step_attempts WHERE attempt_id=?',[attemptId])).results?.[0];
+    assert.equal(claimed.state,'claimed');
+    assert.equal(claimed.owner_run_id,candidate.runId);
+    assert.equal(claimed.owner_run_attempt,1);
+    const receipt=(await d1('SELECT notification_delivered,result_json FROM callback_receipts WHERE attempt_id=?',[attemptId])).results?.[0];
+    assert.equal(receipt.notification_delivered,1);
+    assert.equal(JSON.parse(receipt.result_json).source,'separate-github-workflow-dispatch');
+    console.log('S3_INDEPENDENT_DISPATCH_TO_NATIVE_WORKFLOW_RESULT_PASS');
+    return;
+  }
   assert.equal(await recordGithubDispatchResult(db,attemptId,{
     status:'confirmed',runId:githubRunId,runAttempt:1,
   }),true);
