@@ -412,3 +412,31 @@ test('S2 tampered published expected schema fails before network dispatch',async
   assert.equal((await service.result(admitted.run_id)).status,'failed');
   assert.equal(network,0);
 });
+
+test('S2 remote outputSchema change prevents tools/call before dispatch',async t=>{
+  const {env,admit,run,service}=setup(t);
+  const grant:ReadonlyOperation={endpoint:'https://public.example.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
+  env.S2_READONLY_ENABLED='true';
+  const admitted=await admit([{id:'read',uses:'mcp.call',with:{
+    endpoint:grant.endpoint,tool:grant.tool,scope:grant.scope,
+    input_schema:PINNED_SCHEMA,arguments:{value:'must not be sent'},
+  }}],{},[grant]);
+  const originalFetch=globalThis.fetch;
+  let toolCalls=0;
+  globalThis.fetch=(async(input:RequestInfo|URL,init?:RequestInit)=>{
+    const request=new Request(input,init);
+    if(request.method!=='POST')return readonlyWorker.fetch(request);
+    const rpc=await request.clone().json() as {method:string};
+    if(rpc.method==='tools/call')toolCalls++;
+    const response=await readonlyWorker.fetch(request);
+    if(rpc.method!=='tools/list'||!response.ok)return response;
+    const discovered=await response.json() as {result:{tools:Array<{outputSchema?:unknown}>}};
+    discovered.result.tools[0].outputSchema={type:'object',properties:{value:{type:'string'}}};
+    return Response.json(discovered);
+  }) as typeof fetch;
+  try{await run(admitted.run_id);}finally{globalThis.fetch=originalFetch;}
+  const result=await service.result(admitted.run_id);
+  assert.equal(result.status,'failed');
+  assert.equal(result.steps[0].status,'failed');
+  assert.equal(toolCalls,0);
+});
