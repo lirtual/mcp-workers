@@ -73,3 +73,34 @@ Cloudflare D1 **independently confirmed** one request to A with credential categ
 **Limitation and tool barrier:** the attempted Cloudflare secret setup for the isolated *gateway* Worker was blocked by execution safety checks. The deployed gateway had **no** `PROBE_KEY` and rejected all ingress. Rather than bypass that check, the **same transpiled gateway source** was executed locally with an in-memory test key and the real Cloudflare target Workers. These results do **not** demonstrate Cloudflare edge runtime egress correctness for this gateway. No actual private, metadata, loopback or DNS-rebinding traffic was sent; comprehensive SSRF and DNS/redirect-proof egress controls remain **OPEN**. The test code's hostname checks are expressly **not** sufficient for DNS rebinding defense.
 
 **Verified teardown:** all three temporary Workers (gateway and both targets) plus the temporary D1 were deleted. Cloudflare resource counts returned to **12 Workers, 4 D1, 1 Workflow**, with no named test resources left. No new long-lived token, proxy, durable record or production permission is justified by these limited tests.
+
+## Follow-up P0-3 selection gate — 2026-10-21 (offline only)
+
+**Scope:** Owner approved continued P0-3 validation without merging or deploying. This pass changed no runtime source, existing Worker, D1, credentials, production setting or Ticket. Q7 (dynamic targets without preregistration) and Q16 (block private/metadata/redirect/DNS bypass) remain binding.
+
+### Reused evidence and results
+
+- Reused the original local gateway PoC at /tmp/wf-p03-egress-20261020/gateway.mjs (SHA256 c876fd5ffac4a15651ece364e6fbbb5cb751be34de4167ef58cee69dc88a9319) with Node 22 and an in-memory fetch mock. No new proxy/SDK installation, no real network request.
+- **19/19 offline assertions PASS:** unauthorized/method gate (2); HTTP/localhost/IPv4/IPv6/numeric alias/metadata/RFC1918/userinfo/custom port/dotless hostname rejections (10); non-granted public name rejected (1); target-origin-scoped synthetic A/B authorization (2); redirect from A to B, loopback or metadata target rejected without following (3); one simulated DNS-rebinding limitation case (1). Actual external traffic: **zero**.
+- A chosen real public, read-only Streamable HTTP endpoint (DeepWiki MCP) was **not tested** because its remote execution request was blocked by environment safety checks. We did not retry via another route. Previously documented official SDK edge tests retain only their original narrower scope.
+- **Negative evidence:** the original PoC performs hostname/URL preflight but does not validate the actual connected peer IP. With a synthetic public-looking approved name whose hypothetical DNS moves to RFC1918, the mock still sees a fetch attempt. This is **a missing policy proof**, not an observed Cloudflare SSRF exploit or a test of actual DNS behavior.
+
+### Platform constraints and alternative selection
+
+- [Cloudflare Request redirect guidance](https://developers.cloudflare.com/workers/runtime-apis/request/) explicitly warns that auto-following a Worker-created request may forward Authorization to another origin. Keep manual redirect handling with outright rejection; do not add an automatic cross-target redirect path.
+- [Workers node:dns](https://developers.cloudflare.com/workers/runtime-apis/nodejs/dns/) offers resolution, but a separate DNS lookup and subsequent fetch **do not demonstrate a pinned validated peer**. No claim of rebinding defense from preflight-only checks.
+- [Request resolveOverride](https://developers.cloudflare.com/workers/runtime-apis/request/) works only under same-zone restrictions; it is not a general arbitrary-target IP-pinning API.
+- [global_fetch_strictly_public](https://developers.cloudflare.com/workers/configuration/compatibility-flags/) concerns Worker/zone routing; no documentation retrieved proves it alone enforces the full SSRF exclusion policy for dynamic hostnames.
+- [Cloudflare sockets](https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/) may reject private/localhost TCP peers but replacing supported Streamable HTTP fetch with a handcrafted TLS/HTTP/SDK implementation adds disproportionate compatibility, monitoring and maintenance obligations without a failing production invariant.
+
+| Choice | Evidence | Decision and cost |
+| --- | --- | --- |
+| A. Existing Worker fetch + manual redirect + concrete target/tool grant | Redirect and credential isolation confirmed in local mocks/earlier limited live targets; DNS-peer invariant unproven | Keep as candidate, **not permission to enable dynamic S2** |
+| B. Reuse a documented Worker-native destination enforcement primitive | No currently proven connect-time guarantee for arbitrary user-selected hostname | First verify platform contract and real isolated edge behavior; minimal dependency if supported |
+| C. Separate outbound proxy, DNS pinning service, or raw socket/TLS client | Necessity not demonstrated | **Reject for now**: new secret lifecycle, operations, deployment and drift costs |
+
+**Decision: P0-3 remains OPEN; dynamic external S2 MCP is disabled.** S1 fixed-echo edge success does not close the network boundary. No reason to create new infrastructure or to restore static preregistration requirements.
+
+**Next falsifiable experiment only with separate isolated Cloudflare test authorization:** verify a real public read-only MCP SDK handshake and destination enforcement at connection time against controlled, non-sensitive, test-owned DNS/redirect endpoints. Do not probe unowned private hosts or cloud metadata and do not conflate Cloudflare simulation with edge enforcement. Tear down any authorized temporary resources.
+
+**Stop condition:** if official platform capability plus safe edge evidence cannot establish Q16 for dynamic endpoints, return to the product/architecture selection gate; do not continue piling on proxy or compatibility layers, and do not merge/deploy.
