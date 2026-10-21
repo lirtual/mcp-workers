@@ -148,9 +148,33 @@ async function run(){
   const params={workflow_id:draft.workflow_id,inputs:{},idempotency_key:'s3-plan-'+suffix};
   const started=await tool('workflow_run',params);runId=started.run_id;
   console.log('S3_PRODUCT_WORKFLOW_RUN_STARTED',name);
+  async function readOnlyResult(){
+    for(let attempt=0;attempt<3;attempt++){
+      try{return await tool('workflow_result',{run_id:runId});}
+      catch(error){
+        // Only idempotent result reads may retry. An ambiguous workflow_run
+        // or GitHub dispatch is never repeated.
+        if(!/Request timed out/i.test(String(error)))throw error;
+        console.log('S3_PRODUCT_READONLY_RESULT_TIMEOUT',attempt+1);
+        try{
+          const queried=await api('POST',
+            '/accounts/'+account+'/d1/database/'+dbId+'/query',{
+              sql:'SELECT outcome,error_code FROM runs WHERE id=?',
+              params:[runId],
+            });
+          const row=queried[0]?.results?.[0]??null;
+          console.log('S3_PRODUCT_D1_READONLY_STATUS',
+            JSON.stringify(row?{status:row.outcome,error_code:row.error_code}:null));
+        }catch{console.log('S3_PRODUCT_D1_READONLY_STATUS_UNAVAILABLE');}
+        if(attempt===2)throw error;
+        await pause(2500);
+      }
+    }
+    throw Error('result_read_exhausted');
+  }
   let outcome;
   for(let i=0;i<170;i++){
-    outcome=await tool('workflow_result',{run_id:runId});
+    outcome=await readOnlyResult();
     if(['succeeded','failed','indeterminate','cancelled'].includes(outcome.status))break;
     await pause(1000);
   }

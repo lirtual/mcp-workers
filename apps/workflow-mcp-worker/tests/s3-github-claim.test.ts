@@ -251,3 +251,28 @@ test('a cancelled Run refuses late success callbacks without mutating its durabl
   assert.equal((sqlite.prepare('SELECT outcome FROM runs WHERE id=?')
     .get(runId) as {outcome:string}).outcome,'cancelled');
 });
+
+test('a valid very late GitHub callback cannot overwrite a terminally indeterminate Run',async t=>{
+  const {db,sqlite}=setup(t),{issue,keys}=await fixtureSigner();
+  const jwt=await issue();
+  await registerGithubAttempt(db,registration);
+  await recordGithubDispatchResult(db,attemptId,{
+    status:'confirmed',runId:39410780231,runAttempt:1,
+  });
+  assert.equal(await verifyAndClaimGithubAttempt(db,attemptId,jwt,identity,keys),true);
+  // The native Workflow already exhausted its bounded callback window.
+  sqlite.prepare("UPDATE runs SET outcome='indeterminate',error_code='s3_callback_unconfirmed' WHERE id=?")
+    .run(runId);
+  const id='f8835141-0b3a-4fcb-a9ae-b4b75bfae93c';
+  assert.equal(await recordGithubCallback(db,{
+    attemptId,callbackId:id,outcome:'succeeded',result:{echo:'late'},
+  },jwt,identity,keys),false);
+  assert.equal((sqlite.prepare('SELECT count(*) AS n FROM callback_receipts')
+    .get() as {n:number}).n,0);
+  const run=sqlite.prepare('SELECT outcome,error_code FROM runs WHERE id=?')
+    .get(runId) as {outcome:string;error_code:string};
+  assert.equal(run.outcome,'indeterminate');
+  assert.equal(run.error_code,'s3_callback_unconfirmed');
+  // A signed Run cannot re-acquire a Claim or duplicate an external Job.
+  assert.equal(await verifyAndClaimGithubAttempt(db,attemptId,jwt,identity,keys),false);
+});
