@@ -75,7 +75,8 @@ export function canonicalJsonString(value: unknown): string {
 export async function toolSchemaDigest(inputSchema:unknown, outputSchema?:unknown):Promise<string>{
   if(!inputSchema||typeof inputSchema!=='object'||Array.isArray(inputSchema)||
      (inputSchema as Record<string,unknown>).type!=='object'||
-     (outputSchema!==undefined&&(!outputSchema||typeof outputSchema!=='object'||Array.isArray(outputSchema))))
+     (outputSchema!==undefined&&(!outputSchema||typeof outputSchema!=='object'||Array.isArray(outputSchema)||
+       (outputSchema as Record<string,unknown>).type!=='object')))
     throw new PlanError('invalid_tool_schema');
   validateFiniteNumbers(inputSchema);
   if(outputSchema!==undefined)validateFiniteNumbers(outputSchema);

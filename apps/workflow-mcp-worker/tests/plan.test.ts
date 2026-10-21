@@ -172,6 +172,9 @@ test('S2 contract requires bounded, concrete JSON Schema; no user-supplied diges
     {input_schema:{}},
     {input_schema:{type:'array'}},
     {input_schema:{type:'object',description:'x'.repeat(9000)}},
+    {output_schema:{}},
+    {output_schema:{type:'array'}},
+    {output_schema:'not-an-object'},
     {schema_digest:'0'.repeat(64)},
   ])await assert.rejects(()=>compilePlan({...plan,steps:[{
     ...step,with:{...step.with,...extra},
