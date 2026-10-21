@@ -1,8 +1,9 @@
 /**
  * Candidate S2 public MCP transport, guarded by the disabled-by-default
  * S2_READONLY_ENABLED flag in the runner. URL shape checks and manual redirects
- * do NOT establish DNS/IP or SSRF isolation; hosted-edge P0-3/AC-08 acceptance
- * is still required before the flag may be enabled.
+ * do NOT establish DNS/IP or SSRF isolation. The owner selected personal
+ * trusted-target scope (B), explicitly accepting residual risks; the original
+ * P0-3/AC-08 isolation gate remains unproven. Production enablement is separate.
  *
  * The caller MUST supply a trusted, authorized concrete endpoint. Passing
  * an endpoint derived only from a Draft or Run input is not authorization.

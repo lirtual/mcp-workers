@@ -25,6 +25,9 @@ async function callApprovedReadonly(env:Env,plan:Plan,step:Step,args:Record<stri
   // No current Wrangler config sets this flag. Both Publish and invocation
   // must opt in; disabling it later blocks previously published S2 plans.
   if(env.S2_READONLY_ENABLED!=='true')throw Error('s2_disabled');
+  // A pre-existing candidate Plan without the trusted-target acknowledgement
+  // cannot start calling external MCP tools after a future flag change.
+  if(plan.s2_target_risks_accepted!==true)throw Error('target_risk_acknowledgment_required');
   const endpoint=step.with.endpoint,tool=step.with.tool,schema_digest=step.with.schema_digest;
   const grant=plan.s2_approvals?.some(g=>g.endpoint===endpoint&&g.tool===tool&&g.scope==='read'&&g.schema_digest===schema_digest);
   if(!grant||step.with.scope!=='read'||typeof endpoint!=='string'||typeof tool!=='string'||

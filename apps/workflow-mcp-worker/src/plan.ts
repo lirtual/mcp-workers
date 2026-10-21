@@ -10,7 +10,7 @@ export type Step = {
   with: Record<string, unknown>; if?: unknown;
 };
 export type ReadonlyOperation = { endpoint:string; tool:string; scope:'read'; schema_digest:string };
-export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown>; s2_approvals?: ReadonlyOperation[] };
+export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown>; s2_approvals?: ReadonlyOperation[]; s2_target_risks_accepted?: true };
 const SAFE_ID = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
 const OBJECT_PROTOTYPE_KEYS = new Set(['constructor','toString','toLocaleString','valueOf','hasOwnProperty','isPrototypeOf','propertyIsEnumerable']);
 const RESERVED = new Set(['eval','javascript','script','code','shell','endpoint','url','command','function']);

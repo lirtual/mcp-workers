@@ -51,7 +51,7 @@ function setup(t:test.TestContext){
   const service=new WorkflowService(env);
   async function admit(steps:unknown[],inputs:Record<string,unknown>={},approvals:ReadonlyOperation[]=[]){
     const w=await service.create(JSON.stringify({version:1,name:'Review regression',steps}));
-    await service.publish(w.workflow_id,1,approvals);
+    await service.publish(w.workflow_id,1,approvals,approvals.length>0);
     return service.start(w.workflow_id,inputs);
   }
   async function run(run_id:string){
@@ -215,10 +215,12 @@ test('S2 Publish requires explicit matching read approval and is disabled by def
   await assert.rejects(()=>service.publish(created.workflow_id,1),/external_approval_required/);
   await assert.rejects(()=>service.publish(created.workflow_id,1,[{...grant,tool:'other'}]),/external_approval_required/);
   await assert.rejects(()=>service.publish(created.workflow_id,1,[grant,grant]),/external_approval_required/);
+  await assert.rejects(()=>service.publish(created.workflow_id,1,[grant]),/target_risk_acknowledgment_required/);
   assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM workflow_versions').get()?.n,0);
-  const published=await service.publish(created.workflow_id,1,[grant]);
+  const published=await service.publish(created.workflow_id,1,[grant],true);
   const saved=sqlite.prepare('SELECT plan FROM workflow_versions WHERE id=?').get(published.published_version_id) as {plan:string};
   assert.deepEqual(JSON.parse(saved.plan).s2_approvals,[grant]);
+  assert.equal(JSON.parse(saved.plan).s2_target_risks_accepted,true);
 });
 
 test('S2 previously approved Run fails closed if rollout flag is turned off',async t=>{
@@ -476,4 +478,27 @@ test('S2 lost tools/call response is indeterminate, never a confirmed failure or
   assert.equal(result.steps[0].status,'indeterminate');
   assert.equal(result.steps[0].error_code,'external_outcome_unknown');
   assert.equal(result.error_code,'external_outcome_unknown');
+});
+
+test('S2 older Published Plan without trusted-target risk acknowledgment is blocked before network',async t=>{
+  const {env,admit,run,service,sqlite}=setup(t);
+  env.S2_READONLY_ENABLED='true';
+  const grant:ReadonlyOperation={endpoint:'https://public.example.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
+  const admitted=await admit([{id:'lookup',uses:'mcp.call',with:{
+    endpoint:grant.endpoint,tool:grant.tool,scope:'read',
+    input_schema:PINNED_SCHEMA,arguments:{value:'must never dispatch'},
+  }}],{},[grant]);
+  const version=sqlite.prepare('SELECT version_id FROM runs WHERE id=?').get(admitted.run_id) as {version_id:string};
+  const saved=sqlite.prepare('SELECT plan FROM workflow_versions WHERE id=?').get(version.version_id) as {plan:string};
+  const oldPlan=JSON.parse(saved.plan);
+  delete oldPlan.s2_target_risks_accepted;
+  sqlite.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(oldPlan),version.version_id);
+  let network=0;
+  const originalFetch=globalThis.fetch;
+  globalThis.fetch=(async()=>{network++;throw Error('unexpected_external_network');}) as typeof fetch;
+  try{await run(admitted.run_id);}finally{globalThis.fetch=originalFetch;}
+  const result=await service.result(admitted.run_id);
+  assert.equal(result.status,'failed');
+  assert.equal(result.steps[0].status,'failed');
+  assert.equal(network,0);
 });

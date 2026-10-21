@@ -96,7 +96,7 @@ export class WorkflowService {
       return {valid:false,issues:[{code:error.message.split(':')[0]}]};
     }
   }
-  async publish(workflow_id:string,expected_revision:number,approved_operations:ReadonlyOperation[]=[]){
+  async publish(workflow_id:string,expected_revision:number,approved_operations:ReadonlyOperation[]=[],accept_target_risks=false){
     assertId(workflow_id);const row=await this.row(workflow_id);
     if(row.draft_revision!==expected_revision)throw new StateError('revision_conflict');
     const {plan,digest:plan_digest}=await compilePlan(row.draft);
@@ -109,7 +109,11 @@ export class WorkflowService {
     const provided=approved_operations.slice().sort((a,b)=>JSON.stringify(a)<JSON.stringify(b)?-1:JSON.stringify(a)>JSON.stringify(b)?1:0);
     if(JSON.stringify(required)!==JSON.stringify(provided))throw new StateError('external_approval_required');
     if(required.length && this.env.S2_READONLY_ENABLED!=='true')throw new StateError('s2_disabled');
-    const publishedPlan:Plan=required.length?{...plan,s2_approvals:required}:plan;
+    // Personal trusted-target mode: a separate explicit risk acknowledgement
+    // is required at each Publish in addition to exact per-operation grants.
+    // This is an authenticated API assertion, not proof of human interaction.
+    if(required.length && accept_target_risks!==true)throw new StateError('target_risk_acknowledgment_required');
+    const publishedPlan:Plan=required.length?{...plan,s2_approvals:required,s2_target_risks_accepted:true}:plan;
     // Repeated Publish of an unchanged Draft resolves to its existing Version.
     if(row.active_version_id){
       const current=await this.db.prepare('SELECT digest FROM workflow_versions WHERE id=? AND workflow_id=?').bind(row.active_version_id,workflow_id).first<{digest:string}>();
