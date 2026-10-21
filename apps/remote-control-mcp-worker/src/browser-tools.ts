@@ -68,17 +68,19 @@ export function parseBrowserCall(tool: string, input: unknown): Parsed | null {
     if(typeof input.url!=="string" || input.url.length>2048) return null;
     let url:URL;
     try{url=new URL(input.url);}catch{return null;}
+    // DNS names may have a trailing root dot; validate the effective hostname.
+    const hostname = url.hostname.replace(/\.+$/, "");
     // Keep the public MCP boundary aligned with the Agent's first-stage
     // initial-target hygiene: reject private/local-looking URLs BEFORE a
     // durable operation ID can be admitted. This is not a DNS, redirect or
     // subresource SSRF firewall.
     if (/[\x00-\x20\x7f]/.test(input.url) ||
         !["https:","http:"].includes(url.protocol) ||
-        !url.hostname || url.username || url.password ||
-        url.hostname==="localhost" || url.hostname.endsWith(".localhost") ||
-        url.hostname.endsWith(".local") || url.hostname.endsWith(".internal") ||
-        /^\d+\.\d+\.\d+\.\d+$/.test(url.hostname) ||
-        url.hostname.startsWith("[") || !url.hostname.includes(".")) return null;
+        !hostname || url.username || url.password ||
+        hostname==="localhost" || hostname.endsWith(".localhost") ||
+        hostname.endsWith(".local") || hostname.endsWith(".internal") ||
+        /^\d+\.\d+\.\d+\.\d+$/.test(hostname) ||
+        hostname.startsWith("[") || !hostname.includes(".")) return null;
   }
   const {device_id,operation_id,...args}=input;
   return {device_id:device_id as string,tool,arguments:args,

@@ -32,6 +32,11 @@ test("rejects arbitrary JS, CLI/path/profile, missing IDs, unexpected keys, and 
     ["browser_navigate",{device_id,operation_id,session_id,url:"http://2130706433:8765/"}],
     ["browser_navigate",{device_id,operation_id,session_id,url:"http://[::1]/"}],
     ["browser_navigate",{device_id,operation_id,session_id,url:"http://localhost:1234/"}],
+    ["browser_navigate",{device_id,operation_id,session_id,url:"http://localhost./"}],
+    ["browser_navigate",{device_id,operation_id,session_id,url:"http://localhost../"}],
+    ["browser_navigate",{device_id,operation_id,session_id,url:"https://printer.local./"}],
+    ["browser_navigate",{device_id,operation_id,session_id,url:"https://db.internal.."}],
+    ["browser_navigate",{device_id,operation_id,session_id,url:"http://127.0.0.1../"}],
     ["browser_navigate",{device_id,operation_id,session_id,url:"https://docs.internal/page"}],
     ["browser_navigate",{device_id,operation_id,session_id,url:"https://printer.local/"}],
     ["browser_navigate",{device_id,operation_id,session_id,url:"https://server/"}],
@@ -127,6 +132,7 @@ test("first-hop URL rejection precedes any DO mutation admission; network-level 
     device_id,operation_id,session_id,url:"https://example.com/review?q=1",
   });
   assert.equal(publicUrl?.kind,"operation");
+  assert.equal(parseBrowserCall("browser_navigate",{device_id,operation_id,session_id,url:"https://example.com./"})?.kind,"operation");
   for(const value of [
     "http://10.0.0.1/", "http://192.168.0.10/", "http://172.16.2.3/",
     "http://127.0.0.1:18781/", "http://169.254.169.254/",
