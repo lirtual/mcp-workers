@@ -8,8 +8,6 @@ import type { ToolHandlerContext } from "../src/tools/common.js";
 describe("Worker-native diagnostics contract", () => {
   it("keeps operational metadata while excluding Node/Bun/environment details", async () => {
     const getBookmarks = vi.fn(async (query: Record<string, unknown>) => {
-      if (query.broken) return { count: 1 };
-      if (query.duplicates) return { count: 2 };
       if (query.notag) return { count: 3 };
       return { count: 0 };
     });
@@ -47,8 +45,6 @@ describe("Worker-native diagnostics contract", () => {
         totalCollections: 4,
         totalHighlights: 2,
         totalTags: 7,
-        brokenCount: 1,
-        duplicateCount: 2,
         untaggedCount: 3,
       },
     });

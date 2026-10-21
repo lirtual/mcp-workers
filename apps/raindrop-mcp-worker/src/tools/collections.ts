@@ -170,11 +170,10 @@ const CollectionUpdateInputSchema = z.object({
   id: z.number().int().positive().safe(),
   title: z.string().trim().min(1).max(255).optional(),
   description: z.string().max(4096).optional(),
-  color: z.string().min(1).max(64).optional(),
   public: z.literal(false).optional(),
 }).strict().refine(
   args => args.title !== undefined || args.description !== undefined ||
-    args.color !== undefined || args.public !== undefined,
+args.public !== undefined,
   "At least one collection field must be updated",
 );
 
@@ -244,7 +243,6 @@ const collectionUpdateTool = defineTool({
     const updates = {
       ...(args.title !== undefined ? { title: args.title } : {}),
       ...(args.description !== undefined ? { description: args.description } : {}),
-      ...(args.color !== undefined ? { color: args.color } : {}),
       ...(args.public !== undefined ? { public: args.public } : {}),
     };
     return guardedCollectionWrite(

@@ -132,7 +132,7 @@ describe("RaindropMCPService", () => {
   it("does not expose maintenance diagnostics as an Agent tool", async () => {
     const tools = await mcpService.listTools();
     expect(tools.find(tool => tool.id === "diagnostics")).toBeUndefined();
-    expect(tools).toHaveLength(25);
+    expect(tools).toHaveLength(24);
   });
 });
 

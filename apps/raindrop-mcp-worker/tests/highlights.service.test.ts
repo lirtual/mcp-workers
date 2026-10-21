@@ -66,9 +66,8 @@ describe("bookmark-scoped highlight Service", () => {
         _id: "new-string-id",
         text: "new quote",
         color: "red",
-        note: "",
       };
-      const updated = { ...quote, note: "" };
+      const updated = { ...quote, color: "red" };
       const after =
         operation === "create"
           ? [quote, adjacent, added]
@@ -84,10 +83,9 @@ describe("bookmark-scoped highlight Service", () => {
           ? await svc.createHighlight(42, {
               text: "new quote",
               color: "red",
-              note: "",
             })
           : operation === "update"
-            ? await svc.updateHighlight(42, quote._id, { note: "" })
+            ? await svc.updateHighlight(42, quote._id, { color: "red" })
             : await svc.deleteHighlight(42, quote._id);
       expect(result).toEqual({
         status: "succeeded",
@@ -108,9 +106,9 @@ describe("bookmark-scoped highlight Service", () => {
       expect(await fetch.mock.calls[1]![0].json()).toEqual({
         highlights: [
           operation === "create"
-            ? { text: "new quote", color: "red", note: "" }
+            ? { text: "new quote", color: "red" }
             : operation === "update"
-              ? { _id: quote._id, note: "" }
+              ? { _id: quote._id, color: "red" }
               : { _id: quote._id, text: "" },
         ],
       });
@@ -139,7 +137,7 @@ describe("bookmark-scoped highlight Service", () => {
       svc.createHighlight(id as number, { text: "new" }),
     ).rejects.toThrow();
     await expect(
-      svc.updateHighlight(id as number, quote._id, { note: "new" }),
+      svc.updateHighlight(id as number, quote._id, { color: "red" }),
     ).rejects.toThrow();
     await expect(
       svc.deleteHighlight(id as number, quote._id),
@@ -164,7 +162,7 @@ describe("bookmark-scoped highlight Service", () => {
       const fetch = mock();
       const svc = service();
       await expect(
-        svc.updateHighlight(42, id as string, { note: "new" }),
+        svc.updateHighlight(42, id as string, { color: "red" }),
       ).rejects.toThrow();
       await expect(svc.deleteHighlight(42, id as string)).rejects.toThrow();
       expect(fetch).not.toHaveBeenCalled();
@@ -206,7 +204,7 @@ describe("bookmark-scoped highlight Service", () => {
       await expect(
         operation === "update"
           ? svc.updateHighlight(42, "belongs-to-another-bookmark", {
-              note: "new",
+              color: "red",
             })
           : svc.deleteHighlight(42, "belongs-to-another-bookmark"),
       ).rejects.toMatchObject({ code: "NOT_FOUND" });
@@ -249,7 +247,7 @@ describe("bookmark-scoped highlight Service", () => {
         operation === "create"
           ? await svc.createHighlight(42, { text: "new" })
           : operation === "update"
-            ? await svc.updateHighlight(42, quote._id, { note: "new" })
+            ? await svc.updateHighlight(42, quote._id, { color: "red" })
             : await svc.deleteHighlight(42, quote._id);
       expect(result.status).toBe("unknown");
       expect(clear).toHaveBeenCalledOnce();
@@ -262,14 +260,14 @@ describe("bookmark-scoped highlight Service", () => {
     { result: true },
     body([], 43),
     body(),
-    body([{ ...quote, note: "wrong" }, adjacent]),
+    body([{ ...quote, color: "yellow" }, adjacent]),
   ])("returns unknown for unconfirmed update response %j", async (response) => {
     mock(response);
     const svc = service();
     const clear = vi.spyOn((svc as any).cacheSearch, "clear");
     const invalidate = vi.spyOn((svc as any).cacheBookmarks, "delete");
     expect(
-      await svc.updateHighlight(42, quote._id, { note: "new" }),
+      await svc.updateHighlight(42, quote._id, { color: "red" }),
     ).toMatchObject({
       status: "unknown",
       bookmarkId: 42,
@@ -285,7 +283,7 @@ describe("bookmark-scoped highlight Service", () => {
     const initial = await svc.getBookmark(42);
     expect(initial._id).toBe(42);
 
-    const outcome = await svc.updateHighlight(42, quote._id, { note: "new" });
+    const outcome = await svc.updateHighlight(42, quote._id, { color: "red" });
     expect(outcome.status).toBe("unknown");
 
     // The upstream may have committed even though its response was incomplete.
@@ -357,7 +355,7 @@ describe("highlight confirmation details", () => {
     ["create", body([adjacent, { _id: "new", text: "new" }])],
     ["create", body([quote, adjacent, { _id: "new", text: "wrong" }])],
     ["update", body([{ ...quote, note: "new" }])],
-    ["update", body([{ ...quote, note: "new", text: "unexpected" }, adjacent])],
+    ["update", body([{ ...quote, color: "red", text: "unexpected" }, adjacent])],
     ["update", body([{ ...quote, note: "new" }, adjacent], 43)],
     ["delete", body([quote, adjacent])],
     ["delete", body([])],
@@ -370,7 +368,7 @@ describe("highlight confirmation details", () => {
         operation === "create"
           ? await svc.createHighlight(42, { text: "new" })
           : operation === "update"
-            ? await svc.updateHighlight(42, quote._id, { note: "new" })
+            ? await svc.updateHighlight(42, quote._id, { color: "red" })
             : await svc.deleteHighlight(42, quote._id);
       expect(result.status).toBe("unknown");
     },

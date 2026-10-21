@@ -629,7 +629,7 @@ describe("T07 public MCP schemas and invocation", () => {
     }
   });
 
-  it("lists 25 tools and executes both strict preview/confirm contracts over MCP", async () => {
+  it("lists 24 tools and executes both strict preview/confirm contracts over MCP", async () => {
     const f = fixture();
     const server = new RaindropMCPService({ accessToken: "mock-only" });
     const client = new Client({ name: "t07-contract", version: "1" });
@@ -638,7 +638,7 @@ describe("T07 public MCP schemas and invocation", () => {
       await server.getServer().connect(st);
       await client.connect(ct);
       const { tools } = await client.listTools();
-      expect(tools).toHaveLength(25);
+      expect(tools).toHaveLength(24);
       for (const name of ["collection_delete", "collection_remove_empty"]) {
         expect(tools.find((t) => t.name === name)).toMatchObject({
           outputSchema: expect.any(Object),
