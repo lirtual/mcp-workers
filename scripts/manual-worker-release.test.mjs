@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig, verifyWorkflowD1Readiness } from "./manual-worker-release.mjs";
+import { activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig, verifyWorkflowD1Readiness, verifyFixtureExposure } from "./manual-worker-release.mjs";
 
 const required = [
   { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
@@ -392,4 +392,19 @@ test("S1 manual GitHub Actions requires D1 checks and private Fixture before Own
   assert.match(ci,/health_endpoint="https:\/\/workflow\.lirtual\.dpdns\.org\/health"/);
   assert.match(ci,/body\.scope !== "s1"/);
   assert.match(ci,/github\.ref == 'refs\/heads\/main'/);
+});
+
+test("S1 private Fixture actual Cloudflare exposure must be absent after deployment", () => {
+  const subdomain={enabled:false,previews_enabled:false};
+  assert.equal(verifyFixtureExposure(subdomain,[],[]),true);
+  assert.throws(()=>verifyFixtureExposure({...subdomain,enabled:true},[],[]),/workers.dev/);
+  assert.throws(()=>verifyFixtureExposure({...subdomain,previews_enabled:true},[],[]),/Preview/);
+  assert.throws(()=>verifyFixtureExposure(subdomain,[{service:"workflow-s1-readonly-fixture",hostname:"public.example.com"}],[]),/Custom Domain/);
+  assert.throws(()=>verifyFixtureExposure(subdomain,[],[{script:"workflow-s1-readonly-fixture",pattern:"example.com/*"}]),/public Worker route/);
+  assert.throws(()=>verifyFixtureExposure(subdomain,null,[]),/inventory unavailable/);
+  const ci=readFileSync(new URL("../.github/workflows/ci.yml",import.meta.url),"utf8");
+  const fixture=ci.indexOf("      - name: Deploy existing private S1 read-only Fixture");
+  const readback=ci.indexOf("      - name: Read back private S1 Fixture public-route isolation");
+  const publish=ci.indexOf("      - name: Publish exactly selected Worker");
+  assert.ok(fixture>0 && readback>fixture && publish>readback);
 });

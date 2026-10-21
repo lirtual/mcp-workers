@@ -190,6 +190,19 @@ export function verifyWorkflowReleaseConfig(conf, fixture) {
   return true;
 }
 
+// Review the actually deployed private Fixture, not just its source manifest.
+export function verifyFixtureExposure(subdomain, domains, routesByZone) {
+  invariant(subdomain?.enabled === false && subdomain?.previews_enabled === false,
+    "S1 private Fixture has public workers.dev or Preview exposure");
+  invariant(Array.isArray(domains) && Array.isArray(routesByZone),
+    "S1 Fixture public route inventory unavailable");
+  invariant(!domains.some(x => x.service === "workflow-s1-readonly-fixture"),
+    "S1 private Fixture has a Custom Domain");
+  invariant(!routesByZone.some(x => x.script === "workflow-s1-readonly-fixture"),
+    "S1 private Fixture has a public Worker route");
+  return true;
+}
+
 export function verifyWorkflowD1Readiness(response, bootstrap) {
   invariant(Array.isArray(response) && response.length === 1 &&
     response[0]?.success === true && response[0]?.results?.length === 1,
@@ -293,6 +306,21 @@ function readConfiguration(worker, content) {
   return conf;
 }
 
+async function cfListRead(path, token) {
+  const response = await fetch("https://api.cloudflare.com/client/v4" + path, {
+    headers: { Authorization: "Bearer " + token, Accept: "application/json" },
+    signal: AbortSignal.timeout(15_000),
+  });
+  invariant(response.ok, "S1 private Fixture route inventory HTTP " + response.status);
+  const data = await response.json();
+  invariant(data?.success === true && Array.isArray(data.result),
+    "S1 private Fixture route inventory missing");
+  invariant((data.result_info?.total_pages ?? 1) <= 1 &&
+    (!data.result_info?.total_count || data.result_info.total_count <= data.result.length),
+    "S1 private Fixture route inventory incomplete");
+  return data.result;
+}
+
 async function cfGet(account, worker, token, endpoint) {
   const url = "https://api.cloudflare.com/client/v4/accounts/" +
     encodeURIComponent(account) + "/workers/scripts/" + encodeURIComponent(worker) + endpoint;
@@ -369,7 +397,24 @@ async function current(account, worker, token, options) {
 
 async function main() {
   const [mode, worker] = process.argv.slice(2);
-  invariant(["preflight", "readback", "version", "diagnostic", "fixture-check", "d1-check"].includes(mode), "Unknown release validation mode");
+  invariant(["preflight", "readback", "version", "diagnostic", "fixture-check", "fixture-readback", "d1-check"].includes(mode), "Unknown release validation mode");
+  if (mode === "fixture-readback") {
+    invariant(worker === "workflow-mcp-worker", "Private Fixture check restricted to S1");
+    const account = process.env.CLOUDFLARE_ACCOUNT_ID;
+    const token = process.env.CLOUDFLARE_API_TOKEN;
+    invariant(account && token, "S1 Cloudflare readback credentials missing");
+    const subdomain = await cfGet(account, "workflow-s1-readonly-fixture", token, "/subdomain");
+    const [domains, zones] = await Promise.all([
+      cfListRead("/accounts/" + encodeURIComponent(account) + "/workers/domains?per_page=100", token),
+      cfListRead("/zones?account.id=" + encodeURIComponent(account) + "&per_page=50", token),
+    ]);
+    const routes = (await Promise.all(zones.map(zone =>
+      cfListRead("/zones/" + encodeURIComponent(zone.id) + "/workers/routes?per_page=100", token)
+    ))).flat();
+    verifyFixtureExposure(subdomain, domains, routes);
+    console.log("S1 private Fixture has no Workers.dev, Preview, Custom Domain or Worker route");
+    return;
+  }
   if (mode === "fixture-check") {
     invariant(worker === "workflow-mcp-worker", "Private Fixture check restricted to S1");
     const owner = JSON.parse(await readFile(join(process.cwd(),
