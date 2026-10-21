@@ -5,6 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { toolSchemaDigest } from '../src/plan.ts';
+import { TRUSTED_PORTAL_ENDPOINT } from '../src/s2-public-fetch.ts';
 import type { Env } from '../src/store.ts';
 import type { WorkflowEvent, WorkflowStep } from 'cloudflare:workers';
 import readonlyWorker from './fixtures/readonly-worker.ts';
@@ -25,7 +26,9 @@ const [{default:ownerWorker},{WorkflowRunner}]=await Promise.all([
 ]);
 hook.deregister();
 
-const TRUSTED='https://trusted-fixture.example.org/mcp';
+const TRUSTED=TRUSTED_PORTAL_ENDPOINT;
+const PORTAL_ID='test-only-service-token-id';
+const PORTAL_SECRET='test-only-service-token-secret';
 const OWNER='https://owner.example.org/mcp';
 const TOKEN='disposable-portal-token-s2-owner-e2e';
 const INPUT_SCHEMA={type:'object',properties:{
@@ -34,7 +37,7 @@ const INPUT_SCHEMA={type:'object',properties:{
 },required:['value'],'$schema':'https://json-schema.org/draft/2020-12/schema',additionalProperties:false};
 const DIGEST=await toolSchemaDigest(INPUT_SCHEMA);
 
-test('Portal -> validate -> risk acknowledgment -> Publish -> Run -> Result for trusted S2 target',async t=>{
+test('Portal-authenticated S2 -> validate -> approve -> Publish -> Run -> Result',async t=>{
   const sqlite=new DatabaseSync(':memory:');
   t.after(()=>sqlite.close());
   for(const name of ['0001_s1.sql','0002_native_complete_seen.sql'])
@@ -51,6 +54,8 @@ test('Portal -> validate -> risk acknowledgment -> Publish -> Run -> Result for 
   let privateCalls=0;
   const env={
     MCP_ACCESS_TOKEN:TOKEN,
+    S2_PORTAL_CLIENT_ID:PORTAL_ID,
+    S2_PORTAL_CLIENT_SECRET:PORTAL_SECRET,
     DB:{prepare,async batch(items:{run:()=>Promise<unknown>}[]){return Promise.all(items.map(s=>s.run()));}},
     WORKFLOW:{async create(){},async get(){return {async status(){return {status:'running'};}};}},
     READONLY_TARGET:{async fetch(input:Request|string|URL,init?:RequestInit){
@@ -65,7 +70,9 @@ test('Portal -> validate -> risk acknowledgment -> Publish -> Run -> Result for 
     internetCalls++;
     assert.equal(request.url,TRUSTED);
     assert.equal(request.redirect,'manual');
-    assert.equal(request.headers.get('authorization'),null,'Portal secret must not leak');
+    assert.equal(request.headers.get('authorization'),null,'incoming Portal token must not leak');
+    assert.equal(request.headers.get('cf-access-client-id'),PORTAL_ID);
+    assert.equal(request.headers.get('cf-access-client-secret'),PORTAL_SECRET);
     if(request.method==='POST'){
       const rpc=await request.clone().json() as {method:string};
       if(rpc.method==='tools/call')toolCalls++;
@@ -149,6 +156,22 @@ test('Portal -> validate -> risk acknowledgment -> Publish -> Run -> Result for 
     assert.equal(outcome.result.content[0].text,'approved trusted echo');
     assert.equal(toolCalls,1,'exactly one tools/call');
     assert.equal(privateCalls,0,'S2 must never use the S1 private service binding');
+
+    // A missing outbound Portal secret must fail without sending any requests.
+    env.S2_PORTAL_CLIENT_SECRET=undefined;
+    const noCredential=await call('workflow_run',{
+      workflow_id:created.workflow_id,inputs:{message:'no portal identity'},
+    });
+    await new WorkflowRunner({} as ExecutionContext,env).run({
+      payload:{run_id:noCredential.run_id},
+    } as WorkflowEvent<{run_id:string}>,{
+      do:async(_name:unknown,_options:unknown,fn:()=>Promise<unknown>)=>fn(),
+    } as unknown as WorkflowStep);
+    const rejected=await call('workflow_result',{run_id:noCredential.run_id});
+    assert.equal(rejected.status,'failed');
+    assert.equal(rejected.steps[0].status,'failed');
+    assert.equal(toolCalls,1,'missing portal credentials cannot reach target');
+    env.S2_PORTAL_CLIENT_SECRET=PORTAL_SECRET;
 
     env.S2_READONLY_ENABLED=undefined;
     const blocked=await call('workflow_run',{

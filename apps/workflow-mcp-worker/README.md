@@ -1,3 +1,32 @@
+## S2 Portal machine authentication (Draft only)
+
+The first owner-approved Portal candidate is
+`https://mcp.lirtual.dpdns.org/mcp` (IMA through the existing Portal).
+S2 is **disabled** in the checked-in Wrangler configuration and this Draft is
+not authorized for production. S1 does not require the following settings.
+
+When this S2 target is explicitly approved for enablement, configure the
+optional Worker **secrets** `S2_PORTAL_CLIENT_ID` and
+`S2_PORTAL_CLIENT_SECRET` with an Access service-token pair. The existing
+`MCP_ACCESS_TOKEN` is an **incoming** credential and must not be reused as
+a Portal outbound credential. Never put these values in a Workflow Draft,
+logs, tracked files, or test fixtures.
+
+The service token must have a Service Auth policy at **both** the Portal
+Access application and the IMA linked-server Access application. For IMA's
+Portal mapping, `Require user auth` must be **off** so the Portal uses its
+stored upstream admin credential. Do not change other servers' mappings.
+Only the exact Portal endpoint receives the service-token headers; all other
+S2 targets receive no Portal identity. URL pinning and manual redirects are
+not a proof of DNS/IP SSRF isolation. Exact endpoint + tool + schema-digest
+Publish approval, risk acknowledgement, `readOnlyHint`, and the
+`S2_READONLY_ENABLED` runtime gate remain required.
+
+Acceptance is **pending**: authenticate with a disposable/rotatable token,
+fetch the Portal's actual tools list, compare IMA's read-only tool schemas,
+call one harmless tool, and verify S2 stays off in production. Do not turn on
+`S2_READONLY_ENABLED` simply to make an unauthenticated test pass.
+
 # Workflow MCP Worker — S1 baseline, S2 candidate gated
 
 Implementation base: [Issue #141](https://github.com/lirtual/mcp-workers/issues/141) and [S1 Draft PR #142](https://github.com/lirtual/mcp-workers/pull/142).

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { publicMcpEndpoint, scopedPublicMcpFetch } from '../src/s2-public-fetch.ts';
+import { publicMcpEndpoint, scopedPublicMcpFetch, TRUSTED_PORTAL_ENDPOINT } from '../src/s2-public-fetch.ts';
 
 const TARGET = 'https://mcp.example.org/mcp?tenant=one';
 
@@ -78,4 +78,48 @@ test('actual MCP SDK initialize/list/call/get/delete stay on the approved endpoi
   assert.ok(seen.some(x=>x.method==='DELETE'));
   assert.ok(seen.some(x=>x.method==='POST'));
   assert.ok(seen.every(x=>x.url===TARGET && x.redirect==='manual'));
+});
+
+
+test('service token only reaches the pinned Portal, never other approved MCP targets', async () => {
+  const token={clientId:'test-access-id',clientSecret:'test-access-secret'};
+  let sent=0;
+  const fakeFetch=async(req:Request):Promise<Response>=>{
+    sent++;
+    assert.equal(req.url,TRUSTED_PORTAL_ENDPOINT);
+    assert.equal(req.redirect,'manual');
+    assert.equal(req.headers.get('cf-access-client-id'),token.clientId);
+    assert.equal(req.headers.get('cf-access-client-secret'),token.clientSecret);
+    return new Response(null,{status:202});
+  };
+  assert.throws(
+    ()=>scopedPublicMcpFetch(TARGET,fakeFetch as typeof fetch,token),
+    /portal_auth_wrong_target/,
+  );
+  assert.throws(
+    ()=>scopedPublicMcpFetch(TRUSTED_PORTAL_ENDPOINT,fakeFetch as typeof fetch,{...token,clientSecret:''}),
+    /portal_auth_not_configured/,
+  );
+  const boundary=scopedPublicMcpFetch(TRUSTED_PORTAL_ENDPOINT,fakeFetch as typeof fetch,token);
+  for(const method of ['POST','GET','DELETE']){
+    const response=await boundary(TRUSTED_PORTAL_ENDPOINT,{method});
+    assert.equal(response.status,202);
+  }
+  assert.equal(sent,3);
+  await assert.rejects(boundary('https://attacker.example.org/mcp'),/mcp_target_not_authorized/);
+  await assert.rejects(boundary(TRUSTED_PORTAL_ENDPOINT,{
+    headers:{'CF-Access-Client-Secret':'attacker-override'},
+  }),/portal_auth_header_override_denied/);
+  assert.equal(sent,3);
+});
+
+test('service token cannot follow a Portal redirect to any other endpoint', async () => {
+  const seen:string[]=[];
+  const boundary=scopedPublicMcpFetch(TRUSTED_PORTAL_ENDPOINT,(async(req:Request)=>{
+    seen.push(req.url);
+    assert.equal(req.redirect,'manual');
+    return new Response(null,{status:307,headers:{location:'https://malicious.example.org/mcp'}});
+  }) as typeof fetch,{clientId:'test-id',clientSecret:'test-secret'});
+  await assert.rejects(boundary(TRUSTED_PORTAL_ENDPOINT,{redirect:'follow'}),/mcp_redirect_denied/);
+  assert.deepEqual(seen,[TRUSTED_PORTAL_ENDPOINT]);
 });

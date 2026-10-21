@@ -22,6 +22,9 @@ export type Env = {
   READONLY_TARGET: Fetcher;
   // Absent in every existing Wrangler environment. Never enabled by default.
   S2_READONLY_ENABLED?: string;
+  // Optional, S2-only machine identity for the pinned Cloudflare MCP Portal.
+  S2_PORTAL_CLIENT_ID?: string;
+  S2_PORTAL_CLIENT_SECRET?: string;
 };
 export class StateError extends Error {
   code:string;

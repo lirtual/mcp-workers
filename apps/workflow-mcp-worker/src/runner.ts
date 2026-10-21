@@ -4,7 +4,7 @@ import { evaluateArguments, evaluateCondition, toolSchemaDigest } from './plan.t
 import type { Plan, Step } from './plan.ts';
 import type { Env } from './store.ts';
 import { limitResult } from './store.ts';
-import { scopedPublicMcpFetch } from './s2-public-fetch.ts';
+import { scopedPublicMcpFetch, TRUSTED_PORTAL_ENDPOINT, type PortalServiceToken } from './s2-public-fetch.ts';
 
 type Outcome={status:'succeeded'|'failed'|'skipped'|'indeterminate';output?:any;error_code?:string};
 const now=()=>Date.now();
@@ -44,8 +44,16 @@ async function callApprovedReadonly(env:Env,plan:Plan,step:Step,args:Record<stri
     throw Error('approved_schema_changed');
   const client=new Client({name:'workflow-s2-readonly-candidate',version:'0.1.0'});
   // NEVER send a dynamic target through the S1 private READONLY_TARGET service.
+  let portalToken:PortalServiceToken|undefined;
+  if(endpoint===TRUSTED_PORTAL_ENDPOINT){
+    // Fail closed before making a network request; never fall back to
+    // unauthenticated access or pass credentials through Workflow inputs.
+    if(!env.S2_PORTAL_CLIENT_ID||!env.S2_PORTAL_CLIENT_SECRET)
+      throw Error('portal_auth_not_configured');
+    portalToken={clientId:env.S2_PORTAL_CLIENT_ID,clientSecret:env.S2_PORTAL_CLIENT_SECRET};
+  }
   const transport=new StreamableHTTPClientTransport(new URL(endpoint),{
-    fetch:scopedPublicMcpFetch(endpoint),
+    fetch:scopedPublicMcpFetch(endpoint,fetch,portalToken),
   });
   try{
     await client.connect(transport);
