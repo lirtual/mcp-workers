@@ -217,7 +217,7 @@ const guardedCollectionWrite = async <T extends { _id: number; title: string }>(
 
 const collectionCreateTool = defineTool({
   name: "collection_create",
-  description: "Create exactly one collection with a title and optional parent/public flag.",
+  description: "Create one private collection with a title and optional parent. Public sharing is not available to Agents.",
   inputSchema: CollectionCreateInputSchema,
   outputSchema: CollectionMutationOutputSchema,
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },

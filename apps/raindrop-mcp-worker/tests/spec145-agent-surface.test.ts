@@ -59,4 +59,25 @@ describe("Spec #145: Agent MCP public contract", () => {
       await client.close(); await service.cleanup(); vi.unstubAllGlobals();
     }
   });
+
+  it("also rejects forbidden writes through the public service callTool entrypoint", async () => {
+    const service = new RaindropMCPService({ accessToken: "mock-only" });
+    const create = vi.spyOn(service.raindropService, "createCollection");
+    const update = vi.spyOn(service.raindropService, "updateCollection");
+    const getBookmark = vi.spyOn(service.raindropService, "getBookmark");
+    try {
+      await expect(service.callTool("collection_create", { title: "Leak", public: true }))
+        .rejects.toThrow();
+      await expect(service.callTool("collection_update", { id: 123, public: true }))
+        .rejects.toThrow();
+      await expect(service.callTool("bookmark_delete", { id: 456, permanent: true }))
+        .rejects.toThrow();
+      expect(create).not.toHaveBeenCalled();
+      expect(update).not.toHaveBeenCalled();
+      expect(getBookmark).not.toHaveBeenCalled();
+    } finally {
+      vi.restoreAllMocks();
+      await service.cleanup();
+    }
+  });
 });
