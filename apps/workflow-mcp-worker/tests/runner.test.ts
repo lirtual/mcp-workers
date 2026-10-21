@@ -634,7 +634,7 @@ test('S3 published Plan dispatches one confirmed Job, waits outside step.do and 
     do:async(_name:string,_options:unknown,callback:()=>Promise<unknown>)=>callback(),
     waitForEvent:async(_name:string,options:{type:string})=>{
       waited++;
-      assert.equal(options.type,'s3-receipt');
+      assert.equal(options.type,'s3-receipt-heavy');
       const row=sqlite.prepare('SELECT attempt_id,dispatch_id,state,candidate_run_id FROM step_attempts').get() as {
         attempt_id:string;dispatch_id:string;state:string;candidate_run_id:number
       };

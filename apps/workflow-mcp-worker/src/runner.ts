@@ -149,7 +149,7 @@ async function runGithubStep(
   if(!receipt){
     try{
       const wake=await step.waitForEvent<{attemptId:string;callbackId:string}>(
-        's3-receipt-'+s.id,{type:'s3-receipt',timeout:'4 minutes'});
+        's3-receipt-'+s.id,{type:'s3-receipt-'+s.id,timeout:'4 minutes'});
       if(wake.payload.attemptId!==dispatch.attemptId)
         throw Error('s3_callback_mismatch');
       receipt=await readReceipt();

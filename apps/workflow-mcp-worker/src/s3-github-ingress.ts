@@ -59,14 +59,14 @@ export async function handleGithubCallbackRequest(request:Request,env:Env):Promi
     },jwt,pinned);
     if(!saved)return answer(403,'callback_denied');
     const row=await env.DB.prepare(
-      'SELECT r.instance_id FROM step_attempts a JOIN runs r ON r.id=a.run_id WHERE a.attempt_id=?'
-    ).bind(body.attemptId).first<{instance_id:string}>();
+      'SELECT r.instance_id,a.step_id FROM step_attempts a JOIN runs r ON r.id=a.run_id WHERE a.attempt_id=?'
+    ).bind(body.attemptId).first<{instance_id:string;step_id:string}>();
     if(!row)return answer(503,'unavailable');
     try{
       await notifyStoredGithubReceipt(env.DB,body.attemptId!,async payload=>{
         const instance=await env.WORKFLOW.get(row.instance_id);
         if(!instance.sendEvent)throw Error('s3_workflow_signal_unavailable');
-        await instance.sendEvent({type:'s3-receipt',payload});
+        await instance.sendEvent({type:'s3-receipt-'+row.step_id,payload});
       });
       return answer(200,'stored');
     }catch{
