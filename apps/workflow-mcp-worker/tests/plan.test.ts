@@ -180,3 +180,23 @@ test('S2 contract requires bounded, concrete JSON Schema; no user-supplied diges
     ...step,with:{...step.with,...extra},
   }]}),PlanError);
 });
+
+
+test('S3 only compiles a fixed registered capability without dynamic shell, repo, or token',async()=>{
+  const compiled=await compilePlan({version:1,name:'S3 echo',steps:[
+    {id:'heavy',uses:'github.run',with:{capability:'heavy.github.echo'}},
+    {id:'out',needs:['heavy'],uses:'result.emit',with:{data:{ref:'steps.heavy.output'}}},
+  ]});
+  assert.equal(compiled.plan.steps[0].uses,'github.run');
+  assert.deepEqual(compiled.plan.steps[0].with,{capability:'heavy.github.echo'});
+  for(const extra of [
+    {capability:'shell.exec'},
+    {capability:'heavy.github.echo',repository:'attacker/other'},
+    {capability:'heavy.github.echo',workflow:'other.yml'},
+    {capability:'heavy.github.echo',token:{ref:'inputs.token'}},
+    {capability:'heavy.github.echo',command:'pwd'},
+    {capability:'heavy.github.echo',arguments:{value:'unsafe'}},
+  ]) await assert.rejects(()=>compilePlan({version:1,name:'S3 invalid',steps:[
+    {id:'heavy',uses:'github.run',with:extra},
+  ]}),PlanError);
+});

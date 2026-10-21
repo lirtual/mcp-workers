@@ -1,3 +1,407 @@
+## S3 upgrade-safe OIDC callbacks and late-result acceptance (2026-10-22)
+
+**Isolated real product E2E is green on the upgraded callback code:**
+[Cloudflare Workflow coordinator #39652777599](https://github.com/lirtual/mcp-workers/actions/runs/39652777599)
+**Success** with [independent GitHub echo executor #39652927947](https://github.com/lirtual/mcp-workers/actions/runs/39652927947)
+**Success**, including S2 test Portal IMA read, confirmed physical dispatch,
+GitHub OIDC Claim, durable result emission, and verified disposable
+Worker/Workflow/D1 cleanup.
+
+Fix `84ef561` removes a cross-deployment identity mismatch: a signed
+callback for an already dispatched job is now validated against its
+**original immutable D1 Attempt** `repository_id`, `workflow_ref` and
+`ref`, instead of the latest Worker Environment ref. Only the same
+environment-authorized repository ID, known dedicated executor family,
+active parent Run and matching OIDC audience may succeed. A previous
+test-only `ci.yml` candidate still cannot be claimed from the
+production dedicated executor identity. **Rotating OIDC audience,
+repository or dedicated workflow family is not transparent:** drain
+active jobs before changing those environment identities. No schema
+migration or new service was introduced.
+
+Commit `e323ebc` adds terminal-late-callback regression tests and
+hardens **only the disposable E2E test harness**: a timed-out read-only
+`workflow_result` request is retried a bounded number of times,
+with a sanitized D1 business-outcome lookup for diagnostics.
+It never retries `workflow_run` or the GitHub dispatch. The first
+post-fix isolated coordinator [#39652043892](https://github.com/lirtual/mcp-workers/actions/runs/39652043892)
+did fail on a result-query timeout despite its [GitHub child
+#39652193430](https://github.com/lirtual/mcp-workers/actions/runs/39652193430)
+succeeding. The subsequent coordinator #39652777599 passed, confirming
+normal operation of the fixed callback path and successful cleanup.
+
+**Evidence:** 92/92 local Workflow tests, TypeScript checks and
+Wrangler dry-run passed. Physical GitHub Job cancellation and handling
+of callbacks *after* a terminal `indeterminate` Run remain explicit
+release decisions. Terminal results are not silently rewritten by a
+late signed callback; no retry or new executor is automatically created.
+The formal Portal HTTP 401 remains deferred. S1 production unchanged;
+S2/S3 implementations still Draft, unmerged, undeployed and disabled.
+
+---
+
+## S3 dedicated registered executor — real isolated E2E PASS (2026-10-22)
+
+**The exact default-branch registered `workflow-s3-executor.yml` now has
+a successful real GitHub Job acceptance**, not just a registration or
+no-op dispatch. On S3 Draft commit `c1a549e`:
+
+- [Product coordinator / Cloudflare Workflow #39650137200](https://github.com/lirtual/mcp-workers/actions/runs/39650137200)
+  **Success** for the three-Step `S2 test Portal IMA read →
+  github.run(heavy.github.echo) → result.emit` Plan.
+- [Registered dedicated Echo Job #39650305184](https://github.com/lirtual/mcp-workers/actions/runs/39650305184)
+  **Success**; GitHub-issued OIDC, D1 confirmed physical Run Claim and
+  authenticated callback completed. Its logs contain
+  `S3_REGISTERED_ECHO_EXECUTOR_SUCCESS`.
+- Coordinator logs confirm `S3_PRODUCT_GITHUB_CREDENTIAL_GATE_OK`,
+  `S3_PRODUCT_WORKFLOW_RUN_STARTED`,
+  `S3_PRODUCT_S2_PORTAL_GITHUB_WORKFLOW_RESULT_PASS` and
+  `S3_PRODUCT_DISPOSABLE_CLEANUP_OK`.
+- Exactly two temporary GitHub Environment **variables**
+  (`S3_CALLBACK_ORIGIN` to random disposable
+  `workflow-s3-plan-066f01db1f.aiyaya.workers.dev`, and
+  `S3_GITHUB_AUDIENCE=workflow-s3-claim:test`) were set under a
+  shell `EXIT`/failure cleanup trap. After the successful test,
+  both were deleted, and the GitHub Environment variables list was
+  independently checked **empty**. The randomly named Cloudflare Worker,
+  Workflow and D1 were deleted and verified by the coordinator.
+  No production secret or permanent environment configuration was added.
+- Local Workflow tests **88/88**, TypeScript checks, and Wrangler
+  bundle dry-run passed; GitHub Application checks and GitGuardian for
+  `c1a549e` both finished Success.
+- The dedicated test callback origin rule is limited to one exact S3
+  Draft ref, a fixed OIDC test audience and the randomized
+  `workflow-s3-plan-<10hex>` test host. Normal production dispatcher
+  rules stay unchanged.
+
+**Still not production activation:** S1 production has not changed;
+S2/S3 implementation remains Draft, unmerged and not deployed. The
+dedicated workflow is registered on `main` but has no recurring
+trigger; no production S3 flags were enabled. Remaining work concerns
+real physical GitHub cancellation, much-delayed/terminal uncertain
+reconciliation, cross-version upgrade validation and the formal
+Portal HTTP 401 at eventual release. Do not infer those gates from
+the successful normal-path dedicated Echo E2E.
+
+---
+
+## S3 dedicated executor registered on GitHub default branch (2026-10-22)
+
+**Registration complete, not production activation.** The isolated
+[one-file PR #153](https://github.com/lirtual/mcp-workers/pull/153) was
+squash-merged to `main` as commit `50724a58`. It added **only**
+`.github/workflows/workflow-s3-executor.yml`; no S1/S2/S3 application
+implementation or deployment was merged. GitHub now lists the registered
+`S3 Registered Echo Executor` as `active` (workflow ID `392010253`).
+
+[Non-executing dispatch proof #39648141107](https://github.com/lirtual/mcp-workers/actions/runs/39648141107)
+successfully reached the registered workflow with `--ref
+wip/workflow-s3-github-executor`; a deliberately unsupported capability
+made its only execution Job **skipped**. This proves registration,
+ref selection and the fixed capability allowlist reject path; it **does not**
+prove an actual dedicated Echo Job has run. The main push
+[CI #39648034389](https://github.com/lirtual/mcp-workers/actions/runs/39648034389)
+finished Success, with the existing manual Worker production release
+Job **skipped**.
+
+GitHub Environment `workflow-mcp-worker` is still missing
+`S3_CALLBACK_ORIGIN` and `S3_GITHUB_AUDIENCE`. They must be set to an
+explicitly approved, isolated test target and matching GitHub OIDC audience
+before running the registered dedicated Echo execution; **no variables or
+secrets were added during registration**. The earlier product S2 test
+Portal + S3 end-to-end Success using the pinned `ci.yml` isolation Job
+still stands, but does not substitute for this final dedicated-executor
+test. S2/S3 Draft PRs remain unmerged, production S1 unchanged, S3 OFF,
+and formal Portal HTTP 401 deferred.
+
+---
+
+## S3 dedicated executor registration and compatibility preflight (2026-10-22)
+
+The source in [Draft PR #151](https://github.com/lirtual/mcp-workers/pull/151)
+includes `.github/workflows/workflow-s3-executor.yml`, but GitHub's
+default branch does **not** contain it and the GitHub Actions workflow
+directory does **not** register it yet. GitHub requires a
+`workflow_dispatch` workflow to exist on the default branch before it can
+be invoked with a selected ref. The existing pinned branch-local
+`ci.yml` isolated Echo tests do not remove that product registration gate.
+
+The existing GitHub Environment `workflow-mcp-worker` was checked
+read-only: its variable-name list currently does **not** include
+`S3_CALLBACK_ORIGIN` or `S3_GITHUB_AUDIENCE`. The dedicated Job consumes
+exactly these two scoped variables. No new permanent variable or secret has
+been created. Configure their narrowly approved, environment-specific
+values **only after** a separate release authorization and an identified
+registered test Worker endpoint. Do not reuse or blindly redirect the
+production Portal credentials; the executor receives no Cloudflare keys.
+
+Two immutable-version regressions are added: a queued S3 Run remains pinned
+to its original Published Version when the Draft is republished as an S1
+plan; and an older S1 Published Plan cannot acquire a GitHub dispatch grant
+by schema tampering. Two static contract tests pin the dedicated Job's
+three opaque inputs, fixed `heavy.github.echo` capability, bounded 3-minute
+runtime, read-only repository permission and `id-token:write`. The Job
+cannot accept arbitrary shell, repository or callback URL inputs.
+
+**Current evidence:** 87/87 Workflow tests, TypeScript typecheck and the
+Wrangler Worker bundle dry-run passed. This is **static/local acceptance**
+of the dedicated Job and version-pin invariants, not a claim that its live
+`workflow_dispatch` registration or long-running job cancellation has
+been verified. The full product S2 test Portal + S3 ephemeral `ci.yml`
+Executor end-to-end check remains green from
+[Actions #39643118492](https://github.com/lirtual/mcp-workers/actions/runs/39643118492)
+and [independent Job #39643255274](https://github.com/lirtual/mcp-workers/actions/runs/39643255274).
+
+**Still gated:** separate authorization for merging/activating the dedicated
+default-branch Workflow; approval of the two environment variables; isolated
+validation with the newly registered dedicated executor; physical GitHub Job
+cancellation (no cancellation MCP API exists), exceptionally late callbacks,
+reconciliation after terminal indeterminate and cross-deployment changes to
+executor identity while active jobs are running. Keep S1 production
+unchanged, S2/S3 Draft and OFF, formal Portal HTTP 401 deferred.
+
+---
+
+## S3 pre-release resilience and terminal-state gates (2026-10-22)
+
+[Draft PR #151](https://github.com/lirtual/mcp-workers/pull/151)
+commit `caa37a8` adds two **bounded, no-new-service** safeguards:
+
+- **Durable callback reconciliation while waiting:** after a confirmed
+  dispatch, the native Workflow now checks D1 before waiting and after
+  each of up to eight 30-second `waitForEvent` periods. If the wake
+  notification was lost but an immutable, already authorized callback
+  receipt exists, Workflow can complete from D1 alone. If no receipt is
+  found in that four-minute limit, it retains `indeterminate` and
+  `s3_callback_unconfirmed`. **It never re-dispatches the GitHub Job.**
+  Unit tests cover both lost-wake recovery and bounded missing-receipt
+  exhaustion.
+- **Terminal-Run cancellation guard:** the atomic D1 Claim and callback
+  insert both require their parent Run to remain `queued` or `running`.
+  A valid GitHub OIDC credential cannot obtain a new Claim or insert a
+  late success receipt once the Run has been marked `cancelled`.
+  The conditional writes protect even if a Run transitions after JWT
+  verification. Unit tests verify immutable terminal outcome and denial.
+
+All **83/83** Workflow unit tests, TypeScript checks and Wrangler dry-run
+passed after these changes. The existing full S2 Portal → S3 GitHub
+product E2E is being rerun on `caa37a8`; its verdict is tracked in
+[GitHub Actions #39643118492](https://github.com/lirtual/mcp-workers/actions/runs/39643118492),
+not treated as successful until the job is complete.
+
+**Still not implemented / accepted:** an explicit user-facing cancellation
+API and physical GitHub Job cancellation, reconciliation after a terminal
+`indeterminate` Run, delayed callbacks after a long execution window,
+independent full version-upgrade compatibility, and default-branch
+registration of the dedicated `workflow-s3-executor.yml`. The four-minute
+lost-wake window is not a guarantee of recovering arbitrarily delayed
+GitHub executions. Do not merge or enable production S2/S3 until the
+necessary release decisions and tests are complete. Production S1 and
+formal Portal remain unchanged.
+
+---
+
+## S3 product combined cloud E2E — passed in isolation (2026-10-21)
+
+**End-to-end product Plan/Runner acceptance succeeded**:
+[Cloudflare Workflow + S2 test Portal + S3 coordinator #39641201454](https://github.com/lirtual/mcp-workers/actions/runs/39641201454)
+and its [separate GitHub echo executor #39641354802](https://github.com/lirtual/mcp-workers/actions/runs/39641354802)
+both finished **Success** on implementation commit `6865fdc`.
+
+The exact isolated business Plan was `Workflow Draft → Validate → Publish →
+Run → test Portal IMA read-only `ima_list_notebooks` → registered `github.run`
+(`heavy.github.echo`) → OIDC claimed GitHub Job → immutable D1 callback
+receipt → native Workflow wake and result readback → `result.emit``.
+The coordinator asserted all three Steps `succeeded`, the expected echo
+business result, and idempotent Run identity. The same successful job
+confirmed **automatic removal** of its randomly named temporary Cloudflare
+Worker, Workflow and D1 database.
+
+**What resolved the observed GitHub 403:** separate no-execution probes
+[#39638965893](https://github.com/lirtual/mcp-workers/actions/runs/39638965893)
+and [#39639345904](https://github.com/lirtual/mcp-workers/actions/runs/39639345904)
+found that a just-written temporary Worker Secret could initially differ
+from the original GitHub Actions token, but in later runs matched exactly,
+with authorized GitHub GET 200 and invalid-ref dispatch 422. The product
+acceptance then showed first two credential hash checks mismatching,
+followed by a correct match ~20 seconds later. After adding a GitHub
+`User-Agent` to the real S3 dispatch, the **full product E2E** passed.
+The change and credential readiness preflight were tested together; this
+supports the request-contract and rollout-readiness fix without claiming
+that one particular failure mode alone explains every earlier 403.
+The readiness endpoint is in a **test-only entrypoint wrapper**, not the
+production Worker source, and never returns token bytes, hashes or GitHub
+response bodies.
+
+**Release remains gated.** GitHub `ci.yml` served as the existing,
+precisely pinned **test-only** executor because the final dedicated
+`workflow-s3-executor.yml` is still Draft and not registered on the
+repository's default branch. Only a side-effect-free registered echo
+capability has been exercised. Timeout/cancellation, ambiguous long-running
+job recovery, loss-of-notification reconciliation and future version
+compatibility still require explicit acceptance. Production S1 was
+unchanged; S2/S3 remain Draft, unmerged, undeployed and disabled.
+Production Portal authentication (401) stays deferred until the
+authorized final release. Local **79/79** tests, TypeScript check and
+Wrangler dry-run succeeded before the live E2E.
+
+---
+
+## S3 Plan / Publish / Runner integration (Draft, 2026-10-21)
+
+**New product code in S3 Draft PR #151** connects the previously isolated
+S3 modules to the real Workflow MCP surfaces while keeping all production
+flags **OFF**. `github.run` is supported as an explicit Plan Step with only
+`with: {capability: heavy.github.echo}`; arbitrary command, repository, token,
+endpoint, workflow ref or dynamic arguments are rejected by compilation.
+`workflow_validate` reports `requires_heavy_execution_approval:true`.
+Publish requires both `S3_ENABLED=true` in the server Environment and the
+owner's explicit `approve_heavy_execution:true`, recorded in the immutable
+Published Plan as `s3_execution_approved:true`. Mixed S2+S3 plans also
+require S2's **separate** exact MCP read grant and risk acknowledgement.
+
+The real `WorkflowRunner` executes a registered S3 Step using an immutable
+D1 logical Attempt, one GitHub REST dispatch with
+`return_run_details:true`, and a confirmed physical Run ID. No dispatch
+occurs when S3 is disabled, and an ambiguous dispatch is
+`s3_dispatch_unknown` **without retry**. The native Workflow waits outside
+`step.do` and only consumes a signed claimed-owner callback after reading
+the immutable D1 receipt. That verified output is available to downstream
+`result.emit`. `/s3/claim` and `/s3/callback` are exact OIDC-only POST
+endpoints and return 404 while S3 is disabled. A separate bounded echo-only
+`.github/workflows/workflow-s3-executor.yml` runs with `id-token:write`
+and repository read; **the job does not receive Cloudflare or Portal secrets**.
+Callback origins and audience are server/GitHub Environment configuration,
+never user Plan/Run inputs.
+
+**Product acceptance:** The real combined S2 test Portal + S3 Plan/Runner
+cloud E2E passed in the isolated test environment (details above). The
+dedicated workflow is still Draft-only and cannot be treated as a live
+default-branch executor. No production S3 flag, dispatch credential, D1
+migration or callback origin was installed.
+
+**Outstanding release gates:** Dedicated executor registration and its
+production-shaped isolated verification; timeout/cancellation and
+lost-notification recovery; bounded reconciliation and version upgrades.
+Do not merge, deploy or enable production S3 without separate authorization.
+The production Portal 401 remains deferred until final rollout.
+
+---
+
+## S3 isolated independent GitHub REST dispatch proof (2026-10-21)
+
+A real separate, side-effect-free GitHub Job has been dispatched successfully:
+[coordinator Action #39627837142](https://github.com/lirtual/mcp-workers/actions/runs/39627837142)
+→ [independent executor Action #39627918285](https://github.com/lirtual/mcp-workers/actions/runs/39627918285).
+The GitHub REST `workflow_dispatch` request now sets
+`return_run_details:true` (the upstream API requires this to obtain a
+confirmed physical `workflow_run_id`). The coordinator pinned the exact
+GitHub ref, registered an opaque logical Attempt, made **one** dispatch
+request, recorded the returned physical Run ID in disposable D1, then
+waited for that separate GitHub Runner to obtain its own signed OIDC
+identity, claim the confirmed Attempt and execute only registered
+`heavy.github.echo`. The callback was stored before Cloudflare Workflows
+was notified, and the coordinator verified the Run's terminal result and
+owner Run ID against D1. The child GitHub Action's final verdict was
+**Success**, and the coordinator's main acceptance job finished **Success**,
+including the isolated Worker/Workflow/D1 cleanup checks.
+
+Because the dedicated `workflow-s3-executor.yml` is not present on the
+repository's default branch, this **Draft-only isolated proof reuses the
+existing `ci.yml` as a precisely pinned temporary executor**. The
+production dispatcher remains pinned to `workflow-s3-executor.yml`; the
+`ci.yml` alternate path is allowed only for exact
+`lirtual/mcp-workers`, the S3 Draft ref and a randomly named
+`workflow-s3-oidc-<10 hex>` isolated Worker. It does not authorize arbitrary
+repository dispatch, Shell tools or dynamic callback URLs. The child Job
+receives only opaque IDs and the scoped isolated hostname; it gets GitHub
+OIDC but **not** Cloudflare or Portal secrets.
+
+**Remaining product integration:** this proved a *GitHub Actions coordinator*
+dispatching an independent Job and receiving its result through a real
+Cloudflare Workflow. The user-facing Workflow MCP Runner and published
+`Plan` DSL do **not** yet dispatch `heavy.github.echo`; this is not yet an
+operational S3 MCP capability, nor a combined S1+S2+S3 plan through test
+Portal. Cancellation, timeout ambiguity, cross-version compatibility and
+the final dedicated executor workflow still require integration/acceptance.
+S1 production unchanged, S2/S3 Draft and OFF, production Portal 401 deferred.
+
+---
+
+## S3 real GitHub OIDC / Cloudflare D1 isolated verification (2026-10-21)
+
+[GitHub Actions #39624620984](https://github.com/lirtual/mcp-workers/actions/runs/39624620984)
+completed **Success** on Draft head `c811565`. A GitHub-hosted Runner
+minted a genuine GitHub OIDC token using `id-token: write`, then sent it
+to a disposable Cloudflare Worker with dedicated disposable D1. The Worker
+used the real `jose` GitHub JWKS verifier and D1 atomic Claim / immutable
+callback receipt implementation; wrong-audience tokens and repeat Claims
+were rejected, identical callbacks were idempotent, and an altered callback
+was rejected. The test script queried real D1 to assert exactly one
+confirmed physical owner and one stored callback result. Its successful
+final job verdict includes removal of the isolated Worker and D1.
+
+[Follow-up real Cloudflare Workflow proof #39625864994](https://github.com/lirtual/mcp-workers/actions/runs/39625864994)
+also completed **Success** on `06cfd62`. The disposable fixture now
+starts a real native Workflow, persists the authenticated callback before
+sending `s3-receipt`, uses `sendEvent` / `waitForEvent`, and requires the
+Workflow to re-read D1 before committing `runs.outcome='succeeded'`.
+The coordinator polls actual D1 and asserts the returned business result;
+the GitHub Action's overall Success includes exact Worker, Workflow and D1
+removal. Event delivery without terminal D1 Run status would fail the job.
+
+**Exact assurance scope:** the isolated GitHub CI Job registered *itself* as
+the confirmed physical candidate using its `GITHUB_RUN_ID` and
+`GITHUB_RUN_ATTEMPT=1` before requesting OIDC. The real platform proofs
+now cover signed GitHub workload identity, D1 Claim, receipt-first callback
+and native Workflow event wake/readback. They **do not** establish the
+remaining full REST Workflow → separately dispatched heavy GitHub Job →
+verified physical candidate correlation, durable production reconciliation,
+or safe cancellation under ambiguity. The temporary `ci.yml` workflow
+identity is server-pinned; the product dispatcher remains restricted to
+`workflow-s3-executor.yml`. No production Worker/DB migration, new
+production secret, merge or S3 activation took place. S2's **test Portal**
+remains the intended source for later S1+S2+S3 integration; production Portal
+HTTP 401 is deferred.
+
+---
+
+## S3 GitHub Actions execution (Draft, no release)
+
+S3 is implemented in separate [Draft PR #151](https://github.com/lirtual/mcp-workers/pull/151)
+stacked on S2 Draft #146. This first isolated security slice introduces
+`s3-github-dispatch.ts` (only registered `heavy.github.echo` execution
+requests, non-secret opaque inputs and dispatch-unknown without redispatch),
+`s3-github-claim.ts` (GitHub JWKS RS256 OIDC JWT verification with pinned
+issuer/audience/expiry/repository ID/ref/workflow/Run and run_attempt), and
+`0003_s3_attempt_claim.sql` (one D1 logical Attempt row, confirmed physical
+candidate and an atomic first-claim-wins UPDATE). `0004_s3_callback_receipts.sql`
+and `s3-github-callback.ts` now persist one immutable signed-owner callback
+fact before notifying Cloudflare Workflow. Identical callbacks are idempotent;
+conflicts and late callbacks are rejected, while failed notification leaves
+the durable receipt pending for reconciliation. This reuses D1, not a new
+queue, callback service or broker. JWT verification uses the existing `jose`
+library, now an explicit dependency, not a homegrown signing scheme.
+
+The candidate returned by GitHub dispatch **must be durably confirmed in
+D1** before a signed Runner is permitted to Claim. Neither a known attempt
+ID nor a signed token from a different GitHub job is authorization. A timeout
+or `dispatch_unknown` does not grant a second owner. No Cloudflare
+migrations, workflows, secrets or production configuration have been changed.
+
+Local signed-JWT/SQLite tests verify identity fences, single-owner Claim,
+callback deduplication and lost-notification recovery. The repo's existing
+Worker continues to compile under Wrangler dry-run with no S3 ingress enabled.
+**Still missing**: a real GitHub-issued OIDC + Cloudflare D1 acceptance,
+actual S3 HTTP Claim/callback ingress, native Workflow wake / readback and
+bounded reconciliation, a controlled executor job, approved dispatch authority,
+cancel/retry lifecycle, version compatibility, and production release approval.
+No actual S3 heavy job has run. Until those gates pass, this is an
+unconnected fail-closed module; S3 is NOT usable in production. S2 continues via the **test** MCP Portal and production
+Portal authentication may remain deferred until final release.
+
+---
+
 ## S2 Portal selection (Draft, not production-enabled)
 
 - Isolated acceptance and tests continue using `https://test-mcp.lirtual.dpdns.org/mcp`.

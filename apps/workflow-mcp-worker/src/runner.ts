@@ -4,6 +4,8 @@ import { evaluateArguments, evaluateCondition, toolSchemaDigest } from './plan.t
 import type { Plan, Step } from './plan.ts';
 import type { Env } from './store.ts';
 import { limitResult } from './store.ts';
+import { registerGithubAttempt,recordGithubDispatchResult } from './s3-github-claim.ts';
+import { dispatchGithubAttempt,selectedS3Executor } from './s3-github-dispatch.ts';
 import { scopedPublicMcpFetch, TRUSTED_PORTAL_ENDPOINT, PRODUCTION_PORTAL_ENDPOINT, type PortalServiceToken } from './s2-public-fetch.ts';
 
 type Outcome={status:'succeeded'|'failed'|'skipped'|'indeterminate';output?:any;error_code?:string};
@@ -92,6 +94,88 @@ async function callApprovedReadonly(env:Env,plan:Plan,step:Step,args:Record<stri
   }
 }
 
+/**
+ * S3 cannot be executed by the generic 30-second step.do callback:
+ * dispatch is externally observable, and waiting for a callback belongs in
+ * a native Workflow waitForEvent (not inside step.do). The first durable
+ * Attempt INSERT is UNIQUE(run_id,step_id), fencing replayed dispatch.
+ */
+async function runGithubStep(
+  env:Env,plan:Plan,s:Step,runId:string,step:WorkflowStep,
+):Promise<Outcome>{
+  if(env.S3_ENABLED!=='true'||plan.s3_execution_approved!==true)
+    return {status:'failed',error_code:'s3_disabled'};
+  if(s.with.capability!=='heavy.github.echo')
+    return {status:'failed',error_code:'s3_capability_not_registered'};
+  if(!env.S3_GITHUB_TOKEN||!env.S3_GITHUB_REPOSITORY||
+     !env.S3_GITHUB_REPOSITORY_ID||!env.S3_GITHUB_REF||
+     !env.S3_GITHUB_AUDIENCE)
+    return {status:'failed',error_code:'s3_executor_not_configured'};
+  const db=env.DB;
+  const executor=selectedS3Executor(env);
+  // This operation intentionally does not retry on any ambiguity. A new
+  // logical Attempt for the same Run+Step is forbidden by D1 UNIQUE.
+  const dispatch=(await step.do('s3-dispatch-'+s.id,{
+    retries:{limit:0,delay:'1 second'},timeout:'45 seconds',
+  },async()=>{
+    const attemptId=crypto.randomUUID(),dispatchId=crypto.randomUUID();
+    await registerGithubAttempt(db,{
+      attemptId,dispatchId,runId,stepId:s.id,
+      capabilityId:'heavy.github.echo',
+      repository:env.S3_GITHUB_REPOSITORY!,
+      repositoryId:env.S3_GITHUB_REPOSITORY_ID!,
+      ref:env.S3_GITHUB_REF!,
+      workflowRef:env.S3_GITHUB_REPOSITORY+
+        '/.github/workflows/'+executor.workflow+'@'+env.S3_GITHUB_REF,
+      audience:env.S3_GITHUB_AUDIENCE!,
+    });
+    const result=await dispatchGithubAttempt({
+      repository:env.S3_GITHUB_REPOSITORY!,
+      ref:env.S3_GITHUB_REF!,
+      workflow:executor.workflow,
+      ...(executor.workerName?{workerName:executor.workerName}:{}),
+      dispatchToken:env.S3_GITHUB_TOKEN!,
+    },{attemptId,dispatchId,capabilityId:'heavy.github.echo'});
+    const persisted=await recordGithubDispatchResult(db,attemptId,result);
+    if(!persisted)throw Error('dispatch_ack_not_persisted');
+    return {attemptId,...result};
+  })) as {attemptId:string;status:string;httpStatus?:number;reason?:string};
+  if(dispatch.status==='rejected')return {
+    status:'failed',error_code:'s3_dispatch_rejected_'+
+      String(dispatch.httpStatus??'unknown')+'_'+String(dispatch.reason??'unknown'),
+  };
+  if(dispatch.status!=='confirmed')
+    return {status:'indeterminate',error_code:'s3_dispatch_unknown'};
+  type Receipt={callback_id:string;outcome:string;result_json:string};
+  const readReceipt=()=>db.prepare(
+    'SELECT callback_id,outcome,result_json FROM callback_receipts WHERE attempt_id=?'
+  ).bind(dispatch.attemptId).first<Receipt>();
+  let receipt=await readReceipt();
+  // A notification can be lost after its immutable D1 receipt was committed,
+  // or arrive just before waitForEvent is registered. Use native timed waits
+  // with a bounded D1 readback; the event is only a wake hint and NEVER a
+  // source of business facts. No re-dispatch or external job retry occurs.
+  for(let i=0;i<8&&!receipt;i++){
+    try{
+      await step.waitForEvent<{attemptId:string;callbackId:string}>(
+        's3-receipt-'+s.id+'-'+i,
+        {type:'s3-receipt-'+s.id,timeout:'30 seconds'});
+    }catch{
+      // Missing notification or timeout: reconcile durable D1 only.
+    }
+    receipt=await readReceipt();
+  }
+  if(!receipt)return {status:'indeterminate',error_code:'s3_callback_unconfirmed'};
+  if(receipt.outcome!=='succeeded'&&receipt.outcome!=='failed')
+    return {status:'indeterminate',error_code:'s3_callback_invalid'};
+  try{
+    const value=limitResult(JSON.parse(receipt.result_json));
+    return receipt.outcome==='succeeded'
+      ?{status:'succeeded',output:value}
+      :{status:'failed',error_code:'s3_job_failed'};
+  }catch{return {status:'indeterminate',error_code:'s3_callback_invalid'};}
+}
+
 export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
   async run(event:WorkflowEvent<{run_id:string}>,step:WorkflowStep){
     const id=event.payload.run_id;
@@ -114,12 +198,26 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
     let hasEmitted=false;
     let failed=false;
     let uncertain=false;
+    let uncertainCode:string|null=null;
     try{
       while(pending.size){
         const ready=[...pending.values()].filter(s=>s.needs.every(n=>ctx.steps[n])).slice(0,8);
         if(!ready.length)throw Error('invalid_execution_graph');
         const outcomes=await Promise.all(ready.map(async (s:Step):Promise<Outcome>=>{
-          const result=(await step.do('s1-'+s.id,{retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},async ():Promise<Outcome>=>{
+          const result=(s.uses==='github.run'
+            ? await (async()=>{
+              try{
+                await db.prepare("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES(?,?,'running',?) ON CONFLICT(run_id,step_id) DO NOTHING")
+                  .bind(id,s.id,now()).run();
+                if(s.needs.some(n=>ctx.steps[n].status!=='succeeded'))return {status:'skipped'} as Outcome;
+                if(s.if!==undefined&&!evaluateCondition(s.if,ctx))return {status:'skipped'} as Outcome;
+                return await runGithubStep(this.env,plan,s,id,step);
+              }catch{
+                // Never retry an uncertain GitHub dispatch on a Workflow replay.
+                return {status:'indeterminate',error_code:'s3_dispatch_unknown'} as Outcome;
+              }
+            })()
+            : await step.do('s1-'+s.id,{retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},async ():Promise<Outcome>=>{
             try{
               // Only an executing callback marks a Step running. Cached replay
               // must never replace a previously persisted terminal Step state.
@@ -156,12 +254,14 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
           return result;
         }));
         ready.forEach((s,i)=>{ctx.steps[s.id]=outcomes[i];pending.delete(s.id);if(outcomes[i].status==='failed')failed=true;
-          if(outcomes[i].status==='indeterminate')uncertain=true;
+          if(outcomes[i].status==='indeterminate'){
+            uncertain=true;uncertainCode??=outcomes[i].error_code??'external_outcome_unknown';
+          }
           if(s.uses==='result.emit'&&outcomes[i].status==='succeeded'){emitted=outcomes[i].output;hasEmitted=true;}});
       }
       const output=limitResult(hasEmitted?emitted:ctx.steps[plan.steps.at(-1)!.id]?.output??null);
       await db.prepare("UPDATE runs SET outcome=?,result=?,error_code=?,updated_at=? WHERE id=? AND outcome='running'")
-        .bind(uncertain?'indeterminate':failed?'failed':'succeeded',JSON.stringify(output),uncertain?'external_outcome_unknown':null,now(),id).run();
+        .bind(uncertain?'indeterminate':failed?'failed':'succeeded',JSON.stringify(output),uncertain?uncertainCode:null,now(),id).run();
     }catch{
       await db.prepare("UPDATE runs SET outcome='indeterminate',error_code='execution_interrupted',updated_at=? WHERE id=? AND outcome='running'").bind(now(),id).run();
       throw Error('execution_interrupted');

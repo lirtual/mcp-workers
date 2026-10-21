@@ -42,6 +42,57 @@ on:
         required: false
         type: boolean
         default: false
+      s3_oidc_probe:
+        description: Real GitHub OIDC and disposable Cloudflare D1 Claim/Callback (no production)
+        required: false
+        type: boolean
+        default: false
+      s3_full_dispatch:
+        description: Test isolated S3 REST dispatch to independent GitHub Job (no production)
+        required: false
+        type: boolean
+        default: false
+      s3_auth_compare:
+        description: Test GitHub Runner vs disposable Worker token/GET/invalid-branch authorization (no real Job)
+        required: false
+        type: boolean
+        default: false
+      s3_product_e2e:
+        description: Isolated Workflow MCP Plan with test Portal read and independent S3 Job (no production)
+        required: false
+        type: boolean
+        default: false
+      s3_dedicated_name:
+        description: Exact pre-authorized random disposable S3 Worker name (dedicated executor acceptance only)
+        required: false
+        type: string
+        default: ''
+      s3_cleanup_name:
+        description: Exact ephemeral workflow-s3-plan-XXXXXXXXXX resource to remove
+        required: false
+        type: string
+        default: ''
+      s3_executor_worker:
+        description: Internal S3 test-only echo executor, called by coordinator
+        required: false
+        type: boolean
+        default: false
+      worker_name:
+        description: Pinned isolated S3 Worker name
+        required: false
+        type: string
+      attempt_id:
+        description: Internal S3 opaque Attempt ID
+        required: false
+        type: string
+      dispatch_id:
+        description: Internal S3 opaque Dispatch ID
+        required: false
+        type: string
+      capability_id:
+        description: Internal S3 registered capability
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -58,7 +109,15 @@ jobs:
     if: >-
       ${{ !(github.event_name == 'workflow_dispatch' &&
             github.ref == 'refs/heads/wip/workflow-s2-public-readonly' &&
-            (inputs.s2_portal_probe == true || inputs.s2_cloud_e2e == true)) }}
+            (inputs.s2_portal_probe == true || inputs.s2_cloud_e2e == true)) &&
+          !(github.event_name == 'workflow_dispatch' &&
+            github.ref == 'refs/heads/wip/workflow-s3-github-executor' &&
+            (inputs.s3_oidc_probe == true ||
+             inputs.s3_full_dispatch == true ||
+             inputs.s3_auth_compare == true ||
+             inputs.s3_product_e2e == true ||
+             inputs.s3_cleanup_name != '' ||
+             inputs.s3_executor_worker == true)) }}
     concurrency:
       group: ci-checks-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.event.pull_request.number || github.ref }}
       cancel-in-progress: true
@@ -611,3 +670,222 @@ jobs:
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Verify disposable Workflow, Portal and IMA; clean all ephemeral resources
         run: node --experimental-strip-types apps/workflow-mcp-worker/tests/s2-portal-cloud-e2e.mjs
+
+  workflow-s3-isolated-oidc:
+    name: Isolated S3 GitHub OIDC / D1 Claim / Callback (no production)
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/wip/workflow-s3-github-executor' &&
+          inputs.worker == 'workflow-mcp-worker' &&
+          inputs.s3_oidc_probe == true &&
+          inputs.s2_portal_probe != true &&
+          inputs.s2_cloud_e2e != true &&
+          inputs.smoke_only != true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: workflow-mcp-worker
+    concurrency:
+      group: workflow-s3-isolated-oidc
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Accept real signed GitHub Runner against disposable Cloudflare D1
+        run: node --experimental-strip-types apps/workflow-mcp-worker/tests/s3-real-oidc-cloud.mjs
+
+
+  workflow-s3-independent-dispatch:
+    name: Isolated S3 confirmed REST dispatch -> separate GitHub echo job
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/wip/workflow-s3-github-executor' &&
+          inputs.worker == 'workflow-mcp-worker' &&
+          inputs.s3_full_dispatch == true &&
+          inputs.s3_executor_worker != true &&
+          inputs.s3_oidc_probe != true &&
+          inputs.smoke_only != true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    environment:
+      name: workflow-mcp-worker
+    concurrency:
+      group: workflow-s3-isolated-rest-dispatch
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: write
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      S3_INDEPENDENT_DISPATCH: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Register confirmed GitHub REST Job and verify Cloudflare Result, then clean up
+        run: node --experimental-strip-types apps/workflow-mcp-worker/tests/s3-real-oidc-cloud.mjs
+
+  workflow-s3-independent-echo:
+    name: Independent GitHub S3 no-side-effect echo execution (OIDC only)
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/wip/workflow-s3-github-executor' &&
+          inputs.worker == 'workflow-mcp-worker' &&
+          inputs.s3_executor_worker == true &&
+          inputs.s3_full_dispatch != true &&
+          inputs.s3_oidc_probe != true &&
+          inputs.smoke_only != true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      S3_WORKER_NAME: ${{ inputs.worker_name }}
+      S3_ATTEMPT_ID: ${{ inputs.attempt_id }}
+      S3_DISPATCH_ID: ${{ inputs.dispatch_id }}
+      S3_CAPABILITY: ${{ inputs.capability_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Obtain signed OIDC identity, claim, echo and post durable result
+        run: node apps/workflow-mcp-worker/tests/s3-independent-executor.mjs
+
+
+  workflow-s3-product-cloud-e2e:
+    name: Isolated S2 Portal + S3 product Plan through GitHub Workflow (auto-cleanup)
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/wip/workflow-s3-github-executor' &&
+          inputs.worker == 'workflow-mcp-worker' &&
+          inputs.s3_product_e2e == true &&
+          inputs.s3_full_dispatch != true &&
+          inputs.s3_oidc_probe != true &&
+          inputs.s3_executor_worker != true &&
+          inputs.smoke_only != true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: workflow-mcp-worker
+    concurrency:
+      group: workflow-s3-product-cloud-e2e
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: write
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      S2_PORTAL_CLIENT_ID: ${{ secrets.S2_PORTAL_CLIENT_ID }}
+      S2_PORTAL_CLIENT_SECRET: ${{ secrets.S2_PORTAL_CLIENT_SECRET }}
+      S3_DEDICATED_TEST_NAME: ${{ inputs.s3_dedicated_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Test real S2 and S3 product Plan then remove disposable Cloudflare resources
+        run: node --experimental-strip-types apps/workflow-mcp-worker/tests/s3-product-combined-cloud.mjs
+
+
+  workflow-s3-disposable-cleanup:
+    name: Cleanup one exact disposable S3 Plan Worker / Workflow / D1
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/wip/workflow-s3-github-executor' &&
+          inputs.worker == 'workflow-mcp-worker' &&
+          inputs.s3_cleanup_name != '' &&
+          inputs.s3_product_e2e != true &&
+          inputs.s3_full_dispatch != true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    environment:
+      name: workflow-mcp-worker
+    permissions:
+      contents: read
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      S3_CLEANUP_NAME: ${{ inputs.s3_cleanup_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Delete and verify one exact disposable S3 fixture
+        run: node apps/workflow-mcp-worker/tests/s3-disposable-cleanup.mjs "$S3_CLEANUP_NAME"
+
+  workflow-s3-github-auth-comparison:
+    name: S3 GitHub authorization isolation probe (no executable dispatch)
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/wip/workflow-s3-github-executor' &&
+          inputs.worker == 'workflow-mcp-worker' &&
+          inputs.s3_auth_compare == true &&
+          inputs.s3_product_e2e != true &&
+          inputs.s3_full_dispatch != true &&
+          inputs.s3_oidc_probe != true &&
+          inputs.s3_executor_worker != true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    environment:
+      name: workflow-mcp-worker
+    concurrency:
+      group: workflow-s3-auth-isolation
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: write
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Compare GitHub Runner vs temporary Worker token identity and denied nonexistent branch
+        run: node apps/workflow-mcp-worker/tests/s3-github-auth-comparison.mjs

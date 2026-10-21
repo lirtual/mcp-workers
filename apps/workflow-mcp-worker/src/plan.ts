@@ -6,11 +6,11 @@ export class PlanError extends Error {
   constructor(message: string) { super(message); this.name = 'PlanError'; }
 }
 export type Step = {
-  id: string; uses: 's1.readonly_mcp' | 'result.emit' | 'mcp.call'; needs: string[];
+  id: string; uses: 's1.readonly_mcp' | 'result.emit' | 'mcp.call' | 'github.run'; needs: string[];
   with: Record<string, unknown>; if?: unknown;
 };
 export type ReadonlyOperation = { endpoint:string; tool:string; scope:'read'; schema_digest:string };
-export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown>; s2_approvals?: ReadonlyOperation[]; s2_target_risks_accepted?: true };
+export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown>; s2_approvals?: ReadonlyOperation[]; s2_target_risks_accepted?: true; s3_execution_approved?: true };
 const SAFE_ID = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
 const OBJECT_PROTOTYPE_KEYS = new Set(['constructor','toString','toLocaleString','valueOf','hasOwnProperty','isPrototypeOf','propertyIsEnumerable']);
 const RESERVED = new Set(['eval','javascript','script','code','shell','endpoint','url','command','function']);
@@ -126,7 +126,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     const s=object(s0,'invalid_step');keys(s,['id','uses','needs','if','with']);
     if(typeof s.id!=='string'||!SAFE_ID.test(s.id)||ids.has(s.id)||OBJECT_PROTOTYPE_KEYS.has(s.id))throw new PlanError('invalid_step_id');
     ids.add(s.id);
-    if(s.uses!=='s1.readonly_mcp'&&s.uses!=='result.emit'&&s.uses!=='mcp.call')throw new PlanError('unsupported_capability');
+    if(s.uses!=='s1.readonly_mcp'&&s.uses!=='result.emit'&&s.uses!=='mcp.call'&&s.uses!=='github.run')throw new PlanError('unsupported_capability');
     const needs=s.needs===undefined?[]:s.needs;
     if(!Array.isArray(needs)||needs.some(n=>typeof n!=='string'||!SAFE_ID.test(n))||new Set(needs).size!==needs.length)throw new PlanError('invalid_dependencies');
     const withData=object(s.with,'invalid_step_arguments');
@@ -135,6 +135,12 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       if(withData.tool!=='echo')throw new PlanError('unsupported_readonly_tool');
       if(withData.arguments===undefined)throw new PlanError('missing_arguments');
       object(withData.arguments,'invalid_step_arguments');
+    }else if(s.uses==='github.run'){
+      // v1 intentionally offers a single fixed no-side-effect registered
+      // capability. No user-supplied scripts, URL, repo, ref, or arguments.
+      keys(withData,['capability']);
+      if(withData.capability!=='heavy.github.echo')
+        throw new PlanError('unsupported_github_capability');
     }else if(s.uses==='mcp.call'){
       keys(withData,['endpoint','tool','scope','arguments','input_schema','output_schema']);
       if(typeof withData.endpoint!=='string')throw new PlanError('invalid_endpoint');
