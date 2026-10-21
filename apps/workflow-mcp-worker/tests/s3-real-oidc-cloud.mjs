@@ -116,6 +116,7 @@ async function run(){
     },
     d1_databases:[{binding:'DB',database_name:name,
       database_id:databaseId,migrations_dir:'migrations'}],
+    workflows:[{binding:'WORKFLOW',name,class_name:'S3ReceiptWaiter'}],
   };
   writeFileSync(new URL('../'+file,import.meta.url),JSON.stringify(config));
   wr(['d1','migrations','apply',name,'--remote','--config',file]);
@@ -162,6 +163,8 @@ async function run(){
   await invoke('/claim',valid,claim,200);
   await invoke('/claim',valid,claim,403);
   console.log('S3_GITHUB_OIDC_AND_ATOMIC_CLAIM_PASS');
+  await invoke('/start',wrong,claim,403);
+  await invoke('/start',valid,claim,202);
   const fact={attemptId,callbackId,outcome:'succeeded',result:{echo:'ok',source:'github-oidc'}};
   await invoke('/callback',wrong,fact,403);
   await invoke('/callback',valid,fact,200);
@@ -173,13 +176,25 @@ async function run(){
   assert.equal(rows[0].callback_id,callbackId);
   assert.equal(rows[0].outcome,'succeeded');
   assert.equal(JSON.parse(rows[0].result_json).echo,'ok');
-  assert.equal(rows[0].notification_delivered,0,'No Workflow notification was dispatched');
+  assert.equal(rows[0].notification_delivered,1,'Wake notification must be confirmed');
   const attempts=(await d1(`SELECT owner_run_id,owner_run_attempt,state
     FROM step_attempts WHERE attempt_id=?`,[attemptId])).results;
   assert.equal(attempts?.[0].state,'claimed');
   assert.equal(attempts[0].owner_run_id,githubRunId);
   assert.equal(attempts[0].owner_run_attempt,1);
   console.log('S3_GITHUB_SIGNED_CALLBACK_AND_D1_RECEIPT_PASS');
+  // The Workflow consumes the event only as a hint. Its own step reads the
+  // durable D1 callback and then commits the authoritative Run outcome.
+  let finished;
+  for(let i=0;i<45;i++){
+    const row=(await d1('SELECT outcome,result FROM runs WHERE id=?',[runId])).results?.[0];
+    if(row?.outcome==='succeeded'){finished=row;break;}
+    if(row?.outcome==='failed')throw Error('Native Workflow returned business failure');
+    await new Promise(resolve=>setTimeout(resolve,1000));
+  }
+  assert.equal(finished?.outcome,'succeeded','Native Workflow did not finish');
+  assert.equal(JSON.parse(finished.result).echo,'ok');
+  console.log('S3_NATIVE_WORKFLOW_RECEIPT_WAKE_AND_RESULT_PASS');
 }
 async function present(path){
   const response=await fetch('https://api.cloudflare.com/client/v4'+path,{
@@ -200,6 +215,13 @@ async function cleanup(){
         await api('DELETE',path+'?force=true');
       if(await present(path+'/script-settings'))throw Error('worker remains');
     }catch{problems.push('worker');}
+  }
+  if(deployAttempted){
+    const path=root+'/workflows/'+name;
+    try{
+      if(await present(path))await api('DELETE',path);
+      if(await present(path))throw Error('workflow remains');
+    }catch{problems.push('workflow');}
   }
   if(databaseId){
     const path=root+'/d1/database/'+databaseId;
