@@ -329,7 +329,7 @@ test("GitHub Actions deploy requires only one PAT Secret and no repository lists
 
 test("Workflow release config is blocked until real D1, route and explicit bindings exist", () => {
   const source = JSON.parse(readFileSync(new URL("../apps/workflow-mcp-worker/wrangler.jsonc", import.meta.url), "utf8"));
-  assert.throws(() => verifyWorkflowReleaseConfig(source), /Workflow release/);
+  assert.equal(verifyWorkflowReleaseConfig(source), true);
   const complete = {
     ...source,
     keep_vars: false,
@@ -343,7 +343,7 @@ test("Workflow release config is blocked until real D1, route and explicit bindi
     [{ ...complete, routes: [{ pattern: "workflow.lirtual.dpdns.org", custom_domain: false }] }, /public routing/],
     [{ ...complete, routes: [{ pattern: "other.lirtual.dpdns.org", custom_domain: true }] }, /approved workflow.lirtual.dpdns.org/],
     [{ ...complete, routes: [complete.routes[0], { pattern: "other.lirtual.dpdns.org", custom_domain: true }] }, /public routing/],
-    [{ ...complete, d1_databases: source.d1_databases }, /D1 database ID/],
+    [{ ...complete, d1_databases: [{ ...complete.d1_databases[0], database_id: "00000000-0000-0000-0000-000000000000" }] }, /D1 database ID/],
     [{ ...complete, workflows: [] }, /Workflows binding/],
     [{ ...complete, services: [] }, /read-only Fixture binding/],
     [{ ...complete, secrets: { required: [] } }, /Portal token/],
@@ -380,7 +380,8 @@ test("Workflow offline readiness CLI fails on placeholder resources and accepts 
   });
   try {
     mkdirSync(folder, { recursive: true });
-    writeFileSync(join(folder, "wrangler.jsonc"), JSON.stringify(config));
+    const placeholder = { ...config, d1_databases: [{ ...config.d1_databases[0], database_id: "00000000-0000-0000-0000-000000000000" }] };
+    writeFileSync(join(folder, "wrangler.jsonc"), JSON.stringify(placeholder));
     const blocked = run();
     assert.notEqual(blocked.status, 0, "a dry-run cannot certify placeholder resources");
     assert.match(blocked.stderr, /Workflow release/);
