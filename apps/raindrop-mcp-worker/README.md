@@ -33,41 +33,19 @@ It is not published as an npm package and does not support standalone STDIO, sta
 
 ## MCP tools
 
-The regression-tested tool inventory contains 41 tools, including the original 17. T10 assesses release readiness only; see [contract readiness and cutover blockers](docs/T10-CONTRACT-READINESS.md). Selected tools:
+The Agent-facing MCP contract follows [Spec #145](https://github.com/lirtual/mcp-workers/issues/145) and the accepted [ADR in PR #144](https://github.com/lirtual/mcp-workers/pull/144): **25 atomic tools** replace the old 41-name compatibility inventory. This README describes the implementation branch; production remains on the previously published 41-name version until a separately authorized release.
 
-- `diagnostics`
-- `collection_list`
-- `collection_delete`
-- `collection_remove_empty`
-- `get_collection_tree`
-- collection_manage (legacy delete disabled; use collection_delete preview/confirm)
-- `bookmark_search`
-- `bookmark_manage`
-- `get_raindrop`
-- `list_raindrops`
-- `get_suggestions`
-- `suggest_tags`
-- bulk_edit_raindrops (legacy writes disabled; use bookmark_batch_update/delete)
-- `bookmark_batch_update`
-- `bookmark_batch_delete`
-- `tag_manage`
-- `highlight_list`
-- `highlight_create`
-- `highlight_update`
-- `highlight_delete`
-- `highlight_manage` (legacy adapter; requires bookmarkId and string highlightId for update/delete)
-- `library_audit`
-- `trash_empty` (full preview and digest confirmation)
-- `empty_trash` (legacy migration guidance)
-- `cleanup_collections`
-- `bookmark_remove_duplicates`
-- `remove_duplicates` (legacy guidance; execution disabled)
+- Collections: `collection_list`, `collection_get`, `collection_create`, `collection_update`, `collection_delete`, `collection_remove_empty`
+- Bookmarks: `bookmark_search`, `bookmark_get`, `bookmark_exists`, `bookmark_create`, `bookmark_update`, `bookmark_move`, `bookmark_delete`, `bookmark_filters_get`, `bookmark_batch_update`, `bookmark_batch_delete`
+- Tags: `tag_list`, `tag_rename`, `tag_merge`, `tag_delete`
+- Highlights: `highlight_list`, `highlight_create`, `highlight_update`, `highlight_delete`
+- Scoped duplicate cleanup: `bookmark_remove_duplicates`
 
-`bookmark_batch_update` and `bookmark_batch_delete` require one positive source `collectionId` and 1–50 explicit unique positive safe-integer `ids`. Every bookmark is freshly checked for source membership before a single bulk write; moves also freshly verify the positive `destinationCollectionId`. Updates support `tagsToAdd` (nonempty, distinct names), `clearTags: true` (mutually exclusive with `tagsToAdd`), `destinationCollectionId`, and `important`, with at least one change required. Delete moves bookmarks to Trash; system source collections, search and nesting are rejected. The Service caps total HTTP attempts including read retries at 60 and never replays writes. Results partition IDs into `succeeded`, `failed`, `unknown` and `notExecuted`; preflight failure means no write. Aggregate `result: true` / `modified` cannot prove individual outcomes, so acknowledged bulk writes still return per-ID `unknown`, including when the count matches. Inspect current state before deciding whether to retry. See the [official bulk API contract](https://developer.raindrop.io/v1/raindrops/multiple).
+**Safety boundary:** `bookmark_delete` only moves non-Trash bookmarks to Trash; `permanent:true` is not accepted. Agent-facing collection creation and updates reject `public:true`; public sharing and irreversible Trash deletion remain manual Raindrop website operations. `trash_empty`, `diagnostics`, `library_audit`, obsolete aliases, and AI suggestion wrappers are **not registered as Agent tools**.
 
-`collection_delete({id})` previews a complete subtree (root included), ascending `collectionIds`, `total` collection count, verified direct bookmark counts and `bookmarkCount`. `collection_remove_empty({rootId})` previews only empty leaves within that explicit positive scope; `collections` still describes the complete verified scoped subtree. Confirm either with the same scope plus `confirm: true`, `expectedTotal`, exact ordered `collectionIds`, and `digest`. The versioned SHA-256 digest binds the operation, root, canonical sorted membership (ID, parent ID, direct count), and candidates. Fresh owner-level (`access.level: 4`) metadata and direct-only bookmark counts must agree. Confirm recomputes everything before any writes; empty-leaf removal also rechecks the fresh hierarchy and metadata before each individual DELETE, without expanding the approved set to newly emptied parents. No global cleanup endpoint is used by these two tools. Large scopes fail preflight within the shared 60 HTTP-attempt budget. DELETE cascades descendants and moves bookmarks to Trash. Outcome arrays identify actual DELETE targets; one successful root DELETE covers its previewed subtree. Execution stops on the first failure or unknown acknowledgement. A digest is neither authorization nor a transactional lock, and concurrent upstream changes remain possible.
+Scoped high-impact writes retain their existing ID/collection validation, bounded batch limits, preview/digest confirmation where already implemented, and unknown-outcome no-replay rule. Explicit, sufficiently scoped instructions need no extra verbal confirmation, but cannot bypass any tool-mandated preview/confirmation step. Client-side approval is not a server-side authorization guarantee.
 
-Trash emptying uses `trash_empty({})` to enumerate all IDs with stable counts via fresh `GET /raindrops/-99` pages (50 items, nested=false) and an empty terminal page. Confirm with `{confirm:true, collectionId:-99, expectedTotal:preview.total, digest:preview.digest}`; a fresh full enumeration must match before one bodyless `DELETE /collection/-99`. The 60 HTTP attempt budget includes retries and the write; infeasible scopes fail closed with guidance to `bookmark_delete permanent:true` using explicit limited IDs. Empty Trash confirmation sends no write. Outcomes are `preview`, `notExecuted`, `succeeded`, `failed`, or `unknown`; only result:true establishes success. Unverified preflight failures omit total/ids/digest rather than inventing an empty snapshot. Never blindly retry unknown outcomes. The digest is not a transactional lock; concurrent changes between reread and deletion remain possible. Legacy `empty_trash` provides guidance without reads and rejects `confirm:true`. Legacy `cleanup_collections` provides migration guidance without scanning and rejects `confirm:true` before any upstream call; use `collection_remove_empty` with an explicit positive `rootId` and its exact preview/confirm contract. Legacy `remove_duplicates` provides migration guidance only and rejects `dryRun: false` before any upstream call. Use `bookmark_remove_duplicates({collectionId: 123})` for a fresh, single-collection official `duplicate:true` preview, then pass its exact `confirmation` object as `confirm`. This object contains a versioned SHA-256 digest, sorted `candidateIds`, `keeperIds`, and deletion `total`, bound to the complete observed filter snapshot and full fresh metadata. The tool caps the scope at 50 filtered results and 10 eligible deletions, failing closed rather than truncating. It compares exact URL strings, preserves a verified keeper per group (preferring protected copies), and protects notes, highlights, tags, favorites, reminders and missing metadata. A sole official candidate is retained because the filter may omit canonical originals. Reads and retries share a 60-attempt budget. Confirmation recomputes the snapshot and rechecks candidates and keepers before one T06 batch DELETE. Aggregate acknowledgement still leaves individual outcomes unknown; inspect results before any manual retry. A digest is neither permission nor a transaction lock: concurrent upstream mutations remain possible. Tests use mocks; live writes require separate authorization.
+Existing public read and write paths are exercised through MCP SDK `tools/list` and `tools/call` integration tests; no additional authentication, workflow, or approval service is introduced.
 
 ## Configuration
 
@@ -132,6 +110,6 @@ This Worker was migrated and adapted from an MIT-licensed Raindrop MCP implement
 
 ### T10 release readiness
 
-See docs/T10-CONTRACT-READINESS.md for the **current 26-candidate tool matrix**, the **15 retained legacy-compatible names** (41 registered names in the Draft), historical migration evidence, and the blocked production cutover verdict. The withdrawn `bookmark_suggest` candidate must not be reintroduced without separate approval. No merge, published-tool cutover, or global destructive action is authorized; limited disposable-data acceptance is separately scoped.
+See [Spec #145](https://github.com/lirtual/mcp-workers/issues/145) for the 25-tool public cutover contract; [T10 readiness](docs/T10-CONTRACT-READINESS.md) records historical G0 evidence and earlier 41-name compatibility decisions. This branch does not authorize production deployment or destructive live testing.
 
 The Draft follow-up fixes strict unknown-field rejection for collection_list and declares a validated structured output schema for bookmark_remove_duplicates. These mock/SDK contract fixes are not live Raindrop acceptance or release permission.

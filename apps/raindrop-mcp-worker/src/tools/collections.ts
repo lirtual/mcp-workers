@@ -162,7 +162,7 @@ const collectionGetTool = defineTool({
 
 const CollectionCreateInputSchema = z.object({
   title: z.string().trim().min(1).max(255),
-  public: z.boolean().optional(),
+  public: z.literal(false).optional(),
   parentId: z.number().int().positive().safe().optional(),
 }).strict();
 
@@ -171,7 +171,7 @@ const CollectionUpdateInputSchema = z.object({
   title: z.string().trim().min(1).max(255).optional(),
   description: z.string().max(4096).optional(),
   color: z.string().min(1).max(64).optional(),
-  public: z.boolean().optional(),
+  public: z.literal(false).optional(),
 }).strict().refine(
   args => args.title !== undefined || args.description !== undefined ||
     args.color !== undefined || args.public !== undefined,
@@ -217,7 +217,7 @@ const guardedCollectionWrite = async <T extends { _id: number; title: string }>(
 
 const collectionCreateTool = defineTool({
   name: "collection_create",
-  description: "Create exactly one collection with a title and optional parent/public flag.",
+  description: "Create one private collection with a title and optional parent. Public sharing is not available to Agents.",
   inputSchema: CollectionCreateInputSchema,
   outputSchema: CollectionMutationOutputSchema,
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },

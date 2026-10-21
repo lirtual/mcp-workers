@@ -3,60 +3,17 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { RaindropMCPService } from "../src/services/raindropmcp.service.js";
 import { RateLimitError } from "../src/types/mcpErrors.js";
 
+// Spec #145: canonical names from the accepted public issue, not derived from runtime.
 const EXPECTED_TOOL_NAMES = [
-  "bookmark_batch_update",
-  "bookmark_batch_delete",
-  "bookmark_create",
-  "bookmark_delete",
-  "bookmark_exists",
-  "bookmark_move",
-  "bookmark_update",
-  "bookmark_filters_get",
-  "bookmark_get",
-  "bookmark_manage",
-  "bookmark_search",
-  "bulk_edit_raindrops",
-  "cleanup_collections",
-  "collection_create",
-  "collection_delete",
-  "collection_remove_empty",
-  "collection_get",
-  "collection_update",
-  "collection_list",
-  "collection_manage",
-  "diagnostics",
-  "empty_trash",
-  "trash_empty",
-  "get_collection_tree",
-  "get_raindrop",
-  "get_suggestions",
-  "highlight_manage",
-  "highlight_list",
-  "highlight_create",
-  "highlight_update",
-  "highlight_delete",
-  "library_audit",
-  "list_raindrops",
-  "remove_duplicates",
-  "bookmark_remove_duplicates",
-  "suggest_tags",
-  "tag_manage",
-  "tag_list",
-  "tag_rename",
-  "tag_merge",
-  "tag_delete",
-].sort();
-
-// T10 assessment only: pin the candidate surface without removing legacy names.
-const CANONICAL_TOOL_NAMES = [
+  "collection_list", "collection_get", "collection_create", "collection_update",
   "bookmark_search", "bookmark_get", "bookmark_exists", "bookmark_create",
-  "bookmark_update", "bookmark_delete", "bookmark_move", "bookmark_batch_update",
-  "bookmark_batch_delete", "collection_list", "collection_get", "collection_create",
-  "collection_update", "collection_delete", "tag_list", "tag_rename", "tag_merge",
-  "tag_delete", "highlight_list", "highlight_create", "highlight_update",
-  "highlight_delete", "bookmark_filters_get", "trash_empty",
-  "collection_remove_empty", "bookmark_remove_duplicates",
-];
+  "bookmark_update", "bookmark_move", "bookmark_delete", "bookmark_filters_get",
+  "tag_list", "highlight_list", "highlight_create", "highlight_update", "highlight_delete",
+  "tag_rename", "tag_merge", "tag_delete", "bookmark_batch_update", "bookmark_batch_delete",
+  "collection_delete", "collection_remove_empty", "bookmark_remove_duplicates",
+].sort();
+const CANONICAL_TOOL_NAMES = EXPECTED_TOOL_NAMES;
+
 const READ_ONLY_TOOL_NAMES = new Set([
   "bookmark_search", "bookmark_get", "bookmark_exists", "collection_list",
   "collection_get", "tag_list", "highlight_list", "bookmark_filters_get",
@@ -64,7 +21,7 @@ const READ_ONLY_TOOL_NAMES = new Set([
 const DESTRUCTIVE_TOOL_NAMES = new Set([
   "bookmark_delete", "bookmark_batch_update", "bookmark_batch_delete",
   "collection_delete", "collection_remove_empty", "tag_rename", "tag_merge",
-  "tag_delete", "highlight_update", "highlight_delete", "trash_empty",
+  "tag_delete", "highlight_update", "highlight_delete",
   "bookmark_remove_duplicates",
 ]);
 
@@ -76,8 +33,8 @@ function objectBranches(schema: Record<string, unknown>): Array<Record<string, u
     : [schema];
 }
 
-describe("T10 public contract release readiness (no cutover)", () => {
-  it("lists all 26 candidates once, 15 legacy names, schemas and appropriate hints through the SDK", async () => {
+describe("Spec #145 public contract cutover", () => {
+  it("lists only 25 atomic names with valid MCP schemas and hints", async () => {
     const service = new RaindropMCPService({ accessToken: "mock-only" });
     const client = new Client({ name: "t10-readiness", version: "1.0.0" });
     const [ct, st] = InMemoryTransport.createLinkedPair();
@@ -86,13 +43,13 @@ describe("T10 public contract release readiness (no cutover)", () => {
       const { tools } = await client.listTools();
       const names = tools.map(tool => tool.name);
       expect(names.toSorted()).toEqual(EXPECTED_TOOL_NAMES);
-      expect(names).toHaveLength(41);
-      expect(new Set(names).size).toBe(41);
-      expect(CANONICAL_TOOL_NAMES).toHaveLength(26);
-      expect(new Set(CANONICAL_TOOL_NAMES).size).toBe(26);
+      expect(names).toHaveLength(25);
+      expect(new Set(names).size).toBe(25);
+      expect(CANONICAL_TOOL_NAMES).toHaveLength(25);
+      expect(new Set(CANONICAL_TOOL_NAMES).size).toBe(25);
       expect(names.filter(name => CANONICAL_TOOL_NAMES.includes(name)).toSorted())
         .toEqual(CANONICAL_TOOL_NAMES.toSorted());
-      expect(names.filter(name => !CANONICAL_TOOL_NAMES.includes(name))).toHaveLength(15);
+      expect(names.filter(name => !CANONICAL_TOOL_NAMES.includes(name))).toHaveLength(0);
       for (const name of CANONICAL_TOOL_NAMES) {
         const tool = tools.find(entry => entry.name === name)!;
         expect(tool.description?.length, name).toBeGreaterThan(0);
@@ -151,7 +108,7 @@ describe("T10 public contract release readiness (no cutover)", () => {
         ["highlight_delete", { bookmarkId: 42, highlightId: 123 }],
         ["bookmark_batch_delete", { collectionId: -99, ids: [42] }],
         ["collection_remove_empty", { rootId: 42, confirm: true }],
-        ["trash_empty", { confirm: true, collectionId: -99 }],
+
         ["bookmark_remove_duplicates", { collectionId: 42, confirm: true }],
       ] as const) {
         expect((await client.callTool({ name, arguments: args })).isError, name).toBe(true);
@@ -166,7 +123,7 @@ describe("T10 public contract release readiness (no cutover)", () => {
 });
 
 describe("Raindrop MCP capability contract", () => {
-  it("retains legacy tools while adding T01 through T07 atomic tools", async () => {
+  it("exposes the approved Agent tool names", async () => {
     const service = new RaindropMCPService({ accessToken: "test-token" });
 
     try {
@@ -174,8 +131,8 @@ describe("Raindrop MCP capability contract", () => {
       const actual = tools.map((tool) => tool.id).sort();
 
       expect(actual).toEqual(EXPECTED_TOOL_NAMES);
-      expect(actual).toHaveLength(41);
-      expect(actual).toContain("diagnostics");
+      expect(actual).toHaveLength(25);
+      expect(actual).not.toContain("diagnostics");
     } finally {
       await service.cleanup();
     }
@@ -305,99 +262,6 @@ describe("collection_list over MCP tools/call", () => {
   });
 });
 
-describe("preview-first cleanup MCP tools/list and tools/call entry contract", () => {
-  it("retains legacy names, blocks all three destructive bypasses, and makes no upstream requests", async () => {
-    const fetch = vi.fn(() => { throw new Error("Unexpected HTTP"); });
-    vi.stubGlobal("fetch", fetch);
-    const service = new RaindropMCPService({ accessToken: "test-token" });
-    const getStats = vi.spyOn(service.raindropService, "getUserStats")
-      .mockResolvedValue({ trash: 7, collections: 5 } as Awaited<ReturnType<typeof service.raindropService.getUserStats>>);
-    const roots = vi.spyOn(service.raindropService, "getCollections")
-      .mockResolvedValue([{ _id: 11, title: "Empty", count: 0 }] as Awaited<ReturnType<typeof service.raindropService.getCollections>>);
-    const children = vi.spyOn(service.raindropService, "getAllChildCollections")
-      .mockResolvedValue([] as Awaited<ReturnType<typeof service.raindropService.getAllChildCollections>>);
-    const getBookmarks = vi.spyOn(service.raindropService, "getBookmarks")
-      .mockResolvedValue({ count: 0, items: [] } as Awaited<ReturnType<typeof service.raindropService.getBookmarks>>);
-    const trashDelete = vi.spyOn(service.raindropService, "emptyTrash");
-    const collectionDelete = vi.spyOn(service.raindropService, "removeEmptyCollections");
-    const duplicateDelete = vi.spyOn(
-      service.raindropService, "batchDeleteBookmarksInCollection",
-    );
-    const client = new Client({ name: "cleanup-protocol-regression", version: "1.0.0" });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    try {
-      await Promise.all([service.getServer().connect(serverTransport), client.connect(clientTransport)]);
-      const { tools } = await client.listTools();
-      for (const name of ["empty_trash", "cleanup_collections", "remove_duplicates"]) {
-        const tool = tools.find(entry => entry.name === name);
-        expect(tool?.annotations).toMatchObject({
-          readOnlyHint: false, destructiveHint: true,
-        });
-        expect(tool?.description).toMatch(/preview/i);
-        const argsProperty = name === "remove_duplicates" ? "dryRun" : "confirm";
-        expect((tool?.inputSchema as { properties?: Record<string, unknown> })?.properties?.[argsProperty]).toBeDefined();
-        const preview = await client.callTool({ name, arguments: {} });
-        expect(preview.isError).not.toBe(true);
-        expect(preview.content?.[0]).toMatchObject({ type: "text" });
-      }
-      for (const [name, args, replacement] of [
-        ["empty_trash", { confirm: true }, "trash_empty"],
-        ["cleanup_collections", { confirm: true }, "collection_remove_empty"],
-        ["remove_duplicates", { dryRun: false }, "bookmark_remove_duplicates"],
-      ] as const) {
-        const blocked = await client.callTool({ name, arguments: args });
-        expect(blocked.isError).toBe(true);
-        expect(JSON.stringify(blocked.content)).toContain(replacement);
-        expect(JSON.stringify(blocked.content)).toMatch(/disabled/i);
-      }
-      // Non-executing flags must also be safe at protocol boundary.
-      for (const name of ["empty_trash", "cleanup_collections"]) {
-        const preview = await client.callTool({ name, arguments: { confirm: false } });
-        expect(preview.isError).not.toBe(true);
-      }
-      const duplicatePreview = await client.callTool({
-        name: "remove_duplicates", arguments: { dryRun: true },
-      });
-      expect(duplicatePreview.isError).not.toBe(true);
-      for (const [name, args] of [
-        ["empty_trash", { dryRun: false }],
-        ["empty_trash", { unknown: 1 }],
-        ["cleanup_collections", { dryRun: true }],
-        ["cleanup_collections", { unknown: 1 }],
-        ["remove_duplicates", { confirm: true }],
-        ["remove_duplicates", { unknown: 1 }],
-      ] as const) {
-        let rejected = false;
-        try {
-          const result = await client.callTool({ name, arguments: args });
-          rejected = result.isError === true;
-        } catch {
-          rejected = true;
-        }
-        expect(rejected).toBe(true);
-      }
-      expect(getStats).not.toHaveBeenCalled();
-      expect(roots).not.toHaveBeenCalled();
-      expect(children).not.toHaveBeenCalled();
-      expect(getBookmarks).not.toHaveBeenCalled();
-      expect(trashDelete).not.toHaveBeenCalled();
-      expect(collectionDelete).not.toHaveBeenCalled();
-      expect(duplicateDelete).not.toHaveBeenCalled();
-      expect(fetch).not.toHaveBeenCalled();
-    } finally {
-      await client.close();
-      await service.cleanup();
-      getStats.mockRestore();
-      roots.mockRestore();
-      children.mockRestore();
-      getBookmarks.mockRestore();
-      trashDelete.mockRestore();
-      collectionDelete.mockRestore();
-      duplicateDelete.mockRestore();
-      vi.unstubAllGlobals();
-    }
-  });
-});
 
 describe("bookmark_exists over MCP tools/list and tools/call", () => {
   it("uses strict input and returns verified URL existence without mutating bookmarks", async () => {
@@ -791,81 +655,40 @@ describe("T03 atomic bookmark writes over public MCP", () => {
     }
   });
 
-  it("prevents accidental permanent deletion and reports uncertain writes without replay", async () => {
+  it("only moves non-Trash bookmarks to Trash and never replays uncertain deletes", async () => {
     const service = new RaindropMCPService({ accessToken: "test-token" });
     const normal = { _id: 7, link: "https://example.com", title: "Example",
       tags: [], collection: { $id: 11 } };
     const trash = { ...normal, collection: { $id: -99 } };
     const get = vi.spyOn(service.raindropService, "getBookmark");
-    const remove = vi.spyOn(service.raindropService, "deleteBookmark")
-      .mockResolvedValue(undefined);
-    const client = new Client({ name: "t03-delete-safety", version: "1.0.0" });
+    const remove = vi.spyOn(service.raindropService, "deleteBookmark").mockResolvedValue(undefined);
+    const client = new Client({ name: "spec145-soft-delete", version: "1.0.0" });
     const [ct, st] = InMemoryTransport.createLinkedPair();
     try {
       await Promise.all([service.getServer().connect(st), client.connect(ct)]);
+      const permanent = await client.callTool({ name: "bookmark_delete", arguments: { id: 7, permanent: true } });
+      expect(permanent.isError).toBe(true);
+      expect(get).not.toHaveBeenCalled();
       get.mockResolvedValueOnce(trash as Awaited<ReturnType<typeof service.raindropService.getBookmark>>);
-      const unsafe = await client.callTool({ name: "bookmark_delete", arguments: { id: 7 } });
-      expect(unsafe.isError).toBe(true);
+      expect((await client.callTool({ name: "bookmark_delete", arguments: { id: 7 } })).isError).toBe(true);
       expect(remove).not.toHaveBeenCalled();
-
-      get.mockResolvedValueOnce(normal as Awaited<ReturnType<typeof service.raindropService.getBookmark>>);
-      const mismatched = await client.callTool({
-        name: "bookmark_delete", arguments: { id: 7, permanent: true },
-      });
-      expect(mismatched.isError).toBe(true);
-      expect(remove).not.toHaveBeenCalled();
-
       get.mockResolvedValueOnce(normal as Awaited<ReturnType<typeof service.raindropService.getBookmark>>);
       const soft = await client.callTool({ name: "bookmark_delete", arguments: { id: 7 } });
       expect(soft.structuredContent).toEqual({ status: "succeeded", id: 7, outcome: "trashed" });
-
-      get.mockResolvedValueOnce(trash as Awaited<ReturnType<typeof service.raindropService.getBookmark>>);
-      const permanent = await client.callTool({
-        name: "bookmark_delete", arguments: { id: 7, permanent: true },
-      });
-      expect(permanent.structuredContent).toEqual({ status: "succeeded", id: 7, outcome: "permanently_deleted" });
-
       get.mockResolvedValueOnce(normal as Awaited<ReturnType<typeof service.raindropService.getBookmark>>);
       remove.mockRejectedValueOnce(new Error("network acknowledgement lost"));
       const uncertain = await client.callTool({ name: "bookmark_delete", arguments: { id: 7 } });
       expect(uncertain.structuredContent).toMatchObject({ status: "unknown", id: 7 });
-      expect(remove).toHaveBeenCalledTimes(3);
+      expect(remove).toHaveBeenCalledTimes(2);
       expect(remove).toHaveBeenNthCalledWith(1, 7, 11);
-      expect(remove).toHaveBeenNthCalledWith(2, 7, -99);
-      expect(remove).toHaveBeenNthCalledWith(3, 7, 11);
-      expect(get).toHaveBeenCalledTimes(5);
+      expect(remove).toHaveBeenNthCalledWith(2, 7, 11);
+      expect(get).toHaveBeenCalledTimes(3);
     } finally {
-      await client.close(); await service.cleanup();
-      get.mockRestore(); remove.mockRestore();
+      await client.close(); await service.cleanup(); get.mockRestore(); remove.mockRestore();
     }
   });
 });
 
-
-describe("Legacy bookmark_manage cannot bypass Trash protections", () => {
-  it("refuses an already-trashed bookmark before dispatching DELETE", async () => {
-    const service = new RaindropMCPService({ accessToken: "test-token" });
-    const get = vi.spyOn(service.raindropService, "getBookmark")
-      .mockResolvedValue({ _id: 7, title: "Old", link: "https://example.com",
-        collection: { $id: -99 }, tags: [] } as Awaited<ReturnType<typeof service.raindropService.getBookmark>>);
-    const remove = vi.spyOn(service.raindropService, "deleteBookmark").mockResolvedValue();
-    const client = new Client({ name: "legacy-trash-guard", version: "1.0.0" });
-    const [ct, st] = InMemoryTransport.createLinkedPair();
-    try {
-      await Promise.all([service.getServer().connect(st), client.connect(ct)]);
-      const response = await client.callTool({
-        name: "bookmark_manage",
-        arguments: { operation: "delete", id: 7, title: "Old", url: "https://example.com" },
-      });
-      expect(response.isError).toBe(true);
-      expect(get).toHaveBeenCalledWith(7, true);
-      expect(remove).not.toHaveBeenCalled();
-    } finally {
-      await client.close(); await service.cleanup();
-      get.mockRestore(); remove.mockRestore();
-    }
-  });
-});
 
 
 describe("T03 unsafe source-state preflight", () => {
@@ -954,10 +777,7 @@ describe("tag MCP tools/list and tools/call contract", () => {
         ["tag_rename", { oldName: "a", newName: "fresh" }],
         ["tag_merge", { tagNames: ["a", "b"], newName: "target" }],
         ["tag_delete", { tagNames: ["b"] }],
-        [
-          "tag_manage",
-          { operation: "rename", tagNames: ["a"], newName: "fresh" },
-        ],
+
       ] as const) {
         const result = await client.callTool({
           name,
@@ -971,7 +791,7 @@ describe("tag MCP tools/list and tools/call contract", () => {
         });
       }
     });
-    expect(fetch).toHaveBeenCalledTimes(9);
+    expect(fetch).toHaveBeenCalledTimes(7);
   });
 
   it("supports an explicit global tag mutation only with collectionId:0", async () => {
@@ -997,7 +817,6 @@ describe("tag MCP tools/list and tools/call contract", () => {
         ["tag_rename", { oldName: "a", newName: "fresh" }],
         ["tag_merge", { tagNames: ["a", "b"], newName: "target" }],
         ["tag_delete", { tagNames: ["a"] }],
-        ["tag_manage", { operation: "delete", tagNames: ["a"] }],
       ] as const) {
         expect((await client.callTool({ name, arguments: args })).isError).toBe(true);
       }
@@ -1019,22 +838,10 @@ describe("tag MCP tools/list and tools/call contract", () => {
         ["tag_delete", { tagNames: ["a", "a"] }],
         ["tag_delete", { tagNames: ["missing"], collectionId: 42 }],
         ["tag_delete", { tagNames: ["a"], newName: "ignored" }],
-        [
-          "tag_manage",
-          { operation: "rename", tagNames: ["a", "b"], newName: "fresh" },
-        ],
-        [
-          "tag_manage",
-          { operation: "delete", tagNames: ["a"], newName: "ignored" },
-        ],
-        [
-          "tag_manage",
-          { operation: "rename", tagNames: ["a"], newName: "target" },
-        ],
-        [
-          "tag_manage",
-          { operation: "merge", tagNames: ["a"], newName: "fresh" },
-        ],
+
+
+
+
       ] as const) {
         expect((await client.callTool({ name, arguments: args })).isError).toBe(
           true,
@@ -1064,15 +871,8 @@ describe("tag MCP tools/list and tools/call contract", () => {
           ["tag_rename", { oldName: "a", newName: "fresh" }],
           ["tag_merge", { tagNames: ["a", "b"], newName: "target" }],
           ["tag_delete", { tagNames: ["a"] }],
-          [
-            "tag_manage",
-            { operation: "rename", tagNames: ["a"], newName: "fresh" },
-          ],
-          [
-            "tag_manage",
-            { operation: "merge", tagNames: ["a", "b"], newName: "target" },
-          ],
-          ["tag_manage", { operation: "delete", tagNames: ["a"] }],
+
+
         ] as const) {
           const result = await client.callTool({ name, arguments: { ...args, collectionId: 42 } });
           if (failure === "unknown") {
@@ -1086,7 +886,7 @@ describe("tag MCP tools/list and tools/call contract", () => {
           }
         }
       });
-      expect(fetch).toHaveBeenCalledTimes(failure === "preflight" ? 6 : 12);
+      expect(fetch).toHaveBeenCalledTimes(failure === "preflight" ? 3 : 6);
     },
   );
 });
@@ -1108,10 +908,6 @@ describe("highlight atomic and Draft compatibility contracts", () => {
       expect((await service.callTool("highlight_create", { bookmarkId: 42, text: "Quote" })).structuredContent).toEqual(confirmed);
       expect((await service.callTool("highlight_update", { bookmarkId: 42, highlightId: highlight._id, note: "" })).structuredContent).toEqual(confirmed);
       expect((await service.callTool("highlight_delete", { bookmarkId: 42, highlightId: highlight._id })).structuredContent).toEqual(deleted);
-      for (const operation of ["create", "update", "delete"]) {
-        const args = operation === "create" ? { text: "Quote" } : operation === "update" ? { highlightId: highlight._id, note: "" } : { highlightId: highlight._id };
-        expect((await service.callTool("highlight_manage", { bookmarkId: 42, operation, ...args })).structuredContent).toEqual(operation === "delete" ? deleted : confirmed);
-      }
       expect(list).toHaveBeenCalledExactlyOnceWith(42);
       expect(create).toHaveBeenCalledWith(42, { text: "Quote" });
       expect(update).toHaveBeenCalledWith(42, highlight._id, { note: "" });
@@ -1124,7 +920,7 @@ describe("highlight atomic and Draft compatibility contracts", () => {
     vi.stubGlobal("fetch", fetch);
     const service = new RaindropMCPService({ accessToken: "mock-only" });
     try {
-      for (const tool of ["highlight_list", "highlight_create", "highlight_update", "highlight_delete", "highlight_manage"]) {
+      for (const tool of ["highlight_list", "highlight_create", "highlight_update", "highlight_delete"]) {
         for (const bookmarkId of [undefined, null, "42", -1, 0, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
           const args = tool === "highlight_list" ? { bookmarkId }
             : tool === "highlight_create" ? { bookmarkId, text: "Quote" }
@@ -1144,12 +940,6 @@ describe("highlight atomic and Draft compatibility contracts", () => {
         ["highlight_update", { bookmarkId: 42, highlightId: 123, note: "" }],
         ["highlight_delete", { bookmarkId: 42, highlightId: "" }],
         ["highlight_delete", { bookmarkId: 42, highlightId: "id", note: "ignored?" }],
-        ["highlight_manage", { operation: "update", id: 123, text: "Quote" }],
-        ["highlight_manage", { operation: "delete", bookmarkId: 42, id: 123 }],
-        ["highlight_manage", { operation: "update", bookmarkId: 42, note: "" }],
-        ["highlight_manage", { operation: "update", bookmarkId: 42, highlightId: 123, note: "" }],
-        ["highlight_manage", { operation: "create", bookmarkId: 42, highlightId: "id", text: "Quote" }],
-        ["highlight_manage", { operation: "delete", bookmarkId: 42, highlightId: "id", text: "Quote" }],
       ];
       for (const [name, args] of invalid) await expect(service.callTool(name, args)).rejects.toThrow();
       expect(fetch).not.toHaveBeenCalled();
@@ -1168,7 +958,7 @@ describe("highlight atomic and Draft compatibility contracts", () => {
       await service.getServer().connect(serverTransport);
       await client.connect(clientTransport);
       const tools = await client.listTools();
-      expect(tools.tools).toHaveLength(41);
+      expect(tools.tools).toHaveLength(25);
       for (const name of ["highlight_list", "highlight_create", "highlight_update", "highlight_delete"]) {
         const tool = tools.tools.find(t => t.name === name)!;
         expect(tool.inputSchema.required).toContain("bookmarkId");
@@ -1194,45 +984,5 @@ describe("highlight atomic and Draft compatibility contracts", () => {
       update.mockRejectedValue(new Error("403 permission denied"));
       expect((await client.callTool({ name: "highlight_update", arguments: { bookmarkId: 42, highlightId: highlight._id, note: "" } })).isError).toBe(true);
     } finally { await client.close(); await service.cleanup(); }
-  });
-});
-
-describe("T10 deprecated write entry points cannot bypass safer atomic contracts", () => {
-  it("blocks unconfirmed collection_manage deletion and all legacy bulk mutations before any upstream access", async () => {
-    const service = new RaindropMCPService({ accessToken: "test-token" });
-    const upstream = vi.fn(() => { throw new Error("Unexpected upstream request"); });
-    vi.stubGlobal("fetch", upstream);
-    const collectionDelete = vi.spyOn(service.raindropService, "deleteCollection");
-    const collectionPreview = vi.spyOn(service.raindropService, "deleteCollectionPreviewFirst");
-    const bulkUpdate = vi.spyOn(service.raindropService, "batchUpdateBookmarksInCollection");
-    const bulkDelete = vi.spyOn(service.raindropService, "batchDeleteBookmarksInCollection");
-    const client = new Client({ name: "t10-write-bypass-regression", version: "1.0.0" });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    try {
-      await Promise.all([service.getServer().connect(serverTransport), client.connect(clientTransport)]);
-      for (const [name, args, replacement] of [
-        ["collection_manage", { operation: "delete", id: 55 }, "collection_delete"],
-        ["bulk_edit_raindrops", { operation: "remove", collectionId: 55, ids: [101] }, "bookmark_batch_delete"],
-        ["bulk_edit_raindrops", { operation: "move", collectionId: 55, toCollectionId: 56, ids: [101] }, "bookmark_batch_update"],
-        ["bulk_edit_raindrops", { operation: "update", collectionId: 55, important: true }, "bookmark_batch_update"],
-      ] as const) {
-        const result = await client.callTool({ name, arguments: args });
-        expect(result.isError, name).toBe(true);
-        expect(JSON.stringify(result.content), name).toContain(replacement);
-      }
-      expect(upstream).not.toHaveBeenCalled();
-      expect(collectionDelete).not.toHaveBeenCalled();
-      expect(collectionPreview).not.toHaveBeenCalled();
-      expect(bulkUpdate).not.toHaveBeenCalled();
-      expect(bulkDelete).not.toHaveBeenCalled();
-    } finally {
-      await client.close();
-      await service.cleanup();
-      collectionDelete.mockRestore();
-      collectionPreview.mockRestore();
-      bulkUpdate.mockRestore();
-      bulkDelete.mockRestore();
-      vi.unstubAllGlobals();
-    }
   });
 });

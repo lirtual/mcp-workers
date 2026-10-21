@@ -296,12 +296,9 @@ export class RaindropMCPService {
     if (!config) {
       throw new Error(`Tool with id "${toolId}" not found.`);
     }
-    const args =
-      config.name === "empty_trash" ||
-      config.name === "cleanup_collections" ||
-      config.name === "remove_duplicates"
-        ? config.inputSchema.parse(input ?? {})
-        : input ?? {};
+    // All public invocation paths must enforce the same schema. Skipping this
+    // validation allowed direct callTool callers to bypass MCP input guards.
+    const args = config.inputSchema.parse(input ?? {});
     return await config.handler(args, {
       raindropService: this.raindropService,
       mcpServer: this.server.server,

@@ -320,7 +320,6 @@ const BookmarkMoveInputSchema = z.object({
 }).strict();
 const BookmarkDeleteInputSchema = z.object({
   id: AtomicBookmarkIdSchema,
-  permanent: z.boolean().optional().default(false),
 }).strict();
 
 const AtomicMutationStatus = z.enum(["succeeded", "unknown"]);
@@ -332,7 +331,7 @@ const AtomicBookmarkMutationOutputSchema = z.object({
 const AtomicBookmarkDeleteOutputSchema = z.object({
   status: AtomicMutationStatus,
   id: AtomicBookmarkIdSchema,
-  outcome: z.enum(["trashed", "permanently_deleted"]).optional(),
+  outcome: z.literal("trashed").optional(),
   reason: z.string().optional(),
 });
 const unverifiedMutationReason =
@@ -445,7 +444,7 @@ const bookmarkMoveTool = defineTool({
 
 const bookmarkDeleteTool = defineTool({
   name: "bookmark_delete",
-  description: "Soft-delete a bookmark; permanent deletion only for a freshly verified Trash bookmark with permanent:true.",
+  description: "Move exactly one non-Trash bookmark into Trash. Permanent deletion is not available to Agents.",
   inputSchema: BookmarkDeleteInputSchema,
   outputSchema: AtomicBookmarkDeleteOutputSchema,
   annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
@@ -457,18 +456,15 @@ const bookmarkDeleteTool = defineTool({
     const sourceCollection = current.collection?.$id;
     if (typeof sourceCollection !== "number" || !Number.isSafeInteger(sourceCollection))
       throw new ValidationError("Cannot verify the bookmark's current collection");
-    if (sourceCollection === -99 && !args.permanent)
-      throw new ValidationError("Bookmark is already in Trash; permanent:true is required");
-    if (sourceCollection !== -99 && args.permanent)
-      throw new ValidationError("Permanent deletion is only allowed for Trash bookmarks");
-    if (sourceCollection !== -99 && sourceCollection !== -1 && sourceCollection <= 0)
+    if (sourceCollection === -99)
+      throw new ValidationError("Bookmark is already in Trash; permanent deletion is not available");
+    if (sourceCollection !== -1 && sourceCollection <= 0)
       throw new ValidationError("Bookmark is not in a verified writable collection");
     try {
       await raindropService.deleteBookmark(args.id, sourceCollection);
-      const outcome = args.permanent ? "permanently_deleted" as const : "trashed" as const;
       return {
-        content: [textContent(outcome)],
-        structuredContent: { status: "succeeded" as const, id: args.id, outcome },
+        content: [textContent("trashed")],
+        structuredContent: { status: "succeeded" as const, id: args.id, outcome: "trashed" as const },
       };
     } catch {
       return {
