@@ -1,5 +1,5 @@
 import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
-import { BROWSER_TOOLS, BROWSER_EFFECT_TOOLS, BROWSER_READ_TOOLS, parseBrowserCall } from "./browser-tools.ts";
+import { BROWSER_TOOLS, BROWSER_EFFECT_TOOLS, BROWSER_READ_TOOLS, parseBrowserCall, browserEffectClientStatus } from "./browser-tools.ts";
 /** Source staged only: no browser surface advertised before native packaging and E2E acceptance. */
 const BROWSER_TOOLS_ACCEPTED = false;
 import { handleAgentInstallerRequest } from "./install-bootstrap.ts";
@@ -83,7 +83,8 @@ async function callPairedBrowser(env: Env, id: unknown, name: string, args: unkn
     if (value.operation_id!==parsed.operation_id||typeof value.status!=="string") {
       return toolText(id,JSON.stringify({operation_id:parsed.operation_id,status:"timeout_unknown"}));
     }
-    return toolText(id,JSON.stringify({operation_id:parsed.operation_id,status:value.status,
+    return toolText(id,JSON.stringify({operation_id:parsed.operation_id,
+      status:browserEffectClientStatus(value.status),
       ...(typeof value.session_id==="string"?{session_id:value.session_id}:{})}));
   } catch {
     return parsed.kind==="operation"

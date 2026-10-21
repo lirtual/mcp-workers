@@ -88,6 +88,12 @@ export function parseBrowserCall(tool: string, input: unknown): Parsed | null {
     kind:effect?"operation":"read"};
 }
 
+/** A lost browser effect may already have changed the page. Never imply it is safe to replay. */
+export function browserEffectClientStatus(status: unknown): string {
+  return status === "running" || status === "completed" || status === "failed" ||
+    status === "conflict" || status === "bad_request" ? status : "timeout_unknown";
+}
+
 /** The DO injects operation_id during admission. Use same strict parser. */
 export function parseBrowserDoArguments(tool: string, input: unknown): boolean {
   if (!obj(input)) return false;

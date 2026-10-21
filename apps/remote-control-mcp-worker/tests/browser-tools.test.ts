@@ -2,9 +2,19 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import worker from "../src/worker.ts";
-import { BROWSER_TOOLS, parseBrowserCall, parseBrowserDoArguments } from "../src/browser-tools.ts";
+import { BROWSER_TOOLS, parseBrowserCall, parseBrowserDoArguments, browserEffectClientStatus } from "../src/browser-tools.ts";
 
 const device_id=randomUUID(), session_id=randomUUID(), operation_id="browser-op-"+randomUUID();
+
+test("unknown browser effects require receipt lookup, never implicit replay",()=>{
+  for (const status of ["unknown","unavailable","admitted","not_found","unexpected",undefined]) {
+    assert.equal(browserEffectClientStatus(status),"timeout_unknown",String(status));
+  }
+  for (const status of ["running","completed","failed","conflict","bad_request"]) {
+    assert.equal(browserEffectClientStatus(status),status);
+  }
+});
+
 test("strict 5-operation browser contract forwards only bounded typed arguments",()=>{
   const start=parseBrowserCall("browser_start",{device_id,operation_id});
   assert.deepEqual(start,{device_id,tool:"browser_start",kind:"operation",operation_id,arguments:{}});
