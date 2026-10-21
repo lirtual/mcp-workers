@@ -1,3 +1,12 @@
+## 最新收尾状态 · 24 个 Free 工具（2026-10-21；优先于全部历史快照）
+
+- **实现、合并与发布：** [PR #148](https://github.com/lirtual/mcp-workers/pull/148) 已合并至 `main`（`eb64cc0`），移除 Raindrop Pro 专属的 `bookmark_remove_duplicates` 及相关不适用输入；公开业务工具最终为 **24 个**。[GitHub Actions #39554129177](https://github.com/lirtual/mcp-workers/actions/runs/39554129177) 的选定 Worker 发布作业显示 **success**。
+- **源码契约已验证：** `src/tools/index.ts` 白名单恰好 24 项；`tests/spec145-agent-surface.test.ts` 以 MCP SDK 检查工具列表、禁用名称及 Pro 不适用的 Schema 参数。此项是源码/测试证据，**不是** ChatGPT 实际 `tools/list` 回执。
+- **线上验收仍待完成：** 本会话的 Raindrop Portal 中上游 `raindrop` 为 disabled，尝试启用要求用户完成重新授权。重授权后需确认 24 项目录、被移除名称/参数不存在，再仅对 UUID 命名可丢弃收藏夹、书签、标签、高亮执行最小生命周期与清理回执；不操作用户既有数据，不执行全局清空或永久删除。
+- **Issue 状态：** [Spec #123](https://github.com/lirtual/mcp-workers/issues/123) 与 [Spec #145](https://github.com/lirtual/mcp-workers/issues/145) 已关闭，旧 26/25/41 数字及 G0 NO-GO 属于各阶段的历史记录，不代表当前公开工具数量；线上冒烟结果不得据此视为已通过。
+
+---
+
 ## 当前生产状态与 Agent 工具契约收敛（2026-10-21；优先于下文历史快照）
 
 - **生产已发布：** PR [#134](https://github.com/lirtual/mcp-workers/pull/134) 已 squash 合并（`ae4c444`），现有 [Actions #39536606340](https://github.com/lirtual/mcp-workers/actions/runs/39536606340) 选定 `raindrop-mcp-worker` 发布成功。通过现有 MCP 插件只读诊断核对 **41 个公开工具**，以及收藏夹列表、书签查询。此事实覆盖下文旧阶段的“Draft / 未合并 / 未部署”声明；旧 G0 真实写入失败记录仍属历史事实，**不能倒算为通过**。
