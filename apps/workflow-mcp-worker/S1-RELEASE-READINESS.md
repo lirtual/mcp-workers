@@ -60,6 +60,13 @@ User authorization covered **temporary isolated edge tests and cleanup only**, n
 - **Verified cleanup**: both temporary Workers returned *does not exist* on deployment lookup; temporary Workflow not present in Workflow list; temporary D1 absent from D1 list. Temporary Secret and Wrangler configs removed. No isolated test resource was left deployed.
 - **Not proven**: real Cloudflare internal network partition; native retention actually elapsing; incompatible engine upgrade with historical active Runs; permanent Portal credentials, live routing, or production installation. The conditional 48 KiB historical-active-Run compatibility gate remains for any future upgrade. First production release still requires explicit separate approval and permanent resource/config verification.
 
+## Production preparation update — 2026-10-21 (not deployed)
+
+- The owner approved the intended S1 Custom Domain `workflow.lirtual.dpdns.org`; this Draft PR #142 now contains that source route only, with `workers_dev: false`, `keep_vars: false`, and invocation logs enabled. The Cloudflare route is **not activated**, and zone ownership/availability remains a separate check.
+- A new Cloudflare D1 database named `workflow-mcp-worker` (UUID `c76850db-b5e3-4128-9150-849a1c9e8d74`, WNAM) was independently confirmed with **0 tables**. Its migration scripts remain **unexecuted**; production SQL is left for the owner to execute and must be verified before any Worker release.
+- GitHub Environment `workflow-mcp-worker` was created and read back without any Environment-specific Secrets, Variables, or approval rules. The existing repository-level `MCP_ACCESS_TOKEN` and `CLOUDFLARE_API_TOKEN` Secrets and `CLOUDFLARE_ACCOUNT_ID` Variable already exist; the existing manual release workflow can inherit them without generating, exposing or copying secret values. Runtime Secret presence must still be checked at deployment; GitHub cannot reveal secret values.
+- Native Cloudflare Workflow `workflow-mcp-s1` and the private read-only Fixture Worker remain **undeployed**. The manual Actions release selector continues to exclude Workflow, so there is no executable S1 production release path yet. PR #146 remains Draft with S2 runtime switch absent/disabled; do not merge, deploy, or enable S2 under this preparation authority.
+
 ## Current release recommendation
 
 **Not yet ready to mark PR #142 Ready, merge, or deploy.** Latest-commit CI and independent AI review evidence are now verified, but the Cloudflare deployment resources, release route and GitHub Environment are not provisioned, the isolated current-version edge retest has passed, and the user has **not authorized merging or production deployment**. A green CI or separate AI audit is not a production release.
