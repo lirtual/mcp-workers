@@ -11,17 +11,28 @@ was rejected. The test script queried real D1 to assert exactly one
 confirmed physical owner and one stored callback result. Its successful
 final job verdict includes removal of the isolated Worker and D1.
 
-**Exact assurance scope:** the isolated CI Job registered *itself* as the
-confirmed physical candidate using its `GITHUB_RUN_ID` and
-`GITHUB_RUN_ATTEMPT=1` before requesting OIDC. This proves signed workload
-identity verification and real D1 Claim / callback semantics, **not**
-end-to-end GitHub REST dispatch correlation, a separately dispatched heavy
-Job, native Cloudflare Workflow wait/wake, or production reconciliation.
-The temporary `ci.yml` workflow identity was server-pinned; the product
-dispatch adapter remains constrained to `workflow-s3-executor.yml`.
-No production Worker/DB migration, new production secret, merge or S3
-activation took place. S2's **test Portal** remains the intended source
-for later S1+S2+S3 integration; production Portal HTTP 401 is deferred.
+[Follow-up real Cloudflare Workflow proof #39625864994](https://github.com/lirtual/mcp-workers/actions/runs/39625864994)
+also completed **Success** on `06cfd62`. The disposable fixture now
+starts a real native Workflow, persists the authenticated callback before
+sending `s3-receipt`, uses `sendEvent` / `waitForEvent`, and requires the
+Workflow to re-read D1 before committing `runs.outcome='succeeded'`.
+The coordinator polls actual D1 and asserts the returned business result;
+the GitHub Action's overall Success includes exact Worker, Workflow and D1
+removal. Event delivery without terminal D1 Run status would fail the job.
+
+**Exact assurance scope:** the isolated GitHub CI Job registered *itself* as
+the confirmed physical candidate using its `GITHUB_RUN_ID` and
+`GITHUB_RUN_ATTEMPT=1` before requesting OIDC. The real platform proofs
+now cover signed GitHub workload identity, D1 Claim, receipt-first callback
+and native Workflow event wake/readback. They **do not** establish the
+remaining full REST Workflow → separately dispatched heavy GitHub Job →
+verified physical candidate correlation, durable production reconciliation,
+or safe cancellation under ambiguity. The temporary `ci.yml` workflow
+identity is server-pinned; the product dispatcher remains restricted to
+`workflow-s3-executor.yml`. No production Worker/DB migration, new
+production secret, merge or S3 activation took place. S2's **test Portal**
+remains the intended source for later S1+S2+S3 integration; production Portal
+HTTP 401 is deferred.
 
 ---
 
