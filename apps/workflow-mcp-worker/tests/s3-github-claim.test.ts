@@ -220,3 +220,34 @@ test('late callback after cancellation cannot create a terminal receipt',async t
   assert.equal((sqlite.prepare('SELECT COUNT(*) AS total FROM callback_receipts')
     .get() as {total:number}).total,0);
 });
+
+
+test('a cancelled Run cannot authorize a new GitHub Claim even with valid signed OIDC',async t=>{
+  const {db,sqlite}=setup(t),{issue,keys}=await fixtureSigner();
+  await registerGithubAttempt(db,registration);
+  await recordGithubDispatchResult(db,attemptId,{status:'confirmed',runId:39410780231,runAttempt:1});
+  sqlite.prepare("UPDATE runs SET outcome='cancelled' WHERE id=?").run(runId);
+  assert.equal(await verifyAndClaimGithubAttempt(db,attemptId,await issue(),identity,keys),false);
+  const row=sqlite.prepare('SELECT state,owner_run_id FROM step_attempts WHERE attempt_id=?')
+    .get(attemptId) as {state:string;owner_run_id:number|null};
+  assert.equal(row.state,'confirmed');
+  assert.equal(row.owner_run_id,null);
+});
+
+test('a cancelled Run refuses late success callbacks without mutating its durable outcome',async t=>{
+  const {db,sqlite}=setup(t),{issue,keys}=await fixtureSigner();
+  const jwt=await issue();
+  await registerGithubAttempt(db,registration);
+  await recordGithubDispatchResult(db,attemptId,{status:'confirmed',runId:39410780231,runAttempt:1});
+  assert.equal(await verifyAndClaimGithubAttempt(db,attemptId,jwt,identity,keys),true);
+  sqlite.prepare("UPDATE runs SET outcome='cancelled' WHERE id=?").run(runId);
+  const accepted=await recordGithubCallback(db,{
+    attemptId,callbackId:'f8835141-0b3a-4fcb-a9ae-b4b75bfae93c',
+    outcome:'succeeded',result:{message:'late'},
+  },jwt,identity,keys);
+  assert.equal(accepted,false);
+  assert.equal((sqlite.prepare('SELECT COUNT(*) AS n FROM callback_receipts')
+    .get() as {n:number}).n,0);
+  assert.equal((sqlite.prepare('SELECT outcome FROM runs WHERE id=?')
+    .get(runId) as {outcome:string}).outcome,'cancelled');
+});

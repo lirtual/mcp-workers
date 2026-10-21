@@ -151,20 +151,21 @@ async function runGithubStep(
     'SELECT callback_id,outcome,result_json FROM callback_receipts WHERE attempt_id=?'
   ).bind(dispatch.attemptId).first<Receipt>();
   let receipt=await readReceipt();
-  if(!receipt){
+  // A notification can be lost after its immutable D1 receipt was committed,
+  // or arrive just before waitForEvent is registered. Use native timed waits
+  // with a bounded D1 readback; the event is only a wake hint and NEVER a
+  // source of business facts. No re-dispatch or external job retry occurs.
+  for(let i=0;i<8&&!receipt;i++){
     try{
-      const wake=await step.waitForEvent<{attemptId:string;callbackId:string}>(
-        's3-receipt-'+s.id,{type:'s3-receipt-'+s.id,timeout:'4 minutes'});
-      if(wake.payload.attemptId!==dispatch.attemptId)
-        throw Error('s3_callback_mismatch');
-      receipt=await readReceipt();
-      if(!receipt||wake.payload.callbackId!==receipt.callback_id)
-        throw Error('s3_callback_mismatch');
+      await step.waitForEvent<{attemptId:string;callbackId:string}>(
+        's3-receipt-'+s.id+'-'+i,
+        {type:'s3-receipt-'+s.id,timeout:'30 seconds'});
     }catch{
-      // Timeout or lost notification has no license to re-dispatch.
-      return {status:'indeterminate',error_code:'s3_callback_unconfirmed'};
+      // Missing notification or timeout: reconcile durable D1 only.
     }
+    receipt=await readReceipt();
   }
+  if(!receipt)return {status:'indeterminate',error_code:'s3_callback_unconfirmed'};
   if(receipt.outcome!=='succeeded'&&receipt.outcome!=='failed')
     return {status:'indeterminate',error_code:'s3_callback_invalid'};
   try{

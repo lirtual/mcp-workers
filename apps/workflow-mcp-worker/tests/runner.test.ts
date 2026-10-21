@@ -744,3 +744,95 @@ test('one combined S2 read plus S3 registered heavy Plan requires both independe
   assert.equal(plan.s3_execution_approved,true);
   assert.deepEqual(plan.s2_approvals,[grant]);
 });
+
+
+test('S3 lost wake event recovers from durable D1 receipt, without a second GitHub dispatch',async t=>{
+  const {service,env,sqlite}=setup(t);
+  Object.assign(env,{
+    S3_ENABLED:'true',S3_GITHUB_TOKEN:'test-token',
+    S3_GITHUB_REPOSITORY:'lirtual/test-executor',
+    S3_GITHUB_REPOSITORY_ID:'987654321',
+    S3_GITHUB_REF:'refs/heads/main',
+    S3_GITHUB_AUDIENCE:'workflow-s3-claim:test',
+  });
+  const w=await service.create(JSON.stringify({version:1,name:'S3 lost wake recovery',steps:[
+    {id:'heavy',uses:'github.run',with:{capability:'heavy.github.echo'}},
+    {id:'out',needs:['heavy'],uses:'result.emit',with:{data:{ref:'steps.heavy.output'}}},
+  ]}));
+  await service.publish(w.workflow_id,1,[],false,true);
+  const admitted=await service.start(w.workflow_id,{});
+  let dispatches=0,waits=0;
+  const oldFetch=globalThis.fetch;
+  globalThis.fetch=(async()=>{
+    dispatches++;
+    return Response.json({workflow_run_id:39410780231},{status:200});
+  }) as typeof fetch;
+  const workflow={
+    do:async(_name:unknown,_options:unknown,fn:()=>Promise<unknown>)=>fn(),
+    waitForEvent:async(_name:string,option:{type:string;timeout:string})=>{
+      waits++;
+      assert.equal(option.type,'s3-receipt-heavy');
+      assert.equal(option.timeout,'30 seconds');
+      const attempt=sqlite.prepare('SELECT attempt_id FROM step_attempts').get() as {attempt_id:string};
+      sqlite.prepare(`INSERT INTO callback_receipts
+        (callback_id,attempt_id,outcome,result_json,created_at)
+        VALUES(?,?, 'succeeded', ?, ?)`).run(
+          'f8835141-0b3a-4fcb-a9ae-b4b75bfae93c',attempt.attempt_id,
+          JSON.stringify({echo:'ok',source:'durable-d1'}),Date.now(),
+        );
+      throw Error('simulated_lost_event_timeout');
+    },
+  };
+  try{
+    await new WorkflowRunner({} as ExecutionContext,env).run(
+      {payload:{run_id:admitted.run_id}} as WorkflowEvent<{run_id:string}>,
+      workflow as unknown as WorkflowStep);
+  }finally{globalThis.fetch=oldFetch;}
+  const result=await service.result(admitted.run_id);
+  assert.equal(result.status,'succeeded');
+  assert.deepEqual(result.result,{echo:'ok',source:'durable-d1'});
+  assert.equal(dispatches,1);
+  assert.equal(waits,1);
+});
+
+test('S3 missing callback remains indeterminate after bounded waits, never re-dispatches',async t=>{
+  const {service,env}=setup(t);
+  Object.assign(env,{
+    S3_ENABLED:'true',S3_GITHUB_TOKEN:'test-token',
+    S3_GITHUB_REPOSITORY:'lirtual/test-executor',
+    S3_GITHUB_REPOSITORY_ID:'987654321',
+    S3_GITHUB_REF:'refs/heads/main',
+    S3_GITHUB_AUDIENCE:'workflow-s3-claim:test',
+  });
+  const w=await service.create(JSON.stringify({version:1,name:'S3 missed callback',steps:[
+    {id:'heavy',uses:'github.run',with:{capability:'heavy.github.echo'}},
+  ]}));
+  await service.publish(w.workflow_id,1,[],false,true);
+  const admitted=await service.start(w.workflow_id,{});
+  let dispatches=0,waits=0;
+  const original=globalThis.fetch;
+  globalThis.fetch=(async()=>{
+    dispatches++;
+    return Response.json({workflow_run_id:39410780231},{status:200});
+  }) as typeof fetch;
+  const wf={
+    do:async(_name:unknown,_opts:unknown,fn:()=>Promise<unknown>)=>fn(),
+    waitForEvent:async(_name:string,options:{type:string;timeout:string})=>{
+      waits++;
+      assert.equal(options.type,'s3-receipt-heavy');
+      assert.equal(options.timeout,'30 seconds');
+      throw Error('callback_never_received');
+    },
+  };
+  try{
+    await new WorkflowRunner({} as ExecutionContext,env).run(
+      {payload:{run_id:admitted.run_id}} as WorkflowEvent<{run_id:string}>,
+      wf as unknown as WorkflowStep);
+  }finally{globalThis.fetch=original;}
+  const result=await service.result(admitted.run_id);
+  assert.equal(result.status,'indeterminate');
+  assert.equal(result.error_code,'s3_callback_unconfirmed');
+  assert.equal(result.steps[0].status,'indeterminate');
+  assert.equal(dispatches,1);
+  assert.equal(waits,8);
+});

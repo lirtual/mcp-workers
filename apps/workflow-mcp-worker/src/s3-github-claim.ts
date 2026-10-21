@@ -41,6 +41,7 @@ type AttemptRow={
   candidate_run_attempt:number|null;
   owner_run_id:number|null;
   owner_run_attempt:number|null;
+  run_outcome:string;
 };
 function validateIdentity(c:ExecutorIdentity){
   if(!REPO.test(c.repository)||c.repository.includes('..')||
@@ -108,9 +109,11 @@ async function verifiedGithubCandidate(
     return null;
   const row=await db.prepare(`SELECT attempt_id,repository,repository_id,
     workflow_ref,ref,state,candidate_run_id,candidate_run_attempt,
-    owner_run_id,owner_run_attempt FROM step_attempts
-    WHERE attempt_id=?`).bind(attemptId).first<AttemptRow>();
-  if(!row||row.state!==requiredState||
+    owner_run_id,owner_run_attempt,
+    (SELECT outcome FROM runs WHERE runs.id=step_attempts.run_id) AS run_outcome
+    FROM step_attempts WHERE attempt_id=?`).bind(attemptId).first<AttemptRow>();
+  if(!row||!['queued','running'].includes(row.run_outcome)||
+     row.state!==requiredState||
      !row.candidate_run_id||!row.candidate_run_attempt||
      row.repository!==pinned.repository||row.repository_id!==pinned.repositoryId||
      row.workflow_ref!==pinned.workflowRef||row.ref!==pinned.ref)
@@ -166,7 +169,10 @@ export async function verifyAndClaimGithubAttempt(
     WHERE attempt_id=? AND state='confirmed'
       AND owner_run_id IS NULL AND owner_run_attempt IS NULL
       AND candidate_run_id=? AND candidate_run_attempt=?
-      AND repository=? AND repository_id=? AND workflow_ref=? AND ref=?`).bind(
+      AND repository=? AND repository_id=? AND workflow_ref=? AND ref=?
+      AND EXISTS(SELECT 1 FROM runs
+        WHERE runs.id=step_attempts.run_id
+        AND runs.outcome IN ('queued','running'))`).bind(
     a.candidate_run_id,a.candidate_run_attempt,Date.now(),attemptId,
     a.candidate_run_id,a.candidate_run_attempt,a.repository,a.repository_id,
     a.workflow_ref,a.ref,

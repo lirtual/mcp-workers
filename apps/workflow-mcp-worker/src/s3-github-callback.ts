@@ -49,7 +49,10 @@ export async function recordGithubCallback(
     SELECT ?,?,?,?,? FROM step_attempts
     WHERE attempt_id=? AND state='claimed'
       AND owner_run_id=candidate_run_id
-      AND owner_run_attempt=candidate_run_attempt`).bind(
+      AND owner_run_attempt=candidate_run_attempt
+      AND EXISTS(SELECT 1 FROM runs
+        WHERE runs.id=step_attempts.run_id
+        AND runs.outcome IN ('queued','running'))`).bind(
     callback.callbackId,callback.attemptId,callback.outcome,
     serialized,Date.now(),callback.attemptId,
   ).run();
