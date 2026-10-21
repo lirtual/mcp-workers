@@ -416,7 +416,7 @@ describe("highlight write retry safety", () => {
         const clear = vi.spyOn((service as any).cacheSearch, "clear");
         const invalidate = vi.spyOn((service as any).cacheBookmarks, "delete");
         const result = operation === "create" ? service.createHighlight(42, { text: "new" })
-          : operation === "update" ? service.updateHighlight(42, existing._id, { note: "new" })
+          : operation === "update" ? service.updateHighlight(42, existing._id, { color: "red" })
           : service.deleteHighlight(42, existing._id);
         const code = failure === "403" || failure === "401" ? "AUTH_ERROR"
           : failure === "404" ? "NOT_FOUND" : failure === "429" ? "RATE_LIMITED"

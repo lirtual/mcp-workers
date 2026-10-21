@@ -871,8 +871,6 @@ export default class RaindropService {
       perPage?: number;
       sort?: string;
       tag?: string;
-      duplicates?: boolean;
-      broken?: boolean;
       notag?: boolean;
       highlight?: boolean;
       domain?: string;
@@ -932,12 +930,6 @@ export default class RaindropService {
       if (params.perPage !== undefined) query.perpage = params.perPage;
       if (params.sort) query.sort = params.sort;
 
-      if (params.duplicates === true) {
-        searchParts.push("duplicate:true");
-      }
-      if (params.broken === true) {
-        searchParts.push("broken:true");
-      }
       if (params.notag === true) {
         searchParts.push("notag:true");
       }
@@ -989,8 +981,6 @@ export default class RaindropService {
     tagsSort?: "-count" | "_id",
     search?: string,
   ): Promise<{
-    broken?: number;
-    duplicates?: number;
     important?: number;
     notag?: number;
     tags?: Array<{ name: string; count: number }>;
@@ -1012,11 +1002,11 @@ export default class RaindropService {
       }
 
       const stats: {
-        broken?: number; duplicates?: number; important?: number; notag?: number;
+        important?: number; notag?: number;
         tags?: Array<{ name: string; count: number }>;
         types?: Array<{ name: string; count: number }>;
       } = {};
-      for (const key of ["broken", "duplicates", "important", "notag"] as const) {
+      for (const key of ["important", "notag"] as const) {
         if (data[key] === undefined) continue;
         const count = data[key]?.count;
         if (!Number.isSafeInteger(count) || count < 0) {
@@ -1076,57 +1066,6 @@ export default class RaindropService {
     }, "read");
   }
 
-  /** Strict, uncached official duplicate-filter scope; deliberately capped at 50. */
-  async getDuplicateScope(collectionId: number): Promise<number[]> {
-    if (!Number.isSafeInteger(collectionId) || collectionId <= 0)
-      throw new ValidationError("Positive actual collectionId required");
-    await this.withRateLimit(async () => {
-      const { data } = await this.client.GET("/collection/{id}", {
-        params: { path: { id: collectionId } },
-      });
-      if (data?.result !== true || data.item?._id !== collectionId)
-        throw new ValidationError("Duplicate source collection inaccessible or invalid");
-    });
-    const pageSchema = z.object({
-      result: z.literal(true), count: z.number().int().nonnegative().max(50),
-      items: z.array(z.object({ _id: z.number().int().positive().max(Number.MAX_SAFE_INTEGER) })),
-    });
-    const readPage = async (page: number) => this.withRateLimit(async () => {
-      // Local generated path typing uses id; the official placeholder is collectionId.
-      const options = { params: { path: { id: collectionId, collectionId }, query: {
-        search: "duplicate:true", page, perpage: 50, nested: false,
-      } } };
-      const { data } = await this.client.GET("/raindrops/{collectionId}", options);
-      const parsed = pageSchema.safeParse(data);
-      if (!parsed.success) throw new ValidationError("Invalid official duplicate snapshot or scope exceeds 50 filtered results");
-      return parsed.data;
-    });
-    const first = await readPage(0);
-    const ids = first.items.map(item => item._id);
-    if (ids.length !== first.count || new Set(ids).size !== ids.length)
-      throw new ValidationError("Incomplete or overlapping duplicate snapshot");
-    // An independent terminal page must agree with count and have no overlap/items.
-    const terminal = await readPage(1);
-    if (terminal.count !== first.count || terminal.items.length !== 0)
-      throw new ValidationError("Duplicate pagination changed or pages overlap");
-    return ids.sort((a, b) => a - b);
-  }
-
-  /** Fresh raw metadata: missing deletion fields remain unknown, never defaults. */
-  async getDuplicateMetadata(id: number, collectionId: number) {
-    return this.withRateLimit(async () => {
-      const { data } = await this.client.GET("/raindrop/{id}", {
-        params: { path: { id } },
-      });
-      const parsed = z.object({ result: z.literal(true), item: z.object({
-        _id: z.literal(id), collection: z.object({ $id: z.literal(collectionId) }),
-        link: z.string().min(1),
-      }).passthrough() }).safeParse(data);
-      if (!parsed.success) throw new ValidationError("Cannot verify fresh duplicate identity, URL or source membership");
-      return parsed.data.item;
-    });
-  }
-
   /**
    * Fetch a single bookmark by ID
    * Raindrop.io API: GET /raindrop/{id}
@@ -1150,28 +1089,6 @@ export default class RaindropService {
 
     this.cacheBookmarks.set(`id:${id}`, bookmark);
     return bookmark;
-  }
-
-  /**
-   * Fetch AI-powered suggestions for a URL or existing bookmark.
-   * Raindrop.io API: POST /raindrop/suggest or GET /raindrop/{id}/suggest
-   */
-  async getSuggestions(
-    target: string | number,
-  ): Promise<components["schemas"]["SuggestionsResponse"]> {
-    return this.withRateLimit(async () => {
-      if (typeof target === "number") {
-        const { data } = await this.client.GET("/raindrop/{id}/suggest", {
-          params: { path: { id: target } },
-        });
-        return data as components["schemas"]["SuggestionsResponse"];
-      } else {
-        const { data } = await this.client.POST("/raindrop/suggest", {
-          body: { link: target },
-        });
-        return data as components["schemas"]["SuggestionsResponse"];
-      }
-    });
   }
 
   /**

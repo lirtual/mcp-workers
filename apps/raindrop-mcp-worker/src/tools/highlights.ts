@@ -20,7 +20,7 @@ const updateInput = z
     ...HighlightUpdateFieldsSchema.shape,
   })
   .refine(
-    ({ text, note, color }) => [text, note, color].some((v) => v !== undefined),
+    ({ text, color }) => [text, color].some((v) => v !== undefined),
     "Provide at least one update field",
   );
 const writeResponse = (outcome: HighlightWriteOutcome) => ({

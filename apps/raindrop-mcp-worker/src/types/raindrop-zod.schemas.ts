@@ -53,7 +53,6 @@ export const BookmarkOutputSchema = z.object({
 export const CollectionInputSchema = z.object({
   title: z.string(),
   description: z.string().optional(),
-  color: z.string().optional(),
   parentId: z.number().optional(),
 });
 
@@ -78,7 +77,6 @@ export const HighlightColorSchema = z.enum([
 ]);
 const HighlightFields = {
   text: z.string().refine(value => value.trim().length > 0, "text must not be empty"),
-  note: z.string().optional(),
   color: HighlightColorSchema.optional(),
 };
 export const HighlightCreateFieldsSchema = z.strictObject(HighlightFields);

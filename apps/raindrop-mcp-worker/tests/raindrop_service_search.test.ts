@@ -27,7 +27,7 @@ describe("RaindropService.getBookmarks filter mapping", () => {
       createdStart: "2023-01-01",
       createdEnd: "2023-12-31",
       media: "video",
-      duplicates: true,
+      notag: true,
     });
 
     expect(mockGet).toHaveBeenCalledWith(
@@ -45,7 +45,7 @@ describe("RaindropService.getBookmarks filter mapping", () => {
     expect(searchString).toContain("created:>=2023-01-01");
     expect(searchString).toContain("created:<=2023-12-31");
     expect(searchString).toContain("type:video");
-    expect(searchString).toContain("duplicate:true");
+    expect(searchString).toContain("notag:true");
   });
 });
 
@@ -162,7 +162,7 @@ describe("RaindropService official filters", () => {
     const get = (service as any).client.GET;
     get.mockResolvedValueOnce({ data: { result: false } });
     await expect(service.getBookmarkFilters(0)).rejects.toThrow();
-    get.mockResolvedValueOnce({ data: { result: true, duplicates: { count: "0" } } });
+    get.mockResolvedValueOnce({ data: { result: true, important: { count: "0" } } });
     await expect(service.getBookmarkFilters(0)).rejects.toThrow();
   });
 });

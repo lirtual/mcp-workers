@@ -81,7 +81,7 @@ describeDestructive("RaindropService destructive live integration", () => {
     expect(created.highlight?.text).toBe(text);
     const hid = created.highlightId;
     expect((await service.getHighlights(id)).some(h => h._id === hid)).toBe(true);
-    const updated = await service.updateHighlight(id, hid, { note: "spec123 test note" });
+    const updated = await service.updateHighlight(id, hid, { color: "blue" });
     expect(updated.status).toBe("succeeded");
     if (updated.status !== "succeeded") return;
     expect(updated.highlight?.note).toBe("spec123 test note");

@@ -10,7 +10,7 @@ const EXPECTED_TOOL_NAMES = [
   "bookmark_update", "bookmark_move", "bookmark_delete", "bookmark_filters_get",
   "tag_list", "highlight_list", "highlight_create", "highlight_update", "highlight_delete",
   "tag_rename", "tag_merge", "tag_delete", "bookmark_batch_update", "bookmark_batch_delete",
-  "collection_delete", "collection_remove_empty", "bookmark_remove_duplicates",
+  "collection_delete", "collection_remove_empty",
 ].sort();
 const CANONICAL_TOOL_NAMES = EXPECTED_TOOL_NAMES;
 
@@ -22,7 +22,6 @@ const DESTRUCTIVE_TOOL_NAMES = new Set([
   "bookmark_delete", "bookmark_batch_update", "bookmark_batch_delete",
   "collection_delete", "collection_remove_empty", "tag_rename", "tag_merge",
   "tag_delete", "highlight_update", "highlight_delete",
-  "bookmark_remove_duplicates",
 ]);
 
 // Preview/confirm schemas emit unions; inspect each object branch as well as flat objects.
@@ -34,7 +33,7 @@ function objectBranches(schema: Record<string, unknown>): Array<Record<string, u
 }
 
 describe("Spec #145 public contract cutover", () => {
-  it("lists only 25 atomic names with valid MCP schemas and hints", async () => {
+  it("lists only 24 Free-plan atomic names with valid MCP schemas and hints", async () => {
     const service = new RaindropMCPService({ accessToken: "mock-only" });
     const client = new Client({ name: "t10-readiness", version: "1.0.0" });
     const [ct, st] = InMemoryTransport.createLinkedPair();
@@ -43,10 +42,10 @@ describe("Spec #145 public contract cutover", () => {
       const { tools } = await client.listTools();
       const names = tools.map(tool => tool.name);
       expect(names.toSorted()).toEqual(EXPECTED_TOOL_NAMES);
-      expect(names).toHaveLength(25);
-      expect(new Set(names).size).toBe(25);
-      expect(CANONICAL_TOOL_NAMES).toHaveLength(25);
-      expect(new Set(CANONICAL_TOOL_NAMES).size).toBe(25);
+      expect(names).toHaveLength(24);
+      expect(new Set(names).size).toBe(24);
+      expect(CANONICAL_TOOL_NAMES).toHaveLength(24);
+      expect(new Set(CANONICAL_TOOL_NAMES).size).toBe(24);
       expect(names.filter(name => CANONICAL_TOOL_NAMES.includes(name)).toSorted())
         .toEqual(CANONICAL_TOOL_NAMES.toSorted());
       expect(names.filter(name => !CANONICAL_TOOL_NAMES.includes(name))).toHaveLength(0);
@@ -109,7 +108,6 @@ describe("Spec #145 public contract cutover", () => {
         ["bookmark_batch_delete", { collectionId: -99, ids: [42] }],
         ["collection_remove_empty", { rootId: 42, confirm: true }],
 
-        ["bookmark_remove_duplicates", { collectionId: 42, confirm: true }],
       ] as const) {
         expect((await client.callTool({ name, arguments: args })).isError, name).toBe(true);
       }
@@ -131,7 +129,7 @@ describe("Raindrop MCP capability contract", () => {
       const actual = tools.map((tool) => tool.id).sort();
 
       expect(actual).toEqual(EXPECTED_TOOL_NAMES);
-      expect(actual).toHaveLength(25);
+      expect(actual).toHaveLength(24);
       expect(actual).not.toContain("diagnostics");
     } finally {
       await service.cleanup();
@@ -906,11 +904,11 @@ describe("highlight atomic and Draft compatibility contracts", () => {
     try {
       expect((await service.callTool("highlight_list", { bookmarkId: 42 })).structuredContent).toEqual({ bookmarkId: 42, highlights: [highlight] });
       expect((await service.callTool("highlight_create", { bookmarkId: 42, text: "Quote" })).structuredContent).toEqual(confirmed);
-      expect((await service.callTool("highlight_update", { bookmarkId: 42, highlightId: highlight._id, note: "" })).structuredContent).toEqual(confirmed);
+      expect((await service.callTool("highlight_update", { bookmarkId: 42, highlightId: highlight._id, color: "blue" })).structuredContent).toEqual(confirmed);
       expect((await service.callTool("highlight_delete", { bookmarkId: 42, highlightId: highlight._id })).structuredContent).toEqual(deleted);
       expect(list).toHaveBeenCalledExactlyOnceWith(42);
       expect(create).toHaveBeenCalledWith(42, { text: "Quote" });
-      expect(update).toHaveBeenCalledWith(42, highlight._id, { note: "" });
+      expect(update).toHaveBeenCalledWith(42, highlight._id, { color: "blue" });
       expect(remove).toHaveBeenCalledWith(42, highlight._id);
     } finally { await service.cleanup(); }
   });
@@ -925,7 +923,7 @@ describe("highlight atomic and Draft compatibility contracts", () => {
           const args = tool === "highlight_list" ? { bookmarkId }
             : tool === "highlight_create" ? { bookmarkId, text: "Quote" }
             : tool === "highlight_delete" ? { bookmarkId, highlightId: "id" }
-            : { bookmarkId, highlightId: "id", note: "", ...(tool === "highlight_manage" ? { operation: "update" } : {}) };
+            : { bookmarkId, highlightId: "id", color: "blue", ...(tool === "highlight_manage" ? { operation: "update" } : {}) };
           await expect(service.callTool(tool, args)).rejects.toThrow();
         }
       }
@@ -937,7 +935,7 @@ describe("highlight atomic and Draft compatibility contracts", () => {
         ["highlight_create", { bookmarkId: 42, text: "Quote", highlightId: "injected" }],
         ["highlight_update", { bookmarkId: 42, highlightId: "id" }],
         ["highlight_update", { bookmarkId: 42, highlightId: "id", text: "" }],
-        ["highlight_update", { bookmarkId: 42, highlightId: 123, note: "" }],
+        ["highlight_update", { bookmarkId: 42, highlightId: 123, color: "blue" }],
         ["highlight_delete", { bookmarkId: 42, highlightId: "" }],
         ["highlight_delete", { bookmarkId: 42, highlightId: "id", note: "ignored?" }],
       ];
@@ -958,7 +956,7 @@ describe("highlight atomic and Draft compatibility contracts", () => {
       await service.getServer().connect(serverTransport);
       await client.connect(clientTransport);
       const tools = await client.listTools();
-      expect(tools.tools).toHaveLength(25);
+      expect(tools.tools).toHaveLength(24);
       for (const name of ["highlight_list", "highlight_create", "highlight_update", "highlight_delete"]) {
         const tool = tools.tools.find(t => t.name === name)!;
         expect(tool.inputSchema.required).toContain("bookmarkId");
@@ -968,7 +966,7 @@ describe("highlight atomic and Draft compatibility contracts", () => {
       for (const [name, args] of [
         ["highlight_list", { bookmarkId: 42 }],
         ["highlight_create", { bookmarkId: 42, text: "Quote" }],
-        ["highlight_update", { bookmarkId: 42, highlightId: highlight._id, note: "" }],
+        ["highlight_update", { bookmarkId: 42, highlightId: highlight._id, color: "blue" }],
         ["highlight_delete", { bookmarkId: 42, highlightId: highlight._id }],
       ] as const) {
         const result = await client.callTool({ name, arguments: args });
@@ -976,13 +974,13 @@ describe("highlight atomic and Draft compatibility contracts", () => {
         expect(result.structuredContent).toMatchObject({ bookmarkId: 42 });
       }
       update.mockResolvedValue({ status: "unknown", bookmarkId: 42, highlightId: highlight._id, reason: "Result unknown; inspect before retry" });
-      const unknown = await client.callTool({ name: "highlight_update", arguments: { bookmarkId: 42, highlightId: highlight._id, note: "" } });
+      const unknown = await client.callTool({ name: "highlight_update", arguments: { bookmarkId: 42, highlightId: highlight._id, color: "blue" } });
       expect(unknown.isError).not.toBe(true);
       expect(unknown.structuredContent).toMatchObject({ status: "unknown" });
-      const invalid = await client.callTool({ name: "highlight_update", arguments: { bookmarkId: 42, highlightId: 123, note: "" } });
+      const invalid = await client.callTool({ name: "highlight_update", arguments: { bookmarkId: 42, highlightId: 123, color: "blue" } });
       expect(invalid.isError).toBe(true);
       update.mockRejectedValue(new Error("403 permission denied"));
-      expect((await client.callTool({ name: "highlight_update", arguments: { bookmarkId: 42, highlightId: highlight._id, note: "" } })).isError).toBe(true);
+      expect((await client.callTool({ name: "highlight_update", arguments: { bookmarkId: 42, highlightId: highlight._id, color: "blue" } })).isError).toBe(true);
     } finally { await client.close(); await service.cleanup(); }
   });
 });

@@ -1,4 +1,3 @@
-import { bookmarkRemoveDuplicatesTool } from "./duplicates.js";
 import { bookmarkBatchTools } from "./bookmark-batch.js";
 import { bookmarkTools } from "./bookmarks.js";
 import { collectionTools } from "./collections.js";
@@ -17,7 +16,7 @@ const agentToolNames = new Set([
   "bookmark_update", "bookmark_move", "bookmark_delete", "bookmark_filters_get",
   "tag_list", "highlight_list", "highlight_create", "highlight_update", "highlight_delete",
   "tag_rename", "tag_merge", "tag_delete", "bookmark_batch_update", "bookmark_batch_delete",
-  "collection_delete", "collection_remove_empty", "bookmark_remove_duplicates",
+  "collection_delete", "collection_remove_empty",
 ]);
 
 export const buildToolConfigs = (_options: { serverVersion: string }) => {
@@ -27,7 +26,6 @@ export const buildToolConfigs = (_options: { serverVersion: string }) => {
     ...tagTools,
     ...highlightTools,
     ...bookmarkBatchTools,
-    bookmarkRemoveDuplicatesTool,
   ].filter(tool => agentToolNames.has(tool.name));
   const getEnabledToolNames = () => toolConfigs.map(tool => tool.name);
 

@@ -9,8 +9,14 @@ import {
   textContent,
 } from "./common.js";
 
+// Filter out Pro-only query operators, even when embedded in free-text searches.
+const FreeSearchTextSchema = z.string().max(500).refine(
+  value => !/(?:^|\s)-?(?:duplicates?|broken):(true|false)(?=\s|$)/i.test(value),
+  "Raindrop Pro duplicate and broken-link filters are not available on Free",
+);
+
 const BookmarkSearchInputSchema = z.object({
-  search: z.string().max(500).optional().describe("Search text (empty or omitted lists bookmarks)"),
+  search: FreeSearchTextSchema.optional().describe("Ordinary bookmark search text"),
   collection: z.number().int().safe()
     .refine(id => id === 0 || id === -1 || id === -99 || id > 0,
       "Expected a collection ID or a valid read-only system collection")
@@ -22,8 +28,6 @@ const BookmarkSearchInputSchema = z.object({
   sort: z.enum(["-created", "created", "score", "-sort", "title", "-title", "domain", "-domain"])
     .optional().describe("Official Raindrop sort order"),
   tag: z.string().optional().describe("Single tag to filter by"),
-  duplicates: z.boolean().optional().describe("Include duplicate bookmarks"),
-  broken: z.boolean().optional().describe("Include broken links"),
   notag: z.boolean().optional().describe("Filter by items without tags"),
   highlight: z.boolean().optional().describe("Only bookmarks with highlights"),
   domain: z.string().optional().describe("Filter by domain"),
@@ -205,7 +209,7 @@ const BookmarkFiltersInputSchema = z.object({
   collectionId: z.number().int().safe().min(0).optional()
     .describe("Collection scope; 0 means all bookmarks"),
   tagsSort: z.enum(["-count", "_id"]).optional(),
-  search: z.string().max(500).optional(),
+  search: FreeSearchTextSchema.optional(),
 }).strict();
 
 const FilterCountSchema = z.number().int().nonnegative();
@@ -214,8 +218,6 @@ const NamedFilterSchema = z.object({
 });
 const BookmarkFiltersOutputSchema = z.object({
   filters: z.object({
-    broken: FilterCountSchema.optional(),
-    duplicates: FilterCountSchema.optional(),
     important: FilterCountSchema.optional(),
     notag: FilterCountSchema.optional(),
     tags: z.array(NamedFilterSchema).optional(),
@@ -246,7 +248,7 @@ const bookmarkFiltersTool = defineTool({
 const bookmarkSearchTool = defineTool({
   name: "bookmark_search",
   description:
-    "Searches bookmarks with advanced filters, tags, and full-text search.",
+    "Search bookmarks using Free-plan text, tags and filters.",
   inputSchema: BookmarkSearchInputSchema,
   outputSchema: BookmarkSearchOutputSchema,
   annotations: { readOnlyHint: true, idempotentHint: true },
@@ -263,8 +265,6 @@ const bookmarkSearchTool = defineTool({
     setIfDefined(query, "perPage", args.perPage);
     setIfDefined(query, "sort", args.sort);
     setIfDefined(query, "tag", args.tag);
-    setIfDefined(query, "duplicates", args.duplicates);
-    setIfDefined(query, "broken", args.broken);
     setIfDefined(query, "notag", args.notag);
     setIfDefined(query, "highlight", args.highlight);
     setIfDefined(query, "domain", args.domain);

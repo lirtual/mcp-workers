@@ -65,7 +65,7 @@ describe("preview-first cleanup contracts", () => {
     });
   });
 
-  it("all three legacy destructive handlers fail closed before any upstream access", async () => {
+  it("both legacy destructive handlers fail closed before any upstream access", async () => {
     const fetch = vi.fn(() => { throw new Error("Unexpected HTTP"); });
     vi.stubGlobal("fetch", fetch);
     // A poison context catches any service access, including an accidental read.
@@ -75,7 +75,6 @@ describe("preview-first cleanup contracts", () => {
     for (const [name, args, replacement] of [
       ["empty_trash", { confirm: true }, "trash_empty"],
       ["cleanup_collections", { confirm: true }, "collection_remove_empty"],
-      ["remove_duplicates", { dryRun: false }, "bookmark_remove_duplicates"],
     ] as const) {
       const tool = cleanupTools.find(entry => entry.name === name)!;
       await expect(tool.handler(args, { raindropService: noUpstream } as ToolHandlerContext))
