@@ -1,5 +1,8 @@
 # ADR-0022 — Playwright-backed, cross-platform browser sessions
 
+> **Current amendment (2026-10-22, [Spec #152](https://github.com/lirtual/mcp-workers/issues/152)):** Keep direct `playwright-core` inside the existing Agent and distinct persistent private Windows Chrome/Edge Profiles. The browser session **persists across on-demand MCP operations with no forced idle or absolute expiration**; manual owner use requires no formal Agent/Human control ownership mode. A remote tool call has a bounded lifetime independent from the browser process. The original Q8 idle cleanup and any implicit temporary control-owner guarantees below are **superseded** for Windows Goal A. Preserve explicit close, cancellation/revocation behavior, operation receipts, and safe profile/crash recovery. Historical paragraphs follow.
+
+
 > **Current phase-one runtime direction (2026-10-20):** The [architecture review](../BROWSER-ARCHITECTURE-REVIEW-20261020.md) supersedes the intermediate CLI-first preface. Prefer direct **`playwright-core` in the existing Agent** after Windows/WSL P0. Playwright 1.64 provides AI ARIA Snapshot refs and `page.getByRef`, so no extra CLI/Ref registry is justified absent a reproducible blocker. Below are historical Q5/Q6 decisions, **not** a claim that the offline-only PR #15 already supports ordinary navigation or that the feature is deployed.
 
 
