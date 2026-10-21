@@ -495,7 +495,7 @@ describe("official atomic duplicate removal", () => {
       await mcp.getServer().connect(st);
       await client.connect(ct);
       const { tools } = await client.listTools();
-      expect(tools).toHaveLength(41);
+      expect(tools).toHaveLength(25);
       const listed = tools.find((t) => t.name === tool.name)!;
       expect(listed.outputSchema).toBeDefined();
       expect(listed.outputSchema?.type).toBe("object");
@@ -513,14 +513,10 @@ describe("official atomic duplicate removal", () => {
         expect(
           (await client.callTool({ name: tool.name, arguments: args })).isError,
         ).toBe(true);
-      expect(
-        (
-          await client.callTool({
-            name: "remove_duplicates",
-            arguments: { dryRun: false },
-          })
-        ).isError,
-      ).toBe(true);
+      await expect(client.callTool({
+        name: "remove_duplicates",
+        arguments: { dryRun: false },
+      })).rejects.toThrow(/not found/i);
       expect(mock.fetch).not.toHaveBeenCalled();
       const p = await client.callTool({
         name: tool.name,

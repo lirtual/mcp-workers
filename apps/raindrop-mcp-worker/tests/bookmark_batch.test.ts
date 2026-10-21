@@ -376,7 +376,7 @@ describe("batch tools over MCP tools/list and tools/call", () => {
       await mcp.getServer().connect(serverTransport);
       await client.connect(clientTransport);
       const { tools } = await client.listTools();
-      expect(tools).toHaveLength(41);
+      expect(tools).toHaveLength(25);
       expect(tools.map((t) => t.name)).not.toContain("bookmark_batch_move");
       for (const name of ["bookmark_batch_update", "bookmark_batch_delete"]) {
         const tool = tools.find((t) => t.name === name)!;

@@ -7,21 +7,6 @@ const hasToken = Boolean(process.env.RAINDROP_ACCESS_TOKEN?.trim());
 const explicitlyEnabled = process.env.RUN_LIVE_API_TESTS === "true";
 const describeIf = hasToken && explicitlyEnabled ? describe : describe.skip;
 
-const isDiagnosticsResource = (
-  content: unknown,
-): content is { type: "resource"; resource: { uri: string; text: string } } =>
-  typeof content === "object" &&
-  content !== null &&
-  "type" in content &&
-  content.type === "resource" &&
-  "resource" in content &&
-  typeof content.resource === "object" &&
-  content.resource !== null &&
-  "uri" in content.resource &&
-  content.resource.uri === "diagnostics://server" &&
-  "text" in content.resource &&
-  typeof content.resource.text === "string";
-
 describeIf("MCP protocol integration", () => {
   let client: Client;
   let service: RaindropMCPService;
@@ -48,38 +33,15 @@ describeIf("MCP protocol integration", () => {
     const { tools } = await client.listTools();
     const toolNames = tools.map((tool) => tool.name);
 
-    expect(toolNames).toContain("diagnostics");
+    expect(toolNames).not.toContain("diagnostics");
     expect(toolNames).toContain("collection_list");
     expect(toolNames).toContain("bookmark_search");
-    for (const name of ["diagnostics", "collection_list", "bookmark_search"]) {
+    for (const name of ["collection_list", "bookmark_search"]) {
       expect(
         tools.find((tool) => tool.name === name)?.outputSchema,
       ).toBeDefined();
     }
   });
 
-  it("executes diagnostics through the MCP client", async () => {
-    const result = await client.callTool({
-      name: "diagnostics",
-      arguments: {},
-    });
-    const content = (result as { content: unknown }).content;
-    if (!Array.isArray(content)) {
-      throw new Error("Expected tool response content array");
-    }
-    const diagnosticsContent = content.find(isDiagnosticsResource);
 
-    expect(diagnosticsContent).toBeDefined();
-    if (!diagnosticsContent) {
-      throw new Error("Expected diagnostics resource payload");
-    }
-
-    const diagnostics = JSON.parse(diagnosticsContent.resource.text);
-    expect(diagnostics.mcpProtocolVersion).toBe("2026-07-28");
-    expect(diagnostics.version).toBeDefined();
-    expect(result.structuredContent).toMatchObject({
-      mcpProtocolVersion: "2026-07-28",
-      version: diagnostics.version,
-    });
-  });
 });

@@ -14,9 +14,7 @@ afterEach(() => {
 
 // Full public MCP -> Service -> official HTTP endpoint, no token or network.
 describe("production highlight 404 regression over Draft MCP", () => {
-  it.each(["highlight_create", "highlight_manage"] as const)(
-    "uses the official bookmark PUT for %s, never the obsolete POST /highlights",
-    async (toolName) => {
+  it("uses official bookmark PUT for highlight_create, never obsolete POST /highlights", async () => {
       const bookmarkId = 42;
       const highlight = {
         _id: "opaque-highlight-id", text: "Acceptance-only quote",
@@ -41,10 +39,10 @@ describe("production highlight 404 regression over Draft MCP", () => {
       const [ct, st] = InMemoryTransport.createLinkedPair();
       try {
         await Promise.all([service.getServer().connect(st), client.connect(ct)]);
-        const args = toolName === "highlight_create"
-          ? { bookmarkId, text: highlight.text, color: "yellow" }
-          : { operation: "create", bookmarkId, text: highlight.text, color: "yellow" };
-        const result = await client.callTool({ name: toolName, arguments: args });
+        const result = await client.callTool({
+          name: "highlight_create",
+          arguments: { bookmarkId, text: highlight.text, color: "yellow" },
+        });
         expect(result.isError).not.toBe(true);
         expect(result.structuredContent).toMatchObject({
           status: "succeeded", bookmarkId, highlightId: highlight._id,
