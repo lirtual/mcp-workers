@@ -33,7 +33,7 @@ Latest implementation evidence at `e5fcbab` (2026-10-21): **27/27** S1 unit/cont
 
 **Platform facts:** Cloudflare Workflows finished instance state has bounded retention; Free is limited to 3 days, Workers Paid has an up-to-30-day maximum but, for Workflows newly created since 2026-09-10, the default on Paid is 7 days unless overridden. These are **instance-observability windows**, not a safe cutoff for D1 Run identities. See [Workers API](https://developers.cloudflare.com/workflows/build/workers-api/) and [retention changelog](https://developers.cloudflare.com/changelog/post/2026-09-10-paid-retention-default/). Workers deployments version code/bindings but **do not version D1 storage**; see [Workers versions and deployments](https://developers.cloudflare.com/workers/versions-and-deployments/).
 
-## Read-only release preflight — 2026-10-21
+## Historical read-only release preflight — 2026-10-21 (superseded below)
 
 Checked only via authenticated GitHub metadata and `wrangler` read/list commands on the existing authorized WSL device. **No Cloudflare resources, GitHub Secrets, workflow runs or deployment settings were created or changed.**
 
@@ -52,7 +52,7 @@ For a genuinely empty first installation, positively validate the newly chosen D
 
 ## Approved domain planning update — 2026-10-21
 
-The owner selected `workflow.lirtual.dpdns.org` as the intended first S1 public entry. This is **planning authorization only**, not permission to create or attach a production route. The proposed Custom Domain, `keep_vars: false`, and invocation logs are staged in **S2 Draft PR #146**; the separate S1 Draft PR #142 has not been changed in this action. Before S1-only deployment, ensure the selected release source contains the reviewed configuration. The currently undeployed route must still be verified against the actual Cloudflare zone/availability; the newly created production D1 (`c76850db-b5e3-4128-9150-849a1c9e8d74`, WNAM, independently listed with 0 tables before migrations) exists, but its migrations have **not** been applied; missing Fixture/Workflow provisioning, Portal Secret and GitHub Environment remain blockers. The original S1 PR #142 still has the placeholder D1 ID. The existing GitHub Actions manual release selector still excludes Workflow; no production resources were created.
+The owner selected `workflow.lirtual.dpdns.org` for S1. The Custom Domain source, dedicated production D1 UUID (`c76850db-b5e3-4128-9150-849a1c9e8d74`), `keep_vars: false`, and Invocation Logs are now in S1 Draft PR #142 (`256cc7f`) and synchronized into S2 Draft PR #146. GitHub Environment `workflow-mcp-worker` exists and inherits existing repository-level Secret *names*; no new token was issued or exposed. Cloudflare domain routing, D1 migrations, Workflow and read-only Fixture have not been deployed. The existing Actions release selector still excludes Workflow; no production deployment is authorized.
 
 ## Isolated real Cloudflare edge verification — 2026-10-21
 
@@ -73,7 +73,7 @@ User authorization covered **temporary isolated edge tests and cleanup only**, n
 
 ## Current release recommendation
 
-**Not yet ready to mark PR #142 Ready, merge, or deploy.** Latest-commit CI and independent AI review evidence are now verified, but the Cloudflare deployment resources, release route and GitHub Environment are not provisioned, the isolated current-version edge retest has passed, and the user has **not authorized merging or production deployment**. A green CI or separate AI audit is not a production release.
+**Not yet ready to mark PR #142 Ready, merge, or deploy.** Latest-commit CI and independent AI review evidence are now verified, but the Cloudflare Workflow / Fixture, D1 migrations, live release route and permitted GitHub Actions deployment are not yet ready, the isolated current-version edge retest has passed, and the user has **not authorized merging or production deployment**. A green CI or separate AI audit is not a production release.
 
 Do **not** make real internal Cloudflare network outages or a hypothetical incompatible *future* upgrade a blocker to the **first empty-state, read-only S1** deployment after those gates and explicit authorization. If production state is not empty, reassess as an active-Run upgrade, not a first deploy. If the platform error signature changes, the implementation intentionally fails closed; preserving capacity and returning uncertainty is preferable to replaying a possibly executed Run.
 
