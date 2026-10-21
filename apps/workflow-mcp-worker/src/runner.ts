@@ -5,7 +5,7 @@ import type { Plan, Step } from './plan.ts';
 import type { Env } from './store.ts';
 import { limitResult } from './store.ts';
 import { registerGithubAttempt,recordGithubDispatchResult } from './s3-github-claim.ts';
-import { dispatchGithubAttempt } from './s3-github-dispatch.ts';
+import { dispatchGithubAttempt,selectedS3Executor } from './s3-github-dispatch.ts';
 import { scopedPublicMcpFetch, TRUSTED_PORTAL_ENDPOINT, PRODUCTION_PORTAL_ENDPOINT, type PortalServiceToken } from './s2-public-fetch.ts';
 
 type Outcome={status:'succeeded'|'failed'|'skipped'|'indeterminate';output?:any;error_code?:string};
@@ -112,6 +112,7 @@ async function runGithubStep(
      !env.S3_GITHUB_AUDIENCE)
     return {status:'failed',error_code:'s3_executor_not_configured'};
   const db=env.DB;
+  const executor=selectedS3Executor(env);
   // This operation intentionally does not retry on any ambiguity. A new
   // logical Attempt for the same Run+Step is forbidden by D1 UNIQUE.
   const dispatch=(await step.do('s3-dispatch-'+s.id,{
@@ -125,13 +126,14 @@ async function runGithubStep(
       repositoryId:env.S3_GITHUB_REPOSITORY_ID!,
       ref:env.S3_GITHUB_REF!,
       workflowRef:env.S3_GITHUB_REPOSITORY+
-        '/.github/workflows/workflow-s3-executor.yml@'+env.S3_GITHUB_REF,
+        '/.github/workflows/'+executor.workflow+'@'+env.S3_GITHUB_REF,
       audience:env.S3_GITHUB_AUDIENCE!,
     });
     const result=await dispatchGithubAttempt({
       repository:env.S3_GITHUB_REPOSITORY!,
       ref:env.S3_GITHUB_REF!,
-      workflow:'workflow-s3-executor.yml',
+      workflow:executor.workflow,
+      ...(executor.workerName?{workerName:executor.workerName}:{}),
       dispatchToken:env.S3_GITHUB_TOKEN!,
     },{attemptId,dispatchId,capabilityId:'heavy.github.echo'});
     const persisted=await recordGithubDispatchResult(db,attemptId,result);

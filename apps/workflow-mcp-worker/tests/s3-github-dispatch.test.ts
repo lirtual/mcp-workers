@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { dispatchGithubAttempt, matchCandidateIdentity } from '../src/s3-github-dispatch.ts';
+import { dispatchGithubAttempt, matchCandidateIdentity, selectedS3Executor } from '../src/s3-github-dispatch.ts';
 
 const config={
   repository:'lirtual/test-executor',workflow:'workflow-s3-executor.yml',
@@ -122,4 +122,24 @@ test('isolation CI registration must be exact and never permits an arbitrary wor
       throw Error('network must not be contacted');
     }),/github_executor_/);
   }
+});
+
+
+test('production executor remains dedicated; only exact disposable S3 environment may reuse ci.yml',()=>{
+  assert.deepEqual(selectedS3Executor({S3_GITHUB_REPOSITORY:'lirtual/mcp-workers',
+    S3_GITHUB_REF:'refs/heads/main'}),{workflow:'workflow-s3-executor.yml'});
+  const fixture={S3_GITHUB_REPOSITORY:'lirtual/mcp-workers',
+    S3_GITHUB_REF:'refs/heads/wip/workflow-s3-github-executor',
+    S3_TEST_WORKER_NAME:'workflow-s3-oidc-aabbccddee'};
+  assert.deepEqual(selectedS3Executor(fixture),{
+    workflow:'ci.yml',workerName:'workflow-s3-oidc-aabbccddee',
+  });
+  assert.deepEqual(selectedS3Executor({...fixture,S3_TEST_WORKER_NAME:'workflow-s3-plan-aabbccddee'}),{
+    workflow:'ci.yml',workerName:'workflow-s3-plan-aabbccddee',
+  });
+  for(const mutation of [
+    {...fixture,S3_GITHUB_REPOSITORY:'lirtual/other'},
+    {...fixture,S3_GITHUB_REF:'refs/heads/main'},
+    {...fixture,S3_TEST_WORKER_NAME:'workflow-s3-oidc-../../bad'},
+  ])assert.throws(()=>selectedS3Executor(mutation),/github_executor_test_environment_invalid/);
 });

@@ -47,7 +47,7 @@ function assertRegistered(config:RegisteredDispatchConfig,attempt:LogicalAttempt
   if((isolated
        ? (config.repository!=='lirtual/mcp-workers' ||
           config.ref!=='refs/heads/wip/workflow-s3-github-executor' ||
-          !/^workflow-s3-oidc-[a-f0-9]{10}$/.test(config.workerName??''))
+          !/^workflow-s3-(?:oidc|plan)-[a-f0-9]{10}$/.test(config.workerName??''))
        : (config.workflow!=='workflow-s3-executor.yml' || config.workerName!==undefined)) ||
      !REPO.test(config.repository) || config.repository.includes('..') ||
      !BRANCH.test(config.ref) || config.ref.includes('..') ||
@@ -128,4 +128,17 @@ export function matchCandidateIdentity(
     verified.run_attempt===String(expected.runAttempt) &&
     Number.isSafeInteger(expected.runId) && expected.runId>0 &&
     Number.isSafeInteger(expected.runAttempt) && expected.runAttempt>0;
+}
+
+
+/** No runtime or Plan input can elect the isolated CI executor. */
+export function selectedS3Executor(
+  env:{S3_GITHUB_REPOSITORY?:string;S3_GITHUB_REF?:string;S3_TEST_WORKER_NAME?:string},
+):{workflow:'workflow-s3-executor.yml'|'ci.yml';workerName?:string}{
+  if(env.S3_TEST_WORKER_NAME===undefined)return {workflow:'workflow-s3-executor.yml'};
+  if(env.S3_GITHUB_REPOSITORY!=='lirtual/mcp-workers'||
+     env.S3_GITHUB_REF!=='refs/heads/wip/workflow-s3-github-executor'||
+     !/^workflow-s3-(?:oidc|plan)-[a-f0-9]{10}$/.test(env.S3_TEST_WORKER_NAME))
+    throw Error('github_executor_test_environment_invalid');
+  return {workflow:'ci.yml',workerName:env.S3_TEST_WORKER_NAME};
 }

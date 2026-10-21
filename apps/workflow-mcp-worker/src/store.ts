@@ -35,6 +35,9 @@ export type Env = {
   S3_GITHUB_REPOSITORY_ID?: string;
   S3_GITHUB_REF?: string;
   S3_GITHUB_AUDIENCE?: string;
+  // An isolated acceptance-only worker can use the existing ci.yml branch Job
+  // because the dedicated S3 workflow is not registered on main yet.
+  S3_TEST_WORKER_NAME?: string;
 };
 export class StateError extends Error {
   code:string;

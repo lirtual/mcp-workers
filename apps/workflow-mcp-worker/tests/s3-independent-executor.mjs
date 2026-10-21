@@ -7,7 +7,7 @@ const name=env('S3_WORKER_NAME');
 const attemptId=env('S3_ATTEMPT_ID');
 const dispatchId=env('S3_DISPATCH_ID');
 const capability=env('S3_CAPABILITY');
-assert.match(name,/^workflow-s3-oidc-[a-f0-9]{10}$/);
+assert.match(name,/^workflow-s3-(?:oidc|plan)-[a-f0-9]{10}$/);
 const uuid=/^[0-9a-f]{8}-[0-9a-f-]{27,}$/i;
 assert.match(attemptId,uuid);
 assert.match(dispatchId,uuid);
@@ -26,9 +26,11 @@ const oidc=await fetch(oidcURL,{headers:{
 assert.equal(oidc.status,200,'GitHub OIDC issuance');
 const jwt=(await oidc.json()).value;
 assert.ok(jwt?.length>150,'Missing signed GitHub identity');
+const product=name.startsWith('workflow-s3-plan-');
 const base='https://'+name+'.aiyaya.workers.dev';
+const ingress=product?'/s3':'';
 const post=async(path,body)=>{
-  const response=await fetch(base+path,{method:'POST',
+  const response=await fetch(base+ingress+path,{method:'POST',
     headers:{authorization:'Bearer '+jwt,'content-type':'application/json'},
     body:JSON.stringify(body),signal:AbortSignal.timeout(14000)});
   return response.status;
@@ -43,7 +45,7 @@ for(let i=0;i<65;i++){
   await new Promise(resolve=>setTimeout(resolve,1000));
 }
 assert.ok(claimed,'Claim never authorized by confirmed dispatch');
-assert.equal(await post('/start',{attemptId}),202,'Native Workflow start');
+if(!product)assert.equal(await post('/start',{attemptId}),202,'Native Workflow start');
 const callbackId=randomUUID();
 const fact={attemptId,callbackId,outcome:'succeeded',
   result:{echo:'ok',source:'separate-github-workflow-dispatch'}};

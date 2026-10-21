@@ -1,6 +1,7 @@
 import { verifyAndClaimGithubAttempt } from './s3-github-claim.ts';
 import { recordGithubCallback,notifyStoredGithubReceipt } from './s3-github-callback.ts';
 import type { Env } from './store.ts';
+import { selectedS3Executor } from './s3-github-dispatch.ts';
 
 // This path is not MCP Portal authentication; it accepts only GitHub-issued,
 // cryptographically verified OIDC for one configured repository + workflow.
@@ -35,11 +36,14 @@ export async function handleGithubCallbackRequest(request:Request,env:Env):Promi
   if(typeof body.attemptId!=='string'||!uuid.test(body.attemptId))
     return answer(400,'invalid_attempt');
   const jwt=bearer.slice(7);
+  let executor;
+  try{executor=selectedS3Executor(env);}
+  catch{return answer(503,'s3_executor_misconfigured');}
   const pinned={
     repository:env.S3_GITHUB_REPOSITORY,
     repositoryId:env.S3_GITHUB_REPOSITORY_ID,
     workflowRef:env.S3_GITHUB_REPOSITORY+
-      '/.github/workflows/workflow-s3-executor.yml@'+env.S3_GITHUB_REF,
+      '/.github/workflows/'+executor.workflow+'@'+env.S3_GITHUB_REF,
     ref:env.S3_GITHUB_REF,
     audience:env.S3_GITHUB_AUDIENCE,
   };
