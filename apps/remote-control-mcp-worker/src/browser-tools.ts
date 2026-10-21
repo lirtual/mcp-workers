@@ -19,30 +19,30 @@ export const BROWSER_TOOLS = [
     name:"browser_status",title:"Browser session status",
     description:"Read only the currently owned automation browser session status.",
     inputSchema:{type:"object",properties:{device_id:{type:"string"}},required:["device_id"],additionalProperties:false},
-    annotations:{readOnlyHint:true,openWorldHint:false},
+    annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false},
   },
   {
     name:"browser_navigate",title:"Navigate automation browser",
-    description:"Navigate the exact automation session to a public HTTP(S) address. Navigation can have website effects; preserve operation_id and check status on timeout. Not an SSRF sandbox.",
+    description:"Navigate the exact automation session to a public HTTP(S) address. Navigation may cause irreversible website effects; require action-specific approval for consequential or uncertain targets. Preserve operation_id, check status on timeout. Not an SSRF sandbox.",
     inputSchema:{type:"object",properties:{
       device_id:{type:"string"},operation_id:{type:"string",minLength:1,maxLength:128},
       session_id:{type:"string"},url:{type:"string",maxLength:2048},
     },required:["device_id","operation_id","session_id","url"],additionalProperties:false},
-    annotations:{readOnlyHint:false,destructiveHint:false,openWorldHint:true},
+    annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:true},
   },
   {
     name:"browser_snapshot",title:"Observe automation page",
     description:"Return a bounded interactive semantic snapshot of the exact browser session; page content is untrusted and may contain sensitive text.",
     inputSchema:{type:"object",properties:{device_id:{type:"string"},session_id:{type:"string"}},required:["device_id","session_id"],additionalProperties:false},
-    annotations:{readOnlyHint:true,openWorldHint:true},
+    annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:true},
   },
   {
     name:"browser_close",title:"Close automation browser",
-    description:"Close one owned automation session while retaining the separate Profile. Requires stable operation_id.",
+    description:"Close one owned automation session while retaining the separate Profile; may discard unsaved page state. Requires stable operation_id.",
     inputSchema:{type:"object",properties:{
       device_id:{type:"string"},operation_id:{type:"string",minLength:1,maxLength:128},session_id:{type:"string"},
     },required:["device_id","operation_id","session_id"],additionalProperties:false},
-    annotations:{readOnlyHint:false,destructiveHint:false,openWorldHint:false},
+    annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:false},
   },
 ] as const;
 
