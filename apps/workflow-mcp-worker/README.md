@@ -1,48 +1,46 @@
-## S3 product combined cloud acceptance — blocked at GitHub REST 403 (2026-10-21)
+## S3 product combined cloud E2E — passed in isolation (2026-10-21)
 
-A new **real product** isolated acceptance job in `ci.yml` executes
-`Workflow MCP Draft → Validate → Publish → Run` for the three-step Plan
-`IMA read-only via test Portal → github.run(heavy.github.echo) → result.emit`.
-It uses a new disposable Cloudflare Worker/Workflow/D1 per attempt and the
-already-existing GitHub Actions Environment credentials. The only extra
-runner adaptation selects the previously registered `ci.yml` test echo
-executor for exact `lirtual/mcp-workers`, S3 Draft ref and randomized
-`workflow-s3-plan-<10hex>` host. The normal product executor selection
-remains `workflow-s3-executor.yml`. Neither Cloudflare Portal nor
-production S1/S2/S3 was modified.
+**End-to-end product Plan/Runner acceptance succeeded**:
+[Cloudflare Workflow + S2 test Portal + S3 coordinator #39641201454](https://github.com/lirtual/mcp-workers/actions/runs/39641201454)
+and its [separate GitHub echo executor #39641354802](https://github.com/lirtual/mcp-workers/actions/runs/39641354802)
+both finished **Success** on implementation commit `6865fdc`.
 
-**Observed live evidence:**
-- [#39634092039](https://github.com/lirtual/mcp-workers/actions/runs/39634092039):
-  Success cleaning an exact disposable Worker/Workflow/D1 left by an early
-  Cloudflare deployment-registration error.
-- [#39636125703](https://github.com/lirtual/mcp-workers/actions/runs/39636125703):
-  stable disposable Cloudflare Worker health, **S2 real test Portal IMA read
-  succeeded**, S3 dispatch Step failed with GitHub HTTP 403 and
-  `result.emit` correctly skipped; exact cleanup succeeded.
-- [#39636701695](https://github.com/lirtual/mcp-workers/actions/runs/39636701695):
-  same result using bounded, sanitized GitHub rejection classifier:
-  `s3_dispatch_rejected_403_unknown` (the response did not match known,
-  safely classifiable GitHub rejection messages); test Portal IMA Step
-  succeeded and disposable cleanup passed.
+The exact isolated business Plan was `Workflow Draft → Validate → Publish →
+Run → test Portal IMA read-only `ima_list_notebooks` → registered `github.run`
+(`heavy.github.echo`) → OIDC claimed GitHub Job → immutable D1 callback
+receipt → native Workflow wake and result readback → `result.emit``.
+The coordinator asserted all three Steps `succeeded`, the expected echo
+business result, and idempotent Run identity. The same successful job
+confirmed **automatic removal** of its randomly named temporary Cloudflare
+Worker, Workflow and D1 database.
 
-**Important distinction:** the prior [isolated coordinator →
-independent GitHub Job → Cloudflare Workflows proof
-#39627837142](https://github.com/lirtual/mcp-workers/actions/runs/39627837142)
-was green, but the **new product Worker itself** cannot yet dispatch the
-job with the short-lived GitHub Actions token passed as an ephemeral
-Cloudflare secret. The exact root cause of HTTP 403 remains **unverified**;
-do not assume PAT scope, bypass authorization or add another deployment
-service. No user-facing S3 complete-E2E success claim is valid until the
-product Step reaches terminal `succeeded` and the ephemeral resources are
-cleaned. Last local tests **79/79 green**, TypeScript check and Wrangler
-dry-run passed. S2 and S3 PRs remain Draft and unmerged; production S1
-unchanged; formal Portal HTTP 401 deliberately deferred.
+**What resolved the observed GitHub 403:** separate no-execution probes
+[#39638965893](https://github.com/lirtual/mcp-workers/actions/runs/39638965893)
+and [#39639345904](https://github.com/lirtual/mcp-workers/actions/runs/39639345904)
+found that a just-written temporary Worker Secret could initially differ
+from the original GitHub Actions token, but in later runs matched exactly,
+with authorized GitHub GET 200 and invalid-ref dispatch 422. The product
+acceptance then showed first two credential hash checks mismatching,
+followed by a correct match ~20 seconds later. After adding a GitHub
+`User-Agent` to the real S3 dispatch, the **full product E2E** passed.
+The change and credential readiness preflight were tested together; this
+supports the request-contract and rollout-readiness fix without claiming
+that one particular failure mode alone explains every earlier 403.
+The readiness endpoint is in a **test-only entrypoint wrapper**, not the
+production Worker source, and never returns token bytes, hashes or GitHub
+response bodies.
 
-Suggested next isolated diagnosis: compare the exact REST dispatch
-authorization outcome inside the GitHub Runner with the outcome from a
-disposable Cloudflare Worker, using a **bounded GitHub HTTP status/reason
-check only** (no raw credential/body output). Resolve that evidence before
-considering a separately authorized least-privilege GitHub credential.
+**Release remains gated.** GitHub `ci.yml` served as the existing,
+precisely pinned **test-only** executor because the final dedicated
+`workflow-s3-executor.yml` is still Draft and not registered on the
+repository's default branch. Only a side-effect-free registered echo
+capability has been exercised. Timeout/cancellation, ambiguous long-running
+job recovery, loss-of-notification reconciliation and future version
+compatibility still require explicit acceptance. Production S1 was
+unchanged; S2/S3 remain Draft, unmerged, undeployed and disabled.
+Production Portal authentication (401) stays deferred until the
+authorized final release. Local **79/79** tests, TypeScript check and
+Wrangler dry-run succeeded before the live E2E.
 
 ---
 
@@ -73,23 +71,17 @@ and repository read; **the job does not receive Cloudflare or Portal secrets**.
 Callback origins and audience are server/GitHub Environment configuration,
 never user Plan/Run inputs.
 
-**Current acceptance is local product integration, not a new live deployment:**
-Plan/Publish/Runner/HTTP ingress tests, including a combined S2+S3
-publication contract, are green. Wrangler S3 product build dry-run passes.
-The dedicated workflow is in a Draft branch and is not available on GitHub
-main until separately authorized for merge. No S3 runtime flag, GitHub
-dispatch secret, Cloudflare migration or callback origin was installed in
-production. The previous real GitHub REST dispatch + OIDC + D1 callback +
-native Workflow live evidence below used an **isolated test harness**.
+**Product acceptance:** The real combined S2 test Portal + S3 Plan/Runner
+cloud E2E passed in the isolated test environment (details above). The
+dedicated workflow is still Draft-only and cannot be treated as a live
+default-branch executor. No production S3 flag, dispatch credential, D1
+migration or callback origin was installed.
 
-**Outstanding gates:** execute a genuine S2 test Portal MCP call followed
-by the newly integrated `github.run` in one isolated production-shaped
-Cloudflare Workflow, confirm callback ingress and D1 migrations against
-the dedicated executor workflow, and test timeout/cancellation and
-lost-notification reconciliation. GitHub's default-branch workflow
-registration and environment-scoped callback URL/token need an explicit,
-minimal test setup; do not silently merge or turn on production S3.
-The production Portal 401 is deferred until final rollout.
+**Outstanding release gates:** Dedicated executor registration and its
+production-shaped isolated verification; timeout/cancellation and
+lost-notification recovery; bounded reconciliation and version upgrades.
+Do not merge, deploy or enable production S3 without separate authorization.
+The production Portal 401 remains deferred until final rollout.
 
 ---
 
