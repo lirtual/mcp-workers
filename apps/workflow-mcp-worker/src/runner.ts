@@ -138,9 +138,11 @@ async function runGithubStep(
     },{attemptId,dispatchId,capabilityId:'heavy.github.echo'});
     const persisted=await recordGithubDispatchResult(db,attemptId,result);
     if(!persisted)throw Error('dispatch_ack_not_persisted');
-    return {attemptId,status:result.status};
-  })) as {attemptId:string;status:string};
-  if(dispatch.status==='rejected')return {status:'failed',error_code:'s3_dispatch_rejected'};
+    return {attemptId,...result};
+  })) as {attemptId:string;status:string;httpStatus?:number};
+  if(dispatch.status==='rejected')return {
+    status:'failed',error_code:'s3_dispatch_rejected_'+String(dispatch.httpStatus??'unknown'),
+  };
   if(dispatch.status!=='confirmed')
     return {status:'indeterminate',error_code:'s3_dispatch_unknown'};
   type Receipt={callback_id:string;outcome:string;result_json:string};

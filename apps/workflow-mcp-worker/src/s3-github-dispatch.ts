@@ -21,7 +21,7 @@ export type LogicalAttempt={
 };
 export type DispatchOutcome=
   | {status:'confirmed';runId:number;runAttempt:1}
-  | {status:'rejected'}
+  | {status:'rejected';httpStatus:400|401|403|404|422}
   | {status:'dispatch_unknown'};
 export type ConfirmedCandidate={
   repository:string;
@@ -99,7 +99,8 @@ export async function dispatchGithubAttempt(
   catch {return {status:'dispatch_unknown'};}
   // Documented 4xx rejection establishes no accepted dispatch. A timeout,
   // redirect, unexpected status, or malformed 200 can conceal acceptance.
-  if([400,401,403,404,422].includes(response.status))return {status:'rejected'};
+  if([400,401,403,404,422].includes(response.status))
+    return {status:'rejected',httpStatus:response.status as 400|401|403|404|422};
   if(response.status!==200)return {status:'dispatch_unknown'};
   try{
     const result=await response.json() as {workflow_run_id?:unknown};
