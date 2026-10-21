@@ -341,6 +341,43 @@ describe("T07 collection_delete fresh verified cascade", () => {
     expect(f.state.writes).toEqual([10]);
   });
 
+  it("ignores only exact root echoes in the nested endpoint", async () => {
+    const f = fixture([row(10), row(20, 10), row(99)]);
+    f.state.override = (req) => {
+      if (new URL(req.url).pathname === "/rest/v1/collections/childrens")
+        return json({ result: true, items: [row(10), row(20, 10), row(99)] });
+      return undefined;
+    };
+    const preview = await f.service().deleteCollectionPreviewFirst({ id: 10 });
+    expect(preview).toMatchObject({
+      preview: true, total: 2, collectionIds: [10, 20],
+    });
+    expect(preview.collections.map(c => [c.id, c.parentId]))
+      .toEqual([[10, null], [20, 10]]);
+    expect(f.state.writes).toEqual([]);
+    const confirmed = await f.service().deleteCollectionPreviewFirst({
+      id: 10, ...confirmation(preview),
+    });
+    expect(confirmed.succeeded).toEqual([10]);
+    expect(f.state.writes).toEqual([10]);
+  });
+
+  it.each([
+    ["unknown parentless child", [row(10), row(20, 10), row(77)]],
+    ["conflicting root echo title", [row(10), row(20, 10), { ...row(99), title: "Mismatched" }]],
+    ["duplicate root echoes", [row(10), row(10), row(20, 10)]],
+  ])("rejects %s without any delete", async (_label, children) => {
+    const f = fixture([row(10), row(20, 10), row(99)]);
+    f.state.override = (req) => {
+      if (new URL(req.url).pathname === "/rest/v1/collections/childrens")
+        return json({ result: true, items: children });
+      return undefined;
+    };
+    await expect(f.service().deleteCollectionPreviewFirst({ id: 10 }))
+      .rejects.toThrow(/Invalid child collection scope|Duplicate collection IDs/);
+    expect(f.state.writes).toEqual([]);
+  });
+
   it("rejects conflicting overlap before any deletion", async () => {
     const f = fixture([row(10), row(20, 10)]);
     f.state.override = (req) => {

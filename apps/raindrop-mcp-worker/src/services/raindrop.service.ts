@@ -511,15 +511,24 @@ export default class RaindropService {
       return parsed.data.items;
     };
     const roots = await read("/collections");
-    const children = await read("/collections/childrens");
-    if (children.some((r) => !r.parent))
-      throw new ValidationError("Invalid child collection scope");
-    // The real API may list the same nested collection in both endpoints.
-    // Accept a consistent overlap, favoring the explicit nested parent;
-    // reject duplicates within one endpoint and conflicting metadata.
+    const allChildren = await read("/collections/childrens");
+    // Reject duplication inside either endpoint before treating echoes as roots.
     if (new Set(roots.map(r => r._id)).size !== roots.length ||
-        new Set(children.map(r => r._id)).size !== children.length)
+        new Set(allChildren.map(r => r._id)).size !== allChildren.length)
       throw new ValidationError("Duplicate collection IDs within one endpoint");
+    // Officially child items have a positive parent ID. Some responses may
+    // echo top-level roots too; safely ignore *only* an exact known root echo.
+    // Never silently treat a new parentless child as a root or widen deletion.
+    const rootById = new Map(roots.map(r => [r._id, r]));
+    const children = allChildren.filter(r => {
+      if (r.parent) return true;
+      const root = rootById.get(r._id);
+      if (!root || root.parent || root.title !== r.title)
+        throw new ValidationError("Invalid child collection scope");
+      return false;
+    });
+    // The same nested ID may occur in roots and children. A conflicting
+    // parent or title is rejected rather than merging untrusted metadata.
     const tree = new Map<number, { id: number; title: string; parentId: number | null }>();
     for (const r of [...roots, ...children]) {
       const parentId = r.parent?.$id ?? null;

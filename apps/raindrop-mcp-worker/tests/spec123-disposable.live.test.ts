@@ -120,6 +120,7 @@ live("Spec 123 disposable real API acceptance", () => {
       console.log("LIVE_ISOLATED_CLEANUP_PASS");
     };
     await Promise.all([service.getServer().connect(st), client.connect(ct)]);
+    let primaryFailure: unknown;
     try {
       for (const title of titles) {
         const result = await success("collection_create", { title, public: false });
@@ -192,13 +193,33 @@ live("Spec 123 disposable real API acceptance", () => {
       expect(single.outcome).toBe("trashed");
       expect((await owned(x)).collection?.$id).toBe(-99);
       console.log("LIVE_SCOPED_WRITES_PASS");
+    } catch (error) {
+      primaryFailure = error;
+    }
+    let cleanupFailure: unknown;
+    try {
+      await cleanup();
+    } catch (error) {
+      cleanupFailure = error;
     } finally {
       try {
-        await cleanup();
-      } finally {
         await client.close();
         await service.cleanup();
+      } catch (error) {
+        cleanupFailure = cleanupFailure
+          ? new AggregateError([cleanupFailure, error], "Cleanup and connection close failed")
+          : error;
       }
     }
+    if (primaryFailure && cleanupFailure) {
+      const message = (error: unknown) => error instanceof Error ? error.message : String(error);
+      throw new AggregateError(
+        [primaryFailure, cleanupFailure],
+        "G0 primary failure: " + message(primaryFailure) +
+          "; separate cleanup failure: " + message(cleanupFailure),
+      );
+    }
+    if (primaryFailure) throw primaryFailure;
+    if (cleanupFailure) throw cleanupFailure;
   }, 120_000);
 });

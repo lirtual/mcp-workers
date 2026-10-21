@@ -285,3 +285,12 @@ bash -c 'set -eu; IFS= read -rsp "Raindrop API Token: " RAINDROP_ACCESS_TOKEN </
 - 在现有 `tests/spec123-disposable.live.test.ts` 的随机命名私有测试集合中，三个原本必须创建的书签现在显式标记为 **1 个 `important:true` 与 2 个 `important:false`**。真实执行时，先用不缓存的 Draft `bookmark_search(collection=a,important:true/false)` 分别核对包含/排除的精确 ID，再进入原有移动/批量/tag/删除阶段。**无需额外真实写入**，同时补齐原先缺失的 Favorite 正负对照。失败则停止后续正常操作并按已核实身份清理。
 - 新增唯一建议使用的安全入口：`pnpm --filter raindrop-mcp-worker run test:live:spec123`。此命令启动前必须同时看到经授权注入的进程环境变量 `RAINDROP_ACCESS_TOKEN`、`RUN_DESTRUCTIVE_LIVE_TESTS=true` 及 `CONFIRM_DESTRUCTIVE_LIVE_TESTS=DELETE_ONLY_TEST_BOOKMARKS`。否则**退出非零并注明 G0 NOT RUN**，避免直接执行 Vitest 时把 skipped 误认为真实验收通过。不得把 Token 贴进 PR、工作流日志、聊天或文档。
 - 当前 WSL 未有可用 Token，**只实际验证了非零拒绝路径**，本地 TypeScript、ESLint 与 377 passed / 3 skipped 的 Mock 套件通过；尚未执行真实写入、Favorite 过滤或精确清理。此更新不修改生产代码、Runner、GitHub Environment 或发布流程。G0 仍 NO-GO。
+
+
+### G0 首次真实 API 验收失败后的保守修复（2026-10-21）
+
+- [Actions #39519905146](https://github.com/lirtual/mcp-workers/actions/runs/39519905146) 在 owner-only 临时 Job 中使用原有 GitHub Environment Token 运行**固定旧源码提交** `6b894b5` 的可丢弃数据验收。真实 Job 失败：测试在 finally 清理两个新建根集合时出现 `Invalid child collection scope`，**原始前段测试失败原因可能被覆盖**。不能把本次尝试算作 Favorite/批量/标签/完整清理通过。发布 Job Skipped；临时 Job 已于 `0de58c6` 撤销。
+- 旧版生产 Raindrop 插件只读核实两个新建集合均为根级、没有子集合、直属书签数为零。第一个精确 ID 的定向删除获 `deleted:true` 回执；第二个精确 ID 的删除及后续再次读取受到平台安全检查限制，仍**不能**标记为已完成清理。不得改用其它接口绕过限制；需账户所有者按此前指定的唯一名称/ID 在 Raindrop UI 另行核查，不清空整个 Trash。
+- 原因分析：Draft `deletionTree` 的 `/collections/childrens` 适配器看到缺失正数父 ID 的记录会报 `Invalid child collection scope`。Raindrop 官方契约要求它只返回嵌套集合，故**暂不确认真实响应为何缺父 ID**；保守修复只允许和 `/collections` 根列表的 ID + 标题 + 空父级完全相符的重复根记录，未知无父级成员、重复成员、冲突元数据仍拒绝；新增 HTTP Mock 覆盖成功与拒绝分支。原有完整子树 SHA-256、权限、直属数、60 次请求预算保持不变。
+- Live 验收脚本原先 `finally` 的 cleanup 异常会覆盖更早的失败；现分别捕获原始失败和清理失败，必要时返回双错误。**补丁只证明代码逻辑和 Mock，未复跑真实 API，也未验证真实返回恰好是根记录重影。**
+- 截止目前 **G0 仍 NO-GO**。剩余一个测试集合清理状态尚待用户核实，任何新的真实写入验收必须在完成旧测试数据核对、审查补丁及另行授权后才可以执行，不直接复用已撤销临时 Job。
