@@ -2,10 +2,15 @@
 
 ## P13 latest acceptance ledger — code and runtime (2026-10-21)
 
-**Source gate:** Worker Draft PR #143 at `251587f` still has
-`BROWSER_TOOLS_ACCEPTED = false`; no production browser tools are listed
-or callable. Agent Draft PR #20 at `9acc214` remains unmerged and unpublished.
-Source/CI reviews are complete, not a production activation authorization.
+**Source gate:** [Worker Draft PR #143](https://github.com/lirtual/mcp-workers/pull/143)
+keeps `BROWSER_TOOLS_ACCEPTED = false`; no production browser tools are listed or
+callable. The source-only [Agent Browser Draft PR #20](https://github.com/lirtual/remote-control-agent/pull/20)
+depends on the [Windows full-tools Draft #13](https://github.com/lirtual/remote-control-agent/pull/13)
+and [Windows native Draft #7](https://github.com/lirtual/remote-control-agent/pull/7).
+On 2026-10-21, their branch heads `93cc40d`, `ff29a89`, and `57d3182`
+were all GitHub CLEAN/MERGEABLE and passed Windows x64, Ubuntu x64 and ARM64
+CI. All remain Draft; green CI is not approval to merge, release, install or
+activate the browser tools.
 
 **Passed independently:** A SHA-pinned portable native Windows Agent
 started real Chrome, navigated the harmless public TodoMVC page, returned
@@ -36,6 +41,24 @@ supported owner-authenticated, non-production acceptance path and fresh
 explicit consent for any new temporary pairing; earlier revoked identities
 cannot be reused. Consequential/ambiguous navigation additionally requires
 target-specific user approval, not merely device pairing.
+
+**Native ChatGPT confirmation vs trusted execution:** ChatGPT app permission
+settings can ask before a tool call, and `destructiveHint`/`openWorldHint`
+communicate risk to the host. These are useful review UX, but an MCP tool
+descriptor, a model-supplied `approved` field, device pairing, and ordinary
+Portal authentication are **not** a server-verifiable, one-use authorization
+for the exact URL and consequential effect. OpenAI's plugin reference and
+MCP-server guidance explicitly require server-side authorization and do
+not treat annotations as enforcement. Current Worker `initialize` does
+not advertise an action-bound approval protocol; do not claim that plugin
+permission preferences prove such a protocol was executed. First verify
+a supported owner confirmation path independently; otherwise the browser
+gate stays false. This requires no new approval service while disabled.
+
+OpenAI references:
+[Tool annotations and approvals](https://developers.openai.com/plugins/reference),
+[Build an MCP server](https://developers.openai.com/plugins/build/mcp-server),
+[App permission controls](https://developers.openai.com/plugins/changelog).
 
 **Release hold:** No merge, release, installed-Agent upgrade, production
 browser enablement, or Cloudflare deployment has been authorized. Reuse the
