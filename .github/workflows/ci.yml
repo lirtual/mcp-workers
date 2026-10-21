@@ -29,6 +29,11 @@ on:
         required: false
         type: boolean
         default: false
+      s2_cloud_e2e:
+        description: Create, test and delete isolated S2 Worker, Workflow and D1 (never production)
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -45,7 +50,7 @@ jobs:
     if: >-
       ${{ !(github.event_name == 'workflow_dispatch' &&
             github.ref == 'refs/heads/wip/workflow-s2-public-readonly' &&
-            inputs.s2_portal_probe == true) }}
+            (inputs.s2_portal_probe == true || inputs.s2_cloud_e2e == true)) }}
     concurrency:
       group: ci-checks-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.event.pull_request.number || github.ref }}
       cancel-in-progress: true
@@ -561,3 +566,39 @@ jobs:
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Read-only MCP discovery and one IMA list call
         run: node --experimental-strip-types apps/workflow-mcp-worker/tests/s2-portal-acceptance.mjs
+
+  workflow-s2-isolated-cloud-e2e:
+    name: Isolated S2 Workflow to test Portal and IMA (auto-cleanup)
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/wip/workflow-s2-public-readonly' &&
+          inputs.worker == 'workflow-mcp-worker' &&
+          inputs.s2_cloud_e2e == true &&
+          inputs.s2_portal_probe != true &&
+          inputs.smoke_only != true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    environment:
+      name: workflow-mcp-worker
+    concurrency:
+      group: workflow-s2-isolated-cloud-e2e
+      cancel-in-progress: false
+    env:
+      S2_PORTAL_CLIENT_ID: ${{ secrets.S2_PORTAL_CLIENT_ID }}
+      S2_PORTAL_CLIENT_SECRET: ${{ secrets.S2_PORTAL_CLIENT_SECRET }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Verify disposable Workflow, Portal and IMA; clean all ephemeral resources
+        run: node --experimental-strip-types apps/workflow-mcp-worker/tests/s2-portal-cloud-e2e.mjs
