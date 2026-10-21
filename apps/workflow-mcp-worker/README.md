@@ -1,3 +1,30 @@
+## S3 real GitHub OIDC / Cloudflare D1 isolated verification (2026-10-21)
+
+[GitHub Actions #39624620984](https://github.com/lirtual/mcp-workers/actions/runs/39624620984)
+completed **Success** on Draft head `c811565`. A GitHub-hosted Runner
+minted a genuine GitHub OIDC token using `id-token: write`, then sent it
+to a disposable Cloudflare Worker with dedicated disposable D1. The Worker
+used the real `jose` GitHub JWKS verifier and D1 atomic Claim / immutable
+callback receipt implementation; wrong-audience tokens and repeat Claims
+were rejected, identical callbacks were idempotent, and an altered callback
+was rejected. The test script queried real D1 to assert exactly one
+confirmed physical owner and one stored callback result. Its successful
+final job verdict includes removal of the isolated Worker and D1.
+
+**Exact assurance scope:** the isolated CI Job registered *itself* as the
+confirmed physical candidate using its `GITHUB_RUN_ID` and
+`GITHUB_RUN_ATTEMPT=1` before requesting OIDC. This proves signed workload
+identity verification and real D1 Claim / callback semantics, **not**
+end-to-end GitHub REST dispatch correlation, a separately dispatched heavy
+Job, native Cloudflare Workflow wait/wake, or production reconciliation.
+The temporary `ci.yml` workflow identity was server-pinned; the product
+dispatch adapter remains constrained to `workflow-s3-executor.yml`.
+No production Worker/DB migration, new production secret, merge or S3
+activation took place. S2's **test Portal** remains the intended source
+for later S1+S2+S3 integration; production Portal HTTP 401 is deferred.
+
+---
+
 ## S3 GitHub Actions execution (Draft, no release)
 
 S3 is implemented in separate [Draft PR #151](https://github.com/lirtual/mcp-workers/pull/151)
