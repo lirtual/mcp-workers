@@ -117,6 +117,21 @@ live("Spec 123 disposable real API acceptance", () => {
             (error instanceof Error ? error.message : "unknown outcome"));
         }
       }
+      // DELETE acknowledgements alone do not establish that the two private
+      // disposable collections actually disappeared. Re-read the root list
+      // without cache, including uncertain POSTs recorded by exact title.
+      try {
+        const roots = await cleanupService.getCollections(true);
+        const expectedTitles = new Set([titles[0], titles[1], titles[0] + "-renamed"]);
+        const leftovers = roots.filter(root =>
+          ownedCollections.has(root._id) || expectedTitles.has(root.title));
+        if (leftovers.length)
+          problems.push("disposable collections still present after cleanup: " +
+            leftovers.map(item => String(item._id)).join(", "));
+      } catch (error) {
+        problems.push("final collection readback unavailable: " +
+          (error instanceof Error ? error.message : String(error)));
+      }
       if (problems.length) throw new Error("Disposable cleanup incomplete: " + problems.join("; "));
       console.log("LIVE_ISOLATED_CLEANUP_PASS");
     };
