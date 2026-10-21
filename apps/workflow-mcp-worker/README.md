@@ -1,3 +1,51 @@
+## S3 product combined cloud acceptance — blocked at GitHub REST 403 (2026-10-21)
+
+A new **real product** isolated acceptance job in `ci.yml` executes
+`Workflow MCP Draft → Validate → Publish → Run` for the three-step Plan
+`IMA read-only via test Portal → github.run(heavy.github.echo) → result.emit`.
+It uses a new disposable Cloudflare Worker/Workflow/D1 per attempt and the
+already-existing GitHub Actions Environment credentials. The only extra
+runner adaptation selects the previously registered `ci.yml` test echo
+executor for exact `lirtual/mcp-workers`, S3 Draft ref and randomized
+`workflow-s3-plan-<10hex>` host. The normal product executor selection
+remains `workflow-s3-executor.yml`. Neither Cloudflare Portal nor
+production S1/S2/S3 was modified.
+
+**Observed live evidence:**
+- [#39634092039](https://github.com/lirtual/mcp-workers/actions/runs/39634092039):
+  Success cleaning an exact disposable Worker/Workflow/D1 left by an early
+  Cloudflare deployment-registration error.
+- [#39636125703](https://github.com/lirtual/mcp-workers/actions/runs/39636125703):
+  stable disposable Cloudflare Worker health, **S2 real test Portal IMA read
+  succeeded**, S3 dispatch Step failed with GitHub HTTP 403 and
+  `result.emit` correctly skipped; exact cleanup succeeded.
+- [#39636701695](https://github.com/lirtual/mcp-workers/actions/runs/39636701695):
+  same result using bounded, sanitized GitHub rejection classifier:
+  `s3_dispatch_rejected_403_unknown` (the response did not match known,
+  safely classifiable GitHub rejection messages); test Portal IMA Step
+  succeeded and disposable cleanup passed.
+
+**Important distinction:** the prior [isolated coordinator →
+independent GitHub Job → Cloudflare Workflows proof
+#39627837142](https://github.com/lirtual/mcp-workers/actions/runs/39627837142)
+was green, but the **new product Worker itself** cannot yet dispatch the
+job with the short-lived GitHub Actions token passed as an ephemeral
+Cloudflare secret. The exact root cause of HTTP 403 remains **unverified**;
+do not assume PAT scope, bypass authorization or add another deployment
+service. No user-facing S3 complete-E2E success claim is valid until the
+product Step reaches terminal `succeeded` and the ephemeral resources are
+cleaned. Last local tests **79/79 green**, TypeScript check and Wrangler
+dry-run passed. S2 and S3 PRs remain Draft and unmerged; production S1
+unchanged; formal Portal HTTP 401 deliberately deferred.
+
+Suggested next isolated diagnosis: compare the exact REST dispatch
+authorization outcome inside the GitHub Runner with the outcome from a
+disposable Cloudflare Worker, using a **bounded GitHub HTTP status/reason
+check only** (no raw credential/body output). Resolve that evidence before
+considering a separately authorized least-privilege GitHub credential.
+
+---
+
 ## S3 Plan / Publish / Runner integration (Draft, 2026-10-21)
 
 **New product code in S3 Draft PR #151** connects the previously isolated
