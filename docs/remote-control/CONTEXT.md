@@ -1,5 +1,7 @@
 # Remote Control MCP — Domain Context
 
+> **Current browser domain model — 2026-10-22, supersedes older handoff/idle terminology below:** The owner-confirmed [Issue #152](https://github.com/lirtual/mcp-workers/issues/152) adopts **Persistent Automation Browser Session** (visible, Agent-private Chrome/Edge reused until explicit close, browser/Agent termination or revocation), **On-Demand Browser Operation** (one bounded MCP request, not exclusive continuous ownership), **Shared Manual/Agent Use** (human may directly use the same window; Agent-only operation serialization does not imply OS-level human exclusion), **Explicit Browser Tab Target** (a stable selected tab, never silently inferred from focus or newest tab), and **Operation Outcome Receipt** (durable completed/running/unknown effect evidence independent of the browser lifetime). There is **no active Agent Control/Human Control/handoff/resume state machine and no idle or absolute session expiry**. The former H1–H24 terms and historical Q1–Q52 paragraphs immediately following this note are retained for traceability and are **NOT active implementation instructions**. This domain description does not authorize runtime changes, deploy, or browser MCP enablement.
+
 > **Windows handoff vocabulary (H19–H24; 2026-10-21):** **Visible Automation Window** is the existing Agent-owned headed Chrome/Edge instance shown on the Windows desktop, reachable by the owner locally or through their own existing remote desktop; ChatGPT does not receive a desktop stream. **Human Control Privacy Boundary** allows AI-readable control/session status only, not screenshots, DOM, page text or element snapshots; internal content-free idle-activity/lifecycle accounting is permitted but does not prove human identity. **Explicit Takeover** is a control request through ChatGPT/MCP; manually clicking a browser during Agent Control does not itself change ownership. **Owner-Closed Session** terminates without auto-relaunch or Profile deletion. **Unlock Continuity** restores the previous control owner only if the session remains live, and never replays uncertain work. **Volatile Control Ownership** lives in the Agent-local browser session across temporary WSS disconnect, not in a new persistent store; durable effect receipts remain separate. See [fourth-round decisions and convergence](./BROWSER-ARCHITECTURE-REVIEW-20261020.md#grill-with-docs-fourth-round--h19h24-2026-10-21). These are agreed domain terms, not implemented features or deploy authorization.
 
 > **Windows handoff terms (H12–H18, 2026-10-21):** **Observed Page Activity** means positively observed interaction *within the automation page* that may refresh the 30-minute idle timer, not OS-global input or proof of a human's identity; typed secrets must not be collected. **Idle Session Expiry** closes a truly idle Agent-owned browser without a popup but retains its Profile and receipts. **Post-Handoff Stale Observation** means page refs/snapshots from before Human Control cannot be reused after the owner resumes. **Unknown Pre-Handoff Effect** is an admitted operation with uncertain completion after a bounded timeout; it permits takeover, not replay. **Restart Profile Conflict** prevents automatic reattachment to leftover browsers or unsafe Profiles. **Locked Desktop** suspends new Agent page actions, preserving idle accounting. **Ordinary Owner Resume** is an explicit ChatGPT instruction via authenticated Remote Control MCP; not independently proven human presence or high-impact website approval. [Round 3](./BROWSER-ARCHITECTURE-REVIEW-20261020.md#grill-with-docs-round-3--h12h18-2026-10-21). These are design definitions only.
@@ -97,8 +99,20 @@ Device-scoped inspection and interaction with web pages and browser tabs through
 _Avoid_: Remote desktop control, arbitrary OS mouse/keyboard control.
 
 **Automation Browser Session**:
-An identifiable browser session for a remote automation workflow, reusable across interactions but not indefinitely active; a persistent automation profile can have only one active session at a time.
-_Avoid_: Equating it to the Agent's Shell Managed Session, or treating it as implicit permission to inspect the owner's personal browser profile.
+An identifiable, reusable Agent-owned browser session that may remain open across any number of separate, on-demand MCP operations and manual user interactions until intentionally closed or terminated; it has no forced idle/absolute lifetime.
+_Avoid_: Equating it to the Agent's Shell Managed Session, treating a tool call as the browser lifetime, or interpreting an open session as permission to inspect personal browser Profiles.
+
+**On-Demand Browser Operation**:
+A bounded, explicitly requested remote action or observation within an already identified browser session; it does not confer ongoing exclusive control of the browser.
+_Avoid_: Equating the completion of an MCP request with closing the browser, or assuming the absence of a handoff mode proves that no human is interacting.
+
+**Shared Manual/Agent Use**:
+A browser collaboration convention in which the owner may use the same visible automation window between or during Agent operations without any special control-owner transition.
+_Avoid_: Claiming strict mutual exclusion of physical mouse/keyboard input or a private human-only browsing mode.
+
+**Browser Operation Lock**:
+The exclusive execution slot for Agent-initiated operations on one automation browser session. It must remain occupied while an accepted asynchronous operation actually runs, even when the originating remote call has returned a running result.
+_Avoid_: Mistaking this for a Windows input lock, or for permission to retry an uncertain website effect.
 
 **Automation Browser Profile**:
 A dedicated owner-controlled browser identity whose sign-in state may be retained locally across automation sessions, separate from the owner's everyday browser profile.
