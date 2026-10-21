@@ -1,3 +1,34 @@
+## S2 real test-Portal Cloudflare acceptance (2026-10-21)
+
+The first exact owner candidate is `https://test-mcp.lirtual.dpdns.org/mcp`,
+using the existing Access Service Auth policy and Environment secrets.
+[Authenticated Portal acceptance #39589031472](https://github.com/lirtual/mcp-workers/actions/runs/39589031472)
+passed initialize, tools/list and `ima_list_notebooks` without writing IMA data.
+
+A separately named **isolated real Cloudflare Worker, Workflows and D1** then
+completed `Draft → Validate → exact approve → Publish → Run → Result` through
+that real Portal. Run `f9a359c0-a310-4ab6-95fc-b68f62e51b3c` returned
+`succeeded` for both `read` and `emit` steps with an IMA result, and Run
+idempotency passed. See [live Action #39591397557](https://github.com/lirtual/mcp-workers/actions/runs/39591397557).
+The original Action itself ended **cancelled**, because the temporary Worker
+cleanup command failed and lingering Node handles prevented the process from
+exiting. Thus it is valid **feature-execution evidence**, not a successful
+overall CI verdict.
+
+A targeted [cleanup Action #39593329741](https://github.com/lirtual/mcp-workers/actions/runs/39593329741)
+then successfully removed and verified absence of the **exact** temporary
+Worker `workflow-s2-ima-aab86c737a`, matching Workflow and D1. The
+one-time cleanup job was removed afterward. The reusable isolated acceptance
+script now uses the verified Cloudflare API delete and verifies absence
+before exiting; this revised cleanup behavior is code-reviewed/tested locally
+but **has not been re-run on Cloudflare**.
+
+**No production merge, deployment or S2 flag enablement.** The original
+personal trusted-target residual DNS/IP risks remain accepted only in the
+explicit limited scope; these results do not establish general SSRF isolation.
+
+---
+
 ## S2 Portal machine authentication (Draft only)
 
 The first owner-approved Portal candidate is
@@ -22,10 +53,9 @@ not a proof of DNS/IP SSRF isolation. Exact endpoint + tool + schema-digest
 Publish approval, risk acknowledgement, `readOnlyHint`, and the
 `S2_READONLY_ENABLED` runtime gate remain required.
 
-Acceptance is **pending**: authenticate with a disposable/rotatable token,
-fetch the Portal's actual tools list, compare IMA's read-only tool schemas,
-call one harmless tool, and verify S2 stays off in production. Do not turn on
-`S2_READONLY_ENABLED` simply to make an unauthenticated test pass.
+Authenticated test Portal discovery and the isolated S2 Workflow calling
+`ima_list_notebooks` now have the evidence summarized above. Production
+`S2_READONLY_ENABLED` remains OFF; do not enable it as a side-effect of tests.
 
 # Workflow MCP Worker — S1 baseline, S2 candidate gated
 

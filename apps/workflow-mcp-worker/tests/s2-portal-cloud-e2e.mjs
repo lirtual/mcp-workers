@@ -58,16 +58,37 @@ async function run(){
   assert.equal((await tool('workflow_run',params)).run_id,runId);
   console.log('S2_ISOLATED_CLOUD_E2E_OK',JSON.stringify({worker:name,runId,steps:outcome.steps.map(s=>s.status),tool:'ima_list_notebooks'}));
 }
+async function resourcePresent(path){
+  const response=await fetch('https://api.cloudflare.com/client/v4'+path,{
+    headers:{authorization:'Bearer '+cf},signal:AbortSignal.timeout(15000),
+  });
+  const doc=await response.json().catch(()=>null);
+  if(response.status===404||doc?.errors?.some(e=>e.code===10007))return false;
+  if(!response.ok||doc?.success!==true)throw Error('Cleanup verification failed: HTTP '+response.status);
+  return true;
+}
+async function removeExact(path){
+  if(await resourcePresent(path))await api('DELETE',path);
+  if(await resourcePresent(path))throw Error('Disposable resource still present');
+}
 async function cleanup(){
   try{await owner?.close();await portal?.client?.close();}catch{}
-  const safe=()=>/^workflow-s2-ima-[a-f0-9]{10}$/.test(name);
-  if(!safe())throw Error('Unsafe cleanup identity');
+  if(!/^workflow-s2-ima-[a-f0-9]{10}$/.test(name))throw Error('Unsafe cleanup identity');
   const failed=[];
+  const worker='/accounts/'+account+'/workers/scripts/'+name;
+  const workflow='/accounts/'+account+'/workflows/'+name;
   if(attempted){
-    try{await api('DELETE','/accounts/'+account+'/workers/scripts/'+name+'?force=true');}catch{failed.push('worker');}
-    try{wr(['workflows','delete',name,'--config',file]);}catch{failed.push('workflow');}
+    try{
+      if(await resourcePresent(worker+'/script-settings'))
+        await api('DELETE',worker+'?force=true');
+      if(await resourcePresent(worker+'/script-settings'))throw Error('worker remains');
+    }catch{failed.push('worker');}
+    try{await removeExact(workflow);}catch{failed.push('workflow');}
   }
-  if(dbId){try{await api('DELETE','/accounts/'+account+'/d1/database/'+dbId);}catch{failed.push('d1');}}
+  if(dbId){
+    try{await removeExact('/accounts/'+account+'/d1/database/'+dbId);}
+    catch{failed.push('d1');}
+  }
   try{unlinkSync(new URL('../'+file,import.meta.url));}catch{}
   if(failed.length)throw Error('DISPOSABLE_CLEANUP_FAILED: '+failed.join(',')+' name='+name);
   console.log('DISPOSABLE_CLEANUP_OK',name);
@@ -75,4 +96,6 @@ async function cleanup(){
 let failure;
 try{await run()}catch(e){failure=e;console.error('S2_CLOUD_E2E_FAILED',String(e.message).replaceAll(cf,'[redacted]').replaceAll(pair.clientSecret,'[redacted]'),'name='+name);}
 finally{try{await cleanup();}catch(e){failure??=e;console.error(String(e.message));}}
-if(failure)process.exitCode=1;
+// CLI has completed all awaited cleanup. Close lingering SDK/HTTP handles rather
+// than letting a successful test hang until GitHub cancels the entire job.
+process.exit(failure?1:0);

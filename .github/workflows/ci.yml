@@ -34,11 +34,6 @@ on:
         required: false
         type: boolean
         default: false
-      s2_cleanup_only:
-        description: One-time cleanup of isolated Cloudflare acceptance resources (no deploy)
-        required: false
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -55,7 +50,7 @@ jobs:
     if: >-
       ${{ !(github.event_name == 'workflow_dispatch' &&
             github.ref == 'refs/heads/wip/workflow-s2-public-readonly' &&
-            (inputs.s2_portal_probe == true || inputs.s2_cloud_e2e == true || inputs.s2_cleanup_only == true)) }}
+            (inputs.s2_portal_probe == true || inputs.s2_cloud_e2e == true)) }}
     concurrency:
       group: ci-checks-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.event.pull_request.number || github.ref }}
       cancel-in-progress: true
@@ -607,26 +602,3 @@ jobs:
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Verify disposable Workflow, Portal and IMA; clean all ephemeral resources
         run: node --experimental-strip-types apps/workflow-mcp-worker/tests/s2-portal-cloud-e2e.mjs
-
-
-  workflow-s2-cleanup-once:
-    name: Cleanup exact temporary S2 Cloudflare acceptance resources
-    if: >-
-      ${{ github.event_name == 'workflow_dispatch' &&
-          github.ref == 'refs/heads/wip/workflow-s2-public-readonly' &&
-          inputs.worker == 'workflow-mcp-worker' &&
-          inputs.s2_cleanup_only == true &&
-          inputs.s2_cloud_e2e != true &&
-          inputs.s2_portal_probe != true &&
-          inputs.smoke_only != true }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 3
-    environment:
-      name: workflow-mcp-worker
-    env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Verify and clean exact temporary S2 resource name
-        run: node apps/workflow-mcp-worker/tests/s2-cleanup-once.mjs
