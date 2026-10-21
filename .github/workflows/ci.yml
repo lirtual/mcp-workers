@@ -412,3 +412,59 @@ jobs:
             echo "Unexpected unauthenticated MCP status: $status" >&2
             exit 1
           done
+
+  # TEMPORARY owner-dispatched G0 acceptance; remove after one run.
+  raindrop-spec123-g0-acceptance:
+    name: Raindrop G0 disposable API acceptance
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.repository == 'lirtual/mcp-workers' &&
+      github.actor == 'lirtual' &&
+      github.ref == 'refs/heads/implement/spec-123-raindrop' &&
+      inputs.worker == 'raindrop-mcp-worker'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    environment:
+      name: raindrop-mcp-worker
+    concurrency:
+      group: raindrop-spec123-g0-once
+      cancel-in-progress: false
+    steps:
+      - name: Check caller and immutable test source
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_ACTOR" == "lirtual" ]]
+          [[ "$GITHUB_REF" == "refs/heads/implement/spec-123-raindrop" ]]
+      - uses: actions/checkout@v4
+        with:
+          ref: 6b894b58dbf0402c8373dba715abf6e9a76235f4
+          persist-credentials: false
+      - name: Verify pinned reviewed source
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "6b894b58dbf0402c8373dba715abf6e9a76235f4" ]]
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Install frozen dependencies without lifecycle scripts
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Run one scoped live-test and exact-ID cleanup
+        working-directory: apps/raindrop-mcp-worker
+        env:
+          RAINDROP_ACCESS_TOKEN: ${{ secrets.RAINDROP_ACCESS_TOKEN }}
+          RUN_DESTRUCTIVE_LIVE_TESTS: "true"
+          CONFIRM_DESTRUCTIVE_LIVE_TESTS: DELETE_ONLY_TEST_BOOKMARKS
+        run: |
+          set -euo pipefail
+          test -n "$RAINDROP_ACCESS_TOKEN"
+          pnpm run test:live:spec123
