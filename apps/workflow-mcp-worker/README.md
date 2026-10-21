@@ -1,3 +1,42 @@
+## S3 pre-release resilience and terminal-state gates (2026-10-22)
+
+[Draft PR #151](https://github.com/lirtual/mcp-workers/pull/151)
+commit `caa37a8` adds two **bounded, no-new-service** safeguards:
+
+- **Durable callback reconciliation while waiting:** after a confirmed
+  dispatch, the native Workflow now checks D1 before waiting and after
+  each of up to eight 30-second `waitForEvent` periods. If the wake
+  notification was lost but an immutable, already authorized callback
+  receipt exists, Workflow can complete from D1 alone. If no receipt is
+  found in that four-minute limit, it retains `indeterminate` and
+  `s3_callback_unconfirmed`. **It never re-dispatches the GitHub Job.**
+  Unit tests cover both lost-wake recovery and bounded missing-receipt
+  exhaustion.
+- **Terminal-Run cancellation guard:** the atomic D1 Claim and callback
+  insert both require their parent Run to remain `queued` or `running`.
+  A valid GitHub OIDC credential cannot obtain a new Claim or insert a
+  late success receipt once the Run has been marked `cancelled`.
+  The conditional writes protect even if a Run transitions after JWT
+  verification. Unit tests verify immutable terminal outcome and denial.
+
+All **83/83** Workflow unit tests, TypeScript checks and Wrangler dry-run
+passed after these changes. The existing full S2 Portal → S3 GitHub
+product E2E is being rerun on `caa37a8`; its verdict is tracked in
+[GitHub Actions #39643118492](https://github.com/lirtual/mcp-workers/actions/runs/39643118492),
+not treated as successful until the job is complete.
+
+**Still not implemented / accepted:** an explicit user-facing cancellation
+API and physical GitHub Job cancellation, reconciliation after a terminal
+`indeterminate` Run, delayed callbacks after a long execution window,
+independent full version-upgrade compatibility, and default-branch
+registration of the dedicated `workflow-s3-executor.yml`. The four-minute
+lost-wake window is not a guarantee of recovering arbitrarily delayed
+GitHub executions. Do not merge or enable production S2/S3 until the
+necessary release decisions and tests are complete. Production S1 and
+formal Portal remain unchanged.
+
+---
+
 ## S3 product combined cloud E2E — passed in isolation (2026-10-21)
 
 **End-to-end product Plan/Runner acceptance succeeded**:
