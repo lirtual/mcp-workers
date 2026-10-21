@@ -1,7 +1,7 @@
 ## 当前生产状态与 Agent 工具契约收敛（2026-10-21；优先于下文历史快照）
 
 - **生产已发布：** PR [#134](https://github.com/lirtual/mcp-workers/pull/134) 已 squash 合并（`ae4c444`），现有 [Actions #39536606340](https://github.com/lirtual/mcp-workers/actions/runs/39536606340) 选定 `raindrop-mcp-worker` 发布成功。通过现有 MCP 插件只读诊断核对 **41 个公开工具**，以及收藏夹列表、书签查询。此事实覆盖下文旧阶段的“Draft / 未合并 / 未部署”声明；旧 G0 真实写入失败记录仍属历史事实，**不能倒算为通过**。
-- **用户已确认新的目标契约：** 将 41 个公开工具精简为 26 个原子候选（17 个日常、9 个高影响），移除 15 个旧兼容、重复、AI 建议及内部/综合入口。详见 [ADR 0001：Agent 工具公开契约](adr/0001-agent-tool-public-contract.md)。其中高影响工具的可见性/授权细节还需收敛；本次仅记录决定。
+- **用户已确认的新公开契约（Grill Q1–Q4=A）：** 将生产当前的 41 个公开工具拟精简为 **25 个**（17 个日常、8 个高影响），拟移除 **16 个**（原 15 个兼容/重复/建议/运维入口加 `trash_empty`）。Agent 的 `bookmark_delete` 仅软删除，`collection_create/update` 不得设置 `public:true`；高影响操作明确范围及用户确认，复用现有预览/摘要（如存在）与客户端交互，不新建审批服务。现行生产尚未实现这些限制，客户端确认也不是服务端强制授权。详见 [ADR 0001：Agent 工具公开契约](adr/0001-agent-tool-public-contract.md)。
 - **执行范围：** 新决定尚未实施或发布；不得将此文档 PR 当作工具精简部署授权。不加第二个 MCP 或审批服务，仍优先复用现有 Portal 与 CI。下文为各历史阶段的按时记录。
 
 ---
