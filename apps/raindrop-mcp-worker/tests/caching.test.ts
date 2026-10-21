@@ -53,6 +53,7 @@ describe("RaindropService Caching Logic", () => {
     ["missing items", { data: { result: true } }],
     ["non-array items", { data: { result: true, items: {} } }],
   ])("getCollections rejects %s rather than claiming an empty account", async (_label, response) => {
+    service = new RaindropService({ accessToken: "fake-token", maxReadRetries: 0 });
     const mockGet = (service as any).client.GET;
     mockGet.mockResolvedValueOnce(response);
 
@@ -61,6 +62,7 @@ describe("RaindropService Caching Logic", () => {
   });
 
   it("does not cache an invalid collection list as empty", async () => {
+    service = new RaindropService({ accessToken: "fake-token", maxReadRetries: 0 });
     const mockGet = (service as any).client.GET;
     mockGet.mockResolvedValueOnce({ data: { result: false, items: [] } });
     mockGet.mockResolvedValueOnce({ data: { result: true, items: [{ _id: 1, title: "Valid" }] } });
