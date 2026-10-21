@@ -4,7 +4,7 @@
  */
 type Env={
   GITHUB_AUTH_TOKEN:string; EXPECTED_TOKEN_SHA256:string;
-  PROBE_ACCESS_TOKEN:string; PROBE_BRANCH:string;
+  PROBE_ACCESS_TOKEN:string; PROBE_BRANCH:string; EXPECTED_TOKEN_LENGTH:string;
 };
 const githubUrl='https://api.github.com/repos/lirtual/mcp-workers/actions/workflows/ci.yml';
 function summary(response:Response){
@@ -27,6 +27,19 @@ export default{
     const digest=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)))
       .map(n=>n.toString(16).padStart(2,'0')).join('');
     const tokenUnchanged=digest===env.EXPECTED_TOKEN_SHA256;
+    async function matches(value:string){
+      const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',
+        new TextEncoder().encode(value))))
+        .map(n=>n.toString(16).padStart(2,'0')).join('');
+      return hash===env.EXPECTED_TOKEN_SHA256;
+    }
+    const normalization={
+      trimEnd:await matches(env.GITHUB_AUTH_TOKEN.trimEnd()),
+      trimBoth:await matches(env.GITHUB_AUTH_TOKEN.trim()),
+      lengthDelta:env.GITHUB_AUTH_TOKEN.length-Number(env.EXPECTED_TOKEN_LENGTH),
+      hasTrailingNewline:env.GITHUB_AUTH_TOKEN.endsWith('\n'),
+      hasTrailingCarriageReturn:env.GITHUB_AUTH_TOKEN.endsWith('\r'),
+    };
     const common={
       'accept':'application/vnd.github+json',
       'authorization':'Bearer '+env.GITHUB_AUTH_TOKEN,
@@ -40,7 +53,7 @@ export default{
       body:JSON.stringify({ref:env.PROBE_BRANCH,return_run_details:true,
         inputs:{worker:'workflow-mcp-worker',s3_executor_worker:'true'}}),
     });
-    return Response.json({tokenUnchanged,read:summary(get),invalidDispatch:summary(post)},
+    return Response.json({tokenUnchanged,normalization,read:summary(get),invalidDispatch:summary(post)},
       {headers:{'cache-control':'no-store'}});
   },
 };
