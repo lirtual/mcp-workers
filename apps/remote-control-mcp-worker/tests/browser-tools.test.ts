@@ -44,6 +44,21 @@ test("rejects arbitrary JS, CLI/path/profile, missing IDs, unexpected keys, and 
   assert.equal(parseBrowserDoArguments("browser_snapshot",{session_id}),true);
   assert.equal(parseBrowserDoArguments("browser_snapshot",{session_id,profile:"personal"}),false);
 });
+test("browser tool annotations conservatively describe external effects, not approval",()=>{
+  for(const tool of BROWSER_TOOLS) {
+    assert.equal(typeof tool.annotations.readOnlyHint,"boolean",tool.name);
+    assert.equal(typeof tool.annotations.destructiveHint,"boolean",tool.name);
+    assert.equal(typeof tool.annotations.openWorldHint,"boolean",tool.name);
+  }
+  const hints=Object.fromEntries(BROWSER_TOOLS.map(t=>[t.name,t.annotations]));
+  assert.deepEqual(hints.browser_start,{readOnlyHint:false,destructiveHint:false,openWorldHint:false});
+  assert.deepEqual(hints.browser_status,{readOnlyHint:true,destructiveHint:false,openWorldHint:false});
+  assert.deepEqual(hints.browser_navigate,{readOnlyHint:false,destructiveHint:true,openWorldHint:true});
+  assert.deepEqual(hints.browser_snapshot,{readOnlyHint:true,destructiveHint:false,openWorldHint:true});
+  assert.deepEqual(hints.browser_close,{readOnlyHint:false,destructiveHint:true,openWorldHint:false});
+  // These annotations influence client risk UX; they are NOT server-side
+  // approval, so the hard-coded disabled browser-tool gate remains required.
+});
 test("model-supplied confirmation fields cannot grant browser authorization",()=>{
   const nav={device_id,operation_id,session_id,url:"https://example.com/"};
   const agentArgs={operation_id,session_id,url:nav.url};
