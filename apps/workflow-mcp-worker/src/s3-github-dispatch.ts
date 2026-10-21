@@ -79,6 +79,9 @@ export async function dispatchGithubAttempt(
       authorization:'Bearer '+config.dispatchToken,
       'content-type':'application/json',
       'x-github-api-version':'2026-03-10',
+      // GitHub REST requires a valid User-Agent; unlike Node, Workers fetch
+      // must not rely on the runtime injecting one implicitly.
+      'user-agent':'mcp-workers-workflow-s3',
     },
     body:JSON.stringify({
       ref:config.ref.slice('refs/heads/'.length),

@@ -19,6 +19,7 @@ test('registered GitHub dispatch uses exact repo/ref and only opaque inputs',asy
     assert.equal(req.method,'POST');
     assert.equal(req.headers.get('authorization'),'Bearer test-token-not-real');
     assert.equal(req.headers.get('x-github-api-version'),'2026-03-10');
+    assert.equal(req.headers.get('user-agent'),'mcp-workers-workflow-s3');
     assert.deepEqual(await req.json(),{
       ref:'main',return_run_details:true,
       inputs:{attempt_id:attempt.attemptId,dispatch_id:attempt.dispatchId,capability_id:attempt.capabilityId},
