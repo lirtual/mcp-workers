@@ -50,6 +50,10 @@ Checked only via authenticated GitHub metadata and `wrangler` read/list commands
 
 For a genuinely empty first installation, positively validate the newly chosen D1 before admitting Runs. For any discovered prior active Runs, **halt incompatible upgrade**: the latest 48 KiB limit may change execution semantics of an older pinned Plan/Run. This is a **conditional upgrade risk**, not proof of an already deployed old S1 engine.
 
+## Approved domain planning update — 2026-10-21
+
+The owner selected `workflow.lirtual.dpdns.org` as the intended first S1 public entry. This is **planning authorization only**, not permission to create or attach a production route. The proposed Custom Domain, `keep_vars: false`, and invocation logs are staged in **S2 Draft PR #146**; the separate S1 Draft PR #142 has not been changed in this action. Before S1-only deployment, ensure the selected release source contains the reviewed configuration. The currently undeployed route must still be verified against the actual Cloudflare zone/availability; the all-zero D1 ID, missing test Fixture/Workflow provisioning, Portal Secret and GitHub Environment remain blockers. The existing GitHub Actions manual release selector still excludes Workflow; no production resources were created.
+
 ## Isolated real Cloudflare edge verification — 2026-10-21
 
 User authorization covered **temporary isolated edge tests and cleanup only**, not production. On the existing WSL device, the unchanged implementation from e5fcbab (tested at document HEAD 3642b72) was deployed to a new disposable Cloudflare Worker, private read-only echo Fixture Worker, independent D1 database and independent Workflow. No production names, resources, Portal tokens, app code or release settings were modified.

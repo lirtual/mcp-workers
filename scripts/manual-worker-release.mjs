@@ -146,8 +146,8 @@ export function verifyWorkflowReleaseConfig(conf) {
   invariant(conf.workers_dev === false && conf.preview_urls === false &&
     Array.isArray(conf.routes) && conf.routes.length === 1 &&
     conf.routes[0]?.custom_domain === true &&
-    typeof conf.routes[0]?.pattern === "string" && conf.routes[0].pattern.length > 0,
-    "Workflow release public routing must be an explicitly reviewed Custom Domain");
+    conf.routes[0]?.pattern === "workflow.lirtual.dpdns.org",
+    "Workflow release public routing must match the approved workflow.lirtual.dpdns.org Custom Domain");
   const d1 = conf.d1_databases;
   invariant(Array.isArray(d1) && d1.length === 1 &&
     d1[0]?.binding === "DB" && d1[0]?.database_name === "workflow-mcp-worker" &&
@@ -171,8 +171,9 @@ export function verifyWorkflowReleaseConfig(conf) {
     "Workflow release S2 must stay disabled until separately authorized");
   invariant(conf.compatibility_flags?.includes("global_fetch_strictly_public"),
     "Workflow release public fetch compatibility flag missing");
-  invariant(conf.observability?.enabled === true,
-    "Workflow release observability must be enabled");
+  invariant(conf.observability?.enabled === true &&
+    conf.observability?.logs?.invocation_logs === true,
+    "Workflow release observability and Invocation Logs must be enabled");
   return true;
 }
 

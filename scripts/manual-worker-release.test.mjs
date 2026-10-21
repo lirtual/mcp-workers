@@ -334,13 +334,15 @@ test("Workflow release config is blocked until real D1, route and explicit bindi
     ...source,
     keep_vars: false,
     d1_databases: [{ ...source.d1_databases[0], database_id: "12345678-1234-4234-8234-123456789abc" }],
-    routes: [{ pattern: "workflow.example.org", custom_domain: true }],
+    routes: [{ pattern: "workflow.lirtual.dpdns.org", custom_domain: true }],
   };
   assert.equal(verifyWorkflowReleaseConfig(complete), true);
   const broken = [
     [{ ...complete, workers_dev: true }, /public routing/],
     [{ ...complete, routes: [] }, /public routing/],
-    [{ ...complete, routes: [{ pattern: "workflow.example.org", custom_domain: false }] }, /public routing/],
+    [{ ...complete, routes: [{ pattern: "workflow.lirtual.dpdns.org", custom_domain: false }] }, /public routing/],
+    [{ ...complete, routes: [{ pattern: "other.lirtual.dpdns.org", custom_domain: true }] }, /approved workflow.lirtual.dpdns.org/],
+    [{ ...complete, routes: [complete.routes[0], { pattern: "other.lirtual.dpdns.org", custom_domain: true }] }, /public routing/],
     [{ ...complete, d1_databases: source.d1_databases }, /D1 database ID/],
     [{ ...complete, workflows: [] }, /Workflows binding/],
     [{ ...complete, services: [] }, /read-only Fixture binding/],
@@ -386,7 +388,7 @@ test("Workflow offline readiness CLI fails on placeholder resources and accepts 
     const ready = {
       ...config,
       keep_vars: false,
-      routes: [{ pattern: "workflow.example.org", custom_domain: true }],
+      routes: [{ pattern: "workflow.lirtual.dpdns.org", custom_domain: true }],
       d1_databases: [{ ...config.d1_databases[0],
         database_id: "12345678-1234-4234-8234-123456789abc" }],
     };

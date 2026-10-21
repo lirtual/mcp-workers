@@ -4,6 +4,8 @@ Implementation base: [Issue #141](https://github.com/lirtual/mcp-workers/issues/
 This branch also stages a **disabled-by-default S2 candidate** in [Draft PR #146](https://github.com/lirtual/mcp-workers/pull/146).
 Neither S1 nor S2 has production deployment authorization; do not deploy without the separate release gates and production binding review.
 
+**Approved S1 ingress plan:** `workflow.lirtual.dpdns.org` is pinned as a Custom Domain in the **stacked S2 Draft branch only**, together with `keep_vars: false` and Invocation Logs enabled. The actual S1 base PR #142 has **not** been updated by this change. Before an S1-only release, carry the reviewed ingress config into the selected release source and independently verify Cloudflare zone/domain ownership and route availability. This is a source-code plan, **not a live DNS or Cloudflare route change**. No D1 ID, Workflow, test Fixture, Environment Secret or production publish has been provisioned.
+
 ## S2 personal trusted-target decision B — 2026-10-21
 
 - **Owner-approved scope change (B): personal trusted MCP targets only**, not unrestricted or verified-isolated dynamic targets. Each S2 Publish must first call `workflow_validate`, review the exact `required_approvals` (`endpoint`, `tool`, `scope: read`, `schema_digest`), then supply those exact values as `approved_operations` **and separately set** `accept_target_risks: true`. This acknowledges that the trusted target may access the wider network or perform side effects despite its claimed read-only metadata. No persistent target registry, new authentication layer, or approval service is introduced.
