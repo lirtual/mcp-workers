@@ -104,3 +104,26 @@ Cloudflare D1 **independently confirmed** one request to A with credential categ
 **Next falsifiable experiment only with separate isolated Cloudflare test authorization:** verify a real public read-only MCP SDK handshake and destination enforcement at connection time against controlled, non-sensitive, test-owned DNS/redirect endpoints. Do not probe unowned private hosts or cloud metadata and do not conflate Cloudflare simulation with edge enforcement. Tear down any authorized temporary resources.
 
 **Stop condition:** if official platform capability plus safe edge evidence cannot establish Q16 for dynamic endpoints, return to the product/architecture selection gate; do not continue piling on proxy or compatibility layers, and do not merge/deploy.
+
+## Follow-up P0-3 Cloudflare-native network egress option — 2026-10-21
+
+**Finding (revises earlier candidate priority, not Q decisions):** Cloudflare's June 5, 2026 native Workers VPC Network supports account-wide cf1:network binding for **public Internet egress through Cloudflare Gateway**. The Worker calls env.EGRESS.fetch; Gateway matching DNS, HTTP and Network policies apply, including **Destination IP CIDR** rules. This is a simpler *candidate* than creating a dedicated egress proxy. Sources: [Workers VPC Network](https://developers.cloudflare.com/workers-vpc/configuration/vpc-networks/), [June 5 announcement](https://developers.cloudflare.com/changelog/post/2026-06-05-gateway-egress/), [Gateway Network Policies](https://developers.cloudflare.com/cloudflare-one/traffic-controls/network-policies/).
+
+### Evidence and strict limitations
+
+- Existing WSL Wrangler **4.130.0** accepted throwaway VPC Network config with binding=EGRESS, network_id=cf1:network, remote=true. **deploy --dry-run PASS** printed env.EGRESS (cf1:network) VPC Network. Nothing was deployed; account entitlement, policies, roles and Gateway logs were not checked. A local dry-run is **not** proof that Gateway blocks a private peer.
+- VPC Networks may **also reach private Cloudflare Tunnel/Mesh/subnet routes**. Merely adding the binding is *not* a security guard; without scoped deny policy, it could expand access to internal resources. Never edit a broad existing account rule as a test; rule order/precedence must be verified.
+- An implementation calling the **global fetch** may bypass env.EGRESS.fetch. A single external HTTP transport must be enforced, including any MCP SDK-internal request path; static grep is not a complete runtime proof.
+- Gateway offers destination-IP policies, but actual connection-time enforcement remains **unverified**, including Worker-specific rule targeting, policy ordering, IPv4/IPv6 ranges, DNS changes and redirects. The earlier synthetic rebinding case proves missing PoC guard, **not an observed Cloudflare exploit**.
+
+### Minimal alternatives
+
+| Option | Cost and proven capability | Selection |
+| --- | --- | --- |
+| Direct global fetch with URL preflight | Fewest app changes, but peer-address invariant unproven | Not approved for arbitrary S2 dynamic MCP |
+| **Native VPC Network + Gateway** | Binding and existing platform policies; requires network rights, scoped policies, observability and possibly Zero Trust setup; no new custom proxy/token issuer | **First platform candidate** for separately authorized, safely isolated proof |
+| Custom proxy, pinned-DNS service, handmade TCP/TLS HTTP stack | Added privileged service, secrets, operational lifecycle, transport incompatibility | Do not introduce without evidence native alternative is insufficient |
+
+**Next safe proof sequence** (requires narrowly scoped authorization for any account-policy mutation and any temporary Worker deployment): read-only inspect Zero Trust availability, current policy scopes and roles; prove isolation from existing Tunnel/Mesh private routes; isolate policy to test traffic without altering other users' routing; use benign owned endpoints and logs to test allow-public/deny destination-IP and DNS-change behavior; verify every MCP SDK outbound request uses the intended transport; delete temporary rules and Workers and prove cleanup. No probes against actual private or cloud metadata services.
+
+**Stop gate:** P0-3 is **OPEN** and S2 dynamic external MCP stays disabled until account policies and real Cloudflare edge tests uphold Q16. No new production components, endpoint preregistration requirement, extra CI, Tickets, merge or deployment are authorized by this report.
