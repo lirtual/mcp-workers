@@ -39,6 +39,8 @@ type AttemptRow={
   state:string;
   candidate_run_id:number|null;
   candidate_run_attempt:number|null;
+  owner_run_id:number|null;
+  owner_run_attempt:number|null;
 };
 function validateIdentity(c:ExecutorIdentity){
   if(!REPO.test(c.repository)||c.repository.includes('..')||
@@ -87,25 +89,30 @@ export async function recordGithubDispatchResult(
 }
 
 /**
- * Validate the GitHub-issued RS256 JWT before a conditional owner Claim.
- * The caller's attempt ID is a LOOKUP ONLY. Candidate repository/ref/Run ID
- * come from confirmed D1 state and are never accepted from callback JSON.
- * A timeout cannot transfer ownership or authorize a second candidate.
+ * Verify the GitHub signature AND compare it with the D1-authorized physical
+ * candidate. A job's signed identity alone is not permission to access an
+ * Attempt. A selected row must already carry a confirmed dispatch candidate.
+ * This helper is not exposed as an HTTP route or MCP operation.
  */
-export async function verifyAndClaimGithubAttempt(
+async function verifiedGithubCandidate(
   db:AttemptDatabase,attemptId:string,token:string,
-  pinned:ExecutorIdentity,keyResolver:KeyResolver=githubKeys,
-):Promise<boolean>{
+  pinned:ExecutorIdentity,requiredState:'confirmed'|'claimed',
+  keyResolver:KeyResolver,
+):Promise<AttemptRow|null>{
   validateIdentity(pinned);
   if(!ID.test(attemptId)||typeof token!=='string'||token.length>8192)
-    return false;
-  const a=await db.prepare(`SELECT attempt_id,repository,repository_id,
-    workflow_ref,ref,state,candidate_run_id,candidate_run_attempt
-    FROM step_attempts WHERE attempt_id=?`).bind(attemptId).first<AttemptRow>();
-  if(!a||a.state!=='confirmed'||!a.candidate_run_id||!a.candidate_run_attempt||
-     a.repository!==pinned.repository||a.repository_id!==pinned.repositoryId||
-     a.workflow_ref!==pinned.workflowRef||a.ref!==pinned.ref)
-    return false;
+    return null;
+  const row=await db.prepare(`SELECT attempt_id,repository,repository_id,
+    workflow_ref,ref,state,candidate_run_id,candidate_run_attempt,
+    owner_run_id,owner_run_attempt FROM step_attempts
+    WHERE attempt_id=?`).bind(attemptId).first<AttemptRow>();
+  if(!row||row.state!==requiredState||
+     !row.candidate_run_id||!row.candidate_run_attempt||
+     row.repository!==pinned.repository||row.repository_id!==pinned.repositoryId||
+     row.workflow_ref!==pinned.workflowRef||row.ref!==pinned.ref)
+    return null;
+  if(requiredState==='claimed'&&(row.owner_run_id!==row.candidate_run_id||
+       row.owner_run_attempt!==row.candidate_run_attempt))return null;
   let claims:Record<string,unknown>;
   try{
     const {payload}=await jwtVerify(token,keyResolver,{
@@ -116,12 +123,40 @@ export async function verifyAndClaimGithubAttempt(
     if(typeof payload.exp!=='number'||typeof payload.iat!=='number'||
        payload.exp-payload.iat>600||
        payload.repository_id!==pinned.repositoryId)
-      return false;
-  }catch{return false;}
-  if(!matchCandidateIdentity(claims,{
-    repository:a.repository,workflowRef:a.workflow_ref,ref:a.ref,
-    runId:a.candidate_run_id,runAttempt:a.candidate_run_attempt,
-  }))return false;
+      return null;
+  }catch{return null;}
+  return matchCandidateIdentity(claims,{
+    repository:row.repository,workflowRef:row.workflow_ref,ref:row.ref,
+    runId:row.candidate_run_id,runAttempt:row.candidate_run_attempt,
+  })?row:null;
+}
+
+/**
+ * A signed callback from the already claimed owner is authenticated before
+ * the D1 receipt insert. No ownership is transferred by this verification.
+ */
+export async function verifyGithubClaimedOwner(
+  db:AttemptDatabase,attemptId:string,token:string,
+  pinned:ExecutorIdentity,keyResolver:KeyResolver=githubKeys,
+):Promise<boolean>{
+  return !!(await verifiedGithubCandidate(
+    db,attemptId,token,pinned,'claimed',keyResolver,
+  ));
+}
+
+/**
+ * Validate the GitHub-issued RS256 JWT before a conditional owner Claim.
+ * The callback's attempt ID is a LOOKUP ONLY. Repository/ref/Run ID are taken
+ * from server-side pinned config and the confirmed D1 candidate.
+ */
+export async function verifyAndClaimGithubAttempt(
+  db:AttemptDatabase,attemptId:string,token:string,
+  pinned:ExecutorIdentity,keyResolver:KeyResolver=githubKeys,
+):Promise<boolean>{
+  const a=await verifiedGithubCandidate(
+    db,attemptId,token,pinned,'confirmed',keyResolver,
+  );
+  if(!a)return false;
   const result=await db.prepare(`UPDATE step_attempts
     SET state='claimed',owner_run_id=?,owner_run_attempt=?,updated_at=?
     WHERE attempt_id=? AND state='confirmed'

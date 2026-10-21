@@ -9,6 +9,7 @@ import {
   registerGithubAttempt,recordGithubDispatchResult,verifyAndClaimGithubAttempt,
   type AttemptDatabase,type ExecutorIdentity,type AttemptRegistration,
 } from '../src/s3-github-claim.ts';
+import { recordGithubCallback,notifyStoredGithubReceipt } from '../src/s3-github-callback.ts';
 
 const runId='run-s3-fixture';
 const attemptId='b6835141-0b3a-4fcb-a9ae-b4b75bfae93c';
@@ -26,7 +27,7 @@ function setup(t:test.TestContext){
   const sqlite=new DatabaseSync(':memory:');
   t.after(()=>sqlite.close());
   sqlite.exec('PRAGMA foreign_keys=ON');
-  for(const name of ['0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql']){
+  for(const name of ['0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql']){
     sqlite.exec(readFileSync(new URL('../migrations/'+name,import.meta.url),'utf8'));
   }
   sqlite.prepare(`INSERT INTO workflows (id,name,draft,created_at,updated_at)
@@ -140,4 +141,82 @@ test('duplicate logical Run/Step or dispatch identities are rejected by D1 const
     ...registration,attemptId:'b6835141-0b3a-4fcb-a9ae-b4b75bfae93d',
     stepId:'other',
   }));
+});
+
+
+test('authenticated callback is durable, idempotent and cannot be overwritten',async t=>{
+  const {db,sqlite}=setup(t),{issue,keys}=await fixtureSigner();
+  const jwt=await issue();
+  const callbackId='f8835141-0b3a-4fcb-a9ae-b4b75bfae93c';
+  const fact={attemptId,callbackId,outcome:'succeeded' as const,result:{message:'safe echo'}};
+  await registerGithubAttempt(db,registration);
+  await recordGithubDispatchResult(db,attemptId,{status:'confirmed',runId:39410780231,runAttempt:1});
+  assert.equal(await recordGithubCallback(db,fact,jwt,identity,keys),false,
+    'not yet claimed must not accept callback');
+  assert.equal(await verifyAndClaimGithubAttempt(db,attemptId,jwt,identity,keys),true);
+  assert.equal(await recordGithubCallback(db,fact,await issue({run_attempt:'2'}),identity,keys),false);
+  assert.equal(await recordGithubCallback(db,fact,jwt,identity,keys),true);
+  assert.equal(await recordGithubCallback(db,fact,jwt,identity,keys),true,
+    'identical callback replay is safe');
+  assert.equal(await recordGithubCallback(db,{
+    ...fact,callbackId:'f8835141-0b3a-4fcb-a9ae-b4b75bfae93d',
+  },jwt,identity,keys),false);
+  assert.equal(await recordGithubCallback(db,{
+    ...fact,result:{message:'different'},
+  },jwt,identity,keys),false);
+  assert.equal(await recordGithubCallback(db,{
+    ...fact,result:{payload:'x'.repeat(5000)},
+  },jwt,identity,keys),false);
+  const row=sqlite.prepare('SELECT COUNT(*) AS total,result_json FROM callback_receipts')
+    .get() as {total:number;result_json:string};
+  assert.equal(row.total,1);
+  assert.equal(row.result_json,JSON.stringify(fact.result));
+});
+
+test('failed notification leaves durable receipt pending for safe reconciliation',async t=>{
+  const {db,sqlite}=setup(t),{issue,keys}=await fixtureSigner();
+  const jwt=await issue();
+  const callbackId='f8835141-0b3a-4fcb-a9ae-b4b75bfae93c';
+  const fact={attemptId,callbackId,outcome:'failed' as const,result:{code:'test_failure'}};
+  await registerGithubAttempt(db,registration);
+  await recordGithubDispatchResult(db,attemptId,{status:'confirmed',runId:39410780231,runAttempt:1});
+  assert.equal(await verifyAndClaimGithubAttempt(db,attemptId,jwt,identity,keys),true);
+  assert.equal(await notifyStoredGithubReceipt(db,attemptId,async()=>{
+    throw Error('must not notify before callback persisted');
+  }),false);
+  assert.equal(await recordGithubCallback(db,fact,jwt,identity,keys),true);
+  let sends=0;
+  await assert.rejects(notifyStoredGithubReceipt(db,attemptId,async()=>{
+    sends++;
+    throw Error('event connection unavailable');
+  }),/event connection unavailable/);
+  let status=sqlite.prepare('SELECT notification_delivered FROM callback_receipts')
+    .get() as {notification_delivered:number};
+  assert.equal(status.notification_delivered,0,'receipt survived failed wake');
+  assert.equal(await notifyStoredGithubReceipt(db,attemptId,async event=>{
+    sends++;
+    assert.deepEqual(event,{attemptId,callbackId});
+  }),true);
+  assert.equal(await notifyStoredGithubReceipt(db,attemptId,async()=>{
+    throw Error('already notified');
+  }),true);
+  status=sqlite.prepare('SELECT notification_delivered FROM callback_receipts')
+    .get() as {notification_delivered:number};
+  assert.equal(status.notification_delivered,1);
+  assert.equal(sends,2);
+});
+
+test('late callback after cancellation cannot create a terminal receipt',async t=>{
+  const {db,sqlite}=setup(t),{issue,keys}=await fixtureSigner();
+  await registerGithubAttempt(db,registration);
+  await recordGithubDispatchResult(db,attemptId,{status:'confirmed',runId:39410780231,runAttempt:1});
+  const jwt=await issue();
+  assert.equal(await verifyAndClaimGithubAttempt(db,attemptId,jwt,identity,keys),true);
+  sqlite.prepare("UPDATE step_attempts SET state='cancelled' WHERE attempt_id=?").run(attemptId);
+  assert.equal(await recordGithubCallback(db,{
+    attemptId,callbackId:'f8835141-0b3a-4fcb-a9ae-b4b75bfae93c',
+    outcome:'succeeded',result:{value:'late'},
+  },jwt,identity,keys),false);
+  assert.equal((sqlite.prepare('SELECT COUNT(*) AS total FROM callback_receipts')
+    .get() as {total:number}).total,0);
 });

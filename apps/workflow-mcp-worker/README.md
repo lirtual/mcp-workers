@@ -7,9 +7,13 @@ requests, non-secret opaque inputs and dispatch-unknown without redispatch),
 `s3-github-claim.ts` (GitHub JWKS RS256 OIDC JWT verification with pinned
 issuer/audience/expiry/repository ID/ref/workflow/Run and run_attempt), and
 `0003_s3_attempt_claim.sql` (one D1 logical Attempt row, confirmed physical
-candidate and an atomic first-claim-wins UPDATE). JWT verification uses the
-existing `jose` library, now an explicit dependency, not a new service or
-homemade signing scheme.
+candidate and an atomic first-claim-wins UPDATE). `0004_s3_callback_receipts.sql`
+and `s3-github-callback.ts` now persist one immutable signed-owner callback
+fact before notifying Cloudflare Workflow. Identical callbacks are idempotent;
+conflicts and late callbacks are rejected, while failed notification leaves
+the durable receipt pending for reconciliation. This reuses D1, not a new
+queue, callback service or broker. JWT verification uses the existing `jose`
+library, now an explicit dependency, not a homegrown signing scheme.
 
 The candidate returned by GitHub dispatch **must be durably confirmed in
 D1** before a signed Runner is permitted to Claim. Neither a known attempt
@@ -17,12 +21,15 @@ ID nor a signed token from a different GitHub job is authorization. A timeout
 or `dispatch_unknown` does not grant a second owner. No Cloudflare
 migrations, workflows, secrets or production configuration have been changed.
 
-Local signed-JWT/SQLite tests verify identity fences and single-owner Claim.
-**Still missing**: a real GitHub OIDC + Cloudflare D1 execution, callback
-receipt-before-signal, durable Workflow wake/reconciliation, a controlled
-registered executor job, production readiness and release approval. Until
-those are proven this is only an unconnected, fail-closed module; S3 is NOT
-usable in production. S2 continues via the **test** MCP Portal and production
+Local signed-JWT/SQLite tests verify identity fences, single-owner Claim,
+callback deduplication and lost-notification recovery. The repo's existing
+Worker continues to compile under Wrangler dry-run with no S3 ingress enabled.
+**Still missing**: a real GitHub-issued OIDC + Cloudflare D1 acceptance,
+actual S3 HTTP Claim/callback ingress, native Workflow wake / readback and
+bounded reconciliation, a controlled executor job, approved dispatch authority,
+cancel/retry lifecycle, version compatibility, and production release approval.
+No actual S3 heavy job has run. Until those gates pass, this is an
+unconnected fail-closed module; S3 is NOT usable in production. S2 continues via the **test** MCP Portal and production
 Portal authentication may remain deferred until final release.
 
 ---
