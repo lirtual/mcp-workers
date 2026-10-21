@@ -73,7 +73,7 @@ Formal Agent/Human ownership, handoff/resume, idle/duration timers, human activi
 
 ### Further Notes — design tree convergence
 
-**Resolved product frontier (2026-10-22):** one reusable headed Windows Chrome/Edge browser session, 13 candidate bounded core tools, optional capabilities only upon demonstrated need, no forced session lifetime or manual takeover state. Historical H1–H24 and Q1–Q52 remain below for traceability only; they must not override this section. Important admitted trade-off: user and Agent can physically interact concurrently; exact mutual exclusion and privacy during manual control are **not guaranteed**. Further user decisions are required only if testing reveals a genuinely different trade-off, not for ordinary schema/locator implementation details.
+**Resolved product frontier (2026-10-22):** one reusable headed Windows Chrome/Edge browser session, 13 candidate bounded core tools, optional capabilities only upon demonstrated need, no forced session lifetime or manual takeover state. Historical H1–H24 decisions remain in the architecture review and design notes, and earlier broad Q1–Q52 choices remain in the archived section below; none overrides this section. Important admitted trade-off: user and Agent can physically interact concurrently; exact mutual exclusion and privacy during manual control are **not guaranteed**. Further user decisions are required only if testing reveals a genuinely different trade-off, not for ordinary schema/locator implementation details.
 
 ---
 
