@@ -52,6 +52,11 @@ on:
         required: false
         type: boolean
         default: false
+      s3_auth_compare:
+        description: Test GitHub Runner vs disposable Worker token/GET/invalid-branch authorization (no real Job)
+        required: false
+        type: boolean
+        default: false
       s3_product_e2e:
         description: Isolated Workflow MCP Plan with test Portal read and independent S3 Job (no production)
         required: false
@@ -104,6 +109,7 @@ jobs:
             github.ref == 'refs/heads/wip/workflow-s3-github-executor' &&
             (inputs.s3_oidc_probe == true ||
              inputs.s3_full_dispatch == true ||
+             inputs.s3_auth_compare == true ||
              inputs.s3_product_e2e == true ||
              inputs.s3_cleanup_name != '' ||
              inputs.s3_executor_worker == true)) }}
@@ -837,3 +843,43 @@ jobs:
           node-version: 24
       - name: Delete and verify one exact disposable S3 fixture
         run: node apps/workflow-mcp-worker/tests/s3-disposable-cleanup.mjs "$S3_CLEANUP_NAME"
+
+  workflow-s3-github-auth-comparison:
+    name: S3 GitHub authorization isolation probe (no executable dispatch)
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/wip/workflow-s3-github-executor' &&
+          inputs.worker == 'workflow-mcp-worker' &&
+          inputs.s3_auth_compare == true &&
+          inputs.s3_product_e2e != true &&
+          inputs.s3_full_dispatch != true &&
+          inputs.s3_oidc_probe != true &&
+          inputs.s3_executor_worker != true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    environment:
+      name: workflow-mcp-worker
+    concurrency:
+      group: workflow-s3-auth-isolation
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: write
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Compare GitHub Runner vs temporary Worker token identity and denied nonexistent branch
+        run: node apps/workflow-mcp-worker/tests/s3-github-auth-comparison.mjs
