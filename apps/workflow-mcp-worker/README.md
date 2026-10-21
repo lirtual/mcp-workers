@@ -21,8 +21,9 @@ without provisioning and reviewing the actual D1 database, binding and Portal se
 ## Setup for local smoke tests only
 
 Use Node 24, `corepack pnpm install`, then
-`corepack pnpm --filter workflow-mcp-worker run check` and
-`corepack pnpm --filter workflow-mcp-worker run deploy:dry-run`.
+`corepack pnpm --filter workflow-mcp-worker run check`.
+`check` runs typecheck, unit/contract tests and the existing `deploy:dry-run`
+once; no production credentials are required. Do not repeat the dry-run afterward.
 
 The Wrangler configuration deliberately contains an invalid placeholder D1 ID,
 `workers_dev: false` and no production credentials. Never deploy that configuration as-is.
@@ -39,6 +40,28 @@ For local tests:
 Only two fixed app bindings are necessary: `DB` and `WORKFLOW`, plus
 `READONLY_TARGET` for the isolated test seam. Actual deployment and live edge
 validation need separate authorization.
+
+## Result and status bounds
+
+Step outputs and the final Run result are limited to **48 KiB of serialized UTF-8
+JSON**. The complete MCP response remains capped at 64 KiB; the reserved 16 KiB
+covers Run metadata and all 32 Step summaries (Step IDs are at most 64 ASCII
+characters). An oversized Step output fails execution rather than creating a
+successful Run whose result cannot be retrieved. An explicit `result.emit` of
+`null` is retained as the result.
+
+`workflow_status` and the metadata in `workflow_result` keep their existing field
+shapes. `steps` now includes every Step from the Run's pinned Published Plan,
+sorted by Step ID, with `step_id`, `status`, and nullable `error_code`. Completed
+`succeeded`/`failed`/`skipped` projections are retained. A callback records
+`running` in the existing `run_steps` table before execution; an unstarted Step
+is shown as `waiting` (including dependency waits). On a terminal Run or native
+`complete` (even while the business outcome settles), any Step without a confirmed
+terminal projection is shown as `indeterminate`, never as still waiting or running.
+Replaying execution does not reset terminal Step
+projections. A nonterminal Run observed in native `waiting` also reports
+Run `status: "waiting"`; D1 terminal outcomes remain authoritative. These are
+additional status values and fuller Step coverage, with no new response fields.
 
 ## Evidence and remaining work
 

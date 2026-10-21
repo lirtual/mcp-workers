@@ -26,7 +26,9 @@ export class StateError extends Error {
   constructor(code: string) { super(code); this.code=code; this.name='StateError'; }
 }
 const now=()=>Date.now();
-const MAX_RESULT=64*1024;
+// 32 Steps with <=64-byte IDs plus Run IDs/status/error metadata fit well
+// within the remaining 16 KiB of the 64 KiB MCP response budget.
+const MAX_RESULT=48*1024;
 // A reserved start older than this window is no longer safe to retry.
 // Preserve its identity and report uncertainty instead of holding quota forever.
 const START_RECONCILE_WINDOW_MS=10*60*1000;
@@ -42,9 +44,10 @@ async function digest(s:string):Promise<string>{
   return [...new Uint8Array(result)].map(x=>x.toString(16).padStart(2,'0')).join('');
 }
 export function cleanError(e:unknown):string {return e instanceof StateError||e instanceof PlanError?e instanceof StateError?e.code:e.code:'internal_error';}
-export function limitResult<T>(value:T):T {if(new TextEncoder().encode(JSON.stringify(value)).byteLength>MAX_RESULT)throw new StateError('result_too_large');return value;}
+export function limitResult<T>(value:T,maxBytes=MAX_RESULT):T {if(new TextEncoder().encode(JSON.stringify(value)).byteLength>maxBytes)throw new StateError('result_too_large');return value;}
 export function applyStatus(native:string, outcome:string):string {
   if(['succeeded','failed','indeterminate','cancelled'].includes(outcome))return outcome;
+  if(native==='waiting')return 'waiting';
   // Native failure alone is not a durable business failure. Reconcile D1 first.
   // Workflows may report platform completion before D1's business outcome is
   // visible to this request. Do not prematurely freeze a still-settling Run.
@@ -235,12 +238,21 @@ export class WorkflowService {
         row=await this.settleNativeOutcome(row,native);
       }
     }
-    const steps=(await this.db.prepare('SELECT step_id,status,error_code FROM run_steps WHERE run_id=? ORDER BY step_id').bind(run_id).all<{step_id:string;status:string;error_code:string|null}>()).results;
+    const stored=(await this.db.prepare('SELECT step_id,status,error_code FROM run_steps WHERE run_id=? ORDER BY step_id').bind(run_id).all<{step_id:string;status:string;error_code:string|null}>()).results;
+    const version=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=?').bind(row.version_id).first<{plan:string}>();
+    if(!version)throw new StateError('version_missing');
+    const terminal=['succeeded','failed','indeterminate','cancelled'].includes(row.outcome)||native==='complete';
+    const byId=new Map(stored.map(s=>[s.step_id,s]));
+    const steps=(JSON.parse(version.plan) as Plan).steps.map(s=>{
+      const saved=byId.get(s.id);
+      if(saved && ['succeeded','failed','skipped'].includes(saved.status))return saved;
+      return {step_id:s.id,status:terminal?'indeterminate':saved?.status??'waiting',error_code:saved?.error_code??null};
+    }).sort((a,b)=>a.step_id<b.step_id?-1:a.step_id>b.step_id?1:0);
     return {run_id,workflow_id:row.workflow_id,published_version_id:row.version_id,start_state:row.start_state,status:['succeeded','failed','indeterminate','cancelled'].includes(row.outcome)?row.outcome:row.start_state!=='started'?'start_unknown':applyStatus(native,row.outcome),steps};
   }
   async result(run_id:string){
     const meta=await this.status(run_id);
     const row=await this.db.prepare('SELECT result,error_code FROM runs WHERE id=?').bind(run_id).first<{result:string|null;error_code:string|null}>();
-    return limitResult({...meta,result:row?.result?JSON.parse(row.result):null,error_code:row?.error_code??null});
+    return limitResult({...meta,result:row?.result?JSON.parse(row.result):null,error_code:row?.error_code??null},64*1024);
   }
 }

@@ -39,6 +39,7 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
     }
     const pending=new Map(plan.steps.map(s=>[s.id,s]));
     let emitted:unknown=null;
+    let hasEmitted=false;
     let failed=false;
     try{
       while(pending.size){
@@ -47,6 +48,10 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
         const outcomes=await Promise.all(ready.map(async (s:Step):Promise<Outcome>=>{
           const result=(await step.do('s1-'+s.id,{retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},async ():Promise<Outcome>=>{
             try{
+              // Only an executing callback marks a Step running. Cached replay
+              // must never replace a previously persisted terminal Step state.
+              await db.prepare("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES(?,?,'running',?) ON CONFLICT(run_id,step_id) DO NOTHING")
+                .bind(id,s.id,now()).run();
               if(s.needs.some(n=>ctx.steps[n].status!=='succeeded'))return {status:'skipped'};
               if(s.if!==undefined&&!evaluateCondition(s.if,ctx))return {status:'skipped'};
               if(s.uses==='s1.readonly_mcp'){
@@ -56,14 +61,14 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
               return {status:'succeeded',output:limitResult(evaluateArguments(s.with.data,ctx))};
             }catch{return {status:'failed',error_code:'step_execution_failed'};}
           })) as Outcome;
-          await db.prepare('INSERT INTO run_steps(run_id,step_id,status,output,error_code,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(run_id,step_id) DO UPDATE SET status=excluded.status,output=excluded.output,error_code=excluded.error_code,updated_at=excluded.updated_at')
+          await db.prepare("INSERT INTO run_steps(run_id,step_id,status,output,error_code,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(run_id,step_id) DO UPDATE SET status=excluded.status,output=excluded.output,error_code=excluded.error_code,updated_at=excluded.updated_at WHERE run_steps.status IN ('waiting','running')")
           .bind(id,s.id,result.status,result.output===undefined?null:JSON.stringify(result.output),result.error_code??null,now()).run();
           return result;
         }));
         ready.forEach((s,i)=>{ctx.steps[s.id]=outcomes[i];pending.delete(s.id);if(outcomes[i].status==='failed')failed=true;
-          if(s.uses==='result.emit'&&outcomes[i].status==='succeeded')emitted=outcomes[i].output;});
+          if(s.uses==='result.emit'&&outcomes[i].status==='succeeded'){emitted=outcomes[i].output;hasEmitted=true;}});
       }
-      const output=limitResult(emitted??ctx.steps[plan.steps.at(-1)!.id]?.output??null);
+      const output=limitResult(hasEmitted?emitted:ctx.steps[plan.steps.at(-1)!.id]?.output??null);
       await db.prepare("UPDATE runs SET outcome=?,result=?,updated_at=? WHERE id=? AND outcome='running'").bind(failed?'failed':'succeeded',JSON.stringify(output),now(),id).run();
     }catch{
       await db.prepare("UPDATE runs SET outcome='indeterminate',error_code='execution_interrupted',updated_at=? WHERE id=? AND outcome='running'").bind(now(),id).run();
