@@ -264,7 +264,10 @@ test('S2 approved read-only MCP tool invokes actual SDK only through scoped publ
   }) as typeof fetch;
   try{await run(admitted.run_id);}finally{globalThis.fetch=originalFetch;}
   const result=await service.result(admitted.run_id);
-  assert.equal(result.status,'failed'); // target rejected extra arg: no write/false success
+  // A remote rejection after tools/call still does not prove no side effect.
+  assert.equal(result.status,'indeterminate');
+  assert.equal(result.steps[0].status,'indeterminate');
+  assert.equal(result.error_code,'external_outcome_unknown');
   assert.ok(networkCalls>0);
   assert.equal(privateCalls,0);
   assert.equal(secretSeen,false);
@@ -439,4 +442,38 @@ test('S2 remote outputSchema change prevents tools/call before dispatch',async t
   assert.equal(result.status,'failed');
   assert.equal(result.steps[0].status,'failed');
   assert.equal(toolCalls,0);
+});
+
+test('S2 lost tools/call response is indeterminate, never a confirmed failure or blind retry',async t=>{
+  const {env,admit,run,service}=setup(t);
+  const grant:ReadonlyOperation={endpoint:'https://public.example.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
+  env.S2_READONLY_ENABLED='true';
+  const admitted=await admit([{id:'read',uses:'mcp.call',with:{
+    endpoint:grant.endpoint,tool:grant.tool,scope:grant.scope,
+    input_schema:PINNED_SCHEMA,arguments:{value:'ack may be lost'},
+  }}],{},[grant]);
+  const originalFetch=globalThis.fetch;
+  let toolCalls=0,received=0;
+  globalThis.fetch=(async(input:RequestInfo|URL,init?:RequestInit)=>{
+    const request=new Request(input,init);
+    if(request.method==='POST'){
+      const rpc=await request.clone().json() as {method:string};
+      if(rpc.method==='tools/call'){
+        toolCalls++;
+        const response=await readonlyWorker.fetch(request);
+        assert.equal(response.ok,true);
+        received++;
+        throw Error('simulated_ack_loss_after_remote_execution');
+      }
+    }
+    return readonlyWorker.fetch(request);
+  }) as typeof fetch;
+  try{await run(admitted.run_id);}finally{globalThis.fetch=originalFetch;}
+  const result=await service.result(admitted.run_id);
+  assert.equal(toolCalls,1);
+  assert.equal(received,1);
+  assert.equal(result.status,'indeterminate');
+  assert.equal(result.steps[0].status,'indeterminate');
+  assert.equal(result.steps[0].error_code,'external_outcome_unknown');
+  assert.equal(result.error_code,'external_outcome_unknown');
 });

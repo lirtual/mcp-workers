@@ -261,7 +261,7 @@ export class WorkflowService {
     const byId=new Map(stored.map(s=>[s.step_id,s]));
     const steps=(JSON.parse(version.plan) as Plan).steps.map(s=>{
       const saved=byId.get(s.id);
-      if(saved && ['succeeded','failed','skipped'].includes(saved.status))return saved;
+      if(saved && ['succeeded','failed','skipped','indeterminate'].includes(saved.status))return saved;
       return {step_id:s.id,status:terminal?'indeterminate':saved?.status??'waiting',error_code:saved?.error_code??null};
     }).sort((a,b)=>a.step_id<b.step_id?-1:a.step_id>b.step_id?1:0);
     return {run_id,workflow_id:row.workflow_id,published_version_id:row.version_id,start_state:row.start_state,status:['succeeded','failed','indeterminate','cancelled'].includes(row.outcome)?row.outcome:row.start_state!=='started'?'start_unknown':applyStatus(native,row.outcome),steps};

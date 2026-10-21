@@ -6,7 +6,7 @@ import type { Env } from './store.ts';
 import { limitResult } from './store.ts';
 import { scopedPublicMcpFetch } from './s2-public-fetch.ts';
 
-type Outcome={status:'succeeded'|'failed'|'skipped';output?:any;error_code?:string};
+type Outcome={status:'succeeded'|'failed'|'skipped'|'indeterminate';output?:any;error_code?:string};
 const now=()=>Date.now();
 async function callFixture(env:Env,args:Record<string,unknown>):Promise<unknown>{
   const client=new Client({name:'workflow-s1-worker',version:'0.1.0'});
@@ -49,14 +49,19 @@ async function callApprovedReadonly(env:Env,plan:Plan,step:Step,args:Record<stri
        candidate.annotations?.destructiveHint===true)throw Error('readonly_tool_unconfirmed');
     if(await toolSchemaDigest(candidate.inputSchema,candidate.outputSchema)!==schema_digest)
       throw Error('tool_schema_drift');
-    const output=await client.callTool({name:tool,arguments:args});
-    if(output.isError)throw Error('remote_tool_failed');
-    return limitResult(output);
+    // Once tools/call is attempted, a thrown error, remote error, or unreadable
+    // result does not prove the external tool had no side effects.
+    try{
+      const output=await client.callTool({name:tool,arguments:args});
+      if(output.isError)throw Error('remote_tool_failed');
+      return limitResult(output);
+    }catch{throw Error('external_outcome_unknown');}
   }finally{
     // close() does not automatically send DELETE. Termination is best effort;
     // an unknown reply must never be interpreted as an undone external effect.
     await transport.terminateSession().catch(()=>{});
-    await client.close();
+    // A failed teardown must not overwrite an already observed tool outcome.
+    await client.close().catch(()=>{});
   }
 }
 
@@ -81,6 +86,7 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
     let emitted:unknown=null;
     let hasEmitted=false;
     let failed=false;
+    let uncertain=false;
     try{
       while(pending.size){
         const ready=[...pending.values()].filter(s=>s.needs.every(n=>ctx.steps[n])).slice(0,8);
@@ -106,7 +112,13 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
               if(s.uses==='mcp.call'){
                 const a=evaluateArguments(s.with.arguments,ctx);
                 if(!a||typeof a!=='object'||Array.isArray(a))throw Error('invalid_arguments');
-                return {status:'succeeded',output:await callApprovedReadonly(this.env,plan,s,a as Record<string,unknown>)};
+                try{
+                  return {status:'succeeded',output:await callApprovedReadonly(this.env,plan,s,a as Record<string,unknown>)};
+                }catch(error){
+                  if(error instanceof Error&&error.message==='external_outcome_unknown')
+                    return {status:'indeterminate',error_code:'external_outcome_unknown'};
+                  throw error;
+                }
               }
               throw Error('unsupported_capability');
             }catch{return {status:'failed',error_code:'step_execution_failed'};}
@@ -116,10 +128,12 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
           return result;
         }));
         ready.forEach((s,i)=>{ctx.steps[s.id]=outcomes[i];pending.delete(s.id);if(outcomes[i].status==='failed')failed=true;
+          if(outcomes[i].status==='indeterminate')uncertain=true;
           if(s.uses==='result.emit'&&outcomes[i].status==='succeeded'){emitted=outcomes[i].output;hasEmitted=true;}});
       }
       const output=limitResult(hasEmitted?emitted:ctx.steps[plan.steps.at(-1)!.id]?.output??null);
-      await db.prepare("UPDATE runs SET outcome=?,result=?,updated_at=? WHERE id=? AND outcome='running'").bind(failed?'failed':'succeeded',JSON.stringify(output),now(),id).run();
+      await db.prepare("UPDATE runs SET outcome=?,result=?,error_code=?,updated_at=? WHERE id=? AND outcome='running'")
+        .bind(uncertain?'indeterminate':failed?'failed':'succeeded',JSON.stringify(output),uncertain?'external_outcome_unknown':null,now(),id).run();
     }catch{
       await db.prepare("UPDATE runs SET outcome='indeterminate',error_code='execution_interrupted',updated_at=? WHERE id=? AND outcome='running'").bind(now(),id).run();
       throw Error('execution_interrupted');
