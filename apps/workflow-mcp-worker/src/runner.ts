@@ -8,6 +8,11 @@ import { scopedPublicMcpFetch } from './s2-public-fetch.ts';
 
 type Outcome={status:'succeeded'|'failed'|'skipped'|'indeterminate';output?:any;error_code?:string};
 const now=()=>Date.now();
+// A missing Run-input reference must not silently disappear during JSON
+// serialization, changing the meaning of an approved external MCP call.
+const hasUnresolvedArgument=(value:unknown):boolean=>
+  value===undefined||(Array.isArray(value)?value.some(hasUnresolvedArgument):
+    value!==null&&typeof value==='object'&&Object.values(value).some(hasUnresolvedArgument));
 async function callFixture(env:Env,args:Record<string,unknown>):Promise<unknown>{
   const client=new Client({name:'workflow-s1-worker',version:'0.1.0'});
   const transport=new StreamableHTTPClientTransport(new URL('https://s1-fixture.invalid/mcp'),{
@@ -114,7 +119,8 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
                 return {status:'succeeded',output:limitResult(evaluateArguments(s.with.data,ctx))};
               if(s.uses==='mcp.call'){
                 const a=evaluateArguments(s.with.arguments,ctx);
-                if(!a||typeof a!=='object'||Array.isArray(a))throw Error('invalid_arguments');
+                if(!a||typeof a!=='object'||Array.isArray(a)||hasUnresolvedArgument(a))
+                  throw Error('invalid_arguments');
                 try{
                   return {status:'succeeded',output:await callApprovedReadonly(this.env,plan,s,a as Record<string,unknown>)};
                 }catch(error){

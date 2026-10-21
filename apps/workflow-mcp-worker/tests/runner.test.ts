@@ -502,3 +502,24 @@ test('S2 older Published Plan without trusted-target risk acknowledgment is bloc
   assert.equal(result.steps[0].status,'failed');
   assert.equal(network,0);
 });
+
+test('S2 unresolved Run-input reference is rejected before any trusted-target request',async t=>{
+  const {env,admit,run,service}=setup(t);
+  const grant:ReadonlyOperation={endpoint:'https://public.example.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
+  env.S2_READONLY_ENABLED='true';
+  const admitted=await admit([{id:'read',uses:'mcp.call',with:{
+    endpoint:grant.endpoint,tool:grant.tool,scope:'read',input_schema:PINNED_SCHEMA,
+    // delay_ms is optional in the declared MCP schema. Silently dropping this
+    // missing reference could turn the owner's intended call into a different
+    // legitimate target operation, so block it before initialize/tools/list.
+    arguments:{value:'safe',delay_ms:{ref:'inputs.delay_ms'}},
+  }}],{},[grant]);
+  let networkRequests=0;
+  const previousFetch=globalThis.fetch;
+  globalThis.fetch=(async()=>{networkRequests++;throw Error('unexpected_s2_network');}) as typeof fetch;
+  try{await run(admitted.run_id);}finally{globalThis.fetch=previousFetch;}
+  const outcome=await service.result(admitted.run_id);
+  assert.equal(outcome.status,'failed');
+  assert.equal(outcome.steps[0].status,'failed');
+  assert.equal(networkRequests,0);
+});
