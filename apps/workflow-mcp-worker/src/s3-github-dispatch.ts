@@ -21,7 +21,8 @@ export type LogicalAttempt={
 };
 export type DispatchOutcome=
   | {status:'confirmed';runId:number;runAttempt:1}
-  | {status:'rejected';httpStatus:400|401|403|404|422}
+  | {status:'rejected';httpStatus:400|401|403|404|422;
+      reason:'integration_scope'|'rate_limit'|'workflow_trigger'|'policy'|'unknown'}
   | {status:'dispatch_unknown'};
 export type ConfirmedCandidate={
   repository:string;
@@ -99,8 +100,22 @@ export async function dispatchGithubAttempt(
   catch {return {status:'dispatch_unknown'};}
   // Documented 4xx rejection establishes no accepted dispatch. A timeout,
   // redirect, unexpected status, or malformed 200 can conceal acceptance.
-  if([400,401,403,404,422].includes(response.status))
-    return {status:'rejected',httpStatus:response.status as 400|401|403|404|422};
+  if([400,401,403,404,422].includes(response.status)){
+    // Normalize recognized GitHub diagnostics, never return/log an untrusted
+    // response body, arbitrary remote text, or authorization credentials.
+    const body=await response.json().catch(()=>null) as {message?:unknown}|null;
+    const message=typeof body?.message==='string'
+      ?body.message.slice(0,250).toLowerCase():'';
+    const reason=message.includes('resource not accessible by integration')
+      ?'integration_scope'
+      :message.includes('rate limit')||message.includes('rate-limited')
+        ?'rate_limit'
+      :message.includes('workflow_dispatch trigger')?'workflow_trigger'
+      :message.includes('administrative rules')||message.includes('policy')
+        ?'policy':'unknown';
+    return {status:'rejected',
+      httpStatus:response.status as 400|401|403|404|422,reason};
+  }
   if(response.status!==200)return {status:'dispatch_unknown'};
   try{
     const result=await response.json() as {workflow_run_id?:unknown};

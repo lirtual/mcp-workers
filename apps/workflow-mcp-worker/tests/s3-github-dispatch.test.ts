@@ -49,7 +49,7 @@ test('known GitHub rejection is not a dispatched Run',async()=>{
     count++;
     return new Response(null,{status:403});
   });
-  assert.deepEqual(result,{status:'rejected',httpStatus:403});
+  assert.deepEqual(result,{status:'rejected',httpStatus:403,reason:'unknown'});
   assert.equal(count,1);
 });
 

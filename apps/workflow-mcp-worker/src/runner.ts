@@ -139,9 +139,10 @@ async function runGithubStep(
     const persisted=await recordGithubDispatchResult(db,attemptId,result);
     if(!persisted)throw Error('dispatch_ack_not_persisted');
     return {attemptId,...result};
-  })) as {attemptId:string;status:string;httpStatus?:number};
+  })) as {attemptId:string;status:string;httpStatus?:number;reason?:string};
   if(dispatch.status==='rejected')return {
-    status:'failed',error_code:'s3_dispatch_rejected_'+String(dispatch.httpStatus??'unknown'),
+    status:'failed',error_code:'s3_dispatch_rejected_'+
+      String(dispatch.httpStatus??'unknown')+'_'+String(dispatch.reason??'unknown'),
   };
   if(dispatch.status!=='confirmed')
     return {status:'indeterminate',error_code:'s3_dispatch_unknown'};
