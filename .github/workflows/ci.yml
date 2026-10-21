@@ -40,6 +40,12 @@ env:
 jobs:
   checks:
     name: Application checks
+    # The S2 test-only dispatch is not a production Worker selection.
+    # Normal push/PR and main release checks are unchanged.
+    if: >-
+      ${{ !(github.event_name == 'workflow_dispatch' &&
+            github.ref == 'refs/heads/wip/workflow-s2-public-readonly' &&
+            inputs.s2_portal_probe == true) }}
     concurrency:
       group: ci-checks-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.event.pull_request.number || github.ref }}
       cancel-in-progress: true
@@ -528,14 +534,12 @@ jobs:
 
   workflow-s2-portal-probe:
     name: Authenticated S2 test Portal read-only check (no deploy)
-    needs: [checks]
     if: >-
       ${{ github.event_name == 'workflow_dispatch' &&
           github.ref == 'refs/heads/wip/workflow-s2-public-readonly' &&
           inputs.worker == 'workflow-mcp-worker' &&
           inputs.s2_portal_probe == true &&
-          inputs.smoke_only != true &&
-          needs.checks.result == 'success' }}
+          inputs.smoke_only != true }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     environment:
