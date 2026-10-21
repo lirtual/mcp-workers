@@ -174,6 +174,29 @@ live("Spec 123 disposable real API acceptance", () => {
       const nonFavorites = await call("bookmark_search", {
         collection: a, important: false, page: 0, perPage: 10, skipCache: true,
       });
+      if (favorites.count !== 1) {
+        // Diagnose only this UUID-scoped private test collection. These are
+        // extra READS on failure, never retries of any write or global search.
+        // Do not log bookmark contents, raw API responses, or credentials.
+        const diagnostic: Record<string, unknown> = { filteredCount: favorites.count };
+        try {
+          const unfiltered = await call("bookmark_search", {
+            collection: a, page: 0, perPage: 10, skipCache: true,
+          });
+          diagnostic.unfilteredCount = unfiltered.count;
+          diagnostic.favoritedIdVisibleUnfiltered =
+            (unfiltered.items as { id: number }[]).some(item => item.id === x);
+        } catch {
+          diagnostic.unfilteredRead = "unavailable";
+        }
+        try {
+          const stats = await service.raindropService.getBookmarkFilters(a);
+          diagnostic.officialFavoriteCount = stats.important ?? "unavailable";
+        } catch {
+          diagnostic.officialFavoriteCount = "unavailable";
+        }
+        console.log("LIVE_FAVORITE_DIAGNOSTIC=" + JSON.stringify(diagnostic));
+      }
       expect(favorites.count).toBe(1);
       expect((favorites.items as { id: number }[]).map(item => item.id)).toEqual([x]);
       expect(nonFavorites.count).toBe(2);

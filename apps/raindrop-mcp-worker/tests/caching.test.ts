@@ -56,7 +56,7 @@ describe("RaindropService Caching Logic", () => {
 
   it("getBookmarks should use cache and only call API once for same query", async () => {
     const mockGet = (service as any).client.GET;
-    mockGet.mockResolvedValue({ data: { items: [], count: 0 } });
+    mockGet.mockResolvedValue({ data: { result: true, items: [], count: 0 } });
 
     const params = { search: "test", collection: 123 };
 
@@ -94,7 +94,7 @@ describe("RaindropService Caching Logic", () => {
     const mockPut = (service as any).client.PUT;
 
     mockGet.mockResolvedValue({
-      data: { item: { _id: 123, title: "Initial" }, items: [], count: 0 },
+      data: { result: true, item: { _id: 123, title: "Initial" }, items: [], count: 0 },
     });
     mockPut.mockResolvedValue({
       data: { result: true, item: { _id: 123, title: "Updated" } },
@@ -117,7 +117,7 @@ describe("RaindropService Caching Logic", () => {
 
   it("should bypass cache when skipCache is true", async () => {
     const mockGet = (service as any).client.GET;
-    mockGet.mockResolvedValue({ data: { items: [], count: 0 } });
+    mockGet.mockResolvedValue({ data: { result: true, items: [], count: 0 } });
 
     // First call - populates cache
     await service.getCollections();

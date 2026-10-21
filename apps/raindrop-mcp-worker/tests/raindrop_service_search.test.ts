@@ -4,7 +4,7 @@ import RaindropService from "../src/services/raindrop.service.js";
 // Mock openapi-fetch
 vi.mock("openapi-fetch", () => ({
   default: vi.fn(() => ({
-    GET: vi.fn().mockResolvedValue({ data: { items: [], count: 0 } }),
+    GET: vi.fn().mockResolvedValue({ data: { result: true, items: [], count: 0 } }),
     POST: vi.fn().mockResolvedValue({ data: { result: false, ids: [] } }),
     PUT: vi.fn(),
     DELETE: vi.fn(),
@@ -94,6 +94,31 @@ describe("RaindropService search semantics and pagination", () => {
     expect(get).toHaveBeenCalledWith("/raindrops/{id}", {
       params: { path: { id: -1 }, query: { page: 0, perpage: 50 } },
     });
+  });
+
+  it("uses the official Favorites search operator and collection path", async () => {
+    const service = new RaindropService("fake-token");
+    const get = (service as any).client.GET;
+    await service.getBookmarks({ important: true, collection: 97, page: 0, perPage: 10 }, true);
+    expect(get).toHaveBeenCalledWith("/raindrops/{id}", {
+      params: { path: { id: 97 }, query: { search: "❤️", page: 0, perpage: 10 } },
+    });
+  });
+
+  it.each([
+    ["HTTP error response", { error: { message: "upstream error" } }],
+    ["missing response", { data: undefined }],
+    ["upstream result false", { data: { result: false, items: [], count: 0 } }],
+    ["missing count", { data: { result: true, items: [] } }],
+    ["wrong count type", { data: { result: true, items: [], count: "0" } }],
+    ["missing items", { data: { result: true, count: 0 } }],
+    ["negative count", { data: { result: true, items: [], count: -1 } }],
+  ])("rejects %s rather than returning zero Favorites", async (_label, response) => {
+    const service = new RaindropService({ accessToken: "fake-token", maxReadRetries: 0 });
+    const get = (service as any).client.GET;
+    get.mockResolvedValueOnce(response);
+    await expect(service.getBookmarks({ important: true }, true))
+      .rejects.toThrow("bookmark search response could not be verified");
   });
 
   it("never turns important:false into favorites-only results", async () => {

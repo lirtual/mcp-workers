@@ -959,11 +959,15 @@ export default class RaindropService {
         ? { params: { path: { id: params.collection }, query } }
         : { params: { query } };
 
-      const { data } = await (this.client as any).GET(endpoint, options);
-      return {
-        items: (data?.items as Bookmark[]) || [],
-        count: data?.count || 0,
-      };
+      const { data, error } = await (this.client as any).GET(endpoint, options);
+      // A missing or malformed upstream response is NOT an empty result.
+      // In particular, do not silently turn an upstream search error into
+      // "0 favorites" during G0 acceptance or normal MCP searches.
+      if (error || data?.result !== true || !Array.isArray(data?.items) ||
+          !Number.isSafeInteger(data?.count) || data.count < 0) {
+        throw new UpstreamError("Raindrop bookmark search response could not be verified");
+      }
+      return { items: data.items as Bookmark[], count: data.count as number };
     });
 
     this.cacheSearch.set(cacheKey, result);
