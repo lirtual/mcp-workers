@@ -34,7 +34,7 @@ try {
     t.annotations?.readOnlyHint===true&&
     t.annotations?.destructiveHint!==true);
   if(!candidate) throw new Error('ima_readonly_tool_unavailable');
-  console.log('APPROVABLE_IME_TOOL',candidate.name);
+  console.log('APPROVABLE_IMA_TOOL',candidate.name);
   console.log('TOOL_SCHEMA_SHA256',await toolSchemaDigest(candidate.inputSchema,candidate.outputSchema));
   const output=await client.callTool({name:candidate.name,arguments:{limit:1}});
   if(output.isError) throw new Error('ima_readonly_tool_error');
