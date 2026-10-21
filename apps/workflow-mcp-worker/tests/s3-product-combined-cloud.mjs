@@ -49,7 +49,18 @@ async function run(){
  S3_GITHUB_REF:process.env.GITHUB_REF,
  S3_GITHUB_AUDIENCE:'workflow-s3-claim:test',S3_TEST_WORKER_NAME:name},d1_databases:[{binding:'DB',database_name:name,database_id:dbId,migrations_dir:'migrations'}],workflows:[{name,binding:'WORKFLOW',class_name:'WorkflowRunner'}],services:[{binding:'READONLY_TARGET',service:'workflow-s1-readonly-fixture'}]}));
   wr(['d1','migrations','apply',name,'--remote','--config',file]);
-  attempted=true;wr(['deploy','--config',file]);
+  attempted=true;
+  try{wr(['deploy','--config',file]);}
+  catch(error){
+    // Cloudflare occasionally exposes a newly uploaded disposable Worker
+    // before its workers.dev subdomain endpoint can see it (10007). Retry
+    // ONLY the same declarative upload, never a Workflow Run or GitHub Job.
+    const message=String(error);
+    if(!message.includes('/subdomain')||!message.includes('10007'))throw error;
+    console.log('S3_WORKER_SUBDOMAIN_PROPAGATION_RETRY',name);
+    await pause(8500);
+    wr(['deploy','--config',file]);
+  }
   for(const [key,val] of Object.entries({MCP_ACCESS_TOKEN:ownerToken,S2_PORTAL_CLIENT_ID:pair.clientId,S2_PORTAL_CLIENT_SECRET:pair.clientSecret,S3_GITHUB_TOKEN:need('GITHUB_TOKEN')}))wr(['secret','put',key,'--config',file],val);
   console.log('DISPOSABLE_WORKER_READY',name);
   let connected=false;for(let i=0;i<15;i++){
