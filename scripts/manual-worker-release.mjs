@@ -340,7 +340,15 @@ async function current(account, worker, token, options) {
 
 async function main() {
   const [mode, worker] = process.argv.slice(2);
-  invariant(["preflight", "readback", "version", "diagnostic"].includes(mode), "Unknown release validation mode");
+  invariant(["preflight", "readback", "version", "diagnostic", "readiness"].includes(mode), "Unknown release validation mode");
+  if (mode === "readiness") {
+    invariant(worker === "workflow-mcp-worker", "Readiness mode limited to Workflow MCP");
+    const path = join(process.cwd(), "apps", worker, "wrangler.jsonc");
+    const conf = JSON.parse((await readFile(path, "utf8")).replace(/^\s*\/\/.*$/gm, ""));
+    verifyWorkflowReleaseConfig(conf);
+    console.log("Offline Workflow config valid; live resources not verified; production dispatch remains disabled");
+    return;
+  }
   if (mode === "diagnostic") {
     invariant(worker, "Wrangler log path missing");
     const log = await readFile(worker, "utf8");

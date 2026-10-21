@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig } from "./manual-worker-release.mjs";
@@ -362,4 +362,40 @@ test("Unprovisioned Workflow Worker cannot enter existing production dispatch", 
   assert.ok(!selector.includes("RELEASE_WORKERS = APPLICATIONS;"), "application tests are not release authorization");
   assert.match(selector, /name !== 'workflow-mcp-worker'/);
   assert.doesNotMatch(release.split("const WORKERS = new Set(")[1].split(");")[0], /workflow-mcp-worker/);
+});
+
+test("Workflow offline readiness CLI fails on placeholder resources and accepts only prepared config", () => {
+  const cli = new URL("./manual-worker-release.mjs", import.meta.url).pathname;
+  const root = mkdtempSync(join(tmpdir(), "workflow-release-readiness-"));
+  const folder = join(root, "apps", "workflow-mcp-worker");
+  const config = JSON.parse(readFileSync(new URL("../apps/workflow-mcp-worker/wrangler.jsonc", import.meta.url), "utf8"));
+  const run = () => spawnSync(process.execPath, [cli, "readiness", "workflow-mcp-worker"], {
+    cwd: root,
+    encoding: "utf8",
+    timeout: 5000,
+    env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: "", CLOUDFLARE_API_TOKEN: "",
+      RELEASE_STATE_FILE: "", GITHUB_SHA: "" },
+  });
+  try {
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, "wrangler.jsonc"), JSON.stringify(config));
+    const blocked = run();
+    assert.notEqual(blocked.status, 0, "a dry-run cannot certify placeholder resources");
+    assert.match(blocked.stderr, /Workflow release/);
+    assert.doesNotMatch(blocked.stdout + blocked.stderr, /Cloudflare read-only|deploy/i);
+    const ready = {
+      ...config,
+      keep_vars: false,
+      routes: [{ pattern: "workflow.example.org", custom_domain: true }],
+      d1_databases: [{ ...config.d1_databases[0],
+        database_id: "12345678-1234-4234-8234-123456789abc" }],
+    };
+    writeFileSync(join(folder, "wrangler.jsonc"), "// reviewed route and mock D1 ID\n" + JSON.stringify(ready));
+    const result = run();
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Offline Workflow config valid/);
+    assert.match(result.stdout, /live resources not verified/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
