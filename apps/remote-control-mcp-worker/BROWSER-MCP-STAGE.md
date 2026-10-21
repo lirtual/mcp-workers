@@ -1,5 +1,16 @@
 # Browser MCP tools — inactive first-stage contract
 
+## P9 owner-accepted Windows Goal A, not network isolation (2026-10-21)
+
+**Current authoritative scope (supersedes P4's strict-private-network activation condition only):** The owner has explicitly accepted the risk that pages and redirects executing within the personally paired native Windows Chrome can reach host loopback, LAN and internal destinations. **Do not present the existing first-hop / context filters as an SSRF sandbox or demand zero internal-server hits as Goal A release proof.** P5 observed `attempted=1`, `blocked=0`, `localHits=1` on redirect-to-local; it remains true and is classified **NOT ISOLATED / OWNER-ACCEPTED RISK**, not a PASS.
+
+**Keep the actual tool gate disabled:** `BROWSER_TOOLS_ACCEPTED = false`, five staged tool names only. No direct private initial URL, unsupported scheme, arbitrary JS/CDP/CLI or custom Profile input is added; preserve all existing argument checks, owner-device binding and Agent-local no-replay receipts. An arbitrary `browser_navigate` must not be assumed read-only: consequential/ambiguous website effects remain blocked without real one-use action/target-bound user approval at the execution boundary. ChatGPT tool confirmation, client Elicitation capability, Portal auth and operation IDs must not be misreported as verified proof.
+
+**Remaining acceptance:** (1) source-negative checks/disabled public MCP surface, (2) reuse P3/P5 disposable Windows Chrome Profile and signed DO/WSS *separate* evidence without conflating them with an end-to-end browser operation, (3) inspect actual client approval capability without enabling the production browser tools, (4) independently authorize one disposable full-path browser MCP test if and when confirmation and the test-only route can be enforced. No additional Worker, network proxy, firewall or confirmation service chosen. No merge, deployment, installation or production activation.
+
+See [P9 architecture decision](https://github.com/lirtual/mcp-workers/blob/docs/browser-automation-grilling-20261020/docs/remote-control/BROWSER-ARCHITECTURE-REVIEW-20261020.md#p9-acceptance-reconciliation--trusted-windows-goal-a-2026-10-21).
+
+---
 This Draft adds only the explicit, minimal `browser_start`, `browser_status`, `browser_navigate`, `browser_snapshot`, `browser_close` schemas and compatible **existing** device owner Durable Object / WSS read and operation paths. There is no additional Worker, table, proxy, job system, generic command dispatcher or browser runtime here.
 
 `BROWSER_TOOLS_ACCEPTED = false` is a source-level acceptance gate. All five browser tools are **excluded from public `tools/list` and fail public `tools/call`**, including for already paired devices, until a packaged Agent and platform-security acceptance explicitly justify enabling them. This is not a user-configurable additional deployment variable. The active Windows-first Agent implementation is staged in `lirtual/remote-control-agent` **Draft PR #20**. Earlier PRs #15/#19 are exploratory work, not the selected release path.
