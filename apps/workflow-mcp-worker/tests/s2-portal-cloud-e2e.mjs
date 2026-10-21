@@ -64,7 +64,7 @@ async function cleanup(){
   if(!safe())throw Error('Unsafe cleanup identity');
   const failed=[];
   if(attempted){
-    try{wr(['delete','--name',name,'--config',file,'--yes']);}catch{failed.push('worker');}
+    try{await api('DELETE','/accounts/'+account+'/workers/scripts/'+name+'?force=true');}catch{failed.push('worker');}
     try{wr(['workflows','delete',name,'--config',file]);}catch{failed.push('workflow');}
   }
   if(dbId){try{await api('DELETE','/accounts/'+account+'/d1/database/'+dbId);}catch{failed.push('d1');}}
