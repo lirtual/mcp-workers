@@ -28,6 +28,15 @@ test("rejects arbitrary JS, CLI/path/profile, missing IDs, unexpected keys, and 
     ["browser_navigate",{device_id,operation_id,session_id,url:"file:///etc/passwd"}],
     ["browser_navigate",{device_id,operation_id,session_id,url:"https://u:secret@example.com/"}],
     ["browser_navigate",{device_id,operation_id,session_id,url:"javascript:alert(1)"}],
+    ["browser_navigate",{device_id,operation_id,session_id,url:"http://127.0.0.1:8765/"}],
+    ["browser_navigate",{device_id,operation_id,session_id,url:"http://2130706433:8765/"}],
+    ["browser_navigate",{device_id,operation_id,session_id,url:"http://[::1]/"}],
+    ["browser_navigate",{device_id,operation_id,session_id,url:"http://localhost:1234/"}],
+    ["browser_navigate",{device_id,operation_id,session_id,url:"https://docs.internal/page"}],
+    ["browser_navigate",{device_id,operation_id,session_id,url:"https://printer.local/"}],
+    ["browser_navigate",{device_id,operation_id,session_id,url:"https://server/"}],
+    ["browser_navigate",{device_id,operation_id,session_id,url:"  https://example.com/"}],
+    ["browser_navigate",{device_id,operation_id,session_id,url:"https://example.com/\n"}],
     ["browser_navigate",{device_id,operation_id,session_id,url:"https://example.com/",script:"alert(1)"}],
   ] as const) assert.equal(parseBrowserCall(tool,args),null,tool);
   assert.equal(parseBrowserDoArguments("browser_start",{operation_id}),true);
@@ -57,4 +66,23 @@ test("staged browser tools are neither advertised nor dispatchable on the curren
   const call=await rpc("tools/call",{name:"browser_start",arguments:{device_id,operation_id}});
   assert.equal(call.result?.isError,true);
   assert.equal(doCalls,0);
+});
+
+
+test("first-hop URL rejection precedes any DO mutation admission; network-level isolation remains unproven",()=>{
+  const publicUrl=parseBrowserCall("browser_navigate",{
+    device_id,operation_id,session_id,url:"https://example.com/review?q=1",
+  });
+  assert.equal(publicUrl?.kind,"operation");
+  for(const value of [
+    "http://10.0.0.1/", "http://192.168.0.10/", "http://172.16.2.3/",
+    "http://127.0.0.1:18781/", "http://169.254.169.254/",
+    "http://[::ffff:127.0.0.1]/",
+  ]) {
+    assert.equal(parseBrowserCall("browser_navigate",{
+      device_id,operation_id,session_id,url:value,
+    }),null,value);
+  }
+  // Public-host redirects, hostile DNS resolution and HTML subresources
+  // are outside these argument-only checks; never advertise SSRF safety.
 });
