@@ -1,6 +1,8 @@
+> **实施追记 · 2026-10-21（优先于下文历史设计快照）**：本 ADR 所述 **41 → 25** 是当时已确认的设计；后续为适配 Raindrop Free 账号，进一步移除了 Pro 专属 `bookmark_remove_duplicates`，最终源码公开 **24 个原子业务工具**。该变更已随 [PR #148](https://github.com/lirtual/mcp-workers/pull/148) 合并到 `main`（`eb64cc0`），[Actions #39554129177](https://github.com/lirtual/mcp-workers/actions/runs/39554129177) 的生产发布作业成功。**ChatGPT Portal 线上 `tools/list` 与可丢弃数据写入冒烟仍待重授权后验证**；不能以源码/CI/部署成功代替线上验收。以下 25 工具及“尚未实施”的文字保留为原始设计决策历史，不再代表当前发布目标。
+
 # 收敛 Raindrop Agent 公开工具契约
 
-status: accepted (Q1–Q6; scoped design tree closed, implementation deferred)
+status: accepted (historical 41 → 25 design; final Free-plan release is 24, live acceptance pending)
 
 ## 背景与决定
 
