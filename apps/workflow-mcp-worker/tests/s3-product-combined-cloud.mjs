@@ -63,6 +63,22 @@ async function run(){
   }
   for(const [key,val] of Object.entries({MCP_ACCESS_TOKEN:ownerToken,S2_PORTAL_CLIENT_ID:pair.clientId,S2_PORTAL_CLIENT_SECRET:pair.clientSecret,S3_GITHUB_TOKEN:need('GITHUB_TOKEN')}))wr(['secret','put',key,'--config',file],val);
   console.log('DISPOSABLE_WORKER_READY',name);
+  // Each 'wrangler secret put' can publish another Worker version.
+  // Require consecutive read-only health checks after all secret writes
+  // before ANY state-mutating MCP request. Never retry a create/publish.
+  let stable=0;
+  for(let i=0;i<25&&stable<3;i++){
+    try{
+      const response=await fetch('https://'+name+'.aiyaya.workers.dev/health',{
+        method:'GET',signal:AbortSignal.timeout(5500),
+      });
+      if(response.status===200&&((await response.json())?.ok===true))stable++;
+      else stable=0;
+    }catch{stable=0;}
+    if(stable<3)await pause(2200);
+  }
+  assert.equal(stable,3,'disposable_worker_route_unstable_after_secrets');
+  console.log('S3_PRODUCT_STABLE_WORKER_HEALTH_OK',name);
   let connected=false;for(let i=0;i<15;i++){
     const instance=mcp(endpoint,{requestInit:{headers:{authorization:'Bearer '+ownerToken}}});
     try{await instance.client.connect(instance.transport);owner=instance.client;connected=true;break;}catch{await instance.client.close().catch(()=>{});await pause(2000);}
