@@ -1,5 +1,49 @@
 # Browser MCP tools — inactive first-stage contract
 
+## P13 latest acceptance ledger — code and runtime (2026-10-21)
+
+**Source gate:** Worker Draft PR #143 at `251587f` still has
+`BROWSER_TOOLS_ACCEPTED = false`; no production browser tools are listed
+or callable. Agent Draft PR #20 at `9acc214` remains unmerged and unpublished.
+Source/CI reviews are complete, not a production activation authorization.
+
+**Passed independently:** A SHA-pinned portable native Windows Agent
+started real Chrome, navigated the harmless public TodoMVC page, returned
+semantic Snapshot, closed its isolated Profile, and recorded actual
+`completed` SQLite start/navigation/close receipts with duplicate-ID
+deduplication. Separately, an explicitly owner-approved 24-hour disposable
+Ed25519 device connected over real signed WSS; an MCP read-only `stat_file`
+reached that Windows Agent via the running production Owner DO. The
+disposable identity was then revoked and removed; no installed Agent or
+scheduled task was modified.
+
+**Local-only test feasibility passed, browser positive path not passed:**
+Existing `wrangler.v2-preview.jsonc` supported a separate loopback-only
+Wrangler and local SQLite DO, with its own bearer token. A disposable source
+copy listed the five browser tools and enforced a fixed TodoMVC navigation
+target, bad-token rejection, and missing-device rejection. This was not a
+production deploy or a signed browser operation. The most recent attempt to
+recreate the local owner-authentication test was blocked by tool safety review;
+the stopped loopback service, disposable key/token and local DO/worktree
+were cleaned. Do not retry by a different credentialed endpoint, internal
+DO call, or Shell-to-browser substitution.
+
+**Still unpassed (P13):** a single genuine `browser_start → browser_navigate
+→ browser_snapshot → browser_close` sequence over authorized MCP
+`tools/call → DO → Ed25519 WSS → portable Windows Agent → Chrome`, with
+operation receipts and cleanup verified *in that same run*. It requires a
+supported owner-authenticated, non-production acceptance path and fresh
+explicit consent for any new temporary pairing; earlier revoked identities
+cannot be reused. Consequential/ambiguous navigation additionally requires
+target-specific user approval, not merely device pairing.
+
+**Release hold:** No merge, release, installed-Agent upgrade, production
+browser enablement, or Cloudflare deployment has been authorized. Reuse the
+existing Worker, DO, and Agent; do not add proxies, approval databases,
+or more simulated tests solely to bypass the remaining gate.
+
+---
+
 ## P9 owner-accepted Windows Goal A, not network isolation (2026-10-21)
 
 **Current authoritative scope (supersedes P4's strict-private-network activation condition only):** The owner has explicitly accepted the risk that pages and redirects executing within the personally paired native Windows Chrome can reach host loopback, LAN and internal destinations. **Do not present the existing first-hop / context filters as an SSRF sandbox or demand zero internal-server hits as Goal A release proof.** P5 observed `attempted=1`, `blocked=0`, `localHits=1` on redirect-to-local; it remains true and is classified **NOT ISOLATED / OWNER-ACCEPTED RISK**, not a PASS.
