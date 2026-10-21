@@ -1,3 +1,32 @@
+## S3 GitHub Actions execution (Draft, no release)
+
+S3 is implemented in separate [Draft PR #151](https://github.com/lirtual/mcp-workers/pull/151)
+stacked on S2 Draft #146. This first isolated security slice introduces
+`s3-github-dispatch.ts` (only registered `heavy.github.echo` execution
+requests, non-secret opaque inputs and dispatch-unknown without redispatch),
+`s3-github-claim.ts` (GitHub JWKS RS256 OIDC JWT verification with pinned
+issuer/audience/expiry/repository ID/ref/workflow/Run and run_attempt), and
+`0003_s3_attempt_claim.sql` (one D1 logical Attempt row, confirmed physical
+candidate and an atomic first-claim-wins UPDATE). JWT verification uses the
+existing `jose` library, now an explicit dependency, not a new service or
+homemade signing scheme.
+
+The candidate returned by GitHub dispatch **must be durably confirmed in
+D1** before a signed Runner is permitted to Claim. Neither a known attempt
+ID nor a signed token from a different GitHub job is authorization. A timeout
+or `dispatch_unknown` does not grant a second owner. No Cloudflare
+migrations, workflows, secrets or production configuration have been changed.
+
+Local signed-JWT/SQLite tests verify identity fences and single-owner Claim.
+**Still missing**: a real GitHub OIDC + Cloudflare D1 execution, callback
+receipt-before-signal, durable Workflow wake/reconciliation, a controlled
+registered executor job, production readiness and release approval. Until
+those are proven this is only an unconnected, fail-closed module; S3 is NOT
+usable in production. S2 continues via the **test** MCP Portal and production
+Portal authentication may remain deferred until final release.
+
+---
+
 ## S2 Portal selection (Draft, not production-enabled)
 
 - Isolated acceptance and tests continue using `https://test-mcp.lirtual.dpdns.org/mcp`.

@@ -1,0 +1,143 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
+import {
+  SignJWT,generateKeyPair,exportJWK,createLocalJWKSet,
+} from 'jose';
+import {
+  registerGithubAttempt,recordGithubDispatchResult,verifyAndClaimGithubAttempt,
+  type AttemptDatabase,type ExecutorIdentity,type AttemptRegistration,
+} from '../src/s3-github-claim.ts';
+
+const runId='run-s3-fixture';
+const attemptId='b6835141-0b3a-4fcb-a9ae-b4b75bfae93c';
+const dispatchId='d9b3439b-b7ed-4812-9064-75c925f93c6a';
+const identity:ExecutorIdentity={
+  repository:'lirtual/test-executor',repositoryId:'987654321',
+  workflowRef:'lirtual/test-executor/.github/workflows/workflow-s3-executor.yml@refs/heads/main',
+  ref:'refs/heads/main',audience:'workflow-s3-claim:test',
+};
+const registration:AttemptRegistration={
+  ...identity,attemptId,dispatchId,runId,stepId:'heavy',capabilityId:'heavy.github.echo',
+};
+
+function setup(t:test.TestContext){
+  const sqlite=new DatabaseSync(':memory:');
+  t.after(()=>sqlite.close());
+  sqlite.exec('PRAGMA foreign_keys=ON');
+  for(const name of ['0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql']){
+    sqlite.exec(readFileSync(new URL('../migrations/'+name,import.meta.url),'utf8'));
+  }
+  sqlite.prepare(`INSERT INTO workflows (id,name,draft,created_at,updated_at)
+    VALUES (?,?,?,?,?)`).run('wf-s3-fixture','S3 fixture','{}',1,1);
+  sqlite.prepare(`INSERT INTO workflow_versions (id,workflow_id,digest,plan,created_at)
+    VALUES (?,?,?,?,?)`).run('version-s3-fixture','wf-s3-fixture','test','{}',1);
+  sqlite.prepare(`INSERT INTO runs
+    (id,workflow_id,version_id,instance_id,request_digest,inputs,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?)`).run(
+    runId,'wf-s3-fixture','version-s3-fixture','instance-fixture','digest','{}',1,1,
+  );
+  const db={
+    prepare(sql:string){
+      let params:unknown[]=[];
+      return {
+        bind(...values:unknown[]){params=values;return this;},
+        async first<T>(){return sqlite.prepare(sql).get(...params as any[]) as T|null;},
+        async run(){const r=sqlite.prepare(sql).run(...params as any[]);return {meta:{changes:Number(r.changes)}};},
+      };
+    },
+  } as unknown as AttemptDatabase;
+  return {sqlite,db};
+}
+async function fixtureSigner(){
+  const pair=await generateKeyPair('RS256');
+  const jwk=await exportJWK(pair.publicKey);
+  const keys=createLocalJWKSet({keys:[{...jwk,kid:'s3-fixture',use:'sig',alg:'RS256'}]});
+  async function issue(overrides:Record<string,unknown>={},expiry:string|number='5m'){
+    const fields={
+      repository:identity.repository,repository_id:identity.repositoryId,
+      workflow_ref:identity.workflowRef,ref:identity.ref,
+      run_id:'39410780231',run_attempt:'1',event_name:'workflow_dispatch',
+      ...overrides,
+    };
+    return new SignJWT(fields).setProtectedHeader({alg:'RS256',kid:'s3-fixture'})
+      .setIssuer('https://token.actions.githubusercontent.com')
+      .setAudience(identity.audience).setIssuedAt()
+      .setExpirationTime(expiry).sign(pair.privateKey);
+  }
+  return {issue,keys};
+}
+
+test('registered, confirmed, signed GitHub candidate obtains exactly one D1 Claim',async t=>{
+  const {db,sqlite}=setup(t);
+  const {issue,keys}=await fixtureSigner();
+  await registerGithubAttempt(db,registration);
+  assert.equal(await recordGithubDispatchResult(db,attemptId,{
+    status:'confirmed',runId:39410780231,runAttempt:1,
+  }),true);
+  const jwt=await issue();
+  const results=await Promise.all([
+    verifyAndClaimGithubAttempt(db,attemptId,jwt,identity,keys),
+    verifyAndClaimGithubAttempt(db,attemptId,jwt,identity,keys),
+  ]);
+  assert.deepEqual(results.sort(),[false,true]);
+  const row=sqlite.prepare('SELECT state,owner_run_id,owner_run_attempt FROM step_attempts WHERE attempt_id=?')
+    .get(attemptId) as Record<string,unknown>;
+  assert.deepEqual({...row},{state:'claimed',owner_run_id:39410780231,owner_run_attempt:1});
+  assert.equal(await verifyAndClaimGithubAttempt(db,attemptId,jwt,identity,keys),false);
+});
+
+test('unconfirmed and ambiguous dispatch states cannot Claim, even with signed identity',async t=>{
+  const {db}=setup(t),{issue,keys}=await fixtureSigner();
+  await registerGithubAttempt(db,registration);
+  const jwt=await issue();
+  assert.equal(await verifyAndClaimGithubAttempt(db,attemptId,jwt,identity,keys),false);
+  assert.equal(await recordGithubDispatchResult(db,attemptId,{status:'dispatch_unknown'}),true);
+  assert.equal(await verifyAndClaimGithubAttempt(db,attemptId,jwt,identity,keys),false);
+  assert.equal(await recordGithubDispatchResult(db,attemptId,{status:'confirmed',runId:39410780231,runAttempt:1}),false);
+});
+
+test('rejects signed wrong repo, ref, workflow, run, attempt, event and repository ID',async t=>{
+  const {db,sqlite}=setup(t),{issue,keys}=await fixtureSigner();
+  await registerGithubAttempt(db,registration);
+  await recordGithubDispatchResult(db,attemptId,{status:'confirmed',runId:39410780231,runAttempt:1});
+  for(const payload of [
+    {repository:'lirtual/other'},
+    {repository_id:'9'},
+    {workflow_ref:'lirtual/test-executor/.github/workflows/admin.yml@refs/heads/main'},
+    {ref:'refs/heads/other'},
+    {run_id:'39410780232'},
+    {run_attempt:'2'},
+    {event_name:'push'},
+  ]){
+    assert.equal(await verifyAndClaimGithubAttempt(db,attemptId,await issue(payload),identity,keys),false);
+  }
+  const row=sqlite.prepare('SELECT state,owner_run_id FROM step_attempts WHERE attempt_id=?').get(attemptId) as Record<string,unknown>;
+  assert.deepEqual({...row},{state:'confirmed',owner_run_id:null});
+});
+
+test('rejects forged, wrong-audience, and expired JWT before D1 Claim',async t=>{
+  const {db}=setup(t),{issue,keys}=await fixtureSigner();
+  await registerGithubAttempt(db,registration);
+  await recordGithubDispatchResult(db,attemptId,{status:'confirmed',runId:39410780231,runAttempt:1});
+  const forged=(await fixtureSigner()).issue;
+  assert.equal(await verifyAndClaimGithubAttempt(db,attemptId,await forged(),identity,keys),false);
+  assert.equal(await verifyAndClaimGithubAttempt(db,'not-an-allowed-id',await issue(),identity,keys),false);
+  assert.equal(await verifyAndClaimGithubAttempt(db,attemptId,await issue(),{...identity,audience:'workflow-s3-other:test'},keys),false);
+  assert.equal(await verifyAndClaimGithubAttempt(db,attemptId,'not-a-jwt',identity,keys),false);
+  assert.equal(await verifyAndClaimGithubAttempt(db,attemptId,await issue({},Math.floor(Date.now()/1000)-60),identity,keys),false);
+});
+
+test('duplicate logical Run/Step or dispatch identities are rejected by D1 constraints',async t=>{
+  const {db}=setup(t);
+  await registerGithubAttempt(db,registration);
+  await assert.rejects(registerGithubAttempt(db,{
+    ...registration,attemptId:'b6835141-0b3a-4fcb-a9ae-b4b75bfae93d',
+    dispatchId:'d9b3439b-b7ed-4812-9064-75c925f93d',
+  }));
+  await assert.rejects(registerGithubAttempt(db,{
+    ...registration,attemptId:'b6835141-0b3a-4fcb-a9ae-b4b75bfae93d',
+    stepId:'other',
+  }));
+});
