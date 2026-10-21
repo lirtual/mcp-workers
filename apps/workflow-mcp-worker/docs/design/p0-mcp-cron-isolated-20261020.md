@@ -127,3 +127,23 @@ Cloudflare D1 **independently confirmed** one request to A with credential categ
 **Next safe proof sequence** (requires narrowly scoped authorization for any account-policy mutation and any temporary Worker deployment): read-only inspect Zero Trust availability, current policy scopes and roles; prove isolation from existing Tunnel/Mesh private routes; isolate policy to test traffic without altering other users' routing; use benign owned endpoints and logs to test allow-public/deny destination-IP and DNS-change behavior; verify every MCP SDK outbound request uses the intended transport; delete temporary rules and Workers and prove cleanup. No probes against actual private or cloud metadata services.
 
 **Stop gate:** P0-3 is **OPEN** and S2 dynamic external MCP stays disabled until account policies and real Cloudflare edge tests uphold Q16. No new production components, endpoint preregistration requirement, extra CI, Tickets, merge or deployment are authorized by this report.
+
+## Follow-up P0-3 account isolation gate — 2026-10-21
+
+**Conditional user authorization:** Temporary Gateway policy + test Worker creation was approved **only if** policy isolation to test traffic could first be proven and verified not to affect existing devices, Tunnel/Mesh routes, or other Workers. **That prerequisite was not met; no Gateway policy, test Worker, network rule, secret, or live Cloudflare connection was created/changed.**
+
+### Read-only observations (sensitive account details deliberately omitted)
+
+- Wrangler 4.130.0 OAuth was active for the intended account and its access-scope listing **did not include a named Gateway policy read/write permission**. Existing native VPC service list contained **at least one active configured private-service target**. No service name, endpoint, tunnel ID, internal address or port is included in this public repository.
+- Existing VPC Network binding can reach both public Internet through Gateway and private Cloudflare Tunnel/Mesh/subnet destinations. [VPC Networks](https://developers.cloudflare.com/workers-vpc/configuration/vpc-networks/) documents the combined reach. Binding to cf1:network is **not itself a private-network isolation guarantee** and could widen access for a testing Worker.
+- [Gateway Network policy selectors](https://developers.cloudflare.com/cloudflare-one/traffic-controls/network-policies/) document Traffic Source values for device clients, Mesh, WAN, proxies, RDP and MCP portals, but **do not document a policy predicate for a specific originating Worker name/ID**. By contrast, [2026-09-29 Network Session Logs](https://developers.cloudflare.com/changelog/product/workers-vpc/) include SourceName/SourceID for Workers VPC logging. **Log attribution does not prove that policy rules can match a Worker identity**. Do not confuse matching by destination or generic Traffic Source with policy isolation to one test Worker.
+- Read-only Cloudflare connector Gateway introspection returned tool errors. The active Wrangler OAuth permission inventory did not establish Gateway policy authority. **Actual account policy list, ordering, Worker-scoped expression support and Zero Trust entitlement are UNVERIFIED.** No fallback extraction/exposure of OAuth tokens was attempted.
+- Existing test-only local Wrangler deploy --dry-run succeeded in the previous evidence section, which **only** confirms the binding's build/config syntax; no new edge fetch, DNS change, metadata/private target request, or real Gateway block was tested.
+
+### Stop decision and smallest next step
+
+**STOP at the pre-provisioning boundary.** The conditions for safe rule scoping are unproven, and an account-wide experimental block could disrupt unrelated Cloudflare One clients and production services. User authorization was conditional; do **not** infer permission for unscoped account-wide policy creation. This is **not** proof that VPC+Gateway is incapable of meeting Q16, only that this account/test configuration is not verified safe for mutations.
+
+Before any future account change, use authorized **read-only** Gateway policy access to prove a real per-test-Worker predicate (not just a log field), verify rule precedence and any active private routes, and show the policy affects neither existing Worker VPC flows nor user/device traffic. If that cannot be established, consider a **separately isolated Zero Trust test account** or return to the owner for architecture selection; do not silently deploy an egress proxy or weaken SSRF requirements.
+
+**P0-3 remains OPEN; S2 dynamic target invocations remain disabled.** No extra CI, tickets, code, dependencies, merge or production deployment were made in this verification.
