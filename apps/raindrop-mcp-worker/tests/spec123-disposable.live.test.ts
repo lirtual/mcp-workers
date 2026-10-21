@@ -145,6 +145,15 @@ live("Spec 123 disposable real API acceptance", () => {
           throw new Error("Collection creation ID not verifiable");
         ownedCollections.add(id);
         expect((await service.raindropService.getCollection(id, true)).title).toBe(title);
+        if (ownedCollections.size === 1) {
+          // Before creating further disposable objects, check that the exact
+          // fresh, read-only deletion preview can safely enumerate this root.
+          // The prior real G0 run failed at this step only during cleanup.
+          const preview = await cleanupService.deleteCollectionPreviewFirst({ id });
+          if (preview.rootId !== id || preview.total !== 1 ||
+              preview.collectionIds[0] !== id || preview.bookmarkCount !== 0)
+            throw new Error("Disposable collection deletion preflight is not safe");
+        }
       }
       const [a, b] = [...ownedCollections];
       if (!a || !b) throw new Error("Disposable collections missing");
