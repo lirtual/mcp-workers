@@ -9,7 +9,7 @@ const config={
 const attempt={
   attemptId:'b6835141-0b3a-4fcb-a9ae-b4b75bfae93c',
   dispatchId:'d9b3439b-b7ed-4812-9064-75c925f93c6a',
-  capabilityId:'heavy.github.echo',
+  capabilityId:'heavy.github.echo' as const,
 };
 test('registered GitHub dispatch uses exact repo/ref and only opaque inputs',async()=>{
   let calls=0;
