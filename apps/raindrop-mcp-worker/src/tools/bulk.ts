@@ -1,5 +1,4 @@
 import { z } from "zod";
-import type { ToolHandlerContext } from "./common.js";
 import { defineTool } from "./common.js";
 
 const BulkEditRaindropsInputSchema = z.object({
@@ -30,79 +29,14 @@ const BulkEditRaindropsInputSchema = z.object({
 const bulkEditRaindropsTool = defineTool({
   name: "bulk_edit_raindrops",
   description:
-    "Bulk update, move, or remove bookmarks in a specific collection.",
+    "Legacy bulk mutation disabled pending approved contract cutover. Use bookmark_batch_update or bookmark_batch_delete with an explicit positive source collection and 1–50 verified IDs.",
   inputSchema: BulkEditRaindropsInputSchema,
-  handler: async (
-    args: z.infer<typeof BulkEditRaindropsInputSchema>,
-    { raindropService }: ToolHandlerContext,
-  ) => {
-    if (args.operation === "remove") {
-      if (!args.ids || args.ids.length === 0) {
-        throw new Error("IDs are required for remove operation");
-      }
-      const success = await raindropService.batchDeleteBookmarksInCollection(
-        args.collectionId,
-        args.ids,
-      );
-      return {
-        content: [
-          {
-            type: "text",
-            text: success
-              ? `Successfully removed ${args.ids.length} bookmarks.`
-              : "Failed to remove bookmarks.",
-          },
-        ],
-      };
-    }
-
-    if (args.operation === "move") {
-      if (!args.ids || args.ids.length === 0) {
-        throw new Error("IDs are required for move operation");
-      }
-      if (args.toCollectionId === undefined) {
-        throw new Error("toCollectionId is required for move operation");
-      }
-
-      // Moving is essentially a batch update of the collection ID
-      const success = await raindropService.batchUpdateBookmarks(args.ids, {
-        collection: args.toCollectionId,
-      });
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: success
-              ? `Successfully moved ${args.ids.length} bookmarks to collection ${args.toCollectionId}.`
-              : "Failed to move bookmarks.",
-          },
-        ],
-      };
-    }
-
-    // Default: update
-    const updates: any = {
-      ids: args.ids || [],
-    };
-    if (args.important !== undefined) updates.important = args.important;
-    if (args.tags) updates.tags = args.tags;
-
-    const success = await raindropService.batchUpdateBookmarksInCollection(
-      args.collectionId,
-      updates,
+  handler: async (_args: z.infer<typeof BulkEditRaindropsInputSchema>) => {
+    // All legacy update/move/remove paths could bypass membership checks or
+    // mutate an entire collection without an explicit ID list.
+    throw new Error(
+      "Legacy bulk_edit_raindrops mutation disabled. Use bookmark_batch_update or bookmark_batch_delete with explicit source collectionId and IDs; nothing modified.",
     );
-
-    return {
-      content: [
-        {
-          type: "text",
-          text: success
-            ? `Bulk update in collection ${args.collectionId} successful.`
-            : "Bulk update failed.",
-        },
-      ],
-    };
   },
 });
 

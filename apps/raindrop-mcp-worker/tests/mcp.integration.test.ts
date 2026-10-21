@@ -1,12 +1,11 @@
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
-import { config } from "dotenv";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { RaindropMCPService } from "../src/services/raindropmcp.service.js";
 
-config();
 
 const hasToken = Boolean(process.env.RAINDROP_ACCESS_TOKEN?.trim());
-const describeIf = hasToken ? describe : describe.skip;
+const explicitlyEnabled = process.env.RUN_LIVE_API_TESTS === "true";
+const describeIf = hasToken && explicitlyEnabled ? describe : describe.skip;
 
 const isDiagnosticsResource = (
   content: unknown,
@@ -28,7 +27,7 @@ describeIf("MCP protocol integration", () => {
   let service: RaindropMCPService;
 
   beforeAll(async () => {
-    service = new RaindropMCPService();
+    service = new RaindropMCPService({ accessToken: process.env.RAINDROP_ACCESS_TOKEN!.trim(), maxReadRetries: 0 });
     client = new Client({ name: "raindrop-mcp-test-client", version: "1.0.0" });
 
     const [clientTransport, serverTransport] =
