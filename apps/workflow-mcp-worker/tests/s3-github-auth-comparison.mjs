@@ -98,6 +98,15 @@ try{
   if(!proof.tokenUnchanged){
     console.log('S3_WORKER_SECRET_NORMALIZATION_DIAGNOSTIC',
       JSON.stringify(proof.normalization));
+    // Read-only later observation discriminates temporary rollout lag
+    // from persistent mismatch without changing credentials.
+    await pause(12000);
+    const laterResponse=await fetch('https://'+name+'.aiyaya.workers.dev/proof',{
+      headers:{authorization:'Bearer '+access},signal:AbortSignal.timeout(12000),
+    });
+    assert.equal(laterResponse.status,200,'later authorization read');
+    const later=await laterResponse.json();
+    console.log('S3_GITHUB_WORKER_DELAYED_DIAGNOSTIC',JSON.stringify(later));
   }
   console.log('S3_GITHUB_RUNNER_WORKER_DIAGNOSTIC_COMPLETE');
 }catch(e){
