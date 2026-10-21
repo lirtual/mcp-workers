@@ -1,3 +1,50 @@
+## S3 Plan / Publish / Runner integration (Draft, 2026-10-21)
+
+**New product code in S3 Draft PR #151** connects the previously isolated
+S3 modules to the real Workflow MCP surfaces while keeping all production
+flags **OFF**. `github.run` is supported as an explicit Plan Step with only
+`with: {capability: heavy.github.echo}`; arbitrary command, repository, token,
+endpoint, workflow ref or dynamic arguments are rejected by compilation.
+`workflow_validate` reports `requires_heavy_execution_approval:true`.
+Publish requires both `S3_ENABLED=true` in the server Environment and the
+owner's explicit `approve_heavy_execution:true`, recorded in the immutable
+Published Plan as `s3_execution_approved:true`. Mixed S2+S3 plans also
+require S2's **separate** exact MCP read grant and risk acknowledgement.
+
+The real `WorkflowRunner` executes a registered S3 Step using an immutable
+D1 logical Attempt, one GitHub REST dispatch with
+`return_run_details:true`, and a confirmed physical Run ID. No dispatch
+occurs when S3 is disabled, and an ambiguous dispatch is
+`s3_dispatch_unknown` **without retry**. The native Workflow waits outside
+`step.do` and only consumes a signed claimed-owner callback after reading
+the immutable D1 receipt. That verified output is available to downstream
+`result.emit`. `/s3/claim` and `/s3/callback` are exact OIDC-only POST
+endpoints and return 404 while S3 is disabled. A separate bounded echo-only
+`.github/workflows/workflow-s3-executor.yml` runs with `id-token:write`
+and repository read; **the job does not receive Cloudflare or Portal secrets**.
+Callback origins and audience are server/GitHub Environment configuration,
+never user Plan/Run inputs.
+
+**Current acceptance is local product integration, not a new live deployment:**
+Plan/Publish/Runner/HTTP ingress tests, including a combined S2+S3
+publication contract, are green. Wrangler S3 product build dry-run passes.
+The dedicated workflow is in a Draft branch and is not available on GitHub
+main until separately authorized for merge. No S3 runtime flag, GitHub
+dispatch secret, Cloudflare migration or callback origin was installed in
+production. The previous real GitHub REST dispatch + OIDC + D1 callback +
+native Workflow live evidence below used an **isolated test harness**.
+
+**Outstanding gates:** execute a genuine S2 test Portal MCP call followed
+by the newly integrated `github.run` in one isolated production-shaped
+Cloudflare Workflow, confirm callback ingress and D1 migrations against
+the dedicated executor workflow, and test timeout/cancellation and
+lost-notification reconciliation. GitHub's default-branch workflow
+registration and environment-scoped callback URL/token need an explicit,
+minimal test setup; do not silently merge or turn on production S3.
+The production Portal 401 is deferred until final rollout.
+
+---
+
 ## S3 isolated independent GitHub REST dispatch proof (2026-10-21)
 
 A real separate, side-effect-free GitHub Job has been dispatched successfully:

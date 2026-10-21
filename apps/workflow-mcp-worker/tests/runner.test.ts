@@ -32,7 +32,7 @@ function deferred(){
 function setup(t:test.TestContext){
   const sqlite=new DatabaseSync(':memory:');
   t.after(()=>sqlite.close());
-  for(const file of ['0001_s1.sql','0002_native_complete_seen.sql'])
+  for(const file of ['0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql'])
     sqlite.exec(readFileSync(new URL('../migrations/'+file,import.meta.url),'utf8'));
   function prepare(sql:string){
     let args:any[]=[];
@@ -579,4 +579,168 @@ test('S2 stateful MCP DELETE cannot delay an already successful tools/call resul
   assert.equal(result.status,'succeeded');
   assert.equal(result.steps[0].status,'succeeded');
   assert.ok(JSON.stringify(result.result).includes('acknowledged stateful result'));
+});
+
+
+test('S3 Publish requires a separate heavy-executor opt-in and the S3 feature flag',async t=>{
+  const {service,env,sqlite}=setup(t);
+  const definition=JSON.stringify({version:1,name:'S3 gated',steps:[
+    {id:'heavy',uses:'github.run',with:{capability:'heavy.github.echo'}},
+  ]});
+  const wf=await service.create(definition);
+  const validated=await service.validate(wf.workflow_id,1);
+  assert.equal(validated.valid,true);
+  assert.equal((validated as {requires_heavy_execution_approval?:boolean}).requires_heavy_execution_approval,true);
+  await assert.rejects(()=>service.publish(wf.workflow_id,1,[],false,true),/s3_disabled/);
+  env.S3_ENABLED='true';
+  await assert.rejects(()=>service.publish(wf.workflow_id,1),/s3_execution_approval_required/);
+  const published=await service.publish(wf.workflow_id,1,[],false,true);
+  const plan=sqlite.prepare('SELECT plan FROM workflow_versions WHERE id=?').get(published.published_version_id) as {plan:string};
+  assert.equal(JSON.parse(plan.plan).s3_execution_approved,true);
+});
+
+
+test('S3 published Plan dispatches one confirmed Job, waits outside step.do and emits durable receipt',async t=>{
+  const {service,env,sqlite}=setup(t);
+  Object.assign(env,{
+    S3_ENABLED:'true',S3_GITHUB_TOKEN:'fixture-token',
+    S3_GITHUB_REPOSITORY:'lirtual/test-executor',
+    S3_GITHUB_REPOSITORY_ID:'987654321',
+    S3_GITHUB_REF:'refs/heads/main',
+    S3_GITHUB_AUDIENCE:'workflow-s3-claim:test',
+  });
+  const steps=[
+    {id:'heavy',uses:'github.run',with:{capability:'heavy.github.echo'}},
+    {id:'emit',needs:['heavy'],uses:'result.emit',with:{data:{ref:'steps.heavy.output'}}},
+  ];
+  const created=await service.create(JSON.stringify({version:1,name:'S3 published',steps}));
+  await service.publish(created.workflow_id,1,[],false,true);
+  const accepted=await service.start(created.workflow_id,{});
+  let posts=0;
+  const oldFetch=globalThis.fetch;
+  globalThis.fetch=(async(input:RequestInfo|URL,init?:RequestInit)=>{
+    const req=new Request(input,init);
+    posts++;
+    assert.equal(req.url,'https://api.github.com/repos/lirtual/test-executor/actions/workflows/workflow-s3-executor.yml/dispatches');
+    assert.equal(req.headers.get('authorization'),'Bearer fixture-token');
+    const sent=await req.json() as {return_run_details:boolean;inputs:Record<string,string>};
+    assert.equal(sent.return_run_details,true);
+    assert.equal(sent.inputs.capability_id,'heavy.github.echo');
+    return Response.json({workflow_run_id:987654321},{status:200});
+  }) as typeof fetch;
+  t.after(()=>{globalThis.fetch=oldFetch;});
+  let waited=0;
+  const orchestration={
+    do:async(_name:string,_options:unknown,callback:()=>Promise<unknown>)=>callback(),
+    waitForEvent:async(_name:string,options:{type:string})=>{
+      waited++;
+      assert.equal(options.type,'s3-receipt');
+      const row=sqlite.prepare('SELECT attempt_id,dispatch_id,state,candidate_run_id FROM step_attempts').get() as {
+        attempt_id:string;dispatch_id:string;state:string;candidate_run_id:number
+      };
+      assert.equal(row.state,'confirmed');
+      assert.equal(row.candidate_run_id,987654321);
+      const receiptId='f8835141-0b3a-4fcb-a9ae-b4b75bfae93c';
+      sqlite.prepare("UPDATE step_attempts SET state='claimed',owner_run_id=987654321,owner_run_attempt=1 WHERE attempt_id=?")
+        .run(row.attempt_id);
+      sqlite.prepare("INSERT INTO callback_receipts(callback_id,attempt_id,outcome,result_json,created_at) VALUES(?,?, 'succeeded', ?, ?)")
+        .run(receiptId,row.attempt_id,JSON.stringify({echo:'ok',source:'real-github'}),Date.now());
+      return {payload:{attemptId:row.attempt_id,callbackId:receiptId}};
+    },
+  };
+  await new WorkflowRunner({} as ExecutionContext,env).run(
+    {payload:{run_id:accepted.run_id}} as WorkflowEvent<{run_id:string}>,
+    orchestration as unknown as WorkflowStep,
+  );
+  const result=await service.result(accepted.run_id);
+  assert.equal(result.status,'succeeded');
+  assert.deepEqual(result.result,{echo:'ok',source:'real-github'});
+  assert.deepEqual(result.steps.map(s=>s.status),['succeeded','succeeded']);
+  assert.equal(posts,1);
+  assert.equal(waited,1);
+});
+
+test('a previously published S3 Run does not dispatch after feature flag is disabled',async t=>{
+  const {service,env}=setup(t);
+  env.S3_ENABLED='true';
+  const wf=await service.create(JSON.stringify({version:1,name:'Disabled run',steps:[
+    {id:'heavy',uses:'github.run',with:{capability:'heavy.github.echo'}},
+  ]}));
+  await service.publish(wf.workflow_id,1,[],false,true);
+  const accepted=await service.start(wf.workflow_id,{});
+  env.S3_ENABLED=undefined;
+  const original=globalThis.fetch;let attempts=0;
+  globalThis.fetch=(async()=>{attempts++;throw Error('no outbound allowed');}) as typeof fetch;
+  try{
+    await new WorkflowRunner({} as ExecutionContext,env).run(
+      {payload:{run_id:accepted.run_id}} as WorkflowEvent<{run_id:string}>,
+      {do:async(_name:unknown,_options:unknown,fn:()=>Promise<unknown>)=>fn()} as unknown as WorkflowStep,
+    );
+  }finally{globalThis.fetch=original;}
+  const result=await service.result(accepted.run_id);
+  assert.equal(result.status,'failed');
+  assert.equal(result.steps[0].status,'failed');
+  assert.equal(attempts,0);
+});
+
+
+test('S3 dispatch HTTP ambiguity is terminally uncertain and never re-dispatched',async t=>{
+  const {service,env,sqlite}=setup(t);
+  Object.assign(env,{
+    S3_ENABLED:'true',S3_GITHUB_TOKEN:'test-token',
+    S3_GITHUB_REPOSITORY:'lirtual/test-executor',
+    S3_GITHUB_REPOSITORY_ID:'987654321',
+    S3_GITHUB_REF:'refs/heads/main',
+    S3_GITHUB_AUDIENCE:'workflow-s3-claim:test',
+  });
+  const wf=await service.create(JSON.stringify({version:1,name:'S3 uncertainty',steps:[
+    {id:'heavy',uses:'github.run',with:{capability:'heavy.github.echo'}},
+  ]}));
+  await service.publish(wf.workflow_id,1,[],false,true);
+  const accepted=await service.start(wf.workflow_id,{});
+  let outbound=0;
+  const oldFetch=globalThis.fetch;
+  globalThis.fetch=(async()=>{outbound++;return new Response(null,{status:503});}) as typeof fetch;
+  const runner=new WorkflowRunner({} as ExecutionContext,env);
+  const event={payload:{run_id:accepted.run_id}} as WorkflowEvent<{run_id:string}>;
+  const handler={do:async(_n:unknown,_opts:unknown,fn:()=>Promise<unknown>)=>fn()};
+  try{
+    await runner.run(event,handler as unknown as WorkflowStep);
+    await runner.run(event,handler as unknown as WorkflowStep);
+  }finally{globalThis.fetch=oldFetch;}
+  const result=await service.result(accepted.run_id);
+  assert.equal(result.status,'indeterminate');
+  assert.equal(result.error_code,'s3_dispatch_unknown');
+  assert.equal(sqlite.prepare('SELECT state FROM step_attempts').get()?.state,'dispatch_unknown');
+  assert.equal(outbound,1);
+});
+
+
+test('one combined S2 read plus S3 registered heavy Plan requires both independent Publish grants',async t=>{
+  const {service,env,sqlite}=setup(t);
+  const endpoint='https://public.example.org/mcp';
+  const grant:ReadonlyOperation={
+    endpoint,tool:'echo',scope:'read',schema_digest:PINNED_DIGEST,
+  };
+  const wf=await service.create(JSON.stringify({version:1,name:'S2+S3 unified',steps:[
+    {id:'read',uses:'mcp.call',with:{
+      endpoint,tool:'echo',scope:'read',input_schema:PINNED_SCHEMA,
+      arguments:{value:'minimal-test'},
+    }},
+    {id:'heavy',needs:['read'],uses:'github.run',with:{capability:'heavy.github.echo'}},
+    {id:'emit',needs:['heavy'],uses:'result.emit',with:{data:{ref:'steps.heavy.output'}}},
+  ]}));
+  const validation=await service.validate(wf.workflow_id,1);
+  assert.equal(validation.valid,true);
+  assert.deepEqual((validation as {required_approvals?:ReadonlyOperation[]}).required_approvals,[grant]);
+  assert.equal((validation as {requires_heavy_execution_approval?:boolean}).requires_heavy_execution_approval,true);
+  env.S2_READONLY_ENABLED='true';env.S3_ENABLED='true';
+  await assert.rejects(()=>service.publish(wf.workflow_id,1,[grant],true),/s3_execution_approval_required/);
+  await assert.rejects(()=>service.publish(wf.workflow_id,1,[grant],false,true),/target_risk_acknowledgment_required/);
+  const version=await service.publish(wf.workflow_id,1,[grant],true,true);
+  const row=sqlite.prepare('SELECT plan FROM workflow_versions WHERE id=?').get(version.published_version_id) as {plan:string};
+  const plan=JSON.parse(row.plan);
+  assert.equal(plan.s2_target_risks_accepted,true);
+  assert.equal(plan.s3_execution_approved,true);
+  assert.deepEqual(plan.s2_approvals,[grant]);
 });

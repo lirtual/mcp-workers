@@ -1,0 +1,48 @@
+# Registered S3 capability only. This is inert until deliberately dispatched
+# with a confirmed logical Attempt in the Workflow MCP D1 database.
+name: S3 Registered Echo Executor
+
+on:
+  workflow_dispatch:
+    inputs:
+      attempt_id:
+        description: Durable registered Attempt UUID
+        required: true
+        type: string
+      dispatch_id:
+        description: Durable dispatch UUID
+        required: true
+        type: string
+      capability_id:
+        description: Registered capability (only heavy.github.echo)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  registered-echo:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.capability_id == 'heavy.github.echo' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    environment: workflow-mcp-worker
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: s3-registered-echo-${{ inputs.attempt_id }}
+      cancel-in-progress: false
+    env:
+      S3_ATTEMPT_ID: ${{ inputs.attempt_id }}
+      S3_DISPATCH_ID: ${{ inputs.dispatch_id }}
+      S3_CAPABILITY: ${{ inputs.capability_id }}
+      S3_CALLBACK_ORIGIN: ${{ vars.S3_CALLBACK_ORIGIN }}
+      S3_GITHUB_AUDIENCE: ${{ vars.S3_GITHUB_AUDIENCE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Claim registered Attempt and submit fixed echo result
+        run: node apps/workflow-mcp-worker/tests/s3-registered-executor.mjs

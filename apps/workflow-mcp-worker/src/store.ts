@@ -17,7 +17,7 @@ export type Env = {
   MCP_ACCESS_TOKEN: string;
   WORKFLOW: {
     create(options:{id:string;params:{run_id:string}}):Promise<unknown>;
-    get(id:string):Promise<{status():Promise<{status:string}>}>;
+    get(id:string):Promise<{status():Promise<{status:string}>;sendEvent?(event:{type:string;payload:unknown}):Promise<void>}>;
   };
   READONLY_TARGET: Fetcher;
   // Absent in every existing Wrangler environment. Never enabled by default.
@@ -28,6 +28,13 @@ export type Env = {
   // Optional while S2 remains disabled. For production S2, pin to mcp;
   // for isolated test S2, pin to test-mcp (never selected by Draft input).
   S2_PORTAL_ENDPOINT?: string;
+  // S3 can only be enabled in separately authorized, isolated environments.
+  S3_ENABLED?: string;
+  S3_GITHUB_TOKEN?: string;
+  S3_GITHUB_REPOSITORY?: string;
+  S3_GITHUB_REPOSITORY_ID?: string;
+  S3_GITHUB_REF?: string;
+  S3_GITHUB_AUDIENCE?: string;
 };
 export class StateError extends Error {
   code:string;
@@ -96,13 +103,15 @@ export class WorkflowService {
         const grant:ReadonlyOperation={endpoint:s.with.endpoint as string,tool:s.with.tool as string,scope:'read',schema_digest:s.with.schema_digest as string};
         return [JSON.stringify(grant),grant] as const;
       })).values()];
-      return {valid:true,digest,steps:plan.steps.length,issues:[],...(required_approvals.length?{required_approvals}:{})};
+      return {valid:true,digest,steps:plan.steps.length,issues:[],
+        ...(required_approvals.length?{required_approvals}:{}),
+        ...(plan.steps.some(s=>s.uses==='github.run')?{requires_heavy_execution_approval:true}:{})};
     }catch(error){
       if(!(error instanceof PlanError))throw error;
       return {valid:false,issues:[{code:error.message.split(':')[0]}]};
     }
   }
-  async publish(workflow_id:string,expected_revision:number,approved_operations:ReadonlyOperation[]=[],accept_target_risks=false){
+  async publish(workflow_id:string,expected_revision:number,approved_operations:ReadonlyOperation[]=[],accept_target_risks=false,approve_heavy_execution=false){
     assertId(workflow_id);const row=await this.row(workflow_id);
     if(row.draft_revision!==expected_revision)throw new StateError('revision_conflict');
     const {plan,digest:plan_digest}=await compilePlan(row.draft);
@@ -119,7 +128,11 @@ export class WorkflowService {
     // is required at each Publish in addition to exact per-operation grants.
     // This is an authenticated API assertion, not proof of human interaction.
     if(required.length && accept_target_risks!==true)throw new StateError('target_risk_acknowledgment_required');
-    const publishedPlan:Plan=required.length?{...plan,s2_approvals:required,s2_target_risks_accepted:true}:plan;
+    const hasS3=plan.steps.some(s=>s.uses==='github.run');
+    if(hasS3 && this.env.S3_ENABLED!=='true')throw new StateError('s3_disabled');
+    if(hasS3 && approve_heavy_execution!==true)throw new StateError('s3_execution_approval_required');
+    const scopedPlan:Plan=required.length?{...plan,s2_approvals:required,s2_target_risks_accepted:true}:plan;
+    const publishedPlan:Plan=hasS3?{...scopedPlan,s3_execution_approved:true}:scopedPlan;
     // Repeated Publish of an unchanged Draft resolves to its existing Version.
     if(row.active_version_id){
       const current=await this.db.prepare('SELECT digest FROM workflow_versions WHERE id=? AND workflow_id=?').bind(row.active_version_id,workflow_id).first<{digest:string}>();
