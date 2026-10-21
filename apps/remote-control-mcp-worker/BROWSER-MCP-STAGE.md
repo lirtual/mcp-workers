@@ -4,13 +4,15 @@
 
 **Source gate:** [Worker Draft PR #143](https://github.com/lirtual/mcp-workers/pull/143)
 keeps `BROWSER_TOOLS_ACCEPTED = false`; no production browser tools are listed or
-callable. The source-only [Agent Browser Draft PR #20](https://github.com/lirtual/remote-control-agent/pull/20)
-depends on the [Windows full-tools Draft #13](https://github.com/lirtual/remote-control-agent/pull/13)
-and [Windows native Draft #7](https://github.com/lirtual/remote-control-agent/pull/7).
-On 2026-10-21, their branch heads `93cc40d`, `ff29a89`, and `57d3182`
-were all GitHub CLEAN/MERGEABLE and passed Windows x64, Ubuntu x64 and ARM64
-CI. All remain Draft; green CI is not approval to merge, release, install or
-activate the browser tools.
+callable. [Agent Browser PR #20](https://github.com/lirtual/remote-control-agent/pull/20)
+remains Draft at `93cc40d`, based on `main`. Its prerequisites,
+[Windows native PR #7](https://github.com/lirtual/remote-control-agent/pull/7)
+and [Windows full-tools PR #13](https://github.com/lirtual/remote-control-agent/pull/13),
+were merged to Agent `main` on 2026-10-21 (`458e59d`, `b82d07d`).
+Both post-merge Agent CI runs passed; no Agent Release or device upgrade followed.
+The browser Worker PR #143 remains Draft at `66ff8ce`; its
+[CI #39582346377](https://github.com/lirtual/mcp-workers/actions/runs/39582346377)
+passed. Neither browser Draft is authorized to merge or deploy.
 
 **Passed independently:** A SHA-pinned portable native Windows Agent
 started real Chrome, navigated the harmless public TodoMVC page, returned
@@ -60,7 +62,8 @@ OpenAI references:
 [Build an MCP server](https://developers.openai.com/plugins/build/mcp-server),
 [App permission controls](https://developers.openai.com/plugins/changelog).
 
-**Release hold:** No merge, release, installed-Agent upgrade, production
+**Release hold:** The two foundational Agent PRs were merged as authorized.
+No **browser Draft** merge, Agent release, installed-Agent upgrade, production
 browser enablement, or Cloudflare deployment has been authorized. Reuse the
 existing Worker, DO, and Agent; do not add proxies, approval databases,
 or more simulated tests solely to bypass the remaining gate.
@@ -97,9 +100,9 @@ The typed `browser_navigate` parser now refuses local-looking **initial** HTTP(S
 
 **Reuse the existing permission and receipt chain:** Portal owner authentication, explicit device_id, signed Ed25519 WSS and device revocation, per-operation durable `operation_id`, and no automatic replay already cover the first-stage five-tool shape. No click, form-fill, scripting, download or upload tools are part of this stage. An additional general-purpose confirmation system, network proxy, Worker, database or all-platform browser installer is not justified just to keep a Draft disabled; consequential future browser actions must receive separate explicit user approval and verified enforcement before implementation.
 
-**Verification:** scoped browser schema/denial tests 4/4 PASS and Worker TypeScript production+test compilation PASS with the independently staged Agent fixture. The broad Worker suite encountered one `v2 write_file` receipt test failure (`failed` rather than `running|completed`); **the exact same test also failed when the browser URL change was temporarily removed**, so do not attribute the failure to this P4 validation patch, but do not mark the full Worker suite green. The independent GitHub branch CI remains the acceptance gate for this Draft.
+**Historical P4 verification:** browser schema/denial tests and TypeScript checks passed. One earlier `v2 write_file` fixture failed in a disposable worktree without the Agent's required native Shell supervisor; the failure was unrelated to browser URL checks. **Superseding acceptance on 2026-10-21:** the supervisor was built from the repository's own script, full Worker tests passed **110/110** against current Agent Browser Draft `93cc40d`, TypeScript checks passed, and remote CI for Worker `66ff8ce` passed. This is source/fixture acceptance, **not** a live signed browser MCP-to-Chrome run.
 
-**Activation hold:** independently demonstrate a credible private-network/redirect/subresource policy appropriate to trusted owner-operated Windows Chrome, and verify the user approval story for navigation that may have side effects. Then explicitly authorize a disposable browser-MCP end-to-end test; do not bypass this source gate or use a locally altered Worker as a surrogate for approval. Installed Windows Agent and production Worker keep their current settings until a later separate release decision.
+**Activation hold (current P9 decision supersedes stricter P4 network isolation):** the owner accepted residual loopback/LAN egress from personally paired Windows Chrome; do not claim SSRF isolation. Consequential navigation still needs genuinely verifiable action-specific approval. A supported, owner-authorized disposable browser-MCP full-path run remains unpassed; do not bypass this source gate or use a locally altered Worker as a surrogate for approval. Installed Windows Agent and production Worker keep their current settings until a separate release decision.
 
 ## P11 tool hint and protocol compatibility audit (2026-10-21)
 
