@@ -44,6 +44,19 @@ test("rejects arbitrary JS, CLI/path/profile, missing IDs, unexpected keys, and 
   assert.equal(parseBrowserDoArguments("browser_snapshot",{session_id}),true);
   assert.equal(parseBrowserDoArguments("browser_snapshot",{session_id,profile:"personal"}),false);
 });
+test("model-supplied confirmation fields cannot grant browser authorization",()=>{
+  const nav={device_id,operation_id,session_id,url:"https://example.com/"};
+  const agentArgs={operation_id,session_id,url:nav.url};
+  // Owner consent is not a model-authored flag or token. This test is
+  // parser-only: it is NOT evidence of a working human approval channel.
+  for(const [field,value] of Object.entries({
+    approved:true,confirmed:true,user_approved:true,
+    approval_token:"forged",confirmation:"yes",human_presence:true,
+  })) {
+    assert.equal(parseBrowserCall("browser_navigate",{...nav,[field]:value}),null,field);
+    assert.equal(parseBrowserDoArguments("browser_navigate",{...agentArgs,[field]:value}),false,field);
+  }
+});
 test("staged browser tools are neither advertised nor dispatchable on the current production MCP surface",async()=>{
   let doCalls=0;
   const env={
@@ -63,8 +76,18 @@ test("staged browser tools are neither advertised nor dispatchable on the curren
   const list=await rpc("tools/list",{});
   const exposed=(list.result?.tools??[]).map((tool:any)=>tool.name);
   for(const tool of BROWSER_TOOLS) assert.equal(exposed.includes(tool.name),false);
-  const call=await rpc("tools/call",{name:"browser_start",arguments:{device_id,operation_id}});
-  assert.equal(call.result?.isError,true);
+  for(const [name,args] of [
+    ["browser_start",{device_id,operation_id}],
+    ["browser_status",{device_id}],
+    ["browser_navigate",{device_id,operation_id,session_id,url:"https://example.com/"}],
+    ["browser_snapshot",{device_id,session_id}],
+    ["browser_close",{device_id,operation_id,session_id}],
+    ["browser_navigate",{device_id,operation_id,session_id,url:"https://example.com/",approved:true}],
+    ["browser_navigate",{device_id,operation_id,session_id,url:"https://example.com/",confirmation:"yes"}],
+  ] as const) {
+    const call=await rpc("tools/call",{name,arguments:args});
+    assert.equal(call.result?.isError,true,name);
+  }
   assert.equal(doCalls,0);
 });
 
