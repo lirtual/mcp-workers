@@ -387,7 +387,9 @@ test("S1 manual GitHub Actions requires D1 checks and private Fixture before Own
   assert.ok(pre>0 && fixture>pre && publish>fixture);
   assert.ok(ci.includes("S1_FIRST_DEPLOY: " + String.fromCharCode(36) + "{{ steps.preflight.outputs.bootstrap }}"));
   assert.match(ci,/node scripts\/manual-worker-release\.mjs d1-check workflow-mcp-worker/);
-  assert.match(ci,/pnpm exec wrangler deploy --config wrangler\.jsonc/);
+  assert.match(ci,/pnpm exec wrangler deploy --config tests\/fixtures\/wrangler\.jsonc/);
+  assert.match(ci,/\(cd apps\/workflow-mcp-worker &&/);
+  assert.doesNotMatch(ci,/cd apps\/workflow-mcp-worker\/tests\/fixtures &&/);
   assert.match(ci,/mcp_endpoint="https:\/\/workflow\.lirtual\.dpdns\.org\/mcp"/);
   assert.match(ci,/health_endpoint="https:\/\/workflow\.lirtual\.dpdns\.org\/health"/);
   assert.match(ci,/body\.scope !== "s1"/);
