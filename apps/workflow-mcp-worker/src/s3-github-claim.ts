@@ -45,7 +45,11 @@ type AttemptRow={
 function validateIdentity(c:ExecutorIdentity){
   if(!REPO.test(c.repository)||c.repository.includes('..')||
      !/^\d+$/.test(c.repositoryId)||
-     c.workflowRef!==c.repository+'/.github/workflows/workflow-s3-executor.yml@'+c.ref||
+     !c.workflowRef.startsWith(c.repository+'/.github/workflows/')||
+     !c.workflowRef.endsWith('@'+c.ref)||
+     !/^[a-z0-9][a-z0-9_-]*\.yml$/.test(
+       c.workflowRef.slice((c.repository+'/.github/workflows/').length,
+         -(c.ref.length+1)))||
      !/^refs\/heads\/[A-Za-z0-9._/-]+$/.test(c.ref)||
      c.ref.includes('..')||c.ref.includes('//')||
      !/^workflow-s3-[a-z0-9:-]{4,120}$/.test(c.audience))

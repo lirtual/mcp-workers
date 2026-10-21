@@ -42,6 +42,11 @@ on:
         required: false
         type: boolean
         default: false
+      s3_oidc_probe:
+        description: Real GitHub OIDC and disposable Cloudflare D1 Claim/Callback (no production)
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -58,7 +63,10 @@ jobs:
     if: >-
       ${{ !(github.event_name == 'workflow_dispatch' &&
             github.ref == 'refs/heads/wip/workflow-s2-public-readonly' &&
-            (inputs.s2_portal_probe == true || inputs.s2_cloud_e2e == true)) }}
+            (inputs.s2_portal_probe == true || inputs.s2_cloud_e2e == true)) &&
+          !(github.event_name == 'workflow_dispatch' &&
+            github.ref == 'refs/heads/wip/workflow-s3-github-executor' &&
+            inputs.s3_oidc_probe == true) }}
     concurrency:
       group: ci-checks-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.event.pull_request.number || github.ref }}
       cancel-in-progress: true
@@ -611,3 +619,41 @@ jobs:
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Verify disposable Workflow, Portal and IMA; clean all ephemeral resources
         run: node --experimental-strip-types apps/workflow-mcp-worker/tests/s2-portal-cloud-e2e.mjs
+
+  workflow-s3-isolated-oidc:
+    name: Isolated S3 GitHub OIDC / D1 Claim / Callback (no production)
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/wip/workflow-s3-github-executor' &&
+          inputs.worker == 'workflow-mcp-worker' &&
+          inputs.s3_oidc_probe == true &&
+          inputs.s2_portal_probe != true &&
+          inputs.s2_cloud_e2e != true &&
+          inputs.smoke_only != true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: workflow-mcp-worker
+    concurrency:
+      group: workflow-s3-isolated-oidc
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Accept real signed GitHub Runner against disposable Cloudflare D1
+        run: node --experimental-strip-types apps/workflow-mcp-worker/tests/s3-real-oidc-cloud.mjs
