@@ -105,6 +105,13 @@ async function run(){
     if(['succeeded','failed','indeterminate','cancelled'].includes(outcome.status))break;
     await pause(1000);
   }
+  if(outcome?.status!=='succeeded'){
+    const safe=outcome?.steps?.map(s=>({
+      step:s.step_id,status:s.status,error_code:s.error_code||null,
+    }))||[];
+    console.log('S3_PRODUCT_RUN_FAILURE_STATE',
+      JSON.stringify({status:outcome?.status,error_code:outcome?.error_code||null,steps:safe}));
+  }
   assert.equal(outcome.status,'succeeded',
     'S2+S3 Product Run failed: '+String(outcome?.error_code||outcome?.status));
   assert.equal(outcome.steps.length,3);
