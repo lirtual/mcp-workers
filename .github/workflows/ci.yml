@@ -25,10 +25,18 @@ on:
         type: boolean
         default: false
       s2_portal_probe:
-        description: Read-only S2 test Portal acceptance from existing Environment secrets (no deploy)
+        description: Read-only S2 Portal acceptance from existing Environment secrets (no deploy)
         required: false
         type: boolean
         default: false
+      s2_portal_target:
+        description: Portal for the read-only S2 probe (no deployment)
+        required: false
+        type: choice
+        options:
+          - test
+          - production
+        default: test
       s2_cloud_e2e:
         description: Create, test and delete isolated S2 Worker, Workflow and D1 (never production)
         required: false
@@ -552,6 +560,7 @@ jobs:
     env:
       S2_PORTAL_CLIENT_ID: ${{ secrets.S2_PORTAL_CLIENT_ID }}
       S2_PORTAL_CLIENT_SECRET: ${{ secrets.S2_PORTAL_CLIENT_SECRET }}
+      S2_PORTAL_TARGET: ${{ inputs.s2_portal_target }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4

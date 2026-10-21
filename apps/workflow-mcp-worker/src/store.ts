@@ -25,6 +25,9 @@ export type Env = {
   // Optional, S2-only machine identity for the pinned Cloudflare MCP Portal.
   S2_PORTAL_CLIENT_ID?: string;
   S2_PORTAL_CLIENT_SECRET?: string;
+  // Optional while S2 remains disabled. For production S2, pin to mcp;
+  // for isolated test S2, pin to test-mcp (never selected by Draft input).
+  S2_PORTAL_ENDPOINT?: string;
 };
 export class StateError extends Error {
   code:string;

@@ -4,7 +4,7 @@ import { evaluateArguments, evaluateCondition, toolSchemaDigest } from './plan.t
 import type { Plan, Step } from './plan.ts';
 import type { Env } from './store.ts';
 import { limitResult } from './store.ts';
-import { scopedPublicMcpFetch, TRUSTED_PORTAL_ENDPOINT, type PortalServiceToken } from './s2-public-fetch.ts';
+import { scopedPublicMcpFetch, TRUSTED_PORTAL_ENDPOINT, PRODUCTION_PORTAL_ENDPOINT, type PortalServiceToken } from './s2-public-fetch.ts';
 
 type Outcome={status:'succeeded'|'failed'|'skipped'|'indeterminate';output?:any;error_code?:string};
 const now=()=>Date.now();
@@ -43,9 +43,20 @@ async function callApprovedReadonly(env:Env,plan:Plan,step:Step,args:Record<stri
   if(await toolSchemaDigest(step.with.input_schema,step.with.output_schema)!==schema_digest)
     throw Error('approved_schema_changed');
   const client=new Client({name:'workflow-s2-readonly-candidate',version:'0.1.0'});
+  // Environment-scoped Portal selection cannot be changed by a Draft, a
+  // Published Plan, or Run inputs. Production must explicitly select its own
+  // Portal; the test Portal is never its implicit fallback.
+  const chosenPortal=env.S2_PORTAL_ENDPOINT;
+  if(chosenPortal!==undefined){
+    if(chosenPortal!==TRUSTED_PORTAL_ENDPOINT && chosenPortal!==PRODUCTION_PORTAL_ENDPOINT)
+      throw Error('portal_target_not_authorized');
+    if(endpoint!==chosenPortal)throw Error('portal_target_not_authorized');
+  }
+  if(endpoint===PRODUCTION_PORTAL_ENDPOINT && chosenPortal!==PRODUCTION_PORTAL_ENDPOINT)
+    throw Error('portal_target_not_configured');
   // NEVER send a dynamic target through the S1 private READONLY_TARGET service.
   let portalToken:PortalServiceToken|undefined;
-  if(endpoint===TRUSTED_PORTAL_ENDPOINT){
+  if(endpoint===TRUSTED_PORTAL_ENDPOINT || endpoint===PRODUCTION_PORTAL_ENDPOINT){
     // Fail closed before making a network request; never fall back to
     // unauthenticated access or pass credentials through Workflow inputs.
     if(!env.S2_PORTAL_CLIENT_ID||!env.S2_PORTAL_CLIENT_SECRET)
@@ -53,7 +64,7 @@ async function callApprovedReadonly(env:Env,plan:Plan,step:Step,args:Record<stri
     portalToken={clientId:env.S2_PORTAL_CLIENT_ID,clientSecret:env.S2_PORTAL_CLIENT_SECRET};
   }
   const transport=new StreamableHTTPClientTransport(new URL(endpoint),{
-    fetch:scopedPublicMcpFetch(endpoint,fetch,portalToken),
+    fetch:scopedPublicMcpFetch(endpoint,fetch,portalToken,chosenPortal??TRUSTED_PORTAL_ENDPOINT),
   });
   try{
     await client.connect(transport);

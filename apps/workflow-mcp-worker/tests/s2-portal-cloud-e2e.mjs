@@ -31,7 +31,7 @@ async function run(){
   assert.ok(cand&&cand.annotations?.readOnlyHint===true&&cand.annotations?.destructiveHint!==true,'IMA read-only contract missing');
   const created=await api('POST','/accounts/'+account+'/d1/database',{name});dbId=created.uuid;
   assert.match(dbId,/^[a-f0-9-]{36}$/i);console.log('DISPOSABLE_DB_CREATED',name);
-  writeFileSync(new URL('../'+file,import.meta.url),JSON.stringify({name,main:'src/index.ts',compatibility_date:'2026-09-10',workers_dev:true,preview_urls:false,keep_vars:false,vars:{S2_READONLY_ENABLED:'true'},d1_databases:[{binding:'DB',database_name:name,database_id:dbId,migrations_dir:'migrations'}],workflows:[{name,binding:'WORKFLOW',class_name:'WorkflowRunner'}],services:[{binding:'READONLY_TARGET',service:'workflow-s1-readonly-fixture'}]}));
+  writeFileSync(new URL('../'+file,import.meta.url),JSON.stringify({name,main:'src/index.ts',compatibility_date:'2026-09-10',workers_dev:true,preview_urls:false,keep_vars:false,vars:{S2_READONLY_ENABLED:'true',S2_PORTAL_ENDPOINT:TRUSTED_PORTAL_ENDPOINT},d1_databases:[{binding:'DB',database_name:name,database_id:dbId,migrations_dir:'migrations'}],workflows:[{name,binding:'WORKFLOW',class_name:'WorkflowRunner'}],services:[{binding:'READONLY_TARGET',service:'workflow-s1-readonly-fixture'}]}));
   wr(['d1','migrations','apply',name,'--remote','--config',file]);
   attempted=true;wr(['deploy','--config',file]);
   for(const [key,val] of Object.entries({MCP_ACCESS_TOKEN:ownerToken,S2_PORTAL_CLIENT_ID:pair.clientId,S2_PORTAL_CLIENT_SECRET:pair.clientSecret}))wr(['secret','put',key,'--config',file],val);

@@ -1,12 +1,38 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { publicMcpEndpoint, scopedPublicMcpFetch, TRUSTED_PORTAL_ENDPOINT } from '../src/s2-public-fetch.ts';
+import { publicMcpEndpoint, scopedPublicMcpFetch, TRUSTED_PORTAL_ENDPOINT, PRODUCTION_PORTAL_ENDPOINT } from '../src/s2-public-fetch.ts';
 
 const TARGET = 'https://mcp.example.org/mcp?tenant=one';
 
 test('owner-selected S2 Portal endpoint is the test Portal', () => {
   assert.equal(TRUSTED_PORTAL_ENDPOINT,'https://test-mcp.lirtual.dpdns.org/mcp');
+});
+
+test('production Portal identity requires an exact explicit URL and cannot be sent to test Portal or other hosts', async () => {
+  assert.equal(PRODUCTION_PORTAL_ENDPOINT,'https://mcp.lirtual.dpdns.org/mcp');
+  const credentials={clientId:'production-fixture-id',clientSecret:'production-fixture-secret'};
+  let reached=0;
+  const send=(async(request:Request):Promise<Response>=>{
+    reached++;
+    assert.equal(request.url,PRODUCTION_PORTAL_ENDPOINT);
+    assert.equal(request.headers.get('cf-access-client-id'),credentials.clientId);
+    assert.equal(request.headers.get('cf-access-client-secret'),credentials.clientSecret);
+    assert.equal(request.redirect,'manual');
+    return new Response(null,{status:202});
+  }) as typeof fetch;
+  const scoped=scopedPublicMcpFetch(PRODUCTION_PORTAL_ENDPOINT,send,credentials,PRODUCTION_PORTAL_ENDPOINT);
+  assert.equal((await scoped(PRODUCTION_PORTAL_ENDPOINT,{method:'POST'})).status,202);
+  assert.equal(reached,1);
+  assert.throws(
+    ()=>scopedPublicMcpFetch(TRUSTED_PORTAL_ENDPOINT,send,credentials,PRODUCTION_PORTAL_ENDPOINT),
+    /portal_auth_wrong_target/,
+  );
+  assert.throws(
+    ()=>scopedPublicMcpFetch(PRODUCTION_PORTAL_ENDPOINT,send,credentials,'https://other.example.org/mcp'),
+    /portal_auth_wrong_target/,
+  );
+  assert.equal(reached,1);
 });
 
 test('candidate S2 transport rejects non-public-shaped or unsafe target URLs', () => {

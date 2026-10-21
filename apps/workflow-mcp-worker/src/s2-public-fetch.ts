@@ -27,6 +27,7 @@ export function publicMcpEndpoint(input: string | URL): URL {
 // S2 may authenticate only to the owner's explicitly chosen Portal.
 // Never send this credential to an arbitrary endpoint from a Draft.
 export const TRUSTED_PORTAL_ENDPOINT = 'https://test-mcp.lirtual.dpdns.org/mcp';
+export const PRODUCTION_PORTAL_ENDPOINT = 'https://mcp.lirtual.dpdns.org/mcp';
 export type PortalServiceToken = {clientId:string;clientSecret:string};
 
 /** Only use with an endpoint already checked against an owner operation grant. */
@@ -34,10 +35,13 @@ export function scopedPublicMcpFetch(
   approvedEndpoint: string | URL,
   outbound: typeof fetch = fetch,
   portalToken?: PortalServiceToken,
+  portalEndpoint: string = TRUSTED_PORTAL_ENDPOINT,
 ): typeof fetch {
   const approved = publicMcpEndpoint(approvedEndpoint).href;
-  if (portalToken && approved !== TRUSTED_PORTAL_ENDPOINT)
-    throw new Error('portal_auth_wrong_target');
+  if (portalToken && (
+    (portalEndpoint !== TRUSTED_PORTAL_ENDPOINT && portalEndpoint !== PRODUCTION_PORTAL_ENDPOINT) ||
+    approved !== portalEndpoint
+  )) throw new Error('portal_auth_wrong_target');
   if (portalToken && (!portalToken.clientId || !portalToken.clientSecret))
     throw new Error('portal_auth_not_configured');
   return (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {

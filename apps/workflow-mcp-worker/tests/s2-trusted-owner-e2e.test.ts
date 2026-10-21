@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { toolSchemaDigest } from '../src/plan.ts';
-import { TRUSTED_PORTAL_ENDPOINT } from '../src/s2-public-fetch.ts';
+import { TRUSTED_PORTAL_ENDPOINT, PRODUCTION_PORTAL_ENDPOINT } from '../src/s2-public-fetch.ts';
 import type { Env } from '../src/store.ts';
 import type { WorkflowEvent, WorkflowStep } from 'cloudflare:workers';
 import readonlyWorker from './fixtures/readonly-worker.ts';
@@ -56,6 +56,7 @@ test('Portal-authenticated S2 -> validate -> approve -> Publish -> Run -> Result
     MCP_ACCESS_TOKEN:TOKEN,
     S2_PORTAL_CLIENT_ID:PORTAL_ID,
     S2_PORTAL_CLIENT_SECRET:PORTAL_SECRET,
+    S2_PORTAL_ENDPOINT:TRUSTED,
     DB:{prepare,async batch(items:{run:()=>Promise<unknown>}[]){return Promise.all(items.map(s=>s.run()));}},
     WORKFLOW:{async create(){},async get(){return {async status(){return {status:'running'};}};}},
     READONLY_TARGET:{async fetch(input:Request|string|URL,init?:RequestInit){
@@ -156,6 +157,23 @@ test('Portal-authenticated S2 -> validate -> approve -> Publish -> Run -> Result
     assert.equal(outcome.result.content[0].text,'approved trusted echo');
     assert.equal(toolCalls,1,'exactly one tools/call');
     assert.equal(privateCalls,0,'S2 must never use the S1 private service binding');
+
+    // An environment configured for the production Portal must not silently
+    // execute a Plan approved for the test Portal (nor leak credentials).
+    env.S2_PORTAL_ENDPOINT=PRODUCTION_PORTAL_ENDPOINT;
+    const crossEnvironment=await call('workflow_run',{
+      workflow_id:created.workflow_id,inputs:{message:'blocked wrong Portal'},
+    });
+    await new WorkflowRunner({} as ExecutionContext,env).run({
+      payload:{run_id:crossEnvironment.run_id},
+    } as WorkflowEvent<{run_id:string}>,{
+      do:async(_name:unknown,_options:unknown,fn:()=>Promise<unknown>)=>fn(),
+    } as unknown as WorkflowStep);
+    const wrongPortal=await call('workflow_result',{run_id:crossEnvironment.run_id});
+    assert.equal(wrongPortal.status,'failed');
+    assert.equal(wrongPortal.steps[0].status,'failed');
+    assert.equal(toolCalls,1,'cross-environment Portal was not contacted');
+    env.S2_PORTAL_ENDPOINT=TRUSTED;
 
     // A missing outbound Portal secret must fail without sending any requests.
     env.S2_PORTAL_CLIENT_SECRET=undefined;

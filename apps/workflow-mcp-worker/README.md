@@ -1,3 +1,27 @@
+## S2 Portal selection (Draft, not production-enabled)
+
+- Isolated acceptance and tests continue using `https://test-mcp.lirtual.dpdns.org/mcp`.
+- The proposed production target is `https://mcp.lirtual.dpdns.org/mcp`.
+  A future production S2 release must **explicitly** configure
+  `S2_PORTAL_ENDPOINT` to the production URL; it is not inferred from a
+  Workflow Draft or a user-supplied Run input.
+- Both endpoints are fixed in source. When the environment selects either one,
+  the runtime rejects a Plan targeting the other endpoint before network I/O.
+  The Portal Service Token is attached only to the selected exact URL; redirects
+  and credential-header overrides remain denied. The existing generic
+  owner-approved public-target path remains subject to its separate gates;
+  this change does not claim generic SSRF isolation.
+- Test-only Cloudflare Workers explicitly set `S2_PORTAL_ENDPOINT` to the
+  test URL. Production S1 does not add this Variable and
+  `S2_READONLY_ENABLED` remains absent/OFF.
+- GitHub Actions' existing read-only Portal probe supports selecting `test`
+  or `production` without changing Worker deployments, for credential and
+  IMA tool discovery checks. It never stores or prints Service Token values.
+- Production Portal Service Auth and IMA mapping must be positively accepted
+  before a production S2 activation is separately authorized.
+
+---
+
 ## S2 real test-Portal Cloudflare acceptance (2026-10-21)
 
 The first exact owner candidate is `https://test-mcp.lirtual.dpdns.org/mcp`,
