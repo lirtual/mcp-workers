@@ -33,27 +33,19 @@ It is not published as an npm package and does not support standalone STDIO, sta
 
 ## MCP tools
 
-The exact supported tool-name contract is regression-tested and currently contains 17 tools:
+The Agent-facing MCP contract follows [Spec #145](https://github.com/lirtual/mcp-workers/issues/145) and the accepted [ADR in PR #144](https://github.com/lirtual/mcp-workers/pull/144): **24 Free-plan atomic tools** replace the old 41-name compatibility inventory. The production ChatGPT MCP directory was verified on 2026-10-21: exactly 24 Raindrop tools are exposed, separate from three MCP Portal management tools. This document also describes the matching source contract.
 
-- `diagnostics`
-- `collection_list`
-- `get_collection_tree`
-- `collection_manage`
-- `bookmark_search`
-- `bookmark_manage`
-- `get_raindrop`
-- `list_raindrops`
-- `get_suggestions`
-- `suggest_tags`
-- `bulk_edit_raindrops`
-- `tag_manage`
-- `highlight_manage`
-- `library_audit`
-- `empty_trash`
-- `cleanup_collections`
-- `remove_duplicates`
+- Collections: `collection_list`, `collection_get`, `collection_create`, `collection_update`, `collection_delete`, `collection_remove_empty`
+- Bookmarks: `bookmark_search`, `bookmark_get`, `bookmark_exists`, `bookmark_create`, `bookmark_update`, `bookmark_move`, `bookmark_delete`, `bookmark_filters_get`, `bookmark_batch_update`, `bookmark_batch_delete`
+- Tags: `tag_list`, `tag_rename`, `tag_merge`, `tag_delete`
+- Highlights: `highlight_list`, `highlight_create`, `highlight_update`, `highlight_delete`
+- Pro-only duplicate cleanup is removed (no replacement tool)
 
-Cleanup tools use preview-first semantics: `empty_trash({})` and `cleanup_collections({})` do not delete anything; only `confirm: true` executes. `remove_duplicates({})` and `dryRun: true` preview verified candidates; only `dryRun: false` deletes. All three retain `destructiveHint: true` and the existing safe-candidate, batch, fail-closed and no-blind-retry protections. A preview is not a transaction lock: recheck the target state before confirmed operations. Tests and acceptance checks must not mutate a real Raindrop library without separate explicit authorization.
+**Safety boundary:** `bookmark_delete` only moves non-Trash bookmarks to Trash; `permanent:true` is not accepted. Agent-facing collection creation and updates reject `public:true`; public sharing and irreversible Trash deletion remain manual Raindrop website operations. `trash_empty`, `diagnostics`, `library_audit`, obsolete aliases, and AI suggestion wrappers are **not registered as Agent tools**.
+
+Scoped high-impact writes retain their existing ID/collection validation, bounded batch limits, preview/digest confirmation where already implemented, and unknown-outcome no-replay rule. Explicit, sufficiently scoped instructions need no extra verbal confirmation, but cannot bypass any tool-mandated preview/confirmation step. Client-side approval is not a server-side authorization guarantee.
+
+Existing public read and write paths are exercised through MCP SDK `tools/list` and `tools/call` integration tests; no additional authentication, workflow, or approval service is introduced.
 
 ## Configuration
 
@@ -91,7 +83,7 @@ pnpm install --frozen-lockfile
 pnpm --filter raindrop-mcp-worker check
 ```
 
-The application `check` runs TypeScript validation, lint, the local regression suite including the exact 17-tool contract, deterministic OpenAPI type regeneration, and Wrangler dry-run deployment validation.
+The application `check` runs TypeScript validation, lint, the local regression suite including the exact tool inventory, deterministic OpenAPI type regeneration, and Wrangler dry-run deployment validation.
 
 Optional tests that require a real `RAINDROP_ACCESS_TOKEN` remain outside the default CI-safe test set. `test:env` includes explicitly gated live checks, including a destructive lifecycle test; run those only with disposable/non-production test data and the documented opt-in flags, never as routine production cutover smoke.
 
@@ -115,3 +107,17 @@ Account-level Cloudflare deployment, publisher cutover, Portal upstream changes,
 ## Source attribution
 
 This Worker was migrated and adapted from an MIT-licensed Raindrop MCP implementation. The immutable source repository, frozen commit, and license provenance are recorded in `SOURCE.md`; the preserved license is in `LICENSE`.
+
+### T10 release readiness
+
+See [Spec #145](https://github.com/lirtual/mcp-workers/issues/145) for the historical 25-tool cutover contract (now 24 tools after removing Pro-only duplicates); [T10 readiness](docs/T10-CONTRACT-READINESS.md) records historical G0 evidence and earlier 41-name compatibility decisions. The original Draft did not authorize deployment or destructive live testing; the final 24-tool Free-plan source has since been merged and published ([PR #148](https://github.com/lirtual/mcp-workers/pull/148), [release run #39554129177](https://github.com/lirtual/mcp-workers/actions/runs/39554129177)). ChatGPT Portal tool discovery and a scoped disposable-data production smoke test were completed on 2026-10-21. The live test passed bookmark create/update, Favorite positive and negative filtering, keyword/tag search, highlight create/update/delete, collection create/delete, and cleanup readback. The test bookmark was moved to Trash and remains recoverable; this is not a claim that all 24 tools were individually tested. See the acceptance record on [Issue #145](https://github.com/lirtual/mcp-workers/issues/145).
+
+The Draft follow-up fixes strict unknown-field rejection for collection_list and previously declared a validated output schema for bookmark_remove_duplicates (now removed for Free plan). These mock/SDK contract fixes are not live Raindrop acceptance or release permission.
+
+
+## Free plan scope
+
+The Worker intentionally excludes Raindrop Pro duplicate cleanup and broken-link filters,
+AI Suggestions, highlight annotations and unsupported collection color writes.
+Regular highlights (text/color), bookmark notes, collections, tags and favorites remain supported.
+The source exposes 24 atomic MCP tools; a successful build alone does not establish live deployment.

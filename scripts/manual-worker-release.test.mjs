@@ -1,10 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig } from "./manual-worker-release.mjs";
+import { activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig, verifyWorkflowD1Readiness, verifyFixtureExposure } from "./manual-worker-release.mjs";
 
 const required = [
   { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
@@ -327,78 +327,86 @@ test("GitHub Actions deploy requires only one PAT Secret and no repository lists
     secrets, { mode: "readback" }), /Unexpected production resource/);
 });
 
-test("Workflow release config is blocked until real D1, route and explicit bindings exist", () => {
-  const source = JSON.parse(readFileSync(new URL("../apps/workflow-mcp-worker/wrangler.jsonc", import.meta.url), "utf8"));
-  assert.equal(verifyWorkflowReleaseConfig(source), true);
-  const complete = {
-    ...source,
-    keep_vars: false,
-    d1_databases: [{ ...source.d1_databases[0], database_id: "12345678-1234-4234-8234-123456789abc" }],
-    routes: [{ pattern: "workflow.lirtual.dpdns.org", custom_domain: true }],
-  };
-  assert.equal(verifyWorkflowReleaseConfig(complete), true);
-  const broken = [
-    [{ ...complete, workers_dev: true }, /public routing/],
-    [{ ...complete, routes: [] }, /public routing/],
-    [{ ...complete, routes: [{ pattern: "workflow.lirtual.dpdns.org", custom_domain: false }] }, /public routing/],
-    [{ ...complete, routes: [{ pattern: "other.lirtual.dpdns.org", custom_domain: true }] }, /approved workflow.lirtual.dpdns.org/],
-    [{ ...complete, routes: [complete.routes[0], { pattern: "other.lirtual.dpdns.org", custom_domain: true }] }, /public routing/],
-    [{ ...complete, d1_databases: [{ ...complete.d1_databases[0], database_id: "00000000-0000-0000-0000-000000000000" }] }, /D1 database ID/],
-    [{ ...complete, workflows: [] }, /Workflows binding/],
-    [{ ...complete, services: [] }, /read-only Fixture binding/],
-    [{ ...complete, secrets: { required: [] } }, /Portal token/],
-    [{ ...complete, vars: { S2_READONLY_ENABLED: "true" } }, /S2 must stay disabled/],
-    [{ ...complete, keep_vars: true }, /Variables ownership/],
-    [{ ...complete, observability: { enabled: false } }, /observability/],
+test("S1 production release must preserve exact reviewed resource and private fixture boundaries", () => {
+  const owner = JSON.parse(readFileSync(new URL("../apps/workflow-mcp-worker/wrangler.jsonc", import.meta.url), "utf8"));
+  const fixture = JSON.parse(readFileSync(new URL("../apps/workflow-mcp-worker/tests/fixtures/wrangler.jsonc", import.meta.url), "utf8"));
+  assert.equal(verifyWorkflowReleaseConfig(owner, fixture), true);
+  const brokenOwners = [
+    [{ ...owner, routes: [{ pattern: "wrong.lirtual.dpdns.org", custom_domain: true }] }, /public route/],
+    [{ ...owner, d1_databases: [{ ...owner.d1_databases[0], database_id: "00000000-0000-0000-0000-000000000000" }] }, /production D1/],
+    [{ ...owner, services: [] }, /Fixture binding/],
+    [{ ...owner, workflows: [] }, /Workflow binding/],
+    [{ ...owner, secrets: { required: [] } }, /Portal Secret/],
+    [{ ...owner, vars: { S2_READONLY_ENABLED: "true" } }, /S2/],
+    [{ ...owner, compatibility_flags: ["global_fetch_strictly_public"] }, /S2/],
   ];
-  for (const [conf, reason] of broken) {
-    assert.throws(() => verifyWorkflowReleaseConfig(conf), reason);
-  }
+  for(const [cfg,err] of brokenOwners)assert.throws(()=>verifyWorkflowReleaseConfig(cfg,fixture),err);
+  for(const bad of [
+    { ...fixture, workers_dev:true },
+    { ...fixture, routes: [{pattern:"fixture.example.org", custom_domain:true}] },
+    { ...fixture, secrets:{required:["SOME_TOKEN"]} },
+    { ...fixture, d1_databases:[{binding:"DB",database_id:"other"}] }
+  ])assert.throws(()=>verifyWorkflowReleaseConfig(owner,bad),/Fixture must have no public route/);
 });
 
-test("Unprovisioned Workflow Worker cannot enter existing production dispatch", () => {
-  const workflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
-  const selector = readFileSync(new URL("./select-affected-apps.mjs", import.meta.url), "utf8");
-  const release = readFileSync(new URL("./manual-worker-release.mjs", import.meta.url), "utf8");
-  assert.ok(!workflow.includes("          - workflow-mcp-worker"), "no release choice before provisioning");
-  assert.ok(!selector.includes("RELEASE_WORKERS = APPLICATIONS;"), "application tests are not release authorization");
-  assert.match(selector, /name !== 'workflow-mcp-worker'/);
-  assert.doesNotMatch(release.split("const WORKERS = new Set(")[1].split(");")[0], /workflow-mcp-worker/);
+test("S1 remote D1 readback blocks missing migrations, nonempty first-run and unresolved Runs", () => {
+  const row = { migration_count:2,migration_v1:1,migration_v2:1,native_column:1,
+    active_runs:0,run_count:0,workflow_count:0 };
+  const result = (value) => [{success:true,results:[value]}];
+  assert.equal(verifyWorkflowD1Readiness(result(row),true),true);
+  assert.equal(verifyWorkflowD1Readiness(result({...row,run_count:3,workflow_count:1}),false),true);
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...row,migration_v2:0}),false),/schema migrations/);
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...row,active_runs:1}),false),/active or indeterminate/);
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...row,run_count:1}),true),/empty production/);
+  assert.throws(()=>verifyWorkflowD1Readiness([],true),/readback unavailable/);
 });
 
-test("Workflow offline readiness CLI fails on placeholder resources and accepts only prepared config", () => {
-  const cli = new URL("./manual-worker-release.mjs", import.meta.url).pathname;
-  const root = mkdtempSync(join(tmpdir(), "workflow-release-readiness-"));
-  const folder = join(root, "apps", "workflow-mcp-worker");
-  const config = JSON.parse(readFileSync(new URL("../apps/workflow-mcp-worker/wrangler.jsonc", import.meta.url), "utf8"));
-  const run = () => spawnSync(process.execPath, [cli, "readiness", "workflow-mcp-worker"], {
-    cwd: root,
-    encoding: "utf8",
-    timeout: 5000,
-    env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: "", CLOUDFLARE_API_TOKEN: "",
-      RELEASE_STATE_FILE: "", GITHUB_SHA: "" },
-  });
-  try {
-    mkdirSync(folder, { recursive: true });
-    const placeholder = { ...config, d1_databases: [{ ...config.d1_databases[0], database_id: "00000000-0000-0000-0000-000000000000" }] };
-    writeFileSync(join(folder, "wrangler.jsonc"), JSON.stringify(placeholder));
-    const blocked = run();
-    assert.notEqual(blocked.status, 0, "a dry-run cannot certify placeholder resources");
-    assert.match(blocked.stderr, /Workflow release/);
-    assert.doesNotMatch(blocked.stdout + blocked.stderr, /Cloudflare read-only|deploy/i);
-    const ready = {
-      ...config,
-      keep_vars: false,
-      routes: [{ pattern: "workflow.lirtual.dpdns.org", custom_domain: true }],
-      d1_databases: [{ ...config.d1_databases[0],
-        database_id: "12345678-1234-4234-8234-123456789abc" }],
-    };
-    writeFileSync(join(folder, "wrangler.jsonc"), "// reviewed route and mock D1 ID\n" + JSON.stringify(ready));
-    const result = run();
-    assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /Offline Workflow config valid/);
-    assert.match(result.stdout, /live resources not verified/);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
+test("S1 Cloudflare runtime binding readback must match private Fixture, D1 and native Workflow", () => {
+  const bindings = [
+    {name:"MCP_ACCESS_TOKEN",type:"secret_text"},
+    {name:"DB",type:"d1",id:"c76850db-b5e3-4128-9150-849a1c9e8d74"},
+    {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-s1",class_name:"WorkflowRunner"},
+    {name:"READONLY_TARGET",type:"service",service:"workflow-s1-readonly-fixture"}
+  ];
+  const settings = {bindings,observability:{enabled:true,logs:{invocation_logs:true}}};
+  const secrets = [{name:"MCP_ACCESS_TOKEN"}];
+  assert.equal(verifyBindings("workflow-mcp-worker",settings,secrets,{mode:"readback"}),true);
+  for(const item of ["DB","WORKFLOW","READONLY_TARGET"]) {
+    assert.throws(()=>verifyBindings("workflow-mcp-worker",
+      {...settings,bindings:bindings.filter(x=>x.name!==item)},secrets,{mode:"readback"}),/binding drift/);
   }
+  assert.throws(()=>verifyBindings("workflow-mcp-worker",{...settings,bindings:[...bindings,
+    {name:"S2_READONLY_ENABLED",type:"plain_text",text:"true"}]},secrets,{mode:"readback"}),/S2 must remain disabled/);
+});
+
+test("S1 manual GitHub Actions requires D1 checks and private Fixture before Owner", () => {
+  const ci=readFileSync(new URL("../.github/workflows/ci.yml",import.meta.url),"utf8");
+  const pre=ci.indexOf("      - name: Verify S1 private Fixture and remote D1 readiness");
+  const fixture=ci.indexOf("      - name: Deploy existing private S1 read-only Fixture");
+  const publish=ci.indexOf("      - name: Publish exactly selected Worker");
+  assert.ok(pre>0 && fixture>pre && publish>fixture);
+  assert.ok(ci.includes("S1_FIRST_DEPLOY: " + String.fromCharCode(36) + "{{ steps.preflight.outputs.bootstrap }}"));
+  assert.match(ci,/node scripts\/manual-worker-release\.mjs d1-check workflow-mcp-worker/);
+  assert.match(ci,/pnpm exec wrangler deploy --config tests\/fixtures\/wrangler\.jsonc/);
+  assert.match(ci,/\(cd apps\/workflow-mcp-worker &&/);
+  assert.doesNotMatch(ci,/cd apps\/workflow-mcp-worker\/tests\/fixtures &&/);
+  assert.match(ci,/mcp_endpoint="https:\/\/workflow\.lirtual\.dpdns\.org\/mcp"/);
+  assert.match(ci,/health_endpoint="https:\/\/workflow\.lirtual\.dpdns\.org\/health"/);
+  assert.match(ci,/body\.scope !== "s1"/);
+  assert.match(ci,/github\.ref == 'refs\/heads\/main'/);
+});
+
+test("S1 private Fixture actual Cloudflare exposure must be absent after deployment", () => {
+  const subdomain={enabled:false,previews_enabled:false};
+  assert.equal(verifyFixtureExposure(subdomain,[],[]),true);
+  assert.throws(()=>verifyFixtureExposure({...subdomain,enabled:true},[],[]),/workers.dev/);
+  assert.throws(()=>verifyFixtureExposure({...subdomain,previews_enabled:true},[],[]),/Preview/);
+  assert.throws(()=>verifyFixtureExposure(subdomain,[{service:"workflow-s1-readonly-fixture",hostname:"public.example.com"}],[]),/Custom Domain/);
+  assert.throws(()=>verifyFixtureExposure(subdomain,[],[{script:"workflow-s1-readonly-fixture",pattern:"example.com/*"}]),/public Worker route/);
+  assert.throws(()=>verifyFixtureExposure(subdomain,null,[]),/inventory unavailable/);
+  const ci=readFileSync(new URL("../.github/workflows/ci.yml",import.meta.url),"utf8");
+  const fixture=ci.indexOf("      - name: Deploy existing private S1 read-only Fixture");
+  const readback=ci.indexOf("      - name: Read back private S1 Fixture public-route isolation");
+  const publish=ci.indexOf("      - name: Publish exactly selected Worker");
+  assert.ok(fixture>0 && readback>fixture && publish>readback);
 });

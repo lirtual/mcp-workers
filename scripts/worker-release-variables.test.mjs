@@ -25,6 +25,8 @@ test("Remote Control installer origin comes only from its configured Custom Doma
 
 test("each Worker owns an explicit non-secret variable allowlist", () => {
   assert.deepEqual(WORKER_VARIABLES["ssh-mcp-worker"], []);
+  assert.deepEqual(WORKER_VARIABLES["workflow-mcp-worker"], []);
+  assert.deepEqual(collectWorkerVars("workflow-mcp-worker", { S2_READONLY_ENABLED: "true", GH_TOKEN: "ignored" }), []);
   assert.deepEqual(WORKER_VARIABLES["remote-control-mcp-worker"], []);
   assert.deepEqual(collectWorkerVars("remote-control-mcp-worker",
     { MAX_ROWS: "100", REMOTE_CONTROL_V2_ONLY: "false", REMOTE_CONTROL_INSTALL_ORIGIN: "https://evil.example" }, { config: remoteConfig }),

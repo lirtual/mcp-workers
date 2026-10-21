@@ -9,20 +9,25 @@ import {
   textContent,
 } from "./common.js";
 
+// Filter out Pro-only query operators, even when embedded in free-text searches.
+const FreeSearchTextSchema = z.string().max(500).refine(
+  value => !/(?:^|\s)-?(?:duplicates?|broken):(true|false)(?=\s|$)/i.test(value),
+  "Raindrop Pro duplicate and broken-link filters are not available on Free",
+);
+
 const BookmarkSearchInputSchema = z.object({
-  search: z.string().optional().describe("Full-text search query"),
-  collection: z.number().optional().describe("Collection ID to search within"),
-  tags: z.array(z.string()).optional().describe("Tags to filter by"),
-  important: z.boolean().optional().describe("Filter by important bookmarks"),
-  page: z.number().optional().describe("Page number for pagination"),
-  perPage: z.number().optional().describe("Items per page (max 50)"),
-  sort: z
-    .string()
-    .optional()
-    .describe("Sort order (score, title, -created, created)"),
+  search: FreeSearchTextSchema.optional().describe("Ordinary bookmark search text"),
+  collection: z.number().int().safe()
+    .refine(id => id === 0 || id === -1 || id === -99 || id > 0,
+      "Expected a collection ID or a valid read-only system collection")
+    .optional().describe("Collection ID; 0=All, -1=Unsorted, -99=Trash"),
+  tags: z.array(z.string().trim().min(1).max(100)).max(20).optional().describe("Tags to filter by"),
+  important: z.boolean().optional().describe("Filter by favorites (false excludes favorites)"),
+  page: z.number().int().min(0).safe().optional().describe("Zero-based page (default 0)"),
+  perPage: z.number().int().min(1).max(50).optional().describe("Page size (1–50)"),
+  sort: z.enum(["-created", "created", "score", "-sort", "title", "-title", "domain", "-domain"])
+    .optional().describe("Official Raindrop sort order"),
   tag: z.string().optional().describe("Single tag to filter by"),
-  duplicates: z.boolean().optional().describe("Include duplicate bookmarks"),
-  broken: z.boolean().optional().describe("Include broken links"),
   notag: z.boolean().optional().describe("Filter by items without tags"),
   highlight: z.boolean().optional().describe("Only bookmarks with highlights"),
   domain: z.string().optional().describe("Filter by domain"),
@@ -42,7 +47,7 @@ const BookmarkSearchInputSchema = z.object({
     .boolean()
     .optional()
     .describe("Force a fresh fetch from the API, bypassing the local cache"),
-});
+}).strict();
 
 const BookmarkSearchOutputSchema = z.object({
   items: z.array(
@@ -106,12 +111,147 @@ const bookmarkSummary = (bookmark: any) => ({
   tags: bookmark.tags || [],
 });
 
+const BookmarkGetInputSchema = z.object({
+  id: z.number().int().positive()
+    .refine(Number.isSafeInteger, "Expected a safe positive integer ID"),
+  skipCache: z.boolean().optional(),
+}).strict();
+
+const BookmarkGetOutputSchema = z.object({
+  bookmark: z.object({
+    id: z.number().int().positive(),
+    title: z.string(),
+    url: z.string().url(),
+    tags: z.array(z.string()),
+    excerpt: z.string().optional(),
+    note: z.string().optional(),
+    important: z.boolean().optional(),
+    collectionId: z.union([z.number().int().positive().safe(), z.literal(-1), z.literal(-99)]).optional(),
+    highlights: z.array(z.object({
+      id: z.string(),
+      text: z.string(),
+      color: z.string().optional(),
+      note: z.string().optional(),
+    })).optional(),
+  }),
+});
+
+const bookmarkGetTool = defineTool({
+  name: "bookmark_get",
+  description: "Fetch a bookmark by its exact positive integer ID, including available notes and highlights.",
+  inputSchema: BookmarkGetInputSchema,
+  outputSchema: BookmarkGetOutputSchema,
+  annotations: { readOnlyHint: true, idempotentHint: true },
+  handler: async (
+    args: z.infer<typeof BookmarkGetInputSchema>,
+    { raindropService }: ToolHandlerContext,
+  ) => {
+    const raw = await raindropService.getBookmark(args.id, args.skipCache);
+    const bookmark = {
+      id: raw._id,
+      title: raw.title || "Untitled",
+      url: raw.link,
+      tags: raw.tags || [],
+      ...(typeof raw.excerpt === "string" ? { excerpt: raw.excerpt } : {}),
+      ...(typeof raw.note === "string" ? { note: raw.note } : {}),
+      ...(typeof raw.important === "boolean" ? { important: raw.important } : {}),
+      ...(typeof raw.collection?.$id === "number" &&
+          Number.isSafeInteger(raw.collection.$id) &&
+          (raw.collection.$id > 0 || raw.collection.$id === -1 || raw.collection.$id === -99)
+        ? { collectionId: raw.collection.$id } : {}),
+      ...(Array.isArray(raw.highlights)
+        ? { highlights: raw.highlights.map((h) => ({
+            id: h._id,
+            text: h.text,
+            ...(typeof h.color === "string" ? { color: h.color } : {}),
+            ...(typeof h.note === "string" ? { note: h.note } : {}),
+          })) }
+        : {}),
+    };
+    return {
+      content: [textContent(`Bookmark ${bookmark.id}: ${bookmark.title}`)],
+      structuredContent: { bookmark },
+    };
+  },
+});
+
+// Single URL only: the official exists endpoint returns an aggregate ID list,
+// not a proven per-URL mapping for bulk input.
+const BookmarkExistsInputSchema = z.object({
+  url: z.string().max(2048).url()
+    .refine((value) => /^https?:\/\//i.test(value), "Expected an HTTP(S) URL"),
+}).strict();
+
+const BookmarkExistsOutputSchema = z.object({
+  exists: z.boolean(),
+  ids: z.array(z.number().int().positive()),
+});
+
+const bookmarkExistsTool = defineTool({
+  name: "bookmark_exists",
+  description: "Check whether exactly one HTTP(S) URL is already bookmarked, without changing data.",
+  inputSchema: BookmarkExistsInputSchema,
+  outputSchema: BookmarkExistsOutputSchema,
+  annotations: { readOnlyHint: true, idempotentHint: true },
+  handler: async (
+    args: z.infer<typeof BookmarkExistsInputSchema>,
+    { raindropService }: ToolHandlerContext,
+  ) => {
+    const result = await raindropService.bookmarkExists(args.url);
+    return {
+      content: [textContent(result.exists ? "URL is bookmarked" : "URL is not bookmarked")],
+      structuredContent: result,
+    };
+  },
+});
+
+const BookmarkFiltersInputSchema = z.object({
+  collectionId: z.number().int().safe().min(0).optional()
+    .describe("Collection scope; 0 means all bookmarks"),
+  tagsSort: z.enum(["-count", "_id"]).optional(),
+  search: FreeSearchTextSchema.optional(),
+}).strict();
+
+const FilterCountSchema = z.number().int().nonnegative();
+const NamedFilterSchema = z.object({
+  name: z.string(), count: FilterCountSchema,
+});
+const BookmarkFiltersOutputSchema = z.object({
+  filters: z.object({
+    important: FilterCountSchema.optional(),
+    notag: FilterCountSchema.optional(),
+    tags: z.array(NamedFilterSchema).optional(),
+    types: z.array(NamedFilterSchema).optional(),
+  }),
+});
+
+const bookmarkFiltersTool = defineTool({
+  name: "bookmark_filters_get",
+  description: "Read Raindrop's official filter statistics for a collection, without inventing missing counts.",
+  inputSchema: BookmarkFiltersInputSchema,
+  outputSchema: BookmarkFiltersOutputSchema,
+  annotations: { readOnlyHint: true, idempotentHint: true },
+  handler: async (
+    args: z.infer<typeof BookmarkFiltersInputSchema>,
+    { raindropService }: ToolHandlerContext,
+  ) => {
+    const filters = await raindropService.getBookmarkFilters(
+      args.collectionId ?? 0, args.tagsSort, args.search,
+    );
+    return {
+      content: [textContent("Raindrop filter statistics")],
+      structuredContent: { filters },
+    };
+  },
+});
+
 const bookmarkSearchTool = defineTool({
   name: "bookmark_search",
   description:
-    "Searches bookmarks with advanced filters, tags, and full-text search.",
+    "Search bookmarks using Free-plan text, tags and filters.",
   inputSchema: BookmarkSearchInputSchema,
   outputSchema: BookmarkSearchOutputSchema,
+  annotations: { readOnlyHint: true, idempotentHint: true },
   handler: async (
     args: z.infer<typeof BookmarkSearchInputSchema>,
     { raindropService }: ToolHandlerContext,
@@ -125,8 +265,6 @@ const bookmarkSearchTool = defineTool({
     setIfDefined(query, "perPage", args.perPage);
     setIfDefined(query, "sort", args.sort);
     setIfDefined(query, "tag", args.tag);
-    setIfDefined(query, "duplicates", args.duplicates);
-    setIfDefined(query, "broken", args.broken);
     setIfDefined(query, "notag", args.notag);
     setIfDefined(query, "highlight", args.highlight);
     setIfDefined(query, "domain", args.domain);
@@ -153,6 +291,192 @@ const bookmarkSearchTool = defineTool({
     };
   },
 });
+
+
+const AtomicBookmarkIdSchema = z.number().int().positive().safe();
+const AtomicBookmarkUrlSchema = z.string().url().max(2048)
+  .refine((url) => /^https?:\/\//i.test(url), "Expected an HTTP(S) URL");
+const AtomicBookmarkFieldsSchema = z.object({
+  title: z.string().trim().min(1).max(1000).optional(),
+  url: AtomicBookmarkUrlSchema.optional(),
+  excerpt: z.string().max(10000).optional(),
+  note: z.string().max(10000).optional(),
+  tags: z.array(z.string().trim().min(1).max(100)).max(50).optional(),
+  important: z.boolean().optional(),
+}).strict();
+const BookmarkCreateInputSchema = AtomicBookmarkFieldsSchema
+  .omit({ url: true }).extend({
+    url: AtomicBookmarkUrlSchema,
+    collectionId: AtomicBookmarkIdSchema.optional(),
+  }).strict();
+const BookmarkUpdateInputSchema = AtomicBookmarkFieldsSchema.extend({
+  id: AtomicBookmarkIdSchema,
+}).strict().refine(({ id: _id, ...changes }) =>
+  Object.values(changes).some((value) => value !== undefined),
+  "At least one field must change");
+const BookmarkMoveInputSchema = z.object({
+  id: AtomicBookmarkIdSchema,
+  collectionId: AtomicBookmarkIdSchema,
+}).strict();
+const BookmarkDeleteInputSchema = z.object({
+  id: AtomicBookmarkIdSchema,
+}).strict();
+
+const AtomicMutationStatus = z.enum(["succeeded", "unknown"]);
+const AtomicBookmarkMutationOutputSchema = z.object({
+  status: AtomicMutationStatus,
+  bookmark: BookmarkSearchOutputSchema.shape.items.element.optional(),
+  reason: z.string().optional(),
+});
+const AtomicBookmarkDeleteOutputSchema = z.object({
+  status: AtomicMutationStatus,
+  id: AtomicBookmarkIdSchema,
+  outcome: z.literal("trashed").optional(),
+  reason: z.string().optional(),
+});
+const unverifiedMutationReason =
+  "Upstream write outcome is not verified. Read the target before considering a retry.";
+const atomicBookmarkWriteResult = async (
+  work: () => Promise<unknown>,
+) => {
+  try {
+    const bookmark = await work() as {
+      _id: number; title?: string; link: string; tags?: string[];
+    };
+    if (!Number.isSafeInteger(bookmark?._id) || bookmark._id <= 0)
+      return { status: "unknown" as const, reason: unverifiedMutationReason };
+    return {
+      status: "succeeded" as const,
+      bookmark: bookmarkSummary(bookmark),
+    };
+  } catch {
+    // An upstream write might have applied before a network acknowledgement
+    // was lost. Never automatically retry or claim rollback.
+    return { status: "unknown" as const, reason: unverifiedMutationReason };
+  }
+};
+
+const bookmarkCreateTool = defineTool({
+  name: "bookmark_create",
+  description: "Create one bookmark. URL is required; metadata and destination are optional.",
+  inputSchema: BookmarkCreateInputSchema,
+  outputSchema: AtomicBookmarkMutationOutputSchema,
+  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+  handler: async (
+    args: z.infer<typeof BookmarkCreateInputSchema>,
+    { raindropService }: ToolHandlerContext,
+  ) => {
+    // Preflight runs outside the write uncertainty handler; a missing or
+    // inaccessible destination is a definite precondition failure.
+    if (args.collectionId !== undefined)
+      await raindropService.getCollection(args.collectionId, true);
+    const { collectionId, url, ...fields } = args;
+    const result = await atomicBookmarkWriteResult(() =>
+      raindropService.createBookmark(collectionId, {
+        link: url, ...fields,
+      }),
+    );
+    return { content: [textContent(result.status)], structuredContent: result };
+  },
+});
+
+const bookmarkUpdateTool = defineTool({
+  name: "bookmark_update",
+  description: "Update selected fields of one existing, non-Trash bookmark.",
+  inputSchema: BookmarkUpdateInputSchema,
+  outputSchema: AtomicBookmarkMutationOutputSchema,
+  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+  handler: async (
+    args: z.infer<typeof BookmarkUpdateInputSchema>,
+    { raindropService }: ToolHandlerContext,
+  ) => {
+    const current = await raindropService.getBookmark(args.id, true);
+    const sourceId = current.collection?.$id;
+    if (typeof sourceId !== "number" || !Number.isSafeInteger(sourceId) ||
+        (sourceId !== -1 && sourceId <= 0))
+      throw new ValidationError("Bookmark location is unverified or in Trash");
+    const { id, url, ...fields } = args;
+    const updates = {
+      ...fields,
+      ...(url !== undefined ? { link: url } : {}),
+    };
+    const result = await atomicBookmarkWriteResult(async () => {
+      const updated = await raindropService.updateBookmark(id, updates);
+      // If upstream returns a changed field with a conflicting value,
+      // never mark the mutation as confirmed.
+      for (const [key, expected] of Object.entries(updates)) {
+        if (JSON.stringify(updated[key as keyof typeof updated]) !== JSON.stringify(expected))
+          throw new Error("Returned bookmark does not match requested update");
+      }
+      return updated;
+    });
+    return { content: [textContent(result.status)], structuredContent: result };
+  },
+});
+
+const bookmarkMoveTool = defineTool({
+  name: "bookmark_move",
+  description: "Move exactly one bookmark into one explicitly selected collection.",
+  inputSchema: BookmarkMoveInputSchema,
+  outputSchema: AtomicBookmarkMutationOutputSchema,
+  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+  handler: async (
+    args: z.infer<typeof BookmarkMoveInputSchema>,
+    { raindropService }: ToolHandlerContext,
+  ) => {
+    const current = await raindropService.getBookmark(args.id, true);
+    const sourceId = current.collection?.$id;
+    if (typeof sourceId !== "number" || !Number.isSafeInteger(sourceId) ||
+        (sourceId !== -1 && sourceId <= 0))
+      throw new ValidationError("Bookmark location is unverified or in Trash");
+    await raindropService.getCollection(args.collectionId, true);
+    const result = await atomicBookmarkWriteResult(async () => {
+      const updated = await raindropService.updateBookmark(args.id, {
+        collection: { $id: args.collectionId },
+      });
+      if (updated.collection?.$id !== args.collectionId)
+        throw new Error("Destination collection not verified in upstream response");
+      return updated;
+    });
+    return { content: [textContent(result.status)], structuredContent: result };
+  },
+});
+
+const bookmarkDeleteTool = defineTool({
+  name: "bookmark_delete",
+  description: "Move exactly one non-Trash bookmark into Trash. Permanent deletion is not available to Agents.",
+  inputSchema: BookmarkDeleteInputSchema,
+  outputSchema: AtomicBookmarkDeleteOutputSchema,
+  annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
+  handler: async (
+    args: z.infer<typeof BookmarkDeleteInputSchema>,
+    { raindropService }: ToolHandlerContext,
+  ) => {
+    const current = await raindropService.getBookmark(args.id, true);
+    const sourceCollection = current.collection?.$id;
+    if (typeof sourceCollection !== "number" || !Number.isSafeInteger(sourceCollection))
+      throw new ValidationError("Cannot verify the bookmark's current collection");
+    if (sourceCollection === -99)
+      throw new ValidationError("Bookmark is already in Trash; permanent deletion is not available");
+    if (sourceCollection !== -1 && sourceCollection <= 0)
+      throw new ValidationError("Bookmark is not in a verified writable collection");
+    try {
+      await raindropService.deleteBookmark(args.id, sourceCollection);
+      return {
+        content: [textContent("trashed")],
+        structuredContent: { status: "succeeded" as const, id: args.id, outcome: "trashed" as const },
+      };
+    } catch {
+      return {
+        content: [textContent(unverifiedMutationReason)],
+        structuredContent: {
+          status: "unknown" as const, id: args.id, reason: unverifiedMutationReason,
+        },
+      };
+    }
+  },
+});
+
 
 const bookmarkManageTool = defineTool({
   name: "bookmark_manage",
@@ -209,10 +533,18 @@ const bookmarkManageTool = defineTool({
         };
       }
       case "delete": {
-        if (!args.id) throw new ValidationError("id is required for delete");
-        await raindropService.deleteBookmark(args.id);
+        if (!args.id || !Number.isSafeInteger(args.id) || args.id <= 0)
+          throw new ValidationError("A positive bookmark ID is required for delete");
+        // Legacy tool stays registered until the approved public-contract
+        // cutover, but must not bypass the new Trash-only permanent-delete rule.
+        const current = await raindropService.getBookmark(args.id, true);
+        const source = current.collection?.$id;
+        if (typeof source !== "number" || !Number.isSafeInteger(source) ||
+            source === -99 || (source !== -1 && source <= 0))
+          throw new ValidationError("Legacy delete only supports a verified non-Trash bookmark");
+        await raindropService.deleteBookmark(args.id, source);
         return {
-          content: [textContent(`Deleted bookmark ${args.id}`)],
+          content: [textContent(`Moved bookmark ${args.id} to Trash`)],
           structuredContent: { operation: "delete" as const, deleted: true },
         };
       }
@@ -283,6 +615,13 @@ const listRaindropsTool = defineTool({
 });
 
 export const bookmarkTools = [
+  bookmarkCreateTool,
+  bookmarkUpdateTool,
+  bookmarkMoveTool,
+  bookmarkDeleteTool,
+  bookmarkFiltersTool,
+  bookmarkGetTool,
+  bookmarkExistsTool,
   bookmarkSearchTool,
   bookmarkManageTool,
   getRaindropTool,

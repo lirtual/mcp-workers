@@ -80,9 +80,9 @@ describe("RaindropMCPService", () => {
       expect(tool).toHaveProperty("outputSchema");
     }
     // Check for a known tool
-    const diagnosticsTool = tools.find((t: any) => t.id === "diagnostics");
-    expect(diagnosticsTool).toBeDefined();
-    expect(diagnosticsTool?.name.toLowerCase()).toContain("diagnostic");
+    const searchTool = tools.find((t: any) => t.id === "bookmark_search");
+    expect(searchTool).toBeDefined();
+    expect(tools.find((t: any) => t.id === "diagnostics")).toBeUndefined();
   });
 
   it("should read the diagnostics resource via a public API", async () => {
@@ -129,16 +129,10 @@ describe("RaindropMCPService", () => {
     expect(typeof info.description).toBe("string");
   });
 
-  it("should expose diagnostics tool in available tools", async () => {
+  it("does not expose maintenance diagnostics as an Agent tool", async () => {
     const tools = await mcpService.listTools();
-    const diagnosticsTool = tools.find((t: any) => t.id === "diagnostics");
-
-    expect(diagnosticsTool).toBeDefined();
-    if (!diagnosticsTool) {
-      throw new Error("Diagnostics tool not found in tool list");
-    }
-    expect(diagnosticsTool.name).toBe("diagnostics");
-    expect(diagnosticsTool.description).toContain("Diagnostics");
+    expect(tools.find(tool => tool.id === "diagnostics")).toBeUndefined();
+    expect(tools).toHaveLength(24);
   });
 });
 

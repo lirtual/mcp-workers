@@ -5,7 +5,7 @@ import RaindropService from "../src/services/raindrop.service.js";
 vi.mock("openapi-fetch", () => ({
   default: vi.fn(() => ({
     GET: vi.fn().mockResolvedValue({
-      data: { items: [{ _id: 1, title: "Test" }], count: 1 },
+      data: { result: true, items: [{ _id: 1, title: "Test" }], count: 1 },
     }),
     POST: vi.fn(),
     PUT: vi.fn(),
@@ -37,6 +37,43 @@ describe("RaindropService Caching Logic", () => {
     expect(mockGet).toHaveBeenCalledTimes(1); // Still 1
   });
 
+  it("getCollections accepts a verified empty root list", async () => {
+    const mockGet = (service as any).client.GET;
+    mockGet.mockResolvedValueOnce({ data: { result: true, items: [] } });
+
+    await expect(service.getCollections(true)).resolves.toEqual([]);
+    expect(mockGet).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["upstream HTTP error", { error: { message: "rejected" }, data: undefined }],
+    ["missing response", { data: undefined }],
+    ["upstream result false", { data: { result: false, items: [] } }],
+    ["missing result", { data: { items: [] } }],
+    ["missing items", { data: { result: true } }],
+    ["non-array items", { data: { result: true, items: {} } }],
+  ])("getCollections rejects %s rather than claiming an empty account", async (_label, response) => {
+    service = new RaindropService({ accessToken: "fake-token", maxReadRetries: 0 });
+    const mockGet = (service as any).client.GET;
+    mockGet.mockResolvedValueOnce(response);
+
+    await expect(service.getCollections(true))
+      .rejects.toThrow("root collection list response could not be verified");
+  });
+
+  it("does not cache an invalid collection list as empty", async () => {
+    service = new RaindropService({ accessToken: "fake-token", maxReadRetries: 0 });
+    const mockGet = (service as any).client.GET;
+    mockGet.mockResolvedValueOnce({ data: { result: false, items: [] } });
+    mockGet.mockResolvedValueOnce({ data: { result: true, items: [{ _id: 1, title: "Valid" }] } });
+
+    await expect(service.getCollections()).rejects.toThrow(
+      "root collection list response could not be verified",
+    );
+    await expect(service.getCollections()).resolves.toEqual([{ _id: 1, title: "Valid" }]);
+    expect(mockGet).toHaveBeenCalledTimes(2);
+  });
+
   it("getBookmark should use cache and only call API once", async () => {
     const mockGet = (service as any).client.GET;
     mockGet.mockResolvedValue({
@@ -56,7 +93,7 @@ describe("RaindropService Caching Logic", () => {
 
   it("getBookmarks should use cache and only call API once for same query", async () => {
     const mockGet = (service as any).client.GET;
-    mockGet.mockResolvedValue({ data: { items: [], count: 0 } });
+    mockGet.mockResolvedValue({ data: { result: true, items: [], count: 0 } });
 
     const params = { search: "test", collection: 123 };
 
@@ -76,7 +113,7 @@ describe("RaindropService Caching Logic", () => {
   it("modifying collections should clear collection cache", async () => {
     const mockGet = (service as any).client.GET;
     const mockPost = (service as any).client.POST;
-    mockPost.mockResolvedValue({ data: { item: { _id: 1, title: "New" } } });
+    mockPost.mockResolvedValue({ data: { result: true, item: { _id: 1, title: "New" } } });
 
     await service.getCollections();
     expect(mockGet).toHaveBeenCalledTimes(1);
@@ -94,10 +131,10 @@ describe("RaindropService Caching Logic", () => {
     const mockPut = (service as any).client.PUT;
 
     mockGet.mockResolvedValue({
-      data: { item: { _id: 123, title: "Initial" }, items: [], count: 0 },
+      data: { result: true, item: { _id: 123, title: "Initial" }, items: [], count: 0 },
     });
     mockPut.mockResolvedValue({
-      data: { item: { _id: 123, title: "Updated" } },
+      data: { result: true, item: { _id: 123, title: "Updated" } },
     });
 
     await service.getBookmark(123);
@@ -117,7 +154,7 @@ describe("RaindropService Caching Logic", () => {
 
   it("should bypass cache when skipCache is true", async () => {
     const mockGet = (service as any).client.GET;
-    mockGet.mockResolvedValue({ data: { items: [], count: 0 } });
+    mockGet.mockResolvedValue({ data: { result: true, items: [], count: 0 } });
 
     // First call - populates cache
     await service.getCollections();

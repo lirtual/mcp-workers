@@ -13,8 +13,8 @@ export const APPLICATIONS = [
   'workflow-mcp-worker',
 ];
 
-// S1 is test-only; do not expose its Worker in the production dispatch gate.
-const RELEASE_WORKERS = APPLICATIONS.filter(name => name !== 'workflow-mcp-worker');
+// Only the selected main-branch manual workflow may deploy; CI never deploys.
+const RELEASE_WORKERS = APPLICATIONS;
 
 function requiresAllApps(file) {
   return file === 'package.json'
