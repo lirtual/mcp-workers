@@ -38,6 +38,7 @@ export type Env = {
   // An isolated acceptance-only worker can use the existing ci.yml branch Job
   // because the dedicated S3 workflow is not registered on main yet.
   S3_TEST_WORKER_NAME?: string;
+  S3_TEST_DEDICATED_EXECUTOR?: string;
 };
 export class StateError extends Error {
   code:string;

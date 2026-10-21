@@ -11,7 +11,11 @@ const cf=need('CLOUDFLARE_API_TOKEN'),account=need('CLOUDFLARE_ACCOUNT_ID');
 const pair={clientId:need('S2_PORTAL_CLIENT_ID'),clientSecret:need('S2_PORTAL_CLIENT_SECRET')};
 assert.equal(need('GITHUB_REPOSITORY'),'lirtual/mcp-workers');
 assert.equal(need('GITHUB_REF'),'refs/heads/wip/workflow-s3-github-executor');
-const suffix=randomBytes(5).toString('hex'),name='workflow-s3-plan-'+suffix;
+const expectedName=process.env.S3_DEDICATED_TEST_NAME||undefined;
+if(expectedName!==undefined)assert.match(expectedName,/^workflow-s3-plan-[a-f0-9]{10}$/);
+const suffix=expectedName?.slice(-10)??randomBytes(5).toString('hex');
+const name=expectedName??'workflow-s3-plan-'+suffix;
+const dedicated=expectedName!==undefined;
 const file='wrangler.s3-plan-'+suffix+'.json',cwd=new URL('..',import.meta.url).pathname;
 const endpoint='https://'+name+'.aiyaya.workers.dev/mcp',ownerToken=randomUUID()+randomUUID();
 let dbId,attempted=false,owner,portal,runId;const pause=ms=>new Promise(r=>setTimeout(r,ms));
@@ -41,6 +45,11 @@ async function run(){
   await portal.client.connect(portal.transport);
   const cand=(await portal.client.listTools()).tools.find(t=>t.name==='ima_list_notebooks');
   assert.ok(cand&&cand.annotations?.readOnlyHint===true&&cand.annotations?.destructiveHint!==true,'IMA read-only contract missing');
+  if(dedicated){
+    const listed=await api('GET','/accounts/'+account+'/workers/scripts');
+    assert.ok(Array.isArray(listed)&&!listed.some(x=>x.id===name||x.name===name),
+      'dedicated disposable Worker name is already in use');
+  }
   const created=await api('POST','/accounts/'+account+'/d1/database',{name});dbId=created.uuid;
   assert.match(dbId,/^[a-f0-9-]{36}$/i);console.log('DISPOSABLE_DB_CREATED',name);
   writeFileSync(new URL('../'+file,import.meta.url),JSON.stringify({name,main:'tests/fixtures/s3-product-test-entry.ts',compatibility_date:'2026-09-10',workers_dev:true,preview_urls:false,keep_vars:false,vars:{S2_READONLY_ENABLED:'true',S2_PORTAL_ENDPOINT:TRUSTED_PORTAL_ENDPOINT,
@@ -48,6 +57,7 @@ async function run(){
  S3_GITHUB_REPOSITORY_ID:process.env.GITHUB_REPOSITORY_ID,
  S3_GITHUB_REF:process.env.GITHUB_REF,
  S3_GITHUB_AUDIENCE:'workflow-s3-claim:test',S3_TEST_WORKER_NAME:name,
+ ...(dedicated?{S3_TEST_DEDICATED_EXECUTOR:'true'}:{}),
  S3_TEST_EXPECTED_TOKEN_SHA256:createHash('sha256').update(need('GITHUB_TOKEN')).digest('hex')},d1_databases:[{binding:'DB',database_name:name,database_id:dbId,migrations_dir:'migrations'}],workflows:[{name,binding:'WORKFLOW',class_name:'WorkflowRunner'}],services:[{binding:'READONLY_TARGET',service:'workflow-s1-readonly-fixture'}]}));
   wr(['d1','migrations','apply',name,'--remote','--config',file]);
   attempted=true;
@@ -155,7 +165,8 @@ async function run(){
     'S2+S3 Product Run failed: '+String(outcome?.error_code||outcome?.status));
   assert.equal(outcome.steps.length,3);
   assert.ok(outcome.steps.every(s=>s.status==='succeeded'));
-  assert.equal(outcome.result?.source,'separate-github-workflow-dispatch');
+  assert.equal(outcome.result?.source,
+    dedicated?'workflow-s3-executor':'separate-github-workflow-dispatch');
   assert.equal(outcome.result?.echo,'ok');
   assert.equal((await tool('workflow_run',params)).run_id,runId);
   console.log('S3_PRODUCT_S2_PORTAL_GITHUB_WORKFLOW_RESULT_PASS',name);

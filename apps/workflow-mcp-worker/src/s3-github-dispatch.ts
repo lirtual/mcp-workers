@@ -152,12 +152,18 @@ export function matchCandidateIdentity(
 
 /** No runtime or Plan input can elect the isolated CI executor. */
 export function selectedS3Executor(
-  env:{S3_GITHUB_REPOSITORY?:string;S3_GITHUB_REF?:string;S3_TEST_WORKER_NAME?:string},
+  env:{S3_GITHUB_REPOSITORY?:string;S3_GITHUB_REF?:string;S3_TEST_WORKER_NAME?:string;S3_TEST_DEDICATED_EXECUTOR?:string},
 ):{workflow:'workflow-s3-executor.yml'|'ci.yml';workerName?:string}{
-  if(env.S3_TEST_WORKER_NAME===undefined)return {workflow:'workflow-s3-executor.yml'};
+  if(env.S3_TEST_WORKER_NAME===undefined){
+    if(env.S3_TEST_DEDICATED_EXECUTOR==='true')
+      throw Error('github_executor_test_environment_invalid');
+    return {workflow:'workflow-s3-executor.yml'};
+  }
   if(env.S3_GITHUB_REPOSITORY!=='lirtual/mcp-workers'||
      env.S3_GITHUB_REF!=='refs/heads/wip/workflow-s3-github-executor'||
      !/^workflow-s3-(?:oidc|plan)-[a-f0-9]{10}$/.test(env.S3_TEST_WORKER_NAME))
     throw Error('github_executor_test_environment_invalid');
+  if(env.S3_TEST_DEDICATED_EXECUTOR==='true')
+    return {workflow:'workflow-s3-executor.yml'};
   return {workflow:'ci.yml',workerName:env.S3_TEST_WORKER_NAME};
 }

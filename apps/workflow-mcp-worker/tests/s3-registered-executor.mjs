@@ -17,10 +17,14 @@ const ref=required('GITHUB_REF');
 assert.equal(required('GITHUB_WORKFLOW_REF'),
   'lirtual/mcp-workers/.github/workflows/workflow-s3-executor.yml@'+ref);
 const origin=required('S3_CALLBACK_ORIGIN');
+const dedicatedDraftFixture=
+  ref==='refs/heads/wip/workflow-s3-github-executor' &&
+  /^https:\/\/workflow-s3-plan-[a-f0-9]{10}\.aiyaya\.workers\.dev$/.test(origin) &&
+  process.env.S3_GITHUB_AUDIENCE==='workflow-s3-claim:test';
 assert.ok([
   'https://workflow.lirtual.dpdns.org',
   'https://workflow-s3-test.aiyaya.workers.dev',
-].includes(origin),'unregistered callback origin');
+].includes(origin)||dedicatedDraftFixture,'unregistered callback origin');
 const audience=required('S3_GITHUB_AUDIENCE');
 assert.match(audience,/^workflow-s3-[a-z0-9:-]{4,120}$/);
 const oidcURL=new URL(required('ACTIONS_ID_TOKEN_REQUEST_URL'));

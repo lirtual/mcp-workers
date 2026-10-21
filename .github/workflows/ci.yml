@@ -62,6 +62,11 @@ on:
         required: false
         type: boolean
         default: false
+      s3_dedicated_name:
+        description: Exact pre-authorized random disposable S3 Worker name (dedicated executor acceptance only)
+        required: false
+        type: string
+        default: ''
       s3_cleanup_name:
         description: Exact ephemeral workflow-s3-plan-XXXXXXXXXX resource to remove
         required: false
@@ -801,6 +806,7 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       S2_PORTAL_CLIENT_ID: ${{ secrets.S2_PORTAL_CLIENT_ID }}
       S2_PORTAL_CLIENT_SECRET: ${{ secrets.S2_PORTAL_CLIENT_SECRET }}
+      S3_DEDICATED_TEST_NAME: ${{ inputs.s3_dedicated_name }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4

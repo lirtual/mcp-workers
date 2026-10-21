@@ -144,3 +144,18 @@ test('production executor remains dedicated; only exact disposable S3 environmen
     {...fixture,S3_TEST_WORKER_NAME:'workflow-s3-oidc-../../bad'},
   ])assert.throws(()=>selectedS3Executor(mutation),/github_executor_test_environment_invalid/);
 });
+
+
+test('registered dedicated S3 acceptance is gated to the exact Draft ref and disposable host',()=>{
+  const env={S3_GITHUB_REPOSITORY:'lirtual/mcp-workers',
+    S3_GITHUB_REF:'refs/heads/wip/workflow-s3-github-executor',
+    S3_TEST_WORKER_NAME:'workflow-s3-plan-abcdef0123',
+    S3_TEST_DEDICATED_EXECUTOR:'true'};
+  assert.deepEqual(selectedS3Executor(env),{workflow:'workflow-s3-executor.yml'});
+  for(const changed of [
+    {...env,S3_GITHUB_REF:'refs/heads/main'},
+    {...env,S3_GITHUB_REPOSITORY:'other/repo'},
+    {...env,S3_TEST_WORKER_NAME:'workflow-s3-plan/evil'},
+    {...env,S3_TEST_WORKER_NAME:undefined},
+  ])assert.throws(()=>selectedS3Executor(changed),/github_executor_test_environment_invalid/);
+});
