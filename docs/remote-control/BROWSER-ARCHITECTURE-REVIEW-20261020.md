@@ -221,3 +221,27 @@ Source contracts: [Playwright Network](https://playwright.dev/docs/network), [CD
 **P10 PR CI follow-up:** GitHub Actions [run #39525669190](https://github.com/lirtual/mcp-workers/actions/runs/39525669190), for Worker Draft commit `a4414e9`, **CI completed SUCCESS**. The **Application checks** job succeeded including staging the pinned public Agent test fixture and running affected application checks. **Database integration** and **Manual selected Worker release** jobs were **skipped**. This is independent CI evidence for the Draft test addition; it is **not** a production publish, a browser MCP signed real-device run, or a ChatGPT user-confirmation acceptance.
 
 **P10 checkpoint:** source/test hardening completed and repeatable; confirmed human-approval transport **NOT PROVEN**; no production tool exposure, code deployment, Agent upgrade, PR merge or network isolation assertion.
+
+## P11 annotated risk and protocol boundary (2026-10-21)
+
+**Outcome: minimal source metadata correction plus local protocol contract tests; NOT a live ChatGPT confirmation experiment.** The owner-selected Windows Goal A remains the active risk model, with the network-exposure risk accepted and with consequential/uncertain external actions gated by real user approval. All browser tools remain disabled on the production MCP surface.
+
+### Exact changes to Worker Draft PR #143
+
+- [`cb15d8a`](https://github.com/lirtual/mcp-workers/commit/cb15d8acca0606f8dbcbd921022dd413c245d857) corrects **only staged tool descriptors**: `browser_navigate` is `readOnlyHint=false`, `destructiveHint=true`, `openWorldHint=true` because even GET navigation may cause irreversible website effects; `browser_close` now explicitly warns of unsaved page state loss and uses `destructiveHint=true`. `browser_status` and `browser_snapshot` explicitly declare `destructiveHint=false`. `browser_start` remains a non-read-only, non-destructive local session-start operation. All five expose explicit booleans for `readOnlyHint`, `destructiveHint` and `openWorldHint`.
+- [`091eca8`](https://github.com/lirtual/mcp-workers/commit/091eca8f421e3126bcdc6174ac5ca471704e6e21) pins these exact annotations as a regression test. **Annotations are advisory host UX, not authorization or proof of single-use consent.** [OpenAI plugin guidelines](https://developers.openai.com/plugins/plugin-guidelines) require explicit truthful values; the [MCP maintainers' tool annotation review](https://blog.modelcontextprotocol.io/posts/2026-03-16-tool-annotations/) cautions against treating these hints as enforcement.
+- [`ca6f383`](https://github.com/lirtual/mcp-workers/commit/ca6f3830be8a832605969ce7ebbde0cae52d0bce) pins legacy protocol behavior: an isolated client-shaped `initialize` requesting `2026-07-28` and `capabilities.elicitation` still returns only `2025-11-25` with `{tools:{listChanged:false}}`. This checks the **existing local Worker handler**, not a real ChatGPT client connection, and does not prove 2026-07-28 MRTR or trusted user presence. No protocol migration selected.
+
+### Observed evidence and precise limits
+
+| Validation | Result | Limit |
+| --- | --- | --- |
+| WSL disposable archive, Node 22, Worker Draft `ca6f383`, `node --experimental-strip-types --test tests/browser-tools.test.ts` | **7/7 PASS** | Local handler + parser tests only, no Cloudflare production or ChatGPT client |
+| Worker source `tsc --noEmit -p tsconfig.json` with existing development dependencies | **PASS** | Isolated test configuration with full Agent fixtures not repeated this turn |
+| Existing Client ↔ live plugin runtime negotiation / elicitation callback | **NOT TESTED** | Cannot infer support from public docs or synthetic `initialize` |
+| One-use approval bound to signed Agent browser operation + execution effects | **NOT IMPLEMENTED / NOT VERIFIED** | Still blocks high-impact/uncertain operations |
+| Native Windows production browser enablement, build/install or release | **NOT DONE** | `BROWSER_TOOLS_ACCEPTED=false`, Draft only |
+
+**Complexity decision:** To verify actual ChatGPT client user input, a *separately authorized* disposable MCP endpoint/connection with non-production credentials is necessary; reusing the production Remote Control plugin as a test endpoint is not acceptable. Do not add a second worker, approval backend, auth provider, special browser binary, or persistent challenge storage solely to compensate for a currently unobserved client response. If the client's trusted server-visible approval signal cannot be demonstrated, **preserve the five-tool staging/deny gate and do not enable consequential or ambiguous navigation**, rather than pretending host confirmation is Agent-verifiable. Reuse P3 independent native Windows Chrome/DO signed evidence without combining it into a fictitious complete live browser E2E.
+
+**P11 status:** two staged code-description changes, added tests, zero runtime or production behavior changes, no Client human-confirmation acceptance. Continue only with a realistic isolated client proof after separate permission to connect one; no merge, deploy, release, installed Agent upgrade, or production browser feature enablement.
