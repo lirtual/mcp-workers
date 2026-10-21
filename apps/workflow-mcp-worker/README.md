@@ -1,3 +1,43 @@
+## S3 isolated independent GitHub REST dispatch proof (2026-10-21)
+
+A real separate, side-effect-free GitHub Job has been dispatched successfully:
+[coordinator Action #39627837142](https://github.com/lirtual/mcp-workers/actions/runs/39627837142)
+→ [independent executor Action #39627918285](https://github.com/lirtual/mcp-workers/actions/runs/39627918285).
+The GitHub REST `workflow_dispatch` request now sets
+`return_run_details:true` (the upstream API requires this to obtain a
+confirmed physical `workflow_run_id`). The coordinator pinned the exact
+GitHub ref, registered an opaque logical Attempt, made **one** dispatch
+request, recorded the returned physical Run ID in disposable D1, then
+waited for that separate GitHub Runner to obtain its own signed OIDC
+identity, claim the confirmed Attempt and execute only registered
+`heavy.github.echo`. The callback was stored before Cloudflare Workflows
+was notified, and the coordinator verified the Run's terminal result and
+owner Run ID against D1. The child GitHub Action's final verdict was
+**Success**, and the coordinator's main acceptance job finished **Success**,
+including the isolated Worker/Workflow/D1 cleanup checks.
+
+Because the dedicated `workflow-s3-executor.yml` is not present on the
+repository's default branch, this **Draft-only isolated proof reuses the
+existing `ci.yml` as a precisely pinned temporary executor**. The
+production dispatcher remains pinned to `workflow-s3-executor.yml`; the
+`ci.yml` alternate path is allowed only for exact
+`lirtual/mcp-workers`, the S3 Draft ref and a randomly named
+`workflow-s3-oidc-<10 hex>` isolated Worker. It does not authorize arbitrary
+repository dispatch, Shell tools or dynamic callback URLs. The child Job
+receives only opaque IDs and the scoped isolated hostname; it gets GitHub
+OIDC but **not** Cloudflare or Portal secrets.
+
+**Remaining product integration:** this proved a *GitHub Actions coordinator*
+dispatching an independent Job and receiving its result through a real
+Cloudflare Workflow. The user-facing Workflow MCP Runner and published
+`Plan` DSL do **not** yet dispatch `heavy.github.echo`; this is not yet an
+operational S3 MCP capability, nor a combined S1+S2+S3 plan through test
+Portal. Cancellation, timeout ambiguity, cross-version compatibility and
+the final dedicated executor workflow still require integration/acceptance.
+S1 production unchanged, S2/S3 Draft and OFF, production Portal 401 deferred.
+
+---
+
 ## S3 real GitHub OIDC / Cloudflare D1 isolated verification (2026-10-21)
 
 [GitHub Actions #39624620984](https://github.com/lirtual/mcp-workers/actions/runs/39624620984)
