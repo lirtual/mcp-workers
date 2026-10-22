@@ -60,7 +60,7 @@ export const BROWSER_TOOLS = [
   },
   {
     name:"browser_fill",title:"Fill semantic page target",
-    description:"Fill one unique, fresh target; input text must not appear in logs or receipt summaries.",
+    description:"Fill one unique, fresh target after one-use owner approval. The approval page must not display entered text; preserve the exact operation_id and arguments on confirmation.",
     inputSchema:schema({operation_id:operation,session_id:session,role,name,snapshot_version:version,text:{type:"string",maxLength:5000}},["operation_id","session_id","role","name","snapshot_version","text"]),
     annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:true},
   },

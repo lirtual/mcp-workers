@@ -8,7 +8,7 @@ const TOMBSTONE_MS = 5 * 60_000;
 const MAX_RECORDS = 32;
 const DEVICE_ID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const DIGEST = /^[a-f0-9]{64}$/;
-const ALLOWED_EFFECTS = new Set(["browser_click","browser_press_key","browser_select_option"]);
+const ALLOWED_EFFECTS = new Set(["browser_click","browser_fill","browser_press_key","browser_select_option"]);
 
 export interface BrowserApprovalIntent {
   device_id: string;

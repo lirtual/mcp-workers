@@ -72,7 +72,7 @@ async function callPairedBrowser(env: Env, id: unknown, name: string, args: unkn
   if (!parsed) return toolError(id,"Invalid browser request or device target.");
   const owner = pendingOwner(env);
   if (!owner) return toolError(id,"Browser device is unavailable.");
-  const gated = ["browser_click","browser_press_key","browser_select_option"].includes(name);
+  const gated = ["browser_click","browser_fill","browser_press_key","browser_select_option"].includes(name);
   const approvalSettings=env as V2Env & BrowserApprovalAccessConfig & {BROWSER_APPROVAL_PUBLIC_ORIGIN?:string};
   const publicOrigin=approvalSettings.BROWSER_APPROVAL_PUBLIC_ORIGIN;
   // Missing remote-owner identity configuration means no sensitive effect.

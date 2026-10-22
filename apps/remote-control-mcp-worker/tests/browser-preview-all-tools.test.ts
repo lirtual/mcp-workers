@@ -88,3 +88,26 @@ test("production DeviceCoordinator never advertises or dispatches browser tools"
   assert.equal(out.result?.isError,true);
   assert.equal(forwarded,0);
 });
+
+test("Preview routes browser_fill through approval instead of direct signed WSS dispatch",async()=>{
+  const device=randomUUID(),operation_id="spec152-fill-"+randomUUID();
+  const calls:Array<{path:string;payload:Record<string,unknown>}>=[];
+  const env={...preview,V2_OWNER:{idFromName:()=>({}),get:()=>({
+    fetch:async(url:string,init:{body?:string})=>{
+      const payload=JSON.parse(init.body??"{}") as Record<string,unknown>;
+      calls.push({path:new URL(url).pathname,payload});
+      return Response.json({operation_id,status:"confirmation_required",
+        approval_id:randomUUID(),expires_at:Date.now()+300000});
+    },
+  })}};
+  const text="not-safe-to-show-on-approval-page";
+  const output=await request(env,"tools/call",{name:"browser_fill",arguments:{
+    device_id:device,operation_id,session_id:randomUUID(),role:"textbox",
+    name:"Demo field",snapshot_version:7,text,
+  }});
+  assert.equal(output.result?.isError,false);
+  assert.deepEqual(calls.map(x=>x.path),["/browser-approval/dispatch"]);
+  assert.equal(calls[0]?.payload.tool,"browser_fill");
+  assert.match(String(output.result?.content?.[0]?.text),/confirmation_required/);
+  assert.equal(JSON.stringify(output).includes(text),false);
+});

@@ -309,7 +309,7 @@ export class V2OwnerCoordinator {
     const tool=input.tool,deviceId=input.device_id,operationId=input.operation_id;
     const args=input.arguments;
     if(Object.keys(input).length!==4||typeof tool!=="string"||
-      !["browser_click","browser_press_key","browser_select_option"].includes(tool)||
+      !["browser_click","browser_fill","browser_press_key","browser_select_option"].includes(tool)||
       typeof deviceId!=="string"||typeof operationId!=="string"||
       !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(deviceId)||
       !parseOperationId({operation_id:operationId})||
@@ -354,6 +354,8 @@ export class V2OwnerCoordinator {
     }catch{return Response.json({error:"unsupported_page"},{status:409});}
     const desc=tool==="browser_click"
       ? "Click "+String(effectArgs.role)+" "+String(effectArgs.name)
+      : tool==="browser_fill"
+      ? "Fill "+String(effectArgs.role)+" "+String(effectArgs.name)+" (contents hidden)"
       : tool==="browser_press_key"
       ? "Press "+String(effectArgs.key)
       : "Select option "+String(effectArgs.value)+" in "+String(effectArgs.name);

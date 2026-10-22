@@ -3,6 +3,7 @@ import {randomUUID} from "node:crypto";
 import test from "node:test";
 import {V2OwnerCoordinator} from "../src/worker.ts";
 import {approveBrowserIntent,inspectBrowserIntent} from "../src/browser-approval.ts";
+import {browserApprovalPage} from "../src/browser-approval-web.ts";
 
 function context(){
   const id=randomUUID(),sid=randomUUID(),epoch=randomUUID();
@@ -137,4 +138,43 @@ test("same-origin path or query changes cannot reuse consent; URL query stays ou
     assert.equal(changed.data.status,"conflict");
     assert.equal(t.commands.filter(c=>c.kind==="operation").length,0);
   }
+});
+
+test("fill requires exact one-use owner approval and never stores or displays entered text",async()=>{
+  const t=context();
+  const entered="example-private-form-value-never-persist";
+  const fillArgs={
+    session_id:t.sid,role:"textbox",name:"Account reference",
+    snapshot_version:3,text:entered,
+  };
+  const first=await t.dispatch({tool:"browser_fill",arguments:fillArgs});
+  assert.equal(first.status,200);
+  assert.equal(first.data.status,"confirmation_required");
+  assert.equal(t.commands.filter(x=>x.kind==="operation").length,0);
+  const approvalId=String(first.data.approval_id);
+  const record=await inspectBrowserIntent(
+    t.storage as unknown as Pick<DurableObjectStorage,"transaction">,approvalId);
+  assert.ok(record);
+  assert.equal(record.intent.tool,"browser_fill");
+  assert.match(record.intent.display,/Account reference/);
+  assert.match(record.intent.display,/contents hidden/);
+  assert.equal(JSON.stringify([...t.data.entries()]).includes(entered),false);
+  assert.equal(JSON.stringify(first.data).includes(entered),false);
+  const page=await browserApprovalPage(approvalId,record).text();
+  assert.match(page,/Fill textbox Account reference/);
+  assert.equal(page.includes(entered),false);
+  assert.equal(page.includes("contents hidden"),true);
+  const changed=await t.dispatch({tool:"browser_fill",
+    arguments:{...fillArgs,text:"different-value"}});
+  assert.equal(changed.data.status,"conflict");
+  assert.equal(t.commands.filter(x=>x.kind==="operation").length,0);
+  assert.equal(await approveBrowserIntent(
+    t.storage as unknown as Pick<DurableObjectStorage,"transaction">,
+    approvalId,"owner-access-subject"),"approved");
+  const sent=await t.dispatch({tool:"browser_fill",arguments:fillArgs});
+  assert.equal(sent.data.status,"completed");
+  assert.equal(t.commands.filter(x=>x.kind==="operation").length,1);
+  const repeated=await t.dispatch({tool:"browser_fill",arguments:fillArgs});
+  assert.equal(repeated.data.status,"unavailable");
+  assert.equal(t.commands.filter(x=>x.kind==="operation").length,1);
 });
