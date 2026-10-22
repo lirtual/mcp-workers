@@ -21,6 +21,7 @@ Updated: 2026-10-22 · SPEC #152
 - Actual Windows desktop, Agent `79dec253`: produced unpublished native preview package `v0.0.4-spec152`; manifest verified **34/34** files against pinned hashes, including Playwright 1.64.1.
 - **Real headed Edge, native/local only:** opened a disposable private Profile, navigated the public Playwright TodoMVC test page, read semantic snapshot, filled a role/name target, pressed Enter, verified the result and closed successfully (exit 0).
 - A second real Edge test opened/selected/closed multiple tabs and proved stale-snapshot rejection after switching tabs (exit 0). Both tests left zero test-profile Edge processes and cleaned their temporary Profiles. Installed Windows RCA was unchanged.
+- **Latest compiled native Windows candidate:** Agent [`76aad5f`](https://github.com/lirtual/remote-control-agent/commit/76aad5f2fdf5cab0f12c0a337060a38de45771b0), [CI #39765365929](https://github.com/lirtual/remote-control-agent/actions/runs/39765365929) **PASS** across Windows x64 and Ubuntu x64/ARM64. The packaged BrowserManager ran actual Windows Chrome, denied wrong-tab and stale-version navigation without changing the page, and completed a fresh-version navigation to an entirely locally fulfilled HTTPS fixture. This is native packaged browser coverage, **not** the missing authenticated MCP/DO/signed-WSS Windows end-to-end run.
 
 ## Open release blockers
 
