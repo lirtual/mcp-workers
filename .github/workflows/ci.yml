@@ -440,7 +440,7 @@ jobs:
           umask 077
           node scripts/worker-release-variables.mjs "$SELECTED_WORKER" "$RUNNER_TEMP/mcp-worker-variables.txt"
 
-      - name: Verify dedicated GitHub GitHub token without executable dispatch
+      - name: Verify dedicated GitHub token without executable dispatch
         if: inputs.worker == 'workflow-mcp-worker'
         env:
           GITHUB_EXECUTOR_TOKEN: ${{ secrets.GITHUB_EXECUTOR_TOKEN }}
@@ -774,7 +774,7 @@ jobs:
         run: node --experimental-strip-types apps/workflow-mcp-worker/tests/mcp-portal-cloud-e2e.mjs
 
   workflow-github-isolated-oidc:
-    name: Isolated GitHub GitHub OIDC / D1 Claim / Callback (no production)
+    name: Isolated GitHub OIDC / D1 Claim / Callback (no production)
     if: >-
       ${{ github.event_name == 'workflow_dispatch' &&
           github.ref == 'refs/heads/wip/workflow-github-executor' &&
@@ -853,7 +853,7 @@ jobs:
         run: node --experimental-strip-types apps/workflow-mcp-worker/tests/github-real-oidc-cloud.mjs
 
   workflow-github-independent-echo:
-    name: Independent GitHub GitHub no-side-effect echo execution (OIDC only)
+    name: Independent GitHub no-side-effect echo execution (OIDC only)
     if: >-
       ${{ github.event_name == 'workflow_dispatch' &&
           github.ref == 'refs/heads/wip/workflow-github-executor' &&
@@ -953,7 +953,7 @@ jobs:
         run: node apps/workflow-mcp-worker/tests/github-disposable-cleanup.mjs "$GITHUB_CLEANUP_NAME"
 
   workflow-github-auth-comparison:
-    name: GitHub GitHub authorization isolation probe (no executable dispatch)
+    name: GitHub authorization isolation probe (no executable dispatch)
     if: >-
       ${{ github.event_name == 'workflow_dispatch' &&
           github.ref == 'refs/heads/wip/workflow-github-executor' &&

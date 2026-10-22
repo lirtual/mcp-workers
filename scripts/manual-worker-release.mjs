@@ -188,7 +188,7 @@ export function verifyWorkflowReleaseConfig(conf, fixture) {
     conf.d1_databases[0]?.migrations_dir === "migrations", "Workflow approved production D1 drift");
   invariant(conf.workflows?.length === 1 && conf.workflows[0]?.binding === "WORKFLOW" &&
     conf.workflows[0]?.name === "workflow-mcp-runner" &&
-    conf.workflows[0]?.class_name === "WorkflowRunner", "Workflow Workflow binding drift");
+    conf.workflows[0]?.class_name === "WorkflowRunner", "Workflow binding drift");
   invariant(conf.services?.length === 1 && conf.services[0]?.binding === "READONLY_TARGET" &&
     conf.services[0]?.service === "workflow-readonly-fixture", "Workflow private Fixture binding drift");
   invariant(JSON.stringify(conf.secrets?.required) === JSON.stringify(["MCP_ACCESS_TOKEN"]),
