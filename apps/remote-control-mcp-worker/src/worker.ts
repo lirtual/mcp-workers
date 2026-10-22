@@ -1,8 +1,8 @@
 import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
 import { BROWSER_TOOLS, BROWSER_EFFECT_TOOLS, BROWSER_READ_TOOLS, parseBrowserCall, browserEffectClientStatus } from "./browser-tools.ts";
 import {verifyAccessApprovalOwner,validBrowserApprovalRequest,validBrowserApprovalForm,browserApprovalPage,type BrowserApprovalAccessConfig} from "./browser-approval-web.ts";
-/** Source staged only: no browser surface advertised before native packaging and E2E acceptance. */
-const BROWSER_TOOLS_ACCEPTED = false;
+/** Browser tools are available to paired devices only on the isolated v2 Preview.
+ * Production's DEVICE_COORDINATOR binding never opts into this Preview surface. */
 import { handleAgentInstallerRequest } from "./install-bootstrap.ts";
 export { V2OwnerCoordinator } from "./v2-pairing.ts";
 import { V2OwnerCoordinator as PreviewCoordinator } from "./v2-pairing.ts";
@@ -12,34 +12,18 @@ type V2Env = Env & {
   V2_OWNER?: DurableObjectNamespace;
   DEVICE_COORDINATOR?: DurableObjectNamespace;
   REMOTE_CONTROL_V2_PREVIEW_ONLY?: string;
-  SPEC152_PREVIEW_BROWSER_DEVICE_ID?: string;
-  SPEC152_PREVIEW_BROWSER_TOOLS?: string;
   REMOTE_CONTROL_INSTALL_ORIGIN?: string;
 };
 function pairedOnly(env: Env): boolean {
   return Boolean((env as V2Env).DEVICE_COORDINATOR || (env as V2Env).V2_OWNER);
 }
-// The production gate is deliberately unchanged. A separate, explicit
-// one-device test-only window exposes only read + one click operation.
-const SPEC152_PREVIEW_TOOLS = new Set([
-  "browser_click", "browser_tabs", "browser_snapshot", "browser_status",
-]);
-function spec152PreviewBrowserDevice(env:Env):string|null{
-  const e=env as V2Env & BrowserApprovalAccessConfig;
-  const id=e.SPEC152_PREVIEW_BROWSER_DEVICE_ID;
-  if(BROWSER_TOOLS_ACCEPTED || e.DEVICE_COORDINATOR || !e.V2_OWNER ||
-      e.REMOTE_CONTROL_V2_PREVIEW_ONLY!=="true" ||
-      e.SPEC152_PREVIEW_BROWSER_TOOLS!=="true" ||
-      e.BROWSER_APPROVAL_ENABLED!=="true" ||
-      !e.BROWSER_APPROVAL_ACCESS_AUD || !e.BROWSER_APPROVAL_ACCESS_ISSUER ||
-      !e.BROWSER_APPROVAL_ALLOWED_EMAIL ||
-      typeof id!=="string" ||
-      !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(id))return null;
-  return id;
-}
-function allowedBrowserTarget(env:Env,tool:string,deviceId:unknown):boolean{
-  return BROWSER_TOOLS_ACCEPTED ||
-    (SPEC152_PREVIEW_TOOLS.has(tool) && deviceId===spec152PreviewBrowserDevice(env));
+function browserToolsAvailable(env:Env):boolean {
+  const e=env as V2Env & BrowserApprovalAccessConfig & {BROWSER_APPROVAL_PUBLIC_ORIGIN?:string};
+  return Boolean(e.V2_OWNER) && !e.DEVICE_COORDINATOR &&
+    e.REMOTE_CONTROL_V2_PREVIEW_ONLY==="true" &&
+    Boolean(e.BROWSER_APPROVAL_ACCESS_ISSUER &&
+      e.BROWSER_APPROVAL_ACCESS_AUD && e.BROWSER_APPROVAL_ALLOWED_EMAIL &&
+      e.BROWSER_APPROVAL_PUBLIC_ORIGIN);
 }
 // Preview operations use existing authenticated per-device WSS routing.
 // The paired Agent, not a temporary Worker secret, opts into write/Shell.
@@ -92,8 +76,7 @@ async function callPairedBrowser(env: Env, id: unknown, name: string, args: unkn
   const approvalSettings=env as V2Env & BrowserApprovalAccessConfig & {BROWSER_APPROVAL_PUBLIC_ORIGIN?:string};
   const publicOrigin=approvalSettings.BROWSER_APPROVAL_PUBLIC_ORIGIN;
   // Missing remote-owner identity configuration means no sensitive effect.
-  if(gated && (approvalSettings.BROWSER_APPROVAL_ENABLED!=="true" ||
-      !approvalSettings.BROWSER_APPROVAL_ACCESS_ISSUER ||
+  if(gated && (!approvalSettings.BROWSER_APPROVAL_ACCESS_ISSUER ||
       !approvalSettings.BROWSER_APPROVAL_ACCESS_AUD ||
       !approvalSettings.BROWSER_APPROVAL_ALLOWED_EMAIL ||
       typeof publicOrigin!=="string" ||
@@ -1068,9 +1051,7 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
   if (rpcMessage.method === "tools/list") {
     if (pairedOnly(env)) {
       return rpc(rpcMessage.id, { tools: [
-        ...(BROWSER_TOOLS_ACCEPTED ? BROWSER_TOOLS :
-          spec152PreviewBrowserDevice(env) ?
-          BROWSER_TOOLS.filter(tool=>SPEC152_PREVIEW_TOOLS.has(tool.name)) : []),
+        ...(browserToolsAvailable(env) ? BROWSER_TOOLS : []),
         ...LOCAL_TOOLS.map(tool => ({
           ...tool,
           inputSchema: { ...tool.inputSchema,
@@ -1093,9 +1074,7 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
     if (pairedOnly(env)) {
       const name = typeof call.name === "string" ? call.name : "";
       const requiresDevice = V2_READ_TOOLS.has(name) || V2_OPERATION_TOOLS.has(name) ||
-        (allowedBrowserTarget(env,name,
-          (call.arguments && typeof call.arguments==="object" &&
-           !Array.isArray(call.arguments) ? (call.arguments as Record<string,unknown>).device_id : undefined)) &&
+        (browserToolsAvailable(env) &&
           (BROWSER_EFFECT_TOOLS.has(name) || BROWSER_READ_TOOLS.has(name)));
       const target = call.arguments && typeof call.arguments === "object" && !Array.isArray(call.arguments)
         ? (call.arguments as Record<string, unknown>).device_id : undefined;
@@ -1108,10 +1087,7 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
     }
     if (typeof call.name === "string" &&
         (BROWSER_EFFECT_TOOLS.has(call.name)||BROWSER_READ_TOOLS.has(call.name)) &&
-        allowedBrowserTarget(env,call.name,
-          call.arguments && typeof call.arguments==="object" &&
-          !Array.isArray(call.arguments) ?
-          (call.arguments as Record<string,unknown>).device_id : undefined)) {
+        browserToolsAvailable(env)) {
       return callPairedBrowser(env,rpcMessage.id,call.name,call.arguments);
     }
     if (typeof call.name === "string" && V2_OPERATION_TOOLS.has(call.name) &&
@@ -1188,7 +1164,7 @@ export default {
       // NEVER accept the MCP bearer credential or model-originated approval.
       const approvalId=url.pathname.slice("/browser-approve/".length);
       const settings=env as V2Env & BrowserApprovalAccessConfig;
-      if(settings.BROWSER_APPROVAL_ENABLED!=="true"||
+      if(!browserToolsAvailable(env)||
           !validBrowserApprovalRequest(request,approvalId)) {
         return jsonError(404,"not_found","The approval route is unavailable.");
       }

@@ -7,7 +7,6 @@ import {createRemoteJWKSet,jwtVerify,type JWTVerifyGetKey} from "jose";
 import type {BrowserApprovalIntent} from "./browser-approval.ts";
 
 export interface BrowserApprovalAccessConfig {
-  BROWSER_APPROVAL_ENABLED?: string;
   BROWSER_APPROVAL_ACCESS_ISSUER?: string;
   BROWSER_APPROVAL_ACCESS_AUD?: string;
   BROWSER_APPROVAL_ALLOWED_EMAIL?: string;
@@ -16,7 +15,6 @@ export interface BrowserApprovalAccessConfig {
 const jwksCache=new Map<string,JWTVerifyGetKey>();
 function validated(config:BrowserApprovalAccessConfig):
   {issuer:string;audience:string;email:string}|null{
-  if(config.BROWSER_APPROVAL_ENABLED!=="true")return null;
   const issuer=config.BROWSER_APPROVAL_ACCESS_ISSUER;
   const audience=config.BROWSER_APPROVAL_ACCESS_AUD;
   const email=config.BROWSER_APPROVAL_ALLOWED_EMAIL;

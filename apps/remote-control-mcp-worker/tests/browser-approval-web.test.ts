@@ -10,8 +10,7 @@ import worker,{V2OwnerCoordinator} from "../src/worker.ts";
 
 const issuer="https://spec152-test.cloudflareaccess.com";
 const audience="a".repeat(64);
-const config={BROWSER_APPROVAL_ENABLED:"true",
-  BROWSER_APPROVAL_ACCESS_ISSUER:issuer,BROWSER_APPROVAL_ACCESS_AUD:audience,
+const config={BROWSER_APPROVAL_ACCESS_ISSUER:issuer,BROWSER_APPROVAL_ACCESS_AUD:audience,
   BROWSER_APPROVAL_ALLOWED_EMAIL:"owner@example.net"};
 
 function fakeStorage(){
@@ -59,7 +58,7 @@ test("Access identity requires signature, exact app audience/issuer, allowed ema
   assert.equal(await check(await token("other@example.net")),null);
   assert.equal(await check(await token("owner@example.net",{type:"org"})),null);
   assert.equal(await check("invalid.jwt.string"),null);
-  assert.equal(await check(await token("owner@example.net"),{...config,BROWSER_APPROVAL_ENABLED:"false"}),null);
+  assert.equal(await check(await token("owner@example.net"),{...config,BROWSER_APPROVAL_ACCESS_ISSUER:""}),null);
   assert.equal(await check(await token("owner@example.net"),{...config,BROWSER_APPROVAL_ACCESS_AUD:"c".repeat(64)}),null);
   const mismatchedIssuer=await new SignJWT({email:"owner@example.net",type:"app"})
     .setProtectedHeader({alg:"RS256",kid:"current-key"})
@@ -120,9 +119,11 @@ test("HTTP owner confirmation entry denies model tokens, forged Origins, missing
 
   let doCalls=0;
   const stub={idFromName:()=>({}),get:()=>({fetch:()=>{doCalls++;throw Error("Should not be reached");}})};
-  const env={...config,MCP_ACCESS_TOKEN:"owner-mcp-token",DEVICE_COORDINATOR:stub} as unknown as Env;
+  const env={...config,MCP_ACCESS_TOKEN:"owner-mcp-token",
+    REMOTE_CONTROL_V2_PREVIEW_ONLY:"true",V2_OWNER:stub,
+    BROWSER_APPROVAL_PUBLIC_ORIGIN:"https://rca.example"} as unknown as Env;
   const disabled=await worker.fetch(new Request(url),{
-    ...env,BROWSER_APPROVAL_ENABLED:"false"} as Env);
+    ...env,BROWSER_APPROVAL_ACCESS_AUD:undefined} as Env);
   assert.equal(disabled.status,404);
   const forged=await worker.fetch(new Request(url,{headers:{
     authorization:"Bearer owner-mcp-token","cf-access-jwt-assertion":"false.jwt",
@@ -144,7 +145,9 @@ test("actual Worker Access route accepts a signed user on GET+POST and DO state 
     getWebSockets:()=>[],
   } as unknown as DurableObjectState);
   const env={...config,MCP_ACCESS_TOKEN:"different-mcp-token",
-    DEVICE_COORDINATOR:{idFromName:()=>({}),get:()=>({fetch:(url:string,init:RequestInit)=>
+    REMOTE_CONTROL_V2_PREVIEW_ONLY:"true",
+    BROWSER_APPROVAL_PUBLIC_ORIGIN:"https://rca.example",
+    V2_OWNER:{idFromName:()=>({}),get:()=>({fetch:(url:string,init:RequestInit)=>
       owner.fetch(new Request(url,init))})}} as unknown as Env;
   const {publicKey,privateKey}=await generateKeyPair("RS256");
   const jwk={...await exportJWK(publicKey),kid:"test-owner-key",alg:"RS256",use:"sig"};

@@ -1,4 +1,4 @@
-/** Staged typed browser MCP surface. Deliberately disabled until separate real-device acceptance. */
+/** Typed browser MCP surface: isolated Preview only until separate real-device acceptance. */
 import { parseOperationId } from "./local-read.ts";
 
 export const BROWSER_EFFECT_TOOLS = new Set([
