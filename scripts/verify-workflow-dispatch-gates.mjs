@@ -32,6 +32,8 @@ assert.match(config,/      enable_workflow_s2:\n[\s\S]*?        default: false/)
 assert.match(config,/      enable_workflow_s3:\n[\s\S]*?        default: false/);
 assert.ok(config.includes('WORKFLOW_S3_RELEASE: ${{ inputs.enable_workflow_s3 }}'),
   'S3 mode must reach staging and readback');
+assert.ok(config.includes('node scripts/verify-s3-release-token.mjs'),
+  'S3 registered credential must pass no-job permission probe before deployment');
 assert.ok(config.includes('S3_GITHUB_TOKEN: ${{ secrets.S3_GITHUB_TOKEN }}'),
   'S3 credential must be provided by selected environment');
 assert.ok(config.includes("S3_CALLBACK_ORIGIN: ${{ vars.S3_CALLBACK_ORIGIN }}") &&

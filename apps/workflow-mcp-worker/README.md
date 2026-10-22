@@ -13,6 +13,12 @@ Prerequisites in the **existing** `workflow-mcp-worker` GitHub Environment:
 - Variable `S3_CALLBACK_ORIGIN=https://workflow.lirtual.dpdns.org`.
 - Variable `S3_GITHUB_AUDIENCE=workflow-s3-claim:production`.
 
+The same release now verifies the dedicated token through the exact
+repository and registered GitHub Actions Workflow API, followed by an
+expected-rejected dispatch to a randomized **nonexistent** ref. A successful
+response cannot trigger a Job; unexpected status/identity aborts deployment.
+This no-job preflight is only invoked for explicit S3 releases.
+
 The release script pins the registered `workflow-s3-executor.yml`,
 repository ID, `refs/heads/main` and OIDC audience and refuses incomplete or
 drifted runtime bindings. It does **not** create secrets or variables.

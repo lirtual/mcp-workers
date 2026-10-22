@@ -201,7 +201,7 @@ jobs:
 
       - name: Check manual release safeguards offline
         if: steps.scope.outputs.apps != ''
-        run: node --test scripts/manual-worker-release.test.mjs scripts/bootstrap-worker-secrets.test.mjs scripts/worker-release-variables.test.mjs
+        run: node --test scripts/manual-worker-release.test.mjs scripts/bootstrap-worker-secrets.test.mjs scripts/worker-release-variables.test.mjs scripts/verify-s3-release-token.test.mjs
 
       - name: Check shared portal-auth package
         if: steps.scope.outputs.portal_auth_changed == 'true'
@@ -439,6 +439,12 @@ jobs:
           set -euo pipefail
           umask 077
           node scripts/worker-release-variables.mjs "$SELECTED_WORKER" "$RUNNER_TEMP/mcp-worker-variables.txt"
+
+      - name: Verify dedicated S3 GitHub token without executable dispatch
+        if: inputs.worker == 'workflow-mcp-worker' && inputs.enable_workflow_s3 == true
+        env:
+          S3_GITHUB_TOKEN: ${{ secrets.S3_GITHUB_TOKEN }}
+        run: node scripts/verify-s3-release-token.mjs
 
       - name: Recheck current main inside acquired release lock
         shell: bash
