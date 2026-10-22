@@ -10,6 +10,7 @@ const MAX_APPROVALS_PER_MINUTE = 8;
 const te = new TextEncoder();
 import { issueSessionChallenge, authorizeSession, acceptAuthenticatedSocket, handleIdleSocketMessage, handleDeviceInfoMessage, listApprovedDevices, deviceIsAuthorized, listLiveGrants, TEMPORARY_GRANT_MS, type V2Device } from "./v2-session.ts";
 import { parseBrowserDoArguments } from "./browser-tools.ts";
+import { inspectBrowserIntent, approveBrowserIntent } from "./browser-approval.ts";
 import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId, parseLocalWriteFile, parseLocalCreateDirectory, parseLocalEditBlock, parseLocalMoveFile, parseLocalDeleteFile, parseStartProcess, parseLocalProcessOutput, parseListSessions, parseLocalProcessInteraction, parseLocalProcessTermination, parseOperationId } from "./local-read.ts";
 
 export interface PendingDevice {
@@ -625,6 +626,26 @@ export class V2OwnerCoordinator {
     }
     if (request.method !== "POST") return new Response(null, { status: 405 });
     const path = new URL(request.url).pathname;
+    if (path === "/browser-approval/inspect" || path === "/browser-approval/approve") {
+      try {
+        const body=await limitedJson(request,1024);
+        if(!body||typeof body!=="object"||Array.isArray(body))return new Response(null,{status:400});
+        const args=body as Record<string,unknown>;
+        const approvalId=args.approval_id;
+        if(typeof approvalId!=="string")return new Response(null,{status:400});
+        if(path==="/browser-approval/inspect"){
+          if(Object.keys(args).length!==1)return new Response(null,{status:400});
+          const result=await inspectBrowserIntent(this.state.storage,approvalId);
+          return result?Response.json(result,{headers:{"cache-control":"no-store"}}):
+            new Response(null,{status:404});
+        }
+        if(Object.keys(args).length!==2 || typeof args.subject!=="string")
+          return new Response(null,{status:400});
+        const result=await approveBrowserIntent(this.state.storage,approvalId,args.subject);
+        return Response.json({status:result},{status:result==="approved"?200:403,
+          headers:{"cache-control":"no-store"}});
+      }catch{return new Response(null,{status:503});}
+    }
     if (path === "/rename") {
       try { return await this.renameDevice(request); }
       catch { return Response.json({ error: "unavailable" }, { status: 503 }); }

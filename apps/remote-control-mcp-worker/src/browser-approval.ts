@@ -101,6 +101,24 @@ export async function prepareBrowserIntent(store:Store,intent:BrowserApprovalInt
   });
 }
 
+/** Read only after verifying the independent owner's Access session.
+ * No page text, secrets, or raw payloads are exposed to unauthenticated callers.
+ */
+export async function inspectBrowserIntent(
+  store:Store,approvalId:string,now=Date.now(),
+):Promise<{status:"pending"|"approved";intent:BrowserApprovalIntent;expires_at:number}|null>{
+  if(!DEVICE_ID.test(approvalId))return null;
+  return store.transaction(async (tx:Tx)=>{
+    const op=await tx.get<string>(tokenKey(approvalId));
+    if(!op)return null;
+    const record=await tx.get<ApprovalRecord>(recordKey(op));
+    if(!record||record.id!==approvalId||record.expires_at<=now||
+      !["pending","approved"].includes(record.state))return null;
+    return{status:record.state as "pending"|"approved",
+      intent:record.intent,expires_at:record.expires_at};
+  });
+}
+
 /** Internal only: verifiedSubject must come from a validated Access JWT, NOT MCP. */
 export async function approveBrowserIntent(
   store:Store,approvalId:string,verifiedSubject:string,now=Date.now(),

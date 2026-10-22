@@ -1,5 +1,6 @@
 import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
 import { BROWSER_TOOLS, BROWSER_EFFECT_TOOLS, BROWSER_READ_TOOLS, parseBrowserCall, browserEffectClientStatus } from "./browser-tools.ts";
+import {verifyAccessApprovalOwner,validBrowserApprovalRequest,browserApprovalPage,type BrowserApprovalAccessConfig} from "./browser-approval-web.ts";
 /** Source staged only: no browser surface advertised before native packaging and E2E acceptance. */
 const BROWSER_TOOLS_ACCEPTED = false;
 import { handleAgentInstallerRequest } from "./install-bootstrap.ts";
@@ -1125,6 +1126,50 @@ export default {
       return jsonError(503, "preview_unconfigured", "The preview is not yet configured.");
     }
     const url = new URL(request.url);
+    if (url.pathname.startsWith("/browser-approve/")) {
+      // A real person signs into a separately Access-protected exact path.
+      // NEVER accept the MCP bearer credential or model-originated approval.
+      const approvalId=url.pathname.slice("/browser-approve/".length);
+      const settings=env as V2Env & BrowserApprovalAccessConfig;
+      if(settings.BROWSER_APPROVAL_ENABLED!=="true"||
+          !validBrowserApprovalRequest(request,approvalId)) {
+        return jsonError(404,"not_found","The approval route is unavailable.");
+      }
+      const subject=await verifyAccessApprovalOwner(request,settings);
+      if(!subject)return jsonError(403,"unauthorized","Owner Access verification failed.");
+      const owner=pendingOwner(env);
+      if(!owner)return jsonError(503,"unavailable","Approval state is unavailable.");
+      try{
+        if(request.method==="GET"){
+          const state=await owner.fetch("https://v2.internal/browser-approval/inspect",{
+            method:"POST",headers:{"content-type":"application/json"},
+            body:JSON.stringify({approval_id:approvalId}),
+          });
+          if(!state.ok)return jsonError(404,"not_found","Approval request expired or unavailable.");
+          const record=await state.json() as {
+            status:"pending"|"approved";expires_at:number;
+            intent:import("./browser-approval.ts").BrowserApprovalIntent;
+          };
+          return browserApprovalPage(approvalId,record);
+        }
+        const raw=await readBounded(request,128);
+        if(raw===null||new URLSearchParams(raw).get("decision")!=="approve"||
+          [...new URLSearchParams(raw).keys()].some(key=>key!=="decision")) {
+          return jsonError(400,"bad_request","Invalid owner confirmation.");
+        }
+        const result=await owner.fetch("https://v2.internal/browser-approval/approve",{
+          method:"POST",headers:{"content-type":"application/json"},
+          body:JSON.stringify({approval_id:approvalId,subject}),
+        });
+        if(!result.ok)return jsonError(403,"denied","The approval was denied or expired.");
+        return new Response("Approved for this exact browser operation. Return to ChatGPT.\n",{
+          status:200,headers:{"content-type":"text/plain; charset=utf-8",
+            "cache-control":"no-store","x-content-type-options":"nosniff","referrer-policy":"no-referrer"},
+        });
+      }catch{
+        return jsonError(503,"unavailable","Approval is currently unavailable.");
+      }
+    }
     if (url.pathname === "/install.sh") {
       // Only the owner-configured v2 Preview may serve the reviewed immutable
       // test installer. Keep every other environment fail-closed (503).

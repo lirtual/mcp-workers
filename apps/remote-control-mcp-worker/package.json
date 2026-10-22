@@ -15,7 +15,8 @@
     "types": "wrangler types"
   },
   "dependencies": {
-    "@mcp-workers/portal-auth": "workspace:*"
+    "@mcp-workers/portal-auth": "workspace:*",
+    "jose": "6.2.12"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20261006.1",
