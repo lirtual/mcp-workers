@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 const total = z.number().int().nonnegative().safe();
-const digest = z.string().regex(/^trash-v1:sha256:[a-f0-9]{64}$/);
+const digest = z.string().regex(/^trash:sha256:[a-f0-9]{64}$/);
 export const TrashEmptyInputSchema = z.union([
   z.object({}).strict(),
   z
