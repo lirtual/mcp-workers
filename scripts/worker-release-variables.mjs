@@ -23,6 +23,7 @@ export const WORKER_VARIABLES = Object.freeze({
   "ssh-mcp-worker": [],
   "remote-control-mcp-worker": [],
   "github-actions-mcp-worker": [],
+  "workflow-mcp-worker": [],
 });
 
 // The Wrangler Custom Domain is the one authoritative installation origin.
@@ -46,6 +47,15 @@ export function collectWorkerVars(worker, env, options = {}) {
   const allowed = WORKER_VARIABLES[worker];
   if (!allowed) throw new Error("Unsupported Worker release target");
   const variables = [];
+  if (worker === "workflow-mcp-worker") {
+    variables.push(
+      "MCP_PORTAL_ENDPOINT:https://mcp.lirtual.dpdns.org/mcp",
+      "GITHUB_EXECUTOR_REPOSITORY:lirtual/mcp-workers",
+      "GITHUB_EXECUTOR_REPOSITORY_ID:1414936394",
+      "GITHUB_EXECUTOR_REF:refs/heads/main",
+      "GITHUB_EXECUTOR_AUDIENCE:workflow-github-claim:production"
+    );
+  }
   if (worker === "remote-control-mcp-worker") {
     variables.push("REMOTE_CONTROL_INSTALL_ORIGIN:" + remoteControlInstallOrigin(options.config));
   }

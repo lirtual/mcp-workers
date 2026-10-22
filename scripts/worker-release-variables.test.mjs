@@ -25,6 +25,8 @@ test("Remote Control installer origin comes only from its configured Custom Doma
 
 test("each Worker owns an explicit non-secret variable allowlist", () => {
   assert.deepEqual(WORKER_VARIABLES["ssh-mcp-worker"], []);
+  assert.deepEqual(WORKER_VARIABLES["workflow-mcp-worker"], []);
+  assert.deepEqual(collectWorkerVars("workflow-mcp-worker",{GH_TOKEN:"ignored"}).length,5);
   assert.deepEqual(WORKER_VARIABLES["remote-control-mcp-worker"], []);
   assert.deepEqual(collectWorkerVars("remote-control-mcp-worker",
     { MAX_ROWS: "100", REMOTE_CONTROL_V2_ONLY: "false", REMOTE_CONTROL_INSTALL_ORIGIN: "https://evil.example" }, { config: remoteConfig }),
@@ -75,4 +77,29 @@ test("GitHub Actions has no redundant repository allowlist variables", () => {
   assert.deepEqual(collectWorkerVars("github-actions-mcp-worker", {
     GITHUB_REPOS: "ignored", GITHUB_REPOS_SECONDARY: "ignored",
   }), []);
+});
+
+test("Workflow always has a pinned MCP Portal and GitHub executor without rollout toggles",()=>{
+  const fixed=collectWorkerVars("workflow-mcp-worker",{
+    MCP_PORTAL_ENDPOINT:"https://attacker.invalid/mcp",
+    GITHUB_EXECUTOR_REPOSITORY:"untrusted/other",
+    MCP_CALL_ENABLED:"true",GITHUB_EXECUTION_ENABLED:"false"
+  });
+  assert.deepEqual(fixed,[
+    "MCP_PORTAL_ENDPOINT:https://mcp.lirtual.dpdns.org/mcp",
+    "GITHUB_EXECUTOR_REPOSITORY:lirtual/mcp-workers",
+    "GITHUB_EXECUTOR_REPOSITORY_ID:1414936394",
+    "GITHUB_EXECUTOR_REF:refs/heads/main",
+    "GITHUB_EXECUTOR_AUDIENCE:workflow-github-claim:production",
+  ]);
+  assert.deepEqual(collectWorkerVars("workflow-mcp-worker",{}),fixed);
+});
+
+
+test("No other Worker inherits the Workflow GitHub executor's variables",()=>{
+  const other=collectWorkerVars("raindrop-mcp-worker",{
+    GITHUB_EXECUTOR_REPOSITORY:"untrusted/other",
+    MCP_PORTAL_ENDPOINT:"https://attacker.invalid/mcp"
+  });
+  assert.deepEqual(other,[]);
 });

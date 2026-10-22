@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion } from "./manual-worker-release.mjs";
+import { activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig, verifyWorkflowD1Readiness } from "./manual-worker-release.mjs";
 
 const required = [
   { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
@@ -325,4 +325,161 @@ test("GitHub Actions deploy requires only one PAT Secret and no repository lists
   assert.throws(() => verifyBindings(worker, { ...settings,
     bindings: [...bindings, { name: "DANGEROUS_RESOURCE", type: "service" }] },
     secrets, { mode: "readback" }), /Unexpected production resource/);
+});
+
+test("Workflow production release must preserve exact reviewed resource and runtime boundaries", () => {
+  const owner = JSON.parse(readFileSync(new URL("../apps/workflow-mcp-worker/wrangler.jsonc", import.meta.url), "utf8"));
+    assert.equal(verifyWorkflowReleaseConfig(owner), true);
+  const brokenOwners = [
+    [{ ...owner, routes: [{ pattern: "wrong.lirtual.dpdns.org", custom_domain: true }] }, /public route/],
+    [{ ...owner, d1_databases: [{ ...owner.d1_databases[0], database_id: "00000000-0000-0000-0000-000000000000" }] }, /production D1/],
+    [{ ...owner, services: [{binding:"UNEXPECTED",service:"fake"}] }, /Service Bindings/],
+    [{ ...owner, workflows: [] }, /Workflow binding/],
+    [{ ...owner, secrets: { required: [] } }, /Portal Secret/],
+    [{ ...owner, vars: { MCP_CALL_ENABLED: "true" } }, /MCP/],
+    [{ ...owner, compatibility_flags: ["global_fetch_strictly_public"] }, /MCP/],
+  ];
+  for(const [cfg,err] of brokenOwners)assert.throws(()=>verifyWorkflowReleaseConfig(cfg),err);
+
+});
+
+test("Workflow remote D1 readback blocks missing migrations, nonempty first-run and unresolved Runs", () => {
+  const row = { migration_count:2,migration_v1:1,migration_v2:1,
+    migration_v3:0,migration_v4:0,migration_v5:0,attempt_table:0,receipt_table:0,
+    native_column:1,active_runs:0,run_count:0,workflow_count:0 };
+  const result = (value) => [{success:true,results:[value]}];
+  assert.throws(()=>verifyWorkflowD1Readiness(result(row),true),/schema migrations/);
+  const previous = {...row,migration_count:4,migration_v3:1,migration_v4:1,
+    attempt_table:1,receipt_table:1};
+  const migrated = {...previous,migration_count:5,migration_v5:1};
+  assert.equal(verifyWorkflowD1Readiness(result(previous),false),true);
+  assert.throws(()=>verifyWorkflowD1Readiness(result(previous),false,true),/schema migrations/);
+  assert.equal(verifyWorkflowD1Readiness(result(migrated),false),true);
+  assert.equal(verifyWorkflowD1Readiness(result(migrated),false,true),true);
+  assert.throws(()=>verifyWorkflowD1Readiness(result(row),false,true),
+    /schema migrations/);
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...migrated,migration_v4:0}),false),
+    /schema migrations/);
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...migrated,receipt_table:0}),false),
+    /schema migrations/);
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...row,migration_count:3,migration_v3:1,
+    attempt_table:1}),false),/schema migrations/);
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...row,migration_count:6}),false),
+    /schema migrations/);
+  assert.equal(verifyWorkflowD1Readiness(result({...migrated,run_count:3,workflow_count:1}),false),true);
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...row,migration_v2:0}),false),/schema migrations/);
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...migrated,active_runs:1}),false),/active or indeterminate/);
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...migrated,run_count:1}),true),/empty production/);
+  assert.throws(()=>verifyWorkflowD1Readiness([],true),/readback unavailable/);
+});
+
+test("Workflow readback verifies one integrated runtime, registered GitHub identity and Portal",()=>{
+  const bindings=[
+    {name:"MCP_ACCESS_TOKEN",type:"secret_text"},
+    {name:"MCP_PORTAL_CLIENT_ID",type:"secret_text"},
+    {name:"MCP_PORTAL_CLIENT_SECRET",type:"secret_text"},
+    {name:"WORKFLOW_EXECUTOR_GITHUB_TOKEN",type:"secret_text"},
+    {name:"DB",type:"d1",id:"c76850db-b5e3-4128-9150-849a1c9e8d74"},
+    {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-runner",class_name:"WorkflowRunner"},
+    {name:"MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
+    {name:"GITHUB_EXECUTOR_REPOSITORY",type:"plain_text",text:"lirtual/mcp-workers"},
+    {name:"GITHUB_EXECUTOR_REPOSITORY_ID",type:"plain_text",text:"1414936394"},
+    {name:"GITHUB_EXECUTOR_REF",type:"plain_text",text:"refs/heads/main"},
+    {name:"GITHUB_EXECUTOR_AUDIENCE",type:"plain_text",text:"workflow-github-claim:production"},
+  ];
+  const settings={bindings,observability:{enabled:true,logs:{invocation_logs:true}}};
+  const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET",
+    "WORKFLOW_EXECUTOR_GITHUB_TOKEN"].map(name=>({name}));
+  const check=(list=bindings,ss=secrets)=>
+    verifyBindings("workflow-mcp-worker",{...settings,bindings:list},ss,{mode:"readback"});
+  assert.equal(check(),true);
+  for(const name of ["DB","WORKFLOW"]){
+    assert.throws(()=>check(bindings.filter(x=>x.name!==name)),/binding drift/);
+  }
+  for(const name of ["MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET","WORKFLOW_EXECUTOR_GITHUB_TOKEN"]){
+    assert.throws(()=>check(bindings,secrets.filter(x=>x.name!==name)),/binding missing/);
+  }
+  assert.throws(()=>check([...bindings,{name:"MCP_CALL_ENABLED",type:"plain_text",text:"true"}]),/Obsolete stage flag/);
+});
+
+
+test("Workflow manual GitHub Actions requires D1 checks before Owner", () => {
+  const ci=readFileSync(new URL("../.github/workflows/ci.yml",import.meta.url),"utf8");
+  const pre=ci.indexOf("      - name: Verify Workflow release configuration and remote D1 readiness");
+  const migration=ci.indexOf("      - name: Apply complete Workflow D1 migrations");
+  const publish=ci.indexOf("      - name: Publish exactly selected Worker");
+  assert.ok(pre>0 && migration>pre && publish>migration);
+  assert.match(ci,/wrangler d1 migrations apply workflow-mcp-worker --remote/);
+  assert.match(ci,/WORKFLOW_REQUIRE_COMPLETE_SCHEMA: 'true'/);
+  assert.ok(ci.includes("WORKFLOW_FIRST_DEPLOY: " + String.fromCharCode(36) + "{{ steps.preflight.outputs.bootstrap }}"));
+  assert.match(ci,/node scripts\/manual-worker-release\.mjs d1-check workflow-mcp-worker/);
+  assert.match(ci,/\(cd apps\/workflow-mcp-worker &&/);
+  assert.match(ci,/mcp_endpoint="https:\/\/workflow\.lirtual\.dpdns\.org\/mcp"/);
+  assert.match(ci,/health_endpoint="https:\/\/workflow\.lirtual\.dpdns\.org\/health"/);
+  assert.match(ci,/body\.scope !== "workflow"/);
+  assert.match(ci,/github\.ref == 'refs\/heads\/main'/);
+});
+
+test("Workflow release pins the exact Portal and rejects target drift",()=>{
+  const bindings=[
+    {name:"MCP_ACCESS_TOKEN",type:"secret_text"},{name:"MCP_PORTAL_CLIENT_ID",type:"secret_text"},
+    {name:"MCP_PORTAL_CLIENT_SECRET",type:"secret_text"},{name:"WORKFLOW_EXECUTOR_GITHUB_TOKEN",type:"secret_text"},
+    {name:"DB",type:"d1",id:"c76850db-b5e3-4128-9150-849a1c9e8d74"},
+    {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-runner",class_name:"WorkflowRunner"},
+    {name:"MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
+    {name:"GITHUB_EXECUTOR_REPOSITORY",type:"plain_text",text:"lirtual/mcp-workers"},
+    {name:"GITHUB_EXECUTOR_REPOSITORY_ID",type:"plain_text",text:"1414936394"},
+    {name:"GITHUB_EXECUTOR_REF",type:"plain_text",text:"refs/heads/main"},
+    {name:"GITHUB_EXECUTOR_AUDIENCE",type:"plain_text",text:"workflow-github-claim:production"},
+  ];
+  const settings={observability:{enabled:true,logs:{invocation_logs:true}}};
+  const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET",
+    "WORKFLOW_EXECUTOR_GITHUB_TOKEN"].map(name=>({name}));
+  const check=(updated)=>verifyBindings("workflow-mcp-worker",{...settings,bindings:updated},secrets,{mode:"readback"});
+  assert.equal(check(bindings),true);
+  assert.throws(()=>check(bindings.map(x=>x.name==="MCP_PORTAL_ENDPOINT"
+    ?{...x,text:"https://test-mcp.lirtual.dpdns.org/mcp"}:x)),/pinned Workflow MCP Portal|Pinned Workflow MCP Portal/);
+  assert.throws(()=>check([...bindings,{name:"MCP_DIRECT_TARGETS_ENABLED",type:"plain_text",text:"true"}]),
+    /Obsolete stage flag/);
+});
+
+
+test("GitHub execution is integral but still pins repository, ref and OIDC audience",()=>{
+  const base=[
+    {name:"MCP_ACCESS_TOKEN",type:"secret_text"},
+    {name:"DB",type:"d1",id:"c76850db-b5e3-4128-9150-849a1c9e8d74"},
+    {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-runner",class_name:"WorkflowRunner"},
+    {name:"MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
+    {name:"GITHUB_EXECUTOR_REPOSITORY",type:"plain_text",text:"lirtual/mcp-workers"},
+    {name:"GITHUB_EXECUTOR_REPOSITORY_ID",type:"plain_text",text:"1414936394"},
+    {name:"GITHUB_EXECUTOR_REF",type:"plain_text",text:"refs/heads/main"},
+    {name:"GITHUB_EXECUTOR_AUDIENCE",type:"plain_text",text:"workflow-github-claim:production"},
+  ];
+  const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET",
+    "WORKFLOW_EXECUTOR_GITHUB_TOKEN"].map(name=>({name}));
+  const pins=["MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET","WORKFLOW_EXECUTOR_GITHUB_TOKEN"]
+    .map(name=>({name,type:"secret_text"}));
+  const check=(bindings)=>verifyBindings("workflow-mcp-worker",{
+    bindings,observability:{enabled:true,logs:{invocation_logs:true}}},secrets,{mode:"readback"});
+  assert.equal(check([...base,...pins]),true);
+  for(const name of ["GITHUB_EXECUTOR_REPOSITORY","GITHUB_EXECUTOR_REPOSITORY_ID","GITHUB_EXECUTOR_REF","GITHUB_EXECUTOR_AUDIENCE"]){
+    assert.throws(()=>check([...base,...pins].map(x=>x.name===name?{...x,text:"wrong"}:x)),
+      /executor identity drift/);
+  }
+});
+
+
+test("Workflow preflight tolerates removed service bindings, readback rejects them",()=>{
+  const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET",
+    "WORKFLOW_EXECUTOR_GITHUB_TOKEN"].map(name=>({name}));
+  const bindings=[
+    {name:"MCP_ACCESS_TOKEN",type:"secret_text"},
+    {name:"DB",type:"d1",id:"c76850db-b5e3-4128-9150-849a1c9e8d74"},
+    {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-s1",class_name:"WorkflowRunner"},
+    {name:"OLD_TEST_SERVICE",type:"service",service:"unused-test-worker"},
+    {name:"MCP_CALL_ENABLED",type:"plain_text",text:"true"}
+  ];
+  const settings={bindings,observability:{enabled:true,logs:{invocation_logs:true}}};
+  assert.equal(verifyBindings("workflow-mcp-worker",settings,secrets,{mode:"preflight"}),true);
+  assert.throws(()=>verifyBindings("workflow-mcp-worker",settings,secrets,{mode:"readback"}),/Workflow binding drift/);
 });

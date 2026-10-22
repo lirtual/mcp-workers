@@ -3,7 +3,7 @@
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-const WORKERS = new Set(["raindrop-mcp-worker", "ima-mcp-worker", "database-mcp-worker", "ssh-mcp-worker", "remote-control-mcp-worker", "github-actions-mcp-worker"]);
+const WORKERS = new Set(["raindrop-mcp-worker", "ima-mcp-worker", "database-mcp-worker", "ssh-mcp-worker", "remote-control-mcp-worker", "github-actions-mcp-worker", "workflow-mcp-worker"]);
 const REQUIRED_SECRETS = {
   "raindrop-mcp-worker": ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN"],
   "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "API_KEY"],
@@ -11,6 +11,7 @@ const REQUIRED_SECRETS = {
   "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "MCP_BROKER_TOKEN"],
   "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "GH_TOKEN"],
+  "workflow-mcp-worker": ["MCP_ACCESS_TOKEN"],
 };
 const WORKER_ENTRIES = {
   "raindrop-mcp-worker": "src/worker.ts",
@@ -19,6 +20,7 @@ const WORKER_ENTRIES = {
   "ssh-mcp-worker": "src/index.ts",
   "remote-control-mcp-worker": "src/worker.ts",
   "github-actions-mcp-worker": "src/index.ts",
+  "workflow-mcp-worker": "src/index.ts",
 };
 
 function invariant(value, message) {
@@ -54,6 +56,35 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     invariant(settings.observability?.enabled === true &&
       settings.observability?.logs?.invocation_logs === logs,
       "Unexpected Invocation Logs configuration");
+  }
+  if (worker === "workflow-mcp-worker") {
+    const d1 = find("DB", "d1");
+    invariant((d1?.id || d1?.database_id) ===
+      "c76850db-b5e3-4128-9150-849a1c9e8d74", "Workflow production D1 runtime binding drift");
+    const flow = find("WORKFLOW", "workflow");
+    if(options.mode==="readback") invariant(flow?.workflow_name === "workflow-mcp-runner" &&
+      flow?.class_name === "WorkflowRunner", "Workflow native Workflow binding drift");
+    if (options.mode === "readback") {
+      invariant(find("MCP_PORTAL_ENDPOINT", "plain_text")?.text ===
+        "https://mcp.lirtual.dpdns.org/mcp", "Pinned Workflow MCP Portal drift");
+      const pins = {
+        GITHUB_EXECUTOR_REPOSITORY: "lirtual/mcp-workers",
+        GITHUB_EXECUTOR_REPOSITORY_ID: "1414936394",
+        GITHUB_EXECUTOR_REF: "refs/heads/main",
+        GITHUB_EXECUTOR_AUDIENCE: "workflow-github-claim:production",
+      };
+      for (const [name,value] of Object.entries(pins)) {
+        invariant(find(name,"plain_text")?.text === value,
+          "Workflow GitHub executor identity drift: " + name);
+      }
+      for (const name of ["MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET","WORKFLOW_EXECUTOR_GITHUB_TOKEN"]) {
+        invariant(secretNames.has(name) && !!find(name,"secret_text"),
+          "Workflow runtime credential binding missing: " + name);
+      }
+      invariant(!bindings.some(x => ["MCP_CALL_ENABLED","GITHUB_EXECUTION_ENABLED",
+        "MCP_DIRECT_TARGETS_ENABLED"].includes(x.name)),
+        "Obsolete stage flag present after release");
+    }
   }
   if (worker === "github-actions-mcp-worker" && options.mode === "readback") {
     // GitHub PATs alone authorize repositories. No repository lists should
@@ -120,7 +151,8 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
         "Remote Control installer origin binding differs from Custom Domain");
     }
   }
-  const allowed = new Set(worker === "ima-mcp-worker"
+  const allowed = new Set(worker === "workflow-mcp-worker" ? ["DB", "WORKFLOW"] :
+    worker === "ima-mcp-worker"
     ? ["IMA_IMAGE_REFRESH_SHARD"]
     : worker === "database-mcp-worker" ? ["RATE_LIMITER"]
       : worker === "ssh-mcp-worker" ? ["EDGE_SSH_BROKER", "SSH_OPERATIONS"]
@@ -130,9 +162,62 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
           : ["DEVICE_COORDINATOR"]) : []);
   for (const item of bindings) {
     if (!["plain_text", "secret_text"].includes(item.type)) {
-      invariant(allowed.has(item.name), "Unexpected production resource binding: " + item.name);
+      // Source manifest controls the new bindings; a production preflight may
+      // still observe bindings that this release is about to remove.
+      // Readback strictly verifies that no extra resource binding survives.
+      if (!(worker === "workflow-mcp-worker" && options.mode === "preflight" && item.type === "service"))
+        invariant(allowed.has(item.name), "Unexpected production resource binding: " + item.name);
     }
   }
+  return true;
+}
+
+// Fail closed before any production Worker deployment.
+export function verifyWorkflowReleaseConfig(conf) {
+  invariant(conf?.name === "workflow-mcp-worker" && conf.main === "src/index.ts",
+    "Workflow source identity drift");
+  invariant(conf.keep_vars === false && conf.workers_dev === false &&
+    conf.preview_urls === false && conf.routes?.length === 1 &&
+    conf.routes[0]?.pattern === "workflow.lirtual.dpdns.org" &&
+    conf.routes[0]?.custom_domain === true, "Workflow reviewed public route drift");
+  invariant(conf.observability?.enabled === true &&
+    conf.observability?.logs?.invocation_logs === true, "Workflow Invocation Logs drift");
+  invariant(conf.d1_databases?.length === 1 &&
+    conf.d1_databases[0]?.binding === "DB" &&
+    conf.d1_databases[0]?.database_name === "workflow-mcp-worker" &&
+    conf.d1_databases[0]?.database_id === "c76850db-b5e3-4128-9150-849a1c9e8d74" &&
+    conf.d1_databases[0]?.migrations_dir === "migrations", "Workflow approved production D1 drift");
+  invariant(conf.workflows?.length === 1 && conf.workflows[0]?.binding === "WORKFLOW" &&
+    conf.workflows[0]?.name === "workflow-mcp-runner" &&
+    conf.workflows[0]?.class_name === "WorkflowRunner", "Workflow binding drift");
+  invariant(!conf.services?.length, "Workflow must not retain Service Bindings");
+  invariant(JSON.stringify(conf.secrets?.required) === JSON.stringify(["MCP_ACCESS_TOKEN"]),
+    "Workflow Portal Secret declaration drift");
+  invariant(!conf.vars || Object.keys(conf.vars).length===0,
+    "Workflow MCP source cannot declare runtime feature flags");
+  invariant(!(conf.compatibility_flags || []).includes("global_fetch_strictly_public"),
+    "Workflow must never enable or import MCP dynamic-target behavior");
+  return true;
+}
+
+export function verifyWorkflowD1Readiness(response, bootstrap, requireCompleteSchema = false) {
+  invariant(Array.isArray(response) && response.length === 1 &&
+    response[0]?.success === true && response[0]?.results?.length === 1,
+    "Workflow remote D1 readback unavailable");
+  const row = response[0].results[0];
+  const requiredBase = row?.migration_v1 === 1 && row?.migration_v2 === 1 &&
+    row?.migration_v3 === 1 && row?.migration_v4 === 1 &&
+    row?.attempt_table === 1 && row?.receipt_table === 1;
+  // The previous four-migration schema is allowed only before an additive
+  // GitHub capability migration, never as final production readback.
+  const beforeUpgrade = row?.migration_count === 4 && row?.migration_v5 === 0;
+  const ready = row?.migration_count === 5 && row?.migration_v5 === 1;
+  invariant(requiredBase && (requireCompleteSchema ? ready : (beforeUpgrade || ready)),
+    "Workflow production D1 schema migrations missing, partial or drifted");
+  invariant(Number.isSafeInteger(row?.active_runs) && row.active_runs === 0,
+    "Workflow cannot redeploy while Runs are active or indeterminate");
+  if(bootstrap) invariant(row.run_count === 0 && row.workflow_count === 0,
+    "Workflow first deployment requires empty production Run and Workflow state");
   return true;
 }
 
@@ -166,6 +251,7 @@ export function verifyPublishedVersion(previous, observed, expected) {
 
 function readConfiguration(worker, content) {
   const conf = JSON.parse(content.replace(/^\s*\/\/.*$/gm, ""));
+  if (worker === "workflow-mcp-worker") verifyWorkflowReleaseConfig(conf);
   invariant(conf.name === worker && conf.main === WORKER_ENTRIES[worker],
     "Worker script name or entry differs from selected target");
   invariant(conf.keep_vars === false,
@@ -221,6 +307,21 @@ function readConfiguration(worker, content) {
       "Production must declare a local SQLite DeviceCoordinator");
   }
   return conf;
+}
+
+async function cfListRead(path, token) {
+  const response = await fetch("https://api.cloudflare.com/client/v4" + path, {
+    headers: { Authorization: "Bearer " + token, Accept: "application/json" },
+    signal: AbortSignal.timeout(15_000),
+  });
+  invariant(response.ok, "Workflow private Fixture route inventory HTTP " + response.status);
+  const data = await response.json();
+  invariant(data?.success === true && Array.isArray(data.result),
+    "Workflow private Fixture route inventory missing");
+  invariant((data.result_info?.total_pages ?? 1) <= 1 &&
+    (!data.result_info?.total_count || data.result_info.total_count <= data.result.length),
+    "Workflow private Fixture route inventory incomplete");
+  return data.result;
 }
 
 async function cfGet(account, worker, token, endpoint) {
@@ -299,7 +400,16 @@ async function current(account, worker, token, options) {
 
 async function main() {
   const [mode, worker] = process.argv.slice(2);
-  invariant(["preflight", "readback", "version", "diagnostic"].includes(mode), "Unknown release validation mode");
+  invariant(["preflight", "readback", "version", "diagnostic", "d1-check"].includes(mode), "Unknown release validation mode");
+  if (mode === "d1-check") {
+    invariant(worker === "workflow-mcp-worker", "D1 check restricted to Workflow");
+    const raw = await readFile("/dev/stdin", "utf8");
+    verifyWorkflowD1Readiness(JSON.parse(raw),
+      process.env.WORKFLOW_FIRST_DEPLOY === "true",
+      process.env.WORKFLOW_REQUIRE_COMPLETE_SCHEMA === "true");
+    console.log("Workflow production D1 migrations and Run-state gate verified");
+    return;
+  }
   if (mode === "diagnostic") {
     invariant(worker, "Wrangler log path missing");
     const log = await readFile(worker, "utf8");

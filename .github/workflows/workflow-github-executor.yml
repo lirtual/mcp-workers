@@ -1,0 +1,63 @@
+# Pinned repository verification. Only a D1-confirmed, OIDC-claimed Attempt
+# can execute the fixed check, and only its original physical Job can report.
+name: GitHub Workflow Check Executor
+
+on:
+  workflow_dispatch:
+    inputs:
+      attempt_id:
+        description: Durable registered Attempt UUID
+        required: true
+        type: string
+      dispatch_id:
+        description: Durable dispatch UUID
+        required: true
+        type: string
+      capability_id:
+        description: Registered capability (github.workflow.check)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  registered-check:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.capability_id == 'github.workflow.check' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    environment: workflow-mcp-worker
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: github-registered-check-${{ inputs.attempt_id }}
+      cancel-in-progress: false
+    env:
+      WORKFLOW_ATTEMPT_ID: ${{ inputs.attempt_id }}
+      WORKFLOW_DISPATCH_ID: ${{ inputs.dispatch_id }}
+      WORKFLOW_CAPABILITY: ${{ inputs.capability_id }}
+      WORKFLOW_CALLBACK_ORIGIN: https://workflow.lirtual.dpdns.org
+      WORKFLOW_EXECUTOR_AUDIENCE: workflow-github-claim:production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Claim confirmed registered Attempt
+        id: claim
+        run: node apps/workflow-mcp-worker/tests/github-registered-executor.mjs claim
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+      - name: Install pinned dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Verify Workflow MCP Worker
+        id: verify
+        run: pnpm --filter workflow-mcp-worker check
+      - name: Send signed verification result
+        if: ${{ always() && steps.claim.outcome == 'success' }}
+        env:
+          WORKFLOW_CHECK_OUTCOME: ${{ steps.verify.outcome }}
+        run: node apps/workflow-mcp-worker/tests/github-registered-executor.mjs callback

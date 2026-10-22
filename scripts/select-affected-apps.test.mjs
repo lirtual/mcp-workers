@@ -65,3 +65,10 @@ test('isolated Preview uses the existing CI checks without authorizing productio
   assert.throws(()=>run('remote-control-mcp-worker','refs/heads/topic-review'),/Unsupported manual Worker selection/);
   assert.match(run('remote-control-mcp-worker','refs/heads/main'),/Selected applications: remote-control-mcp-worker/);
 });
+
+test('Workflow MCP Workflow is CI-checked and may only be manually released from main', async () => {
+  assert.deepEqual(selectAffectedApps(['apps/workflow-mcp-worker/src/index.ts']), ['workflow-mcp-worker']);
+  assert.ok(selectAffectedApps(['pnpm-lock.yaml']).includes('workflow-mcp-worker'));
+  const workflow = await readFile(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  assert.equal(workflow.includes('\n          - workflow-mcp-worker\n'), true);
+});

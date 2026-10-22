@@ -50,18 +50,14 @@ describe("bookmark_search tool with new filters", () => {
     );
   });
 
-  it("maps duplicates filter to search query", async () => {
-    mockService.getBookmarks.mockResolvedValueOnce({ count: 0, items: [] });
-
-    await bookmarkSearch.handler({ duplicates: true }, {
-      raindropService: mockService,
-    } as any);
-
-    expect(mockService.getBookmarks).toHaveBeenCalledWith(
-      expect.objectContaining({
-        duplicates: true,
-      }),
-      undefined,
-    );
+  it("does not expose Pro-only duplicate and broken filters", () => {
+    for (const key of ["duplicates", "broken"]) {
+      expect(bookmarkSearch.inputSchema.safeParse({ [key]: true }).success).toBe(false);
+      expect(bookmarkSearch.inputSchema.safeParse({ search: key + ":true" }).success).toBe(false);
+      expect(bookmarkSearch.inputSchema.safeParse({ search: "foo " + key + ":true" }).success).toBe(false);
+    }
+    expect(bookmarkSearch.inputSchema.safeParse({ search: "ordinary free search" }).success).toBe(true);
+    expect(mockService.getBookmarks).not.toHaveBeenCalled();
   });
+
 });

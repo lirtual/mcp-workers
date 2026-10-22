@@ -13,19 +13,25 @@ export const BOOTSTRAP_SECRETS = Object.freeze({
   "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "MCP_BROKER_TOKEN"],
   "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "GH_TOKEN"],
+  "workflow-mcp-worker": ["MCP_ACCESS_TOKEN", "MCP_PORTAL_CLIENT_ID", "MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_EXECUTOR_GITHUB_TOKEN"],
 });
 
 export function collectBootstrapSecrets(worker, env) {
   const required = BOOTSTRAP_SECRETS[worker];
   if (!required) throw new Error("Bootstrap is not enabled for this Worker");
   const payload = {};
-  for (const name of required) {
+  const selected = required;
+  for (const name of selected) {
     const value = env[name];
     if (typeof value !== "string" || value.trim().length === 0) {
       throw new Error("Missing or empty bootstrap Secret: " + name);
     }
     payload[name] = value;
   }
+  if (worker === "workflow-mcp-worker" && (payload.WORKFLOW_EXECUTOR_GITHUB_TOKEN.length < 20 ||
+      payload.WORKFLOW_EXECUTOR_GITHUB_TOKEN.length > 512 ||
+      /\s/.test(payload.WORKFLOW_EXECUTOR_GITHUB_TOKEN)))
+    throw new Error("Invalid WORKFLOW_EXECUTOR_GITHUB_TOKEN");
   if (worker === "ssh-mcp-worker" && payload.MCP_BROKER_TOKEN.length < 32) {
     throw new Error("SSH Broker token must be at least 32 characters");
   }

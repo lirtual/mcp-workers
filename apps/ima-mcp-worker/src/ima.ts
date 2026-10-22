@@ -13,6 +13,7 @@ import type {
   ListNoteResponse,
   NoteMutationResponse,
   SearchNoteResponse,
+  SearchNoteItem,
 } from "./types.ts";
 import { ImaApiError, MediaType } from "./types.ts";
 import { hmacSha1Hex, sha1Hex } from "./crypto.ts";
@@ -74,20 +75,58 @@ export class ImaNotes {
   constructor(api: ImaClient) {
     this.api = api;
   }
-  search(a: { query: string; search_type?: 0 | 1; sort_type?: number; start?: number; end?: number }): Promise<SearchNoteResponse> {
-    const search_type = a.search_type ?? 0;
-    const query_info = search_type === 1 ? { content: a.query } : { title: a.query };
+  async search(a: { query: string; search_type?: 0 | 1; sort_type?: number; start?: number; end?: number }): Promise<SearchNoteResponse> {
     const start = a.start ?? 0;
     const end = a.end ?? (start + 20);
     if (end <= start) throw new ImaApiError("Invalid pagination: end must be greater than start", 210001);
     if (end - start > 20) throw new ImaApiError("Invalid pagination: maximum page size 20", 210001);
-    return this.api.post<SearchNoteResponse>("openapi/note/v1/search_note", {
-      search_type,
-      sort_type: a.sort_type ?? 0,
-      query_info,
-      start,
-      end,
+
+    // IMA search_note may return zero total_hit_num with nonempty results, ignore
+    // start/end, and match body text in title mode. For small note collections,
+    // use the existing list/get endpoints to provide a reliable search contract.
+    // Fail explicitly rather than silently omit results from larger collections.
+    const maxNotes = 100;
+    const notes: ListNoteResponse["note_book_list"] = [];
+    let cursor = "";
+    const seenCursors = new Set<string>();
+    while (true) {
+      if (seenCursors.has(cursor)) throw new ImaApiError("IMA note list pagination did not advance", 210001);
+      seenCursors.add(cursor);
+      const page = await this.list({ cursor, limit: 20 });
+      notes.push(...page.note_book_list);
+      if (notes.length > maxNotes || (!page.is_end && notes.length >= maxNotes)) {
+        throw new ImaApiError(`Reliable note search is limited to ${maxNotes} notes`, 210001);
+      }
+      if (page.is_end) break;
+      if (!page.next_cursor || page.next_cursor === cursor) {
+        throw new ImaApiError("IMA note list returned no next cursor", 210001);
+      }
+      cursor = page.next_cursor;
+    }
+
+    const keyword = a.query.toLowerCase();
+    const searchBody = (a.search_type ?? 0) === 1;
+    const sortType = a.sort_type ?? 0;
+    const matches: Array<{ note: SearchNoteItem; size: number }> = [];
+    for (const note of notes) {
+      // Title-only searches avoid reading note content unless size sorting needs it.
+      const content = searchBody ? (await this.get(note.note_id, 0)).content : "";
+      const haystack = searchBody ? content : note.title;
+      if (haystack.toLowerCase().includes(keyword)) {
+        const sizeContent = searchBody ? content : sortType === 3 ? (await this.get(note.note_id, 0)).content : "";
+        matches.push({ note: { note_book_info: note }, size: new TextEncoder().encode(sizeContent).length });
+      }
+    }
+    matches.sort((a, b) => {
+      const left = a.note.note_book_info;
+      const right = b.note.note_book_info;
+      const order = sortType === 2 ? left.title.localeCompare(right.title)
+        : sortType === 3 ? b.size - a.size
+        : Number(sortType === 1 ? right.create_time ?? 0 : right.modify_time ?? 0)
+          - Number(sortType === 1 ? left.create_time ?? 0 : left.modify_time ?? 0);
+      return order || left.note_id.localeCompare(right.note_id);
     });
+    return { search_note_infos: matches.slice(start, end).map(item => item.note), total_hit_num: matches.length, is_end: end >= matches.length };
   }
   list(a: { folder_id?: string; cursor?: string; limit?: number }): Promise<ListNoteResponse> {
     return this.api.post<ListNoteResponse>("openapi/note/v1/list_note", {
