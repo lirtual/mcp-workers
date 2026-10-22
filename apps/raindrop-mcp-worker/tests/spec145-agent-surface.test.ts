@@ -18,6 +18,29 @@ const removed = [
 ];
 
 describe("Spec #145: Agent MCP public contract", () => {
+  it("does not expose MCP Prompts while retaining tools and resources", async () => {
+    const service = new RaindropMCPService({ accessToken: "mock-only" });
+    const client = new Client({ name: "spec145-no-prompts", version: "1" });
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    try {
+      await Promise.all([service.getServer().connect(st), client.connect(ct)]);
+      expect(client.getServerCapabilities()).not.toHaveProperty("prompts");
+      expect((await client.listPrompts()).prompts).toEqual([]);
+
+      const manifest = await service.getManifest();
+      expect(manifest).not.toHaveProperty("prompts");
+      expect(manifest).not.toHaveProperty("capabilities.prompts");
+
+      const { tools } = await client.listTools();
+      expect(tools).toHaveLength(24);
+      const { resources } = await client.listResources();
+      expect(resources.length).toBeGreaterThan(0);
+    } finally {
+      await client.close();
+      await service.cleanup();
+    }
+  });
+
   it("exposes exactly 24 Free-plan atomic tools and refuses all 16 removed names before network access", async () => {
     const service = new RaindropMCPService({ accessToken: "mock-only" });
     const client = new Client({ name: "spec145-contract", version: "1" });
