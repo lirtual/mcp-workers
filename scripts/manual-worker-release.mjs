@@ -80,7 +80,7 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
         invariant(find(name,"plain_text")?.text === value,
           "Workflow GitHub executor identity drift: " + name);
       }
-      for (const name of ["MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET","GITHUB_EXECUTOR_TOKEN"]) {
+      for (const name of ["MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET","WORKFLOW_EXECUTOR_TOKEN"]) {
         invariant(secretNames.has(name) && !!find(name,"secret_text"),
           "Workflow runtime credential binding missing: " + name);
       }

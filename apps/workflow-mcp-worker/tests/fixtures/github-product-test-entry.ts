@@ -18,12 +18,12 @@ export default{
        url.hostname!==env.GITHUB_TEST_WORKER_NAME+'.aiyaya.workers.dev' ||
        request.headers.get('authorization')!=='Bearer '+env.MCP_ACCESS_TOKEN)
       return new Response(null,{status:404});
-    if(!env.GITHUB_EXECUTOR_TOKEN ||
+    if(!env.WORKFLOW_EXECUTOR_TOKEN ||
        !/^[a-f0-9]{64}$/.test(env.GITHUB_TEST_EXPECTED_TOKEN_SHA256))
       return Response.json({tokenMatches:false,readStatus:null,invalidDispatchStatus:null},
         {headers:{'cache-control':'no-store'}});
     const hash=Array.from(new Uint8Array(await crypto.subtle.digest(
-      'SHA-256',new TextEncoder().encode(env.GITHUB_EXECUTOR_TOKEN))))
+      'SHA-256',new TextEncoder().encode(env.WORKFLOW_EXECUTOR_TOKEN))))
       .map(n=>n.toString(16).padStart(2,'0')).join('');
     if(hash!==env.GITHUB_TEST_EXPECTED_TOKEN_SHA256)
       return Response.json({tokenMatches:false,readStatus:null,invalidDispatchStatus:null},
@@ -31,7 +31,7 @@ export default{
     const urlGithub='https://api.github.com/repos/lirtual/mcp-workers/actions/workflows/ci.yml';
     const headers={
       'accept':'application/vnd.github+json',
-      'authorization':'Bearer '+env.GITHUB_EXECUTOR_TOKEN,
+      'authorization':'Bearer '+env.WORKFLOW_EXECUTOR_TOKEN,
       'content-type':'application/json',
       'x-github-api-version':'2026-03-10',
       'user-agent':'mcp-workers-github-isolated-proof',

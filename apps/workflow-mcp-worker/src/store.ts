@@ -28,7 +28,7 @@ export type Env = {
   // for isolated test MCP, pin to test-mcp (never selected by Draft input).
   MCP_PORTAL_ENDPOINT?: string;
   // Production GitHub requires explicit opt-in and fixed OIDC/executor pins.
-  GITHUB_EXECUTOR_TOKEN?: string;
+  WORKFLOW_EXECUTOR_TOKEN?: string;
   GITHUB_EXECUTOR_REPOSITORY?: string;
   GITHUB_EXECUTOR_REPOSITORY_ID?: string;
   GITHUB_EXECUTOR_REF?: string;

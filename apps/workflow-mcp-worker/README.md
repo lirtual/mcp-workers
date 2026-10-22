@@ -22,7 +22,7 @@ Environment bindings and credentials:
 - `DB`, `WORKFLOW` (`workflow-mcp-runner`) and private service `READONLY_TARGET` (`workflow-readonly-fixture`).
 - `MCP_ACCESS_TOKEN` for owner API ingress.
 - `MCP_PORTAL_CLIENT_ID` / `MCP_PORTAL_CLIENT_SECRET` for the pinned Portal.
-- `GITHUB_EXECUTOR_TOKEN` for the registered GitHub executor.
+- `WORKFLOW_EXECUTOR_TOKEN` for the registered GitHub executor.
 - Release-pinned non-secret variables `MCP_PORTAL_ENDPOINT`, `GITHUB_EXECUTOR_REPOSITORY`, `GITHUB_EXECUTOR_REPOSITORY_ID`, `GITHUB_EXECUTOR_REF` and `GITHUB_EXECUTOR_AUDIENCE`.
 
 There are **no independent capability enable flags**. The documented per-operation Publish approvals and runtime authorization checks remain mandatory.

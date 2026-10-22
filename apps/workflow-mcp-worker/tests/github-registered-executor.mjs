@@ -5,27 +5,27 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 const required=name=>{const v=process.env[name];assert.ok(v,'missing '+name);return v;};
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const attemptId=required('GITHUB_ATTEMPT_ID');
-const dispatchId=required('GITHUB_DISPATCH_ID');
+const attemptId=required('WORKFLOW_ATTEMPT_ID');
+const dispatchId=required('WORKFLOW_DISPATCH_ID');
 assert.match(attemptId,uuid);
 assert.match(dispatchId,uuid);
-assert.equal(required('GITHUB_CAPABILITY'),'heavy.github.echo');
+assert.equal(required('WORKFLOW_CAPABILITY'),'heavy.github.echo');
 assert.equal(required('GITHUB_REPOSITORY'),'lirtual/mcp-workers');
 assert.equal(required('GITHUB_EVENT_NAME'),'workflow_dispatch');
 assert.equal(required('GITHUB_RUN_ATTEMPT'),'1','GitHub reruns are not approved');
 const ref=required('GITHUB_REF');
 assert.equal(required('GITHUB_WORKFLOW_REF'),
   'lirtual/mcp-workers/.github/workflows/workflow-github-executor.yml@'+ref);
-const origin=required('GITHUB_CALLBACK_ORIGIN');
+const origin=required('WORKFLOW_CALLBACK_ORIGIN');
 const dedicatedDraftFixture=
   ref==='refs/heads/wip/workflow-github-executor' &&
   /^https:\/\/workflow-github-plan-[a-f0-9]{10}\.aiyaya\.workers\.dev$/.test(origin) &&
-  process.env.GITHUB_EXECUTOR_AUDIENCE==='workflow-github-claim:test';
+  process.env.WORKFLOW_EXECUTOR_AUDIENCE==='workflow-github-claim:test';
 assert.ok([
   'https://workflow.lirtual.dpdns.org',
   'https://workflow-github-test.aiyaya.workers.dev',
 ].includes(origin)||dedicatedDraftFixture,'unregistered callback origin');
-const audience=required('GITHUB_EXECUTOR_AUDIENCE');
+const audience=required('WORKFLOW_EXECUTOR_AUDIENCE');
 assert.match(audience,/^workflow-github-[a-z0-9:-]{4,120}$/);
 const oidcURL=new URL(required('ACTIONS_ID_TOKEN_REQUEST_URL'));
 oidcURL.searchParams.set('audience',audience);

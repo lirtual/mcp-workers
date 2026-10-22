@@ -397,12 +397,12 @@ jobs:
         if: inputs.worker == 'workflow-mcp-worker'
         shell: bash
         env:
-          GITHUB_CALLBACK_ORIGIN: https://workflow.lirtual.dpdns.org
-          GITHUB_EXECUTOR_AUDIENCE: workflow-github-claim:production
+          WORKFLOW_CALLBACK_ORIGIN: https://workflow.lirtual.dpdns.org
+          WORKFLOW_EXECUTOR_AUDIENCE: workflow-github-claim:production
         run: |
           set -euo pipefail
-          [[ "$GITHUB_CALLBACK_ORIGIN" == 'https://workflow.lirtual.dpdns.org' ]] || exit 1
-          [[ "$GITHUB_EXECUTOR_AUDIENCE" == 'workflow-github-claim:production' ]] || exit 1
+          [[ "$WORKFLOW_CALLBACK_ORIGIN" == 'https://workflow.lirtual.dpdns.org' ]] || exit 1
+          [[ "$WORKFLOW_EXECUTOR_AUDIENCE" == 'workflow-github-claim:production' ]] || exit 1
           echo "GitHub registered executor origin/audience confirmed (values withheld)"
 
       - name: Stage selected Worker Secrets for every release
@@ -418,7 +418,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           MCP_PORTAL_CLIENT_ID: ${{ secrets.MCP_PORTAL_CLIENT_ID }}
           MCP_PORTAL_CLIENT_SECRET: ${{ secrets.MCP_PORTAL_CLIENT_SECRET }}
-          GITHUB_EXECUTOR_TOKEN: ${{ secrets.GITHUB_EXECUTOR_TOKEN }}
+          WORKFLOW_EXECUTOR_TOKEN: ${{ secrets.WORKFLOW_EXECUTOR_TOKEN }}
         run: |
           set -euo pipefail
           umask 077
@@ -443,7 +443,7 @@ jobs:
       - name: Verify dedicated GitHub token without executable dispatch
         if: inputs.worker == 'workflow-mcp-worker'
         env:
-          GITHUB_EXECUTOR_TOKEN: ${{ secrets.GITHUB_EXECUTOR_TOKEN }}
+          WORKFLOW_EXECUTOR_TOKEN: ${{ secrets.WORKFLOW_EXECUTOR_TOKEN }}
         run: node scripts/verify-github-release-token.mjs
 
       - name: Recheck current main inside acquired release lock
@@ -686,7 +686,7 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       WORKFLOW_MCP_SMOKE: ${{ inputs.mcp_production_smoke }}
       WORKFLOW_GITHUB_SMOKE: ${{ inputs.github_production_smoke }}
-      GITHUB_EXECUTOR_TOKEN: ${{ secrets.GITHUB_EXECUTOR_TOKEN }}
+      WORKFLOW_EXECUTOR_TOKEN: ${{ secrets.WORKFLOW_EXECUTOR_TOKEN }}
       MCP_PORTAL_CLIENT_ID: ${{ secrets.MCP_PORTAL_CLIENT_ID }}
       MCP_PORTAL_CLIENT_SECRET: ${{ secrets.MCP_PORTAL_CLIENT_SECRET }}
     steps:
@@ -869,9 +869,9 @@ jobs:
       id-token: write
     env:
       GITHUB_WORKER_NAME: ${{ inputs.worker_name }}
-      GITHUB_ATTEMPT_ID: ${{ inputs.attempt_id }}
-      GITHUB_DISPATCH_ID: ${{ inputs.dispatch_id }}
-      GITHUB_CAPABILITY: ${{ inputs.capability_id }}
+      WORKFLOW_ATTEMPT_ID: ${{ inputs.attempt_id }}
+      WORKFLOW_DISPATCH_ID: ${{ inputs.dispatch_id }}
+      WORKFLOW_CAPABILITY: ${{ inputs.capability_id }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

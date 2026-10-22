@@ -104,7 +104,7 @@ async function runGithubStep(
     return {status:'failed',error_code:'github_execution_approval_required'};
   if(s.with.capability!=='heavy.github.echo')
     return {status:'failed',error_code:'github_capability_not_registered'};
-  if(!env.GITHUB_EXECUTOR_TOKEN||!env.GITHUB_EXECUTOR_REPOSITORY||
+  if(!env.WORKFLOW_EXECUTOR_TOKEN||!env.GITHUB_EXECUTOR_REPOSITORY||
      !env.GITHUB_EXECUTOR_REPOSITORY_ID||!env.GITHUB_EXECUTOR_REF||
      !env.GITHUB_EXECUTOR_AUDIENCE)
     return {status:'failed',error_code:'github_executor_not_configured'};
@@ -131,7 +131,7 @@ async function runGithubStep(
       ref:env.GITHUB_EXECUTOR_REF!,
       workflow:executor.workflow,
       ...(executor.workerName?{workerName:executor.workerName}:{}),
-      dispatchToken:env.GITHUB_EXECUTOR_TOKEN!,
+      dispatchToken:env.WORKFLOW_EXECUTOR_TOKEN!,
     },{attemptId,dispatchId,capabilityId:'heavy.github.echo'});
     const persisted=await recordGithubDispatchResult(db,attemptId,result);
     if(!persisted)throw Error('dispatch_ack_not_persisted');

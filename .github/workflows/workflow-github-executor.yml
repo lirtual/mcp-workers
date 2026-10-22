@@ -34,11 +34,11 @@ jobs:
       group: github-registered-echo-${{ inputs.attempt_id }}
       cancel-in-progress: false
     env:
-      GITHUB_ATTEMPT_ID: ${{ inputs.attempt_id }}
-      GITHUB_DISPATCH_ID: ${{ inputs.dispatch_id }}
-      GITHUB_CAPABILITY: ${{ inputs.capability_id }}
-      GITHUB_CALLBACK_ORIGIN: https://workflow.lirtual.dpdns.org
-      GITHUB_EXECUTOR_AUDIENCE: workflow-github-claim:production
+      WORKFLOW_ATTEMPT_ID: ${{ inputs.attempt_id }}
+      WORKFLOW_DISPATCH_ID: ${{ inputs.dispatch_id }}
+      WORKFLOW_CAPABILITY: ${{ inputs.capability_id }}
+      WORKFLOW_CALLBACK_ORIGIN: https://workflow.lirtual.dpdns.org
+      WORKFLOW_EXECUTOR_AUDIENCE: workflow-github-claim:production
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

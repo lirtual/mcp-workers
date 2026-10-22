@@ -28,11 +28,11 @@ test('GitHub dedicated job has only fixed registered echo inputs, no user comman
   assert.equal(job.steps.at(-1).run,
     'node apps/workflow-mcp-worker/tests/github-registered-executor.mjs');
   assert.deepEqual(Object.keys(job.env).sort(),[
-    'GITHUB_ATTEMPT_ID','GITHUB_CALLBACK_ORIGIN','GITHUB_CAPABILITY',
-    'GITHUB_DISPATCH_ID','GITHUB_EXECUTOR_AUDIENCE',
+    'WORKFLOW_ATTEMPT_ID','WORKFLOW_CALLBACK_ORIGIN','WORKFLOW_CAPABILITY',
+    'WORKFLOW_DISPATCH_ID','WORKFLOW_EXECUTOR_AUDIENCE',
   ]);
-  assert.equal(job.env.GITHUB_CALLBACK_ORIGIN,'https://workflow.lirtual.dpdns.org');
-  assert.equal(job.env.GITHUB_EXECUTOR_AUDIENCE,'workflow-github-claim:production');
+  assert.equal(job.env.WORKFLOW_CALLBACK_ORIGIN,'https://workflow.lirtual.dpdns.org');
+  assert.equal(job.env.WORKFLOW_EXECUTOR_AUDIENCE,'workflow-github-claim:production');
   assert.equal(selectedGithubExecutor({GITHUB_EXECUTOR_REPOSITORY:'lirtual/mcp-workers',
     GITHUB_EXECUTOR_REF:'refs/heads/main'}).workflow,'workflow-github-executor.yml');
 });
@@ -42,7 +42,7 @@ test('dedicated GitHub workflow has no automatic push/schedule or broad write pe
   assert.equal(workflow.permissions.actions,undefined);
   const serialized=JSON.stringify(workflow);
   for(const forbidden of [
-    'secrets.CLOUDFLARE_API_TOKEN','secrets.GITHUB_EXECUTOR_TOKEN','secrets.GH_TOKEN',
+    'secrets.CLOUDFLARE_API_TOKEN','secrets.WORKFLOW_EXECUTOR_TOKEN','secrets.GH_TOKEN',
     'GITHUB_TEST_WORKER_NAME','inputs.command','inputs.repository','inputs.callback_url',
     'pull_request_target','repository_dispatch',
   ])assert.equal(serialized.includes(forbidden),false,forbidden);
