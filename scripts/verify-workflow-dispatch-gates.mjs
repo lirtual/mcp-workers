@@ -20,6 +20,7 @@ for(const required of [
   "github.ref == 'refs/heads/main'",
   'inputs.deploy_to_production == true',
   'inputs.s2_portal_probe != true',
+  'inputs.workflow_portal_register != true',
   'inputs.s3_production_smoke != true',
   'inputs.s2_cloud_e2e != true',
   'inputs.s3_product_e2e != true',
@@ -33,6 +34,26 @@ for(const required of [
 assert.match(config,/      enable_workflow_s2:\n[\s\S]*?        default: false/);
 assert.match(config,/      enable_workflow_s3:\n[\s\S]*?        default: false/);
 assert.match(config,/      confirm_workflow_stage_disable:\n[\s\S]*?        default: false/);
+assert.match(config,/      workflow_portal_register:\n[\s\S]*?        default: false/);
+const attach=jobExpression('workflow-portal-register');
+for(const required of [
+  "github.event_name == 'workflow_dispatch'",
+  "github.ref == 'refs/heads/main'",
+  "inputs.worker == 'workflow-mcp-worker'",
+  "inputs.workflow_portal_register == true",
+  "inputs.deploy_to_production != true",
+  "inputs.smoke_only != true",
+  "inputs.enable_workflow_s2 != true",
+  "inputs.enable_workflow_s3 != true",
+  "needs.checks.result == 'success'",
+])assert.ok(attach.includes(required),'unsafe Portal registration gate: '+required);
+assert.ok(config.includes('run: node scripts/register-workflow-portal.mjs'),
+  'Portal registration must use dedicated fixed configuration script');
+assert.ok(config.includes('run: node --test scripts/register-workflow-portal.test.mjs'),
+  'Portal admin mutation must have an unconditional offline test gate');
+assert.ok(config.includes('group: worker-release-workflow-mcp-worker'),
+  'Portal updates must share production release lock');
+
 assert.ok(config.includes('WORKFLOW_ALLOW_STAGE_DISABLE: '+String.fromCharCode(36)+'{{ inputs.confirm_workflow_stage_disable }}'),
   'Explicit Workflow stage disable approval must reach preflight');
 

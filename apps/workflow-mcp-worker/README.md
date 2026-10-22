@@ -131,6 +131,17 @@ For S2's independent read-only production smoke, use `smoke_only=true`,
 `s2_production_smoke=true`, `enable_workflow_s2=true` and
 `deploy_to_production=false`.
 
+## Unified Portal registration
+
+To expose Workflow through the **existing** Cloudflare One-MCP Portal
+(`one-mcp`, `mcp.lirtual.dpdns.org`) without another gateway, dispatch the
+existing `ci.yml` on `main` with `worker=workflow-mcp-worker` and
+`workflow_portal_register=true`; leave deployment and smoke inputs disabled.
+This job reuses the existing GitHub Environment and bearer Secret, syncs and
+verifies the exact 11 Workflow tools, then appends one mapping while retaining
+the existing nine servers, their tool enabled flags, Code Mode and Gateway
+settings. It does not deploy the Worker, modify D1 or add a ChatGPT plugin.
+
 ## Safety invariants
 
 - Bounded DAG size, parallelism, output size and Run capacity. Rejected work
