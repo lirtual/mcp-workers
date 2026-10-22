@@ -66,11 +66,7 @@ export function validBrowserApprovalRequest(request:Request,approvalId:string):b
   // advisory headers are not owner authorization. POST additionally needs
   // the signed Access JWT and matching CSRF form/cookie before any write.
   if(url.hash||url.pathname!=="/browser-approve/"+approvalId)return false;
-  if(request.method!=="GET"&&request.method!=="POST")return false;
-  if(request.method==="POST"&&
-     request.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase()
-       !=="application/x-www-form-urlencoded")return false;
-  return true;
+  return request.method==="GET"||request.method==="POST";
 }
 
 const escapeHtml=(value:string)=>value.replace(/[&<>"']/g,c=>
@@ -84,6 +80,8 @@ const CSRF_PATTERN=/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
  * Do not trust it as owner identity: signed Access JWT is always required.
  */
 export function validBrowserApprovalForm(request:Request,body:string):boolean{
+  if(request.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase()
+    !=="application/x-www-form-urlencoded")return false;
   const params=new URLSearchParams(body);
   const fields=[...params.keys()];
   if(fields.length!==2||params.getAll("decision").length!==1||

@@ -101,11 +101,18 @@ test("HTTP owner confirmation entry denies model tokens, forged Origins, missing
   assert.ok(cookie.startsWith("__Host-rca-approval-csrf="));
   assert.match(String(page.headers.get("set-cookie")),/SameSite=Lax/);
   const form=new URLSearchParams({decision:"approve",csrf:hidden}).toString();
-  assert.equal(validBrowserApprovalForm(new Request(url,{headers:{cookie}}),form),true);
+  assert.equal(validBrowserApprovalForm(new Request(url,{headers:{cookie,
+    "content-type":"application/x-www-form-urlencoded"}}),form),true);
   assert.equal(validBrowserApprovalForm(new Request(url),form),false);
-  assert.equal(validBrowserApprovalForm(new Request(url,{headers:{cookie}}),
+  const textPost=new Request(url,{method:"POST",headers:{cookie,
+    "content-type":"text/plain"},body:form});
+  assert.equal(validBrowserApprovalRequest(textPost,record.approval_id),true);
+  assert.equal(validBrowserApprovalForm(textPost,form),false);
+  assert.equal(validBrowserApprovalForm(new Request(url,{headers:{cookie,
+    "content-type":"application/x-www-form-urlencoded"}}),
     new URLSearchParams({decision:"approve",csrf:randomUUID()}).toString()),false);
-  assert.equal(validBrowserApprovalForm(new Request(url,{headers:{cookie}}),
+  assert.equal(validBrowserApprovalForm(new Request(url,{headers:{cookie,
+    "content-type":"application/x-www-form-urlencoded"}}),
     form+"&decision=approve"),false);
   assert.equal(validBrowserApprovalRequest(new Request(url,{method:"POST",
     headers:{"content-type":"application/x-www-form-urlencoded"},body:form}),
