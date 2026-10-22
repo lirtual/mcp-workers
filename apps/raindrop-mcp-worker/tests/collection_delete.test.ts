@@ -107,7 +107,7 @@ describe("T07 collection_delete fresh verified cascade", () => {
         [30, 20, 2],
       ],
     );
-    expect(preview.digest).toMatch(/^v1:sha256:[a-f0-9]{64}$/);
+    expect(preview.digest).toMatch(/^collection-deletion:sha256:[a-f0-9]{64}$/);
     expect(f.state.writes).toEqual([]);
     const result = await f
       .service()
@@ -156,7 +156,7 @@ describe("T07 collection_delete fresh verified cascade", () => {
     for (const changes of [
       { expectedTotal: 2 },
       { collectionIds: [10, 20] },
-      { digest: `v1:sha256:${"0".repeat(64)}` },
+      { digest: `collection-deletion:sha256:${"0".repeat(64)}` },
     ]) {
       await expect(
         f
@@ -623,7 +623,7 @@ describe("T07 public MCP schemas and invocation", () => {
           confirm: true,
           expectedTotal: 2,
           collectionIds: [20, 10],
-          digest: `v1:sha256:${"0".repeat(64)}`,
+          digest: `collection-deletion:sha256:${"0".repeat(64)}`,
         }).success,
       ).toBe(false);
     }

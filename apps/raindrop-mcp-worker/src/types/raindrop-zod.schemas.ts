@@ -237,7 +237,7 @@ const CollectionDeleteIdsSchema = z.array(CollectionDeleteIdSchema).max(60).refi
   ids => ids.every((id, index) => index === 0 || ids[index - 1]! < id),
   "IDs must be unique and sorted ascending",
 );
-const CollectionDigestSchema = z.string().regex(/^v1:sha256:[a-f0-9]{64}$/);
+const CollectionDigestSchema = z.string().regex(/^collection-deletion:sha256:[a-f0-9]{64}$/);
 const CollectionConfirmationShape = {
   confirm: z.literal(true),
   expectedTotal: z.number().int().nonnegative().safe(),
