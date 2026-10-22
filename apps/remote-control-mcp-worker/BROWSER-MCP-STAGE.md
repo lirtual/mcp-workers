@@ -4,7 +4,7 @@ Updated: 2026-10-22 · SPEC #152
 
 ## Scope and implementation
 
-- Worker: [Draft PR #143](https://github.com/lirtual/mcp-workers/pull/143), source commit `03114f4`. Agent: [Draft PR #20](https://github.com/lirtual/remote-control-agent/pull/20), source commit `79dec253`.
+- Worker: [Draft PR #143](https://github.com/lirtual/mcp-workers/pull/143). Agent: [Draft PR #20](https://github.com/lirtual/remote-control-agent/pull/20). Use the PR heads as the current source of truth; commit IDs below identify specific completed checks.
 - Existing paired-device MCP route and Owner Durable Object; no extra Worker, browser CLI, proxy, database, or generic script executor.
 - **Isolated Preview only:** when `V2_OWNER` is bound, `DEVICE_COORDINATOR` is absent, `REMOTE_CONTROL_V2_PREVIEW_ONLY=true`, and owner Access identity/origin configuration is present, the MCP advertises and dispatches **10** tools: `browser_start`, `browser_status`, `browser_navigate`, `browser_snapshot`, `browser_close`, `browser_tabs`, `browser_click`, `browser_fill`, `browser_press_key`, `browser_select_option`.
 - The legacy test switches `SPEC152_PREVIEW_BROWSER_TOOLS`, `BROWSER_APPROVAL_ENABLED`, and fixed `SPEC152_PREVIEW_BROWSER_DEVICE_ID` restriction have been removed. Tool availability depends on Preview identity and Access configuration, not these variables.
@@ -16,7 +16,8 @@ Updated: 2026-10-22 · SPEC #152
 
 ## Verified evidence
 
-- Worker application and database CI passed at `03114f4`; source/fixture approval tests passed. Actual phone Cloudflare Access approval succeeded for an exact operation sent to a **simulated** signed Agent, which recorded exactly one effect and acknowledgement. Live cloud replay rejection was not confirmed; local single-use enforcement tests passed.
+- Worker `8e9df89`: [CI #39763349323](https://github.com/lirtual/mcp-workers/actions/runs/39763349323) **PASS** (Application checks and Database integration). Agent `47b0c86`: [CI #39763345892](https://github.com/lirtual/remote-control-agent/actions/runs/39763345892) **PASS**. Navigation now requires exact-tab and fresh-snapshot checks on both sides; CI does not establish native Windows end-to-end acceptance.
+- Earlier local approval proof: actual phone Cloudflare Access approval succeeded for an exact operation sent to a **simulated** signed Agent, which recorded exactly one effect and acknowledgement. Live cloud replay rejection was not confirmed; local single-use enforcement tests passed.
 - Actual Windows desktop, Agent `79dec253`: produced unpublished native preview package `v0.0.4-spec152`; manifest verified **34/34** files against pinned hashes, including Playwright 1.64.1.
 - **Real headed Edge, native/local only:** opened a disposable private Profile, navigated the public Playwright TodoMVC test page, read semantic snapshot, filled a role/name target, pressed Enter, verified the result and closed successfully (exit 0).
 - A second real Edge test opened/selected/closed multiple tabs and proved stale-snapshot rejection after switching tabs (exit 0). Both tests left zero test-profile Edge processes and cleaned their temporary Profiles. Installed Windows RCA was unchanged.
@@ -24,7 +25,7 @@ Updated: 2026-10-22 · SPEC #152
 ## Open release blockers
 
 1. **Not yet verified:** one continuous, owner-approved, signed `MCP tools/call → Worker Durable Object → Ed25519 WebSocket → actual Windows Agent → real browser` E2E operation with receipts, replay rejection, revocation and cleanup. An earlier disposable pairing approval request was blocked by the execution environment's security review. Do not reroute, re-create substitute credentials, or infer success from separate native and mock tests.
-2. **GitGuardian:** one suspected secret was reported across the Worker PR history; GitHub checks expose no finding path/type. Inspect the actual GitGuardian alert and remediate/rotate if genuine before merging. Never expose a secret in evidence or comments.
+2. **GitGuardian:** the PR-history `generic_password` detection (incident `38837633`) is `IGNORED` with reason `false_positive`; validation is `no_checker`, so this is a triage decision, not proof that a credential was automatically verified safe. Reassess if new evidence appears. Do not expose secret values in evidence or comments.
 3. **Release not authorized:** both browser PRs remain Draft. No production Worker activation, browser Agent release, installed-Agent upgrade, or merged PR is implied. Human takeover/resume and remaining desktop lifecycle behaviors require separate verification.
 
 The previous stage-by-stage design and risk discussions remain available in Git history and the [architecture review](https://github.com/lirtual/mcp-workers/pull/117). This file is the concise current-state contract, not a chronological transcript.
