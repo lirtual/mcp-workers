@@ -26,6 +26,7 @@ const echo = 'workflow-s1-production-smoke-' + label;
 let workflowId;
 let runId;
 let failure;
+let s3PhysicalCompleted = false;
 
 function sql(statement) {
   // stdout contains JSON only; do not log credentials, SQL args or Wrangler internals.
@@ -52,6 +53,12 @@ function cleanup() {
   const runs = workflowRows();
   if (runs.some(r => !terminal.has(r.outcome))) {
     throw Error('Refusing to delete temporary records: nonterminal Run still exists');
+  }
+  if(process.env.WORKFLOW_S3_SMOKE==='true' && runId && !s3PhysicalCompleted)
+    throw Error('Refusing S3 cleanup until physical GitHub Job is completed');
+  if(process.env.WORKFLOW_S3_SMOKE==='true'){
+    sql('DELETE FROM callback_receipts WHERE attempt_id IN (SELECT attempt_id FROM step_attempts WHERE run_id IN (SELECT id FROM runs WHERE workflow_id = ' + id + '))');
+    sql('DELETE FROM step_attempts WHERE run_id IN (SELECT id FROM runs WHERE workflow_id = ' + id + ')');
   }
   // Foreign-key order; scoped by the server-returned random Workflow UUID.
   sql(`DELETE FROM run_steps WHERE run_id IN (SELECT id FROM runs WHERE workflow_id = ${id})`);
@@ -199,8 +206,79 @@ async function runS2Smoke() {
   console.log('S2_PRODUCTION_SMOKE_OK: pinned Portal + IMA read-only + published Workflow + result');
 }
 
+async function runS3Smoke() {
+  const credential=process.env.S3_GITHUB_TOKEN;
+  assert.ok(credential && credential.length>=20,'Dedicated GitHub token missing');
+  const outstanding=sql("SELECT count(*) AS n FROM runs WHERE outcome NOT IN ('succeeded','failed','cancelled')");
+  assert.equal(outstanding[0]?.n,0,'Production has nonterminal Runs: S3 smoke aborted');
+  await client.connect(transport);
+  const definition={version:1,name:'workflow-s3-production-smoke-'+label,steps:[
+    {id:'heavy',uses:'github.run',with:{capability:'heavy.github.echo'}},
+    {id:'emit',needs:['heavy'],uses:'result.emit',
+      with:{data:{ref:'steps.heavy.output'}}},
+  ]};
+  const draft=await tool('workflow_create',{definition:JSON.stringify(definition)});
+  workflowId=draft.workflow_id;
+  assert.match(workflowId,uuid);
+  const checked=await tool('workflow_validate',{workflow_id:workflowId,revision:1});
+  assert.equal(checked.valid,true);
+  assert.equal(checked.requires_heavy_execution_approval,true);
+  const denied=await client.callTool({name:'workflow_publish',arguments:{
+    workflow_id:workflowId,expected_revision:1,
+  }});
+  assert.equal(denied.isError,true,'Unapproved S3 Publish must be rejected');
+  const approved=await tool('workflow_publish',{
+    workflow_id:workflowId,expected_revision:1,approve_heavy_execution:true,
+  });
+  assert.ok(approved.published_version_id);
+  const opts={workflow_id:workflowId,inputs:{},idempotency_key:'s3-prod-smoke-'+label};
+  const first=await tool('workflow_run',opts);
+  runId=first.run_id;
+  assert.match(runId,uuid);
+  assert.equal((await tool('workflow_run',opts)).run_id,runId,
+    'Idempotency must reuse original physical dispatch');
+  let outcome;
+  for(let i=0;i<220;i++){
+    try{outcome=await tool('workflow_result',{run_id:runId});}
+    catch(error){
+      if(!/Request timed out/i.test(String(error)))throw error;
+      await new Promise(r=>setTimeout(r,1200));continue;
+    }
+    if(terminal.has(outcome.status)||outcome.status==='indeterminate')break;
+    await new Promise(r=>setTimeout(r,1200));
+  }
+  assert.equal(outcome?.status,'succeeded','S3 business outcome not succeeded');
+  assert.equal(outcome.steps.length,2);
+  assert.ok(outcome.steps.every(s=>s.status==='succeeded'));
+  assert.equal(outcome.result?.echo,'ok');
+  assert.equal(outcome.result?.source,'workflow-s3-executor');
+  const attempt=sql('SELECT candidate_run_id,candidate_run_attempt FROM step_attempts WHERE run_id='+quotedId(runId));
+  assert.equal(attempt.length,1,'Expected one durable S3 Attempt');
+  assert.ok(Number.isSafeInteger(attempt[0].candidate_run_id)&&attempt[0].candidate_run_id>0);
+  assert.equal(attempt[0].candidate_run_attempt,1);
+  const receipts=sql('SELECT count(*) AS n FROM callback_receipts WHERE attempt_id IN (SELECT attempt_id FROM step_attempts WHERE run_id='+quotedId(runId)+')');
+  assert.equal(receipts[0]?.n,1,'Expected one durable callback');
+  const url='https://api.github.com/repos/lirtual/mcp-workers/actions/runs/'+attempt[0].candidate_run_id;
+  for(let i=0;i<70;i++){
+    const response=await fetch(url,{headers:{
+      accept:'application/vnd.github+json',authorization:'Bearer '+credential,
+      'user-agent':'mcp-workers-s3-production-smoke',
+    },redirect:'manual',signal:AbortSignal.timeout(12000)});
+    assert.equal(response.status,200,'GitHub physical job state unavailable');
+    const run=await response.json();
+    if(run.status==='completed'){
+      assert.equal(run.conclusion,'success','Physical GitHub Job did not succeed');
+      s3PhysicalCompleted=true;break;
+    }
+    await new Promise(r=>setTimeout(r,1000));
+  }
+  assert.equal(s3PhysicalCompleted,true,'Physical GitHub Job not completed');
+  console.log('S3_PRODUCTION_SMOKE_OK: one Echo, OIDC callback, physical Job complete');
+}
+
 try {
-  await (process.env.WORKFLOW_S2_SMOKE==='true'?runS2Smoke():runSmoke());
+  await (process.env.WORKFLOW_S3_SMOKE==='true'?runS3Smoke():
+    process.env.WORKFLOW_S2_SMOKE==='true'?runS2Smoke():runSmoke());
 } catch (e) {
   failure = e;
   console.error('SMOKE_FAILED:', String(e?.message ?? e).replaceAll(token, '[redacted]'));

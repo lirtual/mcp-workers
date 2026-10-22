@@ -20,6 +20,7 @@ for(const required of [
   "github.ref == 'refs/heads/main'",
   'inputs.deploy_to_production == true',
   'inputs.s2_portal_probe != true',
+  'inputs.s3_production_smoke != true',
   'inputs.s2_cloud_e2e != true',
   'inputs.s3_product_e2e != true',
   'inputs.s3_oidc_probe != true',
@@ -30,6 +31,17 @@ for(const required of [
 ])assert.ok(deploy.includes(required),'unsafe release gate: '+required);
 assert.match(config,/      enable_workflow_s2:\n[\s\S]*?        default: false/);
 assert.match(config,/      enable_workflow_s3:\n[\s\S]*?        default: false/);
+assert.match(config,/      s3_production_smoke:\n[\s\S]*?        default: false/);
+const smoke = jobExpression('workflow-s1-smoke');
+for(const required of [
+  'inputs.smoke_only == true',
+  'inputs.deploy_to_production != true',
+  'inputs.enable_workflow_s3 != true',
+  '(inputs.s2_production_smoke != true || inputs.s3_production_smoke != true)',
+]) assert.ok(smoke.includes(required),'S3 production smoke cannot release: '+required);
+assert.ok(config.includes('WORKFLOW_S3_SMOKE: '+String.fromCharCode(36)+'{{ inputs.s3_production_smoke }}'),
+  'S3 smoke selection must be wired only into the smoke Job');
+
 assert.ok(config.includes('WORKFLOW_S3_RELEASE: ${{ inputs.enable_workflow_s3 }}'),
   'S3 mode must reach staging and readback');
 assert.ok(config.includes('node scripts/verify-s3-release-token.mjs'),
