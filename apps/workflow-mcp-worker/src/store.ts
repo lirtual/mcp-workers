@@ -39,6 +39,10 @@ export type Env = {
   // because the dedicated S3 workflow is not registered on main yet.
   S3_TEST_WORKER_NAME?: string;
   S3_TEST_DEDICATED_EXECUTOR?: string;
+
+  // Legacy personal direct-target mode requires a separate explicit opt-in.
+  // Without it, S2 must have a pinned Portal endpoint at Publish and Run.
+  S2_DIRECT_TARGETS_ENABLED?: string;
 };
 export class StateError extends Error {
   code:string;
@@ -128,6 +132,16 @@ export class WorkflowService {
     const provided=approved_operations.slice().sort((a,b)=>JSON.stringify(a)<JSON.stringify(b)?-1:JSON.stringify(a)>JSON.stringify(b)?1:0);
     if(JSON.stringify(required)!==JSON.stringify(provided))throw new StateError('external_approval_required');
     if(required.length && this.env.S2_READONLY_ENABLED!=='true')throw new StateError('s2_disabled');
+    if(required.length){
+      const portal=this.env.S2_PORTAL_ENDPOINT;
+      if(portal===undefined){
+        if(this.env.S2_DIRECT_TARGETS_ENABLED!=='true')
+          throw new StateError('portal_target_not_configured');
+      }else if(!['https://test-mcp.lirtual.dpdns.org/mcp',
+                 'https://mcp.lirtual.dpdns.org/mcp'].includes(portal)||
+               required.some(grant=>grant.endpoint!==portal))
+        throw new StateError('portal_target_not_authorized');
+    }
     // Personal trusted-target mode: a separate explicit risk acknowledgement
     // is required at each Publish in addition to exact per-operation grants.
     // This is an authenticated API assertion, not proof of human interaction.
