@@ -49,7 +49,7 @@ test('never accepts a renamed/replaced Portal or incomplete inventory',()=>{
     assert.throws(()=>buildPortalUpdate(p),/portal_/);
   }
 });
-function fake(){
+function fake(expectedToken=env.MCP_ACCESS_TOKEN){
   let current=portal();
   let upstream;
   const requests=[];
@@ -63,7 +63,7 @@ function fake(){
       return res(200,[...oldServers.map(id=>({id})),...(upstream?[upstream]:[])]);
     if(request.method==='POST'&&tail==='/servers'){
       const value=JSON.parse(await request.text());
-      assert.equal(value.auth_credentials,env.MCP_ACCESS_TOKEN);
+      assert.equal(value.auth_credentials,expectedToken);
       upstream={...originalServer};
       return res(200,upstream);
     }
@@ -92,10 +92,17 @@ test('one scoped registration and one Portal append, repeat safely',async()=>{
   assert.equal(api.requests.filter(x=>x.method==='POST'&&x.tail==='/servers').length,1);
 });
 test('missing credential fails before any network request',async()=>{
-  const api=fake();
-  await assert.rejects(attachWorkflowPortal({...env,MCP_ACCESS_TOKEN:''},api.send),
-    /portal_worker_token_missing/);
-  assert.equal(api.requests.length,0);
+  for(const bad of ['',undefined]){
+    const api=fake();
+    await assert.rejects(attachWorkflowPortal({...env,MCP_ACCESS_TOKEN:bad},api.send),
+      /portal_worker_token_missing/);
+    assert.equal(api.requests.length,0);
+  }
+});
+test('short existing bearer is allowed only after real upstream sync',async()=>{
+  const api=fake('x');
+  assert.equal(await attachWorkflowPortal({...env,MCP_ACCESS_TOKEN:'x'},api.send),true);
+  assert.equal(api.getPortal().servers.length,10);
 });
 test('denied Cloudflare access fails closed without changing Portal',async()=>{
   const api=fake();
