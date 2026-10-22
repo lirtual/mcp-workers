@@ -62,3 +62,23 @@ test("one GH_TOKEN Secret stages multiple PATs without additional secret names",
     { ...primary, GH_TOKEN: Array(9).fill("different").map((x,i) => x + i).join("\n") }),
     /Invalid or duplicate/);
 });
+
+test("Workflow S2 credentials are staged only for the separately enabled release", () => {
+  const fixture = { MCP_ACCESS_TOKEN: "s1-portal",
+    S2_PORTAL_CLIENT_ID: "existing-service-id",
+    S2_PORTAL_CLIENT_SECRET: "existing-service-secret",
+  };
+  assert.deepEqual(collectBootstrapSecrets("workflow-mcp-worker", fixture),
+    { MCP_ACCESS_TOKEN: "s1-portal" });
+  const explicit = { ...fixture, WORKFLOW_S2_RELEASE: "true" };
+  assert.deepEqual(collectBootstrapSecrets("workflow-mcp-worker", explicit), fixture);
+  for (const key of ["S2_PORTAL_CLIENT_ID", "S2_PORTAL_CLIENT_SECRET"]) {
+    assert.throws(() => collectBootstrapSecrets("workflow-mcp-worker",
+      { ...explicit, [key]: "" }), new RegExp(key));
+    assert.throws(() => collectBootstrapSecrets("workflow-mcp-worker",
+      { ...explicit, [key]: undefined }), new RegExp(key));
+  }
+  assert.throws(() => collectBootstrapSecrets("ima-mcp-worker", {
+    ...fixtures["ima-mcp-worker"], WORKFLOW_S2_RELEASE: "true",
+  }), /S2 release is allowed only/);
+});
