@@ -512,3 +512,42 @@ test("S3 production activation is separate, exact and requires S2", () => {
     {mode:"readback",expectS2:true,expectS3:false}),
     /configuration must not persist/);
 });
+
+test("Workflow preflight rejects accidental S2/S3 downgrade but permits explicitly approved one", () => {
+  const names=["MCP_ACCESS_TOKEN","S2_PORTAL_CLIENT_ID","S2_PORTAL_CLIENT_SECRET","S3_GITHUB_TOKEN"];
+  const secrets=names.map(name=>({name}));
+  const base=[
+    ...names.map(name=>({name,type:"secret_text"})),
+    {name:"DB",type:"d1",id:"c76850db-b5e3-4128-9150-849a1c9e8d74"},
+    {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-s1",class_name:"WorkflowRunner"},
+    {name:"READONLY_TARGET",type:"service",service:"workflow-s1-readonly-fixture"},
+  ];
+  const s2=[
+    {name:"S2_READONLY_ENABLED",type:"plain_text",text:"true"},
+    {name:"S2_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
+  ];
+  const s3=[
+    {name:"S3_ENABLED",type:"plain_text",text:"true"},
+    {name:"S3_GITHUB_REPOSITORY",type:"plain_text",text:"lirtual/mcp-workers"},
+    {name:"S3_GITHUB_REPOSITORY_ID",type:"plain_text",text:"1414936394"},
+    {name:"S3_GITHUB_REF",type:"plain_text",text:"refs/heads/main"},
+    {name:"S3_GITHUB_AUDIENCE",type:"plain_text",text:"workflow-s3-claim:production"},
+  ];
+  const verify=(bindings,options)=>verifyBindings("workflow-mcp-worker",
+    {bindings,observability:{enabled:true,logs:{invocation_logs:true}}},
+    secrets,{mode:"preflight",...options});
+  const both=[...base,...s2,...s3];
+  assert.equal(verify(both,{expectS2:true,expectS3:true}),true);
+  assert.throws(()=>verify(both,{expectS2:false,expectS3:false}),/would disable an active S2\/S3/);
+  assert.throws(()=>verify(both,{expectS2:true,expectS3:false}),/would disable an active S2\/S3/);
+  assert.equal(verify(both,{expectS2:true,expectS3:false,allowStageDisable:true}),true);
+  assert.equal(verify(both,{expectS2:false,expectS3:false,allowStageDisable:true}),true);
+  assert.throws(()=>verify([...base,...s2],{expectS2:false,expectS3:false}),/would disable an active S2\/S3/);
+  assert.equal(verify([...base,...s2],{expectS2:true,expectS3:false}),true);
+  assert.equal(verify(base,{expectS2:false,expectS3:false}),true);
+  assert.equal(verify(base,{expectS2:true,expectS3:true}),true);
+  assert.throws(()=>verify([...base,...s2,...s3.map(x=>x.name==="S3_GITHUB_REF"?{...x,text:"refs/heads/evil"}:x)],
+    {expectS2:false,expectS3:false,allowStageDisable:true}),/registered executor identity drift/);
+  assert.throws(()=>verify(both,{mode:"readback",expectS2:false,expectS3:false,allowStageDisable:true}),
+    /S3 production enablement differs/);
+});

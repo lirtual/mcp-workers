@@ -75,6 +75,16 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
       "Direct MCP targets must remain disabled");
     const s3 = find("S3_ENABLED", "plain_text");
     const s3IsOn = s3?.text === "true";
+    // Protect previously enabled production stages from a missing re-selection.
+    // The preflight runs before Secrets, migrations or Worker deployment.
+    if (options.mode === "preflight") {
+      const disablingS2 = s2IsOn && options.expectS2 === false;
+      const disablingS3 = s3IsOn && options.expectS3 === false;
+      invariant(!disablingS2 && !disablingS3 ||
+        options.allowStageDisable === true,
+        "Workflow release would disable an active S2/S3 stage; " +
+        "retain enabled stages or explicitly confirm disable");
+    }
     if (options.mode === "readback") {
       invariant(s3IsOn === (options.expectS3 === true),
         "S3 production enablement differs from approved release");
@@ -529,6 +539,7 @@ async function main() {
     mode, sourceConfig, previousNamespaceId: previous?.previousNamespaceId,
     expectS2: process.env.WORKFLOW_S2_RELEASE === "true",
     expectS3: process.env.WORKFLOW_S3_RELEASE === "true",
+    allowStageDisable: process.env.WORKFLOW_ALLOW_STAGE_DISABLE === "true",
   }) : { mode: "bootstrap" };
   if (mode === "preflight") {
     await writeFile(statePath, JSON.stringify({ worker, sourceSha, ...observed }), { mode: 0o600 });
