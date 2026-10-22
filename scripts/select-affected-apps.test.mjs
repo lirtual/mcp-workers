@@ -49,6 +49,8 @@ test('isolated Preview uses the existing CI checks without authorizing productio
   assert.match(preview,/github.ref != 'refs\/heads\/main'/);
   assert.match(preview,/github.actor == 'lirtual'/);
   assert.match(preview,/--config wrangler.v2-preview.jsonc/);
+  assert.match(preview,/secrets.RC_V2_PREVIEW_CLOUDFLARE_API_TOKEN/);
+  assert.doesNotMatch(preview,/secrets.CLOUDFLARE_API_TOKEN/);
   assert.doesNotMatch(preview,/wrangler.jsonc\s/);
   const run=(worker,ref)=>{
     return execFileSync(process.execPath,['scripts/select-affected-apps.mjs'],{
