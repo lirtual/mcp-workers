@@ -358,6 +358,9 @@ test("S1 remote D1 readback blocks missing migrations, nonempty first-run and un
   const migrated = {...row,migration_count:4,migration_v3:1,migration_v4:1,
     attempt_table:1,receipt_table:1};
   assert.equal(verifyWorkflowD1Readiness(result(migrated),false),true);
+  assert.equal(verifyWorkflowD1Readiness(result(migrated),false,true),true);
+  assert.throws(()=>verifyWorkflowD1Readiness(result(row),false,true),
+    /schema migrations/);
   assert.throws(()=>verifyWorkflowD1Readiness(result({...migrated,migration_v4:0}),false),
     /schema migrations/);
   assert.throws(()=>verifyWorkflowD1Readiness(result({...migrated,receipt_table:0}),false),
@@ -394,9 +397,12 @@ test("S1 Cloudflare runtime binding readback must match private Fixture, D1 and 
 test("S1 manual GitHub Actions requires D1 checks and private Fixture before Owner", () => {
   const ci=readFileSync(new URL("../.github/workflows/ci.yml",import.meta.url),"utf8");
   const pre=ci.indexOf("      - name: Verify S1 private Fixture and remote D1 readiness");
+  const migration=ci.indexOf("      - name: Apply additive Workflow D1 migrations (S3 remains disabled)");
   const fixture=ci.indexOf("      - name: Deploy existing private S1 read-only Fixture");
   const publish=ci.indexOf("      - name: Publish exactly selected Worker");
-  assert.ok(pre>0 && fixture>pre && publish>fixture);
+  assert.ok(pre>0 && migration>pre && fixture>migration && publish>fixture);
+  assert.match(ci,/wrangler d1 migrations apply workflow-mcp-worker --remote/);
+  assert.match(ci,/WORKFLOW_REQUIRE_S3_SCHEMA: 'true'/);
   assert.ok(ci.includes("S1_FIRST_DEPLOY: " + String.fromCharCode(36) + "{{ steps.preflight.outputs.bootstrap }}"));
   assert.match(ci,/node scripts\/manual-worker-release\.mjs d1-check workflow-mcp-worker/);
   assert.match(ci,/pnpm exec wrangler deploy --config tests\/fixtures\/wrangler\.jsonc/);

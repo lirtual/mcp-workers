@@ -226,7 +226,7 @@ export function verifyFixtureExposure(subdomain, domains, routesByZone) {
   return true;
 }
 
-export function verifyWorkflowD1Readiness(response, bootstrap) {
+export function verifyWorkflowD1Readiness(response, bootstrap, requireS3Schema = false) {
   invariant(Array.isArray(response) && response.length === 1 &&
     response[0]?.success === true && response[0]?.results?.length === 1,
     "S1 remote D1 readback unavailable");
@@ -240,7 +240,7 @@ export function verifyWorkflowD1Readiness(response, bootstrap) {
     row?.migration_v4 === 0 && row?.attempt_table === 0 && row?.receipt_table === 0;
   const s3Ready = row?.migration_count === 4 && row?.migration_v3 === 1 &&
     row?.migration_v4 === 1 && row?.attempt_table === 1 && row?.receipt_table === 1;
-  invariant(s1Schema && (s1Only || s3Ready),
+  invariant(s1Schema && (requireS3Schema ? s3Ready : (s1Only || s3Ready)),
     "Workflow production D1 schema migrations missing, partial or drifted");
   invariant(Number.isSafeInteger(row?.active_runs) && row.active_runs === 0,
     "S1 cannot redeploy while Runs are active or indeterminate");
@@ -460,7 +460,8 @@ async function main() {
     invariant(worker === "workflow-mcp-worker", "D1 check restricted to S1");
     const raw = await readFile("/dev/stdin", "utf8");
     verifyWorkflowD1Readiness(JSON.parse(raw),
-      process.env.S1_FIRST_DEPLOY === "true");
+      process.env.S1_FIRST_DEPLOY === "true",
+      process.env.WORKFLOW_REQUIRE_S3_SCHEMA === "true");
     console.log("S1 production D1 migrations and Run-state gate verified");
     return;
   }

@@ -455,6 +455,35 @@ jobs:
              (SELECT count(*) FROM workflows) AS workflow_count") |
             node scripts/manual-worker-release.mjs d1-check workflow-mcp-worker
 
+      # Only the existing production release lock and GitHub Environment can
+      # apply the two already-reviewed additive S3 tables. This changes the
+      # schema, not S3_ENABLED, the GitHub executor or any existing Run.
+      - name: Apply additive Workflow D1 migrations (S3 remains disabled)
+        if: inputs.worker == 'workflow-mcp-worker'
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WORKFLOW_REQUIRE_S3_SCHEMA: 'true'
+        run: |
+          set -euo pipefail
+          (cd apps/workflow-mcp-worker &&
+            pnpm exec wrangler d1 migrations apply workflow-mcp-worker --remote)
+          (cd apps/workflow-mcp-worker &&
+            pnpm exec wrangler d1 execute workflow-mcp-worker --remote --json --command "SELECT
+              (SELECT count(*) FROM d1_migrations) AS migration_count,
+              (SELECT count(*) FROM d1_migrations WHERE name='0001_s1.sql') AS migration_v1,
+              (SELECT count(*) FROM d1_migrations WHERE name='0002_native_complete_seen.sql') AS migration_v2,
+              (SELECT count(*) FROM d1_migrations WHERE name='0003_s3_attempt_claim.sql') AS migration_v3,
+              (SELECT count(*) FROM d1_migrations WHERE name='0004_s3_callback_receipts.sql') AS migration_v4,
+              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='step_attempts') AS attempt_table,
+              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='callback_receipts') AS receipt_table,
+              (SELECT count(*) FROM pragma_table_info('runs') WHERE name='native_complete_seen_at') AS native_column,
+              (SELECT count(*) FROM runs WHERE outcome NOT IN ('succeeded','failed','cancelled')) AS active_runs,
+              (SELECT count(*) FROM runs) AS run_count,
+              (SELECT count(*) FROM workflows) AS workflow_count") |
+            node scripts/manual-worker-release.mjs d1-check workflow-mcp-worker
+
       - name: Deploy existing private S1 read-only Fixture
         if: inputs.worker == 'workflow-mcp-worker'
         shell: bash
