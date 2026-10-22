@@ -43,6 +43,19 @@ try {
   const output=await client.callTool({name:candidate.name,arguments:{limit:1}});
   if(output.isError) throw new Error('ima_readonly_tool_error');
   console.log('IMA_READONLY_CALL_OK');
+  // On production One-MCP (not the isolated test Portal), verify the actual
+  // end-to-end client → Portal → Workflow read-only tool path. No D1 writes.
+  if(target==='production'){
+    const workflow=listing.tools.find(t=>
+      /(^|[._-])workflow_list$/.test(t.name)&&
+      t.annotations?.readOnlyHint===true&&
+      t.annotations?.destructiveHint!==true);
+    if(!workflow) throw new Error('workflow_readonly_tool_unavailable');
+    console.log('WORKFLOW_PORTAL_READONLY_TOOL_DISCOVERED',workflow.name);
+    const result=await client.callTool({name:workflow.name,arguments:{}});
+    if(result.isError) throw new Error('workflow_readonly_tool_error');
+    console.log('WORKFLOW_PORTAL_READONLY_CALL_OK');
+  }
 } catch(error) {
   // Intentionally do not print exception strings, HTTP bodies or headers.
   console.error('PORTAL_ACCEPTANCE_FAIL',error instanceof Error?error.name:'unknown','HTTP',lastHttpStatus);
