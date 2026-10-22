@@ -88,8 +88,14 @@ enable_workflow_s2=true
 enable_workflow_s3=true
 ```
 
-The later release must explicitly retain previously enabled stages. The
-S3 release gate verifies exact callback origin/audience and checks the
+The later release must explicitly retain previously enabled stages.
+A read-only preflight rejects accidental S2/S3 downgrades **before** Secrets,
+D1 migrations or deployment. To deliberately disable a currently active
+stage, additionally select `confirm_workflow_stage_disable=true` in the
+manual Workflow release. This option defaults false and never bypasses
+release binding, schema or active Run checks.
+
+The S3 release gate verifies exact callback origin/audience and checks the
 dedicated token against the registered GitHub Workflow. The permission
 probe dispatches to a deliberately nonexistent branch and requires rejection;
 it cannot create an executable Job.

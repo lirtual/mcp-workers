@@ -49,6 +49,11 @@ on:
         required: false
         type: boolean
         default: false
+      confirm_workflow_stage_disable:
+        description: Explicitly approve disabling currently enabled S2/S3 stages on a Workflow production release
+        required: false
+        type: boolean
+        default: false
       s2_portal_probe:
         description: Read-only S2 Portal acceptance from existing Environment secrets (no deploy)
         required: false
@@ -319,6 +324,7 @@ jobs:
           (inputs.enable_workflow_s2 != true || inputs.worker == 'workflow-mcp-worker') &&
           (inputs.enable_workflow_s3 != true ||
             (inputs.worker == 'workflow-mcp-worker' && inputs.enable_workflow_s2 == true)) &&
+          (inputs.confirm_workflow_stage_disable != true || inputs.worker == 'workflow-mcp-worker') &&
           inputs.smoke_only != true &&
           inputs.s2_production_smoke != true &&
           inputs.s3_production_smoke != true &&
@@ -355,6 +361,7 @@ jobs:
       SELECTED_WORKER: ${{ inputs.worker }}
       WORKFLOW_S2_RELEASE: ${{ inputs.enable_workflow_s2 }}
       WORKFLOW_S3_RELEASE: ${{ inputs.enable_workflow_s3 }}
+      WORKFLOW_ALLOW_STAGE_DISABLE: ${{ inputs.confirm_workflow_stage_disable }}
       RELEASE_STATE_FILE: /tmp/worker-release-state.json
     steps:
       - uses: actions/checkout@v4

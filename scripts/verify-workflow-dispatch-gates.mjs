@@ -27,10 +27,15 @@ for(const required of [
   "(inputs.enable_workflow_s2 != true || inputs.worker == 'workflow-mcp-worker')",
   "(inputs.enable_workflow_s3 != true ||",
   "(inputs.worker == 'workflow-mcp-worker' && inputs.enable_workflow_s2 == true)",
+  "(inputs.confirm_workflow_stage_disable != true || inputs.worker == 'workflow-mcp-worker')",
 
 ])assert.ok(deploy.includes(required),'unsafe release gate: '+required);
 assert.match(config,/      enable_workflow_s2:\n[\s\S]*?        default: false/);
 assert.match(config,/      enable_workflow_s3:\n[\s\S]*?        default: false/);
+assert.match(config,/      confirm_workflow_stage_disable:\n[\s\S]*?        default: false/);
+assert.ok(config.includes('WORKFLOW_ALLOW_STAGE_DISABLE: '+String.fromCharCode(36)+'{{ inputs.confirm_workflow_stage_disable }}'),
+  'Explicit Workflow stage disable approval must reach preflight');
+
 assert.match(config,/      s3_production_smoke:\n[\s\S]*?        default: false/);
 const smoke = jobExpression('workflow-s1-smoke');
 for(const required of [
