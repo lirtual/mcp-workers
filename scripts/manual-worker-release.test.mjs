@@ -423,7 +423,7 @@ test("Workflow manual GitHub Actions requires D1 checks and private Fixture befo
   assert.doesNotMatch(ci,/cd apps\/workflow-mcp-worker\/tests\/fixtures &&/);
   assert.match(ci,/mcp_endpoint="https:\/\/workflow\.lirtual\.dpdns\.org\/mcp"/);
   assert.match(ci,/health_endpoint="https:\/\/workflow\.lirtual\.dpdns\.org\/health"/);
-  assert.match(ci,/body\.scope !== "s1"/);
+  assert.match(ci,/body\.scope !== "workflow"/);
   assert.match(ci,/github\.ref == 'refs\/heads\/main'/);
 });
 

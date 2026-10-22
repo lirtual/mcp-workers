@@ -615,7 +615,7 @@ jobs:
             const fs = require("node:fs");
             const body = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
             const worker = process.argv[2];
-            if (!body || (worker === "workflow-mcp-worker" ? (body.ok !== true || body.scope !== "s1" || body.service !== "workflow-mcp-worker") : worker === "ima-mcp-worker" ? body.ok !== true : body.status !== "healthy")) process.exit(1);
+            if (!body || (worker === "workflow-mcp-worker" ? (body.ok !== true || body.scope !== "workflow" || body.service !== "workflow-mcp-worker") : worker === "ima-mcp-worker" ? body.ok !== true : body.status !== "healthy")) process.exit(1);
           ' "$response" "$SELECTED_WORKER" || { echo "Health check failed (invalid response)" >&2; exit 1; }
           echo "Existing health endpoint verified (HTTP 200)"
 
