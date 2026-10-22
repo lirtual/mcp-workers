@@ -1,7 +1,8 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  EXPECTED_TOOLS,portalServerMapping,buildPortalUpdate,attachWorkflowPortal,
+  EXPECTED_TOOLS,portalServerMapping,buildPortalUpdate,
+  assertSamePortalMappings,attachWorkflowPortal,
 } from './register-workflow-portal.mjs';
 
 const host='https://workflow.lirtual.dpdns.org/mcp';
@@ -74,7 +75,12 @@ function fake(expectedToken=env.MCP_ACCESS_TOKEN){
       assert.equal(value.name,'One-MCP');
       assert.equal(value.code_mode,'off');
       assert.deepEqual(value.servers.slice(0,9),portal().servers.map(portalServerMapping));
-      current={...current,...value};
+      // Cloudflare reorders server entries after the PUT, although
+      // each per-server mapping and enabled flag is preserved.
+      const reordered=[...value.servers];
+      const added=reordered.pop();
+      reordered.splice(3,0,added);
+      current={...current,...value,servers:reordered};
       return res(200,current);
     }
     return res(404,null);
@@ -91,6 +97,15 @@ test('one scoped registration and one Portal append, repeat safely',async()=>{
   assert.equal(api.requests.filter(x=>x.method==='PUT').length,1);
   assert.equal(api.requests.filter(x=>x.method==='POST'&&x.tail==='/servers').length,1);
 });
+test('comparison ignores ordering but rejects altered capability settings',()=>{
+  const original=portal().servers.map(portalServerMapping);
+  const reordered=[original[3],...original.slice(0,3),...original.slice(4)];
+  assert.doesNotThrow(()=>assertSamePortalMappings(original,reordered));
+  const altered=structuredClone(reordered);
+  altered[0].updated_tools[1].enabled=true;
+  assert.throws(()=>assertSamePortalMappings(original,altered),/portal_existing_mapping_changed/);
+});
+
 test('missing credential fails before any network request',async()=>{
   for(const bad of ['',undefined]){
     const api=fake();

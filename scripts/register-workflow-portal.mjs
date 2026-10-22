@@ -41,6 +41,18 @@ export function portalServerMapping(entry){
   return result;
 }
 
+// Cloudflare may canonicalize Portal server order on write. Identity and
+// effective overrides must remain identical, but list positions need not.
+export function assertSamePortalMappings(expected,actual){
+  assert.equal(actual.length,expected.length,'portal_server_count_mismatch');
+  const current=new Map(actual.map(entry=>[entry.server_id,entry]));
+  assert.equal(current.size,actual.length,'portal_duplicate_server');
+  for(const old of expected){
+    assert.deepEqual(current.get(old.server_id),old,
+      'portal_existing_mapping_changed');
+  }
+}
+
 export function buildPortalUpdate(portal,server){
   assert.equal(portal?.id,'one-mcp','portal_identity_drift');
   assert.equal(portal?.hostname,PORTAL_HOST,'portal_identity_drift');
@@ -123,8 +135,7 @@ export async function attachWorkflowPortal(env,transport=fetch){
   // Re-read just before updating to guard against concurrent Portal edits.
   const fresh=await request('GET','/portals/one-mcp');
   const body=buildPortalUpdate(fresh,details);
-  assert.deepEqual(body.servers.slice(0,before.servers.length),
-    before.servers,'portal_existing_mapping_changed');
+  assertSamePortalMappings(before.servers,body.servers);
   if(!fresh.servers.some(x=>x.server_id==='workflow')){
     const updated=await request('PUT','/portals/one-mcp',body);
     assert.ok(updated.servers?.some(x=>x.server_id==='workflow'),
@@ -132,8 +143,7 @@ export async function attachWorkflowPortal(env,transport=fetch){
   }
   const final=await request('GET','/portals/one-mcp');
   const normalized=buildPortalUpdate(final,details);
-  assert.deepEqual(normalized.servers.slice(0,before.servers.length),
-    before.servers,'portal_existing_mapping_changed');
+  assertSamePortalMappings(before.servers,normalized.servers);
   assert.equal(normalized.servers.filter(x=>x.server_id==='workflow').length,1,
     'portal_attach_unconfirmed');
   assert.equal(normalized.servers.length,before.servers.length+
