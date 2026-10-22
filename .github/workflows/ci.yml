@@ -24,6 +24,11 @@ on:
         required: false
         type: boolean
         default: false
+      s3_production_smoke:
+        description: With smoke_only, verify approved S3 Echo, real GitHub Job and scoped D1 cleanup
+        required: false
+        type: boolean
+        default: false
       s2_production_smoke:
         description: With smoke_only, execute one read-only S2 Workflow via production Portal and clean D1 test records
         required: false
@@ -201,7 +206,7 @@ jobs:
 
       - name: Check manual release safeguards offline
         if: steps.scope.outputs.apps != ''
-        run: node --test scripts/manual-worker-release.test.mjs scripts/bootstrap-worker-secrets.test.mjs scripts/worker-release-variables.test.mjs
+        run: node --test scripts/manual-worker-release.test.mjs scripts/bootstrap-worker-secrets.test.mjs scripts/worker-release-variables.test.mjs scripts/verify-s3-release-token.test.mjs
 
       - name: Check shared portal-auth package
         if: steps.scope.outputs.portal_auth_changed == 'true'
@@ -316,6 +321,7 @@ jobs:
             (inputs.worker == 'workflow-mcp-worker' && inputs.enable_workflow_s2 == true)) &&
           inputs.smoke_only != true &&
           inputs.s2_production_smoke != true &&
+          inputs.s3_production_smoke != true &&
           inputs.s2_portal_probe != true &&
           inputs.s2_cloud_e2e != true &&
           inputs.s3_oidc_probe != true &&
@@ -439,6 +445,12 @@ jobs:
           set -euo pipefail
           umask 077
           node scripts/worker-release-variables.mjs "$SELECTED_WORKER" "$RUNNER_TEMP/mcp-worker-variables.txt"
+
+      - name: Verify dedicated S3 GitHub token without executable dispatch
+        if: inputs.worker == 'workflow-mcp-worker' && inputs.enable_workflow_s3 == true
+        env:
+          S3_GITHUB_TOKEN: ${{ secrets.S3_GITHUB_TOKEN }}
+        run: node scripts/verify-s3-release-token.mjs
 
       - name: Recheck current main inside acquired release lock
         shell: bash
@@ -666,6 +678,8 @@ jobs:
           inputs.smoke_only == true &&
           inputs.deploy_to_production != true &&
           (inputs.s2_production_smoke != true || inputs.enable_workflow_s2 != true) &&
+          (inputs.s2_production_smoke != true || inputs.s3_production_smoke != true) &&
+          inputs.enable_workflow_s3 != true &&
           needs.checks.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 8
@@ -679,6 +693,8 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       WORKFLOW_S2_SMOKE: ${{ inputs.s2_production_smoke }}
+      WORKFLOW_S3_SMOKE: ${{ inputs.s3_production_smoke }}
+      S3_GITHUB_TOKEN: ${{ secrets.S3_GITHUB_TOKEN }}
       S2_PORTAL_CLIENT_ID: ${{ secrets.S2_PORTAL_CLIENT_ID }}
       S2_PORTAL_CLIENT_SECRET: ${{ secrets.S2_PORTAL_CLIENT_SECRET }}
     steps:
@@ -693,7 +709,7 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile --ignore-scripts
-      - name: Verify authenticated S1 or S2 production and remove randomized test records
+      - name: Verify authenticated S1/S2/S3 production and remove randomized test records
         run: node apps/workflow-mcp-worker/tests/production-smoke.mjs
 
   workflow-s2-portal-probe:
