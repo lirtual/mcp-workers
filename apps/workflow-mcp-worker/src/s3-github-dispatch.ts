@@ -1,9 +1,9 @@
 /**
- * S3 registered GitHub execution dispatch — isolated first slice only.
+ * S3 registered GitHub execution dispatch for the fixed Echo capability.
  *
- * This module does not connect the Workflow runner to GitHub yet. The caller
- * must use a reviewed, server-side executor config and a persisted logical
- * Attempt; no repo/workflow/ref/credential can come from a Draft or Run input.
+ * WorkflowRunner calls this with a reviewed server-side executor config and
+ * a persisted logical Attempt; no repository, workflow, ref or credential
+ * can come from a Draft or Run input.
  * The GitHub Actions management MCP's broad multi-PAT authority is not used.
  */
 export type RegisteredDispatchConfig={
