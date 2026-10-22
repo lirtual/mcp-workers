@@ -47,7 +47,7 @@ function mockPublicPeer(t:test.TestContext,onCall?:()=>Promise<void>) {
 function setup(t:test.TestContext){
   const sqlite=new DatabaseSync(':memory:');
   t.after(()=>sqlite.close());
-  for(const file of ['0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql'])
+  for(const file of ['0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql'])
     sqlite.exec(readFileSync(new URL('../migrations/'+file,import.meta.url),'utf8'));
   function prepare(sql:string){
     let args:any[]=[];
@@ -570,7 +570,7 @@ test('MCP stateful MCP DELETE cannot delay an already successful tools/call resu
 test('GitHub Publish requires an explicit approved heavy operation',async t=>{
   const {service,env,sqlite}=setup(t);
   const definition=JSON.stringify({version:1,name:'GitHub gated',steps:[
-    {id:'heavy',uses:'github.run',with:{capability:'heavy.github.echo'}},
+    {id:'heavy',uses:'github.run',with:{capability:'github.workflow.check'}},
   ]});
   const wf=await service.create(definition);
   const validated=await service.validate(wf.workflow_id,1);
@@ -593,7 +593,7 @@ test('GitHub published Plan dispatches one confirmed Job, waits outside step.do 
     GITHUB_EXECUTOR_AUDIENCE:'workflow-github-claim:test',
   });
   const steps=[
-    {id:'heavy',uses:'github.run',with:{capability:'heavy.github.echo'}},
+    {id:'heavy',uses:'github.run',with:{capability:'github.workflow.check'}},
     {id:'emit',needs:['heavy'],uses:'result.emit',with:{data:{ref:'steps.heavy.output'}}},
   ];
   const created=await service.create(JSON.stringify({version:1,name:'GitHub published',steps}));
@@ -608,7 +608,7 @@ test('GitHub published Plan dispatches one confirmed Job, waits outside step.do 
     assert.equal(req.headers.get('authorization'),'Bearer fixture-token');
     const sent=await req.json() as {return_run_details:boolean;inputs:Record<string,string>};
     assert.equal(sent.return_run_details,true);
-    assert.equal(sent.inputs.capability_id,'heavy.github.echo');
+    assert.equal(sent.inputs.capability_id,'github.workflow.check');
     return Response.json({workflow_run_id:987654321},{status:200});
   }) as typeof fetch;
   t.after(()=>{globalThis.fetch=oldFetch;});
@@ -646,7 +646,7 @@ test('GitHub published Plan dispatches one confirmed Job, waits outside step.do 
 test('a published GitHub Run without executor credentials cannot dispatch',async t=>{
   const {service,env}=setup(t);
   const wf=await service.create(JSON.stringify({version:1,name:'Disabled run',steps:[
-    {id:'heavy',uses:'github.run',with:{capability:'heavy.github.echo'}},
+    {id:'heavy',uses:'github.run',with:{capability:'github.workflow.check'}},
   ]}));
   await service.publish(wf.workflow_id,1,[],false,true);
   const accepted=await service.start(wf.workflow_id,{});
@@ -675,7 +675,7 @@ test('GitHub dispatch HTTP ambiguity is terminally uncertain and never re-dispat
     GITHUB_EXECUTOR_AUDIENCE:'workflow-github-claim:test',
   });
   const wf=await service.create(JSON.stringify({version:1,name:'GitHub uncertainty',steps:[
-    {id:'heavy',uses:'github.run',with:{capability:'heavy.github.echo'}},
+    {id:'heavy',uses:'github.run',with:{capability:'github.workflow.check'}},
   ]}));
   await service.publish(wf.workflow_id,1,[],false,true);
   const accepted=await service.start(wf.workflow_id,{});
@@ -708,7 +708,7 @@ test('one combined MCP read plus GitHub registered heavy Plan requires both inde
       endpoint,tool:'echo',scope:'read',input_schema:PINNED_SCHEMA,
       arguments:{value:'minimal-test'},
     }},
-    {id:'heavy',needs:['read'],uses:'github.run',with:{capability:'heavy.github.echo'}},
+    {id:'heavy',needs:['read'],uses:'github.run',with:{capability:'github.workflow.check'}},
     {id:'emit',needs:['heavy'],uses:'result.emit',with:{data:{ref:'steps.heavy.output'}}},
   ]}));
   const validation=await service.validate(wf.workflow_id,1);
@@ -736,7 +736,7 @@ test('GitHub lost wake event recovers from durable D1 receipt, without a second 
     GITHUB_EXECUTOR_AUDIENCE:'workflow-github-claim:test',
   });
   const w=await service.create(JSON.stringify({version:1,name:'GitHub lost wake recovery',steps:[
-    {id:'heavy',uses:'github.run',with:{capability:'heavy.github.echo'}},
+    {id:'heavy',uses:'github.run',with:{capability:'github.workflow.check'}},
     {id:'out',needs:['heavy'],uses:'result.emit',with:{data:{ref:'steps.heavy.output'}}},
   ]}));
   await service.publish(w.workflow_id,1,[],false,true);
@@ -785,7 +785,7 @@ test('GitHub missing callback remains indeterminate after bounded waits, never r
     GITHUB_EXECUTOR_AUDIENCE:'workflow-github-claim:test',
   });
   const w=await service.create(JSON.stringify({version:1,name:'GitHub missed callback',steps:[
-    {id:'heavy',uses:'github.run',with:{capability:'heavy.github.echo'}},
+    {id:'heavy',uses:'github.run',with:{capability:'github.workflow.check'}},
   ]}));
   await service.publish(w.workflow_id,1,[],false,true);
   const admitted=await service.start(w.workflow_id,{});
@@ -821,7 +821,7 @@ test('GitHub admitted Run retains immutable heavy Plan across republish to an Wo
   const {service,env}=setup(t);
   const original=await service.create(JSON.stringify({
     version:1,name:'GitHub original',steps:[
-      {id:'heavy',uses:'github.run',with:{capability:'heavy.github.echo'}},
+      {id:'heavy',uses:'github.run',with:{capability:'github.workflow.check'}},
     ],
   }));
   const v1=await service.publish(original.workflow_id,1,[],false,true);
@@ -869,7 +869,7 @@ test('a legacy Published Workflow Plan tampered to add github.run cannot gain a 
   const run=await service.start(wf.workflow_id,{});
   sqlite.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(
     JSON.stringify({version:1,name:'tampered',steps:[
-      {id:'heavy',needs:[],uses:'github.run',with:{capability:'heavy.github.echo'}},
+      {id:'heavy',needs:[],uses:'github.run',with:{capability:'github.workflow.check'}},
     ]}),v.published_version_id,
   );
   let outbound=0;

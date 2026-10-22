@@ -182,18 +182,18 @@ test('MCP contract requires bounded, concrete JSON Schema; no user-supplied dige
 
 test('GitHub only compiles a fixed registered capability without dynamic shell, repo, or token',async()=>{
   const compiled=await compilePlan({version:1,name:'GitHub echo',steps:[
-    {id:'heavy',uses:'github.run',with:{capability:'heavy.github.echo'}},
+    {id:'heavy',uses:'github.run',with:{capability:'github.workflow.check'}},
     {id:'out',needs:['heavy'],uses:'result.emit',with:{data:{ref:'steps.heavy.output'}}},
   ]});
   assert.equal(compiled.plan.steps[0].uses,'github.run');
-  assert.deepEqual(compiled.plan.steps[0].with,{capability:'heavy.github.echo'});
+  assert.deepEqual(compiled.plan.steps[0].with,{capability:'github.workflow.check'});
   for(const extra of [
     {capability:'shell.exec'},
-    {capability:'heavy.github.echo',repository:'attacker/other'},
-    {capability:'heavy.github.echo',workflow:'other.yml'},
-    {capability:'heavy.github.echo',token:{ref:'inputs.token'}},
-    {capability:'heavy.github.echo',command:'pwd'},
-    {capability:'heavy.github.echo',arguments:{value:'unsafe'}},
+    {capability:'github.workflow.check',repository:'attacker/other'},
+    {capability:'github.workflow.check',workflow:'other.yml'},
+    {capability:'github.workflow.check',token:{ref:'inputs.token'}},
+    {capability:'github.workflow.check',command:'pwd'},
+    {capability:'github.workflow.check',arguments:{value:'unsafe'}},
   ]) await assert.rejects(()=>compilePlan({version:1,name:'GitHub invalid',steps:[
     {id:'heavy',uses:'github.run',with:extra},
   ]}),PlanError);

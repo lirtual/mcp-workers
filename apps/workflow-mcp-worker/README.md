@@ -6,7 +6,7 @@ Versioned, durable workflows using the existing MCP Portal, Cloudflare D1 and Cl
 
 - **Workflow management:** create and revise YAML/JSON Drafts, validate a bounded DAG, explicitly Publish an immutable Plan, run asynchronously, inspect status/results, pause/resume new admissions.
 - **MCP tool calls (`mcp.call`):** read-only operations routed through the existing, server-pinned MCP Portal. Publish requires the exact endpoint, tool, `read` scope and schema digest, plus `accept_target_risks: true`. Runtime checks revalidate the published grant and live tool schema. The remote `readOnlyHint` is untrusted: network isolation and absence of remote side effects are not guaranteed.
-- **GitHub Actions (`github.run`):** a single server-registered `heavy.github.echo` operation, with explicit `approve_heavy_execution: true` at Publish. Repository, workflow, ref and GitHub OIDC audience are pinned server-side. D1 records dispatch identity, GitHub OIDC Claim and immutable callback receipt; ambiguous external effects are never blindly replayed.
+- **GitHub Actions (`github.run`):** a single server-registered `github.workflow.check` operation that runs the pinned Workflow package CI checks, with explicit `approve_heavy_execution: true` at Publish. Repository, workflow, ref and GitHub OIDC audience are pinned server-side. D1 records dispatch identity, GitHub OIDC Claim and immutable callback receipt; ambiguous external effects are never blindly replayed.
 - **Result emission (`result.emit`)** for Workflow results.
 
 Only these known operations are implemented; generic shell commands, arbitrary external MCP writes, Cron/Webhooks, dynamic GitHub tasks, artifacts and automatic GitHub Job cancellation are not provided.
@@ -35,9 +35,9 @@ Publishing is explicit; saving a Draft never starts execution. `workflow_pause` 
 
 ## Release and verification
 
-Use the existing `.github/workflows/ci.yml` release workflow on `main`, selecting `worker=workflow-mcp-worker` and `deploy_to_production=true`. There are no per-capability enable inputs. The release verifies the selected GitHub Environment secrets, fixed Portal/executor identity, D1 schema, private fixture isolation, active Runs and the exact deployed Worker version.
+Use the existing `.github/workflows/ci.yml` release workflow on `main`, selecting `worker=workflow-mcp-worker` and `deploy_to_production=true`. There are no per-capability enable inputs. The release verifies the selected GitHub Environment secrets, fixed Portal/executor identity, D1 schema, active Runs and the exact deployed Worker version.
 
-The registered GitHub job is `.github/workflows/workflow-github-executor.yml`. It only runs the fixed Echo operation; it accepts no user-provided shell, repository or ref.
+The registered GitHub job is `.github/workflows/workflow-github-executor.yml`. It only runs the fixed Workflow package CI check; it accepts no user-provided shell, repository or ref.
 
 The regular test contract is `pnpm --filter workflow-mcp-worker check` (TypeScript, unit/contract suite, Wrangler dry-run). Production smoke tests are explicit, disposable and separate from deployment. A passing dry-run does not establish production acceptance.
 

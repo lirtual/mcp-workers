@@ -39,7 +39,7 @@ export async function verifyS3ReleaseToken(token,request=fetch,nonce=randomUUID(
   const response=await request(new Request(WORKFLOW+'/dispatches',{
     method:'POST',headers,redirect:'manual',signal:AbortSignal.timeout(15000),
     body:JSON.stringify({ref:invalidRef,return_run_details:true,inputs:{
-      attempt_id:nonce,dispatch_id:nonce,capability_id:'heavy.github.echo',
+      attempt_id:nonce,dispatch_id:nonce,capability_id:'github.workflow.check',
     }}),
   }));
   if(response.status!==422)throw Error('github_dispatch_http_'+response.status);

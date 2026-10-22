@@ -345,12 +345,15 @@ test("Workflow production release must preserve exact reviewed resource and runt
 
 test("Workflow remote D1 readback blocks missing migrations, nonempty first-run and unresolved Runs", () => {
   const row = { migration_count:2,migration_v1:1,migration_v2:1,
-    migration_v3:0,migration_v4:0,attempt_table:0,receipt_table:0,
+    migration_v3:0,migration_v4:0,migration_v5:0,attempt_table:0,receipt_table:0,
     native_column:1,active_runs:0,run_count:0,workflow_count:0 };
   const result = (value) => [{success:true,results:[value]}];
-  assert.equal(verifyWorkflowD1Readiness(result(row),true),true);
-  const migrated = {...row,migration_count:4,migration_v3:1,migration_v4:1,
+  assert.throws(()=>verifyWorkflowD1Readiness(result(row),true),/schema migrations/);
+  const previous = {...row,migration_count:4,migration_v3:1,migration_v4:1,
     attempt_table:1,receipt_table:1};
+  const migrated = {...previous,migration_count:5,migration_v5:1};
+  assert.equal(verifyWorkflowD1Readiness(result(previous),false),true);
+  assert.throws(()=>verifyWorkflowD1Readiness(result(previous),false,true),/schema migrations/);
   assert.equal(verifyWorkflowD1Readiness(result(migrated),false),true);
   assert.equal(verifyWorkflowD1Readiness(result(migrated),false,true),true);
   assert.throws(()=>verifyWorkflowD1Readiness(result(row),false,true),
@@ -361,12 +364,12 @@ test("Workflow remote D1 readback blocks missing migrations, nonempty first-run 
     /schema migrations/);
   assert.throws(()=>verifyWorkflowD1Readiness(result({...row,migration_count:3,migration_v3:1,
     attempt_table:1}),false),/schema migrations/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...row,migration_count:5}),false),
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...row,migration_count:6}),false),
     /schema migrations/);
-  assert.equal(verifyWorkflowD1Readiness(result({...row,run_count:3,workflow_count:1}),false),true);
+  assert.equal(verifyWorkflowD1Readiness(result({...migrated,run_count:3,workflow_count:1}),false),true);
   assert.throws(()=>verifyWorkflowD1Readiness(result({...row,migration_v2:0}),false),/schema migrations/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...row,active_runs:1}),false),/active or indeterminate/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...row,run_count:1}),true),/empty production/);
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...migrated,active_runs:1}),false),/active or indeterminate/);
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...migrated,run_count:1}),true),/empty production/);
   assert.throws(()=>verifyWorkflowD1Readiness([],true),/readback unavailable/);
 });
 

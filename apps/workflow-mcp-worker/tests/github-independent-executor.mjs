@@ -11,7 +11,7 @@ assert.match(name,/^workflow-github-(?:oidc|plan)-[a-f0-9]{10}$/);
 const uuid=/^[0-9a-f]{8}-[0-9a-f-]{27,}$/i;
 assert.match(attemptId,uuid);
 assert.match(dispatchId,uuid);
-assert.equal(capability,'heavy.github.echo');
+assert.equal(capability,'github.workflow.check');
 assert.equal(env('GITHUB_REPOSITORY'),'lirtual/mcp-workers');
 assert.equal(env('GITHUB_EVENT_NAME'),'workflow_dispatch');
 assert.equal(env('GITHUB_REF'),'refs/heads/wip/workflow-github-executor');

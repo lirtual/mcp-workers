@@ -131,10 +131,10 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     if(!Array.isArray(needs)||needs.some(n=>typeof n!=='string'||!SAFE_ID.test(n))||new Set(needs).size!==needs.length)throw new PlanError('invalid_dependencies');
     const withData=object(s.with,'invalid_step_arguments');
     if(s.uses==='github.run'){
-      // v1 intentionally offers a single fixed no-side-effect registered
-      // capability. No user-supplied scripts, URL, repo, ref, or arguments.
+      // A single fixed CI verification operation. No user-supplied scripts,
+      // URL, repository, ref or arguments.
       keys(withData,['capability']);
-      if(withData.capability!=='heavy.github.echo')
+      if(withData.capability!=='github.workflow.check')
         throw new PlanError('unsupported_github_capability');
     }else if(s.uses==='mcp.call'){
       keys(withData,['endpoint','tool','scope','arguments','input_schema','output_schema']);

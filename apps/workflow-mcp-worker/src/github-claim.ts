@@ -28,7 +28,7 @@ export type AttemptRegistration=ExecutorIdentity & {
   dispatchId:string;
   runId:string;
   stepId:string;
-  capabilityId:'heavy.github.echo';
+  capabilityId:'github.workflow.check';
 };
 type AttemptRow={
   attempt_id:string;
@@ -63,7 +63,7 @@ export async function registerGithubAttempt(db:AttemptDatabase,a:AttemptRegistra
   if(!ID.test(a.attemptId)||!ID.test(a.dispatchId)||
      !/^[a-zA-Z0-9_-]{1,128}$/.test(a.runId)||
      !/^[a-zA-Z0-9_-]{1,64}$/.test(a.stepId)||
-     a.capabilityId!=='heavy.github.echo')
+     a.capabilityId!=='github.workflow.check')
     throw Error('github_attempt_invalid');
   const time=Date.now();
   await db.prepare(`INSERT INTO step_attempts

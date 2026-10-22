@@ -209,7 +209,7 @@ async function runS3Smoke() {
   assert.equal(outstanding[0]?.n,0,'Production has nonterminal Runs: GitHub smoke aborted');
   await client.connect(transport);
   const definition={version:1,name:'workflow-github-production-smoke-'+label,steps:[
-    {id:'heavy',uses:'github.run',with:{capability:'heavy.github.echo'}},
+    {id:'heavy',uses:'github.run',with:{capability:'github.workflow.check'}},
     {id:'emit',needs:['heavy'],uses:'result.emit',
       with:{data:{ref:'steps.heavy.output'}}},
   ]};
@@ -246,8 +246,10 @@ async function runS3Smoke() {
   assert.equal(outcome?.status,'succeeded','GitHub business outcome not succeeded');
   assert.equal(outcome.steps.length,2);
   assert.ok(outcome.steps.every(s=>s.status==='succeeded'));
-  assert.equal(outcome.result?.echo,'ok');
-  assert.equal(outcome.result?.source,'workflow-github-executor');
+  assert.equal(outcome.result?.task,'github.workflow.check');
+  assert.equal(outcome.result?.status,'passed');
+  assert.equal(outcome.result?.repository,'lirtual/mcp-workers');
+  assert.equal(outcome.result?.ref,'refs/heads/main');
   const attempt=sql('SELECT candidate_run_id,candidate_run_attempt FROM step_attempts WHERE run_id='+quotedId(runId));
   assert.equal(attempt.length,1,'Expected one durable GitHub Attempt');
   assert.ok(Number.isSafeInteger(attempt[0].candidate_run_id)&&attempt[0].candidate_run_id>0);
@@ -269,7 +271,7 @@ async function runS3Smoke() {
     await new Promise(r=>setTimeout(r,1000));
   }
   assert.equal(s3PhysicalCompleted,true,'Physical GitHub Job not completed');
-  console.log('GITHUB_PRODUCTION_SMOKE_OK: one Echo, OIDC callback, physical Job complete');
+  console.log('GITHUB_PRODUCTION_SMOKE_OK: one CI verification, OIDC callback, physical Job complete');
 }
 
 try {
