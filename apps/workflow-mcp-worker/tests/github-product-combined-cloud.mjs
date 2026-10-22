@@ -52,8 +52,8 @@ async function run(){
   }
   const created=await api('POST','/accounts/'+account+'/d1/database',{name});dbId=created.uuid;
   assert.match(dbId,/^[a-f0-9-]{36}$/i);console.log('DISPOSABLE_DB_CREATED',name);
-  writeFileSync(new URL('../'+file,import.meta.url),JSON.stringify({name,main:'tests/fixtures/github-product-test-entry.ts',compatibility_date:'2026-09-10',workers_dev:true,preview_urls:false,keep_vars:false,vars:{MCP_CALL_ENABLED:'true',MCP_PORTAL_ENDPOINT:TRUSTED_PORTAL_ENDPOINT,
- GITHUB_EXECUTION_ENABLED:'true',GITHUB_EXECUTOR_REPOSITORY:process.env.GITHUB_REPOSITORY,
+  writeFileSync(new URL('../'+file,import.meta.url),JSON.stringify({name,main:'tests/fixtures/github-product-test-entry.ts',compatibility_date:'2026-09-10',workers_dev:true,preview_urls:false,keep_vars:false,vars:{MCP_PORTAL_ENDPOINT:TRUSTED_PORTAL_ENDPOINT,
+ GITHUB_EXECUTOR_REPOSITORY:process.env.GITHUB_REPOSITORY,
  GITHUB_EXECUTOR_REPOSITORY_ID:process.env.GITHUB_REPOSITORY_ID,
  GITHUB_EXECUTOR_REF:process.env.GITHUB_REF,
  GITHUB_EXECUTOR_AUDIENCE:'workflow-github-claim:test',GITHUB_TEST_WORKER_NAME:name,
