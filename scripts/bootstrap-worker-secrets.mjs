@@ -23,9 +23,14 @@ export function collectBootstrapSecrets(worker, env) {
   if (env.WORKFLOW_S2_RELEASE === "true" && worker !== "workflow-mcp-worker") {
     throw new Error("S2 release is allowed only for workflow-mcp-worker");
   }
+  const s3 = env.WORKFLOW_S3_RELEASE === "true";
+  if (s3 && (worker !== "workflow-mcp-worker" ||
+             env.WORKFLOW_S2_RELEASE !== "true"))
+    throw new Error("S3 requires Workflow MCP with explicit S2 Portal release");
   const selected = worker === "workflow-mcp-worker" &&
     env.WORKFLOW_S2_RELEASE === "true"
-    ? [...required, "S2_PORTAL_CLIENT_ID", "S2_PORTAL_CLIENT_SECRET"]
+    ? [...required, "S2_PORTAL_CLIENT_ID", "S2_PORTAL_CLIENT_SECRET",
+       ...(s3 ? ["S3_GITHUB_TOKEN"] : [])]
     : required;
   for (const name of selected) {
     const value = env[name];
@@ -34,6 +39,10 @@ export function collectBootstrapSecrets(worker, env) {
     }
     payload[name] = value;
   }
+  if (s3 && (payload.S3_GITHUB_TOKEN.length < 20 ||
+      payload.S3_GITHUB_TOKEN.length > 512 ||
+      /\s/.test(payload.S3_GITHUB_TOKEN)))
+    throw new Error("Invalid S3_GITHUB_TOKEN");
   if (worker === "ssh-mcp-worker" && payload.MCP_BROKER_TOKEN.length < 32) {
     throw new Error("SSH Broker token must be at least 32 characters");
   }

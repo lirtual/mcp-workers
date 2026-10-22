@@ -97,3 +97,26 @@ test("Workflow S2 runtime switch is explicit and pinned to the production MCP Po
     WORKFLOW_S2_RELEASE:"true",
   }), /S2 release is allowed only/);
 });
+
+
+test("S3 production variables use only registered fixed GitHub echo authority",()=>{
+  const selected=collectWorkerVars("workflow-mcp-worker",{
+    WORKFLOW_S2_RELEASE:"true",WORKFLOW_S3_RELEASE:"true",
+    S3_GITHUB_REPOSITORY:"untrusted/other",S3_GITHUB_REF:"refs/heads/evil",
+    S3_GITHUB_AUDIENCE:"untrusted",S3_ENABLED:"false",
+  });
+  assert.deepEqual(selected,[
+    "S3_ENABLED:true","S3_GITHUB_REPOSITORY:lirtual/mcp-workers",
+    "S3_GITHUB_REPOSITORY_ID:1414936394","S3_GITHUB_REF:refs/heads/main",
+    "S3_GITHUB_AUDIENCE:workflow-s3-claim:production",
+    "S2_READONLY_ENABLED:true","S2_PORTAL_ENDPOINT:https://mcp.lirtual.dpdns.org/mcp",
+  ]);
+  assert.throws(()=>collectWorkerVars("workflow-mcp-worker",{
+    WORKFLOW_S3_RELEASE:"true"}),/S3 release requires/);
+  assert.throws(()=>collectWorkerVars("raindrop-mcp-worker",{
+    WORKFLOW_S2_RELEASE:"true",WORKFLOW_S3_RELEASE:"true"}),/S3 release requires/);
+  assert.deepEqual(collectWorkerVars("workflow-mcp-worker",{
+    WORKFLOW_S2_RELEASE:"true",S3_ENABLED:"true"}),[
+      "S2_READONLY_ENABLED:true","S2_PORTAL_ENDPOINT:https://mcp.lirtual.dpdns.org/mcp",
+    ]);
+});

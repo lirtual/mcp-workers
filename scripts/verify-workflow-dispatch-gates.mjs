@@ -24,8 +24,20 @@ for(const required of [
   'inputs.s3_product_e2e != true',
   'inputs.s3_oidc_probe != true',
   "(inputs.enable_workflow_s2 != true || inputs.worker == 'workflow-mcp-worker')",
+  "(inputs.enable_workflow_s3 != true ||",
+  "(inputs.worker == 'workflow-mcp-worker' && inputs.enable_workflow_s2 == true)",
+
 ])assert.ok(deploy.includes(required),'unsafe release gate: '+required);
 assert.match(config,/      enable_workflow_s2:\n[\s\S]*?        default: false/);
+assert.match(config,/      enable_workflow_s3:\n[\s\S]*?        default: false/);
+assert.ok(config.includes('WORKFLOW_S3_RELEASE: ${{ inputs.enable_workflow_s3 }}'),
+  'S3 mode must reach staging and readback');
+assert.ok(config.includes('S3_GITHUB_TOKEN: ${{ secrets.S3_GITHUB_TOKEN }}'),
+  'S3 credential must be provided by selected environment');
+assert.ok(config.includes("S3_CALLBACK_ORIGIN: ${{ vars.S3_CALLBACK_ORIGIN }}") &&
+  config.includes("S3_GITHUB_AUDIENCE: ${{ vars.S3_GITHUB_AUDIENCE }}"),
+  'Registered executor callback variables must be verified');
+
 assert.ok(config.includes('WORKFLOW_S2_RELEASE: ${{ inputs.enable_workflow_s2 }}'),
   'S2 deployment mode must reach preflight and readback');
 

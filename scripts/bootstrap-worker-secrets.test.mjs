@@ -82,3 +82,22 @@ test("Workflow S2 credentials are staged only for the separately enabled release
     ...fixtures["ima-mcp-worker"], WORKFLOW_S2_RELEASE: "true",
   }), /S2 release is allowed only/);
 });
+
+
+test("S3 GitHub credential is gated, independent, and never a multi-PAT GH_TOKEN",()=>{
+  const base={MCP_ACCESS_TOKEN:"s1",S2_PORTAL_CLIENT_ID:"id",S2_PORTAL_CLIENT_SECRET:"secret"};
+  const s3={...base,WORKFLOW_S2_RELEASE:"true",WORKFLOW_S3_RELEASE:"true",
+    S3_GITHUB_TOKEN:"production-specific-github-token"};
+  assert.deepEqual(collectBootstrapSecrets("workflow-mcp-worker",s3),
+    {...base,S3_GITHUB_TOKEN:"production-specific-github-token"});
+  assert.deepEqual(collectBootstrapSecrets("workflow-mcp-worker",
+    {...base,S3_GITHUB_TOKEN:"ignored",WORKFLOW_S2_RELEASE:"true"}),base);
+  assert.throws(()=>collectBootstrapSecrets("workflow-mcp-worker",
+    {...s3,S3_GITHUB_TOKEN:""}),/S3_GITHUB_TOKEN/);
+  assert.throws(()=>collectBootstrapSecrets("workflow-mcp-worker",
+    {...s3,S3_GITHUB_TOKEN:"foo\nbar"}),/S3_GITHUB_TOKEN/);
+  assert.throws(()=>collectBootstrapSecrets("workflow-mcp-worker",
+    {...s3,WORKFLOW_S2_RELEASE:"false"}),/S3 requires/);
+  assert.throws(()=>collectBootstrapSecrets("raindrop-mcp-worker",
+    {...s3,RAINDROP_ACCESS_TOKEN:"x"}),/S2 release is allowed only|S3 requires/);
+});

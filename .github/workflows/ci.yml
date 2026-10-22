@@ -39,6 +39,11 @@ on:
         required: false
         type: boolean
         default: false
+      enable_workflow_s3:
+        description: Separately enable fixed S3 GitHub Echo (requires deploy + S2)
+        required: false
+        type: boolean
+        default: false
       s2_portal_probe:
         description: Read-only S2 Portal acceptance from existing Environment secrets (no deploy)
         required: false
@@ -307,6 +312,8 @@ jobs:
           github.ref == 'refs/heads/main' &&
           inputs.deploy_to_production == true &&
           (inputs.enable_workflow_s2 != true || inputs.worker == 'workflow-mcp-worker') &&
+          (inputs.enable_workflow_s3 != true ||
+            (inputs.worker == 'workflow-mcp-worker' && inputs.enable_workflow_s2 == true)) &&
           inputs.smoke_only != true &&
           inputs.s2_production_smoke != true &&
           inputs.s2_portal_probe != true &&
@@ -341,6 +348,7 @@ jobs:
     env:
       SELECTED_WORKER: ${{ inputs.worker }}
       WORKFLOW_S2_RELEASE: ${{ inputs.enable_workflow_s2 }}
+      WORKFLOW_S3_RELEASE: ${{ inputs.enable_workflow_s3 }}
       RELEASE_STATE_FILE: /tmp/worker-release-state.json
     steps:
       - uses: actions/checkout@v4
@@ -385,6 +393,18 @@ jobs:
 
       # GitHub Secrets are the source of truth for all selected Workers, on every
       # explicitly authorized manual release, not just during bootstrap.
+      - name: Verify fixed S3 registered executor configuration before release
+        if: inputs.worker == 'workflow-mcp-worker' && inputs.enable_workflow_s3 == true
+        shell: bash
+        env:
+          S3_CALLBACK_ORIGIN: ${{ vars.S3_CALLBACK_ORIGIN }}
+          S3_GITHUB_AUDIENCE: ${{ vars.S3_GITHUB_AUDIENCE }}
+        run: |
+          set -euo pipefail
+          [[ "$S3_CALLBACK_ORIGIN" == 'https://workflow.lirtual.dpdns.org' ]] || exit 1
+          [[ "$S3_GITHUB_AUDIENCE" == 'workflow-s3-claim:production' ]] || exit 1
+          echo "S3 registered executor origin/audience confirmed (values withheld)"
+
       - name: Stage selected Worker Secrets for every release
         shell: bash
         env:
@@ -398,6 +418,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           S2_PORTAL_CLIENT_ID: ${{ secrets.S2_PORTAL_CLIENT_ID }}
           S2_PORTAL_CLIENT_SECRET: ${{ secrets.S2_PORTAL_CLIENT_SECRET }}
+          S3_GITHUB_TOKEN: ${{ secrets.S3_GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           umask 077
