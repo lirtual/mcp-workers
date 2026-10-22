@@ -49,6 +49,8 @@ async function callApprovedReadonly(env:Env,plan:Plan,step:Step,args:Record<stri
   // Published Plan, or Run inputs. Production must explicitly select its own
   // Portal; the test Portal is never its implicit fallback.
   const chosenPortal=env.S2_PORTAL_ENDPOINT;
+  if(chosenPortal===undefined && env.S2_DIRECT_TARGETS_ENABLED!=='true')
+    throw Error('portal_target_not_configured');
   if(chosenPortal!==undefined){
     if(chosenPortal!==TRUSTED_PORTAL_ENDPOINT && chosenPortal!==PRODUCTION_PORTAL_ENDPOINT)
       throw Error('portal_target_not_authorized');
