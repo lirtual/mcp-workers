@@ -61,7 +61,11 @@ export async function verifyAccessApprovalOwner(
 export function validBrowserApprovalRequest(request:Request,approvalId:string):boolean{
   if(!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(approvalId))return false;
   const url=new URL(request.url);
-  if(url.search||url.hash||url.pathname!=="/browser-approve/"+approvalId)return false;
+  // Access login can return to the GET page with transient query values.
+  // The GET is read-only and still requires a verified human Access JWT;
+  // never permit query values on the mutating POST confirmation.
+  if(url.hash||url.pathname!=="/browser-approve/"+approvalId)return false;
+  if(request.method==="POST"&&url.search)return false;
   if(request.method!=="GET"&&request.method!=="POST")return false;
   if(request.method==="POST"){
     if(request.headers.get("origin")!==url.origin)return false;

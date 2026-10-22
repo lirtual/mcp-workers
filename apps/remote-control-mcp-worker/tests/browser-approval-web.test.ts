@@ -81,7 +81,12 @@ test("HTTP owner confirmation entry denies model tokens, forged Origins, missing
       "content-type":"application/x-www-form-urlencoded"},body});
   assert.equal(validBrowserApprovalRequest(post("https://attacker.example"),record.approval_id),false);
   assert.equal(validBrowserApprovalRequest(post("https://rca.example"),record.approval_id),true);
-  assert.equal(validBrowserApprovalRequest(new Request(url+"?approved=true"),record.approval_id),false);
+  assert.equal(validBrowserApprovalRequest(new Request(url+"?access_return=1"),record.approval_id),true);
+  assert.equal(validBrowserApprovalRequest(new Request(url+"?approved=true"),record.approval_id),true);
+  assert.equal(validBrowserApprovalRequest(new Request(url+"?approved=true",{method:"POST",
+    headers:{origin:"https://rca.example",
+      "content-type":"application/x-www-form-urlencoded"},
+    body:"decision=approve"}),record.approval_id),false);
   const page=browserApprovalPage(record.approval_id,{
     status:"pending",intent:target,expires_at:record.expires_at});
   const html=await page.text();
@@ -133,7 +138,9 @@ test("actual Worker Access route accepts a signed user on GET+POST and DO state 
   };
   try {
     const signed={"cf-access-jwt-assertion":jwt};
-    const page=await worker.fetch(new Request(url,{headers:signed}),env);
+    // Access may append a transient query parameter after browser login.
+    // Query values are ignored for authenticated GET, not approvals.
+    const page=await worker.fetch(new Request(url+"?access_callback=1",{headers:signed}),env);
     assert.equal(page.status,200);
     assert.match(await page.text(),/Confirm one browser action/);
     const forged=await worker.fetch(new Request(url,{method:"POST",
