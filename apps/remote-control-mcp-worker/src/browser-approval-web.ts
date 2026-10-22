@@ -25,9 +25,9 @@ function validated(config:BrowserApprovalAccessConfig):
     !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))return null;
   try{
     const url=new URL(issuer);
+    // Canonical origin-only URL rejects credentials, ports, paths and fragments.
     if(url.protocol!=="https:"||!url.hostname.endsWith(".cloudflareaccess.com")||
-      url.username||url.password||url.port||url.pathname!=="/"||
-      url.search||url.hash)return null;
+      url.href!==url.origin+"/")return null;
     return {issuer:url.origin,audience,email:email.toLowerCase()};
   }catch{return null;}
 }
