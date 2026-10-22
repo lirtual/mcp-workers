@@ -61,21 +61,15 @@ export async function verifyAccessApprovalOwner(
 export function validBrowserApprovalRequest(request:Request,approvalId:string):boolean{
   if(!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(approvalId))return false;
   const url=new URL(request.url);
-  // Access login can return to the GET page with transient query values.
-  // The GET is read-only and still requires a verified human Access JWT;
-  // never permit query values on the mutating POST confirmation.
+  // Access browser callbacks may retain query parameters or omit/alter
+  // Origin and Sec-Fetch-Site on an ordinary mobile form POST. Those
+  // advisory headers are not owner authorization. POST additionally needs
+  // the signed Access JWT and matching CSRF form/cookie before any write.
   if(url.hash||url.pathname!=="/browser-approve/"+approvalId)return false;
-  if(request.method==="POST"&&url.search)return false;
   if(request.method!=="GET"&&request.method!=="POST")return false;
-  if(request.method==="POST"){
-    // Some native/mobile browsers omit Origin on ordinary form submissions.
-    // The POST also needs a same-site, one-time page token + secure cookie.
-    const origin=request.headers.get("origin");
-    if(origin!==null&&origin!==url.origin)return false;
-    if(request.headers.get("sec-fetch-site")==="cross-site")return false;
-    if(request.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase()
-      !=="application/x-www-form-urlencoded")return false;
-  }
+  if(request.method==="POST"&&
+     request.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase()
+       !=="application/x-www-form-urlencoded")return false;
   return true;
 }
 
@@ -86,7 +80,7 @@ const CSRF_COOKIE="__Host-rca-approval-csrf";
 const CSRF_PATTERN=/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 
 /** The token can only be read from the Access-verified, same-origin page.
- * SameSite=Strict+HttpOnly+Secure host-only cookie prevents off-site form CSRF.
+ * SameSite=Lax+HttpOnly+Secure host-only cookie and hidden token guard form CSRF.
  * Do not trust it as owner identity: signed Access JWT is always required.
  */
 export function validBrowserApprovalForm(request:Request,body:string):boolean{
@@ -142,6 +136,6 @@ ${form}<p>Closing this page means you have not approved this operation.</p>
     "content-security-policy":"default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
     "x-content-type-options":"nosniff","referrer-policy":"no-referrer",
     "x-frame-options":"DENY",
-    "set-cookie":`${CSRF_COOKIE}=${csrfToken}; Path=/; Max-Age=600; Secure; HttpOnly; SameSite=Strict`,
+    "set-cookie":`${CSRF_COOKIE}=${csrfToken}; Path=/; Max-Age=600; Secure; HttpOnly; SameSite=Lax`,
   }});
 }
