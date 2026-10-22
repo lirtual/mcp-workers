@@ -47,6 +47,15 @@ export function collectWorkerVars(worker, env, options = {}) {
   const allowed = WORKER_VARIABLES[worker];
   if (!allowed) throw new Error("Unsupported Worker release target");
   const variables = [];
+  if (env.WORKFLOW_S2_RELEASE === "true") {
+    if (worker !== "workflow-mcp-worker") {
+      throw new Error("S2 release is allowed only for workflow-mcp-worker");
+    }
+    // No user-supplied target or generic/direct-target fallback: the only
+    // production endpoint is the previously validated Cloudflare MCP Portal.
+    variables.push("S2_READONLY_ENABLED:true",
+      "S2_PORTAL_ENDPOINT:https://mcp.lirtual.dpdns.org/mcp");
+  }
   if (worker === "remote-control-mcp-worker") {
     variables.push("REMOTE_CONTROL_INSTALL_ORIGIN:" + remoteControlInstallOrigin(options.config));
   }

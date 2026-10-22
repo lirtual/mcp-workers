@@ -67,8 +67,31 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     const fixture = find("READONLY_TARGET", "service");
     invariant(fixture?.service === "workflow-s1-readonly-fixture" &&
       !fixture?.entrypoint, "S1 private Fixture service binding drift");
-    invariant(!find("S2_READONLY_ENABLED", "plain_text"),
-      "S2 must remain disabled in production S1");
+    const s2 = find("S2_READONLY_ENABLED", "plain_text");
+    const portal = find("S2_PORTAL_ENDPOINT", "plain_text");
+    const s2IsOn = s2?.text === "true";
+    const permittedPortal = "https://mcp.lirtual.dpdns.org/mcp";
+    invariant(!bindings.some(x => ["S2_DIRECT_TARGETS_ENABLED", "S3_ENABLED"].includes(x.name)),
+      "Direct MCP targets and S3 must remain disabled in this release");
+    // Preflight observes PREVIOUS deployment; toggling S2 off or on is legal
+    // only through an explicitly authorized release. Readback must match
+    // the requested S2 mode and cannot mistake an S1-only release for S2.
+    if (options.mode === "readback") {
+      invariant(s2IsOn === (options.expectS2 === true),
+        options.expectS2 ? "S2 release flag missing" : "S2 must remain disabled in production S1");
+    } else if (s2) {
+      invariant(s2IsOn, "Invalid S2 production runtime flag");
+    }
+    if (s2IsOn) {
+      invariant(portal?.text === permittedPortal,
+        "S2 production Portal must be exactly pinned");
+      for (const name of ["S2_PORTAL_CLIENT_ID", "S2_PORTAL_CLIENT_SECRET"]) {
+        invariant(secretNames.has(name) && !!find(name, "secret_text"),
+          "S2 Portal Secret binding missing: " + name);
+      }
+    } else {
+      invariant(!portal, "S2 production Portal must not remain enabled without S2");
+    }
   }
   if (worker === "github-actions-mcp-worker" && options.mode === "readback") {
     // GitHub PATs alone authorize repositories. No repository lists should
@@ -465,6 +488,7 @@ async function main() {
   const exists = mode === "preflight" ? await scriptExists(account, worker, token) : true;
   const observed = exists ? await current(account, worker, token, {
     mode, sourceConfig, previousNamespaceId: previous?.previousNamespaceId,
+    expectS2: process.env.WORKFLOW_S2_RELEASE === "true",
   }) : { mode: "bootstrap" };
   if (mode === "preflight") {
     await writeFile(statePath, JSON.stringify({ worker, sourceSha, ...observed }), { mode: 0o600 });

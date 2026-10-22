@@ -796,3 +796,25 @@ S2 contains only the gated candidate above; S3 is not implemented.
 
 Q1–Q50 design remains in [Draft PR #135](https://github.com/lirtual/mcp-workers/pull/135);
 new S2/S3 facilities are not to be provisioned here.
+## S2 production Portal release preparation (2026-10-22)
+
+S1/S2/S3 source are in main, but the production Worker remains S1-only.
+The production Portal has passed read-only MCP initialize, 18-tool discovery,
+and ima_list_notebooks via the existing GitHub Environment credentials.
+
+GitHub Actions uses separate default-false deploy_to_production and
+enable_workflow_s2 inputs. A normal release stages only S1 Secrets.
+An explicitly S2-enabled workflow-mcp-worker release also stages
+S2_PORTAL_CLIENT_ID and S2_PORTAL_CLIENT_SECRET from the existing
+GitHub Environment and pins S2_READONLY_ENABLED=true plus
+S2_PORTAL_ENDPOINT=https://mcp.lirtual.dpdns.org/mcp. No arbitrary
+endpoint is accepted and legacy S2_DIRECT_TARGETS_ENABLED stays disabled.
+
+Readback requires exact bindings and preserves the existing S1 D1,
+private fixture, observability and no-active-Run constraints.
+No new service, GitHub secret, migration or Environment variable is added.
+This PR does not enable S2 or trigger a production deployment.
+An independently authorized production release is still required.
+S3 is not enabled by this path.
+
+---

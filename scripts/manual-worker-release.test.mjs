@@ -410,3 +410,38 @@ test("S1 private Fixture actual Cloudflare exposure must be absent after deploym
   const publish=ci.indexOf("      - name: Publish exactly selected Worker");
   assert.ok(fixture>0 && readback>fixture && publish>readback);
 });
+
+test("Workflow S2 production release requires exact Portal and matching runtime Secrets", () => {
+  const base=[
+    {name:"MCP_ACCESS_TOKEN",type:"secret_text"},
+    {name:"DB",type:"d1",id:"c76850db-b5e3-4128-9150-849a1c9e8d74"},
+    {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-s1",class_name:"WorkflowRunner"},
+    {name:"READONLY_TARGET",type:"service",service:"workflow-s1-readonly-fixture"},
+  ];
+  const extra=[
+    {name:"S2_PORTAL_CLIENT_ID",type:"secret_text"},
+    {name:"S2_PORTAL_CLIENT_SECRET",type:"secret_text"},
+    {name:"S2_READONLY_ENABLED",type:"plain_text",text:"true"},
+    {name:"S2_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
+  ];
+  const settings={bindings:[...base,...extra],
+    observability:{enabled:true,logs:{invocation_logs:true}}};
+  const secrets=["MCP_ACCESS_TOKEN","S2_PORTAL_CLIENT_ID","S2_PORTAL_CLIENT_SECRET"]
+    .map(name=>({name}));
+  const run=(s,sec=secrets,options={mode:"readback",expectS2:true})=>
+    verifyBindings("workflow-mcp-worker",s,sec,options);
+  assert.equal(run(settings),true);
+  assert.equal(run(settings,secrets,{mode:"preflight"}),true);
+  assert.throws(()=>run(settings,secrets,{mode:"readback",expectS2:false}),/S2 must remain disabled/);
+  assert.throws(()=>run({...settings,bindings:base},secrets),/S2 release flag missing/);
+  assert.throws(()=>run(settings,secrets.filter(s=>s.name!=="S2_PORTAL_CLIENT_SECRET")),
+    /S2 Portal Secret binding missing/);
+  assert.throws(()=>run({...settings,bindings:settings.bindings.map(b=>b.name==="S2_PORTAL_ENDPOINT"
+    ?{...b,text:"https://test-mcp.lirtual.dpdns.org/mcp"}:b)}),
+    /Portal must be exactly pinned/);
+  assert.throws(()=>run({...settings,bindings:[...settings.bindings,
+    {name:"S2_DIRECT_TARGETS_ENABLED",type:"plain_text",text:"true"}]}),
+    /Direct MCP targets/);
+  assert.throws(()=>run({...settings,bindings:[...settings.bindings,
+    {name:"S3_ENABLED",type:"plain_text",text:"true"}]}),/Direct MCP targets/);
+});

@@ -78,3 +78,22 @@ test("GitHub Actions has no redundant repository allowlist variables", () => {
     GITHUB_REPOS: "ignored", GITHUB_REPOS_SECONDARY: "ignored",
   }), []);
 });
+
+test("Workflow S2 runtime switch is explicit and pinned to the production MCP Portal", () => {
+  assert.deepEqual(collectWorkerVars("workflow-mcp-worker", {
+    S2_READONLY_ENABLED: "true",
+    S2_PORTAL_ENDPOINT: "https://test-mcp.lirtual.dpdns.org/mcp",
+  }), []);
+  assert.deepEqual(collectWorkerVars("workflow-mcp-worker", {
+    WORKFLOW_S2_RELEASE: "true",
+    S2_PORTAL_ENDPOINT: "https://untrusted.example.org/mcp",
+    S2_DIRECT_TARGETS_ENABLED: "true",
+    S3_ENABLED: "true",
+  }), [
+    "S2_READONLY_ENABLED:true",
+    "S2_PORTAL_ENDPOINT:https://mcp.lirtual.dpdns.org/mcp",
+  ]);
+  assert.throws(() => collectWorkerVars("raindrop-mcp-worker", {
+    WORKFLOW_S2_RELEASE:"true",
+  }), /S2 release is allowed only/);
+});

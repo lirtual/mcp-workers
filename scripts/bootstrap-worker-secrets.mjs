@@ -20,7 +20,14 @@ export function collectBootstrapSecrets(worker, env) {
   const required = BOOTSTRAP_SECRETS[worker];
   if (!required) throw new Error("Bootstrap is not enabled for this Worker");
   const payload = {};
-  for (const name of required) {
+  if (env.WORKFLOW_S2_RELEASE === "true" && worker !== "workflow-mcp-worker") {
+    throw new Error("S2 release is allowed only for workflow-mcp-worker");
+  }
+  const selected = worker === "workflow-mcp-worker" &&
+    env.WORKFLOW_S2_RELEASE === "true"
+    ? [...required, "S2_PORTAL_CLIENT_ID", "S2_PORTAL_CLIENT_SECRET"]
+    : required;
+  for (const name of selected) {
     const value = env[name];
     if (typeof value !== "string" || value.trim().length === 0) {
       throw new Error("Missing or empty bootstrap Secret: " + name);

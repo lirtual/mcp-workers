@@ -29,6 +29,11 @@ on:
         required: false
         type: boolean
         default: false
+      enable_workflow_s2:
+        description: Separately enable Workflow MCP S2 read-only through production Portal (requires deploy_to_production)
+        required: false
+        type: boolean
+        default: false
       s2_portal_probe:
         description: Read-only S2 Portal acceptance from existing Environment secrets (no deploy)
         required: false
@@ -296,6 +301,7 @@ jobs:
           github.event_name == 'workflow_dispatch' &&
           github.ref == 'refs/heads/main' &&
           inputs.deploy_to_production == true &&
+          (inputs.enable_workflow_s2 != true || inputs.worker == 'workflow-mcp-worker') &&
           inputs.smoke_only != true &&
           inputs.s2_portal_probe != true &&
           inputs.s2_cloud_e2e != true &&
@@ -328,6 +334,7 @@ jobs:
       contents: read
     env:
       SELECTED_WORKER: ${{ inputs.worker }}
+      WORKFLOW_S2_RELEASE: ${{ inputs.enable_workflow_s2 }}
       RELEASE_STATE_FILE: /tmp/worker-release-state.json
     steps:
       - uses: actions/checkout@v4
@@ -383,6 +390,8 @@ jobs:
           DATABASE_CONFIG: ${{ secrets.DATABASE_CONFIG }}
           MCP_BROKER_TOKEN: ${{ secrets.MCP_BROKER_TOKEN }}
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          S2_PORTAL_CLIENT_ID: ${{ secrets.S2_PORTAL_CLIENT_ID }}
+          S2_PORTAL_CLIENT_SECRET: ${{ secrets.S2_PORTAL_CLIENT_SECRET }}
         run: |
           set -euo pipefail
           umask 077
@@ -631,6 +640,7 @@ jobs:
           inputs.worker == 'workflow-mcp-worker' &&
           inputs.s2_portal_probe == true &&
           inputs.deploy_to_production != true &&
+          inputs.enable_workflow_s2 != true &&
           inputs.smoke_only != true }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
