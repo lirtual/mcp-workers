@@ -68,7 +68,7 @@ describe("T09 complete Trash preview and irreversible empty", () => {
         total,
         ids: Array.from({ length: total }, (_, i) => i + 1),
       });
-      expect(p.digest).toMatch(/^trash-v1:sha256:[a-f0-9]{64}$/);
+      expect(p.digest).toMatch(/^trash:sha256:[a-f0-9]{64}$/);
       expect(f.state.writes).toHaveLength(0);
       expect(f.fetch).toHaveBeenCalledTimes(Math.ceil(total / 50) + 1);
       const result = await f.service().emptyTrashPreviewFirst(confirmation(p));
@@ -227,7 +227,7 @@ describe("T09 complete Trash preview and irreversible empty", () => {
       confirm: true,
       collectionId: -99,
       expectedTotal: 2900,
-      digest: `trash-v1:sha256:${"0".repeat(64)}`,
+      digest: `trash:sha256:${"0".repeat(64)}`,
     });
     await vi.runAllTimersAsync();
     expect((await run).status).toBe("notExecuted");
@@ -246,7 +246,7 @@ describe("T09 complete Trash preview and irreversible empty", () => {
       confirm: true,
       collectionId: -99,
       expectedTotal: 2900,
-      digest: `trash-v1:sha256:${"0".repeat(64)}`,
+      digest: `trash:sha256:${"0".repeat(64)}`,
     });
     await vi.runAllTimersAsync();
     expect(await run).toMatchObject({

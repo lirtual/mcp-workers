@@ -728,7 +728,7 @@ export default class RaindropService {
     // Canonical membership is numeric-ID sorted, with stable tuple field order.
     // Bind the full scoped hierarchy even when only empty leaves are candidates.
     const canonical = JSON.stringify([
-      "collection-deletion-v1",
+      "collection-deletion",
       operation,
       rootId,
       collections.map((n) => [n.id, n.parentId, n.count]),
@@ -739,7 +739,7 @@ export default class RaindropService {
       new TextEncoder().encode(canonical),
     );
     const digest =
-      "v1:sha256:" +
+      "collection-deletion:sha256:" +
       Array.from(new Uint8Array(hash), (b) =>
         b.toString(16).padStart(2, "0"),
       ).join("");
@@ -1547,10 +1547,10 @@ export default class RaindropService {
       const hash = await crypto.subtle.digest(
         "SHA-256",
         new TextEncoder().encode(
-          JSON.stringify({ version: 1, collectionId: -99, total, ids }),
+          JSON.stringify({ collectionId: -99, total, ids }),
         ),
       );
-      const digest = `trash-v1:sha256:${Array.from(new Uint8Array(hash), (b) => b.toString(16).padStart(2, "0")).join("")}`;
+      const digest = `trash:sha256:${Array.from(new Uint8Array(hash), (b) => b.toString(16).padStart(2, "0")).join("")}`;
       snapshot = { total, ids, digest };
     } catch (error) {
       return {
