@@ -59,3 +59,16 @@ test('cannot accept a different repo, absent executor or write-unauthorized stat
 test('transport error cannot become approval',async()=>{
   await assert.rejects(verifyS3ReleaseToken(token,async()=>{throw Error('network');},nonce));
 });
+
+test('safe GitHub HTTP error stages include only bounded codes, never remote response bodies',async()=>{
+  for(const [option,expected] of [
+    [{repoStatus:403},/s3_repo_http_403/],
+    [{workflowStatus:404},/s3_workflow_http_404/],
+    [{postStatus:403},/s3_dispatch_http_403/],
+    [{postStatus:401},/s3_dispatch_http_401/],
+    [{postHeaders:{}},/s3_dispatch_header_missing/],
+  ]){
+    const mock=stub(option);
+    await assert.rejects(verifyS3ReleaseToken(token,mock.fn,nonce),expected);
+  }
+});
