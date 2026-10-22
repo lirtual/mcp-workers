@@ -15,19 +15,6 @@ const now=()=>Date.now();
 const hasUnresolvedArgument=(value:unknown):boolean=>
   value===undefined||(Array.isArray(value)?value.some(hasUnresolvedArgument):
     value!==null&&typeof value==='object'&&Object.values(value).some(hasUnresolvedArgument));
-async function callFixture(env:Env,args:Record<string,unknown>):Promise<unknown>{
-  const client=new Client({name:'workflow-worker',version:'0.1.0'});
-  const transport=new StreamableHTTPClientTransport(new URL('https://workflow-fixture.invalid/mcp'),{
-    fetch: ((input:Request|string|URL,init?:RequestInit)=>env.READONLY_TARGET.fetch(input as Request,init)) as typeof fetch,
-  });
-  try{
-    await client.connect(transport);
-    const result=await client.callTool({name:'echo',arguments:args});
-    if(result.isError)throw Error('readonly_tool_failed');
-    return limitResult(result);
-  }finally{await client.close();}
-}
-
 async function callApprovedReadonly(env:Env,plan:Plan,step:Step,args:Record<string,unknown>):Promise<unknown>{
   // Enforce the approved published contract before any remote call.
   if(plan.mcp_target_risks_accepted!==true)throw Error('target_risk_acknowledgment_required');
@@ -53,7 +40,6 @@ async function callApprovedReadonly(env:Env,plan:Plan,step:Step,args:Record<stri
   }
   if(endpoint===PRODUCTION_PORTAL_ENDPOINT && chosenPortal!==PRODUCTION_PORTAL_ENDPOINT)
     throw Error('portal_target_not_configured');
-  // NEVER send a dynamic target through the Workflow private READONLY_TARGET service.
   let portalToken:PortalServiceToken|undefined;
   if(endpoint===TRUSTED_PORTAL_ENDPOINT || endpoint===PRODUCTION_PORTAL_ENDPOINT){
     // Fail closed before making a network request; never fall back to
@@ -222,10 +208,6 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
                 .bind(id,s.id,now()).run();
               if(s.needs.some(n=>ctx.steps[n].status!=='succeeded'))return {status:'skipped'};
               if(s.if!==undefined&&!evaluateCondition(s.if,ctx))return {status:'skipped'};
-              if(s.uses==='fixture.echo'){
-                const a=evaluateArguments(s.with.arguments,ctx);
-                return {status:'succeeded',output:await callFixture(this.env,a as Record<string,unknown>)};
-              }
               // Exhaustive runtime dispatch is required even for a pinned plan
               // read from D1. Never reinterpret a future/unknown capability as
               // a successful result.emit operation.

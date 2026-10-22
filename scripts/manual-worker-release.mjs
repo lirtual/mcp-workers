@@ -64,9 +64,6 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     const flow = find("WORKFLOW", "workflow");
     if(options.mode==="readback") invariant(flow?.workflow_name === "workflow-mcp-runner" &&
       flow?.class_name === "WorkflowRunner", "Workflow native Workflow binding drift");
-    const fixture = find("READONLY_TARGET", "service");
-    if(options.mode==="readback") invariant(fixture?.service === "workflow-readonly-fixture" &&
-      !fixture?.entrypoint, "Workflow private Fixture service binding drift");
     if (options.mode === "readback") {
       invariant(find("MCP_PORTAL_ENDPOINT", "plain_text")?.text ===
         "https://mcp.lirtual.dpdns.org/mcp", "Pinned Workflow MCP Portal drift");
@@ -154,7 +151,7 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
         "Remote Control installer origin binding differs from Custom Domain");
     }
   }
-  const allowed = new Set(worker === "workflow-mcp-worker" ? ["DB", "WORKFLOW", "READONLY_TARGET"] :
+  const allowed = new Set(worker === "workflow-mcp-worker" ? ["DB", "WORKFLOW"] :
     worker === "ima-mcp-worker"
     ? ["IMA_IMAGE_REFRESH_SHARD"]
     : worker === "database-mcp-worker" ? ["RATE_LIMITER"]
@@ -165,14 +162,18 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
           : ["DEVICE_COORDINATOR"]) : []);
   for (const item of bindings) {
     if (!["plain_text", "secret_text"].includes(item.type)) {
-      invariant(allowed.has(item.name), "Unexpected production resource binding: " + item.name);
+      // Source manifest controls the new bindings; a production preflight may
+      // still observe bindings that this release is about to remove.
+      // Readback strictly verifies that no extra resource binding survives.
+      if (!(worker === "workflow-mcp-worker" && options.mode === "preflight" && item.type === "service"))
+        invariant(allowed.has(item.name), "Unexpected production resource binding: " + item.name);
     }
   }
   return true;
 }
 
-// Fail closed before any production Worker or private fixture deployment.
-export function verifyWorkflowReleaseConfig(conf, fixture) {
+// Fail closed before any production Worker deployment.
+export function verifyWorkflowReleaseConfig(conf) {
   invariant(conf?.name === "workflow-mcp-worker" && conf.main === "src/index.ts",
     "Workflow source identity drift");
   invariant(conf.keep_vars === false && conf.workers_dev === false &&
@@ -189,38 +190,13 @@ export function verifyWorkflowReleaseConfig(conf, fixture) {
   invariant(conf.workflows?.length === 1 && conf.workflows[0]?.binding === "WORKFLOW" &&
     conf.workflows[0]?.name === "workflow-mcp-runner" &&
     conf.workflows[0]?.class_name === "WorkflowRunner", "Workflow binding drift");
-  invariant(conf.services?.length === 1 && conf.services[0]?.binding === "READONLY_TARGET" &&
-    conf.services[0]?.service === "workflow-readonly-fixture", "Workflow private Fixture binding drift");
+  invariant(!conf.services?.length, "Workflow must not retain Service Bindings");
   invariant(JSON.stringify(conf.secrets?.required) === JSON.stringify(["MCP_ACCESS_TOKEN"]),
     "Workflow Portal Secret declaration drift");
   invariant(!conf.vars || Object.keys(conf.vars).length===0,
     "Workflow MCP source cannot declare runtime feature flags");
   invariant(!(conf.compatibility_flags || []).includes("global_fetch_strictly_public"),
     "Workflow must never enable or import MCP dynamic-target behavior");
-  if(fixture) {
-    invariant(fixture.name === "workflow-readonly-fixture" &&
-      fixture.main === "readonly-worker.ts" &&
-      fixture.workers_dev === false && fixture.preview_urls === false &&
-      !fixture.routes?.length && fixture.keep_vars === false &&
-      fixture.observability?.enabled === true &&
-      fixture.observability?.logs?.invocation_logs === true &&
-      !fixture.secrets?.required?.length && !fixture.d1_databases?.length &&
-      !fixture.services?.length && !fixture.workflows?.length && !fixture.vars,
-      "Workflow Fixture must have no public route, data binding or Secrets");
-  }
-  return true;
-}
-
-// Review the actually deployed private Fixture, not just its source manifest.
-export function verifyFixtureExposure(subdomain, domains, routesByZone) {
-  invariant(subdomain?.enabled === false && subdomain?.previews_enabled === false,
-    "Workflow private Fixture has public workers.dev or Preview exposure");
-  invariant(Array.isArray(domains) && Array.isArray(routesByZone),
-    "Workflow Fixture public route inventory unavailable");
-  invariant(!domains.some(x => x.service === "workflow-readonly-fixture"),
-    "Workflow private Fixture has a Custom Domain");
-  invariant(!routesByZone.some(x => x.script === "workflow-readonly-fixture"),
-    "Workflow private Fixture has a public Worker route");
   return true;
 }
 
@@ -426,34 +402,7 @@ async function current(account, worker, token, options) {
 
 async function main() {
   const [mode, worker] = process.argv.slice(2);
-  invariant(["preflight", "readback", "version", "diagnostic", "fixture-check", "fixture-readback", "d1-check"].includes(mode), "Unknown release validation mode");
-  if (mode === "fixture-readback") {
-    invariant(worker === "workflow-mcp-worker", "Private Fixture check restricted to Workflow");
-    const account = process.env.CLOUDFLARE_ACCOUNT_ID;
-    const token = process.env.CLOUDFLARE_API_TOKEN;
-    invariant(account && token, "Workflow Cloudflare readback credentials missing");
-    const subdomain = await cfGet(account, "workflow-readonly-fixture", token, "/subdomain");
-    const [domains, zones] = await Promise.all([
-      cfListRead("/accounts/" + encodeURIComponent(account) + "/workers/domains?per_page=100", token),
-      cfListRead("/zones?account.id=" + encodeURIComponent(account) + "&per_page=50", token),
-    ]);
-    const routes = (await Promise.all(zones.map(zone =>
-      cfListRead("/zones/" + encodeURIComponent(zone.id) + "/workers/routes?per_page=100", token)
-    ))).flat();
-    verifyFixtureExposure(subdomain, domains, routes);
-    console.log("Workflow private Fixture has no Workers.dev, Preview, Custom Domain or Worker route");
-    return;
-  }
-  if (mode === "fixture-check") {
-    invariant(worker === "workflow-mcp-worker", "Private Fixture check restricted to Workflow");
-    const owner = JSON.parse(await readFile(join(process.cwd(),
-      "apps/workflow-mcp-worker/wrangler.jsonc"), "utf8"));
-    const fixture = JSON.parse(await readFile(join(process.cwd(),
-      "apps/workflow-mcp-worker/tests/fixtures/wrangler.jsonc"), "utf8"));
-    verifyWorkflowReleaseConfig(owner, fixture);
-    console.log("Workflow private Fixture configuration verified; no public route");
-    return;
-  }
+  invariant(["preflight", "readback", "version", "diagnostic", "d1-check"].includes(mode), "Unknown release validation mode");
   if (mode === "d1-check") {
     invariant(worker === "workflow-mcp-worker", "D1 check restricted to Workflow");
     const raw = await readFile("/dev/stdin", "utf8");

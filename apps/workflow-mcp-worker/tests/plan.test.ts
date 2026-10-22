@@ -4,24 +4,22 @@ import { compilePlan, evaluateExpression, evaluateArguments, evaluateCondition, 
 
 const one = {
   version: 1, name: 'Inspect', steps: [
-    { id: 'read', uses: 'fixture.echo', with: { tool: 'echo', arguments: { value: { ref: 'inputs.subject' } } } },
+    { id: 'read', uses: 'result.emit', with: { data: { ref: 'inputs.subject' } } },
     { id: 'report', needs: ['read'], uses: 'result.emit',
       if: { eq: [{ ref: 'steps.read.status' }, 'succeeded'] },
       with: { data: { ref: 'steps.read.output' } } },
   ],
 };
 
-test('Workflow compiles fixed read-only DAG from JSON or YAML with matching digest', async () => {
+test('Workflow compiles deterministic DAG from JSON or YAML with matching digest', async () => {
   const json = await compilePlan(JSON.stringify(one));
   const yaml = await compilePlan(`version: 1
 name: Inspect
 steps:
   - id: read
-    uses: fixture.echo
+    uses: result.emit
     with:
-      tool: echo
-      arguments:
-        value: {ref: inputs.subject}
+      data: {ref: inputs.subject}
   - id: report
     needs: [read]
     uses: result.emit
@@ -32,7 +30,7 @@ steps:
   assert.equal(json.digest, yaml.digest);
   assert.equal(json.plan.steps.length, 2);
   assert.equal(json.plan.steps[1].needs[0], 'read');
-  assert.deepEqual(evaluateArguments(json.plan.steps[0].with.arguments, {inputs: {subject:'hello'}, steps:{}}), {value:'hello'});
+  assert.deepEqual(evaluateArguments(json.plan.steps[0].with.data, {inputs: {subject:'hello'}, steps:{}}), 'hello');
   assert.equal(evaluateExpression(json.plan.steps[1].if, {inputs:{}, steps:{read:{status:'succeeded'}}}), true);
 });
 
@@ -50,7 +48,7 @@ test('independent DAG Step order is canonical and locale-independent', async () 
 test('Workflow readonly MCP arguments must be an object before Publish', async () => {
   for(const argumentsValue of [null,42,'not an object',['list']]) {
     const definition={version:1,name:'Invalid MCP args',steps:[
-      {id:'read',uses:'fixture.echo',with:{tool:'echo',arguments:argumentsValue}}
+      {id:'read',uses:'mcp.call',with:{endpoint:'https://test-mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',input_schema:{type:'object',properties:{}},arguments:argumentsValue}}
     ]};
     await assert.rejects(()=>compilePlan(definition),PlanError);
   }

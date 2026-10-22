@@ -1,4 +1,4 @@
-// Deliberately narrow production acceptance: one temporary Workflow echo workflow, no deployment.
+// Deliberately narrow production acceptance: one temporary result-only Workflow, no deployment.
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -98,12 +98,8 @@ async function runSmoke() {
 
   const definition = {
     version: 1, name: echo,
-    steps: [
-      { id: 'read', uses: 'fixture.echo',
-        with: { tool: 'echo', arguments: { value: { ref: 'inputs.subject' } } } },
-      { id: 'report', uses: 'result.emit',
-        needs: ['read'], with: { data: { ref: 'steps.read.output' } } },
-    ],
+    steps: [{ id: 'report', uses: 'result.emit',
+      with: { data: { ref: 'inputs.subject' } } }],
   };
   const draft = await tool('workflow_create', { definition: JSON.stringify(definition) });
   workflowId = draft.workflow_id;
@@ -133,11 +129,11 @@ async function runSmoke() {
     await new Promise(resolve => setTimeout(resolve, 1000));
   }
   assert.equal(status?.status, 'succeeded', 'Native Workflow did not successfully finish');
-  assert.equal(status.steps.length, 2);
+  assert.equal(status.steps.length, 1);
   assert.ok(status.steps.every(s => s.status === 'succeeded'));
   const result = await tool('workflow_result', { run_id: runId });
-  assert.equal(result.result?.content?.[0]?.text, echo);
-  console.log('SMOKE_OK: authenticated Draft → Validate → Publish → Run → Result; idempotency and echo verified');
+  assert.equal(result.result, echo);
+  console.log('SMOKE_OK: authenticated Draft → Validate → Publish → Run → Result; idempotency and result verified');
   console.log('Verified Workflow ID:', workflowId);
   console.log('Verified Run ID:', runId);
 }
