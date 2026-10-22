@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       worker:
-        description: Select Worker to deploy to production
+        description: Select Worker for release or read-only acceptance
         required: true
         type: choice
         options:
@@ -21,6 +21,11 @@ on:
           - workflow-mcp-worker
       smoke_only:
         description: Run authenticated S1 production smoke only (no deploy; select workflow-mcp-worker)
+        required: false
+        type: boolean
+        default: false
+      deploy_to_production:
+        description: EXPLICIT approval to deploy the selected Worker (never use with probe/test inputs)
         required: false
         type: boolean
         default: false
@@ -129,6 +134,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Verify release and read-only dispatch gates
+        run: node scripts/verify-workflow-dispatch-gates.mjs
 
       - id: scope
         name: Select affected applications
@@ -287,7 +295,17 @@ jobs:
       ${{ always() &&
           github.event_name == 'workflow_dispatch' &&
           github.ref == 'refs/heads/main' &&
+          inputs.deploy_to_production == true &&
           inputs.smoke_only != true &&
+          inputs.s2_portal_probe != true &&
+          inputs.s2_cloud_e2e != true &&
+          inputs.s3_oidc_probe != true &&
+          inputs.s3_full_dispatch != true &&
+          inputs.s3_auth_compare != true &&
+          inputs.s3_product_e2e != true &&
+          inputs.s3_cleanup_name == '' &&
+          inputs.s3_dedicated_name == '' &&
+          inputs.s3_executor_worker != true &&
           needs.checks.result == 'success' &&
           ((inputs.worker == 'database-mcp-worker' && needs.database-integration.result == 'success') ||
            (inputs.worker != 'database-mcp-worker' && needs.database-integration.result == 'skipped')) &&
@@ -605,12 +623,14 @@ jobs:
         run: node apps/workflow-mcp-worker/tests/production-smoke.mjs
 
   workflow-s2-portal-probe:
-    name: Authenticated S2 test Portal read-only check (no deploy)
+    name: Authenticated S2 Portal read-only check (no deploy)
     if: >-
       ${{ github.event_name == 'workflow_dispatch' &&
-          github.ref == 'refs/heads/wip/workflow-s2-public-readonly' &&
+          (github.ref == 'refs/heads/main' ||
+           github.ref == 'refs/heads/wip/workflow-s2-public-readonly') &&
           inputs.worker == 'workflow-mcp-worker' &&
           inputs.s2_portal_probe == true &&
+          inputs.deploy_to_production != true &&
           inputs.smoke_only != true }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
