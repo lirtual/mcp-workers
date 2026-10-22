@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig, verifyWorkflowD1Readiness, verifyFixtureExposure } from "./manual-worker-release.mjs";
+import { activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig, verifyWorkflowD1Readiness } from "./manual-worker-release.mjs";
 
 const required = [
   { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
@@ -327,26 +327,20 @@ test("GitHub Actions deploy requires only one PAT Secret and no repository lists
     secrets, { mode: "readback" }), /Unexpected production resource/);
 });
 
-test("Workflow production release must preserve exact reviewed resource and private fixture boundaries", () => {
+test("Workflow production release must preserve exact reviewed resource and runtime boundaries", () => {
   const owner = JSON.parse(readFileSync(new URL("../apps/workflow-mcp-worker/wrangler.jsonc", import.meta.url), "utf8"));
-  const fixture = JSON.parse(readFileSync(new URL("../apps/workflow-mcp-worker/tests/fixtures/wrangler.jsonc", import.meta.url), "utf8"));
-  assert.equal(verifyWorkflowReleaseConfig(owner, fixture), true);
+    assert.equal(verifyWorkflowReleaseConfig(owner), true);
   const brokenOwners = [
     [{ ...owner, routes: [{ pattern: "wrong.lirtual.dpdns.org", custom_domain: true }] }, /public route/],
     [{ ...owner, d1_databases: [{ ...owner.d1_databases[0], database_id: "00000000-0000-0000-0000-000000000000" }] }, /production D1/],
-    [{ ...owner, services: [] }, /Fixture binding/],
+    [{ ...owner, services: [{binding:"UNEXPECTED",service:"fake"}] }, /Service Bindings/],
     [{ ...owner, workflows: [] }, /Workflow binding/],
     [{ ...owner, secrets: { required: [] } }, /Portal Secret/],
     [{ ...owner, vars: { MCP_CALL_ENABLED: "true" } }, /MCP/],
     [{ ...owner, compatibility_flags: ["global_fetch_strictly_public"] }, /MCP/],
   ];
-  for(const [cfg,err] of brokenOwners)assert.throws(()=>verifyWorkflowReleaseConfig(cfg,fixture),err);
-  for(const bad of [
-    { ...fixture, workers_dev:true },
-    { ...fixture, routes: [{pattern:"fixture.example.org", custom_domain:true}] },
-    { ...fixture, secrets:{required:["SOME_TOKEN"]} },
-    { ...fixture, d1_databases:[{binding:"DB",database_id:"other"}] }
-  ])assert.throws(()=>verifyWorkflowReleaseConfig(owner,bad),/Fixture must have no public route/);
+  for(const [cfg,err] of brokenOwners)assert.throws(()=>verifyWorkflowReleaseConfig(cfg),err);
+
 });
 
 test("Workflow remote D1 readback blocks missing migrations, nonempty first-run and unresolved Runs", () => {
@@ -384,7 +378,6 @@ test("Workflow readback verifies one integrated runtime, registered GitHub ident
     {name:"WORKFLOW_EXECUTOR_GITHUB_TOKEN",type:"secret_text"},
     {name:"DB",type:"d1",id:"c76850db-b5e3-4128-9150-849a1c9e8d74"},
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-runner",class_name:"WorkflowRunner"},
-    {name:"READONLY_TARGET",type:"service",service:"workflow-readonly-fixture"},
     {name:"MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
     {name:"GITHUB_EXECUTOR_REPOSITORY",type:"plain_text",text:"lirtual/mcp-workers"},
     {name:"GITHUB_EXECUTOR_REPOSITORY_ID",type:"plain_text",text:"1414936394"},
@@ -397,7 +390,7 @@ test("Workflow readback verifies one integrated runtime, registered GitHub ident
   const check=(list=bindings,ss=secrets)=>
     verifyBindings("workflow-mcp-worker",{...settings,bindings:list},ss,{mode:"readback"});
   assert.equal(check(),true);
-  for(const name of ["DB","WORKFLOW","READONLY_TARGET"]){
+  for(const name of ["DB","WORKFLOW"]){
     assert.throws(()=>check(bindings.filter(x=>x.name!==name)),/binding drift/);
   }
   for(const name of ["MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET","WORKFLOW_EXECUTOR_GITHUB_TOKEN"]){
@@ -407,39 +400,21 @@ test("Workflow readback verifies one integrated runtime, registered GitHub ident
 });
 
 
-test("Workflow manual GitHub Actions requires D1 checks and private Fixture before Owner", () => {
+test("Workflow manual GitHub Actions requires D1 checks before Owner", () => {
   const ci=readFileSync(new URL("../.github/workflows/ci.yml",import.meta.url),"utf8");
-  const pre=ci.indexOf("      - name: Verify Workflow private Fixture and remote D1 readiness");
+  const pre=ci.indexOf("      - name: Verify Workflow release configuration and remote D1 readiness");
   const migration=ci.indexOf("      - name: Apply complete Workflow D1 migrations");
-  const fixture=ci.indexOf("      - name: Deploy existing private Workflow read-only Fixture");
   const publish=ci.indexOf("      - name: Publish exactly selected Worker");
-  assert.ok(pre>0 && migration>pre && fixture>migration && publish>fixture);
+  assert.ok(pre>0 && migration>pre && publish>migration);
   assert.match(ci,/wrangler d1 migrations apply workflow-mcp-worker --remote/);
   assert.match(ci,/WORKFLOW_REQUIRE_COMPLETE_SCHEMA: 'true'/);
   assert.ok(ci.includes("WORKFLOW_FIRST_DEPLOY: " + String.fromCharCode(36) + "{{ steps.preflight.outputs.bootstrap }}"));
   assert.match(ci,/node scripts\/manual-worker-release\.mjs d1-check workflow-mcp-worker/);
-  assert.match(ci,/pnpm exec wrangler deploy --config tests\/fixtures\/wrangler\.jsonc/);
   assert.match(ci,/\(cd apps\/workflow-mcp-worker &&/);
-  assert.doesNotMatch(ci,/cd apps\/workflow-mcp-worker\/tests\/fixtures &&/);
   assert.match(ci,/mcp_endpoint="https:\/\/workflow\.lirtual\.dpdns\.org\/mcp"/);
   assert.match(ci,/health_endpoint="https:\/\/workflow\.lirtual\.dpdns\.org\/health"/);
   assert.match(ci,/body\.scope !== "workflow"/);
   assert.match(ci,/github\.ref == 'refs\/heads\/main'/);
-});
-
-test("Workflow private Fixture actual Cloudflare exposure must be absent after deployment", () => {
-  const subdomain={enabled:false,previews_enabled:false};
-  assert.equal(verifyFixtureExposure(subdomain,[],[]),true);
-  assert.throws(()=>verifyFixtureExposure({...subdomain,enabled:true},[],[]),/workers.dev/);
-  assert.throws(()=>verifyFixtureExposure({...subdomain,previews_enabled:true},[],[]),/Preview/);
-  assert.throws(()=>verifyFixtureExposure(subdomain,[{service:"workflow-readonly-fixture",hostname:"public.example.com"}],[]),/Custom Domain/);
-  assert.throws(()=>verifyFixtureExposure(subdomain,[],[{script:"workflow-readonly-fixture",pattern:"example.com/*"}]),/public Worker route/);
-  assert.throws(()=>verifyFixtureExposure(subdomain,null,[]),/inventory unavailable/);
-  const ci=readFileSync(new URL("../.github/workflows/ci.yml",import.meta.url),"utf8");
-  const fixture=ci.indexOf("      - name: Deploy existing private Workflow read-only Fixture");
-  const readback=ci.indexOf("      - name: Read back private Workflow Fixture public-route isolation");
-  const publish=ci.indexOf("      - name: Publish exactly selected Worker");
-  assert.ok(fixture>0 && readback>fixture && publish>readback);
 });
 
 test("Workflow release pins the exact Portal and rejects target drift",()=>{
@@ -448,7 +423,6 @@ test("Workflow release pins the exact Portal and rejects target drift",()=>{
     {name:"MCP_PORTAL_CLIENT_SECRET",type:"secret_text"},{name:"WORKFLOW_EXECUTOR_GITHUB_TOKEN",type:"secret_text"},
     {name:"DB",type:"d1",id:"c76850db-b5e3-4128-9150-849a1c9e8d74"},
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-runner",class_name:"WorkflowRunner"},
-    {name:"READONLY_TARGET",type:"service",service:"workflow-readonly-fixture"},
     {name:"MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
     {name:"GITHUB_EXECUTOR_REPOSITORY",type:"plain_text",text:"lirtual/mcp-workers"},
     {name:"GITHUB_EXECUTOR_REPOSITORY_ID",type:"plain_text",text:"1414936394"},
@@ -472,7 +446,6 @@ test("GitHub execution is integral but still pins repository, ref and OIDC audie
     {name:"MCP_ACCESS_TOKEN",type:"secret_text"},
     {name:"DB",type:"d1",id:"c76850db-b5e3-4128-9150-849a1c9e8d74"},
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-runner",class_name:"WorkflowRunner"},
-    {name:"READONLY_TARGET",type:"service",service:"workflow-readonly-fixture"},
     {name:"MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
     {name:"GITHUB_EXECUTOR_REPOSITORY",type:"plain_text",text:"lirtual/mcp-workers"},
     {name:"GITHUB_EXECUTOR_REPOSITORY_ID",type:"plain_text",text:"1414936394"},
@@ -493,14 +466,14 @@ test("GitHub execution is integral but still pins repository, ref and OIDC audie
 });
 
 
-test("Workflow preflight admits older bindings for a one-way release, readback rejects old toggles",()=>{
+test("Workflow preflight tolerates removed service bindings, readback rejects them",()=>{
   const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET",
     "WORKFLOW_EXECUTOR_GITHUB_TOKEN"].map(name=>({name}));
   const bindings=[
     {name:"MCP_ACCESS_TOKEN",type:"secret_text"},
     {name:"DB",type:"d1",id:"c76850db-b5e3-4128-9150-849a1c9e8d74"},
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-s1",class_name:"WorkflowRunner"},
-    {name:"READONLY_TARGET",type:"service",service:"workflow-s1-readonly-fixture"},
+    {name:"OLD_TEST_SERVICE",type:"service",service:"unused-test-worker"},
     {name:"MCP_CALL_ENABLED",type:"plain_text",text:"true"}
   ];
   const settings={bindings,observability:{enabled:true,logs:{invocation_logs:true}}};

@@ -6,7 +6,7 @@ export class PlanError extends Error {
   constructor(message: string) { super(message); this.name = 'PlanError'; }
 }
 export type Step = {
-  id: string; uses: 'fixture.echo' | 'result.emit' | 'mcp.call' | 'github.run'; needs: string[];
+  id: string; uses: 'result.emit' | 'mcp.call' | 'github.run'; needs: string[];
   with: Record<string, unknown>; if?: unknown;
 };
 export type ReadonlyOperation = { endpoint:string; tool:string; scope:'read'; schema_digest:string };
@@ -126,16 +126,11 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     const s=object(s0,'invalid_step');keys(s,['id','uses','needs','if','with']);
     if(typeof s.id!=='string'||!SAFE_ID.test(s.id)||ids.has(s.id)||OBJECT_PROTOTYPE_KEYS.has(s.id))throw new PlanError('invalid_step_id');
     ids.add(s.id);
-    if(s.uses!=='fixture.echo'&&s.uses!=='result.emit'&&s.uses!=='mcp.call'&&s.uses!=='github.run')throw new PlanError('unsupported_capability');
+    if(s.uses!=='result.emit'&&s.uses!=='mcp.call'&&s.uses!=='github.run')throw new PlanError('unsupported_capability');
     const needs=s.needs===undefined?[]:s.needs;
     if(!Array.isArray(needs)||needs.some(n=>typeof n!=='string'||!SAFE_ID.test(n))||new Set(needs).size!==needs.length)throw new PlanError('invalid_dependencies');
     const withData=object(s.with,'invalid_step_arguments');
-    if(s.uses==='fixture.echo'){
-      keys(withData,['tool','arguments']);
-      if(withData.tool!=='echo')throw new PlanError('unsupported_readonly_tool');
-      if(withData.arguments===undefined)throw new PlanError('missing_arguments');
-      object(withData.arguments,'invalid_step_arguments');
-    }else if(s.uses==='github.run'){
+    if(s.uses==='github.run'){
       // v1 intentionally offers a single fixed no-side-effect registered
       // capability. No user-supplied scripts, URL, repo, ref, or arguments.
       keys(withData,['capability']);

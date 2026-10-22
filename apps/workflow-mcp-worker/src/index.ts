@@ -17,7 +17,7 @@ export default {
   if(url.pathname!=='/mcp')return new Response('Not found',{status:404});
   const auth=await authenticatePortalRequest(request,{expectedToken:env.MCP_ACCESS_TOKEN,allowedOrigins:[]});
   if(!auth.ok)return error(auth.reason==='misconfigured'?503:auth.reason==='invalid_origin'?403:401,auth.reason==='misconfigured'?'auth_misconfigured':auth.reason==='invalid_origin'?'invalid_origin':'unauthorized');
-  if(!env.DB||!env.WORKFLOW||!env.READONLY_TARGET)return error(503,'workflow_bindings_missing');
+  if(!env.DB||!env.WORKFLOW)return error(503,'workflow_bindings_missing');
   return createMcpHandler(()=>buildMcpServer(env),{legacy:'stateless'}).fetch(auth.request);
  }
 };

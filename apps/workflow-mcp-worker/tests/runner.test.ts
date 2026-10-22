@@ -15,7 +15,7 @@ import type { WorkflowEvent, WorkflowStep } from 'cloudflare:workers';
 import { success } from '../src/tools.ts';
 import readonlyWorker from './fixtures/readonly-worker.ts';
 
-// Only the platform base class is substituted; Runner, SQL, Plan and MCP fixture are real.
+// Only the Cloudflare orchestration shell and remote MCP peer are substituted.
 const hook=registerHooks({resolve(specifier,context,next){
   if(specifier==='cloudflare:workers')return {url:'data:text/javascript,export class WorkflowEntrypoint { constructor(ctx,env){this.env=env;} }',shortCircuit:true};
   return next(specifier,context);
@@ -27,6 +27,21 @@ function deferred(){
   let resolve!:()=>void;
   const promise=new Promise<void>(r=>{resolve=r;});
   return {promise,resolve};
+}
+
+const ECHO_GRANT:ReadonlyOperation={endpoint:'https://test-mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
+const echoStep=(id:string,args:Record<string,unknown>)=>({
+  id,uses:'mcp.call',with:{endpoint:ECHO_GRANT.endpoint,tool:'echo',scope:'read',input_schema:PINNED_SCHEMA,arguments:args},
+});
+function mockPublicPeer(t:test.TestContext,onCall?:()=>Promise<void>) {
+  const previous=globalThis.fetch;
+  globalThis.fetch=(async(input:RequestInfo|URL,init?:RequestInit)=>{
+    const request=new Request(input,init);
+    if(onCall && request.method==='POST' && (await request.clone().json() as {method:string}).method==='tools/call')
+      await onCall();
+    return readonlyWorker.fetch(request);
+  }) as typeof fetch;
+  t.after(()=>{globalThis.fetch=previous;});
 }
 
 function setup(t:test.TestContext){
@@ -49,7 +64,6 @@ function setup(t:test.TestContext){
     MCP_PORTAL_CLIENT_SECRET:'test-secret',
     DB:{prepare,async batch(statements:{run:()=>Promise<unknown>}[]){return Promise.all(statements.map(s=>s.run()));}},
     WORKFLOW:{async create(){},async get(){return {async status(){return {status:'running'};}};}},
-    READONLY_TARGET:{fetch:async(input:Request|string|URL,init?:RequestInit)=>readonlyWorker.fetch(new Request(input,init))},
   } as unknown as Env;
   const service=new WorkflowService(env);
   async function admit(steps:unknown[],inputs:Record<string,unknown>={},approvals:ReadonlyOperation[]=[]){
@@ -66,10 +80,11 @@ function setup(t:test.TestContext){
 
 test('explicit null emit remains the Run result when an independent later Step has output',async t=>{
   const {service,admit,run}=setup(t);
+  mockPublicPeer(t);
   const admitted=await admit([
     {id:'a',uses:'result.emit',with:{data:null}},
-    {id:'z',uses:'fixture.echo',with:{tool:'echo',arguments:{value:'other output'}}},
-  ]);
+    echoStep('z',{value:'other output'}),
+  ],{},[ECHO_GRANT]);
   await run(admitted.run_id);
   const result=await service.result(admitted.run_id);
   assert.equal(result.status,'succeeded');
@@ -103,18 +118,15 @@ test('a payload above the reserved result budget cannot produce an unreadable su
   assert.equal(result.result,null);
 });
 
-test('status exposes running delayed fixture, waiting dependency and retained terminal Steps from the pinned Plan',async t=>{
-  const {service,admit,run,env}=setup(t);
+test('status exposes running delayed MCP call, waiting dependency and retained terminal Steps from the pinned Plan',async t=>{
+  const {service,admit,run}=setup(t);
   const entered=deferred(),release=deferred();
-  const fetchFixture=env.READONLY_TARGET.fetch.bind(env.READONLY_TARGET);
-  env.READONLY_TARGET.fetch=(async(...args:Parameters<typeof fetchFixture>)=>{
-    entered.resolve();await release.promise;return fetchFixture(...args);
-  }) as typeof env.READONLY_TARGET.fetch;
+  mockPublicPeer(t,async()=>{entered.resolve();await release.promise;});
   const admitted=await admit([
-    {id:'slow',uses:'fixture.echo',with:{tool:'echo',arguments:{value:'delayed',delay_ms:1}}},
+    echoStep('slow',{value:'delayed'}),
     {id:'dependent',uses:'result.emit',needs:['slow'],with:{data:{ref:'steps.slow.output'}}},
     {id:'skipped',uses:'result.emit',if:false,with:{data:'unused'}},
-  ]);
+  ],{},[ECHO_GRANT]);
   const execution=run(admitted.run_id);
   try{
     await entered.promise;
@@ -158,13 +170,10 @@ test('native waiting is visible and terminal uncertainty never labels unfinished
 });
 
 test('replaying a callback preserves its existing terminal Step state',async t=>{
-  const {service,admit,run,env,sqlite}=setup(t);
+  const {service,admit,run,sqlite}=setup(t);
   const entered=deferred(),release=deferred();
-  const fetchFixture=env.READONLY_TARGET.fetch.bind(env.READONLY_TARGET);
-  env.READONLY_TARGET.fetch=(async(...args:Parameters<typeof fetchFixture>)=>{
-    entered.resolve();await release.promise;return fetchFixture(...args);
-  }) as typeof env.READONLY_TARGET.fetch;
-  const admitted=await admit([{id:'read',uses:'fixture.echo',with:{tool:'echo',arguments:{value:'stable'}}}]);
+  mockPublicPeer(t,async()=>{entered.resolve();await release.promise;});
+  const admitted=await admit([echoStep('read',{value:'stable'})],{},[ECHO_GRANT]);
   sqlite.prepare("INSERT INTO run_steps(run_id,step_id,status,output,updated_at) VALUES(?,'read','succeeded',?,1)")
     .run(admitted.run_id,JSON.stringify({content:[{type:'text',text:'stable'}]}));
   const execution=run(admitted.run_id);
@@ -190,17 +199,15 @@ test('unknown capability in a pinned Plan fails closed instead of becoming resul
   const original=sqlite.prepare('SELECT version_id FROM runs WHERE id=?').get(admitted.run_id) as {version_id:string};
   const tampered={version:1,name:'Untrusted future capability',steps:[{id:'emit',needs:[],uses:'mcp.call',with:{data:'should not succeed'}}]};
   sqlite.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(tampered),original.version_id);
-  let privateFixtureCalls=0;
-  const originalFetch=env.READONLY_TARGET.fetch.bind(env.READONLY_TARGET);
-  env.READONLY_TARGET.fetch=(async(...args:Parameters<typeof originalFetch>)=>{
-    privateFixtureCalls++;
-    return originalFetch(...args);
-  }) as typeof env.READONLY_TARGET.fetch;
+  const previousFetch=globalThis.fetch;
+  let unexpectedNetworkCalls=0;
+  globalThis.fetch=(async()=>{unexpectedNetworkCalls++;throw Error('unexpected network call');}) as typeof fetch;
   await run(admitted.run_id);
   const result=await service.result(admitted.run_id);
   assert.equal(result.status,'failed');
   assert.equal(result.steps[0].status,'failed');
-  assert.equal(privateFixtureCalls,0);
+  assert.equal(unexpectedNetworkCalls,0);
+  globalThis.fetch=previousFetch;
 });
 
 test('MCP Publish requires explicit matching read approval without a stage toggle',async t=>{
@@ -250,11 +257,7 @@ test('MCP approved read-only MCP tool invokes actual SDK only through scoped pub
   // The existing Workflow echo fixture rejects extra args: this must prove the
   // transport was reached without falsely marking an invalid tool call safe.
   const originalFetch=globalThis.fetch;
-  let networkCalls=0,privateCalls=0,secretSeen=false;
-  const privateFetch=env.READONLY_TARGET.fetch.bind(env.READONLY_TARGET);
-  env.READONLY_TARGET.fetch=(async(...args:Parameters<typeof privateFetch>)=>{
-    privateCalls++;return privateFetch(...args);
-  }) as typeof env.READONLY_TARGET.fetch;
+  let networkCalls=0,secretSeen=false;
   globalThis.fetch=(async(input:RequestInfo|URL,init?:RequestInit)=>{
     const request=new Request(input,init);
     networkCalls++;
@@ -270,19 +273,14 @@ test('MCP approved read-only MCP tool invokes actual SDK only through scoped pub
   assert.equal(result.steps[0].status,'indeterminate');
   assert.equal(result.error_code,'external_outcome_unknown');
   assert.ok(networkCalls>0);
-  assert.equal(privateCalls,0);
   assert.equal(secretSeen,false);
 });
 
-test('approved MCP public read-only call succeeds without touching private Workflow binding',async t=>{
+test('approved MCP public read-only call succeeds through pinned Portal',async t=>{
   const {env,admit,run,service}=setup(t);
   const grant:ReadonlyOperation={endpoint:'https://test-mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
   const admitted=await admit([{id:'read',uses:'mcp.call',with:{endpoint:grant.endpoint,tool:grant.tool,scope:'read',input_schema:PINNED_SCHEMA,arguments:{value:'hello MCP'}}}],{},[grant]);
-  let publicCalls=0,privateCalls=0;
-  const originalPrivate=env.READONLY_TARGET.fetch.bind(env.READONLY_TARGET);
-  env.READONLY_TARGET.fetch=(async(...args:Parameters<typeof originalPrivate>)=>{
-    privateCalls++;return originalPrivate(...args);
-  }) as typeof env.READONLY_TARGET.fetch;
+  let publicCalls=0;
   const originalFetch=globalThis.fetch;
   globalThis.fetch=(async(input:RequestInfo|URL,init?:RequestInit)=>{
     const request=new Request(input,init);
@@ -298,7 +296,6 @@ test('approved MCP public read-only call succeeds without touching private Workf
   assert.equal(result.steps[0].status,'succeeded');
   assert.ok(JSON.stringify(result.result).includes('hello MCP'));
   assert.ok(publicCalls>0);
-  assert.equal(privateCalls,0);
 });
 
 test('tampering immutable MCP approval cannot dispatch to a changed endpoint',async t=>{

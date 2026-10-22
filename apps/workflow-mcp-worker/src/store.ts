@@ -19,7 +19,6 @@ export type Env = {
     create(options:{id:string;params:{run_id:string}}):Promise<unknown>;
     get(id:string):Promise<{status():Promise<{status:string}>;sendEvent?(event:{type:string;payload:unknown}):Promise<void>}>;
   };
-  READONLY_TARGET: Fetcher;
   // Enabled only through the explicit selected-Worker production release.
   // Optional, MCP-only machine identity for the pinned Cloudflare MCP Portal.
   MCP_PORTAL_CLIENT_ID?: string;

@@ -7,7 +7,7 @@ Versioned, durable workflows using the existing MCP Portal, Cloudflare D1 and Cl
 - **Workflow management:** create and revise YAML/JSON Drafts, validate a bounded DAG, explicitly Publish an immutable Plan, run asynchronously, inspect status/results, pause/resume new admissions.
 - **MCP tool calls (`mcp.call`):** read-only operations routed through the existing, server-pinned MCP Portal. Publish requires the exact endpoint, tool, `read` scope and schema digest, plus `accept_target_risks: true`. Runtime checks revalidate the published grant and live tool schema. The remote `readOnlyHint` is untrusted: network isolation and absence of remote side effects are not guaranteed.
 - **GitHub Actions (`github.run`):** a single server-registered `heavy.github.echo` operation, with explicit `approve_heavy_execution: true` at Publish. Repository, workflow, ref and GitHub OIDC audience are pinned server-side. D1 records dispatch identity, GitHub OIDC Claim and immutable callback receipt; ambiguous external effects are never blindly replayed.
-- **Result emission (`result.emit`)** and **private read-only fixture (`fixture.echo`)** for integration tests.
+- **Result emission (`result.emit`)** for Workflow results.
 
 Only these known operations are implemented; generic shell commands, arbitrary external MCP writes, Cron/Webhooks, dynamic GitHub tasks, artifacts and automatic GitHub Job cancellation are not provided.
 
@@ -19,7 +19,7 @@ The immutable Run Plan and status are stored in D1; Cloudflare Workflows advance
 
 Environment bindings and credentials:
 
-- `DB`, `WORKFLOW` (`workflow-mcp-runner`) and private service `READONLY_TARGET` (`workflow-readonly-fixture`).
+- `DB` and `WORKFLOW` (`workflow-mcp-runner`).
 - `MCP_ACCESS_TOKEN` for owner API ingress.
 - `MCP_PORTAL_CLIENT_ID` / `MCP_PORTAL_CLIENT_SECRET` for the pinned Portal.
 - `WORKFLOW_EXECUTOR_GITHUB_TOKEN` for the registered GitHub executor.

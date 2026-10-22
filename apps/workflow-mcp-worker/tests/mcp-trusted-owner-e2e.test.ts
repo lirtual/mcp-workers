@@ -51,7 +51,6 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
       async run(){return {meta:{changes:Number(sqlite.prepare(sql).run(...args).changes)}};},
     };
   }
-  let privateCalls=0;
   const env={
     MCP_ACCESS_TOKEN:TOKEN,
     MCP_PORTAL_CLIENT_ID:PORTAL_ID,
@@ -59,10 +58,6 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     MCP_PORTAL_ENDPOINT:TRUSTED,
     DB:{prepare,async batch(items:{run:()=>Promise<unknown>}[]){return Promise.all(items.map(s=>s.run()));}},
     WORKFLOW:{async create(){},async get(){return {async status(){return {status:'running'};}};}},
-    READONLY_TARGET:{async fetch(input:Request|string|URL,init?:RequestInit){
-      privateCalls++;
-      return readonlyWorker.fetch(new Request(input,init));
-    }},
   } as unknown as Env;
   let internetCalls=0,toolCalls=0;
   const previousFetch=globalThis.fetch;
@@ -153,7 +148,6 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     assert.equal(outcome.steps[0].status,'succeeded');
     assert.equal(outcome.result.content[0].text,'approved trusted echo');
     assert.equal(toolCalls,1,'exactly one tools/call');
-    assert.equal(privateCalls,0,'MCP must never use the Workflow private service binding');
 
     // An environment configured for the production Portal must not silently
     // execute a Plan approved for the test Portal (nor leak credentials).
@@ -188,7 +182,6 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     assert.equal(toolCalls,1,'missing portal credentials cannot reach target');
     env.MCP_PORTAL_CLIENT_SECRET=PORTAL_SECRET;
 
-    assert.equal(privateCalls,0);
   }finally{
     await client.close();
   }

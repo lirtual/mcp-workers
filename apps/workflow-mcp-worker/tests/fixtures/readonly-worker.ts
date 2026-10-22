@@ -1,7 +1,7 @@
 import { McpServer, createMcpHandler } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 function buildReadonlyServer(){
- const server=new McpServer({name:'workflow-readonly-fixture',version:'0.1.0'},{capabilities:{tools:{}}});
+ const server=new McpServer({name:'workflow-local-mcp-peer',version:'0.1.0'},{capabilities:{tools:{}}});
  server.registerTool('echo',{description:'Repeat a bounded value without changing external state.',
    inputSchema:z.object({value:z.string().max(4096),delay_ms:z.number().int().min(0).max(15000).optional()}).strict(),
    annotations:{readOnlyHint:true,idempotentHint:true,openWorldHint:false}

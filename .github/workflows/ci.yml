@@ -457,7 +457,7 @@ jobs:
             exit 1
           }
 
-      - name: Verify Workflow private Fixture and remote D1 readiness
+      - name: Verify Workflow release configuration and remote D1 readiness
         if: inputs.worker == 'workflow-mcp-worker'
         shell: bash
         env:
@@ -466,7 +466,6 @@ jobs:
           WORKFLOW_FIRST_DEPLOY: ${{ steps.preflight.outputs.bootstrap }}
         run: |
           set -euo pipefail
-          node scripts/manual-worker-release.mjs fixture-check workflow-mcp-worker
           (cd apps/workflow-mcp-worker && pnpm exec wrangler d1 execute workflow-mcp-worker --remote --json --command \
             "SELECT
              (SELECT count(*) FROM d1_migrations) AS migration_count,
@@ -510,26 +509,6 @@ jobs:
               (SELECT count(*) FROM runs) AS run_count,
               (SELECT count(*) FROM workflows) AS workflow_count") |
             node scripts/manual-worker-release.mjs d1-check workflow-mcp-worker
-
-      - name: Deploy existing private Workflow read-only Fixture
-        if: inputs.worker == 'workflow-mcp-worker'
-        shell: bash
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
-          set -euo pipefail
-          # pnpm exec resets cwd to the workspace package root, not tests/fixtures.
-          (cd apps/workflow-mcp-worker &&
-            pnpm exec wrangler deploy --config tests/fixtures/wrangler.jsonc)
-
-      - name: Read back private Workflow Fixture public-route isolation
-        if: inputs.worker == 'workflow-mcp-worker'
-        shell: bash
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-        run: node scripts/manual-worker-release.mjs fixture-readback workflow-mcp-worker
 
       - name: Publish exactly selected Worker
         id: publish
