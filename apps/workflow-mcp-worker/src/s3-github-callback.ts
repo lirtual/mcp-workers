@@ -4,9 +4,9 @@ import {
 } from './s3-github-claim.ts';
 
 /**
- * S3 receipt-first callback protocol. No HTTP handler or Workflow integration
- * is enabled by this first slice. The business operation must be executed
- * only after the separately confirmed OIDC Claim has succeeded.
+ * S3 receipt-first callback protocol for the registered HTTP ingress and
+ * durable Workflow runner. The business operation must be executed only
+ * after the separately confirmed OIDC Claim has succeeded.
  */
 export type GitHubCallback={
   attemptId:string;

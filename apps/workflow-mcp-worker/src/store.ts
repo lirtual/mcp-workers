@@ -20,23 +20,23 @@ export type Env = {
     get(id:string):Promise<{status():Promise<{status:string}>;sendEvent?(event:{type:string;payload:unknown}):Promise<void>}>;
   };
   READONLY_TARGET: Fetcher;
-  // Absent in every existing Wrangler environment. Never enabled by default.
+  // Enabled only through the explicit selected-Worker production release.
   S2_READONLY_ENABLED?: string;
   // Optional, S2-only machine identity for the pinned Cloudflare MCP Portal.
   S2_PORTAL_CLIENT_ID?: string;
   S2_PORTAL_CLIENT_SECRET?: string;
-  // Optional while S2 remains disabled. For production S2, pin to mcp;
+  // For production S2, pin to the existing MCP Portal;
   // for isolated test S2, pin to test-mcp (never selected by Draft input).
   S2_PORTAL_ENDPOINT?: string;
-  // S3 can only be enabled in separately authorized, isolated environments.
+  // Production S3 requires explicit opt-in and fixed OIDC/executor pins.
   S3_ENABLED?: string;
   S3_GITHUB_TOKEN?: string;
   S3_GITHUB_REPOSITORY?: string;
   S3_GITHUB_REPOSITORY_ID?: string;
   S3_GITHUB_REF?: string;
   S3_GITHUB_AUDIENCE?: string;
-  // An isolated acceptance-only worker can use the existing ci.yml branch Job
-  // because the dedicated S3 workflow is not registered on main yet.
+  // Legacy isolated test fixtures can use the dedicated test branch;
+  // production always selects the registered Echo executor.
   S3_TEST_WORKER_NAME?: string;
   S3_TEST_DEDICATED_EXECUTOR?: string;
 
