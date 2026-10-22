@@ -11,22 +11,33 @@ const workflow=YAML.parse(readFileSync(
   new URL('../../../.github/workflows/workflow-github-executor.yml',import.meta.url),'utf8',
 )) as Record<string,any>;
 
-test('GitHub dedicated job has only fixed registered echo inputs, no user command or dynamic endpoint',()=>{
-  assert.equal(workflow.name,'GitHub Registered Echo Executor');
+test('GitHub dedicated job has only registered check and opaque dispatch inputs, no user command or dynamic endpoint',()=>{
+  assert.equal(workflow.name,'GitHub Workflow Check Executor');
   assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs).sort(),
     ['attempt_id','capability_id','dispatch_id']);
-  assert.deepEqual(Object.keys(workflow.jobs),['registered-echo']);
-  const job=workflow.jobs['registered-echo'];
+  assert.deepEqual(Object.keys(workflow.jobs),['registered-check']);
+  const job=workflow.jobs['registered-check'];
   assert.equal(job['runs-on'],'ubuntu-latest');
-  assert.equal(job['timeout-minutes'],3);
+  assert.equal(job['timeout-minutes'],6);
   assert.equal(job.environment,'workflow-mcp-worker');
   assert.equal(job.permissions.contents,'read');
   assert.equal(job.permissions['id-token'],'write');
   assert.equal(workflow.permissions.contents,'read');
-  assert.match(job.if,/inputs\.capability_id == 'heavy\.github\.echo'/);
+  assert.match(job.if,/inputs\.capability_id == 'github\.workflow\.check'/);
   assert.equal(job.concurrency['cancel-in-progress'],false);
-  assert.equal(job.steps.at(-1).run,
-    'node apps/workflow-mcp-worker/tests/github-registered-executor.mjs');
+  const claim=job.steps.find((step:any)=>step.id==='claim');
+  const verify=job.steps.find((step:any)=>step.id==='verify');
+  const callback=job.steps.at(-1);
+  assert.equal(claim.run,'node apps/workflow-mcp-worker/tests/github-registered-executor.mjs claim');
+  assert.equal(verify.run,'pnpm --filter workflow-mcp-worker check');
+  assert.ok(job.steps.indexOf(claim)<job.steps.indexOf(verify));
+  assert.ok(job.steps.indexOf(verify)<job.steps.indexOf(callback));
+  assert.equal(callback.run,'node apps/workflow-mcp-worker/tests/github-registered-executor.mjs callback');
+  assert.match(callback.if,/always\(\)/);
+  assert.match(callback.if,/steps\.claim\.outcome == 'success'/);
+  assert.equal(callback.env.WORKFLOW_CHECK_OUTCOME, '${{ steps.verify.outcome }}');
+  assert.equal(job.steps.find((step:any)=>step.name==='Install pinned dependencies')?.run,
+    'pnpm install --frozen-lockfile --ignore-scripts');
   assert.deepEqual(Object.keys(job.env).sort(),[
     'WORKFLOW_ATTEMPT_ID','WORKFLOW_CALLBACK_ORIGIN','WORKFLOW_CAPABILITY',
     'WORKFLOW_DISPATCH_ID','WORKFLOW_EXECUTOR_AUDIENCE',

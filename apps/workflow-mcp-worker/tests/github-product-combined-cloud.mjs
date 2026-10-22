@@ -122,7 +122,7 @@ async function run(){
       input_schema:cand.inputSchema,
       ...(cand.outputSchema?{output_schema:cand.outputSchema}:{}),arguments:{limit:1}}},
     {id:'heavy',needs:['read'],uses:'github.run',
-      with:{capability:'heavy.github.echo'}},
+      with:{capability:'github.workflow.check'}},
     {id:'emit',needs:['heavy'],uses:'result.emit',
       with:{data:{ref:'steps.heavy.output'}}},
   ]};

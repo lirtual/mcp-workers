@@ -33,7 +33,7 @@ export type Env = {
   GITHUB_EXECUTOR_REF?: string;
   GITHUB_EXECUTOR_AUDIENCE?: string;
   // Legacy isolated test fixtures can use the dedicated test branch;
-  // production always selects the registered Echo executor.
+  // production always selects the registered CI executor.
   GITHUB_TEST_WORKER_NAME?: string;
   GITHUB_TEST_DEDICATED_EXECUTOR?: string;
 

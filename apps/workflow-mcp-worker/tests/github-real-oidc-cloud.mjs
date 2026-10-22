@@ -140,14 +140,14 @@ async function run(){
   await registerGithubAttempt(db,{
     repository:repo,repositoryId,workflowRef,ref,audience,
     attemptId,dispatchId,runId,stepId:'heavy',
-    capabilityId:'heavy.github.echo',
+    capabilityId:'github.workflow.check',
   });
   if(independent){
     const githubToken=get('GITHUB_TOKEN');
     const candidate=await dispatchGithubAttempt({
       repository:repo,workflow:'ci.yml',ref,
       workerName:name,dispatchToken:githubToken,
-    },{attemptId,dispatchId,capabilityId:'heavy.github.echo'});
+    },{attemptId,dispatchId,capabilityId:'github.workflow.check'});
     const saved=await recordGithubDispatchResult(db,attemptId,candidate);
     assert.equal(saved,true,'Dispatch result not saved');
     assert.equal(candidate.status,'confirmed','Independent GitHub dispatch did not confirm a Run ID');

@@ -88,7 +88,7 @@ async function runGithubStep(
 ):Promise<Outcome>{
   if(plan.github_execution_approved!==true)
     return {status:'failed',error_code:'github_execution_approval_required'};
-  if(s.with.capability!=='heavy.github.echo')
+  if(s.with.capability!=='github.workflow.check')
     return {status:'failed',error_code:'github_capability_not_registered'};
   if(!env.WORKFLOW_EXECUTOR_GITHUB_TOKEN||!env.GITHUB_EXECUTOR_REPOSITORY||
      !env.GITHUB_EXECUTOR_REPOSITORY_ID||!env.GITHUB_EXECUTOR_REF||
@@ -104,7 +104,7 @@ async function runGithubStep(
     const attemptId=crypto.randomUUID(),dispatchId=crypto.randomUUID();
     await registerGithubAttempt(db,{
       attemptId,dispatchId,runId,stepId:s.id,
-      capabilityId:'heavy.github.echo',
+      capabilityId:'github.workflow.check',
       repository:env.GITHUB_EXECUTOR_REPOSITORY!,
       repositoryId:env.GITHUB_EXECUTOR_REPOSITORY_ID!,
       ref:env.GITHUB_EXECUTOR_REF!,
@@ -118,7 +118,7 @@ async function runGithubStep(
       workflow:executor.workflow,
       ...(executor.workerName?{workerName:executor.workerName}:{}),
       dispatchToken:env.WORKFLOW_EXECUTOR_GITHUB_TOKEN!,
-    },{attemptId,dispatchId,capabilityId:'heavy.github.echo'});
+    },{attemptId,dispatchId,capabilityId:'github.workflow.check'});
     const persisted=await recordGithubDispatchResult(db,attemptId,result);
     if(!persisted)throw Error('dispatch_ack_not_persisted');
     return {attemptId,...result};

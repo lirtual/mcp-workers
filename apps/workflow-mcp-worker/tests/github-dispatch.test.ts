@@ -9,7 +9,7 @@ const config={
 const attempt={
   attemptId:'b6835141-0b3a-4fcb-a9ae-b4b75bfae93c',
   dispatchId:'d9b3439b-b7ed-4812-9064-75c925f93c6a',
-  capabilityId:'heavy.github.echo' as const,
+  capabilityId:'github.workflow.check' as const,
 };
 test('registered GitHub dispatch uses exact repo/ref and only opaque inputs',async()=>{
   let calls=0;
@@ -19,7 +19,7 @@ test('registered GitHub dispatch uses exact repo/ref and only opaque inputs',asy
     assert.equal(req.method,'POST');
     assert.equal(req.headers.get('authorization'),'Bearer test-token-not-real');
     assert.equal(req.headers.get('x-github-api-version'),'2026-03-10');
-    assert.equal(req.headers.get('user-agent'),'mcp-workers-workflow-s3');
+    assert.equal(req.headers.get('user-agent'),'mcp-workers-workflow-executor');
     assert.deepEqual(await req.json(),{
       ref:'main',return_run_details:true,
       inputs:{attempt_id:attempt.attemptId,dispatch_id:attempt.dispatchId,capability_id:attempt.capabilityId},
@@ -104,7 +104,7 @@ test('isolation CI registration must be exact and never permits an arbitrary wor
     assert.equal(body.return_run_details,true);
     assert.deepEqual(body.inputs,{
       attempt_id:attempt.attemptId,dispatch_id:attempt.dispatchId,
-      capability_id:'heavy.github.echo',worker_name:'workflow-github-oidc-aabbccddee',
+      capability_id:'github.workflow.check',worker_name:'workflow-github-oidc-aabbccddee',
       worker:'workflow-mcp-worker',github_executor_worker:'true',
     });
     return Response.json({workflow_run_id:39410780231,run_url:'https://api.github.com/test',

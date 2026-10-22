@@ -1,5 +1,5 @@
 /**
- * GitHub registered GitHub execution dispatch for the fixed Echo capability.
+ * GitHub registered GitHub execution dispatch for the fixed Workflow CI verification capability.
  *
  * WorkflowRunner calls this with a reviewed server-side executor config and
  * a persisted logical Attempt; no repository, workflow, ref or credential
@@ -17,7 +17,7 @@ export type RegisteredDispatchConfig={
 export type LogicalAttempt={
   attemptId:string;
   dispatchId:string;
-  capabilityId:'heavy.github.echo';
+  capabilityId:'github.workflow.check';
 };
 export type DispatchOutcome=
   | {status:'confirmed';runId:number;runAttempt:1}
@@ -55,7 +55,7 @@ function assertRegistered(config:RegisteredDispatchConfig,attempt:LogicalAttempt
      config.ref.endsWith('/') || typeof config.dispatchToken!=='string' ||
      !config.dispatchToken.trim())
     throw new Error('github_executor_config_invalid');
-  if(attempt.capabilityId!=='heavy.github.echo' ||
+  if(attempt.capabilityId!=='github.workflow.check' ||
      !UUID.test(attempt.attemptId) || !UUID.test(attempt.dispatchId))
     throw new Error('github_executor_attempt_invalid');
 }
@@ -81,7 +81,7 @@ export async function dispatchGithubAttempt(
       'x-github-api-version':'2026-03-10',
       // GitHub REST requires a valid User-Agent; unlike Node, Workers fetch
       // must not rely on the runtime injecting one implicitly.
-      'user-agent':'mcp-workers-workflow-s3',
+      'user-agent':'mcp-workers-workflow-executor',
     },
     body:JSON.stringify({
       ref:config.ref.slice('refs/heads/'.length),
