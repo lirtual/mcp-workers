@@ -20,7 +20,7 @@ test("dedicated v2 preview cannot inherit the v1 VPC binding, token or DO namesp
   assert.deepEqual(preview.compatibility_flags, ["nodejs_compat"]);
   assert.equal(preview.observability.logs.invocation_logs, false);
   assert.equal(preview.preview_urls, false);
-  assert.equal(preview.keep_vars, false);
+  assert.equal(preview.keep_vars, true, "Preview deployments preserve dashboard-provisioned browser Access parameters and MCP secrets");
   assert.ok(!("vpc_services" in preview));
   assert.ok(!("migrations" in preview));
   assert.ok(!("routes" in preview));
