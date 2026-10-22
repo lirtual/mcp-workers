@@ -10,7 +10,7 @@ const MAX_APPROVALS_PER_MINUTE = 8;
 const te = new TextEncoder();
 import { issueSessionChallenge, authorizeSession, acceptAuthenticatedSocket, handleIdleSocketMessage, handleDeviceInfoMessage, listApprovedDevices, deviceIsAuthorized, listLiveGrants, TEMPORARY_GRANT_MS, type V2Device } from "./v2-session.ts";
 import { parseBrowserDoArguments } from "./browser-tools.ts";
-import { inspectBrowserIntent, approveBrowserIntent, prepareBrowserIntent, consumeBrowserApproval, browserParametersDigest, type BrowserApprovalIntent } from "./browser-approval.ts";
+import { inspectBrowserIntent, approveBrowserIntent, prepareBrowserIntent, consumeBrowserApproval, browserParametersDigest, browserPageDigest, type BrowserApprovalIntent } from "./browser-approval.ts";
 import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId, parseLocalWriteFile, parseLocalCreateDirectory, parseLocalEditBlock, parseLocalMoveFile, parseLocalDeleteFile, parseStartProcess, parseLocalProcessOutput, parseListSessions, parseLocalProcessInteraction, parseLocalProcessTermination, parseOperationId } from "./local-read.ts";
 
 export interface PendingDevice {
@@ -345,10 +345,12 @@ export class V2OwnerCoordinator {
       (x as {tab_id?:unknown}).tab_id===selectedId) as {url?:unknown}|undefined;
     if(typeof selected?.url!=="string")return Response.json({error:"no_selected_tab"},{status:409});
     let origin:string;
+    let pagePath:string;
     try {
       const u=new URL(selected.url);
       if(!["http:","https:"].includes(u.protocol))throw Error("non-web tab");
       origin=u.origin;
+      pagePath=u.pathname.slice(0,512);
     }catch{return Response.json({error:"unsupported_page"},{status:409});}
     const desc=tool==="browser_click"
       ? "Click "+String(effectArgs.role)+" "+String(effectArgs.name)
@@ -360,6 +362,7 @@ export class V2OwnerCoordinator {
       device_id:deviceId,epoch,session_id:sessionId,tab_id:selectedId,
       operation_id:operationId,tool,
       snapshot_version:effectArgs.snapshot_version as number,origin,
+      page_path:pagePath,page_digest:await browserPageDigest(selected.url),
       parameters_digest:await browserParametersDigest(tool,effectArgs),
       display,
     };

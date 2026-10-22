@@ -32,7 +32,7 @@ const descriptor=():BrowserApprovalIntent=>({
   device_id:randomUUID(),epoch:randomUUID(),session_id:randomUUID(),
   tab_id:"tab-1",operation_id:"spec152-"+randomUUID(),
   tool:"browser_click",snapshot_version:3,origin:"https://example.com",
-  parameters_digest:"a".repeat(64),display:"Click confirm button on example.com",
+  page_path:"/review",page_digest:"c".repeat(64),parameters_digest:"a".repeat(64),display:"Click confirm button on example.com",
 });
 
 test("pending intent is stable, bound to exact arguments, and not model-approved",async()=>{
@@ -47,6 +47,8 @@ test("pending intent is stable, bound to exact arguments, and not model-approved
   assert.equal(await approveBrowserIntent(s,first.approval_id,"chatgpt-model",now+TTL+1),"denied");
   assert.equal((await prepareBrowserIntent(s,{...intent,parameters_digest:"b".repeat(64)},now+5)).status,"conflict");
   assert.equal((await prepareBrowserIntent(s,{...intent,tab_id:"tab-2"},now+5)).status,"conflict");
+  assert.equal((await prepareBrowserIntent(s,{...intent,page_digest:"d".repeat(64)},now+5)).status,"conflict");
+  assert.equal((await prepareBrowserIntent(s,{...intent,page_path:"/other"},now+5)).status,"conflict");
   assert.equal((await prepareBrowserIntent(s,{...intent,epoch:randomUUID()},now+5)).status,"conflict");
   assert.equal((await prepareBrowserIntent(s,intent,now+TTL+1)).status,"expired");
 });
@@ -81,7 +83,8 @@ test("malformed or missing Agent-observed context always fails closed",async()=>
   const s=storage(),intent=descriptor();
   for(const mutation of [
     {epoch:""}, {origin:"file:///etc/passwd"}, {origin:"https://example.com/path"},
-    {tool:"browser_start"}, {snapshot_version:-1}, {parameters_digest:"wrong"},
+    {tool:"browser_start"}, {snapshot_version:-1},
+    {page_digest:"invalid"}, {page_path:"/review?token=x"}, {parameters_digest:"wrong"},
     {display:"<script>\n"}, {session_id:"wrong"},
   ])assert.equal((await prepareBrowserIntent(s,{...intent,...mutation})).status,"invalid");
 });

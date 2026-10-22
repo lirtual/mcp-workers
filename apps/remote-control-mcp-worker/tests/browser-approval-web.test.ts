@@ -38,7 +38,7 @@ function intent():BrowserApprovalIntent{
   return{device_id:randomUUID(),epoch:randomUUID(),session_id:randomUUID(),tab_id:"tab-2",
     operation_id:"browser-action-"+randomUUID(),tool:"browser_click",
     snapshot_version:3,origin:"https://example.com",
-    parameters_digest:"b".repeat(64),display:'Confirm <transfer> & "submit"'};
+    page_path:"/review",page_digest:"c".repeat(64),parameters_digest:"b".repeat(64),display:'Confirm <transfer> & "submit"'};
 }
 
 test("Access identity requires signature, exact app audience/issuer, allowed email and app type",async()=>{

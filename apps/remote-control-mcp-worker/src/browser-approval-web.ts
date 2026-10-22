@@ -94,6 +94,7 @@ dt{font-weight:600}dd{margin:0}button{background:#174ca8;color:white;border:0;bo
 <p>Review the destination and exact action before approving. This consent expires automatically.</p>
 <dl><dt>Device</dt><dd>${escapeHtml(intent.device_id)}</dd>
 <dt>Website</dt><dd>${escapeHtml(intent.origin)}</dd>
+<dt>Page</dt><dd>${escapeHtml(intent.page_path)}</dd>
 <dt>Tab</dt><dd>${escapeHtml(intent.tab_id)}</dd>
 <dt>Action</dt><dd>${escapeHtml(intent.display)}</dd>
 <dt>Expires</dt><dd>${escapeHtml(new Date(record.expires_at).toISOString())}</dd></dl>

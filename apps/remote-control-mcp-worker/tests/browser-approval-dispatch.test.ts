@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import {randomUUID} from "node:crypto";
 import test from "node:test";
 import {V2OwnerCoordinator} from "../src/worker.ts";
-import {approveBrowserIntent} from "../src/browser-approval.ts";
+import {approveBrowserIntent,inspectBrowserIntent} from "../src/browser-approval.ts";
 
 function context(){
   const id=randomUUID(),sid=randomUUID(),epoch=randomUUID();
@@ -108,4 +108,33 @@ test("approved once then dispatched once; replay, changed page, revoked epoch fa
   const revoked=await changed.dispatch();
   assert.equal(revoked.status,503);
   assert.equal(changed.commands.filter(c=>c.kind==="operation").length,0);
+});
+
+test("same-origin path or query changes cannot reuse consent; URL query stays out of storage",async()=>{
+  for(const [start,next] of [
+    ["https://example.com/review","https://example.com/submit"],
+    ["https://example.com/review?private_token=do-not-persist",
+     "https://example.com/review?private_token=changed"],
+  ]){
+    const t=context();
+    t.setPage(start);
+    const first=await t.dispatch();
+    assert.equal(first.data.status,"confirmation_required");
+    const record=await inspectBrowserIntent(
+      t.storage as unknown as Pick<DurableObjectStorage,"transaction">,
+      String(first.data.approval_id));
+    assert.ok(record);
+    assert.equal(record.intent.origin,"https://example.com");
+    assert.ok(record.intent.page_path.startsWith("/"));
+    const serialized=JSON.stringify([...t.data.entries()]);
+    assert.equal(serialized.includes("do-not-persist"),false);
+    assert.equal(serialized.includes("private_token="),false);
+    assert.equal(await approveBrowserIntent(
+      t.storage as unknown as Pick<DurableObjectStorage,"transaction">,
+      String(first.data.approval_id),"owner"),"approved");
+    t.setPage(next);
+    const changed=await t.dispatch();
+    assert.equal(changed.data.status,"conflict");
+    assert.equal(t.commands.filter(c=>c.kind==="operation").length,0);
+  }
 });

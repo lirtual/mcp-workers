@@ -54,7 +54,7 @@ export const BROWSER_TOOLS = [
   },
   {
     name:"browser_click",title:"Click semantic page target",
-    description:"Click one unique, fresh role/name target after an observed snapshot. May cause website effects; no trusted high-impact approval is implemented.",
+    description:"Click one unique, fresh role/name target. When confirmation_required, ask the owner to open approval_url on any device, then retry the exact same operation_id and arguments once approved. Never auto-approve or change IDs to bypass confirmation.",
     inputSchema:schema({operation_id:operation,session_id:session,role,name,snapshot_version:version},["operation_id","session_id","role","name","snapshot_version"]),
     annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:true},
   },
@@ -66,13 +66,13 @@ export const BROWSER_TOOLS = [
   },
   {
     name:"browser_press_key",title:"Press allowed browser key",
-    description:"Press a constrained navigation/editing key on the selected tab after a fresh snapshot.",
+    description:"Press an allowed key after a fresh snapshot. When confirmation_required, open approval_url for owner confirmation; reuse the same operation_id and exact arguments after approval, without automatic retries.",
     inputSchema:schema({operation_id:operation,session_id:session,key:{type:"string",maxLength:30},snapshot_version:version},["operation_id","session_id","key","snapshot_version"]),
     annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:true},
   },
   {
     name:"browser_select_option",title:"Select semantic dropdown option",
-    description:"Select an option on one unique, fresh native combobox target.",
+    description:"Select an option on a fresh native combobox. When confirmation_required, owner may approve remotely at approval_url; retry with unchanged operation_id and arguments only after approval.",
     inputSchema:schema({operation_id:operation,session_id:session,role,name,snapshot_version:version,value:{type:"string",maxLength:512}},["operation_id","session_id","role","name","snapshot_version","value"]),
     annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:true},
   },

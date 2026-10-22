@@ -19,6 +19,8 @@ export interface BrowserApprovalIntent {
   tool: string;
   snapshot_version: number;
   origin: string;
+  page_path: string;
+  page_digest: string;
   parameters_digest: string;
   /** Already sanitized on the trusted Agent side. Never raw form text. */
   display: string;
@@ -48,20 +50,23 @@ export function validBrowserIntent(input: BrowserApprovalIntent): boolean {
     !/^tab-[1-9]\d{0,6}$/.test(input.tab_id) ||
     !parseOperationId({operation_id:input.operation_id}) || !ALLOWED_EFFECTS.has(input.tool) ||
     !Number.isSafeInteger(input.snapshot_version) || input.snapshot_version<0 ||
-    !DIGEST.test(input.parameters_digest) ||
+    !DIGEST.test(input.parameters_digest) || !DIGEST.test(input.page_digest) ||
+    typeof input.page_path!=="string" || !input.page_path.startsWith("/") ||
+    input.page_path.length>512 || /[\x00-\x1f\x7f?#]/.test(input.page_path) ||
     typeof input.display!=="string" || input.display.length<1 || input.display.length>240 ||
     /[\x00-\x1f\x7f]/.test(input.display)) return false;
   try {
     const parsed=new URL(input.origin);
     return (parsed.protocol==="https:" || parsed.protocol==="http:") &&
-      parsed.origin===input.origin && !parsed.username && !parsed.password;
+      parsed.origin===input.origin;
   }catch{return false;}
 }
 
 async function intentDigest(intent:BrowserApprovalIntent):Promise<string> {
   const content=JSON.stringify(["browser-approval-v1",intent.device_id,intent.epoch,
     intent.session_id,intent.tab_id,intent.operation_id,intent.tool,
-    intent.snapshot_version,intent.origin,intent.parameters_digest,intent.display]);
+    intent.snapshot_version,intent.origin,intent.page_path,intent.page_digest,
+    intent.parameters_digest,intent.display]);
   const bytes=new TextEncoder().encode(content);
   const hash=await crypto.subtle.digest("SHA-256",bytes);
   return [...new Uint8Array(hash)].map(b=>b.toString(16).padStart(2,"0")).join("");
@@ -165,6 +170,10 @@ function canonical(value:unknown):string {
     return "{"+Object.keys(r).sort().map(k=>JSON.stringify(k)+":"+canonical(r[k])).join(",")+"}";
   }
   return JSON.stringify(value);
+}
+export async function browserPageDigest(url:string):Promise<string>{
+  const bytes=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(url));
+  return [...new Uint8Array(bytes)].map(b=>b.toString(16).padStart(2,"0")).join("");
 }
 export async function browserParametersDigest(tool:string,args:Record<string,unknown>):Promise<string>{
   const input=new TextEncoder().encode(canonical({tool,arguments:args}));
