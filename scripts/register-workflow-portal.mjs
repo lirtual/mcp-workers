@@ -66,8 +66,8 @@ export async function attachWorkflowPortal(env,transport=fetch){
   const token=env.CLOUDFLARE_API_TOKEN,workerToken=env.MCP_ACCESS_TOKEN;
   const account=env.CLOUDFLARE_ACCOUNT_ID;
   assert.ok(/^[a-f0-9]{32}$/.test(account||''),'portal_account_invalid');
-  assert.ok(typeof token==='string'&&token.length>15,'portal_admin_token_missing');
-  assert.ok(typeof workerToken==='string'&&workerToken.length>15 &&
+  assert.ok(typeof token==='string'&&token.length>0,'portal_admin_token_missing');
+  assert.ok(typeof workerToken==='string'&&workerToken.length>0 &&
     !/\r|\n/.test(workerToken),'portal_worker_token_missing');
   const api=ROOT+account+BASE;
   const request=async(method,tail,body)=>{
