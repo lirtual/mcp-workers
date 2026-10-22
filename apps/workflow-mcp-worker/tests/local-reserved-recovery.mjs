@@ -5,7 +5,7 @@ import {execFileSync} from 'node:child_process';
 import {Client,StreamableHTTPClientTransport} from '@modelcontextprotocol/client';
 const token=process.env.S1_LOCAL_TOKEN;
 if(!token)throw Error('missing local-only auth token');
-const client=new Client({name:'s1-local-start-recovery-test',version:'0.1.0'});
+const client=new Client({name:'workflow-local-start-recovery-test',version:'0.1.0'});
 const transport=new StreamableHTTPClientTransport(new URL((process.env.S1_LOCAL_URL??'http://127.0.0.1:8787')+'/mcp'),{requestInit:{headers:{authorization:'Bearer '+token}}});
 async function tool(name,args){
  const response=await client.callTool({name,arguments:args});
@@ -14,14 +14,14 @@ async function tool(name,args){
 }
 function sqlLiteral(s){return "'"+s.replaceAll("'","''")+"'";}
 function executeSql(sql){
- const config=process.env.S1_EDGE_REMOTE==='1'?['--remote','--config','wrangler.s1-cloud.jsonc']:['--local','--persist-to','/tmp/workflow-s1-141-local'];
+ const config=process.env.S1_EDGE_REMOTE==='1'?['--remote','--config','wrangler.workflow-cloud.jsonc']:['--local','--persist-to','/tmp/workflow-141-local'];
  const text=execFileSync('/usr/bin/corepack',['pnpm','exec','wrangler','d1','execute',process.env.S1_EDGE_REMOTE==='1'?'DB':'workflow-mcp-worker',...config,'--command',sql,'--json'],{encoding:'utf8',timeout:30000});
  const result=JSON.parse(text);
  assert.equal(result[0]?.success,true);
 }
 try{
  await client.connect(transport);
- const def={version:1,name:'S1 reserved fault',steps:[{id:'emit',uses:'result.emit',with:{data:{ref:'inputs.subject'}}}]};
+ const def={version:1,name:'Workflow reserved fault',steps:[{id:'emit',uses:'result.emit',with:{data:{ref:'inputs.subject'}}}]};
  const wf=await tool('workflow_create',{definition:JSON.stringify(def)});
  const published=await tool('workflow_publish',{workflow_id:wf.workflow_id,expected_revision:1});
  const runId=crypto.randomUUID(), now=Date.now(), args=JSON.stringify({subject:'recovered reserved run'});
@@ -55,7 +55,7 @@ try{
    executeSql('DELETE FROM runs WHERE id IN ('+blockers.map(sqlLiteral).join(',')+')');
  }
  // A stale uncertain start must remain the SAME Run, become transparently
- // indeterminate, and free its quota slot for fresh S1 read-only work.
+ // indeterminate, and free its quota slot for fresh Workflow read-only work.
  const staleId=crypto.randomUUID(), staleKey='stale-'+staleId;
  const staleAt=Date.now()-11*60*1000;
  const staleInputs='{}', staleDigest=crypto.createHash('sha256').update(staleInputs).digest('hex');

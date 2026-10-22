@@ -1,6 +1,6 @@
-# Registered S3 capability only. This is inert until deliberately dispatched
+# Registered GitHub capability only. This is inert until deliberately dispatched
 # with a confirmed logical Attempt in the Workflow MCP D1 database.
-name: S3 Registered Echo Executor
+name: GitHub Registered Echo Executor
 
 on:
   workflow_dispatch:
@@ -31,18 +31,18 @@ jobs:
       contents: read
       id-token: write
     concurrency:
-      group: s3-registered-echo-${{ inputs.attempt_id }}
+      group: github-registered-echo-${{ inputs.attempt_id }}
       cancel-in-progress: false
     env:
-      S3_ATTEMPT_ID: ${{ inputs.attempt_id }}
-      S3_DISPATCH_ID: ${{ inputs.dispatch_id }}
-      S3_CAPABILITY: ${{ inputs.capability_id }}
-      S3_CALLBACK_ORIGIN: ${{ vars.S3_CALLBACK_ORIGIN }}
-      S3_GITHUB_AUDIENCE: ${{ vars.S3_GITHUB_AUDIENCE }}
+      GITHUB_ATTEMPT_ID: ${{ inputs.attempt_id }}
+      GITHUB_DISPATCH_ID: ${{ inputs.dispatch_id }}
+      GITHUB_CAPABILITY: ${{ inputs.capability_id }}
+      GITHUB_CALLBACK_ORIGIN: https://workflow.lirtual.dpdns.org
+      GITHUB_EXECUTOR_AUDIENCE: workflow-github-claim:production
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
       - name: Claim registered Attempt and submit fixed echo result
-        run: node apps/workflow-mcp-worker/tests/s3-registered-executor.mjs
+        run: node apps/workflow-mcp-worker/tests/github-registered-executor.mjs

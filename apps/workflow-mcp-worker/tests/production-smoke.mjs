@@ -1,11 +1,11 @@
-// Deliberately narrow production acceptance: one temporary S1 echo workflow, no deployment.
+// Deliberately narrow production acceptance: one temporary Workflow echo workflow, no deployment.
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { scopedPublicMcpFetch, PRODUCTION_PORTAL_ENDPOINT } from '../src/s2-public-fetch.ts';
+import { scopedPublicMcpFetch, PRODUCTION_PORTAL_ENDPOINT } from '../src/mcp-public-fetch.ts';
 import { toolSchemaDigest } from '../src/plan.ts';
 
 const token = process.env.MCP_ACCESS_TOKEN;
@@ -15,14 +15,14 @@ assert.ok(process.env.CLOUDFLARE_API_TOKEN && process.env.CLOUDFLARE_ACCOUNT_ID,
 
 const cwd = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const base = 'https://workflow.lirtual.dpdns.org';
-const client = new Client({ name: 'workflow-s1-production-smoke', version: '0.1.0' });
+const client = new Client({ name: 'workflow-production-smoke', version: '0.1.0' });
 const transport = new StreamableHTTPClientTransport(new URL(base + '/mcp'), {
   requestInit: { headers: { authorization: 'Bearer ' + token } },
 });
 const terminal = new Set(['succeeded', 'failed', 'cancelled']);
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const label = randomUUID();
-const echo = 'workflow-s1-production-smoke-' + label;
+const echo = 'workflow-production-smoke-' + label;
 let workflowId;
 let runId;
 let failure;
@@ -54,9 +54,9 @@ function cleanup() {
   if (runs.some(r => !terminal.has(r.outcome))) {
     throw Error('Refusing to delete temporary records: nonterminal Run still exists');
   }
-  if(process.env.WORKFLOW_S3_SMOKE==='true' && runId && !s3PhysicalCompleted)
-    throw Error('Refusing S3 cleanup until physical GitHub Job is completed');
-  if(process.env.WORKFLOW_S3_SMOKE==='true'){
+  if(process.env.WORKFLOW_GITHUB_SMOKE==='true' && runId && !s3PhysicalCompleted)
+    throw Error('Refusing GitHub cleanup until physical GitHub Job is completed');
+  if(process.env.WORKFLOW_GITHUB_SMOKE==='true'){
     sql('DELETE FROM callback_receipts WHERE attempt_id IN (SELECT attempt_id FROM step_attempts WHERE run_id IN (SELECT id FROM runs WHERE workflow_id = ' + id + '))');
     sql('DELETE FROM step_attempts WHERE run_id IN (SELECT id FROM runs WHERE workflow_id = ' + id + ')');
   }
@@ -91,15 +91,15 @@ async function runSmoke() {
   const listed = await client.listTools();
   for (const name of ['workflow_create', 'workflow_validate', 'workflow_publish',
     'workflow_run', 'workflow_status', 'workflow_result']) {
-    assert.ok(listed.tools.some(t => t.name === name), 'Missing S1 tool ' + name);
+    assert.ok(listed.tools.some(t => t.name === name), 'Missing Workflow tool ' + name);
   }
   assert.ok(!listed.tools.some(t => /s2|webhook|github/i.test(t.name)),
-    'Unexpected S2/S3 tool exposed');
+    'Unexpected MCP/GitHub tool exposed');
 
   const definition = {
     version: 1, name: echo,
     steps: [
-      { id: 'read', uses: 's1.readonly_mcp',
+      { id: 'read', uses: 'fixture.echo',
         with: { tool: 'echo', arguments: { value: { ref: 'inputs.subject' } } } },
       { id: 'report', uses: 'result.emit',
         needs: ['read'], with: { data: { ref: 'steps.read.output' } } },
@@ -143,12 +143,12 @@ async function runSmoke() {
 }
 async function runS2Smoke() {
   // The exact production Portal and tool/schema must be explicitly approved.
-  const pair = { clientId:process.env.S2_PORTAL_CLIENT_ID,
-    clientSecret:process.env.S2_PORTAL_CLIENT_SECRET };
+  const pair = { clientId:process.env.MCP_PORTAL_CLIENT_ID,
+    clientSecret:process.env.MCP_PORTAL_CLIENT_SECRET };
   assert.ok(pair.clientId && pair.clientSecret, 'Production Portal secrets missing');
   const outstanding = sql("SELECT count(*) AS n FROM runs WHERE outcome NOT IN ('succeeded','failed','cancelled')");
   assert.equal(outstanding[0]?.n,0,'Production has nonterminal Runs: smoke aborted before writes');
-  const portal = new Client({name:'workflow-s2-production-contract',version:'0.1.0'});
+  const portal = new Client({name:'workflow-mcp-production-contract',version:'0.1.0'});
   const portalTransport = new StreamableHTTPClientTransport(new URL(PRODUCTION_PORTAL_ENDPOINT),{
     fetch:scopedPublicMcpFetch(PRODUCTION_PORTAL_ENDPOINT,fetch,pair,PRODUCTION_PORTAL_ENDPOINT),
   });
@@ -160,7 +160,7 @@ async function runS2Smoke() {
       candidate.annotations?.destructiveHint!==true,'IMA read-only tool unavailable');
   }finally{await portal.close().catch(()=>{});}
   await client.connect(transport);
-  const definition={version:1,name:'workflow-s2-production-smoke-'+label,
+  const definition={version:1,name:'workflow-mcp-production-smoke-'+label,
     steps:[
       {id:'read',uses:'mcp.call',with:{
         endpoint:PRODUCTION_PORTAL_ENDPOINT,tool:'ima_list_notebooks',
@@ -182,7 +182,7 @@ async function runS2Smoke() {
   const publish=await tool('workflow_publish',{workflow_id:workflowId,expected_revision:1,
     approved_operations:checked.required_approvals,accept_target_risks:true});
   assert.ok(publish.published_version_id);
-  const opts={workflow_id:workflowId,inputs:{},idempotency_key:'s2-prod-smoke-'+label};
+  const opts={workflow_id:workflowId,inputs:{},idempotency_key:'mcp-prod-smoke-'+label};
   const started=await tool('workflow_run',opts);
   runId=started.run_id;
   assert.match(runId,uuid);
@@ -199,20 +199,20 @@ async function runS2Smoke() {
     if(terminal.has(outcome.status)||outcome.status==='indeterminate')break;
     await new Promise(r=>setTimeout(r,1000));
   }
-  assert.equal(outcome?.status,'succeeded','Production S2 Workflow did not finish successfully');
+  assert.equal(outcome?.status,'succeeded','Production MCP Workflow did not finish successfully');
   assert.equal(outcome.steps.length,2);
   assert.ok(outcome.steps.every(s=>s.status==='succeeded'));
   assert.ok(Array.isArray(outcome.result?.content),'No read-only MCP result content');
-  console.log('S2_PRODUCTION_SMOKE_OK: pinned Portal + IMA read-only + published Workflow + result');
+  console.log('MCP_PRODUCTION_SMOKE_OK: pinned Portal + IMA read-only + published Workflow + result');
 }
 
 async function runS3Smoke() {
-  const credential=process.env.S3_GITHUB_TOKEN;
+  const credential=process.env.GITHUB_EXECUTOR_TOKEN;
   assert.ok(credential && credential.length>=20,'Dedicated GitHub token missing');
   const outstanding=sql("SELECT count(*) AS n FROM runs WHERE outcome NOT IN ('succeeded','failed','cancelled')");
-  assert.equal(outstanding[0]?.n,0,'Production has nonterminal Runs: S3 smoke aborted');
+  assert.equal(outstanding[0]?.n,0,'Production has nonterminal Runs: GitHub smoke aborted');
   await client.connect(transport);
-  const definition={version:1,name:'workflow-s3-production-smoke-'+label,steps:[
+  const definition={version:1,name:'workflow-github-production-smoke-'+label,steps:[
     {id:'heavy',uses:'github.run',with:{capability:'heavy.github.echo'}},
     {id:'emit',needs:['heavy'],uses:'result.emit',
       with:{data:{ref:'steps.heavy.output'}}},
@@ -226,12 +226,12 @@ async function runS3Smoke() {
   const denied=await client.callTool({name:'workflow_publish',arguments:{
     workflow_id:workflowId,expected_revision:1,
   }});
-  assert.equal(denied.isError,true,'Unapproved S3 Publish must be rejected');
+  assert.equal(denied.isError,true,'Unapproved GitHub Publish must be rejected');
   const approved=await tool('workflow_publish',{
     workflow_id:workflowId,expected_revision:1,approve_heavy_execution:true,
   });
   assert.ok(approved.published_version_id);
-  const opts={workflow_id:workflowId,inputs:{},idempotency_key:'s3-prod-smoke-'+label};
+  const opts={workflow_id:workflowId,inputs:{},idempotency_key:'github-prod-smoke-'+label};
   const first=await tool('workflow_run',opts);
   runId=first.run_id;
   assert.match(runId,uuid);
@@ -247,13 +247,13 @@ async function runS3Smoke() {
     if(terminal.has(outcome.status)||outcome.status==='indeterminate')break;
     await new Promise(r=>setTimeout(r,1200));
   }
-  assert.equal(outcome?.status,'succeeded','S3 business outcome not succeeded');
+  assert.equal(outcome?.status,'succeeded','GitHub business outcome not succeeded');
   assert.equal(outcome.steps.length,2);
   assert.ok(outcome.steps.every(s=>s.status==='succeeded'));
   assert.equal(outcome.result?.echo,'ok');
-  assert.equal(outcome.result?.source,'workflow-s3-executor');
+  assert.equal(outcome.result?.source,'workflow-github-executor');
   const attempt=sql('SELECT candidate_run_id,candidate_run_attempt FROM step_attempts WHERE run_id='+quotedId(runId));
-  assert.equal(attempt.length,1,'Expected one durable S3 Attempt');
+  assert.equal(attempt.length,1,'Expected one durable GitHub Attempt');
   assert.ok(Number.isSafeInteger(attempt[0].candidate_run_id)&&attempt[0].candidate_run_id>0);
   assert.equal(attempt[0].candidate_run_attempt,1);
   const receipts=sql('SELECT count(*) AS n FROM callback_receipts WHERE attempt_id IN (SELECT attempt_id FROM step_attempts WHERE run_id='+quotedId(runId)+')');
@@ -262,7 +262,7 @@ async function runS3Smoke() {
   for(let i=0;i<70;i++){
     const response=await fetch(url,{headers:{
       accept:'application/vnd.github+json',authorization:'Bearer '+credential,
-      'user-agent':'mcp-workers-s3-production-smoke',
+      'user-agent':'mcp-workers-github-production-smoke',
     },redirect:'manual',signal:AbortSignal.timeout(12000)});
     assert.equal(response.status,200,'GitHub physical job state unavailable');
     const run=await response.json();
@@ -273,12 +273,12 @@ async function runS3Smoke() {
     await new Promise(r=>setTimeout(r,1000));
   }
   assert.equal(s3PhysicalCompleted,true,'Physical GitHub Job not completed');
-  console.log('S3_PRODUCTION_SMOKE_OK: one Echo, OIDC callback, physical Job complete');
+  console.log('GITHUB_PRODUCTION_SMOKE_OK: one Echo, OIDC callback, physical Job complete');
 }
 
 try {
-  await (process.env.WORKFLOW_S3_SMOKE==='true'?runS3Smoke():
-    process.env.WORKFLOW_S2_SMOKE==='true'?runS2Smoke():runSmoke());
+  await (process.env.WORKFLOW_GITHUB_SMOKE==='true'?runS3Smoke():
+    process.env.WORKFLOW_MCP_SMOKE==='true'?runS2Smoke():runSmoke());
 } catch (e) {
   failure = e;
   console.error('SMOKE_FAILED:', String(e?.message ?? e).replaceAll(token, '[redacted]'));

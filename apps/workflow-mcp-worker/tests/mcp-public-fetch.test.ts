@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { publicMcpEndpoint, scopedPublicMcpFetch, TRUSTED_PORTAL_ENDPOINT, PRODUCTION_PORTAL_ENDPOINT } from '../src/s2-public-fetch.ts';
+import { publicMcpEndpoint, scopedPublicMcpFetch, TRUSTED_PORTAL_ENDPOINT, PRODUCTION_PORTAL_ENDPOINT } from '../src/mcp-public-fetch.ts';
 
 const TARGET = 'https://mcp.example.org/mcp?tenant=one';
 
-test('owner-selected S2 Portal endpoint is the test Portal', () => {
+test('owner-selected MCP Portal endpoint is the test Portal', () => {
   assert.equal(TRUSTED_PORTAL_ENDPOINT,'https://test-mcp.lirtual.dpdns.org/mcp');
 });
 
@@ -35,7 +35,7 @@ test('production Portal identity requires an exact explicit URL and cannot be se
   assert.equal(reached,1);
 });
 
-test('candidate S2 transport rejects non-public-shaped or unsafe target URLs', () => {
+test('candidate MCP transport rejects non-public-shaped or unsafe target URLs', () => {
   for (const target of [
     'http://mcp.example.org/mcp', 'https://localhost/mcp',
     'https://127.0.0.1/mcp', 'https://169.254.169.254/mcp',
@@ -46,7 +46,7 @@ test('candidate S2 transport rejects non-public-shaped or unsafe target URLs', (
   assert.equal(publicMcpEndpoint(TARGET).href, TARGET);
 });
 
-test('candidate S2 transport rejects unapproved origin, path, and query before network', async () => {
+test('candidate MCP transport rejects unapproved origin, path, and query before network', async () => {
   let sent = 0;
   const boundary = scopedPublicMcpFetch(TARGET, (async () => {
     sent++;
@@ -61,7 +61,7 @@ test('candidate S2 transport rejects unapproved origin, path, and query before n
   assert.equal(sent, 0);
 });
 
-test('candidate S2 transport neutralizes follow redirects and never contacts a second origin', async () => {
+test('candidate MCP transport neutralizes follow redirects and never contacts a second origin', async () => {
   const seen: { url: string; redirect: string }[] = [];
   const boundary = scopedPublicMcpFetch(TARGET, (async (req: Request) => {
     seen.push({ url:req.url, redirect:req.redirect });
@@ -90,7 +90,7 @@ test('actual MCP SDK initialize/list/call/get/delete stay on the approved endpoi
     if(message.method==='tools/call') return Response.json({jsonrpc:'2.0',id:message.id,result:{isError:false,content:[{type:'text',text:message.params?.arguments?.value??''}]}});
     throw new Error('unexpected_message');
   };
-  const client = new Client({ name:'candidate-s2-check',version:'0.1.0' });
+  const client = new Client({ name:'candidate-mcp-check',version:'0.1.0' });
   const transport = new StreamableHTTPClientTransport(new URL(TARGET),{
     fetch:scopedPublicMcpFetch(TARGET,fakeFetch as typeof fetch),
     requestInit:{redirect:'follow'},

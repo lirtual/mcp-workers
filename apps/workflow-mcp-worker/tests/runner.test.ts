@@ -44,9 +44,9 @@ function setup(t:test.TestContext){
     };
   }
   const env={
-    // Legacy direct-target tests explicitly opt in; S2 production defaults
-    // to pinned Portal-only and must not inherit this test fixture setting.
-    S2_DIRECT_TARGETS_ENABLED:'true',
+    MCP_PORTAL_ENDPOINT:'https://test-mcp.lirtual.dpdns.org/mcp',
+    MCP_PORTAL_CLIENT_ID:'test-id',
+    MCP_PORTAL_CLIENT_SECRET:'test-secret',
     DB:{prepare,async batch(statements:{run:()=>Promise<unknown>}[]){return Promise.all(statements.map(s=>s.run()));}},
     WORKFLOW:{async create(){},async get(){return {async status(){return {status:'running'};}};}},
     READONLY_TARGET:{fetch:async(input:Request|string|URL,init?:RequestInit)=>readonlyWorker.fetch(new Request(input,init))},
@@ -68,7 +68,7 @@ test('explicit null emit remains the Run result when an independent later Step h
   const {service,admit,run}=setup(t);
   const admitted=await admit([
     {id:'a',uses:'result.emit',with:{data:null}},
-    {id:'z',uses:'s1.readonly_mcp',with:{tool:'echo',arguments:{value:'other output'}}},
+    {id:'z',uses:'fixture.echo',with:{tool:'echo',arguments:{value:'other output'}}},
   ]);
   await run(admitted.run_id);
   const result=await service.result(admitted.run_id);
@@ -111,7 +111,7 @@ test('status exposes running delayed fixture, waiting dependency and retained te
     entered.resolve();await release.promise;return fetchFixture(...args);
   }) as typeof env.READONLY_TARGET.fetch;
   const admitted=await admit([
-    {id:'slow',uses:'s1.readonly_mcp',with:{tool:'echo',arguments:{value:'delayed',delay_ms:1}}},
+    {id:'slow',uses:'fixture.echo',with:{tool:'echo',arguments:{value:'delayed',delay_ms:1}}},
     {id:'dependent',uses:'result.emit',needs:['slow'],with:{data:{ref:'steps.slow.output'}}},
     {id:'skipped',uses:'result.emit',if:false,with:{data:'unused'}},
   ]);
@@ -164,7 +164,7 @@ test('replaying a callback preserves its existing terminal Step state',async t=>
   env.READONLY_TARGET.fetch=(async(...args:Parameters<typeof fetchFixture>)=>{
     entered.resolve();await release.promise;return fetchFixture(...args);
   }) as typeof env.READONLY_TARGET.fetch;
-  const admitted=await admit([{id:'read',uses:'s1.readonly_mcp',with:{tool:'echo',arguments:{value:'stable'}}}]);
+  const admitted=await admit([{id:'read',uses:'fixture.echo',with:{tool:'echo',arguments:{value:'stable'}}}]);
   sqlite.prepare("INSERT INTO run_steps(run_id,step_id,status,output,updated_at) VALUES(?,'read','succeeded',?,1)")
     .run(admitted.run_id,JSON.stringify({content:[{type:'text',text:'stable'}]}));
   const execution=run(admitted.run_id);
@@ -203,18 +203,16 @@ test('unknown capability in a pinned Plan fails closed instead of becoming resul
   assert.equal(privateFixtureCalls,0);
 });
 
-test('S2 Publish requires explicit matching read approval and is disabled by default',async t=>{
+test('MCP Publish requires explicit matching read approval without a stage toggle',async t=>{
   const {service,env,sqlite}=setup(t);
   const steps=[{id:'read',uses:'mcp.call',with:{
-    endpoint:'https://public.example.org/mcp',tool:'echo',scope:'read',
+    endpoint:'https://test-mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',
     input_schema:PINNED_SCHEMA,arguments:{value:'hello'},
   }}];
-  const plan=JSON.stringify({version:1,name:'S2 approval gate',steps});
+  const plan=JSON.stringify({version:1,name:'MCP approval gate',steps});
   const created=await service.create(plan);
-  const grant:ReadonlyOperation={endpoint:'https://public.example.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
-  await assert.rejects(()=>service.publish(created.workflow_id,1,[grant]),/s2_disabled/);
+  const grant:ReadonlyOperation={endpoint:'https://test-mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
   assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM workflow_versions').get()?.n,0);
-  env.S2_READONLY_ENABLED='true';
   await assert.rejects(()=>service.publish(created.workflow_id,1),/external_approval_required/);
   await assert.rejects(()=>service.publish(created.workflow_id,1,[{...grant,tool:'other'}]),/external_approval_required/);
   await assert.rejects(()=>service.publish(created.workflow_id,1,[grant,grant]),/external_approval_required/);
@@ -222,16 +220,15 @@ test('S2 Publish requires explicit matching read approval and is disabled by def
   assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM workflow_versions').get()?.n,0);
   const published=await service.publish(created.workflow_id,1,[grant],true);
   const saved=sqlite.prepare('SELECT plan FROM workflow_versions WHERE id=?').get(published.published_version_id) as {plan:string};
-  assert.deepEqual(JSON.parse(saved.plan).s2_approvals,[grant]);
-  assert.equal(JSON.parse(saved.plan).s2_target_risks_accepted,true);
+  assert.deepEqual(JSON.parse(saved.plan).mcp_approvals,[grant]);
+  assert.equal(JSON.parse(saved.plan).mcp_target_risks_accepted,true);
 });
 
-test('S2 previously approved Run fails closed if rollout flag is turned off',async t=>{
+test('MCP approved Run fails closed if pinned Portal is removed',async t=>{
   const {env,admit,run,service}=setup(t);
-  const grant:ReadonlyOperation={endpoint:'https://public.example.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
-  env.S2_READONLY_ENABLED='true';
+  const grant:ReadonlyOperation={endpoint:'https://test-mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
   const admitted=await admit([{id:'read',uses:'mcp.call',with:{endpoint:grant.endpoint,tool:grant.tool,scope:'read',input_schema:PINNED_SCHEMA,arguments:{value:'test'}}}],{},[grant]);
-  env.S2_READONLY_ENABLED=undefined;
+  env.MCP_PORTAL_ENDPOINT=undefined;
   const oldFetch=globalThis.fetch;
   let requests=0;
   globalThis.fetch=(async()=>{requests++;throw Error('unexpected_public_fetch');}) as typeof fetch;
@@ -244,14 +241,13 @@ test('S2 previously approved Run fails closed if rollout flag is turned off',asy
   assert.equal(requests,0);
 });
 
-test('S2 approved read-only MCP tool invokes actual SDK only through scoped public fetch',async t=>{
+test('MCP approved read-only MCP tool invokes actual SDK only through scoped public fetch',async t=>{
   const {env,admit,run,service}=setup(t);
-  const grant:ReadonlyOperation={endpoint:'https://public.example.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
-  env.S2_READONLY_ENABLED='true';
+  const grant:ReadonlyOperation={endpoint:'https://test-mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
   const admitted=await admit([{id:'read',uses:'mcp.call',with:{
     endpoint:grant.endpoint,tool:grant.tool,scope:'read',input_schema:PINNED_SCHEMA,arguments:{value:'hello',url:'https://example.org/opaque'},
   }}],{},[grant]);
-  // The existing S1 echo fixture rejects extra args: this must prove the
+  // The existing Workflow echo fixture rejects extra args: this must prove the
   // transport was reached without falsely marking an invalid tool call safe.
   const originalFetch=globalThis.fetch;
   let networkCalls=0,privateCalls=0,secretSeen=false;
@@ -278,11 +274,10 @@ test('S2 approved read-only MCP tool invokes actual SDK only through scoped publ
   assert.equal(secretSeen,false);
 });
 
-test('approved S2 public read-only call succeeds without touching private S1 binding',async t=>{
+test('approved MCP public read-only call succeeds without touching private Workflow binding',async t=>{
   const {env,admit,run,service}=setup(t);
-  const grant:ReadonlyOperation={endpoint:'https://public.example.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
-  env.S2_READONLY_ENABLED='true';
-  const admitted=await admit([{id:'read',uses:'mcp.call',with:{endpoint:grant.endpoint,tool:grant.tool,scope:'read',input_schema:PINNED_SCHEMA,arguments:{value:'hello S2'}}}],{},[grant]);
+  const grant:ReadonlyOperation={endpoint:'https://test-mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
+  const admitted=await admit([{id:'read',uses:'mcp.call',with:{endpoint:grant.endpoint,tool:grant.tool,scope:'read',input_schema:PINNED_SCHEMA,arguments:{value:'hello MCP'}}}],{},[grant]);
   let publicCalls=0,privateCalls=0;
   const originalPrivate=env.READONLY_TARGET.fetch.bind(env.READONLY_TARGET);
   env.READONLY_TARGET.fetch=(async(...args:Parameters<typeof originalPrivate>)=>{
@@ -301,15 +296,14 @@ test('approved S2 public read-only call succeeds without touching private S1 bin
   const result=await service.result(admitted.run_id);
   assert.equal(result.status,'succeeded');
   assert.equal(result.steps[0].status,'succeeded');
-  assert.ok(JSON.stringify(result.result).includes('hello S2'));
+  assert.ok(JSON.stringify(result.result).includes('hello MCP'));
   assert.ok(publicCalls>0);
   assert.equal(privateCalls,0);
 });
 
-test('tampering immutable S2 approval cannot dispatch to a changed endpoint',async t=>{
+test('tampering immutable MCP approval cannot dispatch to a changed endpoint',async t=>{
   const {env,admit,run,service,sqlite}=setup(t);
-  const grant:ReadonlyOperation={endpoint:'https://public.example.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
-  env.S2_READONLY_ENABLED='true';
+  const grant:ReadonlyOperation={endpoint:'https://test-mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
   const admitted=await admit([{id:'read',uses:'mcp.call',with:{endpoint:grant.endpoint,tool:grant.tool,scope:'read',input_schema:PINNED_SCHEMA,arguments:{value:'should not run'}}}],{},[grant]);
   const ver=sqlite.prepare('SELECT version_id FROM runs WHERE id=?').get(admitted.run_id) as {version_id:string};
   const row=sqlite.prepare('SELECT plan FROM workflow_versions WHERE id=?').get(ver.version_id) as {plan:string};
@@ -325,8 +319,7 @@ test('tampering immutable S2 approval cannot dispatch to a changed endpoint',asy
 
 test('remote tool without readOnlyHint is rejected before tools/call despite owner approval',async t=>{
   const {env,admit,run,service}=setup(t);
-  const grant:ReadonlyOperation={endpoint:'https://public.example.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
-  env.S2_READONLY_ENABLED='true';
+  const grant:ReadonlyOperation={endpoint:'https://test-mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
   const admitted=await admit([{id:'read',uses:'mcp.call',with:{endpoint:grant.endpoint,tool:grant.tool,scope:'read',input_schema:PINNED_SCHEMA,arguments:{value:'do-not-invoke'}}}],{},[grant]);
   const originalFetch=globalThis.fetch;let toolCallCount=0;
   globalThis.fetch=(async(input:RequestInfo|URL,init?:RequestInit)=>{
@@ -348,11 +341,11 @@ test('remote tool without readOnlyHint is rejected before tools/call despite own
   assert.equal(toolCallCount,0);
 });
 
-test('S2 workflow_validate exposes exact schema-bound approval for owner review',async t=>{
+test('MCP workflow_validate exposes exact schema-bound approval for owner review',async t=>{
   const {service,env}=setup(t);
   const created=await service.create(JSON.stringify({version:1,name:'Schema approval',steps:[{
     id:'read',uses:'mcp.call',with:{
-      endpoint:'https://public.example.org/mcp',tool:'echo',scope:'read',
+      endpoint:'https://test-mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',
       input_schema:PINNED_SCHEMA,arguments:{value:'hello'},
     },
   }]}));
@@ -360,20 +353,18 @@ test('S2 workflow_validate exposes exact schema-bound approval for owner review'
   assert.equal(validation.valid,true);
   if(!('required_approvals' in validation))throw Error('expected approval preview');
   assert.deepEqual(validation.required_approvals,[{
-    endpoint:'https://public.example.org/mcp',tool:'echo',scope:'read',
+    endpoint:'https://test-mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',
     schema_digest:PINNED_DIGEST,
   }]);
-  env.S2_READONLY_ENABLED='true';
   await assert.rejects(()=>service.publish(created.workflow_id,1,[{
-    endpoint:'https://public.example.org/mcp',tool:'echo',scope:'read',
+    endpoint:'https://test-mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',
     schema_digest:'0'.repeat(64),
   }]),/external_approval_required/);
 });
 
-test('S2 remote inputSchema drift prevents tools/call, even when target and tool still match',async t=>{
+test('MCP remote inputSchema drift prevents tools/call, even when target and tool still match',async t=>{
   const {env,admit,run,service}=setup(t);
-  const grant:ReadonlyOperation={endpoint:'https://public.example.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
-  env.S2_READONLY_ENABLED='true';
+  const grant:ReadonlyOperation={endpoint:'https://test-mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
   const admitted=await admit([{id:'read',uses:'mcp.call',with:{
     endpoint:grant.endpoint,tool:grant.tool,scope:grant.scope,
     input_schema:PINNED_SCHEMA,arguments:{value:'no dispatch'},
@@ -401,10 +392,9 @@ test('S2 remote inputSchema drift prevents tools/call, even when target and tool
   assert.equal(toolCalls,0);
 });
 
-test('S2 tampered published expected schema fails before network dispatch',async t=>{
+test('MCP tampered published expected schema fails before network dispatch',async t=>{
   const {env,admit,run,service,sqlite}=setup(t);
-  const grant:ReadonlyOperation={endpoint:'https://public.example.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
-  env.S2_READONLY_ENABLED='true';
+  const grant:ReadonlyOperation={endpoint:'https://test-mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
   const admitted=await admit([{id:'read',uses:'mcp.call',with:{
     endpoint:grant.endpoint,tool:grant.tool,scope:grant.scope,
     input_schema:PINNED_SCHEMA,arguments:{value:'no dispatch'},
@@ -421,10 +411,9 @@ test('S2 tampered published expected schema fails before network dispatch',async
   assert.equal(network,0);
 });
 
-test('S2 remote outputSchema change prevents tools/call before dispatch',async t=>{
+test('MCP remote outputSchema change prevents tools/call before dispatch',async t=>{
   const {env,admit,run,service}=setup(t);
-  const grant:ReadonlyOperation={endpoint:'https://public.example.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
-  env.S2_READONLY_ENABLED='true';
+  const grant:ReadonlyOperation={endpoint:'https://test-mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
   const admitted=await admit([{id:'read',uses:'mcp.call',with:{
     endpoint:grant.endpoint,tool:grant.tool,scope:grant.scope,
     input_schema:PINNED_SCHEMA,arguments:{value:'must not be sent'},
@@ -449,10 +438,9 @@ test('S2 remote outputSchema change prevents tools/call before dispatch',async t
   assert.equal(toolCalls,0);
 });
 
-test('S2 lost tools/call response is indeterminate, never a confirmed failure or blind retry',async t=>{
+test('MCP lost tools/call response is indeterminate, never a confirmed failure or blind retry',async t=>{
   const {env,admit,run,service}=setup(t);
-  const grant:ReadonlyOperation={endpoint:'https://public.example.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
-  env.S2_READONLY_ENABLED='true';
+  const grant:ReadonlyOperation={endpoint:'https://test-mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
   const admitted=await admit([{id:'read',uses:'mcp.call',with:{
     endpoint:grant.endpoint,tool:grant.tool,scope:grant.scope,
     input_schema:PINNED_SCHEMA,arguments:{value:'ack may be lost'},
@@ -483,10 +471,9 @@ test('S2 lost tools/call response is indeterminate, never a confirmed failure or
   assert.equal(result.error_code,'external_outcome_unknown');
 });
 
-test('S2 older Published Plan without trusted-target risk acknowledgment is blocked before network',async t=>{
+test('MCP older Published Plan without trusted-target risk acknowledgment is blocked before network',async t=>{
   const {env,admit,run,service,sqlite}=setup(t);
-  env.S2_READONLY_ENABLED='true';
-  const grant:ReadonlyOperation={endpoint:'https://public.example.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
+  const grant:ReadonlyOperation={endpoint:'https://test-mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
   const admitted=await admit([{id:'lookup',uses:'mcp.call',with:{
     endpoint:grant.endpoint,tool:grant.tool,scope:'read',
     input_schema:PINNED_SCHEMA,arguments:{value:'must never dispatch'},
@@ -494,7 +481,7 @@ test('S2 older Published Plan without trusted-target risk acknowledgment is bloc
   const version=sqlite.prepare('SELECT version_id FROM runs WHERE id=?').get(admitted.run_id) as {version_id:string};
   const saved=sqlite.prepare('SELECT plan FROM workflow_versions WHERE id=?').get(version.version_id) as {plan:string};
   const oldPlan=JSON.parse(saved.plan);
-  delete oldPlan.s2_target_risks_accepted;
+  delete oldPlan.mcp_target_risks_accepted;
   sqlite.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(oldPlan),version.version_id);
   let network=0;
   const originalFetch=globalThis.fetch;
@@ -506,10 +493,9 @@ test('S2 older Published Plan without trusted-target risk acknowledgment is bloc
   assert.equal(network,0);
 });
 
-test('S2 unresolved Run-input reference is rejected before any trusted-target request',async t=>{
+test('MCP unresolved Run-input reference is rejected before any trusted-target request',async t=>{
   const {env,admit,run,service}=setup(t);
-  const grant:ReadonlyOperation={endpoint:'https://public.example.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
-  env.S2_READONLY_ENABLED='true';
+  const grant:ReadonlyOperation={endpoint:'https://test-mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
   const admitted=await admit([{id:'read',uses:'mcp.call',with:{
     endpoint:grant.endpoint,tool:grant.tool,scope:'read',input_schema:PINNED_SCHEMA,
     // delay_ms is optional in the declared MCP schema. Silently dropping this
@@ -519,7 +505,7 @@ test('S2 unresolved Run-input reference is rejected before any trusted-target re
   }}],{},[grant]);
   let networkRequests=0;
   const previousFetch=globalThis.fetch;
-  globalThis.fetch=(async()=>{networkRequests++;throw Error('unexpected_s2_network');}) as typeof fetch;
+  globalThis.fetch=(async()=>{networkRequests++;throw Error('unexpected_mcp_network');}) as typeof fetch;
   try{await run(admitted.run_id);}finally{globalThis.fetch=previousFetch;}
   const outcome=await service.result(admitted.run_id);
   assert.equal(outcome.status,'failed');
@@ -527,10 +513,9 @@ test('S2 unresolved Run-input reference is rejected before any trusted-target re
   assert.equal(networkRequests,0);
 });
 
-test('S2 stateful MCP DELETE cannot delay an already successful tools/call result',async t=>{
+test('MCP stateful MCP DELETE cannot delay an already successful tools/call result',async t=>{
   const {env,admit,run,service}=setup(t);
-  const grant:ReadonlyOperation={endpoint:'https://public.example.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
-  env.S2_READONLY_ENABLED='true';
+  const grant:ReadonlyOperation={endpoint:'https://test-mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
   const admitted=await admit([{id:'read',uses:'mcp.call',with:{
     endpoint:grant.endpoint,tool:grant.tool,scope:'read',input_schema:PINNED_SCHEMA,
     arguments:{value:'acknowledged stateful result'},
@@ -585,38 +570,36 @@ test('S2 stateful MCP DELETE cannot delay an already successful tools/call resul
 });
 
 
-test('S3 Publish requires a separate heavy-executor opt-in and the S3 feature flag',async t=>{
+test('GitHub Publish requires an explicit approved heavy operation',async t=>{
   const {service,env,sqlite}=setup(t);
-  const definition=JSON.stringify({version:1,name:'S3 gated',steps:[
+  const definition=JSON.stringify({version:1,name:'GitHub gated',steps:[
     {id:'heavy',uses:'github.run',with:{capability:'heavy.github.echo'}},
   ]});
   const wf=await service.create(definition);
   const validated=await service.validate(wf.workflow_id,1);
   assert.equal(validated.valid,true);
   assert.equal((validated as {requires_heavy_execution_approval?:boolean}).requires_heavy_execution_approval,true);
-  await assert.rejects(()=>service.publish(wf.workflow_id,1,[],false,true),/s3_disabled/);
-  env.S3_ENABLED='true';
-  await assert.rejects(()=>service.publish(wf.workflow_id,1),/s3_execution_approval_required/);
+  await assert.rejects(()=>service.publish(wf.workflow_id,1),/github_execution_approval_required/);
   const published=await service.publish(wf.workflow_id,1,[],false,true);
   const plan=sqlite.prepare('SELECT plan FROM workflow_versions WHERE id=?').get(published.published_version_id) as {plan:string};
-  assert.equal(JSON.parse(plan.plan).s3_execution_approved,true);
+  assert.equal(JSON.parse(plan.plan).github_execution_approved,true);
 });
 
 
-test('S3 published Plan dispatches one confirmed Job, waits outside step.do and emits durable receipt',async t=>{
+test('GitHub published Plan dispatches one confirmed Job, waits outside step.do and emits durable receipt',async t=>{
   const {service,env,sqlite}=setup(t);
   Object.assign(env,{
-    S3_ENABLED:'true',S3_GITHUB_TOKEN:'fixture-token',
-    S3_GITHUB_REPOSITORY:'lirtual/test-executor',
-    S3_GITHUB_REPOSITORY_ID:'987654321',
-    S3_GITHUB_REF:'refs/heads/main',
-    S3_GITHUB_AUDIENCE:'workflow-s3-claim:test',
+    GITHUB_EXECUTOR_TOKEN:'fixture-token',
+    GITHUB_EXECUTOR_REPOSITORY:'lirtual/test-executor',
+    GITHUB_EXECUTOR_REPOSITORY_ID:'987654321',
+    GITHUB_EXECUTOR_REF:'refs/heads/main',
+    GITHUB_EXECUTOR_AUDIENCE:'workflow-github-claim:test',
   });
   const steps=[
     {id:'heavy',uses:'github.run',with:{capability:'heavy.github.echo'}},
     {id:'emit',needs:['heavy'],uses:'result.emit',with:{data:{ref:'steps.heavy.output'}}},
   ];
-  const created=await service.create(JSON.stringify({version:1,name:'S3 published',steps}));
+  const created=await service.create(JSON.stringify({version:1,name:'GitHub published',steps}));
   await service.publish(created.workflow_id,1,[],false,true);
   const accepted=await service.start(created.workflow_id,{});
   let posts=0;
@@ -624,7 +607,7 @@ test('S3 published Plan dispatches one confirmed Job, waits outside step.do and 
   globalThis.fetch=(async(input:RequestInfo|URL,init?:RequestInit)=>{
     const req=new Request(input,init);
     posts++;
-    assert.equal(req.url,'https://api.github.com/repos/lirtual/test-executor/actions/workflows/workflow-s3-executor.yml/dispatches');
+    assert.equal(req.url,'https://api.github.com/repos/lirtual/test-executor/actions/workflows/workflow-github-executor.yml/dispatches');
     assert.equal(req.headers.get('authorization'),'Bearer fixture-token');
     const sent=await req.json() as {return_run_details:boolean;inputs:Record<string,string>};
     assert.equal(sent.return_run_details,true);
@@ -637,7 +620,7 @@ test('S3 published Plan dispatches one confirmed Job, waits outside step.do and 
     do:async(_name:string,_options:unknown,callback:()=>Promise<unknown>)=>callback(),
     waitForEvent:async(_name:string,options:{type:string})=>{
       waited++;
-      assert.equal(options.type,'s3-receipt-heavy');
+      assert.equal(options.type,'github-receipt-heavy');
       const row=sqlite.prepare('SELECT attempt_id,dispatch_id,state,candidate_run_id FROM step_attempts').get() as {
         attempt_id:string;dispatch_id:string;state:string;candidate_run_id:number
       };
@@ -663,15 +646,13 @@ test('S3 published Plan dispatches one confirmed Job, waits outside step.do and 
   assert.equal(waited,1);
 });
 
-test('a previously published S3 Run does not dispatch after feature flag is disabled',async t=>{
+test('a published GitHub Run without executor credentials cannot dispatch',async t=>{
   const {service,env}=setup(t);
-  env.S3_ENABLED='true';
   const wf=await service.create(JSON.stringify({version:1,name:'Disabled run',steps:[
     {id:'heavy',uses:'github.run',with:{capability:'heavy.github.echo'}},
   ]}));
   await service.publish(wf.workflow_id,1,[],false,true);
   const accepted=await service.start(wf.workflow_id,{});
-  env.S3_ENABLED=undefined;
   const original=globalThis.fetch;let attempts=0;
   globalThis.fetch=(async()=>{attempts++;throw Error('no outbound allowed');}) as typeof fetch;
   try{
@@ -687,16 +668,16 @@ test('a previously published S3 Run does not dispatch after feature flag is disa
 });
 
 
-test('S3 dispatch HTTP ambiguity is terminally uncertain and never re-dispatched',async t=>{
+test('GitHub dispatch HTTP ambiguity is terminally uncertain and never re-dispatched',async t=>{
   const {service,env,sqlite}=setup(t);
   Object.assign(env,{
-    S3_ENABLED:'true',S3_GITHUB_TOKEN:'test-token',
-    S3_GITHUB_REPOSITORY:'lirtual/test-executor',
-    S3_GITHUB_REPOSITORY_ID:'987654321',
-    S3_GITHUB_REF:'refs/heads/main',
-    S3_GITHUB_AUDIENCE:'workflow-s3-claim:test',
+    GITHUB_EXECUTOR_TOKEN:'test-token',
+    GITHUB_EXECUTOR_REPOSITORY:'lirtual/test-executor',
+    GITHUB_EXECUTOR_REPOSITORY_ID:'987654321',
+    GITHUB_EXECUTOR_REF:'refs/heads/main',
+    GITHUB_EXECUTOR_AUDIENCE:'workflow-github-claim:test',
   });
-  const wf=await service.create(JSON.stringify({version:1,name:'S3 uncertainty',steps:[
+  const wf=await service.create(JSON.stringify({version:1,name:'GitHub uncertainty',steps:[
     {id:'heavy',uses:'github.run',with:{capability:'heavy.github.echo'}},
   ]}));
   await service.publish(wf.workflow_id,1,[],false,true);
@@ -713,19 +694,19 @@ test('S3 dispatch HTTP ambiguity is terminally uncertain and never re-dispatched
   }finally{globalThis.fetch=oldFetch;}
   const result=await service.result(accepted.run_id);
   assert.equal(result.status,'indeterminate');
-  assert.equal(result.error_code,'s3_dispatch_unknown');
+  assert.equal(result.error_code,'github_dispatch_unknown');
   assert.equal(sqlite.prepare('SELECT state FROM step_attempts').get()?.state,'dispatch_unknown');
   assert.equal(outbound,1);
 });
 
 
-test('one combined S2 read plus S3 registered heavy Plan requires both independent Publish grants',async t=>{
+test('one combined MCP read plus GitHub registered heavy Plan requires both independent Publish grants',async t=>{
   const {service,env,sqlite}=setup(t);
-  const endpoint='https://public.example.org/mcp';
+  const endpoint='https://test-mcp.lirtual.dpdns.org/mcp';
   const grant:ReadonlyOperation={
     endpoint,tool:'echo',scope:'read',schema_digest:PINNED_DIGEST,
   };
-  const wf=await service.create(JSON.stringify({version:1,name:'S2+S3 unified',steps:[
+  const wf=await service.create(JSON.stringify({version:1,name:'MCP+GitHub unified',steps:[
     {id:'read',uses:'mcp.call',with:{
       endpoint,tool:'echo',scope:'read',input_schema:PINNED_SCHEMA,
       arguments:{value:'minimal-test'},
@@ -737,28 +718,27 @@ test('one combined S2 read plus S3 registered heavy Plan requires both independe
   assert.equal(validation.valid,true);
   assert.deepEqual((validation as {required_approvals?:ReadonlyOperation[]}).required_approvals,[grant]);
   assert.equal((validation as {requires_heavy_execution_approval?:boolean}).requires_heavy_execution_approval,true);
-  env.S2_READONLY_ENABLED='true';env.S3_ENABLED='true';
-  await assert.rejects(()=>service.publish(wf.workflow_id,1,[grant],true),/s3_execution_approval_required/);
+  await assert.rejects(()=>service.publish(wf.workflow_id,1,[grant],true),/github_execution_approval_required/);
   await assert.rejects(()=>service.publish(wf.workflow_id,1,[grant],false,true),/target_risk_acknowledgment_required/);
   const version=await service.publish(wf.workflow_id,1,[grant],true,true);
   const row=sqlite.prepare('SELECT plan FROM workflow_versions WHERE id=?').get(version.published_version_id) as {plan:string};
   const plan=JSON.parse(row.plan);
-  assert.equal(plan.s2_target_risks_accepted,true);
-  assert.equal(plan.s3_execution_approved,true);
-  assert.deepEqual(plan.s2_approvals,[grant]);
+  assert.equal(plan.mcp_target_risks_accepted,true);
+  assert.equal(plan.github_execution_approved,true);
+  assert.deepEqual(plan.mcp_approvals,[grant]);
 });
 
 
-test('S3 lost wake event recovers from durable D1 receipt, without a second GitHub dispatch',async t=>{
+test('GitHub lost wake event recovers from durable D1 receipt, without a second GitHub dispatch',async t=>{
   const {service,env,sqlite}=setup(t);
   Object.assign(env,{
-    S3_ENABLED:'true',S3_GITHUB_TOKEN:'test-token',
-    S3_GITHUB_REPOSITORY:'lirtual/test-executor',
-    S3_GITHUB_REPOSITORY_ID:'987654321',
-    S3_GITHUB_REF:'refs/heads/main',
-    S3_GITHUB_AUDIENCE:'workflow-s3-claim:test',
+    GITHUB_EXECUTOR_TOKEN:'test-token',
+    GITHUB_EXECUTOR_REPOSITORY:'lirtual/test-executor',
+    GITHUB_EXECUTOR_REPOSITORY_ID:'987654321',
+    GITHUB_EXECUTOR_REF:'refs/heads/main',
+    GITHUB_EXECUTOR_AUDIENCE:'workflow-github-claim:test',
   });
-  const w=await service.create(JSON.stringify({version:1,name:'S3 lost wake recovery',steps:[
+  const w=await service.create(JSON.stringify({version:1,name:'GitHub lost wake recovery',steps:[
     {id:'heavy',uses:'github.run',with:{capability:'heavy.github.echo'}},
     {id:'out',needs:['heavy'],uses:'result.emit',with:{data:{ref:'steps.heavy.output'}}},
   ]}));
@@ -774,7 +754,7 @@ test('S3 lost wake event recovers from durable D1 receipt, without a second GitH
     do:async(_name:unknown,_options:unknown,fn:()=>Promise<unknown>)=>fn(),
     waitForEvent:async(_name:string,option:{type:string;timeout:string})=>{
       waits++;
-      assert.equal(option.type,'s3-receipt-heavy');
+      assert.equal(option.type,'github-receipt-heavy');
       assert.equal(option.timeout,'30 seconds');
       const attempt=sqlite.prepare('SELECT attempt_id FROM step_attempts').get() as {attempt_id:string};
       sqlite.prepare(`INSERT INTO callback_receipts
@@ -798,16 +778,16 @@ test('S3 lost wake event recovers from durable D1 receipt, without a second GitH
   assert.equal(waits,1);
 });
 
-test('S3 missing callback remains indeterminate after bounded waits, never re-dispatches',async t=>{
+test('GitHub missing callback remains indeterminate after bounded waits, never re-dispatches',async t=>{
   const {service,env}=setup(t);
   Object.assign(env,{
-    S3_ENABLED:'true',S3_GITHUB_TOKEN:'test-token',
-    S3_GITHUB_REPOSITORY:'lirtual/test-executor',
-    S3_GITHUB_REPOSITORY_ID:'987654321',
-    S3_GITHUB_REF:'refs/heads/main',
-    S3_GITHUB_AUDIENCE:'workflow-s3-claim:test',
+    GITHUB_EXECUTOR_TOKEN:'test-token',
+    GITHUB_EXECUTOR_REPOSITORY:'lirtual/test-executor',
+    GITHUB_EXECUTOR_REPOSITORY_ID:'987654321',
+    GITHUB_EXECUTOR_REF:'refs/heads/main',
+    GITHUB_EXECUTOR_AUDIENCE:'workflow-github-claim:test',
   });
-  const w=await service.create(JSON.stringify({version:1,name:'S3 missed callback',steps:[
+  const w=await service.create(JSON.stringify({version:1,name:'GitHub missed callback',steps:[
     {id:'heavy',uses:'github.run',with:{capability:'heavy.github.echo'}},
   ]}));
   await service.publish(w.workflow_id,1,[],false,true);
@@ -822,7 +802,7 @@ test('S3 missing callback remains indeterminate after bounded waits, never re-di
     do:async(_name:unknown,_opts:unknown,fn:()=>Promise<unknown>)=>fn(),
     waitForEvent:async(_name:string,options:{type:string;timeout:string})=>{
       waits++;
-      assert.equal(options.type,'s3-receipt-heavy');
+      assert.equal(options.type,'github-receipt-heavy');
       assert.equal(options.timeout,'30 seconds');
       throw Error('callback_never_received');
     },
@@ -834,24 +814,23 @@ test('S3 missing callback remains indeterminate after bounded waits, never re-di
   }finally{globalThis.fetch=original;}
   const result=await service.result(admitted.run_id);
   assert.equal(result.status,'indeterminate');
-  assert.equal(result.error_code,'s3_callback_unconfirmed');
+  assert.equal(result.error_code,'github_callback_unconfirmed');
   assert.equal(result.steps[0].status,'indeterminate');
   assert.equal(dispatches,1);
   assert.equal(waits,8);
 });
 
-test('S3 admitted Run retains immutable heavy Plan across republish to an S1-only Plan',async t=>{
+test('GitHub admitted Run retains immutable heavy Plan across republish to an Workflow-only Plan',async t=>{
   const {service,env}=setup(t);
-  env.S3_ENABLED='true';
   const original=await service.create(JSON.stringify({
-    version:1,name:'S3 original',steps:[
+    version:1,name:'GitHub original',steps:[
       {id:'heavy',uses:'github.run',with:{capability:'heavy.github.echo'}},
     ],
   }));
   const v1=await service.publish(original.workflow_id,1,[],false,true);
   const oldRun=await service.start(original.workflow_id,{});
   const changed=await service.update(original.workflow_id,1,JSON.stringify({
-    version:1,name:'S1 replacement',steps:[
+    version:1,name:'Workflow replacement',steps:[
       {id:'emit',uses:'result.emit',with:{data:{replacement:true}}},
     ],
   }));
@@ -864,8 +843,7 @@ test('S3 admitted Run retains immutable heavy Plan across republish to an S1-onl
 
   // Shut down the heavy executor. An already admitted V1 Run must still
   // execute *its own* pinned heavy Step, which fails closed and cannot be
-  // silently reinterpreted as the newly published S1-only Plan.
-  env.S3_ENABLED=undefined;
+  // silently reinterpreted as the newly published Workflow-only Plan.
   let external=0;
   const previousFetch=globalThis.fetch;
   globalThis.fetch=(async()=>{external++;throw Error('no external dispatch');}) as typeof fetch;
@@ -885,9 +863,9 @@ test('S3 admitted Run retains immutable heavy Plan across republish to an S1-onl
   assert.equal(external,0);
 });
 
-test('a legacy Published S1 Plan tampered to add github.run cannot gain a S3 grant',async t=>{
+test('a legacy Published Workflow Plan tampered to add github.run cannot gain a GitHub grant',async t=>{
   const {service,env,sqlite}=setup(t);
-  const wf=await service.create(JSON.stringify({version:1,name:'legacy S1',steps:[
+  const wf=await service.create(JSON.stringify({version:1,name:'legacy Workflow',steps:[
     {id:'emit',uses:'result.emit',with:{data:{safe:true}}},
   ]}));
   const v=await service.publish(wf.workflow_id,1);
@@ -897,7 +875,6 @@ test('a legacy Published S1 Plan tampered to add github.run cannot gain a S3 gra
       {id:'heavy',needs:[],uses:'github.run',with:{capability:'heavy.github.echo'}},
     ]}),v.published_version_id,
   );
-  env.S3_ENABLED='true';
   let outbound=0;
   const original=globalThis.fetch;
   globalThis.fetch=(async()=>{outbound++;throw Error('unauthorized request');}) as typeof fetch;
@@ -913,49 +890,23 @@ test('a legacy Published S1 Plan tampered to add github.run cannot gain a S3 gra
   assert.equal(outbound,0);
 });
 
-test('S2 fails closed when Portal is not pinned and direct-target opt-in is absent',async t=>{
+test('MCP refuses publish when Portal is not configured',async t=>{
   const {service,env,sqlite}=setup(t);
-  delete env.S2_DIRECT_TARGETS_ENABLED;
-  env.S2_READONLY_ENABLED='true';
-  const grant:ReadonlyOperation={
-    endpoint:'https://public.example.org/mcp',tool:'echo',scope:'read',
-    schema_digest:PINNED_DIGEST,
-  };
-  const wf=await service.create(JSON.stringify({version:1,name:'portal required',steps:[
-    {id:'read',uses:'mcp.call',with:{
-      endpoint:grant.endpoint,tool:grant.tool,scope:grant.scope,
-      input_schema:PINNED_SCHEMA,arguments:{value:'must not dispatch'},
-    }},
+  env.MCP_PORTAL_ENDPOINT=undefined;
+  const grant:ReadonlyOperation={endpoint:'https://test-mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
+  const wf=await service.create(JSON.stringify({version:1,name:'requires pinned Portal',steps:[
+    {id:'read',uses:'mcp.call',with:{endpoint:grant.endpoint,tool:grant.tool,scope:'read',
+      input_schema:PINNED_SCHEMA,arguments:{value:'no dispatch'}}},
   ]}));
-  await assert.rejects(()=>service.publish(wf.workflow_id,1,[grant],true),
-    /portal_target_not_configured/);
+  await assert.rejects(()=>service.publish(wf.workflow_id,1,[grant],true),/portal_target_not_configured/);
   assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM workflow_versions').get()?.n,0);
-  env.S2_DIRECT_TARGETS_ENABLED='true';
-  await service.publish(wf.workflow_id,1,[grant],true);
-  const admitted=await service.start(wf.workflow_id,{});
-  env.S2_DIRECT_TARGETS_ENABLED=undefined;
-  const oldFetch=globalThis.fetch;
-  let calls=0;
-  globalThis.fetch=(async()=>{calls++;throw Error('no external network');}) as typeof fetch;
-  try{
-    await new WorkflowRunner({} as ExecutionContext,env).run(
-      {payload:{run_id:admitted.run_id}} as WorkflowEvent<{run_id:string}>,
-      {do:async(_n:unknown,_opts:unknown,fn:()=>Promise<unknown>)=>fn()} as unknown as WorkflowStep,
-    );
-  }finally{globalThis.fetch=oldFetch;}
-  const result=await service.result(admitted.run_id);
-  assert.equal(result.status,'failed');
-  assert.equal(result.steps[0].status,'failed');
-  assert.equal(calls,0);
 });
 
-
-test('S2 pinned Portal refuses a different approved endpoint at Publish',async t=>{
+test('MCP pinned Portal refuses a different approved endpoint at Publish',async t=>{
   const {service,env,sqlite}=setup(t);
-  env.S2_READONLY_ENABLED='true';
-  env.S2_PORTAL_ENDPOINT='https://test-mcp.lirtual.dpdns.org/mcp';
+  env.MCP_PORTAL_ENDPOINT='https://test-mcp.lirtual.dpdns.org/mcp';
   const grant:ReadonlyOperation={
-    endpoint:'https://public.example.org/mcp',tool:'echo',scope:'read',
+    endpoint:'https://another.example.org/mcp',tool:'echo',scope:'read',
     schema_digest:PINNED_DIGEST,
   };
   const wf=await service.create(JSON.stringify({version:1,name:'portal pinned',steps:[

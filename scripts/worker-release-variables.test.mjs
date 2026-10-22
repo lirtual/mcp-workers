@@ -26,7 +26,7 @@ test("Remote Control installer origin comes only from its configured Custom Doma
 test("each Worker owns an explicit non-secret variable allowlist", () => {
   assert.deepEqual(WORKER_VARIABLES["ssh-mcp-worker"], []);
   assert.deepEqual(WORKER_VARIABLES["workflow-mcp-worker"], []);
-  assert.deepEqual(collectWorkerVars("workflow-mcp-worker", { S2_READONLY_ENABLED: "true", GH_TOKEN: "ignored" }), []);
+  assert.deepEqual(collectWorkerVars("workflow-mcp-worker",{GH_TOKEN:"ignored"}).length,5);
   assert.deepEqual(WORKER_VARIABLES["remote-control-mcp-worker"], []);
   assert.deepEqual(collectWorkerVars("remote-control-mcp-worker",
     { MAX_ROWS: "100", REMOTE_CONTROL_V2_ONLY: "false", REMOTE_CONTROL_INSTALL_ORIGIN: "https://evil.example" }, { config: remoteConfig }),
@@ -79,44 +79,27 @@ test("GitHub Actions has no redundant repository allowlist variables", () => {
   }), []);
 });
 
-test("Workflow S2 runtime switch is explicit and pinned to the production MCP Portal", () => {
-  assert.deepEqual(collectWorkerVars("workflow-mcp-worker", {
-    S2_READONLY_ENABLED: "true",
-    S2_PORTAL_ENDPOINT: "https://test-mcp.lirtual.dpdns.org/mcp",
-  }), []);
-  assert.deepEqual(collectWorkerVars("workflow-mcp-worker", {
-    WORKFLOW_S2_RELEASE: "true",
-    S2_PORTAL_ENDPOINT: "https://untrusted.example.org/mcp",
-    S2_DIRECT_TARGETS_ENABLED: "true",
-    S3_ENABLED: "true",
-  }), [
-    "S2_READONLY_ENABLED:true",
-    "S2_PORTAL_ENDPOINT:https://mcp.lirtual.dpdns.org/mcp",
+test("Workflow always has a pinned MCP Portal and GitHub executor without rollout toggles",()=>{
+  const fixed=collectWorkerVars("workflow-mcp-worker",{
+    MCP_PORTAL_ENDPOINT:"https://attacker.invalid/mcp",
+    GITHUB_EXECUTOR_REPOSITORY:"untrusted/other",
+    MCP_CALL_ENABLED:"true",GITHUB_EXECUTION_ENABLED:"false"
+  });
+  assert.deepEqual(fixed,[
+    "MCP_PORTAL_ENDPOINT:https://mcp.lirtual.dpdns.org/mcp",
+    "GITHUB_EXECUTOR_REPOSITORY:lirtual/mcp-workers",
+    "GITHUB_EXECUTOR_REPOSITORY_ID:1414936394",
+    "GITHUB_EXECUTOR_REF:refs/heads/main",
+    "GITHUB_EXECUTOR_AUDIENCE:workflow-github-claim:production",
   ]);
-  assert.throws(() => collectWorkerVars("raindrop-mcp-worker", {
-    WORKFLOW_S2_RELEASE:"true",
-  }), /S2 release is allowed only/);
+  assert.deepEqual(collectWorkerVars("workflow-mcp-worker",{}),fixed);
 });
 
 
-test("S3 production variables use only registered fixed GitHub echo authority",()=>{
-  const selected=collectWorkerVars("workflow-mcp-worker",{
-    WORKFLOW_S2_RELEASE:"true",WORKFLOW_S3_RELEASE:"true",
-    S3_GITHUB_REPOSITORY:"untrusted/other",S3_GITHUB_REF:"refs/heads/evil",
-    S3_GITHUB_AUDIENCE:"untrusted",S3_ENABLED:"false",
+test("No other Worker inherits the Workflow GitHub executor's variables",()=>{
+  const other=collectWorkerVars("raindrop-mcp-worker",{
+    GITHUB_EXECUTOR_REPOSITORY:"untrusted/other",
+    MCP_PORTAL_ENDPOINT:"https://attacker.invalid/mcp"
   });
-  assert.deepEqual(selected,[
-    "S3_ENABLED:true","S3_GITHUB_REPOSITORY:lirtual/mcp-workers",
-    "S3_GITHUB_REPOSITORY_ID:1414936394","S3_GITHUB_REF:refs/heads/main",
-    "S3_GITHUB_AUDIENCE:workflow-s3-claim:production",
-    "S2_READONLY_ENABLED:true","S2_PORTAL_ENDPOINT:https://mcp.lirtual.dpdns.org/mcp",
-  ]);
-  assert.throws(()=>collectWorkerVars("workflow-mcp-worker",{
-    WORKFLOW_S3_RELEASE:"true"}),/S3 release requires/);
-  assert.throws(()=>collectWorkerVars("raindrop-mcp-worker",{
-    WORKFLOW_S2_RELEASE:"true",WORKFLOW_S3_RELEASE:"true"}),/S3 release requires/);
-  assert.deepEqual(collectWorkerVars("workflow-mcp-worker",{
-    WORKFLOW_S2_RELEASE:"true",S3_ENABLED:"true"}),[
-      "S2_READONLY_ENABLED:true","S2_PORTAL_ENDPOINT:https://mcp.lirtual.dpdns.org/mcp",
-    ]);
+  assert.deepEqual(other,[]);
 });

@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { toolSchemaDigest } from '../src/plan.ts';
-import { TRUSTED_PORTAL_ENDPOINT, PRODUCTION_PORTAL_ENDPOINT } from '../src/s2-public-fetch.ts';
+import { TRUSTED_PORTAL_ENDPOINT, PRODUCTION_PORTAL_ENDPOINT } from '../src/mcp-public-fetch.ts';
 import type { Env } from '../src/store.ts';
 import type { WorkflowEvent, WorkflowStep } from 'cloudflare:workers';
 import readonlyWorker from './fixtures/readonly-worker.ts';
@@ -30,14 +30,14 @@ const TRUSTED=TRUSTED_PORTAL_ENDPOINT;
 const PORTAL_ID='test-only-service-token-id';
 const PORTAL_SECRET='test-only-service-token-secret';
 const OWNER='https://owner.example.org/mcp';
-const TOKEN='disposable-portal-token-s2-owner-e2e';
+const TOKEN='disposable-portal-token-mcp-owner-e2e';
 const INPUT_SCHEMA={type:'object',properties:{
   value:{type:'string',maxLength:4096},
   delay_ms:{type:'integer',minimum:0,maximum:15000},
 },required:['value'],'$schema':'https://json-schema.org/draft/2020-12/schema',additionalProperties:false};
 const DIGEST=await toolSchemaDigest(INPUT_SCHEMA);
 
-test('Portal-authenticated S2 -> validate -> approve -> Publish -> Run -> Result',async t=>{
+test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Result',async t=>{
   const sqlite=new DatabaseSync(':memory:');
   t.after(()=>sqlite.close());
   for(const name of ['0001_s1.sql','0002_native_complete_seen.sql'])
@@ -54,9 +54,9 @@ test('Portal-authenticated S2 -> validate -> approve -> Publish -> Run -> Result
   let privateCalls=0;
   const env={
     MCP_ACCESS_TOKEN:TOKEN,
-    S2_PORTAL_CLIENT_ID:PORTAL_ID,
-    S2_PORTAL_CLIENT_SECRET:PORTAL_SECRET,
-    S2_PORTAL_ENDPOINT:TRUSTED,
+    MCP_PORTAL_CLIENT_ID:PORTAL_ID,
+    MCP_PORTAL_CLIENT_SECRET:PORTAL_SECRET,
+    MCP_PORTAL_ENDPOINT:TRUSTED,
     DB:{prepare,async batch(items:{run:()=>Promise<unknown>}[]){return Promise.all(items.map(s=>s.run()));}},
     WORKFLOW:{async create(){},async get(){return {async status(){return {status:'running'};}};}},
     READONLY_TARGET:{async fetch(input:Request|string|URL,init?:RequestInit){
@@ -92,7 +92,7 @@ test('Portal-authenticated S2 -> validate -> approve -> Publish -> Run -> Result
   assert.equal(disallowedOrigin.status,403);
   assert.equal(internetCalls,0);
 
-  const client=new Client({name:'trusted-s2-owner-test',version:'0.1.0'});
+  const client=new Client({name:'trusted-mcp-owner-test',version:'0.1.0'});
   const transport=new StreamableHTTPClientTransport(new URL(OWNER),{
     requestInit:{headers:{authorization:'Bearer '+TOKEN}},
     fetch:(async(input:RequestInfo|URL,init?:RequestInit)=>
@@ -126,9 +126,6 @@ test('Portal-authenticated S2 -> validate -> approve -> Publish -> Run -> Result
     assert.deepEqual(preview.required_approvals,[grant]);
 
     const base={workflow_id:created.workflow_id,expected_revision:1};
-    await call('workflow_publish',{...base,approved_operations:[grant],accept_target_risks:true},'s2_disabled');
-    assert.equal(internetCalls,0);
-    env.S2_READONLY_ENABLED='true';  // Test-scoped flag only; never written to Wrangler
     await call('workflow_publish',{...base,approved_operations:[grant]},'target_risk_acknowledgment_required');
     await call('workflow_publish',{...base,approved_operations:[{...grant,tool:'unreviewed'}],accept_target_risks:true},'external_approval_required');
     await call('workflow_publish',{...base,accept_target_risks:true},'external_approval_required');
@@ -138,8 +135,8 @@ test('Portal-authenticated S2 -> validate -> approve -> Publish -> Run -> Result
     const published=await call('workflow_publish',{...base,approved_operations:[grant],accept_target_risks:true});
     const plan=JSON.parse((sqlite.prepare('SELECT plan FROM workflow_versions WHERE id=?')
       .get(published.published_version_id) as {plan:string}).plan);
-    assert.equal(plan.s2_target_risks_accepted,true);
-    assert.deepEqual(plan.s2_approvals,[grant]);
+    assert.equal(plan.mcp_target_risks_accepted,true);
+    assert.deepEqual(plan.mcp_approvals,[grant]);
 
     const run=await call('workflow_run',{
       workflow_id:created.workflow_id,inputs:{message:'approved trusted echo'},
@@ -156,11 +153,11 @@ test('Portal-authenticated S2 -> validate -> approve -> Publish -> Run -> Result
     assert.equal(outcome.steps[0].status,'succeeded');
     assert.equal(outcome.result.content[0].text,'approved trusted echo');
     assert.equal(toolCalls,1,'exactly one tools/call');
-    assert.equal(privateCalls,0,'S2 must never use the S1 private service binding');
+    assert.equal(privateCalls,0,'MCP must never use the Workflow private service binding');
 
     // An environment configured for the production Portal must not silently
     // execute a Plan approved for the test Portal (nor leak credentials).
-    env.S2_PORTAL_ENDPOINT=PRODUCTION_PORTAL_ENDPOINT;
+    env.MCP_PORTAL_ENDPOINT=PRODUCTION_PORTAL_ENDPOINT;
     const crossEnvironment=await call('workflow_run',{
       workflow_id:created.workflow_id,inputs:{message:'blocked wrong Portal'},
     });
@@ -173,10 +170,10 @@ test('Portal-authenticated S2 -> validate -> approve -> Publish -> Run -> Result
     assert.equal(wrongPortal.status,'failed');
     assert.equal(wrongPortal.steps[0].status,'failed');
     assert.equal(toolCalls,1,'cross-environment Portal was not contacted');
-    env.S2_PORTAL_ENDPOINT=TRUSTED;
+    env.MCP_PORTAL_ENDPOINT=TRUSTED;
 
     // A missing outbound Portal secret must fail without sending any requests.
-    env.S2_PORTAL_CLIENT_SECRET=undefined;
+    env.MCP_PORTAL_CLIENT_SECRET=undefined;
     const noCredential=await call('workflow_run',{
       workflow_id:created.workflow_id,inputs:{message:'no portal identity'},
     });
@@ -189,21 +186,8 @@ test('Portal-authenticated S2 -> validate -> approve -> Publish -> Run -> Result
     assert.equal(rejected.status,'failed');
     assert.equal(rejected.steps[0].status,'failed');
     assert.equal(toolCalls,1,'missing portal credentials cannot reach target');
-    env.S2_PORTAL_CLIENT_SECRET=PORTAL_SECRET;
+    env.MCP_PORTAL_CLIENT_SECRET=PORTAL_SECRET;
 
-    env.S2_READONLY_ENABLED=undefined;
-    const blocked=await call('workflow_run',{
-      workflow_id:created.workflow_id,inputs:{message:'flag turned off'},
-    });
-    await new WorkflowRunner({} as ExecutionContext,env).run({
-      payload:{run_id:blocked.run_id},
-    } as WorkflowEvent<{run_id:string}>,{
-      do:async(_name:unknown,_options:unknown,fn:()=>Promise<unknown>)=>fn(),
-    } as unknown as WorkflowStep);
-    const blockedResult=await call('workflow_result',{run_id:blocked.run_id});
-    assert.equal(blockedResult.status,'failed');
-    assert.equal(blockedResult.steps[0].status,'failed');
-    assert.equal(toolCalls,1,'disabled flag prevents later target invocation');
     assert.equal(privateCalls,0);
   }finally{
     await client.close();

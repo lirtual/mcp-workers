@@ -1,13 +1,13 @@
 /**
  * DISPOSABLE GitHub OIDC -> D1 evidence Worker, NEVER production ingress.
- * Accepts only Bearer tokens verified by the S3 module and exact D1 candidate.
+ * Accepts only Bearer tokens verified by the GitHub module and exact D1 candidate.
  * No registration, untrusted grants, generic SQL, or result read endpoints.
  */
 import {
   verifyAndClaimGithubAttempt,verifyGithubClaimedOwner,
   type ExecutorIdentity,
-} from '../../src/s3-github-claim.ts';
-import { recordGithubCallback,notifyStoredGithubReceipt } from '../../src/s3-github-callback.ts';
+} from '../../src/github-claim.ts';
+import { recordGithubCallback,notifyStoredGithubReceipt } from '../../src/github-callback.ts';
 import { WorkflowEntrypoint,type WorkflowEvent,type WorkflowStep } from 'cloudflare:workers';
 
 type E={DB:D1Database; EXPECTED_REPO:string; EXPECTED_REPOSITORY_ID:string;
@@ -19,11 +19,11 @@ const targetRun=async(db:D1Database,attemptId:string)=>db.prepare(
 ).bind(attemptId).first<Stored>();
 
 // This is an isolated acceptance-only Workflow class, not a new production
-// scheduler or implementation of the entire S3 Workflow DAG.
+// scheduler or implementation of the entire GitHub Workflow DAG.
 export class S3ReceiptWaiter extends WorkflowEntrypoint<E,{attemptId:string}> {
   async run(event:WorkflowEvent<{attemptId:string}>,step:WorkflowStep){
     const wake=await step.waitForEvent<{attemptId:string;callbackId:string}>(
-      'wait for durable callback',{type:'s3-receipt',timeout:'3 minutes'});
+      'wait for durable callback',{type:'github-receipt',timeout:'3 minutes'});
     if(wake.payload.attemptId!==event.payload.attemptId)
       throw Error('wake_attempt_mismatch');
     return step.do('check durable callback result',async()=>{
@@ -107,7 +107,7 @@ export default {
       try{
         const delivered=await notifyStoredGithubReceipt(env.DB,record.attemptId,async event=>{
           const instance=await env.WORKFLOW.get(linked.instance_id);
-          await instance.sendEvent({type:'s3-receipt',payload:event});
+          await instance.sendEvent({type:'github-receipt',payload:event});
         });
         return delivered?response(200,'stored_and_notified'):response(202,'stored_pending');
       }catch{

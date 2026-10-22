@@ -4,7 +4,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 const base=process.env.S1_LOCAL_URL ?? 'http://127.0.0.1:8787';
 const token=process.env.S1_LOCAL_TOKEN;
 if(!token)throw Error('S1_LOCAL_TOKEN required');
-const cli=new Client({name:'workflow-s1-local-smoke',version:'0.1.0'});
+const cli=new Client({name:'workflow-local-smoke',version:'0.1.0'});
 const transport=new StreamableHTTPClientTransport(new URL(base+'/mcp'),{requestInit:{headers:{authorization:'Bearer '+token}}});
 let tests=0;
 function ok(x,message){assert.ok(x,message);tests++;}
@@ -16,8 +16,8 @@ async function tool(name,args,expectError){
   else{assert.notEqual(response.isError,true,name+' failed: '+JSON.stringify(value));}
   return value;
 }
-const definition={version:1,name:'S1 local smoke',steps:[
- {id:'read',uses:'s1.readonly_mcp',with:{tool:'echo',arguments:{value:{ref:'inputs.subject'}}}},
+const definition={version:1,name:'Workflow local smoke',steps:[
+ {id:'read',uses:'fixture.echo',with:{tool:'echo',arguments:{value:{ref:'inputs.subject'}}}},
  {id:'report',uses:'result.emit',needs:['read'],with:{data:{ref:'steps.read.output'}}}
 ]};
 async function awaitOutcome(run_id){
@@ -36,7 +36,7 @@ try{
     const metadata=listed.tools.find(x=>x.name===name);
     ok(metadata?.annotations?.readOnlyHint===false,`${name} must not claim to be read-only because reconciliation may mutate D1 or resume an admitted Run`);
   }
-  ok(!listed.tools.some(x=>x.name.includes('webhook')||x.name.includes('github')),'no S2/S3 tools');
+  ok(!listed.tools.some(x=>x.name.includes('webhook')||x.name.includes('github')),'no MCP/GitHub tools');
   let w=await tool('workflow_create',{definition:JSON.stringify(definition)});
   ok(w.state==='draft'&&w.draft_revision===1,'creates only Draft');
   let id=w.workflow_id;
@@ -45,32 +45,32 @@ try{
   await tool('workflow_publish',{workflow_id:id,expected_revision:2},'revision_conflict');
   const published=await tool('workflow_publish',{workflow_id:id,expected_revision:1});
   ok(!!published.published_version_id,'explicit Published Version');
-  const first=await tool('workflow_run',{workflow_id:id,inputs:{subject:'sdk fixture local success'},idempotency_key:'s1-local-'+id});
+  const first=await tool('workflow_run',{workflow_id:id,inputs:{subject:'sdk fixture local success'},idempotency_key:'workflow-local-'+id});
   ok(first.published_version_id===published.published_version_id,'Run pins published plan');
-  const same=await tool('workflow_run',{workflow_id:id,inputs:{subject:'sdk fixture local success'},idempotency_key:'s1-local-'+id});
+  const same=await tool('workflow_run',{workflow_id:id,inputs:{subject:'sdk fixture local success'},idempotency_key:'workflow-local-'+id});
   ok(same.run_id===first.run_id,'idempotency reuses logical Run');
   const keyed=await tool('workflow_run',{workflow_id:id,inputs:{subject:'same content',count:2},idempotency_key:'key-order-'+id});
   const reordered=await tool('workflow_run',{workflow_id:id,inputs:{count:2,subject:'same content'},idempotency_key:'key-order-'+id});
   ok(reordered.run_id===keyed.run_id,'same input object with reordered JSON keys reuses admitted Run');
-  await tool('workflow_run',{workflow_id:id,inputs:{subject:'different'},idempotency_key:'s1-local-'+id},'idempotency_conflict');
+  await tool('workflow_run',{workflow_id:id,inputs:{subject:'different'},idempotency_key:'workflow-local-'+id},'idempotency_conflict');
   const done=await awaitOutcome(first.run_id);
   ok(done.status==='succeeded','real SDK fixture call: '+JSON.stringify(done));
   ok(done.steps.length===2&&done.steps.every(x=>x.status==='succeeded'),'both DAG Steps succeeded');
   const result=await tool('workflow_result',{run_id:first.run_id});
   ok(result.result?.content?.[0]?.text==='sdk fixture local success','read-only content from MCP SDK');
-  const changed=structuredClone(definition);changed.name='S1 local changed Draft';
+  const changed=structuredClone(definition);changed.name='Workflow local changed Draft';
   const updated=await tool('workflow_update',{workflow_id:id,expected_revision:1,definition:JSON.stringify(changed)});
   ok(updated.draft_revision===2,'Draft edit after Publish');
   await tool('workflow_update',{workflow_id:id,expected_revision:1,definition:JSON.stringify(changed)},'revision_conflict');
   ok((await tool('workflow_get',{workflow_id:id})).published_version_id===published.published_version_id,'Draft edit does not activate');
   const republished=await tool('workflow_publish',{workflow_id:id,expected_revision:2});
   ok(republished.published_version_id!==published.published_version_id,'explicit republish installs new version');
-  const replay=await tool('workflow_run',{workflow_id:id,inputs:{subject:'sdk fixture local success'},idempotency_key:'s1-local-'+id});
+  const replay=await tool('workflow_run',{workflow_id:id,inputs:{subject:'sdk fixture local success'},idempotency_key:'workflow-local-'+id});
   ok(replay.run_id===first.run_id&&replay.published_version_id===published.published_version_id,'replay pinned across republish');
   ok((await tool('workflow_pause',{workflow_id:id})).state==='paused','paused');
   ok((await tool('workflow_publish',{workflow_id:id,expected_revision:2})).state==='paused','repeated Publish must not silently resume a Paused Workflow');
   await tool('workflow_run',{workflow_id:id,inputs:{subject:'blocked'},idempotency_key:'blocked-'+id},'workflow_not_active');
-  ok((await tool('workflow_run',{workflow_id:id,inputs:{subject:'sdk fixture local success'},idempotency_key:'s1-local-'+id})).run_id===first.run_id,'accepted Run across pause');
+  ok((await tool('workflow_run',{workflow_id:id,inputs:{subject:'sdk fixture local success'},idempotency_key:'workflow-local-'+id})).run_id===first.run_id,'accepted Run across pause');
   await tool('workflow_resume',{workflow_id:id});
   const second=await tool('workflow_run',{workflow_id:id,inputs:{subject:'second run'},idempotency_key:'second-'+id});
   ok(second.published_version_id===republished.published_version_id,'new Run uses new version');
@@ -83,7 +83,7 @@ try{
   ok(invalidPreview.valid===false&&invalidPreview.issues?.length>0,'validation returns actionable issues instead of losing Draft');
   await tool('workflow_publish',{workflow_id:invalidDraft.workflow_id,expected_revision:1},'invalid_definition');
   const wrongArgsDraft=await tool('workflow_create',{definition:JSON.stringify({version:1,name:'Invalid arguments',steps:[
-    {id:'read',uses:'s1.readonly_mcp',with:{tool:'echo',arguments:42}}
+    {id:'read',uses:'fixture.echo',with:{tool:'echo',arguments:42}}
   ]})});
   ok((await tool('workflow_validate',{workflow_id:wrongArgsDraft.workflow_id,revision:1})).valid===false,
     'non-object MCP arguments are rejected during validation, before execution');
@@ -111,7 +111,7 @@ try{
   ok((await tool('workflow_get',{workflow_id:competing.workflow_id})).published_version_id===winningVersion,'CAS active version stable');
   // A rejected read-only tool argument fails the prerequisite; dependent Step is skipped.
   const failingDef={version:1,name:'Failed prerequisite',steps:[
-    {id:'read',uses:'s1.readonly_mcp',with:{tool:'echo',arguments:{value:123}}},
+    {id:'read',uses:'fixture.echo',with:{tool:'echo',arguments:{value:123}}},
     {id:'dependent',uses:'result.emit',needs:['read'],with:{data:'never emitted'}}
   ]};
   const f=await tool('workflow_create',{definition:JSON.stringify(failingDef)});
@@ -129,8 +129,8 @@ try{
   // Story #15: a slow independent read-only Step cannot block a ready fast Step.
   // Assert observable durable Step progress, not only use of Promise.all in source.
   const parallelDef={version:1,name:'Independent read-only Steps',steps:[
-    {id:'slow',uses:'s1.readonly_mcp',with:{tool:'echo',arguments:{value:'slow',delay_ms:9000}}},
-    {id:'fast',uses:'s1.readonly_mcp',with:{tool:'echo',arguments:{value:'fast'}}}
+    {id:'slow',uses:'fixture.echo',with:{tool:'echo',arguments:{value:'slow',delay_ms:9000}}},
+    {id:'fast',uses:'fixture.echo',with:{tool:'echo',arguments:{value:'fast'}}}
   ]};
   const parallelDraft=await tool('workflow_create',{definition:JSON.stringify(parallelDef)});
   await tool('workflow_publish',{workflow_id:parallelDraft.workflow_id,expected_revision:1});
@@ -150,7 +150,7 @@ try{
   // eight-slot limit even under interleaving. These harmless read-only runs
   // hold their slot for 15s; the second eight must receive explicit rejection.
   const burstDefinition={version:1,name:'Shared admission capacity burst',steps:[
-    {id:'hold',uses:'s1.readonly_mcp',with:{tool:'echo',arguments:{value:'capacity',delay_ms:15000}}}
+    {id:'hold',uses:'fixture.echo',with:{tool:'echo',arguments:{value:'capacity',delay_ms:15000}}}
   ]};
   const burstDraft=await tool('workflow_create',{definition:JSON.stringify(burstDefinition)});
   const secondBurstDraft=await tool('workflow_create',{definition:JSON.stringify({...burstDefinition,name:'Second shared-capacity Workflow'})});

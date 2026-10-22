@@ -4,9 +4,9 @@ import { evaluateArguments, evaluateCondition, toolSchemaDigest } from './plan.t
 import type { Plan, Step } from './plan.ts';
 import type { Env } from './store.ts';
 import { limitResult } from './store.ts';
-import { registerGithubAttempt,recordGithubDispatchResult } from './s3-github-claim.ts';
-import { dispatchGithubAttempt,selectedS3Executor } from './s3-github-dispatch.ts';
-import { scopedPublicMcpFetch, TRUSTED_PORTAL_ENDPOINT, PRODUCTION_PORTAL_ENDPOINT, type PortalServiceToken } from './s2-public-fetch.ts';
+import { registerGithubAttempt,recordGithubDispatchResult } from './github-claim.ts';
+import { dispatchGithubAttempt,selectedGithubExecutor } from './github-dispatch.ts';
+import { scopedPublicMcpFetch, TRUSTED_PORTAL_ENDPOINT, PRODUCTION_PORTAL_ENDPOINT, type PortalServiceToken } from './mcp-public-fetch.ts';
 
 type Outcome={status:'succeeded'|'failed'|'skipped'|'indeterminate';output?:any;error_code?:string};
 const now=()=>Date.now();
@@ -16,8 +16,8 @@ const hasUnresolvedArgument=(value:unknown):boolean=>
   value===undefined||(Array.isArray(value)?value.some(hasUnresolvedArgument):
     value!==null&&typeof value==='object'&&Object.values(value).some(hasUnresolvedArgument));
 async function callFixture(env:Env,args:Record<string,unknown>):Promise<unknown>{
-  const client=new Client({name:'workflow-s1-worker',version:'0.1.0'});
-  const transport=new StreamableHTTPClientTransport(new URL('https://s1-fixture.invalid/mcp'),{
+  const client=new Client({name:'workflow-worker',version:'0.1.0'});
+  const transport=new StreamableHTTPClientTransport(new URL('https://workflow-fixture.invalid/mcp'),{
     fetch: ((input:Request|string|URL,init?:RequestInit)=>env.READONLY_TARGET.fetch(input as Request,init)) as typeof fetch,
   });
   try{
@@ -29,14 +29,10 @@ async function callFixture(env:Env,args:Record<string,unknown>):Promise<unknown>
 }
 
 async function callApprovedReadonly(env:Env,plan:Plan,step:Step,args:Record<string,unknown>):Promise<unknown>{
-  // No current Wrangler config sets this flag. Both Publish and invocation
-  // must opt in; disabling it later blocks previously published S2 plans.
-  if(env.S2_READONLY_ENABLED!=='true')throw Error('s2_disabled');
-  // A pre-existing candidate Plan without the trusted-target acknowledgement
-  // cannot start calling external MCP tools after a future flag change.
-  if(plan.s2_target_risks_accepted!==true)throw Error('target_risk_acknowledgment_required');
+  // Enforce the approved published contract before any remote call.
+  if(plan.mcp_target_risks_accepted!==true)throw Error('target_risk_acknowledgment_required');
   const endpoint=step.with.endpoint,tool=step.with.tool,schema_digest=step.with.schema_digest;
-  const grant=plan.s2_approvals?.some(g=>g.endpoint===endpoint&&g.tool===tool&&g.scope==='read'&&g.schema_digest===schema_digest);
+  const grant=plan.mcp_approvals?.some(g=>g.endpoint===endpoint&&g.tool===tool&&g.scope==='read'&&g.schema_digest===schema_digest);
   if(!grant||step.with.scope!=='read'||typeof endpoint!=='string'||typeof tool!=='string'||
      typeof schema_digest!=='string'||!/^[0-9a-f]{64}$/.test(schema_digest))
     throw Error('external_approval_required');
@@ -44,13 +40,12 @@ async function callApprovedReadonly(env:Env,plan:Plan,step:Step,args:Record<stri
   // expected schema while keeping an older authorized digest.
   if(await toolSchemaDigest(step.with.input_schema,step.with.output_schema)!==schema_digest)
     throw Error('approved_schema_changed');
-  const client=new Client({name:'workflow-s2-readonly-candidate',version:'0.1.0'});
+  const client=new Client({name:'workflow-mcp-readonly-candidate',version:'0.1.0'});
   // Environment-scoped Portal selection cannot be changed by a Draft, a
   // Published Plan, or Run inputs. Production must explicitly select its own
   // Portal; the test Portal is never its implicit fallback.
-  const chosenPortal=env.S2_PORTAL_ENDPOINT;
-  if(chosenPortal===undefined && env.S2_DIRECT_TARGETS_ENABLED!=='true')
-    throw Error('portal_target_not_configured');
+  const chosenPortal=env.MCP_PORTAL_ENDPOINT;
+  if(chosenPortal===undefined)throw Error('portal_target_not_configured');
   if(chosenPortal!==undefined){
     if(chosenPortal!==TRUSTED_PORTAL_ENDPOINT && chosenPortal!==PRODUCTION_PORTAL_ENDPOINT)
       throw Error('portal_target_not_authorized');
@@ -58,14 +53,14 @@ async function callApprovedReadonly(env:Env,plan:Plan,step:Step,args:Record<stri
   }
   if(endpoint===PRODUCTION_PORTAL_ENDPOINT && chosenPortal!==PRODUCTION_PORTAL_ENDPOINT)
     throw Error('portal_target_not_configured');
-  // NEVER send a dynamic target through the S1 private READONLY_TARGET service.
+  // NEVER send a dynamic target through the Workflow private READONLY_TARGET service.
   let portalToken:PortalServiceToken|undefined;
   if(endpoint===TRUSTED_PORTAL_ENDPOINT || endpoint===PRODUCTION_PORTAL_ENDPOINT){
     // Fail closed before making a network request; never fall back to
     // unauthenticated access or pass credentials through Workflow inputs.
-    if(!env.S2_PORTAL_CLIENT_ID||!env.S2_PORTAL_CLIENT_SECRET)
+    if(!env.MCP_PORTAL_CLIENT_ID||!env.MCP_PORTAL_CLIENT_SECRET)
       throw Error('portal_auth_not_configured');
-    portalToken={clientId:env.S2_PORTAL_CLIENT_ID,clientSecret:env.S2_PORTAL_CLIENT_SECRET};
+    portalToken={clientId:env.MCP_PORTAL_CLIENT_ID,clientSecret:env.MCP_PORTAL_CLIENT_SECRET};
   }
   const transport=new StreamableHTTPClientTransport(new URL(endpoint),{
     fetch:scopedPublicMcpFetch(endpoint,fetch,portalToken,chosenPortal??TRUSTED_PORTAL_ENDPOINT),
@@ -97,7 +92,7 @@ async function callApprovedReadonly(env:Env,plan:Plan,step:Step,args:Record<stri
 }
 
 /**
- * S3 cannot be executed by the generic 30-second step.do callback:
+ * GitHub cannot be executed by the generic 30-second step.do callback:
  * dispatch is externally observable, and waiting for a callback belongs in
  * a native Workflow waitForEvent (not inside step.do). The first durable
  * Attempt INSERT is UNIQUE(run_id,step_id), fencing replayed dispatch.
@@ -105,49 +100,49 @@ async function callApprovedReadonly(env:Env,plan:Plan,step:Step,args:Record<stri
 async function runGithubStep(
   env:Env,plan:Plan,s:Step,runId:string,step:WorkflowStep,
 ):Promise<Outcome>{
-  if(env.S3_ENABLED!=='true'||plan.s3_execution_approved!==true)
-    return {status:'failed',error_code:'s3_disabled'};
+  if(plan.github_execution_approved!==true)
+    return {status:'failed',error_code:'github_execution_approval_required'};
   if(s.with.capability!=='heavy.github.echo')
-    return {status:'failed',error_code:'s3_capability_not_registered'};
-  if(!env.S3_GITHUB_TOKEN||!env.S3_GITHUB_REPOSITORY||
-     !env.S3_GITHUB_REPOSITORY_ID||!env.S3_GITHUB_REF||
-     !env.S3_GITHUB_AUDIENCE)
-    return {status:'failed',error_code:'s3_executor_not_configured'};
+    return {status:'failed',error_code:'github_capability_not_registered'};
+  if(!env.GITHUB_EXECUTOR_TOKEN||!env.GITHUB_EXECUTOR_REPOSITORY||
+     !env.GITHUB_EXECUTOR_REPOSITORY_ID||!env.GITHUB_EXECUTOR_REF||
+     !env.GITHUB_EXECUTOR_AUDIENCE)
+    return {status:'failed',error_code:'github_executor_not_configured'};
   const db=env.DB;
-  const executor=selectedS3Executor(env);
+  const executor=selectedGithubExecutor(env);
   // This operation intentionally does not retry on any ambiguity. A new
   // logical Attempt for the same Run+Step is forbidden by D1 UNIQUE.
-  const dispatch=(await step.do('s3-dispatch-'+s.id,{
+  const dispatch=(await step.do('github-dispatch-'+s.id,{
     retries:{limit:0,delay:'1 second'},timeout:'45 seconds',
   },async()=>{
     const attemptId=crypto.randomUUID(),dispatchId=crypto.randomUUID();
     await registerGithubAttempt(db,{
       attemptId,dispatchId,runId,stepId:s.id,
       capabilityId:'heavy.github.echo',
-      repository:env.S3_GITHUB_REPOSITORY!,
-      repositoryId:env.S3_GITHUB_REPOSITORY_ID!,
-      ref:env.S3_GITHUB_REF!,
-      workflowRef:env.S3_GITHUB_REPOSITORY+
-        '/.github/workflows/'+executor.workflow+'@'+env.S3_GITHUB_REF,
-      audience:env.S3_GITHUB_AUDIENCE!,
+      repository:env.GITHUB_EXECUTOR_REPOSITORY!,
+      repositoryId:env.GITHUB_EXECUTOR_REPOSITORY_ID!,
+      ref:env.GITHUB_EXECUTOR_REF!,
+      workflowRef:env.GITHUB_EXECUTOR_REPOSITORY+
+        '/.github/workflows/'+executor.workflow+'@'+env.GITHUB_EXECUTOR_REF,
+      audience:env.GITHUB_EXECUTOR_AUDIENCE!,
     });
     const result=await dispatchGithubAttempt({
-      repository:env.S3_GITHUB_REPOSITORY!,
-      ref:env.S3_GITHUB_REF!,
+      repository:env.GITHUB_EXECUTOR_REPOSITORY!,
+      ref:env.GITHUB_EXECUTOR_REF!,
       workflow:executor.workflow,
       ...(executor.workerName?{workerName:executor.workerName}:{}),
-      dispatchToken:env.S3_GITHUB_TOKEN!,
+      dispatchToken:env.GITHUB_EXECUTOR_TOKEN!,
     },{attemptId,dispatchId,capabilityId:'heavy.github.echo'});
     const persisted=await recordGithubDispatchResult(db,attemptId,result);
     if(!persisted)throw Error('dispatch_ack_not_persisted');
     return {attemptId,...result};
   })) as {attemptId:string;status:string;httpStatus?:number;reason?:string};
   if(dispatch.status==='rejected')return {
-    status:'failed',error_code:'s3_dispatch_rejected_'+
+    status:'failed',error_code:'github_dispatch_rejected_'+
       String(dispatch.httpStatus??'unknown')+'_'+String(dispatch.reason??'unknown'),
   };
   if(dispatch.status!=='confirmed')
-    return {status:'indeterminate',error_code:'s3_dispatch_unknown'};
+    return {status:'indeterminate',error_code:'github_dispatch_unknown'};
   type Receipt={callback_id:string;outcome:string;result_json:string};
   const readReceipt=()=>db.prepare(
     'SELECT callback_id,outcome,result_json FROM callback_receipts WHERE attempt_id=?'
@@ -160,22 +155,22 @@ async function runGithubStep(
   for(let i=0;i<8&&!receipt;i++){
     try{
       await step.waitForEvent<{attemptId:string;callbackId:string}>(
-        's3-receipt-'+s.id+'-'+i,
-        {type:'s3-receipt-'+s.id,timeout:'30 seconds'});
+        'github-receipt-'+s.id+'-'+i,
+        {type:'github-receipt-'+s.id,timeout:'30 seconds'});
     }catch{
       // Missing notification or timeout: reconcile durable D1 only.
     }
     receipt=await readReceipt();
   }
-  if(!receipt)return {status:'indeterminate',error_code:'s3_callback_unconfirmed'};
+  if(!receipt)return {status:'indeterminate',error_code:'github_callback_unconfirmed'};
   if(receipt.outcome!=='succeeded'&&receipt.outcome!=='failed')
-    return {status:'indeterminate',error_code:'s3_callback_invalid'};
+    return {status:'indeterminate',error_code:'github_callback_invalid'};
   try{
     const value=limitResult(JSON.parse(receipt.result_json));
     return receipt.outcome==='succeeded'
       ?{status:'succeeded',output:value}
-      :{status:'failed',error_code:'s3_job_failed'};
-  }catch{return {status:'indeterminate',error_code:'s3_callback_invalid'};}
+      :{status:'failed',error_code:'github_job_failed'};
+  }catch{return {status:'indeterminate',error_code:'github_callback_invalid'};}
 }
 
 export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
@@ -185,7 +180,7 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
     const row=await db.prepare('SELECT version_id,inputs,outcome FROM runs WHERE id=?').bind(id).first<{version_id:string;inputs:string;outcome:string}>();
     if(!row)throw Error('run_missing');
     // An expired ambiguous admission is terminally uncertain. A Workflow
-    // started much later must not run the abandoned queued S1 plan.
+    // started much later must not run the abandoned queued Workflow plan.
     if(row.outcome!=='queued'&&row.outcome!=='running')return;
     const version=await db.prepare('SELECT plan FROM workflow_versions WHERE id=?').bind(row.version_id).first<{plan:string}>();
     if(!version)throw Error('version_missing');
@@ -216,10 +211,10 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
                 return await runGithubStep(this.env,plan,s,id,step);
               }catch{
                 // Never retry an uncertain GitHub dispatch on a Workflow replay.
-                return {status:'indeterminate',error_code:'s3_dispatch_unknown'} as Outcome;
+                return {status:'indeterminate',error_code:'github_dispatch_unknown'} as Outcome;
               }
             })()
-            : await step.do('s1-'+s.id,{retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},async ():Promise<Outcome>=>{
+            : await step.do('workflow-'+s.id,{retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},async ():Promise<Outcome>=>{
             try{
               // Only an executing callback marks a Step running. Cached replay
               // must never replace a previously persisted terminal Step state.
@@ -227,7 +222,7 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
                 .bind(id,s.id,now()).run();
               if(s.needs.some(n=>ctx.steps[n].status!=='succeeded'))return {status:'skipped'};
               if(s.if!==undefined&&!evaluateCondition(s.if,ctx))return {status:'skipped'};
-              if(s.uses==='s1.readonly_mcp'){
+              if(s.uses==='fixture.echo'){
                 const a=evaluateArguments(s.with.arguments,ctx);
                 return {status:'succeeded',output:await callFixture(this.env,a as Record<string,unknown>)};
               }

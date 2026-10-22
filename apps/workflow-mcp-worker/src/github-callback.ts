@@ -1,10 +1,10 @@
 import type { jwtVerify } from 'jose';
 import {
   verifyGithubClaimedOwner,type AttemptDatabase,type ExecutorIdentity,
-} from './s3-github-claim.ts';
+} from './github-claim.ts';
 
 /**
- * S3 receipt-first callback protocol for the registered HTTP ingress and
+ * GitHub receipt-first callback protocol for the registered HTTP ingress and
  * durable Workflow runner. The business operation must be executed only
  * after the separately confirmed OIDC Claim has succeeded.
  */

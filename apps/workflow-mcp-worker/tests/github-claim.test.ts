@@ -8,16 +8,16 @@ import {
 import {
   registerGithubAttempt,recordGithubDispatchResult,verifyAndClaimGithubAttempt,
   type AttemptDatabase,type ExecutorIdentity,type AttemptRegistration,
-} from '../src/s3-github-claim.ts';
-import { recordGithubCallback,notifyStoredGithubReceipt } from '../src/s3-github-callback.ts';
+} from '../src/github-claim.ts';
+import { recordGithubCallback,notifyStoredGithubReceipt } from '../src/github-callback.ts';
 
-const runId='run-s3-fixture';
+const runId='run-github-fixture';
 const attemptId='b6835141-0b3a-4fcb-a9ae-b4b75bfae93c';
 const dispatchId='d9b3439b-b7ed-4812-9064-75c925f93c6a';
 const identity:ExecutorIdentity={
   repository:'lirtual/test-executor',repositoryId:'987654321',
-  workflowRef:'lirtual/test-executor/.github/workflows/workflow-s3-executor.yml@refs/heads/main',
-  ref:'refs/heads/main',audience:'workflow-s3-claim:test',
+  workflowRef:'lirtual/test-executor/.github/workflows/workflow-github-executor.yml@refs/heads/main',
+  ref:'refs/heads/main',audience:'workflow-github-claim:test',
 };
 const registration:AttemptRegistration={
   ...identity,attemptId,dispatchId,runId,stepId:'heavy',capabilityId:'heavy.github.echo',
@@ -31,13 +31,13 @@ function setup(t:test.TestContext){
     sqlite.exec(readFileSync(new URL('../migrations/'+name,import.meta.url),'utf8'));
   }
   sqlite.prepare(`INSERT INTO workflows (id,name,draft,created_at,updated_at)
-    VALUES (?,?,?,?,?)`).run('wf-s3-fixture','S3 fixture','{}',1,1);
+    VALUES (?,?,?,?,?)`).run('wf-github-fixture','GitHub fixture','{}',1,1);
   sqlite.prepare(`INSERT INTO workflow_versions (id,workflow_id,digest,plan,created_at)
-    VALUES (?,?,?,?,?)`).run('version-s3-fixture','wf-s3-fixture','test','{}',1);
+    VALUES (?,?,?,?,?)`).run('version-github-fixture','wf-github-fixture','test','{}',1);
   sqlite.prepare(`INSERT INTO runs
     (id,workflow_id,version_id,instance_id,request_digest,inputs,created_at,updated_at)
     VALUES (?,?,?,?,?,?,?,?)`).run(
-    runId,'wf-s3-fixture','version-s3-fixture','instance-fixture','digest','{}',1,1,
+    runId,'wf-github-fixture','version-github-fixture','instance-fixture','digest','{}',1,1,
   );
   const db={
     prepare(sql:string){
@@ -54,7 +54,7 @@ function setup(t:test.TestContext){
 async function fixtureSigner(){
   const pair=await generateKeyPair('RS256');
   const jwk=await exportJWK(pair.publicKey);
-  const keys=createLocalJWKSet({keys:[{...jwk,kid:'s3-fixture',use:'sig',alg:'RS256'}]});
+  const keys=createLocalJWKSet({keys:[{...jwk,kid:'github-fixture',use:'sig',alg:'RS256'}]});
   async function issue(overrides:Record<string,unknown>={},expiry:string|number='5m'){
     const fields={
       repository:identity.repository,repository_id:identity.repositoryId,
@@ -62,7 +62,7 @@ async function fixtureSigner(){
       run_id:'39410780231',run_attempt:'1',event_name:'workflow_dispatch',
       ...overrides,
     };
-    return new SignJWT(fields).setProtectedHeader({alg:'RS256',kid:'s3-fixture'})
+    return new SignJWT(fields).setProtectedHeader({alg:'RS256',kid:'github-fixture'})
       .setIssuer('https://token.actions.githubusercontent.com')
       .setAudience(identity.audience).setIssuedAt()
       .setExpirationTime(expiry).sign(pair.privateKey);
@@ -125,7 +125,7 @@ test('rejects forged, wrong-audience, and expired JWT before D1 Claim',async t=>
   const forged=(await fixtureSigner()).issue;
   assert.equal(await verifyAndClaimGithubAttempt(db,attemptId,await forged(),identity,keys),false);
   assert.equal(await verifyAndClaimGithubAttempt(db,'not-an-allowed-id',await issue(),identity,keys),false);
-  assert.equal(await verifyAndClaimGithubAttempt(db,attemptId,await issue(),{...identity,audience:'workflow-s3-other:test'},keys),false);
+  assert.equal(await verifyAndClaimGithubAttempt(db,attemptId,await issue(),{...identity,audience:'workflow-github-other:test'},keys),false);
   assert.equal(await verifyAndClaimGithubAttempt(db,attemptId,'not-a-jwt',identity,keys),false);
   assert.equal(await verifyAndClaimGithubAttempt(db,attemptId,await issue({},Math.floor(Date.now()/1000)-60),identity,keys),false);
 });
@@ -261,7 +261,7 @@ test('a valid very late GitHub callback cannot overwrite a terminally indetermin
   });
   assert.equal(await verifyAndClaimGithubAttempt(db,attemptId,jwt,identity,keys),true);
   // The native Workflow already exhausted its bounded callback window.
-  sqlite.prepare("UPDATE runs SET outcome='indeterminate',error_code='s3_callback_unconfirmed' WHERE id=?")
+  sqlite.prepare("UPDATE runs SET outcome='indeterminate',error_code='github_callback_unconfirmed' WHERE id=?")
     .run(runId);
   const id='f8835141-0b3a-4fcb-a9ae-b4b75bfae93c';
   assert.equal(await recordGithubCallback(db,{
@@ -272,7 +272,7 @@ test('a valid very late GitHub callback cannot overwrite a terminally indetermin
   const run=sqlite.prepare('SELECT outcome,error_code FROM runs WHERE id=?')
     .get(runId) as {outcome:string;error_code:string};
   assert.equal(run.outcome,'indeterminate');
-  assert.equal(run.error_code,'s3_callback_unconfirmed');
+  assert.equal(run.error_code,'github_callback_unconfirmed');
   // A signed Run cannot re-acquire a Claim or duplicate an external Job.
   assert.equal(await verifyAndClaimGithubAttempt(db,attemptId,jwt,identity,keys),false);
 });
