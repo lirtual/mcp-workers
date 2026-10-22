@@ -418,7 +418,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           MCP_PORTAL_CLIENT_ID: ${{ secrets.MCP_PORTAL_CLIENT_ID }}
           MCP_PORTAL_CLIENT_SECRET: ${{ secrets.MCP_PORTAL_CLIENT_SECRET }}
-          WORKFLOW_EXECUTOR_TOKEN: ${{ secrets.WORKFLOW_EXECUTOR_TOKEN }}
+          WORKFLOW_EXECUTOR_GITHUB_TOKEN: ${{ secrets.WORKFLOW_EXECUTOR_GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           umask 077
@@ -443,7 +443,7 @@ jobs:
       - name: Verify dedicated GitHub token without executable dispatch
         if: inputs.worker == 'workflow-mcp-worker'
         env:
-          WORKFLOW_EXECUTOR_TOKEN: ${{ secrets.WORKFLOW_EXECUTOR_TOKEN }}
+          WORKFLOW_EXECUTOR_GITHUB_TOKEN: ${{ secrets.WORKFLOW_EXECUTOR_GITHUB_TOKEN }}
         run: node scripts/verify-github-release-token.mjs
 
       - name: Recheck current main inside acquired release lock
@@ -686,7 +686,7 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       WORKFLOW_MCP_SMOKE: ${{ inputs.mcp_production_smoke }}
       WORKFLOW_GITHUB_SMOKE: ${{ inputs.github_production_smoke }}
-      WORKFLOW_EXECUTOR_TOKEN: ${{ secrets.WORKFLOW_EXECUTOR_TOKEN }}
+      WORKFLOW_EXECUTOR_GITHUB_TOKEN: ${{ secrets.WORKFLOW_EXECUTOR_GITHUB_TOKEN }}
       MCP_PORTAL_CLIENT_ID: ${{ secrets.MCP_PORTAL_CLIENT_ID }}
       MCP_PORTAL_CLIENT_SECRET: ${{ secrets.MCP_PORTAL_CLIENT_SECRET }}
     steps:

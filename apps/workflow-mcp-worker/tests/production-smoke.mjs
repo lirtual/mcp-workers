@@ -207,7 +207,7 @@ async function runS2Smoke() {
 }
 
 async function runS3Smoke() {
-  const credential=process.env.WORKFLOW_EXECUTOR_TOKEN;
+  const credential=process.env.WORKFLOW_EXECUTOR_GITHUB_TOKEN;
   assert.ok(credential && credential.length>=20,'Dedicated GitHub token missing');
   const outstanding=sql("SELECT count(*) AS n FROM runs WHERE outcome NOT IN ('succeeded','failed','cancelled')");
   assert.equal(outstanding[0]?.n,0,'Production has nonterminal Runs: GitHub smoke aborted');

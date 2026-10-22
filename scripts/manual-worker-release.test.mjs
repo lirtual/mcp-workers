@@ -381,7 +381,7 @@ test("Workflow readback verifies one integrated runtime, registered GitHub ident
     {name:"MCP_ACCESS_TOKEN",type:"secret_text"},
     {name:"MCP_PORTAL_CLIENT_ID",type:"secret_text"},
     {name:"MCP_PORTAL_CLIENT_SECRET",type:"secret_text"},
-    {name:"WORKFLOW_EXECUTOR_TOKEN",type:"secret_text"},
+    {name:"WORKFLOW_EXECUTOR_GITHUB_TOKEN",type:"secret_text"},
     {name:"DB",type:"d1",id:"c76850db-b5e3-4128-9150-849a1c9e8d74"},
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-runner",class_name:"WorkflowRunner"},
     {name:"READONLY_TARGET",type:"service",service:"workflow-readonly-fixture"},
@@ -393,14 +393,14 @@ test("Workflow readback verifies one integrated runtime, registered GitHub ident
   ];
   const settings={bindings,observability:{enabled:true,logs:{invocation_logs:true}}};
   const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET",
-    "WORKFLOW_EXECUTOR_TOKEN"].map(name=>({name}));
+    "WORKFLOW_EXECUTOR_GITHUB_TOKEN"].map(name=>({name}));
   const check=(list=bindings,ss=secrets)=>
     verifyBindings("workflow-mcp-worker",{...settings,bindings:list},ss,{mode:"readback"});
   assert.equal(check(),true);
   for(const name of ["DB","WORKFLOW","READONLY_TARGET"]){
     assert.throws(()=>check(bindings.filter(x=>x.name!==name)),/binding drift/);
   }
-  for(const name of ["MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET","WORKFLOW_EXECUTOR_TOKEN"]){
+  for(const name of ["MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET","WORKFLOW_EXECUTOR_GITHUB_TOKEN"]){
     assert.throws(()=>check(bindings,secrets.filter(x=>x.name!==name)),/binding missing/);
   }
   assert.throws(()=>check([...bindings,{name:"MCP_CALL_ENABLED",type:"plain_text",text:"true"}]),/Obsolete stage flag/);
@@ -445,7 +445,7 @@ test("Workflow private Fixture actual Cloudflare exposure must be absent after d
 test("Workflow release pins the exact Portal and rejects target drift",()=>{
   const bindings=[
     {name:"MCP_ACCESS_TOKEN",type:"secret_text"},{name:"MCP_PORTAL_CLIENT_ID",type:"secret_text"},
-    {name:"MCP_PORTAL_CLIENT_SECRET",type:"secret_text"},{name:"WORKFLOW_EXECUTOR_TOKEN",type:"secret_text"},
+    {name:"MCP_PORTAL_CLIENT_SECRET",type:"secret_text"},{name:"WORKFLOW_EXECUTOR_GITHUB_TOKEN",type:"secret_text"},
     {name:"DB",type:"d1",id:"c76850db-b5e3-4128-9150-849a1c9e8d74"},
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-runner",class_name:"WorkflowRunner"},
     {name:"READONLY_TARGET",type:"service",service:"workflow-readonly-fixture"},
@@ -457,7 +457,7 @@ test("Workflow release pins the exact Portal and rejects target drift",()=>{
   ];
   const settings={observability:{enabled:true,logs:{invocation_logs:true}}};
   const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET",
-    "WORKFLOW_EXECUTOR_TOKEN"].map(name=>({name}));
+    "WORKFLOW_EXECUTOR_GITHUB_TOKEN"].map(name=>({name}));
   const check=(updated)=>verifyBindings("workflow-mcp-worker",{...settings,bindings:updated},secrets,{mode:"readback"});
   assert.equal(check(bindings),true);
   assert.throws(()=>check(bindings.map(x=>x.name==="MCP_PORTAL_ENDPOINT"
@@ -480,8 +480,8 @@ test("GitHub execution is integral but still pins repository, ref and OIDC audie
     {name:"GITHUB_EXECUTOR_AUDIENCE",type:"plain_text",text:"workflow-github-claim:production"},
   ];
   const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET",
-    "WORKFLOW_EXECUTOR_TOKEN"].map(name=>({name}));
-  const pins=["MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET","WORKFLOW_EXECUTOR_TOKEN"]
+    "WORKFLOW_EXECUTOR_GITHUB_TOKEN"].map(name=>({name}));
+  const pins=["MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET","WORKFLOW_EXECUTOR_GITHUB_TOKEN"]
     .map(name=>({name,type:"secret_text"}));
   const check=(bindings)=>verifyBindings("workflow-mcp-worker",{
     bindings,observability:{enabled:true,logs:{invocation_logs:true}}},secrets,{mode:"readback"});
@@ -495,7 +495,7 @@ test("GitHub execution is integral but still pins repository, ref and OIDC audie
 
 test("Workflow preflight admits older bindings for a one-way release, readback rejects old toggles",()=>{
   const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET",
-    "WORKFLOW_EXECUTOR_TOKEN"].map(name=>({name}));
+    "WORKFLOW_EXECUTOR_GITHUB_TOKEN"].map(name=>({name}));
   const bindings=[
     {name:"MCP_ACCESS_TOKEN",type:"secret_text"},
     {name:"DB",type:"d1",id:"c76850db-b5e3-4128-9150-849a1c9e8d74"},

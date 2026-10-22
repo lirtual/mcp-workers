@@ -72,7 +72,7 @@ async function run(){
     await pause(8500);
     wr(['deploy','--config',file]);
   }
-  for(const [key,val] of Object.entries({MCP_ACCESS_TOKEN:ownerToken,MCP_PORTAL_CLIENT_ID:pair.clientId,MCP_PORTAL_CLIENT_SECRET:pair.clientSecret,WORKFLOW_EXECUTOR_TOKEN:need('GITHUB_TOKEN')}))wr(['secret','put',key,'--config',file],val);
+  for(const [key,val] of Object.entries({MCP_ACCESS_TOKEN:ownerToken,MCP_PORTAL_CLIENT_ID:pair.clientId,MCP_PORTAL_CLIENT_SECRET:pair.clientSecret,WORKFLOW_EXECUTOR_GITHUB_TOKEN:need('GITHUB_TOKEN')}))wr(['secret','put',key,'--config',file],val);
   console.log('DISPOSABLE_WORKER_READY',name);
   // Each 'wrangler secret put' can publish another Worker version.
   // Require consecutive read-only health checks after all secret writes

@@ -9,7 +9,7 @@ const fixtures = {
   "ssh-mcp-worker": { MCP_ACCESS_TOKEN: "portal", MCP_BROKER_TOKEN: "x".repeat(32) },
   "remote-control-mcp-worker": { MCP_ACCESS_TOKEN: "portal" },
   "github-actions-mcp-worker": { MCP_ACCESS_TOKEN: "portal", GH_TOKEN: "github-test-token" },
-  "workflow-mcp-worker": { MCP_ACCESS_TOKEN: "portal", MCP_PORTAL_CLIENT_ID: "test-id", MCP_PORTAL_CLIENT_SECRET: "test-secret", WORKFLOW_EXECUTOR_TOKEN: "x".repeat(24) },
+  "workflow-mcp-worker": { MCP_ACCESS_TOKEN: "portal", MCP_PORTAL_CLIENT_ID: "test-id", MCP_PORTAL_CLIENT_SECRET: "test-secret", WORKFLOW_EXECUTOR_GITHUB_TOKEN: "x".repeat(24) },
 };
 
 test("bootstrap supports all selected Workers, including isolated Remote Control", () => {
@@ -79,13 +79,13 @@ test("Workflow registered GitHub token must be nonblank, bounded and not multili
   const valid=fixtures["workflow-mcp-worker"];
   for(const invalid of ["short","x".repeat(513),"foo\nbar"]){
     assert.throws(()=>collectBootstrapSecrets("workflow-mcp-worker",
-      {...valid,WORKFLOW_EXECUTOR_TOKEN:invalid}),/WORKFLOW_EXECUTOR_TOKEN/);
+      {...valid,WORKFLOW_EXECUTOR_GITHUB_TOKEN:invalid}),/WORKFLOW_EXECUTOR_GITHUB_TOKEN/);
   }
   assert.deepEqual(collectBootstrapSecrets("workflow-mcp-worker",{...valid,GH_TOKEN:"ignored"}),valid);
 });
 
 test("Workflow GitHub Environment secrets never use reserved GITHUB_ names",()=>{
   const names=BOOTSTRAP_SECRETS["workflow-mcp-worker"];
-  assert.ok(names.includes("WORKFLOW_EXECUTOR_TOKEN"));
+  assert.ok(names.includes("WORKFLOW_EXECUTOR_GITHUB_TOKEN"));
   for(const name of names)assert.doesNotMatch(name,/^GITHUB_/);
 });
