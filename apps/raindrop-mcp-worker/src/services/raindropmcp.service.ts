@@ -1,5 +1,4 @@
 import { McpServer } from "@modelcontextprotocol/server";
-import type { Prompt } from "@modelcontextprotocol/server";
 import pkg from "../../package.json";
 import { buildToolConfigs } from "../tools/index.js";
 import {
@@ -27,54 +26,6 @@ export class RaindropMCPService {
   private server: McpServer;
   public raindropService: RaindropService;
   private resources: Record<string, any> = {};
-  private prompts: Array<
-    Prompt & {
-      messages?: Array<{ role: "user" | "assistant"; content: string }>;
-    }
-  > = [
-    {
-      name: "organize_by_topic",
-      description:
-        "Analyze titles/excerpts and suggest collections + tags for organization.",
-      messages: [
-        {
-          role: "user",
-          content:
-            "You are a bookmarking assistant that organizes Raindrop.io items by topic and intent. Propose concise collection moves and tag sets.",
-        },
-        {
-          role: "user",
-          content:
-            "Given a list of bookmarks, propose a target collection and 3-6 tags per item.",
-        },
-      ],
-    },
-    {
-      name: "find_duplicates",
-      description:
-        "Identify potential duplicate bookmarks using URL + title similarity.",
-      messages: [
-        {
-          role: "user",
-          content:
-            "You detect duplicate bookmarks. Consider URL normalization, title similarity, and canonical forms. Return suspected duplicate pairs.",
-        },
-      ],
-    },
-    {
-      name: "export_markdown",
-      description:
-        "Render bookmarks as Markdown list with title, link, tags, and excerpt.",
-      messages: [
-        {
-          role: "user",
-          content:
-            "Format bookmarks as markdown bullet list: [Title](URL) — excerpt — tags: tag1, tag2.",
-        },
-      ],
-    },
-  ];
-
   /**
    * Expose the MCP server instance for external control (e.g., connect, close).
    */
@@ -102,15 +53,10 @@ export class RaindropMCPService {
         "MCP Server for Raindrop.io with advanced interactive capabilities",
       capabilities: {
         resources: { subscribe: false, listChanged: false },
-        prompts: { listChanged: false },
         tools: { listChanged: false },
       },
       tools: await this.listTools(),
       resources: this.listResources(),
-      prompts: this.prompts.map(({ name, description }) => ({
-        name,
-        description,
-      })),
     };
   }
 
@@ -127,7 +73,6 @@ export class RaindropMCPService {
         {
           capabilities: {
             resources: { subscribe: false, listChanged: false },
-            prompts: { listChanged: false },
             tools: { listChanged: false },
           },
         },
@@ -136,7 +81,6 @@ export class RaindropMCPService {
       this.registerDeclarativeTools();
       this.registerResources();
       this.registerResourceHandlers();
-      this.registerPromptHandlers();
     } catch (err) {
       console.error("Failed to initialize RaindropMCPService:", err);
       throw err;
@@ -230,31 +174,6 @@ export class RaindropMCPService {
       }),
     );
 
-  }
-
-  private registerPromptHandlers() {
-    this.server.server.setRequestHandler(
-      "prompts/list",
-      this.asyncHandler(async () => ({
-        prompts: this.prompts,
-      })),
-    );
-
-    this.server.server.setRequestHandler(
-      "prompts/get",
-      this.asyncHandler(async (request: any) => {
-        const prompt = this.prompts.find((p) => p.name === request.params.name);
-        if (!prompt)
-          throw new NotFoundError(`Prompt ${request.params.name} not found`);
-        return {
-          description: prompt.description,
-          messages: (prompt.messages || []).map((message) => ({
-            role: message.role,
-            content: { type: "text" as const, text: message.content },
-          })),
-        };
-      }),
-    );
   }
 
   /**
