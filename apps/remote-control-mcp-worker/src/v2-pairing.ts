@@ -309,7 +309,7 @@ export class V2OwnerCoordinator {
     const tool=input.tool,deviceId=input.device_id,operationId=input.operation_id;
     const args=input.arguments;
     if(Object.keys(input).length!==4||typeof tool!=="string"||
-      !["browser_click","browser_fill","browser_press_key","browser_select_option"].includes(tool)||
+      !["browser_navigate","browser_click","browser_fill","browser_press_key","browser_select_option"].includes(tool)||
       typeof deviceId!=="string"||typeof operationId!=="string"||
       !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(deviceId)||
       !parseOperationId({operation_id:operationId})||
@@ -344,15 +344,30 @@ export class V2OwnerCoordinator {
     const selected=tabs.find(x=>x&&typeof x==="object"&&
       (x as {tab_id?:unknown}).tab_id===selectedId) as {url?:unknown}|undefined;
     if(typeof selected?.url!=="string")return Response.json({error:"no_selected_tab"},{status:409});
+    if(tool==="browser_navigate" && effectArgs.tab_id!==selectedId)
+      return Response.json({operation_id:operationId,status:"conflict"});
     let origin:string;
     let pagePath:string;
     try {
       const u=new URL(selected.url);
-      if(!["http:","https:"].includes(u.protocol))throw Error("non-web tab");
-      origin=u.origin;
-      pagePath=u.pathname.slice(0,512);
+      // A newly started tab is about:blank. Its first navigation must be
+      // approvable without pretending it already has a web origin.
+      if(u.href==="about:blank" && tool==="browser_navigate"){
+        origin="about:blank";
+        pagePath="/";
+      }else{
+        if(!["http:","https:"].includes(u.protocol))throw Error("non-web tab");
+        origin=u.origin;
+        pagePath=u.pathname.slice(0,512);
+      }
     }catch{return Response.json({error:"unsupported_page"},{status:409});}
-    const desc=tool==="browser_click"
+    const desc=tool==="browser_navigate"
+      ? (()=>{
+          const target=new URL(String(effectArgs.url));
+          const path=target.pathname.slice(0,130);
+          return "Navigate to "+target.origin+path+(target.search?" (query hidden)":"");
+        })()
+      : tool==="browser_click"
       ? "Click "+String(effectArgs.role)+" "+String(effectArgs.name)
       : tool==="browser_fill"
       ? "Fill "+String(effectArgs.role)+" "+String(effectArgs.name)+" (contents hidden)"

@@ -140,6 +140,69 @@ test("same-origin path or query changes cannot reuse consent; URL query stays ou
   }
 });
 
+test("first navigation from about:blank requires exact target approval and consumes only once",async()=>{
+  const t=context();
+  t.setPage("about:blank");
+  const destination="https://demo.playwright.dev/todomvc/?private_token=hide-me";
+  const navigateArgs={session_id:t.sid,tab_id:"tab-1",snapshot_version:2,url:destination};
+  const first=await t.dispatch({tool:"browser_navigate",arguments:navigateArgs});
+  assert.equal(first.status,200);
+  assert.equal(first.data.status,"confirmation_required");
+  assert.equal(t.commands.filter(x=>x.kind==="operation").length,0);
+  const approvalId=String(first.data.approval_id);
+  const record=await inspectBrowserIntent(
+    t.storage as unknown as Pick<DurableObjectStorage,"transaction">,approvalId);
+  assert.ok(record);
+  assert.equal(record.intent.tool,"browser_navigate");
+  assert.equal(record.intent.origin,"about:blank");
+  assert.equal(record.intent.page_path,"/");
+  assert.equal(record.intent.snapshot_version,2);
+  assert.match(record.intent.display,/demo\.playwright\.dev\/todomvc\//);
+  assert.equal(JSON.stringify([...t.data.entries()]).includes("private_token"),false);
+  const page=await browserApprovalPage(approvalId,record).text();
+  assert.match(page,/Navigate to https:\/\/demo\.playwright\.dev/);
+  assert.equal(page.includes("private_token"),false);
+  const otherTarget=await t.dispatch({tool:"browser_navigate",arguments:{
+    ...navigateArgs,url:"https://demo.playwright.dev/other"}});
+  assert.equal(otherTarget.data.status,"conflict");
+  assert.equal(t.commands.filter(x=>x.kind==="operation").length,0);
+  assert.equal(await approveBrowserIntent(
+    t.storage as unknown as Pick<DurableObjectStorage,"transaction">,approvalId,
+    "owner-access-subject"),"approved");
+  const result=await t.dispatch({tool:"browser_navigate",arguments:navigateArgs});
+  assert.equal(result.data.status,"completed");
+  assert.equal(t.commands.filter(x=>x.kind==="operation").length,1);
+  const replay=await t.dispatch({tool:"browser_navigate",arguments:navigateArgs});
+  assert.equal(replay.data.status,"unavailable");
+  assert.equal(t.commands.filter(x=>x.kind==="operation").length,1);
+});
+
+test("navigation target tab must match the Agent-selected tab before approval",async()=>{
+  const t=context();
+  const denied=await t.dispatch({tool:"browser_navigate",arguments:{
+    session_id:t.sid,tab_id:"tab-2",snapshot_version:2,
+    url:"https://example.org/landing",
+  }});
+  assert.equal(denied.data.status,"conflict");
+  assert.equal(t.commands.filter(x=>x.kind==="operation").length,0);
+});
+
+test("approved navigation is bound to the current signed tab URL",async()=>{
+  const t=context();
+  const args={session_id:t.sid,tab_id:"tab-1",snapshot_version:2,
+    url:"https://example.org/landing"};
+  const first=await t.dispatch({tool:"browser_navigate",arguments:args});
+  const approvalId=String(first.data.approval_id);
+  assert.equal(first.data.status,"confirmation_required");
+  assert.equal(await approveBrowserIntent(
+    t.storage as unknown as Pick<DurableObjectStorage,"transaction">,approvalId,
+    "owner"),"approved");
+  t.setPage("https://example.com/new-page");
+  const stale=await t.dispatch({tool:"browser_navigate",arguments:args});
+  assert.equal(stale.data.status,"conflict");
+  assert.equal(t.commands.filter(x=>x.kind==="operation").length,0);
+});
+
 test("fill requires exact one-use owner approval and never stores or displays entered text",async()=>{
   const t=context();
   const entered="example-private-form-value-never-persist";

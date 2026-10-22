@@ -8,7 +8,7 @@ const TOMBSTONE_MS = 5 * 60_000;
 const MAX_RECORDS = 32;
 const DEVICE_ID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const DIGEST = /^[a-f0-9]{64}$/;
-const ALLOWED_EFFECTS = new Set(["browser_click","browser_fill","browser_press_key","browser_select_option"]);
+const ALLOWED_EFFECTS = new Set(["browser_navigate","browser_click","browser_fill","browser_press_key","browser_select_option"]);
 
 export interface BrowserApprovalIntent {
   device_id: string;
@@ -55,6 +55,9 @@ export function validBrowserIntent(input: BrowserApprovalIntent): boolean {
     input.page_path.length>512 || /[\x00-\x1f\x7f?#]/.test(input.page_path) ||
     typeof input.display!=="string" || input.display.length<1 || input.display.length>240 ||
     /[\x00-\x1f\x7f]/.test(input.display)) return false;
+  // Only navigation may originate in an agent-owned blank tab.
+  if(input.origin==="about:blank")
+    return input.tool==="browser_navigate" && input.page_path==="/";
   try {
     const parsed=new URL(input.origin);
     return (parsed.protocol==="https:" || parsed.protocol==="http:") &&

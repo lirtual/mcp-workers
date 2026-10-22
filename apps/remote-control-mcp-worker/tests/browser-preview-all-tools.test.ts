@@ -111,3 +111,25 @@ test("Preview routes browser_fill through approval instead of direct signed WSS 
   assert.match(String(output.result?.content?.[0]?.text),/confirmation_required/);
   assert.equal(JSON.stringify(output).includes(text),false);
 });
+
+test("Preview routes browser_navigate to signed-tab approval, not direct DO dispatch",async()=>{
+  const device=randomUUID(),operation_id="spec152-nav-"+randomUUID();
+  const calls:Array<{path:string;payload:Record<string,unknown>}>=[];
+  const env={...preview,V2_OWNER:{idFromName:()=>({}),get:()=>({
+    fetch:async(url:string,init:{body?:string})=>{
+      const payload=JSON.parse(init.body??"{}") as Record<string,unknown>;
+      calls.push({path:new URL(url).pathname,payload});
+      return Response.json({operation_id,status:"confirmation_required",
+        approval_id:randomUUID(),expires_at:Date.now()+300000});
+    },
+  })}};
+  const output=await request(env,"tools/call",{name:"browser_navigate",arguments:{
+    device_id:device,operation_id,session_id:randomUUID(),
+    tab_id:"tab-1",snapshot_version:0,
+    url:"https://demo.playwright.dev/todomvc/",
+  }});
+  assert.equal(output.result?.isError,false);
+  assert.deepEqual(calls.map(x=>x.path),["/browser-approval/dispatch"]);
+  assert.equal(calls[0]?.payload.tool,"browser_navigate");
+  assert.match(String(output.result?.content?.[0]?.text),/confirmation_required/);
+});

@@ -18,8 +18,8 @@ test("unknown browser effects require receipt lookup, never implicit replay",()=
 test("strict typed browser contract forwards only bounded arguments",()=>{
   const start=parseBrowserCall("browser_start",{device_id,operation_id});
   assert.deepEqual(start,{device_id,tool:"browser_start",kind:"operation",operation_id,arguments:{}});
-  const nav=parseBrowserCall("browser_navigate",{device_id,operation_id,session_id,url:"https://example.com/"});
-  assert.deepEqual(nav?.arguments,{session_id,url:"https://example.com/"});
+  const nav=parseBrowserCall("browser_navigate",{device_id,operation_id,session_id,tab_id:"tab-1",snapshot_version:0,url:"https://example.com/"});
+  assert.deepEqual(nav?.arguments,{session_id,tab_id:"tab-1",snapshot_version:0,url:"https://example.com/"});
   const read=parseBrowserCall("browser_snapshot",{device_id,session_id});
   assert.equal(read?.kind,"read");
   assert.deepEqual(read?.arguments,{session_id});
@@ -36,24 +36,24 @@ test("rejects arbitrary JS, CLI/path/profile, missing IDs, unexpected keys, and 
     ["browser_start",{device_id}],
     ["browser_status",{device_id,shell:"echo hi"}],
     ["browser_snapshot",{device_id,session_id:"nope"}],
-    ["browser_navigate",{device_id,operation_id,session_id,url:"file:///etc/passwd"}],
-    ["browser_navigate",{device_id,operation_id,session_id,url:"https://u:secret@example.com/"}],
-    ["browser_navigate",{device_id,operation_id,session_id,url:"javascript:alert(1)"}],
-    ["browser_navigate",{device_id,operation_id,session_id,url:"http://127.0.0.1:8765/"}],
-    ["browser_navigate",{device_id,operation_id,session_id,url:"http://2130706433:8765/"}],
-    ["browser_navigate",{device_id,operation_id,session_id,url:"http://[::1]/"}],
-    ["browser_navigate",{device_id,operation_id,session_id,url:"http://localhost:1234/"}],
-    ["browser_navigate",{device_id,operation_id,session_id,url:"http://localhost./"}],
-    ["browser_navigate",{device_id,operation_id,session_id,url:"http://localhost../"}],
-    ["browser_navigate",{device_id,operation_id,session_id,url:"https://printer.local./"}],
-    ["browser_navigate",{device_id,operation_id,session_id,url:"https://db.internal.."}],
-    ["browser_navigate",{device_id,operation_id,session_id,url:"http://127.0.0.1../"}],
-    ["browser_navigate",{device_id,operation_id,session_id,url:"https://docs.internal/page"}],
-    ["browser_navigate",{device_id,operation_id,session_id,url:"https://printer.local/"}],
-    ["browser_navigate",{device_id,operation_id,session_id,url:"https://server/"}],
-    ["browser_navigate",{device_id,operation_id,session_id,url:"  https://example.com/"}],
-    ["browser_navigate",{device_id,operation_id,session_id,url:"https://example.com/\n"}],
-    ["browser_navigate",{device_id,operation_id,session_id,url:"https://example.com/",script:"alert(1)"}],
+    ["browser_navigate",{device_id,operation_id,session_id,tab_id:"tab-1",snapshot_version:0,url:"file:///etc/passwd"}],
+    ["browser_navigate",{device_id,operation_id,session_id,tab_id:"tab-1",snapshot_version:0,url:"https://u:secret@example.com/"}],
+    ["browser_navigate",{device_id,operation_id,session_id,tab_id:"tab-1",snapshot_version:0,url:"javascript:alert(1)"}],
+    ["browser_navigate",{device_id,operation_id,session_id,tab_id:"tab-1",snapshot_version:0,url:"http://127.0.0.1:8765/"}],
+    ["browser_navigate",{device_id,operation_id,session_id,tab_id:"tab-1",snapshot_version:0,url:"http://2130706433:8765/"}],
+    ["browser_navigate",{device_id,operation_id,session_id,tab_id:"tab-1",snapshot_version:0,url:"http://[::1]/"}],
+    ["browser_navigate",{device_id,operation_id,session_id,tab_id:"tab-1",snapshot_version:0,url:"http://localhost:1234/"}],
+    ["browser_navigate",{device_id,operation_id,session_id,tab_id:"tab-1",snapshot_version:0,url:"http://localhost./"}],
+    ["browser_navigate",{device_id,operation_id,session_id,tab_id:"tab-1",snapshot_version:0,url:"http://localhost../"}],
+    ["browser_navigate",{device_id,operation_id,session_id,tab_id:"tab-1",snapshot_version:0,url:"https://printer.local./"}],
+    ["browser_navigate",{device_id,operation_id,session_id,tab_id:"tab-1",snapshot_version:0,url:"https://db.internal.."}],
+    ["browser_navigate",{device_id,operation_id,session_id,tab_id:"tab-1",snapshot_version:0,url:"http://127.0.0.1../"}],
+    ["browser_navigate",{device_id,operation_id,session_id,tab_id:"tab-1",snapshot_version:0,url:"https://docs.internal/page"}],
+    ["browser_navigate",{device_id,operation_id,session_id,tab_id:"tab-1",snapshot_version:0,url:"https://printer.local/"}],
+    ["browser_navigate",{device_id,operation_id,session_id,tab_id:"tab-1",snapshot_version:0,url:"https://server/"}],
+    ["browser_navigate",{device_id,operation_id,session_id,tab_id:"tab-1",snapshot_version:0,url:"  https://example.com/"}],
+    ["browser_navigate",{device_id,operation_id,session_id,tab_id:"tab-1",snapshot_version:0,url:"https://example.com/\n"}],
+    ["browser_navigate",{device_id,operation_id,session_id,tab_id:"tab-1",snapshot_version:0,url:"https://example.com/",script:"alert(1)"}],
   ] as const) assert.equal(parseBrowserCall(tool,args),null,tool);
   assert.equal(parseBrowserDoArguments("browser_start",{operation_id}),true);
   assert.equal(parseBrowserDoArguments("browser_start",{}),false);
@@ -76,8 +76,8 @@ test("browser tool annotations conservatively describe external effects, not app
   // approval, so the hard-coded disabled browser-tool gate remains required.
 });
 test("model-supplied confirmation fields cannot grant browser authorization",()=>{
-  const nav={device_id,operation_id,session_id,url:"https://example.com/"};
-  const agentArgs={operation_id,session_id,url:nav.url};
+  const nav={device_id,operation_id,session_id,tab_id:"tab-1",snapshot_version:0,url:"https://example.com/"};
+  const agentArgs={operation_id,session_id,tab_id:"tab-1",snapshot_version:0,url:nav.url};
   // Owner consent is not a model-authored flag or token. This test is
   // parser-only: it is NOT evidence of a working human approval channel.
   for(const [field,value] of Object.entries({
@@ -110,11 +110,11 @@ test("staged browser tools are neither advertised nor dispatchable on the curren
   for(const [name,args] of [
     ["browser_start",{device_id,operation_id}],
     ["browser_status",{device_id}],
-    ["browser_navigate",{device_id,operation_id,session_id,url:"https://example.com/"}],
+    ["browser_navigate",{device_id,operation_id,session_id,tab_id:"tab-1",snapshot_version:0,url:"https://example.com/"}],
     ["browser_snapshot",{device_id,session_id}],
     ["browser_close",{device_id,operation_id,session_id}],
-    ["browser_navigate",{device_id,operation_id,session_id,url:"https://example.com/",approved:true}],
-    ["browser_navigate",{device_id,operation_id,session_id,url:"https://example.com/",confirmation:"yes"}],
+    ["browser_navigate",{device_id,operation_id,session_id,tab_id:"tab-1",snapshot_version:0,url:"https://example.com/",approved:true}],
+    ["browser_navigate",{device_id,operation_id,session_id,tab_id:"tab-1",snapshot_version:0,url:"https://example.com/",confirmation:"yes"}],
   ] as const) {
     const call=await rpc("tools/call",{name,arguments:args});
     assert.equal(call.result?.isError,true,name);
@@ -140,17 +140,17 @@ test("2026 capability hints do not silently upgrade the legacy MCP bridge",async
 });
 test("first-hop URL rejection precedes any DO mutation admission; network-level isolation remains unproven",()=>{
   const publicUrl=parseBrowserCall("browser_navigate",{
-    device_id,operation_id,session_id,url:"https://example.com/review?q=1",
+    device_id,operation_id,session_id,tab_id:"tab-1",snapshot_version:0,url:"https://example.com/review?q=1",
   });
   assert.equal(publicUrl?.kind,"operation");
-  assert.equal(parseBrowserCall("browser_navigate",{device_id,operation_id,session_id,url:"https://example.com./"})?.kind,"operation");
+  assert.equal(parseBrowserCall("browser_navigate",{device_id,operation_id,session_id,tab_id:"tab-1",snapshot_version:0,url:"https://example.com./"})?.kind,"operation");
   for(const value of [
     "http://10.0.0.1/", "http://192.168.0.10/", "http://172.16.2.3/",
     "http://127.0.0.1:18781/", "http://169.254.169.254/",
     "http://[::ffff:127.0.0.1]/",
   ]) {
     assert.equal(parseBrowserCall("browser_navigate",{
-      device_id,operation_id,session_id,url:value,
+      device_id,operation_id,session_id,tab_id:"tab-1",snapshot_version:0,url:value,
     }),null,value);
   }
   // Public-host redirects, hostile DNS resolution and HTML subresources

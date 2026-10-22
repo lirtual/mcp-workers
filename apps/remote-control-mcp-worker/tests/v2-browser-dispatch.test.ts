@@ -92,7 +92,7 @@ test("browser DO routes typed read/effect frames only to the current approved de
   assert.equal(impersonated.status,400);
   const privateUrl=await dispatch("browser_navigate",device,{
     session_id:sid,operation_id:"spec152-private-"+randomUUID(),
-    url:"http://127.0.0.1/private",
+    url:"http://127.0.0.1/private",tab_id:"tab-1",snapshot_version:0,
   });
   assert.equal(privateUrl.status,400);
   assert.equal(calls.length,beforeDenied,"invalid or unapproved commands do not reach Agent WSS");

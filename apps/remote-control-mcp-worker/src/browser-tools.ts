@@ -30,8 +30,8 @@ export const BROWSER_TOOLS = [
   },
   {
     name:"browser_navigate",title:"Navigate selected browser tab",
-    description:"Navigate the explicitly selected tab to a public HTTP(S) URL. This is not network isolation or approval for consequential web actions.",
-    inputSchema:schema({operation_id:operation,session_id:session,url:{type:"string",maxLength:2048}},["operation_id","session_id","url"]),
+    description:"Navigate the exact tab and snapshot_version from browser_status to a public HTTP(S) URL only after one-use owner approval. Retry with unchanged operation_id, tab_id, snapshot_version and URL after approval. Navigation fails closed if the tab or snapshot changed. This is not DNS or redirect isolation.",
+    inputSchema:schema({operation_id:operation,session_id:session,tab_id:{type:"string"},snapshot_version:version,url:{type:"string",maxLength:2048}},["operation_id","session_id","tab_id","snapshot_version","url"]),
     annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:true},
   },
   {
@@ -96,7 +96,7 @@ export function parseBrowserCall(tool: string, input: unknown): Parsed | null {
   const effect = BROWSER_EFFECT_TOOLS.has(tool) && (!tabs || action!=="list");
   const keys = ["device_id",...(effect?["operation_id"]:[]),
     ...(!["browser_start","browser_status"].includes(tool)?["session_id"]:[]),
-    ...(tool==="browser_navigate"?["url"]:[]),
+    ...(tool==="browser_navigate"?["url","tab_id","snapshot_version"]:[]),
     ...(tool==="browser_snapshot" && Object.hasOwn(input,"offset")?["offset"]:[]),
     ...(tabs?["action",...(["select","close"].includes(String(action))?["tab_id"]:[])]:[]),
     ...(["browser_click","browser_fill","browser_select_option"].includes(tool)?["role","name","snapshot_version"]:[]),
