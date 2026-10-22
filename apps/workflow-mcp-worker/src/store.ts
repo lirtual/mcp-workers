@@ -21,28 +21,25 @@ export type Env = {
   };
   READONLY_TARGET: Fetcher;
   // Enabled only through the explicit selected-Worker production release.
-  S2_READONLY_ENABLED?: string;
-  // Optional, S2-only machine identity for the pinned Cloudflare MCP Portal.
-  S2_PORTAL_CLIENT_ID?: string;
-  S2_PORTAL_CLIENT_SECRET?: string;
-  // For production S2, pin to the existing MCP Portal;
-  // for isolated test S2, pin to test-mcp (never selected by Draft input).
-  S2_PORTAL_ENDPOINT?: string;
-  // Production S3 requires explicit opt-in and fixed OIDC/executor pins.
-  S3_ENABLED?: string;
-  S3_GITHUB_TOKEN?: string;
-  S3_GITHUB_REPOSITORY?: string;
-  S3_GITHUB_REPOSITORY_ID?: string;
-  S3_GITHUB_REF?: string;
-  S3_GITHUB_AUDIENCE?: string;
+  // Optional, MCP-only machine identity for the pinned Cloudflare MCP Portal.
+  MCP_PORTAL_CLIENT_ID?: string;
+  MCP_PORTAL_CLIENT_SECRET?: string;
+  // For production MCP, pin to the existing MCP Portal;
+  // for isolated test MCP, pin to test-mcp (never selected by Draft input).
+  MCP_PORTAL_ENDPOINT?: string;
+  // Production GitHub requires explicit opt-in and fixed OIDC/executor pins.
+  WORKFLOW_EXECUTOR_GITHUB_TOKEN?: string;
+  GITHUB_EXECUTOR_REPOSITORY?: string;
+  GITHUB_EXECUTOR_REPOSITORY_ID?: string;
+  GITHUB_EXECUTOR_REF?: string;
+  GITHUB_EXECUTOR_AUDIENCE?: string;
   // Legacy isolated test fixtures can use the dedicated test branch;
   // production always selects the registered Echo executor.
-  S3_TEST_WORKER_NAME?: string;
-  S3_TEST_DEDICATED_EXECUTOR?: string;
+  GITHUB_TEST_WORKER_NAME?: string;
+  GITHUB_TEST_DEDICATED_EXECUTOR?: string;
 
   // Legacy personal direct-target mode requires a separate explicit opt-in.
-  // Without it, S2 must have a pinned Portal endpoint at Publish and Run.
-  S2_DIRECT_TARGETS_ENABLED?: string;
+  // Without it, MCP must have a pinned Portal endpoint at Publish and Run.
 };
 export class StateError extends Error {
   code:string;
@@ -131,26 +128,20 @@ export class WorkflowService {
     })).values()].sort((a,b)=>JSON.stringify(a)<JSON.stringify(b)?-1:JSON.stringify(a)>JSON.stringify(b)?1:0);
     const provided=approved_operations.slice().sort((a,b)=>JSON.stringify(a)<JSON.stringify(b)?-1:JSON.stringify(a)>JSON.stringify(b)?1:0);
     if(JSON.stringify(required)!==JSON.stringify(provided))throw new StateError('external_approval_required');
-    if(required.length && this.env.S2_READONLY_ENABLED!=='true')throw new StateError('s2_disabled');
     if(required.length){
-      const portal=this.env.S2_PORTAL_ENDPOINT;
-      if(portal===undefined){
-        if(this.env.S2_DIRECT_TARGETS_ENABLED!=='true')
-          throw new StateError('portal_target_not_configured');
-      }else if(!['https://test-mcp.lirtual.dpdns.org/mcp',
-                 'https://mcp.lirtual.dpdns.org/mcp'].includes(portal)||
-               required.some(grant=>grant.endpoint!==portal))
-        throw new StateError('portal_target_not_authorized');
+      const portal=this.env.MCP_PORTAL_ENDPOINT;
+      if(portal===undefined)throw new StateError('portal_target_not_configured');
+      if(!['https://test-mcp.lirtual.dpdns.org/mcp','https://mcp.lirtual.dpdns.org/mcp'].includes(portal) ||
+         required.some(grant=>grant.endpoint!==portal))throw new StateError('portal_target_not_authorized');
     }
     // Personal trusted-target mode: a separate explicit risk acknowledgement
     // is required at each Publish in addition to exact per-operation grants.
     // This is an authenticated API assertion, not proof of human interaction.
     if(required.length && accept_target_risks!==true)throw new StateError('target_risk_acknowledgment_required');
-    const hasS3=plan.steps.some(s=>s.uses==='github.run');
-    if(hasS3 && this.env.S3_ENABLED!=='true')throw new StateError('s3_disabled');
-    if(hasS3 && approve_heavy_execution!==true)throw new StateError('s3_execution_approval_required');
-    const scopedPlan:Plan=required.length?{...plan,s2_approvals:required,s2_target_risks_accepted:true}:plan;
-    const publishedPlan:Plan=hasS3?{...scopedPlan,s3_execution_approved:true}:scopedPlan;
+    const hasGithub=plan.steps.some(s=>s.uses==='github.run');
+    if(hasGithub && approve_heavy_execution!==true)throw new StateError('github_execution_approval_required');
+    const scopedPlan:Plan=required.length?{...plan,mcp_approvals:required,mcp_target_risks_accepted:true}:plan;
+    const publishedPlan:Plan=hasGithub?{...scopedPlan,github_execution_approved:true}:scopedPlan;
     // Repeated Publish of an unchanged Draft resolves to its existing Version.
     if(row.active_version_id){
       const current=await this.db.prepare('SELECT digest FROM workflow_versions WHERE id=? AND workflow_id=?').bind(row.active_version_id,workflow_id).first<{digest:string}>();
@@ -184,7 +175,7 @@ export class WorkflowService {
       if(original){if(original.request_digest!==request_digest)throw new StateError('idempotency_conflict');return this.reconcileStart(original);}
     }
     // Reconcile only the bounded number of stale starts occupying the eight
-    // S1 admission slots. This is ingress repair, not a new scheduler.
+    // Workflow admission slots. This is ingress repair, not a new scheduler.
     const stale=await this.db.prepare("SELECT * FROM runs WHERE outcome='queued' AND start_state IN ('reserved','start_unknown') AND created_at<=? ORDER BY created_at ASC LIMIT 8")
       .bind(now()-START_RECONCILE_WINDOW_MS).all<RunRow>();
     for(const old of stale.results)await this.reconcileStart(old);

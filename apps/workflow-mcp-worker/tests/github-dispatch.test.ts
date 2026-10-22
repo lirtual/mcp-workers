@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { dispatchGithubAttempt, matchCandidateIdentity, selectedS3Executor } from '../src/s3-github-dispatch.ts';
+import { dispatchGithubAttempt, matchCandidateIdentity, selectedGithubExecutor } from '../src/github-dispatch.ts';
 
 const config={
-  repository:'lirtual/test-executor',workflow:'workflow-s3-executor.yml',
+  repository:'lirtual/test-executor',workflow:'workflow-github-executor.yml',
   ref:'refs/heads/main',dispatchToken:'test-token-not-real',
 };
 const attempt={
@@ -15,7 +15,7 @@ test('registered GitHub dispatch uses exact repo/ref and only opaque inputs',asy
   let calls=0;
   const outcome=await dispatchGithubAttempt(config,attempt,async(req:Request)=>{
     calls++;
-    assert.equal(req.url,'https://api.github.com/repos/lirtual/test-executor/actions/workflows/workflow-s3-executor.yml/dispatches');
+    assert.equal(req.url,'https://api.github.com/repos/lirtual/test-executor/actions/workflows/workflow-github-executor.yml/dispatches');
     assert.equal(req.method,'POST');
     assert.equal(req.headers.get('authorization'),'Bearer test-token-not-real');
     assert.equal(req.headers.get('x-github-api-version'),'2026-03-10');
@@ -72,7 +72,7 @@ test('unregistered capabilities and invalid execution configuration fail before 
 
 test('verified job claims must exactly match confirmed physical Run and attempt',()=>{
   const candidate={
-    repository:'lirtual/test-executor',workflowRef:'lirtual/test-executor/.github/workflows/workflow-s3-executor.yml@refs/heads/main',
+    repository:'lirtual/test-executor',workflowRef:'lirtual/test-executor/.github/workflows/workflow-github-executor.yml@refs/heads/main',
     ref:'refs/heads/main',runId:39410780231,runAttempt:1,
   };
   const claims={
@@ -94,18 +94,18 @@ test('verified job claims must exactly match confirmed physical Run and attempt'
 
 test('isolation CI registration must be exact and never permits an arbitrary worker host',async()=>{
   const isolation={...config,repository:'lirtual/mcp-workers',workflow:'ci.yml',
-    ref:'refs/heads/wip/workflow-s3-github-executor',workerName:'workflow-s3-oidc-aabbccddee'};
+    ref:'refs/heads/wip/workflow-github-executor',workerName:'workflow-github-oidc-aabbccddee'};
   let calls=0;
   const result=await dispatchGithubAttempt(isolation,attempt,async request=>{
     calls++;
     assert.equal(request.url,'https://api.github.com/repos/lirtual/mcp-workers/actions/workflows/ci.yml/dispatches');
     const body=await request.json() as {ref:string;return_run_details:boolean;inputs:Record<string,string>};
-    assert.equal(body.ref,'wip/workflow-s3-github-executor');
+    assert.equal(body.ref,'wip/workflow-github-executor');
     assert.equal(body.return_run_details,true);
     assert.deepEqual(body.inputs,{
       attempt_id:attempt.attemptId,dispatch_id:attempt.dispatchId,
-      capability_id:'heavy.github.echo',worker_name:'workflow-s3-oidc-aabbccddee',
-      worker:'workflow-mcp-worker',s3_executor_worker:'true',
+      capability_id:'heavy.github.echo',worker_name:'workflow-github-oidc-aabbccddee',
+      worker:'workflow-mcp-worker',github_executor_worker:'true',
     });
     return Response.json({workflow_run_id:39410780231,run_url:'https://api.github.com/test',
       html_url:'https://github.com/test'},{status:200});
@@ -114,7 +114,7 @@ test('isolation CI registration must be exact and never permits an arbitrary wor
   assert.deepEqual(result,{status:'confirmed',runId:39410780231,runAttempt:1});
   for(const cfg of [
     {...isolation,workerName:'https://evil.example'},
-    {...isolation,workerName:'workflow-s3-oidc-../aaa'},
+    {...isolation,workerName:'workflow-github-oidc-../aaa'},
     {...isolation,repository:'lirtual/other'},
     {...isolation,ref:'refs/heads/main'},
     {...isolation,workflow:'other.yml'},
@@ -126,36 +126,36 @@ test('isolation CI registration must be exact and never permits an arbitrary wor
 });
 
 
-test('production executor remains dedicated; only exact disposable S3 environment may reuse ci.yml',()=>{
-  assert.deepEqual(selectedS3Executor({S3_GITHUB_REPOSITORY:'lirtual/mcp-workers',
-    S3_GITHUB_REF:'refs/heads/main'}),{workflow:'workflow-s3-executor.yml'});
-  const fixture={S3_GITHUB_REPOSITORY:'lirtual/mcp-workers',
-    S3_GITHUB_REF:'refs/heads/wip/workflow-s3-github-executor',
-    S3_TEST_WORKER_NAME:'workflow-s3-oidc-aabbccddee'};
-  assert.deepEqual(selectedS3Executor(fixture),{
-    workflow:'ci.yml',workerName:'workflow-s3-oidc-aabbccddee',
+test('production executor remains dedicated; only exact disposable GitHub environment may reuse ci.yml',()=>{
+  assert.deepEqual(selectedGithubExecutor({GITHUB_EXECUTOR_REPOSITORY:'lirtual/mcp-workers',
+    GITHUB_EXECUTOR_REF:'refs/heads/main'}),{workflow:'workflow-github-executor.yml'});
+  const fixture={GITHUB_EXECUTOR_REPOSITORY:'lirtual/mcp-workers',
+    GITHUB_EXECUTOR_REF:'refs/heads/wip/workflow-github-executor',
+    GITHUB_TEST_WORKER_NAME:'workflow-github-oidc-aabbccddee'};
+  assert.deepEqual(selectedGithubExecutor(fixture),{
+    workflow:'ci.yml',workerName:'workflow-github-oidc-aabbccddee',
   });
-  assert.deepEqual(selectedS3Executor({...fixture,S3_TEST_WORKER_NAME:'workflow-s3-plan-aabbccddee'}),{
-    workflow:'ci.yml',workerName:'workflow-s3-plan-aabbccddee',
+  assert.deepEqual(selectedGithubExecutor({...fixture,GITHUB_TEST_WORKER_NAME:'workflow-github-plan-aabbccddee'}),{
+    workflow:'ci.yml',workerName:'workflow-github-plan-aabbccddee',
   });
   for(const mutation of [
-    {...fixture,S3_GITHUB_REPOSITORY:'lirtual/other'},
-    {...fixture,S3_GITHUB_REF:'refs/heads/main'},
-    {...fixture,S3_TEST_WORKER_NAME:'workflow-s3-oidc-../../bad'},
-  ])assert.throws(()=>selectedS3Executor(mutation),/github_executor_test_environment_invalid/);
+    {...fixture,GITHUB_EXECUTOR_REPOSITORY:'lirtual/other'},
+    {...fixture,GITHUB_EXECUTOR_REF:'refs/heads/main'},
+    {...fixture,GITHUB_TEST_WORKER_NAME:'workflow-github-oidc-../../bad'},
+  ])assert.throws(()=>selectedGithubExecutor(mutation),/github_executor_test_environment_invalid/);
 });
 
 
-test('registered dedicated S3 acceptance is gated to the exact Draft ref and disposable host',()=>{
-  const env={S3_GITHUB_REPOSITORY:'lirtual/mcp-workers',
-    S3_GITHUB_REF:'refs/heads/wip/workflow-s3-github-executor',
-    S3_TEST_WORKER_NAME:'workflow-s3-plan-abcdef0123',
-    S3_TEST_DEDICATED_EXECUTOR:'true'};
-  assert.deepEqual(selectedS3Executor(env),{workflow:'workflow-s3-executor.yml'});
+test('registered dedicated GitHub acceptance is gated to the exact Draft ref and disposable host',()=>{
+  const env={GITHUB_EXECUTOR_REPOSITORY:'lirtual/mcp-workers',
+    GITHUB_EXECUTOR_REF:'refs/heads/wip/workflow-github-executor',
+    GITHUB_TEST_WORKER_NAME:'workflow-github-plan-abcdef0123',
+    GITHUB_TEST_DEDICATED_EXECUTOR:'true'};
+  assert.deepEqual(selectedGithubExecutor(env),{workflow:'workflow-github-executor.yml'});
   for(const changed of [
-    {...env,S3_GITHUB_REF:'refs/heads/main'},
-    {...env,S3_GITHUB_REPOSITORY:'other/repo'},
-    {...env,S3_TEST_WORKER_NAME:'workflow-s3-plan/evil'},
-    {...env,S3_TEST_WORKER_NAME:undefined},
-  ])assert.throws(()=>selectedS3Executor(changed),/github_executor_test_environment_invalid/);
+    {...env,GITHUB_EXECUTOR_REF:'refs/heads/main'},
+    {...env,GITHUB_EXECUTOR_REPOSITORY:'other/repo'},
+    {...env,GITHUB_TEST_WORKER_NAME:'workflow-github-plan/evil'},
+    {...env,GITHUB_TEST_WORKER_NAME:undefined},
+  ])assert.throws(()=>selectedGithubExecutor(changed),/github_executor_test_environment_invalid/);
 });

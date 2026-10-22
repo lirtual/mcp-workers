@@ -1,8 +1,8 @@
 import { createRemoteJWKSet, jwtVerify } from 'jose';
-import { matchCandidateIdentity, type DispatchOutcome } from './s3-github-dispatch.ts';
+import { matchCandidateIdentity, type DispatchOutcome } from './github-dispatch.ts';
 
 /**
- * S3 candidate authorization, first isolated slice only.
+ * GitHub candidate authorization, first isolated slice only.
  * Never call this as a public MCP tool; an OIDC-only GitHub callback endpoint
  * will use it after its exact claim/attempt ID validation is implemented.
  *
@@ -53,7 +53,7 @@ function validateIdentity(c:ExecutorIdentity){
          -(c.ref.length+1)))||
      !/^refs\/heads\/[A-Za-z0-9._/-]+$/.test(c.ref)||
      c.ref.includes('..')||c.ref.includes('//')||
-     !/^workflow-s3-[a-z0-9:-]{4,120}$/.test(c.audience))
+     !/^workflow-github-[a-z0-9:-]{4,120}$/.test(c.audience))
     throw Error('github_oidc_expected_identity_invalid');
 }
 

@@ -327,7 +327,7 @@ test("GitHub Actions deploy requires only one PAT Secret and no repository lists
     secrets, { mode: "readback" }), /Unexpected production resource/);
 });
 
-test("S1 production release must preserve exact reviewed resource and private fixture boundaries", () => {
+test("Workflow production release must preserve exact reviewed resource and private fixture boundaries", () => {
   const owner = JSON.parse(readFileSync(new URL("../apps/workflow-mcp-worker/wrangler.jsonc", import.meta.url), "utf8"));
   const fixture = JSON.parse(readFileSync(new URL("../apps/workflow-mcp-worker/tests/fixtures/wrangler.jsonc", import.meta.url), "utf8"));
   assert.equal(verifyWorkflowReleaseConfig(owner, fixture), true);
@@ -337,8 +337,8 @@ test("S1 production release must preserve exact reviewed resource and private fi
     [{ ...owner, services: [] }, /Fixture binding/],
     [{ ...owner, workflows: [] }, /Workflow binding/],
     [{ ...owner, secrets: { required: [] } }, /Portal Secret/],
-    [{ ...owner, vars: { S2_READONLY_ENABLED: "true" } }, /S2/],
-    [{ ...owner, compatibility_flags: ["global_fetch_strictly_public"] }, /S2/],
+    [{ ...owner, vars: { MCP_CALL_ENABLED: "true" } }, /MCP/],
+    [{ ...owner, compatibility_flags: ["global_fetch_strictly_public"] }, /MCP/],
   ];
   for(const [cfg,err] of brokenOwners)assert.throws(()=>verifyWorkflowReleaseConfig(cfg,fixture),err);
   for(const bad of [
@@ -349,7 +349,7 @@ test("S1 production release must preserve exact reviewed resource and private fi
   ])assert.throws(()=>verifyWorkflowReleaseConfig(owner,bad),/Fixture must have no public route/);
 });
 
-test("S1 remote D1 readback blocks missing migrations, nonempty first-run and unresolved Runs", () => {
+test("Workflow remote D1 readback blocks missing migrations, nonempty first-run and unresolved Runs", () => {
   const row = { migration_count:2,migration_v1:1,migration_v2:1,
     migration_v3:0,migration_v4:0,attempt_table:0,receipt_table:0,
     native_column:1,active_runs:0,run_count:0,workflow_count:0 };
@@ -376,34 +376,47 @@ test("S1 remote D1 readback blocks missing migrations, nonempty first-run and un
   assert.throws(()=>verifyWorkflowD1Readiness([],true),/readback unavailable/);
 });
 
-test("S1 Cloudflare runtime binding readback must match private Fixture, D1 and native Workflow", () => {
-  const bindings = [
+test("Workflow readback verifies one integrated runtime, registered GitHub identity and Portal",()=>{
+  const bindings=[
     {name:"MCP_ACCESS_TOKEN",type:"secret_text"},
+    {name:"MCP_PORTAL_CLIENT_ID",type:"secret_text"},
+    {name:"MCP_PORTAL_CLIENT_SECRET",type:"secret_text"},
+    {name:"WORKFLOW_EXECUTOR_GITHUB_TOKEN",type:"secret_text"},
     {name:"DB",type:"d1",id:"c76850db-b5e3-4128-9150-849a1c9e8d74"},
-    {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-s1",class_name:"WorkflowRunner"},
-    {name:"READONLY_TARGET",type:"service",service:"workflow-s1-readonly-fixture"}
+    {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-runner",class_name:"WorkflowRunner"},
+    {name:"READONLY_TARGET",type:"service",service:"workflow-readonly-fixture"},
+    {name:"MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
+    {name:"GITHUB_EXECUTOR_REPOSITORY",type:"plain_text",text:"lirtual/mcp-workers"},
+    {name:"GITHUB_EXECUTOR_REPOSITORY_ID",type:"plain_text",text:"1414936394"},
+    {name:"GITHUB_EXECUTOR_REF",type:"plain_text",text:"refs/heads/main"},
+    {name:"GITHUB_EXECUTOR_AUDIENCE",type:"plain_text",text:"workflow-github-claim:production"},
   ];
-  const settings = {bindings,observability:{enabled:true,logs:{invocation_logs:true}}};
-  const secrets = [{name:"MCP_ACCESS_TOKEN"}];
-  assert.equal(verifyBindings("workflow-mcp-worker",settings,secrets,{mode:"readback"}),true);
-  for(const item of ["DB","WORKFLOW","READONLY_TARGET"]) {
-    assert.throws(()=>verifyBindings("workflow-mcp-worker",
-      {...settings,bindings:bindings.filter(x=>x.name!==item)},secrets,{mode:"readback"}),/binding drift/);
+  const settings={bindings,observability:{enabled:true,logs:{invocation_logs:true}}};
+  const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET",
+    "WORKFLOW_EXECUTOR_GITHUB_TOKEN"].map(name=>({name}));
+  const check=(list=bindings,ss=secrets)=>
+    verifyBindings("workflow-mcp-worker",{...settings,bindings:list},ss,{mode:"readback"});
+  assert.equal(check(),true);
+  for(const name of ["DB","WORKFLOW","READONLY_TARGET"]){
+    assert.throws(()=>check(bindings.filter(x=>x.name!==name)),/binding drift/);
   }
-  assert.throws(()=>verifyBindings("workflow-mcp-worker",{...settings,bindings:[...bindings,
-    {name:"S2_READONLY_ENABLED",type:"plain_text",text:"true"}]},secrets,{mode:"readback"}),/S2 must remain disabled/);
+  for(const name of ["MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET","WORKFLOW_EXECUTOR_GITHUB_TOKEN"]){
+    assert.throws(()=>check(bindings,secrets.filter(x=>x.name!==name)),/binding missing/);
+  }
+  assert.throws(()=>check([...bindings,{name:"MCP_CALL_ENABLED",type:"plain_text",text:"true"}]),/Obsolete stage flag/);
 });
 
-test("S1 manual GitHub Actions requires D1 checks and private Fixture before Owner", () => {
+
+test("Workflow manual GitHub Actions requires D1 checks and private Fixture before Owner", () => {
   const ci=readFileSync(new URL("../.github/workflows/ci.yml",import.meta.url),"utf8");
-  const pre=ci.indexOf("      - name: Verify S1 private Fixture and remote D1 readiness");
-  const migration=ci.indexOf("      - name: Apply additive Workflow D1 migrations (S3 remains disabled)");
-  const fixture=ci.indexOf("      - name: Deploy existing private S1 read-only Fixture");
+  const pre=ci.indexOf("      - name: Verify Workflow private Fixture and remote D1 readiness");
+  const migration=ci.indexOf("      - name: Apply complete Workflow D1 migrations");
+  const fixture=ci.indexOf("      - name: Deploy existing private Workflow read-only Fixture");
   const publish=ci.indexOf("      - name: Publish exactly selected Worker");
   assert.ok(pre>0 && migration>pre && fixture>migration && publish>fixture);
   assert.match(ci,/wrangler d1 migrations apply workflow-mcp-worker --remote/);
-  assert.match(ci,/WORKFLOW_REQUIRE_S3_SCHEMA: 'true'/);
-  assert.ok(ci.includes("S1_FIRST_DEPLOY: " + String.fromCharCode(36) + "{{ steps.preflight.outputs.bootstrap }}"));
+  assert.match(ci,/WORKFLOW_REQUIRE_COMPLETE_SCHEMA: 'true'/);
+  assert.ok(ci.includes("WORKFLOW_FIRST_DEPLOY: " + String.fromCharCode(36) + "{{ steps.preflight.outputs.bootstrap }}"));
   assert.match(ci,/node scripts\/manual-worker-release\.mjs d1-check workflow-mcp-worker/);
   assert.match(ci,/pnpm exec wrangler deploy --config tests\/fixtures\/wrangler\.jsonc/);
   assert.match(ci,/\(cd apps\/workflow-mcp-worker &&/);
@@ -414,140 +427,83 @@ test("S1 manual GitHub Actions requires D1 checks and private Fixture before Own
   assert.match(ci,/github\.ref == 'refs\/heads\/main'/);
 });
 
-test("S1 private Fixture actual Cloudflare exposure must be absent after deployment", () => {
+test("Workflow private Fixture actual Cloudflare exposure must be absent after deployment", () => {
   const subdomain={enabled:false,previews_enabled:false};
   assert.equal(verifyFixtureExposure(subdomain,[],[]),true);
   assert.throws(()=>verifyFixtureExposure({...subdomain,enabled:true},[],[]),/workers.dev/);
   assert.throws(()=>verifyFixtureExposure({...subdomain,previews_enabled:true},[],[]),/Preview/);
-  assert.throws(()=>verifyFixtureExposure(subdomain,[{service:"workflow-s1-readonly-fixture",hostname:"public.example.com"}],[]),/Custom Domain/);
-  assert.throws(()=>verifyFixtureExposure(subdomain,[],[{script:"workflow-s1-readonly-fixture",pattern:"example.com/*"}]),/public Worker route/);
+  assert.throws(()=>verifyFixtureExposure(subdomain,[{service:"workflow-readonly-fixture",hostname:"public.example.com"}],[]),/Custom Domain/);
+  assert.throws(()=>verifyFixtureExposure(subdomain,[],[{script:"workflow-readonly-fixture",pattern:"example.com/*"}]),/public Worker route/);
   assert.throws(()=>verifyFixtureExposure(subdomain,null,[]),/inventory unavailable/);
   const ci=readFileSync(new URL("../.github/workflows/ci.yml",import.meta.url),"utf8");
-  const fixture=ci.indexOf("      - name: Deploy existing private S1 read-only Fixture");
-  const readback=ci.indexOf("      - name: Read back private S1 Fixture public-route isolation");
+  const fixture=ci.indexOf("      - name: Deploy existing private Workflow read-only Fixture");
+  const readback=ci.indexOf("      - name: Read back private Workflow Fixture public-route isolation");
   const publish=ci.indexOf("      - name: Publish exactly selected Worker");
   assert.ok(fixture>0 && readback>fixture && publish>readback);
 });
 
-test("Workflow S2 production release requires exact Portal and matching runtime Secrets", () => {
-  const base=[
-    {name:"MCP_ACCESS_TOKEN",type:"secret_text"},
+test("Workflow release pins the exact Portal and rejects target drift",()=>{
+  const bindings=[
+    {name:"MCP_ACCESS_TOKEN",type:"secret_text"},{name:"MCP_PORTAL_CLIENT_ID",type:"secret_text"},
+    {name:"MCP_PORTAL_CLIENT_SECRET",type:"secret_text"},{name:"WORKFLOW_EXECUTOR_GITHUB_TOKEN",type:"secret_text"},
     {name:"DB",type:"d1",id:"c76850db-b5e3-4128-9150-849a1c9e8d74"},
-    {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-s1",class_name:"WorkflowRunner"},
-    {name:"READONLY_TARGET",type:"service",service:"workflow-s1-readonly-fixture"},
+    {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-runner",class_name:"WorkflowRunner"},
+    {name:"READONLY_TARGET",type:"service",service:"workflow-readonly-fixture"},
+    {name:"MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
+    {name:"GITHUB_EXECUTOR_REPOSITORY",type:"plain_text",text:"lirtual/mcp-workers"},
+    {name:"GITHUB_EXECUTOR_REPOSITORY_ID",type:"plain_text",text:"1414936394"},
+    {name:"GITHUB_EXECUTOR_REF",type:"plain_text",text:"refs/heads/main"},
+    {name:"GITHUB_EXECUTOR_AUDIENCE",type:"plain_text",text:"workflow-github-claim:production"},
   ];
-  const extra=[
-    {name:"S2_PORTAL_CLIENT_ID",type:"secret_text"},
-    {name:"S2_PORTAL_CLIENT_SECRET",type:"secret_text"},
-    {name:"S2_READONLY_ENABLED",type:"plain_text",text:"true"},
-    {name:"S2_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
-  ];
-  const settings={bindings:[...base,...extra],
-    observability:{enabled:true,logs:{invocation_logs:true}}};
-  const secrets=["MCP_ACCESS_TOKEN","S2_PORTAL_CLIENT_ID","S2_PORTAL_CLIENT_SECRET"]
-    .map(name=>({name}));
-  const run=(s,sec=secrets,options={mode:"readback",expectS2:true})=>
-    verifyBindings("workflow-mcp-worker",s,sec,options);
-  assert.equal(run(settings),true);
-  assert.equal(run(settings,secrets,{mode:"preflight"}),true);
-  assert.throws(()=>run(settings,secrets,{mode:"readback",expectS2:false}),/S2 must remain disabled/);
-  assert.throws(()=>run({...settings,bindings:base},secrets),/S2 release flag missing/);
-  assert.throws(()=>run(settings,secrets.filter(s=>s.name!=="S2_PORTAL_CLIENT_SECRET")),
-    /S2 Portal Secret binding missing/);
-  assert.throws(()=>run({...settings,bindings:settings.bindings.map(b=>b.name==="S2_PORTAL_ENDPOINT"
-    ?{...b,text:"https://test-mcp.lirtual.dpdns.org/mcp"}:b)}),
-    /Portal must be exactly pinned/);
-  assert.throws(()=>run({...settings,bindings:[...settings.bindings,
-    {name:"S2_DIRECT_TARGETS_ENABLED",type:"plain_text",text:"true"}]}),
-    /Direct MCP targets/);
-  assert.throws(()=>run({...settings,bindings:[...settings.bindings,
-    {name:"S3_ENABLED",type:"plain_text",text:"true"}]}),
-    /S3 production enablement differs/);
+  const settings={observability:{enabled:true,logs:{invocation_logs:true}}};
+  const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET",
+    "WORKFLOW_EXECUTOR_GITHUB_TOKEN"].map(name=>({name}));
+  const check=(updated)=>verifyBindings("workflow-mcp-worker",{...settings,bindings:updated},secrets,{mode:"readback"});
+  assert.equal(check(bindings),true);
+  assert.throws(()=>check(bindings.map(x=>x.name==="MCP_PORTAL_ENDPOINT"
+    ?{...x,text:"https://test-mcp.lirtual.dpdns.org/mcp"}:x)),/pinned Workflow MCP Portal|Pinned Workflow MCP Portal/);
+  assert.throws(()=>check([...bindings,{name:"MCP_DIRECT_TARGETS_ENABLED",type:"plain_text",text:"true"}]),
+    /Obsolete stage flag/);
 });
 
 
-test("S3 production activation is separate, exact and requires S2", () => {
+test("GitHub execution is integral but still pins repository, ref and OIDC audience",()=>{
   const base=[
     {name:"MCP_ACCESS_TOKEN",type:"secret_text"},
     {name:"DB",type:"d1",id:"c76850db-b5e3-4128-9150-849a1c9e8d74"},
-    {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-s1",class_name:"WorkflowRunner"},
-    {name:"READONLY_TARGET",type:"service",service:"workflow-s1-readonly-fixture"},
-    {name:"S2_PORTAL_CLIENT_ID",type:"secret_text"},
-    {name:"S2_PORTAL_CLIENT_SECRET",type:"secret_text"},
-    {name:"S2_READONLY_ENABLED",type:"plain_text",text:"true"},
-    {name:"S2_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
+    {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-runner",class_name:"WorkflowRunner"},
+    {name:"READONLY_TARGET",type:"service",service:"workflow-readonly-fixture"},
+    {name:"MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
+    {name:"GITHUB_EXECUTOR_REPOSITORY",type:"plain_text",text:"lirtual/mcp-workers"},
+    {name:"GITHUB_EXECUTOR_REPOSITORY_ID",type:"plain_text",text:"1414936394"},
+    {name:"GITHUB_EXECUTOR_REF",type:"plain_text",text:"refs/heads/main"},
+    {name:"GITHUB_EXECUTOR_AUDIENCE",type:"plain_text",text:"workflow-github-claim:production"},
   ];
-  const exact=[
-    {name:"S3_ENABLED",type:"plain_text",text:"true"},
-    {name:"S3_GITHUB_REPOSITORY",type:"plain_text",text:"lirtual/mcp-workers"},
-    {name:"S3_GITHUB_REPOSITORY_ID",type:"plain_text",text:"1414936394"},
-    {name:"S3_GITHUB_REF",type:"plain_text",text:"refs/heads/main"},
-    {name:"S3_GITHUB_AUDIENCE",type:"plain_text",text:"workflow-s3-claim:production"},
-    {name:"S3_GITHUB_TOKEN",type:"secret_text"},
-  ];
-  const secrets=["MCP_ACCESS_TOKEN","S2_PORTAL_CLIENT_ID",
-    "S2_PORTAL_CLIENT_SECRET","S3_GITHUB_TOKEN"].map(name=>({name}));
-  const settings={bindings:[...base,...exact],
-    observability:{enabled:true,logs:{invocation_logs:true}}};
-  const check=(bindings=settings.bindings,ss=secrets,opt={mode:"readback",expectS2:true,expectS3:true})=>
-    verifyBindings("workflow-mcp-worker",{...settings,bindings},ss,opt);
-  assert.equal(check(),true);
-  assert.equal(check(settings.bindings,secrets,{mode:"preflight"}),true);
-  assert.throws(()=>check(settings.bindings,secrets,{mode:"readback",expectS2:true,expectS3:false}),
-    /S3 production enablement differs/);
-  assert.throws(()=>check(settings.bindings,secrets.filter(s=>s.name!=="S3_GITHUB_TOKEN")),
-    /GitHub token binding missing/);
-  for(const name of ["S3_GITHUB_REPOSITORY","S3_GITHUB_REPOSITORY_ID",
-    "S3_GITHUB_REF","S3_GITHUB_AUDIENCE"]){
-    assert.throws(()=>check(settings.bindings.map(b=>b.name===name?{...b,text:"wrong"}:b)),
-      /registered executor identity drift/);
+  const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET",
+    "WORKFLOW_EXECUTOR_GITHUB_TOKEN"].map(name=>({name}));
+  const pins=["MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET","WORKFLOW_EXECUTOR_GITHUB_TOKEN"]
+    .map(name=>({name,type:"secret_text"}));
+  const check=(bindings)=>verifyBindings("workflow-mcp-worker",{
+    bindings,observability:{enabled:true,logs:{invocation_logs:true}}},secrets,{mode:"readback"});
+  assert.equal(check([...base,...pins]),true);
+  for(const name of ["GITHUB_EXECUTOR_REPOSITORY","GITHUB_EXECUTOR_REPOSITORY_ID","GITHUB_EXECUTOR_REF","GITHUB_EXECUTOR_AUDIENCE"]){
+    assert.throws(()=>check([...base,...pins].map(x=>x.name===name?{...x,text:"wrong"}:x)),
+      /executor identity drift/);
   }
-  assert.throws(()=>check(settings.bindings.filter(b=>b.name!=="S2_READONLY_ENABLED")),
-    /S3 requires production S2 Portal|S2 release flag missing/);
-  assert.throws(()=>check(settings.bindings.filter(b=>b.name!=="S3_ENABLED")),
-    /S3 production enablement differs/);
-  const off=base;
-  assert.equal(check(off,secrets,{mode:"readback",expectS2:true,expectS3:false}),true);
-  assert.throws(()=>check([...off,exact[1]],secrets,
-    {mode:"readback",expectS2:true,expectS3:false}),
-    /configuration must not persist/);
 });
 
-test("Workflow preflight rejects accidental S2/S3 downgrade but permits explicitly approved one", () => {
-  const names=["MCP_ACCESS_TOKEN","S2_PORTAL_CLIENT_ID","S2_PORTAL_CLIENT_SECRET","S3_GITHUB_TOKEN"];
-  const secrets=names.map(name=>({name}));
-  const base=[
-    ...names.map(name=>({name,type:"secret_text"})),
+
+test("Workflow preflight admits older bindings for a one-way release, readback rejects old toggles",()=>{
+  const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET",
+    "WORKFLOW_EXECUTOR_GITHUB_TOKEN"].map(name=>({name}));
+  const bindings=[
+    {name:"MCP_ACCESS_TOKEN",type:"secret_text"},
     {name:"DB",type:"d1",id:"c76850db-b5e3-4128-9150-849a1c9e8d74"},
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-s1",class_name:"WorkflowRunner"},
     {name:"READONLY_TARGET",type:"service",service:"workflow-s1-readonly-fixture"},
+    {name:"MCP_CALL_ENABLED",type:"plain_text",text:"true"}
   ];
-  const s2=[
-    {name:"S2_READONLY_ENABLED",type:"plain_text",text:"true"},
-    {name:"S2_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
-  ];
-  const s3=[
-    {name:"S3_ENABLED",type:"plain_text",text:"true"},
-    {name:"S3_GITHUB_REPOSITORY",type:"plain_text",text:"lirtual/mcp-workers"},
-    {name:"S3_GITHUB_REPOSITORY_ID",type:"plain_text",text:"1414936394"},
-    {name:"S3_GITHUB_REF",type:"plain_text",text:"refs/heads/main"},
-    {name:"S3_GITHUB_AUDIENCE",type:"plain_text",text:"workflow-s3-claim:production"},
-  ];
-  const verify=(bindings,options)=>verifyBindings("workflow-mcp-worker",
-    {bindings,observability:{enabled:true,logs:{invocation_logs:true}}},
-    secrets,{mode:"preflight",...options});
-  const both=[...base,...s2,...s3];
-  assert.equal(verify(both,{expectS2:true,expectS3:true}),true);
-  assert.throws(()=>verify(both,{expectS2:false,expectS3:false}),/would disable an active S2\/S3/);
-  assert.throws(()=>verify(both,{expectS2:true,expectS3:false}),/would disable an active S2\/S3/);
-  assert.equal(verify(both,{expectS2:true,expectS3:false,allowStageDisable:true}),true);
-  assert.equal(verify(both,{expectS2:false,expectS3:false,allowStageDisable:true}),true);
-  assert.throws(()=>verify([...base,...s2],{expectS2:false,expectS3:false}),/would disable an active S2\/S3/);
-  assert.equal(verify([...base,...s2],{expectS2:true,expectS3:false}),true);
-  assert.equal(verify(base,{expectS2:false,expectS3:false}),true);
-  assert.equal(verify(base,{expectS2:true,expectS3:true}),true);
-  assert.throws(()=>verify([...base,...s2,...s3.map(x=>x.name==="S3_GITHUB_REF"?{...x,text:"refs/heads/evil"}:x)],
-    {expectS2:false,expectS3:false,allowStageDisable:true}),/registered executor identity drift/);
-  assert.throws(()=>verify(both,{mode:"readback",expectS2:false,expectS3:false,allowStageDisable:true}),
-    /S3 production enablement differs/);
+  const settings={bindings,observability:{enabled:true,logs:{invocation_logs:true}}};
+  assert.equal(verifyBindings("workflow-mcp-worker",settings,secrets,{mode:"preflight"}),true);
+  assert.throws(()=>verifyBindings("workflow-mcp-worker",settings,secrets,{mode:"readback"}),/Workflow binding drift/);
 });

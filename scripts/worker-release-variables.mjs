@@ -47,26 +47,14 @@ export function collectWorkerVars(worker, env, options = {}) {
   const allowed = WORKER_VARIABLES[worker];
   if (!allowed) throw new Error("Unsupported Worker release target");
   const variables = [];
-  if (env.WORKFLOW_S3_RELEASE === "true") {
-    if (worker !== "workflow-mcp-worker" ||
-        env.WORKFLOW_S2_RELEASE !== "true")
-      throw new Error("S3 release requires Workflow MCP and enabled S2 Portal");
-    // Only the single registered production echo executor. No dynamic
-    // GitHub repository, branch, audience, or arbitrary command selection.
-    variables.push("S3_ENABLED:true",
-      "S3_GITHUB_REPOSITORY:lirtual/mcp-workers",
-      "S3_GITHUB_REPOSITORY_ID:1414936394",
-      "S3_GITHUB_REF:refs/heads/main",
-      "S3_GITHUB_AUDIENCE:workflow-s3-claim:production");
-  }
-  if (env.WORKFLOW_S2_RELEASE === "true") {
-    if (worker !== "workflow-mcp-worker") {
-      throw new Error("S2 release is allowed only for workflow-mcp-worker");
-    }
-    // No user-supplied target or generic/direct-target fallback: the only
-    // production endpoint is the previously validated Cloudflare MCP Portal.
-    variables.push("S2_READONLY_ENABLED:true",
-      "S2_PORTAL_ENDPOINT:https://mcp.lirtual.dpdns.org/mcp");
+  if (worker === "workflow-mcp-worker") {
+    variables.push(
+      "MCP_PORTAL_ENDPOINT:https://mcp.lirtual.dpdns.org/mcp",
+      "GITHUB_EXECUTOR_REPOSITORY:lirtual/mcp-workers",
+      "GITHUB_EXECUTOR_REPOSITORY_ID:1414936394",
+      "GITHUB_EXECUTOR_REF:refs/heads/main",
+      "GITHUB_EXECUTOR_AUDIENCE:workflow-github-claim:production"
+    );
   }
   if (worker === "remote-control-mcp-worker") {
     variables.push("REMOTE_CONTROL_INSTALL_ORIGIN:" + remoteControlInstallOrigin(options.config));

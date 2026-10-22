@@ -20,17 +20,17 @@ on:
           - github-actions-mcp-worker
           - workflow-mcp-worker
       smoke_only:
-        description: Run authenticated S1 production smoke only (no deploy; select workflow-mcp-worker)
+        description: Run authenticated Workflow production smoke only (no deploy; select workflow-mcp-worker)
         required: false
         type: boolean
         default: false
-      s3_production_smoke:
-        description: With smoke_only, verify approved S3 Echo, real GitHub Job and scoped D1 cleanup
+      github_production_smoke:
+        description: With smoke_only, verify approved GitHub Echo, real GitHub Job and scoped D1 cleanup
         required: false
         type: boolean
         default: false
-      s2_production_smoke:
-        description: With smoke_only, execute one read-only S2 Workflow via production Portal and clean D1 test records
+      mcp_production_smoke:
+        description: With smoke_only, execute one read-only MCP Workflow via production Portal and clean D1 test records
         required: false
         type: boolean
         default: false
@@ -39,93 +39,78 @@ on:
         required: false
         type: boolean
         default: false
-      enable_workflow_s2:
-        description: Separately enable Workflow MCP S2 read-only through production Portal (requires deploy_to_production)
-        required: false
-        type: boolean
-        default: false
-      enable_workflow_s3:
-        description: Separately enable fixed S3 GitHub Echo (requires deploy + S2)
-        required: false
-        type: boolean
-        default: false
       workflow_portal_register:
         description: Add existing Workflow MCP to existing One-MCP Portal (no Worker deploy)
         required: false
         type: boolean
         default: false
-      confirm_workflow_stage_disable:
-        description: Explicitly approve disabling currently enabled S2/S3 stages on a Workflow production release
+      mcp_portal_probe:
+        description: Read-only MCP Portal acceptance from existing Environment secrets (no deploy)
         required: false
         type: boolean
         default: false
-      s2_portal_probe:
-        description: Read-only S2 Portal acceptance from existing Environment secrets (no deploy)
-        required: false
-        type: boolean
-        default: false
-      s2_portal_target:
-        description: Portal for the read-only S2 probe (no deployment)
+      mcp_portal_target:
+        description: Portal for the read-only MCP probe (no deployment)
         required: false
         type: choice
         options:
           - test
           - production
         default: test
-      s2_cloud_e2e:
-        description: Create, test and delete isolated S2 Worker, Workflow and D1 (never production)
+      mcp_cloud_e2e:
+        description: Create, test and delete isolated MCP Worker, Workflow and D1 (never production)
         required: false
         type: boolean
         default: false
-      s3_oidc_probe:
+      github_oidc_probe:
         description: Real GitHub OIDC and disposable Cloudflare D1 Claim/Callback (no production)
         required: false
         type: boolean
         default: false
-      s3_full_dispatch:
-        description: Test isolated S3 REST dispatch to independent GitHub Job (no production)
+      github_full_dispatch:
+        description: Test isolated GitHub REST dispatch to independent GitHub Job (no production)
         required: false
         type: boolean
         default: false
-      s3_auth_compare:
+      github_auth_compare:
         description: Test GitHub Runner vs disposable Worker token/GET/invalid-branch authorization (no real Job)
         required: false
         type: boolean
         default: false
-      s3_product_e2e:
-        description: Isolated Workflow MCP Plan with test Portal read and independent S3 Job (no production)
+      github_product_e2e:
+        description: Isolated Workflow MCP Plan with test Portal read and independent GitHub Job (no production)
         required: false
         type: boolean
         default: false
-      s3_dedicated_name:
-        description: Exact pre-authorized random disposable S3 Worker name (dedicated executor acceptance only)
+      github_dedicated_name:
+        description: Exact pre-authorized random disposable GitHub Worker name (dedicated executor acceptance only)
         required: false
         type: string
         default: ''
-      s3_cleanup_name:
-        description: Exact ephemeral workflow-s3-plan-XXXXXXXXXX resource to remove
+      github_cleanup_name:
+        description: Exact ephemeral workflow-github-plan-XXXXXXXXXX resource to remove
         required: false
         type: string
         default: ''
-      s3_executor_worker:
-        description: Internal S3 test-only echo executor, called by coordinator
+      github_executor_worker:
+        description: Internal GitHub test-only echo executor, called by coordinator
         required: false
         type: boolean
         default: false
       worker_name:
-        description: Pinned isolated S3 Worker name
+        description: Pinned isolated GitHub Worker name
         required: false
         type: string
       attempt_id:
-        description: Internal S3 opaque Attempt ID
+        description: Internal GitHub opaque Attempt ID
         required: false
         type: string
       dispatch_id:
-        description: Internal S3 opaque Dispatch ID
+        description: Internal GitHub opaque Dispatch ID
         required: false
         type: string
       capability_id:
-        description: Internal S3 registered capability
+        description: Internal GitHub registered capability
         required: false
         type: string
 
@@ -139,20 +124,20 @@ env:
 jobs:
   checks:
     name: Application checks
-    # The S2 test-only dispatch is not a production Worker selection.
+    # The MCP test-only dispatch is not a production Worker selection.
     # Normal push/PR and main release checks are unchanged.
     if: >-
       ${{ !(github.event_name == 'workflow_dispatch' &&
-            github.ref == 'refs/heads/wip/workflow-s2-public-readonly' &&
-            (inputs.s2_portal_probe == true || inputs.s2_cloud_e2e == true)) &&
+            github.ref == 'refs/heads/wip/workflow-mcp-public-readonly' &&
+            (inputs.mcp_portal_probe == true || inputs.mcp_cloud_e2e == true)) &&
           !(github.event_name == 'workflow_dispatch' &&
-            github.ref == 'refs/heads/wip/workflow-s3-github-executor' &&
-            (inputs.s3_oidc_probe == true ||
-             inputs.s3_full_dispatch == true ||
-             inputs.s3_auth_compare == true ||
-             inputs.s3_product_e2e == true ||
-             inputs.s3_cleanup_name != '' ||
-             inputs.s3_executor_worker == true)) }}
+            github.ref == 'refs/heads/wip/workflow-github-executor' &&
+            (inputs.github_oidc_probe == true ||
+             inputs.github_full_dispatch == true ||
+             inputs.github_auth_compare == true ||
+             inputs.github_product_e2e == true ||
+             inputs.github_cleanup_name != '' ||
+             inputs.github_executor_worker == true)) }}
     concurrency:
       group: ci-checks-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.event.pull_request.number || github.ref }}
       cancel-in-progress: true
@@ -219,7 +204,7 @@ jobs:
 
       - name: Check manual release safeguards offline
         if: steps.scope.outputs.apps != ''
-        run: node --test scripts/manual-worker-release.test.mjs scripts/bootstrap-worker-secrets.test.mjs scripts/worker-release-variables.test.mjs scripts/verify-s3-release-token.test.mjs
+        run: node --test scripts/manual-worker-release.test.mjs scripts/bootstrap-worker-secrets.test.mjs scripts/worker-release-variables.test.mjs scripts/verify-github-release-token.test.mjs
 
       - name: Check shared portal-auth package
         if: steps.scope.outputs.portal_auth_changed == 'true'
@@ -329,23 +314,19 @@ jobs:
           github.event_name == 'workflow_dispatch' &&
           github.ref == 'refs/heads/main' &&
           inputs.deploy_to_production == true &&
-          (inputs.enable_workflow_s2 != true || inputs.worker == 'workflow-mcp-worker') &&
-          (inputs.enable_workflow_s3 != true ||
-            (inputs.worker == 'workflow-mcp-worker' && inputs.enable_workflow_s2 == true)) &&
-          (inputs.confirm_workflow_stage_disable != true || inputs.worker == 'workflow-mcp-worker') &&
           inputs.smoke_only != true &&
           inputs.workflow_portal_register != true &&
-          inputs.s2_production_smoke != true &&
-          inputs.s3_production_smoke != true &&
-          inputs.s2_portal_probe != true &&
-          inputs.s2_cloud_e2e != true &&
-          inputs.s3_oidc_probe != true &&
-          inputs.s3_full_dispatch != true &&
-          inputs.s3_auth_compare != true &&
-          inputs.s3_product_e2e != true &&
-          inputs.s3_cleanup_name == '' &&
-          inputs.s3_dedicated_name == '' &&
-          inputs.s3_executor_worker != true &&
+          inputs.mcp_production_smoke != true &&
+          inputs.github_production_smoke != true &&
+          inputs.mcp_portal_probe != true &&
+          inputs.mcp_cloud_e2e != true &&
+          inputs.github_oidc_probe != true &&
+          inputs.github_full_dispatch != true &&
+          inputs.github_auth_compare != true &&
+          inputs.github_product_e2e != true &&
+          inputs.github_cleanup_name == '' &&
+          inputs.github_dedicated_name == '' &&
+          inputs.github_executor_worker != true &&
           needs.checks.result == 'success' &&
           ((inputs.worker == 'database-mcp-worker' && needs.database-integration.result == 'success') ||
            (inputs.worker != 'database-mcp-worker' && needs.database-integration.result == 'skipped')) &&
@@ -368,9 +349,6 @@ jobs:
       contents: read
     env:
       SELECTED_WORKER: ${{ inputs.worker }}
-      WORKFLOW_S2_RELEASE: ${{ inputs.enable_workflow_s2 }}
-      WORKFLOW_S3_RELEASE: ${{ inputs.enable_workflow_s3 }}
-      WORKFLOW_ALLOW_STAGE_DISABLE: ${{ inputs.confirm_workflow_stage_disable }}
       RELEASE_STATE_FILE: /tmp/worker-release-state.json
     steps:
       - uses: actions/checkout@v4
@@ -415,17 +393,17 @@ jobs:
 
       # GitHub Secrets are the source of truth for all selected Workers, on every
       # explicitly authorized manual release, not just during bootstrap.
-      - name: Verify fixed S3 registered executor configuration before release
-        if: inputs.worker == 'workflow-mcp-worker' && inputs.enable_workflow_s3 == true
+      - name: Verify fixed GitHub registered executor configuration before release
+        if: inputs.worker == 'workflow-mcp-worker'
         shell: bash
         env:
-          S3_CALLBACK_ORIGIN: ${{ vars.S3_CALLBACK_ORIGIN }}
-          S3_GITHUB_AUDIENCE: ${{ vars.S3_GITHUB_AUDIENCE }}
+          WORKFLOW_CALLBACK_ORIGIN: https://workflow.lirtual.dpdns.org
+          WORKFLOW_EXECUTOR_AUDIENCE: workflow-github-claim:production
         run: |
           set -euo pipefail
-          [[ "$S3_CALLBACK_ORIGIN" == 'https://workflow.lirtual.dpdns.org' ]] || exit 1
-          [[ "$S3_GITHUB_AUDIENCE" == 'workflow-s3-claim:production' ]] || exit 1
-          echo "S3 registered executor origin/audience confirmed (values withheld)"
+          [[ "$WORKFLOW_CALLBACK_ORIGIN" == 'https://workflow.lirtual.dpdns.org' ]] || exit 1
+          [[ "$WORKFLOW_EXECUTOR_AUDIENCE" == 'workflow-github-claim:production' ]] || exit 1
+          echo "GitHub registered executor origin/audience confirmed (values withheld)"
 
       - name: Stage selected Worker Secrets for every release
         shell: bash
@@ -438,9 +416,9 @@ jobs:
           DATABASE_CONFIG: ${{ secrets.DATABASE_CONFIG }}
           MCP_BROKER_TOKEN: ${{ secrets.MCP_BROKER_TOKEN }}
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
-          S2_PORTAL_CLIENT_ID: ${{ secrets.S2_PORTAL_CLIENT_ID }}
-          S2_PORTAL_CLIENT_SECRET: ${{ secrets.S2_PORTAL_CLIENT_SECRET }}
-          S3_GITHUB_TOKEN: ${{ secrets.S3_GITHUB_TOKEN }}
+          MCP_PORTAL_CLIENT_ID: ${{ secrets.MCP_PORTAL_CLIENT_ID }}
+          MCP_PORTAL_CLIENT_SECRET: ${{ secrets.MCP_PORTAL_CLIENT_SECRET }}
+          WORKFLOW_EXECUTOR_GITHUB_TOKEN: ${{ secrets.WORKFLOW_EXECUTOR_GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           umask 077
@@ -462,11 +440,11 @@ jobs:
           umask 077
           node scripts/worker-release-variables.mjs "$SELECTED_WORKER" "$RUNNER_TEMP/mcp-worker-variables.txt"
 
-      - name: Verify dedicated S3 GitHub token without executable dispatch
-        if: inputs.worker == 'workflow-mcp-worker' && inputs.enable_workflow_s3 == true
+      - name: Verify dedicated GitHub token without executable dispatch
+        if: inputs.worker == 'workflow-mcp-worker'
         env:
-          S3_GITHUB_TOKEN: ${{ secrets.S3_GITHUB_TOKEN }}
-        run: node scripts/verify-s3-release-token.mjs
+          WORKFLOW_EXECUTOR_GITHUB_TOKEN: ${{ secrets.WORKFLOW_EXECUTOR_GITHUB_TOKEN }}
+        run: node scripts/verify-github-release-token.mjs
 
       - name: Recheck current main inside acquired release lock
         shell: bash
@@ -479,13 +457,13 @@ jobs:
             exit 1
           }
 
-      - name: Verify S1 private Fixture and remote D1 readiness
+      - name: Verify Workflow private Fixture and remote D1 readiness
         if: inputs.worker == 'workflow-mcp-worker'
         shell: bash
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          S1_FIRST_DEPLOY: ${{ steps.preflight.outputs.bootstrap }}
+          WORKFLOW_FIRST_DEPLOY: ${{ steps.preflight.outputs.bootstrap }}
         run: |
           set -euo pipefail
           node scripts/manual-worker-release.mjs fixture-check workflow-mcp-worker
@@ -505,15 +483,15 @@ jobs:
             node scripts/manual-worker-release.mjs d1-check workflow-mcp-worker
 
       # Only the existing production release lock and GitHub Environment can
-      # apply the two already-reviewed additive S3 tables. This changes the
-      # schema, not S3_ENABLED, the GitHub executor or any existing Run.
-      - name: Apply additive Workflow D1 migrations (S3 remains disabled)
+      # apply the two already-reviewed additive GitHub tables. This changes the
+      # schema without changing any running instance.
+      - name: Apply complete Workflow D1 migrations
         if: inputs.worker == 'workflow-mcp-worker'
         shell: bash
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          WORKFLOW_REQUIRE_S3_SCHEMA: 'true'
+          WORKFLOW_REQUIRE_COMPLETE_SCHEMA: 'true'
         run: |
           set -euo pipefail
           (cd apps/workflow-mcp-worker &&
@@ -533,7 +511,7 @@ jobs:
               (SELECT count(*) FROM workflows) AS workflow_count") |
             node scripts/manual-worker-release.mjs d1-check workflow-mcp-worker
 
-      - name: Deploy existing private S1 read-only Fixture
+      - name: Deploy existing private Workflow read-only Fixture
         if: inputs.worker == 'workflow-mcp-worker'
         shell: bash
         env:
@@ -545,7 +523,7 @@ jobs:
           (cd apps/workflow-mcp-worker &&
             pnpm exec wrangler deploy --config tests/fixtures/wrangler.jsonc)
 
-      - name: Read back private S1 Fixture public-route isolation
+      - name: Read back private Workflow Fixture public-route isolation
         if: inputs.worker == 'workflow-mcp-worker'
         shell: bash
         env:
@@ -684,8 +662,8 @@ jobs:
             exit 1
           done
 
-  workflow-s1-smoke:
-    name: Authenticated S1 production smoke (no deploy)
+  workflow-production-smoke:
+    name: Authenticated Workflow production smoke (no deploy)
     needs: [checks]
     if: >-
       ${{ github.event_name == 'workflow_dispatch' &&
@@ -693,26 +671,24 @@ jobs:
           inputs.worker == 'workflow-mcp-worker' &&
           inputs.smoke_only == true &&
           inputs.deploy_to_production != true &&
-          (inputs.s2_production_smoke != true || inputs.enable_workflow_s2 != true) &&
-          (inputs.s2_production_smoke != true || inputs.s3_production_smoke != true) &&
-          inputs.enable_workflow_s3 != true &&
+          (inputs.mcp_production_smoke != true || inputs.github_production_smoke != true) &&
           needs.checks.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 8
     environment:
       name: workflow-mcp-worker
     concurrency:
-      group: workflow-s1-production-smoke
+      group: workflow-production-smoke
       cancel-in-progress: false
     env:
       MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-      WORKFLOW_S2_SMOKE: ${{ inputs.s2_production_smoke }}
-      WORKFLOW_S3_SMOKE: ${{ inputs.s3_production_smoke }}
-      S3_GITHUB_TOKEN: ${{ secrets.S3_GITHUB_TOKEN }}
-      S2_PORTAL_CLIENT_ID: ${{ secrets.S2_PORTAL_CLIENT_ID }}
-      S2_PORTAL_CLIENT_SECRET: ${{ secrets.S2_PORTAL_CLIENT_SECRET }}
+      WORKFLOW_MCP_SMOKE: ${{ inputs.mcp_production_smoke }}
+      WORKFLOW_GITHUB_SMOKE: ${{ inputs.github_production_smoke }}
+      WORKFLOW_EXECUTOR_GITHUB_TOKEN: ${{ secrets.WORKFLOW_EXECUTOR_GITHUB_TOKEN }}
+      MCP_PORTAL_CLIENT_ID: ${{ secrets.MCP_PORTAL_CLIENT_ID }}
+      MCP_PORTAL_CLIENT_SECRET: ${{ secrets.MCP_PORTAL_CLIENT_SECRET }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -725,28 +701,27 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile --ignore-scripts
-      - name: Verify authenticated S1/S2/S3 production and remove randomized test records
+      - name: Verify authenticated Workflow/MCP/GitHub production and remove randomized test records
         run: node apps/workflow-mcp-worker/tests/production-smoke.mjs
 
-  workflow-s2-portal-probe:
-    name: Authenticated S2 Portal read-only check (no deploy)
+  workflow-mcp-portal-probe:
+    name: Authenticated MCP Portal read-only check (no deploy)
     if: >-
       ${{ github.event_name == 'workflow_dispatch' &&
           (github.ref == 'refs/heads/main' ||
-           github.ref == 'refs/heads/wip/workflow-s2-public-readonly') &&
+           github.ref == 'refs/heads/wip/workflow-mcp-public-readonly') &&
           inputs.worker == 'workflow-mcp-worker' &&
-          inputs.s2_portal_probe == true &&
+          inputs.mcp_portal_probe == true &&
           inputs.deploy_to_production != true &&
-          inputs.enable_workflow_s2 != true &&
           inputs.smoke_only != true }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     environment:
       name: workflow-mcp-worker
     env:
-      S2_PORTAL_CLIENT_ID: ${{ secrets.S2_PORTAL_CLIENT_ID }}
-      S2_PORTAL_CLIENT_SECRET: ${{ secrets.S2_PORTAL_CLIENT_SECRET }}
-      S2_PORTAL_TARGET: ${{ inputs.s2_portal_target }}
+      MCP_PORTAL_CLIENT_ID: ${{ secrets.MCP_PORTAL_CLIENT_ID }}
+      MCP_PORTAL_CLIENT_SECRET: ${{ secrets.MCP_PORTAL_CLIENT_SECRET }}
+      MCP_PORTAL_TARGET: ${{ inputs.mcp_portal_target }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -760,27 +735,27 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Read-only MCP discovery and one IMA list call
-        run: node --experimental-strip-types apps/workflow-mcp-worker/tests/s2-portal-acceptance.mjs
+        run: node --experimental-strip-types apps/workflow-mcp-worker/tests/mcp-portal-acceptance.mjs
 
-  workflow-s2-isolated-cloud-e2e:
-    name: Isolated S2 Workflow to test Portal and IMA (auto-cleanup)
+  workflow-mcp-isolated-cloud-e2e:
+    name: Isolated MCP Workflow to test Portal and IMA (auto-cleanup)
     if: >-
       ${{ github.event_name == 'workflow_dispatch' &&
-          github.ref == 'refs/heads/wip/workflow-s2-public-readonly' &&
+          github.ref == 'refs/heads/wip/workflow-mcp-public-readonly' &&
           inputs.worker == 'workflow-mcp-worker' &&
-          inputs.s2_cloud_e2e == true &&
-          inputs.s2_portal_probe != true &&
+          inputs.mcp_cloud_e2e == true &&
+          inputs.mcp_portal_probe != true &&
           inputs.smoke_only != true }}
     runs-on: ubuntu-latest
     timeout-minutes: 12
     environment:
       name: workflow-mcp-worker
     concurrency:
-      group: workflow-s2-isolated-cloud-e2e
+      group: workflow-mcp-isolated-cloud-e2e
       cancel-in-progress: false
     env:
-      S2_PORTAL_CLIENT_ID: ${{ secrets.S2_PORTAL_CLIENT_ID }}
-      S2_PORTAL_CLIENT_SECRET: ${{ secrets.S2_PORTAL_CLIENT_SECRET }}
+      MCP_PORTAL_CLIENT_ID: ${{ secrets.MCP_PORTAL_CLIENT_ID }}
+      MCP_PORTAL_CLIENT_SECRET: ${{ secrets.MCP_PORTAL_CLIENT_SECRET }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
     steps:
@@ -796,24 +771,24 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Verify disposable Workflow, Portal and IMA; clean all ephemeral resources
-        run: node --experimental-strip-types apps/workflow-mcp-worker/tests/s2-portal-cloud-e2e.mjs
+        run: node --experimental-strip-types apps/workflow-mcp-worker/tests/mcp-portal-cloud-e2e.mjs
 
-  workflow-s3-isolated-oidc:
-    name: Isolated S3 GitHub OIDC / D1 Claim / Callback (no production)
+  workflow-github-isolated-oidc:
+    name: Isolated GitHub OIDC / D1 Claim / Callback (no production)
     if: >-
       ${{ github.event_name == 'workflow_dispatch' &&
-          github.ref == 'refs/heads/wip/workflow-s3-github-executor' &&
+          github.ref == 'refs/heads/wip/workflow-github-executor' &&
           inputs.worker == 'workflow-mcp-worker' &&
-          inputs.s3_oidc_probe == true &&
-          inputs.s2_portal_probe != true &&
-          inputs.s2_cloud_e2e != true &&
+          inputs.github_oidc_probe == true &&
+          inputs.mcp_portal_probe != true &&
+          inputs.mcp_cloud_e2e != true &&
           inputs.smoke_only != true }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment:
       name: workflow-mcp-worker
     concurrency:
-      group: workflow-s3-isolated-oidc
+      group: workflow-github-isolated-oidc
       cancel-in-progress: false
     permissions:
       contents: read
@@ -834,25 +809,25 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Accept real signed GitHub Runner against disposable Cloudflare D1
-        run: node --experimental-strip-types apps/workflow-mcp-worker/tests/s3-real-oidc-cloud.mjs
+        run: node --experimental-strip-types apps/workflow-mcp-worker/tests/github-real-oidc-cloud.mjs
 
 
-  workflow-s3-independent-dispatch:
-    name: Isolated S3 confirmed REST dispatch -> separate GitHub echo job
+  workflow-github-independent-dispatch:
+    name: Isolated GitHub confirmed REST dispatch -> separate GitHub echo job
     if: >-
       ${{ github.event_name == 'workflow_dispatch' &&
-          github.ref == 'refs/heads/wip/workflow-s3-github-executor' &&
+          github.ref == 'refs/heads/wip/workflow-github-executor' &&
           inputs.worker == 'workflow-mcp-worker' &&
-          inputs.s3_full_dispatch == true &&
-          inputs.s3_executor_worker != true &&
-          inputs.s3_oidc_probe != true &&
+          inputs.github_full_dispatch == true &&
+          inputs.github_executor_worker != true &&
+          inputs.github_oidc_probe != true &&
           inputs.smoke_only != true }}
     runs-on: ubuntu-latest
     timeout-minutes: 9
     environment:
       name: workflow-mcp-worker
     concurrency:
-      group: workflow-s3-isolated-rest-dispatch
+      group: workflow-github-isolated-rest-dispatch
       cancel-in-progress: false
     permissions:
       contents: read
@@ -861,7 +836,7 @@ jobs:
       GITHUB_TOKEN: ${{ github.token }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-      S3_INDEPENDENT_DISPATCH: 'true'
+      GITHUB_INDEPENDENT_DISPATCH: 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -875,17 +850,17 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Register confirmed GitHub REST Job and verify Cloudflare Result, then clean up
-        run: node --experimental-strip-types apps/workflow-mcp-worker/tests/s3-real-oidc-cloud.mjs
+        run: node --experimental-strip-types apps/workflow-mcp-worker/tests/github-real-oidc-cloud.mjs
 
-  workflow-s3-independent-echo:
-    name: Independent GitHub S3 no-side-effect echo execution (OIDC only)
+  workflow-github-independent-echo:
+    name: Independent GitHub no-side-effect echo execution (OIDC only)
     if: >-
       ${{ github.event_name == 'workflow_dispatch' &&
-          github.ref == 'refs/heads/wip/workflow-s3-github-executor' &&
+          github.ref == 'refs/heads/wip/workflow-github-executor' &&
           inputs.worker == 'workflow-mcp-worker' &&
-          inputs.s3_executor_worker == true &&
-          inputs.s3_full_dispatch != true &&
-          inputs.s3_oidc_probe != true &&
+          inputs.github_executor_worker == true &&
+          inputs.github_full_dispatch != true &&
+          inputs.github_oidc_probe != true &&
           inputs.smoke_only != true }}
     runs-on: ubuntu-latest
     timeout-minutes: 3
@@ -893,36 +868,36 @@ jobs:
       contents: read
       id-token: write
     env:
-      S3_WORKER_NAME: ${{ inputs.worker_name }}
-      S3_ATTEMPT_ID: ${{ inputs.attempt_id }}
-      S3_DISPATCH_ID: ${{ inputs.dispatch_id }}
-      S3_CAPABILITY: ${{ inputs.capability_id }}
+      GITHUB_WORKER_NAME: ${{ inputs.worker_name }}
+      WORKFLOW_ATTEMPT_ID: ${{ inputs.attempt_id }}
+      WORKFLOW_DISPATCH_ID: ${{ inputs.dispatch_id }}
+      WORKFLOW_CAPABILITY: ${{ inputs.capability_id }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
       - name: Obtain signed OIDC identity, claim, echo and post durable result
-        run: node apps/workflow-mcp-worker/tests/s3-independent-executor.mjs
+        run: node apps/workflow-mcp-worker/tests/github-independent-executor.mjs
 
 
-  workflow-s3-product-cloud-e2e:
-    name: Isolated S2 Portal + S3 product Plan through GitHub Workflow (auto-cleanup)
+  workflow-github-product-cloud-e2e:
+    name: Isolated MCP Portal + GitHub product Plan through GitHub Workflow (auto-cleanup)
     if: >-
       ${{ github.event_name == 'workflow_dispatch' &&
-          github.ref == 'refs/heads/wip/workflow-s3-github-executor' &&
+          github.ref == 'refs/heads/wip/workflow-github-executor' &&
           inputs.worker == 'workflow-mcp-worker' &&
-          inputs.s3_product_e2e == true &&
-          inputs.s3_full_dispatch != true &&
-          inputs.s3_oidc_probe != true &&
-          inputs.s3_executor_worker != true &&
+          inputs.github_product_e2e == true &&
+          inputs.github_full_dispatch != true &&
+          inputs.github_oidc_probe != true &&
+          inputs.github_executor_worker != true &&
           inputs.smoke_only != true }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment:
       name: workflow-mcp-worker
     concurrency:
-      group: workflow-s3-product-cloud-e2e
+      group: workflow-github-product-cloud-e2e
       cancel-in-progress: false
     permissions:
       contents: read
@@ -931,9 +906,9 @@ jobs:
       GITHUB_TOKEN: ${{ github.token }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-      S2_PORTAL_CLIENT_ID: ${{ secrets.S2_PORTAL_CLIENT_ID }}
-      S2_PORTAL_CLIENT_SECRET: ${{ secrets.S2_PORTAL_CLIENT_SECRET }}
-      S3_DEDICATED_TEST_NAME: ${{ inputs.s3_dedicated_name }}
+      MCP_PORTAL_CLIENT_ID: ${{ secrets.MCP_PORTAL_CLIENT_ID }}
+      MCP_PORTAL_CLIENT_SECRET: ${{ secrets.MCP_PORTAL_CLIENT_SECRET }}
+      GITHUB_DEDICATED_TEST_NAME: ${{ inputs.github_dedicated_name }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -946,19 +921,19 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile --ignore-scripts
-      - name: Test real S2 and S3 product Plan then remove disposable Cloudflare resources
-        run: node --experimental-strip-types apps/workflow-mcp-worker/tests/s3-product-combined-cloud.mjs
+      - name: Test real MCP and GitHub product Plan then remove disposable Cloudflare resources
+        run: node --experimental-strip-types apps/workflow-mcp-worker/tests/github-product-combined-cloud.mjs
 
 
-  workflow-s3-disposable-cleanup:
-    name: Cleanup one exact disposable S3 Plan Worker / Workflow / D1
+  workflow-github-disposable-cleanup:
+    name: Cleanup one exact disposable GitHub Plan Worker / Workflow / D1
     if: >-
       ${{ github.event_name == 'workflow_dispatch' &&
-          github.ref == 'refs/heads/wip/workflow-s3-github-executor' &&
+          github.ref == 'refs/heads/wip/workflow-github-executor' &&
           inputs.worker == 'workflow-mcp-worker' &&
-          inputs.s3_cleanup_name != '' &&
-          inputs.s3_product_e2e != true &&
-          inputs.s3_full_dispatch != true }}
+          inputs.github_cleanup_name != '' &&
+          inputs.github_product_e2e != true &&
+          inputs.github_full_dispatch != true }}
     runs-on: ubuntu-latest
     timeout-minutes: 4
     environment:
@@ -968,32 +943,32 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-      S3_CLEANUP_NAME: ${{ inputs.s3_cleanup_name }}
+      GITHUB_CLEANUP_NAME: ${{ inputs.github_cleanup_name }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - name: Delete and verify one exact disposable S3 fixture
-        run: node apps/workflow-mcp-worker/tests/s3-disposable-cleanup.mjs "$S3_CLEANUP_NAME"
+      - name: Delete and verify one exact disposable GitHub fixture
+        run: node apps/workflow-mcp-worker/tests/github-disposable-cleanup.mjs "$GITHUB_CLEANUP_NAME"
 
-  workflow-s3-github-auth-comparison:
-    name: S3 GitHub authorization isolation probe (no executable dispatch)
+  workflow-github-auth-comparison:
+    name: GitHub authorization isolation probe (no executable dispatch)
     if: >-
       ${{ github.event_name == 'workflow_dispatch' &&
-          github.ref == 'refs/heads/wip/workflow-s3-github-executor' &&
+          github.ref == 'refs/heads/wip/workflow-github-executor' &&
           inputs.worker == 'workflow-mcp-worker' &&
-          inputs.s3_auth_compare == true &&
-          inputs.s3_product_e2e != true &&
-          inputs.s3_full_dispatch != true &&
-          inputs.s3_oidc_probe != true &&
-          inputs.s3_executor_worker != true }}
+          inputs.github_auth_compare == true &&
+          inputs.github_product_e2e != true &&
+          inputs.github_full_dispatch != true &&
+          inputs.github_oidc_probe != true &&
+          inputs.github_executor_worker != true }}
     runs-on: ubuntu-latest
     timeout-minutes: 6
     environment:
       name: workflow-mcp-worker
     concurrency:
-      group: workflow-s3-auth-isolation
+      group: workflow-github-auth-isolation
       cancel-in-progress: false
     permissions:
       contents: read
@@ -1015,7 +990,7 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Compare GitHub Runner vs temporary Worker token identity and denied nonexistent branch
-        run: node apps/workflow-mcp-worker/tests/s3-github-auth-comparison.mjs
+        run: node apps/workflow-mcp-worker/tests/github-auth-comparison.mjs
 
 
   workflow-portal-register:
@@ -1028,18 +1003,15 @@ jobs:
           inputs.workflow_portal_register == true &&
           inputs.deploy_to_production != true &&
           inputs.smoke_only != true &&
-          inputs.s2_portal_probe != true &&
-          inputs.s2_cloud_e2e != true &&
-          inputs.s3_oidc_probe != true &&
-          inputs.s3_full_dispatch != true &&
-          inputs.s3_auth_compare != true &&
-          inputs.s3_product_e2e != true &&
-          inputs.s3_cleanup_name == '' &&
-          inputs.s3_dedicated_name == '' &&
-          inputs.s3_executor_worker != true &&
-          inputs.confirm_workflow_stage_disable != true &&
-          inputs.enable_workflow_s2 != true &&
-          inputs.enable_workflow_s3 != true &&
+          inputs.mcp_portal_probe != true &&
+          inputs.mcp_cloud_e2e != true &&
+          inputs.github_oidc_probe != true &&
+          inputs.github_full_dispatch != true &&
+          inputs.github_auth_compare != true &&
+          inputs.github_product_e2e != true &&
+          inputs.github_cleanup_name == '' &&
+          inputs.github_dedicated_name == '' &&
+          inputs.github_executor_worker != true &&
           needs.checks.result == 'success' }}
     runs-on: ubuntu-latest
     environment:

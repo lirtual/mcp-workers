@@ -12,7 +12,7 @@
     { "binding": "DB", "database_name": "workflow-mcp-worker",
       "database_id": "c76850db-b5e3-4128-9150-849a1c9e8d74", "migrations_dir": "migrations" }
   ],
-  "workflows": [{ "name": "workflow-mcp-s1", "binding": "WORKFLOW", "class_name": "WorkflowRunner" }],
-  "services": [{ "binding": "READONLY_TARGET", "service": "workflow-s1-readonly-fixture" }],
+  "workflows": [{ "name": "workflow-mcp-runner", "binding": "WORKFLOW", "class_name": "WorkflowRunner" }],
+  "services": [{ "binding": "READONLY_TARGET", "service": "workflow-readonly-fixture" }],
   "secrets": { "required": ["MCP_ACCESS_TOKEN"] }
 }

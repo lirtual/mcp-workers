@@ -9,7 +9,7 @@ const fixtures = {
   "ssh-mcp-worker": { MCP_ACCESS_TOKEN: "portal", MCP_BROKER_TOKEN: "x".repeat(32) },
   "remote-control-mcp-worker": { MCP_ACCESS_TOKEN: "portal" },
   "github-actions-mcp-worker": { MCP_ACCESS_TOKEN: "portal", GH_TOKEN: "github-test-token" },
-  "workflow-mcp-worker": { MCP_ACCESS_TOKEN: "portal" },
+  "workflow-mcp-worker": { MCP_ACCESS_TOKEN: "portal", MCP_PORTAL_CLIENT_ID: "test-id", MCP_PORTAL_CLIENT_SECRET: "test-secret", WORKFLOW_EXECUTOR_GITHUB_TOKEN: "x".repeat(24) },
 };
 
 test("bootstrap supports all selected Workers, including isolated Remote Control", () => {
@@ -63,41 +63,29 @@ test("one GH_TOKEN Secret stages multiple PATs without additional secret names",
     /Invalid or duplicate/);
 });
 
-test("Workflow S2 credentials are staged only for the separately enabled release", () => {
-  const fixture = { MCP_ACCESS_TOKEN: "s1-portal",
-    S2_PORTAL_CLIENT_ID: "existing-service-id",
-    S2_PORTAL_CLIENT_SECRET: "existing-service-secret",
-  };
-  assert.deepEqual(collectBootstrapSecrets("workflow-mcp-worker", fixture),
-    { MCP_ACCESS_TOKEN: "s1-portal" });
-  const explicit = { ...fixture, WORKFLOW_S2_RELEASE: "true" };
-  assert.deepEqual(collectBootstrapSecrets("workflow-mcp-worker", explicit), fixture);
-  for (const key of ["S2_PORTAL_CLIENT_ID", "S2_PORTAL_CLIENT_SECRET"]) {
-    assert.throws(() => collectBootstrapSecrets("workflow-mcp-worker",
-      { ...explicit, [key]: "" }), new RegExp(key));
-    assert.throws(() => collectBootstrapSecrets("workflow-mcp-worker",
-      { ...explicit, [key]: undefined }), new RegExp(key));
+test("Workflow release always stages the dedicated Portal and GitHub credentials",()=>{
+  const expected=fixtures["workflow-mcp-worker"];
+  assert.deepEqual(collectBootstrapSecrets("workflow-mcp-worker",expected),expected);
+  for(const name of Object.keys(expected)){
+    assert.throws(()=>collectBootstrapSecrets("workflow-mcp-worker",{...expected,[name]:""}),new RegExp(name));
   }
-  assert.throws(() => collectBootstrapSecrets("ima-mcp-worker", {
-    ...fixtures["ima-mcp-worker"], WORKFLOW_S2_RELEASE: "true",
-  }), /S2 release is allowed only/);
+  assert.deepEqual(collectBootstrapSecrets("raindrop-mcp-worker",{
+    ...fixtures["raindrop-mcp-worker"],...expected
+  }),fixtures["raindrop-mcp-worker"]);
 });
 
 
-test("S3 GitHub credential is gated, independent, and never a multi-PAT GH_TOKEN",()=>{
-  const base={MCP_ACCESS_TOKEN:"s1",S2_PORTAL_CLIENT_ID:"id",S2_PORTAL_CLIENT_SECRET:"secret"};
-  const s3={...base,WORKFLOW_S2_RELEASE:"true",WORKFLOW_S3_RELEASE:"true",
-    S3_GITHUB_TOKEN:"production-specific-github-token"};
-  assert.deepEqual(collectBootstrapSecrets("workflow-mcp-worker",s3),
-    {...base,S3_GITHUB_TOKEN:"production-specific-github-token"});
-  assert.deepEqual(collectBootstrapSecrets("workflow-mcp-worker",
-    {...base,S3_GITHUB_TOKEN:"ignored",WORKFLOW_S2_RELEASE:"true"}),base);
-  assert.throws(()=>collectBootstrapSecrets("workflow-mcp-worker",
-    {...s3,S3_GITHUB_TOKEN:""}),/S3_GITHUB_TOKEN/);
-  assert.throws(()=>collectBootstrapSecrets("workflow-mcp-worker",
-    {...s3,S3_GITHUB_TOKEN:"foo\nbar"}),/S3_GITHUB_TOKEN/);
-  assert.throws(()=>collectBootstrapSecrets("workflow-mcp-worker",
-    {...s3,WORKFLOW_S2_RELEASE:"false"}),/S3 requires/);
-  assert.throws(()=>collectBootstrapSecrets("raindrop-mcp-worker",
-    {...s3,RAINDROP_ACCESS_TOKEN:"x"}),/S2 release is allowed only|S3 requires/);
+test("Workflow registered GitHub token must be nonblank, bounded and not multiline",()=>{
+  const valid=fixtures["workflow-mcp-worker"];
+  for(const invalid of ["short","x".repeat(513),"foo\nbar"]){
+    assert.throws(()=>collectBootstrapSecrets("workflow-mcp-worker",
+      {...valid,WORKFLOW_EXECUTOR_GITHUB_TOKEN:invalid}),/WORKFLOW_EXECUTOR_GITHUB_TOKEN/);
+  }
+  assert.deepEqual(collectBootstrapSecrets("workflow-mcp-worker",{...valid,GH_TOKEN:"ignored"}),valid);
+});
+
+test("Workflow GitHub Environment secrets never use reserved GITHUB_ names",()=>{
+  const names=BOOTSTRAP_SECRETS["workflow-mcp-worker"];
+  assert.ok(names.includes("WORKFLOW_EXECUTOR_GITHUB_TOKEN"));
+  for(const name of names)assert.doesNotMatch(name,/^GITHUB_/);
 });

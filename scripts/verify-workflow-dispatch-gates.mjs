@@ -1,97 +1,69 @@
 import assert from 'node:assert/strict';
-import {readFileSync} from 'node:fs';
+import { readFileSync } from 'node:fs';
 
-// No dependencies: run before pnpm install for every selected CI check.
-const config=readFileSync(new URL('../.github/workflows/ci.yml',import.meta.url),'utf8');
-function jobExpression(name){
-  const start=config.indexOf('\n  '+name+':\n');
-  assert.ok(start>=0,'missing job '+name);
-  const remaining=config.slice(start+name.length+6);
-  const match=/\n  [a-z][a-z0-9-]*:\n/.exec(remaining);
-  const section=config.slice(start,match?start+name.length+6+match.index:undefined);
-  const expr=section.match(/\n    if: >-\n([\s\S]*?)\n    runs-on:/)?.[1];
-  assert.ok(expr,'missing gate for '+name);
-  return expr;
+// Executed by CI before pnpm install. Keep the owner release gates static and
+// independent of GitHub-hosted runtime credentials.
+const source=readFileSync(new URL('../.github/workflows/ci.yml',import.meta.url),'utf8');
+const dollar=String.fromCharCode(36);
+function job(name){
+  const start=source.indexOf('\n  '+name+':\n');
+  assert.ok(start>=0,'Missing CI job '+name);
+  const rest=source.slice(start+name.length+6);
+  const next=/\n  [a-z][a-z0-9-]*:\n/.exec(rest);
+  const content=source.slice(start,next?start+name.length+6+next.index:undefined);
+  const gate=content.match(/\n    if: >-\n([\s\S]*?)\n    runs-on:/)?.[1];
+  assert.ok(gate,'Missing CI gate '+name);
+  return {content,gate};
 }
-const deploy=jobExpression('deploy');
-const portal=jobExpression('workflow-s2-portal-probe');
-assert.match(config,/      deploy_to_production:\n[\s\S]*?        default: false/);
-for(const required of [
+const release=job('deploy').gate;
+for(const clause of [
+  "github.event_name == 'workflow_dispatch'",
   "github.ref == 'refs/heads/main'",
   'inputs.deploy_to_production == true',
-  'inputs.s2_portal_probe != true',
+  'inputs.smoke_only != true',
   'inputs.workflow_portal_register != true',
-  'inputs.s3_production_smoke != true',
-  'inputs.s2_cloud_e2e != true',
-  'inputs.s3_product_e2e != true',
-  'inputs.s3_oidc_probe != true',
-  "(inputs.enable_workflow_s2 != true || inputs.worker == 'workflow-mcp-worker')",
-  "(inputs.enable_workflow_s3 != true ||",
-  "(inputs.worker == 'workflow-mcp-worker' && inputs.enable_workflow_s2 == true)",
-  "(inputs.confirm_workflow_stage_disable != true || inputs.worker == 'workflow-mcp-worker')",
+  "needs.checks.result == 'success'",
+])assert.ok(release.includes(clause),'Unsafe production gate: '+clause);
+assert.match(source,/      deploy_to_production:\n[\s\S]*?        default: false/);
+assert.doesNotMatch(source,/enable_workflow_mcp|enable_workflow_github|confirm_workflow_capability_disable|WORKFLOW_MCP_RELEASE|WORKFLOW_GITHUB_RELEASE|WORKFLOW_ALLOW_CAPABILITY_DISABLE/);
 
-])assert.ok(deploy.includes(required),'unsafe release gate: '+required);
-assert.match(config,/      enable_workflow_s2:\n[\s\S]*?        default: false/);
-assert.match(config,/      enable_workflow_s3:\n[\s\S]*?        default: false/);
-assert.match(config,/      confirm_workflow_stage_disable:\n[\s\S]*?        default: false/);
-assert.match(config,/      workflow_portal_register:\n[\s\S]*?        default: false/);
-const attach=jobExpression('workflow-portal-register');
-for(const required of [
+const portal=job('workflow-portal-register').gate;
+for(const clause of [
   "github.event_name == 'workflow_dispatch'",
   "github.ref == 'refs/heads/main'",
   "inputs.worker == 'workflow-mcp-worker'",
-  "inputs.workflow_portal_register == true",
-  "inputs.deploy_to_production != true",
-  "inputs.smoke_only != true",
-  "inputs.enable_workflow_s2 != true",
-  "inputs.enable_workflow_s3 != true",
+  'inputs.workflow_portal_register == true',
+  'inputs.deploy_to_production != true',
+  'inputs.smoke_only != true',
   "needs.checks.result == 'success'",
-])assert.ok(attach.includes(required),'unsafe Portal registration gate: '+required);
-assert.ok(config.includes('run: node scripts/register-workflow-portal.mjs'),
-  'Portal registration must use dedicated fixed configuration script');
-assert.ok(config.includes('run: node --test scripts/register-workflow-portal.test.mjs'),
-  'Portal admin mutation must have an unconditional offline test gate');
-assert.ok(config.includes('group: worker-release-workflow-mcp-worker'),
-  'Portal updates must share production release lock');
+])assert.ok(portal.includes(clause),'Unsafe Portal registration: '+clause);
+assert.ok(source.includes('run: node scripts/register-workflow-portal.mjs'));
+assert.ok(source.includes('run: node --test scripts/register-workflow-portal.test.mjs'));
+assert.ok(source.includes('group: worker-release-workflow-mcp-worker'));
 
-assert.ok(config.includes('WORKFLOW_ALLOW_STAGE_DISABLE: '+String.fromCharCode(36)+'{{ inputs.confirm_workflow_stage_disable }}'),
-  'Explicit Workflow stage disable approval must reach preflight');
-
-assert.match(config,/      s3_production_smoke:\n[\s\S]*?        default: false/);
-const smoke = jobExpression('workflow-s1-smoke');
-for(const required of [
+const smoke=job('workflow-production-smoke').gate;
+for(const clause of [
   'inputs.smoke_only == true',
   'inputs.deploy_to_production != true',
-  'inputs.enable_workflow_s3 != true',
-  '(inputs.s2_production_smoke != true || inputs.s3_production_smoke != true)',
-]) assert.ok(smoke.includes(required),'S3 production smoke cannot release: '+required);
-assert.ok(config.includes('WORKFLOW_S3_SMOKE: '+String.fromCharCode(36)+'{{ inputs.s3_production_smoke }}'),
-  'S3 smoke selection must be wired only into the smoke Job');
+  '(inputs.mcp_production_smoke != true || inputs.github_production_smoke != true)',
+])assert.ok(smoke.includes(clause),'Unsafe smoke gate: '+clause);
+assert.ok(source.includes('WORKFLOW_GITHUB_SMOKE: '+dollar+'{{ inputs.github_production_smoke }}'));
 
-assert.ok(config.includes('WORKFLOW_S3_RELEASE: ${{ inputs.enable_workflow_s3 }}'),
-  'S3 mode must reach staging and readback');
-assert.ok(config.includes('node scripts/verify-s3-release-token.mjs'),
-  'S3 registered credential must pass no-job permission probe before deployment');
-assert.ok(config.includes('S3_GITHUB_TOKEN: ${{ secrets.S3_GITHUB_TOKEN }}'),
-  'S3 credential must be provided by selected environment');
-assert.ok(config.includes("S3_CALLBACK_ORIGIN: ${{ vars.S3_CALLBACK_ORIGIN }}") &&
-  config.includes("S3_GITHUB_AUDIENCE: ${{ vars.S3_GITHUB_AUDIENCE }}"),
-  'Registered executor callback variables must be verified');
-
-assert.ok(config.includes('WORKFLOW_S2_RELEASE: ${{ inputs.enable_workflow_s2 }}'),
-  'S2 deployment mode must reach preflight and readback');
-
-for(const required of [
+const probe=job('workflow-mcp-portal-probe').gate;
+for(const clause of [
   "github.ref == 'refs/heads/main'",
-  'inputs.s2_portal_probe == true',
+  'inputs.mcp_portal_probe == true',
   'inputs.deploy_to_production != true',
-])assert.ok(portal.includes(required),'unsafe Portal probe gate: '+required);
-// S2 release must not be enabled by merely selecting a Worker or by a
-// read-only Portal probe. Its second explicit opt-in is false by default.
-assert.ok(config.includes("inputs.enable_workflow_s2 != true || inputs.worker == 'workflow-mcp-worker'"),
-  'S2 enablement must be scoped to Workflow MCP only');
-assert.ok(config.includes('S2_PORTAL_CLIENT_ID: ${{ secrets.S2_PORTAL_CLIENT_ID }}') &&
-  config.includes('S2_PORTAL_CLIENT_SECRET: ${{ secrets.S2_PORTAL_CLIENT_SECRET }}'),
-  'S2 service identity must be read from the selected GitHub Environment');
+])assert.ok(probe.includes(clause),'Unsafe Portal probe gate: '+clause);
 
+for(const key of ['MCP_PORTAL_CLIENT_ID','MCP_PORTAL_CLIENT_SECRET','WORKFLOW_EXECUTOR_GITHUB_TOKEN']){
+  assert.ok(source.includes(key+': '+dollar+'{{ secrets.'+key+' }}'),
+    'Missing selected Environment Secret '+key);
+}
+assert.ok(source.includes('run: node scripts/verify-github-release-token.mjs'),
+  'GitHub token must be probed without dispatch before release');
+assert.ok(source.includes('node scripts/manual-worker-release.mjs preflight'),
+  'Cloudflare preflight required before deployment');
+assert.ok(source.includes('WORKFLOW_REQUIRE_COMPLETE_SCHEMA: '+"'true'"),
+  'Complete schema must be verified after migration');
 console.log('WORKFLOW_RELEASE_GATE_CONTRACT_OK');

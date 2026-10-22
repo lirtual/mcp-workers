@@ -1,25 +1,25 @@
-// Disposable Cloudflare combined S2 test Portal -> GitHub S3 end-to-end acceptance.
+// Disposable Cloudflare combined MCP test Portal -> GitHub GitHub end-to-end acceptance.
 import assert from 'node:assert/strict';
 import {randomBytes,randomUUID,createHash} from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 import {writeFileSync,unlinkSync} from 'node:fs';
 import {Client,StreamableHTTPClientTransport} from '@modelcontextprotocol/client';
-import {TRUSTED_PORTAL_ENDPOINT,scopedPublicMcpFetch} from '../src/s2-public-fetch.ts';
+import {TRUSTED_PORTAL_ENDPOINT,scopedPublicMcpFetch} from '../src/mcp-public-fetch.ts';
 import {toolSchemaDigest} from '../src/plan.ts';
 const need=k=>{assert.ok(process.env[k],'Missing '+k);return process.env[k]};
 const cf=need('CLOUDFLARE_API_TOKEN'),account=need('CLOUDFLARE_ACCOUNT_ID');
-const pair={clientId:need('S2_PORTAL_CLIENT_ID'),clientSecret:need('S2_PORTAL_CLIENT_SECRET')};
+const pair={clientId:need('MCP_PORTAL_CLIENT_ID'),clientSecret:need('MCP_PORTAL_CLIENT_SECRET')};
 assert.equal(need('GITHUB_REPOSITORY'),'lirtual/mcp-workers');
-assert.equal(need('GITHUB_REF'),'refs/heads/wip/workflow-s3-github-executor');
-const expectedName=process.env.S3_DEDICATED_TEST_NAME||undefined;
-if(expectedName!==undefined)assert.match(expectedName,/^workflow-s3-plan-[a-f0-9]{10}$/);
+assert.equal(need('GITHUB_REF'),'refs/heads/wip/workflow-github-executor');
+const expectedName=process.env.GITHUB_DEDICATED_TEST_NAME||undefined;
+if(expectedName!==undefined)assert.match(expectedName,/^workflow-github-plan-[a-f0-9]{10}$/);
 const suffix=expectedName?.slice(-10)??randomBytes(5).toString('hex');
-const name=expectedName??'workflow-s3-plan-'+suffix;
+const name=expectedName??'workflow-github-plan-'+suffix;
 const dedicated=expectedName!==undefined;
-const file='wrangler.s3-plan-'+suffix+'.json',cwd=new URL('..',import.meta.url).pathname;
+const file='wrangler.github-plan-'+suffix+'.json',cwd=new URL('..',import.meta.url).pathname;
 const endpoint='https://'+name+'.aiyaya.workers.dev/mcp',ownerToken=randomUUID()+randomUUID();
 let dbId,attempted=false,owner,portal,runId;const pause=ms=>new Promise(r=>setTimeout(r,ms));
-assert.match(name,/^workflow-s3-plan-[a-f0-9]{10}$/);
+assert.match(name,/^workflow-github-plan-[a-f0-9]{10}$/);
 async function api(method,path,body){
   const r=await fetch('https://api.cloudflare.com/client/v4'+path,{method,headers:{authorization:'Bearer '+cf,'content-type':'application/json'},...(body?{body:JSON.stringify(body)}:{}),signal:AbortSignal.timeout(25000)});
   const v=await r.json().catch(()=>null);if(!r.ok||!v?.success)throw Error('Cloudflare '+method+' HTTP '+r.status);return v.result;
@@ -52,13 +52,13 @@ async function run(){
   }
   const created=await api('POST','/accounts/'+account+'/d1/database',{name});dbId=created.uuid;
   assert.match(dbId,/^[a-f0-9-]{36}$/i);console.log('DISPOSABLE_DB_CREATED',name);
-  writeFileSync(new URL('../'+file,import.meta.url),JSON.stringify({name,main:'tests/fixtures/s3-product-test-entry.ts',compatibility_date:'2026-09-10',workers_dev:true,preview_urls:false,keep_vars:false,vars:{S2_READONLY_ENABLED:'true',S2_PORTAL_ENDPOINT:TRUSTED_PORTAL_ENDPOINT,
- S3_ENABLED:'true',S3_GITHUB_REPOSITORY:process.env.GITHUB_REPOSITORY,
- S3_GITHUB_REPOSITORY_ID:process.env.GITHUB_REPOSITORY_ID,
- S3_GITHUB_REF:process.env.GITHUB_REF,
- S3_GITHUB_AUDIENCE:'workflow-s3-claim:test',S3_TEST_WORKER_NAME:name,
- ...(dedicated?{S3_TEST_DEDICATED_EXECUTOR:'true'}:{}),
- S3_TEST_EXPECTED_TOKEN_SHA256:createHash('sha256').update(need('GITHUB_TOKEN')).digest('hex')},d1_databases:[{binding:'DB',database_name:name,database_id:dbId,migrations_dir:'migrations'}],workflows:[{name,binding:'WORKFLOW',class_name:'WorkflowRunner'}],services:[{binding:'READONLY_TARGET',service:'workflow-s1-readonly-fixture'}]}));
+  writeFileSync(new URL('../'+file,import.meta.url),JSON.stringify({name,main:'tests/fixtures/github-product-test-entry.ts',compatibility_date:'2026-09-10',workers_dev:true,preview_urls:false,keep_vars:false,vars:{MCP_CALL_ENABLED:'true',MCP_PORTAL_ENDPOINT:TRUSTED_PORTAL_ENDPOINT,
+ GITHUB_EXECUTION_ENABLED:'true',GITHUB_EXECUTOR_REPOSITORY:process.env.GITHUB_REPOSITORY,
+ GITHUB_EXECUTOR_REPOSITORY_ID:process.env.GITHUB_REPOSITORY_ID,
+ GITHUB_EXECUTOR_REF:process.env.GITHUB_REF,
+ GITHUB_EXECUTOR_AUDIENCE:'workflow-github-claim:test',GITHUB_TEST_WORKER_NAME:name,
+ ...(dedicated?{GITHUB_TEST_DEDICATED_EXECUTOR:'true'}:{}),
+ GITHUB_TEST_EXPECTED_TOKEN_SHA256:createHash('sha256').update(need('GITHUB_TOKEN')).digest('hex')},d1_databases:[{binding:'DB',database_name:name,database_id:dbId,migrations_dir:'migrations'}],workflows:[{name,binding:'WORKFLOW',class_name:'WorkflowRunner'}],services:[{binding:'READONLY_TARGET',service:'workflow-readonly-fixture'}]}));
   wr(['d1','migrations','apply',name,'--remote','--config',file]);
   attempted=true;
   try{wr(['deploy','--config',file]);}
@@ -68,11 +68,11 @@ async function run(){
     // ONLY the same declarative upload, never a Workflow Run or GitHub Job.
     const message=String(error);
     if(!message.includes('/subdomain')||!message.includes('10007'))throw error;
-    console.log('S3_WORKER_SUBDOMAIN_PROPAGATION_RETRY',name);
+    console.log('GITHUB_WORKER_SUBDOMAIN_PROPAGATION_RETRY',name);
     await pause(8500);
     wr(['deploy','--config',file]);
   }
-  for(const [key,val] of Object.entries({MCP_ACCESS_TOKEN:ownerToken,S2_PORTAL_CLIENT_ID:pair.clientId,S2_PORTAL_CLIENT_SECRET:pair.clientSecret,S3_GITHUB_TOKEN:need('GITHUB_TOKEN')}))wr(['secret','put',key,'--config',file],val);
+  for(const [key,val] of Object.entries({MCP_ACCESS_TOKEN:ownerToken,MCP_PORTAL_CLIENT_ID:pair.clientId,MCP_PORTAL_CLIENT_SECRET:pair.clientSecret,WORKFLOW_EXECUTOR_GITHUB_TOKEN:need('GITHUB_TOKEN')}))wr(['secret','put',key,'--config',file],val);
   console.log('DISPOSABLE_WORKER_READY',name);
   // Each 'wrangler secret put' can publish another Worker version.
   // Require consecutive read-only health checks after all secret writes
@@ -89,7 +89,7 @@ async function run(){
     if(stable<3)await pause(2200);
   }
   assert.equal(stable,3,'disposable_worker_route_unstable_after_secrets');
-  console.log('S3_PRODUCT_STABLE_WORKER_HEALTH_OK',name);
+  console.log('GITHUB_PRODUCT_STABLE_WORKER_HEALTH_OK',name);
   // Fail closed before Draft/Publish/Run if the temporary Worker did not
   // receive exactly the same Runner token with GitHub actions:write access.
   // This route exists only in the disposable test wrapper, not product code.
@@ -105,18 +105,18 @@ async function run(){
       validIdentity=true;
       break;
     }
-    console.log('S3_PRODUCT_GITHUB_CREDENTIAL_GATE_PENDING',
+    console.log('GITHUB_PRODUCT_GITHUB_CREDENTIAL_GATE_PENDING',
       JSON.stringify({matching:observed.tokenMatches,read:observed.readStatus,
         deniedBranch:observed.invalidDispatchStatus}));
     if(i<2)await pause(9000);
   }
-  assert.ok(validIdentity,'S3 product Worker GitHub credential gate not ready');
-  console.log('S3_PRODUCT_GITHUB_CREDENTIAL_GATE_OK',name);
+  assert.ok(validIdentity,'GitHub product Worker GitHub credential gate not ready');
+  console.log('GITHUB_PRODUCT_GITHUB_CREDENTIAL_GATE_OK',name);
   let connected=false;for(let i=0;i<15;i++){
     const instance=mcp(endpoint,{requestInit:{headers:{authorization:'Bearer '+ownerToken}}});
     try{await instance.client.connect(instance.transport);owner=instance.client;connected=true;break;}catch{await instance.client.close().catch(()=>{});await pause(2000);}
   }assert.ok(connected,'Isolated Worker unavailable');
-  const definition={version:1,name:'isolated-s2-s3-'+suffix,steps:[
+  const definition={version:1,name:'isolated-mcp-github-'+suffix,steps:[
     {id:'read',uses:'mcp.call',with:{
       endpoint:TRUSTED_PORTAL_ENDPOINT,tool:'ima_list_notebooks',scope:'read',
       input_schema:cand.inputSchema,
@@ -137,7 +137,7 @@ async function run(){
   const base={workflow_id:draft.workflow_id,expected_revision:1};
   await tool('workflow_publish',{...base,
     approved_operations:validation.required_approvals,
-    accept_target_risks:true},'s3_execution_approval_required');
+    accept_target_risks:true},'github_execution_approval_required');
   await tool('workflow_publish',{...base,
     approved_operations:[],accept_target_risks:true,
     approve_heavy_execution:true},'external_approval_required');
@@ -145,9 +145,9 @@ async function run(){
     approved_operations:validation.required_approvals,
     accept_target_risks:true,approve_heavy_execution:true});
   assert.ok(published.published_version_id);
-  const params={workflow_id:draft.workflow_id,inputs:{},idempotency_key:'s3-plan-'+suffix};
+  const params={workflow_id:draft.workflow_id,inputs:{},idempotency_key:'github-plan-'+suffix};
   const started=await tool('workflow_run',params);runId=started.run_id;
-  console.log('S3_PRODUCT_WORKFLOW_RUN_STARTED',name);
+  console.log('GITHUB_PRODUCT_WORKFLOW_RUN_STARTED',name);
   async function readOnlyResult(){
     for(let attempt=0;attempt<3;attempt++){
       try{return await tool('workflow_result',{run_id:runId});}
@@ -155,7 +155,7 @@ async function run(){
         // Only idempotent result reads may retry. An ambiguous workflow_run
         // or GitHub dispatch is never repeated.
         if(!/Request timed out/i.test(String(error)))throw error;
-        console.log('S3_PRODUCT_READONLY_RESULT_TIMEOUT',attempt+1);
+        console.log('GITHUB_PRODUCT_READONLY_RESULT_TIMEOUT',attempt+1);
         try{
           const queried=await api('POST',
             '/accounts/'+account+'/d1/database/'+dbId+'/query',{
@@ -163,9 +163,9 @@ async function run(){
               params:[runId],
             });
           const row=queried[0]?.results?.[0]??null;
-          console.log('S3_PRODUCT_D1_READONLY_STATUS',
+          console.log('GITHUB_PRODUCT_D1_READONLY_STATUS',
             JSON.stringify(row?{status:row.outcome,error_code:row.error_code}:null));
-        }catch{console.log('S3_PRODUCT_D1_READONLY_STATUS_UNAVAILABLE');}
+        }catch{console.log('GITHUB_PRODUCT_D1_READONLY_STATUS_UNAVAILABLE');}
         if(attempt===2)throw error;
         await pause(2500);
       }
@@ -182,18 +182,18 @@ async function run(){
     const safe=outcome?.steps?.map(s=>({
       step:s.step_id,status:s.status,error_code:s.error_code||null,
     }))||[];
-    console.log('S3_PRODUCT_RUN_FAILURE_STATE',
+    console.log('GITHUB_PRODUCT_RUN_FAILURE_STATE',
       JSON.stringify({status:outcome?.status,error_code:outcome?.error_code||null,steps:safe}));
   }
   assert.equal(outcome.status,'succeeded',
-    'S2+S3 Product Run failed: '+String(outcome?.error_code||outcome?.status));
+    'MCP+GitHub Product Run failed: '+String(outcome?.error_code||outcome?.status));
   assert.equal(outcome.steps.length,3);
   assert.ok(outcome.steps.every(s=>s.status==='succeeded'));
   assert.equal(outcome.result?.source,
-    dedicated?'workflow-s3-executor':'separate-github-workflow-dispatch');
+    dedicated?'workflow-github-executor':'separate-github-workflow-dispatch');
   assert.equal(outcome.result?.echo,'ok');
   assert.equal((await tool('workflow_run',params)).run_id,runId);
-  console.log('S3_PRODUCT_S2_PORTAL_GITHUB_WORKFLOW_RESULT_PASS',name);
+  console.log('GITHUB_PRODUCT_MCP_PORTAL_GITHUB_WORKFLOW_RESULT_PASS',name);
 
 }
 async function resourcePresent(path){
@@ -211,20 +211,20 @@ async function removeExact(path){
 }
 async function cleanup(){
   try{await owner?.close();await portal?.client?.close();}catch{}
-  if(!/^workflow-s3-plan-[a-f0-9]{10}$/.test(name))
+  if(!/^workflow-github-plan-[a-f0-9]{10}$/.test(name))
     throw Error('Unsafe cleanup identity');
-  const result=spawnSync('node',['tests/s3-disposable-cleanup.mjs',name],{
+  const result=spawnSync('node',['tests/github-disposable-cleanup.mjs',name],{
     cwd,timeout:90000,encoding:'utf8',
     env:process.env,
   });
   try{unlinkSync(new URL('../'+file,import.meta.url));}catch{}
-  if(result.status!==0)throw Error('S3_PRODUCT_DISPOSABLE_CLEANUP_FAILED '+name+
+  if(result.status!==0)throw Error('GITHUB_PRODUCT_DISPOSABLE_CLEANUP_FAILED '+name+
     ' exit '+String(result.status));
-  console.log('S3_PRODUCT_DISPOSABLE_CLEANUP_OK',name);
+  console.log('GITHUB_PRODUCT_DISPOSABLE_CLEANUP_OK',name);
 }
 
 let failure;
-try{await run()}catch(e){failure=e;console.error('S3_PRODUCT_CLOUD_E2E_FAILED',String(e.message).replaceAll(cf,'[redacted]').replaceAll(pair.clientSecret,'[redacted]'),'name='+name);}
+try{await run()}catch(e){failure=e;console.error('GITHUB_PRODUCT_CLOUD_E2E_FAILED',String(e.message).replaceAll(cf,'[redacted]').replaceAll(pair.clientSecret,'[redacted]'),'name='+name);}
 finally{try{await cleanup();}catch(e){failure??=e;console.error(String(e.message));}}
 // CLI has completed all awaited cleanup. Close lingering SDK/HTTP handles rather
 // than letting a successful test hang until GitHub cancels the entire job.

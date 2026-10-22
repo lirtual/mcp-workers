@@ -8,13 +8,13 @@ const token=need('GITHUB_TOKEN');
 const cf=need('CLOUDFLARE_API_TOKEN');
 const account=need('CLOUDFLARE_ACCOUNT_ID');
 assert.equal(need('GITHUB_REPOSITORY'),'lirtual/mcp-workers');
-assert.equal(need('GITHUB_REF'),'refs/heads/wip/workflow-s3-github-executor');
+assert.equal(need('GITHUB_REF'),'refs/heads/wip/workflow-github-executor');
 const suffix=randomBytes(5).toString('hex');
-const name='workflow-s3-auth-'+suffix;
+const name='workflow-github-auth-'+suffix;
 const access=randomBytes(24).toString('hex');
-const branch='s3-auth-probe-nonexistent-'+randomBytes(12).toString('hex');
+const branch='github-auth-probe-nonexistent-'+randomBytes(12).toString('hex');
 const dir=new URL('..',import.meta.url).pathname;
-const configName='wrangler.s3-auth-'+suffix+'.json';
+const configName='wrangler.github-auth-'+suffix+'.json';
 const configUrl=new URL('../'+configName,import.meta.url);
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 const cfRoot='https://api.cloudflare.com/client/v4/accounts/'+account;
@@ -52,7 +52,7 @@ const common={
   'authorization':'Bearer '+token,
   'content-type':'application/json',
   'x-github-api-version':'2026-03-10',
-  'user-agent':'mcp-workers-s3-isolated-auth-test',
+  'user-agent':'mcp-workers-github-isolated-auth-test',
 };
 const githubUrl='https://api.github.com/repos/lirtual/mcp-workers/actions/workflows/ci.yml';
 let touched=false,failed=false;
@@ -61,12 +61,12 @@ try{
   const runPost=await fetch(githubUrl+'/dispatches',{
     method:'POST',headers:common,redirect:'manual',
     body:JSON.stringify({ref:branch,return_run_details:true,
-      inputs:{worker:'workflow-mcp-worker',s3_executor_worker:'true'}}),
+      inputs:{worker:'workflow-mcp-worker',github_executor_worker:'true'}}),
   });
-  console.log('S3_GITHUB_RUNNER_DIAGNOSTIC',JSON.stringify({
+  console.log('GITHUB_EXECUTOR_RUNNER_DIAGNOSTIC',JSON.stringify({
     read:summary(runGet),invalidDispatch:summary(runPost),
   }));
-  const config={name,main:'tests/fixtures/s3-github-auth-probe-worker.ts',
+  const config={name,main:'tests/fixtures/github-auth-probe-worker.ts',
     compatibility_date:'2026-09-10',workers_dev:true,preview_urls:false,
     keep_vars:false,
     vars:{EXPECTED_TOKEN_SHA256:createHash('sha256').update(token).digest('hex'),
@@ -94,9 +94,9 @@ try{
     await pause(2300);
   }
   assert.ok(proof,'disposable Worker auth probe unavailable');
-  console.log('S3_GITHUB_WORKER_DIAGNOSTIC',JSON.stringify(proof));
+  console.log('GITHUB_EXECUTOR_WORKER_DIAGNOSTIC',JSON.stringify(proof));
   if(!proof.tokenUnchanged){
-    console.log('S3_WORKER_SECRET_NORMALIZATION_DIAGNOSTIC',
+    console.log('GITHUB_WORKER_SECRET_NORMALIZATION_DIAGNOSTIC',
       JSON.stringify(proof.normalization));
     // Read-only later observation discriminates temporary rollout lag
     // from persistent mismatch without changing credentials.
@@ -106,12 +106,12 @@ try{
     });
     assert.equal(laterResponse.status,200,'later authorization read');
     const later=await laterResponse.json();
-    console.log('S3_GITHUB_WORKER_DELAYED_DIAGNOSTIC',JSON.stringify(later));
+    console.log('GITHUB_EXECUTOR_WORKER_DELAYED_DIAGNOSTIC',JSON.stringify(later));
   }
-  console.log('S3_GITHUB_RUNNER_WORKER_DIAGNOSTIC_COMPLETE');
+  console.log('GITHUB_EXECUTOR_RUNNER_WORKER_DIAGNOSTIC_COMPLETE');
 }catch(e){
   failed=true;
-  console.error('S3_GITHUB_AUTH_COMPARE_FAILED',
+  console.error('GITHUB_EXECUTOR_AUTH_COMPARE_FAILED',
     String(e instanceof Error?e.message:e).replaceAll(token,'[redacted]'));
 }finally{
   if(touched){
@@ -126,7 +126,7 @@ try{
       }
       if(i===0)await pause(2500);
     }
-    console.log('S3_GITHUB_AUTH_PROBE_CLEANUP',clean?'verified':'FAILED');
+    console.log('GITHUB_EXECUTOR_AUTH_PROBE_CLEANUP',clean?'verified':'FAILED');
     if(!clean)failed=true;
   }
   try{unlinkSync(configUrl);}catch{}

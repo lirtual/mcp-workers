@@ -1,12 +1,8 @@
 /**
- * Candidate S2 public MCP transport, guarded by the disabled-by-default
- * S2_READONLY_ENABLED flag in the runner. URL shape checks and manual redirects
- * do NOT establish DNS/IP or SSRF isolation. The owner selected personal
- * trusted-target scope (B), explicitly accepting residual risks; the original
- * P0-3/AC-08 isolation gate remains unproven. Production enablement is separate.
- *
- * The caller MUST supply a trusted, authorized concrete endpoint. Passing
- * an endpoint derived only from a Draft or Run input is not authorization.
+ * Bounded, server-pinned MCP Portal transport.
+ * URL-shape and redirect checks do not establish full DNS/IP or SSRF isolation.
+ * Every call additionally requires a schema-bound owner grant and target risk
+ * acknowledgment in the immutable Published Plan.
  */
 export function publicMcpEndpoint(input: string | URL): URL {
   const url = new URL(input);
@@ -24,7 +20,7 @@ export function publicMcpEndpoint(input: string | URL): URL {
   return url;
 }
 
-// S2 may authenticate only to the owner's explicitly chosen Portal.
+// MCP may authenticate only to the owner's explicitly chosen Portal.
 // Never send this credential to an arbitrary endpoint from a Draft.
 export const TRUSTED_PORTAL_ENDPOINT = 'https://test-mcp.lirtual.dpdns.org/mcp';
 export const PRODUCTION_PORTAL_ENDPOINT = 'https://mcp.lirtual.dpdns.org/mcp';

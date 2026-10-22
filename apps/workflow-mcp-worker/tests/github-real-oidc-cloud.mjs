@@ -13,8 +13,8 @@ import { spawnSync } from 'node:child_process';
 import { unlinkSync, writeFileSync } from 'node:fs';
 import {
   registerGithubAttempt,recordGithubDispatchResult,
-} from '../src/s3-github-claim.ts';
-import { dispatchGithubAttempt } from '../src/s3-github-dispatch.ts';
+} from '../src/github-claim.ts';
+import { dispatchGithubAttempt } from '../src/github-dispatch.ts';
 
 const get=k=>{const v=process.env[k];assert.ok(v,'Missing '+k);return v;};
 const token=get('CLOUDFLARE_API_TOKEN');
@@ -26,18 +26,18 @@ const workflowRef=get('GITHUB_WORKFLOW_REF');
 const githubRunId=Number(get('GITHUB_RUN_ID'));
 const githubRunAttempt=Number(get('GITHUB_RUN_ATTEMPT'));
 assert.equal(repo,'lirtual/mcp-workers');
-assert.equal(ref,'refs/heads/wip/workflow-s3-github-executor');
+assert.equal(ref,'refs/heads/wip/workflow-github-executor');
 assert.equal(workflowRef,repo+'/.github/workflows/ci.yml@'+ref);
 assert.equal(githubRunAttempt,1,'reruns are intentionally not pre-authorized');
 assert.ok(Number.isSafeInteger(githubRunId)&&githubRunId>0);
 assert.match(repositoryId,/^\d+$/);
 const suffix=randomBytes(5).toString('hex');
-const name='workflow-s3-oidc-'+suffix;
+const name='workflow-github-oidc-'+suffix;
 const dir=new URL('..',import.meta.url).pathname;
-const file='wrangler.s3-oidc-'+suffix+'.json';
+const file='wrangler.github-oidc-'+suffix+'.json';
 const url='https://'+name+'.aiyaya.workers.dev';
-const audience='workflow-s3-claim:test';
-const independent=process.env.S3_INDEPENDENT_DISPATCH==='true';
+const audience='workflow-github-claim:test';
+const independent=process.env.GITHUB_INDEPENDENT_DISPATCH==='true';
 const workflowId='w-'+suffix,versionId='v-'+suffix,runId='r-'+suffix;
 const attemptId=randomUUID(),dispatchId=randomUUID(),callbackId=randomUUID();
 let databaseId=null,deployAttempted=false;
@@ -102,13 +102,13 @@ async function invoke(path,jwt,body,expected){
   return response;
 }
 async function run(){
-  assert.match(name,/^workflow-s3-oidc-[a-f0-9]{10}$/);
+  assert.match(name,/^workflow-github-oidc-[a-f0-9]{10}$/);
   const created=await api('POST',root+'/d1/database',{name});
   databaseId=created.uuid;
   assert.match(databaseId,/^[a-f0-9-]{36}$/i);
-  console.log('S3_DISPOSABLE_D1_CREATED',name);
+  console.log('GITHUB_DISPOSABLE_D1_CREATED',name);
   const config={
-    name,main:'tests/fixtures/s3-oidc-worker.ts',
+    name,main:'tests/fixtures/github-oidc-worker.ts',
     compatibility_date:'2026-09-10',workers_dev:true,preview_urls:false,
     keep_vars:false,
     vars:{
@@ -124,13 +124,13 @@ async function run(){
   wr(['d1','migrations','apply',name,'--remote','--config',file]);
   deployAttempted=true;
   wr(['deploy','--config',file]);
-  console.log('S3_DISPOSABLE_WORKER_DEPLOYED',name);
+  console.log('GITHUB_DISPOSABLE_WORKER_DEPLOYED',name);
   // Coordinator seeds a confirmed candidate tied to its current GitHub run
   // before asking GitHub to mint the OIDC token. This is an isolated test
   // harness; production must persist a real REST dispatch acknowledgement.
   const t=Date.now();
   await d1('INSERT INTO workflows (id,name,draft,created_at,updated_at) VALUES (?,?,?,?,?)',
-    [workflowId,'S3 isolated OIDC proof','{}',t,t]);
+    [workflowId,'GitHub isolated OIDC proof','{}',t,t]);
   await d1('INSERT INTO workflow_versions (id,workflow_id,digest,plan,created_at) VALUES (?,?,?,?,?)',
     [versionId,workflowId,'test','{}',t]);
   await d1(`INSERT INTO runs(id,workflow_id,version_id,instance_id,
@@ -152,7 +152,7 @@ async function run(){
     assert.equal(saved,true,'Dispatch result not saved');
     assert.equal(candidate.status,'confirmed','Independent GitHub dispatch did not confirm a Run ID');
     assert.notEqual(candidate.runId,githubRunId,'Executor must be a separate GitHub run');
-    console.log('S3_INDEPENDENT_GITHUB_REST_DISPATCH_CONFIRMED');
+    console.log('GITHUB_INDEPENDENT_GITHUB_REST_DISPATCH_CONFIRMED');
     let finished=null;
     for(let i=0;i<150;i++){
       const row=(await d1('SELECT outcome,result FROM runs WHERE id=?',[runId])).results?.[0];
@@ -169,15 +169,15 @@ async function run(){
     const receipt=(await d1('SELECT notification_delivered,result_json FROM callback_receipts WHERE attempt_id=?',[attemptId])).results?.[0];
     assert.equal(receipt.notification_delivered,1);
     assert.equal(JSON.parse(receipt.result_json).source,'separate-github-workflow-dispatch');
-    console.log('S3_INDEPENDENT_DISPATCH_TO_NATIVE_WORKFLOW_RESULT_PASS');
+    console.log('GITHUB_INDEPENDENT_DISPATCH_TO_NATIVE_WORKFLOW_RESULT_PASS');
     return;
   }
   assert.equal(await recordGithubDispatchResult(db,attemptId,{
     status:'confirmed',runId:githubRunId,runAttempt:1,
   }),true);
-  console.log('S3_CONFIRMED_TEST_CANDIDATE',name);
+  console.log('GITHUB_CONFIRMED_TEST_CANDIDATE',name);
   const valid=await actualOidc(audience);
-  const wrong=await actualOidc('workflow-s3-claim:wrong');
+  const wrong=await actualOidc('workflow-github-claim:wrong');
   const claim={attemptId};
   // Wait for Cloudflare route propagation; invalid identity must stay denied.
   let accessible=false;
@@ -190,11 +190,11 @@ async function run(){
     }catch{}
     await new Promise(r=>setTimeout(r,2000));
   }
-  assert.equal(accessible,true,'S3 fixture route never became available');
+  assert.equal(accessible,true,'GitHub fixture route never became available');
   await invoke('/claim',wrong,claim,403);
   await invoke('/claim',valid,claim,200);
   await invoke('/claim',valid,claim,403);
-  console.log('S3_GITHUB_OIDC_AND_ATOMIC_CLAIM_PASS');
+  console.log('GITHUB_EXECUTOR_OIDC_AND_ATOMIC_CLAIM_PASS');
   await invoke('/start',wrong,claim,403);
   await invoke('/start',valid,claim,202);
   const fact={attemptId,callbackId,outcome:'succeeded',result:{echo:'ok',source:'github-oidc'}};
@@ -214,7 +214,7 @@ async function run(){
   assert.equal(attempts?.[0].state,'claimed');
   assert.equal(attempts[0].owner_run_id,githubRunId);
   assert.equal(attempts[0].owner_run_attempt,1);
-  console.log('S3_GITHUB_SIGNED_CALLBACK_AND_D1_RECEIPT_PASS');
+  console.log('GITHUB_EXECUTOR_SIGNED_CALLBACK_AND_D1_RECEIPT_PASS');
   // The Workflow consumes the event only as a hint. Its own step reads the
   // durable D1 callback and then commits the authoritative Run outcome.
   let finished;
@@ -226,7 +226,7 @@ async function run(){
   }
   assert.equal(finished?.outcome,'succeeded','Native Workflow did not finish');
   assert.equal(JSON.parse(finished.result).echo,'ok');
-  console.log('S3_NATIVE_WORKFLOW_RECEIPT_WAKE_AND_RESULT_PASS');
+  console.log('GITHUB_NATIVE_WORKFLOW_RECEIPT_WAKE_AND_RESULT_PASS');
 }
 async function present(path){
   const response=await fetch('https://api.cloudflare.com/client/v4'+path,{
@@ -263,12 +263,12 @@ async function cleanup(){
     }catch{problems.push('d1');}
   }
   try{unlinkSync(new URL('../'+file,import.meta.url));}catch{}
-  if(problems.length)throw Error('S3_DISPOSABLE_CLEANUP_FAILED '+name+' '+problems.join(','));
-  console.log('S3_DISPOSABLE_CLEANUP_OK',name);
+  if(problems.length)throw Error('GITHUB_DISPOSABLE_CLEANUP_FAILED '+name+' '+problems.join(','));
+  console.log('GITHUB_DISPOSABLE_CLEANUP_OK',name);
 }
 let failed=false;
 try{await run();}
-catch(e){failed=true;console.error('S3_REAL_OIDC_ACCEPTANCE_FAILED',cleanError(e));}
+catch(e){failed=true;console.error('GITHUB_REAL_OIDC_ACCEPTANCE_FAILED',cleanError(e));}
 finally{
   try{await cleanup();}
   catch(e){failed=true;console.error(cleanError(e));}

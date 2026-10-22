@@ -42,7 +42,7 @@ test('GitHub Actions MCP is CI-checked and manually deployable from main', async
 });
 
 
-test('Workflow MCP S1 is CI-checked and may only be manually released from main', async () => {
+test('Workflow MCP Workflow is CI-checked and may only be manually released from main', async () => {
   assert.deepEqual(selectAffectedApps(['apps/workflow-mcp-worker/src/index.ts']), ['workflow-mcp-worker']);
   assert.ok(selectAffectedApps(['pnpm-lock.yaml']).includes('workflow-mcp-worker'));
   const workflow = await readFile(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');

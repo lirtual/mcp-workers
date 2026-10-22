@@ -45,13 +45,13 @@ export default{
       'authorization':'Bearer '+env.GITHUB_AUTH_TOKEN,
       'content-type':'application/json',
       'x-github-api-version':'2026-03-10',
-      'user-agent':'mcp-workers-s3-isolated-auth-test',
+      'user-agent':'mcp-workers-github-isolated-auth-test',
     };
     const get=await fetch(githubUrl,{method:'GET',headers:common,redirect:'manual'});
     const post=await fetch(githubUrl+'/dispatches',{
       method:'POST',headers:common,redirect:'manual',
       body:JSON.stringify({ref:env.PROBE_BRANCH,return_run_details:true,
-        inputs:{worker:'workflow-mcp-worker',s3_executor_worker:'true'}}),
+        inputs:{worker:'workflow-mcp-worker',github_executor_worker:'true'}}),
     });
     return Response.json({tokenUnchanged,normalization,read:summary(get),invalidDispatch:summary(post)},
       {headers:{'cache-control':'no-store'}});

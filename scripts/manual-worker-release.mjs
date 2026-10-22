@@ -60,76 +60,33 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
   if (worker === "workflow-mcp-worker") {
     const d1 = find("DB", "d1");
     invariant((d1?.id || d1?.database_id) ===
-      "c76850db-b5e3-4128-9150-849a1c9e8d74", "S1 production D1 runtime binding drift");
+      "c76850db-b5e3-4128-9150-849a1c9e8d74", "Workflow production D1 runtime binding drift");
     const flow = find("WORKFLOW", "workflow");
-    invariant(flow?.workflow_name === "workflow-mcp-s1" &&
-      flow?.class_name === "WorkflowRunner", "S1 native Workflow binding drift");
+    if(options.mode==="readback") invariant(flow?.workflow_name === "workflow-mcp-runner" &&
+      flow?.class_name === "WorkflowRunner", "Workflow native Workflow binding drift");
     const fixture = find("READONLY_TARGET", "service");
-    invariant(fixture?.service === "workflow-s1-readonly-fixture" &&
-      !fixture?.entrypoint, "S1 private Fixture service binding drift");
-    const s2 = find("S2_READONLY_ENABLED", "plain_text");
-    const portal = find("S2_PORTAL_ENDPOINT", "plain_text");
-    const s2IsOn = s2?.text === "true";
-    const permittedPortal = "https://mcp.lirtual.dpdns.org/mcp";
-    invariant(!bindings.some(x => x.name === "S2_DIRECT_TARGETS_ENABLED"),
-      "Direct MCP targets must remain disabled");
-    const s3 = find("S3_ENABLED", "plain_text");
-    const s3IsOn = s3?.text === "true";
-    // Protect previously enabled production stages from a missing re-selection.
-    // The preflight runs before Secrets, migrations or Worker deployment.
-    if (options.mode === "preflight") {
-      const disablingS2 = s2IsOn && options.expectS2 === false;
-      const disablingS3 = s3IsOn && options.expectS3 === false;
-      invariant(!disablingS2 && !disablingS3 ||
-        options.allowStageDisable === true,
-        "Workflow release would disable an active S2/S3 stage; " +
-        "retain enabled stages or explicitly confirm disable");
-    }
+    if(options.mode==="readback") invariant(fixture?.service === "workflow-readonly-fixture" &&
+      !fixture?.entrypoint, "Workflow private Fixture service binding drift");
     if (options.mode === "readback") {
-      invariant(s3IsOn === (options.expectS3 === true),
-        "S3 production enablement differs from approved release");
-    } else if (s3) {
-      invariant(s3IsOn, "Invalid S3 production flag");
-    }
-    const s3Required = {
-      S3_GITHUB_REPOSITORY: "lirtual/mcp-workers",
-      S3_GITHUB_REPOSITORY_ID: "1414936394",
-      S3_GITHUB_REF: "refs/heads/main",
-      S3_GITHUB_AUDIENCE: "workflow-s3-claim:production",
-    };
-    if (s3IsOn) {
-      invariant(s2IsOn, "S3 requires production S2 Portal");
-      for (const [name, value] of Object.entries(s3Required)) {
-        invariant(find(name, "plain_text")?.text === value,
-          "S3 registered executor identity drift: " + name);
+      invariant(find("MCP_PORTAL_ENDPOINT", "plain_text")?.text ===
+        "https://mcp.lirtual.dpdns.org/mcp", "Pinned Workflow MCP Portal drift");
+      const pins = {
+        GITHUB_EXECUTOR_REPOSITORY: "lirtual/mcp-workers",
+        GITHUB_EXECUTOR_REPOSITORY_ID: "1414936394",
+        GITHUB_EXECUTOR_REF: "refs/heads/main",
+        GITHUB_EXECUTOR_AUDIENCE: "workflow-github-claim:production",
+      };
+      for (const [name,value] of Object.entries(pins)) {
+        invariant(find(name,"plain_text")?.text === value,
+          "Workflow GitHub executor identity drift: " + name);
       }
-      invariant(secretNames.has("S3_GITHUB_TOKEN") &&
-        !!find("S3_GITHUB_TOKEN", "secret_text"),
-        "S3 dedicated GitHub token binding missing");
-    } else {
-      for (const name of Object.keys(s3Required)) {
-        invariant(!bindings.some(x => x.name === name),
-          "S3 configuration must not persist when disabled: " + name);
+      for (const name of ["MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET","WORKFLOW_EXECUTOR_GITHUB_TOKEN"]) {
+        invariant(secretNames.has(name) && !!find(name,"secret_text"),
+          "Workflow runtime credential binding missing: " + name);
       }
-    }
-    // Preflight observes PREVIOUS deployment; toggling S2 off or on is legal
-    // only through an explicitly authorized release. Readback must match
-    // the requested S2 mode and cannot mistake an S1-only release for S2.
-    if (options.mode === "readback") {
-      invariant(s2IsOn === (options.expectS2 === true),
-        options.expectS2 ? "S2 release flag missing" : "S2 must remain disabled in production S1");
-    } else if (s2) {
-      invariant(s2IsOn, "Invalid S2 production runtime flag");
-    }
-    if (s2IsOn) {
-      invariant(portal?.text === permittedPortal,
-        "S2 production Portal must be exactly pinned");
-      for (const name of ["S2_PORTAL_CLIENT_ID", "S2_PORTAL_CLIENT_SECRET"]) {
-        invariant(secretNames.has(name) && !!find(name, "secret_text"),
-          "S2 Portal Secret binding missing: " + name);
-      }
-    } else {
-      invariant(!portal, "S2 production Portal must not remain enabled without S2");
+      invariant(!bindings.some(x => ["MCP_CALL_ENABLED","GITHUB_EXECUTION_ENABLED",
+        "MCP_DIRECT_TARGETS_ENABLED"].includes(x.name)),
+        "Obsolete stage flag present after release");
     }
   }
   if (worker === "github-actions-mcp-worker" && options.mode === "readback") {
@@ -217,30 +174,31 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
 // Fail closed before any production Worker or private fixture deployment.
 export function verifyWorkflowReleaseConfig(conf, fixture) {
   invariant(conf?.name === "workflow-mcp-worker" && conf.main === "src/index.ts",
-    "S1 source identity drift");
+    "Workflow source identity drift");
   invariant(conf.keep_vars === false && conf.workers_dev === false &&
     conf.preview_urls === false && conf.routes?.length === 1 &&
     conf.routes[0]?.pattern === "workflow.lirtual.dpdns.org" &&
-    conf.routes[0]?.custom_domain === true, "S1 reviewed public route drift");
+    conf.routes[0]?.custom_domain === true, "Workflow reviewed public route drift");
   invariant(conf.observability?.enabled === true &&
-    conf.observability?.logs?.invocation_logs === true, "S1 Invocation Logs drift");
+    conf.observability?.logs?.invocation_logs === true, "Workflow Invocation Logs drift");
   invariant(conf.d1_databases?.length === 1 &&
     conf.d1_databases[0]?.binding === "DB" &&
     conf.d1_databases[0]?.database_name === "workflow-mcp-worker" &&
     conf.d1_databases[0]?.database_id === "c76850db-b5e3-4128-9150-849a1c9e8d74" &&
-    conf.d1_databases[0]?.migrations_dir === "migrations", "S1 approved production D1 drift");
+    conf.d1_databases[0]?.migrations_dir === "migrations", "Workflow approved production D1 drift");
   invariant(conf.workflows?.length === 1 && conf.workflows[0]?.binding === "WORKFLOW" &&
-    conf.workflows[0]?.name === "workflow-mcp-s1" &&
-    conf.workflows[0]?.class_name === "WorkflowRunner", "S1 Workflow binding drift");
+    conf.workflows[0]?.name === "workflow-mcp-runner" &&
+    conf.workflows[0]?.class_name === "WorkflowRunner", "Workflow binding drift");
   invariant(conf.services?.length === 1 && conf.services[0]?.binding === "READONLY_TARGET" &&
-    conf.services[0]?.service === "workflow-s1-readonly-fixture", "S1 private Fixture binding drift");
+    conf.services[0]?.service === "workflow-readonly-fixture", "Workflow private Fixture binding drift");
   invariant(JSON.stringify(conf.secrets?.required) === JSON.stringify(["MCP_ACCESS_TOKEN"]),
-    "S1 Portal Secret declaration drift");
-  invariant(!conf.vars?.S2_READONLY_ENABLED && !conf.vars?.S3_ENABLED &&
-    !(conf.compatibility_flags || []).includes("global_fetch_strictly_public"),
-    "S1 must never enable or import S2 dynamic-target behavior");
+    "Workflow Portal Secret declaration drift");
+  invariant(!conf.vars || Object.keys(conf.vars).length===0,
+    "Workflow MCP source cannot declare runtime feature flags");
+  invariant(!(conf.compatibility_flags || []).includes("global_fetch_strictly_public"),
+    "Workflow must never enable or import MCP dynamic-target behavior");
   if(fixture) {
-    invariant(fixture.name === "workflow-s1-readonly-fixture" &&
+    invariant(fixture.name === "workflow-readonly-fixture" &&
       fixture.main === "readonly-worker.ts" &&
       fixture.workers_dev === false && fixture.preview_urls === false &&
       !fixture.routes?.length && fixture.keep_vars === false &&
@@ -248,7 +206,7 @@ export function verifyWorkflowReleaseConfig(conf, fixture) {
       fixture.observability?.logs?.invocation_logs === true &&
       !fixture.secrets?.required?.length && !fixture.d1_databases?.length &&
       !fixture.services?.length && !fixture.workflows?.length && !fixture.vars,
-      "S1 Fixture must have no public route, data binding or Secrets");
+      "Workflow Fixture must have no public route, data binding or Secrets");
   }
   return true;
 }
@@ -256,36 +214,36 @@ export function verifyWorkflowReleaseConfig(conf, fixture) {
 // Review the actually deployed private Fixture, not just its source manifest.
 export function verifyFixtureExposure(subdomain, domains, routesByZone) {
   invariant(subdomain?.enabled === false && subdomain?.previews_enabled === false,
-    "S1 private Fixture has public workers.dev or Preview exposure");
+    "Workflow private Fixture has public workers.dev or Preview exposure");
   invariant(Array.isArray(domains) && Array.isArray(routesByZone),
-    "S1 Fixture public route inventory unavailable");
-  invariant(!domains.some(x => x.service === "workflow-s1-readonly-fixture"),
-    "S1 private Fixture has a Custom Domain");
-  invariant(!routesByZone.some(x => x.script === "workflow-s1-readonly-fixture"),
-    "S1 private Fixture has a public Worker route");
+    "Workflow Fixture public route inventory unavailable");
+  invariant(!domains.some(x => x.service === "workflow-readonly-fixture"),
+    "Workflow private Fixture has a Custom Domain");
+  invariant(!routesByZone.some(x => x.script === "workflow-readonly-fixture"),
+    "Workflow private Fixture has a public Worker route");
   return true;
 }
 
-export function verifyWorkflowD1Readiness(response, bootstrap, requireS3Schema = false) {
+export function verifyWorkflowD1Readiness(response, bootstrap, requireCompleteSchema = false) {
   invariant(Array.isArray(response) && response.length === 1 &&
     response[0]?.success === true && response[0]?.results?.length === 1,
-    "S1 remote D1 readback unavailable");
+    "Workflow remote D1 readback unavailable");
   const row = response[0].results[0];
   const s1Schema = row?.migration_v1 === 1 && row?.migration_v2 === 1 &&
     row?.native_column === 1;
-  // S3 tables may be pre-migrated while its execution flag stays disabled.
+  // GitHub tables may be pre-migrated while its execution flag stays disabled.
   // Allow ONLY the exact full v3+v4 pair; reject any half-applied, unknown
   // or missing-table state before an existing manual Worker deployment.
   const s1Only = row?.migration_count === 2 && row?.migration_v3 === 0 &&
     row?.migration_v4 === 0 && row?.attempt_table === 0 && row?.receipt_table === 0;
   const s3Ready = row?.migration_count === 4 && row?.migration_v3 === 1 &&
     row?.migration_v4 === 1 && row?.attempt_table === 1 && row?.receipt_table === 1;
-  invariant(s1Schema && (requireS3Schema ? s3Ready : (s1Only || s3Ready)),
+  invariant(s1Schema && (requireCompleteSchema ? s3Ready : (s1Only || s3Ready)),
     "Workflow production D1 schema migrations missing, partial or drifted");
   invariant(Number.isSafeInteger(row?.active_runs) && row.active_runs === 0,
-    "S1 cannot redeploy while Runs are active or indeterminate");
+    "Workflow cannot redeploy while Runs are active or indeterminate");
   if(bootstrap) invariant(row.run_count === 0 && row.workflow_count === 0,
-    "S1 first deployment requires empty production Run and Workflow state");
+    "Workflow first deployment requires empty production Run and Workflow state");
   return true;
 }
 
@@ -382,13 +340,13 @@ async function cfListRead(path, token) {
     headers: { Authorization: "Bearer " + token, Accept: "application/json" },
     signal: AbortSignal.timeout(15_000),
   });
-  invariant(response.ok, "S1 private Fixture route inventory HTTP " + response.status);
+  invariant(response.ok, "Workflow private Fixture route inventory HTTP " + response.status);
   const data = await response.json();
   invariant(data?.success === true && Array.isArray(data.result),
-    "S1 private Fixture route inventory missing");
+    "Workflow private Fixture route inventory missing");
   invariant((data.result_info?.total_pages ?? 1) <= 1 &&
     (!data.result_info?.total_count || data.result_info.total_count <= data.result.length),
-    "S1 private Fixture route inventory incomplete");
+    "Workflow private Fixture route inventory incomplete");
   return data.result;
 }
 
@@ -470,11 +428,11 @@ async function main() {
   const [mode, worker] = process.argv.slice(2);
   invariant(["preflight", "readback", "version", "diagnostic", "fixture-check", "fixture-readback", "d1-check"].includes(mode), "Unknown release validation mode");
   if (mode === "fixture-readback") {
-    invariant(worker === "workflow-mcp-worker", "Private Fixture check restricted to S1");
+    invariant(worker === "workflow-mcp-worker", "Private Fixture check restricted to Workflow");
     const account = process.env.CLOUDFLARE_ACCOUNT_ID;
     const token = process.env.CLOUDFLARE_API_TOKEN;
-    invariant(account && token, "S1 Cloudflare readback credentials missing");
-    const subdomain = await cfGet(account, "workflow-s1-readonly-fixture", token, "/subdomain");
+    invariant(account && token, "Workflow Cloudflare readback credentials missing");
+    const subdomain = await cfGet(account, "workflow-readonly-fixture", token, "/subdomain");
     const [domains, zones] = await Promise.all([
       cfListRead("/accounts/" + encodeURIComponent(account) + "/workers/domains?per_page=100", token),
       cfListRead("/zones?account.id=" + encodeURIComponent(account) + "&per_page=50", token),
@@ -483,26 +441,26 @@ async function main() {
       cfListRead("/zones/" + encodeURIComponent(zone.id) + "/workers/routes?per_page=100", token)
     ))).flat();
     verifyFixtureExposure(subdomain, domains, routes);
-    console.log("S1 private Fixture has no Workers.dev, Preview, Custom Domain or Worker route");
+    console.log("Workflow private Fixture has no Workers.dev, Preview, Custom Domain or Worker route");
     return;
   }
   if (mode === "fixture-check") {
-    invariant(worker === "workflow-mcp-worker", "Private Fixture check restricted to S1");
+    invariant(worker === "workflow-mcp-worker", "Private Fixture check restricted to Workflow");
     const owner = JSON.parse(await readFile(join(process.cwd(),
       "apps/workflow-mcp-worker/wrangler.jsonc"), "utf8"));
     const fixture = JSON.parse(await readFile(join(process.cwd(),
       "apps/workflow-mcp-worker/tests/fixtures/wrangler.jsonc"), "utf8"));
     verifyWorkflowReleaseConfig(owner, fixture);
-    console.log("S1 private Fixture configuration verified; no public route");
+    console.log("Workflow private Fixture configuration verified; no public route");
     return;
   }
   if (mode === "d1-check") {
-    invariant(worker === "workflow-mcp-worker", "D1 check restricted to S1");
+    invariant(worker === "workflow-mcp-worker", "D1 check restricted to Workflow");
     const raw = await readFile("/dev/stdin", "utf8");
     verifyWorkflowD1Readiness(JSON.parse(raw),
-      process.env.S1_FIRST_DEPLOY === "true",
-      process.env.WORKFLOW_REQUIRE_S3_SCHEMA === "true");
-    console.log("S1 production D1 migrations and Run-state gate verified");
+      process.env.WORKFLOW_FIRST_DEPLOY === "true",
+      process.env.WORKFLOW_REQUIRE_COMPLETE_SCHEMA === "true");
+    console.log("Workflow production D1 migrations and Run-state gate verified");
     return;
   }
   if (mode === "diagnostic") {
@@ -537,9 +495,6 @@ async function main() {
   const exists = mode === "preflight" ? await scriptExists(account, worker, token) : true;
   const observed = exists ? await current(account, worker, token, {
     mode, sourceConfig, previousNamespaceId: previous?.previousNamespaceId,
-    expectS2: process.env.WORKFLOW_S2_RELEASE === "true",
-    expectS3: process.env.WORKFLOW_S3_RELEASE === "true",
-    allowStageDisable: process.env.WORKFLOW_ALLOW_STAGE_DISABLE === "true",
   }) : { mode: "bootstrap" };
   if (mode === "preflight") {
     await writeFile(statePath, JSON.stringify({ worker, sourceSha, ...observed }), { mode: 0o600 });

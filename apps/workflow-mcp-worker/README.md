@@ -1,162 +1,44 @@
 # Workflow MCP Worker
 
-Versioned durable workflows using the existing MCP Portal, Cloudflare D1 and
-Cloudflare Workflows. No extra scheduler, private queue or credential issuer.
+Versioned, durable workflows using the existing MCP Portal, Cloudflare D1 and Cloudflare Workflows. One Worker exposes a unified set of capabilities; no separate execution stages, capability enable switches, scheduler, queue or credential issuer.
 
-## Current production contract (verified 2026-10-22)
+## Capabilities
 
-| Stage | Enabled capability | Acceptance |
-| --- | --- | --- |
-| S1 | Draft → validate → Publish → Run → result | Production PASS |
-| S2 | Exact owner-approved, read-only MCP call via Portal | Production PASS |
-| S3 | Registered GitHub Actions `heavy.github.echo` + OIDC Claim/callback | Production PASS |
+- **Workflow management:** create and revise YAML/JSON Drafts, validate a bounded DAG, explicitly Publish an immutable Plan, run asynchronously, inspect status/results, pause/resume new admissions.
+- **MCP tool calls (`mcp.call`):** read-only operations routed through the existing, server-pinned MCP Portal. Publish requires the exact endpoint, tool, `read` scope and schema digest, plus `accept_target_risks: true`. Runtime checks revalidate the published grant and live tool schema. The remote `readOnlyHint` is untrusted: network isolation and absence of remote side effects are not guaranteed.
+- **GitHub Actions (`github.run`):** a single server-registered `heavy.github.echo` operation, with explicit `approve_heavy_execution: true` at Publish. Repository, workflow, ref and GitHub OIDC audience are pinned server-side. D1 records dispatch identity, GitHub OIDC Claim and immutable callback receipt; ambiguous external effects are never blindly replayed.
+- **Result emission (`result.emit`)** and **private read-only fixture (`fixture.echo`)** for integration tests.
 
-The authenticated owner MCP endpoint is
-`https://workflow.lirtual.dpdns.org/mcp`. Production S2 calls
-`https://mcp.lirtual.dpdns.org/mcp`. D1 stores Drafts, immutable Published
-Versions, Runs/Steps, GitHub Attempts and callback receipts; Cloudflare
-Workflows handles DAG progression. The dedicated S3 executor is
-`.github/workflows/workflow-s3-executor.yml` in `lirtual/mcp-workers` on
-`refs/heads/main`. Its only registered operation is a fixed, no-side-effect
-Echo — no user-supplied shell, script, repository, ref or arbitrary action.
+Only these known operations are implemented; generic shell commands, arbitrary external MCP writes, Cron/Webhooks, dynamic GitHub tasks, artifacts and automatic GitHub Job cancellation are not provided.
 
-**Evidence**
+## Runtime
 
-- [S3 production release](https://github.com/lirtual/mcp-workers/actions/runs/39717083160):
-  success; S2 and S3 bindings and active version read back from Cloudflare.
-- [Production S3 Echo E2E](https://github.com/lirtual/mcp-workers/actions/runs/39717266457):
-  `S3_PRODUCTION_SMOKE_OK` and `CLEANUP_OK` — authenticated Publish/Run,
-  confirmed dispatch, GitHub OIDC Claim, immutable callback, result, physical
-  Job completion and scoped D1 cleanup.
-- [Actual S3 Job cancellation](https://github.com/lirtual/mcp-workers/actions/runs/39717834242):
-  one registered Echo Job with a **nonexistent** Attempt reached `in_progress`,
-  then its Run, Job and main step reached `completed/cancelled` after a GitHub
-  cancellation request. The Job could not claim a production Attempt and D1
-  remained empty.
-- [S2 production read-only smoke](https://github.com/lirtual/mcp-workers/actions/runs/39708841147):
-  pinned Portal/IMA integration, durable result and cleanup.
+The owner-facing endpoint is `https://workflow.lirtual.dpdns.org/mcp`. The existing production Portal endpoint is `https://mcp.lirtual.dpdns.org/mcp`. The Worker's MCP endpoint requires the existing Portal bearer authentication; GitHub callbacks use GitHub-issued OIDC, not the Portal bearer.
 
-**Cancellation boundary:** physical cancellation of a GitHub Job is verified,
-but Workflow MCP does **not** expose `workflow_cancel` or automatically cancel
-the child GitHub Job when a Workflow stops. `workflow_pause` blocks *new*
-Run admissions only. `indeterminate` never means an external Job was stopped;
-a terminal outcome cannot be overwritten by a late callback.
+The immutable Run Plan and status are stored in D1; Cloudflare Workflows advances the bounded DAG. Every Run is pinned to its Published Version. The target URL, tool and schema are never dynamically determined by arbitrary client inputs. External dispatch and callback state use persisted attempt IDs and verified physical GitHub Job identity.
+
+Environment bindings and credentials:
+
+- `DB`, `WORKFLOW` (`workflow-mcp-runner`) and private service `READONLY_TARGET` (`workflow-readonly-fixture`).
+- `MCP_ACCESS_TOKEN` for owner API ingress.
+- `MCP_PORTAL_CLIENT_ID` / `MCP_PORTAL_CLIENT_SECRET` for the pinned Portal.
+- `WORKFLOW_EXECUTOR_GITHUB_TOKEN` for the registered GitHub executor.
+- Release-pinned non-secret variables `MCP_PORTAL_ENDPOINT`, `GITHUB_EXECUTOR_REPOSITORY`, `GITHUB_EXECUTOR_REPOSITORY_ID`, `GITHUB_EXECUTOR_REF` and `GITHUB_EXECUTOR_AUDIENCE`.
+
+There are **no independent capability enable flags**. The documented per-operation Publish approvals and runtime authorization checks remain mandatory.
 
 ## MCP owner tools
 
-`workflow_list` / `workflow_get` list and inspect Workflows. `workflow_create` /
-`workflow_update` write YAML/JSON Drafts with optimistic revision checks.
-`workflow_validate` reports invalid DAGs and necessary approval grants without
-side effects. `workflow_publish` explicitly publishes an immutable version.
-`workflow_run` asynchronously admits one idempotent Run of the pinned version.
-`workflow_status` / `workflow_result` return bounded safe Step/business
-outcomes (and may reconcile durable state). `workflow_pause` /
-`workflow_resume` control *new* admissions, not running jobs.
+`workflow_list`, `workflow_get`, `workflow_create`, `workflow_update`, `workflow_validate`, `workflow_publish`, `workflow_run`, `workflow_status`, `workflow_result`, `workflow_pause` and `workflow_resume`.
 
-S2 Publish requires the **exact** `workflow_validate.required_approvals`:
-`endpoint`, `tool`, `scope: read`, `schema_digest`, plus
-`accept_target_risks: true`. This is an authenticated API assertion, not proof
-of a human confirmation UI. A remote `readOnlyHint` is untrusted: **private
-network/SSRF isolation and actual no-side-effects are not guaranteed**. The
-runtime only accepts the pinned production Portal; arbitrary direct public MCP
-targets and write-scope targets are not available.
+Publishing is explicit; saving a Draft never starts execution. `workflow_pause` prevents new admissions but does not stop an active Run or automatically cancel an external Job.
 
-S3 Publish requires `approve_heavy_execution: true` for a `github.run` Step
-with `with: { capability: heavy.github.echo }`. Dispatch is server-pinned to
-one repository/workflow/ref and uses a separate repo-scoped GitHub token; GitHub
-OIDC and a confirmed D1 Attempt must match the same physical Run and attempt
-before Claim. Results are stored immutably before signaling the Workflow.
+## Release and verification
 
-Not provided by this production slice: generic heavy GitHub tasks, arbitrary
-commands, Cron/Webhooks, external MCP writes, R2 artifacts or automatic GitHub
-Job cancellation. These need separate scoped implementations and acceptance.
+Use the existing `.github/workflows/ci.yml` release workflow on `main`, selecting `worker=workflow-mcp-worker` and `deploy_to_production=true`. There are no per-capability enable inputs. The release verifies the selected GitHub Environment secrets, fixed Portal/executor identity, D1 schema, private fixture isolation, active Runs and the exact deployed Worker version.
 
-## Release and smoke (existing CI only)
+The registered GitHub job is `.github/workflows/workflow-github-executor.yml`. It only runs the fixed Echo operation; it accepts no user-provided shell, repository or ref.
 
-The existing [GitHub Actions CI](https://github.com/lirtual/mcp-workers/actions/workflows/ci.yml)
-is the only production release route. Only an explicit manual `main` dispatch
-can publish; PR/push CI never deploys. Release validates the trusted main
-commit, GitHub Environment, exact runtime bindings, D1 migrations, active
-version and required credentials. All production enable/deploy flags default **false**.
+The regular test contract is `pnpm --filter workflow-mcp-worker check` (TypeScript, unit/contract suite, Wrangler dry-run). Production smoke tests are explicit, disposable and separate from deployment. A passing dry-run does not establish production acceptance.
 
-For an authorized release that **retains both S2 and S3**:
-
-```text
-worker=workflow-mcp-worker
-deploy_to_production=true
-enable_workflow_s2=true
-enable_workflow_s3=true
-```
-
-The later release must explicitly retain previously enabled stages.
-A read-only preflight rejects accidental S2/S3 downgrades **before** Secrets,
-D1 migrations or deployment. To deliberately disable a currently active
-stage, additionally select `confirm_workflow_stage_disable=true` in the
-manual Workflow release. This option defaults false and never bypasses
-release binding, schema or active Run checks.
-
-The S3 release gate verifies exact callback origin/audience and checks the
-dedicated token against the registered GitHub Workflow. The permission
-probe dispatches to a deliberately nonexistent branch and requires rejection;
-it cannot create an executable Job.
-
-Existing GitHub Environment `workflow-mcp-worker` contains Secrets
-`S3_GITHUB_TOKEN`, `S2_PORTAL_CLIENT_ID` and `S2_PORTAL_CLIENT_SECRET`,
-plus variables
-`S3_CALLBACK_ORIGIN=https://workflow.lirtual.dpdns.org` and
-`S3_GITHUB_AUDIENCE=workflow-s3-claim:production`. Existing shared release
-credentials include `MCP_ACCESS_TOKEN` and `CLOUDFLARE_API_TOKEN`.
-S3 uses its own single repo-scoped Actions read/write token, **not** the
-`github-actions-mcp-worker` multi-PAT `GH_TOKEN`.
-
-For **one production S3 Echo smoke without deployment**, dispatch `ci.yml`
-on `main` with:
-
-```text
-worker=workflow-mcp-worker
-smoke_only=true
-s3_production_smoke=true
-deploy_to_production=false
-enable_workflow_s2=false
-enable_workflow_s3=false
-```
-
-It creates a random disposable Workflow, validates explicit heavy-operation
-approval and idempotent admission, verifies the final Workflow result and
-independent GitHub Job completion, then removes only its matching D1 data.
-Ambiguous/running external Jobs block automatic cleanup; inspect their
-actual identifiers rather than deleting potentially live records.
-
-For S2's independent read-only production smoke, use `smoke_only=true`,
-`s2_production_smoke=true`, `enable_workflow_s2=true` and
-`deploy_to_production=false`.
-
-## Unified Portal registration
-
-To expose Workflow through the **existing** Cloudflare One-MCP Portal
-(`one-mcp`, `mcp.lirtual.dpdns.org`) without another gateway, dispatch the
-existing `ci.yml` on `main` with `worker=workflow-mcp-worker` and
-`workflow_portal_register=true`; leave deployment and smoke inputs disabled.
-This job reuses the existing GitHub Environment and bearer Secret, syncs and
-verifies the exact 11 Workflow tools, then appends one mapping while retaining
-the existing nine servers, their tool enabled flags, Code Mode and Gateway
-settings. It does not deploy the Worker, modify D1 or add a ChatGPT plugin.
-
-## Safety invariants
-
-- Bounded DAG size, parallelism, output size and Run capacity. Rejected work
-  does not enter a second hidden queue.
-- Each Run is pinned to its Published Version. Idempotent admission and
-  `UNIQUE(run_id,step_id)` prohibit duplicate external dispatch.
-- External calls with unknown outcome are not blindly retried.
-- S3 signed Claim/callback is correlated to the **original D1 Attempt**
-  repository ID, workflow ref, physical Run ID and attempt number. A late
-  callback cannot rewrite terminal business state; notification alone is
-  not proof of success.
-- Before rotating S3 repository identity, workflow family or OIDC audience,
-  drain active physical jobs. A failed release does not automatically roll
-  back D1 schema.
-
-Superseded rollout and Draft experiments are available in Git history. This
-README describes the present operational contract, not the implementation
-chronology.
+Old schema migration filenames are retained because they have already been recorded by D1. They are historical database identifiers, not product stages.

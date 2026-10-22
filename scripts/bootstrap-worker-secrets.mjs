@@ -13,25 +13,14 @@ export const BOOTSTRAP_SECRETS = Object.freeze({
   "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "MCP_BROKER_TOKEN"],
   "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "GH_TOKEN"],
-  "workflow-mcp-worker": ["MCP_ACCESS_TOKEN"],
+  "workflow-mcp-worker": ["MCP_ACCESS_TOKEN", "MCP_PORTAL_CLIENT_ID", "MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_EXECUTOR_GITHUB_TOKEN"],
 });
 
 export function collectBootstrapSecrets(worker, env) {
   const required = BOOTSTRAP_SECRETS[worker];
   if (!required) throw new Error("Bootstrap is not enabled for this Worker");
   const payload = {};
-  if (env.WORKFLOW_S2_RELEASE === "true" && worker !== "workflow-mcp-worker") {
-    throw new Error("S2 release is allowed only for workflow-mcp-worker");
-  }
-  const s3 = env.WORKFLOW_S3_RELEASE === "true";
-  if (s3 && (worker !== "workflow-mcp-worker" ||
-             env.WORKFLOW_S2_RELEASE !== "true"))
-    throw new Error("S3 requires Workflow MCP with explicit S2 Portal release");
-  const selected = worker === "workflow-mcp-worker" &&
-    env.WORKFLOW_S2_RELEASE === "true"
-    ? [...required, "S2_PORTAL_CLIENT_ID", "S2_PORTAL_CLIENT_SECRET",
-       ...(s3 ? ["S3_GITHUB_TOKEN"] : [])]
-    : required;
+  const selected = required;
   for (const name of selected) {
     const value = env[name];
     if (typeof value !== "string" || value.trim().length === 0) {
@@ -39,10 +28,10 @@ export function collectBootstrapSecrets(worker, env) {
     }
     payload[name] = value;
   }
-  if (s3 && (payload.S3_GITHUB_TOKEN.length < 20 ||
-      payload.S3_GITHUB_TOKEN.length > 512 ||
-      /\s/.test(payload.S3_GITHUB_TOKEN)))
-    throw new Error("Invalid S3_GITHUB_TOKEN");
+  if (worker === "workflow-mcp-worker" && (payload.WORKFLOW_EXECUTOR_GITHUB_TOKEN.length < 20 ||
+      payload.WORKFLOW_EXECUTOR_GITHUB_TOKEN.length > 512 ||
+      /\s/.test(payload.WORKFLOW_EXECUTOR_GITHUB_TOKEN)))
+    throw new Error("Invalid WORKFLOW_EXECUTOR_GITHUB_TOKEN");
   if (worker === "ssh-mcp-worker" && payload.MCP_BROKER_TOKEN.length < 32) {
     throw new Error("SSH Broker token must be at least 32 characters");
   }

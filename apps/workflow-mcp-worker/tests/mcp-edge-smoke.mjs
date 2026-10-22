@@ -2,12 +2,12 @@
 // Credentials and concrete endpoints are provided by the caller, never stored here.
 import assert from 'node:assert/strict';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-const owner=process.env.S2_EDGE_OWNER_URL;
-const target=process.env.S2_EDGE_TARGET_URL;
-const token=process.env.S2_EDGE_ACCESS_TOKEN;
-if(!owner||!target||!token)throw Error('Missing disposable S2 edge test configuration');
+const owner=process.env.MCP_EDGE_OWNER_URL;
+const target=process.env.MCP_EDGE_TARGET_URL;
+const token=process.env.MCP_EDGE_ACCESS_TOKEN;
+if(!owner||!target||!token)throw Error('Missing disposable MCP edge test configuration');
 const makeClient=async(url,options={})=>{
-  const client=new Client({name:'s2-disposable-acceptance',version:'0.1.0'});
+  const client=new Client({name:'mcp-disposable-acceptance',version:'0.1.0'});
   const transport=new StreamableHTTPClientTransport(new URL(url),options);
   await client.connect(transport);
   return client;
@@ -49,7 +49,7 @@ try{
   await invoke(client,'workflow_publish',{...options,approved_operations:[{...approved[0],tool:'unapproved'}],accept_target_risks:true},'external_approval_required');
   const pub=await invoke(client,'workflow_publish',{...options,approved_operations:approved,accept_target_risks:true});
   check(!!pub.published_version_id,'approved immutable publication');
-  const started=await invoke(client,'workflow_run',{workflow_id:created.workflow_id,inputs:{},idempotency_key:'edge-trusted-s2-once'});
+  const started=await invoke(client,'workflow_run',{workflow_id:created.workflow_id,inputs:{},idempotency_key:'edge-trusted-mcp-once'});
   check(!!started.run_id,'actual Cloudflare Workflow started');
   let status;
   for(let i=0;i<30;i++){
@@ -62,7 +62,7 @@ try{
   check(result.status==='succeeded','owner result succeeded');
   check(result.steps?.every(s=>s.status==='succeeded'),'all workflow steps completed');
   check(result.result?.content?.[0]?.text==='edge-trusted-readonly-s2','actual HTTPS MCP echo returned');
-  console.log('S2_DISPOSABLE_EDGE_PASS',JSON.stringify({assertions:n,run_id:started.run_id,workflow_id:created.workflow_id}));
+  console.log('MCP_DISPOSABLE_EDGE_PASS',JSON.stringify({assertions:n,run_id:started.run_id,workflow_id:created.workflow_id}));
 }finally{
   await client?.close().catch(()=>{});
   await fixture.close().catch(()=>{});

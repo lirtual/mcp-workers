@@ -1,8 +1,8 @@
-// Only cleans exact disposable S3 Plan test resources. No wildcards, no
+// Only cleans exact disposable GitHub Plan test resources. No wildcards, no
 // other Worker prefixes, and NEVER production resources.
 import assert from 'node:assert/strict';
 const name=process.argv[2];
-assert.match(name,/^workflow-s3-plan-[a-f0-9]{10}$/);
+assert.match(name,/^workflow-github-plan-[a-f0-9]{10}$/);
 const token=process.env.CLOUDFLARE_API_TOKEN;
 const account=process.env.CLOUDFLARE_ACCOUNT_ID;
 assert.ok(token && account,'Missing Cloudflare cleanup credentials');
@@ -23,7 +23,7 @@ async function remove(kind,path){
   if(!response.success&&!absent(response))
     throw Error(kind+'_delete_http_'+response.status+
       '_code_'+String(response.errors[0]?.code??'none'));
-  console.log('S3_DISPOSABLE_'+kind+'_DELETE_CHECKED',name,
+  console.log('GITHUB_DISPOSABLE_'+kind+'_DELETE_CHECKED',name,
     'status',response.status);
 }
 async function databaseIds(){
@@ -53,7 +53,7 @@ try{
     throw Error('workers_list_failed_http_'+workers.status);
   assert.ok(!workers.result.some(x=>x.id===name||x.name===name),
     'Disposable Worker still exists');
-  console.log('S3_DISPOSABLE_CLEANUP_VERIFIED',name);
-}catch(e){failure=true;console.error('S3_DISPOSABLE_CLEANUP_FAILED',
+  console.log('GITHUB_DISPOSABLE_CLEANUP_VERIFIED',name);
+}catch(e){failure=true;console.error('GITHUB_DISPOSABLE_CLEANUP_FAILED',
   String(e.message).replaceAll(token,'[redacted]'));}
 process.exit(failure?1:0);
