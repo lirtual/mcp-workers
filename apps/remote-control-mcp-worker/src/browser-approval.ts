@@ -3,7 +3,7 @@ import { parseOperationId } from "./local-read.ts";
  * This does NOT authenticate the approver. Only an independently verified
  * user-session endpoint may call approveBrowserIntent. Never expose it as MCP.
  */
-const TTL_MS = 120_000;
+const TTL_MS = 10 * 60_000;
 const TOMBSTONE_MS = 5 * 60_000;
 const MAX_RECORDS = 32;
 const DEVICE_ID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;

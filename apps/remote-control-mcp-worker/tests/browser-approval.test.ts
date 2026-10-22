@@ -52,7 +52,7 @@ test("pending intent is stable, bound to exact arguments, and not model-approved
   assert.equal((await prepareBrowserIntent(s,{...intent,epoch:randomUUID()},now+5)).status,"conflict");
   assert.equal((await prepareBrowserIntent(s,intent,now+TTL+1)).status,"expired");
 });
-const TTL=120_000;
+const TTL=10 * 60_000;
 
 test("independently verified owner approval consumes exactly once; replay and changed target denied",async()=>{
   const s=storage(),intent=descriptor(),now=1_800_000;
@@ -75,8 +75,8 @@ test("short-lived independent consent rejects expired and unknown challenges",as
   const pending=await prepareBrowserIntent(s,intent,1000);
   if(pending.status!=="pending")throw Error("unreachable");
   assert.equal(await approveBrowserIntent(s,randomUUID(),"owner@example.com",1050),"denied");
-  assert.equal(await approveBrowserIntent(s,pending.approval_id,"owner@example.com",121_000),"denied");
-  assert.equal(await consumeBrowserApproval(s,intent,121_000),false);
+  assert.equal(await approveBrowserIntent(s,pending.approval_id,"owner@example.com",601_000),"denied");
+  assert.equal(await consumeBrowserApproval(s,intent,601_000),false);
 });
 
 test("malformed or missing Agent-observed context always fails closed",async()=>{
@@ -96,6 +96,6 @@ test("bounded pending capacity recovers by lazy expiration without alarms",async
     assert.equal(result.status,"pending");
   }
   assert.equal((await prepareBrowserIntent(s,descriptor(),start)).status,"capacity");
-  // 2-minute consent window plus short tombstone age has elapsed.
-  assert.equal((await prepareBrowserIntent(s,descriptor(),start+120_000+5*60_000+1)).status,"pending");
+  // Ten-minute consent window plus short tombstone age has elapsed.
+  assert.equal((await prepareBrowserIntent(s,descriptor(),start+10*60_000+5*60_000+1)).status,"pending");
 });
