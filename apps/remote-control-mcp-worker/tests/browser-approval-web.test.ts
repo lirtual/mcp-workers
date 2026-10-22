@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {randomUUID} from "node:crypto";
 import {createLocalJWKSet,exportJWK,generateKeyPair,SignJWT} from "jose";
-import {verifyAccessApprovalOwner,validBrowserApprovalRequest,browserApprovalPage}
+import {verifyAccessApprovalOwner,validBrowserApprovalRequest,validBrowserApprovalForm,browserApprovalPage}
   from "../src/browser-approval-web.ts";
 import {prepareBrowserIntent,consumeBrowserApproval,type BrowserApprovalIntent}
   from "../src/browser-approval.ts";
@@ -94,6 +94,22 @@ test("HTTP owner confirmation entry denies model tokens, forged Origins, missing
   assert.ok(html.includes("&lt;transfer&gt; &amp; &quot;submit&quot;"));
   assert.ok(!html.includes("<transfer>"));
   assert.match(String(page.headers.get("content-security-policy")),/frame-ancestors 'none'/);
+  const hidden=/name="csrf" value="([a-f0-9-]{36})"/.exec(html)?.[1];
+  const cookie=page.headers.get("set-cookie")?.split(";")[0];
+  assert.ok(hidden);
+  assert.ok(cookie);
+  assert.ok(cookie.startsWith("__Host-rca-approval-csrf="));
+  assert.match(String(page.headers.get("set-cookie")),/SameSite=Strict/);
+  const form=new URLSearchParams({decision:"approve",csrf:hidden}).toString();
+  assert.equal(validBrowserApprovalForm(new Request(url,{headers:{cookie}}),form),true);
+  assert.equal(validBrowserApprovalForm(new Request(url),form),false);
+  assert.equal(validBrowserApprovalForm(new Request(url,{headers:{cookie}}),
+    new URLSearchParams({decision:"approve",csrf:randomUUID()}).toString()),false);
+  assert.equal(validBrowserApprovalForm(new Request(url,{headers:{cookie}}),
+    form+"&decision=approve"),false);
+  assert.equal(validBrowserApprovalRequest(new Request(url,{method:"POST",
+    headers:{"content-type":"application/x-www-form-urlencoded"},body:form}),
+    record.approval_id),true);
 
   let doCalls=0;
   const stub={idFromName:()=>({}),get:()=>({fetch:()=>{doCalls++;throw Error("Should not be reached");}})};
@@ -142,22 +158,43 @@ test("actual Worker Access route accepts a signed user on GET+POST and DO state 
     // Query values are ignored for authenticated GET, not approvals.
     const page=await worker.fetch(new Request(url+"?access_callback=1",{headers:signed}),env);
     assert.equal(page.status,200);
-    assert.match(await page.text(),/Confirm one browser action/);
+    const pageHtml=await page.text();
+    assert.match(pageHtml,/Confirm one browser action/);
+    const csrf=/name="csrf" value="([a-f0-9-]{36})"/.exec(pageHtml)?.[1];
+    const cookie=page.headers.get("set-cookie")?.split(";")[0];
+    assert.ok(csrf && cookie);
+    const validForm=new URLSearchParams({decision:"approve",csrf}).toString();
     const forged=await worker.fetch(new Request(url,{method:"POST",
-      headers:{...signed,origin:"https://attacker.example",
-        "content-type":"application/x-www-form-urlencoded"},body:"decision=approve"}),env);
+      headers:{...signed,origin:"https://attacker.example",cookie,
+        "content-type":"application/x-www-form-urlencoded"},body:validForm}),env);
     assert.equal(forged.status,404);
     assert.equal(await consumeBrowserApproval(s,wanted),false);
+    // A mobile browser is allowed to omit Origin if the signed Access
+    // session and unguessable same-origin form+cookie pair are both valid.
+    const noCookie=await worker.fetch(new Request(url,{method:"POST",
+      headers:{...signed,"content-type":"application/x-www-form-urlencoded"},
+      body:validForm}),env);
+    assert.equal(noCookie.status,400);
+    assert.equal(await consumeBrowserApproval(s,wanted),false);
+    const badToken=await worker.fetch(new Request(url,{method:"POST",
+      headers:{...signed,cookie,"content-type":"application/x-www-form-urlencoded"},
+      body:new URLSearchParams({decision:"approve",csrf:randomUUID()}).toString()}),env);
+    assert.equal(badToken.status,400);
+    assert.equal(await consumeBrowserApproval(s,wanted),false);
+    const crossSite=await worker.fetch(new Request(url,{method:"POST",
+      headers:{...signed,cookie,"sec-fetch-site":"cross-site",
+        "content-type":"application/x-www-form-urlencoded"},body:validForm}),env);
+    assert.equal(crossSite.status,404);
     const approval=await worker.fetch(new Request(url,{method:"POST",
-      headers:{...signed,origin:"https://rca.example",
-        "content-type":"application/x-www-form-urlencoded"},body:"decision=approve"}),env);
+      headers:{...signed,cookie,
+        "content-type":"application/x-www-form-urlencoded"},body:validForm}),env);
     assert.equal(approval.status,200,await approval.text());
     assert.equal(await consumeBrowserApproval(s,{...wanted,tab_id:"tab-7"}),false);
     assert.equal(await consumeBrowserApproval(s,wanted),true);
     assert.equal(await consumeBrowserApproval(s,wanted),false);
     const replay=await worker.fetch(new Request(url,{method:"POST",
-      headers:{...signed,origin:"https://rca.example",
-        "content-type":"application/x-www-form-urlencoded"},body:"decision=approve"}),env);
+      headers:{...signed,cookie,
+        "content-type":"application/x-www-form-urlencoded"},body:validForm}),env);
     assert.equal(replay.status,403);
   }finally{
     globalThis.fetch=originalFetch;

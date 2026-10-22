@@ -1,6 +1,6 @@
 import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
 import { BROWSER_TOOLS, BROWSER_EFFECT_TOOLS, BROWSER_READ_TOOLS, parseBrowserCall, browserEffectClientStatus } from "./browser-tools.ts";
-import {verifyAccessApprovalOwner,validBrowserApprovalRequest,browserApprovalPage,type BrowserApprovalAccessConfig} from "./browser-approval-web.ts";
+import {verifyAccessApprovalOwner,validBrowserApprovalRequest,validBrowserApprovalForm,browserApprovalPage,type BrowserApprovalAccessConfig} from "./browser-approval-web.ts";
 /** Source staged only: no browser surface advertised before native packaging and E2E acceptance. */
 const BROWSER_TOOLS_ACCEPTED = false;
 import { handleAgentInstallerRequest } from "./install-bootstrap.ts";
@@ -1210,8 +1210,7 @@ export default {
           return browserApprovalPage(approvalId,record);
         }
         const raw=await readBounded(request,128);
-        if(raw===null||new URLSearchParams(raw).get("decision")!=="approve"||
-          [...new URLSearchParams(raw).keys()].some(key=>key!=="decision")) {
+        if(raw===null||!validBrowserApprovalForm(request,raw)) {
           return jsonError(400,"bad_request","Invalid owner confirmation.");
         }
         const result=await owner.fetch("https://v2.internal/browser-approval/approve",{

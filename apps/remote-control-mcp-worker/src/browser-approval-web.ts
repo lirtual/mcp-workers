@@ -68,7 +68,10 @@ export function validBrowserApprovalRequest(request:Request,approvalId:string):b
   if(request.method==="POST"&&url.search)return false;
   if(request.method!=="GET"&&request.method!=="POST")return false;
   if(request.method==="POST"){
-    if(request.headers.get("origin")!==url.origin)return false;
+    // Some native/mobile browsers omit Origin on ordinary form submissions.
+    // The POST also needs a same-site, one-time page token + secure cookie.
+    const origin=request.headers.get("origin");
+    if(origin!==null&&origin!==url.origin)return false;
     if(request.headers.get("sec-fetch-site")==="cross-site")return false;
     if(request.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase()
       !=="application/x-www-form-urlencoded")return false;
@@ -79,13 +82,42 @@ export function validBrowserApprovalRequest(request:Request,approvalId:string):b
 const escapeHtml=(value:string)=>value.replace(/[&<>"']/g,c=>
   ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]??c));
 
+const CSRF_COOKIE="__Host-rca-approval-csrf";
+const CSRF_PATTERN=/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
+
+/** The token can only be read from the Access-verified, same-origin page.
+ * SameSite=Strict+HttpOnly+Secure host-only cookie prevents off-site form CSRF.
+ * Do not trust it as owner identity: signed Access JWT is always required.
+ */
+export function validBrowserApprovalForm(request:Request,body:string):boolean{
+  const params=new URLSearchParams(body);
+  const fields=[...params.keys()];
+  if(fields.length!==2||params.getAll("decision").length!==1||
+      params.getAll("csrf").length!==1||
+      fields.some(f=>f!=="decision"&&f!=="csrf")||
+      params.get("decision")!=="approve")return false;
+  const token=params.get("csrf");
+  if(typeof token!=="string"||!CSRF_PATTERN.test(token))return false;
+  const cookies=request.headers.get("cookie")?.split(";").map(x=>x.trim())??[];
+  const same=cookies.filter(c=>c.startsWith(CSRF_COOKIE+"="));
+  if(same.length!==1)return false;
+  const cookieToken=same[0]!.slice(CSRF_COOKIE.length+1);
+  if(!CSRF_PATTERN.test(cookieToken))return false;
+  // Both same-origin page token and host-only cookie must match.
+  let mismatch=0;
+  for(let i=0;i<token.length;i++)mismatch|=token.charCodeAt(i)^cookieToken.charCodeAt(i);
+  return mismatch===0;
+}
+
 export function browserApprovalPage(
   approvalId:string,record:{status:"pending"|"approved";intent:BrowserApprovalIntent;expires_at:number},
 ):Response{
   const {intent}=record;
   const valid=record.status==="pending";
+  const csrfToken=crypto.randomUUID();
   const title="Remote Control · Confirm browser action";
   const form=valid?`<form method="POST" action="/browser-approve/${approvalId}">
+<input type="hidden" name="csrf" value="${csrfToken}">
 <button type="submit" name="decision" value="approve">Approve this action once</button>
 </form>`:"<p>Already approved. Return to ChatGPT to continue.</p>";
   const html=`<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -110,5 +142,6 @@ ${form}<p>Closing this page means you have not approved this operation.</p>
     "content-security-policy":"default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
     "x-content-type-options":"nosniff","referrer-policy":"no-referrer",
     "x-frame-options":"DENY",
+    "set-cookie":`${CSRF_COOKIE}=${csrfToken}; Path=/; Max-Age=600; Secure; HttpOnly; SameSite=Strict`,
   }});
 }
