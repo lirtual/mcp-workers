@@ -1,3 +1,29 @@
+## S3 production release gate (2026-10-22; disabled until explicit activation)
+
+The existing `.github/workflows/ci.yml` release is the **only** production
+deployment path. Selecting `workflow-mcp-worker` alone does not enable S3.
+Production S3 requires all three explicit manual inputs:
+`deploy_to_production=true`, `enable_workflow_s2=true`, and
+`enable_workflow_s3=true`. No regular push/PR activates production.
+
+Prerequisites in the **existing** `workflow-mcp-worker` GitHub Environment:
+- Secret `S3_GITHUB_TOKEN`: a separate, single GitHub token with Actions
+  dispatch rights limited to `lirtual/mcp-workers` (not the GitHub Actions
+  MCP's multi-PAT `GH_TOKEN`).
+- Variable `S3_CALLBACK_ORIGIN=https://workflow.lirtual.dpdns.org`.
+- Variable `S3_GITHUB_AUDIENCE=workflow-s3-claim:production`.
+
+The release script pins the registered `workflow-s3-executor.yml`,
+repository ID, `refs/heads/main` and OIDC audience and refuses incomplete or
+drifted runtime bindings. It does **not** create secrets or variables.
+Only `heavy.github.echo` is registered; no arbitrary shell or general-purpose
+task is authorized. GitHub Jobs already dispatched are **not guaranteed
+physically cancelled** by a logical Workflow failure or terminal uncertainty.
+Do not enable production S3 until the separate cancellation/late-callback
+release decision and production acceptance are completed.
+
+---
+
 ## S3 upgrade-safe OIDC callbacks and late-result acceptance (2026-10-22)
 
 **Isolated real product E2E is green on the upgraded callback code:**

@@ -71,8 +71,37 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     const portal = find("S2_PORTAL_ENDPOINT", "plain_text");
     const s2IsOn = s2?.text === "true";
     const permittedPortal = "https://mcp.lirtual.dpdns.org/mcp";
-    invariant(!bindings.some(x => ["S2_DIRECT_TARGETS_ENABLED", "S3_ENABLED"].includes(x.name)),
-      "Direct MCP targets and S3 must remain disabled in this release");
+    invariant(!bindings.some(x => x.name === "S2_DIRECT_TARGETS_ENABLED"),
+      "Direct MCP targets must remain disabled");
+    const s3 = find("S3_ENABLED", "plain_text");
+    const s3IsOn = s3?.text === "true";
+    if (options.mode === "readback") {
+      invariant(s3IsOn === (options.expectS3 === true),
+        "S3 production enablement differs from approved release");
+    } else if (s3) {
+      invariant(s3IsOn, "Invalid S3 production flag");
+    }
+    const s3Required = {
+      S3_GITHUB_REPOSITORY: "lirtual/mcp-workers",
+      S3_GITHUB_REPOSITORY_ID: "1414936394",
+      S3_GITHUB_REF: "refs/heads/main",
+      S3_GITHUB_AUDIENCE: "workflow-s3-claim:production",
+    };
+    if (s3IsOn) {
+      invariant(s2IsOn, "S3 requires production S2 Portal");
+      for (const [name, value] of Object.entries(s3Required)) {
+        invariant(find(name, "plain_text")?.text === value,
+          "S3 registered executor identity drift: " + name);
+      }
+      invariant(secretNames.has("S3_GITHUB_TOKEN") &&
+        !!find("S3_GITHUB_TOKEN", "secret_text"),
+        "S3 dedicated GitHub token binding missing");
+    } else {
+      for (const name of Object.keys(s3Required)) {
+        invariant(!bindings.some(x => x.name === name),
+          "S3 configuration must not persist when disabled: " + name);
+      }
+    }
     // Preflight observes PREVIOUS deployment; toggling S2 off or on is legal
     // only through an explicitly authorized release. Readback must match
     // the requested S2 mode and cannot mistake an S1-only release for S2.
@@ -197,7 +226,8 @@ export function verifyWorkflowReleaseConfig(conf, fixture) {
     conf.services[0]?.service === "workflow-s1-readonly-fixture", "S1 private Fixture binding drift");
   invariant(JSON.stringify(conf.secrets?.required) === JSON.stringify(["MCP_ACCESS_TOKEN"]),
     "S1 Portal Secret declaration drift");
-  invariant(!conf.vars?.S2_READONLY_ENABLED && !(conf.compatibility_flags || []).includes("global_fetch_strictly_public"),
+  invariant(!conf.vars?.S2_READONLY_ENABLED && !conf.vars?.S3_ENABLED &&
+    !(conf.compatibility_flags || []).includes("global_fetch_strictly_public"),
     "S1 must never enable or import S2 dynamic-target behavior");
   if(fixture) {
     invariant(fixture.name === "workflow-s1-readonly-fixture" &&
@@ -498,6 +528,7 @@ async function main() {
   const observed = exists ? await current(account, worker, token, {
     mode, sourceConfig, previousNamespaceId: previous?.previousNamespaceId,
     expectS2: process.env.WORKFLOW_S2_RELEASE === "true",
+    expectS3: process.env.WORKFLOW_S3_RELEASE === "true",
   }) : { mode: "bootstrap" };
   if (mode === "preflight") {
     await writeFile(statePath, JSON.stringify({ worker, sourceSha, ...observed }), { mode: 0o600 });

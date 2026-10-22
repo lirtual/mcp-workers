@@ -461,5 +461,54 @@ test("Workflow S2 production release requires exact Portal and matching runtime 
     {name:"S2_DIRECT_TARGETS_ENABLED",type:"plain_text",text:"true"}]}),
     /Direct MCP targets/);
   assert.throws(()=>run({...settings,bindings:[...settings.bindings,
-    {name:"S3_ENABLED",type:"plain_text",text:"true"}]}),/Direct MCP targets/);
+    {name:"S3_ENABLED",type:"plain_text",text:"true"}]}),
+    /S3 production enablement differs/);
+});
+
+
+test("S3 production activation is separate, exact and requires S2", () => {
+  const base=[
+    {name:"MCP_ACCESS_TOKEN",type:"secret_text"},
+    {name:"DB",type:"d1",id:"c76850db-b5e3-4128-9150-849a1c9e8d74"},
+    {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-s1",class_name:"WorkflowRunner"},
+    {name:"READONLY_TARGET",type:"service",service:"workflow-s1-readonly-fixture"},
+    {name:"S2_PORTAL_CLIENT_ID",type:"secret_text"},
+    {name:"S2_PORTAL_CLIENT_SECRET",type:"secret_text"},
+    {name:"S2_READONLY_ENABLED",type:"plain_text",text:"true"},
+    {name:"S2_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
+  ];
+  const exact=[
+    {name:"S3_ENABLED",type:"plain_text",text:"true"},
+    {name:"S3_GITHUB_REPOSITORY",type:"plain_text",text:"lirtual/mcp-workers"},
+    {name:"S3_GITHUB_REPOSITORY_ID",type:"plain_text",text:"1414936394"},
+    {name:"S3_GITHUB_REF",type:"plain_text",text:"refs/heads/main"},
+    {name:"S3_GITHUB_AUDIENCE",type:"plain_text",text:"workflow-s3-claim:production"},
+    {name:"S3_GITHUB_TOKEN",type:"secret_text"},
+  ];
+  const secrets=["MCP_ACCESS_TOKEN","S2_PORTAL_CLIENT_ID",
+    "S2_PORTAL_CLIENT_SECRET","S3_GITHUB_TOKEN"].map(name=>({name}));
+  const settings={bindings:[...base,...exact],
+    observability:{enabled:true,logs:{invocation_logs:true}}};
+  const check=(bindings=settings.bindings,ss=secrets,opt={mode:"readback",expectS2:true,expectS3:true})=>
+    verifyBindings("workflow-mcp-worker",{...settings,bindings},ss,opt);
+  assert.equal(check(),true);
+  assert.equal(check(settings.bindings,secrets,{mode:"preflight"}),true);
+  assert.throws(()=>check(settings.bindings,secrets,{mode:"readback",expectS2:true,expectS3:false}),
+    /S3 production enablement differs/);
+  assert.throws(()=>check(settings.bindings,secrets.filter(s=>s.name!=="S3_GITHUB_TOKEN")),
+    /GitHub token binding missing/);
+  for(const name of ["S3_GITHUB_REPOSITORY","S3_GITHUB_REPOSITORY_ID",
+    "S3_GITHUB_REF","S3_GITHUB_AUDIENCE"]){
+    assert.throws(()=>check(settings.bindings.map(b=>b.name===name?{...b,text:"wrong"}:b)),
+      /registered executor identity drift/);
+  }
+  assert.throws(()=>check(settings.bindings.filter(b=>b.name!=="S2_READONLY_ENABLED")),
+    /S3 requires production S2 Portal|S2 release flag missing/);
+  assert.throws(()=>check(settings.bindings.filter(b=>b.name!=="S3_ENABLED")),
+    /S3 production enablement differs/);
+  const off=base;
+  assert.equal(check(off,secrets,{mode:"readback",expectS2:true,expectS3:false}),true);
+  assert.throws(()=>check([...off,exact[1]],secrets,
+    {mode:"readback",expectS2:true,expectS3:false}),
+    /configuration must not persist/);
 });
