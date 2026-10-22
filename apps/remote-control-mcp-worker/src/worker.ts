@@ -12,10 +12,34 @@ type V2Env = Env & {
   V2_OWNER?: DurableObjectNamespace;
   DEVICE_COORDINATOR?: DurableObjectNamespace;
   REMOTE_CONTROL_V2_PREVIEW_ONLY?: string;
+  SPEC152_PREVIEW_BROWSER_DEVICE_ID?: string;
+  SPEC152_PREVIEW_BROWSER_TOOLS?: string;
   REMOTE_CONTROL_INSTALL_ORIGIN?: string;
 };
 function pairedOnly(env: Env): boolean {
   return Boolean((env as V2Env).DEVICE_COORDINATOR || (env as V2Env).V2_OWNER);
+}
+// The production gate is deliberately unchanged. A separate, explicit
+// one-device test-only window exposes only read + one click operation.
+const SPEC152_PREVIEW_TOOLS = new Set([
+  "browser_click", "browser_tabs", "browser_snapshot", "browser_status",
+]);
+function spec152PreviewBrowserDevice(env:Env):string|null{
+  const e=env as V2Env & BrowserApprovalAccessConfig;
+  const id=e.SPEC152_PREVIEW_BROWSER_DEVICE_ID;
+  if(BROWSER_TOOLS_ACCEPTED || e.DEVICE_COORDINATOR || !e.V2_OWNER ||
+      e.REMOTE_CONTROL_V2_PREVIEW_ONLY!=="true" ||
+      e.SPEC152_PREVIEW_BROWSER_TOOLS!=="true" ||
+      e.BROWSER_APPROVAL_ENABLED!=="true" ||
+      !e.BROWSER_APPROVAL_ACCESS_AUD || !e.BROWSER_APPROVAL_ACCESS_ISSUER ||
+      !e.BROWSER_APPROVAL_ALLOWED_EMAIL ||
+      typeof id!=="string" ||
+      !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(id))return null;
+  return id;
+}
+function allowedBrowserTarget(env:Env,tool:string,deviceId:unknown):boolean{
+  return BROWSER_TOOLS_ACCEPTED ||
+    (SPEC152_PREVIEW_TOOLS.has(tool) && deviceId===spec152PreviewBrowserDevice(env));
 }
 // Preview operations use existing authenticated per-device WSS routing.
 // The paired Agent, not a temporary Worker secret, opts into write/Shell.
@@ -1044,7 +1068,9 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
   if (rpcMessage.method === "tools/list") {
     if (pairedOnly(env)) {
       return rpc(rpcMessage.id, { tools: [
-        ...(BROWSER_TOOLS_ACCEPTED ? BROWSER_TOOLS : []),
+        ...(BROWSER_TOOLS_ACCEPTED ? BROWSER_TOOLS :
+          spec152PreviewBrowserDevice(env) ?
+          BROWSER_TOOLS.filter(tool=>SPEC152_PREVIEW_TOOLS.has(tool.name)) : []),
         ...LOCAL_TOOLS.map(tool => ({
           ...tool,
           inputSchema: { ...tool.inputSchema,
@@ -1067,7 +1093,10 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
     if (pairedOnly(env)) {
       const name = typeof call.name === "string" ? call.name : "";
       const requiresDevice = V2_READ_TOOLS.has(name) || V2_OPERATION_TOOLS.has(name) ||
-        (BROWSER_TOOLS_ACCEPTED && (BROWSER_EFFECT_TOOLS.has(name) || BROWSER_READ_TOOLS.has(name)));
+        (allowedBrowserTarget(env,name,
+          (call.arguments && typeof call.arguments==="object" &&
+           !Array.isArray(call.arguments) ? (call.arguments as Record<string,unknown>).device_id : undefined)) &&
+          (BROWSER_EFFECT_TOOLS.has(name) || BROWSER_READ_TOOLS.has(name)));
       const target = call.arguments && typeof call.arguments === "object" && !Array.isArray(call.arguments)
         ? (call.arguments as Record<string, unknown>).device_id : undefined;
       // Never fall back to the v1 VPC. A caller must choose a paired device.
@@ -1077,8 +1106,12 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
         return toolError(rpcMessage.id, "The requested tool call was rejected: a valid device_id is required.");
       }
     }
-    if (BROWSER_TOOLS_ACCEPTED && typeof call.name === "string" &&
-        (BROWSER_EFFECT_TOOLS.has(call.name)||BROWSER_READ_TOOLS.has(call.name))) {
+    if (typeof call.name === "string" &&
+        (BROWSER_EFFECT_TOOLS.has(call.name)||BROWSER_READ_TOOLS.has(call.name)) &&
+        allowedBrowserTarget(env,call.name,
+          call.arguments && typeof call.arguments==="object" &&
+          !Array.isArray(call.arguments) ?
+          (call.arguments as Record<string,unknown>).device_id : undefined)) {
       return callPairedBrowser(env,rpcMessage.id,call.name,call.arguments);
     }
     if (typeof call.name === "string" && V2_OPERATION_TOOLS.has(call.name) &&
