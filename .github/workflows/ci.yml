@@ -49,6 +49,11 @@ on:
         required: false
         type: boolean
         default: false
+      workflow_portal_register:
+        description: Add existing Workflow MCP to existing One-MCP Portal (no Worker deploy)
+        required: false
+        type: boolean
+        default: false
       confirm_workflow_stage_disable:
         description: Explicitly approve disabling currently enabled S2/S3 stages on a Workflow production release
         required: false
@@ -162,6 +167,9 @@ jobs:
 
       - name: Verify release and read-only dispatch gates
         run: node scripts/verify-workflow-dispatch-gates.mjs
+
+      - name: Verify Workflow Portal registration contract (offline)
+        run: node --test scripts/register-workflow-portal.test.mjs
 
       - id: scope
         name: Select affected applications
@@ -326,6 +334,7 @@ jobs:
             (inputs.worker == 'workflow-mcp-worker' && inputs.enable_workflow_s2 == true)) &&
           (inputs.confirm_workflow_stage_disable != true || inputs.worker == 'workflow-mcp-worker') &&
           inputs.smoke_only != true &&
+          inputs.workflow_portal_register != true &&
           inputs.s2_production_smoke != true &&
           inputs.s3_production_smoke != true &&
           inputs.s2_portal_probe != true &&
@@ -1007,3 +1016,55 @@ jobs:
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Compare GitHub Runner vs temporary Worker token identity and denied nonexistent branch
         run: node apps/workflow-mcp-worker/tests/s3-github-auth-comparison.mjs
+
+
+  workflow-portal-register:
+    name: Register existing Workflow MCP in One-MCP Portal (no Worker deploy)
+    needs: checks
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/main' &&
+          inputs.worker == 'workflow-mcp-worker' &&
+          inputs.workflow_portal_register == true &&
+          inputs.deploy_to_production != true &&
+          inputs.smoke_only != true &&
+          inputs.s2_portal_probe != true &&
+          inputs.s2_cloud_e2e != true &&
+          inputs.s3_oidc_probe != true &&
+          inputs.s3_full_dispatch != true &&
+          inputs.s3_auth_compare != true &&
+          inputs.s3_product_e2e != true &&
+          inputs.s3_cleanup_name == '' &&
+          inputs.s3_dedicated_name == '' &&
+          inputs.s3_executor_worker != true &&
+          inputs.confirm_workflow_stage_disable != true &&
+          inputs.enable_workflow_s2 != true &&
+          inputs.enable_workflow_s3 != true &&
+          needs.checks.result == 'success' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: workflow-mcp-worker
+    concurrency:
+      group: worker-release-workflow-mcp-worker
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Verify current trusted main
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
+          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
+      - name: Register and verify existing Workflow MCP upstream
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
+        run: node scripts/register-workflow-portal.mjs
