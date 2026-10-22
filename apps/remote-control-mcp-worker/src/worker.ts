@@ -64,8 +64,21 @@ async function callPairedBrowser(env: Env, id: unknown, name: string, args: unkn
   if (!parsed) return toolError(id,"Invalid browser request or device target.");
   const owner = pendingOwner(env);
   if (!owner) return toolError(id,"Browser device is unavailable.");
+  const gated = ["browser_click","browser_press_key","browser_select_option"].includes(name);
+  const approvalSettings=env as V2Env & BrowserApprovalAccessConfig & {BROWSER_APPROVAL_PUBLIC_ORIGIN?:string};
+  const publicOrigin=approvalSettings.BROWSER_APPROVAL_PUBLIC_ORIGIN;
+  // Missing remote-owner identity configuration means no sensitive effect.
+  if(gated && (approvalSettings.BROWSER_APPROVAL_ENABLED!=="true" ||
+      !approvalSettings.BROWSER_APPROVAL_ACCESS_ISSUER ||
+      !approvalSettings.BROWSER_APPROVAL_ACCESS_AUD ||
+      !approvalSettings.BROWSER_APPROVAL_ALLOWED_EMAIL ||
+      typeof publicOrigin!=="string" ||
+      !/^https:\/\/[a-z0-9.-]+$/i.test(publicOrigin))) {
+    return toolText(id,JSON.stringify({operation_id:parsed.operation_id,status:"unavailable"}));
+  }
   try {
-    const response = await owner.fetch("https://v2.internal/"+parsed.kind,{
+    const response = await owner.fetch("https://v2.internal/"+
+      (gated?"browser-approval/dispatch":parsed.kind),{
       method:"POST",headers:{"content-type":"application/json"},
       body:JSON.stringify({device_id:parsed.device_id,tool:parsed.tool,
         ...(parsed.operation_id?{operation_id:parsed.operation_id}:{}),arguments:parsed.arguments}),
@@ -80,9 +93,20 @@ async function callPairedBrowser(env: Env, id: unknown, name: string, args: unkn
       return value.status==="completed"&&typeof value.text==="string"&&value.text.length<=65536
         ? toolText(id,value.text) : toolError(id,"Browser observation unavailable.");
     }
-    const value=await response.json() as {operation_id?:unknown,status?:unknown;session_id?:unknown};
+    const value=await response.json() as {operation_id?:unknown;status?:unknown;
+      session_id?:unknown;approval_id?:unknown;expires_at?:unknown};
     if (value.operation_id!==parsed.operation_id||typeof value.status!=="string") {
       return toolText(id,JSON.stringify({operation_id:parsed.operation_id,status:"timeout_unknown"}));
+    }
+    if(value.status==="confirmation_required"){
+      if(!gated||typeof value.approval_id!=="string"||
+          !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value.approval_id) ||
+          typeof value.expires_at!=="number"||!Number.isSafeInteger(value.expires_at))
+        return toolText(id,JSON.stringify({operation_id:parsed.operation_id,status:"unavailable"}));
+      return toolText(id,JSON.stringify({operation_id:parsed.operation_id,
+        status:"confirmation_required",
+        approval_url:publicOrigin+"/browser-approve/"+value.approval_id,
+        expires_at:value.expires_at}));
     }
     return toolText(id,JSON.stringify({operation_id:parsed.operation_id,
       status:browserEffectClientStatus(value.status),

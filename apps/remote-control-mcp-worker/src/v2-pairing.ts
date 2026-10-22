@@ -10,7 +10,7 @@ const MAX_APPROVALS_PER_MINUTE = 8;
 const te = new TextEncoder();
 import { issueSessionChallenge, authorizeSession, acceptAuthenticatedSocket, handleIdleSocketMessage, handleDeviceInfoMessage, listApprovedDevices, deviceIsAuthorized, listLiveGrants, TEMPORARY_GRANT_MS, type V2Device } from "./v2-session.ts";
 import { parseBrowserDoArguments } from "./browser-tools.ts";
-import { inspectBrowserIntent, approveBrowserIntent } from "./browser-approval.ts";
+import { inspectBrowserIntent, approveBrowserIntent, prepareBrowserIntent, consumeBrowserApproval, browserParametersDigest, type BrowserApprovalIntent } from "./browser-approval.ts";
 import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId, parseLocalWriteFile, parseLocalCreateDirectory, parseLocalEditBlock, parseLocalMoveFile, parseLocalDeleteFile, parseStartProcess, parseLocalProcessOutput, parseListSessions, parseLocalProcessInteraction, parseLocalProcessTermination, parseOperationId } from "./local-read.ts";
 
 export interface PendingDevice {
@@ -295,6 +295,96 @@ export class V2OwnerCoordinator {
     resolve: (response: Response) => void;
     kind: "read" | "operation"; operationId?: string;
   }>();
+
+  /** A potential irreversible browser effect must be prepared from a current,
+   * signed Agent tab listing, then approved through independent Access identity.
+   * This reuses the original WSS read/effect path; no new Agent wire primitive.
+   */
+  private async dispatchConfirmedBrowserEffect(request:Request):Promise<Response>{
+    let body:unknown;
+    try{body=await limitedJson(request,8192);}
+    catch{return Response.json({error:"bad_request"},{status:400});}
+    if(!body||typeof body!=="object"||Array.isArray(body))return Response.json({error:"bad_request"},{status:400});
+    const input=body as Record<string,unknown>;
+    const tool=input.tool,deviceId=input.device_id,operationId=input.operation_id;
+    const args=input.arguments;
+    if(Object.keys(input).length!==4||typeof tool!=="string"||
+      !["browser_click","browser_press_key","browser_select_option"].includes(tool)||
+      typeof deviceId!=="string"||typeof operationId!=="string"||
+      !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(deviceId)||
+      !parseOperationId({operation_id:operationId})||
+      !args||typeof args!=="object"||Array.isArray(args)||
+      !parseBrowserDoArguments(tool,{...args,operation_id:operationId}))
+      return Response.json({error:"bad_request"},{status:400});
+    const effectArgs=args as Record<string,unknown>;
+    const sessionId=effectArgs.session_id;
+    if(typeof sessionId!=="string")return Response.json({error:"bad_request"},{status:400});
+    const [device,epoch]=await Promise.all([
+      this.state.storage.get<V2Device>("device:"+deviceId),
+      this.state.storage.get<string>("session:epoch:"+deviceId),
+    ]);
+    if(!deviceIsAuthorized(device)||!epoch)return Response.json({error:"offline"},{status:503});
+    // This status is observed on the signed WSS Agent, not supplied by the model.
+    const listing=await this.readFile(new Request("https://v2.internal/read",{
+      method:"POST",headers:{"content-type":"application/json"},
+      body:JSON.stringify({device_id:deviceId,tool:"browser_tabs",
+        arguments:{session_id:sessionId,action:"list"}}),
+    }));
+    if(!listing.ok)return Response.json({error:"offline"},{status:503});
+    let observed:Record<string,unknown>;
+    try{
+      const reply=await listing.json() as {status?:unknown;text?:unknown};
+      if(reply.status!=="completed"||typeof reply.text!=="string")throw Error("no listing");
+      observed=JSON.parse(reply.text) as Record<string,unknown>;
+    }catch{return Response.json({error:"unavailable"},{status:503});}
+    const selectedId=observed.selected_tab_id;
+    const tabs=observed.tabs;
+    if(observed.session_id!==sessionId||typeof selectedId!=="string"||
+      !Array.isArray(tabs))return Response.json({error:"no_selected_tab"},{status:409});
+    const selected=tabs.find(x=>x&&typeof x==="object"&&
+      (x as {tab_id?:unknown}).tab_id===selectedId) as {url?:unknown}|undefined;
+    if(typeof selected?.url!=="string")return Response.json({error:"no_selected_tab"},{status:409});
+    let origin:string;
+    try {
+      const u=new URL(selected.url);
+      if(!["http:","https:"].includes(u.protocol))throw Error("non-web tab");
+      origin=u.origin;
+    }catch{return Response.json({error:"unsupported_page"},{status:409});}
+    const desc=tool==="browser_click"
+      ? "Click "+String(effectArgs.role)+" "+String(effectArgs.name)
+      : tool==="browser_press_key"
+      ? "Press "+String(effectArgs.key)
+      : "Select option "+String(effectArgs.value)+" in "+String(effectArgs.name);
+    const display=desc.replace(/[\x00-\x1f\x7f]+/g," ").slice(0,220).trim();
+    const intent:BrowserApprovalIntent={
+      device_id:deviceId,epoch,session_id:sessionId,tab_id:selectedId,
+      operation_id:operationId,tool,
+      snapshot_version:effectArgs.snapshot_version as number,origin,
+      parameters_digest:await browserParametersDigest(tool,effectArgs),
+      display,
+    };
+    const prepared=await prepareBrowserIntent(this.state.storage,intent);
+    if(prepared.status!=="pending"){
+      return Response.json({operation_id:operationId,
+        status:prepared.status==="conflict"?"conflict":"unavailable"});
+    }
+    const detail=await inspectBrowserIntent(this.state.storage,prepared.approval_id);
+    if(!detail)return Response.json({operation_id:operationId,status:"unavailable"});
+    if(detail.status!=="approved"){
+      return Response.json({operation_id:operationId,status:"confirmation_required",
+        approval_id:prepared.approval_id,expires_at:prepared.expires_at});
+    }
+    // The approval is single use. Consume before effect dispatch; a lost
+    // outcome remains unknown and is never silently replayed.
+    if(!await consumeBrowserApproval(this.state.storage,intent))
+      return Response.json({operation_id:operationId,status:"unavailable"});
+    const currentEpoch=await this.state.storage.get<string>("session:epoch:"+deviceId);
+    if(currentEpoch!==epoch)return Response.json({operation_id:operationId,status:"unavailable"});
+    return this.readFile(new Request("https://v2.internal/operation",{
+      method:"POST",headers:{"content-type":"application/json"},
+      body:JSON.stringify(input),
+    }),true);
+  }
 
   private async readFile(request: Request, isOperation = false): Promise<Response> {
     let body: unknown;
@@ -626,6 +716,10 @@ export class V2OwnerCoordinator {
     }
     if (request.method !== "POST") return new Response(null, { status: 405 });
     const path = new URL(request.url).pathname;
+    if (path === "/browser-approval/dispatch") {
+      try{return await this.dispatchConfirmedBrowserEffect(request);}
+      catch{return Response.json({error:"unavailable"},{status:503});}
+    }
     if (path === "/browser-approval/inspect" || path === "/browser-approval/approve") {
       try {
         const body=await limitedJson(request,1024);

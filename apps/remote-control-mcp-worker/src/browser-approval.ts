@@ -154,3 +154,20 @@ export async function consumeBrowserApproval(
     return true;
   });
 }
+
+/** Stable checksum of the exact validated effect arguments. No raw text is
+ * persisted with the pending approval; unchanged calls remain reproducible.
+ */
+function canonical(value:unknown):string {
+  if(Array.isArray(value))return "["+value.map(canonical).join(",")+"]";
+  if(value!==null&&typeof value==="object"){
+    const r=value as Record<string,unknown>;
+    return "{"+Object.keys(r).sort().map(k=>JSON.stringify(k)+":"+canonical(r[k])).join(",")+"}";
+  }
+  return JSON.stringify(value);
+}
+export async function browserParametersDigest(tool:string,args:Record<string,unknown>):Promise<string>{
+  const input=new TextEncoder().encode(canonical({tool,arguments:args}));
+  const bytes=await crypto.subtle.digest("SHA-256",input);
+  return [...new Uint8Array(bytes)].map(b=>b.toString(16).padStart(2,"0")).join("");
+}
