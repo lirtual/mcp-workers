@@ -1040,3 +1040,55 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
         run: node scripts/register-workflow-portal.mjs
+
+
+  # One-time encrypted migration, deleted after use.
+  workflow-credential-transfer:
+    name: Encrypted Workflow credential migration (one-time)
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/refactor/workflow-semantic-capabilities' &&
+          inputs.worker == 'workflow-mcp-worker' &&
+          inputs.deploy_to_production != true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    environment:
+      name: workflow-mcp-worker
+    steps:
+      - name: Encrypt previously configured Environment secrets for local migration
+        shell: bash
+        env:
+          S2_PORTAL_CLIENT_ID: ${{ secrets.S2_PORTAL_CLIENT_ID }}
+          S2_PORTAL_CLIENT_SECRET: ${{ secrets.S2_PORTAL_CLIENT_SECRET }}
+          S3_GITHUB_TOKEN: ${{ secrets.S3_GITHUB_TOKEN }}
+          PUBLIC_RECIPIENT_CERT: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUVPekNDQXFPZ0F3SUJBZ0lVTkZpSmgzc0lKYStvQlhIV1lvSkZwMkNvL0s0d0RRWUpLb1pJaHZjTkFRRUwKQlFBd0xURXJNQ2tHQTFVRUF3d2lkR1Z0Y0c5eVlYSjVMWGR2Y210bWJHOTNMWE5sWTNKbGRDMTBjbUZ1YzJabApjakFlRncweU5qRXdNakl3T0RRMk5ERmFGdzB5TmpFd01qTXdPRFEyTkRGYU1DMHhLekFwQmdOVkJBTU1JblJsCmJYQnZjbUZ5ZVMxM2IzSnJabXh2ZHkxelpXTnlaWFF0ZEhKaGJuTm1aWEl3Z2dHaU1BMEdDU3FHU0liM0RRRUIKQVFVQUE0SUJqd0F3Z2dHS0FvSUJnUUREN1YvVFBNMmxLMEk4bTh5L212TXZpUVJZM2lFZnYyVFF6YWdCWVFUUApRU0x6ZjVtUERKNlhFYUV4WCt3R2ZxWjYraGlHSkpPN2ZRcjdZdStsMlhXbHFGeHVlSXFxQVRRTHVvNlR2cWFjCkZ4WnU3bVVxQms2LzBoVGVRQ1lOVkVlN3U4Y1RBem90UG9wdVlGWVdjTmJVNlhvTzQ3YkNqbkJnY1B4dGlIb1IKZnc4SkNmaDFlL2UvMDJqNWNmeHZ2LzVWTG44d3lqM0crVGx6QktodWM2OUtUZERTc0l6aW5MREk0WDdTald2QwpaRlM2MU1sWnphTm1FREhlVllNM05LN091SjVuSzRCTUhwSmRkRlVKMjdQRFYzV3VwbFVwRWFmT2tUNm1EQmROClJOOHRPY1VKTG81ZHhlem1GNDdvdURkajJuaFVta0l5V25mUlR3VkpDSDJqTkxKY0xwdHBjaFRnLzh1dHJldW8Kb1JSMktFYkdBNVJhRW4zeDFDSkwveUtTMGFjbTJiUWF1VUdQam5jL0hlcDNNaTJGVHQwZ1BLeFhxbTQ0dWo4KwoyZmN4aElocDBxckNhTFJBVUJXVndsTXRISWlNT3pqSVFiTWpDUUZmVW8xS1hGU2lHYXoydFBkR3pWc0ZuVXJ5CkxXMC93bHd3ai9HQXlpbFlHUnhMdTQ4Q0F3RUFBYU5UTUZFd0hRWURWUjBPQkJZRUZCVk9GWk5Pb1Z3TysyVnkKUXJkMGZ4cG4zV0FBTUI4R0ExVWRJd1FZTUJhQUZCVk9GWk5Pb1Z3TysyVnlRcmQwZnhwbjNXQUFNQThHQTFVZApFd0VCL3dRRk1BTUJBZjh3RFFZSktvWklodmNOQVFFTEJRQURnZ0dCQURaRC9VNVluWkNVZjFVQWVpckl0UVMvCnBqUzZOT0h1OG5QSzNqdDJERjlpSWx3WVFyRkNtdDVFTjV5TEFNMEZORXpHNk40ZEpxVmx6UnFxb09pbXJkSEIKY0xZWVNMWXZlVTdJNzB6MkJHeVlVNGgrYzN6M2l0VVluVWpPeVBjTS9nS3dqb2lHWkFGUnVPUzlIWDV4dW5GWQpBQ3dCcmNPcUp4Vmx5a3lOS2l6T01UaE15Tk5YdE9LSmpDMksxOHM0SHQ2MUpGTW5yZURhRkVYWnpZUFBFSHpWCmRsRHhEWTJiMWRGZWlTQXA1eFRTcEVHb2tYTk1QN1pOWW81OTM5Vk9QQWhCY3R1QnZxWVVjTTBNSWIxWWFRWEYKWkVQVWo3RHlYQ1FQVUpvanZ6cTQwZlBaNTFDa1orWEpYRWh6RENYMUtpaWtGT3NWM2dQZnVjWTVKM2hDd2JTRQpEQU9zT09uRUhTT0ZjOXJpTkdtYkJOTzNmZUFrd01LcnBlR1dJcTZzVkFyS2czemU3d1RrMXBWVllYazM3YWhQCjkzbE5pNnBWcm9TMWh6eW9uK2JkSGFSa21iK3FHTHRGZVZKMmxtUlhFZ3BSZmFyVCtFWG43R3c5YVpBc3hhUDUKNjU1WW1sNE9CMUJ4eUh2Z3dIbHNPRHpFSEwyNzU5Tzk0VFNCV3cxWURBPT0KLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQo=
+        run: |
+          set -euo pipefail
+          umask 077
+          tmpdir="$(mktemp -d)"
+          trap 'rm -rf "$tmpdir"' EXIT
+          export TRANSFER_TMP="$tmpdir"
+          printf '%s' "$PUBLIC_RECIPIENT_CERT" | base64 --decode > "$tmpdir/recipient.pem"
+          node <<'NODE'
+          const fs=require('node:fs');
+          const values={
+            MCP_PORTAL_CLIENT_ID:process.env.S2_PORTAL_CLIENT_ID,
+            MCP_PORTAL_CLIENT_SECRET:process.env.S2_PORTAL_CLIENT_SECRET,
+            GITHUB_EXECUTOR_TOKEN:process.env.S3_GITHUB_TOKEN,
+          };
+          for(const [name,value] of Object.entries(values)){
+            if(!value || !value.trim()){console.error('Missing source credential for '+name);process.exitCode=1;}
+          }
+          if(process.exitCode)process.exit(process.exitCode);
+          fs.writeFileSync(process.env.TRANSFER_TMP+'/payload.json',JSON.stringify(values),{mode:0o600});
+          NODE
+          openssl cms -encrypt -binary -aes-256-cbc -outform DER -in "$tmpdir/payload.json" -out workflow-credential-transfer.cms "$tmpdir/recipient.pem"
+          rm -f "$tmpdir/payload.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: workflow-credential-transfer
+          path: workflow-credential-transfer.cms
+          if-no-files-found: error
+          retention-days: 1
