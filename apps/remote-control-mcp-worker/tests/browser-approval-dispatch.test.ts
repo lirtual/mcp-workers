@@ -115,7 +115,7 @@ test("same-origin path or query changes cannot reuse consent; URL query stays ou
     ["https://example.com/review","https://example.com/submit"],
     ["https://example.com/review?private_token=do-not-persist",
      "https://example.com/review?private_token=changed"],
-  ]){
+  ] as const){
     const t=context();
     t.setPage(start);
     const first=await t.dispatch();
