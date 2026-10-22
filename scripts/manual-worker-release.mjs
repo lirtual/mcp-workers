@@ -231,9 +231,17 @@ export function verifyWorkflowD1Readiness(response, bootstrap) {
     response[0]?.success === true && response[0]?.results?.length === 1,
     "S1 remote D1 readback unavailable");
   const row = response[0].results[0];
-  invariant(row?.migration_count === 2 && row?.migration_v1 === 1 &&
-    row?.migration_v2 === 1 && row?.native_column === 1,
-    "S1 production D1 schema migrations missing or drifted");
+  const s1Schema = row?.migration_v1 === 1 && row?.migration_v2 === 1 &&
+    row?.native_column === 1;
+  // S3 tables may be pre-migrated while its execution flag stays disabled.
+  // Allow ONLY the exact full v3+v4 pair; reject any half-applied, unknown
+  // or missing-table state before an existing manual Worker deployment.
+  const s1Only = row?.migration_count === 2 && row?.migration_v3 === 0 &&
+    row?.migration_v4 === 0 && row?.attempt_table === 0 && row?.receipt_table === 0;
+  const s3Ready = row?.migration_count === 4 && row?.migration_v3 === 1 &&
+    row?.migration_v4 === 1 && row?.attempt_table === 1 && row?.receipt_table === 1;
+  invariant(s1Schema && (s1Only || s3Ready),
+    "Workflow production D1 schema migrations missing, partial or drifted");
   invariant(Number.isSafeInteger(row?.active_runs) && row.active_runs === 0,
     "S1 cannot redeploy while Runs are active or indeterminate");
   if(bootstrap) invariant(row.run_count === 0 && row.workflow_count === 0,
