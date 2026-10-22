@@ -5,6 +5,8 @@ import { execFileSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { scopedPublicMcpFetch, PRODUCTION_PORTAL_ENDPOINT } from '../src/s2-public-fetch.ts';
+import { toolSchemaDigest } from '../src/plan.ts';
 
 const token = process.env.MCP_ACCESS_TOKEN;
 assert.ok(token, 'MCP_ACCESS_TOKEN must be present in GitHub Environment');
@@ -132,8 +134,73 @@ async function runSmoke() {
   console.log('Verified Workflow ID:', workflowId);
   console.log('Verified Run ID:', runId);
 }
+async function runS2Smoke() {
+  // The exact production Portal and tool/schema must be explicitly approved.
+  const pair = { clientId:process.env.S2_PORTAL_CLIENT_ID,
+    clientSecret:process.env.S2_PORTAL_CLIENT_SECRET };
+  assert.ok(pair.clientId && pair.clientSecret, 'Production Portal secrets missing');
+  const outstanding = sql("SELECT count(*) AS n FROM runs WHERE outcome NOT IN ('succeeded','failed','cancelled')");
+  assert.equal(outstanding[0]?.n,0,'Production has nonterminal Runs: smoke aborted before writes');
+  const portal = new Client({name:'workflow-s2-production-contract',version:'0.1.0'});
+  const portalTransport = new StreamableHTTPClientTransport(new URL(PRODUCTION_PORTAL_ENDPOINT),{
+    fetch:scopedPublicMcpFetch(PRODUCTION_PORTAL_ENDPOINT,fetch,pair,PRODUCTION_PORTAL_ENDPOINT),
+  });
+  let candidate;
+  try{
+    await portal.connect(portalTransport);
+    candidate=(await portal.listTools()).tools.find(t=>t.name==='ima_list_notebooks');
+    assert.ok(candidate?.annotations?.readOnlyHint===true &&
+      candidate.annotations?.destructiveHint!==true,'IMA read-only tool unavailable');
+  }finally{await portal.close().catch(()=>{});}
+  await client.connect(transport);
+  const definition={version:1,name:'workflow-s2-production-smoke-'+label,
+    steps:[
+      {id:'read',uses:'mcp.call',with:{
+        endpoint:PRODUCTION_PORTAL_ENDPOINT,tool:'ima_list_notebooks',
+        scope:'read',arguments:{limit:1},input_schema:candidate.inputSchema,
+        ...(candidate.outputSchema?{output_schema:candidate.outputSchema}:{})
+      }},
+      {id:'emit',needs:['read'],uses:'result.emit',
+        with:{data:{ref:'steps.read.output'}}},
+    ]};
+  const draft=await tool('workflow_create',{definition:JSON.stringify(definition)});
+  workflowId=draft.workflow_id;
+  assert.match(workflowId,uuid);
+  const checked=await tool('workflow_validate',{workflow_id:workflowId,revision:1});
+  assert.equal(checked.valid,true);
+  assert.deepEqual(checked.required_approvals,[{
+    endpoint:PRODUCTION_PORTAL_ENDPOINT,tool:'ima_list_notebooks',scope:'read',
+    schema_digest:await toolSchemaDigest(candidate.inputSchema,candidate.outputSchema),
+  }]);
+  const publish=await tool('workflow_publish',{workflow_id:workflowId,expected_revision:1,
+    approved_operations:checked.required_approvals,accept_target_risks:true});
+  assert.ok(publish.published_version_id);
+  const opts={workflow_id:workflowId,inputs:{},idempotency_key:'s2-prod-smoke-'+label};
+  const started=await tool('workflow_run',opts);
+  runId=started.run_id;
+  assert.match(runId,uuid);
+  assert.equal((await tool('workflow_run',opts)).run_id,runId);
+  let outcome;
+  for(let i=0;i<90;i++){
+    // Read-only result requests may time out; never retry workflow_run.
+    try{outcome=await tool('workflow_result',{run_id:runId});}
+    catch(error){
+      if(!/Request timed out/i.test(String(error))||i>=89)throw error;
+      await new Promise(r=>setTimeout(r,1500));
+      continue;
+    }
+    if(terminal.has(outcome.status)||outcome.status==='indeterminate')break;
+    await new Promise(r=>setTimeout(r,1000));
+  }
+  assert.equal(outcome?.status,'succeeded','Production S2 Workflow did not finish successfully');
+  assert.equal(outcome.steps.length,2);
+  assert.ok(outcome.steps.every(s=>s.status==='succeeded'));
+  assert.ok(Array.isArray(outcome.result?.content),'No read-only MCP result content');
+  console.log('S2_PRODUCTION_SMOKE_OK: pinned Portal + IMA read-only + published Workflow + result');
+}
+
 try {
-  await runSmoke();
+  await (process.env.WORKFLOW_S2_SMOKE==='true'?runS2Smoke():runSmoke());
 } catch (e) {
   failure = e;
   console.error('SMOKE_FAILED:', String(e?.message ?? e).replaceAll(token, '[redacted]'));

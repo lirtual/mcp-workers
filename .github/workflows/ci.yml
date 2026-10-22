@@ -24,6 +24,11 @@ on:
         required: false
         type: boolean
         default: false
+      s2_production_smoke:
+        description: With smoke_only, execute one read-only S2 Workflow via production Portal and clean D1 test records
+        required: false
+        type: boolean
+        default: false
       deploy_to_production:
         description: EXPLICIT approval to deploy the selected Worker (never use with probe/test inputs)
         required: false
@@ -303,6 +308,7 @@ jobs:
           inputs.deploy_to_production == true &&
           (inputs.enable_workflow_s2 != true || inputs.worker == 'workflow-mcp-worker') &&
           inputs.smoke_only != true &&
+          inputs.s2_production_smoke != true &&
           inputs.s2_portal_probe != true &&
           inputs.s2_cloud_e2e != true &&
           inputs.s3_oidc_probe != true &&
@@ -604,6 +610,8 @@ jobs:
           github.ref == 'refs/heads/main' &&
           inputs.worker == 'workflow-mcp-worker' &&
           inputs.smoke_only == true &&
+          inputs.deploy_to_production != true &&
+          (inputs.s2_production_smoke != true || inputs.enable_workflow_s2 != true) &&
           needs.checks.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 8
@@ -616,6 +624,9 @@ jobs:
       MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      WORKFLOW_S2_SMOKE: ${{ inputs.s2_production_smoke }}
+      S2_PORTAL_CLIENT_ID: ${{ secrets.S2_PORTAL_CLIENT_ID }}
+      S2_PORTAL_CLIENT_SECRET: ${{ secrets.S2_PORTAL_CLIENT_SECRET }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -628,7 +639,7 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile --ignore-scripts
-      - name: Verify authenticated S1 production and remove randomized test records
+      - name: Verify authenticated S1 or S2 production and remove randomized test records
         run: node apps/workflow-mcp-worker/tests/production-smoke.mjs
 
   workflow-s2-portal-probe:
