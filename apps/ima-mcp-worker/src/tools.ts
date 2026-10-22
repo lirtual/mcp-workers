@@ -12,7 +12,7 @@ const fail=(e:unknown)=>({
 
 export function registerTools(server:McpServer, notes:ImaNotes, kb:ImaKnowledge){
   server.registerTool("search_notes",{
-    description:"Search IMA notes by title or body. search_type: 0=DOC_TITLE (default), 1=DOC_CONTENT. sort_type: 0=modify_time, 1=create_time, 2=title, 3=size. Paginate with start/end (max 20 per page).",
+    description:"Search IMA notes by exact case-insensitive title or body substring. search_type: 0=title (default), 1=body; sort_type: 0=modified, 1=created, 2=title, 3=body byte size. Uses list/get for reliable counts and pages, limited to collections of 100 notes. start/end allow up to 20 returned matches per page.",
     annotations:{readOnlyHint:true},
     inputSchema:z.object({
       query:z.string().min(1).describe("Search keyword"),
