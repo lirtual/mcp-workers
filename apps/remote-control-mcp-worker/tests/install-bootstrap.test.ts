@@ -181,7 +181,7 @@ test('public installation home is isolated from authentication and shows the two
   assert.doesNotMatch(html,/>Linux \/ WSL2<\/button>/);
   assert.match(html,/aria-selected/);
   assert.match(html,/const ready=\{windows:false,linux:false\}/);
-  assert.match(html,/copy\.disabled=!ready\[platform\]/);
+  assert.match(html,/copy\.disabled=!chosen\|\|!ready\[value\]/);
   assert.match(html,/安装暂未开放/);
   assert.match(html,/navigator\.userAgentData/);
   assert.match(html,/clipboard\.writeText/);
@@ -215,8 +215,8 @@ test('homepage copy state follows the separately verified platform pins',async()
   assert.match(closed,/const ready=\{windows:false,linux:false\}/);
   assert.match(linux,/const ready=\{windows:false,linux:true\}/);
   assert.match(windows,/const ready=\{windows:true,linux:false\}/);
-  assert.match(closed,/field\.textContent=ready\[value\]\?cmds\[value\]:'安装暂未开放'/);
-  assert.match(closed,/copy\.disabled=!ready\[platform\]/);
+  assert.match(closed,/field\.textContent=chosen\?\(ready\[value\]\?cmds\[value\]:'安装暂未开放'\)/);
+  assert.match(closed,/copy\.disabled=!chosen\|\|!ready\[value\]/);
   assert.match(closed,/if\(!ready\[platform\]\)return;/);
   const custom='https://rca.lirtual.dpdns.org';
   const resp=requestInstall(new Request(custom+'/'),pin,custom);
@@ -275,4 +275,35 @@ test("mobile links may open static install home with query or Origin but not scr
       headers: {origin:"https://chatgpt.com"},
     })).status, 405);
   }
+});
+
+
+test('mobile home stays compact, uses semantic numbered steps and follows OS theme', async () => {
+  const {renderInstallHome}=await import('../src/install-home.ts');
+  const html=renderInstallHome({windows:true,linux:true});
+  assert.match(html, /@media\(prefers-color-scheme:dark\)/);
+  assert.match(html, /color-scheme:light/);
+  assert.match(html, /color-scheme:dark/);
+  for(const token of ['--bg','--fg','--muted','--surface','--border','--button','--button-fg']){
+    assert.ok(html.includes(token), 'missing theme variable '+token);
+  }
+  assert.match(html, /@media\(max-width:520px\)/);
+  assert.match(html, /-webkit-text-size-adjust:100%/);
+  assert.match(html, /list-style:none/);
+  assert.match(html, /<ol role="list">/);
+  assert.equal((html.match(/<li><strong>[123] · /g)??[]).length,3);
+  assert.doesNotMatch(html, /padding-top:12vh|list-style-position:inside/);
+  assert.match(html, /class="command-head"/);
+  assert.match(html, /id="shell-label"/);
+  assert.ok(html.indexOf('id="copy"')<html.indexOf('id="command"'), 'copy button stays above wrapped command');
+  assert.match(html, /overflow-wrap:anywhere/);
+  assert.match(html, /const mobile=\/iphone\|ipad\|ipod\|android\|mobile\//);
+  assert.match(html, /select\(mobile\?'':/);
+  assert.match(html, /先选择 Windows 或 Linux/);
+  assert.match(html, /copy\.disabled=!chosen\|\|!ready\[value\]/);
+  assert.match(html, /aria-selected/);
+  assert.match(html, /clipboard\.writeText\(cmds\[platform\]\)/);
+  assert.match(html, /irm https:\/\/rca\.lirtual\.dpdns\.org\/install\.ps1 \| iex/);
+  assert.match(html, /curl -fsSL https:\/\/rca\.lirtual\.dpdns\.org\/install\.sh \| sh/);
+  assert.doesNotMatch(html, /localStorage|sessionStorage|document\.cookie|api\/devices/);
 });
