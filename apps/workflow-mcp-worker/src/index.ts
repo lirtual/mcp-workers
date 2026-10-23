@@ -10,9 +10,9 @@ const error=(status:number,code:string)=>Response.json({error:code},{status,head
 export default {
  async fetch(request:Request,env:Env):Promise<Response>{
   const url=new URL(request.url);
-  // Only GitHub-issued OIDC may use these two GitHub routes; no MCP Portal token
+  // Only GitHub-issued OIDC may use these GitHub routes; no MCP Portal token
   // is involved. Unknown paths return 404; claim/callback requests require signed GitHub identity.
-  if(url.pathname==='/github/action/claim')
+  if(url.pathname==='/github/action/claim'||url.pathname==='/github/action/ready')
     return handleGithubActionClaimRequest(request,env);
   if(url.pathname==='/github/claim'||url.pathname==='/github/callback')
     return handleGithubCallbackRequest(request,env);
