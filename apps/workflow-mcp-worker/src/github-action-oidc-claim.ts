@@ -101,3 +101,67 @@ export async function verifyAndClaimPinnedGitHubAction(
    row.workflow_ref,row.ref).run();
  return written.meta.changes===1;
 }
+
+/** A registered Attempt can exist briefly before GitHub's dispatch ACK is
+ * persisted. Do not authorize it, but return a retryable status ONLY to the
+ * already-signed job matching the exact approved Published Plan. Invalid
+ * signature, wrong Run/ref/SHA or a durable cancellation are permanent denial.
+ */
+export async function verifySignedPendingGitHubActionClaim(
+ db:Db,attemptId:string,jwt:string,audience:string,
+ keys:GithubActionKeys=githubKeys,
+):Promise<boolean>{
+ if(!UUID.test(attemptId)||typeof jwt!=='string'||jwt.length>8192||
+    !/^workflow-github-[a-z0-9:-]{4,120}$/.test(audience))return false;
+ const row=await db.prepare(`SELECT a.state,a.capability_id,a.step_id,
+   a.repository,a.repository_id,a.workflow_ref,a.ref,
+   a.candidate_run_id,a.candidate_run_attempt,a.owner_run_id,a.owner_run_attempt,
+   r.outcome AS run_outcome,v.plan
+   FROM step_attempts a JOIN runs r ON r.id=a.run_id
+   JOIN workflow_versions v ON v.id=r.version_id
+   WHERE a.attempt_id=?
+   AND NOT EXISTS(SELECT 1 FROM github_action_cancellations c
+     WHERE c.attempt_id=a.attempt_id)`)
+  .bind(attemptId).first<Omit<PinnedActionRow,'run_id'>>();
+ if(!row||row.capability_id!=='github.action'||row.state!=='created'||
+    row.candidate_run_id!==null||row.candidate_run_attempt!==null||
+    row.owner_run_id!==null||row.owner_run_attempt!==null||
+    !['queued','running'].includes(row.run_outcome))return false;
+ let plan:Plan;
+ try{plan=JSON.parse(row.plan) as Plan;}catch{return false;}
+ if(plan.github_execution_approved!==true||!Array.isArray(plan.steps))return false;
+ const step=plan.steps.find(s=>s.id===row.step_id);
+ if(!step||step.uses!=='github.run'||step.with?.capability!=='github.action')
+  return false;
+ const raw=step.with.action as (ReviewedGitHubAction & {ref?:string})|undefined;
+ if(!raw)return false;
+ const action:ReviewedGitHubAction={
+  repository:raw.repository,repositoryId:raw.repositoryId,
+  workflowId:raw.workflowId,workflowPath:raw.workflowPath,
+  commitSha:raw.commitSha,type:raw.type,contractDigest:raw.contractDigest,
+ };
+ if(!isPublishedGitHubActionApproved(plan.github_action_approvals,action)||
+    row.repository!==action.repository||
+    row.repository_id!==String(action.repositoryId)||
+    row.workflow_ref!==action.repository+'/'+action.workflowPath+'@'+row.ref||
+    row.ref!==raw.ref)return false;
+ try{
+  const {payload}=await jwtVerify(jwt,keys,{
+   issuer:'https://token.actions.githubusercontent.com',audience,
+   algorithms:['RS256'],clockTolerance:'5s',maxTokenAge:'5m',
+  });
+  if(typeof payload.iat!=='number'||typeof payload.exp!=='number'||
+     payload.exp-payload.iat>600||typeof payload.run_id!=='string'||
+     !/^[1-9][0-9]*$/.test(payload.run_id)||
+     !Number.isSafeInteger(Number(payload.run_id))||
+     payload.run_attempt!=='1')return false;
+  return matchPinnedActionRunIdentity(payload as JWTPayload & {
+   repository_id?:unknown;sha?:unknown;repository?:unknown;workflow_ref?:unknown;
+   ref?:unknown;run_id?:unknown;run_attempt?:unknown;event_name?:unknown;
+  },{
+   repository:row.repository,repositoryId:row.repository_id,
+   workflowRef:row.workflow_ref,ref:row.ref,
+   runId:Number(payload.run_id),runAttempt:1,commitSha:action.commitSha,
+  });
+ }catch{return false;}
+}
