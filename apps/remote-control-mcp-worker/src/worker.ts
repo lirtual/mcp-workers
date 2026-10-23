@@ -1,7 +1,7 @@
 import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
 import { BROWSER_TOOLS, BROWSER_EFFECT_TOOLS, BROWSER_READ_TOOLS, parseBrowserCall, browserEffectClientStatus } from "./browser-tools.ts";
 /** Browser tools use the existing authenticated MCP + signed paired-device grant. */
-import { handleAgentInstallerRequest } from "./install-bootstrap.ts";
+import { handleAgentInstallerRequest, REVIEWED_V0115_RELEASE_PIN, REVIEWED_WINDOWS_INSTALL_PIN } from "./install-bootstrap.ts";
 export { V2OwnerCoordinator } from "./v2-pairing.ts";
 import { V2OwnerCoordinator as PreviewCoordinator } from "./v2-pairing.ts";
 export class DeviceCoordinator extends PreviewCoordinator {}
@@ -1138,15 +1138,17 @@ export default {
     }
     const url = new URL(request.url);
 
-    if (url.pathname === "/install.sh") {
-      // Only the owner-configured v2 Preview may serve the reviewed immutable
-      // test installer. Keep every other environment fail-closed (503).
+    if (url.pathname === "/" || url.pathname === "/install.sh" || url.pathname === "/install.ps1") {
+      // Serve pinned public installer only from the existing, configured
+      // production owner Worker; other environments remain fail-closed.
       if (!pairedOnly(env) || !env.MCP_ACCESS_TOKEN || !pendingOwner(env)) {
         return new Response("Preview installer is disabled.\n", {
           status: 503, headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" },
         });
       }
-      return handleAgentInstallerRequest(request, undefined, (env as V2Env).REMOTE_CONTROL_INSTALL_ORIGIN);
+      return handleAgentInstallerRequest(request, REVIEWED_V0115_RELEASE_PIN,
+        (env as V2Env).REMOTE_CONTROL_INSTALL_ORIGIN ?? "https://rca.lirtual.dpdns.org",
+        REVIEWED_WINDOWS_INSTALL_PIN);
     }
     if (url.pathname.startsWith("/agent/connect/") && pendingOwner(env)) {
       const deviceId = url.pathname.slice("/agent/connect/".length);

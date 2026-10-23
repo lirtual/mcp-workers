@@ -34,3 +34,22 @@ MCP_ACCESS_TOKEN='<token>' pnpm smoke:mcp -- \
 ```
 
 The runner also supports `--args-json` for explicit tool arguments and `--token-env` for a different environment variable name. The caller—not tool annotations—must select an operation known to be safe.
+
+## Remote Control public installation entry (Spec #24)
+
+The existing `remote-control-mcp-worker` is the intended host for the public
+`https://rca.lirtual.dpdns.org/` landing page, `/install.sh` (Linux/WSL2) and
+`/install.ps1` (Windows). These anonymous **GET-only** resources share the
+configured origin but never grant MCP permissions, expose device data or
+accept pairing approvals. `/mcp` and signed Agent/WebSocket endpoints retain
+their separate authentication.
+
+This is source-level implementation, **not evidence of production deployment**.
+Linux continues to use a verified immutable Agent Release pin. The new Windows
+response is intentionally **503** until the public Agent has been built,
+reviewed, tested and published as a new immutable Windows Release, then both
+its source-script SHA-256 and official release ZIP digest have been
+independently pinned in this Worker. `REVIEWED_WINDOWS_INSTALL_PIN = null`
+is a deliberate release gate, not a missing setting to bypass in production.
+Publishing a Release, changing Cloudflare and upgrading paired devices require
+separate authorization and the normal GitHub Actions gates.

@@ -13,9 +13,9 @@ const pin = Object.freeze({
   x64Sha256:"b".repeat(64), arm64Sha256:"c".repeat(64),
 });
 
-test("reviewed immutable single-code Worker installation route is enabled", async()=>{
+test("public Linux installer remains disabled until new interactive-mode Release is reviewed", async()=>{
   const response=requestInstall(new Request(origin+"/install.sh"));
-  assert.equal(response.status,200);
+  assert.equal(response.status,503);
   assert.equal(response.headers.get("cache-control"),"no-store");
   assert.equal(REVIEWED_V018_RELEASE_PIN.commit,"4d58ffe33e560d6f5f1c375aacf02a774b51a6c0");
   const script=await response.text();
@@ -30,11 +30,9 @@ test("reviewed immutable single-code Worker installation route is enabled", asyn
   assert.equal(REVIEWED_AGENT_RELEASE_PIN.commit, "1171542d2951042cc1e0992c8cb9b97d3284fe03");
   assert.equal(REVIEWED_AGENT_RELEASE_PIN.x64Sha256, "bcb932d9f3539233204decf70ed0a748e2e31ac2a069e5b8b29484ab8733a0e3");
   assert.equal(REVIEWED_AGENT_RELEASE_PIN.arm64Sha256, "bdbe443d6010e372a03bff773d0e0bce946ac7bbbd45d9d1b75c99477eb23aa9");
-  assert.ok(script.includes("remote-control-agent-v0.1.13"));
-  assert.match(script,/bcb932d9f3539233/);
-  assert.match(script,/bdbe443d6010e372/);
-  assert.doesNotMatch(script,/remote-control-agent-v0.1.11/);
-  assert.match(script,/1\) \[ "\$1" = "--upgrade"/);
+  assert.match(script,/No reviewed.*release is published yet/);
+  assert.doesNotMatch(script,/#!/);
+  assert.doesNotMatch(script,/v0\.1\.13|curl|sha256sum/);
 });
 
 test("one-line installer reports genuine download progress and each checked stage", () => {
@@ -62,9 +60,12 @@ test("one-line installer reports genuine download progress and each checked stag
   assert.equal(syntax.status,0,syntax.stderr);
 });
 
-test("production custom hostname serves pinned installer with same-domain Agent endpoint",async()=>{
+test("production custom hostname does not advertise old Linux binary while reviewed candidate is absent",async()=>{
   const custom="https://rca.lirtual.dpdns.org";
-  const response=requestInstall(new Request(custom+"/install.sh"), undefined, custom);
+  const noPin=requestInstall(new Request(custom+"/install.sh"), undefined, custom);
+  assert.equal(noPin.status,503);
+  assert.doesNotMatch(await noPin.text(),/#!/);
+  const response=requestInstall(new Request(custom+"/install.sh"), pin, custom);
   assert.equal(response.status,200);
   const shell=await response.text();
   assert.ok(shell.startsWith("#!/bin/sh"));
@@ -90,8 +91,8 @@ test("historical two-code v0.1.2 cannot be served by single-code Worker even whe
   assert.equal(reviewed.commit,"00aaf200107e42a1b7cede3db51f9a16edea5b09");
   assert.equal(reviewed.x64Sha256,"b895f8133a03a53f4eacbf4fa6d0619f59ad722064c5e2e8ca469f9fc637221a");
   assert.equal(reviewed.arm64Sha256,"ec16343f50b20b762b04a06039164c0f3a7f42bdeb597ab8e04ecc4b3e40724c");
-  const nowEnabled=requestInstall(new Request(origin+"/install.sh"));
-  assert.equal(nowEnabled.status,200);
+  const noNewRelease=requestInstall(new Request(origin+"/install.sh"));
+  assert.equal(noNewRelease.status,503);
   assert.equal(reviewed.pairingProtocol,"two-code-v1");
   const incompatible=requestInstall(new Request(origin+"/install.sh"),reviewed);
   assert.equal(incompatible.status,503);
@@ -166,4 +167,84 @@ test("untrusted pinned release metadata cannot interpolate shell commands",async
     assert.throws(()=>renderAgentInstallShell(origin,candidate),/Unapproved/);
   }
   assert.throws(()=>renderAgentInstallShell("https://unknown.example/path",pin),/Unapproved/);
+});
+
+test('public installation home is isolated from authentication and shows the two exact commands',async()=>{
+  const custom='https://rca.lirtual.dpdns.org';
+  const page=requestInstall(new Request(custom+'/'),undefined,custom);
+  assert.equal(page.status,200);
+  assert.match(page.headers.get('content-type')??'',/text\/html/);
+  assert.match(page.headers.get('content-security-policy')??'',/frame-ancestors 'none'/);
+  const html=await page.text();
+  assert.match(html,/role="tablist"/);
+  assert.match(html,/>Linux<\/button>/);
+  assert.doesNotMatch(html,/>Linux \/ WSL2<\/button>/);
+  assert.match(html,/aria-selected/);
+  assert.match(html,/const ready=\{windows:false,linux:false\}/);
+  assert.match(html,/copy\.disabled=!ready\[platform\]/);
+  assert.match(html,/安装暂未开放/);
+  assert.match(html,/navigator\.userAgentData/);
+  assert.match(html,/clipboard\.writeText/);
+  assert.match(html,/irm https:\/\/rca\.lirtual\.dpdns\.org\/install\.ps1 \| iex/);
+  assert.match(html,/curl -fsSL https:\/\/rca\.lirtual\.dpdns\.org\/install\.sh \| sh/);
+  assert.doesNotMatch(html,/api\/devices|Bearer |secret|Remote Desktop/);
+  assert.equal(requestInstall(new Request(custom+'/',{method:'POST'}),undefined,custom).status,405);
+  assert.equal(requestInstall(new Request(custom+'/',{headers:{host:'evil.test'}}),undefined,custom).status,403);
+  assert.equal(requestInstall(new Request(custom+'/install.ps1'),undefined,custom).status,503);
+});
+
+test('Windows installer fetches only independently source-pinned script and release',async()=>{
+  const { renderAgentInstallPowerShell } = await import('../src/install-bootstrap.ts');
+  const synthetic={tag:'v0.1.99-windows.1',commit:'a'.repeat(40),scriptSha256:'b'.repeat(64),assetSha256:'c'.repeat(64)};
+  const script=renderAgentInstallPowerShell(origin,synthetic);
+  assert.match(script,/Invoke-WebRequest .* -MaximumRedirection 0/);
+  assert.match(script,/SHA-256 mismatch/);
+  assert.match(script,/ScriptBlock\]::Create/);
+  assert.match(script,/-PinnedReleaseSha256/);
+  const resp=handleAgentInstallerRequest(new Request(origin+'/install.ps1'),undefined,origin,synthetic);
+  assert.equal(resp.status,200);
+  assert.match(await resp.text(),/v0\.1\.99-windows\.1/);
+  assert.throws(()=>renderAgentInstallPowerShell(origin,{...synthetic,commit:'not-pinned'}),/Unapproved/);
+});
+
+test('homepage copy state follows the separately verified platform pins',async()=>{
+  const {renderInstallHome}=await import('../src/install-home.ts');
+  const closed=renderInstallHome();
+  const linux=renderInstallHome({linux:true,windows:false});
+  const windows=renderInstallHome({linux:false,windows:true});
+  assert.match(closed,/const ready=\{windows:false,linux:false\}/);
+  assert.match(linux,/const ready=\{windows:false,linux:true\}/);
+  assert.match(windows,/const ready=\{windows:true,linux:false\}/);
+  assert.match(closed,/field\.textContent=ready\[value\]\?cmds\[value\]:'安装暂未开放'/);
+  assert.match(closed,/copy\.disabled=!ready\[platform\]/);
+  assert.match(closed,/if\(!ready\[platform\]\)return;/);
+  const custom='https://rca.lirtual.dpdns.org';
+  const resp=requestInstall(new Request(custom+'/'),pin,custom);
+  assert.match(await resp.text(),/const ready=\{windows:false,linux:true\}/);
+});
+
+
+test('reviewed v0.1.15 enables both public bootstrap paths only with exact reviewed pins', async () => {
+  const { REVIEWED_V0115_RELEASE_PIN, REVIEWED_WINDOWS_INSTALL_PIN } =
+    await import('../src/install-bootstrap.ts');
+  const base = 'https://rca.lirtual.dpdns.org';
+  assert.equal(REVIEWED_V0115_RELEASE_PIN.commit, '7a90504a22e3ea0c302c4c5a7d5defeb72ea7719');
+  assert.equal(REVIEWED_V0115_RELEASE_PIN.x64Sha256, '4c5c9733a37061a7223ff1ba1a019a838c105be462e04b4f73352205fa0ea1c9');
+  assert.equal(REVIEWED_V0115_RELEASE_PIN.arm64Sha256, 'b6c0b7079a090b9fddef11c27211169881b4e51ef99e36ac19f8f9678d0613d7');
+  assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.assetSha256, 'eedc514831968c03447befe2cc7e125b89eca328a524e649dde58f4e9fb4e94d');
+  assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.scriptSha256, '9f13a2222461cdf8d836691c5e137aed992bb81bf50b236b7d551457b9b0d5ed');
+  const home = handleAgentInstallerRequest(new Request(base + '/'), REVIEWED_V0115_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
+  assert.equal(home.status, 200);
+  assert.match(await home.text(), /const ready=\{windows:true,linux:true\}/);
+  const linux = handleAgentInstallerRequest(new Request(base + '/install.sh'), REVIEWED_V0115_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
+  assert.equal(linux.status, 200);
+  assert.match(await linux.text(), /remote-control-agent-v0\.1\.15/);
+  const windows = handleAgentInstallerRequest(new Request(base + '/install.ps1'), REVIEWED_V0115_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
+  assert.equal(windows.status, 200);
+  const ps1 = await windows.text();
+  assert.match(ps1, /7a90504a22e3ea0c302c4c5a7d5defeb72ea7719/);
+  assert.match(ps1, /9f13a2222461cdf8d836691c5e137aed992bb81bf50b236b7d551457b9b0d5ed/);
+  assert.equal(handleAgentInstallerRequest(new Request(base + '/'), null, base, null).status, 200);
+  assert.equal(handleAgentInstallerRequest(new Request(base + '/install.sh'), null, base, null).status, 503);
+  assert.equal(handleAgentInstallerRequest(new Request(base + '/install.ps1'), null, base, null).status, 503);
 });
