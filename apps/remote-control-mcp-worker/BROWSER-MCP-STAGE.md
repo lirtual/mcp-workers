@@ -22,10 +22,17 @@ Agent execution protocol. The following safeguards remain:
 - Preview and production use their own owner DO namespaces. No extra browser approval
   configuration, feature switch, identity store, scheduler or service is introduced.
 
-Temporary grants still expire 24 hours after approval. Changing an *existing temporary
-grant into a permanent grant* is a distinct increase in device privilege and continues
-to require the existing independently Cloudflare Access-verified owner page at
-`/browser-approve/grant/<device_id>`. Permanent onboarding requires no such promotion.
+Temporary grants expire 24 hours after approval. **An existing temporary grant
+cannot become permanent in place.** To authorize a permanent device, explicitly
+end/revoke the old grant, reset its local identity through an owner-reviewed
+re-pair procedure, and enroll a **new key and device ID** with the permanent
+grant choice and a fresh ten-character pairing code. The previous key or
+temporary expiry is never silently upgraded or prolonged.
+
+The retired `/browser-approve/grant/*` web page and internal
+`/grant/permanent` endpoint are not available. Permanent pairing still
+requires owner confirmation using the existing MCP pairing tools. Existing
+permanent devices reconnect normally without re-pairing.
 
 ## Security trade-off
 
