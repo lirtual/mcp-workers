@@ -18,7 +18,7 @@ hook.deregister();
 
 const TOKEN='disposable-portal-token-cron-t09';
 const ORIGIN='https://owner.example.org/mcp';
-type Tick=Record<string, unknown> & {admissions: Array<Record<string, unknown>>; exactly_once: boolean};
+type Tick=Record<string, unknown> & {admissions: Array<Record<string, unknown>>; cancellation_reconciliations?:Array<Record<string,unknown>>; exactly_once: boolean};
 
 function cronDefinition(expression:string, name='Scheduled'){
   return {version:1,name,triggers:[{id:'schedule',type:'cron',expression}],
@@ -27,7 +27,7 @@ function cronDefinition(expression:string, name='Scheduled'){
 function setup(t:test.TestContext){
   const sqlite=new DatabaseSync(':memory:');
   t.after(()=>sqlite.close());
-  for(const file of ['0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql','0006_github_registered_action.sql','0007_run_cancel.sql','0008_grant_revocation.sql','0009_runtime_approval.sql','0010_child_run.sql','0011_cron_due.sql'])
+  for(const file of ['0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql','0006_github_registered_action.sql','0007_run_cancel.sql','0008_grant_revocation.sql','0009_runtime_approval.sql','0010_child_run.sql','0011_cron_due.sql','0012_cron_due_bounds.sql'])
     sqlite.exec(readFileSync(new URL('../migrations/'+file,import.meta.url),'utf8'));
   function prepare(sql:string){
     let args:any[]=[];
@@ -331,10 +331,32 @@ test('a cron minute refused for capacity is admitted later and pause drops it', 
   assert.equal((sqlite.prepare('SELECT COUNT(*) AS n FROM cron_due WHERE workflow_id=?').get(second.workflow_id) as {n:number}).n,1);
   assert.equal(creates.length,1);
   await call('workflow_pause',{workflow_id:second.workflow_id});
+  await call('workflow_resume',{workflow_id:second.workflow_id});
   sqlite.prepare("UPDATE runs SET outcome='succeeded' WHERE outcome='queued'").run();
   const dropped=await tick(env,secondMinute+60_000);
-  assert.equal(forWorkflow(dropped,second.workflow_id)[0]?.error,'workflow_not_active');
+  assert.equal(forWorkflow(dropped,second.workflow_id).length,0);
   assert.equal((sqlite.prepare('SELECT COUNT(*) AS n FROM runs WHERE workflow_id=?').get(second.workflow_id) as {n:number}).n,0);
   assert.equal((sqlite.prepare('SELECT COUNT(*) AS n FROM cron_due WHERE workflow_id=?').get(second.workflow_id) as {n:number}).n,0);
   assert.equal(creates.length,1);
+});
+
+test('scheduled cancellation reconciliation skips terminal nonrefinable rows and advances a real overdue request',async t=>{
+  const {env,sqlite}=setup(t);
+  const call=await connect(t,env);
+  const created=await call('workflow_create',{definition:JSON.stringify({version:1,name:'Cancellation sweep',steps:[{id:'emit',uses:'result.emit',with:{data:'ok'}}]})});
+  const published=await call('workflow_publish',{workflow_id:created.workflow_id,expected_revision:1});
+  const real=await call('workflow_run',{workflow_id:created.workflow_id,inputs:{}});
+  const stamp=Date.now()-11*60_000;
+  sqlite.prepare("UPDATE runs SET cancel_requested_at=?,outcome='queued',start_state='reserved',error_code=NULL WHERE id=?")
+    .run(stamp,real.run_id);
+  for(let index=0;index<100;index++){
+    const id=crypto.randomUUID();
+    sqlite.prepare(`INSERT INTO runs(id,workflow_id,version_id,instance_id,request_digest,inputs,start_state,outcome,error_code,cancel_requested_at,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,'started','indeterminate','permanent_failure',?,?,?)`)
+      .run(id,created.workflow_id,published.published_version_id,id,'old-'+index,'{}',stamp,stamp,stamp);
+  }
+  const result=await tick(env,Date.now());
+  assert.equal((result.cancellation_reconciliations??[]).some(item=>item.run_id===real.run_id),true);
+  assert.equal((sqlite.prepare('SELECT outcome FROM runs WHERE id=?').get(real.run_id) as {outcome:string}).outcome,'cancelled');
+  assert.equal(result.cancellation_reconciliations?.length,1);
 });

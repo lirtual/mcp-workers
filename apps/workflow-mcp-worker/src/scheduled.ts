@@ -29,9 +29,20 @@ export async function handleScheduled(controller: ScheduledTick, env: Env) {
   if (!env.DB || !env.WORKFLOW) return {...empty, scheduled_time: scheduledTime, error: 'workflow_bindings_missing'};
   try {
     const service = new WorkflowService(env);
+    await service.expireCronDue();
     const tick = await service.cronTickTargets(minute);
     const due = await service.dueCronTargets();
+    const cancellations = await service.overdueCancellationTargets();
     const admissions: Array<Record<string, unknown>> = [];
+    const cancellationReconciliations: Array<Record<string, unknown>> = [];
+    for (const item of cancellations) {
+      try {
+        const result = await service.reconcileCancellation(item.id);
+        cancellationReconciliations.push({run_id:item.id,cancellation:result});
+      } catch (error) {
+        cancellationReconciliations.push({run_id:item.id,error:cleanError(error)});
+      }
+    }
     const seen = new Set<string>();
     const admit = async (workflowId: string, state: string, scheduledMs: number) => {
       const eventId = cronEventId(scheduledMs);
@@ -58,13 +69,16 @@ export async function handleScheduled(controller: ScheduledTick, env: Env) {
         try {
           if (code === 'run_capacity_exceeded') await service.rememberCronDue(workflowId, scheduledMs, eventId);
           else await service.clearCronDue(workflowId, eventId);
-        } catch { /* The admission result stays visible. */ }
+        } catch (persistError) {
+          admissions.push({workflow_id: workflowId, error: code, due_persistence_error:cleanError(persistError), exactly_once: false as const});
+          return;
+        }
         admissions.push({workflow_id: workflowId, error: code, exactly_once: false as const});
       }
     };
     for (const item of due) await admit(item.workflow_id, item.state, item.scheduled_ms);
     for (const target of tick.targets) await admit(target.workflow_id, target.state, minute);
-    return {...facts, scheduled_time: scheduledTime, scan_truncated: tick.truncated, admissions};
+    return {...facts, scheduled_time: scheduledTime, scan_truncated: tick.truncated, admissions, cancellation_reconciliations:cancellationReconciliations};
   } catch {
     return {...empty, scheduled_time: scheduledTime, error: 'unavailable'};
   }

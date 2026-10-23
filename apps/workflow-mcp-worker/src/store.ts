@@ -4,7 +4,7 @@ import { recordRuntimeApproval } from './runtime-approval.ts';
 import { cronEventId, cronMatches, CronError, publishedCronFacts } from './cron.ts';
 import { PRODUCTION_PORTAL_ENDPOINT, TRUSTED_PORTAL_ENDPOINT } from './mcp-public-fetch.ts';
 import {githubAsyncViewsForRun} from './github-async.ts';
-import {reconcileRunCancellation, requestAwaitedChildCancellation, type RunCancellation} from './run-cancel.ts';
+import {reconcileRunCancellation, requestAwaitedChildCancellation, REFINABLE_CANCEL_ERRORS, type RunCancellation} from './run-cancel.ts';
 import {publishedSaga, publicCompensation} from './saga.ts';
 import {observeInstance, shouldExpireUnconfirmedOutcome, unresolvedNativeTerminalError, OUTCOME_SETTLE_WINDOW_MS} from './instance-observation.ts';
 import YAML from 'yaml';
@@ -473,9 +473,31 @@ export class WorkflowService {
       ORDER BY d.scheduled_ms ASC, d.workflow_id ASC LIMIT 100`).all<{workflow_id:string;scheduled_ms:number;state:string}>();
     return rows.results;
   }
+  async expireCronDue(){
+    await this.db.prepare('DELETE FROM cron_due WHERE created_at<=?').bind(now()-24*60*60_000).run();
+  }
+  async reconcileCancellation(runId:string){
+    return reconcileRunCancellation(this.db,this.env,runId);
+  }
+  async overdueCancellationTargets(limit=100){
+    const refinable=[...REFINABLE_CANCEL_ERRORS];
+    const rows=await this.db.prepare(`SELECT id FROM runs WHERE cancel_requested_at IS NOT NULL
+      AND cancel_requested_at<=? AND (
+        outcome IN ('queued','running','waiting') OR
+        (outcome='indeterminate' AND error_code IN (${refinable.map(()=>'?').join(',')}))
+      ) ORDER BY cancel_requested_at ASC,id ASC LIMIT ?`)
+      .bind(now()-10*60_000,...refinable,limit).all<{id:string}>();
+    return rows.results;
+  }
   async rememberCronDue(workflowId:string, scheduledMs:number, eventId:string){
-    await this.db.prepare('INSERT OR IGNORE INTO cron_due(workflow_id,event_id,scheduled_ms,created_at) VALUES(?,?,?,?)')
-      .bind(workflowId, eventId, scheduledMs, now()).run();
+    const stamp=now();
+    await this.db.prepare('DELETE FROM cron_due WHERE created_at<=?').bind(stamp-24*60*60_000).run();
+    await this.db.prepare(`INSERT OR IGNORE INTO cron_due(workflow_id,event_id,scheduled_ms,created_at)
+      SELECT ?,?,?,? WHERE (SELECT COUNT(*) FROM cron_due)<10000`)
+      .bind(workflowId, eventId, scheduledMs, stamp).run();
+    const present=await this.db.prepare('SELECT 1 AS present FROM cron_due WHERE workflow_id=? AND event_id=?')
+      .bind(workflowId,eventId).first<{present:number}>();
+    if(!present)throw new StateError('cron_due_capacity_exceeded');
   }
   async clearCronDue(workflowId:string, eventId:string){
     await this.db.prepare('DELETE FROM cron_due WHERE workflow_id=? AND event_id=?').bind(workflowId, eventId).run();
@@ -540,7 +562,10 @@ export class WorkflowService {
     await requestAwaitedChildCancellation(this.db,run_id);
     return this.status(run_id);
   }
-  async pause(workflow_id:string){assertId(workflow_id);const x=await this.db.prepare("UPDATE workflows SET state='paused',updated_at=? WHERE id=? AND state='active'").bind(now(),workflow_id).run();if(!x.meta.changes)throw new StateError('not_active');return {workflow_id,state:'paused'};}
+  async pause(workflow_id:string){assertId(workflow_id);const results=await this.db.batch([
+    this.db.prepare("UPDATE workflows SET state='paused',updated_at=? WHERE id=? AND state='active'").bind(now(),workflow_id),
+    this.db.prepare('DELETE FROM cron_due WHERE workflow_id=?').bind(workflow_id),
+  ]);if(!results[0]?.meta?.changes)throw new StateError('not_active');return {workflow_id,state:'paused'};}
   async resume(workflow_id:string){assertId(workflow_id);const x=await this.db.prepare("UPDATE workflows SET state='active',updated_at=? WHERE id=? AND state='paused' AND active_version_id IS NOT NULL").bind(now(),workflow_id).run();if(!x.meta.changes)throw new StateError('not_paused');return {workflow_id,state:'active'};}
   async admitChild(args:{parent_run_id:string;parent_step_id:string;workflow_id:string;inputs:Record<string,unknown>;mode:'await'|'detach'}){
     assertId(args.parent_run_id);assertId(args.workflow_id);

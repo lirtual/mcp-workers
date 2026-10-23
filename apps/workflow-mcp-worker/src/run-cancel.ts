@@ -36,7 +36,7 @@ export type CancelRuntime={
   GITHUB_EXECUTOR_REPOSITORY?:string;
 };
 type Outbound=(request:Request)=>Promise<Response>;
-const REFINABLE_ERRORS=new Set([
+export const REFINABLE_CANCEL_ERRORS=new Set([
   'github_callback_unconfirmed','execution_interrupted','orchestration_terminated',
   'cancel_unconfirmed','outcome_unconfirmed',
 ]);
@@ -218,7 +218,7 @@ async function reconcileCancelledRun(
   }
   if(run.outcome==='succeeded'||run.outcome==='failed') return 'completed';
   if(run.outcome==='cancelled') return 'cancelled';
-  if(run.outcome==='indeterminate'&&run.error_code!=null&&!REFINABLE_ERRORS.has(run.error_code))
+  if(run.outcome==='indeterminate'&&run.error_code!=null&&!REFINABLE_CANCEL_ERRORS.has(run.error_code))
     return 'indeterminate';
   const sagaWait=await sagaCancelWait(db, env, run);
   if(sagaWait==='defer'){

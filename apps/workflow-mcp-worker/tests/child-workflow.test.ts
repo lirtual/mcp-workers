@@ -32,7 +32,7 @@ const PINNED_SCHEMA = {type: 'object', properties: {
   delay_ms: {type: 'integer', minimum: 0, maximum: 15000},
 }, required: ['value'], '$schema': 'https://json-schema.org/draft/2020-12/schema', additionalProperties: false};
 const PINNED_DIGEST = await toolSchemaDigest(PINNED_SCHEMA);
-const MIGRATIONS = ['0001_s1.sql', '0002_native_complete_seen.sql', '0003_s3_attempt_claim.sql', '0004_s3_callback_receipts.sql', '0005_github_workflow_check.sql', '0006_github_registered_action.sql', '0007_run_cancel.sql', '0008_grant_revocation.sql', '0009_runtime_approval.sql','0010_child_run.sql'];
+const MIGRATIONS = ['0001_s1.sql', '0002_native_complete_seen.sql', '0003_s3_attempt_claim.sql', '0004_s3_callback_receipts.sql', '0005_github_workflow_check.sql', '0006_github_registered_action.sql', '0007_run_cancel.sql', '0008_grant_revocation.sql', '0009_runtime_approval.sql','0010_child_run.sql','0011_cron_due.sql','0012_cron_due_bounds.sql'];
 
 type Call = (name: string, args: Record<string, unknown>, error?: string) => Promise<any>;
 

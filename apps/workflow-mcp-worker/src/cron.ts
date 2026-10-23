@@ -10,6 +10,9 @@ export const CRON_CONTRACT = {
   dedupe: 'utc_scheduled_minute' as const,
   exactly_once: false as const,
   gap: 'missed_platform_tick_not_backfilled' as const,
+  backlog_max_age_hours: 24 as const,
+  backlog_max_entries: 10000 as const,
+  backlog_overflow: 'admission_reports_cron_due_capacity_exceeded' as const,
   platform_cron: PLATFORM_CRON,
 };
 const FIELD_BOUNDS = [
