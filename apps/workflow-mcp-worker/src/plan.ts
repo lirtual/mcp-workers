@@ -2,7 +2,7 @@ import YAML from 'yaml';
 import { publicMcpEndpoint } from './mcp-public-fetch.ts';
 import {
   CONDITION_VALUE_OPS, CRON_TRIGGER_KEYS, DEFINITION_KEYS, EXPANSION_RISK, EXPAND_KEYS, GITHUB_CAPABILITY_ID, GITHUB_TRIGGER_EVENTS, GITHUB_TRIGGER_KEYS,
-  expansionItemWeight, HTTP_TARGET_ARGUMENT_KEYS, isSupportedUse, LIMITS, MCP_SCOPES, OBJECT_PROTOTYPE_KEYS, REPEAT_KEYS, RESERVED_EXPRESSION_KEYS, STEP_ID, STEP_KEYS,
+  expansionItemWeight, HTTP_TARGET_ARGUMENT_KEYS, isSupportedUse, isTsrvName, LIMITS, MCP_SCOPES, OBJECT_PROTOTYPE_KEYS, REPEAT_KEYS, RESERVED_EXPRESSION_KEYS, STEP_ID, STEP_KEYS,
   TOOL_NAME, TRIGGER_EVENT_NAME, TRIGGER_REPOSITORY, TRIGGER_SOURCE_ID, WEBHOOK_TRIGGER_KEYS, WITH_KEYS,
 } from './capabilities.ts';
 import type { SupportedUse } from './capabilities.ts';
@@ -406,6 +406,10 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     keys(s,STEP_KEYS,stepPath);
     if(typeof s.id!=='string'||!STEP_ID.test(s.id)||ids.has(s.id)||PROTOTYPE_KEYS.has(s.id))throw new PlanError('invalid_step_id', {path: stepPath+'/id'});
     ids.add(s.id);
+    if(isTsrvName(s.uses))throw new PlanError('resource_provider_unavailable', {
+      path: stepPath+'/uses',
+      suggestion: 'Remove the tsrv action. A finished GitHub job is not a resource reference.',
+    });
     if(!isSupportedUse(s.uses))throw new PlanError('unsupported_capability', {
       path: stepPath+'/uses', suggestion: 'Use result.emit, mcp.call, http.request, or github.run.',
     });
@@ -414,7 +418,11 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     const withData=object(s.with,'invalid_step_arguments',stepPath+'/with');
     if(s.uses==='github.run'){
       // Targets come from the server. A definition cannot supply a repository,
-      // ref, workflow file, token, or command.
+      // ref, workflow file, token, or command. tsrv is not this allow-list.
+      if(isTsrvName(withData.capability))throw new PlanError('resource_provider_unavailable', {
+        path: stepPath+'/with/capability',
+        suggestion: 'Remove the tsrv action. A finished GitHub job is not a resource reference.',
+      });
       const allowListed=withData.capability===REGISTERED_GITHUB_ACTION.id;
       keys(withData,allowListed?['capability','inputs']:WITH_KEYS['github.run'],stepPath+'/with');
       if(withData.capability===GITHUB_CAPABILITY_ID){

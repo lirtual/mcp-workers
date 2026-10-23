@@ -291,6 +291,7 @@ test('unimplemented capabilities stay unsupported and the compiler reports a pre
   }
   const unsupported = capabilityCatalog().filter(entry => entry.status === 'unsupported').map(entry => entry.id);
   assert.deepEqual(unsupported, [
+    'action.tsrv',
     'action.shell',
     'flow.foreach', 'flow.while', 'flow.nesting', 'flow.wait', 'flow.child_workflow', 'flow.saga',
   ]);
