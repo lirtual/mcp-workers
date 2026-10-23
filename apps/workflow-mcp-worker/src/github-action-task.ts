@@ -62,7 +62,7 @@ export async function runPublishedGitHubActionTask(
    retries:{limit:0,delay:'1 second'},timeout:'45 seconds',
   },()=>reconcilePersistedGitHubActionAttempt(db,attemptId,token,
    (database,id,credential)=>inspectPersistedGitHubActionAttempt(database,id,credential,
-    (action,run,attempt,bearer)=>inspectGitHubActionRun(action,run,attempt,bearer,http))));
+    (action,run,attempt,bearer,ref)=>inspectGitHubActionRun(action,run,attempt,bearer,ref,http))));
   if(state==='conflict')return {status:'indeterminate',error_code:'github_action_identity_conflict'};
   if(state==='updated'||state==='already_settled'){
    const settled=await db.prepare(`SELECT a.state,r.outcome AS parent_outcome
