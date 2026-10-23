@@ -1,4 +1,4 @@
-import { parseDocument, isMap, isScalar } from 'yaml';
+import { parseDocument, isMap } from 'yaml';
 
 export type ActionInput = {
   type: 'string' | 'choice' | 'boolean' | 'number';
@@ -22,7 +22,7 @@ const record = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
 const literal = (value: unknown): value is string =>
   typeof value === 'string' && !value.includes('${{');
-const fail = (reason: string): never => { throw Error('github_action_' + reason); };
+function fail(reason: string): never { throw Error('github_action_' + reason); }
 
 /** Parse the selected revision, not a default-branch copy. Never grants execution. */
 export function parseGitHubAction(yaml: string): DiscoveredAction {
