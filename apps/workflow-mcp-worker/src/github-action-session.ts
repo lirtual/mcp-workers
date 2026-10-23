@@ -1,3 +1,9 @@
+import type {WorkflowStep} from 'cloudflare:workers';
+import type {Env} from './store.ts';
+import type {Step} from './plan.ts';
+import {registerAndDispatchGitHubAction} from './github-action-orchestration.ts';
+import {reconcilePersistedGitHubActionAttempt} from './github-action-attempt-reconcile.ts';
+import {inspectGitHubActionRun} from './github-action-run-inspection.ts';
 import {verifyPinnedGitHubActionIdentity,type GithubActionKeys} from './github-action-oidc-claim.ts';
 import {inspectPersistedGitHubActionAttempt} from './github-action-attempt-inspection.ts';
 import {isPublishedGitHubActionApproved,type ReviewedGitHubAction} from './github-action-review.ts';
@@ -132,4 +138,114 @@ export async function recordSignedSessionReady(
   WHERE run_id=? AND step_id=?`).bind(row.run_id,row.step_id)
   .first<{state:string}>();
  return state?.state==='ready'?'already_ready':'denied';
+}
+
+type SessionOutcome={status:'succeeded'|'failed'|'indeterminate';error_code?:string;output?:unknown};
+type Http=(request:Request)=>Promise<Response>;
+
+/**
+ * The Session step resolves on a *signed and physically verified* Ready,
+ * not on GitHub job completion. D1 Session reservation continues occupying
+ * one of four slots independently of the parent Workflow's business outcome.
+ * Dispatch and wake waits are native, durable Cloudflare Workflow steps.
+ *
+ * This path is internally wired, but WorkflowService.start continues denying
+ * Session admission until user cancellation and post-Ready physical recovery
+ * are implemented and independently accepted.
+ */
+export async function runPublishedGitHubActionSession(
+ env:Env,plan:Plan,stepPlan:Step,runId:string,step:WorkflowStep,
+ http:Http=fetch,
+):Promise<SessionOutcome>{
+ const raw=stepPlan.with.action as (ReviewedGitHubAction & {
+  ref?:unknown;inputs?:unknown;
+ })|undefined;
+ if(!raw||raw.type!=='session')
+  return {status:'failed',error_code:'github_action_session_required'};
+ const identity:ReviewedGitHubAction={
+  repository:raw.repository,repositoryId:raw.repositoryId,
+  workflowId:raw.workflowId,workflowPath:raw.workflowPath,
+  commitSha:raw.commitSha,type:raw.type,contractDigest:raw.contractDigest,
+ };
+ if(plan.github_execution_approved!==true||
+    !isPublishedGitHubActionApproved(plan.github_action_approvals,identity))
+  return {status:'failed',error_code:'github_action_approval_missing'};
+ if(!env.WORKFLOW_EXECUTOR_GITHUB_TOKEN||!env.GITHUB_ACTION_OIDC_AUDIENCE)
+  return {status:'failed',error_code:'github_action_executor_not_configured'};
+ if(typeof raw.ref!=='string'||!raw.ref.startsWith('refs/tags/')||
+    !raw.inputs||typeof raw.inputs!=='object'||Array.isArray(raw.inputs))
+  return {status:'failed',error_code:'github_action_invalid_publication'};
+ const inputs:Record<string,string>={};
+ for(const [key,value] of Object.entries(raw.inputs)){
+  if(typeof value!=='string'&&typeof value!=='boolean'&&
+    (typeof value!=='number'||!Number.isFinite(value)))
+   return {status:'failed',error_code:'github_action_invalid_publication'};
+  inputs[key]=String(value);
+ }
+ const db=env.DB,token=env.WORKFLOW_EXECUTOR_GITHUB_TOKEN;
+ const dispatched=await step.do('github-session-dispatch-'+stepPlan.id,{
+  retries:{limit:0,delay:'1 second'},timeout:'45 seconds',
+ },async()=>{
+  const slot=await reservePublishedSessionSlot(db,runId,stepPlan.id);
+  if(slot==='full')return {status:'quota_full'} as const;
+  if(slot!=='reserved'&&slot!=='existing')return {status:'denied'} as const;
+  const attemptId=crypto.randomUUID(),dispatchId=crypto.randomUUID();
+  const ack=await registerAndDispatchGitHubAction(db,{
+   runId,stepId:stepPlan.id,attemptId,dispatchId,action:identity,
+   ref:raw.ref as string,token,inputs,
+  },http);
+  return {attemptId,...ack};
+ });
+ if(dispatched.status==='quota_full')
+  return {status:'failed',error_code:'github_session_capacity_exceeded'};
+ if(dispatched.status==='denied')
+  return {status:'failed',error_code:'github_session_admission_denied'};
+ if(dispatched.status==='rejected')
+  return {status:'failed',error_code:'github_session_dispatch_rejected'};
+ if(dispatched.status!=='confirmed')
+  return {status:'indeterminate',error_code:'github_session_dispatch_unknown'};
+ const attemptId=dispatched.attemptId;
+ await db.prepare(`UPDATE session_executions SET state='starting',updated_at=?
+   WHERE run_id=? AND step_id=? AND state='queued'`)
+  .bind(Date.now(),runId,stepPlan.id).run();
+
+ for(let i=0;i<30;i++){
+  const snapshot=await db.prepare(`SELECT s.state,a.state AS attempt_state
+    FROM session_executions s JOIN step_attempts a
+    ON a.run_id=s.run_id AND a.step_id=s.step_id
+    WHERE s.run_id=? AND s.step_id=? AND a.attempt_id=?`)
+    .bind(runId,stepPlan.id,attemptId)
+    .first<{state:string;attempt_state:string}>();
+  if(snapshot?.state==='ready'&&snapshot.attempt_state==='claimed')
+   return {status:'succeeded',output:{session:{recorded_state:'ready'}}};
+  if(!snapshot||['terminated','stopping'].includes(snapshot.state))
+   return {status:'indeterminate',error_code:'github_session_no_ready'};
+  if(['succeeded','failed','cancelled'].includes(snapshot.attempt_state)){
+   await releaseVerifiedSessionSlot(db,runId,stepPlan.id);
+   return {status:'failed',error_code:'github_session_ended_before_ready'};
+  }
+  const physical=await step.do('github-session-check-'+stepPlan.id+'-'+i,{
+   retries:{limit:0,delay:'1 second'},timeout:'45 seconds',
+  },()=>reconcilePersistedGitHubActionAttempt(db,attemptId,token,
+   (database,id,credential)=>inspectPersistedGitHubActionAttempt(database,id,credential,
+    (action,run,attempt,bearer,ref)=>
+     inspectGitHubActionRun(action,run,attempt,bearer,ref,http))));
+  if(physical==='conflict')
+   return {status:'indeterminate',error_code:'github_session_identity_conflict'};
+  if(physical==='updated'||physical==='already_settled'){
+   await releaseVerifiedSessionSlot(db,runId,stepPlan.id);
+   return {status:'failed',error_code:'github_session_ended_before_ready'};
+  }
+  try{
+   await step.waitForEvent('github-session-wait-'+stepPlan.id+'-'+i,{
+    type:'github-session-ready-'+stepPlan.id,timeout:'30 seconds',
+   });
+  }catch{
+   // Read the durable record on timeout or lost wake; never re-dispatch.
+  }
+ }
+ await db.prepare(`UPDATE session_executions SET state='uncertain',updated_at=?
+   WHERE run_id=? AND step_id=? AND state IN ('queued','starting')`)
+  .bind(Date.now(),runId,stepPlan.id).run();
+ return {status:'indeterminate',error_code:'github_session_ready_unconfirmed'};
 }
