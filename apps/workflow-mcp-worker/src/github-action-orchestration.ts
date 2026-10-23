@@ -28,7 +28,7 @@ export async function registerAndDispatchGitHubAction(
  if(!UUID.test(data.attemptId)||!UUID.test(data.dispatchId)||
     !UUID.test(data.runId)||!/^[a-zA-Z0-9_-]{1,64}$/.test(data.stepId)||
     !Number.isSafeInteger(data.action.repositoryId)||data.action.repositoryId<=0||
-    !/^refs\/heads\/[A-Za-z0-9._/-]+$/.test(data.ref)||
+    !/^refs\/tags\/[A-Za-z0-9][A-Za-z0-9._\/-]{0,190}$/.test(data.ref)||
     data.ref.includes('..')||data.ref.includes('//')||
     !data.action.workflowPath.startsWith('.github/workflows/')||
     !/^[a-z0-9_-]+\.ya?ml$/.test(data.action.workflowPath.slice('.github/workflows/'.length)))
@@ -56,6 +56,20 @@ export async function registerAndDispatchGitHubAction(
   workflowId:raw.workflowId,workflowPath:raw.workflowPath,
   commitSha:raw.commitSha,type:raw.type,contractDigest:raw.contractDigest,
  };
+ const pinned=raw.inputs;
+ if(raw.ref!==data.ref || !pinned || typeof pinned!=='object'||Array.isArray(pinned))
+  throw Error('github_action_publication_missing');
+ // Inputs must exactly match the validated immutable Published Plan. A
+ // malicious internal caller cannot substitute a different command/value.
+ const expectedInputs=Object.fromEntries(Object.entries(pinned as Record<string,unknown>).map(([key,value])=>{
+  if(typeof value!=='string'&&typeof value!=='boolean'&&
+     (typeof value!=='number'||!Number.isFinite(value)))
+   throw Error('github_action_publication_missing');
+  return [key,String(value)];
+ }));
+ if(Object.keys(expectedInputs).length!==Object.keys(data.inputs).length||
+    Object.entries(expectedInputs).some(([key,value])=>data.inputs[key]!==value))
+  throw Error('github_action_publication_missing');
  if(!isPublishedGitHubActionApproved(plan.github_action_approvals,identity)||
     !isPublishedGitHubActionApproved([identity],data.action))
   throw Error('github_action_publication_missing');
