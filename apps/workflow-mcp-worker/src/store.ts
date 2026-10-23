@@ -3,6 +3,7 @@ import { GITHUB_TRIGGER_EVENTS, isConfiguredSecret, LIMITS, TRIGGER_REPOSITORY, 
 import { cronEventId, cronMatches, CronError, publishedCronFacts } from './cron.ts';
 import { PRODUCTION_PORTAL_ENDPOINT, TRUSTED_PORTAL_ENDPOINT } from './mcp-public-fetch.ts';
 import {githubAsyncViewsForRun} from './github-async.ts';
+import {reconcileRunCancellation, type RunCancellation} from './run-cancel.ts';
 import {observeInstance, shouldExpireUnconfirmedOutcome, unresolvedNativeTerminalError, OUTCOME_SETTLE_WINDOW_MS} from './instance-observation.ts';
 import YAML from 'yaml';
 function draftName(definition:string):string {
@@ -21,7 +22,7 @@ export type Env = {
   MCP_ACCESS_TOKEN: string;
   WORKFLOW: {
     create(options:{id:string;params:{run_id:string}}):Promise<unknown>;
-    get(id:string):Promise<{status():Promise<{status:string}>;sendEvent?(event:{type:string;payload:unknown}):Promise<void>}>;
+    get(id:string):Promise<{status():Promise<{status:string}>;sendEvent?(event:{type:string;payload:unknown}):Promise<void>;terminate?:()=>Promise<void>}>;
   };
   // Enabled only through the explicit selected-Worker production release.
   // Optional, MCP-only machine identity for the pinned Cloudflare MCP Portal.
@@ -194,7 +195,7 @@ export function applyStatus(native:string, outcome:string):string {
 }
 type WorkflowRow={id:string;name:string;draft:string;draft_revision:number;active_version_id:string|null;state:string};
 type VersionRow={id:string;plan:string;digest:string};
-type RunRow={id:string;workflow_id:string;version_id:string;instance_id:string;request_digest:string;start_state:string;outcome:string;result:string|null;error_code:string|null;inputs:string;created_at:number;updated_at:number;native_complete_seen_at:number|null};
+type RunRow={id:string;workflow_id:string;version_id:string;instance_id:string;request_digest:string;start_state:string;outcome:string;result:string|null;error_code:string|null;inputs:string;created_at:number;updated_at:number;native_complete_seen_at:number|null;cancel_requested_at:number|null};
 const workflowView=(row:WorkflowRow)=>({workflow_id:row.id,name:row.name,draft_revision:row.draft_revision,definition:row.draft,published_version_id:row.active_version_id,state:row.state});
 export class WorkflowService {
   private env:Env;
@@ -322,6 +323,15 @@ export class WorkflowService {
     if(trigger.repository!==this.env.GITHUB_EXECUTOR_REPOSITORY||admission.source!==trigger.repository)throw new StateError('unauthorized_source');
     if(!(GITHUB_TRIGGER_EVENTS as readonly string[]).includes(admission.event)||!trigger.events.includes(admission.event))throw new StateError('unauthorized_event');
   }
+  async cancel(run_id:string){
+    assertId(run_id);
+    const existing=await this.db.prepare('SELECT id,cancel_requested_at FROM runs WHERE id=?').bind(run_id).first<{id:string;cancel_requested_at:number|null}>();
+    if(!existing)throw new StateError('run_not_found');
+    if(existing.cancel_requested_at==null){
+      await this.db.prepare('UPDATE runs SET cancel_requested_at=?,updated_at=? WHERE id=? AND cancel_requested_at IS NULL').bind(now(),now(),run_id).run();
+    }
+    return this.status(run_id);
+  }
   async pause(workflow_id:string){assertId(workflow_id);const x=await this.db.prepare("UPDATE workflows SET state='paused',updated_at=? WHERE id=? AND state='active'").bind(now(),workflow_id).run();if(!x.meta.changes)throw new StateError('not_active');return {workflow_id,state:'paused'};}
   async resume(workflow_id:string){assertId(workflow_id);const x=await this.db.prepare("UPDATE workflows SET state='active',updated_at=? WHERE id=? AND state='paused' AND active_version_id IS NOT NULL").bind(now(),workflow_id).run();if(!x.meta.changes)throw new StateError('not_paused');return {workflow_id,state:'active'};}
   async start(workflow_id:string,inputs:Record<string,unknown>={},idempotency_key?:string,mode:'manual'|'event'='manual'){
@@ -393,6 +403,10 @@ export class WorkflowService {
       await this.db.prepare("UPDATE runs SET start_state='started',updated_at=? WHERE id=? AND start_state IN ('reserved','start_unknown')").bind(now(),row.id).run();
       return started();
     }
+    // A cancel request must not create the Workflow instance it asked to stop.
+    if(observation.kind==='missing' && row.cancel_requested_at!=null){
+      return {run_id:row.id,published_version_id:row.version_id,status:row.outcome,start_state:row.start_state,idempotent_replay:true};
+    }
     if(observation.kind==='missing' && row.outcome==='queued' && now()-row.created_at<START_RECONCILE_WINDOW_MS){
       // Positive missing evidence: create only with the ORIGINAL deterministic ID.
       try{await this.env.WORKFLOW.create({id:row.instance_id,params:{run_id:row.id}});}catch{}
@@ -415,6 +429,8 @@ export class WorkflowService {
   private async settleNativeOutcome(row:RunRow, native:string):Promise<RunRow>{
     if(row.start_state!=='started'||!['queued','running'].includes(row.outcome))return row;
     const terminalError=unresolvedNativeTerminalError(native,row.outcome);
+    // Our own terminate() is not an unexplained orchestration failure.
+    if(terminalError==='orchestration_terminated' && row.cancel_requested_at!=null) return row;
     if(terminalError){
       await this.db.prepare("UPDATE runs SET outcome='indeterminate',error_code=?,updated_at=? WHERE id=? AND outcome IN ('queued','running')")
         .bind(terminalError,now(),row.id).run();
@@ -449,6 +465,11 @@ export class WorkflowService {
         row=await this.settleNativeOutcome(row,native);
       }
     }
+    let cancellation:RunCancellation|undefined;
+    if(row.cancel_requested_at!=null){
+      cancellation=await reconcileRunCancellation(this.db,this.env,run_id)??undefined;
+      row=(await this.db.prepare('SELECT * FROM runs WHERE id=?').bind(run_id).first<RunRow>())!;
+    }
     const stored=(await this.db.prepare('SELECT step_id,status,error_code,output FROM run_steps WHERE run_id=? ORDER BY step_id').bind(run_id).all<{step_id:string;status:string;error_code:string|null;output:string|null}>()).results;
     const version=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=?').bind(row.version_id).first<{plan:string}>();
     if(!version)throw new StateError('version_missing');
@@ -476,7 +497,7 @@ export class WorkflowService {
       const asyncAction=asyncActions.get(stepId);
       return asyncAction?{...base,async_action:asyncAction}:base;
     }).sort((a,b)=>a.step_id<b.step_id?-1:a.step_id>b.step_id?1:0);
-    return {run_id,workflow_id:row.workflow_id,published_version_id:row.version_id,start_state:row.start_state,status:['succeeded','failed','indeterminate','cancelled'].includes(row.outcome)?row.outcome:row.start_state!=='started'?'start_unknown':applyStatus(native,row.outcome),steps};
+    return {run_id,workflow_id:row.workflow_id,published_version_id:row.version_id,start_state:row.start_state,status:['succeeded','failed','indeterminate','cancelled'].includes(row.outcome)?row.outcome:row.start_state!=='started'?'start_unknown':applyStatus(native,row.outcome),...(cancellation?{cancellation}:{}),steps};
   }
   async result(run_id:string){
     const meta=await this.status(run_id);
