@@ -29,10 +29,7 @@
   },
   "secrets": {
     "required": [
-      "MCP_ACCESS_TOKEN",
-      "BROWSER_APPROVAL_ACCESS_ISSUER",
-      "BROWSER_APPROVAL_ACCESS_AUD",
-      "BROWSER_APPROVAL_ALLOWED_EMAIL"
+      "MCP_ACCESS_TOKEN"
     ]
   },
   "exports": {
