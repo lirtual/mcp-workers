@@ -47,6 +47,22 @@ removed. Production resources must not be used for rehearsals.
   `WorkflowRunner` and old D1 bindings: it is a build/preflight check, **not**
   an authenticated isolated deployment or a migration test.
 
+## Current isolated Wrangler E2E prerequisite
+
+The existing GitHub Actions isolated Workflow E2E now runs on the #198
+implementation branch and deploys a disposable Worker using
+`MCP_PORTAL_CLIENT_ID` as a Wrangler `vars` plaintext binding, asserting
+its type through Cloudflare readback. It cannot be run successfully yet:
+GitHub Environment `workflow-mcp-worker` currently holds the Client ID only
+as a **Secret**, while `${{ vars.MCP_PORTAL_CLIENT_ID }}` is missing. The
+previous GitHub dispatch token key also remains in that Environment.
+
+Before live E2E, authorize the targeted GitHub Environment change and set
+`MCP_PORTAL_CLIENT_ID` as a Variable using its existing actual ID. Never
+print, guess, or replace the ID with a fixture value for the Portal E2E.
+Do not delete the existing Secret until the new release path and rollback
+are validated. The E2E job does not publish the production Worker.
+
 ## Still required before #204 or production change
 
 1. Using the pinned Wrangler release toolchain, repeat same-name Secret to
