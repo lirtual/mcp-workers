@@ -277,8 +277,8 @@ test('Session dispatches once, signed GitHub Claim and Ready complete startup bu
   } as unknown as WorkflowStep;
   const env={DB:f.adapter,WORKFLOW_EXECUTOR_GITHUB_TOKEN:'token',
    GITHUB_ACTION_OIDC_AUDIENCE:audience} as Env;
-  const outcome=await runPublishedGitHubActionSession(env,plan as Plan,
-   (plan as Plan).steps[0],run(1),workflow,http);
+  const outcome=await runPublishedGitHubActionSession(env,plan as unknown as Plan,
+   (plan as unknown as Plan).steps[0],run(1),workflow,http);
   assert.deepEqual(outcome,{status:'succeeded',output:{session:{recorded_state:'ready'}}});
   assert.equal(posts,1);
   assert.equal(waits,1);
@@ -297,8 +297,8 @@ test('fifth Session is rejected before any GitHub outbound request',async()=>{
   const workflow={do:async(_name:string,_opts:unknown,cb:()=>Promise<unknown>)=>cb()} as unknown as WorkflowStep;
   const env={DB:f.adapter,WORKFLOW_EXECUTOR_GITHUB_TOKEN:'token',
    GITHUB_ACTION_OIDC_AUDIENCE:audience} as Env;
-  const outcome=await runPublishedGitHubActionSession(env,plan as Plan,
-   (plan as Plan).steps[0],run(5),workflow,async()=>{
+  const outcome=await runPublishedGitHubActionSession(env,plan as unknown as Plan,
+   (plan as unknown as Plan).steps[0],run(5),workflow,async()=>{
      requests++;return new Response(null,{status:500});
    });
   assert.equal(outcome.status,'failed');
