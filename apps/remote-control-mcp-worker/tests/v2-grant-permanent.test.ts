@@ -76,8 +76,9 @@ function fixture(){
     rows,storage,owner,env,http,rpc,url,get doCalls(){return doCalls;}};
 }
 
+const ownerKeys=generateKeyPair("RS256");
 async function withAccess<T>(fn:(jwt:string)=>Promise<T>,email="owner@example.net"):Promise<T>{
-  const {publicKey,privateKey}=await generateKeyPair("RS256");
+  const {publicKey,privateKey}=await ownerKeys;
   const jwk={...await exportJWK(publicKey),kid:"owner-key",alg:"RS256",use:"sig"};
   const jwt=await new SignJWT({email,type:"app"}).setProtectedHeader({alg:"RS256",kid:"owner-key"})
     .setIssuer(issuer).setAudience(audience).setSubject("trusted-owner")
