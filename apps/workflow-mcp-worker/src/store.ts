@@ -354,12 +354,31 @@ export class WorkflowService {
     if(!version)throw new StateError('version_missing');
     const terminal=['succeeded','failed','indeterminate','cancelled'].includes(row.outcome)||native==='complete';
     const byId=new Map(stored.map(s=>[s.step_id,s]));
-    const steps=(JSON.parse(version.plan) as Plan).steps.map(s=>{
+    const publishedPlan=JSON.parse(version.plan) as Plan;
+    const steps=publishedPlan.steps.map(s=>{
       const saved=byId.get(s.id);
       if(saved && ['succeeded','failed','skipped','indeterminate'].includes(saved.status))return saved;
       return {step_id:s.id,status:terminal?'indeterminate':saved?.status??'waiting',error_code:saved?.error_code??null};
     }).sort((a,b)=>a.step_id<b.step_id?-1:a.step_id>b.step_id?1:0);
-    return {run_id,workflow_id:row.workflow_id,published_version_id:row.version_id,start_state:row.start_state,status:['succeeded','failed','indeterminate','cancelled'].includes(row.outcome)?row.outcome:row.start_state!=='started'?'start_unknown':applyStatus(native,row.outcome),steps};
+    // A Session may remain live after the parent Workflow succeeds at Ready.
+    // Expose its last durable state independently without calling it "online":
+    // the GitHub physical health is not live-verified by this D1 snapshot.
+    const hasSessions=publishedPlan.steps.some(s=>
+      s.uses==='github.run'&&s.with.capability==='github.action'&&
+      (s.with.action as {type?:unknown}|undefined)?.type==='session');
+    const sessions=hasSessions?(await this.db.prepare(`SELECT s.step_id,s.state,
+      s.updated_at,a.candidate_run_id,a.candidate_run_attempt,a.state AS attempt_state
+      FROM session_executions s
+      LEFT JOIN step_attempts a ON a.run_id=s.run_id AND a.step_id=s.step_id
+      WHERE s.run_id=? ORDER BY s.step_id`).bind(run_id)
+      .all<{step_id:string;state:string;updated_at:number;candidate_run_id:number|null;candidate_run_attempt:number|null;attempt_state:string|null}>()).results
+      .map(record=>({step_id:record.step_id,recorded_state:record.state,
+        recorded_at:record.updated_at,
+        github_run_id:record.candidate_run_id,
+        github_run_attempt:record.candidate_run_attempt,
+        attempt_state:record.attempt_state,
+        physical_health:record.state==='terminated'?'terminated':'unverified'})):[];
+    return {run_id,workflow_id:row.workflow_id,published_version_id:row.version_id,start_state:row.start_state,status:['succeeded','failed','indeterminate','cancelled'].includes(row.outcome)?row.outcome:row.start_state!=='started'?'start_unknown':applyStatus(native,row.outcome),steps,...(hasSessions?{sessions}:{})};
   }
   async result(run_id:string){
     const meta=await this.status(run_id);
