@@ -10,7 +10,7 @@ export type PhysicalTerminalDecision =
  */
 export function decidePhysicalGitHubTerminal(state:PhysicalRunState):PhysicalTerminalDecision {
  if(state.state==='identity_mismatch')return {kind:'hold',reason:'identity_unconfirmed'};
- if(state.state==='unknown'||state.state==='queued'||state.state==='running')
+ if(state.state!=='completed')
    return {kind:'hold',reason:'not_terminal'};
  if(state.conclusion==='success')return {kind:'terminal',outcome:'succeeded',conclusion:'success'};
  if(state.conclusion==='cancelled')return {kind:'terminal',outcome:'cancelled',conclusion:'cancelled'};
