@@ -98,7 +98,11 @@ export const REVIEWED_AGENT_RELEASE_PIN: InstallReleasePin = Object.freeze({
   x64Sha256: "bcb932d9f3539233204decf70ed0a748e2e31ac2a069e5b8b29484ab8733a0e3",
   arm64Sha256: "bdbe443d6010e372a03bff773d0e0bce946ac7bbbd45d9d1b75c99477eb23aa9",
 });
-const VERIFIED_PYTHON_FREE_RELEASE: InstallReleasePin = REVIEWED_AGENT_RELEASE_PIN;
+// The historical reviewed Agent Release predates Spec #24's interactive
+// permanent/temporary choice. Do not silently serve that older installer
+// through the new one-command onboarding page. The default remains closed
+// until both new native artifacts have been reviewed and their immutable
+// Release digests explicitly pinned during a separate release gate.
 /** Independent reviewed source and Release asset pins; both are required. */
 export type WindowsInstallPin = Readonly<{
   tag: string; commit: string; scriptSha256: string; assetSha256: string;
@@ -214,7 +218,7 @@ export function renderAgentInstallShell(origin: string, p: InstallReleasePin): s
 
 export function handleAgentInstallerRequest(
   request: Request,
-  release: InstallReleasePin | null = VERIFIED_PYTHON_FREE_RELEASE,
+  release: InstallReleasePin | null = null,
   trustedOrigin?: string,
   windowsPin: WindowsInstallPin | null = REVIEWED_WINDOWS_INSTALL_PIN,
 ): Response {

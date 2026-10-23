@@ -13,9 +13,9 @@ const pin = Object.freeze({
   x64Sha256:"b".repeat(64), arm64Sha256:"c".repeat(64),
 });
 
-test("reviewed immutable single-code Worker installation route is enabled", async()=>{
+test("public Linux installer remains disabled until new interactive-mode Release is reviewed", async()=>{
   const response=requestInstall(new Request(origin+"/install.sh"));
-  assert.equal(response.status,200);
+  assert.equal(response.status,503);
   assert.equal(response.headers.get("cache-control"),"no-store");
   assert.equal(REVIEWED_V018_RELEASE_PIN.commit,"4d58ffe33e560d6f5f1c375aacf02a774b51a6c0");
   const script=await response.text();
@@ -30,11 +30,9 @@ test("reviewed immutable single-code Worker installation route is enabled", asyn
   assert.equal(REVIEWED_AGENT_RELEASE_PIN.commit, "1171542d2951042cc1e0992c8cb9b97d3284fe03");
   assert.equal(REVIEWED_AGENT_RELEASE_PIN.x64Sha256, "bcb932d9f3539233204decf70ed0a748e2e31ac2a069e5b8b29484ab8733a0e3");
   assert.equal(REVIEWED_AGENT_RELEASE_PIN.arm64Sha256, "bdbe443d6010e372a03bff773d0e0bce946ac7bbbd45d9d1b75c99477eb23aa9");
-  assert.ok(script.includes("remote-control-agent-v0.1.13"));
-  assert.match(script,/bcb932d9f3539233/);
-  assert.match(script,/bdbe443d6010e372/);
-  assert.doesNotMatch(script,/remote-control-agent-v0.1.11/);
-  assert.match(script,/1\) \[ "\$1" = "--upgrade"/);
+  assert.match(script,/No reviewed.*release is published yet/);
+  assert.doesNotMatch(script,/#!/);
+  assert.doesNotMatch(script,/v0\.1\.13|curl|sha256sum/);
 });
 
 test("one-line installer reports genuine download progress and each checked stage", () => {
@@ -62,9 +60,12 @@ test("one-line installer reports genuine download progress and each checked stag
   assert.equal(syntax.status,0,syntax.stderr);
 });
 
-test("production custom hostname serves pinned installer with same-domain Agent endpoint",async()=>{
+test("production custom hostname does not advertise old Linux binary while reviewed candidate is absent",async()=>{
   const custom="https://rca.lirtual.dpdns.org";
-  const response=requestInstall(new Request(custom+"/install.sh"), undefined, custom);
+  const noPin=requestInstall(new Request(custom+"/install.sh"), undefined, custom);
+  assert.equal(noPin.status,503);
+  assert.doesNotMatch(await noPin.text(),/#!/);
+  const response=requestInstall(new Request(custom+"/install.sh"), pin, custom);
   assert.equal(response.status,200);
   const shell=await response.text();
   assert.ok(shell.startsWith("#!/bin/sh"));
@@ -90,8 +91,8 @@ test("historical two-code v0.1.2 cannot be served by single-code Worker even whe
   assert.equal(reviewed.commit,"00aaf200107e42a1b7cede3db51f9a16edea5b09");
   assert.equal(reviewed.x64Sha256,"b895f8133a03a53f4eacbf4fa6d0619f59ad722064c5e2e8ca469f9fc637221a");
   assert.equal(reviewed.arm64Sha256,"ec16343f50b20b762b04a06039164c0f3a7f42bdeb597ab8e04ecc4b3e40724c");
-  const nowEnabled=requestInstall(new Request(origin+"/install.sh"));
-  assert.equal(nowEnabled.status,200);
+  const noNewRelease=requestInstall(new Request(origin+"/install.sh"));
+  assert.equal(noNewRelease.status,503);
   assert.equal(reviewed.pairingProtocol,"two-code-v1");
   const incompatible=requestInstall(new Request(origin+"/install.sh"),reviewed);
   assert.equal(incompatible.status,503);
