@@ -33,8 +33,6 @@ button:focus-visible,a:focus-visible{outline:2px solid var(--fg);outline-offset:
 ol{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px;list-style:none;padding:24px 0;margin:28px 0 23px;border-top:1px solid var(--border);border-bottom:1px solid var(--border)}
 li{min-width:0;line-height:1.6;font-size:13px;color:var(--muted)}
 li strong{color:var(--fg);display:block;font-size:14px;margin-bottom:3px}
-footer{display:flex;gap:24px;font-size:13px}
-a{color:var(--muted);text-decoration:none}a:hover{text-decoration:underline}
 @media(prefers-color-scheme:dark){
   :root{color-scheme:dark;--bg:#121316;--fg:#f4f4f5;--muted:#b9b9c0;--surface:#23242a;--border:#404047;--button:#f4f4f5;--button-fg:#151515}
 }
@@ -52,24 +50,23 @@ a{color:var(--muted);text-decoration:none}a:hover{text-decoration:underline}
 <div role="tablist" aria-label="操作系统"><button type="button" id="windows" role="tab" aria-controls="installer" aria-selected="false">Windows</button><button type="button" id="linux" role="tab" aria-controls="installer" aria-selected="false">Linux</button></div>
 <section id="installer" role="tabpanel" aria-label="安装命令"><div class="command"><div class="command-head"><span id="shell-label" class="command-label">安装命令</span><button type="button" class="copy" id="copy" aria-label="复制安装命令">复制</button></div><code id="command"></code></div><div id="message" role="status" aria-live="polite"></div></section>
 <ol role="list"><li><strong>1 · 安装</strong>运行命令并选择永久或临时</li><li><strong>2 · MCP 授权</strong>核对 10 位配对码与指纹，批准一次</li><li><strong>3 · 验证连接</strong>通过 MCP 确认设备在线并做无害读取</li></ol>
-<footer><a href="https://github.com/lirtual/remote-control-agent" rel="noopener noreferrer">源码</a><a href="https://github.com/lirtual/remote-control-agent#readme" rel="noopener noreferrer">文档</a></footer></main>
+</main>
 <script>
 (()=>{'use strict';const cmds={windows:'irm https://rca.lirtual.dpdns.org/install.ps1 | iex',linux:'curl -fsSL https://rca.lirtual.dpdns.org/install.sh | sh'};
 const ready={windows:${readiness.windows},linux:${readiness.linux}};
 const tabs={windows:document.getElementById('windows'),linux:document.getElementById('linux')};
 const field=document.getElementById('command'),shellLabel=document.getElementById('shell-label'),message=document.getElementById('message'),copy=document.getElementById('copy');
-let platform='';
+let platform='windows';
 function select(value){
   platform=value;
-  const chosen=value==='windows'||value==='linux';
-  shellLabel.textContent=value==='windows'?'PowerShell':value==='linux'?'Shell':'安装命令';
-  field.textContent=chosen?(ready[value]?cmds[value]:'安装暂未开放'):'先选择 Windows 或 Linux';
-  copy.disabled=!chosen||!ready[value];
+  shellLabel.textContent=value==='windows'?'PowerShell':'Shell';
+  field.textContent=ready[value]?cmds[value]:'安装暂未开放';
+  copy.disabled=!ready[value];
   for(const [name,tab] of Object.entries(tabs)){
     tab.setAttribute('aria-selected',String(name===value));
-    tab.tabIndex=(!chosen?name==='windows':name===value)?0:-1;
+    tab.tabIndex=name===value?0:-1;
   }
-  message.textContent=chosen?(ready[value]?'':'等待经审核的正式安装包发布'):'请在目标设备的终端中运行复制的命令';
+  message.textContent=ready[value]?'':'等待经审核的正式安装包发布';
 }
 for(const [name,tab] of Object.entries(tabs)){
   tab.addEventListener('click',()=>select(name));
@@ -81,10 +78,8 @@ for(const [name,tab] of Object.entries(tabs)){
     }
   });
 }
-const agent=(navigator.userAgent||'').toLowerCase();
 const detected=(navigator.userAgentData?.platform||navigator.platform||'').toLowerCase();
-const mobile=/iphone|ipad|ipod|android|mobile/.test(agent)||(detected==='macintel'&&navigator.maxTouchPoints>1);
-select(mobile?'':detected.includes('win')?'windows':detected.includes('linux')?'linux':'');
+select(detected.includes('linux')?'linux':'windows');
 copy.addEventListener('click',async()=>{
   if(!ready[platform])return;
   try{await navigator.clipboard.writeText(cmds[platform]);message.textContent='已复制';}
