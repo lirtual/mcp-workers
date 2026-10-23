@@ -5,6 +5,8 @@ import {readFileSync} from 'node:fs';
 import {reservePublishedSessionSlot,releaseVerifiedSessionSlot}
  from '../src/github-action-session.ts';
 import {WorkflowService} from '../src/store.ts';
+import {reconcilePersistedGitHubActionAttempt} from '../src/github-action-attempt-reconcile.ts';
+import {inspectPersistedGitHubActionAttempt} from '../src/github-action-attempt-inspection.ts';
 import type {Env} from '../src/store.ts';
 
 const run=(n:number)=>'11111111-1111-4111-8111-'+n.toString(16).padStart(12,'0');
@@ -118,5 +120,33 @@ test('existing Workflow status and result preserve Session record after parent s
   const result=await service.result(run(1));
   assert.equal(result.sessions?.[0]?.recorded_state,'ready');
   assert.equal(result.sessions?.[0]?.physical_health,'unverified');
+ }finally{f.db.close();}
+});
+
+test('verified physical GitHub completion after parent Ready still settles and frees Session slot',async()=>{
+ const f=fixture();
+ try{
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
+  f.db.prepare("UPDATE session_executions SET state='ready' WHERE run_id=?").run(run(1));
+  f.db.prepare("UPDATE runs SET outcome='succeeded',start_state='started' WHERE id=?").run(run(1));
+  f.claim(1,'claimed',true);
+  let physicalReads=0;
+  const settled=await reconcilePersistedGitHubActionAttempt(f.adapter,run(11),'token',
+    (database,id,credential)=>inspectPersistedGitHubActionAttempt(database,id,credential,
+      async(identity,physicalRunId,physicalAttempt,bearer,ref)=>{
+        physicalReads++;
+        assert.equal(identity.repository,action.repository);
+        assert.equal(physicalRunId,42);
+        assert.equal(physicalAttempt,1);
+        assert.equal(bearer,'token');
+        assert.equal(ref,'refs/tags/release-v1');
+        return {state:'completed',conclusion:'success'};
+      }));
+  assert.equal(settled,'updated');
+  assert.equal(physicalReads,1);
+  assert.equal(f.db.prepare('SELECT state FROM step_attempts').get()?.state,'succeeded');
+  assert.equal(f.db.prepare('SELECT outcome FROM runs WHERE id=?').get(run(1))?.outcome,'succeeded');
+  assert.equal(await releaseVerifiedSessionSlot(f.adapter,run(1),'launch'),'released');
+  assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'terminated');
  }finally{f.db.close();}
 });
