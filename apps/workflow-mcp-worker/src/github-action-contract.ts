@@ -50,11 +50,25 @@ export function parseGitHubAction(yaml: string): DiscoveredAction {
     }
   }
   const declared = root.on.workflow_dispatch.inputs ?? {};
-  if (!record(declared) || Object.keys(declared).length > 10) fail('invalid_inputs');
+  if (!record(declared) || Object.keys(declared).length > 13) fail('invalid_inputs');
+  // GitHub rejects dispatch inputs not declared in workflow_dispatch. The
+  // three agent-owned identifiers must be declared but never exposed as
+  // caller-controlled Action inputs or defaults.
+  if([...RESERVED].some(name=>!Object.hasOwn(declared,name))) fail('missing_identity_inputs');
   const inputs: Record<string, ActionInput> = {};
   for (const [name, raw] of Object.entries(declared)) {
-    if (!/^[A-Za-z_][A-Za-z0-9_-]{0,63}$/.test(name) || RESERVED.has(name.toLowerCase()) ||
-        name.toLowerCase().startsWith('workflow_')) fail('reserved_input');
+    if (!/^[A-Za-z_][A-Za-z0-9_-]{0,63}$/.test(name)) fail('reserved_input');
+    if (RESERVED.has(name.toLowerCase())) {
+      if (name!==name.toLowerCase() || !record(raw) ||
+          raw.type!=='string' || raw.required!==true ||
+          raw.default!==undefined || raw.options!==undefined)
+        fail('reserved_input');
+      if(raw.description!==undefined&&
+         (!literal(raw.description)||raw.description.length>1024))
+        fail('reserved_input');
+      continue;
+    }
+    if (name.toLowerCase().startsWith('workflow_')) fail('reserved_input');
     if (!record(raw) || !allowedTypes.has(raw.type as string)) fail('invalid_input_type');
     if (raw.required !== undefined && typeof raw.required !== 'boolean') fail('invalid_required');
     if (raw.description !== undefined && (!literal(raw.description) || raw.description.length > 1024)) fail('invalid_description');
@@ -75,6 +89,7 @@ export function parseGitHubAction(yaml: string): DiscoveredAction {
       input.default = value as string | boolean | number;
     }
     inputs[name] = input;
+    if (Object.keys(inputs).length > 10) fail('invalid_inputs');
   }
   return { name: root.name, type: env.WORKFLOW_ACTION_TYPE as 'task' | 'session', inputs };
 }
