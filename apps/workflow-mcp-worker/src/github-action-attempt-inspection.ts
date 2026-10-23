@@ -4,7 +4,7 @@ import type { Plan } from './plan.ts';
 import type { PhysicalRunState } from './github-action-run-state.ts';
 
 type Db=Pick<D1Database,'prepare'>;
-type Row={attempt_id:string;run_id:string;step_id:string;state:string;candidate_run_id:number|null;candidate_run_attempt:number|null;plan:string;run_outcome:string};
+type Row={attempt_id:string;run_id:string;step_id:string;state:string;repository:string;repository_id:string;workflow_ref:string;ref:string;candidate_run_id:number|null;candidate_run_attempt:number|null;plan:string;run_outcome:string};
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /**
@@ -17,6 +17,7 @@ export async function inspectPersistedGitHubActionAttempt(
 ):Promise<PhysicalRunState>{
  if(!UUID.test(attemptId))return {state:'unknown'};
  const row=await db.prepare(`SELECT a.attempt_id,a.run_id,a.step_id,a.state,
+ a.repository,a.repository_id,a.workflow_ref,a.ref,
  a.candidate_run_id,a.candidate_run_attempt,v.plan,r.outcome AS run_outcome
  FROM step_attempts a JOIN runs r ON r.id=a.run_id
  JOIN workflow_versions v ON v.id=r.version_id
@@ -37,7 +38,10 @@ export async function inspectPersistedGitHubActionAttempt(
   workflowPath:raw.workflowPath,commitSha:raw.commitSha,type:raw.type,
   contractDigest:raw.contractDigest,
  };
- if(!isPublishedGitHubActionApproved(plan.github_action_approvals,identity))
-   return {state:'unknown'};
+ if(!isPublishedGitHubActionApproved(plan.github_action_approvals,identity) ||
+    row.repository!==identity.repository ||
+    row.repository_id!==String(identity.repositoryId) ||
+    row.workflow_ref!==identity.repository+'/'+identity.workflowPath+'@'+row.ref ||
+    !row.ref.startsWith('refs/'))return {state:'unknown'};
  return inspect(identity,row.candidate_run_id,row.candidate_run_attempt,token);
 }
