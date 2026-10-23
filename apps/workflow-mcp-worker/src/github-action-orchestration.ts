@@ -49,7 +49,7 @@ export async function registerAndDispatchGitHubAction(
  const step=plan.steps.find(entry=>entry.id===data.stepId);
  if(!step||step.uses!=='github.run'||step.with?.capability!=='github.action')
   throw Error('github_action_publication_missing');
- const raw=step.with.action as (PublishedAction & {inputs?:unknown})|undefined;
+ const raw=step.with.action as (PublishedAction & {inputs?:unknown;ref?:string})|undefined;
  if(!raw)throw Error('github_action_publication_missing');
  const identity:PublishedAction={
   repository:raw.repository,repositoryId:raw.repositoryId,
