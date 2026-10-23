@@ -44,15 +44,23 @@ li strong{color:var(--fg);display:block;font-size:14px;margin-bottom:3px}
   :root{color-scheme:dark;--bg:#121316;--fg:#f4f4f5;--muted:#b9b9c0;--surface:#23242a;--border:#404047;--icon-hover:rgba(255,255,255,.1)}
 }
 @media(max-width:520px){
-  body{padding:28px 20px 40px;padding-top:max(28px,env(safe-area-inset-top))}
-  h1{font-size:30px;line-height:1.2;margin:20px 0 12px}
-  p{font-size:14px;line-height:1.65;margin-bottom:24px}
-  [role=tabpanel]{padding-top:16px}
-  .command{border-radius:22px;padding:18px 18px 20px}
-  .command-head{margin-bottom:16px}
-  .command-label{font-size:17px}
-  code{font-size:14px}
-  ol{grid-template-columns:1fr;gap:16px;margin:24px 0;padding:22px 0}
+  body{padding:24px 20px 32px;padding-top:max(24px,env(safe-area-inset-top))}
+  small{font-size:10px;letter-spacing:.13em}
+  h1{font-size:27px;line-height:1.25;margin:14px 0 10px}
+  p{font-size:13.5px;line-height:1.55;margin-bottom:17px}
+  [role=tablist]{gap:21px}
+  [role=tab]{font-size:15px;padding:10px 2px}
+  [role=tabpanel]{padding-top:14px}
+  .command{border-radius:20px;padding:16px 17px 18px}
+  .command-head{margin-bottom:12px}
+  .command-label{font-size:15px}
+  button.copy{width:36px;height:36px;padding:7px;border-radius:8px}
+  button.copy svg{width:22px;height:22px}
+  .command-scroll{overflow-x:visible}
+  code{width:auto;max-width:100%;font-size:13px;line-height:1.6;white-space:normal;overflow-wrap:anywhere;word-break:normal}
+  ol{grid-template-columns:1fr;gap:13px;margin:20px 0 12px;padding:18px 0}
+  li{font-size:12.5px;line-height:1.5}
+  li strong{font-size:13.5px;margin-bottom:2px}
 }
 </style></head>
 <body><main><small>Remote Control Agent</small><h1>在你的设备上开始</h1>
