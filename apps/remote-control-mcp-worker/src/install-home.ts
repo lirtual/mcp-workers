@@ -25,7 +25,7 @@ p{color:var(--muted);font-size:15px;line-height:1.65;margin:0 0 25px;max-width:5
 .command-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:11px}
 .command-label{font-size:12px;color:var(--muted)}
 code{display:block;font:13.5px/1.7 ui-monospace,SFMono-Regular,Consolas,monospace;overflow-wrap:anywhere;word-break:break-word;min-width:0;color:var(--fg);white-space:normal}
-button.copy{font:inherit;font-size:13px;cursor:pointer;background:var(--button);color:var(--button-fg);border:none;border-radius:7px;padding:8px 13px;flex:none}
+button.copy{font:inherit;font-size:13px;cursor:pointer;background:var(--button);color:var(--button-fg);border:none;border-radius:7px;padding:8px 13px;min-width:66px;flex:none}
 button.copy:disabled{opacity:.45;cursor:not-allowed}
 button:focus-visible,a:focus-visible{outline:2px solid var(--fg);outline-offset:3px}
 #message{margin:8px 0 0;color:var(--muted);font-size:13px;line-height:1.4}
@@ -57,7 +57,14 @@ const ready={windows:${readiness.windows},linux:${readiness.linux}};
 const tabs={windows:document.getElementById('windows'),linux:document.getElementById('linux')};
 const field=document.getElementById('command'),shellLabel=document.getElementById('shell-label'),message=document.getElementById('message'),copy=document.getElementById('copy');
 let platform='windows';
+let copyResetTimer;
+function resetCopyFeedback(){
+  clearTimeout(copyResetTimer);
+  copy.textContent='复制';
+  copy.setAttribute('aria-label','复制安装命令');
+}
 function select(value){
+  resetCopyFeedback();
   platform=value;
   shellLabel.textContent=value==='windows'?'PowerShell':'Shell';
   field.textContent=ready[value]?cmds[value]:'安装暂未开放';
@@ -82,8 +89,21 @@ const detected=(navigator.userAgentData?.platform||navigator.platform||'').toLow
 select(detected.includes('linux')?'linux':'windows');
 copy.addEventListener('click',async()=>{
   if(!ready[platform])return;
-  try{await navigator.clipboard.writeText(cmds[platform]);message.textContent='已复制';}
-  catch{message.textContent='复制失败，请手动选中命令。';}
+  const requestedPlatform=platform;
+  try{
+    await navigator.clipboard.writeText(cmds[requestedPlatform]);
+    if(platform!==requestedPlatform)return;
+    resetCopyFeedback();
+    copy.textContent='已复制';
+    copy.setAttribute('aria-label','安装命令已复制');
+    message.textContent='';
+    copyResetTimer=setTimeout(resetCopyFeedback,1600);
+  }catch{
+    if(platform===requestedPlatform){
+      resetCopyFeedback();
+      message.textContent='复制失败，请手动选中命令。';
+    }
+  }
 });
 })();
 </script></body></html>`;
