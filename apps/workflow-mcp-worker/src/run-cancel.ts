@@ -1,6 +1,7 @@
 import type { AttemptDatabase } from './github-claim.ts';
 import { cancelRegisteredGithubRun, observeRegisteredGithubRun, type GithubExecutionObservation } from './github-dispatch.ts';
 import { observeInstance } from './instance-observation.ts';
+import { LIMITS } from './capabilities.ts';
 
 export type RunCancellation='requested'|'cancelled'|'completed'|'indeterminate';
 type CancelEffect='acknowledged'|'unknown'|null;
@@ -33,6 +34,20 @@ const REFINABLE_ERRORS=new Set([
   'github_callback_unconfirmed','execution_interrupted','orchestration_terminated',
   'cancel_unconfirmed','outcome_unconfirmed',
 ]);
+
+/** Request cancel for awaited children only. Detached children are not selected. */
+export async function requestAwaitedChildCancellation(db:AttemptDatabase, runId:string, depth=0):Promise<void>{
+  if(depth>=LIMITS.maxChildDepth)return;
+  const children=await db.prepare(`SELECT id FROM runs
+    WHERE parent_run_id=? AND child_mode='await' AND cancel_requested_at IS NULL
+      AND outcome IN ('queued','running','waiting')`).bind(runId).all<{id:string}>();
+  const stamp=Date.now();
+  for(const child of children.results){
+    await db.prepare('UPDATE runs SET cancel_requested_at=?, updated_at=? WHERE id=? AND cancel_requested_at IS NULL')
+      .bind(stamp,stamp,child.id).run();
+    await requestAwaitedChildCancellation(db,child.id,depth+1);
+  }
+}
 
 /** Runner and reconciliation share this fact. It does not call GitHub. */
 export async function isCancelRequested(db:AttemptDatabase, runId:string):Promise<boolean>{
@@ -69,7 +84,7 @@ async function persist(
   db:AttemptDatabase, runId:string, outcome:string, errorCode:string|null, resultJson?:string,
 ):Promise<void>{
   const where=`WHERE id=? AND (
-    outcome IN ('queued','running') OR
+    outcome IN ('queued','running','waiting') OR
     (outcome='indeterminate' AND error_code IN ('github_callback_unconfirmed','execution_interrupted','orchestration_terminated','cancel_unconfirmed','outcome_unconfirmed'))
   )`;
   if(resultJson===undefined){
@@ -155,9 +170,23 @@ async function persistReceipt(db:AttemptDatabase, runId:string, rows:AttemptCanc
 export async function reconcileRunCancellation(
   db:AttemptDatabase, env:CancelRuntime, runId:string, outbound:Outbound=fetch,
 ):Promise<RunCancellation|null>{
+  return reconcileCancelledRun(db,env,runId,outbound,0);
+}
+
+async function reconcileCancelledRun(
+  db:AttemptDatabase, env:CancelRuntime, runId:string, outbound:Outbound, depth:number,
+):Promise<RunCancellation|null>{
   const run=await db.prepare(`SELECT id,outcome,error_code,cancel_requested_at,start_state,instance_id
     FROM runs WHERE id=?`).bind(runId).first<RunCancelRow>();
   if(!run?.cancel_requested_at) return null;
+  if(depth<LIMITS.maxChildDepth){
+    await requestAwaitedChildCancellation(db,runId);
+    const children=await db.prepare(`SELECT id FROM runs
+      WHERE parent_run_id=? AND child_mode='await' AND cancel_requested_at IS NOT NULL
+        AND outcome IN ('queued','running','waiting')`).bind(runId).all<{id:string}>();
+    for(const child of children.results)
+      await reconcileCancelledRun(db,env,child.id,outbound,depth+1);
+  }
   if(run.outcome==='succeeded'||run.outcome==='failed') return 'completed';
   if(run.outcome==='cancelled') return 'cancelled';
   if(run.outcome==='indeterminate'&&run.error_code!=null&&!REFINABLE_ERRORS.has(run.error_code))

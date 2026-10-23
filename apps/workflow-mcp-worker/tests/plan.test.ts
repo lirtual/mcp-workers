@@ -227,7 +227,7 @@ test('supported capability examples compile through the real plan compiler', asy
     }
   }
   assert.equal(sawCheck && sawRegistered, true);
-  assert.deepEqual([...seen].sort(), ['flow.expand', 'flow.repeat', 'github.run', 'http.request', 'mcp.call', 'result.emit']);
+  assert.deepEqual([...seen].sort(), ['flow.expand', 'flow.repeat', 'github.run', 'http.request', 'mcp.call', 'result.emit', 'workflow.call']);
 });
 
 test('an unchanged manual definition keeps its published plan digest', async () => {
@@ -293,7 +293,7 @@ test('unimplemented capabilities stay unsupported and the compiler reports a pre
   assert.deepEqual(unsupported, [
     'action.tsrv',
     'action.shell',
-    'flow.foreach', 'flow.while', 'flow.nesting', 'flow.wait', 'flow.child_workflow',
+    'flow.foreach', 'flow.while', 'flow.nesting', 'flow.wait',
   ]);
   const step = (extra: Record<string, unknown>) => ({version: 1, name: 'Probe', steps: [{id: 'a', uses: 'result.emit', with: {data: 1}, ...extra}]});
   const probes: Array<{definition: unknown; code: string; path: string; suggestion?: RegExp}> = [
@@ -305,7 +305,7 @@ test('unimplemented capabilities stay unsupported and the compiler reports a pre
     {definition: {version: 1, name: 'Write', steps: [{id: 'a', uses: 'mcp.call', with: {endpoint: 'https://mcp.lirtual.dpdns.org/mcp', tool: 'echo', scope: 'admin', input_schema: {type: 'object'}, arguments: {}}}]}, code: 'unsupported_operation_scope', path: '/steps/0/with/scope'},
     {definition: step({foreach: 'inputs.items'}), code: 'unsupported_field', path: '/steps/0/foreach'},
     {definition: step({while: true}), code: 'unsupported_field', path: '/steps/0/while'},
-    {definition: {version: 1, name: 'Child', steps: [{id: 'a', uses: 'workflow.call', with: {workflow_id: 'child'}}]}, code: 'unsupported_capability', path: '/steps/0/uses'},
+    {definition: {version: 1, name: 'Child', steps: [{id: 'a', uses: 'workflow.invoke', with: {workflow_id: 'child'}}]}, code: 'unsupported_capability', path: '/steps/0/uses'},
     {definition: {version: 1, name: 'Saga', saga: {}, steps: [{id: 'a', uses: 'result.emit', with: {data: 1}}]}, code: 'invalid_saga', path: '/saga/on'},
     {definition: {version: 1, name: 'Ref', steps: [{id: 'a', uses: 'result.emit', with: {data: {ref: 'nope'}}}]}, code: 'invalid_reference', path: '/steps/0/with/data/ref'},
     {definition: {version: 1, name: 'Wave', steps: Array.from({length: 9}, (_, i) => ({id: 's' + i, uses: 'result.emit', with: {data: i}}))}, code: 'excessive_parallelism', path: '/steps'},
@@ -473,7 +473,7 @@ test('unbounded loops, dynamic expansion, nesting, and unsafe loop bodies fail v
       return true;
     });
   }
-  for (const id of ['flow.foreach', 'flow.while', 'flow.nesting', 'flow.wait', 'flow.child_workflow']) {
+  for (const id of ['flow.foreach', 'flow.while', 'flow.nesting', 'flow.wait']) {
     const entry = workflowCapabilities({}, id);
     assert.equal(entry.status, 'unsupported', id);
     assert.equal('example' in entry, false, id);

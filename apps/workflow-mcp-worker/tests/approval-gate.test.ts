@@ -27,7 +27,7 @@ const PORTAL_ID = 'test-only-service-token-id';
 const PORTAL_SECRET = 'test-only-service-token-secret';
 const OWNER = 'https://owner.example.org/mcp';
 const TOKEN = 'disposable-portal-token-approval-gate';
-const MIGRATIONS = ['0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql','0006_github_registered_action.sql','0007_run_cancel.sql','0008_grant_revocation.sql','0009_runtime_approval.sql'];
+const MIGRATIONS = ['0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql','0006_github_registered_action.sql','0007_run_cancel.sql','0008_grant_revocation.sql','0009_runtime_approval.sql','0010_child_run.sql'];
 const BINDING = ['run_id', 'step_id', 'published_version_id'];
 
 type Wake = {resolve: () => void; reject: (error: Error) => void};
@@ -162,7 +162,7 @@ test('discovery and validation show which high-impact actions wait, and reads do
   await client.connect(transport);
   try {
     const instructions = client.getInstructions() ?? '';
-    assert.match(instructions, /saga are unsupported/);
+    assert.match(instructions, /not an ACID rollback/);
     assert.match(instructions, /do not create that approval/);
     assert.match(instructions, /workflow_approval/);
     const write = await call('workflow_capabilities', {id: 'action.mcp.write'});

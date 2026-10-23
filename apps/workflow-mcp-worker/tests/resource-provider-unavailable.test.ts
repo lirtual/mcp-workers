@@ -19,7 +19,7 @@ hook.deregister();
 const OWNER = 'https://owner.example.org/mcp';
 const TOKEN = 'disposable-portal-token-resource-block';
 const GITHUB_TOKEN = 'fixture-token-must-not-leak';
-const MIGRATIONS = ['0001_s1.sql', '0002_native_complete_seen.sql', '0003_s3_attempt_claim.sql', '0004_s3_callback_receipts.sql', '0005_github_workflow_check.sql', '0006_github_registered_action.sql', '0007_run_cancel.sql', '0008_grant_revocation.sql'];
+const MIGRATIONS = ['0001_s1.sql', '0002_native_complete_seen.sql', '0003_s3_attempt_claim.sql', '0004_s3_callback_receipts.sql', '0005_github_workflow_check.sql', '0006_github_registered_action.sql', '0007_run_cancel.sql', '0008_grant_revocation.sql','0009_runtime_approval.sql','0010_child_run.sql'];
 
 const TSRV = {
   version: 1,
