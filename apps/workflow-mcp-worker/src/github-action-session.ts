@@ -142,7 +142,8 @@ export async function recordSignedSessionReady(
     row.owner_run_attempt!==row.candidate_run_attempt)return 'denied';
  const physical=await inspect(db,attemptId,token);
  if(physical.state!=='running')
-  return physical.state==='unknown'?'physical_unconfirmed':'denied';
+  return physical.state==='unknown'||physical.state==='queued'
+   ?'physical_unconfirmed':'denied';
  const updated=await db.prepare(`UPDATE session_executions
    SET state='ready',updated_at=?
    WHERE run_id=? AND step_id=? AND state IN ('queued','starting')
