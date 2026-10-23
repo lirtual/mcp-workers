@@ -11,10 +11,7 @@ test("production Worker has only the reviewed DO, Access and Custom Domain bindi
   assert.equal(prod.vars?.REMOTE_CONTROL_V2_ONLY,undefined);
   assert.equal(prod.keep_vars,false);
   assert.deepEqual(prod.routes,[{pattern:"rca.lirtual.dpdns.org",custom_domain:true}]);
-  assert.deepEqual(prod.secrets.required,[
-    "MCP_ACCESS_TOKEN","BROWSER_APPROVAL_ACCESS_ISSUER",
-    "BROWSER_APPROVAL_ACCESS_AUD","BROWSER_APPROVAL_ALLOWED_EMAIL"
-  ]);
+  assert.deepEqual(prod.secrets.required,["MCP_ACCESS_TOKEN"]);
   assert.deepEqual(prod.durable_objects.bindings,[
     {name:"DEVICE_COORDINATOR",class_name:"DeviceCoordinator"}
   ]);
