@@ -229,6 +229,17 @@ export class WorkflowService {
     const wf=await this.row(workflow_id);
     if(wf.state!=='active'||!wf.active_version_id)throw new StateError('workflow_not_active');
     const version=wf.active_version_id;
+    // Reject unsupported Action execution before reserving any durable Run
+    // slot. Publication permits owner review, not dispatch authorization.
+    const published=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=? AND workflow_id=?')
+      .bind(version,workflow_id).first<{plan:string}>();
+    if(!published)throw new StateError('published_version_missing');
+    let activePlan:Plan;
+    try{activePlan=JSON.parse(published.plan) as Plan;}
+    catch{throw new StateError('published_plan_invalid');}
+    if(!Array.isArray(activePlan.steps))throw new StateError('published_plan_invalid');
+    if(activePlan.steps.some(step=>step.uses==='github.run'&&step.with?.capability==='github.action'))
+      throw new StateError('github_action_executor_unavailable');
     const id=crypto.randomUUID(),t=now();
     const insert=await this.db.prepare(
       "INSERT OR IGNORE INTO runs(id,workflow_id,version_id,instance_id,admission_key,request_digest,inputs,start_state,outcome,created_at,updated_at) SELECT ?,?,?,?,?,?,?, 'reserved','queued',?,? WHERE EXISTS (SELECT 1 FROM workflows WHERE id=? AND state='active' AND active_version_id=?) AND (SELECT COUNT(*) FROM runs WHERE outcome IN ('queued','running')) < 8"
