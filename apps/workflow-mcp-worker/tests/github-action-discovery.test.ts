@@ -16,7 +16,7 @@ on:
       capability_id:
         type: string
         required: true
-      duration:
+      duration_minutes:
         type: number
         default: 5
 env:
@@ -24,6 +24,7 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 330
     steps:
       - run: echo test
 `;
