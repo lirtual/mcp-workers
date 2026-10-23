@@ -167,3 +167,36 @@ test("untrusted pinned release metadata cannot interpolate shell commands",async
   }
   assert.throws(()=>renderAgentInstallShell("https://unknown.example/path",pin),/Unapproved/);
 });
+
+test('public installation home is isolated from authentication and shows the two exact commands',async()=>{
+  const custom='https://rca.lirtual.dpdns.org';
+  const page=requestInstall(new Request(custom+'/'),undefined,custom);
+  assert.equal(page.status,200);
+  assert.match(page.headers.get('content-type')??'',/text\/html/);
+  assert.match(page.headers.get('content-security-policy')??'',/frame-ancestors 'none'/);
+  const html=await page.text();
+  assert.match(html,/role="tablist"/);
+  assert.match(html,/aria-selected/);
+  assert.match(html,/navigator\.userAgentData/);
+  assert.match(html,/clipboard\.writeText/);
+  assert.match(html,/irm https:\/\/rca\.lirtual\.dpdns\.org\/install\.ps1 \| iex/);
+  assert.match(html,/curl -fsSL https:\/\/rca\.lirtual\.dpdns\.org\/install\.sh \| sh/);
+  assert.doesNotMatch(html,/api\/devices|Bearer |secret|Remote Desktop/);
+  assert.equal(requestInstall(new Request(custom+'/',{method:'POST'}),undefined,custom).status,405);
+  assert.equal(requestInstall(new Request(custom+'/',{headers:{host:'evil.test'}}),undefined,custom).status,403);
+  assert.equal(requestInstall(new Request(custom+'/install.ps1'),undefined,custom).status,503);
+});
+
+test('Windows installer fetches only independently source-pinned script and release',async()=>{
+  const { renderAgentInstallPowerShell } = await import('../src/install-bootstrap.ts');
+  const synthetic={tag:'v0.1.99-windows.1',commit:'a'.repeat(40),scriptSha256:'b'.repeat(64),assetSha256:'c'.repeat(64)};
+  const script=renderAgentInstallPowerShell(origin,synthetic);
+  assert.match(script,/Invoke-WebRequest .* -MaximumRedirection 0/);
+  assert.match(script,/SHA-256 mismatch/);
+  assert.match(script,/ScriptBlock\]::Create/);
+  assert.match(script,/-PinnedReleaseSha256/);
+  const resp=handleAgentInstallerRequest(new Request(origin+'/install.ps1'),undefined,origin,synthetic);
+  assert.equal(resp.status,200);
+  assert.match(await resp.text(),/v0\.1\.99-windows\.1/);
+  assert.throws(()=>renderAgentInstallPowerShell(origin,{...synthetic,commit:'not-pinned'}),/Unapproved/);
+});

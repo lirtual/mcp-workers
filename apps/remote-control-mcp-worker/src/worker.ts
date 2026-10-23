@@ -1138,7 +1138,7 @@ export default {
     }
     const url = new URL(request.url);
 
-    if (url.pathname === "/install.sh") {
+    if (url.pathname === "/" || url.pathname === "/install.sh" || url.pathname === "/install.ps1") {
       // Only the owner-configured v2 Preview may serve the reviewed immutable
       // test installer. Keep every other environment fail-closed (503).
       if (!pairedOnly(env) || !env.MCP_ACCESS_TOKEN || !pendingOwner(env)) {
@@ -1146,7 +1146,8 @@ export default {
           status: 503, headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" },
         });
       }
-      return handleAgentInstallerRequest(request, undefined, (env as V2Env).REMOTE_CONTROL_INSTALL_ORIGIN);
+      return handleAgentInstallerRequest(request, undefined,
+        (env as V2Env).REMOTE_CONTROL_INSTALL_ORIGIN ?? "https://rca.lirtual.dpdns.org");
     }
     if (url.pathname.startsWith("/agent/connect/") && pendingOwner(env)) {
       const deviceId = url.pathname.slice("/agent/connect/".length);
