@@ -315,6 +315,27 @@ test('mobile home stays compact, uses semantic numbered steps and follows OS the
   assert.doesNotMatch(html, /localStorage|sessionStorage|document\.cookie|api\/devices/);
 });
 
+test('mobile install card uses compact proportional sizes and wraps complete commands', async () => {
+  const {renderInstallHome}=await import('../src/install-home.ts');
+  const html=renderInstallHome({windows:true,linux:true});
+  const mobile=html.match(/@media\(max-width:520px\)\{([\s\S]*?)\n\}/)?.[1];
+  assert.ok(mobile, 'mobile rules required');
+  assert.match(mobile,/h1\{font-size:27px/);
+  assert.match(mobile,/\.command\{border-radius:20px;padding:16px 17px 18px\}/);
+  assert.match(mobile,/\.command-label\{font-size:15px\}/);
+  assert.match(mobile,/button\.copy\{width:36px;height:36px/);
+  assert.match(mobile,/button\.copy svg\{width:22px;height:22px\}/);
+  assert.match(mobile,/\.command-scroll\{overflow-x:visible\}/);
+  assert.match(mobile,/code\{width:auto;max-width:100%;font-size:13px;line-height:1\.6;white-space:normal;overflow-wrap:anywhere;word-break:normal\}/);
+  assert.match(mobile,/ol\{grid-template-columns:1fr;gap:13px/);
+  assert.match(html,/@media\(prefers-color-scheme:dark\)/);
+  assert.match(html,/--surface:#23242a/);
+  assert.match(html,/--surface:#f4f4f5/);
+  assert.match(html,/clipboard\.writeText\(cmds\[requestedPlatform\]\)/);
+  assert.match(html,/irm https:\/\/rca\.lirtual\.dpdns\.org\/install\.ps1 \| iex/);
+  assert.match(html,/curl -fsSL https:\/\/rca\.lirtual\.dpdns\.org\/install\.sh \| sh/);
+});
+
 test('installer home drops source/docs and defaults unknown device to first Windows tab', async () => {
   const {renderInstallHome}=await import('../src/install-home.ts');
   const html=renderInstallHome({windows:true,linux:true});
