@@ -2,7 +2,7 @@ import type { ReviewedGitHubAction } from './github-action-review.ts';
 
 type Http=(request:Request)=>Promise<Response>;
 export type ActionDispatchTarget={ref:string;sha:string};
-const REF=/^refs\/(heads|tags)\/[A-Za-z0-9][A-Za-z0-9._/-]{0,190}$/;
+const REF=/^refs\/(heads|tags)\/[A-Za-z0-9][A-Za-z0-9._\/-]{0,190}$/;
 
 /**
  * The GitHub workflow_dispatch endpoint accepts a branch/tag name rather than
