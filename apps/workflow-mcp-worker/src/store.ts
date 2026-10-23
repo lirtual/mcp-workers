@@ -426,6 +426,10 @@ export class WorkflowService {
     const plan=JSON.parse(version.plan) as Plan;
     const step=plan.steps.find(item=>item.id===step_id);
     if(step?.approval?.required!==true)throw new StateError('approval_not_required');
+    const gate=await this.db.prepare('SELECT version_id, deadline_at FROM runtime_approval_gates WHERE run_id=? AND step_id=?')
+      .bind(run_id, step_id).first<{version_id:string;deadline_at:number}>();
+    if(!gate||gate.deadline_at<=now())throw new StateError('approval_not_open');
+    if(gate.version_id!==published_version_id)throw new StateError('approval_binding_mismatch');
     const stored=decision==='approve'?'approved':'denied';
     let recorded:{decision:'approved'|'denied';consumed:boolean;conflict:boolean};
     try{recorded=await recordRuntimeApproval(this.db,run_id,step_id,published_version_id,stored,now());}
@@ -439,20 +443,42 @@ export class WorkflowService {
     return {run_id,step_id,published_version_id,decision:recorded.decision,consumed:recorded.consumed,human_presence:false as const};
   }
   async cronTickTargets(utcMs:number){
-    const rows=await this.db.prepare("SELECT w.id AS id, w.state AS state, v.plan AS plan FROM workflows w JOIN workflow_versions v ON v.id=w.active_version_id AND v.workflow_id=w.id WHERE w.state IN ('active','paused') AND w.active_version_id IS NOT NULL ORDER BY w.id ASC LIMIT 100").all<{id:string;state:string;plan:string}>();
+    const pageSize=100;
     const targets:{workflow_id:string;state:string}[]=[];
-    for(const row of rows.results){
-      try{
-        const plan=JSON.parse(row.plan) as Plan;
-        const trigger=plan.triggers?.find(item=>item.type==='cron');
-        if(!trigger||trigger.type!=='cron'||!cronMatches(trigger.expression,utcMs))continue;
-        targets.push({workflow_id:row.id,state:row.state});
-      }catch(error){
-        if(error instanceof CronError||error instanceof SyntaxError)targets.push({workflow_id:row.id,state:'invalid'});
-        else throw error;
+    let after='';
+    for(let page=0;page<100;page++){
+      const rows=await this.db.prepare(`SELECT w.id AS id, w.state AS state, v.plan AS plan
+        FROM workflows w JOIN workflow_versions v ON v.id=w.active_version_id AND v.workflow_id=w.id
+        WHERE w.state IN ('active','paused') AND w.active_version_id IS NOT NULL AND w.id>?
+        ORDER BY w.id ASC LIMIT ${pageSize}`).bind(after).all<{id:string;state:string;plan:string}>();
+      for(const row of rows.results){
+        try{
+          const plan=JSON.parse(row.plan) as Plan;
+          const trigger=plan.triggers?.find(item=>item.type==='cron');
+          if(!trigger||trigger.type!=='cron'||!cronMatches(trigger.expression,utcMs))continue;
+          targets.push({workflow_id:row.id,state:row.state});
+        }catch(error){
+          if(error instanceof CronError||error instanceof SyntaxError)targets.push({workflow_id:row.id,state:'invalid'});
+          else throw error;
+        }
       }
+      if(rows.results.length<pageSize)return {truncated:false,targets};
+      after=rows.results[rows.results.length-1]?.id??after;
     }
-    return {truncated:rows.results.length===100,targets};
+    return {truncated:true,targets};
+  }
+  async dueCronTargets(){
+    const rows=await this.db.prepare(`SELECT d.workflow_id AS workflow_id, d.scheduled_ms AS scheduled_ms, w.state AS state
+      FROM cron_due d JOIN workflows w ON w.id=d.workflow_id
+      ORDER BY d.scheduled_ms ASC, d.workflow_id ASC LIMIT 100`).all<{workflow_id:string;scheduled_ms:number;state:string}>();
+    return rows.results;
+  }
+  async rememberCronDue(workflowId:string, scheduledMs:number, eventId:string){
+    await this.db.prepare('INSERT OR IGNORE INTO cron_due(workflow_id,event_id,scheduled_ms,created_at) VALUES(?,?,?,?)')
+      .bind(workflowId, eventId, scheduledMs, now()).run();
+  }
+  async clearCronDue(workflowId:string, eventId:string){
+    await this.db.prepare('DELETE FROM cron_due WHERE workflow_id=? AND event_id=?').bind(workflowId, eventId).run();
   }
   async revoke(workflow_id:string, published_version_id:string, operation:ApprovedOperation){
     assertId(workflow_id);assertId(published_version_id);

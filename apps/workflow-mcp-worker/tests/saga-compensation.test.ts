@@ -5,6 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { TRUSTED_PORTAL_ENDPOINT } from '../src/mcp-public-fetch.ts';
+import { CANCEL_SAGA_GRACE_MS } from '../src/run-cancel.ts';
 import type { Env } from '../src/store.ts';
 import type { WorkflowEvent, WorkflowStep } from 'cloudflare:workers';
 import noteWorker from './fixtures/controlled-note-worker.ts';
@@ -40,13 +41,21 @@ function harness(t: test.TestContext){
       async run(){return {meta:{changes:Number(sqlite.prepare(sql).run(...args).changes)}}},
     };
   }
+  const native=new Map<string, string>();
+  let terminates=0;
+  let trackTerminate=false;
+  let releaseNotes=()=>{};
+  let noteGate:Promise<void>|null=null;
   const env={
     MCP_ACCESS_TOKEN:TOKEN,
     MCP_PORTAL_CLIENT_ID:'test-only-service-token-id',
     MCP_PORTAL_CLIENT_SECRET:'test-only-service-token-secret',
     MCP_PORTAL_ENDPOINT:TRUSTED,
     DB:{prepare, async batch(items:{run:()=>Promise<unknown>}[]){return Promise.all(items.map(item=>item.run()));}},
-    WORKFLOW:{async create(){}, async get(){return {async status(){return {status:'running'};}}}},
+    WORKFLOW:{async create(){}, async get(id:string){return {
+      async status(){return {status:native.get(id)??'running'};},
+      ...(trackTerminate?{async terminate(){terminates+=1;native.set(id,'terminated');}}:{}),
+    };}},
   } as unknown as Env;
   const calls: Call[]=[];
   let armedRun: string | undefined;
@@ -63,11 +72,12 @@ function harness(t: test.TestContext){
         calls.push({tool:rpc.params.name, ...(typeof value==='string'?{value}:{})});
         if(rpc.params.name==='note' && armedRun && calls.filter(item=>item.tool==='note').length===notesAtArm+2)
           sqlite.prepare('UPDATE runs SET cancel_requested_at=? WHERE id=? AND cancel_requested_at IS NULL').run(Date.now(), armedRun);
+        if(rpc.params.name==='note' && noteGate) await noteGate;
       }
     }
     return noteWorker.fetch(request);
   }) as typeof fetch;
-  t.after(()=>{globalThis.fetch=previous;});
+  t.after(()=>{releaseNotes();globalThis.fetch=previous;});
   async function call(name: string, args: Record<string, unknown>, error?: string){
     const output=await client.callTool({name, arguments:args});
     const first=output.content[0];
@@ -89,7 +99,14 @@ function harness(t: test.TestContext){
       do:async(_name: unknown, _options: unknown, fn: ()=>Promise<unknown>)=>fn(),
     } as unknown as WorkflowStep);
   }
-  return {sqlite, call, run, client, transport, calls, arm(runId: string){armedRun=runId;notesAtArm=calls.filter(item=>item.tool==='note').length;}};
+  return {
+    sqlite, call, run, client, transport, calls,
+    arm(runId: string){armedRun=runId;notesAtArm=calls.filter(item=>item.tool==='note').length;},
+    enableTerminate(){trackTerminate=true;},
+    terminates:()=>terminates,
+    holdNotes(){noteGate=new Promise(resolve=>{releaseNotes=()=>{noteGate=null;resolve();};});},
+    releaseNotes(){releaseNotes();},
+  };
 }
 
 async function toolSchemas(){
@@ -393,6 +410,99 @@ test('cancel compensates only when cancel was published', async t=>{
     assert.equal(held.cancellation, 'requested');
     assert.equal('compensation' in held, false);
     assert.equal(calls.filter(item=>item.tool==='note_clear').length, clears);
+  }finally{
+    await client.close();
+  }
+});
+
+test('workflow_cancel lets published cancel compensation finish before terminate', async t=>{
+  const {call, run, client, transport, calls, sqlite, enableTerminate, terminates, holdNotes, releaseNotes}=harness(t);
+  const schemas=await toolSchemas();
+  await client.connect(transport);
+  enableTerminate();
+  try{
+    const definition={
+      version:1, name:'Public cancel', saga:{on:['cancel']},
+      steps:[
+        portalStep('alpha', schemas.note, 'alpha', [], {schema:schemas.clear, value:'alpha'}),
+        {id:'later', needs:['alpha'], uses:'result.emit', with:{data:'kept'}},
+      ],
+    };
+    const created=await call('workflow_create',{definition:JSON.stringify(definition)});
+    const checked=await call('workflow_validate',{workflow_id:created.workflow_id, revision:1});
+    await call('workflow_publish',{
+      workflow_id:created.workflow_id, expected_revision:1,
+      approved_operations:checked.required_approvals, accept_target_risks:true,
+    });
+    holdNotes();
+    const started=await call('workflow_run',{workflow_id:created.workflow_id, inputs:{}});
+    const execution=run(started.run_id);
+    const finished=execution.then(()=>undefined, ()=>undefined);
+    t.after(async()=>{releaseNotes();await finished;});
+    for(let attempt=0;attempt<50 && !calls.some(item=>item.tool==='note');attempt++)
+      await new Promise(resolve=>setTimeout(resolve, 10));
+    assert.equal(calls.some(item=>item.tool==='note'), true);
+    const requested=await call('workflow_cancel',{run_id:started.run_id});
+    assert.equal(requested.cancellation, 'requested');
+    assert.notEqual(requested.status, 'cancelled');
+    assert.equal(terminates(), 0);
+    assert.equal(calls.some(item=>item.tool==='note_clear'), false);
+    releaseNotes();
+    await finished;
+    assert.equal(terminates(), 0);
+    assert.deepEqual(calls.filter(item=>item.tool==='note_clear').map(item=>item.value), ['alpha']);
+    const status=await call('workflow_status',{run_id:started.run_id});
+    assert.equal(terminates(), 1);
+    assert.equal(status.compensation.acid_rollback, false);
+    assert.equal(status.compensation.trigger, 'cancel');
+    assert.deepEqual(status.compensation.steps.map((item:{step_id:string;status:string})=>[item.step_id,item.status]), [
+      ['alpha','succeeded'],
+    ]);
+  }finally{
+    await client.close();
+  }
+});
+
+test('an unanswered cancel saga terminates as indeterminate after the grace', async t=>{
+  const {call, client, transport, calls, sqlite, enableTerminate, terminates}=harness(t);
+  const schemas=await toolSchemas();
+  await client.connect(transport);
+  enableTerminate();
+  try{
+    async function publish(on: Array<'failure'|'cancel'>){
+      const definition={
+        version:1, name:'Grace '+on.join('-'), saga:{on},
+        steps:[portalStep('alpha', schemas.note, 'alpha', [], {schema:schemas.clear, value:'alpha'})],
+      };
+      const created=await call('workflow_create',{definition:JSON.stringify(definition)});
+      const checked=await call('workflow_validate',{workflow_id:created.workflow_id, revision:1});
+      await call('workflow_publish',{
+        workflow_id:created.workflow_id, expected_revision:1,
+        approved_operations:checked.required_approvals, accept_target_risks:true,
+      });
+      return call('workflow_run',{workflow_id:created.workflow_id, inputs:{}});
+    }
+    const waiting=await publish(['cancel']);
+    const requested=await call('workflow_cancel',{run_id:waiting.run_id});
+    assert.equal(requested.cancellation, 'requested');
+    assert.equal(terminates(), 0);
+    sqlite.prepare('UPDATE runs SET cancel_requested_at=? WHERE id=?').run(Date.now()-CANCEL_SAGA_GRACE_MS-1, waiting.run_id);
+    const expired=await call('workflow_status',{run_id:waiting.run_id});
+    assert.equal(terminates(), 1);
+    assert.equal(expired.cancellation, 'indeterminate');
+    assert.equal(expired.status, 'indeterminate');
+    assert.notEqual(expired.status, 'cancelled');
+    const stored=sqlite.prepare('SELECT outcome,error_code FROM runs WHERE id=?').get(waiting.run_id) as {outcome:string;error_code:string};
+    assert.equal(stored.outcome, 'indeterminate');
+    assert.equal(stored.error_code, 'cancel_unconfirmed');
+    assert.equal(calls.some(item=>item.tool==='note_clear'), false);
+
+    const failureOnly=await publish(['failure']);
+    const stopped=await call('workflow_cancel',{run_id:failureOnly.run_id});
+    assert.equal(terminates(), 2);
+    assert.equal(stopped.cancellation, 'cancelled');
+    assert.equal(stopped.status, 'cancelled');
+    assert.equal('compensation' in stopped, false);
   }finally{
     await client.close();
   }

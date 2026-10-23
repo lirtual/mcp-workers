@@ -4,7 +4,7 @@ import { registerHooks } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { toolSchemaDigest } from '../src/plan.ts';
+import { canonicalJsonString, toolSchemaDigest } from '../src/plan.ts';
 import { TRUSTED_PORTAL_ENDPOINT } from '../src/mcp-public-fetch.ts';
 import type { Env } from '../src/store.ts';
 import type { WorkflowEvent, WorkflowStep } from 'cloudflare:workers';
@@ -39,13 +39,24 @@ function harness(t: test.TestContext, flags: Flags){
   const sqlite=new DatabaseSync(':memory:');
   t.after(()=>sqlite.close());
   for(const name of MIGRATIONS) sqlite.exec(readFileSync(new URL('../migrations/'+name, import.meta.url), 'utf8'));
+  const race:{insert: (()=>void)|null}={insert:null};
   function prepare(sql:string){
     let args: any[]=[];
     return {
       bind(...values: any[]){args=values;return this;},
-      async first(){return sqlite.prepare(sql).get(...args)??null;},
+      async first(){
+        if(race.insert && sql.includes('SELECT 1 AS revoked FROM grant_revocations')) return null;
+        return sqlite.prepare(sql).get(...args)??null;
+      },
       async all(){return {results:sqlite.prepare(sql).all(...args)};},
-      async run(){return {meta:{changes:Number(sqlite.prepare(sql).run(...args).changes)}}},
+      async run(){
+        if(race.insert && sql.includes('INSERT INTO protected_effects')){
+          const insert=race.insert;
+          race.insert=null;
+          insert();
+        }
+        return {meta:{changes:Number(sqlite.prepare(sql).run(...args).changes)}};
+      },
     };
   }
   const env={
@@ -128,7 +139,10 @@ function harness(t: test.TestContext, flags: Flags){
       do:async(_name: unknown, _options: unknown, fn: ()=>Promise<unknown>)=>fn(),
     } as unknown as WorkflowStep);
   }
-  return {env, sqlite, call, run, client, transport, seenUrls, counts:()=>({noteCalls, httpCalls})};
+  return {
+    env, sqlite, call, run, client, transport, seenUrls, counts:()=>({noteCalls, httpCalls}),
+    armRevocation(insert: ()=>void){race.insert=insert;},
+  };
 }
 
 async function noteSchema(){
@@ -395,4 +409,38 @@ test('MCP write fails closed on an untrusted readOnlyHint or a changed schema be
   assert.equal(drifted.outcome.status, 'failed');
   assert.equal(drifted.outcome.steps[0].error_code, 'tool_schema_drift');
   assert.equal(drifted.calls, 0);
+});
+
+test('revocation that lands before dispatch registration is not sent', async t=>{
+  const {sqlite, call, run, client, transport, counts, armRevocation}=harness(t, {hint:'false', drift:false, http:'echo'});
+  const schema=await noteSchema();
+  await client.connect(transport);
+  try{
+    const definition={version:1, name:'Race note', inputs:{message:'race'}, steps:[{
+      id:'save', uses:'mcp.call', with:{
+        endpoint:TRUSTED, tool:'note', scope:'write', input_schema:schema, arguments:{value:{ref:'inputs.message'}},
+      },
+    }]};
+    const created=await call('workflow_create',{definition:JSON.stringify(definition)});
+    const preview=await call('workflow_validate',{workflow_id:created.workflow_id, revision:1});
+    const grant=preview.required_approvals[0];
+    const published=await call('workflow_publish',{
+      workflow_id:created.workflow_id, expected_revision:1,
+      approved_operations:[grant], accept_target_risks:true,
+    });
+    const before=counts().noteCalls;
+    armRevocation(()=>{
+      sqlite.prepare('INSERT INTO grant_revocations(workflow_id,version_id,grant_key,revoked_at) VALUES(?,?,?,?)')
+        .run(created.workflow_id, published.published_version_id, canonicalJsonString(grant), Date.now());
+    });
+    const started=await call('workflow_run',{workflow_id:created.workflow_id, inputs:{message:'race'}});
+    await run(started.run_id);
+    const denied=await call('workflow_result',{run_id:started.run_id});
+    assert.equal(denied.status, 'failed');
+    assert.equal(denied.steps[0].error_code, 'grant_revoked');
+    assert.equal(counts().noteCalls, before);
+    assert.equal((sqlite.prepare('SELECT COUNT(*) AS n FROM protected_effects').get() as {n:number}).n, 0);
+  }finally{
+    await client.close();
+  }
 });

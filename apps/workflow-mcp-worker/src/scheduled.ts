@@ -30,25 +30,40 @@ export async function handleScheduled(controller: ScheduledTick, env: Env) {
   try {
     const service = new WorkflowService(env);
     const tick = await service.cronTickTargets(minute);
-    const admissions = [];
-    for (const target of tick.targets) {
-      if (target.state !== 'active' && target.state !== 'paused') {
-        admissions.push({workflow_id: target.workflow_id, error: 'invalid_cron', exactly_once: false as const});
-        continue;
+    const due = await service.dueCronTargets();
+    const admissions: Array<Record<string, unknown>> = [];
+    const seen = new Set<string>();
+    const admit = async (workflowId: string, state: string, scheduledMs: number) => {
+      const eventId = cronEventId(scheduledMs);
+      const key = workflowId + '\0' + eventId;
+      if (seen.has(key)) return;
+      seen.add(key);
+      if (state !== 'active' && state !== 'paused') {
+        admissions.push({workflow_id: workflowId, error: 'invalid_cron', exactly_once: false as const});
+        try { await service.clearCronDue(workflowId, eventId); } catch { /* Keep the admission error. */ }
+        return;
       }
       try {
-        const admitted = await service.admitEvent(target.workflow_id, {
+        const admitted = await service.admitEvent(workflowId, {
           kind: 'cron',
           event: 'cron',
-          event_id: cronEventId(minute),
+          event_id: eventId,
           source: 'worker-scheduled',
-          payload: {scheduled_time: scheduledTime},
+          payload: {scheduled_time: new Date(scheduledMs).toISOString()},
         });
-        admissions.push({workflow_id: target.workflow_id, ...admitted, exactly_once: false as const});
+        await service.clearCronDue(workflowId, eventId);
+        admissions.push({workflow_id: workflowId, ...admitted, exactly_once: false as const});
       } catch (error) {
-        admissions.push({workflow_id: target.workflow_id, error: cleanError(error), exactly_once: false as const});
+        const code = cleanError(error);
+        try {
+          if (code === 'run_capacity_exceeded') await service.rememberCronDue(workflowId, scheduledMs, eventId);
+          else await service.clearCronDue(workflowId, eventId);
+        } catch { /* The admission result stays visible. */ }
+        admissions.push({workflow_id: workflowId, error: code, exactly_once: false as const});
       }
-    }
+    };
+    for (const item of due) await admit(item.workflow_id, item.state, item.scheduled_ms);
+    for (const target of tick.targets) await admit(target.workflow_id, target.state, minute);
     return {...facts, scheduled_time: scheduledTime, scan_truncated: tick.truncated, admissions};
   } catch {
     return {...empty, scheduled_time: scheduledTime, error: 'unavailable'};

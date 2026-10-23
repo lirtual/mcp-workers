@@ -13,12 +13,23 @@ export async function grantRevoked(db: Env['DB'], versionId: string, grantKey: s
   return row !== null && row !== undefined;
 }
 
-/** Mark dispatch only after local authorization. A lost race replays the stored row. */
-export async function beginProtectedDispatch(db: Env['DB'], runId: string, stepId: string, grantKey: string, at: number): Promise<boolean> {
+/**
+ * Register dispatch only while this version's grant is still present.
+ * A row that already exists is reconciled, not rewritten. Revocation after
+ * this insert cannot unsend a call that has left; revocation before it refuses.
+ */
+export async function beginProtectedDispatch(
+  db: Env['DB'], runId: string, stepId: string, grantKey: string, versionId: string, at: number,
+): Promise<'started' | 'revoked' | 'exists'> {
   const inserted = await db.prepare(
-    "INSERT INTO protected_effects(run_id,step_id,grant_key,state,result,error_code,created_at,updated_at) VALUES(?,?,?,'dispatching',NULL,NULL,?,?)",
-  ).bind(runId, stepId, grantKey, at, at).run();
-  return inserted.meta.changes > 0;
+    `INSERT INTO protected_effects(run_id,step_id,grant_key,state,result,error_code,created_at,updated_at)
+     SELECT ?,?,?, 'dispatching', NULL, NULL, ?, ?
+     WHERE NOT EXISTS (SELECT 1 FROM grant_revocations WHERE version_id=? AND grant_key=?)
+       AND NOT EXISTS (SELECT 1 FROM protected_effects WHERE run_id=? AND step_id=?)`,
+  ).bind(runId, stepId, grantKey, at, at, versionId, grantKey, runId, stepId).run();
+  if (inserted.meta.changes > 0) return 'started';
+  const prior = await readProtectedEffect(db, runId, stepId);
+  return prior ? 'exists' : 'revoked';
 }
 
 export async function finishProtectedDispatch(

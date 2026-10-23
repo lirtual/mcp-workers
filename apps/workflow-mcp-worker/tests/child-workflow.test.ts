@@ -437,6 +437,9 @@ test('capabilities mark workflow.call and saga supported', async t => {
   assert.equal(detail.uses, 'workflow.call');
   assert.equal(detail.limits.max_child_depth, LIMITS.maxChildDepth);
   assert.equal(detail.limits.admission_cap, LIMITS.admissionCap);
+  assert.equal(detail.limits.max_child_waits, LIMITS.maxChildWaits);
+  assert.match(detail.completion, /child_wait_unconfirmed/);
+  assert.match(detail.completion, new RegExp(String(LIMITS.maxChildWaits)));
   const validated = await call('workflow_validate', {definition: JSON.stringify(detail.example)});
   assert.equal(validated.valid, true);
   const expansion = await call('workflow_capabilities', {id: 'flow.dynamic_expansion'});

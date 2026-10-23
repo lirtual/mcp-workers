@@ -27,7 +27,7 @@ function cronDefinition(expression:string, name='Scheduled'){
 function setup(t:test.TestContext){
   const sqlite=new DatabaseSync(':memory:');
   t.after(()=>sqlite.close());
-  for(const file of ['0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql','0006_github_registered_action.sql','0007_run_cancel.sql','0008_grant_revocation.sql','0009_runtime_approval.sql','0010_child_run.sql'])
+  for(const file of ['0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql','0006_github_registered_action.sql','0007_run_cancel.sql','0008_grant_revocation.sql','0009_runtime_approval.sql','0010_child_run.sql','0011_cron_due.sql'])
     sqlite.exec(readFileSync(new URL('../migrations/'+file,import.meta.url),'utf8'));
   function prepare(sql:string){
     let args:any[]=[];
@@ -281,9 +281,60 @@ test('a workflow past the scheduled scan cap is not silently omitted from the ow
   assert.equal(listed.scan_truncated,true);
   for(const id of past) assert.equal(listed.workflows.some((row:{workflow_id:string})=>row.workflow_id===id),true,id);
   const opened=await tick(env,Date.UTC(2026,9,23,12,0));
-  assert.equal(opened.scan_truncated,true);
-  for(const id of past) assert.equal(opened.admissions.some(item=>item.workflow_id===id),false,id);
+  assert.equal(opened.scan_truncated,false);
+  for(const id of past) assert.equal(opened.admissions.some(item=>item.workflow_id===id),true,id);
   const quiet=await call('workflow_list',{});
   assert.equal(quiet.scan_truncated,true);
   assert.equal(ids.length,101);
+});
+
+test('a cron minute refused for capacity is admitted later and pause drops it', async t=>{
+  const {env,sqlite,creates}=setup(t);
+  const call=await connect(t,env);
+  const holder=await call('workflow_create',{definition:JSON.stringify(cronDefinition('0 0 1 1 *','Holder'))});
+  const holderVersion=await call('workflow_publish',{workflow_id:holder.workflow_id,expected_revision:1});
+  const stamp=Date.now();
+  for(let index=0;index<8;index++){
+    const id='00000000-0000-4000-8000-00000000000'+index;
+    sqlite.prepare(`INSERT INTO runs(id,workflow_id,version_id,instance_id,request_digest,inputs,start_state,outcome,created_at,updated_at)
+      VALUES(?,?,?,?,?,?, 'started','queued',?,?)`).run(
+      id, holder.workflow_id, holderVersion.published_version_id, id, 'digest-'+index, '{}', stamp, stamp,
+    );
+  }
+  const created=await call('workflow_create',{definition:JSON.stringify(cronDefinition('0 12 * * *','Due'))});
+  await call('workflow_publish',{workflow_id:created.workflow_id,expected_revision:1});
+  const minute=Date.UTC(2026,9,23,12,0);
+  const blocked=await tick(env,minute);
+  assert.equal(forWorkflow(blocked,created.workflow_id)[0]?.error,'run_capacity_exceeded');
+  assert.equal(creates.length,0);
+  const due=sqlite.prepare('SELECT event_id,scheduled_ms FROM cron_due WHERE workflow_id=?').get(created.workflow_id) as {event_id:string;scheduled_ms:number};
+  assert.equal(due.scheduled_ms,minute);
+  assert.equal(due.event_id,'cron-20261023T1200');
+  sqlite.prepare("UPDATE runs SET outcome='succeeded' WHERE outcome='queued'").run();
+  const later=await tick(env,minute+60_000);
+  assert.equal(forWorkflow(later,created.workflow_id).some(item=>item.run_id&&item.error===undefined),true);
+  const recovered=sqlite.prepare('SELECT COUNT(*) AS n FROM runs WHERE workflow_id=?').get(created.workflow_id) as {n:number};
+  assert.equal(recovered.n,1);
+  assert.equal((sqlite.prepare('SELECT COUNT(*) AS n FROM cron_due').get() as {n:number}).n,0);
+  assert.equal(creates.length,1);
+  const replay=await tick(env,minute);
+  assert.equal(forWorkflow(replay,created.workflow_id)[0]?.idempotent_replay,true);
+  assert.equal(creates.length,1);
+
+  for(let index=0;index<8;index++)
+    sqlite.prepare("UPDATE runs SET outcome='queued' WHERE id=?").run('00000000-0000-4000-8000-00000000000'+index);
+  const second=await call('workflow_create',{definition:JSON.stringify(cronDefinition('0 18 * * *','Paused due'))});
+  await call('workflow_publish',{workflow_id:second.workflow_id,expected_revision:1});
+  const secondMinute=Date.UTC(2026,9,23,18,0);
+  const held=await tick(env,secondMinute);
+  assert.equal(forWorkflow(held,second.workflow_id)[0]?.error,'run_capacity_exceeded');
+  assert.equal((sqlite.prepare('SELECT COUNT(*) AS n FROM cron_due WHERE workflow_id=?').get(second.workflow_id) as {n:number}).n,1);
+  assert.equal(creates.length,1);
+  await call('workflow_pause',{workflow_id:second.workflow_id});
+  sqlite.prepare("UPDATE runs SET outcome='succeeded' WHERE outcome='queued'").run();
+  const dropped=await tick(env,secondMinute+60_000);
+  assert.equal(forWorkflow(dropped,second.workflow_id)[0]?.error,'workflow_not_active');
+  assert.equal((sqlite.prepare('SELECT COUNT(*) AS n FROM runs WHERE workflow_id=?').get(second.workflow_id) as {n:number}).n,0);
+  assert.equal((sqlite.prepare('SELECT COUNT(*) AS n FROM cron_due WHERE workflow_id=?').get(second.workflow_id) as {n:number}).n,0);
+  assert.equal(creates.length,1);
 });

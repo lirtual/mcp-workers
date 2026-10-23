@@ -360,8 +360,9 @@ test("Workflow remote D1 readback blocks missing migrations, nonempty first-run 
   const stopped = {...cancelled,migration_count:8,migration_v8:1,migration_v9:0,migration_v10:0,
     cancel_column:1,approval_table:0,child_column:0,head_sha_column:0};
   const approvalOnly = {...stopped,migration_count:9,migration_v9:1,migration_v10:0,approval_table:1};
-  const current = {...approvalOnly,migration_count:10,migration_v10:1,approval_table:1,
-    child_column:1,head_sha_column:1};
+  const childOnly = {...approvalOnly,migration_count:10,migration_v10:1,approval_table:1,
+    child_column:1,head_sha_column:1,migration_v11:0,cron_due_table:0};
+  const current = {...childOnly,migration_count:11,migration_v11:1,cron_due_table:1};
   assert.equal(verifyWorkflowD1Readiness(result(previous),false),true);
   assert.throws(()=>verifyWorkflowD1Readiness(result(previous),false,true),/schema migrations/);
   assert.equal(verifyWorkflowD1Readiness(result(migrated),false),true);
@@ -374,6 +375,8 @@ test("Workflow remote D1 readback blocks missing migrations, nonempty first-run 
   assert.throws(()=>verifyWorkflowD1Readiness(result(stopped),false,true),/schema migrations/);
   assert.equal(verifyWorkflowD1Readiness(result(approvalOnly),false),true);
   assert.throws(()=>verifyWorkflowD1Readiness(result(approvalOnly),false,true),/schema migrations/);
+  assert.equal(verifyWorkflowD1Readiness(result(childOnly),false),true);
+  assert.throws(()=>verifyWorkflowD1Readiness(result(childOnly),false,true),/schema migrations/);
   assert.equal(verifyWorkflowD1Readiness(result(current),false),true);
   assert.equal(verifyWorkflowD1Readiness(result(current),false,true),true);
   assert.throws(()=>verifyWorkflowD1Readiness(result({...current,migration_count:9,migration_v10:0,child_column:0,head_sha_column:0}),false,true),
@@ -382,7 +385,9 @@ test("Workflow remote D1 readback blocks missing migrations, nonempty first-run 
     /schema migrations/);
   assert.throws(()=>verifyWorkflowD1Readiness(result({...current,head_sha_column:0}),false,true),
     /schema migrations/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...current,migration_count:11}),false),
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...current,migration_count:12}),false),
+    /schema migrations/);
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...current,cron_due_table:0}),false,true),
     /schema migrations/);
   assert.throws(()=>verifyWorkflowD1Readiness(result(row),false,true),
     /schema migrations/);

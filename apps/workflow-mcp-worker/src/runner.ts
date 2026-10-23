@@ -234,9 +234,9 @@ async function replayOrRefuse(target: EffectTarget): Promise<unknown | undefined
   return undefined;
 }
 async function dispatched<T>(target: EffectTarget, effect: ()=>Promise<T>): Promise<T> {
-  if(await grantRevoked(target.db, target.versionId, target.grantKey))throw Error('grant_revoked');
-  const started=await beginProtectedDispatch(target.db, target.runId, target.stepId, target.grantKey, now());
-  if(!started){
+  const started=await beginProtectedDispatch(target.db, target.runId, target.stepId, target.grantKey, target.versionId, now());
+  if(started==='revoked')throw Error('grant_revoked');
+  if(started!=='started'){
     const replayed=await replayOrRefuse(target);
     if(replayed!==undefined)return replayed as T;
     throw Error('external_outcome_unknown');
@@ -793,6 +793,7 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
           }
           if((s.uses==='result.emit'||s.uses==='flow.repeat'||(s.uses==='flow.expand'&&s.body?.uses==='result.emit'))&&outcomes[i].status==='succeeded'){emitted=outcomes[i].output;hasEmitted=true;}});
       }
+      if(await isCancelRequested(db,id)) throw new CancelObserved();
       if(plan.saga&&(failed||uncertain)){
         const trigger=failed&&plan.saga.on.includes('failure')?'failure':null;
         await runSagaCompensation(this.env,plan,ctx,id,row.version_id,step,trigger);

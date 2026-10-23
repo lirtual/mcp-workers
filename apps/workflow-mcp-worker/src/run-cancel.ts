@@ -2,6 +2,10 @@ import { persistGithubHeadSha, type AttemptDatabase } from './github-claim.ts';
 import { cancelRegisteredGithubRun, observeRegisteredGithubRun, type GithubExecutionObservation } from './github-dispatch.ts';
 import { observeInstance } from './instance-observation.ts';
 import { LIMITS } from './capabilities.ts';
+import { COMPENSATION_ROW } from './saga.ts';
+
+/** Let a live runner finish published cancel compensation before terminate(). */
+export const CANCEL_SAGA_GRACE_MS=10*60_000;
 
 export type RunCancellation='requested'|'cancelled'|'completed'|'indeterminate';
 type CancelEffect='acknowledged'|'unknown'|null;
@@ -16,12 +20,14 @@ type AttemptCancelRow={
 };
 type RunCancelRow={
   id:string;
+  version_id:string;
   outcome:string;
   error_code:string|null;
   cancel_requested_at:number|null;
   start_state:string;
   instance_id:string;
 };
+type SagaCancelWait='proceed'|'defer'|'unconfirmed';
 export type CancelRuntime={
   WORKFLOW:{
     get(id:string):Promise<{status():Promise<{status:string}>;terminate?:()=>Promise<void>}>;
@@ -118,6 +124,26 @@ async function issueCancels(db:AttemptDatabase, env:CancelRuntime, rows:AttemptC
   }
 }
 
+async function sagaCancelWait(db:AttemptDatabase, env:CancelRuntime, run:RunCancelRow):Promise<SagaCancelWait>{
+  const version=await db.prepare('SELECT plan FROM workflow_versions WHERE id=?')
+    .bind(run.version_id).first<{plan:string}>();
+  if(!version) return 'unconfirmed';
+  let triggers:unknown;
+  try{triggers=(JSON.parse(version.plan) as {saga?:{on?:unknown}}).saga?.on;}
+  catch{return 'unconfirmed';}
+  if(!Array.isArray(triggers)||!triggers.includes('cancel')) return 'proceed';
+  const report=await db.prepare('SELECT 1 AS done FROM run_steps WHERE run_id=? AND step_id=?')
+    .bind(run.id, COMPENSATION_ROW).first<{done:number}>();
+  if(report) return 'proceed';
+  const requestedAt=run.cancel_requested_at??0;
+  if(Date.now()-requestedAt>=CANCEL_SAGA_GRACE_MS) return 'unconfirmed';
+  if(run.start_state!=='started') return 'defer';
+  const observed=await observeInstance(env.WORKFLOW, run.instance_id);
+  const dead=observed.kind==='missing'||(observed.kind==='found'&&
+    (observed.status==='terminated'||observed.status==='complete'||observed.status==='errored'));
+  return dead?'unconfirmed':'defer';
+}
+
 async function bestEffortTerminate(env:CancelRuntime, instanceId:string){
   const before=await observeInstance(env.WORKFLOW, instanceId);
   if(before.kind!=='found'||before.status==='terminated'||before.status==='complete'||before.status==='errored')
@@ -179,7 +205,7 @@ export async function reconcileRunCancellation(
 async function reconcileCancelledRun(
   db:AttemptDatabase, env:CancelRuntime, runId:string, outbound:Outbound, depth:number,
 ):Promise<RunCancellation|null>{
-  const run=await db.prepare(`SELECT id,outcome,error_code,cancel_requested_at,start_state,instance_id
+  const run=await db.prepare(`SELECT id,version_id,outcome,error_code,cancel_requested_at,start_state,instance_id
     FROM runs WHERE id=?`).bind(runId).first<RunCancelRow>();
   if(!run?.cancel_requested_at) return null;
   if(depth<LIMITS.maxChildDepth){
@@ -194,6 +220,17 @@ async function reconcileCancelledRun(
   if(run.outcome==='cancelled') return 'cancelled';
   if(run.outcome==='indeterminate'&&run.error_code!=null&&!REFINABLE_ERRORS.has(run.error_code))
     return 'indeterminate';
+  const sagaWait=await sagaCancelWait(db, env, run);
+  if(sagaWait==='defer'){
+    await issueCancels(db, env, await attempts(db, runId), outbound);
+    return finish(db, runId, 'requested');
+  }
+  if(sagaWait==='unconfirmed'){
+    if(run.start_state==='started') await bestEffortTerminate(env, run.instance_id);
+    await issueCancels(db, env, await attempts(db, runId), outbound);
+    await persist(db, runId, 'indeterminate', 'cancel_unconfirmed');
+    return finish(db, runId, 'indeterminate');
+  }
   if(run.start_state==='started') await bestEffortTerminate(env, run.instance_id);
   await issueCancels(db, env, await attempts(db, runId), outbound);
   const fresh=await attempts(db, runId);

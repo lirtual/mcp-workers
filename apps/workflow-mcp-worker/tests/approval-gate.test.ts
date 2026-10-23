@@ -124,7 +124,7 @@ function harness(t: test.TestContext){
     }
   }
   return {
-    call, client, transport, run, stopWaiting, env,
+    call, client, transport, run, stopWaiting, env, sqlite,
     counts: () => ({noteCalls}),
     hold(value: boolean){ holdWakes = value; },
     rows: () => Number(sqlite.prepare('SELECT COUNT(*) AS n FROM runtime_approvals').get()?.n),
@@ -362,6 +362,81 @@ test('one matching approval dispatches once; denial, timeout, mismatch, repeat, 
     const revoked = await ctx.call('workflow_status', {run_id: blocked.run_id});
     assert.equal(revoked.steps.find((step: {step_id: string}) => step.step_id === 'save').error_code, 'grant_revoked');
     assert.equal(ctx.counts().noteCalls, 2);
+  } finally {
+    await ctx.client.close();
+  }
+});
+
+test('workflow_approval before an open gate does not authorize the write', async t => {
+  const ctx = harness(t);
+  const schema = await noteSchema();
+  await ctx.client.connect(ctx.transport);
+  try {
+    const definition = {version: 1, name: 'Early approval', inputs: {message: 'early'}, steps: [{
+      id: 'save', uses: 'mcp.call', approval: {required: true},
+      with: {endpoint: TRUSTED, tool: 'note', scope: 'write', input_schema: schema, arguments: {value: {ref: 'inputs.message'}}},
+    }]};
+    const created = await ctx.call('workflow_create', {definition: JSON.stringify(definition)});
+    const preview = await ctx.call('workflow_validate', {workflow_id: created.workflow_id, revision: 1});
+    const published = await ctx.call('workflow_publish', {
+      workflow_id: created.workflow_id, expected_revision: 1,
+      approved_operations: preview.required_approvals, accept_target_risks: true,
+    });
+    const write = await ctx.call('workflow_capabilities', {id: 'action.mcp.write'});
+    assert.match(write.approval_gate.declaration, /open/);
+    const started = await ctx.call('workflow_run', {workflow_id: created.workflow_id, inputs: {message: 'early'}});
+    await ctx.call('workflow_approval', {
+      run_id: started.run_id, step_id: 'save', published_version_id: published.published_version_id, decision: 'approve',
+    }, 'approval_not_open');
+    assert.equal(ctx.rows(), 0);
+    assert.equal(ctx.counts().noteCalls, 0);
+    const execution = ctx.run(started.run_id);
+    const finished = execution.then(() => undefined, () => undefined);
+    t.after(async () => { ctx.stopWaiting(started.run_id); await finished; });
+    await untilStatus(ctx.call, started.run_id, 'waiting_approval');
+    await ctx.call('workflow_approval', {
+      run_id: started.run_id, step_id: 'save', published_version_id: published.published_version_id, decision: 'approve',
+    });
+    await finished;
+    const done = await ctx.call('workflow_result', {run_id: started.run_id});
+    assert.equal(done.status, 'succeeded');
+    assert.equal(done.result.content[0].text, 'stored:early');
+    assert.equal(ctx.counts().noteCalls, 1);
+  } finally {
+    await ctx.client.close();
+  }
+});
+
+test('an expired approval gate does not authorize the write', async t => {
+  const ctx = harness(t);
+  const schema = await noteSchema();
+  await ctx.client.connect(ctx.transport);
+  try {
+    const definition = {version: 1, name: 'Expired approval', inputs: {message: 'late'}, steps: [{
+      id: 'save', uses: 'mcp.call', approval: {required: true},
+      with: {endpoint: TRUSTED, tool: 'note', scope: 'write', input_schema: schema, arguments: {value: {ref: 'inputs.message'}}},
+    }]};
+    const created = await ctx.call('workflow_create', {definition: JSON.stringify(definition)});
+    const preview = await ctx.call('workflow_validate', {workflow_id: created.workflow_id, revision: 1});
+    const published = await ctx.call('workflow_publish', {
+      workflow_id: created.workflow_id, expected_revision: 1,
+      approved_operations: preview.required_approvals, accept_target_risks: true,
+    });
+    const started = await ctx.call('workflow_run', {workflow_id: created.workflow_id, inputs: {message: 'late'}});
+    const execution = ctx.run(started.run_id);
+    const finished = execution.then(() => undefined, () => undefined);
+    t.after(async () => { ctx.stopWaiting(started.run_id); await finished; });
+    await untilStatus(ctx.call, started.run_id, 'waiting_approval');
+    ctx.sqlite.prepare('UPDATE runtime_approval_gates SET deadline_at=? WHERE run_id=?').run(Date.now() - 1, started.run_id);
+    await ctx.call('workflow_approval', {
+      run_id: started.run_id, step_id: 'save', published_version_id: published.published_version_id, decision: 'approve',
+    }, 'approval_not_open');
+    assert.equal(ctx.rows(), 0);
+    ctx.stopWaiting(started.run_id);
+    await finished;
+    const timedOut = await ctx.call('workflow_status', {run_id: started.run_id});
+    assert.equal(timedOut.steps.find((step: {step_id: string}) => step.step_id === 'save').error_code, 'approval_timeout');
+    assert.equal(ctx.counts().noteCalls, 0);
   } finally {
     await ctx.client.close();
   }
