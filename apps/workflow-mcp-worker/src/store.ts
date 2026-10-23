@@ -1,3 +1,5 @@
+import {reconcilePersistedGitHubActionAttempt} from './github-action-attempt-reconcile.ts';
+import {releaseVerifiedSessionSlot} from './github-action-session.ts';
 import { discoverGitHubActions } from './github-action-discovery.ts';
 import { verifyActionDispatchRef } from './github-action-dispatch-ref.ts';
 import { reviewedGitHubAction, assertReviewedGitHubAction, type ReviewedGitHubAction } from './github-action-review.ts';
@@ -366,6 +368,26 @@ export class WorkflowService {
     const hasSessions=publishedPlan.steps.some(s=>
       s.uses==='github.run'&&s.with.capability==='github.action'&&
       (s.with.action as {type?:unknown}|undefined)?.type==='session');
+    if(hasSessions&&this.env.WORKFLOW_EXECUTOR_GITHUB_TOKEN){
+      // Status/Result are reconciliatory tools. A completed parent cannot
+      // mask its still-running physical Session, and API outages cannot free
+      // a slot. At most four active Sessions exist globally.
+      const active=(await this.db.prepare(`SELECT s.step_id,a.attempt_id
+        FROM session_executions s
+        LEFT JOIN step_attempts a ON a.run_id=s.run_id AND a.step_id=s.step_id
+        WHERE s.run_id=? AND s.state!='terminated' ORDER BY s.step_id LIMIT 4`)
+        .bind(run_id).all<{step_id:string;attempt_id:string|null}>()).results;
+      for(const session of active){
+        if(!session.attempt_id)continue;
+        try{
+          await reconcilePersistedGitHubActionAttempt(
+            this.db,session.attempt_id,this.env.WORKFLOW_EXECUTOR_GITHUB_TOKEN);
+          await releaseVerifiedSessionSlot(this.db,run_id,session.step_id);
+        }catch{
+          // GitHub API unknown never means terminal or capacity released.
+        }
+      }
+    }
     const sessions=hasSessions?(await this.db.prepare(`SELECT s.step_id,s.state,
       s.updated_at,a.candidate_run_id,a.candidate_run_attempt,a.state AS attempt_state
       FROM session_executions s
