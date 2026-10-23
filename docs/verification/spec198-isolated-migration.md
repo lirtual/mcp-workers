@@ -22,6 +22,13 @@ removed. Production resources must not be used for rehearsals.
   Source and target matched on `sqlite_master` user definitions, record counts,
   complete row contents, migration history, and zero `foreign_key_check` issues.
   Both disposable databases were deleted and inventory checked for `spec198-`.
+- An isolated Worker exported both `Spec198Old` and `Spec198New` after an
+  update. The old Workflow instance had reached `complete` with output `ok`
+  before the update and remained queryable by its original ID afterward. A
+  new Workflow instance completed with output `new-ok`. Both temporary
+  Workflows and the temporary Worker were removed after verification. **This
+  proves coexistence and retention while the old export remains**, not safe
+  deletion of the old export.
 - Production was queried **read-only**: D1 `workflow-mcp-worker` had no business
   rows, five `d1_migrations` entries, four explicit indexes and provider-managed
   `_cf_KV`. The old native `workflow-mcp-runner` showed six completed instances.
@@ -35,10 +42,10 @@ removed. Production resources must not be used for rehearsals.
    five migration files and any provider-owned `_cf_KV` state before cutover;
    the isolated source/target SQL transfer and full integrity comparison above
    now pass. Stop if the platform-owned table requires unsafe import handling.
-3. Create an isolated Workflow with a completed instance. Publish a renamed
-   Workflow/class while retaining the old definition, then query the old
-   instance by ID and verify history remains available. Remove only fixture
-   Workflows when history retention is no longer required.
+3. The isolated old/new Workflow coexistence and historical lookup test now
+   passes. For production, keep the old class exported until the required
+   history retention horizon and any in-flight instances have expired; verify
+   old instance lookup and new dispatch again before and after cutover.
 
 ## Fail-closed release and rollback gates
 
