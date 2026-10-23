@@ -574,3 +574,40 @@ test('transient D1 outage does not permanently stop unattended Session reconcili
   assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'terminated');
  }finally{globalThis.fetch=originalFetch;f.db.close();}
 });
+
+test('reviewed Session Run admission is allowed with server credentials and does not bypass physical slot gate',async()=>{
+ const f=fixture();
+ try{
+  f.db.prepare("UPDATE workflows SET active_version_id='v' WHERE id='wf'").run();
+  let created=0;
+  const env={DB:f.adapter,
+   WORKFLOW_EXECUTOR_GITHUB_TOKEN:'private-test-token',
+   GITHUB_ACTION_OIDC_AUDIENCE:'workflow-github-action:production',
+   WORKFLOW:{create:async()=>{created++;}}
+  } as unknown as Env;
+  const service=new WorkflowService(env);
+  const started=await service.start('wf',{},'reviewed-session-admission');
+  assert.equal(started.start_state,'started');
+  assert.equal(started.status,'queued');
+  assert.equal(created,1);
+  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM session_executions').get()?.n,0);
+  // Replaying the same request never creates a second physical/session Run.
+  const repeated=await service.start('wf',{},'reviewed-session-admission');
+  assert.equal(repeated.run_id,started.run_id);
+  assert.equal(created,1);
+  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM session_executions').get()?.n,0);
+ }finally{f.db.close();}
+});
+test('Session admission fails before Run reservation if the Action executor is not configured',async()=>{
+ const f=fixture();
+ try{
+  f.db.prepare("UPDATE workflows SET active_version_id='v' WHERE id='wf'").run();
+  let created=0;
+  const env={DB:f.adapter,WORKFLOW:{create:async()=>{created++;}}} as unknown as Env;
+  const service=new WorkflowService(env);
+  const before=f.db.prepare('SELECT COUNT(*) AS n FROM runs').get()?.n;
+  await assert.rejects(service.start('wf',{}),/github_action_executor_not_configured/);
+  assert.equal(created,0);
+  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM runs').get()?.n,before);
+ }finally{f.db.close();}
+});
