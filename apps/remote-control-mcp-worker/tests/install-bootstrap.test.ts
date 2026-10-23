@@ -285,7 +285,7 @@ test('mobile home stays compact, uses semantic numbered steps and follows OS the
   assert.match(html, /@media\(prefers-color-scheme:dark\)/);
   assert.match(html, /color-scheme:light/);
   assert.match(html, /color-scheme:dark/);
-  for(const token of ['--bg','--fg','--muted','--surface','--border','--button','--button-fg']){
+  for(const token of ['--bg','--fg','--muted','--surface','--border','--icon-hover']){
     assert.ok(html.includes(token), 'missing theme variable '+token);
   }
   assert.match(html, /@media\(max-width:520px\)/);
@@ -297,7 +297,14 @@ test('mobile home stays compact, uses semantic numbered steps and follows OS the
   assert.match(html, /class="command-head"/);
   assert.match(html, /id="shell-label"/);
   assert.ok(html.indexOf('id="copy"')<html.indexOf('id="command"'), 'copy button stays above wrapped command');
-  assert.match(html, /overflow-wrap:anywhere/);
+  assert.match(html, /class="command-scroll"/);
+  assert.match(html, /overflow-x:auto/);
+  assert.match(html, /white-space:pre/);
+  assert.match(html, /border-radius:24px/);
+  assert.match(html, /aria-hidden="true" focusable="false"/);
+  assert.match(html, /class="icon-copy"/);
+  assert.match(html, /class="icon-check"/);
+  assert.doesNotMatch(html, /id="copy"[^>]*>复制<\/button>/);
   assert.match(html, /select\(detected\.includes\('linux'\)\?'linux':'windows'\)/);
   assert.doesNotMatch(html, /先选择 Windows 或 Linux|const mobile=/);
   assert.match(html, /copy\.disabled=!ready\[value\]/);
@@ -323,7 +330,7 @@ test('installer home drops source/docs and defaults unknown device to first Wind
 });
 
 
-test('copy feedback appears in button, resets, and never announces success below card', async () => {
+test('icon-copy feedback resets correctly and retains SVG children', async () => {
   const { renderInstallHome } = await import('../src/install-home.ts');
   const html = renderInstallHome({ windows: true, linux: true });
   const source = html.split('<script>')[1]?.split('</script>')[0];
@@ -367,39 +374,47 @@ test('copy feedback appears in button, resets, and never announces success below
     clearTimeout:(timer:number)=>{pending.delete(timer);},
   });
   assert.equal(els.windows.attributes['aria-selected'],'true','unknown/mobile defaults to first Windows tab');
-  assert.equal(els.copy.textContent,'复制');
+  assert.equal(els.copy.attributes['aria-label'],'复制安装命令');
   await els.copy.handlers.click!();
   assert.equal(clipboard[0],'irm https://rca.lirtual.dpdns.org/install.ps1 | iex');
-  assert.equal(els.copy.textContent,'已复制');
-  assert.equal(els.copy.attributes['data-copied'],'true','success applies green button style');
+  assert.equal(els.copy.attributes['data-copied'],'true');
+  assert.equal(els.copy.textContent,'','state must preserve the inline SVGs');
   assert.equal(els.copy.attributes['aria-label'],'安装命令已复制');
   assert.equal(els.message.textContent,'','no duplicate success label below the button');
   assert.equal(pending.size,1);
   [...pending.values()][0]!();
-  assert.equal(els.copy.textContent,'复制','button restores default label');
-  assert.equal(els.copy.attributes['data-copied'],undefined,'success color resets after timeout');
+  assert.equal(els.copy.attributes['aria-label'],'复制安装命令','accessible name resets after timeout');
+  assert.equal(els.copy.attributes['data-copied'],undefined,'check icon resets after timeout');
   els.linux.handlers.click!();
-  assert.equal(els.copy.textContent,'复制');
+  assert.equal(els.copy.attributes['aria-label'],'复制安装命令');
   await els.copy.handlers.click!();
   assert.equal(clipboard[1],'curl -fsSL https://rca.lirtual.dpdns.org/install.sh | sh');
-  assert.equal(els.copy.textContent,'已复制');
+  assert.equal(els.copy.attributes['data-copied'],'true');
   els.windows.handlers.click!();
-  assert.equal(els.copy.textContent,'复制','switching platforms clears copied label');
-  assert.equal(els.copy.attributes['data-copied'],undefined,'switching platforms clears green state');
+  assert.equal(els.copy.attributes['aria-label'],'复制安装命令','switching platform resets accessible name');
+  assert.equal(els.copy.attributes['data-copied'],undefined,'switching platforms restores copy icon');
   assert.equal(pending.size,0,'switching platforms cancels previous timer');
   rejectCopy=true;
   await els.copy.handlers.click!();
-  assert.equal(els.copy.textContent,'复制','failed copy is not reported as successful');
-  assert.equal(els.copy.attributes['data-copied'],undefined,'failed copy cannot keep green state');
+  assert.equal(els.copy.attributes['aria-label'],'复制安装命令','failed copy must not show success');
+  assert.equal(els.copy.attributes['data-copied'],undefined,'failed copy cannot show check icon');
   assert.equal(els.message.textContent,'复制失败，请手动选中命令。');
 });
 
-test('copied confirmation uses distinct green colors in both system themes', async () => {
+test('icon copy card adapts to system light/dark color scheme and remains accessible', async () => {
   const {renderInstallHome}=await import('../src/install-home.ts');
   const html=renderInstallHome({windows:true,linux:true});
-  assert.ok(html.includes('--copied-bg:#167347;--copied-fg:#fff'));
-  assert.ok(html.includes('--copied-bg:#39d98a;--copied-fg:#092719'));
-  assert.ok(html.includes('button.copy[data-copied="true"]{background:var(--copied-bg);color:var(--copied-fg)}'));
+  assert.ok(html.includes('--surface:#f4f4f5'));
+  assert.ok(html.includes('--surface:#23242a'));
+  assert.ok(html.includes('--icon-hover:rgba(20,20,24,.07)'));
+  assert.ok(html.includes('--icon-hover:rgba(255,255,255,.1)'));
+  assert.ok(html.includes('button.copy{display:inline-flex'));
+  assert.ok(html.includes('background:transparent;color:var(--fg)'));
+  assert.ok(html.includes('stroke:currentColor'));
+  assert.ok(html.includes('button.copy[data-copied="true"] .icon-copy{display:none}'));
+  assert.ok(html.includes('button.copy[data-copied="true"] .icon-check{display:block}'));
+  assert.ok(html.includes('button.copy:disabled{opacity:.45;cursor:not-allowed}'));
   assert.ok(html.includes("copy.setAttribute('data-copied','true')"));
   assert.ok(html.includes("copy.removeAttribute('data-copied')"));
+  assert.doesNotMatch(html,/--copied-bg|--copied-fg/);
 });
