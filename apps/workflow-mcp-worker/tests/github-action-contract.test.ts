@@ -73,8 +73,11 @@ test('Session enforces one job, job-start timeout <=330, and bounded duration',(
    valid.replace('default: 10','default: 0'),
    valid.replace('duration_minutes:','minutes:'),
    valid.replace('    timeout-minutes: 330','    timeout-minutes: 5'),
-   valid.replace('jobs:\\n  test:', 'jobs:\\n  other:\\n    runs-on: ubuntu-latest\\n    timeout-minutes: 330\\n    steps: []\\n  test:'),
- ])assert.throws(()=>parseGitHubAction(revised));
+   valid.replace('jobs:\n  test:', 'jobs:\n  other:\n    runs-on: ubuntu-latest\n    timeout-minutes: 330\n    steps: []\n  test:'),
+ ]){
+  assert.notEqual(revised,valid,'negative fixture must actually change YAML');
+  assert.throws(()=>parseGitHubAction(revised));
+ }
  const contract=parseGitHubAction(valid);
  assert.equal(contract.inputs.duration_minutes.default,10);
 });
