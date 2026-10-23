@@ -75,7 +75,7 @@ test('Task source-to-result: D1 reservation, dispatch ACK, signed OIDC claim and
    assert.equal(claimed,true);
   }
   return Response.json({id:42,workflow_id:456,run_attempt:1,
-   repository:{id:123,full_name:repo},path:action.workflowPath,
+   repository:{id:123,full_name:repo},path:action.workflowPath+'@task-v1',
    head_sha:sha,event:'workflow_dispatch',status:'completed',conclusion:'success'});
  };
  try{
