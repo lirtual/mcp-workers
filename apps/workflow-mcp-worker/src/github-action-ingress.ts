@@ -1,5 +1,7 @@
 import type {Env} from './store.ts';
 import {verifyAndClaimPinnedGitHubAction} from './github-action-oidc-claim.ts';
+import {recordSignedSessionReady} from './github-action-session.ts';
+import {inspectPersistedGitHubActionAttempt} from './github-action-attempt-inspection.ts';
 import type {jwtVerify} from 'jose';
 
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -16,8 +18,10 @@ const result=(status:number,code:string)=>Response.json({result:code},{
  */
 export async function handleGithubActionClaimRequest(
  request:Request,env:Env,keys?:KeyResolver,
+ inspect:typeof inspectPersistedGitHubActionAttempt=inspectPersistedGitHubActionAttempt,
 ):Promise<Response>{
- if(new URL(request.url).pathname!=='/github/action/claim')return result(404,'not_found');
+ const route=new URL(request.url).pathname;
+ if(route!=='/github/action/claim'&&route!=='/github/action/ready')return result(404,'not_found');
  if(request.method!=='POST')return result(405,'method_not_allowed');
  if(!env.DB||!env.GITHUB_ACTION_OIDC_AUDIENCE||
     !/^workflow-github-[a-z0-9:-]{4,120}$/.test(env.GITHUB_ACTION_OIDC_AUDIENCE))
@@ -59,9 +63,30 @@ export async function handleGithubActionClaimRequest(
   attemptId=id;
  }catch{return result(400,'invalid_request');}
  try{
-  const verified=keys
-   ?await verifyAndClaimPinnedGitHubAction(env.DB,attemptId,credential,env.GITHUB_ACTION_OIDC_AUDIENCE,keys)
-   :await verifyAndClaimPinnedGitHubAction(env.DB,attemptId,credential,env.GITHUB_ACTION_OIDC_AUDIENCE);
-  return verified?result(200,'claimed'):result(403,'claim_denied');
+  if(route==='/github/action/claim'){
+   const verified=keys
+    ?await verifyAndClaimPinnedGitHubAction(env.DB,attemptId,credential,env.GITHUB_ACTION_OIDC_AUDIENCE,keys)
+    :await verifyAndClaimPinnedGitHubAction(env.DB,attemptId,credential,env.GITHUB_ACTION_OIDC_AUDIENCE);
+   return verified?result(200,'claimed'):result(403,'claim_denied');
+  }
+  if(!env.WORKFLOW_EXECUTOR_GITHUB_TOKEN)return result(503,'ready_unavailable');
+  const ready=await recordSignedSessionReady(env.DB,attemptId,credential,
+    env.GITHUB_ACTION_OIDC_AUDIENCE,env.WORKFLOW_EXECUTOR_GITHUB_TOKEN,keys,inspect);
+  if(ready==='physical_unconfirmed')return result(503,'physical_unconfirmed');
+  if(ready==='denied')return result(403,'ready_denied');
+  if(ready==='ready'&&env.WORKFLOW){
+   // Wake is advisory only: a lost sendEvent never loses the durable Ready.
+   try{
+    const origin=await env.DB.prepare(`SELECT r.instance_id,a.step_id FROM step_attempts a
+      JOIN runs r ON r.id=a.run_id WHERE a.attempt_id=?`)
+     .bind(attemptId).first<{instance_id:string;step_id:string}>();
+    if(origin){
+     const instance=await env.WORKFLOW.get(origin.instance_id);
+     await instance.sendEvent?.({type:'github-session-ready-'+origin.step_id,
+      payload:{attemptId}});
+    }
+   }catch{}
+  }
+  return result(200,ready);
  }catch{return result(503,'unavailable');}
 }
