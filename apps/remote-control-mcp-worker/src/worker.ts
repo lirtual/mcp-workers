@@ -1,6 +1,6 @@
 import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
 import { BROWSER_TOOLS, BROWSER_EFFECT_TOOLS, BROWSER_READ_TOOLS, parseBrowserCall, browserEffectClientStatus } from "./browser-tools.ts";
-import {verifyAccessApprovalOwner,validBrowserApprovalRequest,validBrowserApprovalForm,browserApprovalPage,type BrowserApprovalAccessConfig} from "./browser-approval-web.ts";
+import {verifyAccessApprovalOwner,validBrowserApprovalRequest,validBrowserApprovalForm,browserApprovalPage,validPermanentGrantForm,permanentGrantApprovalPage,type BrowserApprovalAccessConfig} from "./browser-approval-web.ts";
 /** Browser tools require a paired device and verified owner Access configuration.
  * Preview and production use separate owner namespaces and approval origins. */
 import { handleAgentInstallerRequest } from "./install-bootstrap.ts";
@@ -28,7 +28,7 @@ function browserToolsAvailable(env:Env):boolean {
 }
 // Preview operations use existing authenticated per-device WSS routing.
 // The paired Agent, not a temporary Worker secret, opts into write/Shell.
-const OWNER_TOOLS = new Set(["pairing_lookup", "pairing_approve", "list_devices", "device_rename", "device_make_permanent", "revoke_device"]);
+const OWNER_TOOLS = new Set(["pairing_lookup", "pairing_approve", "list_devices", "device_rename", "revoke_device"]);
 function pendingOwner(env: Env): DurableObjectStub | null {
   const ns = (env as V2Env).DEVICE_COORDINATOR ?? (env as V2Env).V2_OWNER;
   return ns ? ns.get(ns.idFromName("single-owner-v2")) : null;
@@ -200,50 +200,6 @@ async function revokePairedDevice(env: Env, id: unknown, args: unknown): Promise
   } catch { return toolError(id, "Device revocation was not confirmed."); }
 }
 
-
-const DEVICE_MAKE_PERMANENT_TOOL = {
-  name: "device_make_permanent",
-  title: "Promote one temporary device grant to permanent",
-  description: "Permanently authorize exactly one already-paired, currently active temporary device, without rotating its private key or changing the device ID. Only call after the owner explicitly approves permanent access. First read the exact device_id, fingerprint and expires_at from list_devices and copy them unchanged. The grant will not expire automatically; it remains until the owner revokes it. No re-pair or other device is affected.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      device_id: { type: "string", description: "Exact full UUID from list_devices" },
-      expected_fingerprint: { type: "string", pattern: "^[a-f0-9]{24}$", description: "Exact reviewed public-key fingerprint from list_devices" },
-      expected_expires_at: { type: "integer", minimum: 1, description: "Exact original temporary expiry in epoch milliseconds from list_devices" },
-      confirmation: { type: "string", const: "make_permanent", description: "Explicit irreversible authorization change" },
-    },
-    required: ["device_id", "expected_fingerprint", "expected_expires_at", "confirmation"],
-    additionalProperties: false,
-  },
-  annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
-} as const;
-
-async function makePairedDevicePermanent(env: Env, id: unknown, input: unknown): Promise<Response> {
-  if (!input || typeof input !== "object" || Array.isArray(input)) {
-    return toolError(id, "The permanent grant request was rejected.");
-  }
-  const args = input as Record<string, unknown>;
-  if (Object.keys(args).length !== 4 ||
-      typeof args.device_id !== "string" ||
-      !/^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(args.device_id) ||
-      typeof args.expected_fingerprint !== "string" ||
-      !/^[a-f0-9]{24}$/.test(args.expected_fingerprint) ||
-      typeof args.expected_expires_at !== "number" ||
-      !Number.isSafeInteger(args.expected_expires_at) || args.expected_expires_at <= 0 ||
-      args.confirmation !== "make_permanent") {
-    return toolError(id, "The permanent grant request was rejected.");
-  }
-  const owner = pendingOwner(env);
-  if (!owner) return toolError(id, "Permanent grant changes are disabled.");
-  try {
-    const response = await owner.fetch("https://v2.internal/grant/permanent", {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(args),
-    });
-    if (!response.ok) return toolError(id, "Permanent grant not applied: grant is missing, changed, expired or already permanent.");
-    return toolText(id, JSON.stringify(await response.json()));
-  } catch { return toolError(id, "Permanent grant change is unavailable."); }
-}
 
 const DEVICE_RENAME_TOOL = {
   name: "device_rename",
@@ -1104,10 +1060,10 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
             required: [...("required" in tool.inputSchema ? tool.inputSchema.required : []), "device_id"],
           },
         })),
-        PAIRING_LOOKUP_TOOL, PAIRING_APPROVE_TOOL, LIST_DEVICES_TOOL, DEVICE_RENAME_TOOL, DEVICE_MAKE_PERMANENT_TOOL, REVOKE_DEVICE_TOOL,
+        PAIRING_LOOKUP_TOOL, PAIRING_APPROVE_TOOL, LIST_DEVICES_TOOL, DEVICE_RENAME_TOOL, REVOKE_DEVICE_TOOL,
       ] });
     }
-    return rpc(rpcMessage.id, { tools: pendingOwner(env) ? [...LOCAL_TOOLS, PAIRING_LOOKUP_TOOL, PAIRING_APPROVE_TOOL, LIST_DEVICES_TOOL, DEVICE_RENAME_TOOL, DEVICE_MAKE_PERMANENT_TOOL, REVOKE_DEVICE_TOOL] : LOCAL_TOOLS });
+    return rpc(rpcMessage.id, { tools: pendingOwner(env) ? [...LOCAL_TOOLS, PAIRING_LOOKUP_TOOL, PAIRING_APPROVE_TOOL, LIST_DEVICES_TOOL, DEVICE_RENAME_TOOL, REVOKE_DEVICE_TOOL] : LOCAL_TOOLS });
   }
 
   if (rpcMessage.method === "tools/call") {
@@ -1145,9 +1101,6 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
         call.arguments && typeof call.arguments === "object" && !Array.isArray(call.arguments) &&
         Object.hasOwn(call.arguments, "device_id")) {
       return callPairedDeviceRead(env, rpcMessage.id, call.name, call.arguments);
-    }
-    if (call.name === "device_make_permanent" && pendingOwner(env)) {
-      return makePairedDevicePermanent(env, rpcMessage.id, call.arguments);
     }
     if (call.name === "device_rename" && pendingOwner(env)) {
       return renamePairedDevice(env, rpcMessage.id, call.arguments);
@@ -1208,6 +1161,53 @@ export default {
       return jsonError(503, "preview_unconfigured", "The preview is not yet configured.");
     }
     const url = new URL(request.url);
+
+    // Device grant changes are owner-only browser actions, never callable with
+    // the Portal MCP token. Reuse the existing Access-protected approval path.
+    if (url.pathname.startsWith("/browser-approve/grant/")) {
+      const deviceId=url.pathname.slice("/browser-approve/grant/".length);
+      if(!/^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(deviceId)||
+         !["GET","POST"].includes(request.method)||url.hash||!browserToolsAvailable(env))
+        return jsonError(404,"not_found","The device grant page is unavailable.");
+      const settings=env as V2Env & BrowserApprovalAccessConfig;
+      if(!await verifyAccessApprovalOwner(request,settings))
+        return jsonError(403,"unauthorized","Owner Access verification failed.");
+      const owner=pendingOwner(env);
+      if(!owner)return jsonError(503,"unavailable","Device grants are unavailable.");
+      try{
+        if(request.method==="GET"){
+          const response=await owner.fetch("https://v2.internal/devices",{
+            method:"POST",headers:{"content-type":"application/json"},body:"{}",
+          });
+          if(!response.ok)return jsonError(503,"unavailable","Device lookup failed.");
+          const devices=await response.json() as Array<{
+            device_id:string;name:string;grant_type?:string;fingerprint?:string;expires_at?:number;
+          }>;
+          const record=devices.find(d=>d.device_id===deviceId&&d.grant_type==="temporary");
+          if(!record||!record.fingerprint||!record.expires_at)
+            return jsonError(404,"not_found","No active temporary grant for this device.");
+          return permanentGrantApprovalPage({
+            device_id:deviceId,name:record.name,
+            fingerprint:record.fingerprint,expires_at:record.expires_at,
+          });
+        }
+        const raw=await readBounded(request,384);
+        const approval=raw===null?null:validPermanentGrantForm(request,raw);
+        if(!approval)return jsonError(400,"bad_request","Invalid owner confirmation.");
+        const result=await owner.fetch("https://v2.internal/grant/permanent",{
+          method:"POST",headers:{"content-type":"application/json"},
+          body:JSON.stringify({device_id:deviceId,
+            expected_fingerprint:approval.fingerprint,
+            expected_expires_at:approval.expires_at,
+            confirmation:"make_permanent"}),
+        });
+        if(!result.ok)return jsonError(409,"conflict","Device grant changed, expired or was already permanent.");
+        return new Response("Device permanently authorized. You may return to ChatGPT.\n",{
+          status:200,headers:{"content-type":"text/plain; charset=utf-8",
+            "cache-control":"no-store","x-content-type-options":"nosniff","referrer-policy":"no-referrer"},
+        });
+      }catch{return jsonError(503,"unavailable","Device grant update is unavailable.");}
+    }
     if (url.pathname.startsWith("/browser-approve/")) {
       // A real person signs into a separately Access-protected exact path.
       // NEVER accept the MCP bearer credential or model-originated approval.
