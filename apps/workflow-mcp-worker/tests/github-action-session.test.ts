@@ -611,3 +611,45 @@ test('Session admission fails before Run reservation if the Action executor is n
   assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM runs').get()?.n,before);
  }finally{f.db.close();}
 });
+
+test('definitively rejected GitHub dispatch releases a Session slot with no physical Run',async()=>{
+ const f=fixture();
+ try{
+  const workflow={do:async(_name:string,_opts:unknown,cb:()=>Promise<unknown>)=>cb()} as unknown as WorkflowStep;
+  const env={DB:f.adapter,WORKFLOW_EXECUTOR_GITHUB_TOKEN:'token',
+   GITHUB_ACTION_OIDC_AUDIENCE:audience} as Env;
+  let posts=0;
+  const response=await runPublishedGitHubActionSession(env,plan as unknown as Plan,
+   (plan as unknown as Plan).steps[0],run(1),workflow,async req=>{
+    if(req.method==='GET')return Response.json({ref:'refs/tags/release-v1',
+      object:{type:'commit',sha:action.commitSha}});
+    posts++;return new Response(null,{status:422});
+   });
+  assert.deepEqual(response,{status:'failed',error_code:'github_session_dispatch_rejected'});
+  assert.equal(posts,1);
+  assert.equal(f.db.prepare('SELECT state FROM step_attempts').get()?.state,'rejected');
+  assert.equal(f.db.prepare('SELECT candidate_run_id FROM step_attempts').get()?.candidate_run_id,null);
+  assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'terminated');
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(2),'launch'),'reserved');
+ }finally{f.db.close();}
+});
+test('unknown outbound dispatch ACK never releases a Session slot or posts twice',async()=>{
+ const f=fixture();
+ try{
+  const workflow={do:async(_name:string,_opts:unknown,cb:()=>Promise<unknown>)=>cb()} as unknown as WorkflowStep;
+  const env={DB:f.adapter,WORKFLOW_EXECUTOR_GITHUB_TOKEN:'token',
+   GITHUB_ACTION_OIDC_AUDIENCE:audience} as Env;
+  let posts=0;
+  const response=await runPublishedGitHubActionSession(env,plan as unknown as Plan,
+   (plan as unknown as Plan).steps[0],run(1),workflow,async req=>{
+    if(req.method==='GET')return Response.json({ref:'refs/tags/release-v1',
+      object:{type:'commit',sha:action.commitSha}});
+    posts++;throw Error('GitHub may have accepted before ACK was lost');
+   });
+  assert.deepEqual(response,{status:'indeterminate',error_code:'github_session_dispatch_unknown'});
+  assert.equal(posts,1);
+  assert.equal(f.db.prepare('SELECT state FROM step_attempts').get()?.state,'dispatch_unknown');
+  assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'queued');
+  assert.equal(await releaseVerifiedSessionSlot(f.adapter,run(1),'launch'),'held');
+ }finally{f.db.close();}
+});
