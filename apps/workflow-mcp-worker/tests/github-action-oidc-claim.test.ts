@@ -12,7 +12,7 @@ const plan={github_execution_approved:true,github_action_approvals:[action],
 const audience='workflow-github-action-claim';
 const base={repository:'lirtual/session-actions',repository_id:'123',
  workflow_ref:'lirtual/session-actions/.github/workflows/linux.yml@refs/tags/test-v1',
- ref:'refs/heads/main',sha,event_name:'workflow_dispatch',run_id:'42',run_attempt:'1'};
+ ref:'refs/tags/test-v1',sha,event_name:'workflow_dispatch',run_id:'42',run_attempt:'1'};
 const row={run_id:'run',step_id:'linux',state:'confirmed',capability_id:'github.action',
  repository:'lirtual/session-actions',repository_id:'123',
  workflow_ref:base.workflow_ref,ref:base.ref,
