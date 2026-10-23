@@ -415,6 +415,30 @@ test('cancel compensates only when cancel was published', async t=>{
   }
 });
 
+test('compensation validates its resolved arguments before registering an external effect',async t=>{
+  const {call,run,client,transport,calls,sqlite}=harness(t);
+  const schemas=await toolSchemas();
+  await client.connect(transport);
+  try{
+    const definition={version:1,name:'Invalid compensation',saga:{on:['failure']},steps:[
+      portalStep('save',schemas.note,'valid',[],{schema:schemas.clear,value:123}),
+      {...fails,needs:['save']},
+    ]};
+    const created=await call('workflow_create',{definition:JSON.stringify(definition)});
+    const checked=await call('workflow_validate',{workflow_id:created.workflow_id,revision:1});
+    const published=await call('workflow_publish',{workflow_id:created.workflow_id,expected_revision:1,
+      approved_operations:checked.required_approvals,accept_target_risks:true});
+    assert.equal(published.saga.compensations[0].step_id,'save');
+    const started=await call('workflow_run',{workflow_id:created.workflow_id,inputs:{blob}});
+    await run(started.run_id);
+    const result=await call('workflow_result',{run_id:started.run_id});
+    assert.equal(result.status,'failed');
+    assert.deepEqual(result.compensation.steps,[{step_id:'save',status:'failed',error_code:'invalid_arguments'}]);
+    assert.equal(calls.filter(item=>item.tool==='note').length,1);
+    assert.equal(calls.some(item=>item.tool==='note_clear'),false);
+  }finally{await client.close();}
+});
+
 test('workflow_cancel lets published cancel compensation finish before terminate', async t=>{
   const {call, run, client, transport, calls, sqlite, enableTerminate, terminates, holdNotes, releaseNotes}=harness(t);
   const schemas=await toolSchemas();

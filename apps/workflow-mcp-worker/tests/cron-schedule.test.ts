@@ -360,3 +360,26 @@ test('scheduled cancellation reconciliation skips terminal nonrefinable rows and
   assert.equal((sqlite.prepare('SELECT outcome FROM runs WHERE id=?').get(real.run_id) as {outcome:string}).outcome,'cancelled');
   assert.equal(result.cancellation_reconciliations?.length,1);
 });
+
+test('scheduled cancellation scan rotates refinable uncertainty so later overdue work is reached',async t=>{
+  const {env,sqlite}=setup(t);
+  const call=await connect(t,env);
+  const created=await call('workflow_create',{definition:JSON.stringify(cronDefinition('* * * * *','Fair cancellation scan'))});
+  const published=await call('workflow_publish',{workflow_id:created.workflow_id,expected_revision:1});
+  const real=await call('workflow_run',{workflow_id:created.workflow_id,inputs:{}});
+  const cancelAt=Date.now()-11*60_000, oldTouch=cancelAt-1000;
+  sqlite.prepare("UPDATE runs SET cancel_requested_at=?,outcome='queued',start_state='reserved',error_code=NULL,updated_at=? WHERE id=?")
+    .run(cancelAt,cancelAt,real.run_id);
+  for(let index=0;index<100;index++){
+    const id=crypto.randomUUID();
+    sqlite.prepare(`INSERT INTO runs(id,workflow_id,version_id,instance_id,request_digest,inputs,start_state,outcome,error_code,cancel_requested_at,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,'started','indeterminate','cancel_unconfirmed',?,?,?)`)
+      .run(id,created.workflow_id,published.published_version_id,id,'uncertain-'+index,'{}',cancelAt,cancelAt,oldTouch);
+  }
+  const first=await tick(env,Date.now());
+  assert.equal(first.cancellation_reconciliations?.length,100);
+  assert.equal(first.cancellation_reconciliations?.some(item=>item.run_id===real.run_id),false);
+  const second=await tick(env,Date.now()+60_000);
+  assert.equal(second.cancellation_reconciliations?.some(item=>item.run_id===real.run_id),true);
+  assert.equal((sqlite.prepare('SELECT outcome FROM runs WHERE id=?').get(real.run_id) as {outcome:string}).outcome,'cancelled');
+});

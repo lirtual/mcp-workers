@@ -5,6 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { toolSchemaDigest } from '../src/plan.ts';
+import { waitForRuntimeApproval } from '../src/runtime-approval.ts';
 import { TRUSTED_PORTAL_ENDPOINT } from '../src/mcp-public-fetch.ts';
 import type { Env } from '../src/store.ts';
 import type { WorkflowEvent, WorkflowStep } from 'cloudflare:workers';
@@ -405,6 +406,27 @@ test('workflow_approval before an open gate does not authorize the write', async
   } finally {
     await ctx.client.close();
   }
+});
+
+test('replay resumes a consumed MCP or GitHub gate while the effect fence remains authoritative',async t=>{
+  const ctx=harness(t);
+  await ctx.client.connect(ctx.transport);
+  const db=ctx.sqlite;
+  const created=await ctx.call('workflow_create',{definition:JSON.stringify({version:1,name:'Approval replay base',steps:[{id:'emit',uses:'result.emit',with:{data:'ok'}}]})});
+  const published=await ctx.call('workflow_publish',{workflow_id:created.workflow_id,expected_revision:1});
+  const run=await ctx.call('workflow_run',{workflow_id:created.workflow_id});
+  const runId=run.run_id,versionId=published.published_version_id;
+  const at=Date.now();
+  const workflowStep={async do(_name:unknown,_options:unknown,fn:()=>Promise<unknown>){return fn();},async waitForEvent(){throw Error('unexpected_wait');}} as unknown as WorkflowStep;
+  for(const stepId of ['mcp_write','github_action']){
+    db.prepare('INSERT INTO runtime_approval_gates(run_id,step_id,version_id,deadline_at) VALUES(?,?,?,?)').run(runId,stepId,versionId,at+60_000);
+    db.prepare("INSERT INTO runtime_approvals(run_id,step_id,version_id,decision,created_at,consumed_at) VALUES(?,?,?,'approved',?,?)")
+      .run(runId,stepId,versionId,at-1000,at-500);
+    const result=await waitForRuntimeApproval(ctx.env.DB,workflowStep,runId,stepId,versionId,
+      stepId==='mcp_write'?'exact-approved-grant':null,async()=>false);
+    assert.deepEqual(result,{ok:true},stepId);
+  }
+  await ctx.client.close();
 });
 
 test('an expired approval gate does not authorize the write', async t => {

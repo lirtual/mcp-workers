@@ -7,6 +7,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { LIMITS } from '../src/capabilities.ts';
 import { TRUSTED_PORTAL_ENDPOINT } from '../src/mcp-public-fetch.ts';
 import { toolSchemaDigest } from '../src/plan.ts';
+import { WorkflowService } from '../src/store.ts';
 import type { Env } from '../src/store.ts';
 import type { WorkflowEvent, WorkflowStep } from 'cloudflare:workers';
 import readonlyWorker from './fixtures/readonly-worker.ts';
@@ -388,6 +389,34 @@ test('eight waiting parents do not block child admission', async t => {
   assert.deepEqual(results.map(row => JSON.parse(row.result)), Array.from({length: LIMITS.admissionCap}, () => 'child-ok'));
 });
 
+test('a child wake waits for a released admission slot before advancing its parent',async t=>{
+  const {call,client,transport,execute,sqlite,armHold,releaseHold,until}=harness(t);
+  await client.connect(transport);
+  const child=await publish(call,emitWorkflow('Capacity child','child-ok'));
+  const parentWorkflow=await publish(call,{version:1,name:'Capacity parent',steps:[
+    {id:'call',uses:'workflow.call',with:{workflow_id:child,inputs:{}}},
+    {id:'report',needs:['call'],uses:'result.emit',with:{data:{ref:'steps.call.output'}}},
+  ]});
+  armHold();
+  const admitted=await call('workflow_run',{workflow_id:parentWorkflow});
+  const parentExecution=execute(admitted.run_id);
+  await until(()=>{
+    const parentRow=sqlite.prepare('SELECT outcome FROM runs WHERE id=?').get(admitted.run_id) as {outcome:string};
+    return parentRow.outcome==='waiting'&&Number((sqlite.prepare('SELECT COUNT(*) AS n FROM runs WHERE parent_run_id=?').get(admitted.run_id) as {n:number}).n)===1;
+  });
+  const childRun=(sqlite.prepare('SELECT id FROM runs WHERE parent_run_id=?').get(admitted.run_id) as {id:string}).id;
+  await execute(childRun);
+  await until(()=> (sqlite.prepare('SELECT outcome FROM runs WHERE id=?').get(childRun) as {outcome:string}).outcome==='succeeded');
+  const fillers=[] as string[];
+  for(let index=0;index<LIMITS.admissionCap;index++)fillers.push((await call('workflow_run',{workflow_id:child})).run_id);
+  assert.equal(Number((sqlite.prepare("SELECT COUNT(*) AS n FROM runs WHERE outcome IN ('queued','running')").get() as {n:number}).n),LIMITS.admissionCap);
+  releaseHold();
+  await parentExecution;
+  assert.equal((await call('workflow_result',{run_id:admitted.run_id})).result,'child-ok');
+  assert.equal(Number((sqlite.prepare("SELECT COUNT(*) AS n FROM runs WHERE outcome IN ('queued','running')").get() as {n:number}).n),0);
+  assert.equal(fillers.length,LIMITS.admissionCap);
+});
+
 test('child recursion stops at the published depth and a paused child is not admitted', async t => {
   const {call, client, transport, execute, sqlite} = harness(t);
   await client.connect(transport);
@@ -423,6 +452,28 @@ test('child recursion stops at the published depth and a paused child is not adm
   assert.equal(blockedResult.steps[0].error_code, 'workflow_not_active');
   const childRows = sqlite.prepare('SELECT COUNT(*) AS n FROM runs WHERE workflow_id=?').get(pausedChild) as {n: number};
   assert.equal(childRows.n, 0);
+});
+
+test('child replay recovers its pinned admission after pause and incompatible republish',async t=>{
+  const {call,client,transport,sqlite,env}=harness(t);
+  await client.connect(transport);
+  const child=await publish(call,emitWorkflow('Pinned child','ok',{subject:'seed'}));
+  const childVersion=(sqlite.prepare('SELECT active_version_id FROM workflows WHERE id=?').get(child) as {active_version_id:string}).active_version_id;
+  const parent=await publish(call,{version:1,name:'Child replay parent',inputs:{subject:'seed'},steps:[
+    {id:'call',uses:'workflow.call',with:{workflow_id:child,inputs:{subject:{ref:'inputs.subject'}}}},
+  ]});
+  const admittedParent=await call('workflow_run',{workflow_id:parent,inputs:{subject:'seed'}});
+  sqlite.prepare("UPDATE runs SET outcome='running' WHERE id=?").run(admittedParent.run_id);
+  const service=new WorkflowService(env);
+  const first=await service.admitChild({parent_run_id:admittedParent.run_id,parent_step_id:'call',workflow_id:child,inputs:{subject:'seed'},mode:'await'});
+  const update=await call('workflow_update',{workflow_id:child,expected_revision:1,definition:JSON.stringify(emitWorkflow('Incompatible child','new',{subject:{type:'number'}}))});
+  const changed=await call('workflow_publish',{workflow_id:child,expected_revision:update.draft_revision});
+  await call('workflow_pause',{workflow_id:child});
+  const replay=await service.admitChild({parent_run_id:admittedParent.run_id,parent_step_id:'call',workflow_id:child,inputs:{subject:'seed'},mode:'await'});
+  assert.equal(replay.run_id,first.run_id);
+  assert.equal(replay.published_version_id,childVersion);
+  assert.notEqual(changed.published_version_id,childVersion);
+  assert.equal((sqlite.prepare('SELECT version_id FROM runs WHERE id=?').get(replay.run_id) as {version_id:string}).version_id,childVersion);
 });
 
 test('capabilities mark workflow.call and saga supported', async t => {

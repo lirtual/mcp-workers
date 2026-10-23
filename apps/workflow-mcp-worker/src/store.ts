@@ -65,24 +65,28 @@ function serverSecrets(env:Env):string[]{
 }
 // A parent parked on an awaited child is not advancing work. Counting it toward
 // the admission cap deadlocks the child it is waiting for.
-export async function releaseWaitingRun(db:Env['DB'], runId:string):Promise<void>{
-  await db.prepare(`UPDATE runs SET outcome='running', updated_at=?
+export async function releaseWaitingRun(db:Env['DB'], runId:string):Promise<boolean>{
+  const result=await db.prepare(`UPDATE runs SET outcome='running', updated_at=?
     WHERE id=? AND outcome='waiting' AND cancel_requested_at IS NULL
+    AND (SELECT COUNT(*) FROM runs WHERE outcome IN ('queued','running')) < ${LIMITS.admissionCap}
     AND NOT EXISTS (
       SELECT 1 FROM runs AS child
       WHERE child.parent_run_id=? AND child.child_mode='await'
         AND child.outcome IN ('queued','running','waiting')
     )`).bind(now(),runId,runId).run();
+  return result.meta.changes>0;
 }
-export async function resumeParkedRun(db:Env['DB'], runId:string):Promise<void>{
+export async function resumeParkedRun(db:Env['DB'], runId:string):Promise<boolean>{
   // A parent still waiting on a non-terminal awaited child is not advancing.
-  await db.prepare(`UPDATE runs SET outcome='running', updated_at=?
+  const result=await db.prepare(`UPDATE runs SET outcome='running', updated_at=?
     WHERE id=? AND outcome='waiting' AND cancel_requested_at IS NULL
+    AND (SELECT COUNT(*) FROM runs WHERE outcome IN ('queued','running')) < ${LIMITS.admissionCap}
     AND NOT EXISTS (
       SELECT 1 FROM runs AS child
       WHERE child.parent_run_id=? AND child.child_mode='await'
         AND child.outcome IN ('queued','running','waiting')
     )`).bind(now(),runId,runId).run();
+  return result.meta.changes>0;
 }
 export async function noteAwaitingParent(env:Env, runId:string):Promise<void>{
   const row=await env.DB.prepare('SELECT parent_run_id,parent_step_id,child_mode FROM runs WHERE id=?')
@@ -485,7 +489,7 @@ export class WorkflowService {
       AND cancel_requested_at<=? AND (
         outcome IN ('queued','running','waiting') OR
         (outcome='indeterminate' AND error_code IN (${refinable.map(()=>'?').join(',')}))
-      ) ORDER BY cancel_requested_at ASC,id ASC LIMIT ?`)
+      ) ORDER BY updated_at ASC,cancel_requested_at ASC,id ASC LIMIT ?`)
       .bind(now()-10*60_000,...refinable,limit).all<{id:string}>();
     return rows.results;
   }
@@ -523,11 +527,11 @@ export class WorkflowService {
       const existing=await this.db.prepare('SELECT id FROM runs WHERE workflow_id=? AND admission_key=?').bind(workflow_id,key).first<{id:string}>();
       if(existing)return {...await this.start(workflow_id,inputs,key,'event'),dedupe:'stable_event_id' as const,exactly_once:false as const};
     }
-    await this.assertActiveTrigger(workflow_id,admission);
-    const admitted=await this.start(workflow_id,inputs,key,'event');
+    const triggerVersion=await this.assertActiveTrigger(workflow_id,admission);
+    const admitted=await this.start(workflow_id,inputs,key,'event',triggerVersion);
     return {...admitted,dedupe:key?'stable_event_id' as const:'not_claimed' as const,exactly_once:false as const};
   }
-  private async assertActiveTrigger(workflow_id:string,admission:{kind:'webhook'|'github_event'|'cron';event:string;source:string;event_id:string|null;payload:Record<string,unknown>}){
+  private async assertActiveTrigger(workflow_id:string,admission:{kind:'webhook'|'github_event'|'cron';event:string;source:string;event_id:string|null;payload:Record<string,unknown>}):Promise<string>{
     const wf=await this.row(workflow_id);
     if(wf.state!=='active'||!wf.active_version_id)throw new StateError('workflow_not_active');
     const version=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=? AND workflow_id=?').bind(wf.active_version_id,workflow_id).first<{plan:string}>();
@@ -541,15 +545,16 @@ export class WorkflowService {
       const scheduled=Date.parse(admission.payload.scheduled_time);
       if(!Number.isSafeInteger(scheduled)||cronEventId(scheduled)!==admission.event_id)throw new StateError('invalid_event_id');
       if(!cronMatches(trigger.expression,scheduled))throw new StateError('unauthorized_event');
-      return;
+      return wf.active_version_id;
     }
     if(trigger.type==='webhook'){
       if(trigger.source!==this.env.WEBHOOK_TRIGGER_SOURCE||admission.source!==trigger.source)throw new StateError('unauthorized_source');
       if(trigger.event!==admission.event)throw new StateError('unauthorized_event');
-      return;
+      return wf.active_version_id;
     }
     if(trigger.repository!==this.env.GITHUB_EXECUTOR_REPOSITORY||admission.source!==trigger.repository)throw new StateError('unauthorized_source');
     if(!(GITHUB_TRIGGER_EVENTS as readonly string[]).includes(admission.event)||!trigger.events.includes(admission.event))throw new StateError('unauthorized_event');
+    return wf.active_version_id;
   }
   async cancel(run_id:string){
     assertId(run_id);
@@ -576,6 +581,20 @@ export class WorkflowService {
     if(parent.cancel_requested_at!=null)throw new StateError('cancel_requested');
     const depth=Number(parent.call_depth??0)+1;
     if(!Number.isSafeInteger(depth)||depth>LIMITS.maxChildDepth)throw new StateError('child_depth_exceeded');
+    const inputJson=json(args.inputs);
+    const request_digest=await digest(canonicalJsonString(args.inputs));
+    const key='child_'+await digest(args.parent_run_id+'\0'+args.parent_step_id+'\0'+args.mode);
+    // The child row is the durable admission record. Recover it before looking
+    // at mutable publication state so a replay survives pause or republish.
+    const existing=await this.db.prepare('SELECT * FROM runs WHERE workflow_id=? AND admission_key=?')
+      .bind(args.workflow_id,key).first<RunRow>();
+    if(existing){
+      if(existing.request_digest!==request_digest)throw new StateError('idempotency_conflict');
+      if(args.mode==='await'&&!TERMINAL_OUTCOMES.includes(existing.outcome))
+        await this.db.prepare("UPDATE runs SET outcome='waiting',updated_at=? WHERE id=? AND outcome='running' AND cancel_requested_at IS NULL")
+          .bind(now(),args.parent_run_id).run();
+      return this.reconcileStart(existing);
+    }
     const wf=await this.row(args.workflow_id);
     if(wf.state!=='active'||!wf.active_version_id)throw new StateError('workflow_not_active');
     const versionRow=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=? AND workflow_id=?')
@@ -588,18 +607,6 @@ export class WorkflowService {
     catch(error){
       if(error instanceof PlanError)throw new StateError(error.message.split(':')[0]||'child_input_rejected');
       throw error;
-    }
-    const inputJson=json(args.inputs);
-    const request_digest=await digest(canonicalJsonString(args.inputs));
-    const key='child_'+await digest(args.parent_run_id+'\0'+args.parent_step_id+'\0'+args.mode);
-    const existing=await this.db.prepare('SELECT * FROM runs WHERE workflow_id=? AND admission_key=?')
-      .bind(args.workflow_id,key).first<RunRow>();
-    if(existing){
-      if(existing.request_digest!==request_digest)throw new StateError('idempotency_conflict');
-      if(args.mode==='await'&&!TERMINAL_OUTCOMES.includes(existing.outcome))
-        await this.db.prepare("UPDATE runs SET outcome='waiting',updated_at=? WHERE id=? AND outcome='running' AND cancel_requested_at IS NULL")
-          .bind(now(),args.parent_run_id).run();
-      return this.reconcileStart(existing);
     }
     if(args.mode==='await'){
       if(parent.outcome!=='running'&&parent.outcome!=='waiting')throw new StateError('parent_not_running');
@@ -635,7 +642,7 @@ export class WorkflowService {
       return this.reconcileStart(prior!);
     }
   }
-  async start(workflow_id:string,inputs:Record<string,unknown>={},idempotency_key?:string,mode:'manual'|'event'='manual'){
+  async start(workflow_id:string,inputs:Record<string,unknown>={},idempotency_key?:string,mode:'manual'|'event'='manual',expectedVersionId?:string){
     assertId(workflow_id);
     if(idempotency_key!==undefined){
       const reserved=/^evt_[0-9a-f]{64}$/.test(idempotency_key);
@@ -665,6 +672,7 @@ export class WorkflowService {
     }
     const wf=await this.row(workflow_id);
     if(wf.state!=='active'||!wf.active_version_id)throw new StateError('workflow_not_active');
+    if(expectedVersionId!==undefined&&wf.active_version_id!==expectedVersionId)throw new StateError('published_version_changed');
     const version=wf.active_version_id;
     const id=crypto.randomUUID(),t=now();
     const insert=await this.db.prepare(

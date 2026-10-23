@@ -41,6 +41,12 @@ export async function handleScheduled(controller: ScheduledTick, env: Env) {
         cancellationReconciliations.push({run_id:item.id,cancellation:result});
       } catch (error) {
         cancellationReconciliations.push({run_id:item.id,error:cleanError(error)});
+      } finally {
+        // Rotate checked-but-still-open rows behind untouched work so a
+        // refinable indeterminate prefix cannot monopolize every 100-row
+        // Scheduled batch. updated_at is already the durable run touch time.
+        try { await env.DB.prepare(`UPDATE runs SET updated_at=? WHERE id=? AND cancel_requested_at IS NOT NULL
+          AND outcome IN ('queued','running','waiting','indeterminate')`).bind(Date.now(),item.id).run(); } catch { /* the next tick will retry it */ }
       }
     }
     const seen = new Set<string>();

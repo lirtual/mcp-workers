@@ -307,10 +307,9 @@ test('MCP approved read-only MCP tool invokes actual SDK only through scoped pub
   const {env,admit,run,service}=setup(t);
   const grant:ReadonlyOperation={endpoint:'https://test-mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
   const admitted=await admit([{id:'read',uses:'mcp.call',with:{
-    endpoint:grant.endpoint,tool:grant.tool,scope:'read',input_schema:PINNED_SCHEMA,arguments:{value:'hello',url:'https://example.org/opaque'},
+    endpoint:grant.endpoint,tool:grant.tool,scope:'read',input_schema:PINNED_SCHEMA,arguments:{value:123,extra:'unapproved'},
   }}],{},[grant]);
-  // The existing Workflow echo fixture rejects extra args: this must prove the
-  // transport was reached without falsely marking an invalid tool call safe.
+  // Runtime args must be rejected by the pinned schema before network access.
   const originalFetch=globalThis.fetch;
   let networkCalls=0,secretSeen=false;
   globalThis.fetch=(async(input:RequestInfo|URL,init?:RequestInit)=>{
@@ -323,11 +322,10 @@ test('MCP approved read-only MCP tool invokes actual SDK only through scoped pub
   }) as typeof fetch;
   try{await run(admitted.run_id);}finally{globalThis.fetch=originalFetch;}
   const result=await service.result(admitted.run_id);
-  // A remote rejection after tools/call still does not prove no side effect.
-  assert.equal(result.status,'indeterminate');
-  assert.equal(result.steps[0].status,'indeterminate');
-  assert.equal(result.error_code,'external_outcome_unknown');
-  assert.ok(networkCalls>0);
+  assert.equal(result.status,'failed');
+  assert.equal(result.steps[0].status,'failed');
+  assert.equal(result.steps[0].error_code,'invalid_arguments');
+  assert.equal(networkCalls,0);
   assert.equal(secretSeen,false);
 });
 

@@ -6,6 +6,8 @@ import { readFileSync } from 'node:fs';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import type { WorkflowEvent, WorkflowStep } from 'cloudflare:workers';
 import type { Env } from '../src/store.ts';
+import {reconcileRunCancellation} from '../src/run-cancel.ts';
+import {REGISTERED_GITHUB_ACTION,registeredWorkflowRef} from '../src/github-registry.ts';
 
 const hook=registerHooks({resolve(specifier,context,next){
   if(specifier==='cloudflare:workers')return {
@@ -122,6 +124,27 @@ async function connect(t:test.TestContext, env:Env){
 
 function cancelCount(calls:string[]){
   return calls.filter(line=>line.includes('/cancel')).length;
+}
+
+function insertCancellationRun(ctx:ReturnType<typeof setup>,plan:unknown,outcome='running'){
+  const runId=crypto.randomUUID(),workflowId='cancel-fixture-'+runId,versionId='version-'+runId,stamp=Date.now()-1_000;
+  ctx.sqlite.prepare("INSERT INTO workflows(id,name,draft,state,created_at,updated_at) VALUES(?, 'Cancel fixture','{}','active',?,?)")
+    .run(workflowId,stamp,stamp);
+  ctx.sqlite.prepare('INSERT INTO workflow_versions(id,workflow_id,digest,plan,created_at) VALUES(?,?,?,?,?)')
+    .run(versionId,workflowId,'digest-'+runId,JSON.stringify(plan),stamp);
+  ctx.sqlite.prepare(`INSERT INTO runs(id,workflow_id,version_id,instance_id,request_digest,inputs,start_state,outcome,cancel_requested_at,created_at,updated_at)
+    VALUES(?,?,?,?,?,?,'started',?,?,?,?)`).run(runId,workflowId,versionId,runId,'digest-'+runId,'{}',outcome,stamp,stamp,stamp);
+  return {runId,workflowId,versionId,stamp};
+}
+
+function insertAttempt(ctx:ReturnType<typeof setup>,run:{runId:string;versionId:string;stamp:number},options:{stepId:string;capabilityId?:string;state:string;repository?:string;workflowRef?:string;ref?:string;candidateRunId?:number|null}){
+  const id=crypto.randomUUID(),registered=options.capabilityId===REGISTERED_GITHUB_ACTION.id;
+  ctx.sqlite.prepare(`INSERT INTO step_attempts(attempt_id,run_id,step_id,capability_id,dispatch_id,state,repository,repository_id,workflow_ref,ref,candidate_run_id,candidate_run_attempt,created_at,updated_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id,run.runId,options.stepId,options.capabilityId??'github.workflow.check',crypto.randomUUID(),options.state,
+      options.repository??(registered?REGISTERED_GITHUB_ACTION.repository:REPO),registered?REGISTERED_GITHUB_ACTION.repositoryId:'987654321',
+      options.workflowRef??(registered?registeredWorkflowRef():REPO+'/.github/workflows/workflow-github-executor.yml@refs/heads/main'),
+      options.ref??(registered?REGISTERED_GITHUB_ACTION.ref:'refs/heads/main'),options.candidateRunId??null,options.candidateRunId==null?null:1,run.stamp,run.stamp);
+  return id;
 }
 
 async function waitingGithub(t:test.TestContext, github:GithubFixture){
@@ -298,6 +321,68 @@ test('a succeeded receipt contradicted by a cancelled GitHub run stays indetermi
   assert.equal(after.cancellation,'indeterminate');
   assert.equal(cancelCount(ctx.calls),1);
   assert.equal(ctx.calls.filter(line=>line.includes('/dispatches')).length,1);
+});
+
+test('a successful GitHub Receipt cannot succeed a mixed DAG while a later protected step is pending',async t=>{
+  const ctx=setup(t,{run:'completed',conclusion:'success',cancel:'accept'});
+  const plan={steps:[{id:'heavy',uses:'github.run'},{id:'write',uses:'mcp.call',approval:{required:true}}]};
+  const run=insertCancellationRun(ctx,plan);
+  ctx.sqlite.prepare("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES(?, 'heavy','succeeded',?)").run(run.runId,run.stamp);
+  ctx.sqlite.prepare("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES(?, 'write','waiting_approval',?)").run(run.runId,run.stamp);
+  const attemptId=insertAttempt(ctx,run,{stepId:'heavy',state:'confirmed',candidateRunId:RUN});
+  ctx.sqlite.prepare("INSERT INTO callback_receipts(callback_id,attempt_id,outcome,result_json,created_at) VALUES(?,?,'succeeded','{\"ok\":true}',?)")
+    .run(crypto.randomUUID(),attemptId,run.stamp);
+  ctx.sqlite.prepare("UPDATE runs SET cancel_requested_at=? WHERE id=?").run(run.stamp,run.runId);
+  assert.equal(await reconcileRunCancellation(ctx.env.DB,ctx.env,run.runId), 'completed');
+  const stored=ctx.sqlite.prepare('SELECT outcome,error_code FROM runs WHERE id=?').get(run.runId) as {outcome:string;error_code:string|null};
+  assert.notEqual(stored.outcome,'succeeded');
+  assert.equal(stored.outcome,'indeterminate');
+  assert.equal(stored.error_code,'cancel_business_incomplete');
+});
+
+test('an in-flight MCP protected write makes cancellation indeterminate',async t=>{
+  const ctx=setup(t,{run:'in_progress',conclusion:null,cancel:'accept'});
+  const run=insertCancellationRun(ctx,{steps:[{id:'write',uses:'mcp.call'}]});
+  ctx.sqlite.prepare("INSERT INTO protected_effects(run_id,step_id,grant_key,state,created_at,updated_at) VALUES(?, 'write','grant','dispatching',?,?)")
+    .run(run.runId,run.stamp,run.stamp);
+  ctx.sqlite.prepare("UPDATE runs SET cancel_requested_at=? WHERE id=?").run(run.stamp,run.runId);
+  assert.equal(await reconcileRunCancellation(ctx.env.DB,ctx.env,run.runId),'indeterminate');
+  const stored=ctx.sqlite.prepare('SELECT outcome,error_code FROM runs WHERE id=?').get(run.runId) as {outcome:string;error_code:string|null};
+  assert.equal(stored.outcome,'indeterminate');
+  assert.equal(stored.error_code,'cancel_external_effect_unknown');
+});
+
+test('a created GitHub Attempt becomes durably indeterminate after its Workflow stops and never replays',async t=>{
+  const ctx=setup(t,{run:'in_progress',conclusion:null,cancel:'accept'});
+  const run=insertCancellationRun(ctx,{steps:[{id:'heavy',uses:'github.run'}]});
+  insertAttempt(ctx,run,{stepId:'heavy',state:'created'});
+  ctx.sqlite.prepare("UPDATE runs SET cancel_requested_at=? WHERE id=?").run(run.stamp,run.runId);
+  assert.equal(await reconcileRunCancellation(ctx.env.DB,ctx.env,run.runId),'indeterminate');
+  const stored=ctx.sqlite.prepare('SELECT outcome,error_code FROM runs WHERE id=?').get(run.runId) as {outcome:string;error_code:string|null};
+  assert.equal(stored.outcome,'indeterminate');
+  assert.equal(stored.error_code,'github_dispatch_unknown');
+  assert.equal(await reconcileRunCancellation(ctx.env.DB,ctx.env,run.runId),'indeterminate');
+  assert.equal(cancelCount(ctx.calls),0);
+});
+
+test('registered GitHub Action cancellation uses its pinned registry identity without the legacy repository setting',async t=>{
+  const ctx=setup(t,{run:'in_progress',conclusion:null,cancel:'accept'});
+  delete (ctx.env as unknown as Record<string,unknown>).GITHUB_EXECUTOR_REPOSITORY;
+  const run=insertCancellationRun(ctx,{steps:[{id:'action',uses:'github.run'}]});
+  insertAttempt(ctx,run,{stepId:'action',capabilityId:REGISTERED_GITHUB_ACTION.id,state:'confirmed',candidateRunId:RUN});
+  ctx.sqlite.prepare("UPDATE runs SET cancel_requested_at=? WHERE id=?").run(run.stamp,run.runId);
+  const requests:string[]=[];
+  const outbound=async(request:Request)=>{
+    requests.push(request.method+' '+request.url);
+    if(request.url===`https://api.github.com/repos/${REGISTERED_GITHUB_ACTION.repository}/actions/runs/${RUN}/cancel`)
+      return new Response(null,{status:202});
+    if(request.url===`https://api.github.com/repos/${REGISTERED_GITHUB_ACTION.repository}/actions/runs/${RUN}`)
+      return Response.json({id:RUN,status:'in_progress',conclusion:null});
+    throw Error('unexpected:'+request.url);
+  };
+  assert.equal(await reconcileRunCancellation(ctx.env.DB,ctx.env,run.runId,outbound),'requested');
+  assert.equal(requests.some(url=>url.includes('/cancel')),true);
+  assert.equal(requests.some(url=>url.includes('/actions/runs/'+RUN)),true);
 });
 
 test('pause and resume do not cancel an in-flight GitHub run',async t=>{

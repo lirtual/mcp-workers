@@ -42,11 +42,20 @@ function setup(t:test.TestContext){
   t.after(()=>sqlite.close());
   for(const file of ['0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql','0006_github_registered_action.sql','0007_run_cancel.sql','0008_grant_revocation.sql','0009_runtime_approval.sql','0010_child_run.sql','0011_cron_due.sql','0012_cron_due_bounds.sql'])
     sqlite.exec(readFileSync(new URL('../migrations/'+file,import.meta.url),'utf8'));
+  let switchVersionAfterTriggerRead:{workflowId:string;versionId:string;reads:number}|null=null;
   function prepare(sql:string){
     let args:any[]=[];
     return {
       bind(...values:any[]){args=values;return this;},
-      async first(){return sqlite.prepare(sql).get(...args)??null;},
+      async first(){
+        const row=sqlite.prepare(sql).get(...args)??null;
+        if(switchVersionAfterTriggerRead&&sql.includes('SELECT * FROM workflows WHERE id=?')&&args[0]===switchVersionAfterTriggerRead.workflowId&&++switchVersionAfterTriggerRead.reads>=2){
+          sqlite.prepare("UPDATE workflows SET active_version_id=? WHERE id=? AND state='active'")
+            .run(switchVersionAfterTriggerRead.versionId,switchVersionAfterTriggerRead.workflowId);
+          switchVersionAfterTriggerRead=null;
+        }
+        return row;
+      },
       async all(){return {results:sqlite.prepare(sql).all(...args)};},
       async run(){return {meta:{changes:Number(sqlite.prepare(sql).run(...args).changes)}};},
     };
@@ -61,7 +70,7 @@ function setup(t:test.TestContext){
     DB:{prepare,async batch(items:{run:()=>Promise<unknown>}[]){return Promise.all(items.map(item=>item.run()));}},
     WORKFLOW:{async create(options:{id:string}){creates.push(options.id);},async get(){return {async status(){return {status:'running'};}};}},
   } as unknown as Env;
-  return {env,creates};
+  return {env,creates,sqlite,switchVersionAfterTriggerRead(workflowId:string,versionId:string){switchVersionAfterTriggerRead={workflowId,versionId,reads:0};}};
 }
 
 async function connect(t:test.TestContext, env:Env){
@@ -246,6 +255,25 @@ test('version switch, pause, and replay keep the admitted Run pinned',async t=>{
   assert.equal(afterResume.status,200);
   assert.equal(afterResume.body.published_version_id,secondVersion.published_version_id);
   assert.equal(creates.length,3);
+});
+
+test('trigger approval is bound to the Published version used for admission',async t=>{
+  const {env,creates,sqlite,switchVersionAfterTriggerRead}=setup(t);
+  const call=await connect(t,env);
+  const created=await call('workflow_create',{definition:JSON.stringify(webhookDefinition('Trigger race'))});
+  const first=await call('workflow_publish',{workflow_id:created.workflow_id,expected_revision:1});
+  const updated=await call('workflow_update',{workflow_id:created.workflow_id,expected_revision:1,
+    definition:JSON.stringify({version:1,name:'Trigger removed',steps:[{id:'emit',uses:'result.emit',with:{data:'ok'}}]})});
+  const second=await call('workflow_publish',{workflow_id:created.workflow_id,expected_revision:updated.draft_revision});
+  assert.notEqual(first.published_version_id,second.published_version_id);
+  sqlite.prepare("UPDATE workflows SET active_version_id=? WHERE id=?").run(first.published_version_id,created.workflow_id);
+  switchVersionAfterTriggerRead(created.workflow_id,second.published_version_id);
+  const response=await read(await post(env,'/triggers/webhook/'+created.workflow_id,WEBHOOK_SECRET,{n:1},
+    {'x-workflow-event':'submitted','x-workflow-event-id':'switch-during-admission'}));
+  assert.equal(response.status,409,JSON.stringify(response.body));
+  assert.equal(response.body.error,'published_version_changed');
+  assert.equal(creates.length,0);
+  assert.equal((sqlite.prepare('SELECT COUNT(*) AS n FROM runs').get() as {n:number}).n,0);
 });
 
 test('GitHub delivery dedupes one Run and cannot enter through the executor callback',async t=>{

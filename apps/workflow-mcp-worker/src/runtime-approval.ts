@@ -105,13 +105,16 @@ export async function waitForRuntimeApproval(
     return {ok: false, error_code: 'approval_denied'};
   if (!decision || !inTime(decision, deadline) || decision.decision !== 'approved')
     return {ok: false, error_code: 'approval_timeout'};
-  if (decision.consumed_at !== null) return {ok: false, error_code: 'approval_already_used'};
   if (grantKey !== null && await grantRevoked(db, versionId, grantKey))
     return {ok: false, error_code: 'grant_revoked'};
-  const consumed = await db.prepare(
+  // The approval row and the protected-effect/GitHub Attempt row cannot share
+  // one D1 transaction with the external call. A replay may therefore see a
+  // consumed approval before the effect fence was written. Resume the same
+  // run/step/version binding; the effect/Attempt unique key remains the
+  // authority that prevents a blind second dispatch.
+  await db.prepare(
     `UPDATE runtime_approvals SET consumed_at=?
      WHERE run_id=? AND step_id=? AND version_id=? AND decision='approved' AND consumed_at IS NULL`,
   ).bind(now(), runId, stepId, versionId).run();
-  if (consumed.meta.changes < 1) return {ok: false, error_code: 'approval_already_used'};
   return {ok: true};
 }

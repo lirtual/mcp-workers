@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { compilePlan, evaluateExpression, evaluateArguments, evaluateCondition, canonicalJsonString, PlanError, toolSchemaDigest } from '../src/plan.ts';
+import { assertToolArguments, compilePlan, evaluateExpression, evaluateArguments, evaluateCondition, canonicalJsonString, PlanError, toolSchemaDigest } from '../src/plan.ts';
 import { capabilityCatalog, GITHUB_CAPABILITY_ID, LIMITS, supportedCapabilityExamples, workflowCapabilities } from '../src/capabilities.ts';
 import { REGISTERED_GITHUB_ACTION, registeredGithubPin } from '../src/github-registry.ts';
 
@@ -481,4 +481,12 @@ test('unbounded loops, dynamic expansion, nesting, and unsafe loop bodies fail v
   const saga = workflowCapabilities({}, 'flow.saga');
   assert.equal(saga.status, 'supported');
   assert.equal('boundary' in saga && saga.boundary, 'not_an_acid_rollback');
+});
+
+test('resolved external arguments obey pinned types and additionalProperties',()=>{
+  const schema={type:'object',properties:{value:{type:'string'}},required:['value'],additionalProperties:false};
+  assert.doesNotThrow(()=>assertToolArguments(schema,{value:'ok'}));
+  assert.throws(()=>assertToolArguments(schema,{value:123,extra:'unapproved'}),/invalid_arguments/);
+  assert.throws(()=>assertToolArguments(schema,{value:'ok',extra:'unapproved'}),/invalid_arguments/);
+  assert.throws(()=>assertToolArguments({type:'object',properties:{value:{'$ref':'#/$defs/value'}}},{value:'ok'}),/invalid_arguments/);
 });

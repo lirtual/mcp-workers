@@ -362,6 +362,53 @@ export async function toolSchemaDigest(inputSchema:unknown, outputSchema?:unknow
   const hash=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(serial));
   return [...new Uint8Array(hash)].map(v=>v.toString(16).padStart(2,'0')).join('');
 }
+/** Validate resolved runtime values against the pinned JSON Schema subset used by external tools. */
+export function assertToolArguments(schema:unknown,value:unknown):void{
+  const reject=():never=>{throw new PlanError('invalid_arguments');};
+  const valid=(rule:unknown,item:unknown,depth=0):boolean=>{
+    if(depth>LIMITS.maxDefinitionDepth||!rule||typeof rule!=='object'||Array.isArray(rule))return false;
+    const s=rule as Record<string,unknown>;
+    const supported=new Set(['$schema','$id','title','description','default','examples','deprecated','readOnly','writeOnly',
+      'type','enum','const','allOf','anyOf','oneOf','properties','required','additionalProperties','minProperties','maxProperties',
+      'items','minItems','maxItems','minLength','maxLength','pattern','format','minimum','maximum','exclusiveMinimum','exclusiveMaximum','multipleOf']);
+    if(Object.keys(s).some(key=>!supported.has(key)))return false;
+    if(typeof s.type==='string'){
+      const matches=s.type==='object'?item!==null&&typeof item==='object'&&!Array.isArray(item)
+        :s.type==='array'?Array.isArray(item):s.type==='integer'?typeof item==='number'&&Number.isInteger(item)
+        :s.type==='number'?typeof item==='number'&&Number.isFinite(item):s.type==='null'?item===null:typeof item===s.type;
+      if(!matches)return false;
+    }
+    if(Array.isArray(s.enum)&&!s.enum.some(candidate=>canonicalJsonString(candidate)===canonicalJsonString(item)))return false;
+    if(Object.hasOwn(s,'const')&&canonicalJsonString(s.const)!==canonicalJsonString(item))return false;
+    for(const key of ['allOf','anyOf','oneOf'] as const){
+      if(s[key]!==undefined){if(!Array.isArray(s[key]))return false;const count=(s[key] as unknown[]).filter(child=>valid(child,item,depth+1)).length;
+        if(key==='allOf'&&count!==(s[key] as unknown[]).length||key==='anyOf'&&count===0||key==='oneOf'&&count!==1)return false;}
+    }
+    if(item&&typeof item==='object'&&!Array.isArray(item)){
+      const record=item as Record<string,unknown>, props=s.properties&&typeof s.properties==='object'&&!Array.isArray(s.properties)?s.properties as Record<string,unknown>:{};
+      if(Array.isArray(s.required)&&s.required.some(key=>typeof key!=='string'||!Object.hasOwn(record,key)))return false;
+      for(const [key,child] of Object.entries(record)){
+        if(Object.hasOwn(props,key)){if(!valid(props[key],child,depth+1))return false;}
+        else if(s.additionalProperties===false)return false;
+        else if(s.additionalProperties&&typeof s.additionalProperties==='object'&&!valid(s.additionalProperties,child,depth+1))return false;
+      }
+      if(typeof s.minProperties==='number'&&Object.keys(record).length<s.minProperties||typeof s.maxProperties==='number'&&Object.keys(record).length>s.maxProperties)return false;
+    }
+    if(Array.isArray(item)){
+      if(typeof s.minItems==='number'&&item.length<s.minItems||typeof s.maxItems==='number'&&item.length>s.maxItems)return false;
+      if(s.items!==undefined&&item.some(child=>!valid(s.items,child,depth+1)))return false;
+    }
+    if(typeof item==='string'){
+      if(typeof s.minLength==='number'&&[...item].length<s.minLength||typeof s.maxLength==='number'&&[...item].length>s.maxLength)return false;
+      if(typeof s.pattern==='string'){try{if(!new RegExp(s.pattern).test(item))return false;}catch{return false;}}
+    }
+    if(typeof item==='number'){
+      if(typeof s.minimum==='number'&&item<s.minimum||typeof s.maximum==='number'&&item>s.maximum||typeof s.exclusiveMinimum==='number'&&item<=s.exclusiveMinimum||typeof s.exclusiveMaximum==='number'&&item>=s.exclusiveMaximum||typeof s.multipleOf==='number'&&(!Number.isFinite(s.multipleOf)||s.multipleOf<=0||Math.abs(item/s.multipleOf-Math.round(item/s.multipleOf))>1e-10))return false;
+    }
+    return true;
+  };
+  if(!valid(schema,value))reject();
+}
 export function evaluateExpression(v: unknown, ctx: ExprCtx): any {
   if(Array.isArray(v))return v.map(x=>evaluateExpression(x,ctx));
   if(v===null||typeof v!=='object')return v;

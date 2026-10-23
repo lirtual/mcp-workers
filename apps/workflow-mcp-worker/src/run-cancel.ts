@@ -3,6 +3,8 @@ import { cancelRegisteredGithubRun, observeRegisteredGithubRun, type GithubExecu
 import { observeInstance } from './instance-observation.ts';
 import { LIMITS } from './capabilities.ts';
 import { COMPENSATION_ROW } from './saga.ts';
+import {REGISTERED_GITHUB_ACTION, registeredWorkflowRef} from './github-registry.ts';
+import type {Plan} from './plan.ts';
 
 /** Let a live runner finish published cancel compensation before terminate(). */
 export const CANCEL_SAGA_GRACE_MS=10*60_000;
@@ -11,9 +13,13 @@ export type RunCancellation='requested'|'cancelled'|'completed'|'indeterminate';
 type CancelEffect='acknowledged'|'unknown'|null;
 type AttemptCancelRow={
   attempt_id:string;
+  step_id:string;
+  capability_id:string;
   state:string;
   candidate_run_id:number|null;
   repository:string;
+  workflow_ref:string;
+  ref:string;
   cancel_effect:CancelEffect;
   receipt_outcome:string|null;
   result_json:string|null;
@@ -66,7 +72,7 @@ export class CancelObserved extends Error {
   constructor(){super('cancel_observed');this.name='CancelObserved';}
 }
 
-const ATTEMPT_SQL=`SELECT a.attempt_id,a.state,a.candidate_run_id,a.repository,a.cancel_effect,
+const ATTEMPT_SQL=`SELECT a.attempt_id,a.step_id,a.capability_id,a.state,a.candidate_run_id,a.repository,a.workflow_ref,a.ref,a.cancel_effect,
   c.outcome AS receipt_outcome,c.result_json
   FROM step_attempts a
   LEFT JOIN callback_receipts c ON c.attempt_id=a.attempt_id
@@ -75,6 +81,35 @@ const ATTEMPT_SQL=`SELECT a.attempt_id,a.state,a.candidate_run_id,a.repository,a
 async function attempts(db:AttemptDatabase, runId:string):Promise<AttemptCancelRow[]>{
   const rows=await db.prepare(ATTEMPT_SQL).bind(runId).all<AttemptCancelRow>();
   return rows.results;
+}
+
+function pinnedAttemptRepository(env:CancelRuntime, attempt:AttemptCancelRow):string|null{
+  if(attempt.capability_id===REGISTERED_GITHUB_ACTION.id){
+    return attempt.repository===REGISTERED_GITHUB_ACTION.repository&&
+      attempt.workflow_ref===registeredWorkflowRef()&&attempt.ref===REGISTERED_GITHUB_ACTION.ref
+      ?REGISTERED_GITHUB_ACTION.repository:null;
+  }
+  return env.GITHUB_EXECUTOR_REPOSITORY===attempt.repository?attempt.repository:null;
+}
+
+async function hasUnconfirmedProtectedEffect(db:AttemptDatabase,runId:string):Promise<boolean>{
+  const row=await db.prepare(`SELECT 1 AS pending FROM protected_effects
+    WHERE run_id=? AND state IN ('dispatching','indeterminate') LIMIT 1`).bind(runId).first<{pending:number}>();
+  return row!==null&&row!==undefined;
+}
+
+async function businessDagSucceeded(db:AttemptDatabase,runId:string,versionId:string,receipts:AttemptCancelRow[]):Promise<boolean>{
+  const version=await db.prepare('SELECT plan FROM workflow_versions WHERE id=?').bind(versionId).first<{plan:string}>();
+  if(!version)return false;
+  let steps:Plan['steps'];
+  try{steps=(JSON.parse(version.plan) as Plan).steps;}
+  catch{return false;}
+  if(!steps.length)return false;
+  const rows=await db.prepare('SELECT step_id,status FROM run_steps WHERE run_id=?').bind(runId).all<{step_id:string;status:string}>();
+  const statuses=new Map(rows.results.map(row=>[row.step_id,row.status]));
+  const successfulReceipts=new Set(receipts.filter(row=>row.receipt_outcome==='succeeded').map(row=>row.step_id));
+  return steps.every(step=>statuses.get(step.id)==='succeeded'||statuses.get(step.id)==='skipped'||
+    (step.uses==='github.run'&&successfulReceipts.has(step.id)));
 }
 
 async function finish(db:AttemptDatabase, runId:string, proposed:RunCancellation):Promise<RunCancellation>{
@@ -104,9 +139,10 @@ async function persist(
 
 async function issueCancels(db:AttemptDatabase, env:CancelRuntime, rows:AttemptCancelRow[], outbound:Outbound){
   const token=env.WORKFLOW_EXECUTOR_GITHUB_TOKEN;
-  const repository=env.GITHUB_EXECUTOR_REPOSITORY;
-  if(!token||!repository) return;
+  if(!token) return;
   for(const attempt of rows){
+    const repository=pinnedAttemptRepository(env,attempt);
+    if(!repository)continue;
     if(attempt.receipt_outcome) continue;
     if(attempt.state!=='confirmed'&&attempt.state!=='claimed') continue;
     if(attempt.candidate_run_id==null||attempt.cancel_effect!=null) continue;
@@ -166,10 +202,10 @@ function aggregate(readings:GithubExecutionObservation[], effects:CancelEffect[]
 
 async function observeRows(db:AttemptDatabase, env:CancelRuntime, rows:AttemptCancelRow[], outbound:Outbound){
   const token=env.WORKFLOW_EXECUTOR_GITHUB_TOKEN;
-  const repository=env.GITHUB_EXECUTOR_REPOSITORY;
   const readings:GithubExecutionObservation[]=[];
   for(const attempt of rows){
-    if(!token||attempt.repository!==repository||attempt.candidate_run_id==null){
+    const repository=pinnedAttemptRepository(env,attempt);
+    if(!token||!repository||attempt.candidate_run_id==null){
       readings.push({kind:'unknown'});
       continue;
     }
@@ -185,6 +221,11 @@ async function persistReceipt(db:AttemptDatabase, runId:string, rows:AttemptCanc
   const outcomes=new Set(rows.map(row=>row.receipt_outcome));
   if(outcomes.size!==1) return;
   if(outcomes.has('succeeded')){
+    const run=await db.prepare('SELECT version_id FROM runs WHERE id=?').bind(runId).first<{version_id:string}>();
+    if(!run||!await businessDagSucceeded(db,runId,run.version_id,rows)){
+      await persist(db,runId,'indeterminate','cancel_business_incomplete');
+      return;
+    }
     await persist(db, runId, 'succeeded', null, rows.length===1?rows[0].result_json??undefined:undefined);
     return;
   }
@@ -234,14 +275,24 @@ async function reconcileCancelledRun(
   if(run.start_state==='started') await bestEffortTerminate(env, run.instance_id);
   await issueCancels(db, env, await attempts(db, runId), outbound);
   const fresh=await attempts(db, runId);
+  if(await hasUnconfirmedProtectedEffect(db,runId)){
+    await persist(db,runId,'indeterminate','cancel_external_effect_unknown');
+    return finish(db,runId,'indeterminate');
+  }
   if(fresh.some(row=>row.state==='dispatch_unknown')){
     if(run.outcome==='queued'||run.outcome==='running')
       await persist(db, runId, 'indeterminate',
         run.error_code==='github_dispatch_unknown'?'github_dispatch_unknown':'cancel_unconfirmed');
     return finish(db, runId, 'indeterminate');
   }
-  if(fresh.some(row=>row.state==='created')&&fresh.every(row=>row.candidate_run_id==null))
-    return finish(db, runId, 'requested');
+  if(fresh.some(row=>row.state==='created'&&row.candidate_run_id==null)){
+    const observed=run.start_state==='started'?await observeInstance(env.WORKFLOW,run.instance_id):{kind:'missing' as const};
+    if(observed.kind==='unavailable'||(observed.kind==='found'&&
+      observed.status!=='terminated'&&observed.status!=='complete'&&observed.status!=='errored'))
+      return finish(db,runId,'requested');
+    await persist(db,runId,'indeterminate','github_dispatch_unknown');
+    return finish(db,runId,'indeterminate');
+  }
   const watched=fresh.filter(row=>row.candidate_run_id!=null&&
     ['confirmed','claimed','succeeded','failed','cancelled'].includes(row.state));
   if(!watched.length){

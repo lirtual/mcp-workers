@@ -371,6 +371,30 @@ test('one approved MCP write and one restricted HTTP fixture complete, then revo
   }
 });
 
+test('HTTP runtime references are checked against the published fixture schema before dispatch',async t=>{
+  const {env,call,run,client,transport,counts}=harness(t,{hint:'false',drift:false,http:'echo'});
+  await client.connect(transport);
+  try{
+    const definition={version:1,name:'HTTP argument validation',steps:[
+      {id:'source',uses:'result.emit',with:{data:{value:123,extra:'unapproved'}}},
+      {id:'request',needs:['source'],uses:'http.request',with:{fixture:FIXTURE_ID,scope:'read',input_schema:HTTP_SCHEMA,
+        arguments:{ref:'steps.source.output'}}},
+    ]};
+    const created=await call('workflow_create',{definition:JSON.stringify(definition)});
+    const preview=await call('workflow_validate',{workflow_id:created.workflow_id,revision:1});
+    const published=await call('workflow_publish',{workflow_id:created.workflow_id,expected_revision:1,
+      approved_operations:preview.required_approvals,accept_target_risks:true});
+    const before=counts().httpCalls;
+    const started=await call('workflow_run',{workflow_id:created.workflow_id});
+    await run(started.run_id);
+    const result=await call('workflow_result',{run_id:started.run_id});
+    assert.equal(result.status,'failed');
+    assert.equal(result.steps.find((step:{step_id:string})=>step.step_id==='request').error_code,'invalid_arguments');
+    assert.equal(counts().httpCalls,before);
+    assert.ok(published.published_version_id);
+  }finally{await client.close();}
+});
+
 test('MCP write fails closed on an untrusted readOnlyHint or a changed schema before tools/call', async t=>{
   const schema=await noteSchema();
   const digest=await toolSchemaDigest(schema);

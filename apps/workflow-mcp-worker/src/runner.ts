@@ -1,6 +1,6 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { canonicalJsonString, evaluateArguments, evaluateCondition, expandedStepCost, expansionChildId, expansionSnapshotId, toolSchemaDigest } from './plan.ts';
+import { assertToolArguments, canonicalJsonString, evaluateArguments, evaluateCondition, expandedStepCost, expansionChildId, expansionSnapshotId, toolSchemaDigest } from './plan.ts';
 import type { ExprCtx, Plan, Step, StepBody } from './plan.ts';
 import { GITHUB_CAPABILITY_ID, HTTP_TARGET_ARGUMENT_KEYS, LIMITS, NON_EXECUTABLE_PLAN_FIELDS, NON_EXECUTABLE_STEP_FIELDS, readHttpFixture } from './capabilities.ts';
 import type { Env } from './store.ts';
@@ -257,6 +257,7 @@ const hasUnresolvedArgument=(value:unknown):boolean=>
   value===undefined||(Array.isArray(value)?value.some(hasUnresolvedArgument):
     value!==null&&typeof value==='object'&&Object.values(value).some(hasUnresolvedArgument));
 async function callApprovedMcp(env:Env,plan:Plan,step:Step,args:Record<string,unknown>,target:EffectTarget):Promise<unknown>{
+  assertToolArguments(step.with.input_schema,args);
   // Enforce the approved published contract before any remote call.
   if(plan.mcp_target_risks_accepted!==true)throw Error('target_risk_acknowledgment_required');
   const endpoint=step.with.endpoint,tool=step.with.tool,schema_digest=step.with.schema_digest;
@@ -335,6 +336,7 @@ async function callApprovedMcp(env:Env,plan:Plan,step:Step,args:Record<string,un
 }
 
 async function callApprovedHttp(env:Env,plan:Plan,step:Step,args:Record<string,unknown>,target:EffectTarget):Promise<unknown>{
+  assertToolArguments(step.with.input_schema,args);
   if(plan.mcp_target_risks_accepted!==true)throw Error('target_risk_acknowledgment_required');
   const fixture=step.with.fixture;
   const schema_digest=step.with.schema_digest;
@@ -585,6 +587,15 @@ async function runApprovalGatedStep(env: Env, plan: Plan, s: Step, runId: string
   }) as Outcome;
 }
 const TERMINAL_CHILD=new Set(['succeeded','failed','indeterminate','cancelled']);
+async function waitForParentCapacity(env:Env,runId:string,step:WorkflowStep,childStepId:string):Promise<void>{
+  for(let attempt=0;;attempt++){
+    if(await isCancelRequested(env.DB,runId))throw new CancelObserved();
+    if(await releaseWaitingRun(env.DB,runId))return;
+    const row=await env.DB.prepare('SELECT outcome FROM runs WHERE id=?').bind(runId).first<{outcome:string}>();
+    if(row?.outcome==='running')return;
+    try{await step.waitForEvent<{run_id:string}>('child-capacity-'+childStepId+'-'+attempt,{type:'run-capacity-available',timeout:'30 seconds'});}catch{/* bounded sleep, then retry the atomic slot claim */}
+  }
+}
 async function childFailureCode(db:Env['DB'], runId:string, outcome:string, errorCode:string|null):Promise<string>{
   if(errorCode)return errorCode;
   const step=await db.prepare("SELECT error_code FROM run_steps WHERE run_id=? AND status='failed' AND error_code IS NOT NULL ORDER BY step_id LIMIT 1")
@@ -636,7 +647,7 @@ async function runWorkflowCall(env:Env, planStep:Step, runId:string, ctx:ExprCtx
   }) as {ok:true;run_id:string}|{ok:false;error_code:string};
   if(!admitted.ok){
     if(admitted.error_code==='cancel_requested'||await isCancelRequested(db,runId))throw new CancelObserved();
-    await releaseWaitingRun(db,runId);
+    await waitForParentCapacity(env,runId,step,planStep.id);
     return {status:'failed',error_code:admitted.error_code};
   }
   if(mode==='detach')return {status:'succeeded',output:{run_id:admitted.run_id,detached:true}};
@@ -645,7 +656,7 @@ async function runWorkflowCall(env:Env, planStep:Step, runId:string, ctx:ExprCtx
     const child=await db.prepare('SELECT outcome,result,error_code FROM runs WHERE id=?')
       .bind(admitted.run_id).first<{outcome:string;result:string|null;error_code:string|null}>();
     if(child&&TERMINAL_CHILD.has(child.outcome)){
-      await releaseWaitingRun(db,runId);
+      await waitForParentCapacity(env,runId,step,planStep.id);
       return mapChildRun(db,admitted.run_id,child.outcome,child.result,child.error_code);
     }
     try{
@@ -656,7 +667,7 @@ async function runWorkflowCall(env:Env, planStep:Step, runId:string, ctx:ExprCtx
   const last=await db.prepare('SELECT outcome,result,error_code FROM runs WHERE id=?')
     .bind(admitted.run_id).first<{outcome:string;result:string|null;error_code:string|null}>();
   if(last&&TERMINAL_CHILD.has(last.outcome)){
-    await releaseWaitingRun(db,runId);
+    await waitForParentCapacity(env,runId,step,planStep.id);
     return mapChildRun(db,admitted.run_id,last.outcome,last.result,last.error_code);
   }
   // The budget is spent. Leave the parent parked until the child is terminal
@@ -685,6 +696,13 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
     if(await isCancelRequested(db,id)){
       if(plan.saga?.on.includes('cancel')) await runSagaCompensation(this.env,plan,ctx,id,row.version_id,step,'cancel');
       return;
+    }
+    if(row.outcome==='waiting'){
+      for(let attempt=0;;attempt++){
+        if(await isCancelRequested(db,id))throw new CancelObserved();
+        if(await resumeParkedRun(db,id))break;
+        try{await step.waitForEvent<{run_id:string}>('run-capacity-'+id+'-'+attempt,{type:'run-capacity-available',timeout:'30 seconds'});}catch{/* retry the conditional admission slot claim */}
+      }
     }
     if(row.outcome==='queued'){
       const transition=await db.prepare("UPDATE runs SET outcome='running',updated_at=? WHERE id=? AND outcome='queued'").bind(now(),id).run();
