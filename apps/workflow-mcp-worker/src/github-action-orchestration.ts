@@ -5,7 +5,7 @@ import type { DispatchOutcome } from './github-dispatch.ts';
 
 type Db=Pick<D1Database,'prepare'>;
 type Http=(request:Request)=>Promise<Response>;
-const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 type RequestData={
   runId:string;stepId:string;attemptId:string;dispatchId:string;
   action:ReviewedGitHubAction;ref:string;token:string;inputs:Record<string,string>;
