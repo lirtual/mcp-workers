@@ -7,7 +7,7 @@ import type {Env} from '../src/store.ts';
 const url='https://workflow.example.org/github/action/claim';
 const attemptId='11111111-1111-4111-8111-111111111111';
 const audience='workflow-github-action:production';
-const ref='refs/heads/main';
+const ref='refs/tags/test-v1';
 const sha='a'.repeat(40);
 const repo='lirtual/session-actions';
 const workflowRef=repo+'/.github/workflows/linux.yml@'+ref;
@@ -15,7 +15,7 @@ const action={repository:repo,repositoryId:123,workflowId:45,
  workflowPath:'.github/workflows/linux.yml',commitSha:sha,
  type:'session',contractDigest:'b'.repeat(64)};
 const plan={github_execution_approved:true,github_action_approvals:[action],
- steps:[{id:'linux',uses:'github.run',with:{capability:'github.action',action}}]};
+ steps:[{id:'linux',uses:'github.run',with:{capability:'github.action',action:{...action,ref,inputs:{duration_minutes:5}}}}]};
 const claims={repository:repo,repository_id:'123',workflow_ref:workflowRef,
  ref,sha,run_id:'42',run_attempt:'1',event_name:'workflow_dispatch'};
 const row={run_id:'run',step_id:'linux',state:'confirmed',capability_id:'github.action',
