@@ -1,12 +1,14 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { evaluateArguments, evaluateCondition, toolSchemaDigest } from './plan.ts';
+import { canonicalJsonString, evaluateArguments, evaluateCondition, toolSchemaDigest } from './plan.ts';
 import type { ExprCtx, Plan, Step } from './plan.ts';
-import { LIMITS, NON_EXECUTABLE_PLAN_FIELDS, NON_EXECUTABLE_STEP_FIELDS } from './capabilities.ts';
+import { HTTP_TARGET_ARGUMENT_KEYS, LIMITS, NON_EXECUTABLE_PLAN_FIELDS, NON_EXECUTABLE_STEP_FIELDS, readHttpFixture } from './capabilities.ts';
 import type { Env } from './store.ts';
 import { limitResult } from './store.ts';
 import { dispatchOrResumeGithubAttempt,githubAsyncAwaitingExternal,githubAsyncOutcome,GITHUB_ASYNC_WAKE_LIMIT,GITHUB_ASYNC_WAKE_TIMEOUT,readGithubAsyncFact,type GithubAsyncFact,type GithubDispatchStep } from './github-async.ts';
 import { scopedPublicMcpFetch, TRUSTED_PORTAL_ENDPOINT, PRODUCTION_PORTAL_ENDPOINT, type PortalServiceToken } from './mcp-public-fetch.ts';
+import { prepareFixtureRequest, sendFixture } from './http-fixture.ts';
+import { beginProtectedDispatch, finishProtectedDispatch, grantRevoked, readProtectedEffect } from './protected-effect.ts';
 
 type Outcome={status:'succeeded'|'failed'|'skipped'|'indeterminate';output?:any;error_code?:string};
 function blockedStep(step: Step): boolean {
@@ -46,19 +48,89 @@ async function runBoundedLoop(db: Env['DB'], s: Step, runId: string, step: Workf
   return produced?{status:'succeeded',output}:{status:'skipped'};
 }
 const now=()=>Date.now();
+const CLOSED_FAILURE=new Set([
+  'grant_revoked','approved_schema_changed','tool_schema_drift','readonly_tool_unconfirmed','readonly_hint_untrusted',
+  'external_approval_required','portal_target_not_authorized','portal_target_not_configured','portal_auth_not_configured',
+  'http_target_not_authorized','http_target_invalid','http_fixture_not_configured','http_credential_rejected',
+  'target_argument_rejected','target_risk_acknowledgment_required','mcp_target_invalid','mcp_target_not_authorized',
+  'invalid_arguments',
+]);
+const INDETERMINATE=new Set(['external_outcome_unknown','http_redirect_denied','mcp_redirect_denied']);
+function closedOutcome(error: unknown): Outcome {
+  const code=error instanceof Error?error.message:'';
+  if(INDETERMINATE.has(code))return {status:'indeterminate',error_code:code};
+  if(CLOSED_FAILURE.has(code))return {status:'failed',error_code:code};
+  return {status:'failed',error_code:'step_execution_failed'};
+}
+const HTTP_TARGET_KEYS=new Set<string>(HTTP_TARGET_ARGUMENT_KEYS);
+function assertNoTargetArgument(value: unknown): void {
+  if(Array.isArray(value)){for(const item of value)assertNoTargetArgument(item);return;}
+  if(!value||typeof value!=='object')return;
+  for(const [key, child] of Object.entries(value as Record<string, unknown>)){
+    if(HTTP_TARGET_KEYS.has(key.toLowerCase()))throw Error('target_argument_rejected');
+    assertNoTargetArgument(child);
+  }
+}
+function containsSecret(value: unknown, secrets: readonly string[]): boolean {
+  if(typeof value==='string')return secrets.some(secret=>value.includes(secret));
+  if(Array.isArray(value))return value.some(item=>containsSecret(item, secrets));
+  if(value&&typeof value==='object')return Object.values(value as Record<string, unknown>).some(item=>containsSecret(item, secrets));
+  return false;
+}
+function configuredSecrets(env: Env): string[] {
+  return [env.MCP_PORTAL_CLIENT_SECRET, env.MCP_PORTAL_CLIENT_ID, env.WORKFLOW_EXECUTOR_GITHUB_TOKEN, env.WEBHOOK_TRIGGER_SECRET, env.GITHUB_WEBHOOK_SECRET]
+    .filter((value): value is string => typeof value==='string' && value.length>=16);
+}
+type EffectTarget={db: Env['DB']; runId: string; stepId: string; versionId: string; grantKey: string};
+async function replayOrRefuse(target: EffectTarget): Promise<unknown | undefined> {
+  const prior=await readProtectedEffect(target.db, target.runId, target.stepId);
+  if(prior?.state==='succeeded'){
+    if(prior.result===null)throw Error('external_outcome_unknown');
+    try{return JSON.parse(prior.result);}catch{throw Error('external_outcome_unknown');}
+  }
+  if(prior?.state==='dispatching'){
+    await finishProtectedDispatch(target.db, target.runId, target.stepId, 'indeterminate', null, 'external_outcome_unknown', now());
+    throw Error('external_outcome_unknown');
+  }
+  if(prior)throw Error(prior.error_code&&INDETERMINATE.has(prior.error_code)?prior.error_code:'external_outcome_unknown');
+  if(await grantRevoked(target.db, target.versionId, target.grantKey))throw Error('grant_revoked');
+  return undefined;
+}
+async function dispatched<T>(target: EffectTarget, effect: ()=>Promise<T>): Promise<T> {
+  if(await grantRevoked(target.db, target.versionId, target.grantKey))throw Error('grant_revoked');
+  const started=await beginProtectedDispatch(target.db, target.runId, target.stepId, target.grantKey, now());
+  if(!started){
+    const replayed=await replayOrRefuse(target);
+    if(replayed!==undefined)return replayed as T;
+    throw Error('external_outcome_unknown');
+  }
+  try{
+    const output=await effect();
+    await finishProtectedDispatch(target.db, target.runId, target.stepId, 'succeeded', JSON.stringify(output), null, now());
+    return output;
+  }catch(error){
+    const code=error instanceof Error&&INDETERMINATE.has(error.message)?error.message:'external_outcome_unknown';
+    await finishProtectedDispatch(target.db, target.runId, target.stepId, 'indeterminate', null, code, now());
+    throw Error(code);
+  }
+}
 // A missing Run-input reference must not silently disappear during JSON
 // serialization, changing the meaning of an approved external MCP call.
 const hasUnresolvedArgument=(value:unknown):boolean=>
   value===undefined||(Array.isArray(value)?value.some(hasUnresolvedArgument):
     value!==null&&typeof value==='object'&&Object.values(value).some(hasUnresolvedArgument));
-async function callApprovedReadonly(env:Env,plan:Plan,step:Step,args:Record<string,unknown>):Promise<unknown>{
+async function callApprovedMcp(env:Env,plan:Plan,step:Step,args:Record<string,unknown>,target:EffectTarget):Promise<unknown>{
   // Enforce the approved published contract before any remote call.
   if(plan.mcp_target_risks_accepted!==true)throw Error('target_risk_acknowledgment_required');
   const endpoint=step.with.endpoint,tool=step.with.tool,schema_digest=step.with.schema_digest;
-  const grant=plan.mcp_approvals?.some(g=>g.endpoint===endpoint&&g.tool===tool&&g.scope==='read'&&g.schema_digest===schema_digest);
-  if(!grant||step.with.scope!=='read'||typeof endpoint!=='string'||typeof tool!=='string'||
+  const scope=step.with.scope==='write'?'write':step.with.scope==='read'?'read':undefined;
+  const grant=scope!==undefined&&plan.mcp_approvals?.some(g=>g.endpoint===endpoint&&g.tool===tool&&g.scope===scope&&g.schema_digest===schema_digest);
+  if(!grant||typeof endpoint!=='string'||typeof tool!=='string'||
      typeof schema_digest!=='string'||!/^[0-9a-f]{64}$/.test(schema_digest))
     throw Error('external_approval_required');
+  if(containsSecret(args, configuredSecrets(env)))throw Error('target_argument_rejected');
+  const replayed=await replayOrRefuse(target);
+  if(replayed!==undefined)return replayed;
   // Recompute from the pinned contract so a tampered Plan cannot replace the
   // expected schema while keeping an older authorized digest.
   if(await toolSchemaDigest(step.with.input_schema,step.with.output_schema)!==schema_digest)
@@ -93,17 +165,28 @@ async function callApprovedReadonly(env:Env,plan:Plan,step:Step,args:Record<stri
     const candidate=discovered.tools.find(t=>t.name===tool);
     // Tool annotations are untrusted claims, not a grant. This is a second
     // restrictive gate on top of the owner's exact publish approval.
-    if(!candidate||candidate.annotations?.readOnlyHint!==true||
-       candidate.annotations?.destructiveHint===true)throw Error('readonly_tool_unconfirmed');
+    if(!candidate)throw Error('external_approval_required');
+    if(scope==='read'){
+      if(candidate.annotations?.readOnlyHint!==true||candidate.annotations?.destructiveHint===true)
+        throw Error('readonly_tool_unconfirmed');
+    }else if(candidate.annotations?.readOnlyHint!==false){
+      // A missing or true hint is untrusted. It cannot authorize a write.
+      throw Error('readonly_hint_untrusted');
+    }
     if(await toolSchemaDigest(candidate.inputSchema,candidate.outputSchema)!==schema_digest)
       throw Error('tool_schema_drift');
     // Once tools/call is attempted, a thrown error, remote error, or unreadable
     // result does not prove the external tool had no side effects.
-    try{
-      const output=await client.callTool({name:tool,arguments:args});
-      if(output.isError)throw Error('remote_tool_failed');
-      return limitResult(output);
-    }catch{throw Error('external_outcome_unknown');}
+    return await dispatched(target, async()=>{
+      try{
+        const output=await client.callTool({name:tool,arguments:args});
+        if(output.isError)throw Error('external_outcome_unknown');
+        return limitResult(output);
+      }catch(error){
+        if(error instanceof Error&&error.message==='mcp_redirect_denied')throw error;
+        throw Error('external_outcome_unknown');
+      }
+    });
   }finally{
     // A stateful peer's optional HTTP DELETE can hang even after tools/call
     // succeeded. Never block the durable Run result on remote teardown; the
@@ -111,6 +194,35 @@ async function callApprovedReadonly(env:Env,plan:Plan,step:Step,args:Record<stri
     // SDK close() releases local transport state without sending DELETE.
     await client.close().catch(()=>{});
   }
+}
+
+async function callApprovedHttp(env:Env,plan:Plan,step:Step,args:Record<string,unknown>,target:EffectTarget):Promise<unknown>{
+  if(plan.mcp_target_risks_accepted!==true)throw Error('target_risk_acknowledgment_required');
+  const fixture=step.with.fixture;
+  const schema_digest=step.with.schema_digest;
+  const approval=plan.http_approvals?.find(grant=>grant.fixture===fixture&&grant.scope==='read'&&grant.schema_digest===schema_digest);
+  if(step.with.scope!=='read'||typeof fixture!=='string'||typeof schema_digest!=='string'||!approval?.endpoint)
+    throw Error('external_approval_required');
+  assertNoTargetArgument(args);
+  if(containsSecret(args, configuredSecrets(env)))throw Error('target_argument_rejected');
+  const replayed=await replayOrRefuse(target);
+  if(replayed!==undefined)return replayed;
+  if(await toolSchemaDigest(step.with.input_schema,step.with.output_schema)!==schema_digest)
+    throw Error('approved_schema_changed');
+  const configured=readHttpFixture(env);
+  if(!configured)throw Error('http_fixture_not_configured');
+  if(configured.fixture!==fixture||configured.endpoint!==approval.endpoint)throw Error('http_target_not_authorized');
+  if(configured.schema_digest!==schema_digest)throw Error('approved_schema_changed');
+  const request=prepareFixtureRequest(approval.endpoint, JSON.stringify(args));
+  return dispatched(target, async()=>{
+    const response=await sendFixture(request);
+    if(!response.ok)throw Error('external_outcome_unknown');
+    try{return limitResult(await response.json());}
+    catch(error){
+      if(error instanceof Error&&(error.message==='http_redirect_denied'||error.message==='result_too_large'))throw error;
+      throw Error('external_outcome_unknown');
+    }
+  });
 }
 
 /**
@@ -247,16 +359,22 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
               // a successful result.emit operation.
               if(s.uses==='result.emit')
                 return {status:'succeeded',output:limitResult(evaluateArguments(s.with.data,ctx))};
-              if(s.uses==='mcp.call'){
+              if(s.uses==='mcp.call'||s.uses==='http.request'){
                 const a=evaluateArguments(s.with.arguments,ctx);
                 if(!a||typeof a!=='object'||Array.isArray(a)||hasUnresolvedArgument(a))
                   throw Error('invalid_arguments');
+                const storedGrant=s.uses==='mcp.call'
+                  ?plan.mcp_approvals?.find(grant=>grant.endpoint===s.with.endpoint&&grant.tool===s.with.tool&&grant.scope===s.with.scope&&grant.schema_digest===s.with.schema_digest)
+                  :plan.http_approvals?.find(grant=>grant.fixture===s.with.fixture&&grant.scope==='read'&&grant.schema_digest===s.with.schema_digest);
+                const grantKey=canonicalJsonString(storedGrant??{missing:true});
+                const target={db,runId:id,stepId:s.id,versionId:row.version_id,grantKey};
                 try{
-                  return {status:'succeeded',output:await callApprovedReadonly(this.env,plan,s,a as Record<string,unknown>)};
+                  const output=s.uses==='mcp.call'
+                    ?await callApprovedMcp(this.env,plan,s,a as Record<string,unknown>,target)
+                    :await callApprovedHttp(this.env,plan,s,a as Record<string,unknown>,target);
+                  return {status:'succeeded' as const,output};
                 }catch(error){
-                  if(error instanceof Error&&error.message==='external_outcome_unknown')
-                    return {status:'indeterminate',error_code:'external_outcome_unknown'};
-                  throw error;
+                  return closedOutcome(error);
                 }
               }
               throw Error('unsupported_capability');

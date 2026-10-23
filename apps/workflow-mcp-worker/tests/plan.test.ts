@@ -133,7 +133,7 @@ test('MCP compiler blocks dynamic targets, writes, malformed target grants and e
     {endpoint:'http://public.example.org/mcp'},
     {endpoint:'https://127.0.0.1/mcp'},
     {endpoint:'https://public.example.org/mcp#fragment'},
-    {scope:'write'},
+    {scope:'admin'},
     {scope:'read',command:'do-anything'},
     {tool:'unsafe tool name'},
     {arguments:null},
@@ -205,7 +205,7 @@ test('supported capability examples compile through the real plan compiler', asy
   assert.ok(supportedCapabilityExamples.length >= 3);
   for (const example of supportedCapabilityExamples) {
     assert.equal(JSON.stringify(example).includes('schema_digest'), false);
-    assert.equal(JSON.stringify(example).includes('"write"'), false);
+    assert.equal(/secret|password|token/i.test(JSON.stringify(example)), false);
     const compiled = await compilePlan(example);
     assert.match(compiled.digest, /^[0-9a-f]{64}$/);
     assert.equal(compiled.plan.version, 1);
@@ -214,7 +214,7 @@ test('supported capability examples compile through the real plan compiler', asy
     const github = compiled.plan.steps.find(step => step.uses === 'github.run');
     if (github) assert.deepEqual(github.with, {capability: 'github.workflow.check'});
   }
-  assert.deepEqual([...seen].sort(), ['flow.repeat', 'github.run', 'mcp.call', 'result.emit']);
+  assert.deepEqual([...seen].sort(), ['flow.repeat', 'github.run', 'http.request', 'mcp.call', 'result.emit']);
 });
 
 test('an unchanged manual definition keeps its published plan digest', async () => {
@@ -268,7 +268,7 @@ test('unimplemented capabilities stay unsupported and the compiler reports a pre
   const unsupported = capabilityCatalog().filter(entry => entry.status === 'unsupported').map(entry => entry.id);
   assert.deepEqual(unsupported, [
     'trigger.cron',
-    'action.http', 'action.mcp.write', 'action.shell',
+    'action.shell',
     'flow.foreach', 'flow.while', 'flow.nesting', 'flow.dynamic_expansion', 'flow.wait', 'flow.child_workflow', 'flow.saga',
   ]);
   const step = (extra: Record<string, unknown>) => ({version: 1, name: 'Probe', steps: [{id: 'a', uses: 'result.emit', with: {data: 1}, ...extra}]});
@@ -277,8 +277,8 @@ test('unimplemented capabilities stay unsupported and the compiler reports a pre
     {definition: {version: 1, name: 'Hook', webhook: 'https://hooks.example/in', steps: [{id: 'a', uses: 'result.emit', with: {data: 1}}]}, code: 'unsupported_field', path: '/webhook'},
     {definition: {version: 1, name: 'Event', trigger: {github: 'push'}, steps: [{id: 'a', uses: 'result.emit', with: {data: 1}}]}, code: 'unsupported_field', path: '/trigger'},
     {definition: {version: 1, name: 'Shell', steps: [{id: 'a', uses: 'shell.run', with: {command: 'pwd'}}]}, code: 'unsupported_capability', path: '/steps/0/uses'},
-    {definition: {version: 1, name: 'HTTP', steps: [{id: 'a', uses: 'http.request', with: {url: 'https://example.com'}}]}, code: 'unsupported_capability', path: '/steps/0/uses'},
-    {definition: {version: 1, name: 'Write', steps: [{id: 'a', uses: 'mcp.call', with: {endpoint: 'https://mcp.lirtual.dpdns.org/mcp', tool: 'echo', scope: 'write', input_schema: {type: 'object'}, arguments: {}}}]}, code: 'unsupported_operation_scope', path: '/steps/0/with/scope', suggestion: /read/},
+    {definition: {version: 1, name: 'HTTP', steps: [{id: 'a', uses: 'http.request', with: {url: 'https://example.com'}}]}, code: 'unsupported_field', path: '/steps/0/with/url'},
+    {definition: {version: 1, name: 'Write', steps: [{id: 'a', uses: 'mcp.call', with: {endpoint: 'https://mcp.lirtual.dpdns.org/mcp', tool: 'echo', scope: 'admin', input_schema: {type: 'object'}, arguments: {}}}]}, code: 'unsupported_operation_scope', path: '/steps/0/with/scope'},
     {definition: step({foreach: 'inputs.items'}), code: 'unsupported_field', path: '/steps/0/foreach'},
     {definition: step({while: true}), code: 'unsupported_field', path: '/steps/0/while'},
     {definition: {version: 1, name: 'Child', steps: [{id: 'a', uses: 'workflow.call', with: {workflow_id: 'child'}}]}, code: 'unsupported_capability', path: '/steps/0/uses'},

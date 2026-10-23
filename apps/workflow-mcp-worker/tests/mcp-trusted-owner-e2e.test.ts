@@ -40,7 +40,7 @@ const DIGEST=await toolSchemaDigest(INPUT_SCHEMA);
 test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Result',async t=>{
   const sqlite=new DatabaseSync(':memory:');
   t.after(()=>sqlite.close());
-  for(const name of ['0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql'])
+  for(const name of ['0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql','0006_grant_revocation.sql'])
     sqlite.exec(readFileSync(new URL('../migrations/'+name,import.meta.url),'utf8'));
   function prepare(sql:string){
     let args:any[]=[];
@@ -190,7 +190,7 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
 test('Agent discovers capabilities and inline-validates a definition without touching D1', async t => {
   const sqlite=new DatabaseSync(':memory:');
   t.after(()=>sqlite.close());
-  for(const name of ['0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql'])
+  for(const name of ['0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql','0006_grant_revocation.sql'])
     sqlite.exec(readFileSync(new URL('../migrations/'+name,import.meta.url),'utf8'));
   let prepares=0;
   function prepare(sql:string){
@@ -269,7 +269,9 @@ test('Agent discovers capabilities and inline-validates a definition without tou
     assert.equal(byId.get('trigger.github_event')?.status, 'supported');
     for(const id of ['flow.if','flow.needs','flow.parallel','flow.repeat'])
       assert.equal(byId.get(id)?.status, 'supported', id);
-    for(const id of ['trigger.cron','action.http','action.mcp.write','action.shell','flow.foreach','flow.while','flow.nesting','flow.dynamic_expansion','flow.wait','flow.child_workflow','flow.saga'])
+    assert.equal(byId.get('action.http')?.status, 'supported');
+    assert.equal(byId.get('action.mcp.write')?.status, 'supported');
+    for(const id of ['trigger.cron','action.shell','flow.foreach','flow.while','flow.nesting','flow.dynamic_expansion','flow.wait','flow.child_workflow','flow.saga'])
       assert.equal(byId.get(id)?.status, 'unsupported', id);
     for(const item of overview.capabilities) assert.equal('example' in item, false);
 
@@ -325,13 +327,12 @@ test('Agent discovers capabilities and inline-validates a definition without tou
     assert.doesNotMatch(bad.issues[0].suggestion, /write|shell|secret|token|skip|https?:/i);
     const scope=await call('workflow_validate',{definition:JSON.stringify({
       version:1,name:'Write',steps:[{id:'a',uses:'mcp.call',with:{
-        endpoint:TRUSTED,tool:'echo',scope:'write',input_schema:{type:'object'},arguments:{},
+        endpoint:TRUSTED,tool:'echo',scope:'admin',input_schema:{type:'object'},arguments:{},
       }}],
     })});
     assert.equal(scope.issues[0].code, 'unsupported_operation_scope');
     assert.equal(scope.issues[0].path, '/steps/0/with/scope');
-    assert.match(scope.issues[0].suggestion, /read/);
-    assert.doesNotMatch(scope.issues[0].suggestion, /write/);
+    assert.doesNotMatch(scope.issues[0].suggestion ?? '', /secret|token|skip|https?:/i);
     const ref=await call('workflow_validate',{definition:JSON.stringify({
       version:1,name:'Ref',steps:[{id:'a',uses:'result.emit',with:{data:{ref:'nope'}}}],
     })});

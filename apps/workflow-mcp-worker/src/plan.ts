@@ -2,7 +2,7 @@ import YAML from 'yaml';
 import { publicMcpEndpoint } from './mcp-public-fetch.ts';
 import {
   CONDITION_VALUE_OPS, DEFINITION_KEYS, GITHUB_CAPABILITY_ID, GITHUB_TRIGGER_EVENTS, GITHUB_TRIGGER_KEYS,
-  isSupportedUse, LIMITS, MCP_SCOPE, OBJECT_PROTOTYPE_KEYS, REPEAT_KEYS, RESERVED_EXPRESSION_KEYS, STEP_ID, STEP_KEYS,
+  HTTP_TARGET_ARGUMENT_KEYS, isSupportedUse, LIMITS, MCP_SCOPES, OBJECT_PROTOTYPE_KEYS, REPEAT_KEYS, RESERVED_EXPRESSION_KEYS, STEP_ID, STEP_KEYS,
   TOOL_NAME, TRIGGER_EVENT_NAME, TRIGGER_REPOSITORY, TRIGGER_SOURCE_ID, WEBHOOK_TRIGGER_KEYS, WITH_KEYS,
 } from './capabilities.ts';
 
@@ -16,7 +16,7 @@ export class PlanError extends Error {
 }
 export type RepeatSpec = {times: number; until?: unknown};
 export type Step = {
-  id: string; uses: 'result.emit' | 'mcp.call' | 'github.run' | 'flow.repeat'; needs: string[];
+  id: string; uses: 'result.emit' | 'mcp.call' | 'http.request' | 'github.run' | 'flow.repeat'; needs: string[];
   with: Record<string, unknown>; if?: unknown;
   repeat?: RepeatSpec;
   body?: {uses: 'result.emit'; with: Record<string, unknown>};
@@ -26,11 +26,13 @@ export type ExprCtx = {
   steps: Record<string, {status: string; output?: unknown}>;
   loop?: {index: number};
 };
-export type ReadonlyOperation = { endpoint:string; tool:string; scope:'read'; schema_digest:string };
+export type ReadonlyOperation = { endpoint:string; tool:string; scope:'read'|'write'; schema_digest:string };
+export type HttpOperation = { fixture:string; endpoint?:string; scope:'read'; schema_digest:string };
+export type ApprovedOperation = ReadonlyOperation | HttpOperation;
 export type WebhookTrigger = { id: string; type: 'webhook'; source: string; event: string };
 export type GithubEventTrigger = { id: string; type: 'github_event'; repository: string; events: string[] };
 export type PlanTrigger = WebhookTrigger | GithubEventTrigger;
-export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown>; triggers?: PlanTrigger[]; mcp_approvals?: ReadonlyOperation[]; mcp_target_risks_accepted?: true; github_execution_approved?: true };
+export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown>; triggers?: PlanTrigger[]; mcp_approvals?: ReadonlyOperation[]; http_approvals?: Array<HttpOperation & {endpoint: string}>; mcp_target_risks_accepted?: true; github_execution_approved?: true };
 const PROTOTYPE_KEYS = new Set<string>(OBJECT_PROTOTYPE_KEYS);
 const RESERVED = new Set<string>(RESERVED_EXPRESSION_KEYS);
 function pointer(base: string, key: string | number): string {
@@ -89,6 +91,22 @@ function expression(v: unknown, step?: {id:string; needs:string[]}, depth=0, opa
     if(name==='__proto__'||name==='prototype'||name==='constructor')throw new PlanError('invalid_argument_key', {path: pointer(path,name)});
     if(!opaqueKeys&&RESERVED.has(name.toLowerCase()))throw new PlanError('unsafe_expression', {path: pointer(path,name), suggestion: 'Remove this expression field.'});
     expression(x,step,depth+1,opaqueKeys,pointer(path,name),allowLoop);
+  }
+}
+const HTTP_TARGET_KEYS = new Set<string>(HTTP_TARGET_ARGUMENT_KEYS);
+function rejectHttpTargetArguments(value: unknown, path: string): void {
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index++) rejectHttpTargetArguments(value[index], pointer(path, index));
+    return;
+  }
+  if (!value || typeof value !== 'object') return;
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (HTTP_TARGET_KEYS.has(key.toLowerCase()))
+      throw new PlanError('target_argument_rejected', {
+        path: pointer(path, key),
+        suggestion: 'Remove the target field. Arguments cannot select the connection.',
+      });
+    rejectHttpTargetArguments(child, pointer(path, key));
   }
 }
 function assertCondition(value: unknown, path: string) {
@@ -261,7 +279,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     if(typeof s.id!=='string'||!STEP_ID.test(s.id)||ids.has(s.id)||PROTOTYPE_KEYS.has(s.id))throw new PlanError('invalid_step_id', {path: stepPath+'/id'});
     ids.add(s.id);
     if(!isSupportedUse(s.uses))throw new PlanError('unsupported_capability', {
-      path: stepPath+'/uses', suggestion: 'Use result.emit, mcp.call, or github.run.',
+      path: stepPath+'/uses', suggestion: 'Use result.emit, mcp.call, http.request, or github.run.',
     });
     const needs=s.needs===undefined?[]:s.needs;
     if(!Array.isArray(needs)||needs.some(n=>typeof n!=='string'||!STEP_ID.test(n))||new Set(needs).size!==needs.length)throw new PlanError('invalid_dependencies', {path: stepPath+'/needs'});
@@ -280,20 +298,38 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       try { if(publicMcpEndpoint(withData.endpoint).href!==withData.endpoint)throw Error('noncanonical'); }
       catch { throw new PlanError('invalid_endpoint', {path: stepPath+'/with/endpoint', suggestion: 'Use the configured portal HTTPS URL with no userinfo, fragment, or non-443 port.'}); }
       if(typeof withData.tool!=='string'||!TOOL_NAME.test(withData.tool))throw new PlanError('invalid_tool', {path: stepPath+'/with/tool'});
-      if(withData.scope!==MCP_SCOPE)throw new PlanError('unsupported_operation_scope', {
-        path: stepPath+'/with/scope', suggestion: 'Set scope to read.',
+      if(!(MCP_SCOPES as readonly string[]).includes(String(withData.scope)))throw new PlanError('unsupported_operation_scope', {
+        path: stepPath+'/with/scope', suggestion: 'Use an approved scope.',
       });
       object(withData.arguments,'invalid_step_arguments',stepPath+'/with/arguments');
       // Only explicit, bounded expected schema objects may be pinned; never a
       // dynamic expression or network-fetched schema silently approved later.
       try{await toolSchemaDigest(withData.input_schema,withData.output_schema);}
       catch(error){if(error instanceof PlanError)throw new PlanError(error.message,{path:stepPath+'/with'});throw error;}
+    }else if(s.uses==='http.request'){
+      keys(withData,WITH_KEYS['http.request'],stepPath+'/with');
+      if(typeof withData.fixture!=='string'||!TRIGGER_SOURCE_ID.test(withData.fixture))
+        throw new PlanError('invalid_fixture', {
+          path: stepPath+'/with/fixture', suggestion: 'Use the registered fixture id. Do not put a URL here.',
+        });
+      if(withData.scope!=='read')throw new PlanError('unsupported_operation_scope', {
+        path: stepPath+'/with/scope', suggestion: 'Use an approved scope.',
+      });
+      object(withData.arguments,'invalid_step_arguments',stepPath+'/with/arguments');
+      rejectHttpTargetArguments(withData.arguments, stepPath+'/with/arguments');
+      const schema=withData.input_schema;
+      const properties=schema && typeof schema==='object' && !Array.isArray(schema)
+        ? (schema as Record<string, unknown>).properties : undefined;
+      if(properties && typeof properties==='object' && !Array.isArray(properties))
+        rejectHttpTargetArguments(Object.fromEntries(Object.keys(properties).map(key=>[key, true])), stepPath+'/with/input_schema/properties');
+      try{await toolSchemaDigest(withData.input_schema,withData.output_schema);}
+      catch(error){if(error instanceof PlanError)throw new PlanError(error.message,{path:stepPath+'/with'});throw error;}
     }else keys(withData,WITH_KEYS['result.emit'],stepPath+'/with');
     const repeat=s.repeat===undefined?undefined:compileRepeat(s.repeat,stepPath);
     if(repeat&&s.uses!=='result.emit') throw new PlanError('unsafe_loop_body', {
-      path: stepPath+'/repeat', suggestion: 'Repeat only result.emit. Keep mcp.call and github.run outside repeat.',
+      path: stepPath+'/repeat', suggestion: 'Repeat only result.emit. Keep mcp.call, http.request, and github.run outside repeat.',
     });
-    const compiledWith=s.uses==='mcp.call'?
+    const compiledWith=s.uses==='mcp.call'||s.uses==='http.request'?
       {...withData,schema_digest:await toolSchemaDigest(withData.input_schema,withData.output_schema)}:withData;
     // flow.repeat keeps the payload off `with` so an older runner cannot emit
     // the body once. It rejects the unknown uses instead.
@@ -305,7 +341,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     const s=steps[index], stepPath='/steps/'+index;
     for(const dep of s.needs)if(!ids.has(dep)||dep===s.id)throw new PlanError('invalid_dependencies', {path: stepPath+'/needs'});
     const allowLoop=s.uses==='flow.repeat';
-    if(s.uses==='mcp.call') expression(s.with.arguments,s,0,true,stepPath+'/with/arguments');
+    if(s.uses==='mcp.call'||s.uses==='http.request') expression(s.with.arguments,s,0,true,stepPath+'/with/arguments');
     else if(allowLoop) expression(s.body?.with,s,0,false,stepPath+'/with',true);
     else expression(s.with,s,0,false,stepPath+'/with');
     if(allowLoop&&s.repeat?.until!==undefined){

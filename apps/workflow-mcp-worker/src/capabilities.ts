@@ -1,4 +1,4 @@
-import { PRODUCTION_PORTAL_ENDPOINT, TRUSTED_PORTAL_ENDPOINT } from './mcp-public-fetch.ts';
+import { publicMcpEndpoint, PRODUCTION_PORTAL_ENDPOINT, TRUSTED_PORTAL_ENDPOINT } from './mcp-public-fetch.ts';
 import { GITHUB_ASYNC_WAIT_MS } from './github-async.ts';
 import { selectedGithubExecutor } from './github-dispatch.ts';
 
@@ -8,15 +8,20 @@ export const REPEAT_KEYS = ['times', 'until'] as const;
 // Tampered plans must fail closed. `steps` is legal only at the definition root.
 export const NON_EXECUTABLE_PLAN_FIELDS = ['saga', 'foreach', 'while', 'child', 'child_workflow', 'wait', 'compensate'] as const;
 export const NON_EXECUTABLE_STEP_FIELDS = ['foreach', 'while', 'each', 'items', 'saga', 'compensate', 'child', 'child_workflow', 'wait', 'sleep', 'delay', 'steps'] as const;
-export const USES = ['result.emit', 'mcp.call', 'github.run'] as const;
+export const USES = ['result.emit', 'mcp.call', 'http.request', 'github.run'] as const;
 export type SupportedUse = typeof USES[number];
 export const WITH_KEYS: Record<SupportedUse, readonly string[]> = {
   'result.emit': ['data'],
   'mcp.call': ['endpoint', 'tool', 'scope', 'arguments', 'input_schema', 'output_schema'],
+  'http.request': ['fixture', 'scope', 'arguments', 'input_schema', 'output_schema'],
   'github.run': ['capability'],
 };
 export const GITHUB_CAPABILITY_ID = 'github.workflow.check';
 export const MCP_SCOPE = 'read' as const;
+export const MCP_SCOPES = ['read', 'write'] as const;
+export const HTTP_FIXTURE_SCOPE = 'read' as const;
+// Arguments must not choose the connection. Opaque MCP tool fields stay allowed.
+export const HTTP_TARGET_ARGUMENT_KEYS = ['endpoint', 'url', 'uri', 'server', 'host', 'repository', 'repo', 'credential', 'credentials', 'token', 'secret', 'authorization', 'password', 'client_secret', 'client_id', 'method', 'headers', 'redirect'] as const;
 export const CONDITION_OPS = ['ref', 'eq', 'ne', 'gt', 'lt', 'and', 'or', 'not'] as const;
 export const CONDITION_VALUE_OPS = ['eq', 'ne', 'gt', 'lt', 'and', 'or', 'not'] as const;
 export const RESERVED_EXPRESSION_KEYS = ['eval', 'javascript', 'script', 'code', 'shell', 'endpoint', 'url', 'command', 'function'] as const;
@@ -94,6 +99,37 @@ const mcpExample = {
     },
   }],
 };
+const mcpWriteExample = {
+  version: 1,
+  name: 'Write MCP',
+  inputs: {note: 'n'},
+  steps: [{
+    id: 'save',
+    uses: 'mcp.call',
+    with: {
+      endpoint: PRODUCTION_PORTAL_ENDPOINT,
+      tool: 'note',
+      scope: 'write',
+      input_schema: {type: 'object', properties: {note: {type: 'string'}}, additionalProperties: false},
+      arguments: {note: {ref: 'inputs.note'}},
+    },
+  }],
+};
+const httpExample = {
+  version: 1,
+  name: 'HTTP fixture',
+  inputs: {value: 'ok'},
+  steps: [{
+    id: 'echo',
+    uses: 'http.request',
+    with: {
+      fixture: 'echo',
+      scope: 'read',
+      input_schema: {type: 'object', properties: {value: {type: 'string'}}, additionalProperties: false},
+      arguments: {value: {ref: 'inputs.value'}},
+    },
+  }],
+};
 const githubExample = {
   version: 1,
   name: 'GitHub check',
@@ -151,6 +187,7 @@ type SupportedEntry = {
   summary: string;
   example: unknown;
   uses?: SupportedUse;
+  scope?: 'read' | 'write';
   permissions: string;
   completion: string;
 };
@@ -181,18 +218,22 @@ const CATALOG: readonly Entry[] = [
     summary: 'Evaluate a JSON value and store it as the step output. No network.',
     permissions: 'No grant. data is an expression, not a command.',
     completion: 'Completes inside the step with the evaluated data.'},
-  {id: 'action.mcp.call', kind: 'action', status: 'supported', uses: 'mcp.call', example: mcpExample,
+  {id: 'action.mcp.call', kind: 'action', status: 'supported', uses: 'mcp.call', scope: 'read', example: mcpExample,
     summary: 'Call one read-only MCP tool through the configured portal after publish-time approval.',
-    permissions: 'scope must be read. Publish requires approved_operations exactly matching endpoint, tool, scope, and schema_digest, plus accept_target_risks=true. The endpoint must be the configured portal. A public URL shape is not authorization. Do not set schema_digest; the compiler adds it.',
-    completion: 'One tools/call after grants and a live read-only schema check. A lost response is indeterminate and is not retried.'},
+    permissions: 'scope must be read. Publish requires approved_operations exactly matching endpoint, tool, scope, and schema_digest, plus accept_target_risks=true. The endpoint must be the configured portal. A public URL shape is not authorization. Do not set schema_digest; the compiler adds it. readOnlyHint is not a grant.',
+    completion: 'One tools/call after grants and a live read-only schema check. A lost response is indeterminate and is not retried. Revocation blocks a later call. An effect already dispatched stays its real result or indeterminate.'},
+  {id: 'action.mcp.write', kind: 'action', status: 'supported', uses: 'mcp.call', scope: 'write', example: mcpWriteExample,
+    summary: 'Call one exact portal tool whose published scope is write. This is not an arbitrary write and not a public MCP marketplace.',
+    permissions: 'scope must be write. The endpoint, tool, and schema_digest are pinned. Publish requires that exact approved_operations entry and accept_target_risks=true. readOnlyHint cannot authorize the call. Runtime arguments cannot change the server, URL, repository, or credential.',
+    completion: 'One tools/call after the grant, schema, and an explicit readOnlyHint false check. A missing or true readOnlyHint fails closed before tools/call. A lost response is indeterminate and is not retried or rolled back.'},
   {id: 'action.github.run', kind: 'action', status: 'supported', uses: 'github.run', example: githubExample,
     summary: 'Run the registered GitHub Workflow CI check. The definition cannot choose a repository, ref, workflow file, token, or command.',
     permissions: 'Publish requires approve_heavy_execution=true. Runtime uses the server GitHub executor and OIDC. with accepts only capability github.workflow.check.',
     completion: 'Dispatch accepted stores the GitHub run id on the Attempt. The step stays pending until one claimed receipt or the explicit '+String(GITHUB_ASYNC_WAIT_MS/1000)+' second wait ends. That receipt is the external terminal result. Lost, duplicate, early, and late wakes are not a second result. Worker recovery keeps the same Attempt. An ambiguous dispatch or timeout is indeterminate and is not dispatched again.'},
-  {id: 'action.http', kind: 'action', status: 'unsupported',
-    summary: 'HTTP actions are not implemented.'},
-  {id: 'action.mcp.write', kind: 'action', status: 'unsupported',
-    summary: 'MCP write scope is not implemented. mcp.call accepts only read.'},
+  {id: 'action.http', kind: 'action', status: 'supported', uses: 'http.request', scope: 'read', example: httpExample,
+    summary: 'Call the one registered HTTP fixture. The definition cannot choose a URL, method, header, or credential.',
+    permissions: 'scope must be read. with accepts fixture, scope, arguments, and schemas. Publish requires approved_operations exactly matching fixture, endpoint, scope, and schema_digest, plus accept_target_risks=true. The endpoint comes from the server fixture, not from the definition or runtime arguments.',
+    completion: 'One POST to the pinned fixture after the grant and schema check. Redirects are not followed. A lost response or redirect is indeterminate and is not retried or rolled back.'},
   {id: 'action.shell', kind: 'action', status: 'unsupported',
     summary: 'Shell and arbitrary commands are not implemented.'},
   {id: 'flow.needs', kind: 'flow', status: 'supported', example: emitExample,
@@ -209,7 +250,7 @@ const CATALOG: readonly Entry[] = [
     completion: 'Each ready wave is bounded. A larger wave is rejected at validate.'},
   {id: 'flow.repeat', kind: 'flow', status: 'supported', example: repeatExample,
     summary: `Repeat one result.emit step a literal times from 1 to ${LIMITS.maxLoopIterations}. until is checked before each iteration. loop.index and steps.<this-step>.output refer to the iteration and the previous output.`,
-    permissions: 'No grant. The repeated action must be result.emit. mcp.call and github.run stay outside repeat.',
+    permissions: 'No grant. The repeated action must be result.emit. mcp.call, http.request, and github.run stay outside repeat.',
     completion: `Each iteration that runs is one Workflow step. A false if skips that iteration. until stops before the iteration. The step output is the last completed iteration. The loop stops at ${LIMITS.maxLoopDeadlineMs} milliseconds.`},
   {id: 'flow.foreach', kind: 'flow', status: 'unsupported',
     summary: 'foreach is not implemented. Do not add a foreach field. repeat.times must be a literal integer, not a list.'},
@@ -246,7 +287,25 @@ export type CapabilityEnv = {
   WEBHOOK_TRIGGER_SOURCE?: string;
   WEBHOOK_TRIGGER_SECRET?: string;
   GITHUB_WEBHOOK_SECRET?: string;
+  HTTP_FIXTURE_ID?: string;
+  HTTP_FIXTURE_URL?: string;
+  HTTP_FIXTURE_SCHEMA_DIGEST?: string;
 };
+
+/** The one server-pinned HTTP fixture. An illegal or incomplete pin stays unavailable. */
+export function readHttpFixture(env: CapabilityEnv): {fixture: string; endpoint: string; schema_digest: string} | null {
+  const fixture = env.HTTP_FIXTURE_ID;
+  const endpoint = env.HTTP_FIXTURE_URL;
+  const schema_digest = env.HTTP_FIXTURE_SCHEMA_DIGEST;
+  if (!fixture || !endpoint || !schema_digest || !TRIGGER_SOURCE_ID.test(fixture) || !/^[0-9a-f]{64}$/.test(schema_digest))
+    return null;
+  try {
+    if (publicMcpEndpoint(endpoint).href !== endpoint) return null;
+  } catch {
+    return null;
+  }
+  return {fixture, endpoint, schema_digest};
+}
 
 function triggerConnections(env: CapabilityEnv) {
   const webhookSource = env.WEBHOOK_TRIGGER_SOURCE;
@@ -268,16 +327,22 @@ function triggerConnections(env: CapabilityEnv) {
 export function connectionSummary(env: CapabilityEnv) {
   const portal = env.MCP_PORTAL_ENDPOINT;
   const mcp_portal = portal !== undefined && PORTAL_ENDPOINTS.includes(portal)
-    ? {status: 'configured' as const, endpoint: portal, scope: MCP_SCOPE,
-      publish: 'approved_operations must match endpoint, tool, scope, and schema_digest, and accept_target_risks must be true'}
+    ? {status: 'configured' as const, endpoint: portal, scope: MCP_SCOPE, scopes: MCP_SCOPES,
+      publish: 'approved_operations must match endpoint, tool, scope, and schema_digest, and accept_target_risks must be true. scope write is one exact portal tool. readOnlyHint is not a grant.'}
+    : {status: 'unavailable' as const};
+  const http = readHttpFixture(env);
+  const http_fixture = http
+    ? {status: 'configured' as const, fixture: http.fixture, endpoint: http.endpoint, scope: HTTP_FIXTURE_SCOPE,
+      method: 'POST' as const, schema_digest: http.schema_digest,
+      publish: 'approved_operations must match fixture, endpoint, scope, and schema_digest, and accept_target_risks must be true'}
     : {status: 'unavailable' as const};
   const githubReady = Boolean(env.WORKFLOW_EXECUTOR_GITHUB_TOKEN && env.GITHUB_EXECUTOR_REPOSITORY &&
     env.GITHUB_EXECUTOR_REPOSITORY_ID && env.GITHUB_EXECUTOR_REF && env.GITHUB_EXECUTOR_AUDIENCE);
   const triggers = triggerConnections(env);
-  if (!githubReady) return {mcp_portal, github_executor: {status: 'unavailable' as const}, ...triggers};
+  if (!githubReady) return {mcp_portal, http_fixture, github_executor: {status: 'unavailable' as const}, ...triggers};
   try {
     const workflow = selectedGithubExecutor(env).workflow;
-    return {mcp_portal, github_executor: {
+    return {mcp_portal, http_fixture, github_executor: {
       status: 'configured' as const,
       repository: env.GITHUB_EXECUTOR_REPOSITORY,
       ref: env.GITHUB_EXECUTOR_REF,
@@ -285,7 +350,7 @@ export function connectionSummary(env: CapabilityEnv) {
       audience: env.GITHUB_EXECUTOR_AUDIENCE,
     }, ...triggers};
   } catch {
-    return {mcp_portal, github_executor: {status: 'unavailable' as const}, ...triggers};
+    return {mcp_portal, http_fixture, github_executor: {status: 'unavailable' as const}, ...triggers};
   }
 }
 
@@ -362,7 +427,11 @@ function stepSchema(uses: SupportedUse) {
       with: {
         type: 'object',
         additionalProperties: false,
-        required: uses === 'mcp.call' ? ['endpoint', 'tool', 'scope', 'arguments', 'input_schema'] : [...withKeys],
+        required: uses === 'mcp.call'
+          ? ['endpoint', 'tool', 'scope', 'arguments', 'input_schema']
+          : uses === 'http.request'
+            ? ['fixture', 'scope', 'arguments', 'input_schema']
+            : [...withKeys],
         properties: Object.fromEntries(withKeys.map(key => [key, {description: key}])),
       },
     },
@@ -377,7 +446,7 @@ function detailOf(entry: Entry) {
     with_keys: WITH_KEYS[entry.uses],
     schema: stepSchema(entry.uses),
     ...(entry.uses === 'github.run' ? {capability: GITHUB_CAPABILITY_ID} : {}),
-    ...(entry.uses === 'mcp.call' ? {scope: MCP_SCOPE} : {}),
+    ...(entry.scope ? {scope: entry.scope} : {}),
   } : {schema: definitionContract().schema};
   return {...base, ...action, permissions: entry.permissions, completion: entry.completion, example: entry.example,
     ...(entry.id === 'flow.parallel' ? {limits: {max_parallel_steps: LIMITS.maxParallel}} : {}),
@@ -396,6 +465,17 @@ function detailOf(entry: Entry) {
   };
 }
 
+function presentedDetail(entry: Entry, env: CapabilityEnv): ReturnType<typeof detailOf> {
+  const detail = detailOf(entry);
+  if (entry.id !== 'action.http' || !('example' in detail) || !detail.example || typeof detail.example !== 'object')
+    return detail;
+  const http = readHttpFixture(env);
+  if (!http) return detail;
+  const example = structuredClone(detail.example) as {steps?: Array<{with?: {fixture?: string}}>};
+  if (example.steps?.[0]?.with) example.steps[0].with.fixture = http.fixture;
+  return {...detail, example};
+}
+
 export function workflowCapabilities(env: CapabilityEnv, id?: string) {
   const connections = connectionSummary(env);
   if (id === undefined) return {
@@ -412,5 +492,5 @@ export function workflowCapabilities(env: CapabilityEnv, id?: string) {
     summary: 'No capability is registered with this id.',
     connections,
   };
-  return {query: 'detail' as const, ...detailOf(entry), connections};
+  return {query: 'detail' as const, ...presentedDetail(entry, env), connections};
 }

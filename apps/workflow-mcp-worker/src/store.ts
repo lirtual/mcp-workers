@@ -1,5 +1,5 @@
 import { compilePlan, PlanError, canonicalJsonString } from './plan.ts';
-import { GITHUB_TRIGGER_EVENTS, isConfiguredSecret, LIMITS, TRIGGER_REPOSITORY, TRIGGER_SOURCE_ID } from './capabilities.ts';
+import { GITHUB_TRIGGER_EVENTS, isConfiguredSecret, LIMITS, readHttpFixture, TRIGGER_REPOSITORY, TRIGGER_SOURCE_ID } from './capabilities.ts';
 import { PRODUCTION_PORTAL_ENDPOINT, TRUSTED_PORTAL_ENDPOINT } from './mcp-public-fetch.ts';
 import {githubAsyncViewsForRun} from './github-async.ts';
 import {observeInstance, shouldExpireUnconfirmedOutcome, unresolvedNativeTerminalError, OUTCOME_SETTLE_WINDOW_MS} from './instance-observation.ts';
@@ -13,7 +13,7 @@ function draftName(definition:string):string {
   }catch{}
   return 'Untitled Draft';
 }
-import type { Plan, ReadonlyOperation } from './plan.ts';
+import type { ApprovedOperation, HttpOperation, Plan, ReadonlyOperation } from './plan.ts';
 
 export type Env = {
   DB: D1Database;
@@ -42,6 +42,9 @@ export type Env = {
   WEBHOOK_TRIGGER_SOURCE?: string;
   WEBHOOK_TRIGGER_SECRET?: string;
   GITHUB_WEBHOOK_SECRET?: string;
+  HTTP_FIXTURE_ID?: string;
+  HTTP_FIXTURE_URL?: string;
+  HTTP_FIXTURE_SCHEMA_DIGEST?: string;
 
   // Legacy personal direct-target mode requires a separate explicit opt-in.
   // Without it, MCP must have a pinned Portal endpoint at Publish and Run.
@@ -83,17 +86,39 @@ function assertPublishedTriggers(plan:Plan, env:Env){
     if(trigger.events.some(event=>!(GITHUB_TRIGGER_EVENTS as readonly string[]).includes(event)))throw new StateError('unauthorized_event');
   }
 }
+function sortGrants<T>(grants:T[]):T[]{
+  return grants.slice().sort((a,b)=>JSON.stringify(a)<JSON.stringify(b)?-1:JSON.stringify(a)>JSON.stringify(b)?1:0);
+}
 function mcpGrants(plan:Plan):ReadonlyOperation[]{
   return [...new Map(plan.steps.filter(s=>s.uses==='mcp.call').map(s=>{
-    const grant:ReadonlyOperation={endpoint:s.with.endpoint as string,tool:s.with.tool as string,scope:'read',schema_digest:s.with.schema_digest as string};
+    const scope=s.with.scope==='write'?'write':'read';
+    const grant:ReadonlyOperation={endpoint:s.with.endpoint as string,tool:s.with.tool as string,scope,schema_digest:s.with.schema_digest as string};
     return [JSON.stringify(grant),grant] as const;
   })).values()];
+}
+function httpGrants(plan:Plan, env:Env):HttpOperation[]{
+  const fixture=readHttpFixture(env);
+  return [...new Map(plan.steps.filter(s=>s.uses==='http.request').map(s=>{
+    const grant:HttpOperation={
+      fixture:s.with.fixture as string,
+      ...(fixture?{endpoint:fixture.endpoint}:{}),
+      scope:'read',
+      schema_digest:s.with.schema_digest as string,
+    };
+    return [JSON.stringify(grant),grant] as const;
+  })).values()];
+}
+function externalGrants(plan:Plan, env:Env):ApprovedOperation[]{
+  return sortGrants([...mcpGrants(plan), ...httpGrants(plan, env)]);
 }
 function issueMessage(code:string, detail?:string):string{
   switch(code){
     case 'unsupported_field': return `Field "${detail}" is not supported.`;
     case 'unsupported_capability': return 'This action is not supported.';
-    case 'unsupported_operation_scope': return 'MCP scope must be read.';
+    case 'unsupported_operation_scope': return 'This operation scope is not allowed.';
+    case 'invalid_fixture': return 'The HTTP action must name the registered fixture.';
+    case 'target_argument_rejected': return 'Runtime arguments cannot select a server, URL, repository, or credential.';
+    case 'approved_schema_changed': return 'The pinned schema does not match the registered contract.';
     case 'unsupported_github_capability': return 'Only github.workflow.check can be compiled.';
     case 'invalid_reference':
     case 'invalid_step_reference': return 'The reference is not allowed from this step.';
@@ -140,7 +165,7 @@ function issueMessage(code:string, detail?:string):string{
 }
 function safeSuggestion(suggestion?:string):string|undefined{
   if(!suggestion)return undefined;
-  if(/\b(write|shell|secret|token|password)\b/i.test(suggestion)||/skip/i.test(suggestion))return undefined;
+  if(/\b(shell|secret|token|password)\b/i.test(suggestion)||/skip/i.test(suggestion))return undefined;
   return suggestion;
 }
 function validationIssue(error:PlanError){
@@ -149,10 +174,14 @@ function validationIssue(error:PlanError){
   const suggestion=safeSuggestion(error.suggestion);
   return {code, message:issueMessage(code, detail), ...(error.path?{path:error.path}:{}), ...(suggestion?{suggestion}:{})};
 }
-async function compileValidation(source:string){
+async function compileValidation(source:string, env:Env){
   try{
     const {digest,plan}=await compilePlan(source);
-    const required_approvals=mcpGrants(plan);
+    const fixture=readHttpFixture(env);
+    const http=httpGrants(plan, env);
+    if(fixture && http.some(grant=>grant.schema_digest!==fixture.schema_digest))
+      return {valid:false as const, issues:[{code:'approved_schema_changed', path:'/steps', message:issueMessage('approved_schema_changed'), suggestion:'Use the registered fixture schema.'}]};
+    const required_approvals=externalGrants(plan, env);
     return {valid:true as const,digest,steps:plan.steps.length,issues:[] as [],
       ...(required_approvals.length?{required_approvals}:{}),
       ...(plan.steps.some(s=>s.uses==='github.run')?{requires_heavy_execution_approval:true as const}:{})};
@@ -199,25 +228,36 @@ export class WorkflowService {
   async validate(workflow_id:string,revision:number){
     assertId(workflow_id);const row=await this.row(workflow_id);
     if(row.draft_revision!==revision)throw new StateError('revision_conflict');
-    return compileValidation(row.draft);
+    return compileValidation(row.draft, this.env);
   }
   async validateDefinition(definition:string){
-    return compileValidation(definition);
+    return compileValidation(definition, this.env);
   }
-  async publish(workflow_id:string,expected_revision:number,approved_operations:ReadonlyOperation[]=[],accept_target_risks=false,approve_heavy_execution=false){
+  async publish(workflow_id:string,expected_revision:number,approved_operations:ApprovedOperation[]=[],accept_target_risks=false,approve_heavy_execution=false){
     assertId(workflow_id);const row=await this.row(workflow_id);
     if(row.draft_revision!==expected_revision)throw new StateError('revision_conflict');
     const {plan,digest:plan_digest}=await compilePlan(row.draft);
     // The owner must explicitly approve the exact immutable URL + tool + scope.
     // Publishing an arbitrary Draft is not itself an external-operation grant.
-    const required=mcpGrants(plan).sort((a,b)=>JSON.stringify(a)<JSON.stringify(b)?-1:JSON.stringify(a)>JSON.stringify(b)?1:0);
-    const provided=approved_operations.slice().sort((a,b)=>JSON.stringify(a)<JSON.stringify(b)?-1:JSON.stringify(a)>JSON.stringify(b)?1:0);
+    const mcp=sortGrants(mcpGrants(plan));
+    const http=sortGrants(httpGrants(plan,this.env));
+    const required=externalGrants(plan,this.env);
+    const provided=sortGrants(approved_operations);
+    if(http.length && !readHttpFixture(this.env))throw new StateError('http_fixture_not_configured');
     if(JSON.stringify(required)!==JSON.stringify(provided))throw new StateError('external_approval_required');
-    if(required.length){
+    if(mcp.length){
       const portal=this.env.MCP_PORTAL_ENDPOINT;
       if(portal===undefined)throw new StateError('portal_target_not_configured');
       if(![TRUSTED_PORTAL_ENDPOINT,PRODUCTION_PORTAL_ENDPOINT].includes(portal) ||
-         required.some(grant=>grant.endpoint!==portal))throw new StateError('portal_target_not_authorized');
+         mcp.some(grant=>grant.endpoint!==portal))throw new StateError('portal_target_not_authorized');
+    }
+    const fixture=readHttpFixture(this.env);
+    if(http.length){
+      if(!fixture)throw new StateError('http_fixture_not_configured');
+      if(http.some(grant=>grant.fixture!==fixture.fixture || grant.endpoint!==fixture.endpoint))
+        throw new StateError('http_target_not_authorized');
+      if(http.some(grant=>grant.schema_digest!==fixture.schema_digest))
+        throw new StateError('approved_schema_changed');
     }
     // Personal trusted-target mode: a separate explicit risk acknowledgement
     // is required at each Publish in addition to exact per-operation grants.
@@ -226,7 +266,13 @@ export class WorkflowService {
     const hasGithub=plan.steps.some(s=>s.uses==='github.run');
     if(hasGithub && approve_heavy_execution!==true)throw new StateError('github_execution_approval_required');
     assertPublishedTriggers(plan,this.env);
-    const scopedPlan:Plan=required.length?{...plan,mcp_approvals:required,mcp_target_risks_accepted:true}:plan;
+    const httpApprovals=http.flatMap(grant=>grant.endpoint?[{...grant, endpoint:grant.endpoint}]:[]);
+    const scopedPlan:Plan=required.length?{
+      ...plan,
+      ...(mcp.length?{mcp_approvals:mcp}:{}),
+      ...(httpApprovals.length?{http_approvals:httpApprovals}:{}),
+      mcp_target_risks_accepted:true,
+    }:plan;
     const publishedPlan:Plan=hasGithub?{...scopedPlan,github_execution_approved:true}:scopedPlan;
     // Repeated Publish of an unchanged Draft resolves to its existing Version.
     if(row.active_version_id){
@@ -248,6 +294,19 @@ export class WorkflowService {
       throw new StateError('revision_conflict');
     }
     return {workflow_id,published_version_id:version,digest:plan_digest,state:row.state==='paused'?'paused':'active'};
+  }
+  async revoke(workflow_id:string, published_version_id:string, operation:ApprovedOperation){
+    assertId(workflow_id);assertId(published_version_id);
+    const version=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=? AND workflow_id=?')
+      .bind(published_version_id, workflow_id).first<{plan:string}>();
+    if(!version)throw new StateError('version_missing');
+    const plan=JSON.parse(version.plan) as Plan;
+    const provided=canonicalJsonString(operation);
+    const approvals=[...(plan.mcp_approvals??[]), ...(plan.http_approvals??[])];
+    if(!approvals.some(grant=>canonicalJsonString(grant)===provided))throw new StateError('grant_not_found');
+    await this.db.prepare('INSERT OR IGNORE INTO grant_revocations(workflow_id,version_id,grant_key,revoked_at) VALUES(?,?,?,?)')
+      .bind(workflow_id, published_version_id, provided, now()).run();
+    return {workflow_id, published_version_id, revoked:true as const};
   }
   async admitEvent(workflow_id:string,admission:{kind:'webhook'|'github_event';event:string;event_id:string|null;source:string;payload:Record<string,unknown>}){
     assertId(workflow_id);
