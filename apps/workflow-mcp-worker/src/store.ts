@@ -416,6 +416,13 @@ export class WorkflowService {
         recorded_at:record.updated_at,
         github_run_id:record.candidate_run_id,
         github_run_attempt:record.candidate_run_attempt,
+        // Private MagicDNS label selected by the pinned Session GitHub
+        // workflow (hostname: sa-${{ github.run_id }}). This is a connection
+        // hint, not proof that Tailnet ACL or service reachability is healthy.
+        private_hostname:record.state==='ready' &&
+          Number.isSafeInteger(record.candidate_run_id) &&
+          (record.candidate_run_id??0)>0
+          ?'sa-'+record.candidate_run_id:null,
         attempt_state:record.attempt_state,
         physical_health:record.state==='terminated'?'terminated':'unverified'})):[];
     return {run_id,workflow_id:row.workflow_id,published_version_id:row.version_id,start_state:row.start_state,status:['succeeded','failed','indeterminate','cancelled'].includes(row.outcome)?row.outcome:row.start_state!=='started'?'start_unknown':applyStatus(native,row.outcome),steps,...(hasSessions?{sessions}:{})};
