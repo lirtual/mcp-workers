@@ -61,15 +61,12 @@ function main(env = process.env) {
   let selected;
   let changedFiles;
   if (env.EVENT_NAME === 'workflow_dispatch') {
-    const preview = env.MANUAL_WORKER === 'remote-control-v2-preview'
-      && env.MANUAL_REF?.startsWith('refs/heads/')
-      && env.MANUAL_REF !== 'refs/heads/main';
     const production = env.MANUAL_REF === 'refs/heads/main'
       && RELEASE_WORKERS.includes(env.MANUAL_WORKER);
-    if (!preview && !production) {
+    if (!production) {
       throw new Error(`Unsupported manual Worker selection: ${env.MANUAL_WORKER ?? ''}`);
     }
-    selected = [preview ? 'remote-control-mcp-worker' : env.MANUAL_WORKER];
+    selected = [env.MANUAL_WORKER];
     changedFiles = [];
   } else {
     changedFiles = changedFilesForCurrentEvent(env);
@@ -80,7 +77,7 @@ function main(env = process.env) {
   const details = selectionDetails(changedFiles);
   details.apps = selected;
   if (env.EVENT_NAME === 'workflow_dispatch' &&
-      ['remote-control-mcp-worker','remote-control-v2-preview'].includes(env.MANUAL_WORKER)) {
+      env.MANUAL_WORKER === 'remote-control-mcp-worker') {
     details.remoteControlChanged = true;
   }
   details.databaseChanged = selected.includes('database-mcp-worker');

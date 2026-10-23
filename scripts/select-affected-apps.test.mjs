@@ -42,25 +42,15 @@ test('GitHub Actions MCP is CI-checked and manually deployable from main', async
   assert.equal(workflow.includes('\n          - github-actions-mcp-worker\n'), true);
 });
 
-test('isolated Preview uses the existing CI checks without authorizing production branch deployments', async () => {
+test('retired Preview cannot be redeployed, and production still requires main', async () => {
   const workflow = await readFile(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
-  const preview = workflow.slice(workflow.indexOf('  deploy-preview:'),workflow.indexOf('  deploy:'));
-  assert.match(preview,/environment:\s+name: remote-control-v2-preview/);
-  assert.match(preview,/github.ref != 'refs\/heads\/main'/);
-  assert.match(preview,/github.actor == 'lirtual'/);
-  assert.match(preview,/--config wrangler.v2-preview.jsonc/);
-  assert.match(preview,/secrets.CLOUDFLARE_API_TOKEN/);
-  assert.doesNotMatch(preview,/secrets.RC_V2_PREVIEW_CLOUDFLARE_API_TOKEN/);
-  assert.doesNotMatch(preview,/wrangler.jsonc\s/);
-  const run=(worker,ref)=>{
-    return execFileSync(process.execPath,['scripts/select-affected-apps.mjs'],{
-      cwd:new URL('../',import.meta.url),
-      env:{...process.env,EVENT_NAME:'workflow_dispatch',MANUAL_WORKER:worker,MANUAL_REF:ref},
-      encoding:'utf8'
-    });
-  };
-  assert.match(run('remote-control-v2-preview','refs/heads/topic-review'),
-    /Selected applications: remote-control-mcp-worker/);
+  assert.doesNotMatch(workflow, /remote-control-v2-preview|deploy-preview:|wrangler\\.v2-preview/);
+  const run=(worker,ref)=>execFileSync(process.execPath,['scripts/select-affected-apps.mjs'],{
+    cwd:new URL('../',import.meta.url),
+    env:{...process.env,EVENT_NAME:'workflow_dispatch',MANUAL_WORKER:worker,MANUAL_REF:ref},
+    encoding:'utf8'
+  });
+  assert.throws(()=>run('remote-control-v2-preview','refs/heads/topic-review'),/Unsupported manual Worker selection/);
   assert.throws(()=>run('remote-control-v2-preview','refs/heads/main'),/Unsupported manual Worker selection/);
   assert.throws(()=>run('remote-control-mcp-worker','refs/heads/topic-review'),/Unsupported manual Worker selection/);
   assert.match(run('remote-control-mcp-worker','refs/heads/main'),/Selected applications: remote-control-mcp-worker/);
