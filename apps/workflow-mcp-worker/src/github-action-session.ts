@@ -135,7 +135,7 @@ export async function recordSignedSessionReady(
  inspect:typeof inspectPersistedGitHubActionAttempt=inspectPersistedGitHubActionAttempt,
 ):Promise<SessionReadyResult>{
  const verified=await verifyPinnedGitHubActionIdentity(
-   db,attemptId,jwt,audience,...(keys?[keys]:[]));
+   db,attemptId,jwt,audience,keys,true);
  if(!verified||verified.action.type!=='session')return 'denied';
  const {row}=verified;
  if(row.state!=='claimed'||row.owner_run_id!==row.candidate_run_id||
