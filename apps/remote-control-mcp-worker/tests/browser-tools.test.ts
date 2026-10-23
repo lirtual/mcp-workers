@@ -72,14 +72,14 @@ test("browser tool annotations conservatively describe external effects, not app
   assert.deepEqual(hints.browser_navigate,{readOnlyHint:false,destructiveHint:true,openWorldHint:true});
   assert.deepEqual(hints.browser_snapshot,{readOnlyHint:true,destructiveHint:false,openWorldHint:true});
   assert.deepEqual(hints.browser_close,{readOnlyHint:false,destructiveHint:true,openWorldHint:false});
-  // These annotations influence client risk UX; they are NOT server-side
-  // approval, so the hard-coded disabled browser-tool gate remains required.
+  // These annotations influence client risk UX, but never replace the
+  // server-side device grant and authenticated WSS enforcement.
 });
 test("model-supplied confirmation fields cannot grant browser authorization",()=>{
   const nav={device_id,operation_id,session_id,tab_id:"tab-1",snapshot_version:0,url:"https://example.com/"};
   const agentArgs={operation_id,session_id,tab_id:"tab-1",snapshot_version:0,url:nav.url};
-  // Owner consent is not a model-authored flag or token. This test is
-  // parser-only: it is NOT evidence of a working human approval channel.
+  // A model-authored confirmation field cannot replace a device grant.
+  // This parser-only test does not establish server-side authorization.
   for(const [field,value] of Object.entries({
     approved:true,confirmed:true,user_approved:true,
     approval_token:"forged",confirmation:"yes",human_presence:true,
@@ -88,12 +88,14 @@ test("model-supplied confirmation fields cannot grant browser authorization",()=
     assert.equal(parseBrowserDoArguments("browser_navigate",{...agentArgs,[field]:value}),false,field);
   }
 });
-test("staged browser tools are neither advertised nor dispatchable on the current production MCP surface",async()=>{
+test("production advertises browser tools without per-action Access but rejects forged arguments",async()=>{
   let doCalls=0;
   const env={
     MCP_ACCESS_TOKEN:"browser-test-token",
     DEVICE_COORDINATOR:{
-      idFromName:()=> "test-owner", get:()=>({fetch:()=>{doCalls++;throw Error("Unexpected routed browser call");}}),
+      idFromName:()=> "test-owner", get:()=>({fetch:async()=>{
+        doCalls++;return Response.json({operation_id,status:"completed"});
+      }}),
     },
   } as unknown as Env;
   const rpc=async (method:string,params:unknown)=>{
@@ -106,13 +108,10 @@ test("staged browser tools are neither advertised nor dispatchable on the curren
   };
   const list=await rpc("tools/list",{});
   const exposed=(list.result?.tools??[]).map((tool:any)=>tool.name);
-  for(const tool of BROWSER_TOOLS) assert.equal(exposed.includes(tool.name),false);
+  for(const tool of BROWSER_TOOLS) assert.equal(exposed.includes(tool.name),true);
   for(const [name,args] of [
-    ["browser_start",{device_id,operation_id}],
-    ["browser_status",{device_id}],
-    ["browser_navigate",{device_id,operation_id,session_id,tab_id:"tab-1",snapshot_version:0,url:"https://example.com/"}],
-    ["browser_snapshot",{device_id,session_id}],
-    ["browser_close",{device_id,operation_id,session_id}],
+    ["browser_start",{device_id:"not-a-uuid",operation_id}],
+    ["browser_navigate",{device_id,operation_id,session_id,tab_id:"tab-1",snapshot_version:0,url:"file:///etc/passwd"}],
     ["browser_navigate",{device_id,operation_id,session_id,tab_id:"tab-1",snapshot_version:0,url:"https://example.com/",approved:true}],
     ["browser_navigate",{device_id,operation_id,session_id,tab_id:"tab-1",snapshot_version:0,url:"https://example.com/",confirmation:"yes"}],
   ] as const) {
@@ -120,8 +119,11 @@ test("staged browser tools are neither advertised nor dispatchable on the curren
     assert.equal(call.result?.isError,true,name);
   }
   assert.equal(doCalls,0);
+  const started=await rpc("tools/call",{name:"browser_start",arguments:{device_id,operation_id}});
+  assert.equal(started.result?.isError,false);
+  assert.match(String(started.result?.content?.[0]?.text),/completed/);
+  assert.equal(doCalls,1);
 });
-
 
 test("2026 capability hints do not silently upgrade the legacy MCP bridge",async()=>{
   // Source compatibility probe, NOT a real ChatGPT client/elicitation test.
