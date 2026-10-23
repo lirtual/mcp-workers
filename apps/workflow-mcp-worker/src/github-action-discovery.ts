@@ -26,7 +26,7 @@ const headers = (token: string) => ({
   'x-github-api-version': '2026-03-10',
   'user-agent': 'workflow-mcp-action-discovery',
 });
-const reject = (code: string): never => { throw Error('github_discovery_' + code); };
+function reject(code: string): never { throw Error('github_discovery_' + code); }
 async function readJson(response: Response): Promise<unknown> {
   if (!response.ok) reject('github_unavailable');
   const text = await response.text();
