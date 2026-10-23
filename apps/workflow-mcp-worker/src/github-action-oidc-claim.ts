@@ -36,7 +36,7 @@ export async function verifyAndClaimPinnedGitHubAction(
  if(plan.github_execution_approved!==true||!Array.isArray(plan.steps))return false;
  const step=plan.steps.find(s=>s.id===row.step_id);
  if(!step||step.uses!=='github.run'||step.with?.capability!=='github.action')return false;
- const raw=step.with.action as (ReviewedGitHubAction & {inputs?:unknown})|undefined;
+ const raw=step.with.action as (ReviewedGitHubAction & {inputs?:unknown;ref?:string})|undefined;
  if(!raw)return false;
  // The approved identity has exactly seven fields; native Action inputs are
  // separately validated, not part of the identity-grant shape.
