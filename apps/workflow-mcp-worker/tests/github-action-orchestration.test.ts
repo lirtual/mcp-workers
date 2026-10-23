@@ -69,7 +69,7 @@ test('terminal parent run never registers or dispatches',async()=>{
  const {db,adapter}=setup();
  try{
   db.exec("UPDATE runs SET outcome='cancelled'");
-  await assert.rejects(registerAndDispatchGitHubAction(adapter,data,async()=>{throw Error('must not call GitHub');}),/not_registered/);
+  await assert.rejects(registerAndDispatchGitHubAction(adapter,data,async()=>{throw Error('must not call GitHub');}),/publication_missing/);
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM step_attempts').get()?.n,0);
  }finally{db.close();}
 });
