@@ -13,8 +13,8 @@ const VERSION = "0.5.0";
 function missingRuntimeConfig(env: Env): string[] {
   const missing: string[] = [];
   if (!env.MCP_ACCESS_TOKEN) missing.push("MCP_ACCESS_TOKEN");
-  if (!env.CLIENT_ID) missing.push("CLIENT_ID");
-  if (!env.API_KEY) missing.push("API_KEY");
+  if (!env.IMA_CLIENT_ID) missing.push("IMA_CLIENT_ID");
+  if (!env.IMA_API_KEY) missing.push("IMA_API_KEY");
   return missing;
 }
 
@@ -76,14 +76,14 @@ export default {
     }
 
     const missingIma = [
-      !env.CLIENT_ID ? "CLIENT_ID" : null,
-      !env.API_KEY ? "API_KEY" : null,
+      !env.IMA_CLIENT_ID ? "IMA_CLIENT_ID" : null,
+      !env.IMA_API_KEY ? "IMA_API_KEY" : null,
     ].filter((value): value is string => value !== null);
     if (missingIma.length) return configurationError(missingIma);
 
     const credentials: ImaCredentials = {
-      clientId: env.CLIENT_ID!,
-      apiKey: env.API_KEY!,
+      clientId: env.IMA_CLIENT_ID!,
+      apiKey: env.IMA_API_KEY!,
     };
 
     const handler = createMcpHandler(() => {

@@ -56,7 +56,7 @@ for(const clause of [
   'inputs.deploy_to_production != true',
 ])assert.ok(probe.includes(clause),'Unsafe Portal probe gate: '+clause);
 
-for(const key of ['MCP_PORTAL_CLIENT_ID','MCP_PORTAL_CLIENT_SECRET','WORKFLOW_EXECUTOR_GITHUB_TOKEN']){
+for(const key of ['MCP_PORTAL_CLIENT_ID','MCP_PORTAL_CLIENT_SECRET','WORKFLOW_GITHUB_DISPATCH_TOKEN']){
   assert.ok(source.includes(key+': '+dollar+'{{ secrets.'+key+' }}'),
     'Missing selected Environment Secret '+key);
 }

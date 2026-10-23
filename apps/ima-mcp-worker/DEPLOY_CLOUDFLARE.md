@@ -18,8 +18,8 @@ Deploy only through the separately authorized manual Worker release workflow.
 Required Worker Secrets:
 
 ```text
-CLIENT_ID
-API_KEY
+IMA_CLIENT_ID
+IMA_API_KEY
 MCP_ACCESS_TOKEN
 ```
 

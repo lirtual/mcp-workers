@@ -6,12 +6,12 @@ import { join } from "node:path";
 const WORKERS = new Set(["raindrop-mcp-worker", "ima-mcp-worker", "database-mcp-worker", "ssh-mcp-worker", "remote-control-mcp-worker", "github-actions-mcp-worker", "workflow-mcp-worker"]);
 const REQUIRED_SECRETS = {
   "raindrop-mcp-worker": ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN"],
-  "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "API_KEY"],
+  "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "IMA_API_KEY"],
   "database-mcp-worker": ["MCP_ACCESS_TOKEN", "DATABASE_CONFIG"],
-  "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "MCP_BROKER_TOKEN"],
+  "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "SSH_BROKER_TOKEN"],
   "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
-  "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "GH_TOKEN"],
-  "workflow-mcp-worker": ["MCP_ACCESS_TOKEN"],
+  "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "ACTIONS_MCP_TOKENS"],
+  "workflow-mcp-worker": ["MCP_ACCESS_TOKEN", "MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_GITHUB_DISPATCH_TOKEN"],
 };
 const WORKER_ENTRIES = {
   "raindrop-mcp-worker": "src/worker.ts",
@@ -77,10 +77,14 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
         invariant(find(name,"plain_text")?.text === value,
           "Workflow GitHub executor identity drift: " + name);
       }
-      for (const name of ["MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET","WORKFLOW_EXECUTOR_GITHUB_TOKEN"]) {
+      for (const name of ["MCP_PORTAL_CLIENT_SECRET","WORKFLOW_GITHUB_DISPATCH_TOKEN"]) {
         invariant(secretNames.has(name) && !!find(name,"secret_text"),
           "Workflow runtime credential binding missing: " + name);
       }
+      invariant(typeof find("MCP_PORTAL_CLIENT_ID", "plain_text")?.text === "string" &&
+        find("MCP_PORTAL_CLIENT_ID", "plain_text").text.trim().length > 0 &&
+        !find("MCP_PORTAL_CLIENT_ID", "secret_text") && !secretNames.has("MCP_PORTAL_CLIENT_ID"),
+        "Workflow Portal Client ID must be exactly one plaintext Variable");
       invariant(!bindings.some(x => ["MCP_CALL_ENABLED","GITHUB_EXECUTION_ENABLED",
         "MCP_DIRECT_TARGETS_ENABLED"].includes(x.name)),
         "Obsolete stage flag present after release");
@@ -92,19 +96,19 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     invariant(!find("GITHUB_REPOS", "plain_text") &&
       !find("GITHUB_REPOS_SECONDARY", "plain_text"),
       "Legacy GitHub Actions repository allowlists must be removed");
-    invariant(secretNames.has("GH_TOKEN") && !!find("GH_TOKEN", "secret_text"),
-      "GitHub Actions GH_TOKEN Secret binding missing");
+    invariant(secretNames.has("ACTIONS_MCP_TOKENS") && !!find("ACTIONS_MCP_TOKENS", "secret_text"),
+      "GitHub Actions ACTIONS_MCP_TOKENS Secret binding missing");
   }
   if (worker === "ima-mcp-worker") {
-    // During preflight, accept a legacy CLIENT_ID secret because it will be
+    // During preflight, accept a legacy IMA_CLIENT_ID secret because it will be
     // replaced by the selected GitHub Environment Variable at deploy time.
     // A successful readback MUST prove the type migration happened.
     if (options.mode !== "preflight") {
-      const clientId = find("CLIENT_ID", "plain_text");
+      const clientId = find("IMA_CLIENT_ID", "plain_text");
       invariant(typeof clientId?.text === "string" && clientId.text.trim().length > 0,
-        "IMA CLIENT_ID must be a nonempty plain-text Variable after release");
-      invariant(!find("CLIENT_ID", "secret_text") && !secretNames.has("CLIENT_ID"),
-        "IMA legacy CLIENT_ID Secret still present after release");
+        "IMA IMA_CLIENT_ID must be a nonempty plain-text Variable after release");
+      invariant(!find("IMA_CLIENT_ID", "secret_text") && !secretNames.has("IMA_CLIENT_ID"),
+        "IMA legacy IMA_CLIENT_ID Secret still present after release");
     }
     const durable = find("IMA_IMAGE_REFRESH_SHARD", "durable_object_namespace");
     invariant(durable?.class_name === "ImaImageRefreshShard", "IMA Durable Object missing or class drift");
@@ -193,7 +197,7 @@ export function verifyWorkflowReleaseConfig(conf) {
     conf.workflows[0]?.name === "workflow-mcp-runner" &&
     conf.workflows[0]?.class_name === "WorkflowRunner", "Workflow binding drift");
   invariant(!conf.services?.length, "Workflow must not retain Service Bindings");
-  invariant(JSON.stringify(conf.secrets?.required) === JSON.stringify(["MCP_ACCESS_TOKEN"]),
+  invariant(JSON.stringify(conf.secrets?.required) === JSON.stringify(["MCP_ACCESS_TOKEN", "MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_GITHUB_DISPATCH_TOKEN"]),
     "Workflow Portal Secret declaration drift");
   invariant(!conf.vars || Object.keys(conf.vars).length===0,
     "Workflow MCP source cannot declare runtime feature flags");
@@ -268,8 +272,8 @@ function readConfiguration(worker, content) {
   invariant(REQUIRED_SECRETS[worker].every((s) => conf.secrets?.required?.includes(s)),
     "Source required Secret names changed unexpectedly");
   if (worker === "ima-mcp-worker") {
-    invariant(!conf.secrets?.required?.includes("CLIENT_ID"),
-      "IMA CLIENT_ID must be provided as a Variable, not a Secret");
+    invariant(!conf.secrets?.required?.includes("IMA_CLIENT_ID"),
+      "IMA IMA_CLIENT_ID must be provided as a Variable, not a Secret");
     invariant(conf.durable_objects?.bindings?.some((b) =>
       b.name === "IMA_IMAGE_REFRESH_SHARD" && b.class_name === "ImaImageRefreshShard") &&
       conf.exports?.ImaImageRefreshShard?.storage === "sqlite", "IMA SQLite Durable Object must remain");

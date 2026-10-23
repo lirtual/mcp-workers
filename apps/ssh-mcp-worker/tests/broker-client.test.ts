@@ -38,7 +38,7 @@ function brokerEnv(options: { token?: string; deny?: boolean } = {}): { env: Env
   };
   const env = {
     EDGE_SSH_BROKER: broker,
-    MCP_BROKER_TOKEN: options.token ?? 'temporary-broker-token-for-tests-only-abcdef',
+    SSH_BROKER_TOKEN: options.token ?? 'temporary-broker-token-for-tests-only-abcdef',
     // These are intentionally absent: broker must not fall back to a production D1 or encryption key.
   } as unknown as Env;
   return { env, calls };
@@ -56,7 +56,7 @@ test('metadata is sanitized, and credential is fetched only for an actual connec
 
 test('a missing caller token never falls back to a local D1', async () => {
   const { env, calls } = brokerEnv();
-  delete env.MCP_BROKER_TOKEN;
+  delete env.SSH_BROKER_TOKEN;
   await assert.rejects(() => getHost(env, cloudcone), /host_catalog_unavailable/);
   assert.deepEqual(calls, []);
 });

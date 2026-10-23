@@ -9,8 +9,8 @@ type RuntimeEnv = Env;
 function baseEnv(overrides: Partial<RuntimeEnv> = {}): RuntimeEnv {
   return {
     MCP_ACCESS_TOKEN: "portal-secret",
-    CLIENT_ID: "client-id",
-    API_KEY: "api-key",
+    IMA_CLIENT_ID: "client-id",
+    IMA_API_KEY: "api-key",
     ...overrides,
   } as RuntimeEnv;
 }
@@ -39,8 +39,8 @@ test("/ready reports missing capabilities without secret values", async () => {
     new Request("https://worker.example/ready"),
     baseEnv({
       MCP_ACCESS_TOKEN: undefined,
-      CLIENT_ID: undefined,
-      API_KEY: undefined,
+      IMA_CLIENT_ID: undefined,
+      IMA_API_KEY: undefined,
     }),
     ctx,
   );
@@ -49,8 +49,8 @@ test("/ready reports missing capabilities without secret values", async () => {
   assert.equal(body.ready, false);
   assert.deepEqual(body.missing, [
     "MCP_ACCESS_TOKEN",
-    "CLIENT_ID",
-    "API_KEY",
+    "IMA_CLIENT_ID",
+    "IMA_API_KEY",
   ]);
   assert.equal(JSON.stringify(body).includes("portal-secret"), false);
   assert.equal(JSON.stringify(body).includes("client-id"), false);
@@ -120,7 +120,7 @@ test("retired IMA secret names do not satisfy the runtime contract", async () =>
   assert.equal(response.status, 503);
   assert.deepEqual(await json(response), {
     error: "server_misconfigured",
-    missing: ["CLIENT_ID", "API_KEY"],
+    missing: ["IMA_CLIENT_ID", "IMA_API_KEY"],
   });
 });
 

@@ -348,5 +348,5 @@ test('D1 stays SELECT-only, quotas stay at the spec defaults, and secrets are no
   assert.deepEqual(config.services, [{
     binding: 'EDGE_SSH_BROKER', service: 'edgessh', entrypoint: 'HostBrokerEntrypoint',
   }]);
-  assert.deepEqual(config.secrets.required, ['MCP_ACCESS_TOKEN', 'MCP_BROKER_TOKEN']);
+  assert.deepEqual(config.secrets.required, ['MCP_ACCESS_TOKEN', 'SSH_BROKER_TOKEN']);
 });

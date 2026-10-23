@@ -32,26 +32,26 @@ test("Active-version readback requires exactly one 100 percent version", () => {
   ] }] }), /unambiguous/);
 });
 
-test("IMA allows old CLIENT_ID Secret in preflight and requires Variable after release", () => {
+test("IMA allows old IMA_CLIENT_ID Secret in preflight and requires Variable after release", () => {
   const worker = "ima-mcp-worker";
-  const names = ["MCP_ACCESS_TOKEN", "API_KEY"];
+  const names = ["MCP_ACCESS_TOKEN", "IMA_API_KEY"];
   const secrets = names.map(name => ({ name }));
   const durable = { name: "IMA_IMAGE_REFRESH_SHARD", type: "durable_object_namespace", class_name: "ImaImageRefreshShard" };
   const observability = { enabled: true, logs: { invocation_logs: true }, traces: { enabled: true } };
   const old = { bindings: [...names.map(name => ({ name, type: "secret_text" })),
-    { name: "CLIENT_ID", type: "secret_text" }, durable], observability };
-  const oldSecrets = [...secrets, { name: "CLIENT_ID" }];
+    { name: "IMA_CLIENT_ID", type: "secret_text" }, durable], observability };
+  const oldSecrets = [...secrets, { name: "IMA_CLIENT_ID" }];
   assert.equal(verifyBindings(worker, old, oldSecrets, { mode: "preflight" }), true);
-  assert.throws(() => verifyBindings(worker, old, oldSecrets, { mode: "readback" }), /CLIENT_ID.*Variable/);
+  assert.throws(() => verifyBindings(worker, old, oldSecrets, { mode: "readback" }), /IMA_CLIENT_ID.*Variable/);
   const settings = { bindings: [...names.map(name => ({ name, type: "secret_text" })),
-    { name: "CLIENT_ID", type: "plain_text", text: "ima-client-id" }, durable], observability };
+    { name: "IMA_CLIENT_ID", type: "plain_text", text: "ima-client-id" }, durable], observability };
   assert.equal(verifyBindings(worker, settings, secrets, { mode: "readback" }), true);
   assert.throws(() => verifyBindings(worker, { ...settings,
-    bindings: settings.bindings.filter(x => x.name !== "CLIENT_ID") }, secrets, { mode: "readback" }), /CLIENT_ID.*Variable/);
+    bindings: settings.bindings.filter(x => x.name !== "IMA_CLIENT_ID") }, secrets, { mode: "readback" }), /IMA_CLIENT_ID.*Variable/);
   assert.throws(() => verifyBindings(worker, { ...settings,
-    bindings: settings.bindings.map(x => x.name === "CLIENT_ID" ? { ...x, text: " " } : x) },
-    secrets, { mode: "readback" }), /CLIENT_ID.*Variable/);
-  assert.throws(() => verifyBindings(worker, settings, oldSecrets, { mode: "readback" }), /legacy CLIENT_ID Secret/);
+    bindings: settings.bindings.map(x => x.name === "IMA_CLIENT_ID" ? { ...x, text: " " } : x) },
+    secrets, { mode: "readback" }), /IMA_CLIENT_ID.*Variable/);
+  assert.throws(() => verifyBindings(worker, settings, oldSecrets, { mode: "readback" }), /legacy IMA_CLIENT_ID Secret/);
   assert.throws(() => verifyBindings(worker, { ...settings, bindings: [
     ...settings.bindings, { name: "R2_BUCKET", type: "r2_bucket" },
   ] }, secrets, { mode: "preflight" }), /Legacy IMA R2/);
@@ -201,11 +201,11 @@ test("manual release scope stages the pinned Agent only for Remote Control", () 
 
 test("SSH production release requires Broker service, own DO, and least-privileged secret bindings", () => {
   const worker = "ssh-mcp-worker";
-  const secrets = [{ name: "MCP_ACCESS_TOKEN" }, { name: "MCP_BROKER_TOKEN" }];
+  const secrets = [{ name: "MCP_ACCESS_TOKEN" }, { name: "SSH_BROKER_TOKEN" }];
   const settings = {
     bindings: [
       { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
-      { name: "MCP_BROKER_TOKEN", type: "secret_text" },
+      { name: "SSH_BROKER_TOKEN", type: "secret_text" },
       { name: "EDGE_SSH_BROKER", type: "service", service: "edgessh",
         entrypoint: "HostBrokerEntrypoint" },
       { name: "SSH_OPERATIONS", type: "durable_object_namespace", class_name: "SshOperationsDO" },
@@ -246,16 +246,16 @@ test("manual release always syncs selected Worker Secrets from GitHub and never 
   assert.ok(secretStart > 0 && variableStart > secretStart);
   const secretStep = workflow.slice(secretStart, variableStart);
   assert.doesNotMatch(secretStep, /^\s*if:/m, "existing Workers must never skip Secret staging");
-  for (const name of ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN", "API_KEY",
-    "DATABASE_CONFIG", "MCP_BROKER_TOKEN", "GH_TOKEN"]) {
+  for (const name of ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN", "IMA_API_KEY",
+    "DATABASE_CONFIG", "SSH_BROKER_TOKEN", "ACTIONS_MCP_TOKENS"]) {
     assert.ok(secretStep.includes("secrets." + name), "GitHub must provide " + name);
   }
-  assert.equal(secretStep.includes("secrets.CLIENT_ID"), false,
-    "CLIENT_ID must not be staged as a Secret");
+  assert.equal(secretStep.includes("secrets.IMA_CLIENT_ID"), false,
+    "IMA_CLIENT_ID must not be staged as a Secret");
   const variableStep = workflow.slice(variableStart,
     workflow.indexOf("      - name: Recheck current main inside acquired release lock", variableStart));
-  assert.ok(variableStep.includes("vars.CLIENT_ID"),
-    "CLIENT_ID must be provided by the GitHub Environment Variable");
+  assert.ok(variableStep.includes("vars.IMA_CLIENT_ID"),
+    "IMA_CLIENT_ID must be provided by the GitHub Environment Variable");
   const deployStart = workflow.indexOf("      - name: Publish exactly selected Worker");
   const deployEnd = workflow.indexOf("      - name: Remove temporary deployment configuration", deployStart);
   assert.ok(deployStart > 0 && deployEnd > deployStart);
@@ -313,10 +313,10 @@ test("first GitHub Actions Worker release retries only transient 404s without we
 
 test("GitHub Actions deploy requires only one PAT Secret and no repository lists", () => {
   const worker = "github-actions-mcp-worker";
-  const secrets = [{ name: "MCP_ACCESS_TOKEN" }, { name: "GH_TOKEN" }];
+  const secrets = [{ name: "MCP_ACCESS_TOKEN" }, { name: "ACTIONS_MCP_TOKENS" }];
   const bindings = [
     { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
-    { name: "GH_TOKEN", type: "secret_text" },
+    { name: "ACTIONS_MCP_TOKENS", type: "secret_text" },
   ];
   const settings = { bindings, observability: { enabled: true,
     logs: { invocation_logs: true } } };
@@ -328,7 +328,7 @@ test("GitHub Actions deploy requires only one PAT Secret and no repository lists
   assert.throws(() => verifyBindings(worker, settings,
     [{ name: "MCP_ACCESS_TOKEN" }], { mode: "readback" }), /Required runtime Secret missing/);
   const release = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
-  assert.ok(release.includes("GH_TOKEN: ${{ secrets.GH_TOKEN }}"));
+  assert.ok(release.includes("ACTIONS_MCP_TOKENS: ${{ secrets.ACTIONS_MCP_TOKENS }}"));
   assert.ok(!release.includes("GH_TOKEN_SECONDARY"));
   assert.throws(() => verifyBindings(worker, { ...settings,
     bindings: [...bindings, { name: "DANGEROUS_RESOURCE", type: "service" }] },
@@ -343,7 +343,7 @@ test("Workflow production release must preserve exact reviewed resource and runt
     [{ ...owner, d1_databases: [{ ...owner.d1_databases[0], database_id: "00000000-0000-0000-0000-000000000000" }] }, /production D1/],
     [{ ...owner, services: [{binding:"UNEXPECTED",service:"fake"}] }, /Service Bindings/],
     [{ ...owner, workflows: [] }, /Workflow binding/],
-    [{ ...owner, secrets: { required: [] } }, /Portal Secret/],
+    [{ ...owner, secrets: { required: [] } }, /Secret/],
     [{ ...owner, vars: { MCP_CALL_ENABLED: "true" } }, /MCP/],
     [{ ...owner, compatibility_flags: ["global_fetch_strictly_public"] }, /MCP/],
   ];
@@ -384,9 +384,9 @@ test("Workflow remote D1 readback blocks missing migrations, nonempty first-run 
 test("Workflow readback verifies one integrated runtime, registered GitHub identity and Portal",()=>{
   const bindings=[
     {name:"MCP_ACCESS_TOKEN",type:"secret_text"},
-    {name:"MCP_PORTAL_CLIENT_ID",type:"secret_text"},
+    {name:"MCP_PORTAL_CLIENT_ID",type:"plain_text",text:"test-id"},
     {name:"MCP_PORTAL_CLIENT_SECRET",type:"secret_text"},
-    {name:"WORKFLOW_EXECUTOR_GITHUB_TOKEN",type:"secret_text"},
+    {name:"WORKFLOW_GITHUB_DISPATCH_TOKEN",type:"secret_text"},
     {name:"DB",type:"d1",id:"c76850db-b5e3-4128-9150-849a1c9e8d74"},
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-runner",class_name:"WorkflowRunner"},
     {name:"MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
@@ -396,17 +396,23 @@ test("Workflow readback verifies one integrated runtime, registered GitHub ident
     {name:"GITHUB_EXECUTOR_AUDIENCE",type:"plain_text",text:"workflow-github-claim:production"},
   ];
   const settings={bindings,observability:{enabled:true,logs:{invocation_logs:true}}};
-  const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET",
-    "WORKFLOW_EXECUTOR_GITHUB_TOKEN"].map(name=>({name}));
+  const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_SECRET",
+    "WORKFLOW_GITHUB_DISPATCH_TOKEN"].map(name=>({name}));
   const check=(list=bindings,ss=secrets)=>
     verifyBindings("workflow-mcp-worker",{...settings,bindings:list},ss,{mode:"readback"});
   assert.equal(check(),true);
   for(const name of ["DB","WORKFLOW"]){
     assert.throws(()=>check(bindings.filter(x=>x.name!==name)),/binding drift/);
   }
-  for(const name of ["MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET","WORKFLOW_EXECUTOR_GITHUB_TOKEN"]){
-    assert.throws(()=>check(bindings,secrets.filter(x=>x.name!==name)),/binding missing/);
+  for(const name of ["MCP_PORTAL_CLIENT_SECRET","WORKFLOW_GITHUB_DISPATCH_TOKEN"]){
+    assert.throws(()=>check(bindings,secrets.filter(x=>x.name!==name)),/Secret missing/);
   }
+  assert.throws(()=>check(bindings.map(x=>x.name==="MCP_PORTAL_CLIENT_ID" ?
+    {...x,type:"secret_text"}:x)),/plaintext Variable/);
+  assert.throws(()=>check([...bindings,{name:"MCP_PORTAL_CLIENT_ID",type:"secret_text"}]),
+    /plaintext Variable/);
+  assert.throws(()=>check(bindings,[...secrets,{name:"MCP_PORTAL_CLIENT_ID"}]),
+    /plaintext Variable/);
   assert.throws(()=>check([...bindings,{name:"MCP_CALL_ENABLED",type:"plain_text",text:"true"}]),/Obsolete stage flag/);
 });
 
@@ -430,8 +436,8 @@ test("Workflow manual GitHub Actions requires D1 checks before Owner", () => {
 
 test("Workflow release pins the exact Portal and rejects target drift",()=>{
   const bindings=[
-    {name:"MCP_ACCESS_TOKEN",type:"secret_text"},{name:"MCP_PORTAL_CLIENT_ID",type:"secret_text"},
-    {name:"MCP_PORTAL_CLIENT_SECRET",type:"secret_text"},{name:"WORKFLOW_EXECUTOR_GITHUB_TOKEN",type:"secret_text"},
+    {name:"MCP_ACCESS_TOKEN",type:"secret_text"},{name:"MCP_PORTAL_CLIENT_ID",type:"plain_text",text:"test-id"},
+    {name:"MCP_PORTAL_CLIENT_SECRET",type:"secret_text"},{name:"WORKFLOW_GITHUB_DISPATCH_TOKEN",type:"secret_text"},
     {name:"DB",type:"d1",id:"c76850db-b5e3-4128-9150-849a1c9e8d74"},
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-runner",class_name:"WorkflowRunner"},
     {name:"MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
@@ -441,8 +447,8 @@ test("Workflow release pins the exact Portal and rejects target drift",()=>{
     {name:"GITHUB_EXECUTOR_AUDIENCE",type:"plain_text",text:"workflow-github-claim:production"},
   ];
   const settings={observability:{enabled:true,logs:{invocation_logs:true}}};
-  const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET",
-    "WORKFLOW_EXECUTOR_GITHUB_TOKEN"].map(name=>({name}));
+  const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_SECRET",
+    "WORKFLOW_GITHUB_DISPATCH_TOKEN"].map(name=>({name}));
   const check=(updated)=>verifyBindings("workflow-mcp-worker",{...settings,bindings:updated},secrets,{mode:"readback"});
   assert.equal(check(bindings),true);
   assert.throws(()=>check(bindings.map(x=>x.name==="MCP_PORTAL_ENDPOINT"
@@ -463,10 +469,10 @@ test("GitHub execution is integral but still pins repository, ref and OIDC audie
     {name:"GITHUB_EXECUTOR_REF",type:"plain_text",text:"refs/heads/main"},
     {name:"GITHUB_EXECUTOR_AUDIENCE",type:"plain_text",text:"workflow-github-claim:production"},
   ];
-  const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET",
-    "WORKFLOW_EXECUTOR_GITHUB_TOKEN"].map(name=>({name}));
-  const pins=["MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET","WORKFLOW_EXECUTOR_GITHUB_TOKEN"]
-    .map(name=>({name,type:"secret_text"}));
+  const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_SECRET",
+    "WORKFLOW_GITHUB_DISPATCH_TOKEN"].map(name=>({name}));
+  const pins=[{name:"MCP_PORTAL_CLIENT_ID",type:"plain_text",text:"test-id"},
+    ...["MCP_PORTAL_CLIENT_SECRET","WORKFLOW_GITHUB_DISPATCH_TOKEN"].map(name=>({name,type:"secret_text"}))];
   const check=(bindings)=>verifyBindings("workflow-mcp-worker",{
     bindings,observability:{enabled:true,logs:{invocation_logs:true}}},secrets,{mode:"readback"});
   assert.equal(check([...base,...pins]),true);
@@ -478,10 +484,13 @@ test("GitHub execution is integral but still pins repository, ref and OIDC audie
 
 
 test("Workflow preflight tolerates removed service bindings, readback rejects them",()=>{
-  const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET",
-    "WORKFLOW_EXECUTOR_GITHUB_TOKEN"].map(name=>({name}));
+  const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_SECRET",
+    "WORKFLOW_GITHUB_DISPATCH_TOKEN"].map(name=>({name}));
   const bindings=[
     {name:"MCP_ACCESS_TOKEN",type:"secret_text"},
+    {name:"MCP_PORTAL_CLIENT_SECRET",type:"secret_text"},
+    {name:"WORKFLOW_GITHUB_DISPATCH_TOKEN",type:"secret_text"},
+    {name:"MCP_PORTAL_CLIENT_ID",type:"plain_text",text:"test-id"},
     {name:"DB",type:"d1",id:"c76850db-b5e3-4128-9150-849a1c9e8d74"},
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-s1",class_name:"WorkflowRunner"},
     {name:"OLD_TEST_SERVICE",type:"service",service:"unused-test-worker"},

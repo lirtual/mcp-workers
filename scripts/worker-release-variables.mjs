@@ -15,7 +15,7 @@ const INTEGER_LIMITS = Object.freeze({
 
 export const WORKER_VARIABLES = Object.freeze({
   "raindrop-mcp-worker": ["RAINDROP_RATE_LIMIT_MAX_RETRIES"],
-  "ima-mcp-worker": ["CLIENT_ID", "IMA_BASE_URL"],
+  "ima-mcp-worker": ["IMA_CLIENT_ID", "IMA_BASE_URL"],
   "database-mcp-worker": [
     "MAX_ROWS", "MAX_RESULT_BYTES", "MAX_SCHEMA_BYTES", "QUERY_TIMEOUT_MS",
     "MAX_WRITE_AFFECTED_ROWS",
@@ -23,7 +23,7 @@ export const WORKER_VARIABLES = Object.freeze({
   "ssh-mcp-worker": [],
   "remote-control-mcp-worker": [],
   "github-actions-mcp-worker": [],
-  "workflow-mcp-worker": [],
+  "workflow-mcp-worker": ["MCP_PORTAL_CLIENT_ID"],
 });
 
 // The Wrangler Custom Domain is the one authoritative installation origin.
@@ -62,16 +62,16 @@ export function collectWorkerVars(worker, env, options = {}) {
   }
   for (const name of allowed) {
     const value = env[name];
-    if (name === "CLIENT_ID" && worker === "ima-mcp-worker" &&
+    if ((name === "IMA_CLIENT_ID" || name === "MCP_PORTAL_CLIENT_ID") &&
         (typeof value !== "string" || value.trim().length === 0)) {
-      throw new Error("Missing or empty required Worker Variable: CLIENT_ID");
+      throw new Error("Missing or empty required Worker Variable: " + name);
     }
     if (value == null || value === "") continue;
     if (typeof value !== "string") throw new Error("Invalid Worker Variable: " + name);
-    if (name === "CLIENT_ID" &&
+    if ((name === "IMA_CLIENT_ID" || name === "MCP_PORTAL_CLIENT_ID") &&
         (value.length > 512 || value.trim() !== value ||
           /[\u0000-\u001f\u007f\s]/.test(value))) {
-      throw new Error("Invalid Worker Variable: CLIENT_ID");
+      throw new Error("Invalid Worker Variable: " + name);
     }
     if (Object.hasOwn(INTEGER_LIMITS, name)) {
       const [min, max] = INTEGER_LIMITS[name];
