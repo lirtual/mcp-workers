@@ -248,3 +248,31 @@ test('reviewed v0.1.15 enables both public bootstrap paths only with exact revie
   assert.equal(handleAgentInstallerRequest(new Request(base + '/install.sh'), null, base, null).status, 503);
   assert.equal(handleAgentInstallerRequest(new Request(base + '/install.ps1'), null, base, null).status, 503);
 });
+
+
+test("mobile links may open static install home with query or Origin but not scripts", async () => {
+  const { REVIEWED_V0115_RELEASE_PIN, REVIEWED_WINDOWS_INSTALL_PIN } =
+    await import("../src/install-bootstrap.ts");
+  const host = "https://rca.lirtual.dpdns.org";
+  const serve = (request: Request) => handleAgentInstallerRequest(
+    request, REVIEWED_V0115_RELEASE_PIN, host, REVIEWED_WINDOWS_INSTALL_PIN);
+  const clean = await serve(new Request(host + "/")).text();
+  const linked = serve(new Request(host + "/?utm_source=chatgpt.com&utm_medium=share", {
+    headers: { origin: "https://chatgpt.com" },
+  }));
+  assert.equal(linked.status, 200);
+  assert.equal(await linked.text(), clean, "URL parameters must not affect or appear in static HTML");
+  assert.equal(serve(new Request(host + "/?utm_source=chatgpt.com", {method:"POST"})).status, 405);
+  assert.equal(serve(new Request(host + "/?utm_source=chatgpt.com", {
+    headers: {host:"untrusted.example"},
+  })).status, 403);
+  assert.equal(serve(new Request(host + "/?utm_source=chatgpt.com", {
+    headers: {"x-forwarded-host":"untrusted.example"},
+  })).status, 403);
+  for (const path of ["/install.sh", "/install.ps1"]) {
+    assert.equal(serve(new Request(host + path + "?utm_source=chatgpt.com")).status, 405);
+    assert.equal(serve(new Request(host + path, {
+      headers: {origin:"https://chatgpt.com"},
+    })).status, 405);
+  }
+});
