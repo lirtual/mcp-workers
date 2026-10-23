@@ -92,6 +92,8 @@ export async function verifyAndClaimPinnedGitHubAction(
     AND owner_run_id IS NULL AND owner_run_attempt IS NULL
     AND candidate_run_id=? AND candidate_run_attempt=?
     AND repository=? AND repository_id=? AND workflow_ref=? AND ref=?
+    AND NOT EXISTS(SELECT 1 FROM github_action_cancellations c
+      WHERE c.attempt_id=step_attempts.attempt_id)
     AND EXISTS(SELECT 1 FROM runs WHERE id=step_attempts.run_id
       AND outcome IN ('queued','running'))`)
   .bind(row.candidate_run_id,row.candidate_run_attempt,Date.now(),attemptId,
