@@ -45,6 +45,10 @@ test('isolated Action route requires configured server audience and strict reque
   attemptId,repository:repo,
  })),fixture.env)).status,400);
  assert.equal((await handleGithubActionClaimRequest(request('x','x'.repeat(8193)),fixture.env)).status,413);
+ // The declared length is not trusted; the streamed bytes enforce the cap.
+ const undeclared=new Request(url,{method:'POST',
+  headers:{authorization:'Bearer x','content-length':'1'},body:'x'.repeat(8193)});
+ assert.equal((await handleGithubActionClaimRequest(undeclared,fixture.env)).status,413);
  assert.equal((await handleGithubActionClaimRequest(new Request(
   'https://workflow.example.org/github/claim',{method:'POST'},
  ),fixture.env)).status,404);
