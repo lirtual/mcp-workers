@@ -16,8 +16,12 @@ removed. Production resources must not be used for rehearsals.
   fixtures were deleted and verified absent.
 - Disposable D1 tests created schemas, an index, a foreign key, a migration
   history fixture, and rows. Async SQL export advanced from `active` to
-  `complete` and returned export filename and signed URL. All D1 fixtures were
-  deleted and inventory checked for the `spec198-` prefix.
+  `complete` and returned export filename and signed URL. A second isolated
+  test **downloaded the actual SQL export**, uploaded that exact file through
+  the D1 Import signed-upload flow, and ingested it successfully (8 queries).
+  Source and target matched on `sqlite_master` user definitions, record counts,
+  complete row contents, migration history, and zero `foreign_key_check` issues.
+  Both disposable databases were deleted and inventory checked for `spec198-`.
 - Production was queried **read-only**: D1 `workflow-mcp-worker` had no business
   rows, five `d1_migrations` entries, four explicit indexes and provider-managed
   `_cf_KV`. The old native `workflow-mcp-runner` showed six completed instances.
@@ -27,11 +31,10 @@ removed. Production resources must not be used for rehearsals.
 1. Using the pinned Wrangler release toolchain, repeat same-name Secret to
    Variable conversion and reverse recovery against a disposable Worker. Test
    deployment failure after the binding change and confirm readback/rollback.
-2. Export a disposable D1, actually download and import its SQL into another
-   disposable D1, then compare user tables, `sqlite_master` definitions,
-   foreign keys (`PRAGMA foreign_key_check`), indexes, record counts and
-   `d1_migrations`. Handle `_cf_KV` as a platform-owned table; stop if the
-   importer rejects or changes it instead of silently ignoring an error.
+2. Verify the **production-shaped** export/import handling for the existing
+   five migration files and any provider-owned `_cf_KV` state before cutover;
+   the isolated source/target SQL transfer and full integrity comparison above
+   now pass. Stop if the platform-owned table requires unsafe import handling.
 3. Create an isolated Workflow with a completed instance. Publish a renamed
    Workflow/class while retaining the old definition, then query the old
    instance by ID and verify history remains available. Remove only fixture
