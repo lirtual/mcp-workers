@@ -9,7 +9,7 @@ Versioned, durable workflows using the existing MCP Portal, Cloudflare D1 and Cl
 - **GitHub Actions (`github.run`):** a single server-registered `github.workflow.check` operation that runs the pinned Workflow package CI checks, with explicit `approve_heavy_execution: true` at Publish. Repository, workflow, ref and GitHub OIDC audience are pinned server-side. D1 records dispatch identity, GitHub OIDC Claim and immutable callback receipt; ambiguous external effects are never blindly replayed.
 - **Result emission (`result.emit`)** for Workflow results.
 
-Only these known operations are implemented; generic shell commands, arbitrary external MCP writes, Cron/Webhooks, dynamic GitHub tasks, artifacts and automatic GitHub Job cancellation are not provided.
+Only these known operations are implemented; generic shell commands, arbitrary external MCP writes, dynamic GitHub tasks, artifacts and automatic GitHub Job cancellation are not provided. Cron is a five-field UTC schedule matched on this Worker's one-minute scheduled event, not a separate cron per workflow. Webhook and GitHub event triggers share the same Run admission.
 
 ## Runtime
 

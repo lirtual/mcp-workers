@@ -242,12 +242,23 @@ test('approved webhook and GitHub event triggers compile, and illegal trigger in
   });
   assert.equal(reordered.digest, (await compilePlan(github)).digest);
   assert.deepEqual(capabilityCatalog().filter(entry => entry.status === 'supported').map(entry => entry.id).filter(id => id.startsWith('trigger.')),
-    ['trigger.manual', 'trigger.webhook', 'trigger.github_event']);
+    ['trigger.manual', 'trigger.cron', 'trigger.webhook', 'trigger.github_event']);
+  const cron = {
+    version: 1, name: 'Hourly',
+    triggers: [{id: 'schedule', type: 'cron', expression: '15 * * * *'}],
+    steps: [{id: 'emit', uses: 'result.emit', with: {data: {ref: 'inputs.event'}}}],
+  };
+  assert.deepEqual((await compilePlan(cron)).plan.triggers, cron.triggers);
+  const leap = await compilePlan({...cron, triggers: [{id: 'schedule', type: 'cron', expression: '0 0 29 2 *'}]});
+  assert.equal(leap.plan.triggers?.[0] && leap.plan.triggers[0].type === 'cron' ? leap.plan.triggers[0].expression : '', '0 0 29 2 *');
   const rejected: Array<{definition: unknown; code: string; path: string}> = [
     {definition: {...webhook, triggers: [{id: 'hook', type: 'webhook', source: 'approved-webhook', event: 'submitted', secret: 'hidden-secret-value'}]}, code: 'unsupported_field', path: '/triggers/0/secret'},
     {definition: {...github, triggers: [{id: 'gh', type: 'github_event', repository: 'example/workflow', events: ['workflow_run']}]}, code: 'unsupported_github_event', path: '/triggers/0/events/0'},
     {definition: {...github, triggers: [{id: 'gh', type: 'github_event', repository: 'https://github.com/example/workflow', events: ['push']}]}, code: 'invalid_repository', path: '/triggers/0/repository'},
     {definition: {version: 1, name: 'Cron', cron: '*/5 * * * *', steps: webhook.steps}, code: 'unsupported_field', path: '/cron'},
+    {definition: {...cron, triggers: [{id: 'schedule', type: 'cron', expression: '* * * * * *'}]}, code: 'invalid_cron', path: '/triggers/0/expression'},
+    {definition: {...cron, triggers: [{id: 'schedule', type: 'cron', expression: '0 0 31 2 *'}]}, code: 'invalid_cron', path: '/triggers/0/expression'},
+    {definition: {...cron, triggers: [{id: 'schedule', type: 'cron', expression: '15 * * * *', timezone: 'UTC'}]}, code: 'unsupported_field', path: '/triggers/0/timezone'},
   ];
   for (const probe of rejected) {
     await assert.rejects(() => compilePlan(probe.definition), (error: unknown) => {
@@ -267,7 +278,6 @@ test('unimplemented capabilities stay unsupported and the compiler reports a pre
   }
   const unsupported = capabilityCatalog().filter(entry => entry.status === 'unsupported').map(entry => entry.id);
   assert.deepEqual(unsupported, [
-    'trigger.cron',
     'action.http', 'action.mcp.write', 'action.shell',
     'flow.foreach', 'flow.while', 'flow.nesting', 'flow.dynamic_expansion', 'flow.wait', 'flow.child_workflow', 'flow.saga',
   ]);
