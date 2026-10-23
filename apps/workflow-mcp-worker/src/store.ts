@@ -1,4 +1,6 @@
 import { compilePlan, PlanError, canonicalJsonString } from './plan.ts';
+import { LIMITS } from './capabilities.ts';
+import { PRODUCTION_PORTAL_ENDPOINT, TRUSTED_PORTAL_ENDPOINT } from './mcp-public-fetch.ts';
 import {observeInstance, shouldExpireUnconfirmedOutcome, unresolvedNativeTerminalError, OUTCOME_SETTLE_WINDOW_MS} from './instance-observation.ts';
 import YAML from 'yaml';
 function draftName(definition:string):string {
@@ -63,6 +65,73 @@ async function digest(s:string):Promise<string>{
   return [...new Uint8Array(result)].map(x=>x.toString(16).padStart(2,'0')).join('');
 }
 export function cleanError(e:unknown):string {return e instanceof StateError||e instanceof PlanError?e instanceof StateError?e.code:e.code:'internal_error';}
+function mcpGrants(plan:Plan):ReadonlyOperation[]{
+  return [...new Map(plan.steps.filter(s=>s.uses==='mcp.call').map(s=>{
+    const grant:ReadonlyOperation={endpoint:s.with.endpoint as string,tool:s.with.tool as string,scope:'read',schema_digest:s.with.schema_digest as string};
+    return [JSON.stringify(grant),grant] as const;
+  })).values()];
+}
+function issueMessage(code:string, detail?:string):string{
+  switch(code){
+    case 'unsupported_field': return `Field "${detail}" is not supported.`;
+    case 'unsupported_capability': return 'This action is not supported.';
+    case 'unsupported_operation_scope': return 'MCP scope must be read.';
+    case 'unsupported_github_capability': return 'Only github.workflow.check can be compiled.';
+    case 'invalid_reference':
+    case 'invalid_step_reference': return 'The reference is not allowed from this step.';
+    case 'invalid_yaml_or_json': return 'The definition is not valid YAML or JSON.';
+    case 'invalid_endpoint': return 'The MCP endpoint is not a canonical public HTTPS URL.';
+    case 'excessive_parallelism': return `More than ${LIMITS.maxParallel} steps would run at the same time.`;
+    case 'definition_too_large': return `The definition exceeds ${LIMITS.definitionBytes} bytes.`;
+    case 'invalid_condition': return 'if must be a boolean or one condition operator.';
+    case 'invalid_dependencies': return 'needs must name unique other steps.';
+    case 'cyclic_dependencies': return 'Step dependencies contain a cycle.';
+    case 'unsafe_expression': return 'This expression field is not allowed.';
+    case 'invalid_step_id': return 'The step id is missing, duplicated, or not allowed.';
+    case 'invalid_tool': return 'The MCP tool name is invalid.';
+    case 'invalid_tool_schema': return 'MCP input_schema must be a concrete object schema.';
+    case 'tool_schema_too_large': return 'The MCP tool schema exceeds 8192 bytes.';
+    case 'invalid_operator': return 'The condition operator has the wrong number of arguments.';
+    case 'expression_too_deep': return 'The expression is nested too deeply.';
+    case 'expression_too_large': return 'The expression array is too large.';
+    case 'non_finite_number': return 'Numbers must be finite.';
+    case 'invalid_version': return 'version must be 1.';
+    case 'invalid_name': return 'name must be a non-empty string of at most 120 characters.';
+    case 'invalid_step_count': return 'steps must contain 1 to 32 steps.';
+    case 'too_many_inputs': return 'inputs may contain at most 32 keys.';
+    case 'invalid_inputs': return 'inputs must be an object.';
+    case 'invalid_step': return 'Each step must be an object.';
+    case 'invalid_step_arguments': return 'with must be an object, and mcp.call arguments must be an object.';
+    case 'invalid_definition': return 'The definition must be an object.';
+    case 'invalid_expression': return 'The expression must be an object.';
+    case 'invalid_argument_key': return 'This object key is not allowed.';
+    case 'definition_too_deep': return 'The definition is nested too deeply.';
+    default: return 'The definition is invalid.';
+  }
+}
+function safeSuggestion(suggestion?:string):string|undefined{
+  if(!suggestion)return undefined;
+  if(/\b(write|shell|secret|token|password)\b/i.test(suggestion)||/skip/i.test(suggestion))return undefined;
+  return suggestion;
+}
+function validationIssue(error:PlanError){
+  const code=error.message.split(':')[0]??'invalid_definition';
+  const detail=error.message.startsWith(code+':')?error.message.slice(code.length+1):undefined;
+  const suggestion=safeSuggestion(error.suggestion);
+  return {code, message:issueMessage(code, detail), ...(error.path?{path:error.path}:{}), ...(suggestion?{suggestion}:{})};
+}
+async function compileValidation(source:string){
+  try{
+    const {digest,plan}=await compilePlan(source);
+    const required_approvals=mcpGrants(plan);
+    return {valid:true as const,digest,steps:plan.steps.length,issues:[] as [],
+      ...(required_approvals.length?{required_approvals}:{}),
+      ...(plan.steps.some(s=>s.uses==='github.run')?{requires_heavy_execution_approval:true as const}:{})};
+  }catch(error){
+    if(!(error instanceof PlanError))throw error;
+    return {valid:false as const,issues:[validationIssue(error)]};
+  }
+}
 export function limitResult<T>(value:T,maxBytes=MAX_RESULT):T {if(new TextEncoder().encode(JSON.stringify(value)).byteLength>maxBytes)throw new StateError('result_too_large');return value;}
 export function applyStatus(native:string, outcome:string):string {
   if(['succeeded','failed','indeterminate','cancelled'].includes(outcome))return outcome;
@@ -101,19 +170,10 @@ export class WorkflowService {
   async validate(workflow_id:string,revision:number){
     assertId(workflow_id);const row=await this.row(workflow_id);
     if(row.draft_revision!==revision)throw new StateError('revision_conflict');
-    try {
-      const {digest,plan}=await compilePlan(row.draft);
-      const required_approvals=[...new Map(plan.steps.filter(s=>s.uses==='mcp.call').map(s=>{
-        const grant:ReadonlyOperation={endpoint:s.with.endpoint as string,tool:s.with.tool as string,scope:'read',schema_digest:s.with.schema_digest as string};
-        return [JSON.stringify(grant),grant] as const;
-      })).values()];
-      return {valid:true,digest,steps:plan.steps.length,issues:[],
-        ...(required_approvals.length?{required_approvals}:{}),
-        ...(plan.steps.some(s=>s.uses==='github.run')?{requires_heavy_execution_approval:true}:{})};
-    }catch(error){
-      if(!(error instanceof PlanError))throw error;
-      return {valid:false,issues:[{code:error.message.split(':')[0]}]};
-    }
+    return compileValidation(row.draft);
+  }
+  async validateDefinition(definition:string){
+    return compileValidation(definition);
   }
   async publish(workflow_id:string,expected_revision:number,approved_operations:ReadonlyOperation[]=[],accept_target_risks=false,approve_heavy_execution=false){
     assertId(workflow_id);const row=await this.row(workflow_id);
@@ -121,16 +181,13 @@ export class WorkflowService {
     const {plan,digest:plan_digest}=await compilePlan(row.draft);
     // The owner must explicitly approve the exact immutable URL + tool + scope.
     // Publishing an arbitrary Draft is not itself an external-operation grant.
-    const required=[...new Map(plan.steps.filter(s=>s.uses==='mcp.call').map(s=>{
-      const grant:ReadonlyOperation={endpoint:s.with.endpoint as string,tool:s.with.tool as string,scope:'read',schema_digest:s.with.schema_digest as string};
-      return [JSON.stringify(grant),grant] as const;
-    })).values()].sort((a,b)=>JSON.stringify(a)<JSON.stringify(b)?-1:JSON.stringify(a)>JSON.stringify(b)?1:0);
+    const required=mcpGrants(plan).sort((a,b)=>JSON.stringify(a)<JSON.stringify(b)?-1:JSON.stringify(a)>JSON.stringify(b)?1:0);
     const provided=approved_operations.slice().sort((a,b)=>JSON.stringify(a)<JSON.stringify(b)?-1:JSON.stringify(a)>JSON.stringify(b)?1:0);
     if(JSON.stringify(required)!==JSON.stringify(provided))throw new StateError('external_approval_required');
     if(required.length){
       const portal=this.env.MCP_PORTAL_ENDPOINT;
       if(portal===undefined)throw new StateError('portal_target_not_configured');
-      if(!['https://test-mcp.lirtual.dpdns.org/mcp','https://mcp.lirtual.dpdns.org/mcp'].includes(portal) ||
+      if(![TRUSTED_PORTAL_ENDPOINT,PRODUCTION_PORTAL_ENDPOINT].includes(portal) ||
          required.some(grant=>grant.endpoint!==portal))throw new StateError('portal_target_not_authorized');
     }
     // Personal trusted-target mode: a separate explicit risk acknowledgement

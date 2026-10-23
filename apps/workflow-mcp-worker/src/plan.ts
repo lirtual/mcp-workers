@@ -1,9 +1,17 @@
 import YAML from 'yaml';
 import { publicMcpEndpoint } from './mcp-public-fetch.ts';
+import {
+  CONDITION_VALUE_OPS, DEFINITION_KEYS, GITHUB_CAPABILITY_ID, isSupportedUse, LIMITS, MCP_SCOPE,
+  OBJECT_PROTOTYPE_KEYS, RESERVED_EXPRESSION_KEYS, STEP_ID, STEP_KEYS, TOOL_NAME, WITH_KEYS,
+} from './capabilities.ts';
 
 export class PlanError extends Error {
   code = 'invalid_definition';
-  constructor(message: string) { super(message); this.name = 'PlanError'; }
+  readonly path?: string;
+  readonly suggestion?: string;
+  constructor(message: string, hint?: {path?: string; suggestion?: string}) {
+    super(message); this.name = 'PlanError'; this.path = hint?.path; this.suggestion = hint?.suggestion;
+  }
 }
 export type Step = {
   id: string; uses: 'result.emit' | 'mcp.call' | 'github.run'; needs: string[];
@@ -11,54 +19,65 @@ export type Step = {
 };
 export type ReadonlyOperation = { endpoint:string; tool:string; scope:'read'; schema_digest:string };
 export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown>; mcp_approvals?: ReadonlyOperation[]; mcp_target_risks_accepted?: true; github_execution_approved?: true };
-const SAFE_ID = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
-const OBJECT_PROTOTYPE_KEYS = new Set(['constructor','toString','toLocaleString','valueOf','hasOwnProperty','isPrototypeOf','propertyIsEnumerable']);
-const RESERVED = new Set(['eval','javascript','script','code','shell','endpoint','url','command','function']);
-const keys = (o: Record<string, unknown>, allowed: string[]) => {
-  for(const key of Object.keys(o)) if(!allowed.includes(key)) throw new PlanError('unsupported_field:'+key);
+const PROTOTYPE_KEYS = new Set<string>(OBJECT_PROTOTYPE_KEYS);
+const RESERVED = new Set<string>(RESERVED_EXPRESSION_KEYS);
+function pointer(base: string, key: string | number): string {
+  return base + '/' + String(key).replace(/~/g, '~0').replace(/\//g, '~1');
+}
+const keys = (o: Record<string, unknown>, allowed: readonly string[], path: string) => {
+  for(const key of Object.keys(o)) if(!allowed.includes(key)) throw new PlanError('unsupported_field:'+key, {
+    path: pointer(path, key), suggestion: 'Remove this field.',
+  });
 };
-function object(value: unknown, message: string): Record<string, unknown> {
-  if(!value || typeof value !== 'object' || Array.isArray(value)) throw new PlanError(message);
+function object(value: unknown, message: string, path?: string): Record<string, unknown> {
+  if(!value || typeof value !== 'object' || Array.isArray(value)) throw new PlanError(message, path === undefined ? undefined : {path});
   return value as Record<string, unknown>;
 }
-function refCheck(ref: string, step?: {id:string;needs:string[]}) {
+function refCheck(ref: string, step?: {id:string;needs:string[]}, path?: string) {
+  const hint = {path, suggestion: 'Use inputs.<id> or steps.<needed-step>.status or steps.<needed-step>.output.'};
   const parts=ref.split('.');
-  if(parts.length<2 || parts.slice(1).some(p=>!SAFE_ID.test(p)||['__proto__','constructor','prototype'].includes(p))) throw new PlanError('invalid_reference');
+  if(parts.length<2 || parts.slice(1).some(p=>!STEP_ID.test(p)||['__proto__','constructor','prototype'].includes(p))) throw new PlanError('invalid_reference', hint);
   if(parts[0]==='inputs') return;
   if(parts[0]==='steps' && step && step.needs.includes(parts[1]) && parts.length>=3 && ['status','output'].includes(parts[2])) return;
-  throw new PlanError('invalid_step_reference');
+  throw new PlanError('invalid_step_reference', hint);
 }
-function expression(v: unknown, step?: {id:string; needs:string[]}, depth=0, opaqueKeys=false): void {
-  if(depth>15) throw new PlanError('expression_too_deep');
+function expression(v: unknown, step?: {id:string; needs:string[]}, depth=0, opaqueKeys=false, path=''): void {
+  if(depth>LIMITS.maxExpressionDepth) throw new PlanError('expression_too_deep', {path: path || '/'});
   if(v===null || typeof v==='string'||typeof v==='number'||typeof v==='boolean') return;
-  if(Array.isArray(v)) { if(v.length>100) throw new PlanError('expression_too_large'); for(const x of v) expression(x,step,depth+1,opaqueKeys); return; }
-  const o=object(v,'invalid_expression');
+  if(Array.isArray(v)) {
+    if(v.length>LIMITS.maxArrayLength) throw new PlanError('expression_too_large', {path: path || '/'});
+    for(let index=0; index<v.length; index++) expression(v[index],step,depth+1,opaqueKeys,pointer(path,index));
+    return;
+  }
+  const o=object(v,'invalid_expression', path || '/');
   const names=Object.keys(o);
   if(names.length===1 && names[0]==='ref'){
-    if(typeof o.ref!=='string') throw new PlanError('invalid_reference');
-    refCheck(o.ref,step);return;
+    if(typeof o.ref!=='string') throw new PlanError('invalid_reference', {path: pointer(path,'ref'), suggestion: 'Use inputs.<id> or steps.<needed-step>.status or steps.<needed-step>.output.'});
+    refCheck(o.ref,step,pointer(path,'ref'));return;
   }
-  if(names.length===1 && ['eq','ne','gt','lt','and','or','not'].includes(names[0])) {
+  if(names.length===1 && (CONDITION_VALUE_OPS as readonly string[]).includes(names[0])) {
     const op=names[0], arg=o[op];
-    if(op==='not'){expression(arg,step,depth+1,opaqueKeys);return;}
-    if(!Array.isArray(arg)||arg.length<(op==='and'||op==='or'?1:2)||arg.length>(op==='and'||op==='or'?16:2))throw new PlanError('invalid_operator');
-    for(const x of arg)expression(x,step,depth+1,opaqueKeys);
+    if(op==='not'){expression(arg,step,depth+1,opaqueKeys,pointer(path,op));return;}
+    const min=op==='and'||op==='or'?LIMITS.minLogicOperands:LIMITS.comparisonOperands;
+    const max=op==='and'||op==='or'?LIMITS.maxLogicOperands:LIMITS.comparisonOperands;
+    if(!Array.isArray(arg)||arg.length<min||arg.length>max)throw new PlanError('invalid_operator', {path: pointer(path,op)});
+    for(let index=0; index<arg.length; index++) expression(arg[index],step,depth+1,opaqueKeys,pointer(pointer(path,op),index));
     return;
   }
   for(const [name,x] of Object.entries(o)){
-    if(name==='__proto__'||name==='prototype'||name==='constructor')throw new PlanError('invalid_argument_key');
-    if(!opaqueKeys&&RESERVED.has(name.toLowerCase()))throw new PlanError('unsafe_expression');
-    expression(x,step,depth+1,opaqueKeys);
+    if(name==='__proto__'||name==='prototype'||name==='constructor')throw new PlanError('invalid_argument_key', {path: pointer(path,name)});
+    if(!opaqueKeys&&RESERVED.has(name.toLowerCase()))throw new PlanError('unsafe_expression', {path: pointer(path,name), suggestion: 'Remove this expression field.'});
+    expression(x,step,depth+1,opaqueKeys,pointer(path,name));
   }
 }
 // YAML accepts .nan/.inf, but JSON persistence silently changes them to null.
 // Reject these before computing an immutable Published Plan digest.
-function validateFiniteNumbers(v: unknown, depth=0): void {
-  if(depth>32)throw new PlanError('definition_too_deep');
-  if(typeof v==='number' && !Number.isFinite(v))throw new PlanError('non_finite_number');
-  if(Array.isArray(v)) {for(const child of v)validateFiniteNumbers(child,depth+1);}
+function validateFiniteNumbers(v: unknown, depth=0, path=''): void {
+  if(depth>LIMITS.maxDefinitionDepth)throw new PlanError('definition_too_deep', {path: path || '/'});
+  if(typeof v==='number' && !Number.isFinite(v))throw new PlanError('non_finite_number', {path: path || '/'});
+  if(Array.isArray(v)) {for(let index=0; index<v.length; index++)validateFiniteNumbers(v[index],depth+1,pointer(path,index));}
   else if(v && typeof v==='object') {
-    for(const child of Object.values(v))validateFiniteNumbers(child,depth+1);
+    for(const [key,child] of Object.entries(v))validateFiniteNumbers(child,depth+1,pointer(path,key));
   }
 }
 function canonical(v: unknown): unknown {
@@ -81,7 +100,7 @@ export async function toolSchemaDigest(inputSchema:unknown, outputSchema?:unknow
   validateFiniteNumbers(inputSchema);
   if(outputSchema!==undefined)validateFiniteNumbers(outputSchema);
   const serial=canonicalJsonString({inputSchema,outputSchema:outputSchema??null});
-  if(new TextEncoder().encode(serial).byteLength>8192)throw new PlanError('tool_schema_too_large');
+  if(new TextEncoder().encode(serial).byteLength>LIMITS.maxToolSchemaBytes)throw new PlanError('tool_schema_too_large');
   const hash=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(serial));
   return [...new Uint8Array(hash)].map(v=>v.toString(16).padStart(2,'0')).join('');
 }
@@ -110,63 +129,72 @@ export const evaluateArguments=evaluateExpression;
 export async function compilePlan(source: string|unknown): Promise<{plan:Plan; digest:string}>{
   let raw:unknown=source;
   if(typeof source==='string'){
-    if(new TextEncoder().encode(source).byteLength>32*1024)throw new PlanError('definition_too_large');
-    try{ const doc=YAML.parseDocument(source,{uniqueKeys:true,strict:true});if(doc.errors.length)throw Error('invalid_yaml');raw=doc.toJS({maxAliasCount:16}); }
-    catch{throw new PlanError('invalid_yaml_or_json');}
+    if(new TextEncoder().encode(source).byteLength>LIMITS.definitionBytes)throw new PlanError('definition_too_large', {path: '/'});
+    try{ const doc=YAML.parseDocument(source,{uniqueKeys:true,strict:true});if(doc.errors.length)throw Error('invalid_yaml');raw=doc.toJS({maxAliasCount:LIMITS.maxAliasCount}); }
+    catch{throw new PlanError('invalid_yaml_or_json', {path: '/'});}
   }
   validateFiniteNumbers(raw);
-  const o=object(raw,'invalid_definition');keys(o,['version','name','inputs','steps']);
-  if(o.version!==1)throw new PlanError('invalid_version');
-  if(typeof o.name!=='string'||!o.name.trim()||o.name.length>120)throw new PlanError('invalid_name');
-  if(!Array.isArray(o.steps)||o.steps.length<1||o.steps.length>32)throw new PlanError('invalid_step_count');
-  if(o.inputs!==undefined) {const inp=object(o.inputs,'invalid_inputs');if(Object.keys(inp).length>32)throw new PlanError('too_many_inputs');}
+  const o=object(raw,'invalid_definition','/');keys(o,DEFINITION_KEYS,'');
+  if(o.version!==1)throw new PlanError('invalid_version', {path: '/version'});
+  if(typeof o.name!=='string'||!o.name.trim()||o.name.length>LIMITS.maxNameLength)throw new PlanError('invalid_name', {path: '/name'});
+  if(!Array.isArray(o.steps)||o.steps.length<LIMITS.minSteps||o.steps.length>LIMITS.maxSteps)throw new PlanError('invalid_step_count', {path: '/steps'});
+  if(o.inputs!==undefined) {const inp=object(o.inputs,'invalid_inputs','/inputs');if(Object.keys(inp).length>LIMITS.maxInputs)throw new PlanError('too_many_inputs', {path: '/inputs'});}
   const steps:Step[]=[];
   const ids=new Set<string>();
-  for(const s0 of o.steps){
-    const s=object(s0,'invalid_step');keys(s,['id','uses','needs','if','with']);
-    if(typeof s.id!=='string'||!SAFE_ID.test(s.id)||ids.has(s.id)||OBJECT_PROTOTYPE_KEYS.has(s.id))throw new PlanError('invalid_step_id');
+  for(let index=0; index<o.steps.length; index++){
+    const stepPath='/steps/'+index;
+    const s=object(o.steps[index],'invalid_step',stepPath);keys(s,STEP_KEYS,stepPath);
+    if(typeof s.id!=='string'||!STEP_ID.test(s.id)||ids.has(s.id)||PROTOTYPE_KEYS.has(s.id))throw new PlanError('invalid_step_id', {path: stepPath+'/id'});
     ids.add(s.id);
-    if(s.uses!=='result.emit'&&s.uses!=='mcp.call'&&s.uses!=='github.run')throw new PlanError('unsupported_capability');
+    if(!isSupportedUse(s.uses))throw new PlanError('unsupported_capability', {
+      path: stepPath+'/uses', suggestion: 'Use result.emit, mcp.call, or github.run.',
+    });
     const needs=s.needs===undefined?[]:s.needs;
-    if(!Array.isArray(needs)||needs.some(n=>typeof n!=='string'||!SAFE_ID.test(n))||new Set(needs).size!==needs.length)throw new PlanError('invalid_dependencies');
-    const withData=object(s.with,'invalid_step_arguments');
+    if(!Array.isArray(needs)||needs.some(n=>typeof n!=='string'||!STEP_ID.test(n))||new Set(needs).size!==needs.length)throw new PlanError('invalid_dependencies', {path: stepPath+'/needs'});
+    const withData=object(s.with,'invalid_step_arguments',stepPath+'/with');
     if(s.uses==='github.run'){
       // A single fixed CI verification operation. No user-supplied scripts,
       // URL, repository, ref or arguments.
-      keys(withData,['capability']);
-      if(withData.capability!=='github.workflow.check')
-        throw new PlanError('unsupported_github_capability');
+      keys(withData,WITH_KEYS['github.run'],stepPath+'/with');
+      if(withData.capability!==GITHUB_CAPABILITY_ID)
+        throw new PlanError('unsupported_github_capability', {
+          path: stepPath+'/with/capability', suggestion: 'Set capability to github.workflow.check.',
+        });
     }else if(s.uses==='mcp.call'){
-      keys(withData,['endpoint','tool','scope','arguments','input_schema','output_schema']);
-      if(typeof withData.endpoint!=='string')throw new PlanError('invalid_endpoint');
+      keys(withData,WITH_KEYS['mcp.call'],stepPath+'/with');
+      if(typeof withData.endpoint!=='string')throw new PlanError('invalid_endpoint', {path: stepPath+'/with/endpoint'});
       try { if(publicMcpEndpoint(withData.endpoint).href!==withData.endpoint)throw Error('noncanonical'); }
-      catch { throw new PlanError('invalid_endpoint'); }
-      if(typeof withData.tool!=='string'||!/^[a-zA-Z0-9_-][a-zA-Z0-9_.-]{0,127}$/.test(withData.tool))throw new PlanError('invalid_tool');
-      if(withData.scope!=='read')throw new PlanError('unsupported_operation_scope');
-      object(withData.arguments,'invalid_step_arguments');
+      catch { throw new PlanError('invalid_endpoint', {path: stepPath+'/with/endpoint', suggestion: 'Use the configured portal HTTPS URL with no userinfo, fragment, or non-443 port.'}); }
+      if(typeof withData.tool!=='string'||!TOOL_NAME.test(withData.tool))throw new PlanError('invalid_tool', {path: stepPath+'/with/tool'});
+      if(withData.scope!==MCP_SCOPE)throw new PlanError('unsupported_operation_scope', {
+        path: stepPath+'/with/scope', suggestion: 'Set scope to read.',
+      });
+      object(withData.arguments,'invalid_step_arguments',stepPath+'/with/arguments');
       // Only explicit, bounded expected schema objects may be pinned; never a
       // dynamic expression or network-fetched schema silently approved later.
-      await toolSchemaDigest(withData.input_schema,withData.output_schema);
-    }else keys(withData,['data']);
+      try{await toolSchemaDigest(withData.input_schema,withData.output_schema);}
+      catch(error){if(error instanceof PlanError)throw new PlanError(error.message,{path:stepPath+'/with'});throw error;}
+    }else keys(withData,WITH_KEYS['result.emit'],stepPath+'/with');
     const compiledWith=s.uses==='mcp.call'?
       {...withData,schema_digest:await toolSchemaDigest(withData.input_schema,withData.output_schema)}:withData;
     steps.push({id:s.id,uses:s.uses,needs:needs as string[],with:compiledWith,...(s.if===undefined?{}:{if:s.if})});
   }
-  for(const s of steps){
-    for(const dep of s.needs)if(!ids.has(dep)||dep===s.id)throw new PlanError('invalid_dependencies');
-    if(s.uses==='mcp.call') expression(s.with.arguments,s,0,true);
-    else expression(s.with,s);
+  for(let index=0; index<steps.length; index++){
+    const s=steps[index], stepPath='/steps/'+index;
+    for(const dep of s.needs)if(!ids.has(dep)||dep===s.id)throw new PlanError('invalid_dependencies', {path: stepPath+'/needs'});
+    if(s.uses==='mcp.call') expression(s.with.arguments,s,0,true,stepPath+'/with/arguments');
+    else expression(s.with,s,0,false,stepPath+'/with');
     if(s.if!==undefined){
-      expression(s.if,s);
+      expression(s.if,s,0,false,stepPath+'/if');
       const op=s.if && typeof s.if==='object' && !Array.isArray(s.if)?Object.keys(s.if):[];
-      if(typeof s.if!=='boolean' && !(op.length===1 && ['ref','eq','ne','gt','lt','and','or','not'].includes(op[0])))throw new PlanError('invalid_condition');
+      if(typeof s.if!=='boolean' && !(op.length===1 && (CONDITION_VALUE_OPS as readonly string[]).concat('ref').includes(op[0])))throw new PlanError('invalid_condition', {path: stepPath+'/if'});
     }
   }
   const sorted:Step[]=[], pending=new Map(steps.map(s=>[s.id,s]));
   while(pending.size){
     const ready=[...pending.values()].filter(s=>s.needs.every(n=>sorted.some(t=>t.id===n))).sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0);
-    if(!ready.length)throw new PlanError('cyclic_dependencies');
-    if(ready.length>8)throw new PlanError('excessive_parallelism');
+    if(!ready.length)throw new PlanError('cyclic_dependencies', {path: '/steps'});
+    if(ready.length>LIMITS.maxParallel)throw new PlanError('excessive_parallelism', {path: '/steps', suggestion: 'Keep each ready wave to 8 steps or fewer.'});
     for(const s of ready){sorted.push(s);pending.delete(s.id);}
   }
   const plan:Plan={version:1,name:o.name,steps:sorted,...(o.inputs===undefined?{}:{inputs:o.inputs as Record<string,unknown>})};

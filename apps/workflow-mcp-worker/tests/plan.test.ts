@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { compilePlan, evaluateExpression, evaluateArguments, evaluateCondition, canonicalJsonString, PlanError, toolSchemaDigest } from '../src/plan.ts';
+import { capabilityCatalog, supportedCapabilityExamples } from '../src/capabilities.ts';
 
 const one = {
   version: 1, name: 'Inspect', steps: [
@@ -197,4 +198,59 @@ test('GitHub only compiles a fixed registered capability without dynamic shell, 
   ]) await assert.rejects(()=>compilePlan({version:1,name:'GitHub invalid',steps:[
     {id:'heavy',uses:'github.run',with:extra},
   ]}),PlanError);
+});
+
+test('supported capability examples compile through the real plan compiler', async () => {
+  const seen = new Set<string>();
+  assert.ok(supportedCapabilityExamples.length >= 3);
+  for (const example of supportedCapabilityExamples) {
+    assert.equal(JSON.stringify(example).includes('schema_digest'), false);
+    assert.equal(JSON.stringify(example).includes('"write"'), false);
+    const compiled = await compilePlan(example);
+    assert.match(compiled.digest, /^[0-9a-f]{64}$/);
+    assert.equal(compiled.plan.version, 1);
+    assert.ok(compiled.plan.steps.length >= 1);
+    for (const step of compiled.plan.steps) seen.add(step.uses);
+    const github = compiled.plan.steps.find(step => step.uses === 'github.run');
+    if (github) assert.deepEqual(github.with, {capability: 'github.workflow.check'});
+  }
+  assert.deepEqual([...seen].sort(), ['github.run', 'mcp.call', 'result.emit']);
+});
+
+test('unimplemented capabilities stay unsupported and the compiler reports a precise path', async () => {
+  for (const entry of capabilityCatalog()) {
+    if (entry.status === 'unsupported') assert.equal(JSON.stringify(entry).includes('example'), false);
+    else assert.equal(entry.status, 'supported');
+  }
+  const unsupported = capabilityCatalog().filter(entry => entry.status === 'unsupported').map(entry => entry.id);
+  assert.deepEqual(unsupported, [
+    'trigger.cron', 'trigger.webhook', 'trigger.github_event',
+    'action.http', 'action.mcp.write', 'action.shell',
+    'flow.foreach', 'flow.while', 'flow.child_workflow', 'flow.saga',
+  ]);
+  const step = (extra: Record<string, unknown>) => ({version: 1, name: 'Probe', steps: [{id: 'a', uses: 'result.emit', with: {data: 1}, ...extra}]});
+  const probes: Array<{definition: unknown; code: string; path: string; suggestion?: RegExp}> = [
+    {definition: {version: 1, name: 'Cron', cron: '* * * * *', steps: [{id: 'a', uses: 'result.emit', with: {data: 1}}]}, code: 'unsupported_field', path: '/cron'},
+    {definition: {version: 1, name: 'Hook', webhook: 'https://hooks.example/in', steps: [{id: 'a', uses: 'result.emit', with: {data: 1}}]}, code: 'unsupported_field', path: '/webhook'},
+    {definition: {version: 1, name: 'Event', trigger: {github: 'push'}, steps: [{id: 'a', uses: 'result.emit', with: {data: 1}}]}, code: 'unsupported_field', path: '/trigger'},
+    {definition: {version: 1, name: 'Shell', steps: [{id: 'a', uses: 'shell.run', with: {command: 'pwd'}}]}, code: 'unsupported_capability', path: '/steps/0/uses'},
+    {definition: {version: 1, name: 'HTTP', steps: [{id: 'a', uses: 'http.request', with: {url: 'https://example.com'}}]}, code: 'unsupported_capability', path: '/steps/0/uses'},
+    {definition: {version: 1, name: 'Write', steps: [{id: 'a', uses: 'mcp.call', with: {endpoint: 'https://mcp.lirtual.dpdns.org/mcp', tool: 'echo', scope: 'write', input_schema: {type: 'object'}, arguments: {}}}]}, code: 'unsupported_operation_scope', path: '/steps/0/with/scope', suggestion: /read/},
+    {definition: step({foreach: 'inputs.items'}), code: 'unsupported_field', path: '/steps/0/foreach'},
+    {definition: step({while: true}), code: 'unsupported_field', path: '/steps/0/while'},
+    {definition: {version: 1, name: 'Child', steps: [{id: 'a', uses: 'workflow.call', with: {workflow_id: 'child'}}]}, code: 'unsupported_capability', path: '/steps/0/uses'},
+    {definition: {version: 1, name: 'Saga', saga: {}, steps: [{id: 'a', uses: 'result.emit', with: {data: 1}}]}, code: 'unsupported_field', path: '/saga'},
+    {definition: {version: 1, name: 'Ref', steps: [{id: 'a', uses: 'result.emit', with: {data: {ref: 'nope'}}}]}, code: 'invalid_reference', path: '/steps/0/with/data/ref'},
+    {definition: {version: 1, name: 'Wave', steps: Array.from({length: 9}, (_, i) => ({id: 's' + i, uses: 'result.emit', with: {data: i}}))}, code: 'excessive_parallelism', path: '/steps'},
+  ];
+  for (const probe of probes) {
+    await assert.rejects(() => compilePlan(probe.definition), (error: unknown) => {
+      assert.ok(error instanceof PlanError);
+      assert.equal(error.message.split(':')[0], probe.code);
+      assert.equal(error.path, probe.path);
+      if (probe.suggestion) assert.match(error.suggestion ?? '', probe.suggestion);
+      assert.doesNotMatch(error.suggestion ?? '', /write|shell|secret|token|skip/i);
+      return true;
+    });
+  }
 });

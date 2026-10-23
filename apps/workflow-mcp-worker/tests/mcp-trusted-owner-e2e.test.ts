@@ -186,3 +186,185 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     await client.close();
   }
 });
+
+test('Agent discovers capabilities and inline-validates a definition without touching D1', async t => {
+  const sqlite=new DatabaseSync(':memory:');
+  t.after(()=>sqlite.close());
+  for(const name of ['0001_s1.sql','0002_native_complete_seen.sql'])
+    sqlite.exec(readFileSync(new URL('../migrations/'+name,import.meta.url),'utf8'));
+  let prepares=0;
+  function prepare(sql:string){
+    prepares++;
+    let args:any[]=[];
+    return {
+      bind(...values:unknown[]){args=values;return this;},
+      async first(){return sqlite.prepare(sql).get(...args)??null;},
+      async all(){return {results:sqlite.prepare(sql).all(...args)};},
+      async run(){return {meta:{changes:Number(sqlite.prepare(sql).run(...args).changes)}}},
+    };
+  }
+  const env={
+    MCP_ACCESS_TOKEN:TOKEN,
+    MCP_PORTAL_CLIENT_ID:PORTAL_ID,
+    MCP_PORTAL_CLIENT_SECRET:PORTAL_SECRET,
+    MCP_PORTAL_ENDPOINT:TRUSTED,
+    DB:{prepare,async batch(items:{run:()=>Promise<unknown>}[]){return Promise.all(items.map(s=>s.run()));}},
+    WORKFLOW:{async create(){},async get(){return {async status(){return {status:'running'};}};}},
+  } as unknown as Env;
+  const counts=()=>({
+    workflows:Number(sqlite.prepare('SELECT COUNT(*) AS n FROM workflows').get()?.n),
+    versions:Number(sqlite.prepare('SELECT COUNT(*) AS n FROM workflow_versions').get()?.n),
+    runs:Number(sqlite.prepare('SELECT COUNT(*) AS n FROM runs').get()?.n),
+  });
+  const client=new Client({name:'capability-discovery-test',version:'0.1.0'});
+  const transport=new StreamableHTTPClientTransport(new URL(OWNER),{
+    requestInit:{headers:{authorization:'Bearer '+TOKEN}},
+    fetch:(async(input:RequestInfo|URL,init?:RequestInit)=>
+      ownerWorker.fetch(new Request(input,init),env)) as typeof fetch,
+  });
+  const githubToken='github-token-must-not-leak';
+  try{
+    await client.connect(transport);
+    const listed=await client.listTools();
+    const descriptions=new Map(listed.tools.map(tool=>[tool.name, tool.description??'']));
+    assert.ok(descriptions.has('workflow_capabilities'));
+    assert.match(descriptions.get('workflow_validate')??'', /definition/);
+    assert.match(descriptions.get('workflow_validate')??'', /not publish|does not/i);
+    const instructions=client.getInstructions()??'';
+    assert.match(instructions, /workflow_capabilities/);
+    assert.match(instructions, /workflow_validate/);
+    assert.match(instructions, /workflow_create/);
+    assert.match(instructions, /does not publish/i);
+    async function call(name:string,args:Record<string,unknown>):Promise<any>{
+      const output=await client.callTool({name,arguments:args});
+      const first=output.content[0];
+      if(!first || first.type!=='text')throw Error('unexpected_tool_content');
+      assert.equal(first.text.includes(TOKEN), false);
+      assert.equal(first.text.includes(PORTAL_SECRET), false);
+      assert.equal(first.text.includes(PORTAL_ID), false);
+      assert.equal(first.text.includes(githubToken), false);
+      const value=JSON.parse(first.text);
+      assert.notEqual(output.isError, true, name+' '+first.text);
+      return value;
+    }
+    const before=counts();
+    const quiet=prepares;
+    const overview=await call('workflow_capabilities',{});
+    assert.equal(prepares, quiet);
+    assert.deepEqual(counts(), before);
+    assert.equal(overview.query, 'overview');
+    assert.equal(overview.connections.mcp_portal.status, 'configured');
+    assert.equal(overview.connections.mcp_portal.endpoint, TRUSTED);
+    assert.equal(overview.connections.mcp_portal.scope, 'read');
+    assert.equal(overview.connections.github_executor.status, 'unavailable');
+    assert.equal(JSON.stringify(overview).includes('public.example.org'), false);
+    const byId=new Map<string,{status:string}>(overview.capabilities.map((item:{id:string;status:string}):[string,{status:string}]=>[item.id, item]));
+    assert.equal(byId.get('action.result.emit')?.status, 'supported');
+    assert.equal(byId.get('action.mcp.call')?.status, 'supported');
+    assert.equal(byId.get('action.github.run')?.status, 'supported');
+    assert.equal(byId.get('trigger.manual')?.status, 'supported');
+    for(const id of ['trigger.cron','trigger.webhook','trigger.github_event','action.http','action.mcp.write','action.shell','flow.foreach','flow.while','flow.child_workflow','flow.saga'])
+      assert.equal(byId.get(id)?.status, 'unsupported', id);
+    for(const item of overview.capabilities) assert.equal('example' in item, false);
+
+    const emit=await call('workflow_capabilities',{id:'action.result.emit'});
+    const cron=await call('workflow_capabilities',{id:'trigger.cron'});
+    const missing=await call('workflow_capabilities',{id:'action.not-real'});
+    assert.equal(emit.status, 'supported');
+    assert.equal(cron.status, 'unsupported');
+    assert.equal('example' in cron, false);
+    assert.equal(missing.status, 'unknown');
+    const inline=await call('workflow_validate',{definition:JSON.stringify(emit.example)});
+    assert.equal(inline.valid, true);
+    assert.match(inline.digest, /^[0-9a-f]{64}$/);
+    assert.equal(inline.issues.length, 0);
+    assert.equal('required_approvals' in inline, false);
+    assert.equal(prepares, quiet);
+    assert.deepEqual(counts(), before);
+
+    const github=await call('workflow_capabilities',{id:'action.github.run'});
+    const heavy=await call('workflow_validate',{definition:JSON.stringify(github.example)});
+    assert.equal(heavy.valid, true);
+    assert.equal(heavy.requires_heavy_execution_approval, true);
+    const read=await call('workflow_capabilities',{id:'action.mcp.call'});
+    const approved=await call('workflow_validate',{definition:JSON.stringify(read.example)});
+    assert.equal(approved.valid, true);
+    assert.equal(approved.required_approvals.length, 1);
+    assert.equal(approved.required_approvals[0].scope, 'read');
+    assert.equal(prepares, quiet);
+
+    const bad=await call('workflow_validate',{definition:JSON.stringify({
+      version:1,name:'Bad',javascript:'unsafe',steps:[{id:'a',uses:'result.emit',with:{data:1}}],
+    })});
+    assert.equal(bad.valid, false);
+    assert.equal(bad.issues[0].code, 'unsupported_field');
+    assert.equal(bad.issues[0].path, '/javascript');
+    assert.match(bad.issues[0].message, /javascript/);
+    assert.match(bad.issues[0].suggestion, /Remove/);
+    assert.doesNotMatch(bad.issues[0].suggestion, /write|shell|secret|token|skip|https?:/i);
+    const scope=await call('workflow_validate',{definition:JSON.stringify({
+      version:1,name:'Write',steps:[{id:'a',uses:'mcp.call',with:{
+        endpoint:TRUSTED,tool:'echo',scope:'write',input_schema:{type:'object'},arguments:{},
+      }}],
+    })});
+    assert.equal(scope.issues[0].code, 'unsupported_operation_scope');
+    assert.equal(scope.issues[0].path, '/steps/0/with/scope');
+    assert.match(scope.issues[0].suggestion, /read/);
+    assert.doesNotMatch(scope.issues[0].suggestion, /write/);
+    const ref=await call('workflow_validate',{definition:JSON.stringify({
+      version:1,name:'Ref',steps:[{id:'a',uses:'result.emit',with:{data:{ref:'nope'}}}],
+    })});
+    assert.equal(ref.issues[0].code, 'invalid_reference');
+    assert.equal(ref.issues[0].path, '/steps/0/with/data/ref');
+    const scheduled=await call('workflow_validate',{definition:JSON.stringify({
+      version:1,name:'Cron',cron:'* * * * *',steps:[{id:'a',uses:'result.emit',with:{data:1}}],
+    })});
+    assert.equal(scheduled.issues[0].code, 'unsupported_field');
+    assert.equal(scheduled.issues[0].path, '/cron');
+    assert.equal(prepares, quiet);
+    assert.deepEqual(counts(), before);
+
+    const both=await call('workflow_validate',{
+      workflow_id:'00000000-0000-4000-8000-000000000001', revision:1,
+      definition:JSON.stringify(emit.example),
+    });
+    assert.equal(both.valid, false);
+    assert.equal(both.issues[0].code, 'invalid_validate_target');
+    const neither=await call('workflow_validate',{});
+    assert.equal(neither.valid, false);
+    assert.equal(neither.issues[0].code, 'invalid_validate_target');
+    const partial=await call('workflow_validate',{workflow_id:'00000000-0000-4000-8000-000000000001'});
+    assert.equal(partial.valid, false);
+    assert.equal(partial.issues[0].path, '/revision');
+    assert.equal(prepares, quiet);
+
+    env.MCP_PORTAL_ENDPOINT='https://public.example.org/mcp';
+    const hidden=await call('workflow_capabilities',{});
+    assert.equal(hidden.connections.mcp_portal.status, 'unavailable');
+    assert.equal(JSON.stringify(hidden).includes('public.example.org'), false);
+    env.MCP_PORTAL_ENDPOINT=TRUSTED;
+    Object.assign(env,{
+      WORKFLOW_EXECUTOR_GITHUB_TOKEN:githubToken,
+      GITHUB_EXECUTOR_REPOSITORY:'lirtual/mcp-workers',
+      GITHUB_EXECUTOR_REPOSITORY_ID:'1',
+      GITHUB_EXECUTOR_REF:'refs/heads/main',
+      GITHUB_EXECUTOR_AUDIENCE:'workflow-audience',
+    });
+    const configured=await call('workflow_capabilities',{});
+    assert.equal(configured.connections.github_executor.status, 'configured');
+    assert.equal(configured.connections.github_executor.repository, 'lirtual/mcp-workers');
+    assert.equal(configured.connections.github_executor.ref, 'refs/heads/main');
+    assert.equal(configured.connections.github_executor.workflow, 'workflow-github-executor.yml');
+    assert.equal(configured.connections.github_executor.audience, 'workflow-audience');
+    assert.equal('WORKFLOW_EXECUTOR_GITHUB_TOKEN' in configured.connections.github_executor, false);
+
+    const created=await call('workflow_create',{definition:JSON.stringify(read.example)});
+    const stored=await call('workflow_validate',{workflow_id:created.workflow_id, revision:1});
+    assert.equal(stored.valid, true);
+    assert.deepEqual(stored.required_approvals, approved.required_approvals);
+    assert.equal(stored.digest, approved.digest);
+    assert.deepEqual(counts(), {workflows:1, versions:0, runs:0});
+  }finally{
+    await client.close();
+  }
+});
