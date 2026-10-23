@@ -59,7 +59,6 @@ export function collectWorkerVars(worker, env, options = {}) {
   if (worker === "remote-control-mcp-worker") {
     const origin=remoteControlInstallOrigin(options.config);
     variables.push("REMOTE_CONTROL_INSTALL_ORIGIN:" + origin);
-    variables.push("BROWSER_APPROVAL_PUBLIC_ORIGIN:" + origin);
   }
   for (const name of allowed) {
     const value = env[name];
