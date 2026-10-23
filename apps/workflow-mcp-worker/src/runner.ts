@@ -11,6 +11,7 @@ import { CancelObserved, isCancelRequested } from './run-cancel.ts';
 import { scopedPublicMcpFetch, TRUSTED_PORTAL_ENDPOINT, PRODUCTION_PORTAL_ENDPOINT, type PortalServiceToken } from './mcp-public-fetch.ts';
 import { prepareFixtureRequest, sendFixture } from './http-fixture.ts';
 import { beginProtectedDispatch, finishProtectedDispatch, grantRevoked, readProtectedEffect } from './protected-effect.ts';
+import { approvalStillWaiting, waitForRuntimeApproval } from './runtime-approval.ts';
 
 type Outcome={status:'succeeded'|'failed'|'skipped'|'indeterminate';output?:any;error_code?:string};
 function blockedStep(step: Step): boolean {
@@ -72,7 +73,7 @@ async function readChildOutcome(db:Env['DB'],runId:string,stepId:string):Promise
   catch{return {status:'indeterminate',error_code:'expansion_source_invalid'};}
 }
 async function finishChild(db:Env['DB'],runId:string,stepId:string,outcome:Outcome):Promise<void>{
-  await db.prepare("INSERT INTO run_steps(run_id,step_id,status,output,error_code,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(run_id,step_id) DO UPDATE SET status=excluded.status,output=excluded.output,error_code=excluded.error_code,updated_at=excluded.updated_at WHERE run_steps.status IN ('waiting','running')")
+  await db.prepare("INSERT INTO run_steps(run_id,step_id,status,output,error_code,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(run_id,step_id) DO UPDATE SET status=excluded.status,output=excluded.output,error_code=excluded.error_code,updated_at=excluded.updated_at WHERE run_steps.status IN ('waiting','running','waiting_approval')")
     .bind(runId,stepId,outcome.status,outcome.output===undefined?null:JSON.stringify(outcome.output),outcome.error_code??null,now()).run();
 }
 async function executePublishedTemplate(env:Env,plan:Plan,body:StepBody,ctx:ExprCtx,identity:string,runId:string,versionId:string,workflowStep:WorkflowStep):Promise<Outcome>{
@@ -180,7 +181,7 @@ const CLOSED_FAILURE=new Set([
   'external_approval_required','portal_target_not_authorized','portal_target_not_configured','portal_auth_not_configured',
   'http_target_not_authorized','http_target_invalid','http_fixture_not_configured','http_credential_rejected',
   'target_argument_rejected','target_risk_acknowledgment_required','mcp_target_invalid','mcp_target_not_authorized',
-  'invalid_arguments',
+  'invalid_arguments','approval_argument_rejected',
 ]);
 const INDETERMINATE=new Set(['external_outcome_unknown','http_redirect_denied','mcp_redirect_denied']);
 function closedOutcome(error: unknown): Outcome {
@@ -190,6 +191,14 @@ function closedOutcome(error: unknown): Outcome {
   return {status:'failed',error_code:'step_execution_failed'};
 }
 const HTTP_TARGET_KEYS=new Set<string>(HTTP_TARGET_ARGUMENT_KEYS);
+function rejectApprovalArgument(value: unknown): void {
+  if(Array.isArray(value)){for(const item of value)rejectApprovalArgument(item);return;}
+  if(!value||typeof value!=='object')return;
+  for(const [key, child] of Object.entries(value as Record<string, unknown>)){
+    if(key.toLowerCase()==='approval')throw Error('approval_argument_rejected');
+    rejectApprovalArgument(child);
+  }
+}
 function assertNoTargetArgument(value: unknown): void {
   if(Array.isArray(value)){for(const item of value)assertNoTargetArgument(item);return;}
   if(!value||typeof value!=='object')return;
@@ -256,6 +265,7 @@ async function callApprovedMcp(env:Env,plan:Plan,step:Step,args:Record<string,un
      typeof schema_digest!=='string'||!/^[0-9a-f]{64}$/.test(schema_digest))
     throw Error('external_approval_required');
   if(containsSecret(args, configuredSecrets(env)))throw Error('target_argument_rejected');
+  rejectApprovalArgument(args);
   const replayed=await replayOrRefuse(target);
   if(replayed!==undefined)return replayed;
   // Recompute from the pinned contract so a tampered Plan cannot replace the
@@ -331,6 +341,7 @@ async function callApprovedHttp(env:Env,plan:Plan,step:Step,args:Record<string,u
   if(step.with.scope!=='read'||typeof fixture!=='string'||typeof schema_digest!=='string'||!approval?.endpoint)
     throw Error('external_approval_required');
   assertNoTargetArgument(args);
+  rejectApprovalArgument(args);
   if(containsSecret(args, configuredSecrets(env)))throw Error('target_argument_rejected');
   const replayed=await replayOrRefuse(target);
   if(replayed!==undefined)return replayed;
@@ -461,6 +472,44 @@ async function runGithubStep(
   }
 }
 
+function gateFailure(errorCode: string): Outcome {
+  return {status:errorCode==='approval_already_used'?'indeterminate':'failed',error_code:errorCode};
+}
+async function storedMcpOutput(db: Env['DB'], runId: string, stepId: string): Promise<Outcome | null> {
+  const prior=await readProtectedEffect(db, runId, stepId);
+  if(!prior)return null;
+  if(prior.state==='succeeded'){
+    if(prior.result===null)return {status:'indeterminate',error_code:'external_outcome_unknown'};
+    try{return {status:'succeeded',output:JSON.parse(prior.result)};}
+    catch{return {status:'indeterminate',error_code:'external_outcome_unknown'};}
+  }
+  return {status:'indeterminate',error_code:prior.error_code&&INDETERMINATE.has(prior.error_code)?prior.error_code:'external_outcome_unknown'};
+}
+async function runApprovalGatedStep(env: Env, plan: Plan, s: Step, runId: string, versionId: string, workflowStep: WorkflowStep, ctx: ExprCtx): Promise<Outcome> {
+  if(s.needs.some(need=>ctx.steps[need]?.status!=='succeeded'))return {status:'skipped'};
+  try{if(s.if!==undefined&&!evaluateCondition(s.if,ctx))return {status:'skipped'};}
+  catch{return {status:'failed',error_code:'step_execution_failed'};}
+  if(s.uses!=='mcp.call'||s.with.scope!=='write')return {status:'failed',error_code:'approval_not_applicable'};
+  const stored=await storedMcpOutput(env.DB, runId, s.id);
+  if(stored)return stored;
+  const storedGrant=plan.mcp_approvals?.find(grant=>grant.endpoint===s.with.endpoint&&grant.tool===s.with.tool&&grant.scope===s.with.scope&&grant.schema_digest===s.with.schema_digest);
+  const grantKey=canonicalJsonString(storedGrant??{missing:true});
+  const gate=await waitForRuntimeApproval(env.DB, workflowStep, runId, s.id, versionId, grantKey, ()=>isCancelRequested(env.DB, runId));
+  if(!gate.ok)return gateFailure(gate.error_code);
+  const args=evaluateArguments(s.with.arguments, ctx);
+  if(!args||typeof args!=='object'||Array.isArray(args)||hasUnresolvedArgument(args))
+    return {status:'failed',error_code:'invalid_arguments'};
+  return await workflowStep.do('workflow-'+s.id,{retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},async():Promise<Outcome>=>{
+    try{
+      await env.DB.prepare("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES(?,?,'running',?) ON CONFLICT(run_id,step_id) DO NOTHING")
+        .bind(runId,s.id,now()).run();
+      const output=await callApprovedMcp(env, plan, s, args as Record<string, unknown>, {db:env.DB,runId,stepId:s.id,versionId,grantKey});
+      return {status:'succeeded',output};
+    }catch(error){
+      return closedOutcome(error);
+    }
+  }) as Outcome;
+}
 export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
   async run(event:WorkflowEvent<{run_id:string}>,step:WorkflowStep){
     const id=event.payload.run_id;
@@ -492,6 +541,7 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
     let failed=false;
     let uncertain=false;
     let uncertainCode:string|null=null;
+    let openApprovals=0;
     try{
       while(pending.size){
         if(await isCancelRequested(db,id)) throw new CancelObserved();
@@ -506,14 +556,32 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
                   .bind(id,s.id,now()).run();
                 if(s.needs.some(n=>ctx.steps[n].status!=='succeeded'))return {status:'skipped'} as Outcome;
                 if(s.if!==undefined&&!evaluateCondition(s.if,ctx))return {status:'skipped'} as Outcome;
+                if(s.approval?.required===true&&!(await readGithubAsyncFact(db,id,s.id,now()))){
+                  openApprovals++;
+                  try{
+                    const gate=await waitForRuntimeApproval(db,step,id,s.id,row.version_id,null,()=>isCancelRequested(db,id));
+                    openApprovals--;
+                    if(!gate.ok)return gateFailure(gate.error_code);
+                  }catch(error){throw error;}
+                }
                 return await runGithubStep(this.env,plan,s,id,step,ctx);
               }catch(error){
                 if(error instanceof CancelObserved||await isCancelRequested(db,id)) throw error instanceof CancelObserved?error:new CancelObserved();
                 // A confirmed Attempt still inside its deadline is not an
                 // unknown dispatch. Replay must resume it instead of freezing it.
                 if(await githubAsyncAwaitingExternal(db,id,now()))throw error;
+                if(openApprovals>0&&await approvalStillWaiting(db,id,now()))throw error;
                 return {status:'indeterminate',error_code:'github_dispatch_unknown'} as Outcome;
               }
+            })()
+            : s.approval?.required===true
+            ? await (async()=>{
+              openApprovals++;
+              try{
+                const outcome=await runApprovalGatedStep(this.env,plan,s,id,row.version_id,step,ctx);
+                openApprovals--;
+                return outcome;
+              }catch(error){throw error;}
             })()
             : s.uses==='flow.expand'||s.expand!==undefined
             ? await runExpansion(this.env,plan,s,id,row.version_id,step,ctx)
@@ -553,7 +621,7 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
               throw Error('unsupported_capability');
             }catch{return {status:'failed',error_code:'step_execution_failed'};}
           })) as Outcome;
-          await db.prepare("INSERT INTO run_steps(run_id,step_id,status,output,error_code,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(run_id,step_id) DO UPDATE SET status=excluded.status,output=excluded.output,error_code=excluded.error_code,updated_at=excluded.updated_at WHERE run_steps.status IN ('waiting','running')")
+          await db.prepare("INSERT INTO run_steps(run_id,step_id,status,output,error_code,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(run_id,step_id) DO UPDATE SET status=excluded.status,output=excluded.output,error_code=excluded.error_code,updated_at=excluded.updated_at WHERE run_steps.status IN ('waiting','running','waiting_approval')")
           .bind(id,s.id,result.status,result.output===undefined?null:JSON.stringify(result.output),result.error_code??null,now()).run();
           return result;
         }));
@@ -573,6 +641,7 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
       // A live GitHub Attempt still inside its deadline must survive an
       // isolate restart. Freezing it here would hide a later receipt.
       if(await githubAsyncAwaitingExternal(db,id,now()))throw error;
+      if(openApprovals>0&&await approvalStillWaiting(db,id,now()))throw error;
       await db.prepare("UPDATE runs SET outcome='indeterminate',error_code='execution_interrupted',updated_at=? WHERE id=? AND outcome='running'").bind(now(),id).run();
       throw Error('execution_interrupted');
     }

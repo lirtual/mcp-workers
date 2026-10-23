@@ -38,6 +38,7 @@ export type Step = {
   repeat?: RepeatSpec;
   expand?: ExpandSpec;
   body?: StepBody;
+  approval?: {required: true};
 };
 export type ExprCtx = {
   inputs: Record<string, unknown>;
@@ -141,6 +142,39 @@ function expression(v: unknown, step?: {id:string; needs:string[]}, depth=0, opa
   }
 }
 const HTTP_TARGET_KEYS = new Set<string>(HTTP_TARGET_ARGUMENT_KEYS);
+function rejectApprovalArguments(value: unknown, path: string): void {
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index++) rejectApprovalArguments(value[index], pointer(path, index));
+    return;
+  }
+  if (!value || typeof value !== 'object') return;
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (key.toLowerCase() === 'approval')
+      throw new PlanError('approval_argument_rejected', {
+        path: pointer(path, key),
+        suggestion: 'Remove approval from arguments. Arguments cannot add or widen a gate.',
+      });
+    rejectApprovalArguments(child, pointer(path, key));
+  }
+}
+function compileApproval(raw: unknown, path: string, uses: string, scope: unknown, nested: boolean): {required: true} | undefined {
+  if (raw === undefined) return undefined;
+  const approvalPath = path + '/approval';
+  const approval = object(raw, 'invalid_approval', approvalPath);
+  keys(approval, ['required'], approvalPath);
+  if (approval.required !== true) throw new PlanError('invalid_approval', {
+    path: approvalPath + '/required',
+    suggestion: 'Set approval.required to true. Arguments cannot add or widen a gate.',
+  });
+  const highImpact = (uses === 'mcp.call' && scope === 'write') || uses === 'github.run';
+  if (!highImpact || nested) throw new PlanError('approval_not_applicable', {
+    path: approvalPath,
+    suggestion: nested
+      ? 'Do not combine an approval gate with repeat or expand. One approval runs one action.'
+      : 'Only a portal write or GitHub step can declare a runtime approval. Reads do not wait.',
+  });
+  return {required: true};
+}
 function rejectHttpTargetArguments(value: unknown, path: string): void {
   if (Array.isArray(value)) {
     for (let index = 0; index < value.length; index++) rejectHttpTargetArguments(value[index], pointer(path, index));
@@ -435,6 +469,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
         path: stepPath+'/with/scope', suggestion: 'Use an approved scope.',
       });
       object(withData.arguments,'invalid_step_arguments',stepPath+'/with/arguments');
+      rejectApprovalArguments(withData.arguments, stepPath+'/with/arguments');
       // Only explicit, bounded expected schema objects may be pinned; never a
       // dynamic expression or network-fetched schema silently approved later.
       try{await toolSchemaDigest(withData.input_schema,withData.output_schema);}
@@ -449,6 +484,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
         path: stepPath+'/with/scope', suggestion: 'Use an approved scope.',
       });
       object(withData.arguments,'invalid_step_arguments',stepPath+'/with/arguments');
+      rejectApprovalArguments(withData.arguments, stepPath+'/with/arguments');
       rejectHttpTargetArguments(withData.arguments, stepPath+'/with/arguments');
       const schema=withData.input_schema;
       const properties=schema && typeof schema==='object' && !Array.isArray(schema)
@@ -466,6 +502,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     if(expand&&repeat) throw new PlanError('loop_nesting_unsupported', {
       path: stepPath+'/expand', suggestion: 'Do not combine repeat and expand. Nested steps are not implemented.',
     });
+    const approval=compileApproval(s.approval,stepPath,s.uses,withData.scope,repeat!==undefined||expand!==undefined);
     const compiledWith=s.uses==='mcp.call'||s.uses==='http.request'?
       {...withData,schema_digest:await toolSchemaDigest(withData.input_schema,withData.output_schema)}
       :s.uses==='github.run'&&withData.capability===REGISTERED_GITHUB_ACTION.id?
@@ -476,6 +513,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     steps.push({id:s.id,uses:rewritten,needs:needs as string[],with:repeat||expand?{}:compiledWith,
       ...(repeat?{repeat,body:{uses:'result.emit' as const,with:compiledWith}}:{}),
       ...(expand?{expand,body:{uses:s.uses as TemplateUse,with:compiledWith}}:{}),
+      ...(approval?{approval}:{}),
       ...(s.if===undefined?{}:{if:s.if})});
   }
   for(let index=0; index<steps.length; index++){

@@ -31,7 +31,9 @@ There are **no independent capability enable flags**. The documented per-operati
 
 ## MCP owner tools
 
-`workflow_capabilities`, `workflow_list`, `workflow_get`, `workflow_create`, `workflow_update`, `workflow_validate`, `workflow_publish`, `workflow_revoke`, `workflow_run`, `workflow_cancel`, `workflow_status`, `workflow_result`, `workflow_pause` and `workflow_resume`.
+`workflow_capabilities`, `workflow_list`, `workflow_get`, `workflow_create`, `workflow_update`, `workflow_validate`, `workflow_publish`, `workflow_approval`, `workflow_revoke`, `workflow_run`, `workflow_cancel`, `workflow_status`, `workflow_result`, `workflow_pause` and `workflow_resume`.
+
+A portal write or GitHub step may declare `approval.required`. The Run then waits before that one external effect until `workflow_approval` records a decision for the same Run, Step, and Published Version. Denial, timeout, a repeat, and any other binding do not dispatch. Publish does not create that approval. Connection revocation still blocks a later dispatch. Already authorized reads, and writes that omit the gate, do not wait.
 
 Publishing is explicit; saving a Draft never starts execution. `workflow_pause` and `workflow_resume` only gate new admissions; they do not stop an active Run or cancel an external Job. `workflow_cancel` is the explicit cancel request. It uses GitHub's normal cancel API for a waiting or running registered job, never force-cancel, and reports `requested`, `cancelled`, `completed`, or `indeterminate`.
 
