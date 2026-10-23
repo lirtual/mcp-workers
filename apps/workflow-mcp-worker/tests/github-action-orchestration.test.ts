@@ -13,6 +13,8 @@ const action:ReviewedGitHubAction={repository:'lirtual/session-actions',reposito
  commitSha:'a'.repeat(40),type:'session',contractDigest:'b'.repeat(64)};
 const data={runId:rid,stepId:'linux',attemptId:aid,dispatchId:did,
  action,ref:'refs/heads/main',token:'token',inputs:{duration_minutes:'5'}};
+const publishedPlan={github_execution_approved:true,github_action_approvals:[action],
+ steps:[{id:'linux',uses:'github.run',with:{capability:'github.action',action:{...action,inputs:{duration_minutes:5}}}}]};
 function setup(){
  const db=new DatabaseSync(':memory:');
  db.exec('PRAGMA foreign_keys=ON');
@@ -27,6 +29,7 @@ function setup(){
  INSERT INTO workflow_versions(id,workflow_id,digest,plan,created_at) VALUES('v','wf','x','{}',1);
  INSERT INTO runs(id,workflow_id,version_id,instance_id,request_digest,inputs,outcome,created_at,updated_at)
  VALUES('${rid}','wf','v','inst','x','{}','running',1,1)`);
+ db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(publishedPlan),'v');
  const adapter={prepare:(sql:string)=>({bind:(...args:unknown[])=>({
   run:async()=>({meta:{changes:db.prepare(sql).run(...args as []).changes}}),
   first:async()=>db.prepare(sql).get(...args as []),
@@ -67,6 +70,26 @@ test('terminal parent run never registers or dispatches',async()=>{
  try{
   db.exec("UPDATE runs SET outcome='cancelled'");
   await assert.rejects(registerAndDispatchGitHubAction(adapter,data,async()=>{throw Error('must not call GitHub');}),/not_registered/);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM step_attempts').get()?.n,0);
+ }finally{db.close();}
+});
+
+test('an unapproved Action or mismatched Step cannot dispatch or reserve an Attempt',async()=>{
+ const {db,adapter}=setup();
+ try{
+  db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?')
+   .run(JSON.stringify({...publishedPlan,github_action_approvals:[]}), 'v');
+  let network=0;
+  await assert.rejects(registerAndDispatchGitHubAction(adapter,data,async()=>{network++;throw Error('unexpected');}),
+   /publication_missing/);
+  assert.equal(network,0);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM step_attempts').get()?.n,0);
+  db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?')
+   .run(JSON.stringify(publishedPlan),'v');
+  await assert.rejects(registerAndDispatchGitHubAction(adapter,{
+   ...data,action:{...action,workflowId:999},
+  },async()=>{network++;throw Error('unexpected');}),/publication_missing/);
+  assert.equal(network,0);
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM step_attempts').get()?.n,0);
  }finally{db.close();}
 });
