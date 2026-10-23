@@ -540,3 +540,37 @@ test('fallback elapsed-time rule cannot shorten true job duration and rejects in
  assert.equal(sessionCancellationDue({state:'ready',created_at:100,updated_at:1000,duration_minutes:331},1e12),false);
  assert.equal(sessionCancellationDue({state:'stopping',created_at:100,updated_at:1000,duration_minutes:5},1e12),false);
 });
+
+test('transient D1 outage does not permanently stop unattended Session reconciliation',async()=>{
+ const f=fixture(),originalFetch=globalThis.fetch;
+ try{
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
+  f.claim(1,'claimed',true);
+  f.db.prepare("UPDATE session_executions SET state='ready',updated_at=?").run(Date.now());
+  f.db.prepare("UPDATE runs SET outcome='succeeded' WHERE id=?").run(run(1));
+  let failures=0,sleeps=0,reads=0;
+  const db={prepare:(sql:string)=>{
+   if(sql.includes("json_extract(v.plan")&&failures++===0)
+    throw Error('transient D1 outage');
+   return f.adapter.prepare(sql);
+  }} as unknown as D1Database;
+  globalThis.fetch=async()=>{
+   reads++;
+   return Response.json({
+    id:42,workflow_id:456,run_attempt:1,
+    repository:{id:123,full_name:action.repository},
+    path:action.workflowPath+'@release-v1',head_sha:action.commitSha,
+    event:'workflow_dispatch',status:'completed',conclusion:'success',
+   });
+  };
+  const step={
+   do:async(_name:string,_opts:unknown,cb:()=>Promise<unknown>)=>cb(),
+   sleep:async()=>{sleeps++;},
+  } as unknown as WorkflowStep;
+  const env={DB:db,WORKFLOW_EXECUTOR_GITHUB_TOKEN:'token'} as Env;
+  assert.equal(await watchPersistedSessions(env,run(1),step,3),'terminated');
+  assert.equal(sleeps,1);
+  assert.equal(reads,1);
+  assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'terminated');
+ }finally{globalThis.fetch=originalFetch;f.db.close();}
+});
