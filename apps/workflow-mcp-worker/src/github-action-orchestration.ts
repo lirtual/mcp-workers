@@ -49,9 +49,15 @@ export async function registerAndDispatchGitHubAction(
  const step=plan.steps.find(entry=>entry.id===data.stepId);
  if(!step||step.uses!=='github.run'||step.with?.capability!=='github.action')
   throw Error('github_action_publication_missing');
- const raw=step.with.action as PublishedAction|undefined;
- if(!raw||!isPublishedGitHubActionApproved(plan.github_action_approvals,raw)||
-    !isPublishedGitHubActionApproved([raw],data.action))
+ const raw=step.with.action as (PublishedAction & {inputs?:unknown})|undefined;
+ if(!raw)throw Error('github_action_publication_missing');
+ const identity:PublishedAction={
+  repository:raw.repository,repositoryId:raw.repositoryId,
+  workflowId:raw.workflowId,workflowPath:raw.workflowPath,
+  commitSha:raw.commitSha,type:raw.type,contractDigest:raw.contractDigest,
+ };
+ if(!isPublishedGitHubActionApproved(plan.github_action_approvals,identity)||
+    !isPublishedGitHubActionApproved([identity],data.action))
   throw Error('github_action_publication_missing');
  const saved=await db.prepare(`INSERT OR IGNORE INTO step_attempts
  (attempt_id,run_id,step_id,capability_id,dispatch_id,state,repository,
