@@ -1,4 +1,5 @@
 import { runPublishedGitHubActionTask } from './github-action-task.ts';
+import { runPublishedGitHubActionSession } from './github-action-session.ts';
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { evaluateArguments, evaluateCondition, toolSchemaDigest } from './plan.ts';
@@ -90,7 +91,9 @@ async function runGithubStep(
   if(plan.github_execution_approved!==true)
     return {status:'failed',error_code:'github_execution_approval_required'};
   if(s.with.capability==='github.action')
-    return runPublishedGitHubActionTask(env,plan,s,runId,step);
+    return (s.with.action as {type?:unknown}|undefined)?.type==='session'
+      ?runPublishedGitHubActionSession(env,plan,s,runId,step)
+      :runPublishedGitHubActionTask(env,plan,s,runId,step);
   if(s.with.capability!=='github.workflow.check')
     return {status:'failed',error_code:'github_capability_not_registered'};
   if(!env.WORKFLOW_EXECUTOR_GITHUB_TOKEN||!env.GITHUB_EXECUTOR_REPOSITORY||
