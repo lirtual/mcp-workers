@@ -1,7 +1,7 @@
 import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
 import { BROWSER_TOOLS, BROWSER_EFFECT_TOOLS, BROWSER_READ_TOOLS, parseBrowserCall, browserEffectClientStatus } from "./browser-tools.ts";
 /** Browser tools use the existing authenticated MCP + signed paired-device grant. */
-import { handleAgentInstallerRequest, REVIEWED_V0115_RELEASE_PIN, REVIEWED_WINDOWS_INSTALL_PIN } from "./install-bootstrap.ts";
+import { handleAgentInstallerRequest, REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, REVIEWED_WINDOWS_INSTALL_PIN } from "./install-bootstrap.ts";
 export { V2OwnerCoordinator } from "./v2-pairing.ts";
 import { V2OwnerCoordinator as PreviewCoordinator } from "./v2-pairing.ts";
 export class DeviceCoordinator extends PreviewCoordinator {}
@@ -1146,7 +1146,7 @@ export default {
           status: 503, headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" },
         });
       }
-      return handleAgentInstallerRequest(request, REVIEWED_V0115_RELEASE_PIN,
+      return handleAgentInstallerRequest(request, REVIEWED_PUBLIC_INSTALL_RELEASE_PIN,
         (env as V2Env).REMOTE_CONTROL_INSTALL_ORIGIN ?? "https://rca.lirtual.dpdns.org",
         REVIEWED_WINDOWS_INSTALL_PIN);
     }

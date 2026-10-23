@@ -225,26 +225,26 @@ test('homepage copy state follows the separately verified platform pins',async()
 });
 
 
-test('reviewed v0.1.15 enables both public bootstrap paths only with exact reviewed pins', async () => {
-  const { REVIEWED_V0115_RELEASE_PIN, REVIEWED_WINDOWS_INSTALL_PIN } =
+test('reviewed v0.1.16 enables both public bootstrap paths only with exact reviewed pins', async () => {
+  const { REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, REVIEWED_WINDOWS_INSTALL_PIN } =
     await import('../src/install-bootstrap.ts');
   const base = 'https://rca.lirtual.dpdns.org';
-  assert.equal(REVIEWED_V0115_RELEASE_PIN.commit, '7a90504a22e3ea0c302c4c5a7d5defeb72ea7719');
-  assert.equal(REVIEWED_V0115_RELEASE_PIN.x64Sha256, '4c5c9733a37061a7223ff1ba1a019a838c105be462e04b4f73352205fa0ea1c9');
-  assert.equal(REVIEWED_V0115_RELEASE_PIN.arm64Sha256, 'b6c0b7079a090b9fddef11c27211169881b4e51ef99e36ac19f8f9678d0613d7');
-  assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.assetSha256, 'eedc514831968c03447befe2cc7e125b89eca328a524e649dde58f4e9fb4e94d');
-  assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.scriptSha256, '9f13a2222461cdf8d836691c5e137aed992bb81bf50b236b7d551457b9b0d5ed');
-  const home = handleAgentInstallerRequest(new Request(base + '/'), REVIEWED_V0115_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
+  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.commit, 'b942a01e46253daedb220abed8e76cd121f33242');
+  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.x64Sha256, '08ef463baa6a4cb056806fa57945b8aca1f605ed3a791e9b21cda210ac7d3352');
+  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.arm64Sha256, 'c5d38ba20e69546ce2096a3a19804173fafc3e16bae1ad0a1c96759b8df41bb7');
+  assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.assetSha256, 'c39cdf2b8de103b8b283ba9e4e973355bab9e7fce746195ab1ee952bd50a222f');
+  assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.scriptSha256, '4ddb4cefbb0216ea9448735cc89918f8a87c0680805632bf06386d350bbb734e');
+  const home = handleAgentInstallerRequest(new Request(base + '/'), REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
   assert.equal(home.status, 200);
   assert.match(await home.text(), /const ready=\{windows:true,linux:true\}/);
-  const linux = handleAgentInstallerRequest(new Request(base + '/install.sh'), REVIEWED_V0115_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
+  const linux = handleAgentInstallerRequest(new Request(base + '/install.sh'), REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
   assert.equal(linux.status, 200);
-  assert.match(await linux.text(), /remote-control-agent-v0\.1\.15/);
-  const windows = handleAgentInstallerRequest(new Request(base + '/install.ps1'), REVIEWED_V0115_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
+  assert.match(await linux.text(), /remote-control-agent-v0\.1\.16/);
+  const windows = handleAgentInstallerRequest(new Request(base + '/install.ps1'), REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
   assert.equal(windows.status, 200);
   const ps1 = await windows.text();
-  assert.match(ps1, /7a90504a22e3ea0c302c4c5a7d5defeb72ea7719/);
-  assert.match(ps1, /9f13a2222461cdf8d836691c5e137aed992bb81bf50b236b7d551457b9b0d5ed/);
+  assert.match(ps1, /b942a01e46253daedb220abed8e76cd121f33242/);
+  assert.match(ps1, /4ddb4cefbb0216ea9448735cc89918f8a87c0680805632bf06386d350bbb734e/);
   assert.equal(handleAgentInstallerRequest(new Request(base + '/'), null, base, null).status, 200);
   assert.equal(handleAgentInstallerRequest(new Request(base + '/install.sh'), null, base, null).status, 503);
   assert.equal(handleAgentInstallerRequest(new Request(base + '/install.ps1'), null, base, null).status, 503);
@@ -252,11 +252,11 @@ test('reviewed v0.1.15 enables both public bootstrap paths only with exact revie
 
 
 test("mobile links may open static install home with query or Origin but not scripts", async () => {
-  const { REVIEWED_V0115_RELEASE_PIN, REVIEWED_WINDOWS_INSTALL_PIN } =
+  const { REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, REVIEWED_WINDOWS_INSTALL_PIN } =
     await import("../src/install-bootstrap.ts");
   const host = "https://rca.lirtual.dpdns.org";
   const serve = (request: Request) => handleAgentInstallerRequest(
-    request, REVIEWED_V0115_RELEASE_PIN, host, REVIEWED_WINDOWS_INSTALL_PIN);
+    request, REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, host, REVIEWED_WINDOWS_INSTALL_PIN);
   const clean = await serve(new Request(host + "/")).text();
   const linked = serve(new Request(host + "/?utm_source=chatgpt.com&utm_medium=share", {
     headers: { origin: "https://chatgpt.com" },
