@@ -239,7 +239,7 @@ test('reviewed v0.1.18 enables both public bootstrap paths only with exact revie
   assert.match(await home.text(), /const ready=\{windows:true,linux:true\}/);
   const linux = handleAgentInstallerRequest(new Request(base + '/install.sh'), REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
   assert.equal(linux.status, 200);
-  assert.match(await linux.text(), /remote-control-agent-v0\.1\.17/);
+  assert.match(await linux.text(), /remote-control-agent-v0\.1\.18/);
   const windows = handleAgentInstallerRequest(new Request(base + '/install.ps1'), REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
   assert.equal(windows.status, 200);
   const ps1 = await windows.text();
