@@ -25,10 +25,18 @@ export async function inspectPersistedGitHubActionAttempt(
  WHERE a.attempt_id=?`).bind(attemptId).first<Row>();
  if(!row || row.capability_id!=='github.action' ||
     !['confirmed','claimed'].includes(row.state) ||
-    !['queued','running'].includes(row.run_outcome) ||
     !row.candidate_run_id || !row.candidate_run_attempt ||
     (row.state==='claimed' && (row.owner_run_id!==row.candidate_run_id ||
       row.owner_run_attempt!==row.candidate_run_attempt)))return {state:'unknown'};
+ // Session physical jobs outlive their parent Workflow after Ready.
+ // Only a separately reserved, nonterminated Session may be inspected after
+ // the parent reaches a business terminal. Task has no such exception.
+ if(!['queued','running'].includes(row.run_outcome)){
+  const live=await db.prepare(`SELECT state FROM session_executions
+    WHERE run_id=? AND step_id=?`).bind(row.run_id,row.step_id)
+   .first<{state:string}>();
+  if(!live||live.state==='terminated')return {state:'unknown'};
+ }
  let plan:Plan;
  try{plan=JSON.parse(row.plan) as Plan;}catch{return {state:'unknown'};}
  if(plan.github_execution_approved!==true)return {state:'unknown'};
