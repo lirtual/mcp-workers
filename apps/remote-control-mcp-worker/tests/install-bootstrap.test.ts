@@ -177,6 +177,8 @@ test('public installation home is isolated from authentication and shows the two
   assert.match(page.headers.get('content-security-policy')??'',/frame-ancestors 'none'/);
   const html=await page.text();
   assert.match(html,/role="tablist"/);
+  assert.match(html,/>Linux<\/button>/);
+  assert.doesNotMatch(html,/>Linux \/ WSL2<\/button>/);
   assert.match(html,/aria-selected/);
   assert.match(html,/navigator\.userAgentData/);
   assert.match(html,/clipboard\.writeText/);

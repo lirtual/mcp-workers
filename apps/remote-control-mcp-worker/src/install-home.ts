@@ -22,7 +22,7 @@ li{line-height:1.6;font-size:13px;color:#555}li strong{color:#111;display:block;
 </style></head>
 <body><main><small>Remote Control Agent</small><h1>在你的设备上开始</h1>
 <p>复制一条安装命令，在本机终端运行；设备授权只通过已认证的 MCP 所有者审批完成。</p>
-<div role="tablist" aria-label="操作系统"><button type="button" id="windows" role="tab" aria-controls="installer" aria-selected="false">Windows</button><button type="button" id="linux" role="tab" aria-controls="installer" aria-selected="false">Linux / WSL2</button></div>
+<div role="tablist" aria-label="操作系统"><button type="button" id="windows" role="tab" aria-controls="installer" aria-selected="false">Windows</button><button type="button" id="linux" role="tab" aria-controls="installer" aria-selected="false">Linux</button></div>
 <section id="installer" role="tabpanel" aria-label="安装命令"><div class="command"><code id="command"></code><button type="button" class="copy" id="copy" aria-label="复制安装命令">复制</button></div><div id="message" role="status" aria-live="polite"></div></section>
 <ol><li><strong>1 · 安装</strong>运行命令并选择永久或临时</li><li><strong>2 · MCP 授权</strong>核对 10 位配对码与指纹，批准一次</li><li><strong>3 · 验证连接</strong>通过 MCP 确认设备在线并做无害读取</li></ol>
 <footer><a href="https://github.com/lirtual/remote-control-agent" rel="noopener noreferrer">源码</a><a href="https://github.com/lirtual/remote-control-agent#readme" rel="noopener noreferrer">文档</a></footer></main>
