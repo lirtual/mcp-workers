@@ -58,5 +58,11 @@ try {
   console.error('PORTAL_ACCEPTANCE_FAIL',error instanceof Error?error.name:'unknown','HTTP',lastHttpStatus);
   process.exitCode=1;
 } finally {
-  await client.close().catch(()=>{});
+  // SDK HTTP streams can retain open handles even after close(). Keep this
+  // read-only CI probe bounded without changing its success/error verdict.
+  await Promise.race([
+    client.close().catch(()=>{}),
+    new Promise(resolve=>setTimeout(resolve,1500)),
+  ]);
+  process.exit(process.exitCode??0);
 }

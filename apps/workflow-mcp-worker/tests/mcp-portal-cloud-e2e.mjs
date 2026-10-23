@@ -36,6 +36,21 @@ async function run(){
   attempted=true;wr(['deploy','--config',file]);
   for(const [key,val] of Object.entries({MCP_ACCESS_TOKEN:ownerToken,MCP_PORTAL_CLIENT_ID:pair.clientId,MCP_PORTAL_CLIENT_SECRET:pair.clientSecret}))wr(['secret','put',key,'--config',file],val);
   console.log('DISPOSABLE_WORKER_READY',name);
+  // Each secret update can roll out a new Worker version. Do not begin
+  // state-changing MCP requests until the disposable route is stable.
+  let stable=0;
+  for(let i=0;i<25&&stable<3;i++){
+    try{
+      const response=await fetch('https://'+name+'.aiyaya.workers.dev/health',{
+        method:'GET',signal:AbortSignal.timeout(5500),
+      });
+      if(response.status===200&&((await response.json())?.ok===true))stable++;
+      else stable=0;
+    }catch{stable=0;}
+    if(stable<3)await pause(2200);
+  }
+  assert.equal(stable,3,'disposable_worker_route_unstable_after_secrets');
+  console.log('MCP_ISOLATED_STABLE_WORKER_HEALTH_OK',name);
   let connected=false;for(let i=0;i<15;i++){
     const instance=mcp(endpoint,{requestInit:{headers:{authorization:'Bearer '+ownerToken}}});
     try{await instance.client.connect(instance.transport);owner=instance.client;connected=true;break;}catch{await instance.client.close().catch(()=>{});await pause(2000);}
@@ -72,7 +87,15 @@ async function removeExact(path){
   if(await resourcePresent(path))throw Error('Disposable resource still present');
 }
 async function cleanup(){
-  try{await owner?.close();await portal?.client?.close();}catch{}
+  // A stalled SDK stream must never block exact-name cleanup of disposable
+  // Worker / Workflow / D1 resources.
+  await Promise.race([
+    Promise.allSettled([
+      Promise.resolve().then(()=>owner?.close()),
+      Promise.resolve().then(()=>portal?.client?.close()),
+    ]),
+    new Promise(resolve=>setTimeout(resolve,1500)),
+  ]);
   if(!/^workflow-mcp-ima-[a-f0-9]{10}$/.test(name))throw Error('Unsafe cleanup identity');
   const failed=[];
   const worker='/accounts/'+account+'/workers/scripts/'+name;
