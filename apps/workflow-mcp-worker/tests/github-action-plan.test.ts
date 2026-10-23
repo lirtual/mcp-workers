@@ -5,7 +5,7 @@ import { compilePlan } from '../src/plan.ts';
 const action={
   repository:'lirtual/session-actions',repositoryId:123,workflowId:456,
   workflowPath:'.github/workflows/linux.yml',commitSha:'a'.repeat(40),
-  type:'session',contractDigest:'b'.repeat(64),inputs:{duration_minutes:5},
+  type:'session',contractDigest:'b'.repeat(64),ref:'refs/tags/test-v1',inputs:{duration_minutes:5},
 };
 const definition=(a:unknown)=>JSON.stringify({version:1,name:'Session action',steps:[{
   id:'start',uses:'github.run',with:{capability:'github.action',action:a},
@@ -20,6 +20,8 @@ test('rejects missing and dynamic immutable Action identities',async()=>{
   await assert.rejects(compilePlan(definition({...action,workflowPath:'../escape.yml'})),/invalid_github_action/);
   await assert.rejects(compilePlan(definition({...action,repository:'${{ inputs.repo }}'})),/invalid_github_action/);
   await assert.rejects(compilePlan(definition({...action,extra:true})),/unsupported_field/);
+  await assert.rejects(compilePlan(definition({...action,ref:'refs/heads/main'})),/invalid_github_action/);
+  await assert.rejects(compilePlan(definition({...action,ref:'refs/tags/../bad'})),/invalid_github_action/);
 });
 test('unsupported GitHub capabilities remain rejected',async()=>{
   await assert.rejects(compilePlan(JSON.stringify({version:1,name:'Unsafe',steps:[{
