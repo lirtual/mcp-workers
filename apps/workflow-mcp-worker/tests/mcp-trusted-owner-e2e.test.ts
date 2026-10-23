@@ -236,7 +236,8 @@ test('Agent discovers capabilities and inline-validates a definition without tou
     assert.match(instructions, /workflow_create/);
     assert.match(instructions, /does not publish/i);
     assert.match(instructions, /repeat/);
-    assert.match(instructions, /saga are unsupported|saga is unsupported/);
+    assert.match(instructions, /explicit compensate grant/);
+    assert.match(instructions, /not an ACID rollback/);
     async function call(name:string,args:Record<string,unknown>):Promise<any>{
       const output=await client.callTool({name,arguments:args});
       const first=output.content[0];
@@ -267,12 +268,12 @@ test('Agent discovers capabilities and inline-validates a definition without tou
     assert.equal(byId.get('trigger.manual')?.status, 'supported');
     assert.equal(byId.get('trigger.webhook')?.status, 'supported');
     assert.equal(byId.get('trigger.github_event')?.status, 'supported');
-    for(const id of ['flow.if','flow.needs','flow.parallel','flow.repeat','flow.dynamic_expansion'])
+    for(const id of ['flow.if','flow.needs','flow.parallel','flow.repeat','flow.dynamic_expansion','flow.saga'])
       assert.equal(byId.get(id)?.status, 'supported', id);
     assert.equal(byId.get('trigger.cron')?.status, 'supported');
     assert.equal(byId.get('action.http')?.status, 'supported');
     assert.equal(byId.get('action.mcp.write')?.status, 'supported');
-    for(const id of ['action.tsrv','action.shell','flow.foreach','flow.while','flow.nesting','flow.wait','flow.child_workflow','flow.saga'])
+    for(const id of ['action.tsrv','action.shell','flow.foreach','flow.while','flow.nesting','flow.wait','flow.child_workflow'])
       assert.equal(byId.get(id)?.status, 'unsupported', id);
     for(const item of overview.capabilities) assert.equal('example' in item, false);
 

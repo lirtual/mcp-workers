@@ -11,6 +11,7 @@ import { CancelObserved, isCancelRequested } from './run-cancel.ts';
 import { scopedPublicMcpFetch, TRUSTED_PORTAL_ENDPOINT, PRODUCTION_PORTAL_ENDPOINT, type PortalServiceToken } from './mcp-public-fetch.ts';
 import { prepareFixtureRequest, sendFixture } from './http-fixture.ts';
 import { beginProtectedDispatch, finishProtectedDispatch, grantRevoked, readProtectedEffect } from './protected-effect.ts';
+import { COMPENSATION_ROW, compensationEffectId, type CompensationReport, type CompensationStepReport } from './saga.ts';
 
 type Outcome={status:'succeeded'|'failed'|'skipped'|'indeterminate';output?:any;error_code?:string};
 function blockedStep(step: Step): boolean {
@@ -461,6 +462,79 @@ async function runGithubStep(
   }
 }
 
+async function hydrateOutcomes(db: Env['DB'], runId: string, ctx: ExprCtx): Promise<void> {
+  const rows=await db.prepare('SELECT step_id,status,output FROM run_steps WHERE run_id=?')
+    .bind(runId).all<{step_id:string;status:string;output:string|null}>();
+  for(const row of rows.results){
+    if(row.step_id===COMPENSATION_ROW||row.step_id.includes(':')) continue;
+    if(ctx.steps[row.step_id]) continue;
+    let output: unknown;
+    if(row.output!==null){try{output=JSON.parse(row.output);}catch{output=undefined;}}
+    ctx.steps[row.step_id]={status:row.status,...(output===undefined?{}:{output})};
+  }
+}
+async function readCompensationReport(db: Env['DB'], runId: string): Promise<CompensationReport | null> {
+  const row=await db.prepare('SELECT output FROM run_steps WHERE run_id=? AND step_id=?')
+    .bind(runId, COMPENSATION_ROW).first<{output:string|null}>();
+  if(!row?.output) return null;
+  try{
+    const parsed=JSON.parse(row.output) as CompensationReport;
+    return {...parsed, acid_rollback:false};
+  }catch{return {acid_rollback:false, trigger:null, steps:[]};}
+}
+async function storeCompensationReport(db: Env['DB'], runId: string, report: CompensationReport): Promise<CompensationReport> {
+  const steps=report.steps;
+  const status=steps.some(item=>item.status==='indeterminate'||item.status==='uncleared')?'indeterminate'
+    :steps.some(item=>item.status==='failed')?'failed':'succeeded';
+  await db.prepare('INSERT INTO run_steps(run_id,step_id,status,output,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(run_id,step_id) DO NOTHING')
+    .bind(runId, COMPENSATION_ROW, status, JSON.stringify({...report, acid_rollback:false}), now()).run();
+  return (await readCompensationReport(db, runId))??{...report, acid_rollback:false};
+}
+// One pass on this runner. A published grant is required before any compensation call.
+async function runSagaCompensation(
+  env: Env, plan: Plan, ctx: ExprCtx, runId: string, versionId: string, workflowStep: WorkflowStep,
+  trigger: 'failure' | 'cancel' | null,
+): Promise<void> {
+  if(!plan.saga) return;
+  if(await readCompensationReport(env.DB, runId)) return;
+  await hydrateOutcomes(env.DB, runId, ctx);
+  const authorized=trigger!==null&&plan.saga.on.includes(trigger);
+  const steps: CompensationStepReport[]=[];
+  for(const step of [...plan.steps].reverse()){
+    if(!step.compensate||step.uses!=='mcp.call'||step.with.scope!=='write') continue;
+    const business=ctx.steps[step.id];
+    const effect=await readProtectedEffect(env.DB, runId, step.id);
+    const unknown=business?.status==='indeterminate'||effect?.state==='indeterminate'||effect?.state==='dispatching';
+    if(unknown){
+      steps.push({step_id:step.id, status:'uncleared', error_code:effect?.error_code??'external_outcome_unknown'});
+      continue;
+    }
+    if(!authorized||business?.status!=='succeeded'||effect?.state!=='succeeded') continue;
+    const action=step.compensate;
+    const report=await workflowStep.do('saga-compensate-'+step.id,{retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},async():Promise<CompensationStepReport>=>{
+      let args: unknown;
+      try{args=evaluateArguments(action.with.arguments,ctx);}
+      catch{return {step_id:step.id,status:'failed',error_code:'step_execution_failed'};}
+      if(!args||typeof args!=='object'||Array.isArray(args)||hasUnresolvedArgument(args))
+        return {step_id:step.id,status:'failed',error_code:'invalid_arguments'};
+      const storedGrant=plan.mcp_approvals?.find(grant=>grant.endpoint===action.with.endpoint&&grant.tool===action.with.tool&&grant.scope===action.with.scope&&grant.schema_digest===action.with.schema_digest);
+      const target={db:env.DB,runId,stepId:compensationEffectId(step.id),versionId,grantKey:canonicalJsonString(storedGrant??{missing:true})};
+      const synthetic:Step={id:compensationEffectId(step.id),uses:'mcp.call',needs:[],with:action.with};
+      try{
+        await callApprovedMcp(env,plan,synthetic,args as Record<string,unknown>,target);
+        return {step_id:step.id,status:'succeeded'};
+      }catch(error){
+        const outcome=closedOutcome(error);
+        if(outcome.error_code==='grant_revoked') return {step_id:step.id,status:'uncleared',error_code:'grant_revoked'};
+        if(outcome.status==='indeterminate') return {step_id:step.id,status:'indeterminate',error_code:outcome.error_code??'external_outcome_unknown'};
+        return {step_id:step.id,status:'failed',error_code:outcome.error_code??'step_execution_failed'};
+      }
+    }) as CompensationStepReport;
+    steps.push(report);
+  }
+  if(!authorized&&steps.length===0) return;
+  await storeCompensationReport(env.DB, runId, {acid_rollback:false, trigger:authorized?trigger:null, steps});
+}
 export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
   async run(event:WorkflowEvent<{run_id:string}>,step:WorkflowStep){
     const id=event.payload.run_id;
@@ -470,13 +544,17 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
     // An expired ambiguous admission is terminally uncertain. A Workflow
     // started much later must not run the abandoned queued Workflow plan.
     if(row.outcome!=='queued'&&row.outcome!=='running')return;
-    // A resumed invocation must not dispatch or cancel again.
-    if(await isCancelRequested(db,id))return;
     const version=await db.prepare('SELECT plan FROM workflow_versions WHERE id=?').bind(row.version_id).first<{plan:string}>();
     if(!version)throw Error('version_missing');
     const parsed=JSON.parse(version.plan) as Plan & Record<string, unknown>;
     const plan=parsed;
     const ctx:ExprCtx={inputs:JSON.parse(row.inputs) as Record<string,unknown>,steps:{}};
+    // A resumed invocation must not dispatch the business DAG or cancel again.
+    // Published cancel compensation still runs once; its protected effects do not replay a call.
+    if(await isCancelRequested(db,id)){
+      if(plan.saga?.on.includes('cancel')) await runSagaCompensation(this.env,plan,ctx,id,row.version_id,step,'cancel');
+      return;
+    }
     if(row.outcome==='queued'){
       const transition=await db.prepare("UPDATE runs SET outcome='running',updated_at=? WHERE id=? AND outcome='queued'").bind(now(),id).run();
       if(!transition.meta.changes)return;
@@ -563,13 +641,20 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
           }
           if((s.uses==='result.emit'||s.uses==='flow.repeat'||(s.uses==='flow.expand'&&s.body?.uses==='result.emit'))&&outcomes[i].status==='succeeded'){emitted=outcomes[i].output;hasEmitted=true;}});
       }
+      if(plan.saga&&(failed||uncertain)){
+        const trigger=failed&&plan.saga.on.includes('failure')?'failure':null;
+        await runSagaCompensation(this.env,plan,ctx,id,row.version_id,step,trigger);
+      }
       const output=limitResult(hasEmitted?emitted:ctx.steps[plan.steps.at(-1)!.id]?.output??null);
       await db.prepare("UPDATE runs SET outcome=?,result=?,error_code=?,updated_at=? WHERE id=? AND outcome='running'")
         .bind(uncertain?'indeterminate':failed?'failed':'succeeded',JSON.stringify(output),uncertain?uncertainCode:null,now(),id).run();
     }catch(error){
       // Cancellation already owns the terminal decision. Do not freeze the
       // Run or dispatch a replacement attempt when Cloudflare resumes.
-      if(error instanceof CancelObserved||await isCancelRequested(db,id)) return;
+      if(error instanceof CancelObserved||await isCancelRequested(db,id)){
+        if(plan.saga?.on.includes('cancel')) await runSagaCompensation(this.env,plan,ctx,id,row.version_id,step,'cancel');
+        return;
+      }
       // A live GitHub Attempt still inside its deadline must survive an
       // isolate restart. Freezing it here would hide a later receipt.
       if(await githubAsyncAwaitingExternal(db,id,now()))throw error;
