@@ -18,6 +18,7 @@ export type PinnedActionRow={run_id:string;step_id:string;state:string;capabilit
 export async function verifyPinnedGitHubActionIdentity(
  db:Db,attemptId:string,jwt:string,audience:string,
  keys:GithubActionKeys=githubKeys,
+ allowSettledReadyReplay=false,
 ):Promise<{row:PinnedActionRow;action:ReviewedGitHubAction}|null>{
  if(!UUID.test(attemptId)||typeof jwt!=='string'||jwt.length>8192||
     !/^workflow-github-[a-z0-9:-]{4,120}$/.test(audience))return null;
@@ -29,7 +30,6 @@ export async function verifyPinnedGitHubActionIdentity(
   .bind(attemptId).first<PinnedActionRow>();
  if(!row||row.capability_id!=='github.action'||
     !['confirmed','claimed'].includes(row.state)||
-    !['queued','running'].includes(row.run_outcome)||
     !row.candidate_run_id||!row.candidate_run_attempt)return null;
  let plan:Plan;
  try{plan=JSON.parse(row.plan) as Plan;}catch{return null;}
@@ -43,6 +43,18 @@ export async function verifyPinnedGitHubActionIdentity(
   workflowId:raw.workflowId,workflowPath:raw.workflowPath,
   commitSha:raw.commitSha,type:raw.type,contractDigest:raw.contractDigest,
  };
+ // First Claim always requires an active parent. A Ready HTTP response
+ // may be lost after D1 Ready was committed and the parent succeeded.
+ // Permit only a *signed replay* of that exact already-Ready Session;
+ // this exception cannot create a new Ready or revive a stopping job.
+ if(!['queued','running'].includes(row.run_outcome)){
+  if(!allowSettledReadyReplay || row.run_outcome!=='succeeded' ||
+     action.type!=='session' || row.state!=='claimed')return null;
+  const existing=await db.prepare(`SELECT state FROM session_executions
+    WHERE run_id=? AND step_id=?`)
+    .bind(row.run_id,row.step_id).first<{state:string}>();
+  if(existing?.state!=='ready')return null;
+ }
  if(!isPublishedGitHubActionApproved(plan.github_action_approvals,action)||
     row.repository!==action.repository||row.repository_id!==String(action.repositoryId)||
     row.workflow_ref!==action.repository+'/'+action.workflowPath+'@'+row.ref||
