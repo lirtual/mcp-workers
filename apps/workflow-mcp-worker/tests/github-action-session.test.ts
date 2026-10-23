@@ -294,8 +294,7 @@ test('fifth Session is rejected before any GitHub outbound request',async()=>{
   for(let i=1;i<=4;i++)
    assert.equal(await reservePublishedSessionSlot(f.adapter,run(i),'launch'),'reserved');
   let requests=0;
-  const workflow={do:async(_name:string,_opts:unknown,cb:()=>Promise<unknown>)=>cb()}
-   as unknown as WorkflowStep;
+  const workflow={do:async(_name:string,_opts:unknown,cb:()=>Promise<unknown>)=>cb()} as unknown as WorkflowStep;
   const env={DB:f.adapter,WORKFLOW_EXECUTOR_GITHUB_TOKEN:'token',
    GITHUB_ACTION_OIDC_AUDIENCE:audience} as Env;
   const outcome=await runPublishedGitHubActionSession(env,plan as Plan,
