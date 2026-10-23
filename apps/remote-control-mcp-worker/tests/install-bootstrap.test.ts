@@ -183,7 +183,7 @@ test('public installation home is isolated from authentication and shows the two
   assert.match(html,/aria-selected/);
   assert.match(html,/const ready=\{windows:false,linux:false\}/);
   assert.match(html,/copy\.disabled=!ready\[value\]/);
-  assert.match(html,/安装暂未开放/);
+  assert.match(html,/Not available/);
   assert.match(html,/navigator\.userAgentData/);
   assert.match(html,/clipboard\.writeText/);
   assert.match(html,/irm https:\/\/rca\.lirtual\.dpdns\.org\/install\.ps1 \| iex/);
@@ -216,7 +216,7 @@ test('homepage copy state follows the separately verified platform pins',async()
   assert.match(closed,/const ready=\{windows:false,linux:false\}/);
   assert.match(linux,/const ready=\{windows:false,linux:true\}/);
   assert.match(windows,/const ready=\{windows:true,linux:false\}/);
-  assert.match(closed,/field\.textContent=ready\[value\]\?cmds\[value\]:'安装暂未开放'/);
+  assert.match(closed,/field\.textContent=ready\[value\]\?cmds\[value\]:'Not available'/);
   assert.match(closed,/copy\.disabled=!ready\[value\]/);
   assert.match(closed,/if\(!ready\[platform\]\)return;/);
   const custom='https://rca.lirtual.dpdns.org';
@@ -289,6 +289,10 @@ test('mobile home stays compact, uses semantic numbered steps and follows OS the
     assert.ok(html.includes(token), 'missing theme variable '+token);
   }
   assert.match(html, /@media\(max-width:520px\)/);
+  assert.match(html, /<html lang="en">/);
+  assert.match(html, /Install on your device/);
+  assert.match(html, /Copy install command/);
+  assert.doesNotMatch(html, /[\u3400-\u9fff]/, "install page must use English throughout");
   assert.match(html, /-webkit-text-size-adjust:100%/);
   assert.match(html, /list-style:none/);
   assert.match(html, /<ol role="list">/);
@@ -321,6 +325,8 @@ test('mobile install card uses compact proportional sizes and wraps complete com
   const mobile=html.match(/@media\(max-width:520px\)\{([\s\S]*?)\n\}/)?.[1];
   assert.ok(mobile, 'mobile rules required');
   assert.match(mobile,/h1\{font-size:27px/);
+  assert.match(mobile,/min-height:100svh;display:flex;flex-direction:column/);
+  assert.match(mobile,/main\{margin:auto\}/);
   assert.match(mobile,/\.command\{border-radius:20px;padding:16px 17px 18px\}/);
   assert.match(mobile,/\.command-label\{font-size:15px\}/);
   assert.match(mobile,/button\.copy\{width:36px;height:36px/);
@@ -331,6 +337,8 @@ test('mobile install card uses compact proportional sizes and wraps complete com
   assert.match(html,/@media\(prefers-color-scheme:dark\)/);
   assert.match(html,/--surface:#23242a/);
   assert.match(html,/--surface:#f4f4f5/);
+  assert.match(html,/Command copied/);
+  assert.match(html,/Copy failed\. Select the command manually\./);
   assert.match(html,/clipboard\.writeText\(cmds\[requestedPlatform\]\)/);
   assert.match(html,/irm https:\/\/rca\.lirtual\.dpdns\.org\/install\.ps1 \| iex/);
   assert.match(html,/curl -fsSL https:\/\/rca\.lirtual\.dpdns\.org\/install\.sh \| sh/);
