@@ -7,11 +7,11 @@ const attempt='11111111-1111-4111-8111-111111111111';
 const grant:ReviewedGitHubAction={repository:'lirtual/session-actions',repositoryId:12,workflowId:34,
  workflowPath:'.github/workflows/linux.yml',commitSha:'a'.repeat(40),type:'session',contractDigest:'b'.repeat(64)};
 const plan={github_execution_approved:true,github_action_approvals:[grant],
- steps:[{id:'start',uses:'github.run',with:{capability:'github.action',action:{...grant,inputs:{duration_minutes:5}}}}]};
+ steps:[{id:'start',uses:'github.run',with:{capability:'github.action',action:{...grant,ref:'refs/tags/test-v1',inputs:{duration_minutes:5}}}}]};
 const row={attempt_id:attempt,run_id:'run',step_id:'start',state:'confirmed',capability_id:'github.action',
  owner_run_id:null as number|null,owner_run_attempt:null as number|null,
  repository:grant.repository,repository_id:String(grant.repositoryId),
- workflow_ref:grant.repository+'/'+grant.workflowPath+'@refs/heads/main',ref:'refs/heads/main',
+ workflow_ref:grant.repository+'/'+grant.workflowPath+'@refs/tags/test-v1',ref:'refs/heads/main',
  candidate_run_id:99,candidate_run_attempt:1,plan:JSON.stringify(plan),run_outcome:'running'};
 function db(data:(Omit<typeof row,'candidate_run_id'> & {candidate_run_id:number|null})|null){
  return {prepare:(_sql:string)=>({bind:(id:string)=>({first:async()=>{assert.equal(id,attempt);return data;}})})} as any;
