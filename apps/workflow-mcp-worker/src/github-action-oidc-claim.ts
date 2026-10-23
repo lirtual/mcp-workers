@@ -5,41 +5,39 @@ import {isPublishedGitHubActionApproved,type ReviewedGitHubAction} from './githu
 import type {Plan} from './plan.ts';
 
 type Db=Pick<D1Database,'prepare'>;
-type Keys=Parameters<typeof jwtVerify>[1];
+export type GithubActionKeys=Parameters<typeof jwtVerify>[1];
 const githubKeys=createRemoteJWKSet(new URL('https://token.actions.githubusercontent.com/.well-known/jwks'));
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-type Row={run_id:string;step_id:string;state:string;capability_id:string;repository:string;repository_id:string;workflow_ref:string;ref:string;candidate_run_id:number|null;candidate_run_attempt:number|null;owner_run_id:number|null;owner_run_attempt:number|null;run_outcome:string;plan:string};
+export type PinnedActionRow={run_id:string;step_id:string;state:string;capability_id:string;repository:string;repository_id:string;workflow_ref:string;ref:string;candidate_run_id:number|null;candidate_run_attempt:number|null;owner_run_id:number|null;owner_run_attempt:number|null;run_outcome:string;plan:string};
 
 /**
- * Verify GitHub-issued identity against both D1's confirmed physical candidate
- * and the immutable published Action. No caller supplied repo, ref or SHA.
- * The endpoint wiring must select the server-owned audience.
+ * Shared, read-only signature and immutable Published Plan verification for
+ * first Claim and later Session Ready. Every token is verified independently;
+ * a signed JWT alone does not grant ownership or prove readiness.
  */
-export async function verifyAndClaimPinnedGitHubAction(
+export async function verifyPinnedGitHubActionIdentity(
  db:Db,attemptId:string,jwt:string,audience:string,
- keys:Keys=githubKeys,
-):Promise<boolean>{
+ keys:GithubActionKeys=githubKeys,
+):Promise<{row:PinnedActionRow;action:ReviewedGitHubAction}|null>{
  if(!UUID.test(attemptId)||typeof jwt!=='string'||jwt.length>8192||
-    !/^workflow-github-[a-z0-9:-]{4,120}$/.test(audience))return false;
+    !/^workflow-github-[a-z0-9:-]{4,120}$/.test(audience))return null;
  const row=await db.prepare(`SELECT a.run_id,a.step_id,a.state,a.capability_id,a.repository,
   a.repository_id,a.workflow_ref,a.ref,a.candidate_run_id,a.candidate_run_attempt,
   a.owner_run_id,a.owner_run_attempt,r.outcome AS run_outcome,v.plan
   FROM step_attempts a JOIN runs r ON r.id=a.run_id
   JOIN workflow_versions v ON v.id=r.version_id WHERE a.attempt_id=?`)
-  .bind(attemptId).first<Row>();
- if(!row||row.capability_id!=='github.action'||row.state!=='confirmed'||
+  .bind(attemptId).first<PinnedActionRow>();
+ if(!row||row.capability_id!=='github.action'||
+    !['confirmed','claimed'].includes(row.state)||
     !['queued','running'].includes(row.run_outcome)||
-    row.owner_run_id!==null||row.owner_run_attempt!==null||
-    !row.candidate_run_id||!row.candidate_run_attempt)return false;
+    !row.candidate_run_id||!row.candidate_run_attempt)return null;
  let plan:Plan;
- try{plan=JSON.parse(row.plan) as Plan;}catch{return false;}
- if(plan.github_execution_approved!==true||!Array.isArray(plan.steps))return false;
+ try{plan=JSON.parse(row.plan) as Plan;}catch{return null;}
+ if(plan.github_execution_approved!==true||!Array.isArray(plan.steps))return null;
  const step=plan.steps.find(s=>s.id===row.step_id);
- if(!step||step.uses!=='github.run'||step.with?.capability!=='github.action')return false;
+ if(!step||step.uses!=='github.run'||step.with?.capability!=='github.action')return null;
  const raw=step.with.action as (ReviewedGitHubAction & {inputs?:unknown;ref?:string})|undefined;
- if(!raw)return false;
- // The approved identity has exactly seven fields; native Action inputs are
- // separately validated, not part of the identity-grant shape.
+ if(!raw)return null;
  const action:ReviewedGitHubAction={
   repository:raw.repository,repositoryId:raw.repositoryId,
   workflowId:raw.workflowId,workflowPath:raw.workflowPath,
@@ -48,19 +46,34 @@ export async function verifyAndClaimPinnedGitHubAction(
  if(!isPublishedGitHubActionApproved(plan.github_action_approvals,action)||
     row.repository!==action.repository||row.repository_id!==String(action.repositoryId)||
     row.workflow_ref!==action.repository+'/'+action.workflowPath+'@'+row.ref||
-    row.ref!==raw.ref)return false;
+    row.ref!==raw.ref)return null;
  let claims:JWTPayload;
  try{
   const verified=await jwtVerify(jwt,keys,{issuer:'https://token.actions.githubusercontent.com',
    audience,algorithms:['RS256'],clockTolerance:'5s',maxTokenAge:'5m'});
   claims=verified.payload;
-  if(typeof claims.iat!=='number'||typeof claims.exp!=='number'||claims.exp-claims.iat>600)return false;
- }catch{return false;}
- if(!matchPinnedActionRunIdentity(claims as JWTPayload & {repository_id?:unknown;sha?:unknown;repository?:unknown;workflow_ref?:unknown;ref?:unknown;run_id?:unknown;run_attempt?:unknown;event_name?:unknown},{
-  repository:row.repository,repositoryId:row.repository_id,workflowRef:row.workflow_ref,
-  ref:row.ref,runId:row.candidate_run_id,runAttempt:row.candidate_run_attempt,
-  commitSha:action.commitSha,
- }))return false;
+  if(typeof claims.iat!=='number'||typeof claims.exp!=='number'||claims.exp-claims.iat>600)return null;
+ }catch{return null;}
+ if(!matchPinnedActionRunIdentity(claims as JWTPayload & {
+    repository_id?:unknown;sha?:unknown;repository?:unknown;workflow_ref?:unknown;
+    ref?:unknown;run_id?:unknown;run_attempt?:unknown;event_name?:unknown;
+   },{
+    repository:row.repository,repositoryId:row.repository_id,workflowRef:row.workflow_ref,
+    ref:row.ref,runId:row.candidate_run_id,runAttempt:row.candidate_run_attempt,
+    commitSha:action.commitSha,
+   }))return null;
+ return {row,action};
+}
+
+/** First, one-time owner Claim; re-using the same JWT cannot claim twice. */
+export async function verifyAndClaimPinnedGitHubAction(
+ db:Db,attemptId:string,jwt:string,audience:string,
+ keys:GithubActionKeys=githubKeys,
+):Promise<boolean>{
+ const valid=await verifyPinnedGitHubActionIdentity(db,attemptId,jwt,audience,keys);
+ if(!valid)return false;
+ const {row}=valid;
+ if(row.state!=='confirmed'||row.owner_run_id!==null||row.owner_run_attempt!==null)return false;
  const written=await db.prepare(`UPDATE step_attempts
    SET state='claimed',owner_run_id=?,owner_run_attempt=?,updated_at=?
    WHERE attempt_id=? AND capability_id='github.action' AND state='confirmed'
