@@ -96,9 +96,16 @@ export async function requestGitHubActionCancellation(
   if(written.meta.changes!==1)return 'already_requested';
   // Stop accepting new Ready immediately, but retain the physical slot.
   // The physical job may remain live after GitHub acknowledges cancellation.
-  await db.prepare(`UPDATE session_executions SET state='stopping',updated_at=?
-    WHERE run_id=? AND step_id=? AND state!='terminated'`)
-   .bind(time,runId,stepId).run();
+  try{
+   await db.prepare(`UPDATE session_executions SET state='stopping',updated_at=?
+     WHERE run_id=? AND step_id=? AND state!='terminated'`)
+    .bind(time,runId,stepId).run();
+  }catch{
+   // The durable cancellation intent is already committed and now fences
+   // signed Ready atomically. Do NOT abandon the only allowed GitHub POST
+   // just because this advisory lifecycle-state write is temporarily down.
+   // Later status/watch reconciliation may finish setting the state.
+  }
  }
 
  let accepted=false;
