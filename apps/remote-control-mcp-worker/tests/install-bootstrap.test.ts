@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
+import { runInNewContext } from "node:vm";
 import { handleAgentInstallerRequest, renderAgentInstallShell, REVIEWED_V012_RELEASE_PIN, REVIEWED_V014_RELEASE_PIN, REVIEWED_V016_RELEASE_PIN, REVIEWED_V017_RELEASE_PIN, REVIEWED_V018_RELEASE_PIN, REVIEWED_V0110_RELEASE_PIN, REVIEWED_V0111_RELEASE_PIN, REVIEWED_AGENT_RELEASE_PIN } from "../src/install-bootstrap.ts";
 
 const origin = "https://remote-control-v2-preview.aiyaya.workers.dev";
@@ -319,4 +320,70 @@ test('installer home drops source/docs and defaults unknown device to first Wind
   assert.match(html, /copy\.disabled=!ready\[value\]/);
   assert.match(html, /clipboard\.writeText\(cmds\[platform\]\)/);
   assert.doesNotMatch(html, /先选择 Windows 或 Linux/);
+});
+
+
+test('copy feedback appears in button, resets, and never announces success below card', async () => {
+  const { renderInstallHome } = await import('../src/install-home.ts');
+  const html = renderInstallHome({ windows: true, linux: true });
+  const source = html.match(/<script>([\\s\\S]*?)<\\/script>/)?.[1];
+  assert.ok(source, 'inline page script must exist');
+  type FakeElement = {
+    textContent: string; disabled: boolean; tabIndex: number;
+    attributes: Record<string,string>;
+    handlers: Record<string,(event?: {key?:string,preventDefault?:()=>void})=>unknown>;
+    setAttribute: (name:string,value:string)=>void;
+    addEventListener: (name:string,handler:(event?:{key?:string,preventDefault?:()=>void})=>unknown)=>void;
+    focus:()=>void;
+  };
+  function element(): FakeElement {
+    return {
+      textContent:'', disabled:false, tabIndex:0, attributes:{}, handlers:{},
+      setAttribute(name,value){this.attributes[name]=value;},
+      addEventListener(name,handler){this.handlers[name]=handler;},
+      focus(){},
+    };
+  }
+  const els = Object.fromEntries(['windows','linux','command','shell-label','message','copy'].map(id=>[id,element()])) as Record<string,FakeElement>;
+  const clipboard:string[] = [];
+  let rejectCopy=false;
+  const pending=new Map<number,()=>void>();
+  let id=0;
+  runInNewContext(source,{
+    document:{getElementById:(name:string)=>els[name]},
+    navigator:{
+      platform:'iPhone',
+      clipboard:{writeText:async (text:string)=>{
+        if(rejectCopy)throw Error('Clipboard unavailable');
+        clipboard.push(text);
+      }},
+    },
+    setTimeout:(fn:()=>void,delay:number)=>{
+      assert.equal(delay,1600);
+      const next=++id;pending.set(next,fn);return next;
+    },
+    clearTimeout:(timer:number)=>{pending.delete(timer);},
+  });
+  assert.equal(els.windows.attributes['aria-selected'],'true','unknown/mobile defaults to first Windows tab');
+  assert.equal(els.copy.textContent,'复制');
+  await els.copy.handlers.click();
+  assert.equal(clipboard[0],'irm https://rca.lirtual.dpdns.org/install.ps1 | iex');
+  assert.equal(els.copy.textContent,'已复制');
+  assert.equal(els.copy.attributes['aria-label'],'安装命令已复制');
+  assert.equal(els.message.textContent,'','no duplicate success label below the button');
+  assert.equal(pending.size,1);
+  [...pending.values()][0]();
+  assert.equal(els.copy.textContent,'复制','button restores default label');
+  els.linux.handlers.click();
+  assert.equal(els.copy.textContent,'复制');
+  await els.copy.handlers.click();
+  assert.equal(clipboard[1],'curl -fsSL https://rca.lirtual.dpdns.org/install.sh | sh');
+  assert.equal(els.copy.textContent,'已复制');
+  els.windows.handlers.click();
+  assert.equal(els.copy.textContent,'复制','switching platforms clears copied label');
+  assert.equal(pending.size,0,'switching platforms cancels previous timer');
+  rejectCopy=true;
+  await els.copy.handlers.click();
+  assert.equal(els.copy.textContent,'复制','failed copy is not reported as successful');
+  assert.equal(els.message.textContent,'复制失败，请手动选中命令。');
 });
