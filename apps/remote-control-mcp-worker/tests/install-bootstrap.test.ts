@@ -326,7 +326,7 @@ test('installer home drops source/docs and defaults unknown device to first Wind
 test('copy feedback appears in button, resets, and never announces success below card', async () => {
   const { renderInstallHome } = await import('../src/install-home.ts');
   const html = renderInstallHome({ windows: true, linux: true });
-  const source = html.match(/<script>([\\s\\S]*?)<\\/script>/)?.[1];
+  const source = html.split('<script>')[1]?.split('</script>')[0];
   assert.ok(source, 'inline page script must exist');
   type FakeElement = {
     textContent: string; disabled: boolean; tabIndex: number;
