@@ -1,7 +1,7 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { evaluateArguments, evaluateCondition, toolSchemaDigest } from './plan.ts';
-import type { ExprCtx, Plan, Step } from './plan.ts';
+import { evaluateArguments, evaluateCondition, expandedStepCost, expansionChildId, expansionSnapshotId, toolSchemaDigest } from './plan.ts';
+import type { ExprCtx, Plan, Step, StepBody } from './plan.ts';
 import { LIMITS, NON_EXECUTABLE_PLAN_FIELDS, NON_EXECUTABLE_STEP_FIELDS } from './capabilities.ts';
 import type { Env } from './store.ts';
 import { limitResult } from './store.ts';
@@ -44,6 +44,124 @@ async function runBoundedLoop(db: Env['DB'], s: Step, runId: string, step: Workf
     produced=true;
   }
   return produced?{status:'succeeded',output}:{status:'skipped'};
+}
+type ExpansionTake={ok:true;serial:string}|{ok:false;error_code:string};
+function snapshotItems(serial:string):unknown[]|null{
+  try{
+    const parsed=JSON.parse(serial) as {items?:unknown};
+    return parsed&&Array.isArray(parsed.items)?parsed.items:null;
+  }catch{return null;}
+}
+async function readExpansionSnapshot(db:Env['DB'],runId:string,stepId:string):Promise<{items:unknown[]}|null>{
+  const row=await db.prepare('SELECT output FROM run_steps WHERE run_id=? AND step_id=? AND status=?')
+    .bind(runId,expansionSnapshotId(stepId),'succeeded').first<{output:string|null}>();
+  if(!row?.output)return null;
+  const items=snapshotItems(row.output);
+  return items?{items}:null;
+}
+async function readChildOutcome(db:Env['DB'],runId:string,stepId:string):Promise<Outcome|null>{
+  const row=await db.prepare('SELECT status,output,error_code FROM run_steps WHERE run_id=? AND step_id=?')
+    .bind(runId,stepId).first<{status:string;output:string|null;error_code:string|null}>();
+  if(!row||!['succeeded','failed','skipped','indeterminate'].includes(row.status))return null;
+  if(row.output===null)return {status:row.status as Outcome['status'],...(row.error_code?{error_code:row.error_code}:{})};
+  try{return {status:row.status as Outcome['status'],output:JSON.parse(row.output),...(row.error_code?{error_code:row.error_code}:{})};}
+  catch{return {status:'indeterminate',error_code:'expansion_source_invalid'};}
+}
+async function finishChild(db:Env['DB'],runId:string,stepId:string,outcome:Outcome):Promise<void>{
+  await db.prepare("INSERT INTO run_steps(run_id,step_id,status,output,error_code,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(run_id,step_id) DO UPDATE SET status=excluded.status,output=excluded.output,error_code=excluded.error_code,updated_at=excluded.updated_at WHERE run_steps.status IN ('waiting','running')")
+    .bind(runId,stepId,outcome.status,outcome.output===undefined?null:JSON.stringify(outcome.output),outcome.error_code??null,now()).run();
+}
+async function executePublishedTemplate(env:Env,plan:Plan,body:StepBody,ctx:ExprCtx,identity:string,runId:string,workflowStep:WorkflowStep):Promise<Outcome>{
+  // Connection and uses come only from the published template, never from the item.
+  if(body.uses==='result.emit')return {status:'succeeded',output:limitResult(evaluateArguments(body.with.data,ctx))};
+  if(body.uses==='mcp.call'){
+    const synthetic:Step={id:identity,uses:'mcp.call',needs:[],with:body.with};
+    const args=evaluateArguments(body.with.arguments,ctx);
+    if(!args||typeof args!=='object'||Array.isArray(args)||hasUnresolvedArgument(args))return {status:'failed',error_code:'step_execution_failed'};
+    try{return {status:'succeeded',output:await callApprovedReadonly(env,plan,synthetic,args as Record<string,unknown>)};}
+    catch(error){
+      if(error instanceof Error&&error.message==='external_outcome_unknown')return {status:'indeterminate',error_code:'external_outcome_unknown'};
+      return {status:'failed',error_code:'step_execution_failed'};
+    }
+  }
+  if(body.uses==='github.run'){
+    const synthetic:Step={id:identity,uses:'github.run',needs:[],with:body.with};
+    return runGithubStep(env,plan,synthetic,runId,workflowStep);
+  }
+  return {status:'failed',error_code:'unsupported_capability'};
+}
+async function runExpansion(env:Env,plan:Plan,s:Step,runId:string,workflowStep:WorkflowStep,ctx:ExprCtx):Promise<Outcome>{
+  const body=s.body,expand=s.expand,db=env.DB;
+  if(s.uses!=='flow.expand'||!body||!expand||!['result.emit','mcp.call','github.run'].includes(body.uses))
+    return {status:'failed',error_code:'unsupported_capability'};
+  if(s.needs.some(need=>ctx.steps[need]?.status!=='succeeded'))return {status:'skipped'};
+  try{if(s.if!==undefined&&!evaluateCondition(s.if,ctx))return {status:'skipped'};}
+  catch{return {status:'failed',error_code:'step_execution_failed'};}
+  let snapshot=await readExpansionSnapshot(db,runId,s.id);
+  if(!snapshot){
+    const taken=await workflowStep.do('expand-snapshot-'+s.id,{retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},async():Promise<ExpansionTake>=>{
+      const stored=await readExpansionSnapshot(db,runId,s.id);
+      if(stored)return {ok:true,serial:JSON.stringify({items:stored.items})};
+      let raw:unknown;
+      try{raw=evaluateArguments(expand.items,ctx);}catch{return {ok:false,error_code:'expansion_source_invalid'};}
+      if(!Array.isArray(raw))return {ok:false,error_code:'expansion_source_invalid'};
+      let itemSerial:string;
+      try{itemSerial=JSON.stringify(raw);}catch{return {ok:false,error_code:'expansion_source_invalid'};}
+      if(new TextEncoder().encode(itemSerial).byteLength>LIMITS.definitionBytes)return {ok:false,error_code:'expansion_budget_exceeded'};
+      const items=JSON.parse(itemSerial) as unknown[];
+      if(!Array.isArray(items)||items.length>expand.max||expandedStepCost(plan.steps,new Map([[s.id,items.length]]))>LIMITS.maxExpandedSteps)
+        return {ok:false,error_code:'expansion_budget_exceeded'};
+      const serial=JSON.stringify({items});
+      await db.prepare("INSERT INTO run_steps(run_id,step_id,status,output,updated_at) VALUES(?,?,'succeeded',?,?) ON CONFLICT(run_id,step_id) DO NOTHING")
+        .bind(runId,expansionSnapshotId(s.id),serial,now()).run();
+      const winner=await readExpansionSnapshot(db,runId,s.id);
+      return winner?{ok:true,serial:JSON.stringify({items:winner.items})}:{ok:false,error_code:'expansion_source_invalid'};
+    }) as ExpansionTake;
+    if(!taken.ok)return {status:'failed',error_code:taken.error_code};
+    const items=snapshotItems(taken.serial);
+    if(!items)return {status:'failed',error_code:'expansion_source_invalid'};
+    snapshot={items};
+  }
+  const outputs:unknown[]=[];
+  let failure:Outcome|null=null;
+  const runChild=async(index:number,item:unknown):Promise<Outcome>=>{
+    const identity=expansionChildId(s.id,index);
+    const prior=await readChildOutcome(db,runId,identity);
+    if(prior)return prior;
+    const childCtx:ExprCtx={inputs:ctx.inputs,steps:ctx.steps,expand:{item,index}};
+    if(body.uses==='github.run'){
+      const outcome=await executePublishedTemplate(env,plan,body,childCtx,identity,runId,workflowStep);
+      await finishChild(db,runId,identity,outcome);
+      return outcome;
+    }
+    return await workflowStep.do('workflow-'+s.id+'-'+index,{retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},async():Promise<Outcome>=>{
+      const again=await readChildOutcome(db,runId,identity);
+      if(again)return again;
+      const claim=await db.prepare("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES(?,?,'running',?) ON CONFLICT(run_id,step_id) DO NOTHING")
+        .bind(runId,identity,now()).run();
+      if(!claim.meta.changes)return (await readChildOutcome(db,runId,identity))??{status:'indeterminate',error_code:'external_outcome_unknown'};
+      const outcome=await executePublishedTemplate(env,plan,body,childCtx,identity,runId,workflowStep);
+      await finishChild(db,runId,identity,outcome);
+      return outcome;
+    }) as Outcome;
+  };
+  for(let offset=0;offset<snapshot.items.length&&!failure;offset+=LIMITS.maxParallel){
+    const wave=snapshot.items.slice(offset,offset+LIMITS.maxParallel);
+    const waveOutcomes=await Promise.all(wave.map((item,index)=>runChild(offset+index,item)));
+    for(const outcome of waveOutcomes){
+      outputs.push(outcome.status==='succeeded'?outcome.output:null);
+      if(!failure&&(outcome.status==='failed'||outcome.status==='indeterminate'))failure=outcome;
+    }
+  }
+  if(failure){
+    for(let index=outputs.length;index<snapshot.items.length;index++){
+      const identity=expansionChildId(s.id,index);
+      if(await readChildOutcome(db,runId,identity))continue;
+      await finishChild(db,runId,identity,{status:'skipped'});
+    }
+    return failure.status==='indeterminate'?failure:{status:'failed',error_code:failure.error_code??'step_execution_failed'};
+  }
+  return {status:'succeeded',output:outputs};
 }
 const now=()=>Date.now();
 // A missing Run-input reference must not silently disappear during JSON
@@ -232,6 +350,8 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
                 return {status:'indeterminate',error_code:'github_dispatch_unknown'} as Outcome;
               }
             })()
+            : s.uses==='flow.expand'||s.expand!==undefined
+            ? await runExpansion(this.env,plan,s,id,step,ctx)
             : s.uses==='flow.repeat'||s.repeat!==undefined
             ? await runBoundedLoop(db,s,id,step,ctx)
             : await step.do('workflow-'+s.id,{retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},async ():Promise<Outcome>=>{
@@ -270,7 +390,7 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
           if(outcomes[i].status==='indeterminate'){
             uncertain=true;uncertainCode??=outcomes[i].error_code??'external_outcome_unknown';
           }
-          if((s.uses==='result.emit'||s.uses==='flow.repeat')&&outcomes[i].status==='succeeded'){emitted=outcomes[i].output;hasEmitted=true;}});
+          if((s.uses==='result.emit'||s.uses==='flow.repeat'||(s.uses==='flow.expand'&&s.body?.uses==='result.emit'))&&outcomes[i].status==='succeeded'){emitted=outcomes[i].output;hasEmitted=true;}});
       }
       const output=limitResult(hasEmitted?emitted:ctx.steps[plan.steps.at(-1)!.id]?.output??null);
       await db.prepare("UPDATE runs SET outcome=?,result=?,error_code=?,updated_at=? WHERE id=? AND outcome='running'")

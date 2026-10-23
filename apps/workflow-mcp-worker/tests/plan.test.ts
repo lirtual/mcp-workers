@@ -214,7 +214,7 @@ test('supported capability examples compile through the real plan compiler', asy
     const github = compiled.plan.steps.find(step => step.uses === 'github.run');
     if (github) assert.deepEqual(github.with, {capability: 'github.workflow.check'});
   }
-  assert.deepEqual([...seen].sort(), ['flow.repeat', 'github.run', 'mcp.call', 'result.emit']);
+  assert.deepEqual([...seen].sort(), ['flow.expand', 'flow.repeat', 'github.run', 'mcp.call', 'result.emit']);
 });
 
 test('an unchanged manual definition keeps its published plan digest', async () => {
@@ -269,7 +269,7 @@ test('unimplemented capabilities stay unsupported and the compiler reports a pre
   assert.deepEqual(unsupported, [
     'trigger.cron',
     'action.http', 'action.mcp.write', 'action.shell',
-    'flow.foreach', 'flow.while', 'flow.nesting', 'flow.dynamic_expansion', 'flow.wait', 'flow.child_workflow', 'flow.saga',
+    'flow.foreach', 'flow.while', 'flow.nesting', 'flow.wait', 'flow.child_workflow', 'flow.saga',
   ]);
   const step = (extra: Record<string, unknown>) => ({version: 1, name: 'Probe', steps: [{id: 'a', uses: 'result.emit', with: {data: 1}, ...extra}]});
   const probes: Array<{definition: unknown; code: string; path: string; suggestion?: RegExp}> = [
@@ -347,6 +347,76 @@ test('bounded repeat publishes the compiler budgets and compiles to a closed loo
   assert.equal((await compilePlan(maxed)).plan.steps[1]?.repeat?.times, LIMITS.maxLoopIterations);
 });
 
+test('dynamic expansion states the published cap, template, dependencies, and risk', async () => {
+  const detail = workflowCapabilities({}, 'flow.dynamic_expansion');
+  assert.equal(detail.status, 'supported');
+  if (!('limits' in detail) || !detail.limits || !('cap' in detail.limits) || !('example' in detail) || !('risk' in detail))
+    throw new Error('flow.dynamic_expansion detail missing');
+  assert.equal(detail.limits.cap, LIMITS.maxExpandedSteps);
+  assert.equal(detail.limits.max_parallel_steps, LIMITS.maxParallel);
+  assert.equal(detail.limits.max_loop_depth, LIMITS.maxLoopDepth);
+  const compiled = await compilePlan(detail.example);
+  assert.equal(compiled.plan.steps.map(step => step.uses).join(','), 'result.emit,flow.expand');
+  assert.equal('expansion' in compiled.plan, true);
+  const report = compiled.plan.expansion;
+  if (!report) throw new Error('expansion report missing');
+  assert.equal(report.cap, LIMITS.maxExpandedSteps);
+  assert.equal(report.templates.length, 1);
+  assert.equal(report.templates[0]?.step_id, 'fan');
+  assert.deepEqual(report.templates[0]?.needs, ['source']);
+  assert.equal(report.templates[0]?.uses, 'result.emit');
+  assert.equal(report.templates[0]?.connection, null);
+  assert.match(report.templates[0]?.risk ?? '', /cannot select an action/);
+  assert.equal('data' in compiled.plan.steps[1]!.with, false);
+  const fan = compiled.plan.steps[1];
+  assert.equal(fan?.expand?.max, 4);
+  assert.equal(fan?.body?.uses, 'result.emit');
+  const staticPlan = await compilePlan(JSON.stringify(one));
+  assert.equal(staticPlan.digest, '6cefd7cf044a155631149e7c23cd12ce30b39f31296e5a5b02647efa3a1e6c0f');
+  assert.equal('expansion' in staticPlan.plan, false);
+});
+
+test('over-budget expansion, nesting, and invented template fields are rejected', async () => {
+  const source = {id: 'source', uses: 'result.emit', with: {data: ['a']}};
+  const fan = (max: number, extra: Record<string, unknown> = {}) => ({
+    id: 'fan', needs: ['source'], uses: 'result.emit', expand: {items: {ref: 'steps.source.output'}, max, ...extra},
+    with: {data: {ref: 'expand.item'}},
+  });
+  const probes: Array<{definition: unknown; code: string; path: string}> = [
+    {definition: {version: 1, name: 'Wide', steps: [source, fan(LIMITS.maxExpandedSteps)]}, code: 'expansion_budget_exceeded', path: '/steps'},
+    {definition: {version: 1, name: 'Loop and expand', steps: [
+      source,
+      {id: 'grow', needs: ['source'], uses: 'result.emit', repeat: {times: LIMITS.maxLoopIterations}, with: {data: 1}},
+      fan(LIMITS.maxExpandedSteps - LIMITS.maxLoopIterations),
+    ]}, code: 'expansion_budget_exceeded', path: '/steps'},
+    {definition: {version: 1, name: 'Wait budget', steps: [
+      source,
+      {id: 'fan', needs: ['source'], uses: 'github.run', expand: {items: {ref: 'steps.source.output'}, max: 4}, with: {capability: 'github.workflow.check'}},
+    ]}, code: 'expansion_budget_exceeded', path: '/steps'},
+    {definition: {version: 1, name: 'Nested', steps: [{id: 'fan', uses: 'result.emit', repeat: {times: 1}, expand: {items: {ref: 'steps.source.output'}, max: 1}, with: {data: 1}}]}, code: 'loop_nesting_unsupported', path: '/steps/0/expand'},
+    {definition: {version: 1, name: 'Literal', steps: [source, {...fan(2), expand: {items: ['a', 'b'], max: 2}}]}, code: 'invalid_expansion', path: '/steps/1/expand/items'},
+    {definition: {version: 1, name: 'Inputs', steps: [{id: 'fan', uses: 'result.emit', expand: {items: {ref: 'inputs.values'}, max: 2}, with: {data: {ref: 'expand.item'}}}]}, code: 'invalid_expansion', path: '/steps/0/expand/items'},
+    {definition: {version: 1, name: 'Foreach', steps: [{id: 'a', uses: 'result.emit', foreach: ['a'], with: {data: 1}}]}, code: 'unsupported_field', path: '/steps/0/foreach'},
+  ];
+  for (const probe of probes) {
+    await assert.rejects(() => compilePlan(probe.definition), (error: unknown) => {
+      assert.ok(error instanceof PlanError, probe.path);
+      assert.equal(error.message.split(':')[0], probe.code, probe.path + ' ' + (error instanceof Error ? error.message : ''));
+      assert.equal(error.path, probe.path);
+      assert.doesNotMatch(error.suggestion ?? '', /write|shell|secret|token|skip/i);
+      return true;
+    });
+  }
+  const withinWait = await compilePlan({version: 1, name: 'Wait fits', steps: [
+    source,
+    {id: 'fan', needs: ['source'], uses: 'github.run', expand: {items: {ref: 'steps.source.output'}, max: 3}, with: {capability: 'github.workflow.check'}},
+  ]});
+  assert.equal(withinWait.plan.expansion?.templates[0]?.uses, 'github.run');
+  assert.deepEqual(withinWait.plan.expansion?.templates[0]?.connection, {capability: 'github.workflow.check'});
+  assert.equal(withinWait.plan.steps[1]?.body?.uses, 'github.run');
+  assert.equal('capability' in (withinWait.plan.steps[1]?.with ?? {capability: true}), false);
+});
+
 test('unbounded loops, dynamic expansion, nesting, and unsafe loop bodies fail validate', async () => {
   const loop = (repeat: unknown, uses = 'result.emit', input: Record<string, unknown> = {data: 1}) => ({
     version: 1, name: 'Loop', steps: [{id: 'a', uses, repeat, with: input}],
@@ -379,7 +449,7 @@ test('unbounded loops, dynamic expansion, nesting, and unsafe loop bodies fail v
       return true;
     });
   }
-  for (const id of ['flow.foreach', 'flow.while', 'flow.nesting', 'flow.dynamic_expansion', 'flow.wait', 'flow.child_workflow', 'flow.saga']) {
+  for (const id of ['flow.foreach', 'flow.while', 'flow.nesting', 'flow.wait', 'flow.child_workflow', 'flow.saga']) {
     const entry = workflowCapabilities({}, id);
     assert.equal(entry.status, 'unsupported', id);
     assert.equal('example' in entry, false, id);

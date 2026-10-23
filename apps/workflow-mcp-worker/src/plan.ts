@@ -1,10 +1,11 @@
 import YAML from 'yaml';
 import { publicMcpEndpoint } from './mcp-public-fetch.ts';
 import {
-  CONDITION_VALUE_OPS, DEFINITION_KEYS, GITHUB_CAPABILITY_ID, GITHUB_TRIGGER_EVENTS, GITHUB_TRIGGER_KEYS,
-  isSupportedUse, LIMITS, MCP_SCOPE, OBJECT_PROTOTYPE_KEYS, REPEAT_KEYS, RESERVED_EXPRESSION_KEYS, STEP_ID, STEP_KEYS,
+  CONDITION_VALUE_OPS, DEFINITION_KEYS, EXPANSION_RISK, EXPAND_KEYS, GITHUB_CAPABILITY_ID, GITHUB_TRIGGER_EVENTS, GITHUB_TRIGGER_KEYS,
+  expansionItemWeight, isSupportedUse, LIMITS, MCP_SCOPE, OBJECT_PROTOTYPE_KEYS, REPEAT_KEYS, RESERVED_EXPRESSION_KEYS, STEP_ID, STEP_KEYS,
   TOOL_NAME, TRIGGER_EVENT_NAME, TRIGGER_REPOSITORY, TRIGGER_SOURCE_ID, WEBHOOK_TRIGGER_KEYS, WITH_KEYS,
 } from './capabilities.ts';
+import type { SupportedUse } from './capabilities.ts';
 
 export class PlanError extends Error {
   code = 'invalid_definition';
@@ -15,22 +16,55 @@ export class PlanError extends Error {
   }
 }
 export type RepeatSpec = {times: number; until?: unknown};
+export type TemplateUse = SupportedUse;
+export type StepBody = {uses: TemplateUse; with: Record<string, unknown>};
+export type ExpandSpec = {max: number; items: {ref: string}};
+export type ExpansionConnection =
+  | {endpoint: string; tool: string; scope: 'read'}
+  | {capability: string}
+  | null;
+export type ExpansionTemplate = {
+  step_id: string; max: number; needs: string[]; uses: TemplateUse;
+  connection: ExpansionConnection; risk: string;
+};
+export type ExpansionReport = {
+  cap: number; max_parallel: number; max_loop_depth: number; templates: ExpansionTemplate[];
+};
 export type Step = {
-  id: string; uses: 'result.emit' | 'mcp.call' | 'github.run' | 'flow.repeat'; needs: string[];
+  id: string; uses: TemplateUse | 'flow.repeat' | 'flow.expand'; needs: string[];
   with: Record<string, unknown>; if?: unknown;
   repeat?: RepeatSpec;
-  body?: {uses: 'result.emit'; with: Record<string, unknown>};
+  expand?: ExpandSpec;
+  body?: StepBody;
 };
 export type ExprCtx = {
   inputs: Record<string, unknown>;
   steps: Record<string, {status: string; output?: unknown}>;
   loop?: {index: number};
+  expand?: {item: unknown; index: number};
 };
 export type ReadonlyOperation = { endpoint:string; tool:string; scope:'read'; schema_digest:string };
 export type WebhookTrigger = { id: string; type: 'webhook'; source: string; event: string };
 export type GithubEventTrigger = { id: string; type: 'github_event'; repository: string; events: string[] };
 export type PlanTrigger = WebhookTrigger | GithubEventTrigger;
-export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown>; triggers?: PlanTrigger[]; mcp_approvals?: ReadonlyOperation[]; mcp_target_risks_accepted?: true; github_execution_approved?: true };
+export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown>; triggers?: PlanTrigger[]; expansion?: ExpansionReport; mcp_approvals?: ReadonlyOperation[]; mcp_target_risks_accepted?: true; github_execution_approved?: true };
+export function expansionSnapshotId(stepId: string): string {
+  return stepId + ':snapshot';
+}
+export function expansionChildId(stepId: string, index: number): string {
+  return stepId + ':' + index;
+}
+export function expandedStepCost(steps: readonly Step[], actualItems?: ReadonlyMap<string, number>): number {
+  let cost = 0;
+  for (const step of steps) {
+    if (step.uses === 'flow.repeat') cost += step.repeat?.times ?? 0;
+    else if (step.uses === 'flow.expand' && step.expand && step.body) {
+      const count = actualItems?.get(step.id) ?? step.expand.max;
+      cost += 1 + count * expansionItemWeight(step.body.uses);
+    } else cost += 1;
+  }
+  return cost;
+}
 const PROTOTYPE_KEYS = new Set<string>(OBJECT_PROTOTYPE_KEYS);
 const RESERVED = new Set<string>(RESERVED_EXPRESSION_KEYS);
 function pointer(base: string, key: string | number): string {
@@ -45,11 +79,19 @@ function object(value: unknown, message: string, path?: string): Record<string, 
   if(!value || typeof value !== 'object' || Array.isArray(value)) throw new PlanError(message, path === undefined ? undefined : {path});
   return value as Record<string, unknown>;
 }
-function refCheck(ref: string, step?: {id:string;needs:string[]}, path?: string, allowLoop=false) {
-  const hint = {path, suggestion: allowLoop
+function refCheck(ref: string, step?: {id:string;needs:string[]}, path?: string, allowLoop=false, allowExpand=false) {
+  const hint = {path, suggestion: allowExpand
+    ? 'Use expand.index, expand.item, inputs.<id>, or steps.<needed-step>.status or output.'
+    : allowLoop
     ? 'Use loop.index, inputs.<id>, steps.<needed-step>.status or output, or steps.<this-step>.output for the previous iteration.'
     : 'Use inputs.<id> or steps.<needed-step>.status or steps.<needed-step>.output.'};
   const parts=ref.split('.');
+  if(parts[0]==='expand'){
+    const tail=parts.slice(2);
+    if(!allowExpand||(parts[1]!=='index'&&parts[1]!=='item')||(parts[1]==='index'&&parts.length!==2)||tail.some(p=>!STEP_ID.test(p)))
+      throw new PlanError('invalid_reference', hint);
+    return;
+  }
   if(parts[0]==='loop'){
     if(!allowLoop||parts.length!==2||parts[1]!=='index') throw new PlanError('invalid_reference', hint);
     return;
@@ -60,35 +102,37 @@ function refCheck(ref: string, step?: {id:string;needs:string[]}, path?: string,
   if(parts[0]==='steps' && step && (step.needs.includes(parts[1])||self) && parts.length>=3 && ['status','output'].includes(parts[2])) return;
   throw new PlanError('invalid_step_reference', hint);
 }
-function expression(v: unknown, step?: {id:string; needs:string[]}, depth=0, opaqueKeys=false, path='', allowLoop=false): void {
+function expression(v: unknown, step?: {id:string; needs:string[]}, depth=0, opaqueKeys=false, path='', allowLoop=false, allowExpand=false): void {
   if(depth>LIMITS.maxExpressionDepth) throw new PlanError('expression_too_deep', {path: path || '/'});
   if(v===null || typeof v==='string'||typeof v==='number'||typeof v==='boolean') return;
   if(Array.isArray(v)) {
     if(v.length>LIMITS.maxArrayLength) throw new PlanError('expression_too_large', {path: path || '/'});
-    for(let index=0; index<v.length; index++) expression(v[index],step,depth+1,opaqueKeys,pointer(path,index),allowLoop);
+    for(let index=0; index<v.length; index++) expression(v[index],step,depth+1,opaqueKeys,pointer(path,index),allowLoop,allowExpand);
     return;
   }
   const o=object(v,'invalid_expression', path || '/');
   const names=Object.keys(o);
   if(names.length===1 && names[0]==='ref'){
-    if(typeof o.ref!=='string') throw new PlanError('invalid_reference', {path: pointer(path,'ref'), suggestion: allowLoop
+    if(typeof o.ref!=='string') throw new PlanError('invalid_reference', {path: pointer(path,'ref'), suggestion: allowExpand
+      ? 'Use expand.index, expand.item, inputs.<id>, or steps.<needed-step>.status or output.'
+      : allowLoop
       ? 'Use loop.index, inputs.<id>, steps.<needed-step>.status or output, or steps.<this-step>.output for the previous iteration.'
       : 'Use inputs.<id> or steps.<needed-step>.status or steps.<needed-step>.output.'});
-    refCheck(o.ref,step,pointer(path,'ref'),allowLoop);return;
+    refCheck(o.ref,step,pointer(path,'ref'),allowLoop,allowExpand);return;
   }
   if(names.length===1 && (CONDITION_VALUE_OPS as readonly string[]).includes(names[0])) {
     const op=names[0], arg=o[op];
-    if(op==='not'){expression(arg,step,depth+1,opaqueKeys,pointer(path,op),allowLoop);return;}
+    if(op==='not'){expression(arg,step,depth+1,opaqueKeys,pointer(path,op),allowLoop,allowExpand);return;}
     const min=op==='and'||op==='or'?LIMITS.minLogicOperands:LIMITS.comparisonOperands;
     const max=op==='and'||op==='or'?LIMITS.maxLogicOperands:LIMITS.comparisonOperands;
     if(!Array.isArray(arg)||arg.length<min||arg.length>max)throw new PlanError('invalid_operator', {path: pointer(path,op)});
-    for(let index=0; index<arg.length; index++) expression(arg[index],step,depth+1,opaqueKeys,pointer(pointer(path,op),index),allowLoop);
+    for(let index=0; index<arg.length; index++) expression(arg[index],step,depth+1,opaqueKeys,pointer(pointer(path,op),index),allowLoop,allowExpand);
     return;
   }
   for(const [name,x] of Object.entries(o)){
     if(name==='__proto__'||name==='prototype'||name==='constructor')throw new PlanError('invalid_argument_key', {path: pointer(path,name)});
     if(!opaqueKeys&&RESERVED.has(name.toLowerCase()))throw new PlanError('unsafe_expression', {path: pointer(path,name), suggestion: 'Remove this expression field.'});
-    expression(x,step,depth+1,opaqueKeys,pointer(path,name),allowLoop);
+    expression(x,step,depth+1,opaqueKeys,pointer(path,name),allowLoop,allowExpand);
   }
 }
 function assertCondition(value: unknown, path: string) {
@@ -106,13 +150,13 @@ function compileRepeat(raw: unknown, path: string): RepeatSpec {
   for(const key of ['each','items','foreach'] as const)
     if(key in repeat) throw new PlanError('dynamic_expansion', {
       path: pointer(repeatPath,key),
-      suggestion: 'Dynamic expansion is not implemented. repeat.times must be a literal integer.',
+      suggestion: 'repeat.times must be a literal integer. Use expand.items for an upstream output list.',
     });
   keys(repeat,REPEAT_KEYS,repeatPath);
   const times=repeat.times;
   if(times!==null&&typeof times==='object') throw new PlanError('dynamic_expansion', {
     path: repeatPath+'/times',
-    suggestion: 'Dynamic expansion is not implemented. repeat.times must be a literal integer.',
+    suggestion: 'repeat.times must be a literal integer. Use expand.items for an upstream output list.',
   });
   if(typeof times!=='number'||!Number.isSafeInteger(times)||times<1) throw new PlanError('unbounded_loop', {
     path: repeatPath+'/times',
@@ -123,6 +167,49 @@ function compileRepeat(raw: unknown, path: string): RepeatSpec {
     suggestion: `repeat.times must be at most ${LIMITS.maxLoopIterations}.`,
   });
   return repeat.until===undefined?{times}:{times,until:repeat.until};
+}
+function compileExpand(raw: unknown, path: string): ExpandSpec {
+  const expandPath=path+'/expand';
+  const expand=object(raw,'invalid_expansion',expandPath);
+  if('steps' in expand||'body' in expand) throw new PlanError('loop_nesting_unsupported', {
+    path: pointer(expandPath,'steps' in expand?'steps':'body'),
+    suggestion: 'Nested steps are not implemented. Keep one template on this step.',
+  });
+  keys(expand,EXPAND_KEYS,expandPath);
+  const max=expand.max;
+  if(typeof max!=='number'||!Number.isSafeInteger(max)||max<1) throw new PlanError('invalid_expansion', {
+    path: expandPath+'/max',
+    suggestion: `Set expand.max to a positive integer inside the ${LIMITS.maxExpandedSteps} expanded-step cap.`,
+  });
+  const items=expand.items;
+  const itemPath=expandPath+'/items';
+  if(!items||typeof items!=='object'||Array.isArray(items)) throw new PlanError('invalid_expansion', {
+    path: itemPath,
+    suggestion: 'Set expand.items to {ref: steps.<needed-step>.output}. Item values cannot select an action or connection.',
+  });
+  const itemRecord=items as Record<string, unknown>;
+  if(Object.keys(itemRecord).length!==1||typeof itemRecord.ref!=='string') throw new PlanError('invalid_expansion', {
+    path: itemPath,
+    suggestion: 'Set expand.items to {ref: steps.<needed-step>.output}. Item values cannot select an action or connection.',
+  });
+  return {max, items:{ref:itemRecord.ref}};
+}
+function expansionConnection(body: StepBody): ExpansionConnection {
+  if(body.uses==='mcp.call') return {endpoint:String(body.with.endpoint),tool:String(body.with.tool),scope:'read'};
+  if(body.uses==='github.run') return {capability:String(body.with.capability)};
+  return null;
+}
+function expansionReport(steps: readonly Step[]): ExpansionReport | undefined {
+  const templates: ExpansionTemplate[]=[];
+  for(const step of steps){
+    if(step.uses!=='flow.expand'||!step.expand||!step.body) continue;
+    templates.push({
+      step_id:step.id, max:step.expand.max, needs:[...step.needs], uses:step.body.uses,
+      connection:expansionConnection(step.body), risk:EXPANSION_RISK,
+    });
+  }
+  if(!templates.length) return undefined;
+  return {cap:LIMITS.maxExpandedSteps, max_parallel:LIMITS.maxParallel, max_loop_depth:LIMITS.maxLoopDepth, templates};
 }
 // YAML accepts .nan/.inf, but JSON persistence silently changes them to null.
 // Reject these before computing an immutable Published Plan digest.
@@ -168,6 +255,13 @@ export function evaluateExpression(v: unknown, ctx: ExprCtx): any {
       if(parts[0]==='loop'){
         if(!ctx.loop||parts.length!==2||parts[1]!=='index'||!Object.hasOwn(ctx.loop,'index'))return undefined;
         return ctx.loop.index;
+      }
+      if(parts[0]==='expand'){
+        if(!ctx.expand||(parts[1]!=='index'&&parts[1]!=='item'))return undefined;
+        if(parts[1]==='index')return parts.length===2&&Object.hasOwn(ctx.expand,'index')?ctx.expand.index:undefined;
+        let value:any=ctx.expand.item;
+        for(const p of parts.slice(2)) {if(value===null||(typeof value!=='object'&&typeof value!=='function')||!Object.hasOwn(value,p))return undefined;value=value[p];}
+        return value;
       }
       let value:any=parts[0]==='inputs'?ctx.inputs:ctx.steps; for(const p of parts.slice(1)) {if(value===null||(typeof value!=='object'&&typeof value!=='function')||!Object.hasOwn(value,p))return undefined;value=value[p];}return value;
     }
@@ -293,20 +387,39 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     if(repeat&&s.uses!=='result.emit') throw new PlanError('unsafe_loop_body', {
       path: stepPath+'/repeat', suggestion: 'Repeat only result.emit. Keep mcp.call and github.run outside repeat.',
     });
+    const expand=s.expand===undefined?undefined:compileExpand(s.expand,stepPath);
+    if(expand&&repeat) throw new PlanError('loop_nesting_unsupported', {
+      path: stepPath+'/expand', suggestion: 'Do not combine repeat and expand. Nested steps are not implemented.',
+    });
     const compiledWith=s.uses==='mcp.call'?
       {...withData,schema_digest:await toolSchemaDigest(withData.input_schema,withData.output_schema)}:withData;
-    // flow.repeat keeps the payload off `with` so an older runner cannot emit
-    // the body once. It rejects the unknown uses instead.
-    steps.push({id:s.id,uses:repeat?'flow.repeat':s.uses,needs:needs as string[],with:repeat?{}:compiledWith,
+    // flow.repeat and flow.expand keep the payload off `with` so an older
+    // runner cannot emit the template once. It rejects the unknown uses instead.
+    const rewritten=repeat?'flow.repeat':expand?'flow.expand':s.uses;
+    steps.push({id:s.id,uses:rewritten,needs:needs as string[],with:repeat||expand?{}:compiledWith,
       ...(repeat?{repeat,body:{uses:'result.emit' as const,with:compiledWith}}:{}),
+      ...(expand?{expand,body:{uses:s.uses as TemplateUse,with:compiledWith}}:{}),
       ...(s.if===undefined?{}:{if:s.if})});
   }
   for(let index=0; index<steps.length; index++){
     const s=steps[index], stepPath='/steps/'+index;
     for(const dep of s.needs)if(!ids.has(dep)||dep===s.id)throw new PlanError('invalid_dependencies', {path: stepPath+'/needs'});
     const allowLoop=s.uses==='flow.repeat';
+    const allowExpand=s.uses==='flow.expand';
     if(s.uses==='mcp.call') expression(s.with.arguments,s,0,true,stepPath+'/with/arguments');
     else if(allowLoop) expression(s.body?.with,s,0,false,stepPath+'/with',true);
+    else if(allowExpand){
+      const ref=s.expand?.items.ref;
+      const itemPath=stepPath+'/expand/items';
+      const parts=typeof ref==='string'?ref.split('.'):[];
+      if(parts[0]!=='steps'||parts[2]!=='output'||!s.needs.includes(parts[1]??'')) throw new PlanError('invalid_expansion', {
+        path: itemPath,
+        suggestion: 'Set expand.items to a ref of a needed step output. Item values cannot select an action or connection.',
+      });
+      refCheck(ref??'',s,itemPath);
+      if(s.body?.uses==='mcp.call') expression(s.body.with.arguments,s,0,true,stepPath+'/with/arguments',false,true);
+      else expression(s.body?.with,s,0,false,stepPath+'/with',false,true);
+    }
     else expression(s.with,s,0,false,stepPath+'/with');
     if(allowLoop&&s.repeat?.until!==undefined){
       expression(s.repeat.until,s,0,false,stepPath+'/repeat/until',true);
@@ -317,8 +430,8 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       assertCondition(s.if,stepPath+'/if');
     }
   }
-  const expanded=steps.reduce((sum,s)=>sum+(s.uses==='flow.repeat'?s.repeat?.times??0:1),0);
-  if(expanded>LIMITS.maxExpandedSteps) throw new PlanError('loop_budget_exceeded', {
+  const expanded=expandedStepCost(steps);
+  if(expanded>LIMITS.maxExpandedSteps) throw new PlanError(steps.some(s=>s.uses==='flow.expand')?'expansion_budget_exceeded':'loop_budget_exceeded', {
     path: '/steps', suggestion: `Keep expanded execution at or below ${LIMITS.maxExpandedSteps} steps.`,
   });
   const sorted:Step[]=[], pending=new Map(steps.map(s=>[s.id,s]));
@@ -328,7 +441,8 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     if(ready.length>LIMITS.maxParallel)throw new PlanError('excessive_parallelism', {path: '/steps', suggestion: 'Keep each ready wave to 8 steps or fewer.'});
     for(const s of ready){sorted.push(s);pending.delete(s.id);}
   }
-  const plan:Plan={version:1,name:o.name,steps:sorted,...(o.inputs===undefined?{}:{inputs:o.inputs as Record<string,unknown>}),...(triggers===undefined?{}:{triggers})};
+  const expansion=expansionReport(sorted);
+  const plan:Plan={version:1,name:o.name,steps:sorted,...(o.inputs===undefined?{}:{inputs:o.inputs as Record<string,unknown>}),...(triggers===undefined?{}:{triggers}),...(expansion?{expansion}:{})};
   const serial=JSON.stringify(canonical(plan));
   const hash=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(serial));
   const digest=[...new Uint8Array(hash)].map(x=>x.toString(16).padStart(2,'0')).join('');

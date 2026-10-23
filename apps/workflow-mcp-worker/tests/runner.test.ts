@@ -989,6 +989,138 @@ test('MCP pinned Portal refuses a different approved endpoint at Publish',async 
   assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM workflow_versions').get()?.n,0);
 });
 
+const portal='https://test-mcp.lirtual.dpdns.org/mcp';
+function expansionDefinition(max:number){
+  return {version:1,name:'Expand echo',steps:[
+    {id:'source',uses:'result.emit',with:{data:{ref:'inputs.values'}}},
+    {id:'fan',needs:['source'],uses:'mcp.call',expand:{items:{ref:'steps.source.output'},max},with:{
+      endpoint:portal,tool:'echo',scope:'read',input_schema:PINNED_SCHEMA,
+      arguments:{value:{ref:'expand.item.value'}},
+    }},
+    {id:'report',needs:['fan'],uses:'result.emit',with:{data:{ref:'steps.fan.output'}}},
+  ]};
+}
+function countToolCalls(t:test.TestContext){
+  const names:string[]=[];
+  let inFlight=0;
+  let maxInFlight=0;
+  const previous=globalThis.fetch;
+  globalThis.fetch=(async(input:RequestInfo|URL,init?:RequestInit)=>{
+    const request=new Request(input,init);
+    const body=request.method==='POST'?await request.clone().json().catch(()=>null) as {method?:string;params?:{name?:string;arguments?:{value?:string}}}|null:null;
+    if(body?.method==='tools/call'){
+      inFlight++;
+      maxInFlight=Math.max(maxInFlight,inFlight);
+      names.push(body.params?.name+':'+body.params?.arguments?.value);
+      assert.equal(request.url,portal);
+    }
+    try{return await readonlyWorker.fetch(request);}
+    finally{if(body?.method==='tools/call')inFlight--;}
+  }) as typeof fetch;
+  t.after(()=>{globalThis.fetch=previous;});
+  return {names,maxInFlight:()=>maxInFlight};
+}
+async function runRunner(env:Env,run_id:string){
+  await new WorkflowRunner({} as ExecutionContext,env).run({payload:{run_id}} as WorkflowEvent<{run_id:string}>,{
+    do:async(_name:unknown,_options:unknown,callback:()=>Promise<unknown>)=>callback(),
+  } as unknown as WorkflowStep);
+}
+
+test('one published template expands to several steps and returns each echo',async t=>{
+  const {admit,env,service}=setup(t);
+  const calls=countToolCalls(t);
+  const admitted=await admit(expansionDefinition(4).steps,{
+    values:[
+      {value:'alpha',uses:'shell.run',endpoint:'https://evil.example/mcp',tool:'write'},
+      {value:'beta',uses:'github.run',endpoint:'https://evil.example/mcp',tool:'write'},
+    ],
+  },[ECHO_GRANT]);
+  await runRunner(env,admitted.run_id);
+  const result=await service.result(admitted.run_id);
+  assert.equal(result.status,'succeeded');
+  assert.deepEqual(result.steps.map(step=>[step.step_id,step.status]),[
+    ['fan','succeeded'],['fan:0','succeeded'],['fan:1','succeeded'],['report','succeeded'],['source','succeeded'],
+  ]);
+  assert.deepEqual(calls.names,['echo:alpha','echo:beta']);
+  assert.equal(JSON.stringify(result.result).includes('alpha'),true);
+  assert.equal(JSON.stringify(result.result).includes('beta'),true);
+  assert.equal(JSON.stringify(result.result).includes('evil.example'),false);
+});
+
+test('replay after the upstream list changes keeps the snapshot and does not redispatch',async t=>{
+  const {admit,env,service,sqlite}=setup(t);
+  const calls=countToolCalls(t);
+  const admitted=await admit(expansionDefinition(4).steps,{
+    values:[{value:'alpha'},{value:'beta'}],
+  },[ECHO_GRANT]);
+  await runRunner(env,admitted.run_id);
+  const first=await service.result(admitted.run_id);
+  assert.equal(first.status,'succeeded');
+  sqlite.prepare("UPDATE runs SET outcome='running',inputs=? WHERE id=?")
+    .run(JSON.stringify({values:[{value:'alpha'},{value:'beta'},{value:'gamma'}]}),admitted.run_id);
+  await runRunner(env,admitted.run_id);
+  const replayed=await service.result(admitted.run_id);
+  assert.equal(replayed.status,'succeeded');
+  assert.deepEqual(replayed.steps.map(step=>step.step_id),first.steps.map(step=>step.step_id));
+  assert.deepEqual(calls.names,['echo:alpha','echo:beta']);
+  assert.equal(JSON.stringify(replayed.result).includes('gamma'),false);
+});
+
+test('an upstream list longer than the published cap fails before external effects',async t=>{
+  const {admit,env,service}=setup(t);
+  const calls=countToolCalls(t);
+  const admitted=await admit(expansionDefinition(2).steps,{
+    values:[{value:'alpha'},{value:'beta'},{value:'gamma'}],
+  },[ECHO_GRANT]);
+  await runRunner(env,admitted.run_id);
+  const result=await service.result(admitted.run_id);
+  assert.equal(result.status,'failed');
+  assert.equal(result.steps.find(step=>step.step_id==='fan')?.error_code,'expansion_budget_exceeded');
+  assert.equal(result.steps.some(step=>step.step_id==='fan:0'),false);
+  assert.deepEqual(calls.names,[]);
+});
+
+test('expanded calls stay inside the parallel cap',async t=>{
+  const {admit,env,service}=setup(t);
+  let inFlight=0;
+  let maxInFlight=0;
+  let calls=0;
+  const waiting:Array<()=>void>=[];
+  let timer:ReturnType<typeof setTimeout>|undefined;
+  const previous=globalThis.fetch;
+  globalThis.fetch=(async(input:RequestInfo|URL,init?:RequestInit)=>{
+    const request=new Request(input,init);
+    const body=request.method==='POST'?await request.clone().json().catch(()=>null) as {method?:string}|null:null;
+    if(body?.method!=='tools/call')return readonlyWorker.fetch(request);
+    calls++;
+    inFlight++;
+    maxInFlight=Math.max(maxInFlight,inFlight);
+    try{
+      await new Promise<void>(resolve=>{
+        waiting.push(resolve);
+        if(waiting.length===LIMITS.maxParallel){
+          clearTimeout(timer);
+          for(const release of waiting.splice(0))release();
+        }else{
+          clearTimeout(timer);
+          timer=setTimeout(()=>{for(const release of waiting.splice(0))release();},500);
+        }
+      });
+      return await readonlyWorker.fetch(request);
+    }finally{inFlight--;}
+  }) as typeof fetch;
+  t.after(()=>{clearTimeout(timer);globalThis.fetch=previous;});
+  const admitted=await admit(expansionDefinition(9).steps,{
+    values:Array.from({length:9},(_,index)=>({value:'n'+index})),
+  },[ECHO_GRANT]);
+  await runRunner(env,admitted.run_id);
+  const result=await service.result(admitted.run_id);
+  assert.equal(result.status,'succeeded');
+  assert.equal(result.steps.filter(step=>step.step_id.startsWith('fan:')).length,9);
+  assert.equal(calls,9);
+  assert.equal(maxInFlight,LIMITS.maxParallel);
+});
+
 type AsyncStep={step_id:string;status:string;async_action?:{
   phase:string;attempt_id:string;external_execution_id:string|null;
   receipt_outcome:string|null;deadline_at:number|null;timed_out:boolean;

@@ -1,10 +1,13 @@
 import { PRODUCTION_PORTAL_ENDPOINT, TRUSTED_PORTAL_ENDPOINT } from './mcp-public-fetch.ts';
-import { GITHUB_ASYNC_WAIT_MS } from './github-async.ts';
+import { GITHUB_ASYNC_WAIT_MS, GITHUB_ASYNC_WAKE_LIMIT } from './github-async.ts';
 import { selectedGithubExecutor } from './github-dispatch.ts';
 
 export const DEFINITION_KEYS = ['version', 'name', 'inputs', 'triggers', 'steps'] as const;
-export const STEP_KEYS = ['id', 'uses', 'needs', 'if', 'with', 'repeat'] as const;
+export const STEP_KEYS = ['id', 'uses', 'needs', 'if', 'with', 'repeat', 'expand'] as const;
 export const REPEAT_KEYS = ['times', 'until'] as const;
+export const EXPAND_KEYS = ['items', 'max'] as const;
+// Item values multiply this template. They cannot choose another action or connection.
+export const EXPANSION_RISK = 'Each snapshotted item runs the published template once. Item values cannot select an action, endpoint, tool, or repository. A longer list is refused before those effects.';
 // Tampered plans must fail closed. `steps` is legal only at the definition root.
 export const NON_EXECUTABLE_PLAN_FIELDS = ['saga', 'foreach', 'while', 'child', 'child_workflow', 'wait', 'compensate'] as const;
 export const NON_EXECUTABLE_STEP_FIELDS = ['foreach', 'while', 'each', 'items', 'saga', 'compensate', 'child', 'child_workflow', 'wait', 'sleep', 'delay', 'steps'] as const;
@@ -68,6 +71,12 @@ export function isSupportedUse(value: unknown): value is SupportedUse {
   return typeof value === 'string' && (USES as readonly string[]).includes(value);
 }
 
+// The snapshot checkpoint is counted separately. A GitHub item also consumes
+// its fixed receipt waits, still inside maxExpandedSteps.
+export function expansionItemWeight(uses: SupportedUse): number {
+  return uses === 'github.run' ? 1 + GITHUB_ASYNC_WAKE_LIMIT : 1;
+}
+
 const emitExample = {
   version: 1,
   name: 'Emit',
@@ -126,6 +135,16 @@ const githubEventExample = {
   name: 'GitHub event',
   triggers: [{id: 'gh', type: 'github_event', repository: 'example/workflow', events: ['push']}],
   steps: [{id: 'emit', uses: 'result.emit', with: {data: {ref: 'inputs.event'}}}],
+};
+const expansionExample = {
+  version: 1,
+  name: 'Expand',
+  steps: [
+    {id: 'source', uses: 'result.emit', with: {data: ['one', 'two']}},
+    {id: 'fan', needs: ['source'], uses: 'result.emit',
+      expand: {items: {ref: 'steps.source.output'}, max: 4},
+      with: {data: {index: {ref: 'expand.index'}, item: {ref: 'expand.item'}}}},
+  ],
 };
 const repeatExample = {
   version: 1,
@@ -217,8 +236,10 @@ const CATALOG: readonly Entry[] = [
     summary: 'while is not implemented. Do not add a while field. Bounded repetition is repeat.times with optional repeat.until.'},
   {id: 'flow.nesting', kind: 'flow', status: 'unsupported',
     summary: `Nested steps and nested loops are not implemented. Do not add a steps or body field. Loop depth is ${LIMITS.maxLoopDepth}.`},
-  {id: 'flow.dynamic_expansion', kind: 'flow', status: 'unsupported',
-    summary: 'Dynamic DAG expansion is not implemented. A ref, list, each, or items bound is rejected and is not executed as one static step.'},
+  {id: 'flow.dynamic_expansion', kind: 'flow', status: 'supported', example: expansionExample,
+    summary: 'Expand one published template from a needed step output. expand.max caps the list. The snapshot and stable ids (template id, a colon, and the snapshot index) are stored before any expanded external effect.',
+    permissions: 'The template is this step uses and with. mcp.call still needs the read grant and target-risk acceptance. github.run still needs heavy-execution approval. Runtime cannot add an action or connection.',
+    completion: `Validate and publish state cap ${LIMITS.maxExpandedSteps}, the template, dependencies, and the risk of one effect per snapshotted item. A longer list fails before those effects. Replay keeps the stored ids. Waves stay within ${LIMITS.maxParallel}. Depth stays ${LIMITS.maxLoopDepth}. foreach, while, nested steps, durable wait, child workflows, and saga stay unsupported.`},
   {id: 'flow.wait', kind: 'flow', status: 'unsupported',
     summary: 'Durable wait is not implemented. Do not add wait, sleep, or delay. GitHub receipt waiting is not a definition field.'},
   {id: 'flow.child_workflow', kind: 'flow', status: 'unsupported',
@@ -341,6 +362,13 @@ function definitionContract() {
                   until: {description: 'Checked before each iteration. A boolean or one condition operator.'},
                 },
               },
+              expand: {
+                type: 'object', additionalProperties: false, required: ['items', 'max'],
+                properties: {
+                  items: {description: 'A ref to a needed step output. Not a literal list.'},
+                  max: {type: 'integer', minimum: 1, maximum: LIMITS.maxExpandedSteps},
+                },
+              },
             },
           },
         },
@@ -391,6 +419,18 @@ function detailOf(entry: Entry) {
         max_parallel_steps: LIMITS.maxParallel,
         max_loop_depth: LIMITS.maxLoopDepth,
         max_loop_deadline_ms: LIMITS.maxLoopDeadlineMs,
+      },
+    } : {}),
+    ...(entry.id === 'flow.dynamic_expansion' ? {
+      expand_keys: EXPAND_KEYS,
+      template_uses: USES,
+      risk: EXPANSION_RISK,
+      limits: {
+        cap: LIMITS.maxExpandedSteps,
+        max_parallel_steps: LIMITS.maxParallel,
+        max_loop_depth: LIMITS.maxLoopDepth,
+        max_loop_iterations: LIMITS.maxLoopIterations,
+        github_wait_steps: GITHUB_ASYNC_WAKE_LIMIT,
       },
     } : {}),
   };
