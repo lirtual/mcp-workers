@@ -347,6 +347,59 @@ export function canonicalJsonString(value: unknown): string {
   return JSON.stringify(canonical(value));
 }
 
+const TOOL_SCHEMA_KEYWORDS=new Set([
+  '$schema','$id','$ref','$defs','definitions','$comment','title','description','default','examples','deprecated','readOnly','writeOnly','format',
+  'type','enum','const','allOf','anyOf','oneOf','properties','required','additionalProperties','minProperties','maxProperties',
+  'items','minItems','maxItems','minLength','maxLength','pattern','minimum','maximum','exclusiveMinimum','exclusiveMaximum','multipleOf',
+]);
+function schemaFailure():never{throw new PlanError('invalid_tool_schema');}
+function localSchemaRef(root:unknown,ref:string):unknown{
+  if(ref==='#')return root;
+  if(!ref.startsWith('#/'))schemaFailure();
+  let value:unknown=root;
+  for(const encoded of ref.slice(2).split('/')){
+    let token:string;
+    try{token=decodeURIComponent(encoded).replace(/~1/g,'/').replace(/~0/g,'~');}catch{schemaFailure();}
+    if(/~(?![01])/.test(token)||token==='__proto__'||token==='constructor'||token==='prototype'||
+       !value||typeof value!=='object'||!Object.hasOwn(value,token))schemaFailure();
+    value=(value as Record<string,unknown>)[token];
+  }
+  return value;
+}
+function validateToolSchema(schema:unknown):void{
+  const resolving=new Set<string>();
+  const visit=(node:unknown,depth=0):void=>{
+    if(depth>LIMITS.maxDefinitionDepth)schemaFailure();
+    if(typeof node==='boolean')return;
+    if(!node||typeof node!=='object'||Array.isArray(node))schemaFailure();
+    const current=node as Record<string,unknown>;
+    if(Object.keys(current).some(key=>!TOOL_SCHEMA_KEYWORDS.has(key)))schemaFailure();
+    if(current.type!==undefined){
+      const types=Array.isArray(current.type)?current.type:[current.type];
+      if(!types.length||types.some(type=>typeof type!=='string'||!['null','boolean','object','array','number','integer','string'].includes(type))||new Set(types).size!==types.length)schemaFailure();
+    }
+    if(current.$ref!==undefined){
+      if(typeof current.$ref!=='string')schemaFailure();
+      const target=localSchemaRef(schema,current.$ref);
+      if(!resolving.has(current.$ref)){resolving.add(current.$ref);visit(target,depth+1);resolving.delete(current.$ref);}
+    }
+    for(const name of ['$defs','definitions','properties'] as const){
+      if(current[name]!==undefined){const map=current[name];if(!map||typeof map!=='object'||Array.isArray(map))schemaFailure();for(const value of Object.values(map as Record<string,unknown>))visit(value,depth+1);}
+    }
+    for(const name of ['items','additionalProperties'] as const)if(current[name]!==undefined){
+      if(name==='additionalProperties'&&typeof current[name]==='boolean')continue;
+      visit(current[name],depth+1);
+    }
+    for(const name of ['allOf','anyOf','oneOf'] as const)if(current[name]!==undefined){
+      if(!Array.isArray(current[name]))schemaFailure();for(const child of current[name] as unknown[])visit(child,depth+1);
+    }
+    if(current.required!==undefined&&(!Array.isArray(current.required)||current.required.some(value=>typeof value!=='string')))schemaFailure();
+    if(current.enum!==undefined&&!Array.isArray(current.enum))schemaFailure();
+    if(current.pattern!==undefined){if(typeof current.pattern!=='string')schemaFailure();try{new RegExp(current.pattern);}catch{schemaFailure();}}
+  };
+  visit(schema);
+}
+
 // Bind an owner's reviewed MCP tool contract to a Published Plan. Key order
 // is irrelevant; changes in either schema fail closed before tools/call.
 export async function toolSchemaDigest(inputSchema:unknown, outputSchema?:unknown):Promise<string>{
@@ -355,6 +408,8 @@ export async function toolSchemaDigest(inputSchema:unknown, outputSchema?:unknow
      (outputSchema!==undefined&&(!outputSchema||typeof outputSchema!=='object'||Array.isArray(outputSchema)||
        (outputSchema as Record<string,unknown>).type!=='object')))
     throw new PlanError('invalid_tool_schema');
+  validateToolSchema(inputSchema);
+  if(outputSchema!==undefined)validateToolSchema(outputSchema);
   validateFiniteNumbers(inputSchema);
   if(outputSchema!==undefined)validateFiniteNumbers(outputSchema);
   const serial=canonicalJsonString({inputSchema,outputSchema:outputSchema??null});
@@ -365,38 +420,45 @@ export async function toolSchemaDigest(inputSchema:unknown, outputSchema?:unknow
 /** Validate resolved runtime values against the pinned JSON Schema subset used by external tools. */
 export function assertToolArguments(schema:unknown,value:unknown):void{
   const reject=():never=>{throw new PlanError('invalid_arguments');};
-  const valid=(rule:unknown,item:unknown,depth=0):boolean=>{
-    if(depth>LIMITS.maxDefinitionDepth||!rule||typeof rule!=='object'||Array.isArray(rule))return false;
+  try{validateToolSchema(schema);}catch{reject();}
+  const valid=(rule:unknown,item:unknown,root:unknown,depth=0):boolean=>{
+    if(depth>LIMITS.maxDefinitionDepth)return false;
+    if(typeof rule==='boolean')return rule;
+    if(!rule||typeof rule!=='object'||Array.isArray(rule))return false;
     const s=rule as Record<string,unknown>;
-    const supported=new Set(['$schema','$id','title','description','default','examples','deprecated','readOnly','writeOnly',
-      'type','enum','const','allOf','anyOf','oneOf','properties','required','additionalProperties','minProperties','maxProperties',
-      'items','minItems','maxItems','minLength','maxLength','pattern','format','minimum','maximum','exclusiveMinimum','exclusiveMaximum','multipleOf']);
-    if(Object.keys(s).some(key=>!supported.has(key)))return false;
-    if(typeof s.type==='string'){
-      const matches=s.type==='object'?item!==null&&typeof item==='object'&&!Array.isArray(item)
-        :s.type==='array'?Array.isArray(item):s.type==='integer'?typeof item==='number'&&Number.isInteger(item)
-        :s.type==='number'?typeof item==='number'&&Number.isFinite(item):s.type==='null'?item===null:typeof item===s.type;
-      if(!matches)return false;
+    if(Object.keys(s).some(key=>!TOOL_SCHEMA_KEYWORDS.has(key)))return false;
+    if(s.$ref!==undefined){
+      if(typeof s.$ref!=='string')return false;
+      let target:unknown;try{target=localSchemaRef(root,s.$ref);}catch{return false;}
+      if(!valid(target,item,root,depth+1))return false;
+    }
+    if(s.type!==undefined){
+      const types=Array.isArray(s.type)?s.type:[s.type];
+      const typeMatches=(type:unknown):boolean=>type==='object'?item!==null&&typeof item==='object'&&!Array.isArray(item)
+        :type==='array'?Array.isArray(item):type==='integer'?typeof item==='number'&&Number.isInteger(item)
+        :type==='number'?typeof item==='number'&&Number.isFinite(item):type==='null'?item===null
+        :type==='boolean'?typeof item==='boolean':type==='string'?typeof item==='string':false;
+      if(!types.some(typeMatches))return false;
     }
     if(Array.isArray(s.enum)&&!s.enum.some(candidate=>canonicalJsonString(candidate)===canonicalJsonString(item)))return false;
     if(Object.hasOwn(s,'const')&&canonicalJsonString(s.const)!==canonicalJsonString(item))return false;
     for(const key of ['allOf','anyOf','oneOf'] as const){
-      if(s[key]!==undefined){if(!Array.isArray(s[key]))return false;const count=(s[key] as unknown[]).filter(child=>valid(child,item,depth+1)).length;
+      if(s[key]!==undefined){if(!Array.isArray(s[key]))return false;const count=(s[key] as unknown[]).filter(child=>valid(child,item,root,depth+1)).length;
         if(key==='allOf'&&count!==(s[key] as unknown[]).length||key==='anyOf'&&count===0||key==='oneOf'&&count!==1)return false;}
     }
     if(item&&typeof item==='object'&&!Array.isArray(item)){
       const record=item as Record<string,unknown>, props=s.properties&&typeof s.properties==='object'&&!Array.isArray(s.properties)?s.properties as Record<string,unknown>:{};
       if(Array.isArray(s.required)&&s.required.some(key=>typeof key!=='string'||!Object.hasOwn(record,key)))return false;
       for(const [key,child] of Object.entries(record)){
-        if(Object.hasOwn(props,key)){if(!valid(props[key],child,depth+1))return false;}
+        if(Object.hasOwn(props,key)){if(!valid(props[key],child,root,depth+1))return false;}
         else if(s.additionalProperties===false)return false;
-        else if(s.additionalProperties&&typeof s.additionalProperties==='object'&&!valid(s.additionalProperties,child,depth+1))return false;
+        else if(s.additionalProperties!==undefined&&typeof s.additionalProperties!=='boolean'&&!valid(s.additionalProperties,child,root,depth+1))return false;
       }
       if(typeof s.minProperties==='number'&&Object.keys(record).length<s.minProperties||typeof s.maxProperties==='number'&&Object.keys(record).length>s.maxProperties)return false;
     }
     if(Array.isArray(item)){
       if(typeof s.minItems==='number'&&item.length<s.minItems||typeof s.maxItems==='number'&&item.length>s.maxItems)return false;
-      if(s.items!==undefined&&item.some(child=>!valid(s.items,child,depth+1)))return false;
+      if(s.items!==undefined&&item.some(child=>!valid(s.items,child,root,depth+1)))return false;
     }
     if(typeof item==='string'){
       if(typeof s.minLength==='number'&&[...item].length<s.minLength||typeof s.maxLength==='number'&&[...item].length>s.maxLength)return false;
@@ -407,7 +469,7 @@ export function assertToolArguments(schema:unknown,value:unknown):void{
     }
     return true;
   };
-  if(!valid(schema,value))reject();
+  if(!valid(schema,value,schema))reject();
 }
 export function evaluateExpression(v: unknown, ctx: ExprCtx): any {
   if(Array.isArray(v))return v.map(x=>evaluateExpression(x,ctx));

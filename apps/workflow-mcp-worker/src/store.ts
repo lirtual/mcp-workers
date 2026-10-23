@@ -567,6 +567,12 @@ export class WorkflowService {
     await requestAwaitedChildCancellation(this.db,run_id);
     return this.status(run_id);
   }
+  async reconcileAwaitedChildStarts(parent_run_id:string){
+    const rows=await this.db.prepare(`SELECT * FROM runs WHERE parent_run_id=? AND child_mode='await'
+      AND outcome IN ('queued','running','waiting') AND start_state IN ('reserved','start_unknown')
+      ORDER BY created_at ASC,id ASC LIMIT 8`).bind(parent_run_id).all<RunRow>();
+    for(const child of rows.results)await this.reconcileStart(child);
+  }
   async pause(workflow_id:string){assertId(workflow_id);const results=await this.db.batch([
     this.db.prepare("UPDATE workflows SET state='paused',updated_at=? WHERE id=? AND state='active'").bind(now(),workflow_id),
     this.db.prepare('DELETE FROM cron_due WHERE workflow_id=?').bind(workflow_id),

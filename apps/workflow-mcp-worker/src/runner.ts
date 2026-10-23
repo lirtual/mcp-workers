@@ -698,6 +698,11 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
       return;
     }
     if(row.outcome==='waiting'){
+      // A child Run may have been durably inserted before Workflow.create or
+      // its start checkpoint. Reconcile that same child identity before
+      // waiting for child completion, or the parent could wait on a Run that
+      // has no native instance to ever complete.
+      await new WorkflowService(this.env).reconcileAwaitedChildStarts(id);
       for(let attempt=0;;attempt++){
         if(await isCancelRequested(db,id))throw new CancelObserved();
         if(await resumeParkedRun(db,id))break;

@@ -50,6 +50,7 @@ function harness(t: test.TestContext) {
     };
   }
   let nativeStatus = 'running';
+  let failCreates=false;
   let holding = false;
   let exhaustChildWaits = false;
   let releaseHold = () => {};
@@ -62,8 +63,9 @@ function harness(t: test.TestContext) {
     MCP_PORTAL_ENDPOINT: TRUSTED_PORTAL_ENDPOINT,
     DB: {prepare, async batch(items: {run: () => Promise<unknown>}[]) { return Promise.all(items.map(item => item.run())); }},
     WORKFLOW: {
-      async create() {},
+      async create() {if(failCreates)throw Error('injected_create_failure');nativeStatus='running';},
       async get() {
+        if(nativeStatus==='missing')throw Error('instance.not_found');
         return {async status() { return {status: nativeStatus}; }};
       },
     },
@@ -130,7 +132,7 @@ function harness(t: test.TestContext) {
     } else assert.notEqual(output.isError, true, first.text);
     return value;
   }
-  return {sqlite, env, call, client, transport, execute, armHold, releaseHold: () => releaseHold(), until, exhaustChildWaits() { exhaustChildWaits = true; }, setNative(status: string) { nativeStatus = status; }};
+  return {sqlite, env, call, client, transport, execute, armHold, releaseHold: () => releaseHold(), until, exhaustChildWaits() { exhaustChildWaits = true; }, setNative(status: string) { nativeStatus = status; }, failCreates(value:boolean){failCreates=value;}};
 }
 
 async function publish(call: Call, definition: unknown, approvals?: unknown[]) {
@@ -474,6 +476,31 @@ test('child replay recovers its pinned admission after pause and incompatible re
   assert.equal(replay.published_version_id,childVersion);
   assert.notEqual(changed.published_version_id,childVersion);
   assert.equal((sqlite.prepare('SELECT version_id FROM runs WHERE id=?').get(replay.run_id) as {version_id:string}).version_id,childVersion);
+});
+
+test('a waiting parent reconciles its reserved child before waiting for child completion',async t=>{
+  const {call,client,transport,sqlite,env,execute,until,setNative,failCreates}=harness(t);
+  await client.connect(transport);
+  const child=await publish(call,emitWorkflow('Crash-window child','recovered'));
+  const parent=await publish(call,{version:1,name:'Crash-window parent',steps:[
+    {id:'call',uses:'workflow.call',with:{workflow_id:child,inputs:{}}},
+    {id:'report',needs:['call'],uses:'result.emit',with:{data:{ref:'steps.call.output'}}},
+  ]});
+  const admittedParent=await call('workflow_run',{workflow_id:parent});
+  sqlite.prepare("UPDATE runs SET outcome='waiting' WHERE id=?").run(admittedParent.run_id);
+  setNative('missing');
+  failCreates(true);
+  const service=new WorkflowService(env);
+  const first=await service.admitChild({parent_run_id:admittedParent.run_id,parent_step_id:'call',workflow_id:child,inputs:{},mode:'await'});
+  assert.equal(first.start_state,'start_unknown');
+  assert.equal((sqlite.prepare('SELECT outcome FROM runs WHERE id=?').get(admittedParent.run_id) as {outcome:string}).outcome,'waiting');
+  failCreates(false);
+  setNative('missing');
+  await execute(admittedParent.run_id);
+  await until(()=> (sqlite.prepare('SELECT outcome FROM runs WHERE id=?').get(admittedParent.run_id) as {outcome:string}).outcome==='succeeded');
+  assert.equal((await call('workflow_result',{run_id:admittedParent.run_id})).result,'recovered');
+  assert.equal((sqlite.prepare('SELECT start_state FROM runs WHERE id=?').get(first.run_id) as {start_state:string}).start_state,'started');
+  assert.ok(Number((sqlite.prepare("SELECT COUNT(*) AS n FROM runs WHERE outcome IN ('queued','running')").get() as {n:number}).n)<=LIMITS.admissionCap);
 });
 
 test('capabilities mark workflow.call and saga supported', async t => {

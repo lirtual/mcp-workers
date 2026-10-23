@@ -483,10 +483,21 @@ test('unbounded loops, dynamic expansion, nesting, and unsafe loop bodies fail v
   assert.equal('boundary' in saga && saga.boundary, 'not_an_acid_rollback');
 });
 
-test('resolved external arguments obey pinned types and additionalProperties',()=>{
+test('resolved external arguments obey pinned types and additionalProperties',async()=>{
   const schema={type:'object',properties:{value:{type:'string'}},required:['value'],additionalProperties:false};
   assert.doesNotThrow(()=>assertToolArguments(schema,{value:'ok'}));
   assert.throws(()=>assertToolArguments(schema,{value:123,extra:'unapproved'}),/invalid_arguments/);
   assert.throws(()=>assertToolArguments(schema,{value:'ok',extra:'unapproved'}),/invalid_arguments/);
   assert.throws(()=>assertToolArguments({type:'object',properties:{value:{'$ref':'#/$defs/value'}}},{value:'ok'}),/invalid_arguments/);
+  const referenced={type:'object',properties:{value:{$ref:'#/$defs/value'},optional:true,forbidden:false},required:['value'],additionalProperties:false,
+    $defs:{value:{type:['string','null']}}};
+  await toolSchemaDigest(referenced);
+  assert.doesNotThrow(()=>assertToolArguments(referenced,{value:null,optional:{nested:1}}));
+  assert.doesNotThrow(()=>assertToolArguments(referenced,{value:'legacy-compatible'}));
+  assert.throws(()=>assertToolArguments(referenced,{value:123}),/invalid_arguments/);
+  assert.throws(()=>assertToolArguments(referenced,{value:'ok',forbidden:true}),/invalid_arguments/);
+  assert.doesNotThrow(()=>assertToolArguments({type:'object',properties:{value:true},additionalProperties:false},{value:123}));
+  assert.throws(()=>assertToolArguments({type:'object',properties:{value:false},additionalProperties:false},{value:'ok'}));
+  await assert.rejects(()=>toolSchemaDigest({type:'object',properties:{value:{$ref:'https://example.org/schema'}}}),/invalid_tool_schema/);
+  await toolSchemaDigest({type:'object',properties:{value:{type:'string'}}});
 });

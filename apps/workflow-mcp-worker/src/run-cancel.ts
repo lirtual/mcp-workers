@@ -98,18 +98,30 @@ async function hasUnconfirmedProtectedEffect(db:AttemptDatabase,runId:string):Pr
   return row!==null&&row!==undefined;
 }
 
-async function businessDagSucceeded(db:AttemptDatabase,runId:string,versionId:string,receipts:AttemptCancelRow[]):Promise<boolean>{
+async function businessDagResult(db:AttemptDatabase,runId:string,versionId:string,receipts:AttemptCancelRow[]):Promise<string|null>{
   const version=await db.prepare('SELECT plan FROM workflow_versions WHERE id=?').bind(versionId).first<{plan:string}>();
-  if(!version)return false;
+  if(!version)return null;
   let steps:Plan['steps'];
   try{steps=(JSON.parse(version.plan) as Plan).steps;}
-  catch{return false;}
-  if(!steps.length)return false;
-  const rows=await db.prepare('SELECT step_id,status FROM run_steps WHERE run_id=?').bind(runId).all<{step_id:string;status:string}>();
-  const statuses=new Map(rows.results.map(row=>[row.step_id,row.status]));
+  catch{return null;}
+  if(!Array.isArray(steps)||!steps.length)return null;
+  const rows=await db.prepare('SELECT step_id,status,output FROM run_steps WHERE run_id=?').bind(runId).all<{step_id:string;status:string;output:string|null}>();
+  const persisted=new Map(rows.results.map(row=>[row.step_id,row]));
   const successfulReceipts=new Set(receipts.filter(row=>row.receipt_outcome==='succeeded').map(row=>row.step_id));
-  return steps.every(step=>statuses.get(step.id)==='succeeded'||statuses.get(step.id)==='skipped'||
-    (step.uses==='github.run'&&successfulReceipts.has(step.id)));
+  for(const step of steps){
+    const row=persisted.get(step.id);
+    // A late Receipt cannot repair a persisted failed/indeterminate Step or
+    // prove that a downstream Step ran. Every DAG node must have settled.
+    if(!row||!['succeeded','skipped'].includes(row.status))return null;
+    if(step.uses==='github.run'&&row.status==='succeeded'&&!successfulReceipts.has(step.id))return null;
+  }
+  const emitters=steps.filter(step=>step.uses==='result.emit'||step.uses==='flow.repeat'||step.uses==='flow.expand');
+  if(emitters.length>1)return null;
+  const emitted=emitters[0]&&persisted.get(emitters[0].id)?.status==='succeeded'?emitters[0]:undefined;
+  const resultStep=emitted??steps.at(-1)!;
+  const output=persisted.get(resultStep.id)?.output;
+  if(output===null||output===undefined)return 'null';
+  try{return JSON.stringify(JSON.parse(output));}catch{return null;}
 }
 
 async function finish(db:AttemptDatabase, runId:string, proposed:RunCancellation):Promise<RunCancellation>{
@@ -117,6 +129,7 @@ async function finish(db:AttemptDatabase, runId:string, proposed:RunCancellation
     .bind(runId).first<{outcome:string}>();
   if(latest?.outcome==='succeeded'||latest?.outcome==='failed') return 'completed';
   if(latest?.outcome==='cancelled') return 'cancelled';
+  if(latest?.outcome==='indeterminate') return 'indeterminate';
   if(proposed==='cancelled') return 'indeterminate';
   return proposed;
 }
@@ -220,13 +233,18 @@ async function observeRows(db:AttemptDatabase, env:CancelRuntime, rows:AttemptCa
 async function persistReceipt(db:AttemptDatabase, runId:string, rows:AttemptCancelRow[]){
   const outcomes=new Set(rows.map(row=>row.receipt_outcome));
   if(outcomes.size!==1) return;
+  const run=await db.prepare('SELECT version_id,outcome FROM runs WHERE id=?').bind(runId)
+    .first<{version_id:string;outcome:string}>();
+  // A late receipt is evidence about its Step, not authority to rewrite a
+  // business terminal result already persisted by the Runner.
+  if(!run||['succeeded','failed','indeterminate','cancelled'].includes(run.outcome))return;
   if(outcomes.has('succeeded')){
-    const run=await db.prepare('SELECT version_id FROM runs WHERE id=?').bind(runId).first<{version_id:string}>();
-    if(!run||!await businessDagSucceeded(db,runId,run.version_id,rows)){
+    const result=await businessDagResult(db,runId,run.version_id,rows);
+    if(result===null){
       await persist(db,runId,'indeterminate','cancel_business_incomplete');
       return;
     }
-    await persist(db, runId, 'succeeded', null, rows.length===1?rows[0].result_json??undefined:undefined);
+    await persist(db, runId, 'succeeded', null, result);
     return;
   }
   if(outcomes.has('failed')) await persist(db, runId, 'failed', 'github_job_failed');

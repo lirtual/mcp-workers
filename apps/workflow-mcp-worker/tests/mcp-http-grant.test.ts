@@ -395,6 +395,31 @@ test('HTTP runtime references are checked against the published fixture schema b
   }finally{await client.close();}
 });
 
+test('a previously published HTTP schema with local refs and boolean schemas replays compatibly',async t=>{
+  const {env,call,run,client,transport,counts}=harness(t,{hint:'false',drift:false,http:'echo'});
+  const schema={type:'object',properties:{value:{$ref:'#/$defs/value'},metadata:true,blocked:false},required:['value'],
+    additionalProperties:false,$defs:{value:{type:['string','null']}}};
+  const digest=await toolSchemaDigest(schema);
+  env.HTTP_FIXTURE_SCHEMA_DIGEST=digest;
+  await client.connect(transport);
+  try{
+    const definition={version:1,name:'Local reference compatibility',inputs:{value:null},steps:[{
+      id:'request',uses:'http.request',with:{fixture:FIXTURE_ID,scope:'read',input_schema:schema,
+        arguments:{value:{ref:'inputs.value'},metadata:{enabled:true}}},
+    }]};
+    const created=await call('workflow_create',{definition:JSON.stringify(definition)});
+    const preview=await call('workflow_validate',{workflow_id:created.workflow_id,revision:1});
+    await call('workflow_publish',{workflow_id:created.workflow_id,expected_revision:1,
+      approved_operations:preview.required_approvals,accept_target_risks:true});
+    const before=counts().httpCalls;
+    const started=await call('workflow_run',{workflow_id:created.workflow_id,inputs:{value:null}});
+    await run(started.run_id);
+    const result=await call('workflow_result',{run_id:started.run_id});
+    assert.equal(result.status,'succeeded');
+    assert.equal(counts().httpCalls,before+1);
+  }finally{await client.close();}
+});
+
 test('MCP write fails closed on an untrusted readOnlyHint or a changed schema before tools/call', async t=>{
   const schema=await noteSchema();
   const digest=await toolSchemaDigest(schema);

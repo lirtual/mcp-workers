@@ -237,7 +237,7 @@ test('observed GitHub run and job cancellation becomes cancelled only after the 
   assert.equal(ctx.calls.filter(line=>line.includes('/dispatches')).length,1);
 });
 
-test('a receipt that wins the race is completed and is not cancelled or redispatched',async t=>{
+test('a receipt racing cancellation cannot complete a still-running business Step',async t=>{
   const ctx=await waitingGithub(t,{run:'in_progress',conclusion:null,cancel:'accept'});
   assert.equal((await ctx.call('workflow_cancel',{run_id:ctx.admitted.run_id})).cancellation,'requested');
   const attempt=ctx.sqlite.prepare('SELECT attempt_id FROM step_attempts').get() as {attempt_id:string};
@@ -247,32 +247,32 @@ test('a receipt that wins the race is completed and is not cancelled or redispat
   ctx.github.run='completed';
   ctx.github.conclusion='success';
   const done=await ctx.call('workflow_result',{run_id:ctx.admitted.run_id});
-  assert.equal(done.cancellation,'completed');
-  assert.equal(done.status,'succeeded');
-  assert.deepEqual(done.result,{echo:'done'});
-  assert.equal(done.steps[0].async_action.phase,'external_terminal');
-  assert.equal(done.steps[0].async_action.receipt_outcome,'succeeded');
+  assert.equal(done.cancellation,'indeterminate');
+  assert.equal(done.status,'indeterminate');
+  assert.equal(done.error_code,'cancel_business_incomplete');
+  assert.equal(done.steps[0].async_action.phase,'indeterminate');
+  assert.equal((ctx.sqlite.prepare('SELECT outcome FROM callback_receipts WHERE attempt_id=?').get(attempt.attempt_id) as {outcome:string}).outcome,'succeeded');
   ctx.release();
   await ctx.finished;
   const again=await ctx.call('workflow_cancel',{run_id:ctx.admitted.run_id});
-  assert.equal(again.cancellation,'completed');
-  assert.equal(again.status,'succeeded');
+  assert.equal(again.cancellation,'indeterminate');
+  assert.equal(again.status,'indeterminate');
   assert.equal(cancelCount(ctx.calls),1);
   assert.equal(ctx.calls.filter(line=>line.includes('/dispatches')).length,1);
 });
 
-test('GitHub success without a receipt is completed business-indeterminate, not cancelled',async t=>{
+test('GitHub success without a receipt remains business-indeterminate, not cancelled',async t=>{
   const ctx=await waitingGithub(t,{run:'completed',conclusion:'success',cancel:'accept'});
   await ctx.call('workflow_cancel',{run_id:ctx.admitted.run_id});
   const view=await ctx.call('workflow_result',{run_id:ctx.admitted.run_id});
-  assert.equal(view.cancellation,'completed');
+  assert.equal(view.cancellation,'indeterminate');
   assert.equal(view.status,'indeterminate');
   assert.equal(view.error_code,'github_callback_unconfirmed');
   assert.notEqual(view.status,'cancelled');
   ctx.release();
   await ctx.finished;
   assert.equal(cancelCount(ctx.calls),1);
-  assert.equal((await ctx.call('workflow_status',{run_id:ctx.admitted.run_id})).cancellation,'completed');
+  assert.equal((await ctx.call('workflow_status',{run_id:ctx.admitted.run_id})).cancellation,'indeterminate');
   assert.equal(cancelCount(ctx.calls),1);
 });
 
@@ -333,11 +333,53 @@ test('a successful GitHub Receipt cannot succeed a mixed DAG while a later prote
   ctx.sqlite.prepare("INSERT INTO callback_receipts(callback_id,attempt_id,outcome,result_json,created_at) VALUES(?,?,'succeeded','{\"ok\":true}',?)")
     .run(crypto.randomUUID(),attemptId,run.stamp);
   ctx.sqlite.prepare("UPDATE runs SET cancel_requested_at=? WHERE id=?").run(run.stamp,run.runId);
-  assert.equal(await reconcileRunCancellation(ctx.env.DB,ctx.env,run.runId), 'completed');
+  assert.equal(await reconcileRunCancellation(ctx.env.DB,ctx.env,run.runId), 'indeterminate');
   const stored=ctx.sqlite.prepare('SELECT outcome,error_code FROM runs WHERE id=?').get(run.runId) as {outcome:string;error_code:string|null};
   assert.notEqual(stored.outcome,'succeeded');
   assert.equal(stored.outcome,'indeterminate');
   assert.equal(stored.error_code,'cancel_business_incomplete');
+});
+
+test('a late GitHub Receipt cannot replace a timed-out Step or skipped downstream work',async t=>{
+  const ctx=setup(t,{run:'completed',conclusion:'success',cancel:'accept'});
+  const run=insertCancellationRun(ctx,{steps:[
+    {id:'heavy',uses:'github.run'},
+    {id:'answer',uses:'result.emit',needs:['heavy'],with:{data:{answer:42}}},
+  ]},'indeterminate');
+  ctx.sqlite.prepare("UPDATE runs SET error_code='github_callback_unconfirmed' WHERE id=?").run(run.runId);
+  ctx.sqlite.prepare("INSERT INTO run_steps(run_id,step_id,status,error_code,updated_at) VALUES(?, 'heavy','indeterminate','github_callback_unconfirmed',?)")
+    .run(run.runId,run.stamp);
+  ctx.sqlite.prepare("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES(?, 'answer','skipped',?)").run(run.runId,run.stamp);
+  const attemptId=insertAttempt(ctx,run,{stepId:'heavy',state:'confirmed',candidateRunId:RUN});
+  ctx.sqlite.prepare("INSERT INTO callback_receipts(callback_id,attempt_id,outcome,result_json,created_at) VALUES(?,?,'succeeded','{\"github\":true}',?)")
+    .run(crypto.randomUUID(),attemptId,run.stamp);
+  ctx.sqlite.prepare("UPDATE runs SET cancel_requested_at=? WHERE id=?").run(run.stamp,run.runId);
+  assert.equal(await reconcileRunCancellation(ctx.env.DB,ctx.env,run.runId),'indeterminate');
+  const stored=ctx.sqlite.prepare('SELECT outcome,error_code,result FROM runs WHERE id=?').get(run.runId) as {outcome:string;error_code:string|null;result:string|null};
+  assert.equal(stored.outcome,'indeterminate');
+  assert.equal(stored.error_code,'github_callback_unconfirmed');
+  assert.equal((ctx.sqlite.prepare("SELECT status FROM run_steps WHERE run_id=? AND step_id='heavy'").get(run.runId) as {status:string}).status,'indeterminate');
+  assert.notEqual(stored.outcome,'succeeded');
+});
+
+test('a successful Receipt confirms the DAG but its output does not replace the business result',async t=>{
+  const ctx=setup(t,{run:'completed',conclusion:'success',cancel:'accept'});
+  const run=insertCancellationRun(ctx,{steps:[
+    {id:'heavy',uses:'github.run'},
+    {id:'answer',uses:'result.emit',needs:['heavy'],with:{data:{answer:42}}},
+  ]});
+  ctx.sqlite.prepare("INSERT INTO run_steps(run_id,step_id,status,output,updated_at) VALUES(?, 'heavy','succeeded','{\"github\":true}',?)")
+    .run(run.runId,run.stamp);
+  ctx.sqlite.prepare("INSERT INTO run_steps(run_id,step_id,status,output,updated_at) VALUES(?, 'answer','succeeded','{\"answer\":42}',?)")
+    .run(run.runId,run.stamp);
+  const attemptId=insertAttempt(ctx,run,{stepId:'heavy',state:'confirmed',candidateRunId:RUN});
+  ctx.sqlite.prepare("INSERT INTO callback_receipts(callback_id,attempt_id,outcome,result_json,created_at) VALUES(?,?,'succeeded','{\"github\":true}',?)")
+    .run(crypto.randomUUID(),attemptId,run.stamp);
+  ctx.sqlite.prepare("UPDATE runs SET cancel_requested_at=? WHERE id=?").run(run.stamp,run.runId);
+  assert.equal(await reconcileRunCancellation(ctx.env.DB,ctx.env,run.runId),'completed');
+  const stored=ctx.sqlite.prepare('SELECT outcome,result FROM runs WHERE id=?').get(run.runId) as {outcome:string;result:string|null};
+  assert.equal(stored.outcome,'succeeded');
+  assert.deepEqual(JSON.parse(stored.result??'null'),{answer:42});
 });
 
 test('an in-flight MCP protected write makes cancellation indeterminate',async t=>{
