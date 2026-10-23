@@ -722,7 +722,7 @@ jobs:
     name: Isolated MCP Workflow to test Portal and IMA (auto-cleanup)
     if: >-
       ${{ github.event_name == 'workflow_dispatch' &&
-          github.ref == 'refs/heads/wip/workflow-mcp-public-readonly' &&
+          github.ref == 'refs/heads/implement/spec-198-naming' &&
           inputs.worker == 'workflow-mcp-worker' &&
           inputs.mcp_cloud_e2e == true &&
           inputs.mcp_portal_probe != true &&

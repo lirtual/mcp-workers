@@ -31,10 +31,15 @@ async function run(){
   assert.ok(cand&&cand.annotations?.readOnlyHint===true&&cand.annotations?.destructiveHint!==true,'IMA read-only contract missing');
   const created=await api('POST','/accounts/'+account+'/d1/database',{name});dbId=created.uuid;
   assert.match(dbId,/^[a-f0-9-]{36}$/i);console.log('DISPOSABLE_DB_CREATED',name);
-  writeFileSync(new URL('../'+file,import.meta.url),JSON.stringify({name,main:'src/index.ts',compatibility_date:'2026-09-10',workers_dev:true,preview_urls:false,keep_vars:false,vars:{MCP_PORTAL_ENDPOINT:TRUSTED_PORTAL_ENDPOINT},d1_databases:[{binding:'DB',database_name:name,database_id:dbId,migrations_dir:'migrations'}],workflows:[{name,binding:'WORKFLOW',class_name:'WorkflowRunner'}]}));
+  writeFileSync(new URL('../'+file,import.meta.url),JSON.stringify({name,main:'src/index.ts',compatibility_date:'2026-09-10',workers_dev:true,preview_urls:false,keep_vars:false,vars:{MCP_PORTAL_ENDPOINT:TRUSTED_PORTAL_ENDPOINT,MCP_PORTAL_CLIENT_ID:pair.clientId},d1_databases:[{binding:'DB',database_name:name,database_id:dbId,migrations_dir:'migrations'}],workflows:[{name,binding:'WORKFLOW',class_name:'WorkflowRunner'}]}));
   wr(['d1','migrations','apply',name,'--remote','--config',file]);
   attempted=true;wr(['deploy','--config',file]);
-  for(const [key,val] of Object.entries({MCP_ACCESS_TOKEN:ownerToken,MCP_PORTAL_CLIENT_ID:pair.clientId,MCP_PORTAL_CLIENT_SECRET:pair.clientSecret}))wr(['secret','put',key,'--config',file],val);
+  for(const [key,val] of Object.entries({MCP_ACCESS_TOKEN:ownerToken,MCP_PORTAL_CLIENT_SECRET:pair.clientSecret}))wr(['secret','put',key,'--config',file],val);
+  const settings=await api('GET','/accounts/'+account+'/workers/scripts/'+name+'/settings');
+  const clientBindings=settings.bindings.filter(x=>x.name==='MCP_PORTAL_CLIENT_ID');
+  assert.equal(clientBindings.length,1,'Client ID binding must be unique');
+  assert.equal(clientBindings[0].type,'plain_text','Client ID must be Variable');
+  assert.equal(clientBindings[0].text,pair.clientId,'Client ID binding mismatch');
   console.log('DISPOSABLE_WORKER_READY',name);
   let connected=false;for(let i=0;i<15;i++){
     const instance=mcp(endpoint,{requestInit:{headers:{authorization:'Bearer '+ownerToken}}});
