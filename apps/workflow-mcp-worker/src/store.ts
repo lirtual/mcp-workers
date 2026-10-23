@@ -1,3 +1,4 @@
+import {requestGitHubActionCancellation} from './github-action-cancel.ts';
 import {reconcilePersistedGitHubActionAttempt} from './github-action-attempt-reconcile.ts';
 import {releaseVerifiedSessionSlot} from './github-action-session.ts';
 import { discoverGitHubActions } from './github-action-discovery.ts';
@@ -209,6 +210,20 @@ export class WorkflowService {
       throw new StateError('revision_conflict');
     }
     return {workflow_id,published_version_id:version,digest:plan_digest,state:row.state==='paused'?'paused':'active'};
+  }
+  /** Cancel one approved physical Task/Session Step by server-pinned Run identity.
+   * Parent business results and physical Session slots remain independent:
+   * a 202 GitHub cancellation ACK is not evidence of terminal completion.
+   */
+  async cancel(run_id:string,step_id:string,force=false){
+    assertId(run_id);assertId(step_id);
+    if(!this.env.WORKFLOW_EXECUTOR_GITHUB_TOKEN)
+      throw new StateError('github_action_executor_not_configured');
+    const cancellation=await requestGitHubActionCancellation(
+      this.db,run_id,step_id,this.env.WORKFLOW_EXECUTOR_GITHUB_TOKEN,force);
+    if(cancellation==='not_found')throw new StateError('github_action_not_cancellable');
+    return {run_id,step_id,cancellation,
+      physical_terminated:cancellation==='terminal_confirmed'};
   }
   async pause(workflow_id:string){assertId(workflow_id);const x=await this.db.prepare("UPDATE workflows SET state='paused',updated_at=? WHERE id=? AND state='active'").bind(now(),workflow_id).run();if(!x.meta.changes)throw new StateError('not_active');return {workflow_id,state:'paused'};}
   async resume(workflow_id:string){assertId(workflow_id);const x=await this.db.prepare("UPDATE workflows SET state='active',updated_at=? WHERE id=? AND state='paused' AND active_version_id IS NOT NULL").bind(now(),workflow_id).run();if(!x.meta.changes)throw new StateError('not_paused');return {workflow_id,state:'active'};}
