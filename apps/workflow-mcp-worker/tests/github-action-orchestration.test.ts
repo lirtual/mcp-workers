@@ -1,0 +1,72 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {DatabaseSync} from 'node:sqlite';
+import {readFileSync} from 'node:fs';
+import {registerAndDispatchGitHubAction} from '../src/github-action-orchestration.ts';
+import type {ReviewedGitHubAction} from '../src/github-action-review.ts';
+
+const aid='11111111-1111-4111-8111-111111111111';
+const did='22222222-2222-4222-8222-222222222222';
+const rid='33333333-3333-4333-8333-333333333333';
+const action:ReviewedGitHubAction={repository:'lirtual/session-actions',repositoryId:12,
+ workflowId:34,workflowPath:'.github/workflows/linux.yml',
+ commitSha:'a'.repeat(40),type:'session',contractDigest:'b'.repeat(64)};
+const data={runId:rid,stepId:'linux',attemptId:aid,dispatchId:did,
+ action,ref:'refs/heads/main',token:'token',inputs:{duration_minutes:'5'}};
+function setup(){
+ const db=new DatabaseSync(':memory:');
+ db.exec('PRAGMA foreign_keys=ON');
+ for(const name of ['0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql']){
+  db.exec(readFileSync(new URL('../migrations/'+name,import.meta.url),'utf8'));
+ }
+ db.exec('BEGIN');
+ db.exec(readFileSync(new URL('../migrations/0005_action_attempt_capabilities.sql',import.meta.url),'utf8'));
+ db.exec('COMMIT');
+ db.exec(`INSERT INTO workflows(id,name,draft,draft_revision,state,created_at,updated_at)
+ VALUES('wf','wf','{}',1,'active',1,1);
+ INSERT INTO workflow_versions(id,workflow_id,digest,plan,created_at) VALUES('v','wf','x','{}',1);
+ INSERT INTO runs(id,workflow_id,version_id,instance_id,request_digest,inputs,outcome,created_at,updated_at)
+ VALUES('${rid}','wf','v','inst','x','{}','running',1,1)`);
+ const adapter={prepare:(sql:string)=>({bind:(...args:unknown[])=>({
+  run:async()=>({meta:{changes:db.prepare(sql).run(...args as []).changes}}),
+  first:async()=>db.prepare(sql).get(...args as []),
+ })})} as any;
+ return {db,adapter};
+}
+const gitRef=()=>Response.json({ref:'refs/heads/main',object:{type:'commit',sha:action.commitSha}});
+test('persist before POST, then ACK stores physical run in D1',async()=>{
+ const {db,adapter}=setup();
+ try{
+  let posts=0;
+  const result=await registerAndDispatchGitHubAction(adapter,data,async req=>{
+   const stored=db.prepare('SELECT state FROM step_attempts WHERE attempt_id=?').get(aid);
+   assert.equal(stored?.state,'created');
+   if(req.method==='GET')return gitRef();
+   posts++;return Response.json({workflow_run_id:88});
+  });
+  assert.deepEqual(result,{status:'confirmed',runId:88,runAttempt:1});
+  assert.equal(db.prepare('SELECT state FROM step_attempts').get()?.state,'confirmed');
+  assert.equal(posts,1);
+  await assert.rejects(registerAndDispatchGitHubAction(adapter,data,async()=>{throw Error('duplicate dispatched');}),/not_registered/);
+ }finally{db.close();}
+});
+test('ambiguous network result is durable and must not replay',async()=>{
+ const {db,adapter}=setup();
+ try{
+  const result=await registerAndDispatchGitHubAction(adapter,data,async req=>{
+   if(req.method==='GET')return gitRef();
+   throw Error('connection lost');
+  });
+  assert.deepEqual(result,{status:'dispatch_unknown'});
+  assert.equal(db.prepare('SELECT state FROM step_attempts').get()?.state,'dispatch_unknown');
+  await assert.rejects(registerAndDispatchGitHubAction(adapter,data),/not_registered/);
+ }finally{db.close();}
+});
+test('terminal parent run never registers or dispatches',async()=>{
+ const {db,adapter}=setup();
+ try{
+  db.exec("UPDATE runs SET outcome='cancelled'");
+  await assert.rejects(registerAndDispatchGitHubAction(adapter,data,async()=>{throw Error('must not call GitHub');}),/not_registered/);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM step_attempts').get()?.n,0);
+ }finally{db.close();}
+});
