@@ -32,7 +32,7 @@ const exposed=async(env:Record<string,unknown>)=>
   (await request(env,"tools/list")).result?.tools?.map(t=>t.name)
     .filter(n=>n.startsWith("browser_"))??[];
 
-test("Preview with independently configured Access exposes all ten browser tools without test switches",async()=>{
+test("Preview with a paired owner advertises ten browser tools without approval configuration",async()=>{
   assert.deepEqual((await exposed(preview)).sort(),
     [...BROWSER_TOOLS.map(t=>t.name)].sort());
   assert.equal(BROWSER_TOOLS.length,10);
@@ -40,10 +40,6 @@ test("Preview with independently configured Access exposes all ten browser tools
     {REMOTE_CONTROL_V2_PREVIEW_ONLY:"false"},
     {V2_OWNER:undefined},
     {DEVICE_COORDINATOR:preview.V2_OWNER},
-    {BROWSER_APPROVAL_ACCESS_ISSUER:undefined},
-    {BROWSER_APPROVAL_ACCESS_AUD:undefined},
-    {BROWSER_APPROVAL_ALLOWED_EMAIL:undefined},
-    {BROWSER_APPROVAL_PUBLIC_ORIGIN:undefined},
   ]) assert.deepEqual(await exposed({...preview,...overrides}),[],
     JSON.stringify(Object.keys(overrides)));
 });
@@ -74,7 +70,7 @@ test("Preview forwards a chosen UUID to owner DO, which independently rejects un
   assert.equal(forwarded,2);
 });
 
-test("production owner advertises browser tools only with complete Access approval",async()=>{
+test("production owner advertises browser tools independent of browser approval credentials",async()=>{
   let forwarded=0;
   const prod={...preview,V2_OWNER:undefined,REMOTE_CONTROL_V2_PREVIEW_ONLY:undefined,
     DEVICE_COORDINATOR:{idFromName:()=>({}),get:()=>({fetch:async()=>{
@@ -87,21 +83,20 @@ test("production owner advertises browser tools only with complete Access approv
   assert.equal(forwarded,1);
   for(const name of ["BROWSER_APPROVAL_ACCESS_ISSUER","BROWSER_APPROVAL_ACCESS_AUD",
     "BROWSER_APPROVAL_ALLOWED_EMAIL","BROWSER_APPROVAL_PUBLIC_ORIGIN"]){
-    assert.deepEqual(await exposed({...prod,[name]:undefined}),[],name);
+    assert.deepEqual((await exposed({...prod,[name]:undefined})).sort(),BROWSER_TOOLS.map(t=>t.name).sort(),name);
   }
   assert.deepEqual(await exposed({...prod,V2_OWNER:preview.V2_OWNER}),[]);
   assert.deepEqual(await exposed({...prod,REMOTE_CONTROL_V2_PREVIEW_ONLY:"true"}),[]);
 });
 
-test("Preview routes browser_fill through approval instead of direct signed WSS dispatch",async()=>{
+test("Preview routes browser_fill directly to the signed paired-device operation path",async()=>{
   const device=randomUUID(),operation_id="spec152-fill-"+randomUUID();
   const calls:Array<{path:string;payload:Record<string,unknown>}>=[];
   const env={...preview,V2_OWNER:{idFromName:()=>({}),get:()=>({
     fetch:async(url:string,init:{body?:string})=>{
       const payload=JSON.parse(init.body??"{}") as Record<string,unknown>;
       calls.push({path:new URL(url).pathname,payload});
-      return Response.json({operation_id,status:"confirmation_required",
-        approval_id:randomUUID(),expires_at:Date.now()+300000});
+      return Response.json({operation_id,status:"completed"});
     },
   })}};
   const text="not-safe-to-show-on-approval-page";
@@ -110,21 +105,20 @@ test("Preview routes browser_fill through approval instead of direct signed WSS 
     name:"Demo field",snapshot_version:7,text,
   }});
   assert.equal(output.result?.isError,false);
-  assert.deepEqual(calls.map(x=>x.path),["/browser-approval/dispatch"]);
+  assert.deepEqual(calls.map(x=>x.path),["/operation"]);
   assert.equal(calls[0]?.payload.tool,"browser_fill");
-  assert.match(String(output.result?.content?.[0]?.text),/confirmation_required/);
+  assert.match(String(output.result?.content?.[0]?.text),/completed/);
   assert.equal(JSON.stringify(output).includes(text),false);
 });
 
-test("Preview routes browser_navigate to signed-tab approval, not direct DO dispatch",async()=>{
+test("Preview routes browser_navigate directly while retaining signed-tab validation",async()=>{
   const device=randomUUID(),operation_id="spec152-nav-"+randomUUID();
   const calls:Array<{path:string;payload:Record<string,unknown>}>=[];
   const env={...preview,V2_OWNER:{idFromName:()=>({}),get:()=>({
     fetch:async(url:string,init:{body?:string})=>{
       const payload=JSON.parse(init.body??"{}") as Record<string,unknown>;
       calls.push({path:new URL(url).pathname,payload});
-      return Response.json({operation_id,status:"confirmation_required",
-        approval_id:randomUUID(),expires_at:Date.now()+300000});
+      return Response.json({operation_id,status:"completed"});
     },
   })}};
   const output=await request(env,"tools/call",{name:"browser_navigate",arguments:{
@@ -133,7 +127,14 @@ test("Preview routes browser_navigate to signed-tab approval, not direct DO disp
     url:"https://demo.playwright.dev/todomvc/",
   }});
   assert.equal(output.result?.isError,false);
-  assert.deepEqual(calls.map(x=>x.path),["/browser-approval/dispatch"]);
+  assert.deepEqual(calls.map(x=>x.path),["/operation"]);
   assert.equal(calls[0]?.payload.tool,"browser_navigate");
-  assert.match(String(output.result?.content?.[0]?.text),/confirmation_required/);
+  assert.match(String(output.result?.content?.[0]?.text),/completed/);
+});
+
+test("a retired per-action approval URL does not provide an authorization path",async()=>{
+  const response=await worker.fetch(
+    new Request("https://preview.example.com/browser-approve/"+randomUUID()),
+    preview as unknown as Env);
+  assert.equal(response.status,404);
 });
