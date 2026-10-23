@@ -2,6 +2,8 @@ import type { ReviewedGitHubAction } from './github-action-review.ts';
 import { dispatchReviewedGitHubAction } from './github-action-dispatch.ts';
 import { recordGithubDispatchResult } from './github-claim.ts';
 import type { DispatchOutcome } from './github-dispatch.ts';
+import {isPublishedGitHubActionApproved,type ReviewedGitHubAction as PublishedAction} from './github-action-review.ts';
+import type {Plan} from './plan.ts';
 
 type Db=Pick<D1Database,'prepare'>;
 type Http=(request:Request)=>Promise<Response>;
@@ -31,6 +33,26 @@ export async function registerAndDispatchGitHubAction(
     !data.action.workflowPath.startsWith('.github/workflows/')||
     !/^[a-z0-9_-]+\.ya?ml$/.test(data.action.workflowPath.slice('.github/workflows/'.length)))
    throw Error('github_action_registration_invalid');
+ // A private caller cannot create dispatch authority merely by supplying
+ // an Action object. Bind this attempt to its already-published immutable
+ // Workflow version, exact Step, and exact reviewed Action grant.
+ const origin=await db.prepare(`SELECT r.outcome,v.plan
+   FROM runs r JOIN workflow_versions v ON v.id=r.version_id
+   WHERE r.id=?`).bind(data.runId).first<{outcome:string;plan:string}>();
+ if(!origin||!['queued','running'].includes(origin.outcome))
+  throw Error('github_action_publication_missing');
+ let plan:Plan;
+ try{plan=JSON.parse(origin.plan) as Plan;}
+ catch{throw Error('github_action_publication_missing');}
+ if(plan.github_execution_approved!==true||!Array.isArray(plan.steps))
+  throw Error('github_action_publication_missing');
+ const step=plan.steps.find(entry=>entry.id===data.stepId);
+ if(!step||step.uses!=='github.run'||step.with?.capability!=='github.action')
+  throw Error('github_action_publication_missing');
+ const raw=step.with.action as PublishedAction|undefined;
+ if(!raw||!isPublishedGitHubActionApproved(plan.github_action_approvals,raw)||
+    !isPublishedGitHubActionApproved([raw],data.action))
+  throw Error('github_action_publication_missing');
  const saved=await db.prepare(`INSERT OR IGNORE INTO step_attempts
  (attempt_id,run_id,step_id,capability_id,dispatch_id,state,repository,
  repository_id,workflow_ref,ref,created_at,updated_at)
