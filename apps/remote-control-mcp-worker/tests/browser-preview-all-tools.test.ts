@@ -74,19 +74,23 @@ test("Preview forwards a chosen UUID to owner DO, which independently rejects un
   assert.equal(forwarded,2);
 });
 
-test("production DeviceCoordinator never advertises or dispatches browser tools",async()=>{
+test("production owner advertises browser tools only with complete Access approval",async()=>{
   let forwarded=0;
-  const prod={...preview,DEVICE_COORDINATOR:{
-    idFromName:()=>({}),get:()=>({fetch:async()=>{
-      forwarded++;return Response.json({status:"completed"});}}),
-  },V2_OWNER:undefined};
-  assert.deepEqual(await exposed(prod),[]);
-  const out=await request(prod,"tools/call",{
-    name:"browser_click",arguments:{device_id:target,
-      operation_id:"test-"+randomUUID(),session_id:randomUUID(),
-      role:"button",name:"Confirm demo",snapshot_version:1}});
-  assert.equal(out.result?.isError,true);
-  assert.equal(forwarded,0);
+  const prod={...preview,V2_OWNER:undefined,REMOTE_CONTROL_V2_PREVIEW_ONLY:undefined,
+    DEVICE_COORDINATOR:{idFromName:()=>({}),get:()=>({fetch:async()=>{
+      forwarded++;return Response.json({status:"completed",text:"approved-read"});
+    }})},
+  };
+  assert.deepEqual((await exposed(prod)).sort(),BROWSER_TOOLS.map(t=>t.name).sort());
+  const result=await request(prod,"tools/call",{name:"browser_status",arguments:{device_id:target}});
+  assert.equal(result.result?.isError,false);
+  assert.equal(forwarded,1);
+  for(const name of ["BROWSER_APPROVAL_ACCESS_ISSUER","BROWSER_APPROVAL_ACCESS_AUD",
+    "BROWSER_APPROVAL_ALLOWED_EMAIL","BROWSER_APPROVAL_PUBLIC_ORIGIN"]){
+    assert.deepEqual(await exposed({...prod,[name]:undefined}),[],name);
+  }
+  assert.deepEqual(await exposed({...prod,V2_OWNER:preview.V2_OWNER}),[]);
+  assert.deepEqual(await exposed({...prod,REMOTE_CONTROL_V2_PREVIEW_ONLY:"true"}),[]);
 });
 
 test("Preview routes browser_fill through approval instead of direct signed WSS dispatch",async()=>{

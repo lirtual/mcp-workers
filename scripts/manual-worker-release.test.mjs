@@ -85,11 +85,13 @@ test("Remote production requires its own DO and rejects Preview namespace reuse"
   const productionNs = "abcd1234abcd1234abcd1234abcd1234";
   const prod = { bindings: [
     { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
+    ...["BROWSER_APPROVAL_ACCESS_ISSUER","BROWSER_APPROVAL_ACCESS_AUD","BROWSER_APPROVAL_ALLOWED_EMAIL"].map(name=>({name,type:"secret_text"})),
+    { name: "BROWSER_APPROVAL_PUBLIC_ORIGIN", type: "plain_text", text: "https://rca.lirtual.dpdns.org" },
     { name: "REMOTE_CONTROL_INSTALL_ORIGIN", type: "plain_text", text: "https://rca.lirtual.dpdns.org" },
     { name: "DEVICE_COORDINATOR", class_name: "DeviceCoordinator",
       type: "durable_object_namespace", namespace_id: productionNs },
   ], observability: { enabled: true, logs: { invocation_logs: false } } };
-  const secrets = [{ name: "MCP_ACCESS_TOKEN" }];
+  const secrets = ["MCP_ACCESS_TOKEN","BROWSER_APPROVAL_ACCESS_ISSUER","BROWSER_APPROVAL_ACCESS_AUD","BROWSER_APPROVAL_ALLOWED_EMAIL"].map(name=>({name}));
   const options = { mode: "readback", previousNamespaceId: previewNs,
     sourceConfig: { routes: [{ pattern: "rca.lirtual.dpdns.org", custom_domain: true }] } };
   assert.equal(verifyBindings(worker, prod, secrets, options), true);
@@ -115,6 +117,7 @@ test("Remote production requires its own DO and rejects Preview namespace reuse"
   }, secrets, options), /VPC/);
   const previous = { ...prod, bindings: [
     { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
+    ...["BROWSER_APPROVAL_ACCESS_ISSUER","BROWSER_APPROVAL_ACCESS_AUD","BROWSER_APPROVAL_ALLOWED_EMAIL"].map(name=>({name,type:"secret_text"})),
     { name: "REMOTE_CONTROL_V2_ONLY", type: "plain_text", text: "true" },
     { name: "V2_OWNER", type: "durable_object_namespace", namespace_id: previewNs,
       class_name: "V2OwnerCoordinator", script_name: "remote-control-v2-preview" },

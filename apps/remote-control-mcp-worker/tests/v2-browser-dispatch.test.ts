@@ -8,7 +8,7 @@ import { parseBrowserCall } from "../src/browser-tools.ts";
  * Isolated DO/Browser contract gate. Simulates an ALREADY-authorized WSS
  * incarnation; cryptographic nonce proof is verified by v2-session.test.ts
  * and the actual Agent execution path by its own browser-wss.test.ts.
- * No production browser MCP tools are enabled by this test.
+ * Production tool exposure is tested separately; this verifies signed DO transport.
  */
 test("browser DO routes typed read/effect frames only to the current approved device",async()=>{
   const device=randomUUID(), other=randomUUID(), sid=randomUUID(), epoch="test-epoch";

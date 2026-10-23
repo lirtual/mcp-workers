@@ -491,6 +491,9 @@ jobs:
           # GitHub automatically uses same-name Environment Secrets over
           # Repository Secrets. Values are scoped to this one staging step.
           MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
+          BROWSER_APPROVAL_ACCESS_ISSUER: ${{ secrets.BROWSER_APPROVAL_ACCESS_ISSUER }}
+          BROWSER_APPROVAL_ACCESS_AUD: ${{ secrets.BROWSER_APPROVAL_ACCESS_AUD }}
+          BROWSER_APPROVAL_ALLOWED_EMAIL: ${{ secrets.BROWSER_APPROVAL_ALLOWED_EMAIL }}
           RAINDROP_ACCESS_TOKEN: ${{ secrets.RAINDROP_ACCESS_TOKEN }}
           API_KEY: ${{ secrets.API_KEY }}
           DATABASE_CONFIG: ${{ secrets.DATABASE_CONFIG }}

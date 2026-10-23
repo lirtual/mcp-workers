@@ -1,8 +1,8 @@
 import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
 import { BROWSER_TOOLS, BROWSER_EFFECT_TOOLS, BROWSER_READ_TOOLS, parseBrowserCall, browserEffectClientStatus } from "./browser-tools.ts";
 import {verifyAccessApprovalOwner,validBrowserApprovalRequest,validBrowserApprovalForm,browserApprovalPage,type BrowserApprovalAccessConfig} from "./browser-approval-web.ts";
-/** Browser tools are available to paired devices only on the isolated v2 Preview.
- * Production's DEVICE_COORDINATOR binding never opts into this Preview surface. */
+/** Browser tools require a paired device and verified owner Access configuration.
+ * Preview and production use separate owner namespaces and approval origins. */
 import { handleAgentInstallerRequest } from "./install-bootstrap.ts";
 export { V2OwnerCoordinator } from "./v2-pairing.ts";
 import { V2OwnerCoordinator as PreviewCoordinator } from "./v2-pairing.ts";
@@ -19,8 +19,9 @@ function pairedOnly(env: Env): boolean {
 }
 function browserToolsAvailable(env:Env):boolean {
   const e=env as V2Env & BrowserApprovalAccessConfig & {BROWSER_APPROVAL_PUBLIC_ORIGIN?:string};
-  return Boolean(e.V2_OWNER) && !e.DEVICE_COORDINATOR &&
-    e.REMOTE_CONTROL_V2_PREVIEW_ONLY==="true" &&
+  const preview=Boolean(e.V2_OWNER) && !e.DEVICE_COORDINATOR && e.REMOTE_CONTROL_V2_PREVIEW_ONLY==="true";
+  const production=Boolean(e.DEVICE_COORDINATOR) && !e.V2_OWNER && !e.REMOTE_CONTROL_V2_PREVIEW_ONLY;
+  return (preview || production) &&
     Boolean(e.BROWSER_APPROVAL_ACCESS_ISSUER &&
       e.BROWSER_APPROVAL_ACCESS_AUD && e.BROWSER_APPROVAL_ALLOWED_EMAIL &&
       e.BROWSER_APPROVAL_PUBLIC_ORIGIN);
