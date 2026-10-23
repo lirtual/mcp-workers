@@ -10,7 +10,7 @@ export type Step = {
   with: Record<string, unknown>; if?: unknown;
 };
 export type ReadonlyOperation = { endpoint:string; tool:string; scope:'read'; schema_digest:string };
-export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown>; mcp_approvals?: ReadonlyOperation[]; mcp_target_risks_accepted?: true; github_execution_approved?: true };
+export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown>; mcp_approvals?: ReadonlyOperation[]; mcp_target_risks_accepted?: true; github_execution_approved?: true; github_action_approvals?: Array<{repository:string;repositoryId:number;workflowId:number;workflowPath:string;commitSha:string;type:'task'|'session';contractDigest:string}> };
 const SAFE_ID = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
 const OBJECT_PROTOTYPE_KEYS = new Set(['constructor','toString','toLocaleString','valueOf','hasOwnProperty','isPrototypeOf','propertyIsEnumerable']);
 const RESERVED = new Set(['eval','javascript','script','code','shell','endpoint','url','command','function']);
@@ -133,8 +133,22 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     if(s.uses==='github.run'){
       // A single fixed CI verification operation. No user-supplied scripts,
       // URL, repository, ref or arguments.
-      keys(withData,['capability']);
-      if(withData.capability!=='github.workflow.check')
+      keys(withData,['capability','action']);
+      if(withData.capability==='github.action') {
+        const action=object(withData.action,'invalid_github_action');
+        keys(action,['repository','repositoryId','workflowId','workflowPath','commitSha','type','contractDigest','ref','inputs']);
+        if(typeof action.repository!=='string'||!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(action.repository)||
+           !Number.isSafeInteger(action.repositoryId)||Number(action.repositoryId)<=0||
+           !Number.isSafeInteger(action.workflowId)||Number(action.workflowId)<=0||
+           typeof action.workflowPath!=='string'||!/^\.github\/workflows\/[A-Za-z0-9_.-]+\.ya?ml$/.test(action.workflowPath)||
+           typeof action.commitSha!=='string'||! /^[a-f0-9]{40}$/i.test(action.commitSha)||
+           typeof action.ref!=='string'||! /^refs\/tags\/[A-Za-z0-9][A-Za-z0-9._\/-]{0,190}$/.test(action.ref)||
+           action.ref.includes('..')||action.ref.includes('//')||action.ref.endsWith('/')||
+           !['task','session'].includes(String(action.type))||
+           typeof action.contractDigest!=='string'||! /^[a-f0-9]{64}$/i.test(action.contractDigest))
+          throw new PlanError('invalid_github_action');
+        object(action.inputs,'invalid_github_action_inputs');
+      } else if(withData.capability!=='github.workflow.check')
         throw new PlanError('unsupported_github_capability');
     }else if(s.uses==='mcp.call'){
       keys(withData,['endpoint','tool','scope','arguments','input_schema','output_schema']);
@@ -155,7 +169,14 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
   for(const s of steps){
     for(const dep of s.needs)if(!ids.has(dep)||dep===s.id)throw new PlanError('invalid_dependencies');
     if(s.uses==='mcp.call') expression(s.with.arguments,s,0,true);
-    else expression(s.with,s);
+    else if(s.uses==='github.run' && s.with.capability==='github.action') {
+      // Action identity is an immutable literal, never a runtime expression.
+      const a=s.with.action as Record<string,unknown>;
+      for(const [key,value] of Object.entries(a)) {
+        if(key==='inputs') expression(value,s,0,true);
+        else if(typeof value==='string'&&value.includes('\${{'))throw new PlanError('dynamic_github_identity');
+      }
+    } else expression(s.with,s);
     if(s.if!==undefined){
       expression(s.if,s);
       const op=s.if && typeof s.if==='object' && !Array.isArray(s.if)?Object.keys(s.if):[];

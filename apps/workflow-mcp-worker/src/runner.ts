@@ -1,3 +1,6 @@
+import {watchPersistedSessions} from './github-action-session-watch.ts';
+import { runPublishedGitHubActionTask } from './github-action-task.ts';
+import { runPublishedGitHubActionSession } from './github-action-session.ts';
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { evaluateArguments, evaluateCondition, toolSchemaDigest } from './plan.ts';
@@ -88,6 +91,10 @@ async function runGithubStep(
 ):Promise<Outcome>{
   if(plan.github_execution_approved!==true)
     return {status:'failed',error_code:'github_execution_approval_required'};
+  if(s.with.capability==='github.action')
+    return (s.with.action as {type?:unknown}|undefined)?.type==='session'
+      ?runPublishedGitHubActionSession(env,plan,s,runId,step)
+      :runPublishedGitHubActionTask(env,plan,s,runId,step);
   if(s.with.capability!=='github.workflow.check')
     return {status:'failed',error_code:'github_capability_not_registered'};
   if(!env.WORKFLOW_EXECUTOR_GITHUB_TOKEN||!env.GITHUB_EXECUTOR_REPOSITORY||
@@ -244,6 +251,21 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
     }catch{
       await db.prepare("UPDATE runs SET outcome='indeterminate',error_code='execution_interrupted',updated_at=? WHERE id=? AND outcome='running'").bind(now(),id).run();
       throw Error('execution_interrupted');
+    }finally{
+      // The parent business Run can finish at Session Ready, but its GitHub
+      // job is a separate physical resource. Keep THIS native Workflow
+      // sleeping and reconciling until terminal evidence or the bounded
+      // watch window. No external scheduler, false completion, or slot leak
+      // on a successful Ready. Expiry requests normal cancellation only.
+      if(plan.steps.some(s=>s.uses==='github.run'&&
+         s.with.capability==='github.action'&&
+         (s.with.action as {type?:unknown}|undefined)?.type==='session')){
+        try{await watchPersistedSessions(this.env,id,step);}
+        catch{
+          // The independent Session record still holds quota, and explicit
+          // workflow_status performs a verified recovery readback.
+        }
+      }
     }
   }
 }

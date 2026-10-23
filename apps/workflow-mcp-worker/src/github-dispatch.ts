@@ -167,3 +167,20 @@ export function selectedGithubExecutor(
     return {workflow:'workflow-github-executor.yml'};
   return {workflow:'ci.yml',workerName:env.GITHUB_TEST_WORKER_NAME};
 }
+
+/**
+ * Additional immutable source binding for protocol Actions.
+ * Call ONLY after GitHub-issued JWT signature/issuer/audience verification,
+ * and after the registered Attempt's physical run/attempt were loaded from D1.
+ * The token alone must never approve a dispatch.
+ */
+export function matchPinnedActionRunIdentity(
+  verified: VerifiedGitHubClaims & {repository_id?:unknown;sha?:unknown;job_workflow_sha?:unknown},
+  expected: ConfirmedCandidate & {repositoryId:string;commitSha:string},
+): boolean {
+  return /^[a-f0-9]{40}$/i.test(expected.commitSha) &&
+    /^\d+$/.test(expected.repositoryId) &&
+    verified.repository_id===expected.repositoryId &&
+    verified.sha===expected.commitSha &&
+    matchCandidateIdentity(verified,expected);
+}
