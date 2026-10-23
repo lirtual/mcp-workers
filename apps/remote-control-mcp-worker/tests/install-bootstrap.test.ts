@@ -181,7 +181,7 @@ test('public installation home is isolated from authentication and shows the two
   assert.doesNotMatch(html,/>Linux \/ WSL2<\/button>/);
   assert.match(html,/aria-selected/);
   assert.match(html,/const ready=\{windows:false,linux:false\}/);
-  assert.match(html,/copy\.disabled=!chosen\|\|!ready\[value\]/);
+  assert.match(html,/copy\.disabled=!ready\[value\]/);
   assert.match(html,/安装暂未开放/);
   assert.match(html,/navigator\.userAgentData/);
   assert.match(html,/clipboard\.writeText/);
@@ -215,8 +215,8 @@ test('homepage copy state follows the separately verified platform pins',async()
   assert.match(closed,/const ready=\{windows:false,linux:false\}/);
   assert.match(linux,/const ready=\{windows:false,linux:true\}/);
   assert.match(windows,/const ready=\{windows:true,linux:false\}/);
-  assert.match(closed,/field\.textContent=chosen\?\(ready\[value\]\?cmds\[value\]:'安装暂未开放'\)/);
-  assert.match(closed,/copy\.disabled=!chosen\|\|!ready\[value\]/);
+  assert.match(closed,/field\.textContent=ready\[value\]\?cmds\[value\]:'安装暂未开放'/);
+  assert.match(closed,/copy\.disabled=!ready\[value\]/);
   assert.match(closed,/if\(!ready\[platform\]\)return;/);
   const custom='https://rca.lirtual.dpdns.org';
   const resp=requestInstall(new Request(custom+'/'),pin,custom);
@@ -297,13 +297,26 @@ test('mobile home stays compact, uses semantic numbered steps and follows OS the
   assert.match(html, /id="shell-label"/);
   assert.ok(html.indexOf('id="copy"')<html.indexOf('id="command"'), 'copy button stays above wrapped command');
   assert.match(html, /overflow-wrap:anywhere/);
-  assert.match(html, /const mobile=\/iphone\|ipad\|ipod\|android\|mobile\//);
-  assert.match(html, /select\(mobile\?'':/);
-  assert.match(html, /先选择 Windows 或 Linux/);
-  assert.match(html, /copy\.disabled=!chosen\|\|!ready\[value\]/);
+  assert.match(html, /select\(detected\.includes\('linux'\)\?'linux':'windows'\)/);
+  assert.doesNotMatch(html, /先选择 Windows 或 Linux|const mobile=/);
+  assert.match(html, /copy\.disabled=!ready\[value\]/);
   assert.match(html, /aria-selected/);
   assert.match(html, /clipboard\.writeText\(cmds\[platform\]\)/);
   assert.match(html, /irm https:\/\/rca\.lirtual\.dpdns\.org\/install\.ps1 \| iex/);
   assert.match(html, /curl -fsSL https:\/\/rca\.lirtual\.dpdns\.org\/install\.sh \| sh/);
   assert.doesNotMatch(html, /localStorage|sessionStorage|document\.cookie|api\/devices/);
+});
+
+test('installer home drops source/docs and defaults unknown device to first Windows tab', async () => {
+  const {renderInstallHome}=await import('../src/install-home.ts');
+  const html=renderInstallHome({windows:true,linux:true});
+  assert.doesNotMatch(html, /<footer\b|>源码<\/a>|>文档<\/a>|#readme/);
+  assert.match(html, /let platform='windows'/);
+  assert.match(html, /select\(detected\.includes\('linux'\)\?'linux':'windows'\)/);
+  assert.match(html, /id="windows" role="tab"/);
+  assert.match(html, /id="linux" role="tab"/);
+  assert.match(html, /tab\.setAttribute\('aria-selected',String\(name===value\)\)/);
+  assert.match(html, /copy\.disabled=!ready\[value\]/);
+  assert.match(html, /clipboard\.writeText\(cmds\[platform\]\)/);
+  assert.doesNotMatch(html, /先选择 Windows 或 Linux/);
 });
