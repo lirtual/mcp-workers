@@ -87,10 +87,13 @@ export async function registerAndDispatchGitHubAction(
  try{
   outcome=await dispatchReviewedGitHubAction(data.action,data.ref,data.token,
    {attemptId:data.attemptId,dispatchId:data.dispatchId},data.inputs,http);
- }catch{
-  // Validation/readback failures before dispatch have a known absence of
-  // outbound POST. Keeping unknown is conservative and prevents a replay.
-  outcome={status:'dispatch_unknown'};
+ }catch(error){
+  // GitHub explicitly resolved this tag to a different SHA before any POST.
+  // This is a definitive policy rejection, not an ambiguous dispatch ACK.
+  // An unavailable ref lookup remains uncertain and is never retried.
+  outcome=error instanceof Error&&error.message==='github_action_ref_mismatch'
+   ?{status:'rejected',httpStatus:422,reason:'policy'}
+   :{status:'dispatch_unknown'};
  }
  const persisted=await recordGithubDispatchResult(db,data.attemptId,outcome);
  if(!persisted)throw Error('github_action_dispatch_result_unconfirmed');
