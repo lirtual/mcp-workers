@@ -3,6 +3,7 @@ import type { ReviewedGitHubAction } from './github-action-review.ts';
 /** GitHub REST data is untrusted until matched against the immutable published grant. */
 export type GitHubPhysicalRun = {
   id?: unknown;
+  workflow_id?: unknown;
   run_attempt?: unknown;
   repository?: { id?: unknown; full_name?: unknown };
   path?: unknown;
@@ -29,7 +30,8 @@ export function reconcileGitHubPhysicalRun(
 ): PhysicalRunState {
   if (!Number.isSafeInteger(expectedRunId) || expectedRunId <= 0 ||
       !Number.isSafeInteger(expectedAttempt) || expectedAttempt <= 0 ||
-      run.id !== expectedRunId || run.run_attempt !== expectedAttempt ||
+      run.id !== expectedRunId || run.workflow_id !== action.workflowId ||
+      run.run_attempt !== expectedAttempt ||
       run.repository?.id !== action.repositoryId ||
       run.repository?.full_name !== action.repository ||
       run.path !== action.workflowPath ||
