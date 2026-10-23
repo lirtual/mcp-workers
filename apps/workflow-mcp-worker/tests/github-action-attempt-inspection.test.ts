@@ -9,6 +9,8 @@ const grant:ReviewedGitHubAction={repository:'lirtual/session-actions',repositor
 const plan={github_execution_approved:true,github_action_approvals:[grant],
  steps:[{id:'start',uses:'github.run',with:{capability:'github.action',action:{...grant,inputs:{duration_minutes:5}}}}]};
 const row={attempt_id:attempt,run_id:'run',step_id:'start',state:'confirmed',
+ repository:grant.repository,repository_id:String(grant.repositoryId),
+ workflow_ref:grant.repository+'/'+grant.workflowPath+'@refs/heads/main',ref:'refs/heads/main',
  candidate_run_id:99,candidate_run_attempt:1,plan:JSON.stringify(plan),run_outcome:'running'};
 function db(data:(Omit<typeof row,'candidate_run_id'> & {candidate_run_id:number|null})|null){
  return {prepare:(_sql:string)=>({bind:(id:string)=>({first:async()=>{assert.equal(id,attempt);return data;}})})} as any;
@@ -24,6 +26,9 @@ test('reads durable candidate and exactly approved immutable published grant',as
 test('rejects missing candidate, missing publication approval and terminal Run before network',async()=>{
  for(const changed of [
   {...row,state:'created'},
+  {...row,repository:'attacker/other'},
+  {...row,repository_id:'999'},
+  {...row,workflow_ref:'lirtual/session-actions/.github/workflows/other.yml@refs/heads/main'},
   {...row,candidate_run_id:null},
   {...row,run_outcome:'cancelled'},
   {...row,plan:JSON.stringify({...plan,github_action_approvals:[]})},
