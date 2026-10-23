@@ -263,7 +263,7 @@ async function callPairedDeviceOperation(env: Env, id: unknown, name: string, ar
 const LIST_DEVICES_TOOL = {
   name: "list_devices",
   title: "List paired v2 devices",
-  description: "List approved paired devices, full UUIDs, status and last-reported OS/runtime/architecture/Agent version when available. capabilities is present only when reported by the currently authenticated online session; older Agents may omit metadata. Duplicate labels use display_name and name_ambiguous; always resolve an explicit full device_id, never guess. Does not execute commands.",
+  description: "List approved paired devices, full UUIDs, status and last-reported OS/runtime/architecture/Agent version when available. Includes permanent/temporary grant and last authenticated connection time when known. Duplicate labels use display_name and name_ambiguous; always resolve an explicit full device_id, never guess. Does not execute commands.",
   inputSchema: { type: "object", properties: {}, additionalProperties: false },
   annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
 } as const;

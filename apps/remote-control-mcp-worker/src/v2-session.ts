@@ -12,8 +12,7 @@ export interface V2Device {
   approved_at: number;
   revoked: boolean;
   device_info?: DeviceInfo;
-  device_info_epoch?: string;
-  last_seen?: number;
+  last_connected_at?: number;
   grant_type?: "permanent" | "temporary";
   expires_at?: number;
 }
@@ -218,7 +217,9 @@ export async function acceptAuthenticatedSocket(
   const client = pair[0], server = pair[1];
   try {
     state.acceptWebSocket(server, ["device:" + proof.device_id]);
-    server.serializeAttachment({ device_id: auth.device_id, epoch: auth.epoch, last_auth_check_at: Date.now() });
+    const connectedAt = Date.now();
+    server.serializeAttachment({ device_id: auth.device_id, epoch: auth.epoch,
+      last_auth_check_at: connectedAt, connected_at: connectedAt });
   } catch {
     // An accepted socket without a persisted Hibernation identity must never
     // remain live. Refuse the HTTP upgrade and close any accepted half with a
@@ -244,10 +245,13 @@ export async function handleDeviceInfoMessage(
   if (!info) { socket.close(1008, "invalid device info"); return true; }
   try {
     const attached = socket.deserializeAttachment() as {
-      device_id?: unknown; epoch?: unknown; last_auth_check_at?: unknown; device_info_reported?: unknown;
+      device_id?: unknown; epoch?: unknown; last_auth_check_at?: unknown;
+      connected_at?: unknown; device_info_reported?: unknown;
     } | null;
     if (!attached || !isId(attached.device_id) || typeof attached.epoch !== "string" ||
-        attached.device_info_reported === true || socket.readyState !== WebSocket.OPEN) {
+        attached.device_info_reported === true || socket.readyState !== WebSocket.OPEN ||
+        !Number.isSafeInteger(attached.connected_at) ||
+        (attached.connected_at as number) > Date.now() || (attached.connected_at as number) < 0) {
       socket.close(1008, "invalid session");
       return true;
     }
@@ -259,7 +263,7 @@ export async function handleDeviceInfoMessage(
       ]);
       if (!deviceIsAuthorized(device) || epoch !== sessionEpoch) return false;
       await tx.put("device:" + attached.device_id, {
-        ...device, device_info: info, device_info_epoch: sessionEpoch, last_seen: Date.now(),
+        ...device, device_info: info, last_connected_at: attached.connected_at as number,
       } satisfies V2Device);
       return true;
     });
@@ -336,13 +340,13 @@ export async function listApprovedDevices(state: DurableObjectState):
   const grants = await listLiveGrants(state.storage);
   if (!grants.complete || grants.active.size > 64) return { status: 503, body: { error: "capacity" } };
   const stored = grants.active;
-  const devices: Array<{ device_id: string; name: string; status: "online" | "offline"; expires_at?: number; grant_type?: "temporary"; fingerprint?: string; display_name?: string; name_ambiguous?: boolean; device_info?: DeviceInfo; last_seen?: number; capabilities?: DeviceInfo["capabilities"] }> = [];
+  const devices: Array<{ device_id: string; name: string; status: "online" | "offline"; grant_type: "permanent" | "temporary"; expires_at?: number; fingerprint?: string; display_name?: string; name_ambiguous?: boolean; device_info?: DeviceInfo; last_connected_at?: number }> = [];
   for (const [key, device] of stored) {
     if (!device || !isId(device.device_id) || key !== "device:" + device.device_id ||
         typeof device.name !== "string" || typeof device.revoked !== "boolean") continue;
     if (!deviceIsAuthorized(device)) continue; // Deleted/expired/legacy revoked rows are never selectable.
     let online = false;
-    let infoCurrent = false;
+    let currentConnectionAt: number | undefined;
     const now = Date.now();
     // Socket attachments can survive DO Hibernation, while JS Map state cannot.
     // A socket alone does not establish current authority: check its stored epoch.
@@ -353,6 +357,7 @@ export async function listApprovedDevices(state: DurableObjectState):
         try {
           const attachment = socket.deserializeAttachment() as {
               device_id?: unknown; epoch?: unknown; last_auth_check_at?: unknown;
+              connected_at?: unknown;
             } | null;
           const age = now - Number(attachment?.last_auth_check_at);
           if (socket.readyState === WebSocket.OPEN && currentEpoch &&
@@ -360,18 +365,31 @@ export async function listApprovedDevices(state: DurableObjectState):
               Number.isFinite(age) && age >= 0 && age < ONLINE_AUTH_LEASE_MS &&
               attachment.device_id === device.device_id && attachment.epoch === currentEpoch) {
             online = true;
-            infoCurrent = device.device_info_epoch === currentEpoch;
+            if (typeof attachment.connected_at === "number" &&
+                Number.isSafeInteger(attachment.connected_at) &&
+                attachment.connected_at >= 0 && attachment.connected_at <= now) {
+              currentConnectionAt = attachment.connected_at;
+            }
             break;
           }
         } catch { /* Corrupt or unavailable socket is never considered online. */ }
       }
     }
+    const lastConnectedAt = currentConnectionAt ?? device.last_connected_at;
+    // Reconstruct the public snapshot so existing persisted metadata cannot
+    // expose legacy keys before an Agent reconnects.
+    const info = device.device_info;
+    const publicInfo = info && {
+      hostname: info.hostname, os: info.os, os_version: info.os_version,
+      arch: info.arch, environment: info.environment,
+      ...(info.agent_version !== undefined ? { agent_version: info.agent_version } : {}),
+    };
     devices.push({ device_id: device.device_id, name: device.name,
       status: online ? "online" : "offline",
-      ...(device.grant_type === "temporary" ? { grant_type: "temporary" as const, expires_at: device.expires_at, fingerprint: device.fingerprint } : {}),
-      ...(device.device_info ? { device_info: device.device_info } : {}),
-      ...(Number.isSafeInteger(device.last_seen) ? { last_seen: device.last_seen } : {}),
-      ...(online && infoCurrent && device.device_info ? { capabilities: device.device_info.capabilities } : {}) });
+      grant_type: device.grant_type === "temporary" ? "temporary" : "permanent",
+      ...(device.grant_type === "temporary" ? { expires_at: device.expires_at, fingerprint: device.fingerprint } : {}),
+      ...(publicInfo ? { device_info: publicInfo } : {}),
+      ...(Number.isSafeInteger(lastConnectedAt) ? { last_connected_at: lastConnectedAt } : {}) });
   }
   // Keep the original label and full UUID intact. Duplicate labels get a hint,
   // but a caller must still use the full device_id for remote operations.
