@@ -31,13 +31,13 @@ function fixture() {
   };
   let tail: Promise<void> = Promise.resolve();
   const storage: Storage = {
-    async get<T>(key) {return rows.get(key) as T | undefined;},
-    async put(key, value) {rows.set(key, value);},
-    async delete(key) {return rows.delete(key);},
-    async list<T>({prefix, limit}) {
+    async get<T>(key: string) {return rows.get(key) as T | undefined;},
+    async put(key: string, value: unknown) {rows.set(key, value);},
+    async delete(key: string) {return rows.delete(key);},
+    async list<T>({prefix, limit}: {prefix: string; limit: number}) {
       return new Map([...rows].filter(([key]) => key.startsWith(prefix)).slice(0, limit)) as Map<string, T>;
     },
-    async transaction<T>(fn) {
+    async transaction<T>(fn: (txn: Storage) => Promise<T>) {
       const previous = tail;
       let release!: () => void;
       tail = new Promise<void>(resolve => {release = resolve;});
