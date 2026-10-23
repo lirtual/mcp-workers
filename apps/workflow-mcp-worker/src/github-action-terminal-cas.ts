@@ -23,8 +23,14 @@ export async function settlePhysicalGitHubActionAttempt(
     WHERE attempt_id=? AND capability_id='github.action' AND state='claimed'
     AND candidate_run_id=? AND candidate_run_attempt=?
     AND owner_run_id=? AND owner_run_attempt=?
-    AND EXISTS(SELECT 1 FROM runs WHERE runs.id=step_attempts.run_id
-      AND runs.outcome IN ('queued','running'))`)
+    AND (
+      EXISTS(SELECT 1 FROM runs WHERE runs.id=step_attempts.run_id
+        AND runs.outcome IN ('queued','running'))
+      OR EXISTS(SELECT 1 FROM session_executions AS session
+        WHERE session.run_id=step_attempts.run_id
+          AND session.step_id=step_attempts.step_id
+          AND session.state!='terminated')
+    )`)
     .bind(decision.outcome,Date.now(),attemptId,physicalRunId,physicalAttempt,physicalRunId,physicalAttempt).run();
   if(changed.meta.changes===1)return 'updated';
   // A GitHub job can fail before its first OIDC Claim step (missing Runner,
@@ -37,8 +43,14 @@ export async function settlePhysicalGitHubActionAttempt(
       WHERE attempt_id=? AND capability_id='github.action' AND state='confirmed'
       AND candidate_run_id=? AND candidate_run_attempt=?
       AND owner_run_id IS NULL AND owner_run_attempt IS NULL
-      AND EXISTS(SELECT 1 FROM runs WHERE runs.id=step_attempts.run_id
-        AND runs.outcome IN ('queued','running'))`)
+      AND (
+        EXISTS(SELECT 1 FROM runs WHERE runs.id=step_attempts.run_id
+          AND runs.outcome IN ('queued','running'))
+        OR EXISTS(SELECT 1 FROM session_executions AS session
+          WHERE session.run_id=step_attempts.run_id
+            AND session.step_id=step_attempts.step_id
+            AND session.state!='terminated')
+      )`)
       .bind(decision.outcome,Date.now(),attemptId,physicalRunId,physicalAttempt).run();
     if(failed.meta.changes===1)return 'updated';
   }
