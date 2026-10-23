@@ -1,3 +1,6 @@
+import { discoverGitHubActions } from './github-action-discovery.ts';
+import { reviewedGitHubAction, assertReviewedGitHubAction, type ReviewedGitHubAction } from './github-action-review.ts';
+import { approvedActionRepositories } from './github-action-catalog.ts';
 import { compilePlan, PlanError, canonicalJsonString } from './plan.ts';
 import {observeInstance, shouldExpireUnconfirmedOutcome, unresolvedNativeTerminalError, OUTCOME_SETTLE_WINDOW_MS} from './instance-observation.ts';
 import YAML from 'yaml';
@@ -100,16 +103,44 @@ export class WorkflowService {
     if(!x.meta.changes) {await this.row(workflow_id);throw new StateError('revision_conflict');}
     return {workflow_id,draft_revision:expected_revision+1};
   }
+  private async checkedGitHubActions(plan:Plan):Promise<ReviewedGitHubAction[]> {
+    const actions=plan.steps.filter(step=>step.uses==='github.run'&&step.with.capability==='github.action');
+    if(!actions.length)return [];
+    const token=this.env.WORKFLOW_EXECUTOR_GITHUB_TOKEN;
+    if(!token)throw new StateError('github_action_token_missing');
+    const grants=approvedActionRepositories(this.env.GITHUB_ACTION_APPROVED_REPOSITORIES);
+    const approved:ReviewedGitHubAction[]=[];
+    for(const step of actions){
+      const raw=step.with.action as Record<string,unknown>;
+      const expected:ReviewedGitHubAction={
+        repository:raw.repository as string,repositoryId:raw.repositoryId as number,
+        workflowId:raw.workflowId as number,workflowPath:raw.workflowPath as string,
+        commitSha:raw.commitSha as string,type:raw.type as 'task'|'session',
+        contractDigest:raw.contractDigest as string,
+      };
+      const grant=grants.find(g=>g.repository===expected.repository&&
+        g.repositoryId===expected.repositoryId&&g.commitSha===expected.commitSha);
+      if(!grant)throw new StateError('github_action_repository_not_approved');
+      const discovered=await discoverGitHubActions({...grant,token});
+      const candidate=discovered.find(d=>d.workflowId===expected.workflowId&&d.workflowPath===expected.workflowPath);
+      if(!candidate)throw new StateError('github_action_not_found');
+      try{await assertReviewedGitHubAction(expected,candidate,this.env.GITHUB_ACTION_APPROVED_REPOSITORIES,raw.inputs as Record<string,unknown>);}
+      catch{throw new StateError('github_action_review_changed');}
+      approved.push(await reviewedGitHubAction(candidate));
+    }
+    return approved;
+  }
   async validate(workflow_id:string,revision:number){
     assertId(workflow_id);const row=await this.row(workflow_id);
     if(row.draft_revision!==revision)throw new StateError('revision_conflict');
     try {
       const {digest,plan}=await compilePlan(row.draft);
+      const reviewed_actions=await this.checkedGitHubActions(plan);
       const required_approvals=[...new Map(plan.steps.filter(s=>s.uses==='mcp.call').map(s=>{
         const grant:ReadonlyOperation={endpoint:s.with.endpoint as string,tool:s.with.tool as string,scope:'read',schema_digest:s.with.schema_digest as string};
         return [JSON.stringify(grant),grant] as const;
       })).values()];
-      return {valid:true,digest,steps:plan.steps.length,issues:[],
+      return {valid:true,digest,steps:plan.steps.length,issues:[],...(reviewed_actions.length?{reviewed_actions}:{}),
         ...(required_approvals.length?{required_approvals}:{}),
         ...(plan.steps.some(s=>s.uses==='github.run')?{requires_heavy_execution_approval:true}:{})};
     }catch(error){
@@ -117,10 +148,14 @@ export class WorkflowService {
       return {valid:false,issues:[{code:error.message.split(':')[0]}]};
     }
   }
-  async publish(workflow_id:string,expected_revision:number,approved_operations:ReadonlyOperation[]=[],accept_target_risks=false,approve_heavy_execution=false){
+  async publish(workflow_id:string,expected_revision:number,approved_operations:ReadonlyOperation[]=[],accept_target_risks=false,approve_heavy_execution=false,approved_actions:ReviewedGitHubAction[]=[]){
     assertId(workflow_id);const row=await this.row(workflow_id);
     if(row.draft_revision!==expected_revision)throw new StateError('revision_conflict');
     const {plan,digest:plan_digest}=await compilePlan(row.draft);
+    const reviewedActions=await this.checkedGitHubActions(plan);
+    const ordering=(items:ReviewedGitHubAction[])=>items.map(x=>JSON.stringify(x)).sort();
+    if(JSON.stringify(ordering(reviewedActions))!==JSON.stringify(ordering(approved_actions)))
+      throw new StateError('github_action_approval_required');
     // The owner must explicitly approve the exact immutable URL + tool + scope.
     // Publishing an arbitrary Draft is not itself an external-operation grant.
     const required=[...new Map(plan.steps.filter(s=>s.uses==='mcp.call').map(s=>{
