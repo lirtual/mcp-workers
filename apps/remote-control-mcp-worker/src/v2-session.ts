@@ -336,7 +336,7 @@ export async function listApprovedDevices(state: DurableObjectState):
   const grants = await listLiveGrants(state.storage);
   if (!grants.complete || grants.active.size > 64) return { status: 503, body: { error: "capacity" } };
   const stored = grants.active;
-  const devices: Array<{ device_id: string; name: string; status: "online" | "offline"; expires_at?: number; display_name?: string; name_ambiguous?: boolean; device_info?: DeviceInfo; last_seen?: number; capabilities?: DeviceInfo["capabilities"] }> = [];
+  const devices: Array<{ device_id: string; name: string; status: "online" | "offline"; expires_at?: number; grant_type?: "temporary"; fingerprint?: string; display_name?: string; name_ambiguous?: boolean; device_info?: DeviceInfo; last_seen?: number; capabilities?: DeviceInfo["capabilities"] }> = [];
   for (const [key, device] of stored) {
     if (!device || !isId(device.device_id) || key !== "device:" + device.device_id ||
         typeof device.name !== "string" || typeof device.revoked !== "boolean") continue;
@@ -368,7 +368,7 @@ export async function listApprovedDevices(state: DurableObjectState):
     }
     devices.push({ device_id: device.device_id, name: device.name,
       status: online ? "online" : "offline",
-      ...(device.grant_type === "temporary" ? { expires_at: device.expires_at } : {}),
+      ...(device.grant_type === "temporary" ? { grant_type: "temporary" as const, expires_at: device.expires_at, fingerprint: device.fingerprint } : {}),
       ...(device.device_info ? { device_info: device.device_info } : {}),
       ...(Number.isSafeInteger(device.last_seen) ? { last_seen: device.last_seen } : {}),
       ...(online && infoCurrent && device.device_info ? { capabilities: device.device_info.capabilities } : {}) });
