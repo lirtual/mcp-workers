@@ -527,6 +527,7 @@ test('durable cancel intent still sends exactly one POST if advisory stopping wr
    'token',false,async()=>{posts++;throw Error('duplicate POST');},
    async()=>({state:'running'})),'already_requested');
   assert.equal(posts,1);
+  assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'stopping');
   assert.equal(await releaseVerifiedSessionSlot(f.adapter,run(1),'launch'),'held');
  }finally{f.db.close();}
 });
