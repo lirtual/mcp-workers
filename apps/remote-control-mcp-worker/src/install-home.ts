@@ -9,6 +9,7 @@ export function renderInstallHome(readiness: {windows: boolean; linux: boolean} 
   font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
   --bg:#fff;--fg:#151515;--muted:#666;--surface:#f4f4f5;
   --border:#e5e5e5;--button:#151515;--button-fg:#fff;
+  --copied-bg:#167347;--copied-fg:#fff;
 }
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
@@ -26,6 +27,7 @@ p{color:var(--muted);font-size:15px;line-height:1.65;margin:0 0 25px;max-width:5
 .command-label{font-size:12px;color:var(--muted)}
 code{display:block;font:13.5px/1.7 ui-monospace,SFMono-Regular,Consolas,monospace;overflow-wrap:anywhere;word-break:break-word;min-width:0;color:var(--fg);white-space:normal}
 button.copy{font:inherit;font-size:13px;cursor:pointer;background:var(--button);color:var(--button-fg);border:none;border-radius:7px;padding:8px 13px;min-width:66px;flex:none}
+button.copy[data-copied="true"]{background:var(--copied-bg);color:var(--copied-fg)}
 button.copy:disabled{opacity:.45;cursor:not-allowed}
 button:focus-visible,a:focus-visible{outline:2px solid var(--fg);outline-offset:3px}
 #message{margin:8px 0 0;color:var(--muted);font-size:13px;line-height:1.4}
@@ -34,7 +36,7 @@ ol{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px;list-styl
 li{min-width:0;line-height:1.6;font-size:13px;color:var(--muted)}
 li strong{color:var(--fg);display:block;font-size:14px;margin-bottom:3px}
 @media(prefers-color-scheme:dark){
-  :root{color-scheme:dark;--bg:#121316;--fg:#f4f4f5;--muted:#b9b9c0;--surface:#23242a;--border:#404047;--button:#f4f4f5;--button-fg:#151515}
+  :root{color-scheme:dark;--bg:#121316;--fg:#f4f4f5;--muted:#b9b9c0;--surface:#23242a;--border:#404047;--button:#f4f4f5;--button-fg:#151515;--copied-bg:#39d98a;--copied-fg:#092719}
 }
 @media(max-width:520px){
   body{padding:28px 20px 40px;padding-top:max(28px,env(safe-area-inset-top))}
@@ -60,6 +62,7 @@ let platform='windows';
 let copyResetTimer;
 function resetCopyFeedback(){
   clearTimeout(copyResetTimer);
+  copy.removeAttribute('data-copied');
   copy.textContent='复制';
   copy.setAttribute('aria-label','复制安装命令');
 }
@@ -95,6 +98,7 @@ copy.addEventListener('click',async()=>{
     if(platform!==requestedPlatform)return;
     resetCopyFeedback();
     copy.textContent='已复制';
+    copy.setAttribute('data-copied','true');
     copy.setAttribute('aria-label','安装命令已复制');
     message.textContent='';
     copyResetTimer=setTimeout(resetCopyFeedback,1600);
