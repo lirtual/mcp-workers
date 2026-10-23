@@ -35,7 +35,7 @@ test('network ambiguity after POST is never automatically retried',async()=>{
  assert.deepEqual(result,{status:'dispatch_unknown'});assert.equal(count,2);
 });
 test('reserved caller input and invalid IDs reject before network',async()=>{
- for(const inputs of [{attempt_id:'forged'},{workflow_secret:'x'}]){
+ for(const inputs of [{attempt_id:'forged'},{workflow_secret:'x'}] as Record<string,string>[]){
   await assert.rejects(dispatchReviewedGitHubAction(action,'refs/heads/main','token',attempt,inputs),/dispatch_invalid/);
  }
 });
