@@ -7,6 +7,7 @@ import {
 } from './capabilities.ts';
 import type { SupportedUse } from './capabilities.ts';
 import { assertSupportedCron, CronError } from './cron.ts';
+import { REGISTERED_GITHUB_ACTION, registeredPlanPin, registeredSubject } from './github-registry.ts';
 
 export class PlanError extends Error {
   code = 'invalid_definition';
@@ -141,6 +142,25 @@ function assertCondition(value: unknown, path: string) {
   const op=value && typeof value==='object' && !Array.isArray(value)?Object.keys(value):[];
   if(typeof value!=='boolean' && !(op.length===1 && (CONDITION_VALUE_OPS as readonly string[]).concat('ref').includes(op[0])))
     throw new PlanError('invalid_condition', {path});
+}
+function compileRegisteredInputs(inputs: unknown, path: string) {
+  const data=object(inputs,'invalid_github_inputs',path);
+  keys(data,['subject'],path);
+  if(!Object.hasOwn(data,'subject'))throw new PlanError('invalid_github_inputs', {
+    path: path+'/subject', suggestion: 'Provide subject from the allow-listed input schema.',
+  });
+  const subject=data.subject;
+  if(typeof subject==='string'){
+    if(!registeredSubject(subject))throw new PlanError('invalid_github_inputs', {
+      path: path+'/subject', suggestion: 'Use a subject of 1 to 80 characters.',
+    });
+    return;
+  }
+  const ref=subject&&typeof subject==='object'&&!Array.isArray(subject)?subject as Record<string,unknown>:null;
+  if(!ref||Object.keys(ref).length!==1||typeof ref.ref!=='string')
+    throw new PlanError('invalid_github_inputs', {
+      path: path+'/subject', suggestion: 'Use a literal subject or inputs/steps reference.',
+    });
 }
 function compileRepeat(raw: unknown, path: string): RepeatSpec {
   const repeatPath=path+'/repeat';
@@ -375,13 +395,18 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     if(!Array.isArray(needs)||needs.some(n=>typeof n!=='string'||!STEP_ID.test(n))||new Set(needs).size!==needs.length)throw new PlanError('invalid_dependencies', {path: stepPath+'/needs'});
     const withData=object(s.with,'invalid_step_arguments',stepPath+'/with');
     if(s.uses==='github.run'){
-      // A single fixed CI verification operation. No user-supplied scripts,
-      // URL, repository, ref or arguments.
-      keys(withData,WITH_KEYS['github.run'],stepPath+'/with');
-      if(withData.capability!==GITHUB_CAPABILITY_ID)
-        throw new PlanError('unsupported_github_capability', {
-          path: stepPath+'/with/capability', suggestion: 'Set capability to github.workflow.check.',
-        });
+      // Targets come from the server. A definition cannot supply a repository,
+      // ref, workflow file, token, or command.
+      const allowListed=withData.capability===REGISTERED_GITHUB_ACTION.id;
+      keys(withData,allowListed?['capability','inputs']:WITH_KEYS['github.run'],stepPath+'/with');
+      if(withData.capability===GITHUB_CAPABILITY_ID){
+        // Fixed CI verification. No user inputs.
+      }else if(allowListed){
+        compileRegisteredInputs(withData.inputs,stepPath+'/with/inputs');
+      }else throw new PlanError('unsupported_github_capability', {
+        path: stepPath+'/with/capability',
+        suggestion: 'Set capability to github.workflow.check or github.action.registered.',
+      });
     }else if(s.uses==='mcp.call'){
       keys(withData,WITH_KEYS['mcp.call'],stepPath+'/with');
       if(typeof withData.endpoint!=='string')throw new PlanError('invalid_endpoint', {path: stepPath+'/with/endpoint'});
@@ -406,7 +431,9 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       path: stepPath+'/expand', suggestion: 'Do not combine repeat and expand. Nested steps are not implemented.',
     });
     const compiledWith=s.uses==='mcp.call'?
-      {...withData,schema_digest:await toolSchemaDigest(withData.input_schema,withData.output_schema)}:withData;
+      {...withData,schema_digest:await toolSchemaDigest(withData.input_schema,withData.output_schema)}
+      :s.uses==='github.run'&&withData.capability===REGISTERED_GITHUB_ACTION.id?
+        {capability:REGISTERED_GITHUB_ACTION.id,inputs:withData.inputs,registry:registeredPlanPin()}:withData;
     // flow.repeat and flow.expand keep the payload off `with` so an older
     // runner cannot emit the template once. It rejects the unknown uses instead.
     const rewritten=repeat?'flow.repeat':expand?'flow.expand':s.uses;

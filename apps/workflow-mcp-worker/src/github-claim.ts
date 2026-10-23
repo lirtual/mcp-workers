@@ -1,5 +1,6 @@
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 import { matchCandidateIdentity, type DispatchOutcome } from './github-dispatch.ts';
+import { REGISTERED_GITHUB_ACTION } from './github-registry.ts';
 
 /**
  * GitHub candidate authorization, first isolated slice only.
@@ -28,7 +29,7 @@ export type AttemptRegistration=ExecutorIdentity & {
   dispatchId:string;
   runId:string;
   stepId:string;
-  capabilityId:'github.workflow.check';
+  capabilityId:'github.workflow.check'|typeof REGISTERED_GITHUB_ACTION.id;
 };
 type AttemptRow={
   attempt_id:string;
@@ -63,7 +64,7 @@ export async function registerGithubAttempt(db:AttemptDatabase,a:AttemptRegistra
   if(!ID.test(a.attemptId)||!ID.test(a.dispatchId)||
      !/^[a-zA-Z0-9_-]{1,128}$/.test(a.runId)||
      !/^[a-zA-Z0-9_-]{1,64}$/.test(a.stepId)||
-     a.capabilityId!=='github.workflow.check')
+     (a.capabilityId!=='github.workflow.check'&&a.capabilityId!==REGISTERED_GITHUB_ACTION.id))
     throw Error('github_attempt_invalid');
   const time=Date.now();
   await db.prepare(`INSERT INTO step_attempts
@@ -91,6 +92,37 @@ export async function recordGithubDispatchResult(
     result.status==='confirmed'?result.runAttempt:null,Date.now(),attemptId,
   ).run();
   return updated.meta.changes===1;
+}
+
+/**
+ * Record a terminal fact read from the confirmed GitHub run. This is not an
+ * OIDC callback and it does not dispatch. A different result is left untouched.
+ */
+export async function recordGithubRunObservation(
+  db:AttemptDatabase,attemptId:string,
+  expected:{runId:number;repository:string;workflowRef:string;ref:string;capabilityId:typeof REGISTERED_GITHUB_ACTION.id},
+  observation:{outcome:'succeeded'|'failed';result:unknown},
+):Promise<boolean>{
+  if(!ID.test(attemptId)||!Number.isSafeInteger(expected.runId)||expected.runId<=0||
+     !['succeeded','failed'].includes(observation.outcome))return false;
+  const serialized=JSON.stringify(observation.result);
+  if(!serialized||new TextEncoder().encode(serialized).byteLength>4096)return false;
+  await db.prepare(`INSERT OR IGNORE INTO callback_receipts
+    (callback_id,attempt_id,outcome,result_json,created_at)
+    SELECT ?,?,?,?,? FROM step_attempts
+    WHERE attempt_id=? AND state IN ('confirmed','claimed')
+      AND candidate_run_id=? AND candidate_run_attempt=1
+      AND repository=? AND workflow_ref=? AND ref=? AND capability_id=?
+      AND EXISTS(SELECT 1 FROM runs
+        WHERE runs.id=step_attempts.run_id
+        AND runs.outcome IN ('queued','running'))`).bind(
+    crypto.randomUUID(),attemptId,observation.outcome,serialized,Date.now(),
+    attemptId,expected.runId,expected.repository,expected.workflowRef,expected.ref,
+    expected.capabilityId,
+  ).run();
+  const persisted=await db.prepare(`SELECT outcome,result_json FROM callback_receipts
+    WHERE attempt_id=?`).bind(attemptId).first<{outcome:string;result_json:string}>();
+  return persisted?.outcome===observation.outcome && persisted.result_json===serialized;
 }
 
 /**

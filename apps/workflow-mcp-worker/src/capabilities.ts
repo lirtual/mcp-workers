@@ -2,6 +2,7 @@ import { PRODUCTION_PORTAL_ENDPOINT, TRUSTED_PORTAL_ENDPOINT } from './mcp-publi
 import { GITHUB_ASYNC_WAIT_MS, GITHUB_ASYNC_WAKE_LIMIT } from './github-async.ts';
 import { selectedGithubExecutor } from './github-dispatch.ts';
 import { CRON_CONTRACT } from './cron.ts';
+import { REGISTERED_GITHUB_ACTION } from './github-registry.ts';
 
 export const DEFINITION_KEYS = ['version', 'name', 'inputs', 'triggers', 'steps'] as const;
 export const STEP_KEYS = ['id', 'uses', 'needs', 'if', 'with', 'repeat', 'expand'] as const;
@@ -113,6 +114,18 @@ const githubExample = {
     {id: 'out', needs: ['heavy'], uses: 'result.emit', with: {data: {ref: 'steps.heavy.output'}}},
   ],
 };
+const registeredGithubExample = {
+  version: 1,
+  name: 'Registered GitHub action',
+  inputs: {subject: 'build'},
+  steps: [
+    {id: 'act', uses: 'github.run', with: {
+      capability: REGISTERED_GITHUB_ACTION.id,
+      inputs: {subject: {ref: 'inputs.subject'}},
+    }},
+    {id: 'out', needs: ['act'], uses: 'result.emit', with: {data: {ref: 'steps.act.output'}}},
+  ],
+};
 const parallelExample = {
   version: 1,
   name: 'Parallel',
@@ -218,6 +231,10 @@ const CATALOG: readonly Entry[] = [
     summary: 'Run the registered GitHub Workflow CI check. The definition cannot choose a repository, ref, workflow file, token, or command.',
     permissions: 'Publish requires approve_heavy_execution=true. Runtime uses the server GitHub executor and OIDC. with accepts only capability github.workflow.check.',
     completion: 'Dispatch accepted stores the GitHub run id on the Attempt. The step stays pending until one claimed receipt or the explicit '+String(GITHUB_ASYNC_WAIT_MS/1000)+' second wait ends. That receipt is the external terminal result. Lost, duplicate, early, and late wakes are not a second result. Worker recovery keeps the same Attempt. An ambiguous dispatch or timeout is indeterminate and is not dispatched again.'},
+  {id: 'action.github.registered', kind: 'action', status: 'supported', uses: 'github.run', example: registeredGithubExample,
+    summary: 'Dispatch one allow-listed GitHub workflow. The definition supplies schema inputs only. Repository '+REGISTERED_GITHUB_ACTION.repository+', workflow '+REGISTERED_GITHUB_ACTION.workflow+', ref '+REGISTERED_GITHUB_ACTION.ref+'. Grant '+REGISTERED_GITHUB_ACTION.grant+'.',
+    permissions: 'Publish requires approve_heavy_execution=true. The repository, workflow file, and ref are the source allow-list, not definition fields. Inputs must match the subject schema. No shell and no other repository.',
+    completion: 'Dispatch accepted stores the GitHub run id before the run finishes. The step stays dispatch_accepted until a read of that same run records external_terminal success or failure. An ambiguous dispatch or run read is indeterminate and is not dispatched again. The result lists artifact metadata and a repository-scoped URL, not file bytes.'},
   {id: 'action.http', kind: 'action', status: 'unsupported',
     summary: 'HTTP actions are not implemented.'},
   {id: 'action.mcp.write', kind: 'action', status: 'unsupported',
@@ -263,6 +280,20 @@ export const supportedCapabilityExamples: readonly unknown[] = CATALOG.flatMap(e
 
 export function capabilityCatalog(): ReadonlyArray<{id: string; kind: Kind; status: 'supported' | 'unsupported'; summary: string}> {
   return CATALOG.map(({id, kind, status, summary}) => ({id, kind, status, summary}));
+}
+
+function registeredCatalogFields() {
+  const action = REGISTERED_GITHUB_ACTION;
+  return {
+    capability: action.id,
+    repository: action.repository,
+    repository_id: action.repositoryId,
+    workflow: action.workflow,
+    ref: action.ref,
+    grant: action.grant,
+    input_schema: action.inputSchema,
+    with_keys: ['capability', 'inputs'],
+  };
 }
 
 export type CapabilityEnv = {
@@ -430,6 +461,20 @@ function detailOf(entry: Entry) {
     limits: {minimum_interval_seconds: CRON_CONTRACT.minimum_interval_seconds},
   } : {schema: definitionContract().schema};
   return {...base, ...action, permissions: entry.permissions, completion: entry.completion, example: entry.example,
+    ...(entry.id === 'action.github.registered' ? {...registeredCatalogFields(), schema: {
+      type: 'object', additionalProperties: false, required: ['id', 'uses', 'with'],
+      properties: {
+        id: {type: 'string', pattern: STEP_ID.source},
+        uses: {const: 'github.run'},
+        with: {
+          type: 'object', additionalProperties: false, required: ['capability', 'inputs'],
+          properties: {
+            capability: {const: REGISTERED_GITHUB_ACTION.id},
+            inputs: REGISTERED_GITHUB_ACTION.inputSchema,
+          },
+        },
+      },
+    }} : {}),
     ...(entry.id === 'flow.parallel' ? {limits: {max_parallel_steps: LIMITS.maxParallel}} : {}),
     ...(entry.id === 'flow.if' ? {condition_ops: CONDITION_OPS} : {}),
     ...(entry.id === 'flow.repeat' ? {
@@ -463,7 +508,9 @@ export function workflowCapabilities(env: CapabilityEnv, id?: string) {
   if (id === undefined) return {
     query: 'overview' as const,
     definition: definitionContract(),
-    capabilities: CATALOG.map(({id: capabilityId, kind, status, summary}) => ({id: capabilityId, kind, status, summary})),
+    capabilities: CATALOG.map(entry => entry.id === 'action.github.registered'
+      ? {id: entry.id, kind: entry.kind, status: entry.status, summary: entry.summary, ...registeredCatalogFields()}
+      : {id: entry.id, kind: entry.kind, status: entry.status, summary: entry.summary}),
     connections,
   };
   const entry = CATALOG.find(item => item.id === id);

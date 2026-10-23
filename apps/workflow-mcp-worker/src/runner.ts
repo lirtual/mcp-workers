@@ -2,10 +2,11 @@ import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloud
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { evaluateArguments, evaluateCondition, expandedStepCost, expansionChildId, expansionSnapshotId, toolSchemaDigest } from './plan.ts';
 import type { ExprCtx, Plan, Step, StepBody } from './plan.ts';
-import { LIMITS, NON_EXECUTABLE_PLAN_FIELDS, NON_EXECUTABLE_STEP_FIELDS } from './capabilities.ts';
+import { GITHUB_CAPABILITY_ID, LIMITS, NON_EXECUTABLE_PLAN_FIELDS, NON_EXECUTABLE_STEP_FIELDS } from './capabilities.ts';
 import type { Env } from './store.ts';
 import { limitResult } from './store.ts';
-import { dispatchOrResumeGithubAttempt,githubAsyncAwaitingExternal,githubAsyncOutcome,GITHUB_ASYNC_WAKE_LIMIT,GITHUB_ASYNC_WAKE_TIMEOUT,readGithubAsyncFact,type GithubAsyncFact,type GithubDispatchStep } from './github-async.ts';
+import { dispatchOrResumeGithubAttempt,githubAsyncAwaitingExternal,githubAsyncOutcome,observeAllowListedGithubRun,GITHUB_ASYNC_WAKE_LIMIT,GITHUB_ASYNC_WAKE_TIMEOUT,readGithubAsyncFact,type GithubAsyncFact,type GithubDispatchStep } from './github-async.ts';
+import { parseRegisteredInputs, REGISTERED_GITHUB_ACTION, registeredGithubPin } from './github-registry.ts';
 import { scopedPublicMcpFetch, TRUSTED_PORTAL_ENDPOINT, PRODUCTION_PORTAL_ENDPOINT, type PortalServiceToken } from './mcp-public-fetch.ts';
 
 type Outcome={status:'succeeded'|'failed'|'skipped'|'indeterminate';output?:any;error_code?:string};
@@ -238,16 +239,32 @@ async function callApprovedReadonly(env:Env,plan:Plan,step:Step,args:Record<stri
  * Attempt INSERT is UNIQUE(run_id,step_id), fencing replayed dispatch.
  */
 async function runGithubStep(
-  env:Env,plan:Plan,s:Step,runId:string,step:WorkflowStep,
+  env:Env,plan:Plan,s:Step,runId:string,step:WorkflowStep,ctx:ExprCtx,
 ):Promise<Outcome>{
   if(plan.github_execution_approved!==true)
     return {status:'failed',error_code:'github_execution_approval_required'};
-  if(s.with.capability!=='github.workflow.check')
+  const capability=s.with.capability;
+  const registered=capability===REGISTERED_GITHUB_ACTION.id;
+  if(capability!==GITHUB_CAPABILITY_ID&&!registered)
     return {status:'failed',error_code:'github_capability_not_registered'};
-  if(!env.WORKFLOW_EXECUTOR_GITHUB_TOKEN||!env.GITHUB_EXECUTOR_REPOSITORY||
+  let dispatchRequest:{capabilityId:'github.workflow.check'}|{capabilityId:typeof REGISTERED_GITHUB_ACTION.id;inputs:{subject:string}}
+    ={capabilityId:'github.workflow.check'};
+  if(registered){
+    const withKeys=Object.keys(s.with);
+    if(withKeys.length!==3||!withKeys.includes('capability')||!withKeys.includes('inputs')||!withKeys.includes('registry')||
+       !registeredGithubPin(s.with.registry))
+      return {status:'failed',error_code:'github_action_not_allow_listed'};
+    if(!env.WORKFLOW_EXECUTOR_GITHUB_TOKEN)
+      return {status:'failed',error_code:'github_executor_not_configured'};
+    const inputs=parseRegisteredInputs(evaluateArguments(s.with.inputs,ctx));
+    if(!inputs)return {status:'failed',error_code:'github_action_inputs_invalid'};
+    dispatchRequest={capabilityId:REGISTERED_GITHUB_ACTION.id,inputs};
+  }else if(Object.keys(s.with).some(key=>key!=='capability')||
+     !env.WORKFLOW_EXECUTOR_GITHUB_TOKEN||!env.GITHUB_EXECUTOR_REPOSITORY||
      !env.GITHUB_EXECUTOR_REPOSITORY_ID||!env.GITHUB_EXECUTOR_REF||
      !env.GITHUB_EXECUTOR_AUDIENCE)
-    return {status:'failed',error_code:'github_executor_not_configured'};
+    return {status:'failed',error_code:Object.keys(s.with).some(key=>key!=='capability')
+      ?'github_capability_not_registered':'github_executor_not_configured'};
   const db=env.DB;
   // The wake event is only a hint. Receipt JSON in D1 is the external
   // terminal result. A replay resumes the same Attempt and does not dispatch.
@@ -266,7 +283,7 @@ async function runGithubStep(
   try{
     const opened=await step.do('github-dispatch-'+s.id,{
       retries:{limit:0,delay:'1 second'},timeout:'45 seconds',
-    },async()=>dispatchOrResumeGithubAttempt(db,env,runId,s.id)) as GithubDispatchStep|undefined;
+    },async()=>dispatchOrResumeGithubAttempt(db,env,runId,s.id,dispatchRequest)) as GithubDispatchStep|undefined;
     if(opened?.disposition==='rejected')return {
       status:'failed',error_code:'github_dispatch_rejected_'+opened.httpStatus+'_'+opened.reason,
     };
@@ -276,6 +293,15 @@ async function runGithubStep(
     if(outcome)return outcome;
     for(let i=0;i<GITHUB_ASYNC_WAKE_LIMIT&&fact&&!outcome;i++){
       if(fact.deadlineAt!==null&&now()>=fact.deadlineAt)break;
+      if(registered&&(fact.phase==='dispatch_accepted'||fact.phase==='pending')){
+        await step.do('github-observe-'+s.id+'-'+i,{
+          retries:{limit:0,delay:'1 second'},timeout:'45 seconds',
+        },async()=>{await observeAllowListedGithubRun(db,env,runId,s.id);return 'observed';});
+        fact=await read();
+        if(!fact)return {status:'indeterminate',error_code:'github_dispatch_unknown'};
+        outcome=settle(fact);
+        if(outcome)return outcome;
+      }
       try{
         await step.waitForEvent<{attemptId:string;callbackId:string}>(
           'github-receipt-'+s.id+'-'+i,
@@ -342,7 +368,7 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
                   .bind(id,s.id,now()).run();
                 if(s.needs.some(n=>ctx.steps[n].status!=='succeeded'))return {status:'skipped'} as Outcome;
                 if(s.if!==undefined&&!evaluateCondition(s.if,ctx))return {status:'skipped'} as Outcome;
-                return await runGithubStep(this.env,plan,s,id,step);
+                return await runGithubStep(this.env,plan,s,id,step,ctx);
               }catch(error){
                 // A confirmed Attempt still inside its deadline is not an
                 // unknown dispatch. Replay must resume it instead of freezing it.
