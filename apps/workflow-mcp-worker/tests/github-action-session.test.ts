@@ -254,6 +254,38 @@ test('terminal parent never authorizes a first late signed Ready',async()=>{
   assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'queued');
  }finally{f.db.close();}
 });
+test('cancel intent committed during physical readback prevents a late signed Ready CAS',async()=>{
+ const f=fixture();
+ try{
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
+  f.claim(1,'claimed',true);
+  const {jwt,publicKey}=await signedReady();
+  let inspections=0;
+  const status=await recordSignedSessionReady(f.adapter,run(11),jwt,audience,'token',
+   publicKey,async()=>{
+    inspections++;
+    // The cancel POST has not yet been sent, and Session state is still
+    // 'queued': the intent itself MUST fence a concurrent signed Ready.
+    f.db.prepare(`INSERT INTO github_action_cancellations
+      (attempt_id,run_id,step_id,cancel_requested_at,cancel_ack)
+      VALUES(?,?,?,?,'unknown')`).run(run(11),run(1),'launch',Date.now());
+    return {state:'running'};
+   });
+  assert.equal(inspections,1);
+  assert.equal(status,'denied');
+  assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'queued');
+  // Cancellation intent also disallows idempotent Ready response in the
+  // interval before the Session row is updated to 'stopping'.
+  f.db.prepare("UPDATE session_executions SET state='ready'").run();
+  const replay=await recordSignedSessionReady(f.adapter,run(11),jwt,audience,
+   'token',publicKey,async()=>({state:'running'}));
+  assert.equal(replay,'denied');
+  f.db.prepare("UPDATE runs SET outcome='succeeded' WHERE id=?").run(run(1));
+  const terminalParentReplay=await recordSignedSessionReady(f.adapter,run(11),jwt,
+   audience,'token',publicKey,async()=>({state:'running'}));
+  assert.equal(terminalParentReplay,'denied');
+ }finally{f.db.close();}
+});
 test('bad signed identity, unclaimed owner, unknown or ended physical Job cannot set Ready',async()=>{
  const f=fixture();
  try{
