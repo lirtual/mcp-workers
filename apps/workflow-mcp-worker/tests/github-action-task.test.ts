@@ -99,3 +99,25 @@ test('Session is not accidentally accepted through the Task executor',async()=>{
   assert.equal(fixture.db.prepare('SELECT COUNT(*) AS n FROM step_attempts').get()?.n,0);
  }finally{fixture.db.close();}
 });
+
+test('GitHub job failing before OIDC claim reports failed without a false success',async()=>{
+ const fixture=setup();
+ const http=async(req:Request):Promise<Response>=>{
+  const path=new URL(req.url).pathname;
+  if(path.endsWith('/git/ref/tags/task-v1'))
+   return Response.json({ref,object:{type:'commit',sha}});
+  if(req.method==='POST'){fixture.recordPost();return Response.json({workflow_run_id:42});}
+  assert.ok(path.endsWith('/actions/runs/42'));
+  return Response.json({id:42,workflow_id:action.workflowId,run_attempt:1,
+   repository:{id:123,full_name:repo},path:action.workflowPath+'@task-v1',
+   head_sha:sha,event:'workflow_dispatch',status:'completed',conclusion:'failure'});
+ };
+ try{
+  const outcome=await runPublishedGitHubActionTask(fixture.env,plan,plan.steps[0],runId,fixture.step,http);
+  assert.deepEqual(outcome,{status:'failed',error_code:'github_action_failed'});
+  assert.equal(fixture.post(),1);
+  assert.equal(fixture.sleeps(),0);
+  assert.deepEqual(fixture.db.prepare('SELECT state,owner_run_id FROM step_attempts').get(),
+   {state:'failed',owner_run_id:null});
+ }finally{fixture.db.close();}
+});
