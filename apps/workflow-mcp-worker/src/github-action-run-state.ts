@@ -35,7 +35,7 @@ export function reconcileGitHubPhysicalRun(
       run.run_attempt !== expectedAttempt ||
       run.repository?.id !== action.repositoryId ||
       run.repository?.full_name !== action.repository ||
-      !/^refs\\/tags\\/[A-Za-z0-9][A-Za-z0-9._\\/-]{0,190}$/.test(expectedRef) ||
+      !/^refs\/tags\/[A-Za-z0-9][A-Za-z0-9._\/-]{0,190}$/.test(expectedRef) ||
       expectedRef.includes('..') || expectedRef.includes('//') ||
       ![action.workflowPath+'@'+expectedRef,
         action.workflowPath+'@'+expectedRef.slice('refs/tags/'.length)].includes(run.path as string) ||
