@@ -24,7 +24,10 @@ test('D1 registered-capability migration preserves confirmed historical Attempts
     // D1 applies migration SQL in a transaction with deferred foreign-key
     // checks. Reproduce this even with an existing referencing callback.
     db.exec('BEGIN;\n'+migration('0005_github_workflow_check.sql')+'\nCOMMIT;');
+    db.exec(migration('0006_run_cancel.sql'));
     assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(),[]);
+    assert.equal(db.prepare('SELECT cancel_requested_at FROM runs WHERE id=?').get('r')?.cancel_requested_at, null);
+    assert.equal(db.prepare('SELECT cancel_effect FROM step_attempts WHERE attempt_id=?').get('old')?.cancel_effect, null);
     assert.equal(db.prepare('SELECT capability_id FROM step_attempts WHERE attempt_id=?').get('old')?.capability_id,'heavy.github.echo');
     assert.equal(db.prepare('SELECT attempt_id FROM callback_receipts WHERE callback_id=?').get('cb-old')?.attempt_id,'old');
     db.prepare('INSERT INTO step_attempts(attempt_id,run_id,step_id,capability_id,dispatch_id,state,repository,repository_id,workflow_ref,ref,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')

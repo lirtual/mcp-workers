@@ -129,6 +129,101 @@ export async function dispatchGithubAttempt(
   return {status:'dispatch_unknown'};
 }
 
+const GITHUB_HEADERS=(token:string)=>({
+  accept:'application/vnd.github+json',
+  authorization:'Bearer '+token,
+  'x-github-api-version':'2026-03-10',
+  'user-agent':'mcp-workers-workflow-executor',
+});
+const COMPLETED_CONCLUSIONS=new Set([
+  'success','failure','neutral','skipped','timed_out','stale','action_required',
+]);
+
+export type GithubExecutionObservation=
+  | {kind:'open'}
+  | {kind:'cancelled'}
+  | {kind:'completed';conclusion:string}
+  | {kind:'unknown'};
+
+/**
+ * One normal cancel. HTTP 202 only means GitHub accepted the request.
+ * This never calls force-cancel, because that can skip cleanup.
+ */
+export async function cancelRegisteredGithubRun(
+  repository:string, runId:number, token:string,
+  outbound:(request:Request)=>Promise<Response>=fetch,
+):Promise<boolean>{
+  if(!REPO.test(repository)||repository.includes('..')||
+     !Number.isSafeInteger(runId)||runId<=0||!token.trim()) return false;
+  let response:Response;
+  try{
+    response=await outbound(new Request(
+      'https://api.github.com/repos/'+repository+'/actions/runs/'+runId+'/cancel',
+      {method:'POST',redirect:'manual',headers:GITHUB_HEADERS(token)},
+    ));
+  }catch{return false;}
+  if(response.status>=300&&response.status<400) return false;
+  return response.status===202;
+}
+
+async function githubJson(response:Response):Promise<Record<string,unknown>|null>{
+  if(response.status<200||response.status>=300) return null;
+  try{
+    const value:unknown=await response.json();
+    if(!value||typeof value!=='object'||Array.isArray(value)) return null;
+    return value as Record<string,unknown>;
+  }catch{return null;}
+}
+
+/**
+ * Read the registered run and its jobs. A non-terminal or unreadable payload
+ * is not a physical stop. The body is not returned to the caller.
+ */
+export async function observeRegisteredGithubRun(
+  repository:string, runId:number, token:string,
+  outbound:(request:Request)=>Promise<Response>=fetch,
+):Promise<GithubExecutionObservation>{
+  if(!REPO.test(repository)||repository.includes('..')||
+     !Number.isSafeInteger(runId)||runId<=0||!token.trim()) return {kind:'unknown'};
+  const runUrl='https://api.github.com/repos/'+repository+'/actions/runs/'+runId;
+  let runResponse:Response;
+  try{
+    runResponse=await outbound(new Request(runUrl,{method:'GET',redirect:'manual',headers:GITHUB_HEADERS(token)}));
+  }catch{return {kind:'unknown'};}
+  if(runResponse.status>=300&&runResponse.status<400) return {kind:'unknown'};
+  const run=await githubJson(runResponse);
+  if(!run||typeof run.status!=='string') return {kind:'unknown'};
+  if(run.status!=='completed') return {kind:'open'};
+  if(typeof run.conclusion!=='string') return {kind:'unknown'};
+  let jobsResponse:Response;
+  try{
+    jobsResponse=await outbound(new Request(runUrl+'/jobs?per_page=100',{
+      method:'GET',redirect:'manual',headers:GITHUB_HEADERS(token),
+    }));
+  }catch{return {kind:'unknown'};}
+  if(jobsResponse.status>=300&&jobsResponse.status<400) return {kind:'unknown'};
+  const jobsBody=await githubJson(jobsResponse);
+  if(!jobsBody||!Array.isArray(jobsBody.jobs)||typeof jobsBody.total_count!=='number'||
+     !Number.isSafeInteger(jobsBody.total_count)) return {kind:'unknown'};
+  const jobs=jobsBody.jobs;
+  if(jobsBody.total_count!==jobs.length||jobs.length===0||jobs.length>100) return {kind:'unknown'};
+  const conclusions:string[]=[];
+  for(const job of jobs){
+    if(!job||typeof job!=='object'||Array.isArray(job)) return {kind:'unknown'};
+    const status=(job as {status?:unknown}).status;
+    const conclusion=(job as {conclusion?:unknown}).conclusion;
+    if(status!=='completed'||typeof conclusion!=='string') return {kind:'unknown'};
+    conclusions.push(conclusion);
+  }
+  if(run.conclusion==='cancelled'){
+    return conclusions.every(item=>item==='cancelled'||item==='skipped')
+      ?{kind:'cancelled'}:{kind:'unknown'};
+  }
+  if(!COMPLETED_CONCLUSIONS.has(run.conclusion)||conclusions.some(item=>item==='cancelled'))
+    return {kind:'unknown'};
+  return {kind:'completed',conclusion:run.conclusion};
+}
+
 /**
  * Only a *cryptographically verified* GitHub OIDC payload can be supplied to
  * this function. It checks physical candidate correlation, NOT JWT validity.

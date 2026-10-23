@@ -6,6 +6,7 @@ import { LIMITS, NON_EXECUTABLE_PLAN_FIELDS, NON_EXECUTABLE_STEP_FIELDS } from '
 import type { Env } from './store.ts';
 import { limitResult } from './store.ts';
 import { dispatchOrResumeGithubAttempt,githubAsyncAwaitingExternal,githubAsyncOutcome,GITHUB_ASYNC_WAKE_LIMIT,GITHUB_ASYNC_WAKE_TIMEOUT,readGithubAsyncFact,type GithubAsyncFact,type GithubDispatchStep } from './github-async.ts';
+import { CancelObserved, isCancelRequested } from './run-cancel.ts';
 import { scopedPublicMcpFetch, TRUSTED_PORTAL_ENDPOINT, PRODUCTION_PORTAL_ENDPOINT, type PortalServiceToken } from './mcp-public-fetch.ts';
 
 type Outcome={status:'succeeded'|'failed'|'skipped'|'indeterminate';output?:any;error_code?:string};
@@ -148,16 +149,26 @@ async function runGithubStep(
   try{
     const opened=await step.do('github-dispatch-'+s.id,{
       retries:{limit:0,delay:'1 second'},timeout:'45 seconds',
-    },async()=>dispatchOrResumeGithubAttempt(db,env,runId,s.id)) as GithubDispatchStep|undefined;
+    },async()=>{
+      // Replay returns this cached value and must not dispatch again.
+      if(await isCancelRequested(db,runId)) return {disposition:'continued' as const,suppressed:'cancel' as const};
+      return dispatchOrResumeGithubAttempt(db,env,runId,s.id);
+    }) as (GithubDispatchStep & {suppressed?:'cancel'})|undefined;
+    if(opened&&'suppressed' in opened&&opened.suppressed==='cancel') throw new CancelObserved();
     if(opened?.disposition==='rejected')return {
       status:'failed',error_code:'github_dispatch_rejected_'+opened.httpStatus+'_'+opened.reason,
     };
     let fact=await read();
-    if(!fact)return {status:'indeterminate',error_code:'github_dispatch_unknown'};
+    if(!fact){
+      if(await isCancelRequested(db,runId)) throw new CancelObserved();
+      return {status:'indeterminate',error_code:'github_dispatch_unknown'};
+    }
     let outcome=settle(fact);
     if(outcome)return outcome;
+    if(await isCancelRequested(db,runId)) throw new CancelObserved();
     for(let i=0;i<GITHUB_ASYNC_WAKE_LIMIT&&fact&&!outcome;i++){
       if(fact.deadlineAt!==null&&now()>=fact.deadlineAt)break;
+      if(await isCancelRequested(db,runId)) throw new CancelObserved();
       try{
         await step.waitForEvent<{attemptId:string;callbackId:string}>(
           'github-receipt-'+s.id+'-'+i,
@@ -166,10 +177,15 @@ async function runGithubStep(
         // Lost wake or timeout. Reconcile the stored receipt only.
       }
       fact=await read();
-      if(!fact)return {status:'indeterminate',error_code:'github_dispatch_unknown'};
+      if(!fact){
+        if(await isCancelRequested(db,runId)) throw new CancelObserved();
+        return {status:'indeterminate',error_code:'github_dispatch_unknown'};
+      }
       outcome=settle(fact);
       if(outcome)return outcome;
+      if(await isCancelRequested(db,runId)) throw new CancelObserved();
     }
+    if(await isCancelRequested(db,runId)) throw new CancelObserved();
     return {status:'indeterminate',error_code:'github_callback_unconfirmed'};
   }catch(error){
     const fact=await read().catch(()=>null);
@@ -191,6 +207,8 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
     // An expired ambiguous admission is terminally uncertain. A Workflow
     // started much later must not run the abandoned queued Workflow plan.
     if(row.outcome!=='queued'&&row.outcome!=='running')return;
+    // A resumed invocation must not dispatch or cancel again.
+    if(await isCancelRequested(db,id))return;
     const version=await db.prepare('SELECT plan FROM workflow_versions WHERE id=?').bind(row.version_id).first<{plan:string}>();
     if(!version)throw Error('version_missing');
     const parsed=JSON.parse(version.plan) as Plan & Record<string, unknown>;
@@ -213,6 +231,7 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
     let uncertainCode:string|null=null;
     try{
       while(pending.size){
+        if(await isCancelRequested(db,id)) throw new CancelObserved();
         const ready=[...pending.values()].filter(s=>s.needs.every(n=>ctx.steps[n])).slice(0,8);
         if(!ready.length)throw Error('invalid_execution_graph');
         const outcomes=await Promise.all(ready.map(async (s:Step):Promise<Outcome>=>{
@@ -226,6 +245,7 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
                 if(s.if!==undefined&&!evaluateCondition(s.if,ctx))return {status:'skipped'} as Outcome;
                 return await runGithubStep(this.env,plan,s,id,step);
               }catch(error){
+                if(error instanceof CancelObserved||await isCancelRequested(db,id)) throw error instanceof CancelObserved?error:new CancelObserved();
                 // A confirmed Attempt still inside its deadline is not an
                 // unknown dispatch. Replay must resume it instead of freezing it.
                 if(await githubAsyncAwaitingExternal(db,id,now()))throw error;
@@ -276,6 +296,9 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
       await db.prepare("UPDATE runs SET outcome=?,result=?,error_code=?,updated_at=? WHERE id=? AND outcome='running'")
         .bind(uncertain?'indeterminate':failed?'failed':'succeeded',JSON.stringify(output),uncertain?uncertainCode:null,now(),id).run();
     }catch(error){
+      // Cancellation already owns the terminal decision. Do not freeze the
+      // Run or dispatch a replacement attempt when Cloudflare resumes.
+      if(error instanceof CancelObserved||await isCancelRequested(db,id)) return;
       // A live GitHub Attempt still inside its deadline must survive an
       // isolate restart. Freezing it here would hide a later receipt.
       if(await githubAsyncAwaitingExternal(db,id,now()))throw error;
