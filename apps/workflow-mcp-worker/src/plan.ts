@@ -136,12 +136,14 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       keys(withData,['capability','action']);
       if(withData.capability==='github.action') {
         const action=object(withData.action,'invalid_github_action');
-        keys(action,['repository','repositoryId','workflowId','workflowPath','commitSha','type','contractDigest','inputs']);
+        keys(action,['repository','repositoryId','workflowId','workflowPath','commitSha','type','contractDigest','ref','inputs']);
         if(typeof action.repository!=='string'||!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(action.repository)||
            !Number.isSafeInteger(action.repositoryId)||Number(action.repositoryId)<=0||
            !Number.isSafeInteger(action.workflowId)||Number(action.workflowId)<=0||
            typeof action.workflowPath!=='string'||!/^\.github\/workflows\/[A-Za-z0-9_.-]+\.ya?ml$/.test(action.workflowPath)||
            typeof action.commitSha!=='string'||! /^[a-f0-9]{40}$/i.test(action.commitSha)||
+           typeof action.ref!=='string'||! /^refs\/tags\/[A-Za-z0-9][A-Za-z0-9._\/-]{0,190}$/.test(action.ref)||
+           action.ref.includes('..')||action.ref.includes('//')||action.ref.endsWith('/')||
            !['task','session'].includes(String(action.type))||
            typeof action.contractDigest!=='string'||! /^[a-f0-9]{64}$/i.test(action.contractDigest))
           throw new PlanError('invalid_github_action');
