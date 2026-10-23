@@ -46,13 +46,33 @@ page content.
 - Worker browser tools: `browser_start`, `browser_status`, `browser_navigate`,
   `browser_snapshot`, `browser_close`, `browser_tabs`, `browser_click`,
   `browser_fill`, `browser_press_key`, `browser_select_option`.
-- The code is prepared in a separate review branch. Creating or passing a PR does not
-  modify an existing deployed Worker, enrolled Agent, or Portal tool cache.
-- Verify typed request rejection, signed DO routing, revoked/offline refusal, stale-tab
-  refusal, operation receipts, no old approval endpoints, and temporary grant promotion.
-- Run repository Application checks and Worker dry-run. A normal browser E2E with the
-  revised **no-popup** path on an approved test device is a separate release acceptance.
-  Do not infer it from tests of the prior approval-based design.
+- [PR #192](https://github.com/lirtual/mcp-workers/pull/192) merged into `main`
+  at `223222bea9c7e22edcd56a39ebf236b417f861c0`. Main CI
+  [#39910085749](https://github.com/lirtual/mcp-workers/actions/runs/39910085749) passed.
+- Manual GitHub Actions release
+  [#39910167712](https://github.com/lirtual/mcp-workers/actions/runs/39910167712)
+  deployed exactly `remote-control-mcp-worker`. Cloudflare confirmed
+  active Version `e54022e2-b8f4-48f9-8c62-972a3ec04452` at **100%**,
+  without resetting the existing paired-device Durable Object.
+- A real already-paired Windows Agent `v0.1.13-windows.1` completed
+  `browser_start` → `browser_status`/`browser_tabs` →
+  `browser_navigate` (example.com, then Playwright TodoMVC) →
+  `browser_fill` → `browser_press_key` (Enter) → `browser_click`
+  (complete and clear disposable todo) → `browser_close`.
+  Operation receipts confirmed each effect; no separate webpage approval was
+  requested. The disposable test item was removed and final
+  `browser_status` returned `null`.
+- The initial headed-browser launch exceeded the Worker’s five-second
+  response window and reported `timeout_unknown`; querying the **same**
+  `operation_id` confirmed completed, avoiding unsafe duplicate dispatch.
+  This timeout behavior is a known latency limitation, not a failed operation.
+- Cloudflare MCP Portal server `remote-control` re-synced successfully
+  (`ready`, 33 tools) with updated browser descriptions on
+  2026-10-23 06:23 UTC. Existing ChatGPT sessions may retain their
+  cached tool descriptions until the connection refreshes.
+- Safety bounds are unchanged: browser redirects/DNS/private-network SSRF
+  isolation remain unproven; this acceptance is for the personal approved
+  Windows device, not a guarantee of arbitrary site/network safety.
 
 ## Previous acceptance (historical)
 
