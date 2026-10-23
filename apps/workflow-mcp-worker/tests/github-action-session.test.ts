@@ -4,6 +4,8 @@ import {DatabaseSync} from 'node:sqlite';
 import {readFileSync} from 'node:fs';
 import {reservePublishedSessionSlot,releaseVerifiedSessionSlot}
  from '../src/github-action-session.ts';
+import {WorkflowService} from '../src/store.ts';
+import type {Env} from '../src/store.ts';
 
 const run=(n:number)=>'11111111-1111-4111-8111-'+n.toString(16).padStart(12,'0');
 const action={repository:'lirtual/session-actions',repositoryId:123,workflowId:456,
@@ -34,6 +36,7 @@ function fixture(){
    VALUES(?,'wf','v',?,'x','{}','running',1,1)`).run(run(i),'instance-'+i);
  const adapter={prepare:(sql:string)=>({bind:(...args:unknown[])=>({
   first:async()=>db.prepare(sql).get(...args as []),
+  all:async()=>({results:db.prepare(sql).all(...args as [])}),
   run:async()=>({meta:{changes:db.prepare(sql).run(...args as []).changes}}),
  })})} as any;
  const claim=(index:number,state:'claimed'|'failed'|'succeeded'|'cancelled',owner:boolean)=>{
@@ -94,5 +97,26 @@ test('publication, identity, and terminal parent are required before Session adm
   assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'denied');
   assert.equal(await reservePublishedSessionSlot(f.adapter,run(2),'other'),'denied');
   assert.equal(f.db.prepare('SELECT count(*) AS n FROM session_executions').get()?.n,0);
+ }finally{f.db.close();}
+});
+
+test('existing Workflow status and result preserve Session record after parent succeeds',async()=>{
+ const f=fixture();
+ try{
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
+  f.db.prepare("UPDATE session_executions SET state='ready' WHERE run_id=?").run(run(1));
+  f.db.prepare("UPDATE runs SET outcome='succeeded',start_state='started' WHERE id=?").run(run(1));
+  f.db.prepare(`INSERT INTO run_steps(run_id,step_id,status,updated_at)
+    VALUES(?,'launch','succeeded',1)`).run(run(1));
+  const env={DB:f.adapter,WORKFLOW:{}} as Env;
+  const service=new WorkflowService(env);
+  const status=await service.status(run(1));
+  assert.equal(status.status,'succeeded');
+  assert.equal(status.steps[0]?.status,'succeeded');
+  assert.equal(status.sessions?.[0]?.recorded_state,'ready');
+  assert.equal(status.sessions?.[0]?.physical_health,'unverified');
+  const result=await service.result(run(1));
+  assert.equal(result.sessions?.[0]?.recorded_state,'ready');
+  assert.equal(result.sessions?.[0]?.physical_health,'unverified');
  }finally{f.db.close();}
 });
