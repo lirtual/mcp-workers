@@ -3,7 +3,11 @@ import { GITHUB_ASYNC_WAIT_MS } from './github-async.ts';
 import { selectedGithubExecutor } from './github-dispatch.ts';
 
 export const DEFINITION_KEYS = ['version', 'name', 'inputs', 'triggers', 'steps'] as const;
-export const STEP_KEYS = ['id', 'uses', 'needs', 'if', 'with'] as const;
+export const STEP_KEYS = ['id', 'uses', 'needs', 'if', 'with', 'repeat'] as const;
+export const REPEAT_KEYS = ['times', 'until'] as const;
+// Tampered plans must fail closed. `steps` is legal only at the definition root.
+export const NON_EXECUTABLE_PLAN_FIELDS = ['saga', 'foreach', 'while', 'child', 'child_workflow', 'wait', 'compensate'] as const;
+export const NON_EXECUTABLE_STEP_FIELDS = ['foreach', 'while', 'each', 'items', 'saga', 'compensate', 'child', 'child_workflow', 'wait', 'sleep', 'delay', 'steps'] as const;
 export const USES = ['result.emit', 'mcp.call', 'github.run'] as const;
 export type SupportedUse = typeof USES[number];
 export const WITH_KEYS: Record<SupportedUse, readonly string[]> = {
@@ -27,10 +31,18 @@ export const GITHUB_TRIGGER_EVENTS = ['create', 'delete', 'issue_comment', 'issu
 export const TRIGGER_SOURCE_ID = /^[a-z][a-z0-9-]{0,63}$/;
 export const TRIGGER_EVENT_NAME = /^[a-z][a-z0-9_]{0,63}$/;
 export const TRIGGER_REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+// Each repeat iteration is one Workflow step.do. The expanded budget stays on
+// the existing 32-step cap, inside the platform step limit, and the deadline
+// stays inside the 30-second step timeout.
+const MAX_STEPS = 32;
 export const LIMITS = {
   definitionBytes: 32 * 1024,
   minSteps: 1,
-  maxSteps: 32,
+  maxSteps: MAX_STEPS,
+  maxExpandedSteps: MAX_STEPS,
+  maxLoopIterations: 8,
+  maxLoopDepth: 1,
+  maxLoopDeadlineMs: 10_000,
   maxParallel: 8,
   maxInputs: 32,
   maxNameLength: 120,
@@ -115,6 +127,21 @@ const githubEventExample = {
   triggers: [{id: 'gh', type: 'github_event', repository: 'example/workflow', events: ['push']}],
   steps: [{id: 'emit', uses: 'result.emit', with: {data: {ref: 'inputs.event'}}}],
 };
+const repeatExample = {
+  version: 1,
+  name: 'Bounded loop',
+  steps: [
+    {id: 'seed', uses: 'result.emit', with: {data: 'seed'}},
+    {id: 'grow', needs: ['seed'], uses: 'result.emit',
+      repeat: {times: 3, until: {eq: [{ref: 'loop.index'}, 2]}},
+      if: {lt: [{ref: 'loop.index'}, 2]},
+      with: {data: {
+        index: {ref: 'loop.index'},
+        seed: {ref: 'steps.seed.output'},
+        prev: {ref: 'steps.grow.output'},
+      }}},
+  ],
+};
 
 type Kind = 'trigger' | 'action' | 'flow';
 type SupportedEntry = {
@@ -180,14 +207,24 @@ const CATALOG: readonly Entry[] = [
     summary: `Steps with no unmet needs run together, at most ${LIMITS.maxParallel} at a time.`,
     permissions: 'Parallelism does not add actions or grants.',
     completion: 'Each ready wave is bounded. A larger wave is rejected at validate.'},
+  {id: 'flow.repeat', kind: 'flow', status: 'supported', example: repeatExample,
+    summary: `Repeat one result.emit step a literal times from 1 to ${LIMITS.maxLoopIterations}. until is checked before each iteration. loop.index and steps.<this-step>.output refer to the iteration and the previous output.`,
+    permissions: 'No grant. The repeated action must be result.emit. mcp.call and github.run stay outside repeat.',
+    completion: `Each iteration that runs is one Workflow step. A false if skips that iteration. until stops before the iteration. The step output is the last completed iteration. The loop stops at ${LIMITS.maxLoopDeadlineMs} milliseconds.`},
   {id: 'flow.foreach', kind: 'flow', status: 'unsupported',
-    summary: 'foreach is not implemented. Do not add a foreach field.'},
+    summary: 'foreach is not implemented. Do not add a foreach field. repeat.times must be a literal integer, not a list.'},
   {id: 'flow.while', kind: 'flow', status: 'unsupported',
-    summary: 'while and until loops are not implemented. Do not add a while field.'},
+    summary: 'while is not implemented. Do not add a while field. Bounded repetition is repeat.times with optional repeat.until.'},
+  {id: 'flow.nesting', kind: 'flow', status: 'unsupported',
+    summary: `Nested steps and nested loops are not implemented. Do not add a steps or body field. Loop depth is ${LIMITS.maxLoopDepth}.`},
+  {id: 'flow.dynamic_expansion', kind: 'flow', status: 'unsupported',
+    summary: 'Dynamic DAG expansion is not implemented. A ref, list, each, or items bound is rejected and is not executed as one static step.'},
+  {id: 'flow.wait', kind: 'flow', status: 'unsupported',
+    summary: 'Durable wait is not implemented. Do not add wait, sleep, or delay. GitHub receipt waiting is not a definition field.'},
   {id: 'flow.child_workflow', kind: 'flow', status: 'unsupported',
-    summary: 'Child workflows are not implemented.'},
+    summary: 'Child workflows are not implemented. Do not use workflow.call or a child field.'},
   {id: 'flow.saga', kind: 'flow', status: 'unsupported',
-    summary: 'Saga compensation is not implemented. Do not add a saga field.'},
+    summary: 'Saga compensation is not implemented. Do not add a saga or compensate field.'},
 ];
 
 export const supportedCapabilityExamples: readonly unknown[] = CATALOG.flatMap(entry =>
@@ -266,6 +303,10 @@ function definitionContract() {
       min_steps: LIMITS.minSteps,
       max_steps: LIMITS.maxSteps,
       max_parallel_steps: LIMITS.maxParallel,
+      max_loop_iterations: LIMITS.maxLoopIterations,
+      max_expanded_steps: LIMITS.maxExpandedSteps,
+      max_loop_depth: LIMITS.maxLoopDepth,
+      max_loop_deadline_ms: LIMITS.maxLoopDeadlineMs,
       max_inputs: LIMITS.maxInputs,
       max_name_length: LIMITS.maxNameLength,
       max_expression_depth: LIMITS.maxExpressionDepth,
@@ -289,7 +330,19 @@ function definitionContract() {
         },
         steps: {
           type: 'array', minItems: LIMITS.minSteps, maxItems: LIMITS.maxSteps,
-          items: {type: 'object', required: ['id', 'uses', 'with'], properties: {id: {type: 'string'}, uses: {enum: USES}}},
+          items: {
+            type: 'object', required: ['id', 'uses', 'with'],
+            properties: {
+              id: {type: 'string'}, uses: {enum: USES},
+              repeat: {
+                type: 'object', additionalProperties: false, required: ['times'],
+                properties: {
+                  times: {type: 'integer', minimum: 1, maximum: LIMITS.maxLoopIterations},
+                  until: {description: 'Checked before each iteration. A boolean or one condition operator.'},
+                },
+              },
+            },
+          },
         },
       },
     },
@@ -329,6 +382,17 @@ function detailOf(entry: Entry) {
   return {...base, ...action, permissions: entry.permissions, completion: entry.completion, example: entry.example,
     ...(entry.id === 'flow.parallel' ? {limits: {max_parallel_steps: LIMITS.maxParallel}} : {}),
     ...(entry.id === 'flow.if' ? {condition_ops: CONDITION_OPS} : {}),
+    ...(entry.id === 'flow.repeat' ? {
+      condition_ops: CONDITION_OPS,
+      repeat_keys: REPEAT_KEYS,
+      limits: {
+        max_iterations: LIMITS.maxLoopIterations,
+        max_expanded_steps: LIMITS.maxExpandedSteps,
+        max_parallel_steps: LIMITS.maxParallel,
+        max_loop_depth: LIMITS.maxLoopDepth,
+        max_loop_deadline_ms: LIMITS.maxLoopDeadlineMs,
+      },
+    } : {}),
   };
 }
 
