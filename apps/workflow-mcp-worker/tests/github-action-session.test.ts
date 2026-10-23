@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {readFileSync} from 'node:fs';
-import {reservePublishedSessionSlot,releaseVerifiedSessionSlot,recordSignedSessionReady,runPublishedGitHubActionSession}
+import {reservePublishedSessionSlot,releaseVerifiedSessionSlot,releaseNeverDispatchedSessionSlot,recordSignedSessionReady,runPublishedGitHubActionSession}
  from '../src/github-action-session.ts';
 import {generateKeyPair,SignJWT} from 'jose';
 import {handleGithubActionClaimRequest} from '../src/github-action-ingress.ts';
@@ -609,6 +609,49 @@ test('fallback elapsed-time rule cannot shorten true job duration and rejects in
  assert.equal(sessionCancellationDue({state:'stopping',created_at:100,updated_at:1000,duration_minutes:5},1e12),false);
 });
 
+test('abandoned pre-Attempt reservation is released only after terminal parent and 30-minute grace',async()=>{
+ const f=fixture();
+ try{
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
+  f.db.prepare("UPDATE session_executions SET created_at=1000 WHERE run_id=?").run(run(1));
+  const expiredAt=1000+30*60_000;
+  assert.equal(await releaseNeverDispatchedSessionSlot(f.adapter,run(1),'launch',expiredAt),false);
+  f.db.prepare("UPDATE runs SET outcome='indeterminate' WHERE id=?").run(run(1));
+  assert.equal(await releaseNeverDispatchedSessionSlot(f.adapter,run(1),'launch',999),false);
+  assert.equal(await releaseNeverDispatchedSessionSlot(f.adapter,run(1),'launch',expiredAt),true);
+  assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'terminated');
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(2),'launch'),'reserved');
+ }finally{f.db.close();}
+});
+test('a registered unknown-dispatch Attempt keeps Session quota after parent failure',async()=>{
+ const f=fixture();
+ try{
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
+  f.claim(1,'claimed',true);
+  f.db.prepare("UPDATE step_attempts SET state='dispatch_unknown',owner_run_id=NULL,owner_run_attempt=NULL,candidate_run_id=NULL,candidate_run_attempt=NULL WHERE run_id=?").run(run(1));
+  f.db.prepare("UPDATE session_executions SET created_at=1000").run();
+  f.db.prepare("UPDATE runs SET outcome='indeterminate' WHERE id=?").run(run(1));
+  assert.equal(await releaseNeverDispatchedSessionSlot(f.adapter,run(1),'launch',50000000),false);
+  const step={do:async(_name:string,_opts:unknown,cb:()=>Promise<unknown>)=>cb()} as unknown as WorkflowStep;
+  const env={DB:f.adapter,WORKFLOW_EXECUTOR_GITHUB_TOKEN:'token'} as Env;
+  assert.equal(await watchPersistedSessions(env,run(1),step,1,()=>50000000),'unverified');
+  assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'queued');
+  assert.equal(await releaseVerifiedSessionSlot(f.adapter,run(1),'launch'),'held');
+ }finally{f.db.close();}
+});
+test('unattended watcher reclaims confirmed never-dispatched reservation without a GitHub request',async()=>{
+ const f=fixture(),oldFetch=globalThis.fetch;
+ try{
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
+  f.db.prepare("UPDATE session_executions SET created_at=1000").run();
+  f.db.prepare("UPDATE runs SET outcome='indeterminate' WHERE id=?").run(run(1));
+  globalThis.fetch=async()=>{throw Error('must not contact GitHub without an Attempt');};
+  const step={do:async(_name:string,_opts:unknown,cb:()=>Promise<unknown>)=>cb()} as unknown as WorkflowStep;
+  const env={DB:f.adapter,WORKFLOW_EXECUTOR_GITHUB_TOKEN:'token'} as Env;
+  assert.equal(await watchPersistedSessions(env,run(1),step,1,()=>3000000),'terminated');
+  assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'terminated');
+ }finally{globalThis.fetch=oldFetch;f.db.close();}
+});
 test('transient D1 outage does not permanently stop unattended Session reconciliation',async()=>{
  const f=fixture(),originalFetch=globalThis.fetch;
  try{
