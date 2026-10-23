@@ -302,7 +302,7 @@ test('mobile home stays compact, uses semantic numbered steps and follows OS the
   assert.doesNotMatch(html, /先选择 Windows 或 Linux|const mobile=/);
   assert.match(html, /copy\.disabled=!ready\[value\]/);
   assert.match(html, /aria-selected/);
-  assert.match(html, /clipboard\.writeText\(cmds\[platform\]\)/);
+  assert.match(html, /clipboard\.writeText\(cmds\[requestedPlatform\]\)/);
   assert.match(html, /irm https:\/\/rca\.lirtual\.dpdns\.org\/install\.ps1 \| iex/);
   assert.match(html, /curl -fsSL https:\/\/rca\.lirtual\.dpdns\.org\/install\.sh \| sh/);
   assert.doesNotMatch(html, /localStorage|sessionStorage|document\.cookie|api\/devices/);
@@ -318,7 +318,7 @@ test('installer home drops source/docs and defaults unknown device to first Wind
   assert.match(html, /id="linux" role="tab"/);
   assert.match(html, /tab\.setAttribute\('aria-selected',String\(name===value\)\)/);
   assert.match(html, /copy\.disabled=!ready\[value\]/);
-  assert.match(html, /clipboard\.writeText\(cmds\[platform\]\)/);
+  assert.match(html, /clipboard\.writeText\(cmds\[requestedPlatform\]\)/);
   assert.doesNotMatch(html, /先选择 Windows 或 Linux/);
 });
 
