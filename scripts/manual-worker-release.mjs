@@ -81,9 +81,10 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
         invariant(secretNames.has(name) && !!find(name,"secret_text"),
           "Workflow runtime credential binding missing: " + name);
       }
-      invariant(typeof find("MCP_PORTAL_CLIENT_ID", "plain_text")?.text === "string" &&
+      invariant(bindings.filter(x => x.name === "MCP_PORTAL_CLIENT_ID").length === 1 &&
+        typeof find("MCP_PORTAL_CLIENT_ID", "plain_text")?.text === "string" &&
         find("MCP_PORTAL_CLIENT_ID", "plain_text").text.trim().length > 0 &&
-        !find("MCP_PORTAL_CLIENT_ID", "secret_text") && !secretNames.has("MCP_PORTAL_CLIENT_ID"),
+        !secretNames.has("MCP_PORTAL_CLIENT_ID"),
         "Workflow Portal Client ID must be exactly one plaintext Variable");
       invariant(!bindings.some(x => ["MCP_CALL_ENABLED","GITHUB_EXECUTION_ENABLED",
         "MCP_DIRECT_TARGETS_ENABLED"].includes(x.name)),
@@ -105,6 +106,9 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     // A successful readback MUST prove the type migration happened.
     if (options.mode !== "preflight") {
       const clientId = find("IMA_CLIENT_ID", "plain_text");
+      invariant(bindings.filter(x => x.name === "IMA_CLIENT_ID").length === 1 &&
+        !bindings.some(x => x.name === "CLIENT_ID") && !secretNames.has("CLIENT_ID"),
+        "IMA legacy CLIENT_ID binding must be absent after release");
       invariant(typeof clientId?.text === "string" && clientId.text.trim().length > 0,
         "IMA IMA_CLIENT_ID must be a nonempty plain-text Variable after release");
       invariant(!find("IMA_CLIENT_ID", "secret_text") && !secretNames.has("IMA_CLIENT_ID"),

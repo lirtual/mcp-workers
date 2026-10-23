@@ -42,16 +42,20 @@ test("IMA allows old IMA_CLIENT_ID Secret in preflight and requires Variable aft
     { name: "IMA_CLIENT_ID", type: "secret_text" }, durable], observability };
   const oldSecrets = [...secrets, { name: "IMA_CLIENT_ID" }];
   assert.equal(verifyBindings(worker, old, oldSecrets, { mode: "preflight" }), true);
-  assert.throws(() => verifyBindings(worker, old, oldSecrets, { mode: "readback" }), /IMA_CLIENT_ID.*Variable/);
+  assert.throws(() => verifyBindings(worker, old, oldSecrets, { mode: "readback" }), /IMA legacy CLIENT_ID|IMA_CLIENT_ID.*Variable/);
   const settings = { bindings: [...names.map(name => ({ name, type: "secret_text" })),
     { name: "IMA_CLIENT_ID", type: "plain_text", text: "ima-client-id" }, durable], observability };
   assert.equal(verifyBindings(worker, settings, secrets, { mode: "readback" }), true);
   assert.throws(() => verifyBindings(worker, { ...settings,
-    bindings: settings.bindings.filter(x => x.name !== "IMA_CLIENT_ID") }, secrets, { mode: "readback" }), /IMA_CLIENT_ID.*Variable/);
+    bindings: settings.bindings.filter(x => x.name !== "IMA_CLIENT_ID") }, secrets, { mode: "readback" }), /IMA_CLIENT_ID.*Variable|IMA legacy CLIENT_ID/);
   assert.throws(() => verifyBindings(worker, { ...settings,
     bindings: settings.bindings.map(x => x.name === "IMA_CLIENT_ID" ? { ...x, text: " " } : x) },
-    secrets, { mode: "readback" }), /IMA_CLIENT_ID.*Variable/);
+    secrets, { mode: "readback" }), /IMA_CLIENT_ID.*Variable|IMA legacy CLIENT_ID/);
   assert.throws(() => verifyBindings(worker, settings, oldSecrets, { mode: "readback" }), /legacy IMA_CLIENT_ID Secret/);
+  assert.throws(() => verifyBindings(worker, { ...settings, bindings: [
+    ...settings.bindings, { name: "CLIENT_ID", type: "plain_text", text: "legacy" },
+  ] }, secrets, { mode: "readback" }), /legacy CLIENT_ID/);
+
   assert.throws(() => verifyBindings(worker, { ...settings, bindings: [
     ...settings.bindings, { name: "R2_BUCKET", type: "r2_bucket" },
   ] }, secrets, { mode: "preflight" }), /Legacy IMA R2/);
@@ -409,6 +413,8 @@ test("Workflow readback verifies one integrated runtime, registered GitHub ident
   }
   assert.throws(()=>check(bindings.map(x=>x.name==="MCP_PORTAL_CLIENT_ID" ?
     {...x,type:"secret_text"}:x)),/plaintext Variable/);
+  assert.throws(()=>check([...bindings,{name:"MCP_PORTAL_CLIENT_ID",type:"plain_text",text:"duplicate"}]),
+    /plaintext Variable/);
   assert.throws(()=>check([...bindings,{name:"MCP_PORTAL_CLIENT_ID",type:"secret_text"}]),
     /plaintext Variable/);
   assert.throws(()=>check(bindings,[...secrets,{name:"MCP_PORTAL_CLIENT_ID"}]),
