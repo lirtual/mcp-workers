@@ -20,13 +20,14 @@ function setup(){
  'lirtual/mcp-workers/.github/workflows/ci.yml@refs/heads/main','refs/heads/main',1,1);
  INSERT INTO callback_receipts(callback_id,attempt_id,outcome,result_json,created_at)
  VALUES('cb','a','succeeded','{}',1);`);
+ db.exec(read('0005_github_workflow_check.sql'));
  return db;
 }
 test('migration preserves old Attempt, FK receipt, and enables new capabilities',()=>{
  const db=setup();
  try{
   db.exec('BEGIN');
-  db.exec(read('0005_action_attempt_capabilities.sql'));
+  db.exec(read('0006_action_attempt_capabilities.sql'));
   db.exec('COMMIT');
   assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(),[]);
   assert.equal(db.prepare('SELECT capability_id FROM step_attempts WHERE attempt_id=?').get('a')?.capability_id,'heavy.github.echo');
@@ -50,7 +51,7 @@ test('migration rolls back fully on schema conflict',()=>{
  try{
   db.exec('CREATE TABLE step_attempts_replacement (x TEXT)');
   db.exec('BEGIN');
-  assert.throws(()=>db.exec(read('0005_action_attempt_capabilities.sql')));
+  assert.throws(()=>db.exec(read('0006_action_attempt_capabilities.sql')));
   db.exec('ROLLBACK');
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM step_attempts').get()?.n,1);
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM callback_receipts').get()?.n,1);

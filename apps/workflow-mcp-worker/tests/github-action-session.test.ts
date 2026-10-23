@@ -30,8 +30,9 @@ function fixture(){
  for(const name of ['0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql']){
   db.exec(readFileSync(new URL('../migrations/'+name,import.meta.url),'utf8'));
  }
+ db.exec(readFileSync(new URL('../migrations/0005_github_workflow_check.sql',import.meta.url),'utf8'));
  db.exec('BEGIN');
- for(const name of ['0005_action_attempt_capabilities.sql','0006_session_executions.sql']){
+ for(const name of ['0006_action_attempt_capabilities.sql','0007_session_executions.sql']){
   db.exec(readFileSync(new URL('../migrations/'+name,import.meta.url),'utf8'));
  }
  db.exec('COMMIT');

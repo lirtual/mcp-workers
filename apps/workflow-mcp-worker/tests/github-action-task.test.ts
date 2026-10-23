@@ -27,10 +27,11 @@ function setup(){
  for(const migration of ['0001_s1.sql','0002_native_complete_seen.sql',
   '0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql'])
   db.exec(readFileSync(new URL('../migrations/'+migration,import.meta.url),'utf8'));
+ db.exec(readFileSync(new URL('../migrations/0005_github_workflow_check.sql',import.meta.url),'utf8'));
  db.exec('BEGIN');
- db.exec(readFileSync(new URL('../migrations/0005_action_attempt_capabilities.sql',import.meta.url),'utf8'));
+ db.exec(readFileSync(new URL('../migrations/0006_action_attempt_capabilities.sql',import.meta.url),'utf8'));
  db.exec('COMMIT');
- db.exec(readFileSync(new URL('../migrations/0006_session_executions.sql',import.meta.url),'utf8'));
+ db.exec(readFileSync(new URL('../migrations/0007_session_executions.sql',import.meta.url),'utf8'));
  db.exec(`INSERT INTO workflows(id,name,draft,draft_revision,state,created_at,updated_at)
  VALUES('wf','Task','{}',1,'active',1,1);
  INSERT INTO workflow_versions(id,workflow_id,digest,plan,created_at)
