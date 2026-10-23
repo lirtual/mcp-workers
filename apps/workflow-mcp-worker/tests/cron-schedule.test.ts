@@ -44,7 +44,7 @@ function setup(t:test.TestContext){
     DB:{prepare,async batch(items:{run:()=>Promise<unknown>}[]){return Promise.all(items.map(item=>item.run()));}},
     WORKFLOW:{async create(options:{id:string}){creates.push(options.id);},async get(){return {async status(){return {status:'running'};}};}},
   } as unknown as Env;
-  return {env,creates};
+  return {env,creates,sqlite};
 }
 async function connect(t:test.TestContext, env:Env){
   const client=new Client({name:'cron-schedule-test',version:'0.1.0'});
@@ -261,4 +261,29 @@ test('pause suppresses a new cron admission and an in-flight run stays on its pu
   assert.notEqual(manual.run_id,admitted?.run_id);
   assert.equal(manual.published_version_id,disabled.published_version_id);
   assert.equal(creates.length,6);
+});
+
+test('a workflow past the scheduled scan cap is not silently omitted from the owner list',async t=>{
+  const {env,sqlite}=setup(t);
+  const call=await connect(t,env);
+  const ids:string[]=[];
+  for(let index=0;index<101;index++){
+    const created=await call('workflow_create',{definition:JSON.stringify(cronDefinition('* * * * *','Scan '+index))});
+    await call('workflow_publish',{workflow_id:created.workflow_id,expected_revision:1});
+    ids.push(created.workflow_id);
+  }
+  const ranked=sqlite.prepare("SELECT id FROM workflows WHERE state IN ('active','paused') AND active_version_id IS NOT NULL ORDER BY id ASC").all() as {id:string}[];
+  assert.equal(ranked.length,101);
+  const past=ranked.slice(100).map(row=>row.id);
+  const stamp=Date.now();
+  for(const [index,id] of past.entries()) sqlite.prepare('UPDATE workflows SET updated_at=? WHERE id=?').run(stamp+index+1,id);
+  const listed=await call('workflow_list',{});
+  assert.equal(listed.scan_truncated,true);
+  for(const id of past) assert.equal(listed.workflows.some((row:{workflow_id:string})=>row.workflow_id===id),true,id);
+  const opened=await tick(env,Date.UTC(2026,9,23,12,0));
+  assert.equal(opened.scan_truncated,true);
+  for(const id of past) assert.equal(opened.admissions.some(item=>item.workflow_id===id),false,id);
+  const quiet=await call('workflow_list',{});
+  assert.equal(quiet.scan_truncated,true);
+  assert.equal(ids.length,101);
 });

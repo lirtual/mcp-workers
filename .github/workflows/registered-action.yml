@@ -1,0 +1,24 @@
+# Allow-listed subject only. Manual dispatch. This file does not deploy Workers.
+name: Registered action
+
+on:
+  workflow_dispatch:
+    inputs:
+      subject:
+        description: Allow-listed subject
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  record:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Accept subject
+        env:
+          SUBJECT: ${{ inputs.subject }}
+        run: test -n "$SUBJECT"

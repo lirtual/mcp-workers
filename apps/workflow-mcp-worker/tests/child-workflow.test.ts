@@ -50,6 +50,7 @@ function harness(t: test.TestContext) {
   }
   let nativeStatus = 'running';
   let holding = false;
+  let exhaustChildWaits = false;
   let releaseHold = () => {};
   let holdGate = Promise.resolve();
   const inflight = new Map<string, Promise<void>>();
@@ -69,6 +70,7 @@ function harness(t: test.TestContext) {
   const step = {
     async do(_name: unknown, _options: unknown, callback: () => Promise<unknown>) { return callback(); },
     async waitForEvent() {
+      if (exhaustChildWaits) throw new Error('child-wait-budget');
       if (holding) await holdGate;
       const rows = sqlite.prepare("SELECT id FROM runs WHERE outcome IN ('queued','running')").all() as {id: string}[];
       for (const row of rows) await execute(row.id);
@@ -127,7 +129,7 @@ function harness(t: test.TestContext) {
     } else assert.notEqual(output.isError, true, first.text);
     return value;
   }
-  return {sqlite, env, call, client, transport, execute, armHold, releaseHold: () => releaseHold(), until, setNative(status: string) { nativeStatus = status; }};
+  return {sqlite, env, call, client, transport, execute, armHold, releaseHold: () => releaseHold(), until, exhaustChildWaits() { exhaustChildWaits = true; }, setNative(status: string) { nativeStatus = status; }};
 }
 
 async function publish(call: Call, definition: unknown, approvals?: unknown[]) {
@@ -307,6 +309,49 @@ test('a detached child keeps running after the parent finishes and is outside pa
   releaseHold();
   await running;
   assert.equal((sqlite.prepare('SELECT cancel_requested_at FROM runs WHERE id=?').get(detached.id) as {cancel_requested_at: number | null}).cancel_requested_at, null);
+});
+
+test('an exhausted child wait stays unconfirmed and does not take the child success or an advancing slot', async t => {
+  const {call, client, transport, execute, sqlite, until, exhaustChildWaits} = harness(t);
+  await client.connect(transport);
+  const childId = await publish(call, emitWorkflow('Slow child', 'child-ok'));
+  const parentId = await publish(call, {
+    version: 1, name: 'Budget parent',
+    steps: [
+      {id: 'call', uses: 'workflow.call', with: {workflow_id: childId, inputs: {}}},
+      {id: 'report', needs: ['call'], uses: 'result.emit', with: {data: {ref: 'steps.call.output'}}},
+    ],
+  });
+  exhaustChildWaits();
+  const admitted = await call('workflow_run', {workflow_id: parentId});
+  await execute(admitted.run_id);
+  const parked = sqlite.prepare('SELECT outcome, result FROM runs WHERE id=?').get(admitted.run_id) as {outcome: string; result: string | null};
+  const child = sqlite.prepare('SELECT id, outcome FROM runs WHERE parent_run_id=?').get(admitted.run_id) as {id: string; outcome: string};
+  const step = sqlite.prepare("SELECT status, error_code, output FROM run_steps WHERE run_id=? AND step_id='call'").get(admitted.run_id) as {status: string; error_code: string | null; output: string | null};
+  assert.equal(child.outcome, 'queued');
+  assert.equal(parked.outcome, 'waiting');
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM runs WHERE id=? AND outcome IN ('queued','running')").get(admitted.run_id)?.n, 0);
+  assert.equal(step.status, 'indeterminate');
+  assert.equal(step.error_code, 'child_wait_unconfirmed');
+  assert.equal(step.output, null);
+  const waiting = await call('workflow_status', {run_id: admitted.run_id});
+  assert.equal(waiting.status, 'waiting');
+  assert.notEqual(waiting.status, 'succeeded');
+  assert.equal(waiting.steps.find((item: {step_id: string}) => item.step_id === 'call').error_code, 'child_wait_unconfirmed');
+  await execute(child.id);
+  await until(() => (sqlite.prepare('SELECT outcome FROM runs WHERE id=?').get(child.id) as {outcome: string}).outcome === 'succeeded');
+  const parent = await call('workflow_result', {run_id: admitted.run_id});
+  const childResult = await call('workflow_result', {run_id: child.id});
+  assert.equal(childResult.status, 'succeeded');
+  assert.equal(childResult.result, 'child-ok');
+  assert.notEqual(parent.status, 'succeeded');
+  assert.notEqual(parent.result, 'child-ok');
+  assert.equal(parent.steps.find((item: {step_id: string}) => item.step_id === 'call').error_code, 'child_wait_unconfirmed');
+  assert.equal((sqlite.prepare('SELECT outcome FROM runs WHERE id=?').get(admitted.run_id) as {outcome: string}).outcome === 'running', false);
+  await execute(admitted.run_id);
+  const replayed = await call('workflow_result', {run_id: admitted.run_id});
+  assert.notEqual(replayed.status, 'succeeded');
+  assert.notEqual(replayed.result, 'child-ok');
 });
 
 test('eight waiting parents do not block child admission', async t => {

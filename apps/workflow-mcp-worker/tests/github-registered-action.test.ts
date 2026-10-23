@@ -24,6 +24,7 @@ const OWNER='https://owner.example.org/mcp';
 const TOKEN='disposable-portal-token-registered-action';
 const GITHUB_TOKEN='fixture-token-must-not-leak';
 const RUN_ID=424242;
+const HEAD_SHA='0123456789abcdef0123456789abcdef01234567';
 const MIGRATIONS=['0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql','0006_github_registered_action.sql','0007_run_cancel.sql','0008_grant_revocation.sql','0009_runtime_approval.sql','0010_child_run.sql'];
 
 function database(t:test.TestContext){
@@ -153,7 +154,7 @@ test('Agent discovers, publishes, and reads an allow-listed GitHub Action result
       posts++;
       assert.equal(request.url,'https://api.github.com/repos/lirtual/mcp-workers/actions/workflows/registered-action.yml/dispatches');
       assert.deepEqual(await request.json(),{ref:'main',return_run_details:true,inputs:{subject:'fixture-subject'}});
-      return Response.json({workflow_run_id:RUN_ID},{status:200});
+      return Response.json({workflow_run_id:RUN_ID,head_sha:HEAD_SHA},{status:200});
     }
     if(request.url==='https://api.github.com/repos/lirtual/mcp-workers/actions/runs/'+RUN_ID){
       runReads++;
@@ -161,6 +162,7 @@ test('Agent discovers, publishes, and reads an allow-listed GitHub Action result
         id:RUN_ID,status:runReads===1?'in_progress':'completed',
         conclusion:runReads===1?null:'success',event:'workflow_dispatch',
         path:'.github/workflows/registered-action.yml',head_branch:'main',run_attempt:1,
+        head_sha:HEAD_SHA,
         html_url:'https://evil.example/leak?token='+GITHUB_TOKEN,
         repository:{full_name:'lirtual/mcp-workers'},
       });
@@ -185,13 +187,15 @@ test('Agent discovers, publishes, and reads an allow-listed GitHub Action result
       assert.equal(step.async_action.phase,'dispatch_accepted');
       assert.equal(step.async_action.external_execution_id,String(RUN_ID));
       assert.equal(step.async_action.receipt_outcome,null);
-      const attempt=sqlite.prepare('SELECT state,candidate_run_id,capability_id,workflow_ref FROM step_attempts').get() as {
-        state:string;candidate_run_id:number;capability_id:string;workflow_ref:string;
+      assert.equal(step.async_action.head_sha,HEAD_SHA);
+      const attempt=sqlite.prepare('SELECT state,candidate_run_id,capability_id,workflow_ref,head_sha FROM step_attempts').get() as {
+        state:string;candidate_run_id:number;capability_id:string;workflow_ref:string;head_sha:string|null;
       };
       assert.equal(attempt.state,'confirmed');
       assert.equal(attempt.candidate_run_id,RUN_ID);
       assert.equal(attempt.capability_id,REGISTERED_GITHUB_ACTION.id);
       assert.equal(attempt.workflow_ref,registeredWorkflowRef());
+      assert.equal(attempt.head_sha,HEAD_SHA);
       assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM callback_receipts').get()?.n,0);
       assert.equal(posts,1);
     },
@@ -214,6 +218,8 @@ test('Agent discovers, publishes, and reads an allow-listed GitHub Action result
   assert.equal(heavy.async_action.phase,'external_terminal');
   assert.equal(heavy.async_action.receipt_outcome,'succeeded');
   assert.equal(heavy.async_action.external_execution_id,String(RUN_ID));
+  assert.equal(heavy.async_action.head_sha,HEAD_SHA);
+  assert.equal(result.result.run.head_sha,HEAD_SHA);
   const stored=sqlite.prepare('SELECT state,candidate_run_id FROM step_attempts').get() as {state:string;candidate_run_id:number};
   const receipt=sqlite.prepare('SELECT outcome,result_json FROM callback_receipts').get() as {outcome:string;result_json:string};
   assert.equal(stored.state,'confirmed');
@@ -309,6 +315,7 @@ test('illegal runtime target or inputs do not dispatch, and ambiguous results ar
     return Response.json({
       id:5252,status:'completed',conclusion:'failure',event:'workflow_dispatch',
       path:'.github/workflows/registered-action.yml',head_branch:'main',run_attempt:1,
+      head_sha:'abcdef0123456789abcdef0123456789abcdef01',
     });
   }) as typeof fetch;
   await runner(env,failedRun.run_id,waiting);
@@ -316,9 +323,19 @@ test('illegal runtime target or inputs do not dispatch, and ambiguous results ar
   assert.equal(failed.status,'failed');
   assert.equal(failed.steps.find((item:{step_id:string})=>item.step_id==='act').async_action.receipt_outcome,'failed');
   assert.equal(failed.steps.find((item:{step_id:string})=>item.step_id==='act').async_action.external_execution_id,'5252');
+  assert.equal(failed.steps.find((item:{step_id:string})=>item.step_id==='act').async_action.head_sha,'abcdef0123456789abcdef0123456789abcdef01');
   assert.equal(sqlite.prepare('SELECT state FROM step_attempts WHERE run_id=?').get(failedRun.run_id)?.state,'confirmed');
   assert.equal(sqlite.prepare('SELECT outcome FROM callback_receipts').all().at(-1)?.outcome,'failed');
   assert.equal(dispatches-dispatchesBeforeFailure,1);
   await runner(env,failedRun.run_id,waiting);
   assert.equal(dispatches-dispatchesBeforeFailure,1);
+});
+
+test('registered action workflow only runs on workflow_dispatch and does not deploy',()=>{
+  const source=readFileSync(new URL('../../../.github/workflows/registered-action.yml',import.meta.url),'utf8');
+  assert.match(source,/workflow_dispatch:/);
+  assert.doesNotMatch(source,/\n\s{2}(push|pull_request|schedule|workflow_call):/);
+  assert.equal(source.includes('wrangler'),false);
+  assert.equal(source.includes('cloudflare'),false);
+  assert.equal(/secrets\./.test(source),false);
 });

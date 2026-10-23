@@ -210,13 +210,19 @@ export function verifyWorkflowD1Readiness(response, bootstrap, requireCompleteSc
   const requiredBase = row?.migration_v1 === 1 && row?.migration_v2 === 1 &&
     row?.migration_v3 === 1 && row?.migration_v4 === 1 &&
     row?.attempt_table === 1 && row?.receipt_table === 1;
-  // Older schemas are allowed only before the additive cancel migration.
+  // Counts 4–9 are upgrade snapshots. Only all ten migrations are ready.
+  const throughCancel = row?.migration_v5 === 1 && row?.migration_v6 === 1 &&
+    row?.migration_v7 === 1 && row?.migration_v8 === 1 && row?.cancel_column === 1;
   const beforeUpgrade = (row?.migration_count === 4 && row?.migration_v5 === 0) ||
     (row?.migration_count === 5 && row?.migration_v5 === 1 && row?.migration_v6 === 0) ||
     (row?.migration_count === 6 && row?.migration_v5 === 1 && row?.migration_v6 === 1 && row?.migration_v7 === 0) ||
-    (row?.migration_count === 7 && row?.migration_v5 === 1 && row?.migration_v6 === 1 && row?.migration_v7 === 1 && row?.migration_v8 === 0);
-  const ready = row?.migration_count === 8 && row?.migration_v5 === 1 &&
-    row?.migration_v6 === 1 && row?.migration_v7 === 1 && row?.migration_v8 === 1 && row?.cancel_column === 1;
+    (row?.migration_count === 7 && row?.migration_v5 === 1 && row?.migration_v6 === 1 && row?.migration_v7 === 1 && row?.migration_v8 === 0) ||
+    (row?.migration_count === 8 && throughCancel && row?.migration_v9 === 0) ||
+    (row?.migration_count === 9 && throughCancel && row?.migration_v9 === 1 && row?.migration_v10 === 0 &&
+      row?.approval_table === 1);
+  const ready = row?.migration_count === 10 && throughCancel && row?.migration_v9 === 1 &&
+    row?.migration_v10 === 1 && row?.approval_table === 1 && row?.child_column === 1 &&
+    row?.head_sha_column === 1;
   invariant(requiredBase && (requireCompleteSchema ? ready : (beforeUpgrade || ready)),
     "Workflow production D1 schema migrations missing, partial or drifted");
   invariant(Number.isSafeInteger(row?.active_runs) && row.active_runs === 0,

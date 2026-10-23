@@ -1,5 +1,5 @@
-import {dispatchAllowListedGithubAction,dispatchGithubAttempt,readAllowListedGithubExecution,selectedGithubExecutor,type DispatchOutcome} from './github-dispatch.ts';
-import {recordGithubDispatchResult,recordGithubRunObservation,registerGithubAttempt,type AttemptDatabase} from './github-claim.ts';
+import {dispatchAllowListedGithubAction,dispatchGithubAttempt,githubHeadSha,readAllowListedGithubExecution,selectedGithubExecutor,type DispatchOutcome} from './github-dispatch.ts';
+import {persistGithubHeadSha,recordGithubDispatchResult,recordGithubRunObservation,registerGithubAttempt,type AttemptDatabase} from './github-claim.ts';
 import {REGISTERED_GITHUB_ACTION,registeredWorkflowRef} from './github-registry.ts';
 
 /** Eight 30-second wakes. The budget is fixed when the Attempt is created. */
@@ -16,6 +16,7 @@ export type GithubAsyncAction={
   receipt_outcome:'succeeded'|'failed'|null;
   deadline_at:number|null;
   timed_out:boolean;
+  head_sha?:string;
 };
 export type GithubDispatchStep=
   | {disposition:'rejected';httpStatus:400|401|403|404|422;reason:string}
@@ -31,6 +32,7 @@ export type GithubAsyncFact={
   timedOut:boolean;
   errorCode:string|null;
   resultJson:string|null;
+  headSha:string|null;
 };
 type AttemptFactRow={
   step_id:string;
@@ -40,6 +42,7 @@ type AttemptFactRow={
   created_at:number;
   receipt_outcome:string|null;
   result_json:string|null;
+  head_sha:string|null;
 };
 type ExecutorEnv={
   WORKFLOW_EXECUTOR_GITHUB_TOKEN?:string;
@@ -51,7 +54,7 @@ type ExecutorEnv={
   GITHUB_TEST_DEDICATED_EXECUTOR?:string;
 };
 
-const FACT_SQL=`SELECT a.step_id,a.attempt_id,a.state,a.candidate_run_id,a.created_at,
+const FACT_SQL=`SELECT a.step_id,a.attempt_id,a.state,a.candidate_run_id,a.created_at,a.head_sha,
   c.outcome AS receipt_outcome,c.result_json
   FROM step_attempts a
   LEFT JOIN callback_receipts c ON c.attempt_id=a.attempt_id`;
@@ -65,7 +68,7 @@ function classify(row:AttemptFactRow,now:number,runOutcome:string,runError:strin
   const base={
     stepId:row.step_id,attemptId:row.attempt_id,externalExecutionId:external,
     receiptOutcome:receipt,deadlineAt,timedOut:false,errorCode:null as string|null,
-    resultJson:row.result_json,
+    resultJson:row.result_json,headSha:visibleHeadSha(row),
   };
   if(row.state==='rejected')
     return {...base,phase:'rejected',receiptOutcome:null,deadlineAt:null,
@@ -98,7 +101,18 @@ function view(fact:GithubAsyncFact):GithubAsyncAction|null{
     external_execution_id:fact.externalExecutionId,
     receipt_outcome:fact.phase==='external_terminal'?fact.receiptOutcome:null,
     deadline_at:fact.deadlineAt,timed_out:fact.timedOut,
+    ...(fact.headSha?{head_sha:fact.headSha}:{}),
   };
+}
+
+function visibleHeadSha(row:AttemptFactRow):string|null{
+  const stored=githubHeadSha(row.head_sha);
+  if(stored)return stored;
+  if(!row.result_json)return null;
+  try{
+    const parsed=JSON.parse(row.result_json) as {run?:{head_sha?:unknown}};
+    return githubHeadSha(parsed?.run?.head_sha)??null;
+  }catch{return null;}
 }
 
 async function facts(db:AttemptDatabase,runId:string,stepId:string|undefined,now:number,runOutcome:string,runError:string|null){
@@ -222,6 +236,8 @@ export async function observeAllowListedGithubRun(
     .bind(row.attempt_id).first<{callback_id:string}>();
   if(receipt)return;
   const observed=await readAllowListedGithubExecution(row.candidate_run_id,env.WORKFLOW_EXECUTOR_GITHUB_TOKEN);
+  if(observed.status!=='inconclusive'&&observed.headSha)
+    await persistGithubHeadSha(db,row.attempt_id,observed.headSha);
   if(observed.status!=='completed')return;
   await recordGithubRunObservation(db,row.attempt_id,{
     runId:row.candidate_run_id,repository:action.repository,workflowRef:registeredWorkflowRef(),

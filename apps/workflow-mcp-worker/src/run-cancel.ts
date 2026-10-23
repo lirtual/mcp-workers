@@ -1,4 +1,4 @@
-import type { AttemptDatabase } from './github-claim.ts';
+import { persistGithubHeadSha, type AttemptDatabase } from './github-claim.ts';
 import { cancelRegisteredGithubRun, observeRegisteredGithubRun, type GithubExecutionObservation } from './github-dispatch.ts';
 import { observeInstance } from './instance-observation.ts';
 import { LIMITS } from './capabilities.ts';
@@ -138,7 +138,7 @@ function aggregate(readings:GithubExecutionObservation[], effects:CancelEffect[]
   return 'indeterminate';
 }
 
-async function observeRows(env:CancelRuntime, rows:AttemptCancelRow[], outbound:Outbound){
+async function observeRows(db:AttemptDatabase, env:CancelRuntime, rows:AttemptCancelRow[], outbound:Outbound){
   const token=env.WORKFLOW_EXECUTOR_GITHUB_TOKEN;
   const repository=env.GITHUB_EXECUTOR_REPOSITORY;
   const readings:GithubExecutionObservation[]=[];
@@ -147,7 +147,10 @@ async function observeRows(env:CancelRuntime, rows:AttemptCancelRow[], outbound:
       readings.push({kind:'unknown'});
       continue;
     }
-    readings.push(await observeRegisteredGithubRun(attempt.repository, attempt.candidate_run_id, token, outbound));
+    const observed=await observeRegisteredGithubRun(attempt.repository, attempt.candidate_run_id, token, outbound);
+    if('headSha' in observed&&observed.headSha)
+      await persistGithubHeadSha(db, attempt.attempt_id, observed.headSha);
+    readings.push(observed);
   }
   return readings;
 }
@@ -220,7 +223,7 @@ async function reconcileCancelledRun(
   const live=watched.filter(row=>row.receipt_outcome!=='succeeded'&&row.receipt_outcome!=='failed');
   const finished=watched.filter(row=>row.receipt_outcome==='succeeded'||row.receipt_outcome==='failed');
   if(!live.length){
-    const readings=await observeRows(env, finished, outbound);
+    const readings=await observeRows(db, env, finished, outbound);
     if(readings.some(item=>item.kind==='cancelled'||item.kind==='unknown')){
       // A receipt and a conflicting or unreadable GitHub observation cannot
       // be collapsed into cancelled or succeeded.
@@ -230,7 +233,7 @@ async function reconcileCancelledRun(
     await persistReceipt(db, runId, finished);
     return finish(db, runId, 'completed');
   }
-  const readings=await observeRows(env, live, outbound);
+  const readings=await observeRows(db, env, live, outbound);
   const label=aggregate(readings, live.map(row=>row.cancel_effect));
   if(label==='cancelled'&&finished.length) return finish(db, runId, 'indeterminate');
   if(label==='cancelled'){

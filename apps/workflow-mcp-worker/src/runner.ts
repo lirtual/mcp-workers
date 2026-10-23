@@ -605,6 +605,10 @@ async function mapChildRun(db:Env['DB'], runId:string, outcome:string, result:st
 }
 async function runWorkflowCall(env:Env, planStep:Step, runId:string, ctx:ExprCtx, step:WorkflowStep):Promise<Outcome>{
   const db=env.DB;
+  const prior=await db.prepare('SELECT status,error_code FROM run_steps WHERE run_id=? AND step_id=?')
+    .bind(runId,planStep.id).first<{status:string;error_code:string|null}>();
+  if(prior?.status==='indeterminate'&&prior.error_code==='child_wait_unconfirmed')
+    return {status:'indeterminate',error_code:'child_wait_unconfirmed'};
   if(planStep.needs.some(need=>ctx.steps[need]?.status!=='succeeded'))return {status:'skipped'};
   try{if(planStep.if!==undefined&&!evaluateCondition(planStep.if,ctx))return {status:'skipped'};}
   catch{return {status:'failed',error_code:'step_execution_failed'};}
@@ -655,8 +659,8 @@ async function runWorkflowCall(env:Env, planStep:Step, runId:string, ctx:ExprCtx
     await releaseWaitingRun(db,runId);
     return mapChildRun(db,admitted.run_id,last.outcome,last.result,last.error_code);
   }
-  // Stop parking the parent. The child Run itself is left to its own admission.
-  await resumeParkedRun(db,runId);
+  // The budget is spent. Leave the parent parked until the child is terminal
+  // or the parent is cancelled. Do not copy a later child success.
   return {status:'indeterminate',error_code:'child_wait_unconfirmed'};
 }
 

@@ -22,7 +22,7 @@ export type LogicalAttempt={
   capabilityId:'github.workflow.check';
 };
 export type DispatchOutcome=
-  | {status:'confirmed';runId:number;runAttempt:1}
+  | {status:'confirmed';runId:number;runAttempt:1;headSha?:string}
   | {status:'rejected';httpStatus:400|401|403|404|422;
       reason:'integration_scope'|'rate_limit'|'workflow_trigger'|'policy'|'unknown'}
   | {status:'dispatch_unknown'};
@@ -123,10 +123,8 @@ export async function dispatchGithubAttempt(
   }
   if(response.status!==200)return {status:'dispatch_unknown'};
   try{
-    const result=await response.json() as {workflow_run_id?:unknown};
-    if(typeof result.workflow_run_id==='number'&&
-       Number.isSafeInteger(result.workflow_run_id)&&result.workflow_run_id>0)
-      return {status:'confirmed',runId:result.workflow_run_id,runAttempt:1};
+    const confirmed=confirmedDispatch(await response.json());
+    if(confirmed)return {status:'confirmed',runId:confirmed.runId,runAttempt:1,...(confirmed.headSha?{headSha:confirmed.headSha}:{})};
   }catch{}
   return {status:'dispatch_unknown'};
 }
@@ -142,9 +140,9 @@ const COMPLETED_CONCLUSIONS=new Set([
 ]);
 
 export type GithubExecutionObservation=
-  | {kind:'open'}
-  | {kind:'cancelled'}
-  | {kind:'completed';conclusion:string}
+  | {kind:'open';headSha?:string}
+  | {kind:'cancelled';headSha?:string}
+  | {kind:'completed';conclusion:string;headSha?:string}
   | {kind:'unknown'};
 
 /**
@@ -195,7 +193,8 @@ export async function observeRegisteredGithubRun(
   if(runResponse.status>=300&&runResponse.status<400) return {kind:'unknown'};
   const run=await githubObject(runResponse);
   if(!run||typeof run.status!=='string') return {kind:'unknown'};
-  if(run.status!=='completed') return {kind:'open'};
+  const headSha=githubHeadSha(run.head_sha);
+  if(run.status!=='completed') return headSha?{kind:'open',headSha}:{kind:'open'};
   if(typeof run.conclusion!=='string') return {kind:'unknown'};
   let jobsResponse:Response;
   try{
@@ -219,11 +218,11 @@ export async function observeRegisteredGithubRun(
   }
   if(run.conclusion==='cancelled'){
     return conclusions.every(item=>item==='cancelled'||item==='skipped')
-      ?{kind:'cancelled'}:{kind:'unknown'};
+      ?(headSha?{kind:'cancelled',headSha}:{kind:'cancelled'}):{kind:'unknown'};
   }
   if(!COMPLETED_CONCLUSIONS.has(run.conclusion)||conclusions.some(item=>item==='cancelled'))
     return {kind:'unknown'};
-  return {kind:'completed',conclusion:run.conclusion};
+  return headSha?{kind:'completed',conclusion:run.conclusion,headSha}:{kind:'completed',conclusion:run.conclusion};
 }
 
 /**
@@ -290,9 +289,9 @@ export async function dispatchAllowListedGithubAction(
 }
 
 export type AllowListedRead=
-  | {status:'pending'}
+  | {status:'pending';headSha?:string}
   | {status:'inconclusive'}
-  | {status:'completed';outcome:'succeeded'|'failed';result:unknown};
+  | {status:'completed';outcome:'succeeded'|'failed';result:unknown;headSha?:string};
 
 /** Read one confirmed run. Never dispatches. URLs in the result are synthesized. */
 export async function readAllowListedGithubExecution(
@@ -308,7 +307,7 @@ export async function readAllowListedGithubExecution(
   if(!run)return {status:'inconclusive'};
   const body=run as {
     id?:unknown;status?:unknown;conclusion?:unknown;event?:unknown;path?:unknown;
-    head_branch?:unknown;run_attempt?:unknown;repository?:{full_name?:unknown};
+    head_branch?:unknown;run_attempt?:unknown;head_sha?:unknown;repository?:{full_name?:unknown};
   };
   const branch=action.ref.slice('refs/heads/'.length);
   const identity=body.id===runId && body.event==='workflow_dispatch' &&
@@ -316,18 +315,19 @@ export async function readAllowListedGithubExecution(
     body.run_attempt===1 &&
     (body.repository===undefined || body.repository?.full_name===action.repository);
   if(!identity||typeof body.status!=='string')return {status:'inconclusive'};
-  if(body.status!=='completed')return {status:'pending'};
+  const headSha=githubHeadSha(body.head_sha);
+  if(body.status!=='completed')return headSha?{status:'pending',headSha}:{status:'pending'};
   const failed=body.conclusion==='failure'||body.conclusion==='cancelled'||
     body.conclusion==='timed_out'||body.conclusion==='startup_failure';
   if(body.conclusion!=='success'&&!failed)return {status:'inconclusive'};
-  if(failed)return {status:'completed',outcome:'failed',result:executionResult('failure',runId,[])};
+  if(failed)return {status:'completed',outcome:'failed',result:executionResult('failure',runId,[],headSha),...(headSha?{headSha}:{})};
   const listed=await githubJson(outbound,githubRequest(
     'https://api.github.com/repos/'+action.repository+'/actions/runs/'+runId+'/artifacts?per_page=8',
     dispatchToken));
   if(!listed)return {status:'inconclusive'};
   const artifacts=artifactReferences(listed);
   if(!artifacts)return {status:'inconclusive'};
-  return {status:'completed',outcome:'succeeded',result:executionResult('success',runId,artifacts)};
+  return {status:'completed',outcome:'succeeded',result:executionResult('success',runId,artifacts,headSha),...(headSha?{headSha}:{})};
 }
 
 function githubRequest(url:string,token:string,body?:unknown):Request{
@@ -361,10 +361,8 @@ async function postDispatch(
   }
   if(response.status!==200)return {status:'dispatch_unknown'};
   try{
-    const result=await response.json() as {workflow_run_id?:unknown};
-    if(typeof result.workflow_run_id==='number'&&Number.isSafeInteger(result.workflow_run_id)&&
-       result.workflow_run_id>0)
-      return {status:'confirmed',runId:result.workflow_run_id,runAttempt:1};
+    const confirmed=confirmedDispatch(await response.json());
+    if(confirmed)return {status:'confirmed',runId:confirmed.runId,runAttempt:1,...(confirmed.headSha?{headSha:confirmed.headSha}:{})};
   }catch{}
   return {status:'dispatch_unknown'};
 }
@@ -379,7 +377,19 @@ async function githubJson(
   }catch{return null;}
 }
 
-function executionResult(conclusion:'success'|'failure',runId:number,artifacts:ArtifactReference[]){
+const HEAD_SHA=/^[0-9a-f]{40}$/i;
+export function githubHeadSha(value:unknown):string|undefined{
+  return typeof value==='string'&&HEAD_SHA.test(value)?value.toLowerCase():undefined;
+}
+function confirmedDispatch(value:unknown):{runId:number;headSha?:string}|null{
+  if(!value||typeof value!=='object'||Array.isArray(value))return null;
+  const result=value as {workflow_run_id?:unknown;head_sha?:unknown};
+  if(typeof result.workflow_run_id!=='number'||!Number.isSafeInteger(result.workflow_run_id)||result.workflow_run_id<=0)
+    return null;
+  const headSha=githubHeadSha(result.head_sha);
+  return headSha?{runId:result.workflow_run_id,headSha}:{runId:result.workflow_run_id};
+}
+function executionResult(conclusion:'success'|'failure',runId:number,artifacts:ArtifactReference[],headSha?:string){
   const action=REGISTERED_GITHUB_ACTION;
   return {
     task:action.id,
@@ -387,6 +397,7 @@ function executionResult(conclusion:'success'|'failure',runId:number,artifacts:A
     run:{
       id:runId,attempt:1,status:'completed' as const,
       html_url:'https://github.com/'+action.repository+'/actions/runs/'+runId,
+      ...(headSha?{head_sha:headSha}:{}),
     },
     implementation:{
       repository:action.repository,

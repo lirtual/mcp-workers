@@ -1,5 +1,5 @@
 import { createRemoteJWKSet, jwtVerify } from 'jose';
-import { matchCandidateIdentity, type DispatchOutcome } from './github-dispatch.ts';
+import { githubHeadSha, matchCandidateIdentity, type DispatchOutcome } from './github-dispatch.ts';
 import { REGISTERED_GITHUB_ACTION } from './github-registry.ts';
 
 /**
@@ -85,13 +85,22 @@ export async function recordGithubDispatchResult(
       result.runAttempt!==1))throw Error('github_dispatch_candidate_invalid');
   const state=result.status==='confirmed'?'confirmed':
     result.status==='rejected'?'rejected':'dispatch_unknown';
+  const headSha=result.status==='confirmed'?githubHeadSha(result.headSha)??null:null;
   const updated=await db.prepare(`UPDATE step_attempts SET state=?,
-    candidate_run_id=?,candidate_run_attempt=?,updated_at=?
+    candidate_run_id=?,candidate_run_attempt=?,head_sha=COALESCE(?,head_sha),updated_at=?
     WHERE attempt_id=? AND state='created' AND owner_run_id IS NULL`).bind(
     state,result.status==='confirmed'?result.runId:null,
-    result.status==='confirmed'?result.runAttempt:null,Date.now(),attemptId,
+    result.status==='confirmed'?result.runAttempt:null,headSha,Date.now(),attemptId,
   ).run();
   return updated.meta.changes===1;
+}
+
+/** Keep a sha already present on a GitHub run payload. Does not dispatch. */
+export async function persistGithubHeadSha(db:AttemptDatabase,attemptId:string,headSha:string):Promise<void>{
+  const sha=githubHeadSha(headSha);
+  if(!ID.test(attemptId)||!sha)return;
+  await db.prepare(`UPDATE step_attempts SET head_sha=?,updated_at=?
+    WHERE attempt_id=? AND (head_sha IS NULL OR head_sha!=?)`).bind(sha,Date.now(),attemptId,sha).run();
 }
 
 /**

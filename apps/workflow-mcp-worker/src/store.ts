@@ -75,13 +75,27 @@ export async function releaseWaitingRun(db:Env['DB'], runId:string):Promise<void
     )`).bind(now(),runId,runId).run();
 }
 export async function resumeParkedRun(db:Env['DB'], runId:string):Promise<void>{
-  await db.prepare("UPDATE runs SET outcome='running', updated_at=? WHERE id=? AND outcome='waiting' AND cancel_requested_at IS NULL")
-    .bind(now(),runId).run();
+  // A parent still waiting on a non-terminal awaited child is not advancing.
+  await db.prepare(`UPDATE runs SET outcome='running', updated_at=?
+    WHERE id=? AND outcome='waiting' AND cancel_requested_at IS NULL
+    AND NOT EXISTS (
+      SELECT 1 FROM runs AS child
+      WHERE child.parent_run_id=? AND child.child_mode='await'
+        AND child.outcome IN ('queued','running','waiting')
+    )`).bind(now(),runId,runId).run();
 }
 export async function noteAwaitingParent(env:Env, runId:string):Promise<void>{
   const row=await env.DB.prepare('SELECT parent_run_id,parent_step_id,child_mode FROM runs WHERE id=?')
     .bind(runId).first<{parent_run_id:string|null;parent_step_id:string|null;child_mode:string|null}>();
   if(!row?.parent_run_id||row.child_mode!=='await'||!row.parent_step_id)return;
+  const step=await env.DB.prepare('SELECT status,error_code FROM run_steps WHERE run_id=? AND step_id=?')
+    .bind(row.parent_run_id,row.parent_step_id).first<{status:string;error_code:string|null}>();
+  if(step?.status==='indeterminate'&&step.error_code==='child_wait_unconfirmed'){
+    await env.DB.prepare(`UPDATE runs SET outcome='indeterminate', error_code='child_wait_unconfirmed', updated_at=?
+      WHERE id=? AND outcome='waiting' AND cancel_requested_at IS NULL`)
+      .bind(now(),row.parent_run_id).run();
+    return;
+  }
   try{
     const instance=await env.WORKFLOW.get(row.parent_run_id);
     if(instance.sendEvent) await instance.sendEvent({type:'child-done-'+row.parent_step_id,payload:{run_id:runId}});
@@ -302,7 +316,8 @@ export class WorkflowService {
   constructor(env:Env){this.env=env;}
   private get db(){return this.env.DB;}
   async list(){const out=await this.db.prepare('SELECT * FROM workflows ORDER BY updated_at DESC LIMIT 100').all<WorkflowRow>();
-    return {workflows:out.results.map(r=>({workflow_id:r.id,name:r.name,draft_revision:r.draft_revision,published_version_id:r.active_version_id,state:r.state}))};}
+    const scan=await this.db.prepare("SELECT COUNT(*) AS n FROM workflows WHERE state IN ('active','paused') AND active_version_id IS NOT NULL").first<{n:number}>();
+    return {workflows:out.results.map(r=>({workflow_id:r.id,name:r.name,draft_revision:r.draft_revision,published_version_id:r.active_version_id,state:r.state})),scan_truncated:(scan?.n??0)>=100};}
   async get(workflow_id:string){assertId(workflow_id);const row=await this.row(workflow_id);return workflowView(row);}
   private async row(id:string){const row=await this.db.prepare('SELECT * FROM workflows WHERE id=?').bind(id).first<WorkflowRow>();if(!row)throw new StateError('workflow_not_found');return row;}
   async create(definition:string){
