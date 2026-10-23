@@ -7,6 +7,15 @@ const yaml = `name: Short Linux build
 on:
   workflow_dispatch:
     inputs:
+      attempt_id:
+        type: string
+        required: true
+      dispatch_id:
+        type: string
+        required: true
+      capability_id:
+        type: string
+        required: true
       duration:
         type: number
         default: 5
