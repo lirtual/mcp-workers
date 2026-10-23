@@ -1,5 +1,5 @@
 import type {Env} from './store.ts';
-import {verifyAndClaimPinnedGitHubAction,verifySignedPendingGitHubActionClaim} from './github-action-oidc-claim.ts';
+import {verifyAndClaimPinnedGitHubAction,verifySignedPendingGitHubActionClaim,verifyAlreadyClaimedPinnedGitHubAction} from './github-action-oidc-claim.ts';
 import {recordSignedSessionReady} from './github-action-session.ts';
 import {inspectPersistedGitHubActionAttempt} from './github-action-attempt-inspection.ts';
 import type {jwtVerify} from 'jose';
@@ -68,6 +68,15 @@ export async function handleGithubActionClaimRequest(
     ?await verifyAndClaimPinnedGitHubAction(env.DB,attemptId,credential,env.GITHUB_ACTION_OIDC_AUDIENCE,keys)
     :await verifyAndClaimPinnedGitHubAction(env.DB,attemptId,credential,env.GITHUB_ACTION_OIDC_AUDIENCE);
    if(verified)return result(200,'claimed');
+   // A lost HTTP 200 must not strand a physical job whose exact signed
+   // identity already owns this Attempt. Cancellation and terminal fences
+   // still apply; this does not grant or change ownership.
+   const replay=keys
+    ?await verifyAlreadyClaimedPinnedGitHubAction(env.DB,attemptId,credential,
+      env.GITHUB_ACTION_OIDC_AUDIENCE,keys)
+    :await verifyAlreadyClaimedPinnedGitHubAction(env.DB,attemptId,credential,
+      env.GITHUB_ACTION_OIDC_AUDIENCE);
+   if(replay)return result(200,'already_claimed');
    // GitHub may schedule the newly dispatched Job before its HTTP dispatch
    // ACK was persisted. A valid signed, reviewed pending candidate gets a
    // transient 503; unknown/invalid/cancelled identity remains denied.
