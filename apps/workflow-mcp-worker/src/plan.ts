@@ -1,8 +1,9 @@
 import YAML from 'yaml';
 import { publicMcpEndpoint } from './mcp-public-fetch.ts';
 import {
-  CONDITION_VALUE_OPS, DEFINITION_KEYS, GITHUB_CAPABILITY_ID, isSupportedUse, LIMITS, MCP_SCOPE,
-  OBJECT_PROTOTYPE_KEYS, RESERVED_EXPRESSION_KEYS, STEP_ID, STEP_KEYS, TOOL_NAME, WITH_KEYS,
+  CONDITION_VALUE_OPS, DEFINITION_KEYS, GITHUB_CAPABILITY_ID, GITHUB_TRIGGER_EVENTS, GITHUB_TRIGGER_KEYS,
+  isSupportedUse, LIMITS, MCP_SCOPE, OBJECT_PROTOTYPE_KEYS, RESERVED_EXPRESSION_KEYS, STEP_ID, STEP_KEYS,
+  TOOL_NAME, TRIGGER_EVENT_NAME, TRIGGER_REPOSITORY, TRIGGER_SOURCE_ID, WEBHOOK_TRIGGER_KEYS, WITH_KEYS,
 } from './capabilities.ts';
 
 export class PlanError extends Error {
@@ -18,7 +19,10 @@ export type Step = {
   with: Record<string, unknown>; if?: unknown;
 };
 export type ReadonlyOperation = { endpoint:string; tool:string; scope:'read'; schema_digest:string };
-export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown>; mcp_approvals?: ReadonlyOperation[]; mcp_target_risks_accepted?: true; github_execution_approved?: true };
+export type WebhookTrigger = { id: string; type: 'webhook'; source: string; event: string };
+export type GithubEventTrigger = { id: string; type: 'github_event'; repository: string; events: string[] };
+export type PlanTrigger = WebhookTrigger | GithubEventTrigger;
+export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown>; triggers?: PlanTrigger[]; mcp_approvals?: ReadonlyOperation[]; mcp_target_risks_accepted?: true; github_execution_approved?: true };
 const PROTOTYPE_KEYS = new Set<string>(OBJECT_PROTOTYPE_KEYS);
 const RESERVED = new Set<string>(RESERVED_EXPRESSION_KEYS);
 function pointer(base: string, key: string | number): string {
@@ -126,6 +130,54 @@ export function evaluateCondition(condition: unknown, ctx: {inputs:Record<string
   return value;
 }
 export const evaluateArguments=evaluateExpression;
+function validateTriggers(value: unknown): PlanTrigger[] {
+  if(!Array.isArray(value)||value.length<1||value.length>LIMITS.maxTriggers)
+    throw new PlanError('invalid_trigger', {path:'/triggers', suggestion:'Declare one webhook, one github_event, or both.'});
+  const triggers: PlanTrigger[]=[];
+  const ids=new Set<string>();
+  const types=new Set<string>();
+  for(let index=0; index<value.length; index++){
+    const path='/triggers/'+index;
+    const trigger=object(value[index],'invalid_trigger',path);
+    if(trigger.type!=='webhook'&&trigger.type!=='github_event')
+      throw new PlanError('invalid_trigger', {path:path+'/type', suggestion:'Use webhook or github_event.'});
+    if(typeof trigger.id!=='string'||!STEP_ID.test(trigger.id)||ids.has(trigger.id))
+      throw new PlanError('invalid_trigger', {path:path+'/id'});
+    if(types.has(trigger.type))throw new PlanError('duplicate_trigger', {path:path+'/type'});
+    ids.add(trigger.id); types.add(trigger.type);
+    if(trigger.type==='webhook'){
+      keys(trigger,WEBHOOK_TRIGGER_KEYS,path);
+      if(typeof trigger.source!=='string'||!TRIGGER_SOURCE_ID.test(trigger.source))
+        throw new PlanError('invalid_trigger_source', {path:path+'/source', suggestion:'Use the configured source id. Do not put a URL in source.'});
+      if(typeof trigger.event!=='string'||!TRIGGER_EVENT_NAME.test(trigger.event))
+        throw new PlanError('invalid_trigger_event', {path:path+'/event'});
+      triggers.push({id:trigger.id,type:'webhook',source:trigger.source,event:trigger.event});
+      continue;
+    }
+    keys(trigger,GITHUB_TRIGGER_KEYS,path);
+    if(typeof trigger.repository!=='string'||!TRIGGER_REPOSITORY.test(trigger.repository)||trigger.repository.includes('..'))
+      throw new PlanError('invalid_repository', {path:path+'/repository', suggestion:'Use owner/name.'});
+    if(!Array.isArray(trigger.events)||trigger.events.length<1||trigger.events.length>LIMITS.maxTriggerEvents)
+      throw new PlanError('invalid_trigger_event', {path:path+'/events'});
+    const events:string[]=[];
+    for(let eventIndex=0; eventIndex<trigger.events.length; eventIndex++){
+      const event=trigger.events[eventIndex];
+      const eventPath=path+'/events/'+eventIndex;
+      if(typeof event!=='string'||!TRIGGER_EVENT_NAME.test(event))
+        throw new PlanError('invalid_trigger_event', {path:eventPath});
+      if(!(GITHUB_TRIGGER_EVENTS as readonly string[]).includes(event))
+        throw new PlanError('unsupported_github_event', {
+          path:eventPath, suggestion:'Use push, issues, issue_comment, pull_request, release, create, or delete.',
+        });
+      if(events.includes(event))throw new PlanError('duplicate_trigger', {path:eventPath});
+      events.push(event);
+    }
+    events.sort();
+    triggers.push({id:trigger.id,type:'github_event',repository:trigger.repository,events});
+  }
+  triggers.sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0);
+  return triggers;
+}
 export async function compilePlan(source: string|unknown): Promise<{plan:Plan; digest:string}>{
   let raw:unknown=source;
   if(typeof source==='string'){
@@ -139,6 +191,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
   if(typeof o.name!=='string'||!o.name.trim()||o.name.length>LIMITS.maxNameLength)throw new PlanError('invalid_name', {path: '/name'});
   if(!Array.isArray(o.steps)||o.steps.length<LIMITS.minSteps||o.steps.length>LIMITS.maxSteps)throw new PlanError('invalid_step_count', {path: '/steps'});
   if(o.inputs!==undefined) {const inp=object(o.inputs,'invalid_inputs','/inputs');if(Object.keys(inp).length>LIMITS.maxInputs)throw new PlanError('too_many_inputs', {path: '/inputs'});}
+  const triggers=o.triggers===undefined?undefined:validateTriggers(o.triggers);
   const steps:Step[]=[];
   const ids=new Set<string>();
   for(let index=0; index<o.steps.length; index++){
@@ -197,7 +250,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     if(ready.length>LIMITS.maxParallel)throw new PlanError('excessive_parallelism', {path: '/steps', suggestion: 'Keep each ready wave to 8 steps or fewer.'});
     for(const s of ready){sorted.push(s);pending.delete(s.id);}
   }
-  const plan:Plan={version:1,name:o.name,steps:sorted,...(o.inputs===undefined?{}:{inputs:o.inputs as Record<string,unknown>})};
+  const plan:Plan={version:1,name:o.name,steps:sorted,...(o.inputs===undefined?{}:{inputs:o.inputs as Record<string,unknown>}),...(triggers===undefined?{}:{triggers})};
   const serial=JSON.stringify(canonical(plan));
   const hash=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(serial));
   const digest=[...new Uint8Array(hash)].map(x=>x.toString(16).padStart(2,'0')).join('');

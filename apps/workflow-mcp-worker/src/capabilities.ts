@@ -2,7 +2,7 @@ import { PRODUCTION_PORTAL_ENDPOINT, TRUSTED_PORTAL_ENDPOINT } from './mcp-publi
 import { GITHUB_ASYNC_WAIT_MS } from './github-async.ts';
 import { selectedGithubExecutor } from './github-dispatch.ts';
 
-export const DEFINITION_KEYS = ['version', 'name', 'inputs', 'steps'] as const;
+export const DEFINITION_KEYS = ['version', 'name', 'inputs', 'triggers', 'steps'] as const;
 export const STEP_KEYS = ['id', 'uses', 'needs', 'if', 'with'] as const;
 export const USES = ['result.emit', 'mcp.call', 'github.run'] as const;
 export type SupportedUse = typeof USES[number];
@@ -19,6 +19,14 @@ export const RESERVED_EXPRESSION_KEYS = ['eval', 'javascript', 'script', 'code',
 export const OBJECT_PROTOTYPE_KEYS = ['constructor', 'toString', 'toLocaleString', 'valueOf', 'hasOwnProperty', 'isPrototypeOf', 'propertyIsEnumerable'] as const;
 export const STEP_ID = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
 export const TOOL_NAME = /^[a-zA-Z0-9_-][a-zA-Z0-9_.-]{0,127}$/;
+export const WEBHOOK_TRIGGER_KEYS = ['id', 'type', 'source', 'event'] as const;
+export const GITHUB_TRIGGER_KEYS = ['id', 'type', 'repository', 'events'] as const;
+// Business triggers only. GitHub Action lifecycle events stay on the executor
+// claim/callback routes and are not a second orchestrator.
+export const GITHUB_TRIGGER_EVENTS = ['create', 'delete', 'issue_comment', 'issues', 'pull_request', 'push', 'release'] as const;
+export const TRIGGER_SOURCE_ID = /^[a-z][a-z0-9-]{0,63}$/;
+export const TRIGGER_EVENT_NAME = /^[a-z][a-z0-9_]{0,63}$/;
+export const TRIGGER_REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 export const LIMITS = {
   definitionBytes: 32 * 1024,
   minSteps: 1,
@@ -34,7 +42,13 @@ export const LIMITS = {
   maxToolSchemaBytes: 8192,
   maxDefinitionDepth: 32,
   maxAliasCount: 16,
+  maxTriggers: 2,
+  maxTriggerEvents: 8,
 } as const;
+
+export function isConfiguredSecret(value: unknown): value is string {
+  return typeof value === 'string' && value.length >= 16 && value.length <= 256 && !/[\r\n]/.test(value);
+}
 
 const PORTAL_ENDPOINTS: readonly string[] = [TRUSTED_PORTAL_ENDPOINT, PRODUCTION_PORTAL_ENDPOINT];
 
@@ -89,6 +103,18 @@ const manualExample = {
   name: 'Manual',
   steps: [{id: 'emit', uses: 'result.emit', with: {data: 'ok'}}],
 };
+const webhookExample = {
+  version: 1,
+  name: 'Webhook',
+  triggers: [{id: 'hook', type: 'webhook', source: 'approved-webhook', event: 'submitted'}],
+  steps: [{id: 'emit', uses: 'result.emit', with: {data: {ref: 'inputs.event'}}}],
+};
+const githubEventExample = {
+  version: 1,
+  name: 'GitHub event',
+  triggers: [{id: 'gh', type: 'github_event', repository: 'example/workflow', events: ['push']}],
+  steps: [{id: 'emit', uses: 'result.emit', with: {data: {ref: 'inputs.event'}}}],
+};
 
 type Kind = 'trigger' | 'action' | 'flow';
 type SupportedEntry = {
@@ -111,15 +137,19 @@ type Entry = SupportedEntry | UnsupportedEntry;
 
 const CATALOG: readonly Entry[] = [
   {id: 'trigger.manual', kind: 'trigger', status: 'supported', example: manualExample,
-    summary: 'Start the published plan by calling workflow_run. Definitions have no trigger field.',
+    summary: 'Start the published plan by calling workflow_run. Manual start does not declare a trigger.',
     permissions: 'Publishing a Draft does not start a Run. workflow_run admits one manual Run of the pinned published plan.',
     completion: 'The Run is queued. Poll workflow_status and workflow_result. Inputs are an untyped object; typed input checks are unsupported.'},
   {id: 'trigger.cron', kind: 'trigger', status: 'unsupported',
     summary: 'Cron triggers are not implemented. Do not add a cron or schedule field.'},
-  {id: 'trigger.webhook', kind: 'trigger', status: 'unsupported',
-    summary: 'Webhook triggers are not implemented. Do not add a webhook field.'},
-  {id: 'trigger.github_event', kind: 'trigger', status: 'unsupported',
-    summary: 'GitHub event triggers are not implemented. Do not add a trigger field. github.run is a step, not an event trigger.'},
+  {id: 'trigger.webhook', kind: 'trigger', status: 'supported', example: webhookExample,
+    summary: 'An authenticated webhook can admit a Run of the published plan. Declare triggers, not a top-level webhook field.',
+    permissions: 'Publish accepts the webhook only when source equals the configured source and a signing secret is configured. The secret is never returned, logged, or stored in the plan. POST /triggers/webhook/{workflow_id} with X-Workflow-Signature-256.',
+    completion: 'Admission is the same path as workflow_run and pins the published version active at the first admission. A later publish does not move that Run. Replaying the same X-Workflow-Event-Id returns that Run. A new id after a version switch uses the version active at admission. A delivery while paused is rejected and not stored. A missing stable event id is not deduplicated. This does not promise global exactly-once.'},
+  {id: 'trigger.github_event', kind: 'trigger', status: 'supported', example: githubEventExample,
+    summary: 'An authenticated GitHub repository event can admit a Run. github.run remains a step, not an event trigger.',
+    permissions: 'Publish accepts the repository only when it equals the configured executor repository and a webhook secret is configured. The secret is never returned. Allowed events are create, delete, issue_comment, issues, pull_request, push, and release. workflow_run, workflow_job, and the GitHub Action claim/callback routes do not start a business Run.',
+    completion: 'POST /triggers/github/{workflow_id} verifies X-Hub-Signature-256 and then uses the same Run admission as workflow_run. X-GitHub-Delivery dedupes that delivery only. A missing delivery id is not deduplicated. A new delivery id is a new admission. This does not promise global exactly-once.'},
   {id: 'action.result.emit', kind: 'action', status: 'supported', uses: 'result.emit', example: emitExample,
     summary: 'Evaluate a JSON value and store it as the step output. No network.',
     permissions: 'No grant. data is an expression, not a command.',
@@ -176,7 +206,26 @@ export type CapabilityEnv = {
   GITHUB_EXECUTOR_AUDIENCE?: string;
   GITHUB_TEST_WORKER_NAME?: string;
   GITHUB_TEST_DEDICATED_EXECUTOR?: string;
+  WEBHOOK_TRIGGER_SOURCE?: string;
+  WEBHOOK_TRIGGER_SECRET?: string;
+  GITHUB_WEBHOOK_SECRET?: string;
 };
+
+function triggerConnections(env: CapabilityEnv) {
+  const webhookSource = env.WEBHOOK_TRIGGER_SOURCE;
+  const webhookSecret = env.WEBHOOK_TRIGGER_SECRET;
+  const webhook = isConfiguredSecret(webhookSecret) && webhookSource && TRIGGER_SOURCE_ID.test(webhookSource) &&
+    !webhookSource.includes(webhookSecret)
+    ? {status: 'configured' as const, source: webhookSource}
+    : {status: 'unavailable' as const};
+  const repository = env.GITHUB_EXECUTOR_REPOSITORY;
+  const githubSecret = env.GITHUB_WEBHOOK_SECRET;
+  const github_events = isConfiguredSecret(githubSecret) && repository && TRIGGER_REPOSITORY.test(repository) &&
+    !repository.includes(githubSecret)
+    ? {status: 'configured' as const, repository}
+    : {status: 'unavailable' as const};
+  return {webhook, github_events};
+}
 
 // Absent pins stay unavailable. Never echo tokens or an unconfigured endpoint.
 export function connectionSummary(env: CapabilityEnv) {
@@ -187,7 +236,8 @@ export function connectionSummary(env: CapabilityEnv) {
     : {status: 'unavailable' as const};
   const githubReady = Boolean(env.WORKFLOW_EXECUTOR_GITHUB_TOKEN && env.GITHUB_EXECUTOR_REPOSITORY &&
     env.GITHUB_EXECUTOR_REPOSITORY_ID && env.GITHUB_EXECUTOR_REF && env.GITHUB_EXECUTOR_AUDIENCE);
-  if (!githubReady) return {mcp_portal, github_executor: {status: 'unavailable' as const}};
+  const triggers = triggerConnections(env);
+  if (!githubReady) return {mcp_portal, github_executor: {status: 'unavailable' as const}, ...triggers};
   try {
     const workflow = selectedGithubExecutor(env).workflow;
     return {mcp_portal, github_executor: {
@@ -196,9 +246,9 @@ export function connectionSummary(env: CapabilityEnv) {
       ref: env.GITHUB_EXECUTOR_REF,
       workflow,
       audience: env.GITHUB_EXECUTOR_AUDIENCE,
-    }};
+    }, ...triggers};
   } catch {
-    return {mcp_portal, github_executor: {status: 'unavailable' as const}};
+    return {mcp_portal, github_executor: {status: 'unavailable' as const}, ...triggers};
   }
 }
 
@@ -221,8 +271,10 @@ function definitionContract() {
       max_expression_depth: LIMITS.maxExpressionDepth,
       max_expression_array: LIMITS.maxArrayLength,
       max_tool_schema_bytes: LIMITS.maxToolSchemaBytes,
+      max_triggers: LIMITS.maxTriggers,
     },
-    manual_start: 'Call workflow_run after explicit publish. Do not add a trigger field. Typed input checks are unsupported.',
+    manual_start: 'Call workflow_run after explicit publish. Omit triggers for a manual-only definition. Typed input checks are unsupported.',
+    event_admission: 'Webhook and GitHub event deliveries admit through the same Run path as workflow_run. A stable event id dedupes to one Run of the version active at first admission. A missing stable event id does not promise exactly-once. Cron is unsupported.',
     schema: {
       type: 'object',
       additionalProperties: false,
@@ -231,6 +283,10 @@ function definitionContract() {
         version: {const: 1},
         name: {type: 'string', minLength: 1, maxLength: LIMITS.maxNameLength},
         inputs: {type: 'object', maxProperties: LIMITS.maxInputs},
+        triggers: {
+          type: 'array', minItems: 1, maxItems: LIMITS.maxTriggers,
+          description: 'Optional. At most one webhook and one github_event.',
+        },
         steps: {
           type: 'array', minItems: LIMITS.minSteps, maxItems: LIMITS.maxSteps,
           items: {type: 'object', required: ['id', 'uses', 'with'], properties: {id: {type: 'string'}, uses: {enum: USES}}},

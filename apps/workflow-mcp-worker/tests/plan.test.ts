@@ -217,6 +217,49 @@ test('supported capability examples compile through the real plan compiler', asy
   assert.deepEqual([...seen].sort(), ['github.run', 'mcp.call', 'result.emit']);
 });
 
+test('an unchanged manual definition keeps its published plan digest', async () => {
+  const compiled = await compilePlan(JSON.stringify(one));
+  assert.equal(compiled.digest, '6cefd7cf044a155631149e7c23cd12ce30b39f31296e5a5b02647efa3a1e6c0f');
+  assert.equal('triggers' in compiled.plan, false);
+});
+
+test('approved webhook and GitHub event triggers compile, and illegal trigger input does not', async () => {
+  const webhook = {
+    version: 1, name: 'On hook',
+    triggers: [{id: 'hook', type: 'webhook', source: 'approved-webhook', event: 'submitted'}],
+    steps: [{id: 'emit', uses: 'result.emit', with: {data: {ref: 'inputs.event'}}}],
+  };
+  const github = {
+    version: 1, name: 'On push',
+    triggers: [{id: 'gh', type: 'github_event', repository: 'example/workflow', events: ['push', 'issues']}],
+    steps: [{id: 'emit', uses: 'result.emit', with: {data: {ref: 'inputs.payload'}}}],
+  };
+  const compiled = await compilePlan(webhook);
+  assert.deepEqual(compiled.plan.triggers, webhook.triggers);
+  const reordered = await compilePlan({
+    ...github,
+    triggers: [{events: ['issues', 'push'], repository: 'example/workflow', type: 'github_event', id: 'gh'}],
+  });
+  assert.equal(reordered.digest, (await compilePlan(github)).digest);
+  assert.deepEqual(capabilityCatalog().filter(entry => entry.status === 'supported').map(entry => entry.id).filter(id => id.startsWith('trigger.')),
+    ['trigger.manual', 'trigger.webhook', 'trigger.github_event']);
+  const rejected: Array<{definition: unknown; code: string; path: string}> = [
+    {definition: {...webhook, triggers: [{id: 'hook', type: 'webhook', source: 'approved-webhook', event: 'submitted', secret: 'hidden-secret-value'}]}, code: 'unsupported_field', path: '/triggers/0/secret'},
+    {definition: {...github, triggers: [{id: 'gh', type: 'github_event', repository: 'example/workflow', events: ['workflow_run']}]}, code: 'unsupported_github_event', path: '/triggers/0/events/0'},
+    {definition: {...github, triggers: [{id: 'gh', type: 'github_event', repository: 'https://github.com/example/workflow', events: ['push']}]}, code: 'invalid_repository', path: '/triggers/0/repository'},
+    {definition: {version: 1, name: 'Cron', cron: '*/5 * * * *', steps: webhook.steps}, code: 'unsupported_field', path: '/cron'},
+  ];
+  for (const probe of rejected) {
+    await assert.rejects(() => compilePlan(probe.definition), (error: unknown) => {
+      assert.ok(error instanceof PlanError);
+      assert.equal(error.message.split(':')[0], probe.code);
+      assert.equal(error.path, probe.path);
+      assert.equal(JSON.stringify(error).includes('hidden-secret-value'), false);
+      return true;
+    });
+  }
+});
+
 test('unimplemented capabilities stay unsupported and the compiler reports a precise path', async () => {
   for (const entry of capabilityCatalog()) {
     if (entry.status === 'unsupported') assert.equal(JSON.stringify(entry).includes('example'), false);
@@ -224,7 +267,7 @@ test('unimplemented capabilities stay unsupported and the compiler reports a pre
   }
   const unsupported = capabilityCatalog().filter(entry => entry.status === 'unsupported').map(entry => entry.id);
   assert.deepEqual(unsupported, [
-    'trigger.cron', 'trigger.webhook', 'trigger.github_event',
+    'trigger.cron',
     'action.http', 'action.mcp.write', 'action.shell',
     'flow.foreach', 'flow.while', 'flow.child_workflow', 'flow.saga',
   ]);

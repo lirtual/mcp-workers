@@ -263,10 +263,19 @@ test('Agent discovers capabilities and inline-validates a definition without tou
     assert.equal(byId.get('action.mcp.call')?.status, 'supported');
     assert.equal(byId.get('action.github.run')?.status, 'supported');
     assert.equal(byId.get('trigger.manual')?.status, 'supported');
-    for(const id of ['trigger.cron','trigger.webhook','trigger.github_event','action.http','action.mcp.write','action.shell','flow.foreach','flow.while','flow.child_workflow','flow.saga'])
+    assert.equal(byId.get('trigger.webhook')?.status, 'supported');
+    assert.equal(byId.get('trigger.github_event')?.status, 'supported');
+    for(const id of ['trigger.cron','action.http','action.mcp.write','action.shell','flow.foreach','flow.while','flow.child_workflow','flow.saga'])
       assert.equal(byId.get(id)?.status, 'unsupported', id);
     for(const item of overview.capabilities) assert.equal('example' in item, false);
 
+    const hookCap=await call('workflow_capabilities',{id:'trigger.webhook'});
+    const githubEventCap=await call('workflow_capabilities',{id:'trigger.github_event'});
+    assert.equal((await call('workflow_validate',{definition:JSON.stringify(hookCap.example)})).valid, true);
+    assert.equal((await call('workflow_validate',{definition:JSON.stringify(githubEventCap.example)})).valid, true);
+    assert.match(JSON.stringify(hookCap), /does not promise global exactly-once/);
+    assert.match(JSON.stringify(githubEventCap), /claim\/callback routes do not start a business Run/);
+    assert.equal(JSON.stringify(hookCap).includes('WEBHOOK_TRIGGER_SECRET'), false);
     const emit=await call('workflow_capabilities',{id:'action.result.emit'});
     const cron=await call('workflow_capabilities',{id:'trigger.cron'});
     const missing=await call('workflow_capabilities',{id:'action.not-real'});
