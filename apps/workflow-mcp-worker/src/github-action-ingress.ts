@@ -1,5 +1,5 @@
 import type {Env} from './store.ts';
-import {verifyAndClaimPinnedGitHubAction} from './github-action-oidc-claim.ts';
+import {verifyAndClaimPinnedGitHubAction,verifySignedPendingGitHubActionClaim} from './github-action-oidc-claim.ts';
 import {recordSignedSessionReady} from './github-action-session.ts';
 import {inspectPersistedGitHubActionAttempt} from './github-action-attempt-inspection.ts';
 import type {jwtVerify} from 'jose';
@@ -67,7 +67,16 @@ export async function handleGithubActionClaimRequest(
    const verified=keys
     ?await verifyAndClaimPinnedGitHubAction(env.DB,attemptId,credential,env.GITHUB_ACTION_OIDC_AUDIENCE,keys)
     :await verifyAndClaimPinnedGitHubAction(env.DB,attemptId,credential,env.GITHUB_ACTION_OIDC_AUDIENCE);
-   return verified?result(200,'claimed'):result(403,'claim_denied');
+   if(verified)return result(200,'claimed');
+   // GitHub may schedule the newly dispatched Job before its HTTP dispatch
+   // ACK was persisted. A valid signed, reviewed pending candidate gets a
+   // transient 503; unknown/invalid/cancelled identity remains denied.
+   const pending=keys
+    ?await verifySignedPendingGitHubActionClaim(env.DB,attemptId,credential,
+      env.GITHUB_ACTION_OIDC_AUDIENCE,keys)
+    :await verifySignedPendingGitHubActionClaim(env.DB,attemptId,credential,
+      env.GITHUB_ACTION_OIDC_AUDIENCE);
+   return pending?result(503,'claim_pending'):result(403,'claim_denied');
   }
   if(!env.WORKFLOW_EXECUTOR_GITHUB_TOKEN)return result(503,'ready_unavailable');
   const ready=await recordSignedSessionReady(env.DB,attemptId,credential,
