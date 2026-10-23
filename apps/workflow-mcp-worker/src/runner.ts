@@ -1,3 +1,4 @@
+import {watchPersistedSessions} from './github-action-session-watch.ts';
 import { runPublishedGitHubActionTask } from './github-action-task.ts';
 import { runPublishedGitHubActionSession } from './github-action-session.ts';
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
@@ -250,6 +251,21 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
     }catch{
       await db.prepare("UPDATE runs SET outcome='indeterminate',error_code='execution_interrupted',updated_at=? WHERE id=? AND outcome='running'").bind(now(),id).run();
       throw Error('execution_interrupted');
+    }finally{
+      // The parent business Run can finish at Session Ready, but its GitHub
+      // job is a separate physical resource. Keep THIS native Workflow
+      // sleeping and reconciling until terminal evidence or the bounded
+      // watch window. No external scheduler, false completion, or slot leak
+      // on a successful Ready. Expiry requests normal cancellation only.
+      if(plan.steps.some(s=>s.uses==='github.run'&&
+         s.with.capability==='github.action'&&
+         (s.with.action as {type?:unknown}|undefined)?.type==='session')){
+        try{await watchPersistedSessions(this.env,id,step);}
+        catch{
+          // The independent Session record still holds quota, and explicit
+          // workflow_status performs a verified recovery readback.
+        }
+      }
     }
   }
 }
