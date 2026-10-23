@@ -117,7 +117,8 @@ test('GitHub job failing before OIDC claim reports failed without a false succes
   assert.deepEqual(outcome,{status:'failed',error_code:'github_action_failed'});
   assert.equal(fixture.post(),1);
   assert.equal(fixture.sleeps(),0);
-  assert.deepEqual(fixture.db.prepare('SELECT state,owner_run_id FROM step_attempts').get(),
-   {state:'failed',owner_run_id:null});
+  const settled=fixture.db.prepare('SELECT state,owner_run_id FROM step_attempts').get();
+  assert.equal(settled?.state,'failed');
+  assert.equal(settled?.owner_run_id,null);
  }finally{fixture.db.close();}
 });
