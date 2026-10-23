@@ -48,5 +48,5 @@ export async function inspectPersistedGitHubActionAttempt(
     row.workflow_ref!==identity.repository+'/'+identity.workflowPath+'@'+row.ref ||
     row.ref!==raw.ref ||
     !row.ref.startsWith('refs/'))return {state:'unknown'};
- return inspect(identity,row.candidate_run_id,row.candidate_run_attempt,token);
+ return inspect(identity,row.candidate_run_id,row.candidate_run_attempt,token,row.ref);
 }
