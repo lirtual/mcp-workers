@@ -47,7 +47,8 @@ export async function verifyAndClaimPinnedGitHubAction(
  };
  if(!isPublishedGitHubActionApproved(plan.github_action_approvals,action)||
     row.repository!==action.repository||row.repository_id!==String(action.repositoryId)||
-    row.workflow_ref!==action.repository+'/'+action.workflowPath+'@'+row.ref)return false;
+    row.workflow_ref!==action.repository+'/'+action.workflowPath+'@'+row.ref||
+    row.ref!==raw.ref)return false;
  let claims:JWTPayload;
  try{
   const verified=await jwtVerify(jwt,keys,{issuer:'https://token.actions.githubusercontent.com',
