@@ -1,4 +1,5 @@
 import { discoverGitHubActions } from './github-action-discovery.ts';
+import { verifyActionDispatchRef } from './github-action-dispatch-ref.ts';
 import { reviewedGitHubAction, assertReviewedGitHubAction, type ReviewedGitHubAction } from './github-action-review.ts';
 import { approvedActionRepositories } from './github-action-catalog.ts';
 import { compilePlan, PlanError, canonicalJsonString } from './plan.ts';
@@ -127,8 +128,12 @@ export class WorkflowService {
       const discovered=await discoverGitHubActions({...grant,token});
       const candidate=discovered.find(d=>d.workflowId===expected.workflowId&&d.workflowPath===expected.workflowPath);
       if(!candidate)throw new StateError('github_action_not_found');
-      try{await assertReviewedGitHubAction(expected,candidate,this.env.GITHUB_ACTION_APPROVED_REPOSITORIES,raw.inputs as Record<string,unknown>);}
-      catch{throw new StateError('github_action_review_changed');}
+      try{
+        await assertReviewedGitHubAction(expected,candidate,this.env.GITHUB_ACTION_APPROVED_REPOSITORIES,raw.inputs as Record<string,unknown>);
+        // GitHub dispatch accepts a tag/ref, not an arbitrary pinned commit.
+        // Publication must review and store exactly which tag selects that SHA.
+        await verifyActionDispatchRef(expected,raw.ref as string,token);
+      }catch{throw new StateError('github_action_review_changed');}
       approved.push(await reviewedGitHubAction(candidate));
     }
     return approved;
