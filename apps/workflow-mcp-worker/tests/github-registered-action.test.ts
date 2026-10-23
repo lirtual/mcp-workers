@@ -24,7 +24,7 @@ const OWNER='https://owner.example.org/mcp';
 const TOKEN='disposable-portal-token-registered-action';
 const GITHUB_TOKEN='fixture-token-must-not-leak';
 const RUN_ID=424242;
-const MIGRATIONS=['0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql','0006_github_registered_action.sql','0007_run_cancel.sql'];
+const MIGRATIONS=['0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql','0006_github_registered_action.sql','0007_run_cancel.sql','0008_grant_revocation.sql'];
 
 function database(t:test.TestContext){
   const sqlite=new DatabaseSync(':memory:');

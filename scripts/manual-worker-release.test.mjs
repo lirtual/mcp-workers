@@ -355,14 +355,17 @@ test("Workflow remote D1 readback blocks missing migrations, nonempty first-run 
   const previous = {...row,migration_count:4,migration_v3:1,migration_v4:1,
     attempt_table:1,receipt_table:1};
   const migrated = {...previous,migration_count:5,migration_v5:1,migration_v6:0,migration_v7:0};
-  const registered = {...migrated,migration_count:6,migration_v6:1,migration_v7:0};
-  const current = {...registered,migration_count:7,migration_v7:1,cancel_column:1};
+  const registered = {...migrated,migration_count:6,migration_v6:1,migration_v7:0,migration_v8:0};
+  const cancelled = {...registered,migration_count:7,migration_v7:1,migration_v8:0};
+  const current = {...cancelled,migration_count:8,migration_v8:1,cancel_column:1};
   assert.equal(verifyWorkflowD1Readiness(result(previous),false),true);
   assert.throws(()=>verifyWorkflowD1Readiness(result(previous),false,true),/schema migrations/);
   assert.equal(verifyWorkflowD1Readiness(result(migrated),false),true);
   assert.throws(()=>verifyWorkflowD1Readiness(result(migrated),false,true),/schema migrations/);
   assert.equal(verifyWorkflowD1Readiness(result(registered),false),true);
   assert.throws(()=>verifyWorkflowD1Readiness(result(registered),false,true),/schema migrations/);
+  assert.equal(verifyWorkflowD1Readiness(result(cancelled),false),true);
+  assert.throws(()=>verifyWorkflowD1Readiness(result(cancelled),false,true),/schema migrations/);
   assert.equal(verifyWorkflowD1Readiness(result(current),false),true);
   assert.equal(verifyWorkflowD1Readiness(result(current),false,true),true);
   assert.throws(()=>verifyWorkflowD1Readiness(result(row),false,true),
@@ -373,7 +376,7 @@ test("Workflow remote D1 readback blocks missing migrations, nonempty first-run 
     /schema migrations/);
   assert.throws(()=>verifyWorkflowD1Readiness(result({...row,migration_count:3,migration_v3:1,
     attempt_table:1}),false),/schema migrations/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...row,migration_count:8}),false),
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...row,migration_count:9}),false),
     /schema migrations/);
   assert.throws(()=>verifyWorkflowD1Readiness(result({...current,cancel_column:0}),false,true),
     /schema migrations/);

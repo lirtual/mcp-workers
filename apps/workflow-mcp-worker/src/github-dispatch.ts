@@ -168,7 +168,7 @@ export async function cancelRegisteredGithubRun(
   return response.status===202;
 }
 
-async function githubJson(response:Response):Promise<Record<string,unknown>|null>{
+async function githubObject(response:Response):Promise<Record<string,unknown>|null>{
   if(response.status<200||response.status>=300) return null;
   try{
     const value:unknown=await response.json();
@@ -193,7 +193,7 @@ export async function observeRegisteredGithubRun(
     runResponse=await outbound(new Request(runUrl,{method:'GET',redirect:'manual',headers:GITHUB_HEADERS(token)}));
   }catch{return {kind:'unknown'};}
   if(runResponse.status>=300&&runResponse.status<400) return {kind:'unknown'};
-  const run=await githubJson(runResponse);
+  const run=await githubObject(runResponse);
   if(!run||typeof run.status!=='string') return {kind:'unknown'};
   if(run.status!=='completed') return {kind:'open'};
   if(typeof run.conclusion!=='string') return {kind:'unknown'};
@@ -204,7 +204,7 @@ export async function observeRegisteredGithubRun(
     }));
   }catch{return {kind:'unknown'};}
   if(jobsResponse.status>=300&&jobsResponse.status<400) return {kind:'unknown'};
-  const jobsBody=await githubJson(jobsResponse);
+  const jobsBody=await githubObject(jobsResponse);
   if(!jobsBody||!Array.isArray(jobsBody.jobs)||typeof jobsBody.total_count!=='number'||
      !Number.isSafeInteger(jobsBody.total_count)) return {kind:'unknown'};
   const jobs=jobsBody.jobs;

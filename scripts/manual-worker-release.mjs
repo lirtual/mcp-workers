@@ -213,9 +213,10 @@ export function verifyWorkflowD1Readiness(response, bootstrap, requireCompleteSc
   // Older schemas are allowed only before the additive cancel migration.
   const beforeUpgrade = (row?.migration_count === 4 && row?.migration_v5 === 0) ||
     (row?.migration_count === 5 && row?.migration_v5 === 1 && row?.migration_v6 === 0) ||
-    (row?.migration_count === 6 && row?.migration_v5 === 1 && row?.migration_v6 === 1 && row?.migration_v7 === 0);
-  const ready = row?.migration_count === 7 && row?.migration_v5 === 1 &&
-    row?.migration_v6 === 1 && row?.migration_v7 === 1 && row?.cancel_column === 1;
+    (row?.migration_count === 6 && row?.migration_v5 === 1 && row?.migration_v6 === 1 && row?.migration_v7 === 0) ||
+    (row?.migration_count === 7 && row?.migration_v5 === 1 && row?.migration_v6 === 1 && row?.migration_v7 === 1 && row?.migration_v8 === 0);
+  const ready = row?.migration_count === 8 && row?.migration_v5 === 1 &&
+    row?.migration_v6 === 1 && row?.migration_v7 === 1 && row?.migration_v8 === 1 && row?.cancel_column === 1;
   invariant(requiredBase && (requireCompleteSchema ? ready : (beforeUpgrade || ready)),
     "Workflow production D1 schema migrations missing, partial or drifted");
   invariant(Number.isSafeInteger(row?.active_runs) && row.active_runs === 0,

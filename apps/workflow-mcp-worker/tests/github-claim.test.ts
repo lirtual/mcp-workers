@@ -27,7 +27,7 @@ function setup(t:test.TestContext){
   const sqlite=new DatabaseSync(':memory:');
   t.after(()=>sqlite.close());
   sqlite.exec('PRAGMA foreign_keys=ON');
-  for(const name of ['0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql','0006_github_registered_action.sql','0007_run_cancel.sql']){
+  for(const name of ['0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql','0006_github_registered_action.sql','0007_run_cancel.sql','0008_grant_revocation.sql']){
     sqlite.exec(readFileSync(new URL('../migrations/'+name,import.meta.url),'utf8'));
   }
   sqlite.prepare(`INSERT INTO workflows (id,name,draft,created_at,updated_at)

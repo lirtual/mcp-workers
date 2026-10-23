@@ -5,11 +5,12 @@ Versioned, durable workflows using the existing MCP Portal, Cloudflare D1 and Cl
 ## Capabilities
 
 - **Workflow management:** create and revise YAML/JSON Drafts, validate a bounded DAG, explicitly Publish an immutable Plan, run asynchronously, inspect status/results, request Run cancellation, and pause/resume new admissions.
-- **MCP tool calls (`mcp.call`):** read-only operations routed through the existing, server-pinned MCP Portal. Publish requires the exact endpoint, tool, `read` scope and schema digest, plus `accept_target_risks: true`. Runtime checks revalidate the published grant and live tool schema. The remote `readOnlyHint` is untrusted: network isolation and absence of remote side effects are not guaranteed.
-- **GitHub Actions (`github.run`):** a single server-registered `github.workflow.check` operation that runs the pinned Workflow package CI checks, with explicit `approve_heavy_execution: true` at Publish. Repository, workflow, ref and GitHub OIDC audience are pinned server-side. D1 records dispatch identity, GitHub OIDC Claim and immutable callback receipt; ambiguous external effects are never blindly replayed.
+- **MCP tool calls (`mcp.call`):** read-only operations, and one exact approved write, routed through the existing server-pinned MCP Portal. Publish requires the exact endpoint, tool, scope and schema digest, plus `accept_target_risks: true`. Runtime checks revalidate the published grant and live tool schema. The remote `readOnlyHint` is untrusted: it cannot authorize a write, and network isolation is not guaranteed.
+- **Registered HTTP fixture (`http.request`):** one server-pinned POST. The definition cannot choose a URL, method, header, or credential. Publish requires the exact fixture, endpoint, `read` scope and schema digest, plus `accept_target_risks: true`. Redirects are not followed.
+- **GitHub Actions (`github.run`):** the fixed `github.workflow.check` operation and one allow-listed `github.action.registered` action. Both require explicit `approve_heavy_execution: true` at Publish. Repository, workflow, ref and GitHub OIDC audience are pinned server-side. D1 records dispatch identity, GitHub OIDC Claim and immutable callback receipt; ambiguous external effects are never blindly replayed. Artifact results are metadata and URLs, not file bytes.
 - **Result emission (`result.emit`)** for Workflow results.
 
-Only these known operations are implemented; generic shell commands, arbitrary external MCP writes, dynamic GitHub tasks, and GitHub force-cancel are not provided. Cron is a five-field UTC schedule matched on this Worker's one-minute scheduled event, not a separate cron per workflow. Webhook and GitHub event triggers share the same Run admission. An allow-listed GitHub Action may return artifact metadata and a scoped URL, not file bytes. `workflow_cancel` requests cancellation and then reconciles the real Run or GitHub job. Acceptance of that request is not a stopped job.
+Only these known operations are implemented. Generic shell, arbitrary HTTP, a public MCP marketplace, arbitrary external writes, dynamic GitHub tasks, and GitHub force-cancel are not provided. Cron is a five-field UTC schedule matched on this Worker's one-minute scheduled event, not a separate cron per workflow. Webhook and GitHub event triggers share the same Run admission. `workflow_cancel` requests cancellation and then reconciles the real Run or GitHub job. Acceptance of that request is not a stopped job. `workflow_revoke` blocks later use of one exact grant and does not pretend an already dispatched effect was rolled back.
 
 ## Runtime
 
@@ -24,12 +25,13 @@ Environment bindings and credentials:
 - `MCP_PORTAL_CLIENT_ID` / `MCP_PORTAL_CLIENT_SECRET` for the pinned Portal.
 - `WORKFLOW_EXECUTOR_GITHUB_TOKEN` for the registered GitHub executor.
 - Release-pinned non-secret variables `MCP_PORTAL_ENDPOINT`, `GITHUB_EXECUTOR_REPOSITORY`, `GITHUB_EXECUTOR_REPOSITORY_ID`, `GITHUB_EXECUTOR_REF` and `GITHUB_EXECUTOR_AUDIENCE`.
+- Optional registered HTTP fixture pins `HTTP_FIXTURE_ID`, `HTTP_FIXTURE_URL` and `HTTP_FIXTURE_SCHEMA_DIGEST`. These are not a general proxy or a credential broker.
 
 There are **no independent capability enable flags**. The documented per-operation Publish approvals and runtime authorization checks remain mandatory.
 
 ## MCP owner tools
 
-`workflow_list`, `workflow_get`, `workflow_create`, `workflow_update`, `workflow_validate`, `workflow_publish`, `workflow_run`, `workflow_cancel`, `workflow_status`, `workflow_result`, `workflow_pause` and `workflow_resume`.
+`workflow_capabilities`, `workflow_list`, `workflow_get`, `workflow_create`, `workflow_update`, `workflow_validate`, `workflow_publish`, `workflow_revoke`, `workflow_run`, `workflow_cancel`, `workflow_status`, `workflow_result`, `workflow_pause` and `workflow_resume`.
 
 Publishing is explicit; saving a Draft never starts execution. `workflow_pause` and `workflow_resume` only gate new admissions; they do not stop an active Run or cancel an external Job. `workflow_cancel` is the explicit cancel request. It uses GitHub's normal cancel API for a waiting or running registered job, never force-cancel, and reports `requested`, `cancelled`, `completed`, or `indeterminate`.
 
