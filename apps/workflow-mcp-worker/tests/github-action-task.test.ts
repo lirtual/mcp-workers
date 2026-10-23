@@ -4,6 +4,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {readFileSync} from 'node:fs';
 import {generateKeyPair,SignJWT} from 'jose';
 import {runPublishedGitHubActionTask} from '../src/github-action-task.ts';
+import {WorkflowService} from '../src/store.ts';
 import {verifyAndClaimPinnedGitHubAction} from '../src/github-action-oidc-claim.ts';
 import type {Plan} from '../src/plan.ts';
 import type {Env} from '../src/store.ts';
@@ -122,4 +123,47 @@ test('GitHub job failing before OIDC claim reports failed without a false succes
   assert.equal(settled?.state,'failed');
   assert.equal(settled?.owner_run_id,null);
  }finally{fixture.db.close();}
+});
+
+test('workflow_cancel requests a Task cancellation exactly once and preserves parent until physical termination',async()=>{
+ const f=setup(),originalFetch=globalThis.fetch;
+ const attempt='33333333-3333-4333-8333-333333333333';
+ try{
+  f.db.prepare(`INSERT INTO step_attempts(
+   attempt_id,run_id,step_id,capability_id,dispatch_id,state,
+   repository,repository_id,workflow_ref,ref,
+   candidate_run_id,candidate_run_attempt,created_at,updated_at)
+   VALUES(?,?,?,'github.action',?,'confirmed',?,?,?,?,42,1,1,1)`)
+   .run(attempt,runId,'build','44444444-4444-4444-8444-444444444444',
+    repo,String(action.repositoryId),workflowRef,ref);
+  let cancels=0,physicalEnded=false;
+  globalThis.fetch=async(input:RequestInfo|URL)=>{
+   const request=input instanceof Request?input:new Request(input);
+   const pathname=new URL(request.url).pathname;
+   if(request.method==='POST'){
+    assert.ok(pathname.endsWith('/actions/runs/42/cancel'));
+    cancels++;
+    return new Response(null,{status:202});
+   }
+   assert.ok(pathname.endsWith('/actions/runs/42'));
+   return Response.json({id:42,workflow_id:action.workflowId,run_attempt:1,
+    repository:{id:action.repositoryId,full_name:repo},
+    path:action.workflowPath+'@task-v1',head_sha:sha,event:'workflow_dispatch',
+    status:physicalEnded?'completed':'in_progress',
+    conclusion:physicalEnded?'cancelled':null});
+  };
+  const service=new WorkflowService(f.env);
+  assert.equal((await service.cancel(runId,'build')).cancellation,'cancel_requested');
+  assert.equal((await service.cancel(runId,'build')).cancellation,'already_requested');
+  assert.equal(cancels,1);
+  assert.equal(f.db.prepare('SELECT outcome FROM runs').get()?.outcome,'running');
+  physicalEnded=true;
+  const settled=await service.cancel(runId,'build');
+  assert.equal(settled.cancellation,'terminal_confirmed');
+  assert.equal(settled.physical_terminated,true);
+  assert.equal((await service.cancel(runId,'build')).cancellation,'terminal_confirmed');
+  assert.equal(cancels,1);
+  assert.equal(f.db.prepare('SELECT state FROM step_attempts').get()?.state,'cancelled');
+  assert.equal(f.db.prepare('SELECT outcome FROM runs').get()?.outcome,'running');
+ }finally{globalThis.fetch=originalFetch;f.db.close();}
 });
