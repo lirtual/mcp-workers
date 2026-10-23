@@ -326,7 +326,7 @@ test('mobile install card uses compact proportional sizes and wraps complete com
   assert.match(mobile,/button\.copy\{width:36px;height:36px/);
   assert.match(mobile,/button\.copy svg\{width:22px;height:22px\}/);
   assert.match(mobile,/\.command-scroll\{overflow-x:visible\}/);
-  assert.match(mobile,/code\{width:auto;max-width:100%;font-size:13px;line-height:1\.6;white-space:normal;overflow-wrap:anywhere;word-break:normal\}/);
+  assert.match(mobile,/code\{width:auto;max-width:100%;font-size:13px;line-height:1\.6;white-space:normal;overflow-wrap:normal;word-break:normal\}/);
   assert.match(mobile,/ol\{grid-template-columns:1fr;gap:13px/);
   assert.match(html,/@media\(prefers-color-scheme:dark\)/);
   assert.match(html,/--surface:#23242a/);
@@ -334,6 +334,72 @@ test('mobile install card uses compact proportional sizes and wraps complete com
   assert.match(html,/clipboard\.writeText\(cmds\[requestedPlatform\]\)/);
   assert.match(html,/irm https:\/\/rca\.lirtual\.dpdns\.org\/install\.ps1 \| iex/);
   assert.match(html,/curl -fsSL https:\/\/rca\.lirtual\.dpdns\.org\/install\.sh \| sh/);
+});
+
+test('narrow install commands break only at URL path while copied text stays exact', async () => {
+  const {renderInstallHome}=await import('../src/install-home.ts');
+  const html=renderInstallHome({windows:true,linux:true});
+  const source=html.split('<script>')[1]?.split('</script>')[0];
+  assert.ok(source);
+  const codeNodes:{data?:string;tagName?:string;splitText?:(at:number)=>unknown}[]=[];
+  const code = {
+    set textContent(value:string){
+      codeNodes.length=0;
+      codeNodes.push(makeText(value));
+    },
+    get firstChild(){return codeNodes[0];},
+    insertBefore(node:unknown,reference:unknown){
+      const i=codeNodes.indexOf(reference as typeof codeNodes[number]);
+      assert.ok(i>=0);
+      codeNodes.splice(i,0,node as typeof codeNodes[number]);
+    },
+  };
+  function makeText(value:string){
+    return {
+      data:value,
+      splitText(at:number){
+        const suffix=makeText(this.data.slice(at));
+        this.data=this.data.slice(0,at);
+        const i=codeNodes.indexOf(this);
+        codeNodes.splice(i+1,0,suffix);
+        return suffix;
+      },
+    };
+  }
+  function element(){
+    return {
+      textContent:'',disabled:false,tabIndex:0,
+      attributes:{} as Record<string,string>,
+      handlers:{} as Record<string,()=>void>,
+      setAttribute(name:string,value:string){this.attributes[name]=value;},
+      removeAttribute(name:string){delete this.attributes[name];},
+      addEventListener(name:string,handler:()=>void){this.handlers[name]=handler;},
+      focus(){},
+    };
+  }
+  const windows=element(),linux=element(),copy=element(),shellLabel=element(),message=element();
+  const elems:Record<string,unknown>={windows,linux,copy,'shell-label':shellLabel,message,command:code};
+  const copied:string[]=[];
+  runInNewContext(source,{
+    document:{
+      getElementById:(id:string)=>elems[id],
+      createElement:(tag:string)=>{assert.equal(tag,'wbr');return {tagName:'WBR'};},
+    },
+    navigator:{platform:'iPhone',clipboard:{writeText:async(text:string)=>{copied.push(text);}}},
+    setTimeout:()=>1,clearTimeout:()=>{},
+  });
+  assert.deepEqual(codeNodes.map(n=>n.tagName??n.data),[
+    'irm https://rca.lirtual.dpdns.org/','WBR','install.ps1 | iex',
+  ]);
+  await (copy.handlers.click as ()=>Promise<void>)();
+  assert.equal(copied[0],'irm https://rca.lirtual.dpdns.org/install.ps1 | iex');
+  linux.handlers.click!();
+  assert.deepEqual(codeNodes.map(n=>n.tagName??n.data),[
+    'curl -fsSL https://rca.lirtual.dpdns.org/','WBR','install.sh | sh',
+  ]);
+  await (copy.handlers.click as ()=>Promise<void>)();
+  assert.equal(copied[1],'curl -fsSL https://rca.lirtual.dpdns.org/install.sh | sh');
+  assert.doesNotMatch(source,/innerHTML/);
 });
 
 test('installer home drops source/docs and defaults unknown device to first Windows tab', async () => {
