@@ -165,3 +165,34 @@ export async function verifySignedPendingGitHubActionClaim(
   });
  }catch{return false;}
 }
+
+/** Idempotent HTTP response recovery only: the same signed, reviewed,
+ * already-owned physical Run can acknowledge a lost first Claim response.
+ * This does not grant a new owner, change the Attempt or authorize execution
+ * after a durable cancellation intent / parent termination.
+ */
+export async function verifyAlreadyClaimedPinnedGitHubAction(
+ db:Db,attemptId:string,jwt:string,audience:string,
+ keys:GithubActionKeys=githubKeys,
+):Promise<boolean>{
+ const verified=await verifyPinnedGitHubActionIdentity(db,attemptId,jwt,audience,keys);
+ if(!verified)return false;
+ const {row}=verified;
+ if(row.state!=='claimed'||row.owner_run_id!==row.candidate_run_id||
+    row.owner_run_attempt!==row.candidate_run_attempt)return false;
+ const accepted=await db.prepare(`SELECT 1 AS present FROM step_attempts a
+   JOIN runs r ON r.id=a.run_id
+   WHERE a.attempt_id=? AND a.capability_id='github.action'
+     AND a.state='claimed'
+     AND a.owner_run_id=? AND a.owner_run_attempt=?
+     AND a.candidate_run_id=? AND a.candidate_run_attempt=?
+     AND a.repository=? AND a.repository_id=? AND a.workflow_ref=? AND a.ref=?
+     AND r.outcome IN ('queued','running')
+     AND NOT EXISTS(SELECT 1 FROM github_action_cancellations c
+       WHERE c.attempt_id=a.attempt_id)`)
+  .bind(attemptId,row.candidate_run_id,row.candidate_run_attempt,
+   row.candidate_run_id,row.candidate_run_attempt,
+   row.repository,row.repository_id,row.workflow_ref,row.ref)
+  .first<{present:number}>();
+ return accepted?.present===1;
+}
