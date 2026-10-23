@@ -9,7 +9,7 @@ const REQUIRED_SECRETS = {
   "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "API_KEY"],
   "database-mcp-worker": ["MCP_ACCESS_TOKEN", "DATABASE_CONFIG"],
   "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "MCP_BROKER_TOKEN"],
-  "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN", "BROWSER_APPROVAL_ACCESS_ISSUER", "BROWSER_APPROVAL_ACCESS_AUD", "BROWSER_APPROVAL_ALLOWED_EMAIL"],
+  "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "GH_TOKEN"],
   "workflow-mcp-worker": ["MCP_ACCESS_TOKEN"],
 };
@@ -149,8 +149,8 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
         find("REMOTE_CONTROL_INSTALL_ORIGIN", "plain_text")?.text ===
           "https://" + route[0].pattern,
         "Remote Control installer origin binding differs from Custom Domain");
-      invariant(find("BROWSER_APPROVAL_PUBLIC_ORIGIN", "plain_text")?.text ===
-        "https://" + route[0].pattern, "Remote Control approval origin binding drift");
+      invariant(!bindings.some(x => x.name?.startsWith("BROWSER_APPROVAL_")),
+        "Retired Remote Control approval bindings must be removed");
     }
   }
   const allowed = new Set(worker === "workflow-mcp-worker" ? ["DB", "WORKFLOW"] :

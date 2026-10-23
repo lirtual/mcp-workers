@@ -11,7 +11,7 @@ export const BOOTSTRAP_SECRETS = Object.freeze({
   "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "API_KEY"],
   "database-mcp-worker": ["MCP_ACCESS_TOKEN", "DATABASE_CONFIG"],
   "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "MCP_BROKER_TOKEN"],
-  "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN", "BROWSER_APPROVAL_ACCESS_ISSUER", "BROWSER_APPROVAL_ACCESS_AUD", "BROWSER_APPROVAL_ALLOWED_EMAIL"],
+  "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "GH_TOKEN"],
   "workflow-mcp-worker": ["MCP_ACCESS_TOKEN", "MCP_PORTAL_CLIENT_ID", "MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_EXECUTOR_GITHUB_TOKEN"],
 });

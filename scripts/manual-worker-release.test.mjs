@@ -85,17 +85,22 @@ test("Remote production requires its own DO and rejects Preview namespace reuse"
   const productionNs = "abcd1234abcd1234abcd1234abcd1234";
   const prod = { bindings: [
     { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
-    ...["BROWSER_APPROVAL_ACCESS_ISSUER","BROWSER_APPROVAL_ACCESS_AUD","BROWSER_APPROVAL_ALLOWED_EMAIL"].map(name=>({name,type:"secret_text"})),
-    { name: "BROWSER_APPROVAL_PUBLIC_ORIGIN", type: "plain_text", text: "https://rca.lirtual.dpdns.org" },
     { name: "REMOTE_CONTROL_INSTALL_ORIGIN", type: "plain_text", text: "https://rca.lirtual.dpdns.org" },
     { name: "DEVICE_COORDINATOR", class_name: "DeviceCoordinator",
       type: "durable_object_namespace", namespace_id: productionNs },
   ], observability: { enabled: true, logs: { invocation_logs: false } } };
-  const secrets = ["MCP_ACCESS_TOKEN","BROWSER_APPROVAL_ACCESS_ISSUER","BROWSER_APPROVAL_ACCESS_AUD","BROWSER_APPROVAL_ALLOWED_EMAIL"].map(name=>({name}));
+  const secrets = [{name:"MCP_ACCESS_TOKEN"}];
   const options = { mode: "readback", previousNamespaceId: previewNs,
     sourceConfig: { routes: [{ pattern: "rca.lirtual.dpdns.org", custom_domain: true }] } };
   assert.equal(verifyBindings(worker, prod, secrets, options), true);
   assert.throws(() => verifyBindings(worker, prod, [], options), /Secret missing/);
+  for (const name of ["BROWSER_APPROVAL_ACCESS_ISSUER",
+    "BROWSER_APPROVAL_ACCESS_AUD","BROWSER_APPROVAL_ALLOWED_EMAIL",
+    "BROWSER_APPROVAL_PUBLIC_ORIGIN"]) {
+    assert.throws(() => verifyBindings(worker, { ...prod, bindings: [...prod.bindings,
+      { name, type: name === "BROWSER_APPROVAL_PUBLIC_ORIGIN" ? "plain_text" : "secret_text" }] },
+      secrets, options), /Retired Remote Control approval bindings/);
+  }
   assert.throws(() => verifyBindings(worker, { ...prod,
     bindings: prod.bindings.filter(x => x.name !== "REMOTE_CONTROL_INSTALL_ORIGIN"),
   }, secrets, options), /installer origin/);
