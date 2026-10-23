@@ -1,4 +1,8 @@
 import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
+import { BROWSER_TOOLS, BROWSER_EFFECT_TOOLS, BROWSER_READ_TOOLS, parseBrowserCall, browserEffectClientStatus } from "./browser-tools.ts";
+import {verifyAccessApprovalOwner,validBrowserApprovalRequest,validBrowserApprovalForm,browserApprovalPage,type BrowserApprovalAccessConfig} from "./browser-approval-web.ts";
+/** Browser tools require a paired device and verified owner Access configuration.
+ * Preview and production use separate owner namespaces and approval origins. */
 import { handleAgentInstallerRequest } from "./install-bootstrap.ts";
 export { V2OwnerCoordinator } from "./v2-pairing.ts";
 import { V2OwnerCoordinator as PreviewCoordinator } from "./v2-pairing.ts";
@@ -12,6 +16,15 @@ type V2Env = Env & {
 };
 function pairedOnly(env: Env): boolean {
   return Boolean((env as V2Env).DEVICE_COORDINATOR || (env as V2Env).V2_OWNER);
+}
+function browserToolsAvailable(env:Env):boolean {
+  const e=env as V2Env & BrowserApprovalAccessConfig & {BROWSER_APPROVAL_PUBLIC_ORIGIN?:string};
+  const preview=Boolean(e.V2_OWNER) && !e.DEVICE_COORDINATOR && e.REMOTE_CONTROL_V2_PREVIEW_ONLY==="true";
+  const production=Boolean(e.DEVICE_COORDINATOR) && !e.V2_OWNER && !e.REMOTE_CONTROL_V2_PREVIEW_ONLY;
+  return (preview || production) &&
+    Boolean(e.BROWSER_APPROVAL_ACCESS_ISSUER &&
+      e.BROWSER_APPROVAL_ACCESS_AUD && e.BROWSER_APPROVAL_ALLOWED_EMAIL &&
+      e.BROWSER_APPROVAL_PUBLIC_ORIGIN);
 }
 // Preview operations use existing authenticated per-device WSS routing.
 // The paired Agent, not a temporary Worker secret, opts into write/Shell.
@@ -53,6 +66,64 @@ function pairedReadErrorMessage(tool: string, code: unknown): string {
     return "The remote file read failed; check the path and the Agent account's read permissions.";
   }
   return "The requested v2 device is unavailable.";
+}
+
+async function callPairedBrowser(env: Env, id: unknown, name: string, args: unknown): Promise<Response> {
+  const parsed = parseBrowserCall(name,args);
+  if (!parsed) return toolError(id,"Invalid browser request or device target.");
+  const owner = pendingOwner(env);
+  if (!owner) return toolError(id,"Browser device is unavailable.");
+  const gated = ["browser_navigate","browser_click","browser_fill","browser_press_key","browser_select_option"].includes(name);
+  const approvalSettings=env as V2Env & BrowserApprovalAccessConfig & {BROWSER_APPROVAL_PUBLIC_ORIGIN?:string};
+  const publicOrigin=approvalSettings.BROWSER_APPROVAL_PUBLIC_ORIGIN;
+  // Missing remote-owner identity configuration means no sensitive effect.
+  if(gated && (!approvalSettings.BROWSER_APPROVAL_ACCESS_ISSUER ||
+      !approvalSettings.BROWSER_APPROVAL_ACCESS_AUD ||
+      !approvalSettings.BROWSER_APPROVAL_ALLOWED_EMAIL ||
+      typeof publicOrigin!=="string" ||
+      !/^https:\/\/[a-z0-9.-]+$/i.test(publicOrigin))) {
+    return toolText(id,JSON.stringify({operation_id:parsed.operation_id,status:"unavailable"}));
+  }
+  try {
+    const response = await owner.fetch("https://v2.internal/"+
+      (gated?"browser-approval/dispatch":parsed.kind),{
+      method:"POST",headers:{"content-type":"application/json"},
+      body:JSON.stringify({device_id:parsed.device_id,tool:parsed.tool,
+        ...(parsed.operation_id?{operation_id:parsed.operation_id}:{}),arguments:parsed.arguments}),
+    });
+    if (!response.ok) {
+      return parsed.kind==="operation"
+        ? toolText(id,JSON.stringify({operation_id:parsed.operation_id,status:"timeout_unknown"}))
+        : toolError(id,"Browser observation unavailable.");
+    }
+    if (parsed.kind==="read") {
+      const value=await response.json() as {status?:unknown;text?:unknown};
+      return value.status==="completed"&&typeof value.text==="string"&&value.text.length<=65536
+        ? toolText(id,value.text) : toolError(id,"Browser observation unavailable.");
+    }
+    const value=await response.json() as {operation_id?:unknown;status?:unknown;
+      session_id?:unknown;approval_id?:unknown;expires_at?:unknown};
+    if (value.operation_id!==parsed.operation_id||typeof value.status!=="string") {
+      return toolText(id,JSON.stringify({operation_id:parsed.operation_id,status:"timeout_unknown"}));
+    }
+    if(value.status==="confirmation_required"){
+      if(!gated||typeof value.approval_id!=="string"||
+          !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value.approval_id) ||
+          typeof value.expires_at!=="number"||!Number.isSafeInteger(value.expires_at))
+        return toolText(id,JSON.stringify({operation_id:parsed.operation_id,status:"unavailable"}));
+      return toolText(id,JSON.stringify({operation_id:parsed.operation_id,
+        status:"confirmation_required",
+        approval_url:publicOrigin+"/browser-approve/"+value.approval_id,
+        expires_at:value.expires_at}));
+    }
+    return toolText(id,JSON.stringify({operation_id:parsed.operation_id,
+      status:browserEffectClientStatus(value.status),
+      ...(typeof value.session_id==="string"?{session_id:value.session_id}:{})}));
+  } catch {
+    return parsed.kind==="operation"
+      ? toolText(id,JSON.stringify({operation_id:parsed.operation_id,status:"timeout_unknown"}))
+      : toolError(id,"Browser observation unavailable.");
+  }
 }
 
 const V2_READ_TOOLS = new Set(["read_file", "read_files", "list_directory", "stat_file", "search_files", "search_next", "stop_search", "list_sessions", "read_session_output"]);
@@ -981,6 +1052,7 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
   if (rpcMessage.method === "tools/list") {
     if (pairedOnly(env)) {
       return rpc(rpcMessage.id, { tools: [
+        ...(browserToolsAvailable(env) ? BROWSER_TOOLS : []),
         ...LOCAL_TOOLS.map(tool => ({
           ...tool,
           inputSchema: { ...tool.inputSchema,
@@ -1002,7 +1074,9 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
     const call = params as { name?: unknown; arguments?: unknown };
     if (pairedOnly(env)) {
       const name = typeof call.name === "string" ? call.name : "";
-      const requiresDevice = V2_READ_TOOLS.has(name) || V2_OPERATION_TOOLS.has(name);
+      const requiresDevice = V2_READ_TOOLS.has(name) || V2_OPERATION_TOOLS.has(name) ||
+        (browserToolsAvailable(env) &&
+          (BROWSER_EFFECT_TOOLS.has(name) || BROWSER_READ_TOOLS.has(name)));
       const target = call.arguments && typeof call.arguments === "object" && !Array.isArray(call.arguments)
         ? (call.arguments as Record<string, unknown>).device_id : undefined;
       // Never fall back to the v1 VPC. A caller must choose a paired device.
@@ -1011,6 +1085,11 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
             !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(target)))) {
         return toolError(rpcMessage.id, "The requested tool call was rejected: a valid device_id is required.");
       }
+    }
+    if (typeof call.name === "string" &&
+        (BROWSER_EFFECT_TOOLS.has(call.name)||BROWSER_READ_TOOLS.has(call.name)) &&
+        browserToolsAvailable(env)) {
+      return callPairedBrowser(env,rpcMessage.id,call.name,call.arguments);
     }
     if (typeof call.name === "string" && V2_OPERATION_TOOLS.has(call.name) &&
         call.arguments && typeof call.arguments === "object" && !Array.isArray(call.arguments) &&
@@ -1081,6 +1160,49 @@ export default {
       return jsonError(503, "preview_unconfigured", "The preview is not yet configured.");
     }
     const url = new URL(request.url);
+    if (url.pathname.startsWith("/browser-approve/")) {
+      // A real person signs into a separately Access-protected exact path.
+      // NEVER accept the MCP bearer credential or model-originated approval.
+      const approvalId=url.pathname.slice("/browser-approve/".length);
+      const settings=env as V2Env & BrowserApprovalAccessConfig;
+      if(!browserToolsAvailable(env)||
+          !validBrowserApprovalRequest(request,approvalId)) {
+        return jsonError(404,"not_found","The approval route is unavailable.");
+      }
+      const subject=await verifyAccessApprovalOwner(request,settings);
+      if(!subject)return jsonError(403,"unauthorized","Owner Access verification failed.");
+      const owner=pendingOwner(env);
+      if(!owner)return jsonError(503,"unavailable","Approval state is unavailable.");
+      try{
+        if(request.method==="GET"){
+          const state=await owner.fetch("https://v2.internal/browser-approval/inspect",{
+            method:"POST",headers:{"content-type":"application/json"},
+            body:JSON.stringify({approval_id:approvalId}),
+          });
+          if(!state.ok)return jsonError(404,"not_found","Approval request expired or unavailable.");
+          const record=await state.json() as {
+            status:"pending"|"approved";expires_at:number;
+            intent:import("./browser-approval.ts").BrowserApprovalIntent;
+          };
+          return browserApprovalPage(approvalId,record);
+        }
+        const raw=await readBounded(request,128);
+        if(raw===null||!validBrowserApprovalForm(request,raw)) {
+          return jsonError(400,"bad_request","Invalid owner confirmation.");
+        }
+        const result=await owner.fetch("https://v2.internal/browser-approval/approve",{
+          method:"POST",headers:{"content-type":"application/json"},
+          body:JSON.stringify({approval_id:approvalId,subject}),
+        });
+        if(!result.ok)return jsonError(403,"denied","The approval was denied or expired.");
+        return new Response("Approved for this exact browser operation. Return to ChatGPT.\n",{
+          status:200,headers:{"content-type":"text/plain; charset=utf-8",
+            "cache-control":"no-store","x-content-type-options":"nosniff","referrer-policy":"no-referrer"},
+        });
+      }catch{
+        return jsonError(503,"unavailable","Approval is currently unavailable.");
+      }
+    }
     if (url.pathname === "/install.sh") {
       // Only the owner-configured v2 Preview may serve the reviewed immutable
       // test installer. Keep every other environment fail-closed (503).

@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       worker:
-        description: Select Worker for release or read-only acceptance
+        description: Select Worker for release, read-only acceptance or isolated Preview
         required: true
         type: choice
         options:
@@ -19,6 +19,7 @@ on:
           - remote-control-mcp-worker
           - github-actions-mcp-worker
           - workflow-mcp-worker
+          - remote-control-v2-preview
       smoke_only:
         description: Run authenticated Workflow production smoke only (no deploy; select workflow-mcp-worker)
         required: false
@@ -306,6 +307,85 @@ jobs:
       - name: Run database integration tests
         run: pnpm --filter database-mcp-worker run test:integration
 
+  deploy-preview:
+    name: Manual isolated Remote Control Preview
+    needs: checks
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' &&
+          inputs.worker == 'remote-control-v2-preview' &&
+          github.ref != 'refs/heads/main' &&
+          github.actor == 'lirtual' &&
+          needs.checks.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    environment:
+      name: remote-control-v2-preview
+    concurrency:
+      group: remote-control-v2-preview-release
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Verify reviewed branch and Preview-only target
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]
+          [[ "$GITHUB_REF" == refs/heads/* && "$GITHUB_REF" != "refs/heads/main" ]]
+          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
+          [[ "$GITHUB_SHA" == "$(git ls-remote origin "$GITHUB_REF" | cut -f1)" ]]
+          node --input-type=module <<'JS'
+          import {readFileSync} from 'node:fs';
+          import assert from 'node:assert/strict';
+          const p=JSON.parse(readFileSync('apps/remote-control-mcp-worker/wrangler.v2-preview.jsonc','utf8'));
+          assert.equal(p.name,'remote-control-v2-preview');
+          assert.equal(p.keep_vars,true);
+          assert.equal(p.vars?.REMOTE_CONTROL_V2_PREVIEW_ONLY,'true');
+          assert.equal(p.durable_objects?.bindings?.length,1);
+          assert.equal(p.durable_objects.bindings[0].name,'V2_OWNER');
+          assert.equal(p.exports?.V2OwnerCoordinator?.storage,'sqlite');
+          assert.ok(!('routes' in p) && !JSON.stringify(p).includes('DEVICE_COORDINATOR'));
+          JS
+
+      - name: Install pinned dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Deploy only isolated Preview
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          [[ -n "$CLOUDFLARE_API_TOKEN" && -n "$CLOUDFLARE_ACCOUNT_ID" ]] ||
+            { echo "Cloudflare credentials missing for Preview; no deployment" >&2; exit 1; }
+          [[ "$GITHUB_SHA" == "$(git ls-remote origin "$GITHUB_REF" | cut -f1)" ]]
+          umask 077
+          log="$(mktemp)"
+          trap 'rm -f "$log"' EXIT
+          if ! (cd apps/remote-control-mcp-worker &&
+                pnpm exec wrangler deploy --config wrangler.v2-preview.jsonc) >"$log" 2>&1; then
+            echo "Isolated Preview Wrangler deploy failed; raw output withheld" >&2
+            exit 1
+          fi
+          node scripts/manual-worker-release.mjs version "$log" >/dev/null
+          echo "Isolated Preview deployed from reviewed $GITHUB_SHA (no production changes)"
+
   deploy:
     name: Manual selected Worker release
     needs: [checks, database-integration]
@@ -411,6 +491,9 @@ jobs:
           # GitHub automatically uses same-name Environment Secrets over
           # Repository Secrets. Values are scoped to this one staging step.
           MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
+          BROWSER_APPROVAL_ACCESS_ISSUER: ${{ secrets.BROWSER_APPROVAL_ACCESS_ISSUER }}
+          BROWSER_APPROVAL_ACCESS_AUD: ${{ secrets.BROWSER_APPROVAL_ACCESS_AUD }}
+          BROWSER_APPROVAL_ALLOWED_EMAIL: ${{ secrets.BROWSER_APPROVAL_ALLOWED_EMAIL }}
           RAINDROP_ACCESS_TOKEN: ${{ secrets.RAINDROP_ACCESS_TOKEN }}
           API_KEY: ${{ secrets.API_KEY }}
           DATABASE_CONFIG: ${{ secrets.DATABASE_CONFIG }}

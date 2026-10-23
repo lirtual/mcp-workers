@@ -6,7 +6,7 @@
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
   "preview_urls": false,
-  "keep_vars": false,
+  "keep_vars": true,
   "vars": {
     "REMOTE_CONTROL_V2_PREVIEW_ONLY": "true"
   },

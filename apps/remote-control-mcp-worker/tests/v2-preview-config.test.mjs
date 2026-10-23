@@ -20,7 +20,7 @@ test("dedicated v2 preview cannot inherit the v1 VPC binding, token or DO namesp
   assert.deepEqual(preview.compatibility_flags, ["nodejs_compat"]);
   assert.equal(preview.observability.logs.invocation_logs, false);
   assert.equal(preview.preview_urls, false);
-  assert.equal(preview.keep_vars, false);
+  assert.equal(preview.keep_vars, true, "Preview deployments preserve dashboard-provisioned browser Access parameters and MCP secrets");
   assert.ok(!("vpc_services" in preview));
   assert.ok(!("migrations" in preview));
   assert.ok(!("routes" in preview));
@@ -37,7 +37,9 @@ test("dedicated v2 preview cannot inherit the v1 VPC binding, token or DO namesp
   assert.equal(v2Prod.keep_vars, false);
   assert.deepEqual(v2Prod.routes, [{ pattern: "rca.lirtual.dpdns.org", custom_domain: true }],
     "production RCA must use a true Custom Domain, not a Worker Route");
-  assert.deepEqual(v2Prod.secrets.required, ["MCP_ACCESS_TOKEN"]);
+  assert.deepEqual(v2Prod.secrets.required, ["MCP_ACCESS_TOKEN",
+    "BROWSER_APPROVAL_ACCESS_ISSUER", "BROWSER_APPROVAL_ACCESS_AUD",
+    "BROWSER_APPROVAL_ALLOWED_EMAIL"]);
   assert.deepEqual(v2Prod.durable_objects.bindings, [{
     name: "DEVICE_COORDINATOR", class_name: "DeviceCoordinator",
   }], "production must own an independent DO namespace");
