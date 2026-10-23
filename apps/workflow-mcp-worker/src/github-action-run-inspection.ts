@@ -6,7 +6,7 @@ const LIMIT=64*1024;
 
 /** One bounded, read-only API call. No retries when GitHub's response is uncertain. */
 export async function inspectGitHubActionRun(
-  action: ReviewedGitHubAction,runId:number,runAttempt:number,token:string,
+  action: ReviewedGitHubAction,runId:number,runAttempt:number,token:string,expectedRef:string,
   http:Http=fetch,
 ):Promise<PhysicalRunState>{
   if(!Number.isSafeInteger(runId)||runId<=0||
@@ -29,6 +29,6 @@ export async function inspectGitHubActionRun(
     if(body.length>LIMIT)return {state:'unknown'};
     const parsed=JSON.parse(body);
     if(!parsed||typeof parsed!=='object'||Array.isArray(parsed))return {state:'unknown'};
-    return reconcileGitHubPhysicalRun(action,runId,runAttempt,parsed);
+    return reconcileGitHubPhysicalRun(action,runId,runAttempt,parsed,expectedRef);
   }catch{return {state:'unknown'};}
 }
