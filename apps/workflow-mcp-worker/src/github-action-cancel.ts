@@ -43,8 +43,13 @@ export async function requestGitHubActionCancellation(
     candidate_run_id:number|null;candidate_run_attempt:number|null;
     session_state:string|null;cancel_requested_at:number|null;force_requested_at:number|null;
   }>();
- if(!row||row.session_state==='terminated'||
-    !['confirmed','claimed'].includes(row.state)||
+ if(!row)return 'not_found';
+ // D1 terminal states are written only after verified physical settlement.
+ // Repeated cancellation after settlement should remain idempotent.
+ if(row.session_state==='terminated'||
+    ['succeeded','failed','cancelled'].includes(row.state))
+   return 'terminal_confirmed';
+ if(!['confirmed','claimed'].includes(row.state)||
     !Number.isSafeInteger(row.candidate_run_id)||!row.candidate_run_id||
     !Number.isSafeInteger(row.candidate_run_attempt)||!row.candidate_run_attempt)
    return 'not_found';
