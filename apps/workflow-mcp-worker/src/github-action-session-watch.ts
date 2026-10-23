@@ -49,6 +49,7 @@ export async function watchPersistedSessions(
   const remaining=await step.do('session-watch-check-'+i,{
    retries:{limit:0,delay:'1 second'},timeout:'45 seconds',
   },async()=>{
+   try{
    const sessions=(await db.prepare(`SELECT s.step_id,s.state,s.created_at,s.updated_at,
      a.attempt_id,json_extract(v.plan,'$.steps') AS unused_plan
      FROM session_executions s
@@ -82,6 +83,11 @@ export async function watchPersistedSessions(
    const active=await db.prepare(`SELECT COUNT(*) AS n FROM session_executions
     WHERE run_id=? AND state!='terminated'`).bind(runId).first<{n:number}>();
    return active?.n??0;
+   }catch{
+    // D1/network uncertainty must not stop the unattended watcher; the
+    // physical Session retains quota until a later verified readback.
+    return 1;
+   }
   });
   if(remaining===0)return 'terminated';
   if(i<maxChecks-1)
