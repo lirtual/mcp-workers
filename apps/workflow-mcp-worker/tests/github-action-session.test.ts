@@ -10,6 +10,7 @@ import {verifyAndClaimPinnedGitHubAction} from '../src/github-action-oidc-claim.
 import type {WorkflowStep} from 'cloudflare:workers';
 import type {Plan} from '../src/plan.ts';
 import {WorkflowService} from '../src/store.ts';
+import {requestGitHubActionCancellation,FORCE_CANCEL_DELAY_MS} from '../src/github-action-cancel.ts';
 import {reconcilePersistedGitHubActionAttempt} from '../src/github-action-attempt-reconcile.ts';
 import {inspectPersistedGitHubActionAttempt} from '../src/github-action-attempt-inspection.ts';
 import type {Env} from '../src/store.ts';
@@ -352,4 +353,97 @@ test('GitHub status outage cannot release Session quota even if parent succeeded
   assert.equal(result.sessions?.[0]?.physical_health,'unverified');
   assert.equal(await releaseVerifiedSessionSlot(f.adapter,run(1),'launch'),'held');
  }finally{globalThis.fetch=originalFetch;f.db.close();}
+});
+
+test('normal cancel is one-shot and 202 never releases Session capacity; force is separately timed',async()=>{
+ const f=fixture();
+ try{
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
+  f.claim(1,'claimed',true);
+  let clock=500_000;
+  const observed=async()=>({state:'running' as const});
+  const requests:string[]=[];
+  const http=async(req:Request)=>{
+   assert.equal(req.method,'POST');
+   assert.equal(req.redirect,'manual');
+   assert.equal(req.headers.get('authorization'),'Bearer token');
+   requests.push(new URL(req.url).pathname);
+   return new Response(null,{status:202});
+  };
+  const invoke=(force=false)=>requestGitHubActionCancellation(f.adapter,run(1),'launch',
+   'token',force,http,observed,()=>clock);
+  assert.equal(await invoke(true),'normal_required');
+  assert.equal(await invoke(),'cancel_requested');
+  assert.equal(await invoke(),'already_requested');
+  assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'stopping');
+  assert.equal(await releaseVerifiedSessionSlot(f.adapter,run(1),'launch'),'held');
+  clock+=FORCE_CANCEL_DELAY_MS-1;
+  assert.equal(await invoke(true),'too_early');
+  clock++;
+  assert.equal(await invoke(true),'force_requested');
+  assert.equal(await invoke(true),'already_force_requested');
+  assert.deepEqual(requests,[
+   '/repos/lirtual/session-actions/actions/runs/42/cancel',
+   '/repos/lirtual/session-actions/actions/runs/42/force-cancel',
+  ]);
+  const record=f.db.prepare('SELECT cancel_ack,force_ack FROM github_action_cancellations').get();
+  assert.equal(record?.cancel_ack,'accepted');
+  assert.equal(record?.force_ack,'accepted');
+  assert.equal(f.db.prepare('SELECT state FROM step_attempts').get()?.state,'claimed');
+  assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'stopping');
+ }finally{f.db.close();}
+});
+test('lost GitHub cancellation ACK is not retried; no unverified force or quota release',async()=>{
+ const f=fixture();
+ try{
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
+  f.claim(1,'claimed',true);
+  let calls=0,clock=500_000;
+  const http=async()=>{calls++;throw Error('transport failed after POST');};
+  const inspect=async()=>({state:'running' as const});
+  const invoke=(force=false)=>requestGitHubActionCancellation(f.adapter,run(1),'launch',
+   'token',force,http,inspect,()=>clock);
+  assert.equal(await invoke(),'cancel_unknown');
+  assert.equal(await invoke(),'already_requested');
+  assert.equal(calls,1);
+  clock+=FORCE_CANCEL_DELAY_MS;
+  assert.equal(await invoke(true),'force_unknown');
+  assert.equal(await invoke(true),'already_force_requested');
+  assert.equal(calls,2);
+  assert.equal(await releaseVerifiedSessionSlot(f.adapter,run(1),'launch'),'held');
+  assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'stopping');
+ }finally{f.db.close();}
+});
+test('a confirmed GitHub terminal cancels without POST, releases quota, and never corrupts parent',async()=>{
+ const f=fixture();
+ try{
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
+  f.claim(1,'claimed',true);
+  f.db.prepare("UPDATE runs SET outcome='succeeded' WHERE id=?").run(run(1));
+  let calls=0;
+  const result=await requestGitHubActionCancellation(f.adapter,run(1),'launch',
+   'token',false,async()=>{calls++;throw Error('must not POST');},
+   async()=>({state:'completed' as const,conclusion:'cancelled' as const}));
+  assert.equal(result,'terminal_confirmed');
+  assert.equal(calls,0);
+  assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'terminated');
+  assert.equal(f.db.prepare('SELECT state FROM step_attempts').get()?.state,'cancelled');
+  assert.equal(f.db.prepare('SELECT outcome FROM runs WHERE id=?').get(run(1))?.outcome,'succeeded');
+ }finally{f.db.close();}
+});
+test('ambiguous physical identity denies GitHub POST and keeps Session Ready',async()=>{
+ const f=fixture();
+ try{
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
+  f.db.exec("UPDATE session_executions SET state='ready'");
+  f.claim(1,'claimed',true);
+  let calls=0;
+  const state=await requestGitHubActionCancellation(f.adapter,run(1),'launch',
+   'token',false,async()=>{calls++;throw Error('should not send');},
+   async()=>({state:'identity_mismatch' as const}));
+  assert.equal(state,'physical_unconfirmed');
+  assert.equal(calls,0);
+  assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'ready');
+  assert.equal(f.db.prepare('SELECT count(*) AS n FROM github_action_cancellations').get()?.n,0);
+ }finally{f.db.close();}
 });
