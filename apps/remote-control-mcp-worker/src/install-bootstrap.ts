@@ -235,7 +235,11 @@ export function handleAgentInstallerRequest(
   const u = new URL(request.url);
   const headers = { "cache-control": "no-store", "x-content-type-options": "nosniff" };
   if (!["/", "/install.sh", "/install.ps1"].includes(u.pathname)) return new Response("Not found.\n", { status:404, headers });
-  if (request.method !== "GET" || u.search || u.hash || request.headers.has("origin"))
+  // The public home page is static. Mobile/in-app links may append tracking
+  // query parameters or send Origin; neither is read or reflected by the page.
+  // Keep both restrictions for executable installer scripts.
+  if (request.method !== "GET" ||
+      (u.pathname !== "/" && (u.search || u.hash || request.headers.has("origin"))))
     return new Response("Invalid installation request.\n", { status:405, headers });
   if (!validInstallerOrigin(trustedOrigin))
     return new Response("Installer origin is not configured.\n", { status:503, headers });
