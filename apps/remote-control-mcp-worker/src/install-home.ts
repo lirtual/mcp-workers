@@ -57,7 +57,7 @@ li strong{color:var(--fg);display:block;font-size:14px;margin-bottom:3px}
   button.copy{width:36px;height:36px;padding:7px;border-radius:8px}
   button.copy svg{width:22px;height:22px}
   .command-scroll{overflow-x:visible}
-  code{width:auto;max-width:100%;font-size:13px;line-height:1.6;white-space:normal;overflow-wrap:anywhere;word-break:normal}
+  code{width:auto;max-width:100%;font-size:13px;line-height:1.6;white-space:normal;overflow-wrap:normal;word-break:normal}
   ol{grid-template-columns:1fr;gap:13px;margin:20px 0 12px;padding:18px 0}
   li{font-size:12.5px;line-height:1.5}
   li strong{font-size:13.5px;margin-bottom:2px}
@@ -87,6 +87,15 @@ function select(value){
   platform=value;
   shellLabel.textContent=value==='windows'?'PowerShell':'Shell';
   field.textContent=ready[value]?cmds[value]:'安装暂未开放';
+  // Let narrow screens wrap at the URL path boundary, never inside .ps1/.sh.
+  // Keep the command as plain text, with no inserted characters when copied.
+  if(ready[value]){
+    const boundary=cmds[value].indexOf('/install');
+    const node=field.firstChild;
+    if(boundary>=0&&node){
+      field.insertBefore(document.createElement('wbr'),node.splitText(boundary+1));
+    }
+  }
   copy.disabled=!ready[value];
   for(const [name,tab] of Object.entries(tabs)){
     tab.setAttribute('aria-selected',String(name===value));
