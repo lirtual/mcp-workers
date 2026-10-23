@@ -28,6 +28,7 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 330
     steps:
       - run: echo hello
 `;
@@ -61,4 +62,19 @@ test('server identity must be declared as required string but never user input',
 });
 test('rejects duplicate YAML mappings', () => {
   assert.throws(() => parseGitHubAction(valid + '\nenv:\n  WORKFLOW_ACTION_TYPE: task\n'));
+});
+
+test('Session enforces one job, job-start timeout <=330, and bounded duration',()=>{
+ for(const revised of [
+   valid.replace('    timeout-minutes: 330',''),
+   valid.replace('timeout-minutes: 330','timeout-minutes: 331'),
+   valid.replace('timeout-minutes: 330','timeout-minutes: ${{ inputs.duration_minutes }}'),
+   valid.replace('default: 10','default: 331'),
+   valid.replace('default: 10','default: 0'),
+   valid.replace('duration_minutes:','minutes:'),
+   valid.replace('    timeout-minutes: 330','    timeout-minutes: 5'),
+   valid.replace('jobs:\\n  test:', 'jobs:\\n  other:\\n    runs-on: ubuntu-latest\\n    timeout-minutes: 330\\n    steps: []\\n  test:'),
+ ])assert.throws(()=>parseGitHubAction(revised));
+ const contract=parseGitHubAction(valid);
+ assert.equal(contract.inputs.duration_minutes.default,10);
 });
