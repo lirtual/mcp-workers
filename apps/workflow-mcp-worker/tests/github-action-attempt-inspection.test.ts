@@ -10,7 +10,7 @@ const plan={github_execution_approved:true,github_action_approvals:[grant],
  steps:[{id:'start',uses:'github.run',with:{capability:'github.action',action:{...grant,inputs:{duration_minutes:5}}}}]};
 const row={attempt_id:attempt,run_id:'run',step_id:'start',state:'confirmed',
  candidate_run_id:99,candidate_run_attempt:1,plan:JSON.stringify(plan),run_outcome:'running'};
-function db(data:typeof row|null){
+function db(data:(Omit<typeof row,'candidate_run_id'> & {candidate_run_id:number|null})|null){
  return {prepare:(_sql:string)=>({bind:(id:string)=>({first:async()=>{assert.equal(id,attempt);return data;}})})} as any;
 }
 const result={state:'running'} as const;
