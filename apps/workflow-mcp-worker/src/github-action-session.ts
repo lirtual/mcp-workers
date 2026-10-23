@@ -1,3 +1,5 @@
+import {verifyPinnedGitHubActionIdentity,type GithubActionKeys} from './github-action-oidc-claim.ts';
+import {inspectPersistedGitHubActionAttempt} from './github-action-attempt-inspection.ts';
 import {isPublishedGitHubActionApproved,type ReviewedGitHubAction} from './github-action-review.ts';
 import type {Plan} from './plan.ts';
 
@@ -86,4 +88,48 @@ export async function releaseVerifiedSessionSlot(
    WHERE run_id=? AND step_id=?`).bind(runId,stepId)
   .first<{state:string}>();
  return prior?.state==='terminated'?'already_released':'held';
+}
+
+export type SessionReadyResult='ready'|'already_ready'|'denied'|'physical_unconfirmed';
+/**
+ * OIDC-signed Ready: the already-claimed physical GitHub job must still be
+ * running under the exact immutable published Session identity. Readback is
+ * advisory proof of current liveness; the CAS and later terminal reconciliation
+ * protect the persisted state against callbacks racing with cancellation.
+ */
+export async function recordSignedSessionReady(
+ db:Db,attemptId:string,jwt:string,audience:string,token:string,
+ keys?:GithubActionKeys,
+ inspect:typeof inspectPersistedGitHubActionAttempt=inspectPersistedGitHubActionAttempt,
+):Promise<SessionReadyResult>{
+ const verified=await verifyPinnedGitHubActionIdentity(
+   db,attemptId,jwt,audience,...(keys?[keys]:[]));
+ if(!verified||verified.action.type!=='session')return 'denied';
+ const {row}=verified;
+ if(row.state!=='claimed'||row.owner_run_id!==row.candidate_run_id||
+    row.owner_run_attempt!==row.candidate_run_attempt)return 'denied';
+ const physical=await inspect(db,attemptId,token);
+ if(physical.state!=='running')
+  return physical.state==='unknown'?'physical_unconfirmed':'denied';
+ const updated=await db.prepare(`UPDATE session_executions
+   SET state='ready',updated_at=?
+   WHERE run_id=? AND step_id=? AND state IN ('queued','starting')
+   AND EXISTS (
+     SELECT 1 FROM step_attempts a
+     WHERE a.attempt_id=? AND a.run_id=session_executions.run_id
+       AND a.step_id=session_executions.step_id
+       AND a.capability_id='github.action' AND a.state='claimed'
+       AND a.candidate_run_id=? AND a.candidate_run_attempt=?
+       AND a.owner_run_id=a.candidate_run_id
+       AND a.owner_run_attempt=a.candidate_run_attempt
+   ) AND EXISTS (
+     SELECT 1 FROM runs r WHERE r.id=session_executions.run_id
+       AND r.outcome IN ('queued','running')
+   )`).bind(Date.now(),row.run_id,row.step_id,attemptId,
+   row.candidate_run_id,row.candidate_run_attempt).run();
+ if(updated.meta.changes===1)return 'ready';
+ const state=await db.prepare(`SELECT state FROM session_executions
+  WHERE run_id=? AND step_id=?`).bind(row.run_id,row.step_id)
+  .first<{state:string}>();
+ return state?.state==='ready'?'already_ready':'denied';
 }
