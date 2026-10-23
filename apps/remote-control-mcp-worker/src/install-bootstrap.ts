@@ -234,7 +234,8 @@ export function handleAgentInstallerRequest(
       request.headers.has("forwarded") || request.headers.has("x-forwarded-host"))
     return new Response("Unapproved Worker origin.\n", { status:403, headers });
   if (u.pathname === "/") {
-    return new Response(renderInstallHome(), {status:200, headers:{...headers,
+    return new Response(renderInstallHome({linux:!!release && validPin(release),
+      windows:!!windowsPin && validWindowsPin(windowsPin)}), {status:200, headers:{...headers,
       "content-type":"text/html; charset=utf-8", "x-frame-options":"DENY",
       "referrer-policy":"no-referrer", "content-security-policy":"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"}});
   }

@@ -180,6 +180,9 @@ test('public installation home is isolated from authentication and shows the two
   assert.match(html,/>Linux<\/button>/);
   assert.doesNotMatch(html,/>Linux \/ WSL2<\/button>/);
   assert.match(html,/aria-selected/);
+  assert.match(html,/const ready=\{windows:false,linux:false\}/);
+  assert.match(html,/copy\.disabled=!ready\[platform\]/);
+  assert.match(html,/安装暂未开放/);
   assert.match(html,/navigator\.userAgentData/);
   assert.match(html,/clipboard\.writeText/);
   assert.match(html,/irm https:\/\/rca\.lirtual\.dpdns\.org\/install\.ps1 \| iex/);
@@ -202,4 +205,20 @@ test('Windows installer fetches only independently source-pinned script and rele
   assert.equal(resp.status,200);
   assert.match(await resp.text(),/v0\.1\.99-windows\.1/);
   assert.throws(()=>renderAgentInstallPowerShell(origin,{...synthetic,commit:'not-pinned'}),/Unapproved/);
+});
+
+test('homepage copy state follows the separately verified platform pins',async()=>{
+  const {renderInstallHome}=await import('../src/install-home.ts');
+  const closed=renderInstallHome();
+  const linux=renderInstallHome({linux:true,windows:false});
+  const windows=renderInstallHome({linux:false,windows:true});
+  assert.match(closed,/const ready=\{windows:false,linux:false\}/);
+  assert.match(linux,/const ready=\{windows:false,linux:true\}/);
+  assert.match(windows,/const ready=\{windows:true,linux:false\}/);
+  assert.match(closed,/field\.textContent=ready\[value\]\?cmds\[value\]:'安装暂未开放'/);
+  assert.match(closed,/copy\.disabled=!ready\[platform\]/);
+  assert.match(closed,/if\(!ready\[platform\]\)return;/);
+  const custom='https://rca.lirtual.dpdns.org';
+  const resp=requestInstall(new Request(custom+'/'),pin,custom);
+  assert.match(await resp.text(),/const ready=\{windows:false,linux:true\}/);
 });

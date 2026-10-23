@@ -1,5 +1,5 @@
 /** Public onboarding page: it has no credential, live device list or remote operation. */
-export function renderInstallHome(): string {
+export function renderInstallHome(readiness: {windows: boolean; linux: boolean} = {windows:false,linux:false}): string {
   return `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Remote Control Agent · 安装</title>
@@ -14,7 +14,7 @@ p{color:#626262;line-height:1.6;margin:0 0 28px}
 [role=tab][aria-selected=true]{color:#111;border-bottom-color:#111}
 [role=tabpanel]{padding:20px 0 4px}.command{background:#f5f5f5;border:1px solid #ebebeb;border-radius:10px;display:flex;align-items:center;gap:10px;padding:12px}
 code{font-size:13px;overflow-wrap:anywhere;flex:1;min-width:0;line-height:1.65}button.copy{cursor:pointer;background:#111;color:#fff;border:none;border-radius:6px;padding:10px 13px;flex:none}
-button:focus-visible,a:focus-visible{outline:2px solid #111;outline-offset:3px}
+button.copy:disabled{opacity:.45;cursor:not-allowed}button:focus-visible,a:focus-visible{outline:2px solid #111;outline-offset:3px}
 #message{min-height:24px;margin:9px 0 0;color:#555;font-size:13px}
 ol{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px;padding:28px 0 18px;margin:30px 0;border-top:1px solid #eee;border-bottom:1px solid #eee;list-style-position:inside}
 li{line-height:1.6;font-size:13px;color:#555}li strong{color:#111;display:block;font-size:14px}footer{display:flex;gap:24px;font-size:13px}a{color:#555;text-decoration:none}a:hover{text-decoration:underline}
@@ -28,11 +28,12 @@ li{line-height:1.6;font-size:13px;color:#555}li strong{color:#111;display:block;
 <footer><a href="https://github.com/lirtual/remote-control-agent" rel="noopener noreferrer">源码</a><a href="https://github.com/lirtual/remote-control-agent#readme" rel="noopener noreferrer">文档</a></footer></main>
 <script>
 (()=>{'use strict';const cmds={windows:'irm https://rca.lirtual.dpdns.org/install.ps1 | iex',linux:'curl -fsSL https://rca.lirtual.dpdns.org/install.sh | sh'};
-const tabs={windows:document.getElementById('windows'),linux:document.getElementById('linux')};const field=document.getElementById('command'),message=document.getElementById('message');let platform='linux';
-function select(value){platform=value;field.textContent=cmds[value];for(const [name,tab] of Object.entries(tabs)){tab.setAttribute('aria-selected',String(name===value));tab.tabIndex=name===value?0:-1;}message.textContent='';}
+const ready={windows:${readiness.windows},linux:${readiness.linux}};
+const tabs={windows:document.getElementById('windows'),linux:document.getElementById('linux')};const field=document.getElementById('command'),message=document.getElementById('message'),copy=document.getElementById('copy');let platform='linux';
+function select(value){platform=value;field.textContent=ready[value]?cmds[value]:'安装暂未开放';copy.disabled=!ready[platform];for(const [name,tab] of Object.entries(tabs)){tab.setAttribute('aria-selected',String(name===value));tab.tabIndex=name===value?0:-1;}message.textContent=ready[value]?'':'等待经审核的正式安装包发布';}
 for(const [name,tab] of Object.entries(tabs)){tab.addEventListener('click',()=>select(name));tab.addEventListener('keydown',event=>{if(event.key==='ArrowLeft'||event.key==='ArrowRight'){event.preventDefault();const other=name==='windows'?'linux':'windows';select(other);tabs[other].focus();}});}
 const detected=(navigator.userAgentData?.platform||navigator.platform||navigator.userAgent||'').toLowerCase();select(detected.includes('win')?'windows':'linux');
-document.getElementById('copy').addEventListener('click',async()=>{try{await navigator.clipboard.writeText(cmds[platform]);message.textContent='已复制';}catch{message.textContent='复制失败，请手动选中命令。';}});
+copy.addEventListener('click',async()=>{if(!ready[platform])return;try{await navigator.clipboard.writeText(cmds[platform]);message.textContent='已复制';}catch{message.textContent='复制失败，请手动选中命令。';}});
 })();
 </script></body></html>`;
 }
