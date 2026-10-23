@@ -3,13 +3,11 @@
  * Environment. Never log a bearer, service token, request headers or tool data.
  */
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { scopedPublicMcpFetch, TRUSTED_PORTAL_ENDPOINT, PRODUCTION_PORTAL_ENDPOINT } from '../src/mcp-public-fetch.ts';
+import { scopedPublicMcpFetch, PORTAL_ENDPOINT } from '../src/mcp-public-fetch.ts';
 import { toolSchemaDigest } from '../src/plan.ts';
 
-const target=process.env.MCP_PORTAL_TARGET || 'test';
-if(target!=='test'&&target!=='production')throw Error('invalid_portal_probe_target');
-const endpoint=target==='production'?PRODUCTION_PORTAL_ENDPOINT:TRUSTED_PORTAL_ENDPOINT;
-console.log('PORTAL_PROBE_TARGET',target);
+const endpoint=PORTAL_ENDPOINT;
+console.log('PORTAL_PROBE_TARGET',endpoint);
 const clientId=process.env.MCP_PORTAL_CLIENT_ID;
 const clientSecret=process.env.MCP_PORTAL_CLIENT_SECRET;
 if(!clientId||!clientSecret) {
@@ -43,9 +41,8 @@ try {
   const output=await client.callTool({name:candidate.name,arguments:{limit:1}});
   if(output.isError) throw new Error('ima_readonly_tool_error');
   console.log('IMA_READONLY_CALL_OK');
-  // On production One-MCP (not the isolated test Portal), verify the actual
-  // end-to-end client → Portal → Workflow read-only tool path. No D1 writes.
-  if(target==='production'){
+  // Verify the end-to-end Portal → Workflow read-only path. No D1 writes.
+  {
     const workflow=listing.tools.find(t=>
       /(^|[._-])workflow_list$/.test(t.name)&&
       t.annotations?.readOnlyHint===true&&

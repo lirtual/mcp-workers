@@ -49,14 +49,6 @@ on:
         required: false
         type: boolean
         default: false
-      mcp_portal_target:
-        description: Portal for the read-only MCP probe (no deployment)
-        required: false
-        type: choice
-        options:
-          - test
-          - production
-        default: test
       mcp_cloud_e2e:
         description: Create, test and delete isolated MCP Worker, Workflow and D1 (never production)
         required: false
@@ -730,7 +722,6 @@ jobs:
     env:
       MCP_PORTAL_CLIENT_ID: ${{ secrets.MCP_PORTAL_CLIENT_ID }}
       MCP_PORTAL_CLIENT_SECRET: ${{ secrets.MCP_PORTAL_CLIENT_SECRET }}
-      MCP_PORTAL_TARGET: ${{ inputs.mcp_portal_target }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4

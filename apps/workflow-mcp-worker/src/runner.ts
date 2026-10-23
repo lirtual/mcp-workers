@@ -8,7 +8,7 @@ import { cleanError, limitResult, noteAwaitingParent, releaseWaitingRun, resumeP
 import { dispatchOrResumeGithubAttempt,githubAsyncAwaitingExternal,githubAsyncOutcome,observeAllowListedGithubRun,GITHUB_ASYNC_WAKE_LIMIT,GITHUB_ASYNC_WAKE_TIMEOUT,readGithubAsyncFact,type GithubAsyncFact,type GithubDispatchStep } from './github-async.ts';
 import { parseRegisteredInputs, REGISTERED_GITHUB_ACTION, registeredGithubPin } from './github-registry.ts';
 import { CancelObserved, isCancelRequested } from './run-cancel.ts';
-import { scopedPublicMcpFetch, TRUSTED_PORTAL_ENDPOINT, PRODUCTION_PORTAL_ENDPOINT, type PortalServiceToken } from './mcp-public-fetch.ts';
+import { scopedPublicMcpFetch, PORTAL_ENDPOINT, type PortalServiceToken } from './mcp-public-fetch.ts';
 import { prepareFixtureRequest, sendFixture } from './http-fixture.ts';
 import { beginProtectedDispatch, finishProtectedDispatch, grantRevoked, readProtectedEffect } from './protected-effect.ts';
 import { COMPENSATION_ROW, compensationEffectId, type CompensationReport, type CompensationStepReport } from './saga.ts';
@@ -275,28 +275,18 @@ async function callApprovedMcp(env:Env,plan:Plan,step:Step,args:Record<string,un
   if(await toolSchemaDigest(step.with.input_schema,step.with.output_schema)!==schema_digest)
     throw Error('approved_schema_changed');
   const client=new Client({name:'workflow-mcp-readonly-candidate',version:'0.1.0'});
-  // Environment-scoped Portal selection cannot be changed by a Draft, a
-  // Published Plan, or Run inputs. Production must explicitly select its own
-  // Portal; the test Portal is never its implicit fallback.
-  const chosenPortal=env.MCP_PORTAL_ENDPOINT;
-  if(chosenPortal===undefined)throw Error('portal_target_not_configured');
-  if(chosenPortal!==undefined){
-    if(chosenPortal!==TRUSTED_PORTAL_ENDPOINT && chosenPortal!==PRODUCTION_PORTAL_ENDPOINT)
-      throw Error('portal_target_not_authorized');
-    if(endpoint!==chosenPortal)throw Error('portal_target_not_authorized');
-  }
-  if(endpoint===PRODUCTION_PORTAL_ENDPOINT && chosenPortal!==PRODUCTION_PORTAL_ENDPOINT)
-    throw Error('portal_target_not_configured');
-  let portalToken:PortalServiceToken|undefined;
-  if(endpoint===TRUSTED_PORTAL_ENDPOINT || endpoint===PRODUCTION_PORTAL_ENDPOINT){
-    // Fail closed before making a network request; never fall back to
-    // unauthenticated access or pass credentials through Workflow inputs.
-    if(!env.MCP_PORTAL_CLIENT_ID||!env.MCP_PORTAL_CLIENT_SECRET)
-      throw Error('portal_auth_not_configured');
-    portalToken={clientId:env.MCP_PORTAL_CLIENT_ID,clientSecret:env.MCP_PORTAL_CLIENT_SECRET};
-  }
+  // Only the existing owner-approved Portal may receive the service token.
+  // A Draft or Published Plan cannot choose another Portal.
+  if(env.MCP_PORTAL_ENDPOINT===undefined)throw Error('portal_target_not_configured');
+  if(env.MCP_PORTAL_ENDPOINT!==PORTAL_ENDPOINT || endpoint!==PORTAL_ENDPOINT)
+    throw Error('portal_target_not_authorized');
+  if(!env.MCP_PORTAL_CLIENT_ID||!env.MCP_PORTAL_CLIENT_SECRET)
+    throw Error('portal_auth_not_configured');
+  const portalToken:PortalServiceToken={
+    clientId:env.MCP_PORTAL_CLIENT_ID,clientSecret:env.MCP_PORTAL_CLIENT_SECRET,
+  };
   const transport=new StreamableHTTPClientTransport(new URL(endpoint),{
-    fetch:scopedPublicMcpFetch(endpoint,fetch,portalToken,chosenPortal??TRUSTED_PORTAL_ENDPOINT),
+    fetch:scopedPublicMcpFetch(endpoint,fetch,portalToken,PORTAL_ENDPOINT),
   });
   try{
     await client.connect(transport);

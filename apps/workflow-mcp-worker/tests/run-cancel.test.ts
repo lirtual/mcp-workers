@@ -386,7 +386,7 @@ test('a non-emitting MCP expansion does not replace the final GitHub business ou
   const ctx=setup(t,{run:'completed',conclusion:'success',cancel:'accept'});
   const run=insertCancellationRun(ctx,{steps:[
     {id:'fan',uses:'flow.expand',expand:{items:{ref:'inputs.items'},max:2},
-      body:{uses:'mcp.call',with:{endpoint:'https://test-mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read'}}},
+      body:{uses:'mcp.call',with:{endpoint:'https://mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read'}}},
     {id:'heavy',uses:'github.run',needs:['fan'],with:{capability:'github.workflow.check'}},
   ]});
   ctx.sqlite.prepare("INSERT INTO run_steps(run_id,step_id,status,output,updated_at) VALUES(?, 'fan','succeeded','[{\"value\":1}]',?)")

@@ -2,7 +2,7 @@ import { assertChildInputs, compilePlan, PlanError, canonicalJsonString, expansi
 import { GITHUB_TRIGGER_EVENTS, isConfiguredSecret, LIMITS, readHttpFixture, STEP_ID, TRIGGER_REPOSITORY, TRIGGER_SOURCE_ID } from './capabilities.ts';
 import { recordRuntimeApproval } from './runtime-approval.ts';
 import { cronEventId, cronMatches, CronError, publishedCronFacts } from './cron.ts';
-import { PRODUCTION_PORTAL_ENDPOINT, TRUSTED_PORTAL_ENDPOINT } from './mcp-public-fetch.ts';
+import { PORTAL_ENDPOINT } from './mcp-public-fetch.ts';
 import {githubAsyncViewsForRun} from './github-async.ts';
 import {reconcileRunCancellation, requestAwaitedChildCancellation, REFINABLE_CANCEL_ERRORS, type RunCancellation} from './run-cancel.ts';
 import {publishedSaga, publicCompensation} from './saga.ts';
@@ -30,8 +30,7 @@ export type Env = {
   // Optional, MCP-only machine identity for the pinned Cloudflare MCP Portal.
   MCP_PORTAL_CLIENT_ID?: string;
   MCP_PORTAL_CLIENT_SECRET?: string;
-  // For production MCP, pin to the existing MCP Portal;
-  // for isolated test MCP, pin to test-mcp (never selected by Draft input).
+  // Pin all Workflow MCP instances to the single existing Portal.
   MCP_PORTAL_ENDPOINT?: string;
   // Production GitHub requires explicit opt-in and fixed OIDC/executor pins.
   WORKFLOW_EXECUTOR_GITHUB_TOKEN?: string;
@@ -370,7 +369,7 @@ export class WorkflowService {
     if(mcp.length){
       const portal=this.env.MCP_PORTAL_ENDPOINT;
       if(portal===undefined)throw new StateError('portal_target_not_configured');
-      if(![TRUSTED_PORTAL_ENDPOINT,PRODUCTION_PORTAL_ENDPOINT].includes(portal) ||
+      if(![PORTAL_ENDPOINT].includes(portal) ||
          mcp.some(grant=>grant.endpoint!==portal))throw new StateError('portal_target_not_authorized');
     }
     const fixture=readHttpFixture(this.env);

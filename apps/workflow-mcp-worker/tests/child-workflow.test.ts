@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { LIMITS } from '../src/capabilities.ts';
-import { TRUSTED_PORTAL_ENDPOINT } from '../src/mcp-public-fetch.ts';
+import { PORTAL_ENDPOINT } from '../src/mcp-public-fetch.ts';
 import { toolSchemaDigest } from '../src/plan.ts';
 import { WorkflowService } from '../src/store.ts';
 import type { Env } from '../src/store.ts';
@@ -65,7 +65,7 @@ function harness(t: test.TestContext) {
     MCP_ACCESS_TOKEN: TOKEN,
     MCP_PORTAL_CLIENT_ID: 'child-workflow-portal-id',
     MCP_PORTAL_CLIENT_SECRET: PORTAL_SECRET,
-    MCP_PORTAL_ENDPOINT: TRUSTED_PORTAL_ENDPOINT,
+    MCP_PORTAL_ENDPOINT: PORTAL_ENDPOINT,
     DB: {prepare, async batch(items: {run: () => Promise<unknown>}[]) { return Promise.all(items.map(item => item.run())); }},
     WORKFLOW: {
       async create(options:{id:string}) {
@@ -213,7 +213,7 @@ test('the child uses its own grant and rejects a parent secret or connection inp
   const childDef = {
     version: 1, name: 'Echo child',
     steps: [{id: 'read', uses: 'mcp.call', with: {
-      endpoint: TRUSTED_PORTAL_ENDPOINT, tool: 'echo', scope: 'read', input_schema: PINNED_SCHEMA,
+      endpoint: PORTAL_ENDPOINT, tool: 'echo', scope: 'read', input_schema: PINNED_SCHEMA,
       arguments: {value: 'owned-by-child'},
     }}],
   };

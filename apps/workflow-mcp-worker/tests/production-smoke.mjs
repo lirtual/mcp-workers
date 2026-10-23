@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { scopedPublicMcpFetch, PRODUCTION_PORTAL_ENDPOINT } from '../src/mcp-public-fetch.ts';
+import { scopedPublicMcpFetch, PORTAL_ENDPOINT } from '../src/mcp-public-fetch.ts';
 import { toolSchemaDigest } from '../src/plan.ts';
 
 const token = process.env.MCP_ACCESS_TOKEN;
@@ -145,8 +145,8 @@ async function runS2Smoke() {
   const outstanding = sql("SELECT count(*) AS n FROM runs WHERE outcome NOT IN ('succeeded','failed','cancelled')");
   assert.equal(outstanding[0]?.n,0,'Production has nonterminal Runs: smoke aborted before writes');
   const portal = new Client({name:'workflow-mcp-production-contract',version:'0.1.0'});
-  const portalTransport = new StreamableHTTPClientTransport(new URL(PRODUCTION_PORTAL_ENDPOINT),{
-    fetch:scopedPublicMcpFetch(PRODUCTION_PORTAL_ENDPOINT,fetch,pair,PRODUCTION_PORTAL_ENDPOINT),
+  const portalTransport = new StreamableHTTPClientTransport(new URL(PORTAL_ENDPOINT),{
+    fetch:scopedPublicMcpFetch(PORTAL_ENDPOINT,fetch,pair,PORTAL_ENDPOINT),
   });
   let candidate;
   try{
@@ -159,7 +159,7 @@ async function runS2Smoke() {
   const definition={version:1,name:'workflow-mcp-production-smoke-'+label,
     steps:[
       {id:'read',uses:'mcp.call',with:{
-        endpoint:PRODUCTION_PORTAL_ENDPOINT,tool:'ima_list_notebooks',
+        endpoint:PORTAL_ENDPOINT,tool:'ima_list_notebooks',
         scope:'read',arguments:{limit:1},input_schema:candidate.inputSchema,
         ...(candidate.outputSchema?{output_schema:candidate.outputSchema}:{})
       }},
@@ -172,7 +172,7 @@ async function runS2Smoke() {
   const checked=await tool('workflow_validate',{workflow_id:workflowId,revision:1});
   assert.equal(checked.valid,true);
   assert.deepEqual(checked.required_approvals,[{
-    endpoint:PRODUCTION_PORTAL_ENDPOINT,tool:'ima_list_notebooks',scope:'read',
+    endpoint:PORTAL_ENDPOINT,tool:'ima_list_notebooks',scope:'read',
     schema_digest:await toolSchemaDigest(candidate.inputSchema,candidate.outputSchema),
   }]);
   const publish=await tool('workflow_publish',{workflow_id:workflowId,expected_revision:1,

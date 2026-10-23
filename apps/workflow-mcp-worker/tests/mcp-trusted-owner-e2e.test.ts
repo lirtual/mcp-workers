@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { toolSchemaDigest } from '../src/plan.ts';
-import { TRUSTED_PORTAL_ENDPOINT, PRODUCTION_PORTAL_ENDPOINT } from '../src/mcp-public-fetch.ts';
+import { PORTAL_ENDPOINT } from '../src/mcp-public-fetch.ts';
 import type { Env } from '../src/store.ts';
 import type { WorkflowEvent, WorkflowStep } from 'cloudflare:workers';
 import readonlyWorker from './fixtures/readonly-worker.ts';
@@ -26,7 +26,7 @@ const [{default:ownerWorker},{WorkflowRunner}]=await Promise.all([
 ]);
 hook.deregister();
 
-const TRUSTED=TRUSTED_PORTAL_ENDPOINT;
+const TRUSTED=PORTAL_ENDPOINT;
 const PORTAL_ID='test-only-service-token-id';
 const PORTAL_SECRET='test-only-service-token-secret';
 const OWNER='https://owner.example.org/mcp';
@@ -149,9 +149,8 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     assert.equal(outcome.result.content[0].text,'approved trusted echo');
     assert.equal(toolCalls,1,'exactly one tools/call');
 
-    // An environment configured for the production Portal must not silently
-    // execute a Plan approved for the test Portal (nor leak credentials).
-    env.MCP_PORTAL_ENDPOINT=PRODUCTION_PORTAL_ENDPOINT;
+    // A mistargeted environment must not send a published Plan to another Portal.
+    env.MCP_PORTAL_ENDPOINT='https://unapproved.example.org/mcp';
     const crossEnvironment=await call('workflow_run',{
       workflow_id:created.workflow_id,inputs:{message:'blocked wrong Portal'},
     });
@@ -163,7 +162,7 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     const wrongPortal=await call('workflow_result',{run_id:crossEnvironment.run_id});
     assert.equal(wrongPortal.status,'failed');
     assert.equal(wrongPortal.steps[0].status,'failed');
-    assert.equal(toolCalls,1,'cross-environment Portal was not contacted');
+    assert.equal(toolCalls,1,'unauthorized Portal was not contacted');
     env.MCP_PORTAL_ENDPOINT=TRUSTED;
 
     // A missing outbound Portal secret must fail without sending any requests.

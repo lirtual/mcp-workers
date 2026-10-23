@@ -4,7 +4,7 @@ import { registerHooks } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { TRUSTED_PORTAL_ENDPOINT } from '../src/mcp-public-fetch.ts';
+import { PORTAL_ENDPOINT } from '../src/mcp-public-fetch.ts';
 import { CANCEL_SAGA_GRACE_MS } from '../src/run-cancel.ts';
 import type { Env } from '../src/store.ts';
 import type { WorkflowEvent, WorkflowStep } from 'cloudflare:workers';
@@ -22,7 +22,7 @@ const [{default:ownerWorker},{WorkflowRunner}]=await Promise.all([
 ]);
 hook.deregister();
 
-const TRUSTED=TRUSTED_PORTAL_ENDPOINT;
+const TRUSTED=PORTAL_ENDPOINT;
 const TOKEN='disposable-portal-token-saga-compensation';
 const OWNER='https://owner.example.org/mcp';
 const MIGRATIONS=['0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql','0006_github_registered_action.sql','0007_run_cancel.sql','0008_grant_revocation.sql','0009_runtime_approval.sql','0010_child_run.sql'];

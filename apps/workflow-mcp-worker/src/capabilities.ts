@@ -1,4 +1,4 @@
-import { publicMcpEndpoint, PRODUCTION_PORTAL_ENDPOINT, TRUSTED_PORTAL_ENDPOINT } from './mcp-public-fetch.ts';
+import { publicMcpEndpoint, PORTAL_ENDPOINT } from './mcp-public-fetch.ts';
 import { GITHUB_ASYNC_WAIT_MS, GITHUB_ASYNC_WAKE_LIMIT } from './github-async.ts';
 import { APPROVAL_GATE_BINDING, APPROVAL_GATE_WHEN, APPROVAL_WAIT_MS } from './runtime-approval.ts';
 import { selectedGithubExecutor } from './github-dispatch.ts';
@@ -82,7 +82,7 @@ export function isConfiguredSecret(value: unknown): value is string {
   return typeof value === 'string' && value.length >= 16 && value.length <= 256 && !/[\r\n]/.test(value);
 }
 
-const PORTAL_ENDPOINTS: readonly string[] = [TRUSTED_PORTAL_ENDPOINT, PRODUCTION_PORTAL_ENDPOINT];
+const PORTAL_ENDPOINTS: readonly string[] = [PORTAL_ENDPOINT];
 
 export function isSupportedUse(value: unknown): value is SupportedUse {
   return typeof value === 'string' && (USES as readonly string[]).includes(value);
@@ -122,7 +122,7 @@ const mcpExample = {
     id: 'lookup',
     uses: 'mcp.call',
     with: {
-      endpoint: PRODUCTION_PORTAL_ENDPOINT,
+      endpoint: PORTAL_ENDPOINT,
       tool: 'search',
       scope: 'read',
       input_schema: {type: 'object', properties: {query: {type: 'string'}}},
@@ -138,7 +138,7 @@ const mcpWriteExample = {
     id: 'save',
     uses: 'mcp.call',
     with: {
-      endpoint: PRODUCTION_PORTAL_ENDPOINT,
+      endpoint: PORTAL_ENDPOINT,
       tool: 'note',
       scope: 'write',
       input_schema: {type: 'object', properties: {note: {type: 'string'}}, additionalProperties: false},
@@ -232,7 +232,7 @@ const sagaExample = {
       id: 'save',
       uses: 'mcp.call',
       with: {
-        endpoint: PRODUCTION_PORTAL_ENDPOINT,
+        endpoint: PORTAL_ENDPOINT,
         tool: 'note',
         scope: 'write',
         input_schema: {type: 'object', properties: {note: {type: 'string'}}, additionalProperties: false},

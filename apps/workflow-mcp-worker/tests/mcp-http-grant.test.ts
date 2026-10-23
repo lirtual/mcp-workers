@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { canonicalJsonString, toolSchemaDigest } from '../src/plan.ts';
-import { TRUSTED_PORTAL_ENDPOINT } from '../src/mcp-public-fetch.ts';
+import { PORTAL_ENDPOINT } from '../src/mcp-public-fetch.ts';
 import type { Env } from '../src/store.ts';
 import type { WorkflowEvent, WorkflowStep } from 'cloudflare:workers';
 import noteWorker from './fixtures/controlled-note-worker.ts';
@@ -22,7 +22,7 @@ const [{default:ownerWorker},{WorkflowRunner}]=await Promise.all([
 ]);
 hook.deregister();
 
-const TRUSTED=TRUSTED_PORTAL_ENDPOINT;
+const TRUSTED=PORTAL_ENDPOINT;
 const FIXTURE='https://fixture.lirtual.dpdns.org/echo';
 const FIXTURE_ID='echo';
 const HTTP_SCHEMA={type:'object',properties:{value:{type:'string'}},additionalProperties:false};
