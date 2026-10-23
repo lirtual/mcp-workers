@@ -393,7 +393,7 @@ test('narrow install commands break only at URL path while copied text stays exa
   ]);
   await (copy.handlers.click as ()=>Promise<void>)();
   assert.equal(copied[0],'irm https://rca.lirtual.dpdns.org/install.ps1 | iex');
-  linux.handlers.click();
+  linux.handlers.click!();
   assert.deepEqual(codeNodes.map(n=>n.tagName??n.data),[
     'curl -fsSL https://rca.lirtual.dpdns.org/','WBR','install.sh | sh',
   ]);
