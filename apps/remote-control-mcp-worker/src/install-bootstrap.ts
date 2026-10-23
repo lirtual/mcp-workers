@@ -98,15 +98,15 @@ export const REVIEWED_AGENT_RELEASE_PIN: InstallReleasePin = Object.freeze({
   x64Sha256: "bcb932d9f3539233204decf70ed0a748e2e31ac2a069e5b8b29484ab8733a0e3",
   arm64Sha256: "bdbe443d6010e372a03bff773d0e0bce946ac7bbbd45d9d1b75c99477eb23aa9",
 });
-// Public v0.1.17 release from native candidates #39997761408, all three
-// platforms verified. The script uses the PowerShell host Yes/No selector
-// with default No to avoid stdin ambiguity during a piped one-line install.
+// Public v0.1.18 release from native candidates #40006764926, all three
+// platforms verified. The signed same-key Windows recovery is explicitly
+// owner-approved; first install and upgrades retain the same one-line URL.
 export const REVIEWED_PUBLIC_INSTALL_RELEASE_PIN: InstallReleasePin = Object.freeze({
-  tag: "v0.1.17",
+  tag: "v0.1.18",
   pairingProtocol: "single-code-v1",
-  commit: "9334febebfac246299465f17d1d30d21e36fd913",
-  x64Sha256: "4368db59bff2e424b738a845c9d36d213aaa8e99c34f9160fa4091b05d3ad967",
-  arm64Sha256: "9567ddb48ab56fd561edf90c3c95640af557f517d171b34efdd3675d567c3a8e",
+  commit: "b0951ee64d0c0df0b8f5b28bee46aa41b10b1484",
+  x64Sha256: "6fb9f1879ea2a4c1285eeb7c7ae7dcb34f9c86b2adf0c492ebb00170132290e6",
+  arm64Sha256: "85760e8ed9021306fcd817a0cc1fc2f497cadc4c5a9e9f14b03d6d6fb11a48de",
 });
 /** Independent reviewed source and Release asset pins; both are required. */
 export type WindowsInstallPin = Readonly<{
@@ -115,10 +115,10 @@ export type WindowsInstallPin = Readonly<{
 // Public Windows bootstrap source is pinned to the exact reviewed Agent
 // commit; the source hash is separate from the official Windows asset digest.
 export const REVIEWED_WINDOWS_INSTALL_PIN: WindowsInstallPin = Object.freeze({
-  tag: "v0.1.17",
-  commit: "9334febebfac246299465f17d1d30d21e36fd913",
+  tag: "v0.1.18",
+  commit: "b0951ee64d0c0df0b8f5b28bee46aa41b10b1484",
   scriptSha256: "8709c6446e9d81d320887b6132337577a798dafb2630b72e2633859d8268ca24",
-  assetSha256: "bdab834c9137e67883fc52ddb6ac00455612cf96bbeee694fc04fa8ab378c833",
+  assetSha256: "d7c24aeb583f09ee9c3ac77962d7ce078128556d45c68b247db07e765bdc955f",
 });
 
 function validWindowsPin(pin: WindowsInstallPin): boolean {
