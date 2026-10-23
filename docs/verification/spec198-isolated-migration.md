@@ -26,6 +26,9 @@ removed. Production resources must not be used for rehearsals.
   not `_cf_KV`; this is not proof that exporting the production database would
   preserve or safely recreate its platform-managed state. Never manufacture
   `_cf_KV` inserts or schema manually as part of a migration.
+  A read-only `SELECT count(*) FROM _cf_KV` on the existing production D1
+  returned Cloudflare error `7500: not authorized: SQLITE_AUTH`; the internal
+  table is not available as an ordinary user table. Do not bypass this check.
 - An isolated Worker exported both `Spec198Old` and `Spec198New` after an
   update. The old Workflow instance had reached `complete` with output `ok`
   before the update and remained queryable by its original ID afterward. A
