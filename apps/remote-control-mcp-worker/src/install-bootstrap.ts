@@ -98,18 +98,28 @@ export const REVIEWED_AGENT_RELEASE_PIN: InstallReleasePin = Object.freeze({
   x64Sha256: "bcb932d9f3539233204decf70ed0a748e2e31ac2a069e5b8b29484ab8733a0e3",
   arm64Sha256: "bdbe443d6010e372a03bff773d0e0bce946ac7bbbd45d9d1b75c99477eb23aa9",
 });
-// The historical reviewed Agent Release predates Spec #24's interactive
-// permanent/temporary choice. Do not silently serve that older installer
-// through the new one-command onboarding page. The default remains closed
-// until both new native artifacts have been reviewed and their immutable
-// Release digests explicitly pinned during a separate release gate.
+// Spec #24 native Agent Release from merged source 7a90504 and successful
+// main candidate #39976701872; official v0.1.15 SHA-256 assets verified
+// after publication by Actions #39980426344. Does not update existing devices.
+export const REVIEWED_V0115_RELEASE_PIN: InstallReleasePin = Object.freeze({
+  tag: "v0.1.15",
+  pairingProtocol: "single-code-v1",
+  commit: "7a90504a22e3ea0c302c4c5a7d5defeb72ea7719",
+  x64Sha256: "4c5c9733a37061a7223ff1ba1a019a838c105be462e04b4f73352205fa0ea1c9",
+  arm64Sha256: "b6c0b7079a090b9fddef11c27211169881b4e51ef99e36ac19f8f9678d0613d7",
+});
 /** Independent reviewed source and Release asset pins; both are required. */
 export type WindowsInstallPin = Readonly<{
   tag: string; commit: string; scriptSha256: string; assetSha256: string;
 }>;
-// Deliberately unavailable until the new Windows onboarding release is published,
-// independently reviewed and approved for use. Do not use the old staging-only zip.
-export const REVIEWED_WINDOWS_INSTALL_PIN: WindowsInstallPin | null = null;
+// Public Windows bootstrap source is pinned to the exact reviewed Agent
+// commit; the source hash is separate from the official Windows asset digest.
+export const REVIEWED_WINDOWS_INSTALL_PIN: WindowsInstallPin = Object.freeze({
+  tag: "v0.1.15",
+  commit: "7a90504a22e3ea0c302c4c5a7d5defeb72ea7719",
+  scriptSha256: "9f13a2222461cdf8d836691c5e137aed992bb81bf50b236b7d551457b9b0d5ed",
+  assetSha256: "eedc514831968c03447befe2cc7e125b89eca328a524e649dde58f4e9fb4e94d",
+});
 
 function validWindowsPin(pin: WindowsInstallPin): boolean {
   return /^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$/.test(pin.tag) &&
@@ -220,7 +230,7 @@ export function handleAgentInstallerRequest(
   request: Request,
   release: InstallReleasePin | null = null,
   trustedOrigin?: string,
-  windowsPin: WindowsInstallPin | null = REVIEWED_WINDOWS_INSTALL_PIN,
+  windowsPin: WindowsInstallPin | null = null,
 ): Response {
   const u = new URL(request.url);
   const headers = { "cache-control": "no-store", "x-content-type-options": "nosniff" };
