@@ -1,5 +1,4 @@
 import type { ReviewedGitHubAction } from './github-action-review.ts';
-import { isPublishedGitHubActionApproved } from './github-action-review.ts';
 
 type Http=(request:Request)=>Promise<Response>;
 export type ActionDispatchTarget={ref:string;sha:string};
