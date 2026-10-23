@@ -86,6 +86,36 @@ test('four concurrent Sessions reserve distinct slots, fifth denied until physic
   assert.equal(f.db.prepare('PRAGMA foreign_key_check').all().length,0);
  }finally{f.db.close();}
 });
+test('workflow_list reports four durable quota holders even after parent success and allows locating a stuck Run',async()=>{
+ const f=fixture();
+ try{
+  const service=new WorkflowService({DB:f.adapter,WORKFLOW:{}} as Env);
+  const empty=await service.list();
+  assert.deepEqual(empty.active_sessions,[]);
+  for(let i=1;i<=4;i++)
+   assert.equal(await reservePublishedSessionSlot(f.adapter,run(i),'launch'),'reserved');
+  f.db.prepare("UPDATE session_executions SET state='ready' WHERE run_id=?").run(run(1));
+  f.db.prepare("UPDATE session_executions SET state='uncertain' WHERE run_id=?").run(run(2));
+  f.db.prepare("UPDATE session_executions SET state='stopping' WHERE run_id=?").run(run(3));
+  f.db.prepare("UPDATE runs SET outcome='succeeded' WHERE id=?").run(run(1));
+  const listed=await service.list();
+  assert.equal(listed.active_sessions.length,4);
+  assert.deepEqual(listed.active_sessions.map(s=>s.slot),[1,2,3,4]);
+  assert.equal(listed.active_sessions[0]?.run_id,run(1));
+  assert.equal(listed.active_sessions[0]?.recorded_state,'ready');
+  assert.equal(listed.active_sessions[0]?.physical_health,'unverified');
+  assert.equal(listed.active_sessions[1]?.recorded_state,'uncertain');
+  assert.equal(listed.active_sessions[2]?.recorded_state,'stopping');
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(5),'launch'),'full');
+  f.claim(1,'claimed',true);
+  f.db.prepare("UPDATE step_attempts SET state='succeeded' WHERE run_id=?").run(run(1));
+  assert.equal(await releaseVerifiedSessionSlot(f.adapter,run(1),'launch'),'released');
+  const updated=await service.list();
+  assert.equal(updated.active_sessions.length,3);
+  assert.ok(updated.active_sessions.every(s=>s.run_id!==run(1)));
+  assert.ok(updated.active_sessions.every(s=>s.physical_health==='unverified'));
+ }finally{f.db.close();}
+});
 test('uncertain and stopping Sessions keep capacity until a verified physical terminal',async()=>{
  const f=fixture();
  try{
