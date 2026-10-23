@@ -23,7 +23,8 @@ function harness() {
     async transaction<T>(fn: (tx: { get: (key: string) => Promise<unknown>; put: (key: string, value: unknown) => Promise<void> }) => Promise<T>) { return fn(storage); },
   };
   const makeSocket = (id: string, epoch: string) => {
-    let attachment: Record<string, unknown> = { device_id: id, epoch, last_auth_check_at: Date.now() };
+    let attachment: Record<string, unknown> = { device_id: id, epoch,
+      last_auth_check_at: Date.now(), connected_at: Date.now() - 10000 };
     return {
       readyState: Number(WebSocket.OPEN),
       closeCode: 0,
@@ -43,7 +44,6 @@ function harness() {
 const deviceInfo = JSON.stringify({
   kind: "device_info", hostname: "workstation", os: "windows", os_version: "10.0.26100",
   arch: "x64", environment: "native", agent_version: "v0.1.12-windows-rc.1",
-  capabilities: ["read"],
 });
 
 test("signed current epoch reports minimal metadata, not credentials or an inferred grant", async () => {
@@ -57,24 +57,50 @@ test("signed current epoch reports minimal metadata, not credentials or an infer
   assert.equal(active.status, "online");
   assert.equal(active.device_info.hostname, "workstation");
   assert.equal(active.device_info.os, "windows");
-  assert.deepEqual(active.capabilities, ["read"]);
-  assert.ok(Number.isSafeInteger(active.last_seen));
+  assert.equal(Object.hasOwn(active, "capabilities"), false);
+  assert.equal(Object.hasOwn(active.device_info, "capabilities"), false);
+  assert.equal(active.grant_type, "permanent");
+  assert.equal(active.last_connected_at, h.live.deserializeAttachment().connected_at);
+  assert.equal((h.rows.get("device:" + h.activeId) as {last_connected_at:number}).last_connected_at,
+    active.last_connected_at);
   assert.ok(active.display_name.includes("windows/native"));
   assert.equal(active.name_ambiguous, true);
   assert.equal(legacy.status, "offline");
-  assert.equal(legacy.capabilities, undefined);
+  assert.equal(legacy.grant_type, "permanent");
+  assert.equal(legacy.last_connected_at, undefined);
   assert.match(legacy.display_name, new RegExp(h.otherId.slice(0, 8)));
   assert.equal(JSON.stringify(listed).includes("never-disclose"), false);
-  // New authenticated epoch must not claim previous Agent's capabilities.
+  // The new authenticated socket takes priority over the previous connection timestamp.
   h.rows.set("session:epoch:" + h.activeId, "epoch-new");
   h.sockets.set("device:" + h.activeId, [h.makeSocket(h.activeId, "epoch-new")]);
   const afterReconnect = (await listApprovedDevices(h.state)).body as Array<Record<string, any>>;
   const refreshed = afterReconnect.find(row => row.device_id === h.activeId)!;
   assert.equal(refreshed.status, "online");
-  assert.equal(refreshed.capabilities, undefined);
+  assert.equal(refreshed.last_connected_at,
+    h.sockets.get("device:" + h.activeId)![0]!.deserializeAttachment().connected_at);
   // Cannot overwrite the same epoch's identity facts repeatedly.
   assert.equal(await handleDeviceInfoMessage(h.state, h.live as unknown as WebSocket, deviceInfo), true);
   assert.equal(h.live.closeCode, 1008);
+});
+
+test("legacy Agent capabilities are accepted only as ignored metadata", async () => {
+  const h = harness();
+  const oldInfo = JSON.stringify({ ...JSON.parse(deviceInfo),
+    capabilities: ["read", "file_write", "shell"] });
+  assert.equal(await handleDeviceInfoMessage(h.state, h.live as unknown as WebSocket, oldInfo), true);
+  const record = h.rows.get("device:" + h.activeId) as {device_info:Record<string,unknown>};
+  assert.equal(Object.hasOwn(record.device_info, "capabilities"), false);
+  const listed = (await listApprovedDevices(h.state)).body as Array<Record<string,any>>;
+  assert.equal(Object.hasOwn(listed.find(d => d.device_id === h.activeId)!.device_info, "capabilities"), false);
+  // Older persisted records remain visible as historical snapshots, but are sanitized.
+  const legacy = h.rows.get("device:" + h.otherId) as Record<string,unknown>;
+  h.rows.set("device:" + h.otherId, { ...legacy,
+    device_info: { ...JSON.parse(deviceInfo), capabilities: ["read"] } });
+  const again = (await listApprovedDevices(h.state)).body as Array<Record<string,any>>;
+  const offline = again.find(d => d.device_id === h.otherId)!;
+  assert.equal(offline.status, "offline");
+  assert.equal(offline.device_info.hostname, "workstation");
+  assert.equal(Object.hasOwn(offline.device_info, "capabilities"), false);
 });
 
 test("stale, revoked, malformed or oversized device info is rejected without changing a grant", async () => {
@@ -85,7 +111,7 @@ test("stale, revoked, malformed or oversized device info is rejected without cha
   assert.equal((h.rows.get("device:" + h.activeId) as {device_info?: unknown}).device_info, undefined);
   const corrupt = h.makeSocket(h.activeId, "epoch-live");
   assert.equal(await handleDeviceInfoMessage(h.state, corrupt as unknown as WebSocket,
-    deviceInfo.replace('"read"', '"unrestricted"')), true);
+    JSON.stringify({ ...JSON.parse(deviceInfo), capabilities: ["admin"] })), true);
   assert.equal(corrupt.closeCode, 1008);
   const huge = h.makeSocket(h.activeId, "epoch-live");
   assert.equal(await handleDeviceInfoMessage(h.state, huge as unknown as WebSocket,

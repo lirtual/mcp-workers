@@ -71,9 +71,9 @@ test("list_devices requires Portal bearer and reports only current, approved WSS
     device_id: string; name: string; status: string;
   }>;
   assert.deepEqual(devices, [
-    { device_id: onlineId, name: "home", status: "online" },
-    { device_id: staleId, name: "stale", status: "offline" },
-    { device_id: offlineId, name: "office", status: "offline" },
+    { device_id: onlineId, name: "home", status: "online", grant_type: "permanent" },
+    { device_id: staleId, name: "stale", status: "offline", grant_type: "permanent" },
+    { device_id: offlineId, name: "office", status: "offline", grant_type: "permanent" },
   ].sort((a, b) => a.device_id.localeCompare(b.device_id)));
   assert.equal(payload.result.content[0]!.text.includes("private-public-key"), false);
   assert.equal(devices.some(d => d.device_id === revokedId && d.status === "online"), false);
@@ -229,7 +229,7 @@ test("device status fails closed for corrupt Hibernation attachment", async () =
     method: "POST", headers: { "content-type": "application/json" }, body: "{}",
   }));
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), [{ device_id: id, name: "damaged", status: "offline" }]);
+  assert.deepEqual(await response.json(), [{ device_id: id, name: "damaged", status: "offline", grant_type: "permanent" }]);
 });
 
 test("WSL2 distro shutdown is offline after WSS close; restored signed epoch can come online again", async () => {
