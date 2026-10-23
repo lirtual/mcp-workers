@@ -307,3 +307,49 @@ test('fifth Session is rejected before any GitHub outbound request',async()=>{
   assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM session_executions').get()?.n,4);
  }finally{f.db.close();}
 });
+
+test('workflow_status reconciles a Ready Session after parent success and releases slot only on physical terminal',async()=>{
+ const f=fixture(),originalFetch=globalThis.fetch;
+ try{
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
+  f.db.prepare("UPDATE session_executions SET state='ready'").run();
+  f.db.prepare("UPDATE runs SET outcome='succeeded',start_state='started' WHERE id=?").run(run(1));
+  f.claim(1,'claimed',true);
+  let inspected=0;
+  globalThis.fetch=async(input:RequestInfo|URL)=>{
+   inspected++;
+   const req=input instanceof Request?input:new Request(input);
+   assert.ok(new URL(req.url).pathname.endsWith('/actions/runs/42'));
+   return Response.json({
+    id:42,workflow_id:456,run_attempt:1,repository:{id:123,full_name:action.repository},
+    path:action.workflowPath+'@release-v1',head_sha:action.commitSha,
+    event:'workflow_dispatch',status:'completed',conclusion:'failure',
+   });
+  };
+  const service=new WorkflowService({DB:f.adapter,WORKFLOW:{},
+   WORKFLOW_EXECUTOR_GITHUB_TOKEN:'token'} as unknown as Env);
+  const result=await service.status(run(1));
+  assert.equal(inspected,1);
+  assert.equal(result.status,'succeeded');
+  assert.equal(result.sessions?.[0]?.recorded_state,'terminated');
+  assert.equal(result.sessions?.[0]?.physical_health,'terminated');
+  assert.equal(result.sessions?.[0]?.attempt_state,'failed');
+  assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'terminated');
+ }finally{globalThis.fetch=originalFetch;f.db.close();}
+});
+test('GitHub status outage cannot release Session quota even if parent succeeded',async()=>{
+ const f=fixture(),originalFetch=globalThis.fetch;
+ try{
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
+  f.db.prepare("UPDATE session_executions SET state='ready'").run();
+  f.db.prepare("UPDATE runs SET outcome='succeeded',start_state='started' WHERE id=?").run(run(1));
+  f.claim(1,'claimed',true);
+  globalThis.fetch=async()=>new Response(null,{status:503});
+  const service=new WorkflowService({DB:f.adapter,WORKFLOW:{},
+   WORKFLOW_EXECUTOR_GITHUB_TOKEN:'token'} as unknown as Env);
+  const result=await service.status(run(1));
+  assert.equal(result.sessions?.[0]?.recorded_state,'ready');
+  assert.equal(result.sessions?.[0]?.physical_health,'unverified');
+  assert.equal(await releaseVerifiedSessionSlot(f.adapter,run(1),'launch'),'held');
+ }finally{globalThis.fetch=originalFetch;f.db.close();}
+});
