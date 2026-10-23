@@ -32,8 +32,24 @@ export async function handleGithubActionClaimRequest(
  if(Number.isFinite(declared)&&declared>8192)return result(413,'too_large');
  let attemptId:string;
  try{
-  const bytes=await request.arrayBuffer();
-  if(bytes.byteLength>8192)return result(413,'too_large');
+  // Read at most 8 KiB, even when Content-Length is absent or incorrect.
+  // Never buffer an entire caller-controlled HTTP stream before checking it.
+  const reader=request.body?.getReader();
+  if(!reader)return result(400,'invalid_request');
+  const chunks:Uint8Array[]=[];
+  let length=0;
+  try{
+   while(true){
+    const part=await reader.read();
+    if(part.done)break;
+    length+=part.value.byteLength;
+    if(length>8192)return result(413,'too_large');
+    chunks.push(part.value);
+   }
+  }finally{reader.releaseLock();}
+  const bytes=new Uint8Array(length);
+  let offset=0;
+  for(const part of chunks){bytes.set(part,offset);offset+=part.byteLength;}
   const raw:unknown=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));
   if(!raw||typeof raw!=='object'||Array.isArray(raw)||
      Object.keys(raw).length!==1||!Object.hasOwn(raw,'attemptId'))
