@@ -94,7 +94,8 @@ function issueMessage(code:string, detail?:string):string{
     case 'unsupported_field': return `Field "${detail}" is not supported.`;
     case 'unsupported_capability': return 'This action is not supported.';
     case 'unsupported_operation_scope': return 'MCP scope must be read.';
-    case 'unsupported_github_capability': return 'Only github.workflow.check can be compiled.';
+    case 'unsupported_github_capability': return 'Use github.workflow.check or github.action.registered.';
+    case 'invalid_github_inputs': return 'GitHub Action inputs do not match the allow-listed schema.';
     case 'invalid_reference':
     case 'invalid_step_reference': return 'The reference is not allowed from this step.';
     case 'invalid_yaml_or_json': return 'The definition is not valid YAML or JSON.';

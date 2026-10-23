@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { compilePlan, evaluateExpression, evaluateArguments, evaluateCondition, canonicalJsonString, PlanError, toolSchemaDigest } from '../src/plan.ts';
-import { capabilityCatalog, LIMITS, supportedCapabilityExamples, workflowCapabilities } from '../src/capabilities.ts';
+import { capabilityCatalog, GITHUB_CAPABILITY_ID, LIMITS, supportedCapabilityExamples, workflowCapabilities } from '../src/capabilities.ts';
+import { REGISTERED_GITHUB_ACTION, registeredGithubPin } from '../src/github-registry.ts';
 
 const one = {
   version: 1, name: 'Inspect', steps: [
@@ -202,6 +203,8 @@ test('GitHub only compiles a fixed registered capability without dynamic shell, 
 
 test('supported capability examples compile through the real plan compiler', async () => {
   const seen = new Set<string>();
+  let sawCheck = false;
+  let sawRegistered = false;
   assert.ok(supportedCapabilityExamples.length >= 3);
   for (const example of supportedCapabilityExamples) {
     assert.equal(JSON.stringify(example).includes('schema_digest'), false);
@@ -212,8 +215,18 @@ test('supported capability examples compile through the real plan compiler', asy
     assert.ok(compiled.plan.steps.length >= 1);
     for (const step of compiled.plan.steps) seen.add(step.uses);
     const github = compiled.plan.steps.find(step => step.uses === 'github.run');
-    if (github) assert.deepEqual(github.with, {capability: 'github.workflow.check'});
+    if (github?.with.capability === GITHUB_CAPABILITY_ID) {
+      assert.deepEqual(github.with, {capability: 'github.workflow.check'});
+      sawCheck = true;
+    }
+    if (github?.with.capability === REGISTERED_GITHUB_ACTION.id) {
+      assert.equal(registeredGithubPin(github.with.registry), true);
+      assert.deepEqual(Object.keys(github.with).sort(), ['capability', 'inputs', 'registry']);
+      assert.equal(JSON.stringify(github.with).includes('token'), false);
+      sawRegistered = true;
+    }
   }
+  assert.equal(sawCheck && sawRegistered, true);
   assert.deepEqual([...seen].sort(), ['flow.repeat', 'github.run', 'mcp.call', 'result.emit']);
 });
 
