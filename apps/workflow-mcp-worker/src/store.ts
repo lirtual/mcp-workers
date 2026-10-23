@@ -33,6 +33,9 @@ export type Env = {
   WORKFLOW_EXECUTOR_GITHUB_TOKEN?: string;
   // Server-owned, read-only Action discovery scopes; no publication or execution grant.
   GITHUB_ACTION_APPROVED_REPOSITORIES?: string;
+  // Separate GitHub-issued OIDC audience for immutable Action claims.
+  // This is an identity binding, not an execution feature switch.
+  GITHUB_ACTION_OIDC_AUDIENCE?: string;
   GITHUB_EXECUTOR_REPOSITORY?: string;
   GITHUB_EXECUTOR_REPOSITORY_ID?: string;
   GITHUB_EXECUTOR_REF?: string;
