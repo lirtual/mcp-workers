@@ -111,6 +111,7 @@ test("owner must review one live temporary grant; invalid calls cannot reach the
 test("one owner-confirmed transaction changes grant only; key, ID, receipt and unrelated grants survive", async () => {
   const f = fixture(), prior = structuredClone(f.rows.get("device:" + f.temporary)) as V2Device;
   const unrelated = structuredClone(f.rows.get("device:" + f.unrelated));
+  const nonceBefore = structuredClone(f.rows.get("session:nonce:" + f.temporary));
   const listed = await f.rpc("list_devices", {});
   const entries = listed.data as unknown as Array<Record<string, unknown>>;
   const reviewed = entries.find(row => row.device_id === f.temporary)!;
@@ -129,8 +130,7 @@ test("one owner-confirmed transaction changes grant only; key, ID, receipt and u
   delete expected.expires_at;
   assert.deepEqual(saved, expected);
   assert.equal(f.rows.get("session:epoch:" + f.temporary), "original-epoch");
-  assert.deepEqual(f.rows.get("session:nonce:" + f.temporary),
-    {nonce: "n".repeat(24), expires_at: prior.approved_at + 90_000});
+  assert.deepEqual(f.rows.get("session:nonce:" + f.temporary), nonceBefore);
   assert.deepEqual(f.rows.get("device:" + f.unrelated), unrelated);
   assert.equal(deviceIsAuthorized(saved, f.expiresAt + 7 * TEMPORARY_GRANT_MS), true);
   assert.equal((await issueSessionChallenge(f.storage as never, {device_id: f.temporary})).status, 200);
