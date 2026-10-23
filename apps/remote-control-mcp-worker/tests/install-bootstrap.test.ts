@@ -222,3 +222,29 @@ test('homepage copy state follows the separately verified platform pins',async()
   const resp=requestInstall(new Request(custom+'/'),pin,custom);
   assert.match(await resp.text(),/const ready=\{windows:false,linux:true\}/);
 });
+
+
+test('reviewed v0.1.15 enables both public bootstrap paths only with exact reviewed pins', async () => {
+  const { REVIEWED_V0115_RELEASE_PIN, REVIEWED_WINDOWS_INSTALL_PIN } =
+    await import('../src/install-bootstrap.ts');
+  const base = 'https://rca.lirtual.dpdns.org';
+  assert.equal(REVIEWED_V0115_RELEASE_PIN.commit, '7a90504a22e3ea0c302c4c5a7d5defeb72ea7719');
+  assert.equal(REVIEWED_V0115_RELEASE_PIN.x64Sha256, '4c5c9733a37061a7223ff1ba1a019a838c105be462e04b4f73352205fa0ea1c9');
+  assert.equal(REVIEWED_V0115_RELEASE_PIN.arm64Sha256, 'b6c0b7079a090b9fddef11c27211169881b4e51ef99e36ac19f8f9678d0613d7');
+  assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.assetSha256, 'eedc514831968c03447befe2cc7e125b89eca328a524e649dde58f4e9fb4e94d');
+  assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.scriptSha256, '9f13a2222461cdf8d836691c5e137aed992bb81bf50b236b7d551457b9b0d5ed');
+  const home = handleAgentInstallerRequest(new Request(base + '/'), REVIEWED_V0115_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
+  assert.equal(home.status, 200);
+  assert.match(await home.text(), /const ready=\\{windows:true,linux:true\\}/);
+  const linux = handleAgentInstallerRequest(new Request(base + '/install.sh'), REVIEWED_V0115_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
+  assert.equal(linux.status, 200);
+  assert.match(await linux.text(), /remote-control-agent-v0\\.1\\.15/);
+  const windows = handleAgentInstallerRequest(new Request(base + '/install.ps1'), REVIEWED_V0115_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
+  assert.equal(windows.status, 200);
+  const ps1 = await windows.text();
+  assert.match(ps1, /7a90504a22e3ea0c302c4c5a7d5defeb72ea7719/);
+  assert.match(ps1, /9f13a2222461cdf8d836691c5e137aed992bb81bf50b236b7d551457b9b0d5ed/);
+  assert.equal(handleAgentInstallerRequest(new Request(base + '/'), null, base, null).status, 200);
+  assert.equal(handleAgentInstallerRequest(new Request(base + '/install.sh'), null, base, null).status, 503);
+  assert.equal(handleAgentInstallerRequest(new Request(base + '/install.ps1'), null, base, null).status, 503);
+});
