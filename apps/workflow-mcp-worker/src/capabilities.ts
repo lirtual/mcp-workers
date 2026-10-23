@@ -13,13 +13,14 @@ export const EXPANSION_RISK = 'Each snapshotted item runs the published template
 // Tampered plans must fail closed. `steps` is legal only at the definition root.
 export const NON_EXECUTABLE_PLAN_FIELDS = ['saga', 'foreach', 'while', 'child', 'child_workflow', 'wait', 'compensate'] as const;
 export const NON_EXECUTABLE_STEP_FIELDS = ['foreach', 'while', 'each', 'items', 'saga', 'compensate', 'child', 'child_workflow', 'wait', 'sleep', 'delay', 'steps'] as const;
-export const USES = ['result.emit', 'mcp.call', 'http.request', 'github.run'] as const;
+export const USES = ['result.emit', 'mcp.call', 'http.request', 'github.run', 'workflow.call'] as const;
 export type SupportedUse = typeof USES[number];
 export const WITH_KEYS: Record<SupportedUse, readonly string[]> = {
   'result.emit': ['data'],
   'mcp.call': ['endpoint', 'tool', 'scope', 'arguments', 'input_schema', 'output_schema'],
   'http.request': ['fixture', 'scope', 'arguments', 'input_schema', 'output_schema'],
   'github.run': ['capability'],
+  'workflow.call': ['workflow_id', 'inputs', 'detach'],
 };
 export const GITHUB_CAPABILITY_ID = 'github.workflow.check';
 export const MCP_SCOPE = 'read' as const;
@@ -67,6 +68,11 @@ export const LIMITS = {
   maxAliasCount: 16,
   maxTriggers: 3,
   maxTriggerEvents: 8,
+  // Advancing Runs are queued or running. A parent parked on an awaited child
+  // is waiting and must not consume one of these slots.
+  admissionCap: 8,
+  maxChildDepth: 4,
+  maxChildWaits: 40,
 } as const;
 
 export function isConfiguredSecret(value: unknown): value is string {
@@ -203,6 +209,18 @@ const expansionExample = {
       with: {data: {index: {ref: 'expand.index'}, item: {ref: 'expand.item'}}}},
   ],
 };
+const childExample = {
+  version: 1,
+  name: 'Call published child',
+  inputs: {subject: 'seed'},
+  steps: [
+    {id: 'call', uses: 'workflow.call', with: {
+      workflow_id: '00000000-0000-4000-8000-000000000001',
+      inputs: {subject: {ref: 'inputs.subject'}},
+    }},
+    {id: 'report', needs: ['call'], uses: 'result.emit', with: {data: {ref: 'steps.call.output'}}},
+  ],
+};
 const repeatExample = {
   version: 1,
   name: 'Bounded loop',
@@ -307,11 +325,13 @@ const CATALOG: readonly Entry[] = [
   {id: 'flow.dynamic_expansion', kind: 'flow', status: 'supported', example: expansionExample,
     summary: 'Expand one published template from a needed step output. expand.max caps the list. The snapshot and stable ids (template id, a colon, and the snapshot index) are stored before any expanded external effect.',
     permissions: 'The template is this step uses and with. mcp.call still needs the read grant and target-risk acceptance. github.run still needs heavy-execution approval. Runtime cannot add an action or connection.',
-    completion: `Validate and publish state cap ${LIMITS.maxExpandedSteps}, the template, dependencies, and the risk of one effect per snapshotted item. A longer list fails before those effects. Replay keeps the stored ids. Waves stay within ${LIMITS.maxParallel}. Depth stays ${LIMITS.maxLoopDepth}. foreach, while, nested steps, durable wait, child workflows, and saga stay unsupported.`},
+    completion: `Validate and publish state cap ${LIMITS.maxExpandedSteps}, the template, dependencies, and the risk of one effect per snapshotted item. A longer list fails before those effects. Replay keeps the stored ids. Waves stay within ${LIMITS.maxParallel}. Depth stays ${LIMITS.maxLoopDepth}. foreach, while, nested steps, durable wait, and saga stay unsupported. A child workflow call is its own step, not an expansion template.`},
   {id: 'flow.wait', kind: 'flow', status: 'unsupported',
     summary: 'Durable wait is not implemented. Do not add wait, sleep, or delay. GitHub receipt waiting is not a definition field.'},
-  {id: 'flow.child_workflow', kind: 'flow', status: 'unsupported',
-    summary: 'Child workflows are not implemented. Do not use workflow.call or a child field.'},
+  {id: 'flow.child_workflow', kind: 'flow', status: 'supported', uses: 'workflow.call', example: childExample,
+    summary: `Call one published workflow by id. The default waits for that child Run. detach true starts it and does not wait. Call depth is at most ${LIMITS.maxChildDepth}.`,
+    permissions: 'workflow_id is a literal published workflow id. inputs may use only keys that child declares, and cannot select a connection or carry a server credential. The child Run uses its own published plan and grants, never the parent grants.',
+    completion: `The child is admitted as its own D1 Run and Cloudflare Workflow, pinned to the child version active at admission. The awaited step output is the child result, and failure or an indeterminate child is the parent step outcome. detach true leaves that child running when the parent finishes and workflow_cancel does not include it. workflow_cancel on the parent requests cancel only for awaited children. Requested is not stopped; the real instance is reconciled. A waiting parent does not hold one of the ${LIMITS.admissionCap} advancing admissions. A deeper call than ${LIMITS.maxChildDepth} is refused.`},
   {id: 'flow.saga', kind: 'flow', status: 'unsupported',
     summary: 'Saga compensation is not implemented. Do not add a saga or compensate field.'},
 ];
@@ -440,6 +460,8 @@ function definitionContract() {
       max_expression_array: LIMITS.maxArrayLength,
       max_tool_schema_bytes: LIMITS.maxToolSchemaBytes,
       max_triggers: LIMITS.maxTriggers,
+      max_child_depth: LIMITS.maxChildDepth,
+      admission_cap: LIMITS.admissionCap,
     },
     manual_start: 'Call workflow_run after explicit publish. Omit triggers for a manual-only definition. Typed input checks are unsupported.',
     event_admission: 'Webhook, GitHub event, and cron deliveries admit through the same Run path as workflow_run. A stable event id dedupes to one Run of the version active at first admission. A missing stable event id does not promise exactly-once. Cron uses the UTC scheduled minute as that id. A missed platform minute is not backfilled.',
@@ -501,7 +523,9 @@ function stepSchema(uses: SupportedUse) {
           ? ['endpoint', 'tool', 'scope', 'arguments', 'input_schema']
           : uses === 'http.request'
             ? ['fixture', 'scope', 'arguments', 'input_schema']
-            : [...withKeys],
+            : uses === 'workflow.call'
+              ? ['workflow_id']
+              : [...withKeys],
         properties: Object.fromEntries(withKeys.map(key => [key, {description: key}])),
       },
     },
@@ -557,9 +581,16 @@ function detailOf(entry: Entry) {
         max_loop_deadline_ms: LIMITS.maxLoopDeadlineMs,
       },
     } : {}),
+    ...(entry.id === 'flow.child_workflow' ? {
+      limits: {
+        admission_cap: LIMITS.admissionCap,
+        max_child_depth: LIMITS.maxChildDepth,
+        max_child_waits: LIMITS.maxChildWaits,
+      },
+    } : {}),
     ...(entry.id === 'flow.dynamic_expansion' ? {
       expand_keys: EXPAND_KEYS,
-      template_uses: USES,
+      template_uses: USES.filter(use => use !== 'workflow.call'),
       risk: EXPANSION_RISK,
       limits: {
         cap: LIMITS.maxExpandedSteps,

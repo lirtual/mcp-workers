@@ -1,9 +1,9 @@
-import { compilePlan, PlanError, canonicalJsonString, expansionChildId, expansionSnapshotId } from './plan.ts';
-import { GITHUB_TRIGGER_EVENTS, isConfiguredSecret, LIMITS, readHttpFixture, TRIGGER_REPOSITORY, TRIGGER_SOURCE_ID } from './capabilities.ts';
+import { assertChildInputs, compilePlan, PlanError, canonicalJsonString, expansionChildId, expansionSnapshotId } from './plan.ts';
+import { GITHUB_TRIGGER_EVENTS, isConfiguredSecret, LIMITS, readHttpFixture, STEP_ID, TRIGGER_REPOSITORY, TRIGGER_SOURCE_ID } from './capabilities.ts';
 import { cronEventId, cronMatches, CronError, publishedCronFacts } from './cron.ts';
 import { PRODUCTION_PORTAL_ENDPOINT, TRUSTED_PORTAL_ENDPOINT } from './mcp-public-fetch.ts';
 import {githubAsyncViewsForRun} from './github-async.ts';
-import {reconcileRunCancellation, type RunCancellation} from './run-cancel.ts';
+import {reconcileRunCancellation, requestAwaitedChildCancellation, type RunCancellation} from './run-cancel.ts';
 import {observeInstance, shouldExpireUnconfirmedOutcome, unresolvedNativeTerminalError, OUTCOME_SETTLE_WINDOW_MS} from './instance-observation.ts';
 import YAML from 'yaml';
 function draftName(definition:string):string {
@@ -56,6 +56,35 @@ export class StateError extends Error {
   constructor(code: string) { super(code); this.code=code; this.name='StateError'; }
 }
 const now=()=>Date.now();
+const TERMINAL_OUTCOMES=['succeeded','failed','indeterminate','cancelled'];
+function serverSecrets(env:Env):string[]{
+  return [env.MCP_PORTAL_CLIENT_SECRET,env.MCP_PORTAL_CLIENT_ID,env.WORKFLOW_EXECUTOR_GITHUB_TOKEN,env.WEBHOOK_TRIGGER_SECRET,env.GITHUB_WEBHOOK_SECRET]
+    .filter((value):value is string=>typeof value==='string'&&value.length>=16);
+}
+// A parent parked on an awaited child is not advancing work. Counting it toward
+// the admission cap deadlocks the child it is waiting for.
+export async function releaseWaitingRun(db:Env['DB'], runId:string):Promise<void>{
+  await db.prepare(`UPDATE runs SET outcome='running', updated_at=?
+    WHERE id=? AND outcome='waiting' AND cancel_requested_at IS NULL
+    AND NOT EXISTS (
+      SELECT 1 FROM runs AS child
+      WHERE child.parent_run_id=? AND child.child_mode='await'
+        AND child.outcome IN ('queued','running','waiting')
+    )`).bind(now(),runId,runId).run();
+}
+export async function resumeParkedRun(db:Env['DB'], runId:string):Promise<void>{
+  await db.prepare("UPDATE runs SET outcome='running', updated_at=? WHERE id=? AND outcome='waiting' AND cancel_requested_at IS NULL")
+    .bind(now(),runId).run();
+}
+export async function noteAwaitingParent(env:Env, runId:string):Promise<void>{
+  const row=await env.DB.prepare('SELECT parent_run_id,parent_step_id,child_mode FROM runs WHERE id=?')
+    .bind(runId).first<{parent_run_id:string|null;parent_step_id:string|null;child_mode:string|null}>();
+  if(!row?.parent_run_id||row.child_mode!=='await'||!row.parent_step_id)return;
+  try{
+    const instance=await env.WORKFLOW.get(row.parent_run_id);
+    if(instance.sendEvent) await instance.sendEvent({type:'child-done-'+row.parent_step_id,payload:{run_id:runId}});
+  }catch{/* The parent wait reads the child row if this wake is lost. */}
+}
 // 32 Steps with <=64-byte IDs plus Run IDs/status/error metadata fit well
 // within the remaining 16 KiB of the 64 KiB MCP response budget.
 const MAX_RESULT=48*1024;
@@ -179,6 +208,8 @@ function issueMessage(code:string, detail?:string):string{
     case 'invalid_trigger_event': return 'The trigger event name is not allowed.';
     case 'invalid_repository': return 'GitHub repository must be owner/name.';
     case 'unsupported_github_event': return 'This GitHub event cannot start a business Run.';
+    case 'invalid_child_workflow': return 'workflow.call needs a published workflow id, and detach must be boolean.';
+    case 'child_input_rejected': return 'Child inputs must match the child declaration and cannot carry a credential or connection.';
     case 'invalid_definition': return 'The definition must be an object.';
     case 'invalid_expression': return 'The expression must be an object.';
     case 'invalid_argument_key': return 'This object key is not allowed.';
@@ -391,10 +422,80 @@ export class WorkflowService {
     if(existing.cancel_requested_at==null){
       await this.db.prepare('UPDATE runs SET cancel_requested_at=?,updated_at=? WHERE id=? AND cancel_requested_at IS NULL').bind(now(),now(),run_id).run();
     }
+    // Detached children are not owned by this request and keep running.
+    await requestAwaitedChildCancellation(this.db,run_id);
     return this.status(run_id);
   }
   async pause(workflow_id:string){assertId(workflow_id);const x=await this.db.prepare("UPDATE workflows SET state='paused',updated_at=? WHERE id=? AND state='active'").bind(now(),workflow_id).run();if(!x.meta.changes)throw new StateError('not_active');return {workflow_id,state:'paused'};}
   async resume(workflow_id:string){assertId(workflow_id);const x=await this.db.prepare("UPDATE workflows SET state='active',updated_at=? WHERE id=? AND state='paused' AND active_version_id IS NOT NULL").bind(now(),workflow_id).run();if(!x.meta.changes)throw new StateError('not_paused');return {workflow_id,state:'active'};}
+  async admitChild(args:{parent_run_id:string;parent_step_id:string;workflow_id:string;inputs:Record<string,unknown>;mode:'await'|'detach'}){
+    assertId(args.parent_run_id);assertId(args.workflow_id);
+    if(!STEP_ID.test(args.parent_step_id))throw new StateError('invalid_id');
+    const parent=await this.db.prepare('SELECT outcome,call_depth,cancel_requested_at FROM runs WHERE id=?')
+      .bind(args.parent_run_id).first<{outcome:string;call_depth:number|null;cancel_requested_at:number|null}>();
+    if(!parent)throw new StateError('run_not_found');
+    if(parent.cancel_requested_at!=null)throw new StateError('cancel_requested');
+    const depth=Number(parent.call_depth??0)+1;
+    if(!Number.isSafeInteger(depth)||depth>LIMITS.maxChildDepth)throw new StateError('child_depth_exceeded');
+    const wf=await this.row(args.workflow_id);
+    if(wf.state!=='active'||!wf.active_version_id)throw new StateError('workflow_not_active');
+    const versionRow=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=? AND workflow_id=?')
+      .bind(wf.active_version_id,args.workflow_id).first<{plan:string}>();
+    if(!versionRow)throw new StateError('version_missing');
+    let childPlan:Plan;
+    try{childPlan=JSON.parse(versionRow.plan) as Plan;}
+    catch{throw new StateError('child_plan_unreadable');}
+    try{assertChildInputs(childPlan.inputs,args.inputs,serverSecrets(this.env));}
+    catch(error){
+      if(error instanceof PlanError)throw new StateError(error.message.split(':')[0]||'child_input_rejected');
+      throw error;
+    }
+    const inputJson=json(args.inputs);
+    const request_digest=await digest(canonicalJsonString(args.inputs));
+    const key='child_'+await digest(args.parent_run_id+'\0'+args.parent_step_id+'\0'+args.mode);
+    const existing=await this.db.prepare('SELECT * FROM runs WHERE workflow_id=? AND admission_key=?')
+      .bind(args.workflow_id,key).first<RunRow>();
+    if(existing){
+      if(existing.request_digest!==request_digest)throw new StateError('idempotency_conflict');
+      if(args.mode==='await'&&!TERMINAL_OUTCOMES.includes(existing.outcome))
+        await this.db.prepare("UPDATE runs SET outcome='waiting',updated_at=? WHERE id=? AND outcome='running' AND cancel_requested_at IS NULL")
+          .bind(now(),args.parent_run_id).run();
+      return this.reconcileStart(existing);
+    }
+    if(args.mode==='await'){
+      if(parent.outcome!=='running'&&parent.outcome!=='waiting')throw new StateError('parent_not_running');
+      if(parent.outcome==='running'){
+        const parked=await this.db.prepare("UPDATE runs SET outcome='waiting',updated_at=? WHERE id=? AND outcome='running' AND cancel_requested_at IS NULL")
+          .bind(now(),args.parent_run_id).run();
+        if(!parked.meta.changes)throw new StateError('parent_not_running');
+      }
+    }
+    const version=wf.active_version_id;
+    const id=crypto.randomUUID(),t=now();
+    const insert=await this.db.prepare(
+      `INSERT OR IGNORE INTO runs(id,workflow_id,version_id,instance_id,admission_key,request_digest,inputs,start_state,outcome,created_at,updated_at,parent_run_id,parent_step_id,child_mode,call_depth) SELECT ?,?,?,?,?,?,?, 'reserved','queued',?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM workflows WHERE id=? AND state='active' AND active_version_id=?) AND (SELECT COUNT(*) FROM runs WHERE outcome IN ('queued','running')) < ${LIMITS.admissionCap}`
+    ).bind(id,args.workflow_id,version,id,key,request_digest,inputJson,t,t,args.parent_run_id,args.parent_step_id,args.mode,depth,args.workflow_id,version).run();
+    if(!insert.meta.changes){
+      const prior=await this.db.prepare('SELECT * FROM runs WHERE workflow_id=? AND admission_key=?').bind(args.workflow_id,key).first<RunRow>();
+      if(prior){
+        if(prior.request_digest!==request_digest)throw new StateError('idempotency_conflict');
+        return this.reconcileStart(prior);
+      }
+      await releaseWaitingRun(this.db,args.parent_run_id);
+      const latest=await this.row(args.workflow_id);
+      if(latest.state!=='active'||latest.active_version_id!==version)throw new StateError('workflow_not_active');
+      throw new StateError('run_capacity_exceeded');
+    }
+    try{
+      await this.env.WORKFLOW.create({id,params:{run_id:id}});
+      await this.db.prepare("UPDATE runs SET start_state='started',updated_at=? WHERE id=? AND start_state IN ('reserved','start_unknown')").bind(now(),id).run();
+      return {run_id:id,published_version_id:version,status:'queued' as const,start_state:'started' as const};
+    }catch{
+      await this.db.prepare("UPDATE runs SET start_state='start_unknown',updated_at=? WHERE id=? AND start_state='reserved'").bind(now(),id).run();
+      const prior=await this.db.prepare('SELECT * FROM runs WHERE id=?').bind(id).first<RunRow>();
+      return this.reconcileStart(prior!);
+    }
+  }
   async start(workflow_id:string,inputs:Record<string,unknown>={},idempotency_key?:string,mode:'manual'|'event'='manual'){
     assertId(workflow_id);
     if(idempotency_key!==undefined){
@@ -416,7 +517,7 @@ export class WorkflowService {
     // When all eight slots are occupied, bounded ingress repair also checks
     // started Workflows whose native engine completed but D1 never finalized.
     const capacity=await this.db.prepare("SELECT COUNT(*) AS count FROM runs WHERE outcome IN ('queued','running')").first<{count:number}>();
-    if((capacity?.count??0)>=8){
+    if((capacity?.count??0)>=LIMITS.admissionCap){
       const active=await this.db.prepare("SELECT * FROM runs WHERE start_state='started' AND outcome IN ('queued','running') ORDER BY created_at ASC LIMIT 8").all<RunRow>();
       for(const run of active.results){
         const observed=await observeInstance(this.env.WORKFLOW,run.instance_id);
@@ -428,7 +529,7 @@ export class WorkflowService {
     const version=wf.active_version_id;
     const id=crypto.randomUUID(),t=now();
     const insert=await this.db.prepare(
-      "INSERT OR IGNORE INTO runs(id,workflow_id,version_id,instance_id,admission_key,request_digest,inputs,start_state,outcome,created_at,updated_at) SELECT ?,?,?,?,?,?,?, 'reserved','queued',?,? WHERE EXISTS (SELECT 1 FROM workflows WHERE id=? AND state='active' AND active_version_id=?) AND (SELECT COUNT(*) FROM runs WHERE outcome IN ('queued','running')) < 8"
+      `INSERT OR IGNORE INTO runs(id,workflow_id,version_id,instance_id,admission_key,request_digest,inputs,start_state,outcome,created_at,updated_at) SELECT ?,?,?,?,?,?,?, 'reserved','queued',?,? WHERE EXISTS (SELECT 1 FROM workflows WHERE id=? AND state='active' AND active_version_id=?) AND (SELECT COUNT(*) FROM runs WHERE outcome IN ('queued','running')) < ${LIMITS.admissionCap}`
     ).bind(id,workflow_id,version,id,idempotency_key??null,request_digest,inputJson,t,t,workflow_id,version).run();
     if(!insert.meta.changes){
       if(idempotency_key){const prior=await this.db.prepare('SELECT * FROM runs WHERE workflow_id=? AND admission_key=?').bind(workflow_id,idempotency_key).first<RunRow>();

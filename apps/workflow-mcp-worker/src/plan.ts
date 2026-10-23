@@ -156,6 +156,46 @@ function rejectHttpTargetArguments(value: unknown, path: string): void {
     rejectHttpTargetArguments(child, pointer(path, key));
   }
 }
+const CHILD_INPUT_TYPES = new Set(['string', 'number', 'boolean', 'object', 'array']);
+function jsonType(value: unknown): string {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'array';
+  return typeof value;
+}
+function declaredInputType(rule: unknown): string | null {
+  if (rule === null) return 'null';
+  if (typeof rule === 'string') return 'string';
+  if (typeof rule === 'number') return Number.isFinite(rule) ? 'number' : null;
+  if (typeof rule === 'boolean') return 'boolean';
+  if (Array.isArray(rule)) return 'array';
+  if (!rule || typeof rule !== 'object') return null;
+  const record = rule as Record<string, unknown>;
+  const names = Object.keys(record);
+  if (names.length === 1 && names[0] === 'type' && typeof record.type === 'string' && CHILD_INPUT_TYPES.has(record.type))
+    return record.type;
+  return 'object';
+}
+// Child inputs are checked against the child's published `inputs` declaration.
+// A one-key {type} object is a type. Any other value is an example of that JSON type.
+export function assertChildInputs(declared: Record<string, unknown> | undefined, values: Record<string, unknown>, secrets: readonly string[]): void {
+  const schema = declared ?? {};
+  rejectHttpTargetArguments(values, '/inputs');
+  const serial = JSON.stringify(values);
+  if (secrets.some(secret => secret.length >= 16 && serial.includes(secret)))
+    throw new PlanError('child_input_rejected', {path: '/inputs', suggestion: 'Do not pass server credentials into a child Run.'});
+  for (const key of Object.keys(values)) {
+    if (!Object.hasOwn(schema, key)) throw new PlanError('child_input_rejected', {
+      path: '/inputs/' + key, suggestion: 'Pass only keys declared by the child.',
+    });
+  }
+  for (const [key, rule] of Object.entries(schema)) {
+    if (!Object.hasOwn(values, key)) continue;
+    const expected = declaredInputType(rule);
+    if (expected === null || jsonType(values[key]) !== expected) throw new PlanError('child_input_rejected', {
+      path: '/inputs/' + key, suggestion: 'Match the type declared by the child.',
+    });
+  }
+}
 function assertCondition(value: unknown, path: string) {
   const op=value && typeof value==='object' && !Array.isArray(value)?Object.keys(value):[];
   if(typeof value!=='boolean' && !(op.length===1 && (CONDITION_VALUE_OPS as readonly string[]).concat('ref').includes(op[0])))
@@ -407,7 +447,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     if(typeof s.id!=='string'||!STEP_ID.test(s.id)||ids.has(s.id)||PROTOTYPE_KEYS.has(s.id))throw new PlanError('invalid_step_id', {path: stepPath+'/id'});
     ids.add(s.id);
     if(!isSupportedUse(s.uses))throw new PlanError('unsupported_capability', {
-      path: stepPath+'/uses', suggestion: 'Use result.emit, mcp.call, http.request, or github.run.',
+      path: stepPath+'/uses', suggestion: 'Use a supported action from the capability catalog.',
     });
     const needs=s.needs===undefined?[]:s.needs;
     if(!Array.isArray(needs)||needs.some(n=>typeof n!=='string'||!STEP_ID.test(n))||new Set(needs).size!==needs.length)throw new PlanError('invalid_dependencies', {path: stepPath+'/needs'});
@@ -457,6 +497,18 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
         rejectHttpTargetArguments(Object.fromEntries(Object.keys(properties).map(key=>[key, true])), stepPath+'/with/input_schema/properties');
       try{await toolSchemaDigest(withData.input_schema,withData.output_schema);}
       catch(error){if(error instanceof PlanError)throw new PlanError(error.message,{path:stepPath+'/with'});throw error;}
+    }else if(s.uses==='workflow.call'){
+      keys(withData,WITH_KEYS['workflow.call'],stepPath+'/with');
+      if(typeof withData.workflow_id!=='string'||!/^[a-zA-Z0-9_-]{1,128}$/.test(withData.workflow_id))
+        throw new PlanError('invalid_child_workflow', {
+          path:stepPath+'/with/workflow_id', suggestion:'Use the published id. It cannot be an expression.',
+        });
+      if(withData.detach!==undefined&&typeof withData.detach!=='boolean')
+        throw new PlanError('invalid_child_workflow', {
+          path:stepPath+'/with/detach', suggestion:'Use true or false. Omit it to wait for the child.',
+        });
+      if(withData.inputs!==undefined) object(withData.inputs,'invalid_child_workflow',stepPath+'/with/inputs');
+      rejectHttpTargetArguments(withData.inputs??{},stepPath+'/with/inputs');
     }else keys(withData,WITH_KEYS['result.emit'],stepPath+'/with');
     const repeat=s.repeat===undefined?undefined:compileRepeat(s.repeat,stepPath);
     if(repeat&&s.uses!=='result.emit') throw new PlanError('unsafe_loop_body', {
@@ -466,10 +518,16 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     if(expand&&repeat) throw new PlanError('loop_nesting_unsupported', {
       path: stepPath+'/expand', suggestion: 'Do not combine repeat and expand. Nested steps are not implemented.',
     });
+    if(expand&&s.uses==='workflow.call') throw new PlanError('unsupported_capability', {
+      path: stepPath+'/expand', suggestion: 'Keep this call as its own step. Do not expand it.',
+    });
     const compiledWith=s.uses==='mcp.call'||s.uses==='http.request'?
       {...withData,schema_digest:await toolSchemaDigest(withData.input_schema,withData.output_schema)}
       :s.uses==='github.run'&&withData.capability===REGISTERED_GITHUB_ACTION.id?
-        {capability:REGISTERED_GITHUB_ACTION.id,inputs:withData.inputs,registry:registeredPlanPin()}:withData;
+        {capability:REGISTERED_GITHUB_ACTION.id,inputs:withData.inputs,registry:registeredPlanPin()}
+      :s.uses==='workflow.call'?
+        {workflow_id:withData.workflow_id,detach:withData.detach===true,inputs:(withData.inputs as Record<string,unknown>|undefined)??{}}
+      :withData;
     // flow.repeat and flow.expand keep the payload off `with` so an older
     // runner cannot emit the template once. It rejects the unknown uses instead.
     const rewritten=repeat?'flow.repeat':expand?'flow.expand':s.uses;

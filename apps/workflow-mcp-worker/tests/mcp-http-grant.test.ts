@@ -31,7 +31,7 @@ const PORTAL_ID='test-only-service-token-id';
 const PORTAL_SECRET='test-only-service-token-secret';
 const OWNER='https://owner.example.org/mcp';
 const TOKEN='disposable-portal-token-mcp-http-grant';
-const MIGRATIONS=['0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql','0006_github_registered_action.sql','0007_run_cancel.sql','0008_grant_revocation.sql'];
+const MIGRATIONS=['0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql','0006_github_registered_action.sql','0007_run_cancel.sql','0008_grant_revocation.sql','0009_child_run.sql'];
 
 type Flags={hint:'false'|'true'|'missing'; drift:boolean; http:'echo'|'redirect'|'throw'};
 

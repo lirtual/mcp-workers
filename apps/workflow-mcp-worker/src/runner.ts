@@ -4,7 +4,7 @@ import { canonicalJsonString, evaluateArguments, evaluateCondition, expandedStep
 import type { ExprCtx, Plan, Step, StepBody } from './plan.ts';
 import { GITHUB_CAPABILITY_ID, HTTP_TARGET_ARGUMENT_KEYS, LIMITS, NON_EXECUTABLE_PLAN_FIELDS, NON_EXECUTABLE_STEP_FIELDS, readHttpFixture } from './capabilities.ts';
 import type { Env } from './store.ts';
-import { limitResult } from './store.ts';
+import { cleanError, limitResult, noteAwaitingParent, releaseWaitingRun, resumeParkedRun, WorkflowService } from './store.ts';
 import { dispatchOrResumeGithubAttempt,githubAsyncAwaitingExternal,githubAsyncOutcome,observeAllowListedGithubRun,GITHUB_ASYNC_WAKE_LIMIT,GITHUB_ASYNC_WAKE_TIMEOUT,readGithubAsyncFact,type GithubAsyncFact,type GithubDispatchStep } from './github-async.ts';
 import { parseRegisteredInputs, REGISTERED_GITHUB_ACTION, registeredGithubPin } from './github-registry.ts';
 import { CancelObserved, isCancelRequested } from './run-cancel.ts';
@@ -461,6 +461,82 @@ async function runGithubStep(
   }
 }
 
+const TERMINAL_CHILD=new Set(['succeeded','failed','indeterminate','cancelled']);
+async function childFailureCode(db:Env['DB'], runId:string, outcome:string, errorCode:string|null):Promise<string>{
+  if(errorCode)return errorCode;
+  const step=await db.prepare("SELECT error_code FROM run_steps WHERE run_id=? AND status='failed' AND error_code IS NOT NULL ORDER BY step_id LIMIT 1")
+    .bind(runId).first<{error_code:string}>();
+  if(step?.error_code)return step.error_code;
+  if(outcome==='cancelled')return 'child_cancelled';
+  if(outcome==='indeterminate')return 'child_indeterminate';
+  return 'child_failed';
+}
+async function mapChildRun(db:Env['DB'], runId:string, outcome:string, result:string|null, errorCode:string|null):Promise<Outcome>{
+  if(outcome==='succeeded'){
+    if(result===null)return {status:'succeeded',output:null};
+    try{return {status:'succeeded',output:JSON.parse(result)};}
+    catch{return {status:'indeterminate',error_code:'child_result_unreadable'};}
+  }
+  const code=await childFailureCode(db,runId,outcome,errorCode);
+  return outcome==='indeterminate'?{status:'indeterminate',error_code:code}:{status:'failed',error_code:code};
+}
+async function runWorkflowCall(env:Env, planStep:Step, runId:string, ctx:ExprCtx, step:WorkflowStep):Promise<Outcome>{
+  const db=env.DB;
+  if(planStep.needs.some(need=>ctx.steps[need]?.status!=='succeeded'))return {status:'skipped'};
+  try{if(planStep.if!==undefined&&!evaluateCondition(planStep.if,ctx))return {status:'skipped'};}
+  catch{return {status:'failed',error_code:'step_execution_failed'};}
+  const spec=planStep.with as {workflow_id?:unknown;detach?:unknown;inputs?:unknown};
+  if(typeof spec.workflow_id!=='string')return {status:'failed',error_code:'invalid_child_workflow'};
+  let inputs:Record<string,unknown>;
+  try{
+    const evaluated=evaluateArguments(spec.inputs??{},ctx);
+    if(!evaluated||typeof evaluated!=='object'||Array.isArray(evaluated)||hasUnresolvedArgument(evaluated))
+      return {status:'failed',error_code:'child_input_rejected'};
+    inputs=evaluated as Record<string,unknown>;
+  }catch{return {status:'failed',error_code:'child_input_rejected'};}
+  await db.prepare("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES(?,?,'running',?) ON CONFLICT(run_id,step_id) DO NOTHING")
+    .bind(runId,planStep.id,now()).run();
+  if(await isCancelRequested(db,runId))throw new CancelObserved();
+  const mode=spec.detach===true?'detach':'await';
+  const admitted=await step.do('workflow-call-'+planStep.id,{retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},async()=>{
+    if(await isCancelRequested(db,runId))return {ok:false as const,error_code:'cancel_requested'};
+    try{
+      const started=await new WorkflowService(env).admitChild({
+        parent_run_id:runId,parent_step_id:planStep.id,workflow_id:spec.workflow_id as string,inputs,mode,
+      });
+      return {ok:true as const,run_id:started.run_id};
+    }catch(error){return {ok:false as const,error_code:cleanError(error)};}
+  }) as {ok:true;run_id:string}|{ok:false;error_code:string};
+  if(!admitted.ok){
+    if(admitted.error_code==='cancel_requested'||await isCancelRequested(db,runId))throw new CancelObserved();
+    await releaseWaitingRun(db,runId);
+    return {status:'failed',error_code:admitted.error_code};
+  }
+  if(mode==='detach')return {status:'succeeded',output:{run_id:admitted.run_id,detached:true}};
+  for(let attempt=0;attempt<LIMITS.maxChildWaits;attempt++){
+    if(await isCancelRequested(db,runId))throw new CancelObserved();
+    const child=await db.prepare('SELECT outcome,result,error_code FROM runs WHERE id=?')
+      .bind(admitted.run_id).first<{outcome:string;result:string|null;error_code:string|null}>();
+    if(child&&TERMINAL_CHILD.has(child.outcome)){
+      await releaseWaitingRun(db,runId);
+      return mapChildRun(db,admitted.run_id,child.outcome,child.result,child.error_code);
+    }
+    try{
+      await step.waitForEvent<{run_id:string}>('child-wait-'+planStep.id+'-'+attempt,{type:'child-done-'+planStep.id,timeout:'30 seconds'});
+    }catch{/* Lost wake or timeout. The next read uses the child row. */}
+  }
+  if(await isCancelRequested(db,runId))throw new CancelObserved();
+  const last=await db.prepare('SELECT outcome,result,error_code FROM runs WHERE id=?')
+    .bind(admitted.run_id).first<{outcome:string;result:string|null;error_code:string|null}>();
+  if(last&&TERMINAL_CHILD.has(last.outcome)){
+    await releaseWaitingRun(db,runId);
+    return mapChildRun(db,admitted.run_id,last.outcome,last.result,last.error_code);
+  }
+  // Stop parking the parent. The child Run itself is left to its own admission.
+  await resumeParkedRun(db,runId);
+  return {status:'indeterminate',error_code:'child_wait_unconfirmed'};
+}
+
 export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
   async run(event:WorkflowEvent<{run_id:string}>,step:WorkflowStep){
     const id=event.payload.run_id;
@@ -469,7 +545,8 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
     if(!row)throw Error('run_missing');
     // An expired ambiguous admission is terminally uncertain. A Workflow
     // started much later must not run the abandoned queued Workflow plan.
-    if(row.outcome!=='queued'&&row.outcome!=='running')return;
+    // waiting is a parent parked on a child; replay has to continue that wait.
+    if(row.outcome!=='queued'&&row.outcome!=='running'&&row.outcome!=='waiting')return;
     // A resumed invocation must not dispatch or cancel again.
     if(await isCancelRequested(db,id))return;
     const version=await db.prepare('SELECT plan FROM workflow_versions WHERE id=?').bind(row.version_id).first<{plan:string}>();
@@ -519,6 +596,8 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
             ? await runExpansion(this.env,plan,s,id,row.version_id,step,ctx)
             : s.uses==='flow.repeat'||s.repeat!==undefined
             ? await runBoundedLoop(db,s,id,step,ctx)
+            : s.uses==='workflow.call'
+            ? await runWorkflowCall(this.env,s,id,ctx,step)
             : await step.do('workflow-'+s.id,{retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},async ():Promise<Outcome>=>{
             try{
               // Only an executing callback marks a Step running. Cached replay
@@ -564,8 +643,10 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
           if((s.uses==='result.emit'||s.uses==='flow.repeat'||(s.uses==='flow.expand'&&s.body?.uses==='result.emit'))&&outcomes[i].status==='succeeded'){emitted=outcomes[i].output;hasEmitted=true;}});
       }
       const output=limitResult(hasEmitted?emitted:ctx.steps[plan.steps.at(-1)!.id]?.output??null);
-      await db.prepare("UPDATE runs SET outcome=?,result=?,error_code=?,updated_at=? WHERE id=? AND outcome='running'")
+      await releaseWaitingRun(db,id);
+      const settled=await db.prepare("UPDATE runs SET outcome=?,result=?,error_code=?,updated_at=? WHERE id=? AND outcome='running'")
         .bind(uncertain?'indeterminate':failed?'failed':'succeeded',JSON.stringify(output),uncertain?uncertainCode:null,now(),id).run();
+      if(settled.meta.changes)await noteAwaitingParent(this.env,id);
     }catch(error){
       // Cancellation already owns the terminal decision. Do not freeze the
       // Run or dispatch a replacement attempt when Cloudflare resumes.
@@ -573,7 +654,9 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
       // A live GitHub Attempt still inside its deadline must survive an
       // isolate restart. Freezing it here would hide a later receipt.
       if(await githubAsyncAwaitingExternal(db,id,now()))throw error;
-      await db.prepare("UPDATE runs SET outcome='indeterminate',error_code='execution_interrupted',updated_at=? WHERE id=? AND outcome='running'").bind(now(),id).run();
+      await resumeParkedRun(db,id);
+      const interrupted=await db.prepare("UPDATE runs SET outcome='indeterminate',error_code='execution_interrupted',updated_at=? WHERE id=? AND outcome='running'").bind(now(),id).run();
+      if(interrupted.meta.changes)await noteAwaitingParent(this.env,id);
       throw Error('execution_interrupted');
     }
   }

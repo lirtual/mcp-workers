@@ -40,7 +40,7 @@ const DIGEST=await toolSchemaDigest(INPUT_SCHEMA);
 test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Result',async t=>{
   const sqlite=new DatabaseSync(':memory:');
   t.after(()=>sqlite.close());
-  for(const name of ['0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql','0006_github_registered_action.sql','0007_run_cancel.sql','0008_grant_revocation.sql'])
+  for(const name of ['0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql','0006_github_registered_action.sql','0007_run_cancel.sql','0008_grant_revocation.sql','0009_child_run.sql'])
     sqlite.exec(readFileSync(new URL('../migrations/'+name,import.meta.url),'utf8'));
   function prepare(sql:string){
     let args:any[]=[];
@@ -190,7 +190,7 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
 test('Agent discovers capabilities and inline-validates a definition without touching D1', async t => {
   const sqlite=new DatabaseSync(':memory:');
   t.after(()=>sqlite.close());
-  for(const name of ['0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql','0006_github_registered_action.sql','0007_run_cancel.sql','0008_grant_revocation.sql'])
+  for(const name of ['0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql','0006_github_registered_action.sql','0007_run_cancel.sql','0008_grant_revocation.sql','0009_child_run.sql'])
     sqlite.exec(readFileSync(new URL('../migrations/'+name,import.meta.url),'utf8'));
   let prepares=0;
   function prepare(sql:string){
@@ -267,12 +267,12 @@ test('Agent discovers capabilities and inline-validates a definition without tou
     assert.equal(byId.get('trigger.manual')?.status, 'supported');
     assert.equal(byId.get('trigger.webhook')?.status, 'supported');
     assert.equal(byId.get('trigger.github_event')?.status, 'supported');
-    for(const id of ['flow.if','flow.needs','flow.parallel','flow.repeat','flow.dynamic_expansion'])
+    for(const id of ['flow.if','flow.needs','flow.parallel','flow.repeat','flow.dynamic_expansion','flow.child_workflow'])
       assert.equal(byId.get(id)?.status, 'supported', id);
     assert.equal(byId.get('trigger.cron')?.status, 'supported');
     assert.equal(byId.get('action.http')?.status, 'supported');
     assert.equal(byId.get('action.mcp.write')?.status, 'supported');
-    for(const id of ['action.shell','flow.foreach','flow.while','flow.nesting','flow.wait','flow.child_workflow','flow.saga'])
+    for(const id of ['action.shell','flow.foreach','flow.while','flow.nesting','flow.wait','flow.saga'])
       assert.equal(byId.get(id)?.status, 'unsupported', id);
     for(const item of overview.capabilities) assert.equal('example' in item, false);
 
