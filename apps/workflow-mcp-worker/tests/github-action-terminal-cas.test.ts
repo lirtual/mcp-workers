@@ -53,3 +53,29 @@ test('physical identity mismatch cannot update persisted state',async()=>{
   assert.equal(db.prepare('SELECT state FROM step_attempts').get()?.state,'claimed');
  }finally{db.close();}
 });
+
+test('physically failed job before OIDC claim terminates as failed, but never succeeds',async()=>{
+ const db=dbFixture();
+ try{
+  const wrap=adapter(db);
+  db.exec("UPDATE step_attempts SET state='confirmed',owner_run_id=NULL,owner_run_attempt=NULL");
+  assert.equal(await settlePhysicalGitHubActionAttempt(wrap,aid,42,1,{state:'completed',conclusion:'success'}),'conflict');
+  assert.equal(db.prepare('SELECT state FROM step_attempts').get()?.state,'confirmed');
+  assert.equal(await settlePhysicalGitHubActionAttempt(wrap,aid,42,1,{state:'completed',conclusion:'failure'}),'updated');
+  assert.equal(await settlePhysicalGitHubActionAttempt(wrap,aid,42,1,{state:'completed',conclusion:'failure'}),'already_settled');
+  assert.equal(await settlePhysicalGitHubActionAttempt(wrap,aid,42,1,{state:'completed',conclusion:'success'}),'conflict');
+  assert.equal(db.prepare('SELECT state FROM step_attempts').get()?.state,'failed');
+ }finally{db.close();}
+});
+test('pre-claim physical failure cannot settle a cancelled parent or a different candidate',async()=>{
+ const db=dbFixture();
+ try{
+  const wrap=adapter(db);
+  db.exec("UPDATE step_attempts SET state='confirmed',owner_run_id=NULL,owner_run_attempt=NULL");
+  assert.equal(await settlePhysicalGitHubActionAttempt(wrap,aid,43,1,{state:'completed',conclusion:'failure'}),'conflict');
+  assert.equal(await settlePhysicalGitHubActionAttempt(wrap,aid,42,2,{state:'completed',conclusion:'failure'}),'conflict');
+  db.exec("UPDATE runs SET outcome='cancelled'");
+  assert.equal(await settlePhysicalGitHubActionAttempt(wrap,aid,42,1,{state:'completed',conclusion:'failure'}),'conflict');
+  assert.equal(db.prepare('SELECT state FROM step_attempts').get()?.state,'confirmed');
+ }finally{db.close();}
+});
