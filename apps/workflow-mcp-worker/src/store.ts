@@ -1,4 +1,4 @@
-import { compilePlan, PlanError, canonicalJsonString } from './plan.ts';
+import { compilePlan, PlanError, canonicalJsonString, expansionChildId, expansionSnapshotId } from './plan.ts';
 import { GITHUB_TRIGGER_EVENTS, isConfiguredSecret, LIMITS, TRIGGER_REPOSITORY, TRIGGER_SOURCE_ID } from './capabilities.ts';
 import { cronEventId, cronMatches, CronError, publishedCronFacts } from './cron.ts';
 import { PRODUCTION_PORTAL_ENDPOINT, TRUSTED_PORTAL_ENDPOINT } from './mcp-public-fetch.ts';
@@ -14,7 +14,7 @@ function draftName(definition:string):string {
   }catch{}
   return 'Untitled Draft';
 }
-import type { Plan, ReadonlyOperation } from './plan.ts';
+import type { Plan, ReadonlyOperation, Step } from './plan.ts';
 
 export type Env = {
   DB: D1Database;
@@ -89,11 +89,21 @@ function assertPublishedTriggers(plan:Plan, env:Env){
     if(trigger.events.some(event=>!(GITHUB_TRIGGER_EVENTS as readonly string[]).includes(event)))throw new StateError('unauthorized_event');
   }
 }
+function operationOf(step:Step):{uses:string;with:Record<string,unknown>}|undefined{
+  if(step.uses==='flow.expand'&&step.body) return {uses:step.body.uses,with:step.body.with};
+  if(step.uses==='mcp.call'||step.uses==='github.run') return {uses:step.uses,with:step.with};
+  return undefined;
+}
 function mcpGrants(plan:Plan):ReadonlyOperation[]{
-  return [...new Map(plan.steps.filter(s=>s.uses==='mcp.call').map(s=>{
-    const grant:ReadonlyOperation={endpoint:s.with.endpoint as string,tool:s.with.tool as string,scope:'read',schema_digest:s.with.schema_digest as string};
-    return [JSON.stringify(grant),grant] as const;
+  return [...new Map(plan.steps.flatMap(step=>{
+    const operation=operationOf(step);
+    if(operation?.uses!=='mcp.call') return [];
+    const grant:ReadonlyOperation={endpoint:operation.with.endpoint as string,tool:operation.with.tool as string,scope:'read',schema_digest:operation.with.schema_digest as string};
+    return [[JSON.stringify(grant),grant] as const];
   })).values()];
+}
+function publishesGithub(plan:Plan):boolean{
+  return plan.steps.some(step=>operationOf(step)?.uses==='github.run');
 }
 function issueMessage(code:string, detail?:string):string{
   switch(code){
@@ -108,7 +118,9 @@ function issueMessage(code:string, detail?:string):string{
     case 'excessive_parallelism': return `More than ${LIMITS.maxParallel} steps would run at the same time.`;
     case 'unbounded_loop': return `repeat.times must be an integer from 1 to ${LIMITS.maxLoopIterations}.`;
     case 'loop_budget_exceeded': return `The loop exceeds ${LIMITS.maxLoopIterations} iterations or ${LIMITS.maxExpandedSteps} expanded steps.`;
-    case 'dynamic_expansion': return 'Dynamic expansion is not implemented.';
+    case 'dynamic_expansion': return 'repeat.times must be a literal integer. Use expand for an upstream output list.';
+    case 'invalid_expansion': return 'expand.items must reference a needed step output, and expand.max must be a positive integer.';
+    case 'expansion_budget_exceeded': return `Expansion exceeds the ${LIMITS.maxExpandedSteps} expanded-step cap, including snapshots, loops, and GitHub waits.`;
     case 'unsafe_loop_body': return 'Only result.emit can be repeated.';
     case 'loop_nesting_unsupported': return 'Nested steps and nested loops are not implemented.';
     case 'definition_too_large': return `The definition exceeds ${LIMITS.definitionBytes} bytes.`;
@@ -161,8 +173,9 @@ async function compileValidation(source:string){
     const {digest,plan}=await compilePlan(source);
     const required_approvals=mcpGrants(plan);
     return {valid:true as const,digest,steps:plan.steps.length,issues:[] as [],
+      ...(plan.expansion?{expansion:plan.expansion}:{}),
       ...(required_approvals.length?{required_approvals}:{}),
-      ...(plan.steps.some(s=>s.uses==='github.run')?{requires_heavy_execution_approval:true as const}:{})};
+      ...(publishesGithub(plan)?{requires_heavy_execution_approval:true as const}:{})};
   }catch(error){
     if(!(error instanceof PlanError))throw error;
     return {valid:false as const,issues:[validationIssue(error)]};
@@ -230,7 +243,7 @@ export class WorkflowService {
     // is required at each Publish in addition to exact per-operation grants.
     // This is an authenticated API assertion, not proof of human interaction.
     if(required.length && accept_target_risks!==true)throw new StateError('target_risk_acknowledgment_required');
-    const hasGithub=plan.steps.some(s=>s.uses==='github.run');
+    const hasGithub=publishesGithub(plan);
     if(hasGithub && approve_heavy_execution!==true)throw new StateError('github_execution_approval_required');
     assertPublishedTriggers(plan,this.env);
     const scopedPlan:Plan=required.length?{...plan,mcp_approvals:required,mcp_target_risks_accepted:true}:plan;
@@ -435,18 +448,31 @@ export class WorkflowService {
         row=await this.settleNativeOutcome(row,native);
       }
     }
-    const stored=(await this.db.prepare('SELECT step_id,status,error_code FROM run_steps WHERE run_id=? ORDER BY step_id').bind(run_id).all<{step_id:string;status:string;error_code:string|null}>()).results;
+    const stored=(await this.db.prepare('SELECT step_id,status,error_code,output FROM run_steps WHERE run_id=? ORDER BY step_id').bind(run_id).all<{step_id:string;status:string;error_code:string|null;output:string|null}>()).results;
     const version=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=?').bind(row.version_id).first<{plan:string}>();
     if(!version)throw new StateError('version_missing');
     const asyncActions=await githubAsyncViewsForRun(this.db,run_id,row.outcome,row.error_code,now());
     const terminal=['succeeded','failed','indeterminate','cancelled'].includes(row.outcome)||native==='complete';
     const byId=new Map(stored.map(s=>[s.step_id,s]));
-    const steps=(JSON.parse(version.plan) as Plan).steps.map(s=>{
-      const saved=byId.get(s.id);
+    const planSteps=(JSON.parse(version.plan) as Plan).steps;
+    const visible:string[]=[];
+    for(const step of planSteps){
+      visible.push(step.id);
+      if(step.uses!=='flow.expand') continue;
+      const snap=byId.get(expansionSnapshotId(step.id));
+      if(!snap?.output) continue;
+      try{
+        const parsed=JSON.parse(snap.output) as {items?:unknown};
+        if(!Array.isArray(parsed.items)) continue;
+        for(let index=0;index<parsed.items.length;index++) visible.push(expansionChildId(step.id,index));
+      }catch{/* A corrupt snapshot still leaves the template step visible. */}
+    }
+    const steps=visible.map(stepId=>{
+      const saved=byId.get(stepId);
       const base=saved && ['succeeded','failed','skipped','indeterminate'].includes(saved.status)
-        ?saved
-        :{step_id:s.id,status:terminal?'indeterminate':saved?.status??'waiting',error_code:saved?.error_code??null};
-      const asyncAction=asyncActions.get(s.id);
+        ?{step_id:saved.step_id,status:saved.status,error_code:saved.error_code}
+        :{step_id:stepId,status:terminal?'indeterminate':saved?.status??'waiting',error_code:saved?.error_code??null};
+      const asyncAction=asyncActions.get(stepId);
       return asyncAction?{...base,async_action:asyncAction}:base;
     }).sort((a,b)=>a.step_id<b.step_id?-1:a.step_id>b.step_id?1:0);
     return {run_id,workflow_id:row.workflow_id,published_version_id:row.version_id,start_state:row.start_state,status:['succeeded','failed','indeterminate','cancelled'].includes(row.outcome)?row.outcome:row.start_state!=='started'?'start_unknown':applyStatus(native,row.outcome),steps};

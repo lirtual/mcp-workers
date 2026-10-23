@@ -267,10 +267,10 @@ test('Agent discovers capabilities and inline-validates a definition without tou
     assert.equal(byId.get('trigger.manual')?.status, 'supported');
     assert.equal(byId.get('trigger.webhook')?.status, 'supported');
     assert.equal(byId.get('trigger.github_event')?.status, 'supported');
-    for(const id of ['flow.if','flow.needs','flow.parallel','flow.repeat'])
+    for(const id of ['flow.if','flow.needs','flow.parallel','flow.repeat','flow.dynamic_expansion'])
       assert.equal(byId.get(id)?.status, 'supported', id);
     assert.equal(byId.get('trigger.cron')?.status, 'supported');
-    for(const id of ['action.http','action.mcp.write','action.shell','flow.foreach','flow.while','flow.nesting','flow.dynamic_expansion','flow.wait','flow.child_workflow','flow.saga'])
+    for(const id of ['action.http','action.mcp.write','action.shell','flow.foreach','flow.while','flow.nesting','flow.wait','flow.child_workflow','flow.saga'])
       assert.equal(byId.get(id)?.status, 'unsupported', id);
     for(const item of overview.capabilities) assert.equal('example' in item, false);
 
@@ -420,6 +420,29 @@ test('Agent discovers capabilities and inline-validates a definition without tou
     const storedPlan=JSON.parse((sqlite.prepare('SELECT plan FROM workflow_versions WHERE id=?').get(loopPublished.published_version_id) as {plan:string}).plan);
     assert.equal(storedPlan.steps.some((step:{uses:string})=>step.uses==='flow.repeat'), true);
     assert.equal(storedPlan.saga, undefined);
+
+    const expansion=await call('workflow_capabilities',{id:'flow.dynamic_expansion'});
+    assert.equal(expansion.status,'supported');
+    assert.equal(expansion.limits.cap, overview.definition.limits.max_expanded_steps);
+    const expansionPreview=await call('workflow_validate',{definition:JSON.stringify(expansion.example)});
+    assert.equal(expansionPreview.valid, true);
+    assert.equal(expansionPreview.expansion.cap, expansion.limits.cap);
+    assert.equal(expansionPreview.expansion.templates[0].step_id, 'fan');
+    assert.deepEqual(expansionPreview.expansion.templates[0].needs, ['source']);
+    assert.equal(expansionPreview.expansion.templates[0].uses, 'result.emit');
+    assert.match(expansionPreview.expansion.templates[0].risk, /cannot select an action/);
+    const expansionDraft=await call('workflow_create',{definition:JSON.stringify(expansion.example)});
+    await call('workflow_publish',{workflow_id:expansionDraft.workflow_id,expected_revision:1});
+    const expansionRun=await call('workflow_run',{workflow_id:expansionDraft.workflow_id,inputs:{}});
+    await new WorkflowRunner({} as ExecutionContext,env).run({payload:{run_id:expansionRun.run_id}} as WorkflowEvent<{run_id:string}>,{
+      do:async(_name:unknown,_options:unknown,callback:()=>Promise<unknown>)=>callback(),
+    } as unknown as WorkflowStep);
+    const expansionResult=await call('workflow_result',{run_id:expansionRun.run_id});
+    assert.equal(expansionResult.status,'succeeded');
+    assert.deepEqual(expansionResult.result,[{index:0,item:'one'},{index:1,item:'two'}]);
+    assert.deepEqual(expansionResult.steps.map((step:{step_id:string;status:string})=>[step.step_id,step.status]),[
+      ['fan','succeeded'],['fan:0','succeeded'],['fan:1','succeeded'],['source','succeeded'],
+    ]);
   }finally{
     await client.close();
   }
