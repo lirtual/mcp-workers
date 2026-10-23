@@ -143,7 +143,7 @@ test('status provides stable private Tailnet name only for signed Ready, never a
   f.db.prepare("UPDATE session_executions SET state='ready'").run();
   const service=new WorkflowService({DB:f.adapter,WORKFLOW:{}} as Env);
   const status=await service.status(run(1));
-  assert.equal(status.sessions?.[0]?.private_hostname,'sa-42');
+  assert.equal(status.sessions?.[0]?.private_hostname,'sa-42-a1');
   assert.equal(status.sessions?.[0]?.physical_health,'unverified');
   f.db.prepare("UPDATE session_executions SET state='stopping'").run();
   const stopping=await service.status(run(1));
