@@ -254,6 +254,42 @@ test('terminal parent never authorizes a first late signed Ready',async()=>{
   assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'queued');
  }finally{f.db.close();}
 });
+test('queued GitHub job cannot acquire first OIDC Claim after a durable cancellation intent',async()=>{
+ const f=fixture();
+ try{
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
+  f.claim(1,'confirmed',false);
+  const {jwt,publicKey}=await signedReady();
+  let raced=0;
+  // Insert cancellation between JWT + immutable Plan verification and the
+  // Claim UPDATE to prove the single SQL CAS (not merely an earlier SELECT)
+  // fences privilege after cancellation has been durably committed.
+  const db={prepare:(sql:string)=>{
+   const prepared=f.adapter.prepare(sql);
+   if(sql.includes("UPDATE step_attempts")&&sql.includes("SET state='claimed'"))
+    return {bind:(...args:unknown[])=>{
+     const bound=prepared.bind(...args);
+     return {run:async()=>{
+      raced++;
+      f.db.prepare(`INSERT INTO github_action_cancellations
+       (attempt_id,run_id,step_id,cancel_requested_at,cancel_ack)
+       VALUES(?,?,?,?,'unknown')`).run(run(11),run(1),'launch',Date.now());
+      return bound.run();
+     }};
+    }};
+   return prepared;
+  }} as unknown as D1Database;
+  const claimed=await verifyAndClaimPinnedGitHubAction(db,run(11),jwt,
+   audience,publicKey);
+  assert.equal(claimed,false);
+  assert.equal(raced,1);
+  assert.equal(f.db.prepare('SELECT state FROM step_attempts').get()?.state,'confirmed');
+  assert.equal(f.db.prepare('SELECT owner_run_id FROM step_attempts').get()?.owner_run_id,null);
+  assert.equal(await recordSignedSessionReady(f.adapter,run(11),jwt,audience,
+   'token',publicKey,async()=>({state:'running'})),'denied');
+  assert.equal(await releaseVerifiedSessionSlot(f.adapter,run(1),'launch'),'held');
+ }finally{f.db.close();}
+});
 test('cancel intent committed during physical readback prevents a late signed Ready CAS',async()=>{
  const f=fixture();
  try{
