@@ -2,10 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {readFileSync} from 'node:fs';
-import {reservePublishedSessionSlot,releaseVerifiedSessionSlot,recordSignedSessionReady}
+import {reservePublishedSessionSlot,releaseVerifiedSessionSlot,recordSignedSessionReady,runPublishedGitHubActionSession}
  from '../src/github-action-session.ts';
 import {generateKeyPair,SignJWT} from 'jose';
 import {handleGithubActionClaimRequest} from '../src/github-action-ingress.ts';
+import {verifyAndClaimPinnedGitHubAction} from '../src/github-action-oidc-claim.ts';
+import type {WorkflowStep} from 'cloudflare:workers';
+import type {Plan} from '../src/plan.ts';
 import {WorkflowService} from '../src/store.ts';
 import {reconcilePersistedGitHubActionAttempt} from '../src/github-action-attempt-reconcile.ts';
 import {inspectPersistedGitHubActionAttempt} from '../src/github-action-attempt-inspection.ts';
@@ -233,5 +236,75 @@ test('HTTP Ready is OIDC-only and returns no private credentials; wake is adviso
    headers:{authorization:'Bearer '+jwt},
    body:JSON.stringify({attemptId:run(11),access_token:'forged'})}),env,publicKey,inspect);
   assert.equal(bad.status,400);
+ }finally{f.db.close();}
+});
+
+test('Session dispatches once, signed GitHub Claim and Ready complete startup but keep slot',async()=>{
+ const f=fixture();
+ try{
+  const {jwt,publicKey}=await signedReady();
+  let attemptId='',posts=0,waits=0;
+  const http=async(request:Request):Promise<Response>=>{
+   const path=new URL(request.url).pathname;
+   if(path.endsWith('/git/ref/tags/release-v1'))
+    return Response.json({ref:'refs/tags/release-v1',object:{type:'commit',sha:action.commitSha}});
+   if(request.method==='POST'){
+    posts++;
+    const payload=await request.json() as {ref:string;inputs:{attempt_id:string;capability_id:string}};
+    attemptId=payload.inputs.attempt_id;
+    assert.equal(payload.inputs.capability_id,'github.action');
+    assert.equal(payload.ref,'release-v1');
+    return Response.json({workflow_run_id:42});
+   }
+   assert.ok(path.endsWith('/actions/runs/42'));
+   return Response.json({
+    id:42,workflow_id:456,run_attempt:1,
+    repository:{id:123,full_name:action.repository},
+    path:action.workflowPath+'@release-v1',head_sha:action.commitSha,
+    event:'workflow_dispatch',status:'in_progress',conclusion:null,
+   });
+  };
+  const workflow={
+   do:async(_name:string,_opts:unknown,cb:()=>Promise<unknown>)=>cb(),
+   waitForEvent:async()=>{
+    waits++;
+    assert.equal(await verifyAndClaimPinnedGitHubAction(f.adapter,attemptId,
+      jwt,audience,publicKey),true);
+    assert.equal(await recordSignedSessionReady(f.adapter,attemptId,jwt,audience,
+      'token',publicKey,async()=>({state:'running'})),'ready');
+    return {attemptId};
+   },
+  } as unknown as WorkflowStep;
+  const env={DB:f.adapter,WORKFLOW_EXECUTOR_GITHUB_TOKEN:'token',
+   GITHUB_ACTION_OIDC_AUDIENCE:audience} as Env;
+  const outcome=await runPublishedGitHubActionSession(env,plan as Plan,
+   (plan as Plan).steps[0],run(1),workflow,http);
+  assert.deepEqual(outcome,{status:'succeeded',output:{session:{recorded_state:'ready'}}});
+  assert.equal(posts,1);
+  assert.equal(waits,1);
+  assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'ready');
+  assert.equal(f.db.prepare('SELECT state FROM step_attempts').get()?.state,'claimed');
+  assert.equal(await releaseVerifiedSessionSlot(f.adapter,run(1),'launch'),'held');
+  assert.equal(f.db.prepare('SELECT outcome FROM runs WHERE id=?').get(run(1))?.outcome,'running');
+ }finally{f.db.close();}
+});
+test('fifth Session is rejected before any GitHub outbound request',async()=>{
+ const f=fixture();
+ try{
+  for(let i=1;i<=4;i++)
+   assert.equal(await reservePublishedSessionSlot(f.adapter,run(i),'launch'),'reserved');
+  let requests=0;
+  const workflow={do:async(_name:string,_opts:unknown,cb:()=>Promise<unknown>)=>cb()}
+   as unknown as WorkflowStep;
+  const env={DB:f.adapter,WORKFLOW_EXECUTOR_GITHUB_TOKEN:'token',
+   GITHUB_ACTION_OIDC_AUDIENCE:audience} as Env;
+  const outcome=await runPublishedGitHubActionSession(env,plan as Plan,
+   (plan as Plan).steps[0],run(5),workflow,async()=>{
+     requests++;return new Response(null,{status:500});
+   });
+  assert.equal(outcome.status,'failed');
+  assert.equal(outcome.error_code,'github_session_capacity_exceeded');
+  assert.equal(requests,0);
+  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM session_executions').get()?.n,4);
  }finally{f.db.close();}
 });
