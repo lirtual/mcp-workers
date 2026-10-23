@@ -1,11 +1,12 @@
 import { publicMcpEndpoint, PRODUCTION_PORTAL_ENDPOINT, TRUSTED_PORTAL_ENDPOINT } from './mcp-public-fetch.ts';
 import { GITHUB_ASYNC_WAIT_MS, GITHUB_ASYNC_WAKE_LIMIT } from './github-async.ts';
+import { APPROVAL_GATE_BINDING, APPROVAL_GATE_WHEN, APPROVAL_WAIT_MS } from './runtime-approval.ts';
 import { selectedGithubExecutor } from './github-dispatch.ts';
 import { CRON_CONTRACT } from './cron.ts';
 import { REGISTERED_GITHUB_ACTION } from './github-registry.ts';
 
 export const DEFINITION_KEYS = ['version', 'name', 'inputs', 'triggers', 'saga', 'steps'] as const;
-export const STEP_KEYS = ['id', 'uses', 'needs', 'if', 'with', 'repeat', 'expand', 'compensate'] as const;
+export const STEP_KEYS = ['id', 'uses', 'needs', 'if', 'with', 'repeat', 'expand', 'compensate', 'approval'] as const;
 export const SAGA_KEYS = ['on'] as const;
 export const COMPENSATE_KEYS = ['tool', 'scope', 'arguments', 'input_schema', 'output_schema'] as const;
 export const REPEAT_KEYS = ['times', 'until'] as const;
@@ -299,24 +300,24 @@ const CATALOG: readonly Entry[] = [
     permissions: 'No grant. data is an expression, not a command.',
     completion: 'Completes inside the step with the evaluated data.'},
   {id: 'action.mcp.call', kind: 'action', status: 'supported', uses: 'mcp.call', scope: 'read', example: mcpExample,
-    summary: 'Call one read-only MCP tool through the configured portal after publish-time approval.',
-    permissions: 'scope must be read. Publish requires approved_operations exactly matching endpoint, tool, scope, and schema_digest, plus accept_target_risks=true. The endpoint must be the configured portal. A public URL shape is not authorization. Do not set schema_digest; the compiler adds it. readOnlyHint is not a grant.',
+    summary: 'Call one read-only MCP tool through the configured portal after publish-time approval. An already authorized read does not wait for a runtime approval.',
+    permissions: 'scope must be read. Publish requires approved_operations exactly matching endpoint, tool, scope, and schema_digest, plus accept_target_risks=true. The endpoint must be the configured portal. A public URL shape is not authorization. Do not set schema_digest; the compiler adds it. readOnlyHint is not a grant. Do not set approval. Arguments cannot add a gate or change this scope.',
     completion: 'One tools/call after grants and a live read-only schema check. A lost response is indeterminate and is not retried. Revocation blocks a later call. An effect already dispatched stays its real result or indeterminate.'},
   {id: 'action.mcp.write', kind: 'action', status: 'supported', uses: 'mcp.call', scope: 'write', example: mcpWriteExample,
-    summary: 'Call one exact portal tool whose published scope is write. This is not an arbitrary write and not a public MCP marketplace.',
-    permissions: 'scope must be write. The endpoint, tool, and schema_digest are pinned. Publish requires that exact approved_operations entry and accept_target_risks=true. readOnlyHint cannot authorize the call. Runtime arguments cannot change the server, URL, repository, or credential. A compensate block is not implied. flow.saga must publish it as its own grant or this write is not compensated.',
+    summary: 'Call one exact portal tool whose published scope is write. Optional approval.required waits once before that dispatch. This is not an arbitrary write and not a public MCP marketplace.',
+    permissions: 'scope must be write. The endpoint, tool, and schema_digest are pinned. Publish requires that exact approved_operations entry and accept_target_risks=true. readOnlyHint cannot authorize the call. Runtime arguments cannot change the server, URL, repository, credential, or this scope, and cannot set approval. Omit approval and an already authorized write does not wait. Set approval.required to true and the Run waits until one workflow_approval for that run, step, and published version. The server does not create that approval. A compensate block is not implied. flow.saga must publish it as its own grant or this write is not compensated.',
     completion: 'One tools/call after the grant, schema, and an explicit readOnlyHint false check. A missing or true readOnlyHint fails closed before tools/call. A lost response is indeterminate and is not retried or rolled back.'},
   {id: 'action.github.run', kind: 'action', status: 'supported', uses: 'github.run', example: githubExample,
-    summary: 'Run the registered GitHub Workflow CI check. The definition cannot choose a repository, ref, workflow file, token, or command.',
-    permissions: 'Publish requires approve_heavy_execution=true. Runtime uses the server GitHub executor and OIDC. with accepts only capability github.workflow.check.',
+    summary: 'Run the registered GitHub Workflow CI check. Optional approval.required waits once before dispatch. The definition cannot choose a repository, ref, workflow file, token, or command.',
+    permissions: 'Publish requires approve_heavy_execution=true. Runtime uses the server GitHub executor and OIDC. with accepts only capability github.workflow.check. Set approval.required to true to wait for one workflow_approval bound to the run, step, and published version before dispatch. Arguments cannot set that gate. The server does not create it. Omit approval and publish-time heavy-execution approval is enough.',
     completion: 'Dispatch accepted stores the GitHub run id on the Attempt. The step stays pending until one claimed receipt or the explicit '+String(GITHUB_ASYNC_WAIT_MS/1000)+' second wait ends. That receipt is the external terminal result. Lost, duplicate, early, and late wakes are not a second result. Worker recovery keeps the same Attempt. An ambiguous dispatch or timeout is indeterminate and is not dispatched again. workflow_cancel asks GitHub to cancel a waiting or running run and keeps reading that run and its jobs. Accepted cancellation is requested, not stopped. Observed success or failure is completed. Unknown physical state is indeterminate. The cancel call is not repeated and is not a force-cancel.'},
   {id: 'action.github.registered', kind: 'action', status: 'supported', uses: 'github.run', example: registeredGithubExample,
-    summary: 'Dispatch one allow-listed GitHub workflow. The definition supplies schema inputs only. Repository '+REGISTERED_GITHUB_ACTION.repository+', workflow '+REGISTERED_GITHUB_ACTION.workflow+', ref '+REGISTERED_GITHUB_ACTION.ref+'. Grant '+REGISTERED_GITHUB_ACTION.grant+'.',
-    permissions: 'Publish requires approve_heavy_execution=true. The repository, workflow file, and ref are the source allow-list, not definition fields. Inputs must match the subject schema. No shell and no other repository.',
+    summary: 'Dispatch one allow-listed GitHub workflow. Optional approval.required waits once before dispatch. The definition supplies schema inputs only. Repository '+REGISTERED_GITHUB_ACTION.repository+', workflow '+REGISTERED_GITHUB_ACTION.workflow+', ref '+REGISTERED_GITHUB_ACTION.ref+'. Grant '+REGISTERED_GITHUB_ACTION.grant+'.',
+    permissions: 'Publish requires approve_heavy_execution=true. The repository, workflow file, and ref are the source allow-list, not definition fields. Inputs must match the subject schema. No shell and no other repository. Set approval.required to true to wait for one workflow_approval bound to the run, step, and published version before dispatch. Arguments cannot set that gate. The server does not create it.',
     completion: 'Dispatch accepted stores the GitHub run id before the run finishes. The step stays dispatch_accepted until a read of that same run records external_terminal success or failure. An ambiguous dispatch or run read is indeterminate and is not dispatched again. The result lists artifact metadata and a repository-scoped URL, not file bytes. workflow_cancel asks GitHub to cancel a waiting or running run and keeps reading that run and its jobs. Accepted cancellation is requested, not stopped. Observed success or failure is completed. Unknown physical state is indeterminate. The cancel call is not repeated and is not a force-cancel.'},
   {id: 'action.http', kind: 'action', status: 'supported', uses: 'http.request', scope: 'read', example: httpExample,
-    summary: 'Call the one registered HTTP fixture. The definition cannot choose a URL, method, header, or credential.',
-    permissions: 'scope must be read. with accepts fixture, scope, arguments, and schemas. Publish requires approved_operations exactly matching fixture, endpoint, scope, and schema_digest, plus accept_target_risks=true. The endpoint comes from the server fixture, not from the definition or runtime arguments.',
+    summary: 'Call the one registered HTTP fixture. An already authorized read does not wait for a runtime approval. The definition cannot choose a URL, method, header, or credential.',
+    permissions: 'scope must be read. with accepts fixture, scope, arguments, and schemas. Publish requires approved_operations exactly matching fixture, endpoint, scope, and schema_digest, plus accept_target_risks=true. The endpoint comes from the server fixture, not from the definition or runtime arguments. Do not set approval. Arguments cannot add a gate or change this scope.',
     completion: 'One POST to the pinned fixture after the grant and schema check. Redirects are not followed. A lost response or redirect is indeterminate and is not retried or rolled back.'},
   {id: 'action.tsrv', kind: 'action', status: 'unsupported',
     summary: 'tsrv resource actions are unavailable. No resource provider is registered, so this cannot return an owned expiring reference at Ready. A GitHub job result is not Ready. Validate and publish reject this action.'},
@@ -526,6 +527,11 @@ function definitionContract() {
                   max: {type: 'integer', minimum: 1, maximum: LIMITS.maxExpandedSteps},
                 },
               },
+              approval: {
+                type: 'object', additionalProperties: false, required: ['required'],
+                properties: {required: {const: true}},
+                description: 'Optional runtime gate for a portal write or GitHub step only. Reads must omit it. Arguments cannot set it or widen scope. It fires once before dispatch and binds the run, step, and published version.',
+              },
             },
           },
         },
@@ -533,7 +539,35 @@ function definitionContract() {
     },
   };
 }
-function stepSchema(uses: SupportedUse) {
+const approvalField = {
+  type: 'object', additionalProperties: false, required: ['required'],
+  properties: {required: {const: true}},
+  description: 'Optional. required must be true. Arguments cannot set this or widen the published scope.',
+};
+const highImpactApproval = new Set(['action.mcp.write', 'action.github.run', 'action.github.registered']);
+function approvalGateDetail(id: string) {
+  if (id === 'action.mcp.call' || id === 'action.http') return {
+    high_impact: false as const,
+    optional: false as const,
+    scope: 'read' as const,
+    when: 'not_used' as const,
+    binding: [] as string[],
+    effect: 'none' as const,
+    declaration: 'Do not set approval. An already authorized read does not wait.',
+  };
+  if (!highImpactApproval.has(id)) return undefined;
+  return {
+    high_impact: true as const,
+    optional: true as const,
+    scope: id === 'action.mcp.write' ? 'write' as const : 'github_execution' as const,
+    when: APPROVAL_GATE_WHEN,
+    binding: [...APPROVAL_GATE_BINDING],
+    effect: 'once' as const,
+    timeout_ms: APPROVAL_WAIT_MS,
+    declaration: 'Set step approval.required to true. The gate fires once before the external dispatch. One workflow_approval must match the run, step, and published version. Denial, timeout, a repeat, and any other binding do not dispatch. Publish does not create this approval. Arguments cannot set it or change the scope.',
+  };
+}
+function stepSchema(uses: SupportedUse, approval = false) {
   const withKeys = WITH_KEYS[uses];
   return {
     type: 'object',
@@ -544,6 +578,7 @@ function stepSchema(uses: SupportedUse) {
       uses: {const: uses},
       needs: {type: 'array', items: {type: 'string', pattern: STEP_ID.source}},
       if: {description: 'A boolean or one operator: ' + CONDITION_OPS.join(', ')},
+      ...(approval ? {approval: approvalField} : {}),
       with: {
         type: 'object',
         additionalProperties: false,
@@ -564,7 +599,7 @@ function detailOf(entry: Entry) {
   const action = entry.uses ? {
     uses: entry.uses,
     with_keys: WITH_KEYS[entry.uses],
-    schema: stepSchema(entry.uses),
+    schema: stepSchema(entry.uses, entry.id === 'action.mcp.write' || entry.id === 'action.github.run'),
     ...(entry.uses === 'github.run' ? {capability: GITHUB_CAPABILITY_ID} : {}),
     ...(entry.scope ? {scope: entry.scope} : {}),
   } : entry.id === 'trigger.cron' ? {
@@ -579,12 +614,15 @@ function detailOf(entry: Entry) {
     cron: CRON_CONTRACT,
     limits: {minimum_interval_seconds: CRON_CONTRACT.minimum_interval_seconds},
   } : {schema: definitionContract().schema};
+  const gate = approvalGateDetail(entry.id);
   return {...base, ...action, permissions: entry.permissions, completion: entry.completion, example: entry.example,
+    ...(gate ? {approval_gate: gate} : {}),
     ...(entry.id === 'action.github.registered' ? {...registeredCatalogFields(), schema: {
       type: 'object', additionalProperties: false, required: ['id', 'uses', 'with'],
       properties: {
         id: {type: 'string', pattern: STEP_ID.source},
         uses: {const: 'github.run'},
+        approval: approvalField,
         with: {
           type: 'object', additionalProperties: false, required: ['capability', 'inputs'],
           properties: {

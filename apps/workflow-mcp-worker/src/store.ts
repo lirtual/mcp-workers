@@ -1,5 +1,6 @@
 import { compilePlan, PlanError, canonicalJsonString, expansionChildId, expansionSnapshotId } from './plan.ts';
-import { GITHUB_TRIGGER_EVENTS, isConfiguredSecret, LIMITS, readHttpFixture, TRIGGER_REPOSITORY, TRIGGER_SOURCE_ID } from './capabilities.ts';
+import { GITHUB_TRIGGER_EVENTS, isConfiguredSecret, LIMITS, readHttpFixture, STEP_ID, TRIGGER_REPOSITORY, TRIGGER_SOURCE_ID } from './capabilities.ts';
+import { recordRuntimeApproval } from './runtime-approval.ts';
 import { cronEventId, cronMatches, CronError, publishedCronFacts } from './cron.ts';
 import { PRODUCTION_PORTAL_ENDPOINT, TRUSTED_PORTAL_ENDPOINT } from './mcp-public-fetch.ts';
 import {githubAsyncViewsForRun} from './github-async.ts';
@@ -81,7 +82,7 @@ function cronPublication(plan:Plan){
 }
 function publicationFacts(plan:Plan){
   const saga=publishedSaga(plan);
-  return {...cronPublication(plan),...(saga?{saga}:{})};
+  return {...cronPublication(plan),...(saga?{saga}:{}),...approvalPublication(plan)};
 }
 function assertPublishedTriggers(plan:Plan, env:Env){
   for(const trigger of plan.triggers??[]){
@@ -139,6 +140,23 @@ function externalGrants(plan:Plan, env:Env):ApprovedOperation[]{
 function publishesGithub(plan:Plan):boolean{
   return plan.steps.some(step=>operationOf(step)?.uses==='github.run');
 }
+function approvalGatePreview(plan:Plan){
+  const binding=['run_id','step_id','published_version_id'];
+  const gates=[];
+  for(const step of plan.steps){
+    if(step.approval?.required!==true)continue;
+    const operation=operationOf(step);
+    if(operation?.uses==='mcp.call'&&operation.with.scope==='write')
+      gates.push({step_id:step.id,action:'mcp.call' as const,scope:'write' as const,when:'before_dispatch' as const,binding,effect:'once' as const});
+    else if(operation?.uses==='github.run')
+      gates.push({step_id:step.id,action:'github.run' as const,scope:'github_execution' as const,when:'before_dispatch' as const,binding,effect:'once' as const});
+  }
+  return gates;
+}
+function approvalPublication(plan:Plan){
+  const approval_gates=approvalGatePreview(plan);
+  return approval_gates.length?{approval_gates}:{};
+}
 function issueMessage(code:string, detail?:string):string{
   switch(code){
     case 'unsupported_field': return `Field "${detail}" is not supported.`;
@@ -146,6 +164,9 @@ function issueMessage(code:string, detail?:string):string{
     case 'unsupported_operation_scope': return 'This operation scope is not allowed.';
     case 'invalid_fixture': return 'The HTTP action must name the registered fixture.';
     case 'target_argument_rejected': return 'Runtime arguments cannot select a server, URL, repository, or credential.';
+    case 'approval_argument_rejected': return 'Arguments cannot add or widen a runtime approval.';
+    case 'invalid_approval': return 'approval.required must be true. Arguments cannot add or widen a gate.';
+    case 'approval_not_applicable': return 'Only a portal write or GitHub step can declare a runtime approval. Reads do not wait.';
     case 'approved_schema_changed': return 'The pinned schema does not match the registered contract.';
     case 'unsupported_github_capability': return 'Use github.workflow.check or github.action.registered.';
     case 'resource_provider_unavailable': return 'No tsrv resource provider is registered. A GitHub job result is not Ready.';
@@ -224,6 +245,7 @@ async function compileValidation(source:string, env:Env){
       ...(plan.expansion?{expansion:plan.expansion}:{}),
       ...(required_approvals.length?{required_approvals}:{}),
       ...(saga?{saga}:{}),
+      ...approvalPublication(plan),
       ...(publishesGithub(plan)?{requires_heavy_execution_approval:true as const}:{})};
   }catch(error){
     if(!(error instanceof PlanError))throw error;
@@ -344,6 +366,31 @@ export class WorkflowService {
       throw new StateError('revision_conflict');
     }
     return {workflow_id,published_version_id:version,digest:plan_digest,state:row.state==='paused'?'paused':'active',...publicationFacts(publishedPlan)};
+  }
+  async approve(run_id:string, step_id:string, published_version_id:string, decision:'approve'|'deny'){
+    assertId(run_id);assertId(published_version_id);
+    if(!STEP_ID.test(step_id))throw new StateError('invalid_step_id');
+    const run=await this.db.prepare('SELECT version_id,instance_id FROM runs WHERE id=?')
+      .bind(run_id).first<{version_id:string;instance_id:string}>();
+    if(!run)throw new StateError('run_not_found');
+    if(run.version_id!==published_version_id)throw new StateError('approval_binding_mismatch');
+    const version=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=?')
+      .bind(published_version_id).first<{plan:string}>();
+    if(!version)throw new StateError('version_missing');
+    const plan=JSON.parse(version.plan) as Plan;
+    const step=plan.steps.find(item=>item.id===step_id);
+    if(step?.approval?.required!==true)throw new StateError('approval_not_required');
+    const stored=decision==='approve'?'approved':'denied';
+    let recorded:{decision:'approved'|'denied';consumed:boolean;conflict:boolean};
+    try{recorded=await recordRuntimeApproval(this.db,run_id,step_id,published_version_id,stored,now());}
+    catch{throw new StateError('approval_binding_mismatch');}
+    if(recorded.conflict)throw new StateError('approval_conflict');
+    // The row is the decision. The wake payload cannot authorize a dispatch.
+    try{
+      const instance=await this.env.WORKFLOW.get(run.instance_id);
+      if(instance.sendEvent)await instance.sendEvent({type:'approval-'+step_id,payload:{run_id,step_id,published_version_id}});
+    }catch{/* A later wake reads the same row. */}
+    return {run_id,step_id,published_version_id,decision:recorded.decision,consumed:recorded.consumed,human_presence:false as const};
   }
   async cronTickTargets(utcMs:number){
     const rows=await this.db.prepare("SELECT w.id AS id, w.state AS state, v.plan AS plan FROM workflows w JOIN workflow_versions v ON v.id=w.active_version_id AND v.workflow_id=w.id WHERE w.state IN ('active','paused') AND w.active_version_id IS NOT NULL ORDER BY w.id ASC LIMIT 100").all<{id:string;state:string;plan:string}>();
