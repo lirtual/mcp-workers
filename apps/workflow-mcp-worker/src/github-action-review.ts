@@ -57,3 +57,24 @@ export async function assertReviewedGitHubAction(
     throw Error('github_action_review_changed');
   return validateGitHubActionInputs(discovered.contract, suppliedInputs);
 }
+
+/**
+ * Check immutable publication authorization at the runner seam.
+ * An approval assertion supplied with Publish is not sufficient unless its
+ * exact reviewed source is persisted in the version being executed.
+ */
+export function isPublishedGitHubActionApproved(
+  approved: readonly ReviewedGitHubAction[] | undefined,
+  requested: ReviewedGitHubAction,
+): boolean {
+  if (!approved || Object.keys(requested).length !== 7) return false;
+  return approved.some(entry =>
+    Object.keys(entry).length === 7 &&
+    entry.repository === requested.repository &&
+    entry.repositoryId === requested.repositoryId &&
+    entry.workflowId === requested.workflowId &&
+    entry.workflowPath === requested.workflowPath &&
+    entry.commitSha === requested.commitSha &&
+    entry.type === requested.type &&
+    entry.contractDigest === requested.contractDigest);
+}
