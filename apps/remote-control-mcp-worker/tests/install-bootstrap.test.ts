@@ -333,6 +333,7 @@ test('copy feedback appears in button, resets, and never announces success below
     attributes: Record<string,string>;
     handlers: Record<string,(event?: {key?:string,preventDefault?:()=>void})=>unknown>;
     setAttribute: (name:string,value:string)=>void;
+    removeAttribute: (name:string)=>void;
     addEventListener: (name:string,handler:(event?:{key?:string,preventDefault?:()=>void})=>unknown)=>void;
     focus:()=>void;
   };
@@ -340,6 +341,7 @@ test('copy feedback appears in button, resets, and never announces success below
     return {
       textContent:'', disabled:false, tabIndex:0, attributes:{}, handlers:{},
       setAttribute(name,value){this.attributes[name]=value;},
+      removeAttribute(name){delete this.attributes[name];},
       addEventListener(name,handler){this.handlers[name]=handler;},
       focus(){},
     };
@@ -369,11 +371,13 @@ test('copy feedback appears in button, resets, and never announces success below
   await els.copy.handlers.click!();
   assert.equal(clipboard[0],'irm https://rca.lirtual.dpdns.org/install.ps1 | iex');
   assert.equal(els.copy.textContent,'已复制');
+  assert.equal(els.copy.attributes['data-copied'],'true','success applies green button style');
   assert.equal(els.copy.attributes['aria-label'],'安装命令已复制');
   assert.equal(els.message.textContent,'','no duplicate success label below the button');
   assert.equal(pending.size,1);
   [...pending.values()][0]!();
   assert.equal(els.copy.textContent,'复制','button restores default label');
+  assert.equal(els.copy.attributes['data-copied'],undefined,'success color resets after timeout');
   els.linux.handlers.click!();
   assert.equal(els.copy.textContent,'复制');
   await els.copy.handlers.click!();
@@ -381,9 +385,21 @@ test('copy feedback appears in button, resets, and never announces success below
   assert.equal(els.copy.textContent,'已复制');
   els.windows.handlers.click!();
   assert.equal(els.copy.textContent,'复制','switching platforms clears copied label');
+  assert.equal(els.copy.attributes['data-copied'],undefined,'switching platforms clears green state');
   assert.equal(pending.size,0,'switching platforms cancels previous timer');
   rejectCopy=true;
   await els.copy.handlers.click!();
   assert.equal(els.copy.textContent,'复制','failed copy is not reported as successful');
+  assert.equal(els.copy.attributes['data-copied'],undefined,'failed copy cannot keep green state');
   assert.equal(els.message.textContent,'复制失败，请手动选中命令。');
+});
+
+test('copied confirmation uses distinct green colors in both system themes', async () => {
+  const {renderInstallHome}=await import('../src/install-home.ts');
+  const html=renderInstallHome({windows:true,linux:true});
+  assert.ok(html.includes('--copied-bg:#167347;--copied-fg:#fff'));
+  assert.ok(html.includes('--copied-bg:#39d98a;--copied-fg:#092719'));
+  assert.ok(html.includes('button.copy[data-copied="true"]{background:var(--copied-bg);color:var(--copied-fg)}'));
+  assert.ok(html.includes("copy.setAttribute('data-copied','true')"));
+  assert.ok(html.includes("copy.removeAttribute('data-copied')"));
 });
