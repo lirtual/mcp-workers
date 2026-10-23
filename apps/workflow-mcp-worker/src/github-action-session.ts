@@ -181,16 +181,25 @@ export async function recordSignedSessionReady(
        AND a.candidate_run_id=? AND a.candidate_run_attempt=?
        AND a.owner_run_id=a.candidate_run_id
        AND a.owner_run_attempt=a.candidate_run_attempt
+   ) AND NOT EXISTS (
+     SELECT 1 FROM github_action_cancellations c
+     WHERE c.attempt_id=?
    ) AND EXISTS (
      SELECT 1 FROM runs r WHERE r.id=session_executions.run_id
        AND r.outcome IN ('queued','running')
    )`).bind(Date.now(),row.run_id,row.step_id,attemptId,
-   row.candidate_run_id,row.candidate_run_attempt).run();
+   row.candidate_run_id,row.candidate_run_attempt,attemptId).run();
  if(updated.meta.changes===1)return 'ready';
  const state=await db.prepare(`SELECT state FROM session_executions
   WHERE run_id=? AND step_id=?`).bind(row.run_id,row.step_id)
   .first<{state:string}>();
- return state?.state==='ready'?'already_ready':'denied';
+ if(state?.state!=='ready')return 'denied';
+ // HTTP 200 replay is only valid for the original healthy Ready, not after
+ // a cancellation intent has been durably recorded but before 'stopping'.
+ const cancelling=await db.prepare(`SELECT 1 AS present
+   FROM github_action_cancellations WHERE attempt_id=?`)
+   .bind(attemptId).first<{present:number}>();
+ return cancelling?'denied':'already_ready';
 }
 
 type SessionOutcome={status:'succeeded'|'failed'|'indeterminate';error_code?:string;output?:unknown};
