@@ -1,8 +1,8 @@
 /** Public onboarding page: it has no credential, live device list or remote operation. */
 export function renderInstallHome(readiness: {windows: boolean; linux: boolean} = {windows:false,linux:false}): string {
   return `<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Remote Control Agent · 安装</title>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Remote Control Agent · Install</title>
 <style>
 :root{
   color-scheme:light;
@@ -44,7 +44,8 @@ li strong{color:var(--fg);display:block;font-size:14px;margin-bottom:3px}
   :root{color-scheme:dark;--bg:#121316;--fg:#f4f4f5;--muted:#b9b9c0;--surface:#23242a;--border:#404047;--icon-hover:rgba(255,255,255,.1)}
 }
 @media(max-width:520px){
-  body{padding:24px 20px 32px;padding-top:max(24px,env(safe-area-inset-top))}
+  body{padding:24px 20px 32px;padding-top:max(24px,env(safe-area-inset-top));min-height:100svh;display:flex;flex-direction:column}
+  main{margin:auto}
   small{font-size:10px;letter-spacing:.13em}
   h1{font-size:27px;line-height:1.25;margin:14px 0 10px}
   p{font-size:13.5px;line-height:1.55;margin-bottom:17px}
@@ -63,11 +64,11 @@ li strong{color:var(--fg);display:block;font-size:14px;margin-bottom:3px}
   li strong{font-size:13.5px;margin-bottom:2px}
 }
 </style></head>
-<body><main><small>Remote Control Agent</small><h1>在你的设备上开始</h1>
-<p>复制一条安装命令，在本机终端运行；设备授权只通过已认证的 MCP 所有者审批完成。</p>
-<div role="tablist" aria-label="操作系统"><button type="button" id="windows" role="tab" aria-controls="installer" aria-selected="false">Windows</button><button type="button" id="linux" role="tab" aria-controls="installer" aria-selected="false">Linux</button></div>
-<section id="installer" role="tabpanel" aria-label="安装命令"><div class="command"><div class="command-head"><span id="shell-label" class="command-label">PowerShell</span><button type="button" class="copy" id="copy" aria-label="复制安装命令" title="复制安装命令"><svg class="icon-copy" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="8" y="3" width="13" height="13" rx="2"></rect><rect x="3" y="8" width="13" height="13" rx="2"></rect></svg><svg class="icon-check" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 12l5 5L20 6"></path></svg></button></div><div class="command-scroll"><code id="command"></code></div></div><div id="message" role="status" aria-live="polite"></div></section>
-<ol role="list"><li><strong>1 · 安装</strong>运行命令并选择永久或临时</li><li><strong>2 · MCP 授权</strong>核对 10 位配对码与指纹，批准一次</li><li><strong>3 · 验证连接</strong>通过 MCP 确认设备在线并做无害读取</li></ol>
+<body><main><small>Remote Control Agent</small><h1>Install on your device</h1>
+<p>Copy and run the command on your device. Approve access once through your authenticated MCP connection.</p>
+<div role="tablist" aria-label="Operating system"><button type="button" id="windows" role="tab" aria-controls="installer" aria-selected="false">Windows</button><button type="button" id="linux" role="tab" aria-controls="installer" aria-selected="false">Linux</button></div>
+<section id="installer" role="tabpanel" aria-label="Install command"><div class="command"><div class="command-head"><span id="shell-label" class="command-label">PowerShell</span><button type="button" class="copy" id="copy" aria-label="Copy install command" title="Copy install command"><svg class="icon-copy" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="8" y="3" width="13" height="13" rx="2"></rect><rect x="3" y="8" width="13" height="13" rx="2"></rect></svg><svg class="icon-check" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 12l5 5L20 6"></path></svg></button></div><div class="command-scroll"><code id="command"></code></div></div><div id="message" role="status" aria-live="polite"></div></section>
+<ol role="list"><li><strong>1 · Install</strong>Run the command; choose temporary or permanent access</li><li><strong>2 · Approve</strong>Match the 10-character code and fingerprint in MCP</li><li><strong>3 · Verify</strong>Confirm the device is online with a safe read</li></ol>
 </main>
 <script>
 (()=>{'use strict';const cmds={windows:'irm https://rca.lirtual.dpdns.org/install.ps1 | iex',linux:'curl -fsSL https://rca.lirtual.dpdns.org/install.sh | sh'};
@@ -79,14 +80,14 @@ let copyResetTimer;
 function resetCopyFeedback(){
   clearTimeout(copyResetTimer);
   copy.removeAttribute('data-copied');
-  copy.setAttribute('aria-label','复制安装命令');
-  copy.setAttribute('title','复制安装命令');
+  copy.setAttribute('aria-label','Copy install command');
+  copy.setAttribute('title','Copy install command');
 }
 function select(value){
   resetCopyFeedback();
   platform=value;
   shellLabel.textContent=value==='windows'?'PowerShell':'Shell';
-  field.textContent=ready[value]?cmds[value]:'安装暂未开放';
+  field.textContent=ready[value]?cmds[value]:'Not available';
   // Let narrow screens wrap at the URL path boundary, never inside .ps1/.sh.
   // Keep the command as plain text, with no inserted characters when copied.
   if(ready[value]){
@@ -101,7 +102,7 @@ function select(value){
     tab.setAttribute('aria-selected',String(name===value));
     tab.tabIndex=name===value?0:-1;
   }
-  message.textContent=ready[value]?'':'等待经审核的正式安装包发布';
+  message.textContent=ready[value]?'':'Installer not released.';
 }
 for(const [name,tab] of Object.entries(tabs)){
   tab.addEventListener('click',()=>select(name));
@@ -123,14 +124,14 @@ copy.addEventListener('click',async()=>{
     if(platform!==requestedPlatform)return;
     resetCopyFeedback();
     copy.setAttribute('data-copied','true');
-    copy.setAttribute('aria-label','安装命令已复制');
-    copy.setAttribute('title','安装命令已复制');
+    copy.setAttribute('aria-label','Command copied');
+    copy.setAttribute('title','Command copied');
     message.textContent='';
     copyResetTimer=setTimeout(resetCopyFeedback,1600);
   }catch{
     if(platform===requestedPlatform){
       resetCopyFeedback();
-      message.textContent='复制失败，请手动选中命令。';
+      message.textContent='Copy failed. Select the command manually.';
     }
   }
 });
