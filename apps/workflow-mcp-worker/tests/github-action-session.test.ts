@@ -43,11 +43,14 @@ function fixture(){
  for(let i=1;i<=6;i++)
   db.prepare(`INSERT INTO runs(id,workflow_id,version_id,instance_id,request_digest,inputs,outcome,created_at,updated_at)
    VALUES(?,'wf','v',?,'x','{}','running',1,1)`).run(run(i),'instance-'+i);
- const adapter={prepare:(sql:string)=>({bind:(...args:unknown[])=>({
-  first:async()=>db.prepare(sql).get(...args as []),
-  all:async()=>({results:db.prepare(sql).all(...args as [])}),
-  run:async()=>({meta:{changes:db.prepare(sql).run(...args as []).changes}}),
- })})} as any;
+ const adapter={prepare:(sql:string)=>{
+  const statement=(args:unknown[])=>({
+   first:async()=>db.prepare(sql).get(...args as []),
+   all:async()=>({results:db.prepare(sql).all(...args as [])}),
+   run:async()=>({meta:{changes:db.prepare(sql).run(...args as []).changes}}),
+  });
+  return {...statement([]),bind:(...args:unknown[])=>statement(args)};
+ }} as any;
  const claim=(index:number,state:'claimed'|'failed'|'succeeded'|'cancelled',owner:boolean)=>{
   db.prepare(`INSERT INTO step_attempts(attempt_id,run_id,step_id,
    capability_id,dispatch_id,state,repository,repository_id,
