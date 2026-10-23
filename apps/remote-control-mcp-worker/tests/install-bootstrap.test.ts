@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
+import { runInNewContext } from "node:vm";
 import { handleAgentInstallerRequest, renderAgentInstallShell, REVIEWED_V012_RELEASE_PIN, REVIEWED_V014_RELEASE_PIN, REVIEWED_V016_RELEASE_PIN, REVIEWED_V017_RELEASE_PIN, REVIEWED_V018_RELEASE_PIN, REVIEWED_V0110_RELEASE_PIN, REVIEWED_V0111_RELEASE_PIN, REVIEWED_AGENT_RELEASE_PIN } from "../src/install-bootstrap.ts";
 
 const origin = "https://remote-control-v2-preview.aiyaya.workers.dev";
@@ -13,9 +14,9 @@ const pin = Object.freeze({
   x64Sha256:"b".repeat(64), arm64Sha256:"c".repeat(64),
 });
 
-test("reviewed immutable single-code Worker installation route is enabled", async()=>{
+test("public Linux installer remains disabled until new interactive-mode Release is reviewed", async()=>{
   const response=requestInstall(new Request(origin+"/install.sh"));
-  assert.equal(response.status,200);
+  assert.equal(response.status,503);
   assert.equal(response.headers.get("cache-control"),"no-store");
   assert.equal(REVIEWED_V018_RELEASE_PIN.commit,"4d58ffe33e560d6f5f1c375aacf02a774b51a6c0");
   const script=await response.text();
@@ -30,11 +31,9 @@ test("reviewed immutable single-code Worker installation route is enabled", asyn
   assert.equal(REVIEWED_AGENT_RELEASE_PIN.commit, "1171542d2951042cc1e0992c8cb9b97d3284fe03");
   assert.equal(REVIEWED_AGENT_RELEASE_PIN.x64Sha256, "bcb932d9f3539233204decf70ed0a748e2e31ac2a069e5b8b29484ab8733a0e3");
   assert.equal(REVIEWED_AGENT_RELEASE_PIN.arm64Sha256, "bdbe443d6010e372a03bff773d0e0bce946ac7bbbd45d9d1b75c99477eb23aa9");
-  assert.ok(script.includes("remote-control-agent-v0.1.13"));
-  assert.match(script,/bcb932d9f3539233/);
-  assert.match(script,/bdbe443d6010e372/);
-  assert.doesNotMatch(script,/remote-control-agent-v0.1.11/);
-  assert.match(script,/1\) \[ "\$1" = "--upgrade"/);
+  assert.match(script,/No reviewed.*release is published yet/);
+  assert.doesNotMatch(script,/#!/);
+  assert.doesNotMatch(script,/v0\.1\.13|curl|sha256sum/);
 });
 
 test("one-line installer reports genuine download progress and each checked stage", () => {
@@ -62,9 +61,12 @@ test("one-line installer reports genuine download progress and each checked stag
   assert.equal(syntax.status,0,syntax.stderr);
 });
 
-test("production custom hostname serves pinned installer with same-domain Agent endpoint",async()=>{
+test("production custom hostname does not advertise old Linux binary while reviewed candidate is absent",async()=>{
   const custom="https://rca.lirtual.dpdns.org";
-  const response=requestInstall(new Request(custom+"/install.sh"), undefined, custom);
+  const noPin=requestInstall(new Request(custom+"/install.sh"), undefined, custom);
+  assert.equal(noPin.status,503);
+  assert.doesNotMatch(await noPin.text(),/#!/);
+  const response=requestInstall(new Request(custom+"/install.sh"), pin, custom);
   assert.equal(response.status,200);
   const shell=await response.text();
   assert.ok(shell.startsWith("#!/bin/sh"));
@@ -90,8 +92,8 @@ test("historical two-code v0.1.2 cannot be served by single-code Worker even whe
   assert.equal(reviewed.commit,"00aaf200107e42a1b7cede3db51f9a16edea5b09");
   assert.equal(reviewed.x64Sha256,"b895f8133a03a53f4eacbf4fa6d0619f59ad722064c5e2e8ca469f9fc637221a");
   assert.equal(reviewed.arm64Sha256,"ec16343f50b20b762b04a06039164c0f3a7f42bdeb597ab8e04ecc4b3e40724c");
-  const nowEnabled=requestInstall(new Request(origin+"/install.sh"));
-  assert.equal(nowEnabled.status,200);
+  const noNewRelease=requestInstall(new Request(origin+"/install.sh"));
+  assert.equal(noNewRelease.status,503);
   assert.equal(reviewed.pairingProtocol,"two-code-v1");
   const incompatible=requestInstall(new Request(origin+"/install.sh"),reviewed);
   assert.equal(incompatible.status,503);
@@ -166,4 +168,274 @@ test("untrusted pinned release metadata cannot interpolate shell commands",async
     assert.throws(()=>renderAgentInstallShell(origin,candidate),/Unapproved/);
   }
   assert.throws(()=>renderAgentInstallShell("https://unknown.example/path",pin),/Unapproved/);
+});
+
+test('public installation home is isolated from authentication and shows the two exact commands',async()=>{
+  const custom='https://rca.lirtual.dpdns.org';
+  const page=requestInstall(new Request(custom+'/'),undefined,custom);
+  assert.equal(page.status,200);
+  assert.match(page.headers.get('content-type')??'',/text\/html/);
+  assert.match(page.headers.get('content-security-policy')??'',/frame-ancestors 'none'/);
+  const html=await page.text();
+  assert.match(html,/role="tablist"/);
+  assert.match(html,/>Linux<\/button>/);
+  assert.doesNotMatch(html,/>Linux \/ WSL2<\/button>/);
+  assert.match(html,/aria-selected/);
+  assert.match(html,/const ready=\{windows:false,linux:false\}/);
+  assert.match(html,/copy\.disabled=!ready\[value\]/);
+  assert.match(html,/安装暂未开放/);
+  assert.match(html,/navigator\.userAgentData/);
+  assert.match(html,/clipboard\.writeText/);
+  assert.match(html,/irm https:\/\/rca\.lirtual\.dpdns\.org\/install\.ps1 \| iex/);
+  assert.match(html,/curl -fsSL https:\/\/rca\.lirtual\.dpdns\.org\/install\.sh \| sh/);
+  assert.doesNotMatch(html,/api\/devices|Bearer |secret|Remote Desktop/);
+  assert.equal(requestInstall(new Request(custom+'/',{method:'POST'}),undefined,custom).status,405);
+  assert.equal(requestInstall(new Request(custom+'/',{headers:{host:'evil.test'}}),undefined,custom).status,403);
+  assert.equal(requestInstall(new Request(custom+'/install.ps1'),undefined,custom).status,503);
+});
+
+test('Windows installer fetches only independently source-pinned script and release',async()=>{
+  const { renderAgentInstallPowerShell } = await import('../src/install-bootstrap.ts');
+  const synthetic={tag:'v0.1.99-windows.1',commit:'a'.repeat(40),scriptSha256:'b'.repeat(64),assetSha256:'c'.repeat(64)};
+  const script=renderAgentInstallPowerShell(origin,synthetic);
+  assert.match(script,/Invoke-WebRequest .* -MaximumRedirection 0/);
+  assert.match(script,/SHA-256 mismatch/);
+  assert.match(script,/ScriptBlock\]::Create/);
+  assert.match(script,/-PinnedReleaseSha256/);
+  const resp=handleAgentInstallerRequest(new Request(origin+'/install.ps1'),undefined,origin,synthetic);
+  assert.equal(resp.status,200);
+  assert.match(await resp.text(),/v0\.1\.99-windows\.1/);
+  assert.throws(()=>renderAgentInstallPowerShell(origin,{...synthetic,commit:'not-pinned'}),/Unapproved/);
+});
+
+test('homepage copy state follows the separately verified platform pins',async()=>{
+  const {renderInstallHome}=await import('../src/install-home.ts');
+  const closed=renderInstallHome();
+  const linux=renderInstallHome({linux:true,windows:false});
+  const windows=renderInstallHome({linux:false,windows:true});
+  assert.match(closed,/const ready=\{windows:false,linux:false\}/);
+  assert.match(linux,/const ready=\{windows:false,linux:true\}/);
+  assert.match(windows,/const ready=\{windows:true,linux:false\}/);
+  assert.match(closed,/field\.textContent=ready\[value\]\?cmds\[value\]:'安装暂未开放'/);
+  assert.match(closed,/copy\.disabled=!ready\[value\]/);
+  assert.match(closed,/if\(!ready\[platform\]\)return;/);
+  const custom='https://rca.lirtual.dpdns.org';
+  const resp=requestInstall(new Request(custom+'/'),pin,custom);
+  assert.match(await resp.text(),/const ready=\{windows:false,linux:true\}/);
+});
+
+
+test('reviewed v0.1.19 enables both public bootstrap paths only with exact reviewed pins', async () => {
+  const { REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, REVIEWED_WINDOWS_INSTALL_PIN } =
+    await import('../src/install-bootstrap.ts');
+  const base = 'https://rca.lirtual.dpdns.org';
+  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.commit, 'e854db38e6b9525a6e19545be6be5b57ba324d1c');
+  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.x64Sha256, '0629e358ea95bcc67e2b25968264e9befba27848ba44cf6594f0c85b99efc361');
+  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.arm64Sha256, '9cc45cd844ee136ca25dd8d1077fa477d8f6d1b5a0df274d932dcadc6a6e48a3');
+  assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.assetSha256, '5727e877ab15bc94407f968c41df2ff6c35c5b81131c789c5ce6073988877d3a');
+  assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.scriptSha256, '6cc311b8f8ab70b87144f9bc1cec4a8c09f3b249c5874ffc16f21f864516109b');
+  const home = handleAgentInstallerRequest(new Request(base + '/'), REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
+  assert.equal(home.status, 200);
+  assert.match(await home.text(), /const ready=\{windows:true,linux:true\}/);
+  const linux = handleAgentInstallerRequest(new Request(base + '/install.sh'), REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
+  assert.equal(linux.status, 200);
+  assert.match(await linux.text(), /remote-control-agent-v0\.1\.19/);
+  const windows = handleAgentInstallerRequest(new Request(base + '/install.ps1'), REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
+  assert.equal(windows.status, 200);
+  const ps1 = await windows.text();
+  assert.match(ps1, /e854db38e6b9525a6e19545be6be5b57ba324d1c/);
+  assert.match(ps1, /6cc311b8f8ab70b87144f9bc1cec4a8c09f3b249c5874ffc16f21f864516109b/);
+  assert.equal(handleAgentInstallerRequest(new Request(base + '/'), null, base, null).status, 200);
+  assert.equal(handleAgentInstallerRequest(new Request(base + '/install.sh'), null, base, null).status, 503);
+  assert.equal(handleAgentInstallerRequest(new Request(base + '/install.ps1'), null, base, null).status, 503);
+});
+
+
+test("mobile links may open static install home with query or Origin but not scripts", async () => {
+  const { REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, REVIEWED_WINDOWS_INSTALL_PIN } =
+    await import("../src/install-bootstrap.ts");
+  const host = "https://rca.lirtual.dpdns.org";
+  const serve = (request: Request) => handleAgentInstallerRequest(
+    request, REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, host, REVIEWED_WINDOWS_INSTALL_PIN);
+  const clean = await serve(new Request(host + "/")).text();
+  const linked = serve(new Request(host + "/?utm_source=chatgpt.com&utm_medium=share", {
+    headers: { origin: "https://chatgpt.com" },
+  }));
+  assert.equal(linked.status, 200);
+  assert.equal(await linked.text(), clean, "URL parameters must not affect or appear in static HTML");
+  assert.equal(serve(new Request(host + "/?utm_source=chatgpt.com", {method:"POST"})).status, 405);
+  assert.equal(serve(new Request(host + "/?utm_source=chatgpt.com", {
+    headers: {host:"untrusted.example"},
+  })).status, 403);
+  assert.equal(serve(new Request(host + "/?utm_source=chatgpt.com", {
+    headers: {"x-forwarded-host":"untrusted.example"},
+  })).status, 403);
+  for (const path of ["/install.sh", "/install.ps1"]) {
+    assert.equal(serve(new Request(host + path + "?utm_source=chatgpt.com")).status, 405);
+    assert.equal(serve(new Request(host + path, {
+      headers: {origin:"https://chatgpt.com"},
+    })).status, 405);
+  }
+});
+
+
+test('mobile home stays compact, uses semantic numbered steps and follows OS theme', async () => {
+  const {renderInstallHome}=await import('../src/install-home.ts');
+  const html=renderInstallHome({windows:true,linux:true});
+  assert.match(html, /@media\(prefers-color-scheme:dark\)/);
+  assert.match(html, /color-scheme:light/);
+  assert.match(html, /color-scheme:dark/);
+  for(const token of ['--bg','--fg','--muted','--surface','--border','--icon-hover']){
+    assert.ok(html.includes(token), 'missing theme variable '+token);
+  }
+  assert.match(html, /@media\(max-width:520px\)/);
+  assert.match(html, /-webkit-text-size-adjust:100%/);
+  assert.match(html, /list-style:none/);
+  assert.match(html, /<ol role="list">/);
+  assert.equal((html.match(/<li><strong>[123] · /g)??[]).length,3);
+  assert.doesNotMatch(html, /padding-top:12vh|list-style-position:inside/);
+  assert.match(html, /class="command-head"/);
+  assert.match(html, /id="shell-label"/);
+  assert.ok(html.indexOf('id="copy"')<html.indexOf('id="command"'), 'copy button stays above wrapped command');
+  assert.match(html, /class="command-scroll"/);
+  assert.match(html, /overflow-x:auto/);
+  assert.match(html, /white-space:pre/);
+  assert.match(html, /border-radius:24px/);
+  assert.match(html, /aria-hidden="true" focusable="false"/);
+  assert.match(html, /class="icon-copy"/);
+  assert.match(html, /class="icon-check"/);
+  assert.doesNotMatch(html, /id="copy"[^>]*>复制<\/button>/);
+  assert.match(html, /select\(detected\.includes\('linux'\)\?'linux':'windows'\)/);
+  assert.doesNotMatch(html, /先选择 Windows 或 Linux|const mobile=/);
+  assert.match(html, /copy\.disabled=!ready\[value\]/);
+  assert.match(html, /aria-selected/);
+  assert.match(html, /clipboard\.writeText\(cmds\[requestedPlatform\]\)/);
+  assert.match(html, /irm https:\/\/rca\.lirtual\.dpdns\.org\/install\.ps1 \| iex/);
+  assert.match(html, /curl -fsSL https:\/\/rca\.lirtual\.dpdns\.org\/install\.sh \| sh/);
+  assert.doesNotMatch(html, /localStorage|sessionStorage|document\.cookie|api\/devices/);
+});
+
+test('mobile install card uses compact proportional sizes and wraps complete commands', async () => {
+  const {renderInstallHome}=await import('../src/install-home.ts');
+  const html=renderInstallHome({windows:true,linux:true});
+  const mobile=html.match(/@media\(max-width:520px\)\{([\s\S]*?)\n\}/)?.[1];
+  assert.ok(mobile, 'mobile rules required');
+  assert.match(mobile,/h1\{font-size:27px/);
+  assert.match(mobile,/\.command\{border-radius:20px;padding:16px 17px 18px\}/);
+  assert.match(mobile,/\.command-label\{font-size:15px\}/);
+  assert.match(mobile,/button\.copy\{width:36px;height:36px/);
+  assert.match(mobile,/button\.copy svg\{width:22px;height:22px\}/);
+  assert.match(mobile,/\.command-scroll\{overflow-x:visible\}/);
+  assert.match(mobile,/code\{width:auto;max-width:100%;font-size:13px;line-height:1\.6;white-space:normal;overflow-wrap:anywhere;word-break:normal\}/);
+  assert.match(mobile,/ol\{grid-template-columns:1fr;gap:13px/);
+  assert.match(html,/@media\(prefers-color-scheme:dark\)/);
+  assert.match(html,/--surface:#23242a/);
+  assert.match(html,/--surface:#f4f4f5/);
+  assert.match(html,/clipboard\.writeText\(cmds\[requestedPlatform\]\)/);
+  assert.match(html,/irm https:\/\/rca\.lirtual\.dpdns\.org\/install\.ps1 \| iex/);
+  assert.match(html,/curl -fsSL https:\/\/rca\.lirtual\.dpdns\.org\/install\.sh \| sh/);
+});
+
+test('installer home drops source/docs and defaults unknown device to first Windows tab', async () => {
+  const {renderInstallHome}=await import('../src/install-home.ts');
+  const html=renderInstallHome({windows:true,linux:true});
+  assert.doesNotMatch(html, /<footer\b|>源码<\/a>|>文档<\/a>|#readme/);
+  assert.match(html, /let platform='windows'/);
+  assert.match(html, /select\(detected\.includes\('linux'\)\?'linux':'windows'\)/);
+  assert.match(html, /id="windows" role="tab"/);
+  assert.match(html, /id="linux" role="tab"/);
+  assert.match(html, /tab\.setAttribute\('aria-selected',String\(name===value\)\)/);
+  assert.match(html, /copy\.disabled=!ready\[value\]/);
+  assert.match(html, /clipboard\.writeText\(cmds\[requestedPlatform\]\)/);
+  assert.doesNotMatch(html, /先选择 Windows 或 Linux/);
+});
+
+
+test('icon-copy feedback resets correctly and retains SVG children', async () => {
+  const { renderInstallHome } = await import('../src/install-home.ts');
+  const html = renderInstallHome({ windows: true, linux: true });
+  const source = html.split('<script>')[1]?.split('</script>')[0];
+  assert.ok(source, 'inline page script must exist');
+  type FakeElement = {
+    textContent: string; disabled: boolean; tabIndex: number;
+    attributes: Record<string,string>;
+    handlers: Record<string,(event?: {key?:string,preventDefault?:()=>void})=>unknown>;
+    setAttribute: (name:string,value:string)=>void;
+    removeAttribute: (name:string)=>void;
+    addEventListener: (name:string,handler:(event?:{key?:string,preventDefault?:()=>void})=>unknown)=>void;
+    focus:()=>void;
+  };
+  function element(): FakeElement {
+    return {
+      textContent:'', disabled:false, tabIndex:0, attributes:{}, handlers:{},
+      setAttribute(name,value){this.attributes[name]=value;},
+      removeAttribute(name){delete this.attributes[name];},
+      addEventListener(name,handler){this.handlers[name]=handler;},
+      focus(){},
+    };
+  }
+  const els = Object.fromEntries(['windows','linux','command','shell-label','message','copy'].map(id=>[id,element()])) as Record<'windows'|'linux'|'command'|'shell-label'|'message'|'copy',FakeElement>;
+  const clipboard:string[] = [];
+  let rejectCopy=false;
+  const pending=new Map<number,()=>void>();
+  let id=0;
+  runInNewContext(source,{
+    document:{getElementById:(name:string)=>els[name as keyof typeof els]},
+    navigator:{
+      platform:'iPhone',
+      clipboard:{writeText:async (text:string)=>{
+        if(rejectCopy)throw Error('Clipboard unavailable');
+        clipboard.push(text);
+      }},
+    },
+    setTimeout:(fn:()=>void,delay:number)=>{
+      assert.equal(delay,1600);
+      const next=++id;pending.set(next,fn);return next;
+    },
+    clearTimeout:(timer:number)=>{pending.delete(timer);},
+  });
+  assert.equal(els.windows.attributes['aria-selected'],'true','unknown/mobile defaults to first Windows tab');
+  assert.equal(els.copy.attributes['aria-label'],'复制安装命令');
+  await els.copy.handlers.click!();
+  assert.equal(clipboard[0],'irm https://rca.lirtual.dpdns.org/install.ps1 | iex');
+  assert.equal(els.copy.attributes['data-copied'],'true');
+  assert.equal(els.copy.textContent,'','state must preserve the inline SVGs');
+  assert.equal(els.copy.attributes['aria-label'],'安装命令已复制');
+  assert.equal(els.message.textContent,'','no duplicate success label below the button');
+  assert.equal(pending.size,1);
+  [...pending.values()][0]!();
+  assert.equal(els.copy.attributes['aria-label'],'复制安装命令','accessible name resets after timeout');
+  assert.equal(els.copy.attributes['data-copied'],undefined,'check icon resets after timeout');
+  els.linux.handlers.click!();
+  assert.equal(els.copy.attributes['aria-label'],'复制安装命令');
+  await els.copy.handlers.click!();
+  assert.equal(clipboard[1],'curl -fsSL https://rca.lirtual.dpdns.org/install.sh | sh');
+  assert.equal(els.copy.attributes['data-copied'],'true');
+  els.windows.handlers.click!();
+  assert.equal(els.copy.attributes['aria-label'],'复制安装命令','switching platform resets accessible name');
+  assert.equal(els.copy.attributes['data-copied'],undefined,'switching platforms restores copy icon');
+  assert.equal(pending.size,0,'switching platforms cancels previous timer');
+  rejectCopy=true;
+  await els.copy.handlers.click!();
+  assert.equal(els.copy.attributes['aria-label'],'复制安装命令','failed copy must not show success');
+  assert.equal(els.copy.attributes['data-copied'],undefined,'failed copy cannot show check icon');
+  assert.equal(els.message.textContent,'复制失败，请手动选中命令。');
+});
+
+test('icon copy card adapts to system light/dark color scheme and remains accessible', async () => {
+  const {renderInstallHome}=await import('../src/install-home.ts');
+  const html=renderInstallHome({windows:true,linux:true});
+  assert.ok(html.includes('--surface:#f4f4f5'));
+  assert.ok(html.includes('--surface:#23242a'));
+  assert.ok(html.includes('--icon-hover:rgba(20,20,24,.07)'));
+  assert.ok(html.includes('--icon-hover:rgba(255,255,255,.1)'));
+  assert.ok(html.includes('button.copy{display:inline-flex'));
+  assert.ok(html.includes('background:transparent;color:var(--fg)'));
+  assert.ok(html.includes('stroke:currentColor'));
+  assert.ok(html.includes('button.copy[data-copied="true"] .icon-copy{display:none}'));
+  assert.ok(html.includes('button.copy[data-copied="true"] .icon-check{display:block}'));
+  assert.ok(html.includes('button.copy:disabled{opacity:.45;cursor:not-allowed}'));
+  assert.ok(html.includes("copy.setAttribute('data-copied','true')"));
+  assert.ok(html.includes("copy.removeAttribute('data-copied')"));
+  assert.doesNotMatch(html,/--copied-bg|--copied-fg/);
 });
