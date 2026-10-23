@@ -40,7 +40,7 @@ const DIGEST=await toolSchemaDigest(INPUT_SCHEMA);
 test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Result',async t=>{
   const sqlite=new DatabaseSync(':memory:');
   t.after(()=>sqlite.close());
-  for(const name of ['0001_s1.sql','0002_native_complete_seen.sql'])
+  for(const name of ['0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql'])
     sqlite.exec(readFileSync(new URL('../migrations/'+name,import.meta.url),'utf8'));
   function prepare(sql:string){
     let args:any[]=[];
@@ -190,7 +190,7 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
 test('Agent discovers capabilities and inline-validates a definition without touching D1', async t => {
   const sqlite=new DatabaseSync(':memory:');
   t.after(()=>sqlite.close());
-  for(const name of ['0001_s1.sql','0002_native_complete_seen.sql'])
+  for(const name of ['0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql'])
     sqlite.exec(readFileSync(new URL('../migrations/'+name,import.meta.url),'utf8'));
   let prepares=0;
   function prepare(sql:string){
@@ -283,6 +283,14 @@ test('Agent discovers capabilities and inline-validates a definition without tou
     assert.deepEqual(counts(), before);
 
     const github=await call('workflow_capabilities',{id:'action.github.run'});
+    assert.match(github.completion, /Dispatch accepted/);
+    assert.match(github.completion, /pending/);
+    assert.match(github.completion, /external terminal/);
+    assert.match(github.completion, /indeterminate/);
+    assert.match(github.completion, /explicit 240 second/);
+    assert.match(github.completion, /not dispatched again/);
+    assert.equal(github.completion.includes('shell'), false);
+    assert.equal(github.completion.includes('token'), false);
     const heavy=await call('workflow_validate',{definition:JSON.stringify(github.example)});
     assert.equal(heavy.valid, true);
     assert.equal(heavy.requires_heavy_execution_approval, true);

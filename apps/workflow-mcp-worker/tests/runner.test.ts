@@ -639,6 +639,15 @@ test('GitHub published Plan dispatches one confirmed Job, waits outside step.do 
   assert.equal(result.status,'succeeded');
   assert.deepEqual(result.result,{echo:'ok',source:'real-github'});
   assert.deepEqual(result.steps.map(s=>s.status),['succeeded','succeeded']);
+  const stored=sqlite.prepare('SELECT attempt_id,candidate_run_id FROM step_attempts').get() as {attempt_id:string;candidate_run_id:number};
+  const heavy=result.steps.find(s=>s.step_id==='heavy') as AsyncStep;
+  const emitted=result.steps.find(s=>s.step_id==='emit') as AsyncStep;
+  assert.equal(heavy.async_action?.phase,'external_terminal');
+  assert.equal(heavy.async_action?.receipt_outcome,'succeeded');
+  assert.equal(heavy.async_action?.timed_out,false);
+  assert.equal(heavy.async_action?.attempt_id,stored.attempt_id);
+  assert.equal(heavy.async_action?.external_execution_id,String(stored.candidate_run_id));
+  assert.equal('async_action' in emitted,false);
   assert.equal(posts,1);
   assert.equal(waited,1);
 });
@@ -776,7 +785,7 @@ test('GitHub lost wake event recovers from durable D1 receipt, without a second 
 });
 
 test('GitHub missing callback remains indeterminate after bounded waits, never re-dispatches',async t=>{
-  const {service,env}=setup(t);
+  const {service,env,sqlite}=setup(t);
   Object.assign(env,{
     WORKFLOW_EXECUTOR_GITHUB_TOKEN:'test-token',
     GITHUB_EXECUTOR_REPOSITORY:'lirtual/test-executor',
@@ -813,6 +822,14 @@ test('GitHub missing callback remains indeterminate after bounded waits, never r
   assert.equal(result.status,'indeterminate');
   assert.equal(result.error_code,'github_callback_unconfirmed');
   assert.equal(result.steps[0].status,'indeterminate');
+  const heavy=result.steps[0] as AsyncStep;
+  const stored=sqlite.prepare('SELECT attempt_id,candidate_run_id,created_at FROM step_attempts').get() as {attempt_id:string;candidate_run_id:number;created_at:number};
+  assert.equal(heavy.async_action?.phase,'indeterminate');
+  assert.equal(heavy.async_action?.timed_out,true);
+  assert.equal(heavy.async_action?.receipt_outcome,null);
+  assert.equal(heavy.async_action?.attempt_id,stored.attempt_id);
+  assert.equal(heavy.async_action?.external_execution_id,String(stored.candidate_run_id));
+  assert.equal(heavy.async_action?.deadline_at,stored.created_at+240000);
   assert.equal(dispatches,1);
   assert.equal(waits,8);
 });
@@ -915,4 +932,245 @@ test('MCP pinned Portal refuses a different approved endpoint at Publish',async 
   await assert.rejects(()=>service.publish(wf.workflow_id,1,[grant],true),
     /portal_target_not_authorized/);
   assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM workflow_versions').get()?.n,0);
+});
+
+type AsyncStep={step_id:string;status:string;async_action?:{
+  phase:string;attempt_id:string;external_execution_id:string|null;
+  receipt_outcome:string|null;deadline_at:number|null;timed_out:boolean;
+}};
+function enableGithub(env:Env){
+  Object.assign(env,{
+    WORKFLOW_EXECUTOR_GITHUB_TOKEN:'fixture-token',
+    GITHUB_EXECUTOR_REPOSITORY:'lirtual/test-executor',
+    GITHUB_EXECUTOR_REPOSITORY_ID:'987654321',
+    GITHUB_EXECUTOR_REF:'refs/heads/main',
+    GITHUB_EXECUTOR_AUDIENCE:'workflow-github-claim:test',
+  });
+}
+
+test('GitHub status shows dispatch accepted then pending, and the wake payload cannot replace the receipt',async t=>{
+  const {service,env,sqlite}=setup(t);
+  enableGithub(env);
+  const created=await service.create(JSON.stringify({version:1,name:'GitHub phases',steps:[
+    {id:'heavy',uses:'github.run',with:{capability:'github.workflow.check'}},
+  ]}));
+  await service.publish(created.workflow_id,1,[],false,true);
+  const accepted=await service.start(created.workflow_id,{});
+  let posts=0,waits=0;
+  const seen:AsyncStep[]=[];
+  let runStatus='';
+  const previous=globalThis.fetch;
+  globalThis.fetch=(async()=>{
+    posts++;
+    return Response.json({workflow_run_id:555001},{status:200});
+  }) as typeof fetch;
+  t.after(()=>{globalThis.fetch=previous;});
+  const step={
+    do:async(_name:unknown,_options:unknown,fn:()=>Promise<unknown>)=>fn(),
+    waitForEvent:async(_name:string,options:{type:string;timeout:string})=>{
+      waits++;
+      assert.equal(options.type,'github-receipt-heavy');
+      assert.equal(options.timeout,'30 seconds');
+      const during=await service.status(accepted.run_id);
+      runStatus=during.status;
+      const heavy=during.steps[0] as AsyncStep;
+      const row=sqlite.prepare('SELECT attempt_id,candidate_run_id,created_at FROM step_attempts').get() as {
+        attempt_id:string;candidate_run_id:number;created_at:number};
+      seen.push(heavy);
+      if(waits===1){
+        sqlite.prepare("UPDATE step_attempts SET state='claimed',owner_run_id=?,owner_run_attempt=1 WHERE attempt_id=?")
+          .run(row.candidate_run_id,row.attempt_id);
+        const pending=await service.status(accepted.run_id);
+        seen.push(pending.steps[0] as AsyncStep);
+        throw Error('claimed_job_still_running');
+      }
+      sqlite.prepare(`INSERT INTO callback_receipts
+        (callback_id,attempt_id,outcome,result_json,created_at)
+        VALUES(?,?, 'succeeded', ?, ?)`).run(
+        'f8835141-0b3a-4fcb-a9ae-b4b75bfae93c',row.attempt_id,
+        JSON.stringify({echo:'from-receipt'}),Date.now());
+      return {payload:{outcome:'failed',echo:'from-event'}};
+    },
+  };
+  await new WorkflowRunner({} as ExecutionContext,env).run(
+    {payload:{run_id:accepted.run_id}} as WorkflowEvent<{run_id:string}>,
+    step as unknown as WorkflowStep);
+  assert.equal(runStatus,'running');
+  assert.equal(seen[0]?.status,'running');
+  assert.equal(seen[0]?.async_action?.phase,'dispatch_accepted');
+  assert.equal(seen[0]?.async_action?.receipt_outcome,null);
+  assert.equal(seen[0]?.async_action?.timed_out,false);
+  const stored=sqlite.prepare('SELECT attempt_id,candidate_run_id,created_at FROM step_attempts').get() as {
+    attempt_id:string;candidate_run_id:number;created_at:number};
+  assert.equal(seen[0]?.async_action?.attempt_id,stored.attempt_id);
+  assert.equal(seen[0]?.async_action?.external_execution_id,String(stored.candidate_run_id));
+  assert.equal(seen[0]?.async_action?.deadline_at,stored.created_at+240000);
+  assert.equal(seen[1]?.async_action?.phase,'pending');
+  const result=await service.result(accepted.run_id);
+  const done=result.steps[0] as AsyncStep;
+  assert.equal(result.status,'succeeded');
+  assert.deepEqual(result.result,{echo:'from-receipt'});
+  assert.equal(done.async_action?.phase,'external_terminal');
+  assert.equal(done.async_action?.receipt_outcome,'succeeded');
+  assert.equal(posts,1);
+  assert.equal(waits,2);
+  assert.equal((sqlite.prepare('SELECT COUNT(*) AS n FROM step_attempts').get() as {n:number}).n,1);
+});
+
+test('a failed GitHub receipt is an external terminal failure, not indeterminate',async t=>{
+  const {service,env,sqlite}=setup(t);
+  enableGithub(env);
+  const created=await service.create(JSON.stringify({version:1,name:'GitHub job failed',steps:[
+    {id:'heavy',uses:'github.run',with:{capability:'github.workflow.check'}},
+  ]}));
+  await service.publish(created.workflow_id,1,[],false,true);
+  const accepted=await service.start(created.workflow_id,{});
+  let posts=0;
+  const previous=globalThis.fetch;
+  globalThis.fetch=(async()=>{posts++;return Response.json({workflow_run_id:555002},{status:200});}) as typeof fetch;
+  t.after(()=>{globalThis.fetch=previous;});
+  await new WorkflowRunner({} as ExecutionContext,env).run(
+    {payload:{run_id:accepted.run_id}} as WorkflowEvent<{run_id:string}>,
+    {do:async(_n:unknown,_o:unknown,fn:()=>Promise<unknown>)=>fn(),
+      waitForEvent:async()=>{
+        const row=sqlite.prepare('SELECT attempt_id FROM step_attempts').get() as {attempt_id:string};
+        sqlite.prepare("UPDATE step_attempts SET state='claimed',owner_run_id=555002,owner_run_attempt=1 WHERE attempt_id=?").run(row.attempt_id);
+        sqlite.prepare(`INSERT INTO callback_receipts
+          (callback_id,attempt_id,outcome,result_json,created_at)
+          VALUES(?,?, 'failed', ?, ?)`).run(
+          'f8835141-0b3a-4fcb-a9ae-b4b75bfae93d',row.attempt_id,
+          JSON.stringify({code:'ci_failed'}),Date.now());
+        throw Error('wake_lost');
+      }} as unknown as WorkflowStep);
+  const result=await service.result(accepted.run_id);
+  const heavy=result.steps[0] as AsyncStep;
+  assert.equal(result.status,'failed');
+  assert.equal(result.steps[0].error_code,'github_job_failed');
+  assert.equal(result.result,null);
+  assert.equal(heavy.async_action?.phase,'external_terminal');
+  assert.equal(heavy.async_action?.receipt_outcome,'failed');
+  assert.equal(heavy.async_action?.timed_out,false);
+  assert.equal(posts,1);
+});
+
+test('an early GitHub receipt is the result and does not wait or dispatch twice',async t=>{
+  const {service,env,sqlite}=setup(t);
+  enableGithub(env);
+  const created=await service.create(JSON.stringify({version:1,name:'GitHub early receipt',steps:[
+    {id:'heavy',uses:'github.run',with:{capability:'github.workflow.check'}},
+  ]}));
+  await service.publish(created.workflow_id,1,[],false,true);
+  const accepted=await service.start(created.workflow_id,{});
+  let posts=0,waits=0;
+  const previous=globalThis.fetch;
+  globalThis.fetch=(async()=>{posts++;return Response.json({workflow_run_id:555003},{status:200});}) as typeof fetch;
+  t.after(()=>{globalThis.fetch=previous;});
+  await new WorkflowRunner({} as ExecutionContext,env).run(
+    {payload:{run_id:accepted.run_id}} as WorkflowEvent<{run_id:string}>,
+    {do:async(_n:unknown,_o:unknown,fn:()=>Promise<unknown>)=>{
+      const opened=await fn();
+      const row=sqlite.prepare('SELECT attempt_id FROM step_attempts').get() as {attempt_id:string};
+      sqlite.prepare("UPDATE step_attempts SET state='claimed',owner_run_id=555003,owner_run_attempt=1 WHERE attempt_id=?").run(row.attempt_id);
+      sqlite.prepare(`INSERT INTO callback_receipts
+        (callback_id,attempt_id,outcome,result_json,created_at)
+        VALUES(?,?, 'succeeded', ?, ?)`).run(
+        'f8835141-0b3a-4fcb-a9ae-b4b75bfae93e',row.attempt_id,
+        JSON.stringify({echo:'early'}),Date.now());
+      return opened;
+    },waitForEvent:async()=>{waits++;throw Error('too_late_to_wait');}} as unknown as WorkflowStep);
+  const result=await service.result(accepted.run_id);
+  assert.equal(result.status,'succeeded');
+  assert.deepEqual(result.result,{echo:'early'});
+  assert.equal((result.steps[0] as AsyncStep).async_action?.phase,'external_terminal');
+  assert.equal(posts,1);
+  assert.equal(waits,0);
+});
+
+test('a GitHub attempt past its explicit deadline is indeterminate and is not dispatched',async t=>{
+  const {service,env,sqlite}=setup(t);
+  enableGithub(env);
+  const created=await service.create(JSON.stringify({version:1,name:'GitHub deadline',steps:[
+    {id:'heavy',uses:'github.run',with:{capability:'github.workflow.check'}},
+  ]}));
+  await service.publish(created.workflow_id,1,[],false,true);
+  const accepted=await service.start(created.workflow_id,{});
+  const aged=Date.now()-240000-1000;
+  sqlite.prepare(`INSERT INTO step_attempts
+    (attempt_id,run_id,step_id,capability_id,dispatch_id,state,repository,repository_id,
+     workflow_ref,ref,candidate_run_id,candidate_run_attempt,created_at,updated_at)
+    VALUES (?,?,?,?,?,'confirmed',?,?,?,?,?,?,?,?)`).run(
+    'b6835141-0b3a-4fcb-a9ae-b4b75bfae93c',accepted.run_id,'heavy','github.workflow.check',
+    'd9b3439b-b7ed-4812-9064-75c925f93c6a','lirtual/test-executor','987654321',
+    'lirtual/test-executor/.github/workflows/workflow-github-executor.yml@refs/heads/main',
+    'refs/heads/main',555004,1,aged,aged);
+  let posts=0,waits=0;
+  const previous=globalThis.fetch;
+  globalThis.fetch=(async()=>{posts++;throw Error('must not redispatch');}) as typeof fetch;
+  t.after(()=>{globalThis.fetch=previous;});
+  await new WorkflowRunner({} as ExecutionContext,env).run(
+    {payload:{run_id:accepted.run_id}} as WorkflowEvent<{run_id:string}>,
+    {do:async(_n:unknown,_o:unknown,fn:()=>Promise<unknown>)=>fn(),
+      waitForEvent:async()=>{waits++;throw Error('must not wait');}} as unknown as WorkflowStep);
+  const result=await service.result(accepted.run_id);
+  const heavy=result.steps[0] as AsyncStep;
+  assert.equal(result.status,'indeterminate');
+  assert.equal(result.error_code,'github_callback_unconfirmed');
+  assert.equal(heavy.async_action?.phase,'indeterminate');
+  assert.equal(heavy.async_action?.timed_out,true);
+  assert.equal(heavy.async_action?.external_execution_id,'555004');
+  assert.equal(heavy.async_action?.deadline_at,aged+240000);
+  assert.equal(posts,0);
+  assert.equal(waits,0);
+  assert.equal((sqlite.prepare('SELECT COUNT(*) AS n FROM step_attempts').get() as {n:number}).n,1);
+});
+
+test('worker recovery after an accepted GitHub dispatch does not redispatch and keeps the receipt',async t=>{
+  const {service,env,sqlite}=setup(t);
+  enableGithub(env);
+  const created=await service.create(JSON.stringify({version:1,name:'GitHub recovery',steps:[
+    {id:'heavy',uses:'github.run',with:{capability:'github.workflow.check'}},
+  ]}));
+  await service.publish(created.workflow_id,1,[],false,true);
+  const accepted=await service.start(created.workflow_id,{});
+  let posts=0,opens=0;
+  const previous=globalThis.fetch;
+  globalThis.fetch=(async()=>{
+    posts++;
+    return Response.json({workflow_run_id:555005},{status:200});
+  }) as typeof fetch;
+  t.after(()=>{globalThis.fetch=previous;});
+  const event={payload:{run_id:accepted.run_id}} as WorkflowEvent<{run_id:string}>;
+  const step={
+    do:async(_name:unknown,_options:unknown,fn:()=>Promise<unknown>)=>{
+      const opened=await fn();
+      opens++;
+      if(opens===1)throw Error('worker_replaced');
+      return opened;
+    },
+    waitForEvent:async()=>{
+      const row=sqlite.prepare('SELECT attempt_id FROM step_attempts').get() as {attempt_id:string};
+      sqlite.prepare("UPDATE step_attempts SET state='claimed',owner_run_id=555005,owner_run_attempt=1 WHERE attempt_id=?").run(row.attempt_id);
+      sqlite.prepare(`INSERT INTO callback_receipts
+        (callback_id,attempt_id,outcome,result_json,created_at)
+        VALUES(?,?, 'succeeded', ?, ?)`).run(
+        'f8835141-0b3a-4fcb-a9ae-b4b75bfae940',row.attempt_id,
+        JSON.stringify({echo:'recovered'}),Date.now());
+      throw Error('wake_lost_after_recovery');
+    },
+  };
+  const runner=new WorkflowRunner({} as ExecutionContext,env);
+  await assert.rejects(()=>runner.run(event,step as unknown as WorkflowStep),/worker_replaced/);
+  const mid=await service.status(accepted.run_id);
+  assert.equal(mid.status,'running');
+  assert.equal((mid.steps[0] as AsyncStep).async_action?.phase,'dispatch_accepted');
+  assert.equal((mid.steps[0] as AsyncStep).async_action?.external_execution_id,'555005');
+  await runner.run(event,step as unknown as WorkflowStep);
+  const result=await service.result(accepted.run_id);
+  assert.equal(result.status,'succeeded');
+  assert.deepEqual(result.result,{echo:'recovered'});
+  assert.equal((result.steps[0] as AsyncStep).async_action?.phase,'external_terminal');
+  assert.equal(posts,1);
+  assert.equal(opens,2);
+  assert.equal((sqlite.prepare('SELECT COUNT(*) AS n FROM step_attempts').get() as {n:number}).n,1);
+  assert.equal((sqlite.prepare('SELECT state FROM step_attempts').get() as {state:string}).state,'claimed');
 });
