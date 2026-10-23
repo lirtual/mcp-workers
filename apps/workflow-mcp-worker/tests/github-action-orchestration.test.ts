@@ -93,3 +93,17 @@ test('an unapproved Action or mismatched Step cannot dispatch or reserve an Atte
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM step_attempts').get()?.n,0);
  }finally{db.close();}
 });
+
+test('moved immutable tag is a definite rejection and never issues a POST',async()=>{
+ const {db,adapter}=setup();
+ try{
+  let posts=0;
+  const result=await registerAndDispatchGitHubAction(adapter,data,async req=>{
+   if(req.method==='POST'){posts++;throw Error('must not dispatch');}
+   return Response.json({ref:data.ref,object:{type:'commit',sha:'c'.repeat(40)}});
+  });
+  assert.equal(result.status,'rejected');
+  assert.equal(posts,0);
+  assert.equal(db.prepare('SELECT state FROM step_attempts').get()?.state,'rejected');
+ }finally{db.close();}
+});
