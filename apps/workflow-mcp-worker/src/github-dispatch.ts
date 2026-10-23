@@ -179,7 +179,7 @@ export function matchPinnedActionRunIdentity(
   expected: ConfirmedCandidate & {repositoryId:string;commitSha:string},
 ): boolean {
   return /^[a-f0-9]{40}$/i.test(expected.commitSha) &&
-    /^\\d+$/.test(expected.repositoryId) &&
+    /^\d+$/.test(expected.repositoryId) &&
     verified.repository_id===expected.repositoryId &&
     verified.sha===expected.commitSha &&
     matchCandidateIdentity(verified,expected);
