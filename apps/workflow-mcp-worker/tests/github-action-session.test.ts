@@ -41,7 +41,7 @@ function fixture(){
    capability_id,dispatch_id,state,repository,repository_id,
    workflow_ref,ref,candidate_run_id,candidate_run_attempt,
    owner_run_id,owner_run_attempt,created_at,updated_at)
-   VALUES(?,?,'launch','github.action',?,?,?,?,?,42,1,?,?,1,1)`)
+   VALUES(?,?,'launch','github.action',?,?,?,?,?,?,42,1,?,?,1,1)`)
   .run(run(index+10),run(index),'dispatch-'+index,state,
    action.repository,String(action.repositoryId),action.repository+'/'+action.workflowPath+'@refs/tags/release-v1',
    'refs/tags/release-v1',owner?42:null,owner?1:null);
