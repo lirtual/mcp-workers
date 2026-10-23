@@ -86,18 +86,18 @@ export const REVIEWED_V0111_RELEASE_PIN: InstallReleasePin = Object.freeze({
   x64Sha256: "641efcefe08d8bd4a70a1b3511d498d48a21687f05f167122219262bda9db6ec",
   arm64Sha256: "45d17c77c8fe37f7838f8015ad14518412161552e2d01f48e021788fb9a088dd",
 });
-// Published immutable Linux v0.1.12 from reviewed Agent PR #17, release CI
-// #39403328601. Explicit one-time offline transition from installed v0.1.11
+// Published immutable Linux v0.1.13 from reviewed Agent PR #21, release CI
+// #39915698471. Explicit one-time offline transition from installed v0.1.11
 // is owner-controlled; serving this installer NEVER stops or upgrades devices.
-export const REVIEWED_V0112_RELEASE_PIN: InstallReleasePin = Object.freeze({
-  tag: "v0.1.12",
+export const REVIEWED_AGENT_RELEASE_PIN: InstallReleasePin = Object.freeze({
+  tag: "v0.1.13",
   pairingProtocol: "single-code-v1",
   upgradeMode: "explicit-v1",
-  commit: "799c5b7e487df9f4d7c260147b61cc99d15084d6",
-  x64Sha256: "7090a5b2c1f0f448a09d5ae466f2f96d507c873ef7c1f5904e56b710312deef5",
-  arm64Sha256: "d129fd94d8aff681623a407fe7c28d0ca22945cec7686b7ee63fb9ebf54bc124",
+  commit: "1171542d2951042cc1e0992c8cb9b97d3284fe03",
+  x64Sha256: "bcb932d9f3539233204decf70ed0a748e2e31ac2a069e5b8b29484ab8733a0e3",
+  arm64Sha256: "bdbe443d6010e372a03bff773d0e0bce946ac7bbbd45d9d1b75c99477eb23aa9",
 });
-const VERIFIED_PYTHON_FREE_RELEASE: InstallReleasePin = REVIEWED_V0112_RELEASE_PIN;
+const VERIFIED_PYTHON_FREE_RELEASE: InstallReleasePin = REVIEWED_AGENT_RELEASE_PIN;
 // Never trust request Host alone: the allowed origin is supplied by the
 // deployment's validated Custom Domain binding, not a source-code hostname.
 export function validInstallerOrigin(value: unknown): value is string {

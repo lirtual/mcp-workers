@@ -6,7 +6,6 @@ export type DeviceInfo = {
   arch: string;
   environment: "native" | "wsl2" | "container";
   agent_version?: string;
-  capabilities: Array<"read" | "file_write" | "shell">;
 };
 
 export function parseDeviceInfo(raw: string): DeviceInfo | null {
@@ -26,10 +25,12 @@ export function parseDeviceInfo(raw: string): DeviceInfo | null {
       (v.agent_version !== undefined && !label(v.agent_version, 48)) ||
       !["linux", "windows", "darwin"].includes(String(v.os)) ||
       !["native", "wsl2", "container"].includes(String(v.environment)) ||
-      !Array.isArray(v.capabilities) || v.capabilities.length < 1 ||
-      v.capabilities.length > 3 || !v.capabilities.includes("read") ||
-      new Set(v.capabilities).size !== v.capabilities.length ||
-      v.capabilities.some(c => !["read", "file_write", "shell"].includes(c))) return null;
+      // Deployed Agents still report this legacy field. Validate and discard it.
+      (v.capabilities !== undefined &&
+        (!Array.isArray(v.capabilities) || v.capabilities.length < 1 ||
+         v.capabilities.length > 3 || !v.capabilities.includes("read") ||
+         new Set(v.capabilities).size !== v.capabilities.length ||
+         v.capabilities.some(c => !["read", "file_write", "shell"].includes(c))))) return null;
   return {
     hostname: v.hostname as string,
     os: v.os as DeviceInfo["os"],
@@ -37,6 +38,5 @@ export function parseDeviceInfo(raw: string): DeviceInfo | null {
     arch: v.arch as string,
     environment: v.environment as DeviceInfo["environment"],
     ...(v.agent_version !== undefined ? { agent_version: v.agent_version as string } : {}),
-    capabilities: v.capabilities as DeviceInfo["capabilities"],
   };
 }

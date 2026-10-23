@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
-import { handleAgentInstallerRequest, renderAgentInstallShell, REVIEWED_V012_RELEASE_PIN, REVIEWED_V014_RELEASE_PIN, REVIEWED_V016_RELEASE_PIN, REVIEWED_V017_RELEASE_PIN, REVIEWED_V018_RELEASE_PIN, REVIEWED_V0110_RELEASE_PIN, REVIEWED_V0111_RELEASE_PIN, REVIEWED_V0112_RELEASE_PIN } from "../src/install-bootstrap.ts";
+import { handleAgentInstallerRequest, renderAgentInstallShell, REVIEWED_V012_RELEASE_PIN, REVIEWED_V014_RELEASE_PIN, REVIEWED_V016_RELEASE_PIN, REVIEWED_V017_RELEASE_PIN, REVIEWED_V018_RELEASE_PIN, REVIEWED_V0110_RELEASE_PIN, REVIEWED_V0111_RELEASE_PIN, REVIEWED_AGENT_RELEASE_PIN } from "../src/install-bootstrap.ts";
 
 const origin = "https://remote-control-v2-preview.aiyaya.workers.dev";
 function requestInstall(request: Request, release?: Parameters<typeof handleAgentInstallerRequest>[1],
@@ -26,13 +26,13 @@ test("reviewed immutable single-code Worker installation route is enabled", asyn
   assert.equal(REVIEWED_V0111_RELEASE_PIN.commit, "c558ac6a9f2ecc0129234790bf4f3b3a3a4aa191");
   assert.equal(REVIEWED_V0111_RELEASE_PIN.x64Sha256, "641efcefe08d8bd4a70a1b3511d498d48a21687f05f167122219262bda9db6ec");
   assert.equal(REVIEWED_V0111_RELEASE_PIN.arm64Sha256, "45d17c77c8fe37f7838f8015ad14518412161552e2d01f48e021788fb9a088dd");
-  assert.equal(REVIEWED_V0112_RELEASE_PIN.tag, "v0.1.12");
-  assert.equal(REVIEWED_V0112_RELEASE_PIN.commit, "799c5b7e487df9f4d7c260147b61cc99d15084d6");
-  assert.equal(REVIEWED_V0112_RELEASE_PIN.x64Sha256, "7090a5b2c1f0f448a09d5ae466f2f96d507c873ef7c1f5904e56b710312deef5");
-  assert.equal(REVIEWED_V0112_RELEASE_PIN.arm64Sha256, "d129fd94d8aff681623a407fe7c28d0ca22945cec7686b7ee63fb9ebf54bc124");
-  assert.ok(script.includes("remote-control-agent-v0.1.12"));
-  assert.match(script,/7090a5b2c1f0f448/);
-  assert.match(script,/d129fd94d8aff681/);
+  assert.equal(REVIEWED_AGENT_RELEASE_PIN.tag, "v0.1.13");
+  assert.equal(REVIEWED_AGENT_RELEASE_PIN.commit, "1171542d2951042cc1e0992c8cb9b97d3284fe03");
+  assert.equal(REVIEWED_AGENT_RELEASE_PIN.x64Sha256, "bcb932d9f3539233204decf70ed0a748e2e31ac2a069e5b8b29484ab8733a0e3");
+  assert.equal(REVIEWED_AGENT_RELEASE_PIN.arm64Sha256, "bdbe443d6010e372a03bff773d0e0bce946ac7bbbd45d9d1b75c99477eb23aa9");
+  assert.ok(script.includes("remote-control-agent-v0.1.13"));
+  assert.match(script,/bcb932d9f3539233/);
+  assert.match(script,/bdbe443d6010e372/);
   assert.doesNotMatch(script,/remote-control-agent-v0.1.11/);
   assert.match(script,/1\) \[ "\$1" = "--upgrade"/);
 });

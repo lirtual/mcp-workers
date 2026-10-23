@@ -11,10 +11,7 @@ test("production Worker has only the reviewed DO, Access and Custom Domain bindi
   assert.equal(prod.vars?.REMOTE_CONTROL_V2_ONLY,undefined);
   assert.equal(prod.keep_vars,false);
   assert.deepEqual(prod.routes,[{pattern:"rca.lirtual.dpdns.org",custom_domain:true}]);
-  assert.deepEqual(prod.secrets.required,[
-    "MCP_ACCESS_TOKEN","BROWSER_APPROVAL_ACCESS_ISSUER",
-    "BROWSER_APPROVAL_ACCESS_AUD","BROWSER_APPROVAL_ALLOWED_EMAIL"
-  ]);
+  assert.deepEqual(prod.secrets.required,["MCP_ACCESS_TOKEN"]);
   assert.deepEqual(prod.durable_objects.bindings,[
     {name:"DEVICE_COORDINATOR",class_name:"DeviceCoordinator"}
   ]);
@@ -48,7 +45,7 @@ test("production DO binding lists per-device tools without v1 fallback", async (
   assert.equal(unscoped.result.isError, true, "never allow implicit fallback to the old VPC");
 });
 
-test("production installer is pinned to the public v0.1.12 release and its own origin", async () => {
+test("production installer is pinned to the public v0.1.13 release and its own origin", async () => {
   const { default: worker } = await import("../src/worker.ts");
   const prod = "https://remote-control-mcp-worker.aiyaya.workers.dev";
   const env = { MCP_ACCESS_TOKEN: "owner-only", REMOTE_CONTROL_INSTALL_ORIGIN: prod,
@@ -57,7 +54,7 @@ test("production installer is pinned to the public v0.1.12 release and its own o
   const response = await worker.fetch(new Request(prod + "/install.sh"), env);
   assert.equal(response.status, 200);
   const content = await response.text();
-  assert.match(content, /remote-control-agent-v0\.1\.12/);
+  assert.match(content, /remote-control-agent-v0\.1\.13/);
   assert.ok(content.includes("--endpoint") && content.includes(prod + "/"));
   const rejected = await worker.fetch(new Request("https://unauthorized.test/install.sh"), env);
   assert.equal(rejected.status, 403);

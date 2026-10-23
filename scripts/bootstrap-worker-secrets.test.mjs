@@ -7,7 +7,7 @@ const fixtures = {
   "ima-mcp-worker": { MCP_ACCESS_TOKEN: "portal", API_KEY: "ima-key" },
   "database-mcp-worker": { MCP_ACCESS_TOKEN: "portal", DATABASE_CONFIG: '{"sample":"mysql://user:pass@host/db"}' },
   "ssh-mcp-worker": { MCP_ACCESS_TOKEN: "portal", MCP_BROKER_TOKEN: "x".repeat(32) },
-  "remote-control-mcp-worker": { MCP_ACCESS_TOKEN: "portal", BROWSER_APPROVAL_ACCESS_ISSUER: "https://example.cloudflareaccess.com", BROWSER_APPROVAL_ACCESS_AUD: "a".repeat(64), BROWSER_APPROVAL_ALLOWED_EMAIL: "owner@example.com" },
+  "remote-control-mcp-worker": { MCP_ACCESS_TOKEN: "portal" },
   "github-actions-mcp-worker": { MCP_ACCESS_TOKEN: "portal", GH_TOKEN: "github-test-token" },
   "workflow-mcp-worker": { MCP_ACCESS_TOKEN: "portal", MCP_PORTAL_CLIENT_ID: "test-id", MCP_PORTAL_CLIENT_SECRET: "test-secret", WORKFLOW_EXECUTOR_GITHUB_TOKEN: "x".repeat(24) },
 };

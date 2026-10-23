@@ -1,4 +1,4 @@
-/** Typed browser MCP surface: isolated Preview only until separate real-device acceptance. */
+/** Typed browser MCP surface for authorized paired devices. */
 import { parseOperationId } from "./local-read.ts";
 
 export const BROWSER_EFFECT_TOOLS = new Set([
@@ -30,7 +30,7 @@ export const BROWSER_TOOLS = [
   },
   {
     name:"browser_navigate",title:"Navigate selected browser tab",
-    description:"Navigate the exact tab and snapshot_version from browser_status to a public HTTP(S) URL only after one-use owner approval. Retry with unchanged operation_id, tab_id, snapshot_version and URL after approval. Navigation fails closed if the tab or snapshot changed. This is not DNS or redirect isolation.",
+    description:"Navigate the selected tab to a public HTTP(S) URL using its exact tab_id and fresh snapshot_version. The Agent rejects switched tabs and stale versions. This is not DNS or redirect isolation.",
     inputSchema:schema({operation_id:operation,session_id:session,tab_id:{type:"string"},snapshot_version:version,url:{type:"string",maxLength:2048}},["operation_id","session_id","tab_id","snapshot_version","url"]),
     annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:true},
   },
@@ -54,25 +54,25 @@ export const BROWSER_TOOLS = [
   },
   {
     name:"browser_click",title:"Click semantic page target",
-    description:"Click one unique, fresh role/name target. When confirmation_required, ask the owner to open approval_url on any device, then retry the exact same operation_id and arguments once approved. Never auto-approve or change IDs to bypass confirmation.",
+    description:"Click one unique, fresh role/name target on the authorized paired device. Preserve operation_id and check its receipt after an uncertain response; never replay blindly.",
     inputSchema:schema({operation_id:operation,session_id:session,role,name,snapshot_version:version},["operation_id","session_id","role","name","snapshot_version"]),
     annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:true},
   },
   {
     name:"browser_fill",title:"Fill semantic page target",
-    description:"Fill one unique, fresh target after one-use owner approval. The approval page must not display entered text; preserve the exact operation_id and arguments on confirmation.",
+    description:"Fill one unique, fresh target on the authorized paired device. Preserve operation_id, and never expose the entered text in operation receipts.",
     inputSchema:schema({operation_id:operation,session_id:session,role,name,snapshot_version:version,text:{type:"string",maxLength:5000}},["operation_id","session_id","role","name","snapshot_version","text"]),
     annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:true},
   },
   {
     name:"browser_press_key",title:"Press allowed browser key",
-    description:"Press an allowed key after a fresh snapshot. When confirmation_required, open approval_url for owner confirmation; reuse the same operation_id and exact arguments after approval, without automatic retries.",
+    description:"Press an allowed key after a fresh snapshot on the authorized paired device. Query the original operation_id after an uncertain result; do not replay blindly.",
     inputSchema:schema({operation_id:operation,session_id:session,key:{type:"string",maxLength:30},snapshot_version:version},["operation_id","session_id","key","snapshot_version"]),
     annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:true},
   },
   {
     name:"browser_select_option",title:"Select semantic dropdown option",
-    description:"Select an option on a fresh native combobox. When confirmation_required, owner may approve remotely at approval_url; retry with unchanged operation_id and arguments only after approval.",
+    description:"Select an option on a fresh native combobox on the authorized paired device. Preserve the original operation_id after uncertain outcomes.",
     inputSchema:schema({operation_id:operation,session_id:session,role,name,snapshot_version:version,value:{type:"string",maxLength:512}},["operation_id","session_id","role","name","snapshot_version","value"]),
     annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:true},
   },
