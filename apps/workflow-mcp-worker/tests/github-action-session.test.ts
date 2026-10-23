@@ -11,6 +11,7 @@ import type {WorkflowStep} from 'cloudflare:workers';
 import type {Plan} from '../src/plan.ts';
 import {WorkflowService} from '../src/store.ts';
 import {requestGitHubActionCancellation,FORCE_CANCEL_DELAY_MS} from '../src/github-action-cancel.ts';
+import {watchPersistedSessions,sessionCancellationDue,SESSION_READY_GRACE_MS} from '../src/github-action-session-watch.ts';
 import {reconcilePersistedGitHubActionAttempt} from '../src/github-action-attempt-reconcile.ts';
 import {inspectPersistedGitHubActionAttempt} from '../src/github-action-attempt-inspection.ts';
 import type {Env} from '../src/store.ts';
@@ -446,4 +447,96 @@ test('ambiguous physical identity denies GitHub POST and keeps Session Ready',as
   assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'ready');
   assert.equal(f.db.prepare('SELECT count(*) AS n FROM github_action_cancellations').get()?.n,0);
  }finally{f.db.close();}
+});
+
+test('native Workflow keeps monitoring physical Session after parent Ready without a user status query',async()=>{
+ const f=fixture(),originalFetch=globalThis.fetch;
+ try{
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
+  f.db.prepare("UPDATE session_executions SET state='ready',updated_at=?").run(Date.now());
+  f.db.prepare("UPDATE runs SET outcome='succeeded' WHERE id=?").run(run(1));
+  f.claim(1,'claimed',true);
+  let observations=0,sleeps=0;
+  globalThis.fetch=async(input:RequestInfo|URL)=>{
+   const request=input instanceof Request?input:new Request(input);
+   assert.equal(request.method,'GET');
+   observations++;
+   return Response.json({
+    id:42,workflow_id:456,run_attempt:1,
+    repository:{id:123,full_name:action.repository},
+    path:action.workflowPath+'@release-v1',head_sha:action.commitSha,
+    event:'workflow_dispatch',status:observations===1?'in_progress':'completed',
+    conclusion:observations===1?null:'success',
+   });
+  };
+  const workflow={
+   do:async(_name:string,_opts:unknown,cb:()=>Promise<unknown>)=>cb(),
+   sleep:async()=>{sleeps++;},
+  } as unknown as WorkflowStep;
+  const env={DB:f.adapter,WORKFLOW_EXECUTOR_GITHUB_TOKEN:'token'} as Env;
+  assert.equal(await watchPersistedSessions(env,run(1),workflow,3),'terminated');
+  assert.equal(observations,2);
+  assert.equal(sleeps,1);
+  assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'terminated');
+  assert.equal(f.db.prepare('SELECT outcome FROM runs WHERE id=?').get(run(1))?.outcome,'succeeded');
+ }finally{globalThis.fetch=originalFetch;f.db.close();}
+});
+test('watcher requests normal expiry cancellation once but never force or release on active job',async()=>{
+ const f=fixture(),originalFetch=globalThis.fetch;
+ try{
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
+  f.claim(1,'claimed',true);
+  f.db.prepare("UPDATE session_executions SET state='ready',updated_at=1000").run();
+  f.db.prepare("UPDATE runs SET outcome='succeeded' WHERE id=?").run(run(1));
+  const time=1000+5*60_000+SESSION_READY_GRACE_MS;
+  let posts=0,reads=0;
+  globalThis.fetch=async(input:RequestInfo|URL)=>{
+   const req=input instanceof Request?input:new Request(input);
+   if(req.method==='POST'){
+    assert.ok(new URL(req.url).pathname.endsWith('/actions/runs/42/cancel'));
+    posts++;return new Response(null,{status:202});
+   }
+   reads++;
+   return Response.json({id:42,workflow_id:456,run_attempt:1,
+    repository:{id:123,full_name:action.repository},
+    path:action.workflowPath+'@release-v1',head_sha:action.commitSha,
+    event:'workflow_dispatch',status:'in_progress',conclusion:null});
+  };
+  const workflow={
+   do:async(_name:string,_opts:unknown,cb:()=>Promise<unknown>)=>cb(),
+  } as unknown as WorkflowStep;
+  const env={DB:f.adapter,WORKFLOW_EXECUTOR_GITHUB_TOKEN:'token'} as Env;
+  assert.equal(await watchPersistedSessions(env,run(1),workflow,1,()=>time),'unverified');
+  assert.equal(posts,1);
+  assert.ok(reads>=2);
+  assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'stopping');
+  assert.equal(f.db.prepare('SELECT state FROM step_attempts').get()?.state,'claimed');
+  assert.equal(await watchPersistedSessions(env,run(1),workflow,1,()=>time+1),'unverified');
+  assert.equal(posts,1);
+  assert.equal(await releaseVerifiedSessionSlot(f.adapter,run(1),'launch'),'held');
+ }finally{globalThis.fetch=originalFetch;f.db.close();}
+});
+test('unconfirmed dispatch or GitHub outage retains four-slot reservation without false expiry',async()=>{
+ const f=fixture(),originalFetch=globalThis.fetch;
+ try{
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
+  let sleeps=0;
+  const workflow={
+   do:async(_name:string,_opts:unknown,cb:()=>Promise<unknown>)=>cb(),
+   sleep:async()=>{sleeps++;},
+  } as unknown as WorkflowStep;
+  const env={DB:f.adapter,WORKFLOW_EXECUTOR_GITHUB_TOKEN:'token'} as Env;
+  assert.equal(await watchPersistedSessions(env,run(1),workflow,2),'unverified');
+  assert.equal(sleeps,1);
+  assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'queued');
+  assert.equal(await releaseVerifiedSessionSlot(f.adapter,run(1),'launch'),'held');
+ }finally{globalThis.fetch=originalFetch;f.db.close();}
+});
+test('fallback elapsed-time rule cannot shorten true job duration and rejects invalid limits',()=>{
+ assert.equal(sessionCancellationDue({state:'ready',created_at:100,updated_at:1000,duration_minutes:330},
+  1000+330*60_000+SESSION_READY_GRACE_MS-1),false);
+ assert.equal(sessionCancellationDue({state:'ready',created_at:100,updated_at:1000,duration_minutes:330},
+  1000+330*60_000+SESSION_READY_GRACE_MS),true);
+ assert.equal(sessionCancellationDue({state:'ready',created_at:100,updated_at:1000,duration_minutes:331},1e12),false);
+ assert.equal(sessionCancellationDue({state:'stopping',created_at:100,updated_at:1000,duration_minutes:5},1e12),false);
 });
