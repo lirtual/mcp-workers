@@ -265,10 +265,13 @@ export class WorkflowService {
     if(!Array.isArray(activePlan.steps))throw new StateError('published_plan_invalid');
     const protocolActions=activePlan.steps.filter(step=>
       step.uses==='github.run'&&step.with?.capability==='github.action');
-    // Task follows the verified physical GitHub Run. Sessions cannot be
-    // admitted until Ready/live/cancellation and four-slot quota exist.
-    if(protocolActions.some(step=>(step.with.action as {type?:unknown}|undefined)?.type!=='task'))
-      throw new StateError('github_action_session_unavailable');
+    // Session uses the same reviewed GitHub Action admission as Task.
+    // A Session's physical capacity is reserved atomically (max 4) by its
+    // durable Runner step BEFORE dispatch; admission here only reserves the
+    // normal Workflow Run slot, and never grants an extra physical Session.
+    if(protocolActions.some(step=>!['task','session'].includes(
+       String((step.with.action as {type?:unknown}|undefined)?.type))))
+      throw new StateError('github_action_invalid_publication');
     if(protocolActions.length &&
        (!this.env.WORKFLOW_EXECUTOR_GITHUB_TOKEN||!this.env.GITHUB_ACTION_OIDC_AUDIENCE))
       throw new StateError('github_action_executor_not_configured');
