@@ -47,7 +47,7 @@ export async function verifyAndClaimPinnedGitHubAction(
   claims=verified.payload;
   if(typeof claims.iat!=='number'||typeof claims.exp!=='number'||claims.exp-claims.iat>600)return false;
  }catch{return false;}
- if(!matchPinnedActionRunIdentity(claims,{
+ if(!matchPinnedActionRunIdentity(claims as JWTPayload & {repository_id?:unknown;sha?:unknown;repository?:unknown;workflow_ref?:unknown;ref?:unknown;run_id?:unknown;run_attempt?:unknown;event_name?:unknown},{
   repository:row.repository,repositoryId:row.repository_id,workflowRef:row.workflow_ref,
   ref:row.ref,runId:row.candidate_run_id,runAttempt:row.candidate_run_attempt,
   commitSha:action.commitSha,
