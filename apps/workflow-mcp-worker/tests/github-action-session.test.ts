@@ -963,6 +963,47 @@ test('definitively rejected GitHub dispatch releases a Session slot with no phys
   assert.equal(await reservePublishedSessionSlot(f.adapter,run(2),'launch'),'reserved');
  }finally{f.db.close();}
 });
+test('unattended watcher frees definitely rejected dispatch if native Workflow died before release',async()=>{
+ const f=fixture(),originalFetch=globalThis.fetch;
+ try{
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
+  f.claim(1,'confirmed',false);
+  f.db.prepare(`UPDATE step_attempts SET state='rejected',
+    candidate_run_id=NULL,candidate_run_attempt=NULL WHERE run_id=?`).run(run(1));
+  f.db.prepare("UPDATE runs SET outcome='failed' WHERE id=?").run(run(1));
+  let outbound=0;
+  globalThis.fetch=async()=>{outbound++;throw Error('No GitHub physical Run exists');};
+  const workflow={
+   do:async(_name:string,_opts:unknown,cb:()=>Promise<unknown>)=>cb(),
+  } as unknown as WorkflowStep;
+  const env={DB:f.adapter,WORKFLOW_EXECUTOR_GITHUB_TOKEN:'token'} as Env;
+  assert.equal(await watchPersistedSessions(env,run(1),workflow,1),'terminated');
+  assert.equal(outbound,0);
+  assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'terminated');
+  assert.equal(f.db.prepare('SELECT state FROM step_attempts').get()?.state,'rejected');
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(2),'launch'),'reserved');
+ }finally{globalThis.fetch=originalFetch;f.db.close();}
+});
+test('unattended watcher never frees an ambiguous POST merely because no physical candidate is saved',async()=>{
+ const f=fixture(),originalFetch=globalThis.fetch;
+ try{
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
+  f.claim(1,'confirmed',false);
+  f.db.prepare(`UPDATE step_attempts SET state='dispatch_unknown',
+    candidate_run_id=NULL,candidate_run_attempt=NULL WHERE run_id=?`).run(run(1));
+  f.db.prepare("UPDATE runs SET outcome='indeterminate' WHERE id=?").run(run(1));
+  let outbound=0;
+  globalThis.fetch=async()=>{outbound++;throw Error('GitHub state unconfirmed');};
+  const workflow={
+   do:async(_name:string,_opts:unknown,cb:()=>Promise<unknown>)=>cb(),
+  } as unknown as WorkflowStep;
+  const env={DB:f.adapter,WORKFLOW_EXECUTOR_GITHUB_TOKEN:'token'} as Env;
+  assert.equal(await watchPersistedSessions(env,run(1),workflow,1),'unverified');
+  assert.equal(outbound,0);
+  assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'queued');
+  assert.equal(await releaseVerifiedSessionSlot(f.adapter,run(1),'launch'),'held');
+ }finally{globalThis.fetch=originalFetch;f.db.close();}
+});
 test('unknown outbound dispatch ACK never releases a Session slot or posts twice',async()=>{
  const f=fixture();
  try{
