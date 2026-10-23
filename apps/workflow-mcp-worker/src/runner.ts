@@ -4,8 +4,7 @@ import { evaluateArguments, evaluateCondition, toolSchemaDigest } from './plan.t
 import type { Plan, Step } from './plan.ts';
 import type { Env } from './store.ts';
 import { limitResult } from './store.ts';
-import { registerGithubAttempt,recordGithubDispatchResult } from './github-claim.ts';
-import { dispatchGithubAttempt,selectedGithubExecutor } from './github-dispatch.ts';
+import { dispatchOrResumeGithubAttempt,githubAsyncAwaitingExternal,githubAsyncOutcome,GITHUB_ASYNC_WAKE_LIMIT,GITHUB_ASYNC_WAKE_TIMEOUT,readGithubAsyncFact,type GithubAsyncFact,type GithubDispatchStep } from './github-async.ts';
 import { scopedPublicMcpFetch, TRUSTED_PORTAL_ENDPOINT, PRODUCTION_PORTAL_ENDPOINT, type PortalServiceToken } from './mcp-public-fetch.ts';
 
 type Outcome={status:'succeeded'|'failed'|'skipped'|'indeterminate';output?:any;error_code?:string};
@@ -95,68 +94,55 @@ async function runGithubStep(
      !env.GITHUB_EXECUTOR_AUDIENCE)
     return {status:'failed',error_code:'github_executor_not_configured'};
   const db=env.DB;
-  const executor=selectedGithubExecutor(env);
-  // This operation intentionally does not retry on any ambiguity. A new
-  // logical Attempt for the same Run+Step is forbidden by D1 UNIQUE.
-  const dispatch=(await step.do('github-dispatch-'+s.id,{
-    retries:{limit:0,delay:'1 second'},timeout:'45 seconds',
-  },async()=>{
-    const attemptId=crypto.randomUUID(),dispatchId=crypto.randomUUID();
-    await registerGithubAttempt(db,{
-      attemptId,dispatchId,runId,stepId:s.id,
-      capabilityId:'github.workflow.check',
-      repository:env.GITHUB_EXECUTOR_REPOSITORY!,
-      repositoryId:env.GITHUB_EXECUTOR_REPOSITORY_ID!,
-      ref:env.GITHUB_EXECUTOR_REF!,
-      workflowRef:env.GITHUB_EXECUTOR_REPOSITORY+
-        '/.github/workflows/'+executor.workflow+'@'+env.GITHUB_EXECUTOR_REF,
-      audience:env.GITHUB_EXECUTOR_AUDIENCE!,
-    });
-    const result=await dispatchGithubAttempt({
-      repository:env.GITHUB_EXECUTOR_REPOSITORY!,
-      ref:env.GITHUB_EXECUTOR_REF!,
-      workflow:executor.workflow,
-      ...(executor.workerName?{workerName:executor.workerName}:{}),
-      dispatchToken:env.WORKFLOW_EXECUTOR_GITHUB_TOKEN!,
-    },{attemptId,dispatchId,capabilityId:'github.workflow.check'});
-    const persisted=await recordGithubDispatchResult(db,attemptId,result);
-    if(!persisted)throw Error('dispatch_ack_not_persisted');
-    return {attemptId,...result};
-  })) as {attemptId:string;status:string;httpStatus?:number;reason?:string};
-  if(dispatch.status==='rejected')return {
-    status:'failed',error_code:'github_dispatch_rejected_'+
-      String(dispatch.httpStatus??'unknown')+'_'+String(dispatch.reason??'unknown'),
-  };
-  if(dispatch.status!=='confirmed')
-    return {status:'indeterminate',error_code:'github_dispatch_unknown'};
-  type Receipt={callback_id:string;outcome:string;result_json:string};
-  const readReceipt=()=>db.prepare(
-    'SELECT callback_id,outcome,result_json FROM callback_receipts WHERE attempt_id=?'
-  ).bind(dispatch.attemptId).first<Receipt>();
-  let receipt=await readReceipt();
-  // A notification can be lost after its immutable D1 receipt was committed,
-  // or arrive just before waitForEvent is registered. Use native timed waits
-  // with a bounded D1 readback; the event is only a wake hint and NEVER a
-  // source of business facts. No re-dispatch or external job retry occurs.
-  for(let i=0;i<8&&!receipt;i++){
+  // The wake event is only a hint. Receipt JSON in D1 is the external
+  // terminal result. A replay resumes the same Attempt and does not dispatch.
+  const read=()=>readGithubAsyncFact(db,runId,s.id,now());
+  const settle=(fact:GithubAsyncFact):Outcome|null=>{
+    const outcome=githubAsyncOutcome(fact);
+    if(!outcome)return null;
+    if(fact.phase!=='external_terminal'||fact.receiptOutcome==='failed')return outcome;
+    const raw=fact.resultJson===null?'null':fact.resultJson;
     try{
-      await step.waitForEvent<{attemptId:string;callbackId:string}>(
-        'github-receipt-'+s.id+'-'+i,
-        {type:'github-receipt-'+s.id,timeout:'30 seconds'});
+      return {status:'succeeded',output:limitResult(JSON.parse(raw))};
     }catch{
-      // Missing notification or timeout: reconcile durable D1 only.
+      return {status:'indeterminate',error_code:'github_callback_invalid'};
     }
-    receipt=await readReceipt();
-  }
-  if(!receipt)return {status:'indeterminate',error_code:'github_callback_unconfirmed'};
-  if(receipt.outcome!=='succeeded'&&receipt.outcome!=='failed')
-    return {status:'indeterminate',error_code:'github_callback_invalid'};
+  };
   try{
-    const value=limitResult(JSON.parse(receipt.result_json));
-    return receipt.outcome==='succeeded'
-      ?{status:'succeeded',output:value}
-      :{status:'failed',error_code:'github_job_failed'};
-  }catch{return {status:'indeterminate',error_code:'github_callback_invalid'};}
+    const opened=await step.do('github-dispatch-'+s.id,{
+      retries:{limit:0,delay:'1 second'},timeout:'45 seconds',
+    },async()=>dispatchOrResumeGithubAttempt(db,env,runId,s.id)) as GithubDispatchStep|undefined;
+    if(opened?.disposition==='rejected')return {
+      status:'failed',error_code:'github_dispatch_rejected_'+opened.httpStatus+'_'+opened.reason,
+    };
+    let fact=await read();
+    if(!fact)return {status:'indeterminate',error_code:'github_dispatch_unknown'};
+    let outcome=settle(fact);
+    if(outcome)return outcome;
+    for(let i=0;i<GITHUB_ASYNC_WAKE_LIMIT&&fact&&!outcome;i++){
+      if(fact.deadlineAt!==null&&now()>=fact.deadlineAt)break;
+      try{
+        await step.waitForEvent<{attemptId:string;callbackId:string}>(
+          'github-receipt-'+s.id+'-'+i,
+          {type:'github-receipt-'+s.id,timeout:GITHUB_ASYNC_WAKE_TIMEOUT});
+      }catch{
+        // Lost wake or timeout. Reconcile the stored receipt only.
+      }
+      fact=await read();
+      if(!fact)return {status:'indeterminate',error_code:'github_dispatch_unknown'};
+      outcome=settle(fact);
+      if(outcome)return outcome;
+    }
+    return {status:'indeterminate',error_code:'github_callback_unconfirmed'};
+  }catch(error){
+    const fact=await read().catch(()=>null);
+    if(fact){
+      const outcome=settle(fact);
+      if(outcome)return outcome;
+      if(fact.phase==='dispatch_accepted'||fact.phase==='pending')throw error;
+    }
+    return {status:'indeterminate',error_code:'github_dispatch_unknown'};
+  }
 }
 
 export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
@@ -195,8 +181,10 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
                 if(s.needs.some(n=>ctx.steps[n].status!=='succeeded'))return {status:'skipped'} as Outcome;
                 if(s.if!==undefined&&!evaluateCondition(s.if,ctx))return {status:'skipped'} as Outcome;
                 return await runGithubStep(this.env,plan,s,id,step);
-              }catch{
-                // Never retry an uncertain GitHub dispatch on a Workflow replay.
+              }catch(error){
+                // A confirmed Attempt still inside its deadline is not an
+                // unknown dispatch. Replay must resume it instead of freezing it.
+                if(await githubAsyncAwaitingExternal(db,id,now()))throw error;
                 return {status:'indeterminate',error_code:'github_dispatch_unknown'} as Outcome;
               }
             })()
@@ -241,7 +229,10 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
       const output=limitResult(hasEmitted?emitted:ctx.steps[plan.steps.at(-1)!.id]?.output??null);
       await db.prepare("UPDATE runs SET outcome=?,result=?,error_code=?,updated_at=? WHERE id=? AND outcome='running'")
         .bind(uncertain?'indeterminate':failed?'failed':'succeeded',JSON.stringify(output),uncertain?uncertainCode:null,now(),id).run();
-    }catch{
+    }catch(error){
+      // A live GitHub Attempt still inside its deadline must survive an
+      // isolate restart. Freezing it here would hide a later receipt.
+      if(await githubAsyncAwaitingExternal(db,id,now()))throw error;
       await db.prepare("UPDATE runs SET outcome='indeterminate',error_code='execution_interrupted',updated_at=? WHERE id=? AND outcome='running'").bind(now(),id).run();
       throw Error('execution_interrupted');
     }

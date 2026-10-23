@@ -1,4 +1,5 @@
 import { PRODUCTION_PORTAL_ENDPOINT, TRUSTED_PORTAL_ENDPOINT } from './mcp-public-fetch.ts';
+import { GITHUB_ASYNC_WAIT_MS } from './github-async.ts';
 import { selectedGithubExecutor } from './github-dispatch.ts';
 
 export const DEFINITION_KEYS = ['version', 'name', 'inputs', 'steps'] as const;
@@ -130,7 +131,7 @@ const CATALOG: readonly Entry[] = [
   {id: 'action.github.run', kind: 'action', status: 'supported', uses: 'github.run', example: githubExample,
     summary: 'Run the registered GitHub Workflow CI check. The definition cannot choose a repository, ref, workflow file, token, or command.',
     permissions: 'Publish requires approve_heavy_execution=true. Runtime uses the server GitHub executor and OIDC. with accepts only capability github.workflow.check.',
-    completion: 'One workflow_dispatch. An ambiguous HTTP response is indeterminate and is not dispatched again.'},
+    completion: 'Dispatch accepted stores the GitHub run id on the Attempt. The step stays pending until one claimed receipt or the explicit '+String(GITHUB_ASYNC_WAIT_MS/1000)+' second wait ends. That receipt is the external terminal result. Lost, duplicate, early, and late wakes are not a second result. Worker recovery keeps the same Attempt. An ambiguous dispatch or timeout is indeterminate and is not dispatched again.'},
   {id: 'action.http', kind: 'action', status: 'unsupported',
     summary: 'HTTP actions are not implemented.'},
   {id: 'action.mcp.write', kind: 'action', status: 'unsupported',

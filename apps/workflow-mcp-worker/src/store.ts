@@ -1,6 +1,7 @@
 import { compilePlan, PlanError, canonicalJsonString } from './plan.ts';
 import { LIMITS } from './capabilities.ts';
 import { PRODUCTION_PORTAL_ENDPOINT, TRUSTED_PORTAL_ENDPOINT } from './mcp-public-fetch.ts';
+import {githubAsyncViewsForRun} from './github-async.ts';
 import {observeInstance, shouldExpireUnconfirmedOutcome, unresolvedNativeTerminalError, OUTCOME_SETTLE_WINDOW_MS} from './instance-observation.ts';
 import YAML from 'yaml';
 function draftName(definition:string):string {
@@ -345,12 +346,16 @@ export class WorkflowService {
     const stored=(await this.db.prepare('SELECT step_id,status,error_code FROM run_steps WHERE run_id=? ORDER BY step_id').bind(run_id).all<{step_id:string;status:string;error_code:string|null}>()).results;
     const version=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=?').bind(row.version_id).first<{plan:string}>();
     if(!version)throw new StateError('version_missing');
+    const asyncActions=await githubAsyncViewsForRun(this.db,run_id,row.outcome,row.error_code,now());
     const terminal=['succeeded','failed','indeterminate','cancelled'].includes(row.outcome)||native==='complete';
     const byId=new Map(stored.map(s=>[s.step_id,s]));
     const steps=(JSON.parse(version.plan) as Plan).steps.map(s=>{
       const saved=byId.get(s.id);
-      if(saved && ['succeeded','failed','skipped','indeterminate'].includes(saved.status))return saved;
-      return {step_id:s.id,status:terminal?'indeterminate':saved?.status??'waiting',error_code:saved?.error_code??null};
+      const base=saved && ['succeeded','failed','skipped','indeterminate'].includes(saved.status)
+        ?saved
+        :{step_id:s.id,status:terminal?'indeterminate':saved?.status??'waiting',error_code:saved?.error_code??null};
+      const asyncAction=asyncActions.get(s.id);
+      return asyncAction?{...base,async_action:asyncAction}:base;
     }).sort((a,b)=>a.step_id<b.step_id?-1:a.step_id>b.step_id?1:0);
     return {run_id,workflow_id:row.workflow_id,published_version_id:row.version_id,start_state:row.start_state,status:['succeeded','failed','indeterminate','cancelled'].includes(row.outcome)?row.outcome:row.start_state!=='started'?'start_unknown':applyStatus(native,row.outcome),steps};
   }
