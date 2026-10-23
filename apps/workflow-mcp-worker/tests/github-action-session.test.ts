@@ -190,6 +190,59 @@ async function signedReady(claims:Record<string,unknown>={}){
   .setAudience(audience).setIssuedAt().setExpirationTime('5m').sign(privateKey);
  return {jwt,publicKey};
 }
+test('real signed GitHub Claim is retryable only until persisted dispatch candidate arrives',async()=>{
+ const f=fixture();
+ try{
+  f.claim(1,'confirmed',false);
+  f.db.prepare(`UPDATE step_attempts SET state='created',
+    candidate_run_id=NULL,candidate_run_attempt=NULL WHERE run_id=?`).run(run(1));
+  const signed=await signedReady();
+  const env={DB:f.adapter,GITHUB_ACTION_OIDC_AUDIENCE:audience} as Env;
+  const req=(jwt:string)=>new Request('https://worker.example/github/action/claim',{
+   method:'POST',headers:{authorization:'Bearer '+jwt},
+   body:JSON.stringify({attemptId:run(11)}),
+  });
+  const pending=await handleGithubActionClaimRequest(req(signed.jwt),env,signed.publicKey);
+  assert.equal(pending.status,503);
+  assert.deepEqual(await pending.json(),{result:'claim_pending'});
+  assert.equal(f.db.prepare('SELECT state FROM step_attempts').get()?.state,'created');
+  assert.equal(f.db.prepare('SELECT owner_run_id FROM step_attempts').get()?.owner_run_id,null);
+  const changed=await signedReady({sha:'c'.repeat(40)});
+  assert.equal((await handleGithubActionClaimRequest(req(changed.jwt),env,
+   changed.publicKey)).status,403);
+  f.db.prepare(`UPDATE step_attempts SET state='confirmed',
+    candidate_run_id=42,candidate_run_attempt=1 WHERE run_id=?`).run(run(1));
+  const accepted=await handleGithubActionClaimRequest(req(signed.jwt),env,signed.publicKey);
+  assert.equal(accepted.status,200);
+  assert.deepEqual(await accepted.json(),{result:'claimed'});
+  assert.equal(f.db.prepare('SELECT state FROM step_attempts').get()?.state,'claimed');
+ }finally{f.db.close();}
+});
+test('pending signed Claim is permanently denied on cancel, wrong publication or ended parent',async()=>{
+ const f=fixture();
+ try{
+  f.claim(1,'confirmed',false);
+  f.db.prepare(`UPDATE step_attempts SET state='created',
+    candidate_run_id=NULL,candidate_run_attempt=NULL WHERE run_id=?`).run(run(1));
+  const signed=await signedReady();
+  const env={DB:f.adapter,GITHUB_ACTION_OIDC_AUDIENCE:audience} as Env;
+  const req=()=>new Request('https://worker.example/github/action/claim',{
+   method:'POST',headers:{authorization:'Bearer '+signed.jwt},
+   body:JSON.stringify({attemptId:run(11)}),
+  });
+  f.db.prepare(`INSERT INTO github_action_cancellations
+   (attempt_id,run_id,step_id,cancel_requested_at,cancel_ack)
+   VALUES(?,?,?,?,'unknown')`).run(run(11),run(1),'launch',Date.now());
+  assert.equal((await handleGithubActionClaimRequest(req(),env,signed.publicKey)).status,403);
+  f.db.prepare('DELETE FROM github_action_cancellations').run();
+  f.db.prepare("UPDATE runs SET outcome='failed' WHERE id=?").run(run(1));
+  assert.equal((await handleGithubActionClaimRequest(req(),env,signed.publicKey)).status,403);
+  f.db.prepare("UPDATE runs SET outcome='running' WHERE id=?").run(run(1));
+  f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?')
+   .run(JSON.stringify({...plan,github_action_approvals:[]}), 'v');
+  assert.equal((await handleGithubActionClaimRequest(req(),env,signed.publicKey)).status,403);
+ }finally{f.db.close();}
+});
 test('signed Ready must own the exact claimed physical running GitHub Session; duplicate is idempotent',async()=>{
  const f=fixture();
  try{
