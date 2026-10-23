@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { dispatchGithubAttempt, matchCandidateIdentity, selectedGithubExecutor } from '../src/github-dispatch.ts';
+import { dispatchAllowListedGithubAction, dispatchGithubAttempt, matchCandidateIdentity, readAllowListedGithubExecution, selectedGithubExecutor } from '../src/github-dispatch.ts';
 
 const config={
   repository:'lirtual/test-executor',workflow:'workflow-github-executor.yml',
@@ -158,4 +158,68 @@ test('registered dedicated GitHub acceptance is gated to the exact Draft ref and
     {...env,GITHUB_TEST_WORKER_NAME:'workflow-github-plan/evil'},
     {...env,GITHUB_TEST_WORKER_NAME:undefined},
   ])assert.throws(()=>selectedGithubExecutor(changed),/github_executor_test_environment_invalid/);
+});
+
+test('allow-listed GitHub action dispatches only its pinned workflow and does not retry ambiguity',async()=>{
+  let calls=0;
+  const outcome=await dispatchAllowListedGithubAction({subject:'fixture-subject'},{
+    attemptId:attempt.attemptId,dispatchId:attempt.dispatchId,
+  },'test-token-not-real',async request=>{
+    calls++;
+    assert.equal(request.method,'POST');
+    assert.equal(request.url,'https://api.github.com/repos/lirtual/mcp-workers/actions/workflows/registered-action.yml/dispatches');
+    assert.equal(request.headers.get('authorization'),'Bearer test-token-not-real');
+    assert.equal(request.headers.get('user-agent'),'mcp-workers-workflow-executor');
+    assert.deepEqual(await request.json(),{
+      ref:'main',return_run_details:true,inputs:{subject:'fixture-subject'},
+    });
+    return Response.json({workflow_run_id:424242},{status:200});
+  });
+  assert.deepEqual(outcome,{status:'confirmed',runId:424242,runAttempt:1});
+  assert.equal(calls,1);
+  let network=0;
+  const fetcher=async()=>{network++;return Response.json({workflow_run_id:1});};
+  await assert.rejects(()=>dispatchAllowListedGithubAction({subject:''},{
+    attemptId:attempt.attemptId,dispatchId:attempt.dispatchId,
+  },'test-token-not-real',fetcher),/github_action_inputs_invalid/);
+  await assert.rejects(()=>dispatchAllowListedGithubAction({subject:'ok',repository:'evil/repo'} as {subject:string},{
+    attemptId:attempt.attemptId,dispatchId:attempt.dispatchId,
+  },'test-token-not-real',fetcher),/github_action_inputs_invalid/);
+  const ambiguous=await dispatchAllowListedGithubAction({subject:'ok'},{
+    attemptId:attempt.attemptId,dispatchId:attempt.dispatchId,
+  },'test-token-not-real',async()=>{network++;return new Response(null,{status:503});});
+  assert.deepEqual(ambiguous,{status:'dispatch_unknown'});
+  assert.equal(network,1);
+});
+
+test('allow-listed run read stores artifact metadata without file bytes or remote URLs',async()=>{
+  const token='fixture-token-must-not-leak';
+  let calls=0;
+  const read=await readAllowListedGithubExecution(424242,token,async request=>{
+    calls++;
+    assert.equal(request.method,'GET');
+    assert.equal(request.url.includes(token),false);
+    if(request.url==='https://api.github.com/repos/lirtual/mcp-workers/actions/runs/424242')
+      return Response.json({
+        id:424242,status:'completed',conclusion:'success',event:'workflow_dispatch',
+        path:'.github/workflows/registered-action.yml',head_branch:'main',run_attempt:1,
+        html_url:'https://evil.example/leak?token='+token,
+        repository:{full_name:'lirtual/mcp-workers'},
+      });
+    assert.equal(request.url,'https://api.github.com/repos/lirtual/mcp-workers/actions/runs/424242/artifacts?per_page=8');
+    return Response.json({total_count:1,artifacts:[{
+      id:77,name:'result-note',size_in_bytes:24,expired:false,expires_at:'2026-11-23T00:00:00Z',
+      archive_download_url:'https://api.github.com/repos/lirtual/mcp-workers/actions/artifacts/77/zip?token='+token,
+      url:'https://evil.example/?token='+token,
+    }]});
+  });
+  assert.equal(read.status,'completed');
+  if(read.status!=='completed')return;
+  const text=JSON.stringify(read.result);
+  assert.equal(text.includes(token),false);
+  assert.equal(text.includes('/zip'),false);
+  assert.equal(text.includes('evil.example'),false);
+  assert.match(text,/https:\/\/github.com\/lirtual\/mcp-workers\/actions\/runs\/424242/);
+  assert.match(text,/https:\/\/api.github.com\/repos\/lirtual\/mcp-workers\/actions\/artifacts\/77"/);
+  assert.equal(calls,2);
 });

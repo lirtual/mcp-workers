@@ -210,10 +210,24 @@ export function verifyWorkflowD1Readiness(response, bootstrap, requireCompleteSc
   const requiredBase = row?.migration_v1 === 1 && row?.migration_v2 === 1 &&
     row?.migration_v3 === 1 && row?.migration_v4 === 1 &&
     row?.attempt_table === 1 && row?.receipt_table === 1;
-  // The previous four-migration schema is allowed only before an additive
-  // GitHub capability migration, never as final production readback.
-  const beforeUpgrade = row?.migration_count === 4 && row?.migration_v5 === 0;
-  const ready = row?.migration_count === 5 && row?.migration_v5 === 1;
+  // Counts 4–11 are upgrade snapshots. Only all twelve migrations and indexes are ready.
+  const throughCancel = row?.migration_v5 === 1 && row?.migration_v6 === 1 &&
+    row?.migration_v7 === 1 && row?.migration_v8 === 1 && row?.cancel_column === 1;
+  const throughChild = throughCancel && row?.migration_v9 === 1 && row?.migration_v10 === 1 &&
+    row?.approval_table === 1 && row?.child_column === 1 && row?.head_sha_column === 1;
+  const throughCronDue = throughChild && row?.migration_v11 === 1 && row?.cron_due_table === 1;
+  const beforeUpgrade = (row?.migration_count === 4 && row?.migration_v5 === 0) ||
+    (row?.migration_count === 5 && row?.migration_v5 === 1 && row?.migration_v6 === 0) ||
+    (row?.migration_count === 6 && row?.migration_v5 === 1 && row?.migration_v6 === 1 && row?.migration_v7 === 0) ||
+    (row?.migration_count === 7 && row?.migration_v5 === 1 && row?.migration_v6 === 1 && row?.migration_v7 === 1 && row?.migration_v8 === 0) ||
+    (row?.migration_count === 8 && throughCancel && row?.migration_v9 === 0) ||
+    (row?.migration_count === 9 && throughCancel && row?.migration_v9 === 1 && row?.migration_v10 === 0 &&
+      row?.approval_table === 1) ||
+    (row?.migration_count === 10 && throughChild && row?.migration_v11 === 0 && row?.cron_due_table === 0) ||
+    (row?.migration_count === 11 && throughCronDue && row?.migration_v12 === 0 &&
+      row?.cron_due_order_idx === 0 && row?.runs_cancel_reconcile_idx === 0);
+  const ready = row?.migration_count === 12 && throughCronDue && row?.migration_v12 === 1 &&
+    row?.cron_due_order_idx === 1 && row?.runs_cancel_reconcile_idx === 1;
   invariant(requiredBase && (requireCompleteSchema ? ready : (beforeUpgrade || ready)),
     "Workflow production D1 schema migrations missing, partial or drifted");
   invariant(Number.isSafeInteger(row?.active_runs) && row.active_runs === 0,

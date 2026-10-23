@@ -1,0 +1,257 @@
+import {dispatchAllowListedGithubAction,dispatchGithubAttempt,githubHeadSha,readAllowListedGithubExecution,selectedGithubExecutor,type DispatchOutcome} from './github-dispatch.ts';
+import {persistGithubHeadSha,recordGithubDispatchResult,recordGithubRunObservation,registerGithubAttempt,type AttemptDatabase} from './github-claim.ts';
+import {REGISTERED_GITHUB_ACTION,registeredWorkflowRef} from './github-registry.ts';
+
+/** Eight 30-second wakes. The budget is fixed when the Attempt is created. */
+export const GITHUB_ASYNC_WAKE_TIMEOUT='30 seconds';
+export const GITHUB_ASYNC_WAKE_LIMIT=8;
+export const GITHUB_ASYNC_WAKE_MS=30_000;
+export const GITHUB_ASYNC_WAIT_MS=GITHUB_ASYNC_WAKE_LIMIT*GITHUB_ASYNC_WAKE_MS;
+
+export type GithubAsyncPhase='dispatch_accepted'|'pending'|'external_terminal'|'indeterminate';
+export type GithubAsyncAction={
+  phase:GithubAsyncPhase;
+  attempt_id:string;
+  external_execution_id:string|null;
+  receipt_outcome:'succeeded'|'failed'|null;
+  deadline_at:number|null;
+  timed_out:boolean;
+  head_sha?:string;
+};
+export type GithubDispatchStep=
+  | {disposition:'rejected';httpStatus:400|401|403|404|422;reason:string}
+  | {disposition:'continued'};
+type AsyncPhase=GithubAsyncPhase|'rejected';
+export type GithubAsyncFact={
+  stepId:string;
+  phase:AsyncPhase;
+  attemptId:string;
+  externalExecutionId:string|null;
+  receiptOutcome:'succeeded'|'failed'|null;
+  deadlineAt:number|null;
+  timedOut:boolean;
+  errorCode:string|null;
+  resultJson:string|null;
+  headSha:string|null;
+};
+type AttemptFactRow={
+  step_id:string;
+  attempt_id:string;
+  state:string;
+  candidate_run_id:number|null;
+  created_at:number;
+  receipt_outcome:string|null;
+  result_json:string|null;
+  head_sha:string|null;
+};
+type ExecutorEnv={
+  WORKFLOW_EXECUTOR_GITHUB_TOKEN?:string;
+  GITHUB_EXECUTOR_REPOSITORY?:string;
+  GITHUB_EXECUTOR_REPOSITORY_ID?:string;
+  GITHUB_EXECUTOR_REF?:string;
+  GITHUB_EXECUTOR_AUDIENCE?:string;
+  GITHUB_TEST_WORKER_NAME?:string;
+  GITHUB_TEST_DEDICATED_EXECUTOR?:string;
+};
+
+const FACT_SQL=`SELECT a.step_id,a.attempt_id,a.state,a.candidate_run_id,a.created_at,a.head_sha,
+  c.outcome AS receipt_outcome,c.result_json
+  FROM step_attempts a
+  LEFT JOIN callback_receipts c ON c.attempt_id=a.attempt_id`;
+
+function classify(row:AttemptFactRow,now:number,runOutcome:string,runError:string|null):GithubAsyncFact{
+  const receipt:GithubAsyncFact['receiptOutcome']=
+    row.receipt_outcome==='succeeded'||row.receipt_outcome==='failed'
+      ?row.receipt_outcome:null;
+  const external=row.candidate_run_id==null?null:String(row.candidate_run_id);
+  const deadlineAt=row.created_at+GITHUB_ASYNC_WAIT_MS;
+  const base={
+    stepId:row.step_id,attemptId:row.attempt_id,externalExecutionId:external,
+    receiptOutcome:receipt,deadlineAt,timedOut:false,errorCode:null as string|null,
+    resultJson:row.result_json,headSha:visibleHeadSha(row),
+  };
+  if(row.state==='rejected')
+    return {...base,phase:'rejected',receiptOutcome:null,deadlineAt:null,
+      errorCode:'github_dispatch_rejected_unknown_unknown'};
+  if(row.state==='created'||row.state==='dispatch_unknown')
+    return {...base,phase:'indeterminate',
+      externalExecutionId:row.state==='dispatch_unknown'?external:null,
+      receiptOutcome:null,deadlineAt:null,errorCode:'github_dispatch_unknown'};
+  const open=row.state==='confirmed'||row.state==='claimed';
+  const runTerminal=['succeeded','failed','indeterminate','cancelled'].includes(runOutcome);
+  const past=now>=deadlineAt;
+  const timedOut=runOutcome==='indeterminate'&&runError==='github_callback_unconfirmed'||past;
+  if(receipt&&runOutcome!=='indeterminate'&&runOutcome!=='cancelled')
+    return {...base,phase:'external_terminal'};
+  if(open&&!receipt&&!runTerminal&&!past&&row.state==='claimed')
+    return {...base,phase:'pending',receiptOutcome:null};
+  if(open&&!receipt&&!runTerminal&&!past)
+    return {...base,phase:'dispatch_accepted',receiptOutcome:null};
+  if(open&&!receipt)
+    return {...base,phase:'indeterminate',receiptOutcome:null,timedOut,
+      errorCode:'github_callback_unconfirmed'};
+  return {...base,phase:'indeterminate',receiptOutcome:null,timedOut,
+    errorCode:runError??'github_callback_unconfirmed'};
+}
+
+function view(fact:GithubAsyncFact):GithubAsyncAction|null{
+  if(fact.phase==='rejected')return null;
+  return {
+    phase:fact.phase,attempt_id:fact.attemptId,
+    external_execution_id:fact.externalExecutionId,
+    receipt_outcome:fact.phase==='external_terminal'?fact.receiptOutcome:null,
+    deadline_at:fact.deadlineAt,timed_out:fact.timedOut,
+    ...(fact.headSha?{head_sha:fact.headSha}:{}),
+  };
+}
+
+function visibleHeadSha(row:AttemptFactRow):string|null{
+  const stored=githubHeadSha(row.head_sha);
+  if(stored)return stored;
+  if(!row.result_json)return null;
+  try{
+    const parsed=JSON.parse(row.result_json) as {run?:{head_sha?:unknown}};
+    return githubHeadSha(parsed?.run?.head_sha)??null;
+  }catch{return null;}
+}
+
+async function facts(db:AttemptDatabase,runId:string,stepId:string|undefined,now:number,runOutcome:string,runError:string|null){
+  const sql=stepId?FACT_SQL+' WHERE a.run_id=? AND a.step_id=?':FACT_SQL+' WHERE a.run_id=?';
+  const bound=db.prepare(sql).bind(...(stepId?[runId,stepId]:[runId]));
+  const rows=await bound.all<AttemptFactRow>();
+  return rows.results.map(row=>classify(row,now,runOutcome,runError));
+}
+
+/** Read the durable Attempt and receipt. No network and no second dispatch. */
+export async function readGithubAsyncFact(
+  db:AttemptDatabase,runId:string,stepId:string,now:number,
+  runOutcome='running',runError:string|null=null,
+):Promise<GithubAsyncFact|null>{
+  const [fact]=await facts(db,runId,stepId,now,runOutcome,runError);
+  return fact??null;
+}
+
+export async function githubAsyncViewsForRun(
+  db:AttemptDatabase,runId:string,runOutcome:string,runError:string|null,now:number,
+):Promise<Map<string,GithubAsyncAction>>{
+  const map=new Map<string,GithubAsyncAction>();
+  for(const fact of await facts(db,runId,undefined,now,runOutcome,runError)){
+    const action=view(fact);
+    if(action)map.set(fact.stepId,action);
+  }
+  return map;
+}
+
+/**
+ * True only while a confirmed or claimed Attempt is still inside its deadline
+ * and has no receipt. Caller must leave the Run running so replay can resume.
+ */
+export async function githubAsyncAwaitingExternal(db:AttemptDatabase,runId:string,now:number):Promise<boolean>{
+  const open=await facts(db,runId,undefined,now,'running',null);
+  return open.some(fact=>fact.phase==='dispatch_accepted'||fact.phase==='pending');
+}
+
+export type GithubDispatchRequest=
+  | {capabilityId:'github.workflow.check'}
+  | {capabilityId:typeof REGISTERED_GITHUB_ACTION.id;inputs:{subject:string}};
+
+/**
+ * One dispatch for a new Attempt. An existing row is never dispatched again,
+ * including created, unknown, confirmed, claimed, rejected, and timed out.
+ */
+export async function dispatchOrResumeGithubAttempt(
+  db:AttemptDatabase,env:ExecutorEnv,runId:string,stepId:string,
+  request:GithubDispatchRequest={capabilityId:'github.workflow.check'},
+):Promise<GithubDispatchStep>{
+  const existing=await db.prepare(
+    'SELECT attempt_id,state FROM step_attempts WHERE run_id=? AND step_id=?'
+  ).bind(runId,stepId).first<{attempt_id:string;state:string}>();
+  if(existing){
+    if(existing.state==='created')
+      await recordGithubDispatchResult(db,existing.attempt_id,{status:'dispatch_unknown'});
+    return {disposition:'continued'};
+  }
+  const attemptId=crypto.randomUUID(),dispatchId=crypto.randomUUID();
+  try{
+    const registered=request.capabilityId===REGISTERED_GITHUB_ACTION.id;
+    const executor=registered?null:selectedGithubExecutor(env);
+    const action=REGISTERED_GITHUB_ACTION;
+    await registerGithubAttempt(db,registered?{
+      attemptId,dispatchId,runId,stepId,capabilityId:action.id,
+      repository:action.repository,repositoryId:action.repositoryId,ref:action.ref,
+      workflowRef:registeredWorkflowRef(),audience:action.audience,
+    }:{
+      attemptId,dispatchId,runId,stepId,capabilityId:'github.workflow.check',
+      repository:env.GITHUB_EXECUTOR_REPOSITORY!,
+      repositoryId:env.GITHUB_EXECUTOR_REPOSITORY_ID!,
+      ref:env.GITHUB_EXECUTOR_REF!,
+      workflowRef:env.GITHUB_EXECUTOR_REPOSITORY+
+        '/.github/workflows/'+executor!.workflow+'@'+env.GITHUB_EXECUTOR_REF,
+      audience:env.GITHUB_EXECUTOR_AUDIENCE!,
+    });
+    const result:DispatchOutcome=request.capabilityId===REGISTERED_GITHUB_ACTION.id
+      ?await dispatchAllowListedGithubAction(request.inputs,{attemptId,dispatchId},env.WORKFLOW_EXECUTOR_GITHUB_TOKEN!)
+      :await dispatchGithubAttempt({
+        repository:env.GITHUB_EXECUTOR_REPOSITORY!,
+        ref:env.GITHUB_EXECUTOR_REF!,
+        workflow:executor!.workflow,
+        ...(executor!.workerName?{workerName:executor!.workerName}:{}),
+        dispatchToken:env.WORKFLOW_EXECUTOR_GITHUB_TOKEN!,
+      },{attemptId,dispatchId,capabilityId:'github.workflow.check'});
+    const persisted=await recordGithubDispatchResult(db,attemptId,result);
+    if(!persisted)throw Error('dispatch_ack_not_persisted');
+    if(result.status==='rejected')
+      return {disposition:'rejected',httpStatus:result.httpStatus,reason:result.reason};
+    return {disposition:'continued'};
+  }catch(error){
+    const row=await db.prepare(
+      'SELECT attempt_id,state FROM step_attempts WHERE run_id=? AND step_id=?'
+    ).bind(runId,stepId).first<{attempt_id:string;state:string}>();
+    if(!row)throw error;
+    if(row.state==='created')
+      await recordGithubDispatchResult(db,row.attempt_id,{status:'dispatch_unknown'}).catch(()=>{});
+    return {disposition:'continued'};
+  }
+}
+
+type ObservationRow={
+  attempt_id:string;state:string;capability_id:string;candidate_run_id:number|null;
+  candidate_run_attempt:number|null;repository:string;workflow_ref:string;ref:string;
+};
+
+/** Read the confirmed allow-listed run once. Does not dispatch. */
+export async function observeAllowListedGithubRun(
+  db:AttemptDatabase,env:ExecutorEnv,runId:string,stepId:string,
+):Promise<void>{
+  const row=await db.prepare(`SELECT attempt_id,state,capability_id,candidate_run_id,
+    candidate_run_attempt,repository,workflow_ref,ref FROM step_attempts
+    WHERE run_id=? AND step_id=?`).bind(runId,stepId).first<ObservationRow>();
+  const action=REGISTERED_GITHUB_ACTION;
+  if(!row||row.capability_id!==action.id||(row.state!=='confirmed'&&row.state!=='claimed')||
+     row.candidate_run_id==null||row.candidate_run_attempt!==1||
+     row.repository!==action.repository||row.ref!==action.ref||
+     row.workflow_ref!==registeredWorkflowRef()||!env.WORKFLOW_EXECUTOR_GITHUB_TOKEN)
+    return;
+  const receipt=await db.prepare('SELECT callback_id FROM callback_receipts WHERE attempt_id=?')
+    .bind(row.attempt_id).first<{callback_id:string}>();
+  if(receipt)return;
+  const observed=await readAllowListedGithubExecution(row.candidate_run_id,env.WORKFLOW_EXECUTOR_GITHUB_TOKEN);
+  if(observed.status!=='inconclusive'&&observed.headSha)
+    await persistGithubHeadSha(db,row.attempt_id,observed.headSha);
+  if(observed.status!=='completed')return;
+  await recordGithubRunObservation(db,row.attempt_id,{
+    runId:row.candidate_run_id,repository:action.repository,workflowRef:registeredWorkflowRef(),
+    ref:action.ref,capabilityId:action.id,
+  },{outcome:observed.outcome,result:observed.result});
+}
+
+export function githubAsyncOutcome(fact:GithubAsyncFact):{status:'succeeded'|'failed'|'indeterminate';output?:unknown;error_code?:string}|null{
+  if(fact.phase==='dispatch_accepted'||fact.phase==='pending')return null;
+  if(fact.phase==='rejected')
+    return {status:'failed',error_code:fact.errorCode??'github_dispatch_rejected_unknown_unknown'};
+  if(fact.phase==='external_terminal'&&fact.receiptOutcome==='failed')
+    return {status:'failed',error_code:'github_job_failed'};
+  if(fact.phase==='external_terminal')
+    return {status:'succeeded'};
+  return {status:'indeterminate',error_code:fact.errorCode??'github_dispatch_unknown'};
+}

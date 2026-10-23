@@ -49,16 +49,13 @@ on:
         required: false
         type: boolean
         default: false
-      mcp_portal_target:
-        description: Portal for the read-only MCP probe (no deployment)
-        required: false
-        type: choice
-        options:
-          - test
-          - production
-        default: test
       mcp_cloud_e2e:
         description: Create, test and delete isolated MCP Worker, Workflow and D1 (never production)
+        required: false
+        type: boolean
+        default: false
+      mcp_cron_e2e:
+        description: Real Cloudflare Cron -> D1 admission -> Workflow result on disposable resources only
         required: false
         type: boolean
         default: false
@@ -129,7 +126,7 @@ jobs:
     if: >-
       ${{ !(github.event_name == 'workflow_dispatch' &&
             github.ref == 'refs/heads/wip/workflow-mcp-public-readonly' &&
-            (inputs.mcp_portal_probe == true || inputs.mcp_cloud_e2e == true)) &&
+            (inputs.mcp_portal_probe == true || inputs.mcp_cloud_e2e == true || inputs.mcp_cron_e2e == true)) &&
           !(github.event_name == 'workflow_dispatch' &&
             github.ref == 'refs/heads/wip/workflow-github-executor' &&
             (inputs.github_oidc_probe == true ||
@@ -320,6 +317,7 @@ jobs:
           inputs.github_production_smoke != true &&
           inputs.mcp_portal_probe != true &&
           inputs.mcp_cloud_e2e != true &&
+          inputs.mcp_cron_e2e != true &&
           inputs.github_oidc_probe != true &&
           inputs.github_full_dispatch != true &&
           inputs.github_auth_compare != true &&
@@ -474,6 +472,20 @@ jobs:
              (SELECT count(*) FROM d1_migrations WHERE name='0003_s3_attempt_claim.sql') AS migration_v3,
              (SELECT count(*) FROM d1_migrations WHERE name='0004_s3_callback_receipts.sql') AS migration_v4,
              (SELECT count(*) FROM d1_migrations WHERE name='0005_github_workflow_check.sql') AS migration_v5,
+             (SELECT count(*) FROM d1_migrations WHERE name='0006_github_registered_action.sql') AS migration_v6,
+             (SELECT count(*) FROM d1_migrations WHERE name='0007_run_cancel.sql') AS migration_v7,
+             (SELECT count(*) FROM d1_migrations WHERE name='0008_grant_revocation.sql') AS migration_v8,
+             (SELECT count(*) FROM d1_migrations WHERE name='0009_runtime_approval.sql') AS migration_v9,
+             (SELECT count(*) FROM d1_migrations WHERE name='0010_child_run.sql') AS migration_v10,
+             (SELECT count(*) FROM d1_migrations WHERE name='0011_cron_due.sql') AS migration_v11,
+             (SELECT count(*) FROM d1_migrations WHERE name='0012_cron_due_bounds.sql') AS migration_v12,
+             (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='cron_due') AS cron_due_table,
+             (SELECT count(*) FROM sqlite_master WHERE type='index' AND name='cron_due_order_idx') AS cron_due_order_idx,
+             (SELECT count(*) FROM sqlite_master WHERE type='index' AND name='runs_cancel_reconcile_idx') AS runs_cancel_reconcile_idx,
+             (SELECT count(*) FROM pragma_table_info('runs') WHERE name='cancel_requested_at') AS cancel_column,
+             (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='runtime_approvals') AS approval_table,
+             (SELECT count(*) FROM pragma_table_info('runs') WHERE name='parent_run_id') AS child_column,
+             (SELECT count(*) FROM pragma_table_info('step_attempts') WHERE name='head_sha') AS head_sha_column,
              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='step_attempts') AS attempt_table,
              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='callback_receipts') AS receipt_table,
              (SELECT count(*) FROM pragma_table_info('runs') WHERE name='native_complete_seen_at') AS native_column,
@@ -504,6 +516,20 @@ jobs:
               (SELECT count(*) FROM d1_migrations WHERE name='0003_s3_attempt_claim.sql') AS migration_v3,
               (SELECT count(*) FROM d1_migrations WHERE name='0004_s3_callback_receipts.sql') AS migration_v4,
              (SELECT count(*) FROM d1_migrations WHERE name='0005_github_workflow_check.sql') AS migration_v5,
+             (SELECT count(*) FROM d1_migrations WHERE name='0006_github_registered_action.sql') AS migration_v6,
+             (SELECT count(*) FROM d1_migrations WHERE name='0007_run_cancel.sql') AS migration_v7,
+             (SELECT count(*) FROM d1_migrations WHERE name='0008_grant_revocation.sql') AS migration_v8,
+             (SELECT count(*) FROM d1_migrations WHERE name='0009_runtime_approval.sql') AS migration_v9,
+             (SELECT count(*) FROM d1_migrations WHERE name='0010_child_run.sql') AS migration_v10,
+             (SELECT count(*) FROM d1_migrations WHERE name='0011_cron_due.sql') AS migration_v11,
+             (SELECT count(*) FROM d1_migrations WHERE name='0012_cron_due_bounds.sql') AS migration_v12,
+             (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='cron_due') AS cron_due_table,
+             (SELECT count(*) FROM sqlite_master WHERE type='index' AND name='cron_due_order_idx') AS cron_due_order_idx,
+             (SELECT count(*) FROM sqlite_master WHERE type='index' AND name='runs_cancel_reconcile_idx') AS runs_cancel_reconcile_idx,
+             (SELECT count(*) FROM pragma_table_info('runs') WHERE name='cancel_requested_at') AS cancel_column,
+             (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='runtime_approvals') AS approval_table,
+             (SELECT count(*) FROM pragma_table_info('runs') WHERE name='parent_run_id') AS child_column,
+             (SELECT count(*) FROM pragma_table_info('step_attempts') WHERE name='head_sha') AS head_sha_column,
               (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='step_attempts') AS attempt_table,
               (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='callback_receipts') AS receipt_table,
               (SELECT count(*) FROM pragma_table_info('runs') WHERE name='native_complete_seen_at') AS native_column,
@@ -652,6 +678,7 @@ jobs:
           inputs.worker == 'workflow-mcp-worker' &&
           inputs.smoke_only == true &&
           inputs.deploy_to_production != true &&
+          inputs.mcp_cron_e2e != true &&
           (inputs.mcp_production_smoke != true || inputs.github_production_smoke != true) &&
           needs.checks.result == 'success' }}
     runs-on: ubuntu-latest
@@ -694,6 +721,7 @@ jobs:
           inputs.worker == 'workflow-mcp-worker' &&
           inputs.mcp_portal_probe == true &&
           inputs.deploy_to_production != true &&
+          inputs.mcp_cron_e2e != true &&
           inputs.smoke_only != true }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -702,7 +730,6 @@ jobs:
     env:
       MCP_PORTAL_CLIENT_ID: ${{ secrets.MCP_PORTAL_CLIENT_ID }}
       MCP_PORTAL_CLIENT_SECRET: ${{ secrets.MCP_PORTAL_CLIENT_SECRET }}
-      MCP_PORTAL_TARGET: ${{ inputs.mcp_portal_target }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -726,6 +753,7 @@ jobs:
           inputs.worker == 'workflow-mcp-worker' &&
           inputs.mcp_cloud_e2e == true &&
           inputs.mcp_portal_probe != true &&
+          inputs.mcp_cron_e2e != true &&
           inputs.smoke_only != true }}
     runs-on: ubuntu-latest
     timeout-minutes: 12
@@ -752,6 +780,48 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Verify disposable Workflow, Portal and IMA; clean all ephemeral resources
+        run: node --experimental-strip-types apps/workflow-mcp-worker/tests/mcp-portal-cloud-e2e.mjs
+
+  workflow-mcp-isolated-cron-e2e:
+    name: Isolated real Cloudflare Cron -> Workflow result (auto-cleanup)
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/wip/workflow-mcp-public-readonly' &&
+          inputs.worker == 'workflow-mcp-worker' &&
+          inputs.mcp_cron_e2e == true &&
+          inputs.mcp_portal_probe != true &&
+          inputs.mcp_cloud_e2e != true &&
+          inputs.smoke_only != true &&
+          inputs.mcp_production_smoke != true &&
+          inputs.github_production_smoke != true &&
+          inputs.deploy_to_production != true &&
+          inputs.workflow_portal_register != true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 26
+    environment:
+      name: workflow-mcp-worker
+    concurrency:
+      group: workflow-mcp-isolated-cron-e2e
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      MCP_CRON_E2E: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Verify real platform Cron, D1 admission and Workflow result; clean all ephemeral resources
         run: node --experimental-strip-types apps/workflow-mcp-worker/tests/mcp-portal-cloud-e2e.mjs
 
   workflow-github-isolated-oidc:
@@ -986,6 +1056,7 @@ jobs:
           inputs.smoke_only != true &&
           inputs.mcp_portal_probe != true &&
           inputs.mcp_cloud_e2e != true &&
+          inputs.mcp_cron_e2e != true &&
           inputs.github_oidc_probe != true &&
           inputs.github_full_dispatch != true &&
           inputs.github_auth_compare != true &&

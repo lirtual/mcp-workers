@@ -4,7 +4,7 @@ import {randomBytes,randomUUID,createHash} from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 import {writeFileSync,unlinkSync} from 'node:fs';
 import {Client,StreamableHTTPClientTransport} from '@modelcontextprotocol/client';
-import {TRUSTED_PORTAL_ENDPOINT,scopedPublicMcpFetch} from '../src/mcp-public-fetch.ts';
+import {PORTAL_ENDPOINT,scopedPublicMcpFetch} from '../src/mcp-public-fetch.ts';
 import {toolSchemaDigest} from '../src/plan.ts';
 const need=k=>{assert.ok(process.env[k],'Missing '+k);return process.env[k]};
 const cf=need('CLOUDFLARE_API_TOKEN'),account=need('CLOUDFLARE_ACCOUNT_ID');
@@ -41,7 +41,7 @@ function wr(args,input){
 function mcp(url,options){const client=new Client({name:'isolated-s2',version:'1'});return {client,transport:new StreamableHTTPClientTransport(new URL(url),options)};}
 async function tool(name,args,expect){const r=await owner.callTool({name,arguments:args});assert.equal(r.content?.[0]?.type,'text');const v=JSON.parse(r.content[0].text);if(expect){assert.equal(r.isError,true);assert.equal(v.error,expect);}else assert.notEqual(r.isError,true,name+' returned error');return v;}
 async function run(){
-  portal=mcp(TRUSTED_PORTAL_ENDPOINT,{fetch:scopedPublicMcpFetch(TRUSTED_PORTAL_ENDPOINT,fetch,pair)});
+  portal=mcp(PORTAL_ENDPOINT,{fetch:scopedPublicMcpFetch(PORTAL_ENDPOINT,fetch,pair)});
   await portal.client.connect(portal.transport);
   const cand=(await portal.client.listTools()).tools.find(t=>t.name==='ima_list_notebooks');
   assert.ok(cand&&cand.annotations?.readOnlyHint===true&&cand.annotations?.destructiveHint!==true,'IMA read-only contract missing');
@@ -52,7 +52,7 @@ async function run(){
   }
   const created=await api('POST','/accounts/'+account+'/d1/database',{name});dbId=created.uuid;
   assert.match(dbId,/^[a-f0-9-]{36}$/i);console.log('DISPOSABLE_DB_CREATED',name);
-  writeFileSync(new URL('../'+file,import.meta.url),JSON.stringify({name,main:'tests/fixtures/github-product-test-entry.ts',compatibility_date:'2026-09-10',workers_dev:true,preview_urls:false,keep_vars:false,vars:{MCP_PORTAL_ENDPOINT:TRUSTED_PORTAL_ENDPOINT,
+  writeFileSync(new URL('../'+file,import.meta.url),JSON.stringify({name,main:'tests/fixtures/github-product-test-entry.ts',compatibility_date:'2026-09-10',workers_dev:true,preview_urls:false,keep_vars:false,vars:{MCP_PORTAL_ENDPOINT:PORTAL_ENDPOINT,
  GITHUB_EXECUTOR_REPOSITORY:process.env.GITHUB_REPOSITORY,
  GITHUB_EXECUTOR_REPOSITORY_ID:process.env.GITHUB_REPOSITORY_ID,
  GITHUB_EXECUTOR_REF:process.env.GITHUB_REF,
@@ -118,7 +118,7 @@ async function run(){
   }assert.ok(connected,'Isolated Worker unavailable');
   const definition={version:1,name:'isolated-mcp-github-'+suffix,steps:[
     {id:'read',uses:'mcp.call',with:{
-      endpoint:TRUSTED_PORTAL_ENDPOINT,tool:'ima_list_notebooks',scope:'read',
+      endpoint:PORTAL_ENDPOINT,tool:'ima_list_notebooks',scope:'read',
       input_schema:cand.inputSchema,
       ...(cand.outputSchema?{output_schema:cand.outputSchema}:{}),arguments:{limit:1}}},
     {id:'heavy',needs:['read'],uses:'github.run',
@@ -132,7 +132,7 @@ async function run(){
   assert.equal(validation.required_approvals?.length,1);
   assert.equal(validation.requires_heavy_execution_approval,true);
   assert.deepEqual(validation.required_approvals[0],{
-    endpoint:TRUSTED_PORTAL_ENDPOINT,tool:'ima_list_notebooks',scope:'read',
+    endpoint:PORTAL_ENDPOINT,tool:'ima_list_notebooks',scope:'read',
     schema_digest:await toolSchemaDigest(cand.inputSchema,cand.outputSchema)});
   const base={workflow_id:draft.workflow_id,expected_revision:1};
   await tool('workflow_publish',{...base,

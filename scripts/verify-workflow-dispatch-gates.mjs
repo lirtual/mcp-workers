@@ -22,6 +22,7 @@ for(const clause of [
   'inputs.deploy_to_production == true',
   'inputs.smoke_only != true',
   'inputs.workflow_portal_register != true',
+  'inputs.mcp_cron_e2e != true',
   "needs.checks.result == 'success'",
 ])assert.ok(release.includes(clause),'Unsafe production gate: '+clause);
 assert.match(source,/      deploy_to_production:\n[\s\S]*?        default: false/);
@@ -35,6 +36,7 @@ for(const clause of [
   'inputs.workflow_portal_register == true',
   'inputs.deploy_to_production != true',
   'inputs.smoke_only != true',
+  'inputs.mcp_cron_e2e != true',
   "needs.checks.result == 'success'",
 ])assert.ok(portal.includes(clause),'Unsafe Portal registration: '+clause);
 assert.ok(source.includes('run: node scripts/register-workflow-portal.mjs'));
@@ -45,6 +47,7 @@ const smoke=job('workflow-production-smoke').gate;
 for(const clause of [
   'inputs.smoke_only == true',
   'inputs.deploy_to_production != true',
+  'inputs.mcp_cron_e2e != true',
   '(inputs.mcp_production_smoke != true || inputs.github_production_smoke != true)',
 ])assert.ok(smoke.includes(clause),'Unsafe smoke gate: '+clause);
 assert.ok(source.includes('WORKFLOW_GITHUB_SMOKE: '+dollar+'{{ inputs.github_production_smoke }}'));
@@ -54,7 +57,35 @@ for(const clause of [
   "github.ref == 'refs/heads/main'",
   'inputs.mcp_portal_probe == true',
   'inputs.deploy_to_production != true',
+  'inputs.mcp_cron_e2e != true',
 ])assert.ok(probe.includes(clause),'Unsafe Portal probe gate: '+clause);
+
+assert.match(source,/      mcp_cron_e2e:\n[\s\S]*?        type: boolean\n        default: false/);
+const cron=job('workflow-mcp-isolated-cron-e2e');
+for(const clause of [
+  "github.event_name == 'workflow_dispatch'",
+  "github.ref == 'refs/heads/wip/workflow-mcp-public-readonly'",
+  "inputs.worker == 'workflow-mcp-worker'",
+  'inputs.mcp_cron_e2e == true',
+  'inputs.mcp_portal_probe != true',
+  'inputs.mcp_cloud_e2e != true',
+  'inputs.smoke_only != true',
+  'inputs.mcp_production_smoke != true',
+  'inputs.github_production_smoke != true',
+  'inputs.deploy_to_production != true',
+  'inputs.workflow_portal_register != true',
+])assert.ok(cron.gate.includes(clause),'Unsafe isolated Cron E2E gate: '+clause);
+assert.ok(cron.content.includes('timeout-minutes: 26'),'Cron E2E needs propagation time and cleanup reserve');
+assert.ok(cron.content.includes("MCP_CRON_E2E: 'true'"));
+assert.ok(cron.content.includes('mcp-portal-cloud-e2e.mjs'));
+assert.ok(cron.content.includes('CLOUDFLARE_API_TOKEN: '+dollar+'{{ secrets.CLOUDFLARE_API_TOKEN }}'));
+assert.ok(!cron.content.includes('MCP_PORTAL_CLIENT_SECRET:'));
+assert.ok(!cron.content.includes('WORKFLOW_EXECUTOR_GITHUB_TOKEN:'));
+assert.ok(!cron.content.includes('production-smoke.mjs'));
+const checks=job('checks').content;
+assert.ok(checks.includes('inputs.mcp_cron_e2e == true'),'Cron cloud dispatch must skip generic application checks');
+assert.ok(source.includes("inputs.mcp_cloud_e2e == true &&\n          inputs.mcp_portal_probe != true &&\n          inputs.mcp_cron_e2e != true"),
+  'Cron E2E must not share the existing IMA cloud acceptance job');
 
 for(const key of ['MCP_PORTAL_CLIENT_ID','MCP_PORTAL_CLIENT_SECRET','WORKFLOW_EXECUTOR_GITHUB_TOKEN']){
   assert.ok(source.includes(key+': '+dollar+'{{ secrets.'+key+' }}'),

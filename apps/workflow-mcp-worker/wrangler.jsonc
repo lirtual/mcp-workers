@@ -13,5 +13,6 @@
       "database_id": "c76850db-b5e3-4128-9150-849a1c9e8d74", "migrations_dir": "migrations" }
   ],
   "workflows": [{ "name": "workflow-mcp-runner", "binding": "WORKFLOW", "class_name": "WorkflowRunner" }],
+  "triggers": { "crons": ["* * * * *"] },
   "secrets": { "required": ["MCP_ACCESS_TOKEN"] }
 }

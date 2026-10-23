@@ -359,11 +359,50 @@ test("Workflow remote D1 readback blocks missing migrations, nonempty first-run 
   assert.throws(()=>verifyWorkflowD1Readiness(result(row),true),/schema migrations/);
   const previous = {...row,migration_count:4,migration_v3:1,migration_v4:1,
     attempt_table:1,receipt_table:1};
-  const migrated = {...previous,migration_count:5,migration_v5:1};
+  const migrated = {...previous,migration_count:5,migration_v5:1,migration_v6:0,migration_v7:0};
+  const registered = {...migrated,migration_count:6,migration_v6:1,migration_v7:0,migration_v8:0};
+  const cancelled = {...registered,migration_count:7,migration_v7:1,migration_v8:0};
+  const stopped = {...cancelled,migration_count:8,migration_v8:1,migration_v9:0,migration_v10:0,
+    cancel_column:1,approval_table:0,child_column:0,head_sha_column:0};
+  const approvalOnly = {...stopped,migration_count:9,migration_v9:1,migration_v10:0,approval_table:1};
+  const childOnly = {...approvalOnly,migration_count:10,migration_v10:1,approval_table:1,
+    child_column:1,head_sha_column:1,migration_v11:0,cron_due_table:0};
+  const cronDue = {...childOnly,migration_count:11,migration_v11:1,cron_due_table:1,
+    migration_v12:0,cron_due_order_idx:0,runs_cancel_reconcile_idx:0};
+  const current = {...cronDue,migration_count:12,migration_v12:1,
+    cron_due_order_idx:1,runs_cancel_reconcile_idx:1};
   assert.equal(verifyWorkflowD1Readiness(result(previous),false),true);
   assert.throws(()=>verifyWorkflowD1Readiness(result(previous),false,true),/schema migrations/);
   assert.equal(verifyWorkflowD1Readiness(result(migrated),false),true);
-  assert.equal(verifyWorkflowD1Readiness(result(migrated),false,true),true);
+  assert.throws(()=>verifyWorkflowD1Readiness(result(migrated),false,true),/schema migrations/);
+  assert.equal(verifyWorkflowD1Readiness(result(registered),false),true);
+  assert.throws(()=>verifyWorkflowD1Readiness(result(registered),false,true),/schema migrations/);
+  assert.equal(verifyWorkflowD1Readiness(result(cancelled),false),true);
+  assert.throws(()=>verifyWorkflowD1Readiness(result(cancelled),false,true),/schema migrations/);
+  assert.equal(verifyWorkflowD1Readiness(result(stopped),false),true);
+  assert.throws(()=>verifyWorkflowD1Readiness(result(stopped),false,true),/schema migrations/);
+  assert.equal(verifyWorkflowD1Readiness(result(approvalOnly),false),true);
+  assert.throws(()=>verifyWorkflowD1Readiness(result(approvalOnly),false,true),/schema migrations/);
+  assert.equal(verifyWorkflowD1Readiness(result(childOnly),false),true);
+  assert.throws(()=>verifyWorkflowD1Readiness(result(childOnly),false,true),/schema migrations/);
+  assert.equal(verifyWorkflowD1Readiness(result(cronDue),false),true);
+  assert.throws(()=>verifyWorkflowD1Readiness(result(cronDue),false,true),/schema migrations/);
+  assert.equal(verifyWorkflowD1Readiness(result(current),false),true);
+  assert.equal(verifyWorkflowD1Readiness(result(current),false,true),true);
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...current,migration_count:11,migration_v12:0,
+    cron_due_order_idx:0,runs_cancel_reconcile_idx:0}),false,true),/schema migrations/);
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...current,cron_due_order_idx:0}),false,true),/schema migrations/);
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...current,runs_cancel_reconcile_idx:0}),false,true),/schema migrations/);
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...current,migration_count:9,migration_v10:0,child_column:0,head_sha_column:0}),false,true),
+    /schema migrations/);
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...current,child_column:0}),false,true),
+    /schema migrations/);
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...current,head_sha_column:0}),false,true),
+    /schema migrations/);
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...current,migration_count:13}),false),
+    /schema migrations/);
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...current,cron_due_table:0}),false,true),
+    /schema migrations/);
   assert.throws(()=>verifyWorkflowD1Readiness(result(row),false,true),
     /schema migrations/);
   assert.throws(()=>verifyWorkflowD1Readiness(result({...migrated,migration_v4:0}),false),
@@ -372,9 +411,11 @@ test("Workflow remote D1 readback blocks missing migrations, nonempty first-run 
     /schema migrations/);
   assert.throws(()=>verifyWorkflowD1Readiness(result({...row,migration_count:3,migration_v3:1,
     attempt_table:1}),false),/schema migrations/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...row,migration_count:6}),false),
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...row,migration_count:9}),false),
     /schema migrations/);
-  assert.equal(verifyWorkflowD1Readiness(result({...migrated,run_count:3,workflow_count:1}),false),true);
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...current,cancel_column:0}),false,true),
+    /schema migrations/);
+  assert.equal(verifyWorkflowD1Readiness(result({...current,run_count:3,workflow_count:1}),false),true);
   assert.throws(()=>verifyWorkflowD1Readiness(result({...row,migration_v2:0}),false),/schema migrations/);
   assert.throws(()=>verifyWorkflowD1Readiness(result({...migrated,active_runs:1}),false),/active or indeterminate/);
   assert.throws(()=>verifyWorkflowD1Readiness(result({...migrated,run_count:1}),true),/empty production/);
@@ -446,7 +487,7 @@ test("Workflow release pins the exact Portal and rejects target drift",()=>{
   const check=(updated)=>verifyBindings("workflow-mcp-worker",{...settings,bindings:updated},secrets,{mode:"readback"});
   assert.equal(check(bindings),true);
   assert.throws(()=>check(bindings.map(x=>x.name==="MCP_PORTAL_ENDPOINT"
-    ?{...x,text:"https://test-mcp.lirtual.dpdns.org/mcp"}:x)),/pinned Workflow MCP Portal|Pinned Workflow MCP Portal/);
+    ?{...x,text:"https://unapproved.example.org/mcp"}:x)),/pinned Workflow MCP Portal|Pinned Workflow MCP Portal/);
   assert.throws(()=>check([...bindings,{name:"MCP_DIRECT_TARGETS_ENABLED",type:"plain_text",text:"true"}]),
     /Obsolete stage flag/);
 });
