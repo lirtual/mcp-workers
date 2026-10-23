@@ -344,7 +344,7 @@ test('copy feedback appears in button, resets, and never announces success below
       focus(){},
     };
   }
-  const els = Object.fromEntries(['windows','linux','command','shell-label','message','copy'].map(id=>[id,element()])) as Record<string,FakeElement>;
+  const els = Object.fromEntries(['windows','linux','command','shell-label','message','copy'].map(id=>[id,element()])) as Record<'windows'|'linux'|'command'|'shell-label'|'message'|'copy',FakeElement>;
   const clipboard:string[] = [];
   let rejectCopy=false;
   const pending=new Map<number,()=>void>();
@@ -366,24 +366,24 @@ test('copy feedback appears in button, resets, and never announces success below
   });
   assert.equal(els.windows.attributes['aria-selected'],'true','unknown/mobile defaults to first Windows tab');
   assert.equal(els.copy.textContent,'复制');
-  await els.copy.handlers.click();
+  await els.copy.handlers.click!();
   assert.equal(clipboard[0],'irm https://rca.lirtual.dpdns.org/install.ps1 | iex');
   assert.equal(els.copy.textContent,'已复制');
   assert.equal(els.copy.attributes['aria-label'],'安装命令已复制');
   assert.equal(els.message.textContent,'','no duplicate success label below the button');
   assert.equal(pending.size,1);
-  [...pending.values()][0]();
+  [...pending.values()][0]!();
   assert.equal(els.copy.textContent,'复制','button restores default label');
-  els.linux.handlers.click();
+  els.linux.handlers.click!();
   assert.equal(els.copy.textContent,'复制');
-  await els.copy.handlers.click();
+  await els.copy.handlers.click!();
   assert.equal(clipboard[1],'curl -fsSL https://rca.lirtual.dpdns.org/install.sh | sh');
   assert.equal(els.copy.textContent,'已复制');
-  els.windows.handlers.click();
+  els.windows.handlers.click!();
   assert.equal(els.copy.textContent,'复制','switching platforms clears copied label');
   assert.equal(pending.size,0,'switching platforms cancels previous timer');
   rejectCopy=true;
-  await els.copy.handlers.click();
+  await els.copy.handlers.click!();
   assert.equal(els.copy.textContent,'复制','failed copy is not reported as successful');
   assert.equal(els.message.textContent,'复制失败，请手动选中命令。');
 });
