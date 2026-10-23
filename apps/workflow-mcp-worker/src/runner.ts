@@ -90,7 +90,12 @@ async function runGithubStep(
   if(plan.github_execution_approved!==true)
     return {status:'failed',error_code:'github_execution_approval_required'};
   if(s.with.capability==='github.action') {
-    const request=s.with.action as ReviewedGitHubAction | undefined;
+    const action=s.with.action as (ReviewedGitHubAction & {inputs?:unknown}) | undefined;
+    const request=action?{
+      repository:action.repository,repositoryId:action.repositoryId,
+      workflowId:action.workflowId,workflowPath:action.workflowPath,
+      commitSha:action.commitSha,type:action.type,contractDigest:action.contractDigest,
+    }:undefined;
     if(!request || !isPublishedGitHubActionApproved(plan.github_action_approvals,request))
       return {status:'failed',error_code:'github_action_approval_missing'};
     // The execution path is deliberately closed until the authenticated
