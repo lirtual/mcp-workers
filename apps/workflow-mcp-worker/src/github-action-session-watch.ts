@@ -1,7 +1,7 @@
 import type {WorkflowStep} from 'cloudflare:workers';
 import type {Env} from './store.ts';
 import {reconcilePersistedGitHubActionAttempt} from './github-action-attempt-reconcile.ts';
-import {releaseVerifiedSessionSlot} from './github-action-session.ts';
+import {releaseVerifiedSessionSlot,releaseNeverDispatchedSessionSlot} from './github-action-session.ts';
 import {requestGitHubActionCancellation} from './github-action-cancel.ts';
 
 type Db=Pick<D1Database,'prepare'>;
@@ -60,7 +60,14 @@ export async function watchPersistedSessions(
      ORDER BY s.step_id LIMIT 4`).bind(runId).all<SessionRow & {unused_plan:string}>()).results;
    if(!sessions.length)return 0;
    for(const entry of sessions){
-    if(!entry.attempt_id)continue; // Unconfirmed dispatch: retain slot.
+    if(!entry.attempt_id){
+     // After the parent is terminal and the setup grace has elapsed,
+     // NO registered Attempt is proof no GitHub POST could have occurred.
+     // Live parents and all dispatch_unknown Attempts remain fully reserved.
+     await releaseNeverDispatchedSessionSlot(
+      db,runId,entry.step_id,now()-SESSION_SETUP_GRACE_MS);
+     continue;
+    }
     try{
      await reconcilePersistedGitHubActionAttempt(db,entry.attempt_id,token);
      if(await releaseVerifiedSessionSlot(db,runId,entry.step_id)==='released')
