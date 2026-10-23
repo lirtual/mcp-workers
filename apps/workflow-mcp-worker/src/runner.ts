@@ -1,7 +1,8 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { evaluateArguments, evaluateCondition, toolSchemaDigest } from './plan.ts';
-import type { Plan, Step } from './plan.ts';
+import type { ExprCtx, Plan, Step } from './plan.ts';
+import { LIMITS, NON_EXECUTABLE_PLAN_FIELDS, NON_EXECUTABLE_STEP_FIELDS } from './capabilities.ts';
 import type { Env } from './store.ts';
 import { limitResult } from './store.ts';
 import { registerGithubAttempt,recordGithubDispatchResult } from './github-claim.ts';
@@ -9,6 +10,42 @@ import { dispatchGithubAttempt,selectedGithubExecutor } from './github-dispatch.
 import { scopedPublicMcpFetch, TRUSTED_PORTAL_ENDPOINT, PRODUCTION_PORTAL_ENDPOINT, type PortalServiceToken } from './mcp-public-fetch.ts';
 
 type Outcome={status:'succeeded'|'failed'|'skipped'|'indeterminate';output?:any;error_code?:string};
+function blockedStep(step: Step): boolean {
+  const record=step as Step & Record<string, unknown>;
+  return NON_EXECUTABLE_STEP_FIELDS.some(key=>record[key]!==undefined);
+}
+async function runBoundedLoop(db: Env['DB'], s: Step, runId: string, step: WorkflowStep, ctx: ExprCtx): Promise<Outcome> {
+  const times=s.repeat?.times;
+  if(s.uses!=='flow.repeat'||!s.body||s.body.uses!=='result.emit'||typeof times!=='number'||!Number.isSafeInteger(times)||times<1||times>LIMITS.maxLoopIterations)
+    return {status:'failed',error_code:'unbounded_loop'};
+  if(s.needs.some(need=>ctx.steps[need]?.status!=='succeeded')) return {status:'skipped'};
+  const started=Date.now();
+  let output: unknown;
+  let produced=false;
+  for(let index=0; index<times; index++){
+    if(Date.now()-started>LIMITS.maxLoopDeadlineMs) return {status:'failed',error_code:'loop_deadline_exceeded'};
+    const loopCtx: ExprCtx={
+      inputs: ctx.inputs,
+      steps: produced?{...ctx.steps,[s.id]:{status:'succeeded',output}}:{...ctx.steps},
+      loop:{index},
+    };
+    try{
+      if(s.repeat?.until!==undefined&&evaluateCondition(s.repeat.until,loopCtx)) break;
+      if(s.if!==undefined&&!evaluateCondition(s.if,loopCtx)) continue;
+    }catch{return {status:'failed',error_code:'step_execution_failed'};}
+    const iteration=await step.do('workflow-'+s.id+'-i'+index,{retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},async():Promise<Outcome>=>{
+      try{
+        await db.prepare("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES(?,?,'running',?) ON CONFLICT(run_id,step_id) DO NOTHING")
+          .bind(runId,s.id,now()).run();
+        return {status:'succeeded',output:limitResult(evaluateArguments(s.body?.with.data,loopCtx))};
+      }catch{return {status:'failed',error_code:'step_execution_failed'};}
+    }) as Outcome;
+    if(iteration.status!=='succeeded') return iteration;
+    output=iteration.output;
+    produced=true;
+  }
+  return produced?{status:'succeeded',output}:{status:'skipped'};
+}
 const now=()=>Date.now();
 // A missing Run-input reference must not silently disappear during JSON
 // serialization, changing the meaning of an approved external MCP call.
@@ -170,11 +207,17 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
     if(row.outcome!=='queued'&&row.outcome!=='running')return;
     const version=await db.prepare('SELECT plan FROM workflow_versions WHERE id=?').bind(row.version_id).first<{plan:string}>();
     if(!version)throw Error('version_missing');
-    const plan=JSON.parse(version.plan) as Plan;
-    const ctx:{inputs:Record<string,unknown>;steps:Record<string,Outcome>}={inputs:JSON.parse(row.inputs),steps:{}};
+    const parsed=JSON.parse(version.plan) as Plan & Record<string, unknown>;
+    const plan=parsed;
+    const ctx:ExprCtx={inputs:JSON.parse(row.inputs) as Record<string,unknown>,steps:{}};
     if(row.outcome==='queued'){
       const transition=await db.prepare("UPDATE runs SET outcome='running',updated_at=? WHERE id=? AND outcome='queued'").bind(now(),id).run();
       if(!transition.meta.changes)return;
+    }
+    if(NON_EXECUTABLE_PLAN_FIELDS.some(key=>parsed[key]!==undefined)){
+      await db.prepare("UPDATE runs SET outcome='failed',result='null',error_code='unsupported_capability',updated_at=? WHERE id=? AND outcome='running'")
+        .bind(now(),id).run();
+      return;
     }
     const pending=new Map(plan.steps.map(s=>[s.id,s]));
     let emitted:unknown=null;
@@ -187,7 +230,8 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
         const ready=[...pending.values()].filter(s=>s.needs.every(n=>ctx.steps[n])).slice(0,8);
         if(!ready.length)throw Error('invalid_execution_graph');
         const outcomes=await Promise.all(ready.map(async (s:Step):Promise<Outcome>=>{
-          const result=(s.uses==='github.run'
+          const result=blockedStep(s)?{status:'failed',error_code:'unsupported_capability'} as Outcome
+            : (s.uses==='github.run'
             ? await (async()=>{
               try{
                 await db.prepare("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES(?,?,'running',?) ON CONFLICT(run_id,step_id) DO NOTHING")
@@ -200,6 +244,8 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
                 return {status:'indeterminate',error_code:'github_dispatch_unknown'} as Outcome;
               }
             })()
+            : s.uses==='flow.repeat'||s.repeat!==undefined
+            ? await runBoundedLoop(db,s,id,step,ctx)
             : await step.do('workflow-'+s.id,{retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},async ():Promise<Outcome>=>{
             try{
               // Only an executing callback marks a Step running. Cached replay
@@ -236,7 +282,7 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
           if(outcomes[i].status==='indeterminate'){
             uncertain=true;uncertainCode??=outcomes[i].error_code??'external_outcome_unknown';
           }
-          if(s.uses==='result.emit'&&outcomes[i].status==='succeeded'){emitted=outcomes[i].output;hasEmitted=true;}});
+          if((s.uses==='result.emit'||s.uses==='flow.repeat')&&outcomes[i].status==='succeeded'){emitted=outcomes[i].output;hasEmitted=true;}});
       }
       const output=limitResult(hasEmitted?emitted:ctx.steps[plan.steps.at(-1)!.id]?.output??null);
       await db.prepare("UPDATE runs SET outcome=?,result=?,error_code=?,updated_at=? WHERE id=? AND outcome='running'")

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { compilePlan, evaluateExpression, evaluateArguments, evaluateCondition, canonicalJsonString, PlanError, toolSchemaDigest } from '../src/plan.ts';
-import { capabilityCatalog, supportedCapabilityExamples } from '../src/capabilities.ts';
+import { capabilityCatalog, LIMITS, supportedCapabilityExamples, workflowCapabilities } from '../src/capabilities.ts';
 
 const one = {
   version: 1, name: 'Inspect', steps: [
@@ -214,7 +214,7 @@ test('supported capability examples compile through the real plan compiler', asy
     const github = compiled.plan.steps.find(step => step.uses === 'github.run');
     if (github) assert.deepEqual(github.with, {capability: 'github.workflow.check'});
   }
-  assert.deepEqual([...seen].sort(), ['github.run', 'mcp.call', 'result.emit']);
+  assert.deepEqual([...seen].sort(), ['flow.repeat', 'github.run', 'mcp.call', 'result.emit']);
 });
 
 test('unimplemented capabilities stay unsupported and the compiler reports a precise path', async () => {
@@ -226,7 +226,7 @@ test('unimplemented capabilities stay unsupported and the compiler reports a pre
   assert.deepEqual(unsupported, [
     'trigger.cron', 'trigger.webhook', 'trigger.github_event',
     'action.http', 'action.mcp.write', 'action.shell',
-    'flow.foreach', 'flow.while', 'flow.child_workflow', 'flow.saga',
+    'flow.foreach', 'flow.while', 'flow.nesting', 'flow.dynamic_expansion', 'flow.wait', 'flow.child_workflow', 'flow.saga',
   ]);
   const step = (extra: Record<string, unknown>) => ({version: 1, name: 'Probe', steps: [{id: 'a', uses: 'result.emit', with: {data: 1}, ...extra}]});
   const probes: Array<{definition: unknown; code: string; path: string; suggestion?: RegExp}> = [
@@ -252,5 +252,93 @@ test('unimplemented capabilities stay unsupported and the compiler reports a pre
       assert.doesNotMatch(error.suggestion ?? '', /write|shell|secret|token|skip/i);
       return true;
     });
+  }
+});
+
+const boundedRepeat = {
+  version: 1,
+  name: 'Bounded loop',
+  steps: [
+    {id: 'seed', uses: 'result.emit', with: {data: 'seed'}},
+    {id: 'grow', needs: ['seed'], uses: 'result.emit',
+      repeat: {times: 3, until: {eq: [{ref: 'loop.index'}, 2]}},
+      if: {lt: [{ref: 'loop.index'}, 2]},
+      with: {data: {
+        index: {ref: 'loop.index'},
+        seed: {ref: 'steps.seed.output'},
+        prev: {ref: 'steps.grow.output'},
+      }}},
+  ],
+};
+
+test('an existing static plan keeps its canonical digest', async () => {
+  const compiled = await compilePlan(JSON.stringify(one));
+  assert.equal(compiled.digest, '6cefd7cf044a155631149e7c23cd12ce30b39f31296e5a5b02647efa3a1e6c0f');
+  assert.equal(compiled.plan.steps.some(step => step.uses === 'flow.repeat' || step.repeat !== undefined), false);
+});
+
+test('bounded repeat publishes the compiler budgets and compiles to a closed loop step', async () => {
+  const detail = workflowCapabilities({}, 'flow.repeat');
+  assert.equal(detail.status, 'supported');
+  if (!('limits' in detail) || !detail.limits || !('max_iterations' in detail.limits) || !('example' in detail))
+    throw new Error('flow.repeat detail missing');
+  assert.equal(detail.limits.max_iterations, LIMITS.maxLoopIterations);
+  assert.equal(detail.limits.max_expanded_steps, LIMITS.maxExpandedSteps);
+  assert.equal(detail.limits.max_parallel_steps, LIMITS.maxParallel);
+  assert.equal(detail.limits.max_loop_depth, LIMITS.maxLoopDepth);
+  assert.equal(detail.limits.max_loop_deadline_ms, LIMITS.maxLoopDeadlineMs);
+  assert.equal(LIMITS.maxExpandedSteps <= LIMITS.maxSteps, true);
+  const fromCatalog = await compilePlan(detail.example);
+  const compiled = await compilePlan(boundedRepeat);
+  assert.equal(compiled.digest, fromCatalog.digest);
+  assert.deepEqual(compiled.plan.steps.map(step => step.uses), ['result.emit', 'flow.repeat']);
+  const grow = compiled.plan.steps[1];
+  assert.equal(grow.repeat?.times, 3);
+  assert.equal(grow.body?.uses, 'result.emit');
+  assert.equal('data' in grow.with, false);
+  assert.equal(compiled.plan.steps.length, 2);
+  const maxed = structuredClone(boundedRepeat);
+  const repeated = maxed.steps[1];
+  if (!repeated?.repeat) throw new Error('repeat missing');
+  repeated.repeat.times = LIMITS.maxLoopIterations;
+  assert.equal((await compilePlan(maxed)).plan.steps[1]?.repeat?.times, LIMITS.maxLoopIterations);
+});
+
+test('unbounded loops, dynamic expansion, nesting, and unsafe loop bodies fail validate', async () => {
+  const loop = (repeat: unknown, uses = 'result.emit', input: Record<string, unknown> = {data: 1}) => ({
+    version: 1, name: 'Loop', steps: [{id: 'a', uses, repeat, with: input}],
+  });
+  const probes: Array<{definition: unknown; code: string; path: string}> = [
+    {definition: loop(true), code: 'unbounded_loop', path: '/steps/0/repeat'},
+    {definition: loop({}), code: 'unbounded_loop', path: '/steps/0/repeat/times'},
+    {definition: loop({times: 0}), code: 'unbounded_loop', path: '/steps/0/repeat/times'},
+    {definition: loop({times: -1}), code: 'unbounded_loop', path: '/steps/0/repeat/times'},
+    {definition: loop({times: 1.5}), code: 'unbounded_loop', path: '/steps/0/repeat/times'},
+    {definition: loop({times: '3'}), code: 'unbounded_loop', path: '/steps/0/repeat/times'},
+    {definition: loop({times: {ref: 'inputs.n'}}), code: 'dynamic_expansion', path: '/steps/0/repeat/times'},
+    {definition: loop({times: 2, each: ['a', 'b']}), code: 'dynamic_expansion', path: '/steps/0/repeat/each'},
+    {definition: loop({times: LIMITS.maxLoopIterations + 1}), code: 'loop_budget_exceeded', path: '/steps/0/repeat/times'},
+    {definition: {version: 1, name: 'Wide', steps: Array.from({length: 5}, (_, i) => ({id: 's' + i, uses: 'result.emit', repeat: {times: 8}, with: {data: i}}))}, code: 'loop_budget_exceeded', path: '/steps'},
+    {definition: loop({times: 1, steps: [{id: 'inner', uses: 'result.emit', with: {data: 1}}]}), code: 'loop_nesting_unsupported', path: '/steps/0/repeat/steps'},
+    {definition: {version: 1, name: 'Nest', steps: [{id: 'a', uses: 'result.emit', steps: [], with: {data: 1}}]}, code: 'loop_nesting_unsupported', path: '/steps/0/steps'},
+    {definition: loop({times: 1}, 'mcp.call', {endpoint: 'https://mcp.lirtual.dpdns.org/mcp', tool: 'echo', scope: 'read', input_schema: {type: 'object'}, arguments: {}}), code: 'unsafe_loop_body', path: '/steps/0/repeat'},
+    {definition: loop({times: 1}, 'github.run', {capability: 'github.workflow.check'}), code: 'unsafe_loop_body', path: '/steps/0/repeat'},
+    {definition: loop({times: 1, until: {eq: [{ref: 'loop.index'}, 0]}, wait: 1}), code: 'unsupported_field', path: '/steps/0/repeat/wait'},
+    {definition: {version: 1, name: 'Self', steps: [{id: 'a', uses: 'result.emit', with: {data: {ref: 'steps.a.output'}}}]}, code: 'invalid_step_reference', path: '/steps/0/with/data/ref'},
+    {definition: {version: 1, name: 'Index', steps: [{id: 'a', uses: 'result.emit', with: {data: {ref: 'loop.index'}}}]}, code: 'invalid_reference', path: '/steps/0/with/data/ref'},
+  ];
+  for (const probe of probes) {
+    await assert.rejects(() => compilePlan(probe.definition), (error: unknown) => {
+      assert.ok(error instanceof PlanError, probe.path);
+      assert.equal(error.message.split(':')[0], probe.code, probe.path + ' ' + error.message);
+      assert.equal(error.path, probe.path);
+      assert.doesNotMatch(error.suggestion ?? '', /write|shell|secret|token|skip/i);
+      return true;
+    });
+  }
+  for (const id of ['flow.foreach', 'flow.while', 'flow.nesting', 'flow.dynamic_expansion', 'flow.wait', 'flow.child_workflow', 'flow.saga']) {
+    const entry = workflowCapabilities({}, id);
+    assert.equal(entry.status, 'unsupported', id);
+    assert.equal('example' in entry, false, id);
   }
 });

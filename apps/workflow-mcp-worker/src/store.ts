@@ -82,6 +82,11 @@ function issueMessage(code:string, detail?:string):string{
     case 'invalid_yaml_or_json': return 'The definition is not valid YAML or JSON.';
     case 'invalid_endpoint': return 'The MCP endpoint is not a canonical public HTTPS URL.';
     case 'excessive_parallelism': return `More than ${LIMITS.maxParallel} steps would run at the same time.`;
+    case 'unbounded_loop': return `repeat.times must be an integer from 1 to ${LIMITS.maxLoopIterations}.`;
+    case 'loop_budget_exceeded': return `The loop exceeds ${LIMITS.maxLoopIterations} iterations or ${LIMITS.maxExpandedSteps} expanded steps.`;
+    case 'dynamic_expansion': return 'Dynamic expansion is not implemented.';
+    case 'unsafe_loop_body': return 'Only result.emit can be repeated.';
+    case 'loop_nesting_unsupported': return 'Nested steps and nested loops are not implemented.';
     case 'definition_too_large': return `The definition exceeds ${LIMITS.definitionBytes} bytes.`;
     case 'invalid_condition': return 'if must be a boolean or one condition operator.';
     case 'invalid_dependencies': return 'needs must name unique other steps.';

@@ -2,7 +2,7 @@ import YAML from 'yaml';
 import { publicMcpEndpoint } from './mcp-public-fetch.ts';
 import {
   CONDITION_VALUE_OPS, DEFINITION_KEYS, GITHUB_CAPABILITY_ID, isSupportedUse, LIMITS, MCP_SCOPE,
-  OBJECT_PROTOTYPE_KEYS, RESERVED_EXPRESSION_KEYS, STEP_ID, STEP_KEYS, TOOL_NAME, WITH_KEYS,
+  OBJECT_PROTOTYPE_KEYS, REPEAT_KEYS, RESERVED_EXPRESSION_KEYS, STEP_ID, STEP_KEYS, TOOL_NAME, WITH_KEYS,
 } from './capabilities.ts';
 
 export class PlanError extends Error {
@@ -13,9 +13,17 @@ export class PlanError extends Error {
     super(message); this.name = 'PlanError'; this.path = hint?.path; this.suggestion = hint?.suggestion;
   }
 }
+export type RepeatSpec = {times: number; until?: unknown};
 export type Step = {
-  id: string; uses: 'result.emit' | 'mcp.call' | 'github.run'; needs: string[];
+  id: string; uses: 'result.emit' | 'mcp.call' | 'github.run' | 'flow.repeat'; needs: string[];
   with: Record<string, unknown>; if?: unknown;
+  repeat?: RepeatSpec;
+  body?: {uses: 'result.emit'; with: Record<string, unknown>};
+};
+export type ExprCtx = {
+  inputs: Record<string, unknown>;
+  steps: Record<string, {status: string; output?: unknown}>;
+  loop?: {index: number};
 };
 export type ReadonlyOperation = { endpoint:string; tool:string; scope:'read'; schema_digest:string };
 export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown>; mcp_approvals?: ReadonlyOperation[]; mcp_target_risks_accepted?: true; github_execution_approved?: true };
@@ -33,42 +41,84 @@ function object(value: unknown, message: string, path?: string): Record<string, 
   if(!value || typeof value !== 'object' || Array.isArray(value)) throw new PlanError(message, path === undefined ? undefined : {path});
   return value as Record<string, unknown>;
 }
-function refCheck(ref: string, step?: {id:string;needs:string[]}, path?: string) {
-  const hint = {path, suggestion: 'Use inputs.<id> or steps.<needed-step>.status or steps.<needed-step>.output.'};
+function refCheck(ref: string, step?: {id:string;needs:string[]}, path?: string, allowLoop=false) {
+  const hint = {path, suggestion: allowLoop
+    ? 'Use loop.index, inputs.<id>, steps.<needed-step>.status or output, or steps.<this-step>.output for the previous iteration.'
+    : 'Use inputs.<id> or steps.<needed-step>.status or steps.<needed-step>.output.'};
   const parts=ref.split('.');
+  if(parts[0]==='loop'){
+    if(!allowLoop||parts.length!==2||parts[1]!=='index') throw new PlanError('invalid_reference', hint);
+    return;
+  }
   if(parts.length<2 || parts.slice(1).some(p=>!STEP_ID.test(p)||['__proto__','constructor','prototype'].includes(p))) throw new PlanError('invalid_reference', hint);
   if(parts[0]==='inputs') return;
-  if(parts[0]==='steps' && step && step.needs.includes(parts[1]) && parts.length>=3 && ['status','output'].includes(parts[2])) return;
+  const self=allowLoop&&!!step&&parts[1]===step.id;
+  if(parts[0]==='steps' && step && (step.needs.includes(parts[1])||self) && parts.length>=3 && ['status','output'].includes(parts[2])) return;
   throw new PlanError('invalid_step_reference', hint);
 }
-function expression(v: unknown, step?: {id:string; needs:string[]}, depth=0, opaqueKeys=false, path=''): void {
+function expression(v: unknown, step?: {id:string; needs:string[]}, depth=0, opaqueKeys=false, path='', allowLoop=false): void {
   if(depth>LIMITS.maxExpressionDepth) throw new PlanError('expression_too_deep', {path: path || '/'});
   if(v===null || typeof v==='string'||typeof v==='number'||typeof v==='boolean') return;
   if(Array.isArray(v)) {
     if(v.length>LIMITS.maxArrayLength) throw new PlanError('expression_too_large', {path: path || '/'});
-    for(let index=0; index<v.length; index++) expression(v[index],step,depth+1,opaqueKeys,pointer(path,index));
+    for(let index=0; index<v.length; index++) expression(v[index],step,depth+1,opaqueKeys,pointer(path,index),allowLoop);
     return;
   }
   const o=object(v,'invalid_expression', path || '/');
   const names=Object.keys(o);
   if(names.length===1 && names[0]==='ref'){
-    if(typeof o.ref!=='string') throw new PlanError('invalid_reference', {path: pointer(path,'ref'), suggestion: 'Use inputs.<id> or steps.<needed-step>.status or steps.<needed-step>.output.'});
-    refCheck(o.ref,step,pointer(path,'ref'));return;
+    if(typeof o.ref!=='string') throw new PlanError('invalid_reference', {path: pointer(path,'ref'), suggestion: allowLoop
+      ? 'Use loop.index, inputs.<id>, steps.<needed-step>.status or output, or steps.<this-step>.output for the previous iteration.'
+      : 'Use inputs.<id> or steps.<needed-step>.status or steps.<needed-step>.output.'});
+    refCheck(o.ref,step,pointer(path,'ref'),allowLoop);return;
   }
   if(names.length===1 && (CONDITION_VALUE_OPS as readonly string[]).includes(names[0])) {
     const op=names[0], arg=o[op];
-    if(op==='not'){expression(arg,step,depth+1,opaqueKeys,pointer(path,op));return;}
+    if(op==='not'){expression(arg,step,depth+1,opaqueKeys,pointer(path,op),allowLoop);return;}
     const min=op==='and'||op==='or'?LIMITS.minLogicOperands:LIMITS.comparisonOperands;
     const max=op==='and'||op==='or'?LIMITS.maxLogicOperands:LIMITS.comparisonOperands;
     if(!Array.isArray(arg)||arg.length<min||arg.length>max)throw new PlanError('invalid_operator', {path: pointer(path,op)});
-    for(let index=0; index<arg.length; index++) expression(arg[index],step,depth+1,opaqueKeys,pointer(pointer(path,op),index));
+    for(let index=0; index<arg.length; index++) expression(arg[index],step,depth+1,opaqueKeys,pointer(pointer(path,op),index),allowLoop);
     return;
   }
   for(const [name,x] of Object.entries(o)){
     if(name==='__proto__'||name==='prototype'||name==='constructor')throw new PlanError('invalid_argument_key', {path: pointer(path,name)});
     if(!opaqueKeys&&RESERVED.has(name.toLowerCase()))throw new PlanError('unsafe_expression', {path: pointer(path,name), suggestion: 'Remove this expression field.'});
-    expression(x,step,depth+1,opaqueKeys,pointer(path,name));
+    expression(x,step,depth+1,opaqueKeys,pointer(path,name),allowLoop);
   }
+}
+function assertCondition(value: unknown, path: string) {
+  const op=value && typeof value==='object' && !Array.isArray(value)?Object.keys(value):[];
+  if(typeof value!=='boolean' && !(op.length===1 && (CONDITION_VALUE_OPS as readonly string[]).concat('ref').includes(op[0])))
+    throw new PlanError('invalid_condition', {path});
+}
+function compileRepeat(raw: unknown, path: string): RepeatSpec {
+  const repeatPath=path+'/repeat';
+  const repeat=object(raw,'unbounded_loop',repeatPath);
+  if('steps' in repeat||'body' in repeat) throw new PlanError('loop_nesting_unsupported', {
+    path: pointer(repeatPath,'steps' in repeat?'steps':'body'),
+    suggestion: 'Nested loops are not implemented. Keep one repeat on a result.emit step.',
+  });
+  for(const key of ['each','items','foreach'] as const)
+    if(key in repeat) throw new PlanError('dynamic_expansion', {
+      path: pointer(repeatPath,key),
+      suggestion: 'Dynamic expansion is not implemented. repeat.times must be a literal integer.',
+    });
+  keys(repeat,REPEAT_KEYS,repeatPath);
+  const times=repeat.times;
+  if(times!==null&&typeof times==='object') throw new PlanError('dynamic_expansion', {
+    path: repeatPath+'/times',
+    suggestion: 'Dynamic expansion is not implemented. repeat.times must be a literal integer.',
+  });
+  if(typeof times!=='number'||!Number.isSafeInteger(times)||times<1) throw new PlanError('unbounded_loop', {
+    path: repeatPath+'/times',
+    suggestion: `Set repeat.times to an integer from 1 to ${LIMITS.maxLoopIterations}.`,
+  });
+  if(times>LIMITS.maxLoopIterations) throw new PlanError('loop_budget_exceeded', {
+    path: repeatPath+'/times',
+    suggestion: `repeat.times must be at most ${LIMITS.maxLoopIterations}.`,
+  });
+  return repeat.until===undefined?{times}:{times,until:repeat.until};
 }
 // YAML accepts .nan/.inf, but JSON persistence silently changes them to null.
 // Reject these before computing an immutable Published Plan digest.
@@ -104,12 +154,19 @@ export async function toolSchemaDigest(inputSchema:unknown, outputSchema?:unknow
   const hash=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(serial));
   return [...new Uint8Array(hash)].map(v=>v.toString(16).padStart(2,'0')).join('');
 }
-export function evaluateExpression(v: unknown, ctx: {inputs:Record<string,unknown>;steps:Record<string,{status:string;output?:unknown}>}): any {
+export function evaluateExpression(v: unknown, ctx: ExprCtx): any {
   if(Array.isArray(v))return v.map(x=>evaluateExpression(x,ctx));
   if(v===null||typeof v!=='object')return v;
   const o=v as Record<string,unknown>;
   if(Object.keys(o).length===1){
-    if('ref' in o) {let parts=String(o.ref).split('.');let value:any=parts[0]==='inputs'?ctx.inputs:ctx.steps; for(const p of parts.slice(1)) {if(value===null||(typeof value!=='object'&&typeof value!=='function')||!Object.hasOwn(value,p))return undefined;value=value[p];}return value;}
+    if('ref' in o) {
+      const parts=String(o.ref).split('.');
+      if(parts[0]==='loop'){
+        if(!ctx.loop||parts.length!==2||parts[1]!=='index'||!Object.hasOwn(ctx.loop,'index'))return undefined;
+        return ctx.loop.index;
+      }
+      let value:any=parts[0]==='inputs'?ctx.inputs:ctx.steps; for(const p of parts.slice(1)) {if(value===null||(typeof value!=='object'&&typeof value!=='function')||!Object.hasOwn(value,p))return undefined;value=value[p];}return value;
+    }
     if('eq' in o) {const [a,b]=(o.eq as unknown[]).map(x=>evaluateExpression(x,ctx));return a===b;}
     if('ne' in o) {const [a,b]=(o.ne as unknown[]).map(x=>evaluateExpression(x,ctx));return a!==b;}
     if('gt' in o) {const [a,b]=(o.gt as unknown[]).map(x=>evaluateExpression(x,ctx));return typeof a==='number'&&typeof b==='number'&&a>b;}
@@ -120,7 +177,7 @@ export function evaluateExpression(v: unknown, ctx: {inputs:Record<string,unknow
   }
   return Object.fromEntries(Object.entries(o).map(([k,x])=>[k,evaluateExpression(x,ctx)]));
 }
-export function evaluateCondition(condition: unknown, ctx: {inputs:Record<string,unknown>;steps:Record<string,{status:string;output?:unknown}>}): boolean {
+export function evaluateCondition(condition: unknown, ctx: ExprCtx): boolean {
   const value=evaluateExpression(condition,ctx);
   if(typeof value!=='boolean')throw new PlanError('non_boolean_condition');
   return value;
@@ -143,7 +200,11 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
   const ids=new Set<string>();
   for(let index=0; index<o.steps.length; index++){
     const stepPath='/steps/'+index;
-    const s=object(o.steps[index],'invalid_step',stepPath);keys(s,STEP_KEYS,stepPath);
+    const s=object(o.steps[index],'invalid_step',stepPath);
+    if('steps' in s) throw new PlanError('loop_nesting_unsupported', {
+      path: stepPath+'/steps', suggestion: 'Nested steps are not implemented. Keep one repeat on a result.emit step.',
+    });
+    keys(s,STEP_KEYS,stepPath);
     if(typeof s.id!=='string'||!STEP_ID.test(s.id)||ids.has(s.id)||PROTOTYPE_KEYS.has(s.id))throw new PlanError('invalid_step_id', {path: stepPath+'/id'});
     ids.add(s.id);
     if(!isSupportedUse(s.uses))throw new PlanError('unsupported_capability', {
@@ -175,21 +236,38 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       try{await toolSchemaDigest(withData.input_schema,withData.output_schema);}
       catch(error){if(error instanceof PlanError)throw new PlanError(error.message,{path:stepPath+'/with'});throw error;}
     }else keys(withData,WITH_KEYS['result.emit'],stepPath+'/with');
+    const repeat=s.repeat===undefined?undefined:compileRepeat(s.repeat,stepPath);
+    if(repeat&&s.uses!=='result.emit') throw new PlanError('unsafe_loop_body', {
+      path: stepPath+'/repeat', suggestion: 'Repeat only result.emit. Keep mcp.call and github.run outside repeat.',
+    });
     const compiledWith=s.uses==='mcp.call'?
       {...withData,schema_digest:await toolSchemaDigest(withData.input_schema,withData.output_schema)}:withData;
-    steps.push({id:s.id,uses:s.uses,needs:needs as string[],with:compiledWith,...(s.if===undefined?{}:{if:s.if})});
+    // flow.repeat keeps the payload off `with` so an older runner cannot emit
+    // the body once. It rejects the unknown uses instead.
+    steps.push({id:s.id,uses:repeat?'flow.repeat':s.uses,needs:needs as string[],with:repeat?{}:compiledWith,
+      ...(repeat?{repeat,body:{uses:'result.emit' as const,with:compiledWith}}:{}),
+      ...(s.if===undefined?{}:{if:s.if})});
   }
   for(let index=0; index<steps.length; index++){
     const s=steps[index], stepPath='/steps/'+index;
     for(const dep of s.needs)if(!ids.has(dep)||dep===s.id)throw new PlanError('invalid_dependencies', {path: stepPath+'/needs'});
+    const allowLoop=s.uses==='flow.repeat';
     if(s.uses==='mcp.call') expression(s.with.arguments,s,0,true,stepPath+'/with/arguments');
+    else if(allowLoop) expression(s.body?.with,s,0,false,stepPath+'/with',true);
     else expression(s.with,s,0,false,stepPath+'/with');
+    if(allowLoop&&s.repeat?.until!==undefined){
+      expression(s.repeat.until,s,0,false,stepPath+'/repeat/until',true);
+      assertCondition(s.repeat.until,stepPath+'/repeat/until');
+    }
     if(s.if!==undefined){
-      expression(s.if,s,0,false,stepPath+'/if');
-      const op=s.if && typeof s.if==='object' && !Array.isArray(s.if)?Object.keys(s.if):[];
-      if(typeof s.if!=='boolean' && !(op.length===1 && (CONDITION_VALUE_OPS as readonly string[]).concat('ref').includes(op[0])))throw new PlanError('invalid_condition', {path: stepPath+'/if'});
+      expression(s.if,s,0,false,stepPath+'/if',allowLoop);
+      assertCondition(s.if,stepPath+'/if');
     }
   }
+  const expanded=steps.reduce((sum,s)=>sum+(s.uses==='flow.repeat'?s.repeat?.times??0:1),0);
+  if(expanded>LIMITS.maxExpandedSteps) throw new PlanError('loop_budget_exceeded', {
+    path: '/steps', suggestion: `Keep expanded execution at or below ${LIMITS.maxExpandedSteps} steps.`,
+  });
   const sorted:Step[]=[], pending=new Map(steps.map(s=>[s.id,s]));
   while(pending.size){
     const ready=[...pending.values()].filter(s=>s.needs.every(n=>sorted.some(t=>t.id===n))).sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0);

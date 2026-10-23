@@ -235,6 +235,8 @@ test('Agent discovers capabilities and inline-validates a definition without tou
     assert.match(instructions, /workflow_validate/);
     assert.match(instructions, /workflow_create/);
     assert.match(instructions, /does not publish/i);
+    assert.match(instructions, /repeat/);
+    assert.match(instructions, /saga are unsupported|saga is unsupported/);
     async function call(name:string,args:Record<string,unknown>):Promise<any>{
       const output=await client.callTool({name,arguments:args});
       const first=output.content[0];
@@ -263,7 +265,9 @@ test('Agent discovers capabilities and inline-validates a definition without tou
     assert.equal(byId.get('action.mcp.call')?.status, 'supported');
     assert.equal(byId.get('action.github.run')?.status, 'supported');
     assert.equal(byId.get('trigger.manual')?.status, 'supported');
-    for(const id of ['trigger.cron','trigger.webhook','trigger.github_event','action.http','action.mcp.write','action.shell','flow.foreach','flow.while','flow.child_workflow','flow.saga'])
+    for(const id of ['flow.if','flow.needs','flow.parallel','flow.repeat'])
+      assert.equal(byId.get(id)?.status, 'supported', id);
+    for(const id of ['trigger.cron','trigger.webhook','trigger.github_event','action.http','action.mcp.write','action.shell','flow.foreach','flow.while','flow.nesting','flow.dynamic_expansion','flow.wait','flow.child_workflow','flow.saga'])
       assert.equal(byId.get(id)?.status, 'unsupported', id);
     for(const item of overview.capabilities) assert.equal('example' in item, false);
 
@@ -321,6 +325,18 @@ test('Agent discovers capabilities and inline-validates a definition without tou
     })});
     assert.equal(scheduled.issues[0].code, 'unsupported_field');
     assert.equal(scheduled.issues[0].path, '/cron');
+    const repeat=await call('workflow_capabilities',{id:'flow.repeat'});
+    assert.equal(repeat.status,'supported');
+    assert.equal(repeat.limits.max_expanded_steps<=overview.definition.limits.max_steps, true);
+    const repeatPreview=await call('workflow_validate',{definition:JSON.stringify(repeat.example)});
+    assert.equal(repeatPreview.valid, true);
+    assert.equal(repeatPreview.steps, 2);
+    const unbounded=await call('workflow_validate',{definition:JSON.stringify({
+      version:1,name:'Unbounded',steps:[{id:'a',uses:'result.emit',repeat:{times:{ref:'inputs.n'}},with:{data:1}}],
+    })});
+    assert.equal(unbounded.valid, false);
+    assert.equal(unbounded.issues[0].code, 'dynamic_expansion');
+    assert.equal(unbounded.issues[0].path, '/steps/0/repeat/times');
     assert.equal(prepares, quiet);
     assert.deepEqual(counts(), before);
 
@@ -364,6 +380,23 @@ test('Agent discovers capabilities and inline-validates a definition without tou
     assert.deepEqual(stored.required_approvals, approved.required_approvals);
     assert.equal(stored.digest, approved.digest);
     assert.deepEqual(counts(), {workflows:1, versions:0, runs:0});
+
+    const loopDraft=await call('workflow_create',{definition:JSON.stringify(repeat.example)});
+    const loopPublished=await call('workflow_publish',{workflow_id:loopDraft.workflow_id,expected_revision:1});
+    const loopRun=await call('workflow_run',{workflow_id:loopDraft.workflow_id,inputs:{}});
+    await new WorkflowRunner({} as ExecutionContext,env).run({payload:{run_id:loopRun.run_id}} as WorkflowEvent<{run_id:string}>,{
+      do:async(_name:unknown,_options:unknown,callback:()=>Promise<unknown>)=>callback(),
+    } as unknown as WorkflowStep);
+    const loopStatus=await call('workflow_status',{run_id:loopRun.run_id});
+    assert.deepEqual(loopStatus.steps.map((step:{step_id:string;status:string})=>[step.step_id,step.status]),[
+      ['grow','succeeded'],['seed','succeeded'],
+    ]);
+    const loopResult=await call('workflow_result',{run_id:loopRun.run_id});
+    assert.equal(loopResult.status,'succeeded');
+    assert.deepEqual(loopResult.result,{index:1,seed:'seed',prev:{index:0,seed:'seed'}});
+    const storedPlan=JSON.parse((sqlite.prepare('SELECT plan FROM workflow_versions WHERE id=?').get(loopPublished.published_version_id) as {plan:string}).plan);
+    assert.equal(storedPlan.steps.some((step:{uses:string})=>step.uses==='flow.repeat'), true);
+    assert.equal(storedPlan.saga, undefined);
   }finally{
     await client.close();
   }

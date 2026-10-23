@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
+import { LIMITS } from '../src/capabilities.ts';
 import { WorkflowService, type Env } from '../src/store.ts';
 import { toolSchemaDigest, type ReadonlyOperation } from '../src/plan.ts';
 // Exact schema returned by the existing read-only echo MCP fixture.
@@ -191,6 +192,60 @@ test('native complete with an unsettled business outcome does not claim unfinish
   const status=await service.status(admitted.run_id);
   assert.equal(status.status,'queued'); // Preserve the existing business-outcome settle window.
   assert.deepEqual(status.steps.map(s=>[s.step_id,s.status]),[['emit','indeterminate']]);
+});
+
+const boundedRepeatSteps = [
+  {id:'seed',uses:'result.emit',with:{data:'seed'}},
+  {id:'grow',needs:['seed'],uses:'result.emit',
+    repeat:{times:3,until:{eq:[{ref:'loop.index'},2]}},
+    if:{lt:[{ref:'loop.index'},2]},
+    with:{data:{index:{ref:'loop.index'},seed:{ref:'steps.seed.output'},prev:{ref:'steps.grow.output'}}}},
+];
+
+test('a budget-bounded loop runs on the Cloudflare runner with conditions and output refs',async t=>{
+  const {admit,env,service}=setup(t);
+  const admitted=await admit(boundedRepeatSteps);
+  let workflowSteps=0;
+  await new WorkflowRunner({} as ExecutionContext,env).run({payload:{run_id:admitted.run_id}} as WorkflowEvent<{run_id:string}>,{
+    do:async(_name:unknown,_options:unknown,callback:()=>Promise<unknown>)=>{workflowSteps++;return callback();},
+  } as unknown as WorkflowStep);
+  const result=await service.result(admitted.run_id);
+  assert.equal(result.status,'succeeded');
+  assert.deepEqual(result.steps.map(step=>[step.step_id,step.status]),[['grow','succeeded'],['seed','succeeded']]);
+  assert.deepEqual(result.result,{index:1,seed:'seed',prev:{index:0,seed:'seed'}});
+  assert.equal(workflowSteps,3);
+});
+
+test('a bounded loop fails at the runtime deadline and does not keep iterating',async t=>{
+  const {admit,env,service}=setup(t);
+  const admitted=await admit([{id:'grow',uses:'result.emit',repeat:{times:LIMITS.maxLoopIterations},with:{data:{ref:'loop.index'}}}]);
+  let workflowSteps=0;
+  const realNow=Date.now;
+  let clock=1_000_000;
+  Date.now=()=>{clock+=LIMITS.maxLoopDeadlineMs+1;return clock;};
+  try{
+    await new WorkflowRunner({} as ExecutionContext,env).run({payload:{run_id:admitted.run_id}} as WorkflowEvent<{run_id:string}>,{
+      do:async(_name:unknown,_options:unknown,callback:()=>Promise<unknown>)=>{workflowSteps++;return callback();},
+    } as unknown as WorkflowStep);
+  }finally{Date.now=realNow;}
+  const result=await service.result(admitted.run_id);
+  assert.equal(result.status,'failed');
+  assert.equal(result.steps[0].error_code,'loop_deadline_exceeded');
+  assert.equal(result.result,null);
+  assert.equal(workflowSteps,0);
+});
+
+test('foreach on a pinned plan fails closed instead of emitting the step once',async t=>{
+  const {admit,env,run,service,sqlite}=setup(t);
+  const admitted=await admit([{id:'emit',uses:'result.emit',with:{data:'once'}}]);
+  const original=sqlite.prepare('SELECT version_id FROM runs WHERE id=?').get(admitted.run_id) as {version_id:string};
+  const tampered={version:1,name:'Foreach',steps:[{id:'emit',needs:[],uses:'result.emit',foreach:['a','b'],with:{data:'once'}}]};
+  sqlite.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(tampered),original.version_id);
+  await run(admitted.run_id);
+  const result=await service.result(admitted.run_id);
+  assert.equal(result.status,'failed');
+  assert.equal(result.steps[0].status,'failed');
+  assert.notEqual(result.result,'once');
 });
 
 test('unknown capability in a pinned Plan fails closed instead of becoming result.emit',async t=>{
