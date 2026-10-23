@@ -4,7 +4,7 @@ The three maintained MCP Workers authenticate MCP/Portal callers with runtime Se
 
 | Worker | MCP entry Secret | Independent credentials |
 | --- | --- | --- |
-| `ima-mcp-worker` | `MCP_ACCESS_TOKEN` | `API_KEY`, `CLIENT_ID` |
+| `ima-mcp-worker` | `MCP_ACCESS_TOKEN` | `IMA_API_KEY` (Secret), `IMA_CLIENT_ID` (Variable) |
 | `database-mcp-worker` | `MCP_ACCESS_TOKEN` | `DATABASE_CONFIG` |
 | `raindrop-mcp-worker` | `MCP_ACCESS_TOKEN` | `RAINDROP_ACCESS_TOKEN` |
 
