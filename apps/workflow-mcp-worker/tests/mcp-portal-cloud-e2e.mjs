@@ -55,6 +55,20 @@ async function run(){
     const instance=mcp(endpoint,{requestInit:{headers:{authorization:'Bearer '+ownerToken}}});
     try{await instance.client.connect(instance.transport);owner=instance.client;connected=true;break;}catch{await instance.client.close().catch(()=>{});await pause(2000);}
   }assert.ok(connected,'Isolated Worker unavailable');
+  // A healthy GET /health does not guarantee the workers.dev MCP POST route
+  // is stable across edge locations. Force actual network reads, each limited
+  // to 3.5s; 12 attempts plus waits stay below the 12-minute CI cleanup gate.
+  let stableMcpReads=0;
+  for(let i=0;i<12&&stableMcpReads<3;i++){
+    try{
+      const listing=await owner.listTools({}, {timeout:3500,cacheMode:'bypass'});
+      if(listing.tools.some(t=>t.name==='workflow_create'))stableMcpReads++;
+      else stableMcpReads=0;
+    }catch{stableMcpReads=0;}
+    if(stableMcpReads<3)await pause(2000);
+  }
+  assert.equal(stableMcpReads,3,'disposable_worker_mcp_route_unstable');
+  console.log('MCP_ISOLATED_STABLE_MCP_READS_OK',name);
   const definition={version:1,name:'isolated-ima-'+suffix,steps:[{id:'read',uses:'mcp.call',with:{endpoint:PORTAL_ENDPOINT,tool:'ima_list_notebooks',scope:'read',input_schema:cand.inputSchema,...(cand.outputSchema?{output_schema:cand.outputSchema}:{}),arguments:{limit:1}}},{id:'emit',uses:'result.emit',needs:['read'],with:{data:{ref:'steps.read.output'}}}]};
   const draft=await tool('workflow_create',{definition:JSON.stringify(definition)});
   const validation=await tool('workflow_validate',{workflow_id:draft.workflow_id,revision:1});
