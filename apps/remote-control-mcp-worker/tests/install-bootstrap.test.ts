@@ -397,9 +397,9 @@ test('copy feedback appears in button, resets, and never announces success below
 test('copied confirmation uses distinct green colors in both system themes', async () => {
   const {renderInstallHome}=await import('../src/install-home.ts');
   const html=renderInstallHome({windows:true,linux:true});
-  assert.match(html, /--copied-bg:#167347;--copied-fg:#fff/);
-  assert.match(html, /--copied-bg:#39d98a;--copied-fg:#092719/);
-  assert.match(html, /button\\.copy\\[data-copied="true"\\]\\{background:var\\(--copied-bg\\);color:var\\(--copied-fg\\)\\}/);
-  assert.match(html, /copy\\.setAttribute\\('data-copied','true'\\)/);
-  assert.match(html, /copy\\.removeAttribute\\('data-copied'\\)/);
+  assert.ok(html.includes('--copied-bg:#167347;--copied-fg:#fff'));
+  assert.ok(html.includes('--copied-bg:#39d98a;--copied-fg:#092719'));
+  assert.ok(html.includes('button.copy[data-copied="true"]{background:var(--copied-bg);color:var(--copied-fg)}'));
+  assert.ok(html.includes("copy.setAttribute('data-copied','true')"));
+  assert.ok(html.includes("copy.removeAttribute('data-copied')"));
 });
