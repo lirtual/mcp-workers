@@ -93,8 +93,23 @@ export class WorkflowService {
   private env:Env;
   constructor(env:Env){this.env=env;}
   private get db(){return this.env.DB;}
-  async list(){const out=await this.db.prepare('SELECT * FROM workflows ORDER BY updated_at DESC LIMIT 100').all<WorkflowRow>();
-    return {workflows:out.results.map(r=>({workflow_id:r.id,name:r.name,draft_revision:r.draft_revision,published_version_id:r.active_version_id,state:r.state}))};}
+  async list(){
+    const out=await this.db.prepare('SELECT * FROM workflows ORDER BY updated_at DESC LIMIT 100').all<WorkflowRow>();
+    // Four global physical Session slots are independent of the parent
+    // Workflow's business outcome. The existing read-only workflow_list is
+    // enough to discover a held/uncertain slot and its server-pinned run_id;
+    // no separate public Session enumeration capability is necessary.
+    const held=await this.db.prepare(`SELECT s.slot,s.run_id,s.step_id,s.state,
+      s.updated_at,a.state AS attempt_state
+      FROM session_executions s
+      LEFT JOIN step_attempts a ON a.run_id=s.run_id AND a.step_id=s.step_id
+      WHERE s.state!='terminated' ORDER BY s.slot LIMIT 4`)
+      .all<{slot:number;run_id:string;step_id:string;state:string;updated_at:number;attempt_state:string|null}>();
+    return {workflows:out.results.map(r=>({workflow_id:r.id,name:r.name,draft_revision:r.draft_revision,published_version_id:r.active_version_id,state:r.state})),
+      active_sessions:held.results.map(x=>({slot:x.slot,run_id:x.run_id,
+        step_id:x.step_id,recorded_state:x.state,recorded_at:x.updated_at,
+        attempt_state:x.attempt_state,physical_health:'unverified' as const}))};
+  }
   async get(workflow_id:string){assertId(workflow_id);const row=await this.row(workflow_id);return workflowView(row);}
   private async row(id:string){const row=await this.db.prepare('SELECT * FROM workflows WHERE id=?').bind(id).first<WorkflowRow>();if(!row)throw new StateError('workflow_not_found');return row;}
   async create(definition:string){
