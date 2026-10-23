@@ -1,8 +1,7 @@
 import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
 import { BROWSER_TOOLS, BROWSER_EFFECT_TOOLS, BROWSER_READ_TOOLS, parseBrowserCall, browserEffectClientStatus } from "./browser-tools.ts";
-import {verifyAccessApprovalOwner,validBrowserApprovalRequest,validBrowserApprovalForm,browserApprovalPage,validPermanentGrantForm,permanentGrantApprovalPage,type BrowserApprovalAccessConfig} from "./browser-approval-web.ts";
-/** Browser tools require a paired device and verified owner Access configuration.
- * Preview and production use separate owner namespaces and approval origins. */
+import {verifyAccessApprovalOwner,validPermanentGrantForm,permanentGrantApprovalPage,type BrowserApprovalAccessConfig} from "./device-grant-web.ts";
+/** Browser tools use the existing authenticated MCP + signed paired-device grant. */
 import { handleAgentInstallerRequest } from "./install-bootstrap.ts";
 export { V2OwnerCoordinator } from "./v2-pairing.ts";
 import { V2OwnerCoordinator as PreviewCoordinator } from "./v2-pairing.ts";
@@ -18,13 +17,13 @@ function pairedOnly(env: Env): boolean {
   return Boolean((env as V2Env).DEVICE_COORDINATOR || (env as V2Env).V2_OWNER);
 }
 function browserToolsAvailable(env:Env):boolean {
-  const e=env as V2Env & BrowserApprovalAccessConfig & {BROWSER_APPROVAL_PUBLIC_ORIGIN?:string};
-  const preview=Boolean(e.V2_OWNER) && !e.DEVICE_COORDINATOR && e.REMOTE_CONTROL_V2_PREVIEW_ONLY==="true";
-  const production=Boolean(e.DEVICE_COORDINATOR) && !e.V2_OWNER && !e.REMOTE_CONTROL_V2_PREVIEW_ONLY;
-  return (preview || production) &&
-    Boolean(e.BROWSER_APPROVAL_ACCESS_ISSUER &&
-      e.BROWSER_APPROVAL_ACCESS_AUD && e.BROWSER_APPROVAL_ALLOWED_EMAIL &&
-      e.BROWSER_APPROVAL_PUBLIC_ORIGIN);
+  const e=env as V2Env;
+  // Device approval is the sole recurring authorization boundary for browser
+  // calls. Preview and production owner namespaces must never be mixed.
+  return (Boolean(e.V2_OWNER) && !e.DEVICE_COORDINATOR &&
+      e.REMOTE_CONTROL_V2_PREVIEW_ONLY==="true") ||
+    (Boolean(e.DEVICE_COORDINATOR) && !e.V2_OWNER &&
+      !e.REMOTE_CONTROL_V2_PREVIEW_ONLY);
 }
 // Preview operations use existing authenticated per-device WSS routing.
 // The paired Agent, not a temporary Worker secret, opts into write/Shell.
@@ -73,23 +72,12 @@ async function callPairedBrowser(env: Env, id: unknown, name: string, args: unkn
   if (!parsed) return toolError(id,"Invalid browser request or device target.");
   const owner = pendingOwner(env);
   if (!owner) return toolError(id,"Browser device is unavailable.");
-  const gated = ["browser_navigate","browser_click","browser_fill","browser_press_key","browser_select_option"].includes(name);
-  const approvalSettings=env as V2Env & BrowserApprovalAccessConfig & {BROWSER_APPROVAL_PUBLIC_ORIGIN?:string};
-  const publicOrigin=approvalSettings.BROWSER_APPROVAL_PUBLIC_ORIGIN;
-  // Missing remote-owner identity configuration means no sensitive effect.
-  if(gated && (!approvalSettings.BROWSER_APPROVAL_ACCESS_ISSUER ||
-      !approvalSettings.BROWSER_APPROVAL_ACCESS_AUD ||
-      !approvalSettings.BROWSER_APPROVAL_ALLOWED_EMAIL ||
-      typeof publicOrigin!=="string" ||
-      !/^https:\/\/[a-z0-9.-]+$/i.test(publicOrigin))) {
-    return toolText(id,JSON.stringify({operation_id:parsed.operation_id,status:"unavailable"}));
-  }
   try {
-    const response = await owner.fetch("https://v2.internal/"+
-      (gated?"browser-approval/dispatch":parsed.kind),{
+    const response = await owner.fetch("https://v2.internal/"+parsed.kind,{
       method:"POST",headers:{"content-type":"application/json"},
       body:JSON.stringify({device_id:parsed.device_id,tool:parsed.tool,
-        ...(parsed.operation_id?{operation_id:parsed.operation_id}:{}),arguments:parsed.arguments}),
+        ...(parsed.operation_id?{operation_id:parsed.operation_id}:{}),
+        arguments:parsed.arguments}),
     });
     if (!response.ok) {
       return parsed.kind==="operation"
@@ -101,20 +89,9 @@ async function callPairedBrowser(env: Env, id: unknown, name: string, args: unkn
       return value.status==="completed"&&typeof value.text==="string"&&value.text.length<=65536
         ? toolText(id,value.text) : toolError(id,"Browser observation unavailable.");
     }
-    const value=await response.json() as {operation_id?:unknown;status?:unknown;
-      session_id?:unknown;approval_id?:unknown;expires_at?:unknown};
+    const value=await response.json() as {operation_id?:unknown;status?:unknown;session_id?:unknown};
     if (value.operation_id!==parsed.operation_id||typeof value.status!=="string") {
       return toolText(id,JSON.stringify({operation_id:parsed.operation_id,status:"timeout_unknown"}));
-    }
-    if(value.status==="confirmation_required"){
-      if(!gated||typeof value.approval_id!=="string"||
-          !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value.approval_id) ||
-          typeof value.expires_at!=="number"||!Number.isSafeInteger(value.expires_at))
-        return toolText(id,JSON.stringify({operation_id:parsed.operation_id,status:"unavailable"}));
-      return toolText(id,JSON.stringify({operation_id:parsed.operation_id,
-        status:"confirmation_required",
-        approval_url:publicOrigin+"/browser-approve/"+value.approval_id,
-        expires_at:value.expires_at}));
     }
     return toolText(id,JSON.stringify({operation_id:parsed.operation_id,
       status:browserEffectClientStatus(value.status),
@@ -1162,8 +1139,8 @@ export default {
     }
     const url = new URL(request.url);
 
-    // Device grant changes are owner-only browser actions, never callable with
-    // the Portal MCP token. Reuse the existing Access-protected approval path.
+    // Promoting a time-limited grant to permanent is a separate privilege change.
+    // It retains independent owner verification; ordinary browser calls do not.
     if (url.pathname.startsWith("/browser-approve/grant/")) {
       const deviceId=url.pathname.slice("/browser-approve/grant/".length);
       if(!/^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(deviceId)||
@@ -1207,49 +1184,6 @@ export default {
             "cache-control":"no-store","x-content-type-options":"nosniff","referrer-policy":"no-referrer"},
         });
       }catch{return jsonError(503,"unavailable","Device grant update is unavailable.");}
-    }
-    if (url.pathname.startsWith("/browser-approve/")) {
-      // A real person signs into a separately Access-protected exact path.
-      // NEVER accept the MCP bearer credential or model-originated approval.
-      const approvalId=url.pathname.slice("/browser-approve/".length);
-      const settings=env as V2Env & BrowserApprovalAccessConfig;
-      if(!browserToolsAvailable(env)||
-          !validBrowserApprovalRequest(request,approvalId)) {
-        return jsonError(404,"not_found","The approval route is unavailable.");
-      }
-      const subject=await verifyAccessApprovalOwner(request,settings);
-      if(!subject)return jsonError(403,"unauthorized","Owner Access verification failed.");
-      const owner=pendingOwner(env);
-      if(!owner)return jsonError(503,"unavailable","Approval state is unavailable.");
-      try{
-        if(request.method==="GET"){
-          const state=await owner.fetch("https://v2.internal/browser-approval/inspect",{
-            method:"POST",headers:{"content-type":"application/json"},
-            body:JSON.stringify({approval_id:approvalId}),
-          });
-          if(!state.ok)return jsonError(404,"not_found","Approval request expired or unavailable.");
-          const record=await state.json() as {
-            status:"pending"|"approved";expires_at:number;
-            intent:import("./browser-approval.ts").BrowserApprovalIntent;
-          };
-          return browserApprovalPage(approvalId,record);
-        }
-        const raw=await readBounded(request,128);
-        if(raw===null||!validBrowserApprovalForm(request,raw)) {
-          return jsonError(400,"bad_request","Invalid owner confirmation.");
-        }
-        const result=await owner.fetch("https://v2.internal/browser-approval/approve",{
-          method:"POST",headers:{"content-type":"application/json"},
-          body:JSON.stringify({approval_id:approvalId,subject}),
-        });
-        if(!result.ok)return jsonError(403,"denied","The approval was denied or expired.");
-        return new Response("Approved for this exact browser operation. Return to ChatGPT.\n",{
-          status:200,headers:{"content-type":"text/plain; charset=utf-8",
-            "cache-control":"no-store","x-content-type-options":"nosniff","referrer-policy":"no-referrer"},
-        });
-      }catch{
-        return jsonError(503,"unavailable","Approval is currently unavailable.");
-      }
     }
     if (url.pathname === "/install.sh") {
       // Only the owner-configured v2 Preview may serve the reviewed immutable

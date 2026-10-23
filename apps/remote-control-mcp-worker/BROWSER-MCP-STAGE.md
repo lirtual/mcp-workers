@@ -1,32 +1,63 @@
-# Browser MCP — current implementation and acceptance
+# Remote Control browser MCP — paired-device authorization
 
-Updated: 2026-10-22 · SPEC #152
+Updated: 2026-10-23
 
-## Scope and implementation
+## Decision and scope
 
-- Worker: [Draft PR #143](https://github.com/lirtual/mcp-workers/pull/143). Agent: [Draft PR #20](https://github.com/lirtual/remote-control-agent/pull/20). Use the PR heads as the current source of truth; commit IDs below identify specific completed checks.
-- Existing paired-device MCP route and Owner Durable Object; no extra Worker, browser CLI, proxy, database, or generic script executor.
-- **Preview and production:** `V2_OWNER` in isolated Preview or `DEVICE_COORDINATOR` in production, paired with independent Owner Access identity/origin configuration, advertises and dispatches **10** typed tools: `browser_start`, `browser_status`, `browser_navigate`, `browser_snapshot`, `browser_close`, `browser_tabs`, `browser_click`, `browser_fill`, `browser_press_key`, `browser_select_option`.
-- The legacy test switches `SPEC152_PREVIEW_BROWSER_TOOLS`, `BROWSER_APPROVAL_ENABLED`, and fixed `SPEC152_PREVIEW_BROWSER_DEVICE_ID` restriction have been removed. Tool availability depends on Preview identity and Access configuration, not these variables.
-- **Production requires owner configuration:** Browser availability on `DEVICE_COORDINATOR` is fail-closed unless owner Access issuer/audience/email and the canonical public approval origin are configured. Production uses `rca.lirtual.dpdns.org/browser-approve/*` and its own Access audience. GitHub Actions releases all owner settings with the selected Worker; no separate rollout flags.
-- Existing MCP token, explicit paired `device_id`, signed Ed25519 Agent WebSocket, per-operation durable IDs, bounded reads, and fail-closed uncertain receipt semantics remain in force.
-- The Worker requires one-use owner approval via Cloudflare Access JWT + CSRF for `browser_navigate`, `browser_click`, `browser_fill`, `browser_press_key`, and `browser_select_option`, tied to the exact operation. Navigation approval binds the complete destination URL without persisting its query text and also supports an Agent-owned initial `about:blank` tab. Navigation requires `tab_id` and `snapshot_version` obtained from the live browser status; the Worker verifies the signed Agent-selected tab, and the Agent atomically rejects a switched tab or stale version before `page.goto`. This intentionally requires a fresh observation before each navigation. The `browser_fill` approval display hides entered form text while binding its SHA-256 parameters digest; changed arguments need new approval. Approval of a device is **not** approval of an individual website action.
-- **Risk boundary:** tab changes can have external effects and do not receive the same separate owner-approval prompt in the current implementation. Initial URL screening and Playwright route checks do **not** establish DNS/redirect/LAN/loopback SSRF isolation. The owner accepted this residual network risk for a personal device, not unrestricted consequential website actions. Residual network isolation limitations remain; production release requires explicit owner authorization, protected one-use action approval, and post-release live acceptance. No claim of SSRF isolation is made.
-- Agent candidate uses one managed Playwright browser session with an independent Profile, headed Windows Edge/Chrome chosen from agreeing HTTP and HTTPS defaults, explicit selected tabs, versioned semantic snapshots and rejection of stale targets. Never attach to a personal browser Profile or claim a complete human-handoff/resume implementation.
+A device is approved **once** through the existing ten-character pairing code and authenticated
+`pairing_lookup` → `pairing_approve` workflow. After the Agent proves possession of its
+Ed25519 key, browser commands use the ordinary Portal-authenticated MCP → Owner Durable Object
+→ signed WSS → Agent operation path. Browser navigation, clicking, filling, pressing keys,
+and selecting options **do not require a separate Cloudflare Access webpage**.
 
-## Verified evidence
+This simplification changes the browser consent policy, not device enrollment or the
+Agent execution protocol. The following safeguards remain:
 
-- Worker `8e9df89`: [CI #39763349323](https://github.com/lirtual/mcp-workers/actions/runs/39763349323) **PASS** (Application checks and Database integration). Agent `47b0c86`: [CI #39763345892](https://github.com/lirtual/remote-control-agent/actions/runs/39763345892) **PASS**. Navigation now requires exact-tab and fresh-snapshot checks on both sides; CI does not establish native Windows end-to-end acceptance.
-- Earlier local approval proof: actual phone Cloudflare Access approval succeeded for an exact operation sent to a **simulated** signed Agent, which recorded exactly one effect and acknowledgement. Live cloud replay rejection was not confirmed; local single-use enforcement tests passed.
-- Actual Windows desktop, Agent `79dec253`: produced unpublished native preview package `v0.0.4-spec152`; manifest verified **34/34** files against pinned hashes, including Playwright 1.64.1.
-- **Real headed Edge, native/local only:** opened a disposable private Profile, navigated the public Playwright TodoMVC test page, read semantic snapshot, filled a role/name target, pressed Enter, verified the result and closed successfully (exit 0).
-- A second real Edge test opened/selected/closed multiple tabs and proved stale-snapshot rejection after switching tabs (exit 0). Both tests left zero test-profile Edge processes and cleaned their temporary Profiles. Installed Windows RCA was unchanged.
-- **Latest compiled native Windows candidate:** Agent [`76aad5f`](https://github.com/lirtual/remote-control-agent/commit/76aad5f2fdf5cab0f12c0a337060a38de45771b0), [CI #39765365929](https://github.com/lirtual/remote-control-agent/actions/runs/39765365929) **PASS** across Windows x64 and Ubuntu x64/ARM64. The packaged BrowserManager ran actual Windows Chrome, denied wrong-tab and stale-version navigation without changing the page, and completed a fresh-version navigation to an entirely locally fulfilled HTTPS fixture. This is native packaged browser coverage, **not** the missing authenticated MCP/DO/signed-WSS Windows end-to-end run.
+- Explicit `device_id` on each MCP call; current server-side permanent/temporary grant check;
+  expiration/revocation enforcement; fresh signed WSS session/epoch.
+- Typed browser arguments, URL first-hop hygiene, tab identity and fresh snapshot checks
+  where required, bounded observations and managed independent browser Profile.
+- Durable `operation_id` receipts, failure/unknown-result handling and no blind replay.
+  The Agent's existing OS rights and browser isolation limits do not change.
+- Preview and production use their own owner DO namespaces. No extra browser approval
+  configuration, feature switch, identity store, scheduler or service is introduced.
 
-## Open release blockers
+Temporary grants still expire 24 hours after approval. Changing an *existing temporary
+grant into a permanent grant* is a distinct increase in device privilege and continues
+to require the existing independently Cloudflare Access-verified owner page at
+`/browser-approve/grant/<device_id>`. Permanent onboarding requires no such promotion.
 
-1. **Not yet verified:** one continuous, owner-approved, signed `MCP tools/call → Worker Durable Object → Ed25519 WebSocket → actual Windows Agent → real browser` E2E operation with receipts, replay rejection, revocation and cleanup. An earlier disposable pairing approval request was blocked by the execution environment's security review. Do not reroute, re-create substitute credentials, or infer success from separate native and mock tests.
-2. **GitGuardian:** the PR-history `generic_password` detection (incident `38837633`) is `IGNORED` with reason `false_positive`; validation is `no_checker`, so this is a triage decision, not proof that a credential was automatically verified safe. Reassess if new evidence appears. Do not expose secret values in evidence or comments.
-3. **Release not authorized:** both browser PRs remain Draft. No production Worker activation, browser Agent release, installed-Agent upgrade, or merged PR is implied. Human takeover/resume and remaining desktop lifecycle behaviors require separate verification.
+## Security trade-off
 
-The previous stage-by-stage design and risk discussions remain available in Git history and the [architecture review](https://github.com/lirtual/mcp-workers/pull/117). This file is the concise current-state contract, not a chronological transcript.
+An authenticated MCP actor can now initiate a browser action on an approved device
+without another human approval. The earlier one-use website-action authorization is
+removed, including its dispatch/inspect/approve endpoints and pending intent storage.
+This increases the impact of a stolen MCP credential, a compromised client, or prompt
+injection that causes the assistant to invoke browser tools.
+
+**There is no proven DNS/redirect/private-network/SSRF isolation.** First-hop screening
+and Playwright route checks must never be presented as comprehensive isolation. Use only
+the owner's trusted personal Windows device; do not claim safe unrestricted browsing.
+Retain revocation, grants, Agent boundaries and conservative tool handling of untrusted
+page content.
+
+## Implementation and validation
+
+- Worker browser tools: `browser_start`, `browser_status`, `browser_navigate`,
+  `browser_snapshot`, `browser_close`, `browser_tabs`, `browser_click`,
+  `browser_fill`, `browser_press_key`, `browser_select_option`.
+- The code is prepared in a separate review branch. Creating or passing a PR does not
+  modify an existing deployed Worker, enrolled Agent, or Portal tool cache.
+- Verify typed request rejection, signed DO routing, revoked/offline refusal, stale-tab
+  refusal, operation receipts, no old approval endpoints, and temporary grant promotion.
+- Run repository Application checks and Worker dry-run. A normal browser E2E with the
+  revised **no-popup** path on an approved test device is a separate release acceptance.
+  Do not infer it from tests of the prior approval-based design.
+
+## Previous acceptance (historical)
+
+Spec [#152](https://github.com/lirtual/mcp-workers/issues/152) records the earlier
+approved-browser-operation E2E, Worker [PR #143](https://github.com/lirtual/mcp-workers/pull/143)
+and its published release. Agent [PR #20](https://github.com/lirtual/remote-control-agent/pull/20)
+is independently tracked. Those earlier results show the browser transport and receipt
+path, not this new one-time device-authorization policy.

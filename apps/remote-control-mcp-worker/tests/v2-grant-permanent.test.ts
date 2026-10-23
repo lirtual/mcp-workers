@@ -3,7 +3,7 @@ import {randomUUID} from "node:crypto";
 import test from "node:test";
 import {exportJWK,generateKeyPair,SignJWT} from "jose";
 import worker, {V2OwnerCoordinator} from "../src/worker.ts";
-import {validPermanentGrantForm} from "../src/browser-approval-web.ts";
+import {validPermanentGrantForm} from "../src/device-grant-web.ts";
 import {deviceIsAuthorized,issueSessionChallenge,TEMPORARY_GRANT_MS,type V2Device} from "../src/v2-session.ts";
 
 const issuer="https://rca-owner-test.cloudflareaccess.com";
