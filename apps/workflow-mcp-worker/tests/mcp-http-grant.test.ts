@@ -207,7 +207,8 @@ test('one approved MCP write and one restricted HTTP fixture complete, then revo
   try{
     const instructions=client.getInstructions()??'';
     assert.match(instructions, /workflow_revoke/);
-    assert.match(instructions, /saga are unsupported/);
+    assert.match(instructions, /explicit compensate grant/);
+    assert.match(instructions, /not an ACID rollback/);
     assert.match(instructions, /does not publish/i);
     const writeDefinition={version:1, name:'Approved note', inputs:{message:'x'}, steps:[{
       id:'save', uses:'mcp.call', with:{

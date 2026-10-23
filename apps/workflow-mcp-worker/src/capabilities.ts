@@ -4,15 +4,17 @@ import { selectedGithubExecutor } from './github-dispatch.ts';
 import { CRON_CONTRACT } from './cron.ts';
 import { REGISTERED_GITHUB_ACTION } from './github-registry.ts';
 
-export const DEFINITION_KEYS = ['version', 'name', 'inputs', 'triggers', 'steps'] as const;
-export const STEP_KEYS = ['id', 'uses', 'needs', 'if', 'with', 'repeat', 'expand'] as const;
+export const DEFINITION_KEYS = ['version', 'name', 'inputs', 'triggers', 'saga', 'steps'] as const;
+export const STEP_KEYS = ['id', 'uses', 'needs', 'if', 'with', 'repeat', 'expand', 'compensate'] as const;
+export const SAGA_KEYS = ['on'] as const;
+export const COMPENSATE_KEYS = ['tool', 'scope', 'arguments', 'input_schema', 'output_schema'] as const;
 export const REPEAT_KEYS = ['times', 'until'] as const;
 export const EXPAND_KEYS = ['items', 'max'] as const;
 // Item values multiply this template. They cannot choose another action or connection.
 export const EXPANSION_RISK = 'Each snapshotted item runs the published template once. Item values cannot select an action, endpoint, tool, or repository. A longer list is refused before those effects.';
 // Tampered plans must fail closed. `steps` is legal only at the definition root.
-export const NON_EXECUTABLE_PLAN_FIELDS = ['saga', 'foreach', 'while', 'child', 'child_workflow', 'wait', 'compensate'] as const;
-export const NON_EXECUTABLE_STEP_FIELDS = ['foreach', 'while', 'each', 'items', 'saga', 'compensate', 'child', 'child_workflow', 'wait', 'sleep', 'delay', 'steps'] as const;
+export const NON_EXECUTABLE_PLAN_FIELDS = ['foreach', 'while', 'child', 'child_workflow', 'wait'] as const;
+export const NON_EXECUTABLE_STEP_FIELDS = ['foreach', 'while', 'each', 'items', 'child', 'child_workflow', 'wait', 'sleep', 'delay', 'steps'] as const;
 export const USES = ['result.emit', 'mcp.call', 'http.request', 'github.run'] as const;
 export type SupportedUse = typeof USES[number];
 export const WITH_KEYS: Record<SupportedUse, readonly string[]> = {
@@ -203,6 +205,32 @@ const expansionExample = {
       with: {data: {index: {ref: 'expand.index'}, item: {ref: 'expand.item'}}}},
   ],
 };
+const sagaExample = {
+  version: 1,
+  name: 'Compensated write',
+  saga: {on: ['failure', 'cancel']},
+  inputs: {note: 'n'},
+  steps: [
+    {
+      id: 'save',
+      uses: 'mcp.call',
+      with: {
+        endpoint: PRODUCTION_PORTAL_ENDPOINT,
+        tool: 'note',
+        scope: 'write',
+        input_schema: {type: 'object', properties: {note: {type: 'string'}}, additionalProperties: false},
+        arguments: {note: {ref: 'inputs.note'}},
+      },
+      compensate: {
+        tool: 'note_clear',
+        scope: 'write',
+        input_schema: {type: 'object', properties: {note: {type: 'string'}}, additionalProperties: false},
+        arguments: {note: {ref: 'inputs.note'}},
+      },
+    },
+    {id: 'after', needs: ['save'], uses: 'result.emit', with: {data: {ref: 'steps.save.output'}}},
+  ],
+};
 const repeatExample = {
   version: 1,
   name: 'Bounded loop',
@@ -266,7 +294,7 @@ const CATALOG: readonly Entry[] = [
     completion: 'One tools/call after grants and a live read-only schema check. A lost response is indeterminate and is not retried. Revocation blocks a later call. An effect already dispatched stays its real result or indeterminate.'},
   {id: 'action.mcp.write', kind: 'action', status: 'supported', uses: 'mcp.call', scope: 'write', example: mcpWriteExample,
     summary: 'Call one exact portal tool whose published scope is write. This is not an arbitrary write and not a public MCP marketplace.',
-    permissions: 'scope must be write. The endpoint, tool, and schema_digest are pinned. Publish requires that exact approved_operations entry and accept_target_risks=true. readOnlyHint cannot authorize the call. Runtime arguments cannot change the server, URL, repository, or credential.',
+    permissions: 'scope must be write. The endpoint, tool, and schema_digest are pinned. Publish requires that exact approved_operations entry and accept_target_risks=true. readOnlyHint cannot authorize the call. Runtime arguments cannot change the server, URL, repository, or credential. A compensate block is not implied. flow.saga must publish it as its own grant or this write is not compensated.',
     completion: 'One tools/call after the grant, schema, and an explicit readOnlyHint false check. A missing or true readOnlyHint fails closed before tools/call. A lost response is indeterminate and is not retried or rolled back.'},
   {id: 'action.github.run', kind: 'action', status: 'supported', uses: 'github.run', example: githubExample,
     summary: 'Run the registered GitHub Workflow CI check. The definition cannot choose a repository, ref, workflow file, token, or command.',
@@ -307,13 +335,15 @@ const CATALOG: readonly Entry[] = [
   {id: 'flow.dynamic_expansion', kind: 'flow', status: 'supported', example: expansionExample,
     summary: 'Expand one published template from a needed step output. expand.max caps the list. The snapshot and stable ids (template id, a colon, and the snapshot index) are stored before any expanded external effect.',
     permissions: 'The template is this step uses and with. mcp.call still needs the read grant and target-risk acceptance. github.run still needs heavy-execution approval. Runtime cannot add an action or connection.',
-    completion: `Validate and publish state cap ${LIMITS.maxExpandedSteps}, the template, dependencies, and the risk of one effect per snapshotted item. A longer list fails before those effects. Replay keeps the stored ids. Waves stay within ${LIMITS.maxParallel}. Depth stays ${LIMITS.maxLoopDepth}. foreach, while, nested steps, durable wait, child workflows, and saga stay unsupported.`},
+    completion: `Validate and publish state cap ${LIMITS.maxExpandedSteps}, the template, dependencies, and the risk of one effect per snapshotted item. A longer list fails before those effects. Replay keeps the stored ids. Waves stay within ${LIMITS.maxParallel}. Depth stays ${LIMITS.maxLoopDepth}. foreach, while, nested steps, durable wait, and child workflows stay unsupported. Saga is a separate published policy, not an expansion.`},
   {id: 'flow.wait', kind: 'flow', status: 'unsupported',
     summary: 'Durable wait is not implemented. Do not add wait, sleep, or delay. GitHub receipt waiting is not a definition field.'},
   {id: 'flow.child_workflow', kind: 'flow', status: 'unsupported',
     summary: 'Child workflows are not implemented. Do not use workflow.call or a child field.'},
-  {id: 'flow.saga', kind: 'flow', status: 'unsupported',
-    summary: 'Saga compensation is not implemented. Do not add a saga or compensate field.'},
+  {id: 'flow.saga', kind: 'flow', status: 'supported', example: sagaExample,
+    summary: 'Compensate a completed controlled portal write only when saga.on and that step compensate were published. This is not an ACID rollback.',
+    permissions: 'saga.on lists failure, cancel, or both. compensate names the tool, scope, arguments, and schema on that same endpoint. Publish must include that grant in approved_operations and accept_target_risks. A step without compensate is not compensated. Revocation blocks the compensation call.',
+    completion: 'When a later step fails, or workflow_cancel runs and cancel was published, this runner compensates completed writes in reverse dependency order. One failed or unknown compensation does not skip every other granted compensation. Parallel branches, replay, and an indeterminate dispatch stay partial or unknown. The report sets acid_rollback to false. There is no saga worker and no extra queue.'},
 ];
 
 export const supportedCapabilityExamples: readonly unknown[] = CATALOG.flatMap(entry =>
@@ -456,6 +486,13 @@ function definitionContract() {
           type: 'array', minItems: 1, maxItems: LIMITS.maxTriggers,
           description: 'Optional. At most one webhook, one github_event, and one cron. Cron expression is five UTC fields with a 60 second minimum. No timezone or DST.',
         },
+        saga: {
+          type: 'object', additionalProperties: false, required: ['on'],
+          description: 'Optional explicit compensation policy. Steps compensate only when they also set compensate. Not an ACID rollback.',
+          properties: {
+            on: {type: 'array', minItems: 1, maxItems: 2, items: {enum: ['failure', 'cancel']}},
+          },
+        },
         steps: {
           type: 'array', minItems: LIMITS.minSteps, maxItems: LIMITS.maxSteps,
           items: {
@@ -556,6 +593,12 @@ function detailOf(entry: Entry) {
         max_loop_depth: LIMITS.maxLoopDepth,
         max_loop_deadline_ms: LIMITS.maxLoopDeadlineMs,
       },
+    } : {}),
+    ...(entry.id === 'flow.saga' ? {
+      boundary: 'not_an_acid_rollback',
+      triggers: ['failure', 'cancel'],
+      saga_keys: SAGA_KEYS,
+      compensate_keys: COMPENSATE_KEYS,
     } : {}),
     ...(entry.id === 'flow.dynamic_expansion' ? {
       expand_keys: EXPAND_KEYS,

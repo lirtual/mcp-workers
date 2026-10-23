@@ -292,7 +292,7 @@ test('unimplemented capabilities stay unsupported and the compiler reports a pre
   const unsupported = capabilityCatalog().filter(entry => entry.status === 'unsupported').map(entry => entry.id);
   assert.deepEqual(unsupported, [
     'action.shell',
-    'flow.foreach', 'flow.while', 'flow.nesting', 'flow.wait', 'flow.child_workflow', 'flow.saga',
+    'flow.foreach', 'flow.while', 'flow.nesting', 'flow.wait', 'flow.child_workflow',
   ]);
   const step = (extra: Record<string, unknown>) => ({version: 1, name: 'Probe', steps: [{id: 'a', uses: 'result.emit', with: {data: 1}, ...extra}]});
   const probes: Array<{definition: unknown; code: string; path: string; suggestion?: RegExp}> = [
@@ -305,7 +305,7 @@ test('unimplemented capabilities stay unsupported and the compiler reports a pre
     {definition: step({foreach: 'inputs.items'}), code: 'unsupported_field', path: '/steps/0/foreach'},
     {definition: step({while: true}), code: 'unsupported_field', path: '/steps/0/while'},
     {definition: {version: 1, name: 'Child', steps: [{id: 'a', uses: 'workflow.call', with: {workflow_id: 'child'}}]}, code: 'unsupported_capability', path: '/steps/0/uses'},
-    {definition: {version: 1, name: 'Saga', saga: {}, steps: [{id: 'a', uses: 'result.emit', with: {data: 1}}]}, code: 'unsupported_field', path: '/saga'},
+    {definition: {version: 1, name: 'Saga', saga: {}, steps: [{id: 'a', uses: 'result.emit', with: {data: 1}}]}, code: 'invalid_saga', path: '/saga/on'},
     {definition: {version: 1, name: 'Ref', steps: [{id: 'a', uses: 'result.emit', with: {data: {ref: 'nope'}}}]}, code: 'invalid_reference', path: '/steps/0/with/data/ref'},
     {definition: {version: 1, name: 'Wave', steps: Array.from({length: 9}, (_, i) => ({id: 's' + i, uses: 'result.emit', with: {data: i}}))}, code: 'excessive_parallelism', path: '/steps'},
   ];
@@ -472,9 +472,12 @@ test('unbounded loops, dynamic expansion, nesting, and unsafe loop bodies fail v
       return true;
     });
   }
-  for (const id of ['flow.foreach', 'flow.while', 'flow.nesting', 'flow.wait', 'flow.child_workflow', 'flow.saga']) {
+  for (const id of ['flow.foreach', 'flow.while', 'flow.nesting', 'flow.wait', 'flow.child_workflow']) {
     const entry = workflowCapabilities({}, id);
     assert.equal(entry.status, 'unsupported', id);
     assert.equal('example' in entry, false, id);
   }
+  const saga = workflowCapabilities({}, 'flow.saga');
+  assert.equal(saga.status, 'supported');
+  assert.equal('boundary' in saga && saga.boundary, 'not_an_acid_rollback');
 });

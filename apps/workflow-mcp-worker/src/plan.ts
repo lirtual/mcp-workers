@@ -1,8 +1,8 @@
 import YAML from 'yaml';
 import { publicMcpEndpoint } from './mcp-public-fetch.ts';
 import {
-  CONDITION_VALUE_OPS, CRON_TRIGGER_KEYS, DEFINITION_KEYS, EXPANSION_RISK, EXPAND_KEYS, GITHUB_CAPABILITY_ID, GITHUB_TRIGGER_EVENTS, GITHUB_TRIGGER_KEYS,
-  expansionItemWeight, HTTP_TARGET_ARGUMENT_KEYS, isSupportedUse, LIMITS, MCP_SCOPES, OBJECT_PROTOTYPE_KEYS, REPEAT_KEYS, RESERVED_EXPRESSION_KEYS, STEP_ID, STEP_KEYS,
+  COMPENSATE_KEYS, CONDITION_VALUE_OPS, CRON_TRIGGER_KEYS, DEFINITION_KEYS, EXPANSION_RISK, EXPAND_KEYS, GITHUB_CAPABILITY_ID, GITHUB_TRIGGER_EVENTS, GITHUB_TRIGGER_KEYS,
+  expansionItemWeight, HTTP_TARGET_ARGUMENT_KEYS, isSupportedUse, LIMITS, MCP_SCOPES, OBJECT_PROTOTYPE_KEYS, REPEAT_KEYS, RESERVED_EXPRESSION_KEYS, SAGA_KEYS, STEP_ID, STEP_KEYS,
   TOOL_NAME, TRIGGER_EVENT_NAME, TRIGGER_REPOSITORY, TRIGGER_SOURCE_ID, WEBHOOK_TRIGGER_KEYS, WITH_KEYS,
 } from './capabilities.ts';
 import type { SupportedUse } from './capabilities.ts';
@@ -20,6 +20,8 @@ export class PlanError extends Error {
 export type RepeatSpec = {times: number; until?: unknown};
 export type TemplateUse = SupportedUse;
 export type StepBody = {uses: TemplateUse; with: Record<string, unknown>};
+export type SagaTrigger = 'failure' | 'cancel';
+export type SagaPolicy = {on: SagaTrigger[]};
 export type ExpandSpec = {max: number; items: {ref: string}};
 export type ExpansionConnection =
   | {endpoint: string; tool: string; scope: 'read'}
@@ -38,6 +40,7 @@ export type Step = {
   repeat?: RepeatSpec;
   expand?: ExpandSpec;
   body?: StepBody;
+  compensate?: StepBody;
 };
 export type ExprCtx = {
   inputs: Record<string, unknown>;
@@ -52,7 +55,7 @@ export type WebhookTrigger = { id: string; type: 'webhook'; source: string; even
 export type GithubEventTrigger = { id: string; type: 'github_event'; repository: string; events: string[] };
 export type CronTrigger = { id: string; type: 'cron'; expression: string };
 export type PlanTrigger = WebhookTrigger | GithubEventTrigger | CronTrigger;
-export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown>; triggers?: PlanTrigger[]; expansion?: ExpansionReport; mcp_approvals?: ReadonlyOperation[]; http_approvals?: Array<HttpOperation & {endpoint: string}>; mcp_target_risks_accepted?: true; github_execution_approved?: true };
+export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown>; triggers?: PlanTrigger[]; saga?: SagaPolicy; expansion?: ExpansionReport; mcp_approvals?: ReadonlyOperation[]; http_approvals?: Array<HttpOperation & {endpoint: string}>; mcp_target_risks_accepted?: true; github_execution_approved?: true };
 export function expansionSnapshotId(stepId: string): string {
   return stepId + ':snapshot';
 }
@@ -84,7 +87,7 @@ function object(value: unknown, message: string, path?: string): Record<string, 
   if(!value || typeof value !== 'object' || Array.isArray(value)) throw new PlanError(message, path === undefined ? undefined : {path});
   return value as Record<string, unknown>;
 }
-function refCheck(ref: string, step?: {id:string;needs:string[]}, path?: string, allowLoop=false, allowExpand=false) {
+function refCheck(ref: string, step?: {id:string;needs:string[]}, path?: string, allowLoop=false, allowExpand=false, allowSelf=false) {
   const hint = {path, suggestion: allowExpand
     ? 'Use expand.index, expand.item, inputs.<id>, or steps.<needed-step>.status or output.'
     : allowLoop
@@ -103,16 +106,16 @@ function refCheck(ref: string, step?: {id:string;needs:string[]}, path?: string,
   }
   if(parts.length<2 || parts.slice(1).some(p=>!STEP_ID.test(p)||['__proto__','constructor','prototype'].includes(p))) throw new PlanError('invalid_reference', hint);
   if(parts[0]==='inputs') return;
-  const self=allowLoop&&!!step&&parts[1]===step.id;
+  const self=(allowLoop||allowSelf)&&!!step&&parts[1]===step.id;
   if(parts[0]==='steps' && step && (step.needs.includes(parts[1])||self) && parts.length>=3 && ['status','output'].includes(parts[2])) return;
   throw new PlanError('invalid_step_reference', hint);
 }
-function expression(v: unknown, step?: {id:string; needs:string[]}, depth=0, opaqueKeys=false, path='', allowLoop=false, allowExpand=false): void {
+function expression(v: unknown, step?: {id:string; needs:string[]}, depth=0, opaqueKeys=false, path='', allowLoop=false, allowExpand=false, allowSelf=false): void {
   if(depth>LIMITS.maxExpressionDepth) throw new PlanError('expression_too_deep', {path: path || '/'});
   if(v===null || typeof v==='string'||typeof v==='number'||typeof v==='boolean') return;
   if(Array.isArray(v)) {
     if(v.length>LIMITS.maxArrayLength) throw new PlanError('expression_too_large', {path: path || '/'});
-    for(let index=0; index<v.length; index++) expression(v[index],step,depth+1,opaqueKeys,pointer(path,index),allowLoop,allowExpand);
+    for(let index=0; index<v.length; index++) expression(v[index],step,depth+1,opaqueKeys,pointer(path,index),allowLoop,allowExpand,allowSelf);
     return;
   }
   const o=object(v,'invalid_expression', path || '/');
@@ -123,21 +126,21 @@ function expression(v: unknown, step?: {id:string; needs:string[]}, depth=0, opa
       : allowLoop
       ? 'Use loop.index, inputs.<id>, steps.<needed-step>.status or output, or steps.<this-step>.output for the previous iteration.'
       : 'Use inputs.<id> or steps.<needed-step>.status or steps.<needed-step>.output.'});
-    refCheck(o.ref,step,pointer(path,'ref'),allowLoop,allowExpand);return;
+    refCheck(o.ref,step,pointer(path,'ref'),allowLoop,allowExpand,allowSelf);return;
   }
   if(names.length===1 && (CONDITION_VALUE_OPS as readonly string[]).includes(names[0])) {
     const op=names[0], arg=o[op];
-    if(op==='not'){expression(arg,step,depth+1,opaqueKeys,pointer(path,op),allowLoop,allowExpand);return;}
+    if(op==='not'){expression(arg,step,depth+1,opaqueKeys,pointer(path,op),allowLoop,allowExpand,allowSelf);return;}
     const min=op==='and'||op==='or'?LIMITS.minLogicOperands:LIMITS.comparisonOperands;
     const max=op==='and'||op==='or'?LIMITS.maxLogicOperands:LIMITS.comparisonOperands;
     if(!Array.isArray(arg)||arg.length<min||arg.length>max)throw new PlanError('invalid_operator', {path: pointer(path,op)});
-    for(let index=0; index<arg.length; index++) expression(arg[index],step,depth+1,opaqueKeys,pointer(pointer(path,op),index),allowLoop,allowExpand);
+    for(let index=0; index<arg.length; index++) expression(arg[index],step,depth+1,opaqueKeys,pointer(pointer(path,op),index),allowLoop,allowExpand,allowSelf);
     return;
   }
   for(const [name,x] of Object.entries(o)){
     if(name==='__proto__'||name==='prototype'||name==='constructor')throw new PlanError('invalid_argument_key', {path: pointer(path,name)});
     if(!opaqueKeys&&RESERVED.has(name.toLowerCase()))throw new PlanError('unsafe_expression', {path: pointer(path,name), suggestion: 'Remove this expression field.'});
-    expression(x,step,depth+1,opaqueKeys,pointer(path,name),allowLoop,allowExpand);
+    expression(x,step,depth+1,opaqueKeys,pointer(path,name),allowLoop,allowExpand,allowSelf);
   }
 }
 const HTTP_TARGET_KEYS = new Set<string>(HTTP_TARGET_ARGUMENT_KEYS);
@@ -381,6 +384,42 @@ function validateTriggers(value: unknown): PlanTrigger[] {
   triggers.sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0);
   return triggers;
 }
+function compileSaga(raw: unknown): SagaPolicy {
+  const saga=object(raw,'invalid_saga','/saga');
+  keys(saga,SAGA_KEYS,'/saga');
+  if(!Array.isArray(saga.on)||saga.on.length<1||saga.on.length>2)
+    throw new PlanError('invalid_saga', {path:'/saga/on', suggestion:'Set saga.on to failure, cancel, or both.'});
+  const on: SagaTrigger[]=[];
+  for(let index=0; index<saga.on.length; index++){
+    const trigger=saga.on[index];
+    if(trigger!=='failure'&&trigger!=='cancel')
+      throw new PlanError('invalid_saga', {path:'/saga/on/'+index, suggestion:'Use failure or cancel.'});
+    if(on.includes(trigger))
+      throw new PlanError('invalid_saga', {path:'/saga/on/'+index, suggestion:'List each trigger once.'});
+    on.push(trigger);
+  }
+  return {on};
+}
+async function compileCompensation(raw: unknown, stepPath: string, endpoint: string): Promise<StepBody> {
+  const path=stepPath+'/compensate';
+  const compensation=object(raw,'invalid_compensation',path);
+  keys(compensation,COMPENSATE_KEYS,path);
+  if(compensation.scope!=='write')
+    throw new PlanError('compensation_not_controlled', {
+      path:path+'/scope', suggestion:'Use the published portal scope for this compensation.',
+    });
+  if(typeof compensation.tool!=='string'||!TOOL_NAME.test(compensation.tool))
+    throw new PlanError('invalid_tool', {path:path+'/tool', suggestion:'Use the published compensation tool name.'});
+  object(compensation.arguments,'invalid_step_arguments',path+'/arguments');
+  let schema_digest: string;
+  try{schema_digest=await toolSchemaDigest(compensation.input_schema,compensation.output_schema);}
+  catch(error){if(error instanceof PlanError)throw new PlanError(error.message,{path});throw error;}
+  return {uses:'mcp.call', with:{
+    endpoint, tool:compensation.tool, scope:'write', arguments:compensation.arguments,
+    input_schema:compensation.input_schema, ...(compensation.output_schema===undefined?{}:{output_schema:compensation.output_schema}),
+    schema_digest,
+  }};
+}
 export async function compilePlan(source: string|unknown): Promise<{plan:Plan; digest:string}>{
   let raw:unknown=source;
   if(typeof source==='string'){
@@ -395,6 +434,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
   if(!Array.isArray(o.steps)||o.steps.length<LIMITS.minSteps||o.steps.length>LIMITS.maxSteps)throw new PlanError('invalid_step_count', {path: '/steps'});
   if(o.inputs!==undefined) {const inp=object(o.inputs,'invalid_inputs','/inputs');if(Object.keys(inp).length>LIMITS.maxInputs)throw new PlanError('too_many_inputs', {path: '/inputs'});}
   const triggers=o.triggers===undefined?undefined:validateTriggers(o.triggers);
+  const saga=o.saga===undefined?undefined:compileSaga(o.saga);
   const steps:Step[]=[];
   const ids=new Set<string>();
   for(let index=0; index<o.steps.length; index++){
@@ -458,6 +498,17 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       try{await toolSchemaDigest(withData.input_schema,withData.output_schema);}
       catch(error){if(error instanceof PlanError)throw new PlanError(error.message,{path:stepPath+'/with'});throw error;}
     }else keys(withData,WITH_KEYS['result.emit'],stepPath+'/with');
+    let compensate: StepBody | undefined;
+    if(s.compensate!==undefined){
+      if(s.uses!=='mcp.call'||withData.scope!=='write')
+        throw new PlanError('compensation_not_controlled', {
+          path:stepPath+'/compensate', suggestion:'Only a controlled portal call can declare compensate.',
+        });
+      if(!saga) throw new PlanError('compensation_policy_required', {
+        path:stepPath+'/compensate', suggestion:'Add saga.on with failure, cancel, or both.',
+      });
+      compensate=await compileCompensation(s.compensate,stepPath,String(withData.endpoint));
+    }
     const repeat=s.repeat===undefined?undefined:compileRepeat(s.repeat,stepPath);
     if(repeat&&s.uses!=='result.emit') throw new PlanError('unsafe_loop_body', {
       path: stepPath+'/repeat', suggestion: 'Repeat only result.emit. Keep mcp.call, http.request, and github.run outside repeat.',
@@ -465,6 +516,9 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     const expand=s.expand===undefined?undefined:compileExpand(s.expand,stepPath);
     if(expand&&repeat) throw new PlanError('loop_nesting_unsupported', {
       path: stepPath+'/expand', suggestion: 'Do not combine repeat and expand. Nested steps are not implemented.',
+    });
+    if(compensate&&(repeat||expand)) throw new PlanError('compensation_not_controlled', {
+      path: stepPath+'/compensate', suggestion: 'Keep compensate on one controlled portal call. Do not combine it with repeat or expand.',
     });
     const compiledWith=s.uses==='mcp.call'||s.uses==='http.request'?
       {...withData,schema_digest:await toolSchemaDigest(withData.input_schema,withData.output_schema)}
@@ -476,6 +530,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     steps.push({id:s.id,uses:rewritten,needs:needs as string[],with:repeat||expand?{}:compiledWith,
       ...(repeat?{repeat,body:{uses:'result.emit' as const,with:compiledWith}}:{}),
       ...(expand?{expand,body:{uses:s.uses as TemplateUse,with:compiledWith}}:{}),
+      ...(compensate?{compensate}:{}),
       ...(s.if===undefined?{}:{if:s.if})});
   }
   for(let index=0; index<steps.length; index++){
@@ -498,6 +553,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       else expression(s.body?.with,s,0,false,stepPath+'/with',false,true);
     }
     else expression(s.with,s,0,false,stepPath+'/with');
+    if(s.compensate) expression(s.compensate.with.arguments,s,0,true,stepPath+'/compensate/arguments',false,false,true);
     if(allowLoop&&s.repeat?.until!==undefined){
       expression(s.repeat.until,s,0,false,stepPath+'/repeat/until',true);
       assertCondition(s.repeat.until,stepPath+'/repeat/until');
@@ -519,7 +575,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     for(const s of ready){sorted.push(s);pending.delete(s.id);}
   }
   const expansion=expansionReport(sorted);
-  const plan:Plan={version:1,name:o.name,steps:sorted,...(o.inputs===undefined?{}:{inputs:o.inputs as Record<string,unknown>}),...(triggers===undefined?{}:{triggers}),...(expansion?{expansion}:{})};
+  const plan:Plan={version:1,name:o.name,steps:sorted,...(o.inputs===undefined?{}:{inputs:o.inputs as Record<string,unknown>}),...(triggers===undefined?{}:{triggers}),...(saga?{saga}:{}),...(expansion?{expansion}:{})};
   const serial=JSON.stringify(canonical(plan));
   const hash=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(serial));
   const digest=[...new Uint8Array(hash)].map(x=>x.toString(16).padStart(2,'0')).join('');

@@ -4,6 +4,7 @@ import { cronEventId, cronMatches, CronError, publishedCronFacts } from './cron.
 import { PRODUCTION_PORTAL_ENDPOINT, TRUSTED_PORTAL_ENDPOINT } from './mcp-public-fetch.ts';
 import {githubAsyncViewsForRun} from './github-async.ts';
 import {reconcileRunCancellation, type RunCancellation} from './run-cancel.ts';
+import {publishedSaga, publicCompensation} from './saga.ts';
 import {observeInstance, shouldExpireUnconfirmedOutcome, unresolvedNativeTerminalError, OUTCOME_SETTLE_WINDOW_MS} from './instance-observation.ts';
 import YAML from 'yaml';
 function draftName(definition:string):string {
@@ -78,6 +79,10 @@ function cronPublication(plan:Plan){
   const trigger=plan.triggers?.find(item=>item.type==='cron');
   return trigger&&trigger.type==='cron'?{cron:publishedCronFacts(trigger.expression)}:{};
 }
+function publicationFacts(plan:Plan){
+  const saga=publishedSaga(plan);
+  return {...cronPublication(plan),...(saga?{saga}:{})};
+}
 function assertPublishedTriggers(plan:Plan, env:Env){
   for(const trigger of plan.triggers??[]){
     if(trigger.type==='cron')continue;
@@ -101,13 +106,17 @@ function operationOf(step:Step):{uses:string;with:Record<string,unknown>}|undefi
 function sortGrants<T>(grants:T[]):T[]{
   return grants.slice().sort((a,b)=>JSON.stringify(a)<JSON.stringify(b)?-1:JSON.stringify(a)>JSON.stringify(b)?1:0);
 }
+function mcpGrant(withData:Record<string,unknown>):ReadonlyOperation{
+  const scope=withData.scope==='write'?'write':'read';
+  return {endpoint:withData.endpoint as string,tool:withData.tool as string,scope,schema_digest:withData.schema_digest as string};
+}
 function mcpGrants(plan:Plan):ReadonlyOperation[]{
   return [...new Map(plan.steps.flatMap(step=>{
+    const grants:ReadonlyOperation[]=[];
     const operation=operationOf(step);
-    if(operation?.uses!=='mcp.call') return [];
-    const scope=operation.with.scope==='write'?'write':'read';
-    const grant:ReadonlyOperation={endpoint:operation.with.endpoint as string,tool:operation.with.tool as string,scope,schema_digest:operation.with.schema_digest as string};
-    return [[JSON.stringify(grant),grant] as const];
+    if(operation?.uses==='mcp.call') grants.push(mcpGrant(operation.with));
+    if(step.compensate?.uses==='mcp.call') grants.push(mcpGrant(step.compensate.with));
+    return grants.map(grant=>[JSON.stringify(grant),grant] as const);
   })).values()];
 }
 function httpGrants(plan:Plan, env:Env):HttpOperation[]{
@@ -183,6 +192,10 @@ function issueMessage(code:string, detail?:string):string{
     case 'invalid_expression': return 'The expression must be an object.';
     case 'invalid_argument_key': return 'This object key is not allowed.';
     case 'definition_too_deep': return 'The definition is nested too deeply.';
+    case 'invalid_saga': return 'saga.on must list failure, cancel, or both.';
+    case 'invalid_compensation': return 'compensate must name a tool, scope, arguments, and input_schema.';
+    case 'compensation_policy_required': return 'compensate requires saga.on.';
+    case 'compensation_not_controlled': return 'Only a controlled portal call can declare compensate.';
     default: return 'The definition is invalid.';
   }
 }
@@ -205,9 +218,11 @@ async function compileValidation(source:string, env:Env){
     if(fixture && http.some(grant=>grant.schema_digest!==fixture.schema_digest))
       return {valid:false as const, issues:[{code:'approved_schema_changed', path:'/steps', message:issueMessage('approved_schema_changed'), suggestion:'Use the registered fixture schema.'}]};
     const required_approvals=externalGrants(plan, env);
+    const saga=publishedSaga(plan);
     return {valid:true as const,digest,steps:plan.steps.length,issues:[] as [],
       ...(plan.expansion?{expansion:plan.expansion}:{}),
       ...(required_approvals.length?{required_approvals}:{}),
+      ...(saga?{saga}:{}),
       ...(publishesGithub(plan)?{requires_heavy_execution_approval:true as const}:{})};
   }catch(error){
     if(!(error instanceof PlanError))throw error;
@@ -301,7 +316,7 @@ export class WorkflowService {
     // Repeated Publish of an unchanged Draft resolves to its existing Version.
     if(row.active_version_id){
       const current=await this.db.prepare('SELECT digest FROM workflow_versions WHERE id=? AND workflow_id=?').bind(row.active_version_id,workflow_id).first<{digest:string}>();
-      if(current?.digest===plan_digest)return {workflow_id,published_version_id:row.active_version_id,digest:plan_digest,state:row.state,...cronPublication(plan)};
+      if(current?.digest===plan_digest)return {workflow_id,published_version_id:row.active_version_id,digest:plan_digest,state:row.state,...publicationFacts(plan)};
     }
     const version=crypto.randomUUID(),t=now();
     const batch=await this.db.batch([
@@ -313,11 +328,11 @@ export class WorkflowService {
       const latest=await this.row(workflow_id);
       if(latest.draft_revision===expected_revision&&latest.active_version_id){
         const current=await this.db.prepare('SELECT digest FROM workflow_versions WHERE id=? AND workflow_id=?').bind(latest.active_version_id,workflow_id).first<{digest:string}>();
-        if(current?.digest===plan_digest)return {workflow_id,published_version_id:latest.active_version_id,digest:plan_digest,state:latest.state,...cronPublication(plan)};
+        if(current?.digest===plan_digest)return {workflow_id,published_version_id:latest.active_version_id,digest:plan_digest,state:latest.state,...publicationFacts(plan)};
       }
       throw new StateError('revision_conflict');
     }
-    return {workflow_id,published_version_id:version,digest:plan_digest,state:row.state==='paused'?'paused':'active',...cronPublication(publishedPlan)};
+    return {workflow_id,published_version_id:version,digest:plan_digest,state:row.state==='paused'?'paused':'active',...publicationFacts(publishedPlan)};
   }
   async cronTickTargets(utcMs:number){
     const rows=await this.db.prepare("SELECT w.id AS id, w.state AS state, v.plan AS plan FROM workflows w JOIN workflow_versions v ON v.id=w.active_version_id AND v.workflow_id=w.id WHERE w.state IN ('active','paused') AND w.active_version_id IS NOT NULL ORDER BY w.id ASC LIMIT 100").all<{id:string;state:string;plan:string}>();
@@ -558,7 +573,8 @@ export class WorkflowService {
       const asyncAction=asyncActions.get(stepId);
       return asyncAction?{...base,async_action:asyncAction}:base;
     }).sort((a,b)=>a.step_id<b.step_id?-1:a.step_id>b.step_id?1:0);
-    return {run_id,workflow_id:row.workflow_id,published_version_id:row.version_id,start_state:row.start_state,status:['succeeded','failed','indeterminate','cancelled'].includes(row.outcome)?row.outcome:row.start_state!=='started'?'start_unknown':applyStatus(native,row.outcome),...(cancellation?{cancellation}:{}),steps};
+    const compensation=publicCompensation(stored.find(item=>item.step_id==='saga:compensation')?.output);
+    return {run_id,workflow_id:row.workflow_id,published_version_id:row.version_id,start_state:row.start_state,status:['succeeded','failed','indeterminate','cancelled'].includes(row.outcome)?row.outcome:row.start_state!=='started'?'start_unknown':applyStatus(native,row.outcome),...(cancellation?{cancellation}:{}),...(compensation?{compensation}:{}),steps};
   }
   async result(run_id:string){
     const meta=await this.status(run_id);
