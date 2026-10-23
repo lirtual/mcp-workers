@@ -207,6 +207,8 @@ test('bad signed identity, unclaimed owner, unknown or ended physical Job cannot
   assert.equal(await recordSignedSessionReady(f.adapter,run(11),good.jwt,audience,'token',
     good.publicKey,async()=>({state:'unknown'})),'physical_unconfirmed');
   assert.equal(await recordSignedSessionReady(f.adapter,run(11),good.jwt,audience,'token',
+    good.publicKey,async()=>({state:'queued'})),'physical_unconfirmed');
+  assert.equal(await recordSignedSessionReady(f.adapter,run(11),good.jwt,audience,'token',
     good.publicKey,async()=>({state:'completed',conclusion:'failure'})),'denied');
   assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'queued');
   f.db.prepare("UPDATE session_executions SET state='stopping'").run();
