@@ -1,5 +1,6 @@
 import { compilePlan, PlanError, canonicalJsonString } from './plan.ts';
 import { GITHUB_TRIGGER_EVENTS, isConfiguredSecret, LIMITS, TRIGGER_REPOSITORY, TRIGGER_SOURCE_ID } from './capabilities.ts';
+import { cronEventId, cronMatches, CronError, publishedCronFacts } from './cron.ts';
 import { PRODUCTION_PORTAL_ENDPOINT, TRUSTED_PORTAL_ENDPOINT } from './mcp-public-fetch.ts';
 import {githubAsyncViewsForRun} from './github-async.ts';
 import {observeInstance, shouldExpireUnconfirmedOutcome, unresolvedNativeTerminalError, OUTCOME_SETTLE_WINDOW_MS} from './instance-observation.ts';
@@ -69,8 +70,13 @@ async function digest(s:string):Promise<string>{
   return [...new Uint8Array(result)].map(x=>x.toString(16).padStart(2,'0')).join('');
 }
 export function cleanError(e:unknown):string {return e instanceof StateError||e instanceof PlanError?e instanceof StateError?e.code:e.code:'internal_error';}
+function cronPublication(plan:Plan){
+  const trigger=plan.triggers?.find(item=>item.type==='cron');
+  return trigger&&trigger.type==='cron'?{cron:publishedCronFacts(trigger.expression)}:{};
+}
 function assertPublishedTriggers(plan:Plan, env:Env){
   for(const trigger of plan.triggers??[]){
+    if(trigger.type==='cron')continue;
     if(trigger.type==='webhook'){
       if(!isConfiguredSecret(env.WEBHOOK_TRIGGER_SECRET)||!env.WEBHOOK_TRIGGER_SOURCE||!TRIGGER_SOURCE_ID.test(env.WEBHOOK_TRIGGER_SOURCE))
         throw new StateError('webhook_source_not_configured');
@@ -125,7 +131,8 @@ function issueMessage(code:string, detail?:string):string{
     case 'invalid_inputs': return 'inputs must be an object.';
     case 'invalid_step': return 'Each step must be an object.';
     case 'invalid_step_arguments': return 'with must be an object, and mcp.call arguments must be an object.';
-    case 'invalid_trigger': return 'triggers must declare one webhook, one GitHub event, or both.';
+    case 'invalid_trigger': return 'triggers may declare one webhook, one GitHub event, and one cron.';
+    case 'invalid_cron': return 'The cron expression is not a supported five-field UTC schedule.';
     case 'duplicate_trigger': return 'Each trigger id and type can be declared once.';
     case 'invalid_trigger_source': return 'Webhook source must be the configured source id.';
     case 'invalid_trigger_event': return 'The trigger event name is not allowed.';
@@ -231,7 +238,7 @@ export class WorkflowService {
     // Repeated Publish of an unchanged Draft resolves to its existing Version.
     if(row.active_version_id){
       const current=await this.db.prepare('SELECT digest FROM workflow_versions WHERE id=? AND workflow_id=?').bind(row.active_version_id,workflow_id).first<{digest:string}>();
-      if(current?.digest===plan_digest)return {workflow_id,published_version_id:row.active_version_id,digest:plan_digest,state:row.state};
+      if(current?.digest===plan_digest)return {workflow_id,published_version_id:row.active_version_id,digest:plan_digest,state:row.state,...cronPublication(plan)};
     }
     const version=crypto.randomUUID(),t=now();
     const batch=await this.db.batch([
@@ -243,13 +250,29 @@ export class WorkflowService {
       const latest=await this.row(workflow_id);
       if(latest.draft_revision===expected_revision&&latest.active_version_id){
         const current=await this.db.prepare('SELECT digest FROM workflow_versions WHERE id=? AND workflow_id=?').bind(latest.active_version_id,workflow_id).first<{digest:string}>();
-        if(current?.digest===plan_digest)return {workflow_id,published_version_id:latest.active_version_id,digest:plan_digest,state:latest.state};
+        if(current?.digest===plan_digest)return {workflow_id,published_version_id:latest.active_version_id,digest:plan_digest,state:latest.state,...cronPublication(plan)};
       }
       throw new StateError('revision_conflict');
     }
-    return {workflow_id,published_version_id:version,digest:plan_digest,state:row.state==='paused'?'paused':'active'};
+    return {workflow_id,published_version_id:version,digest:plan_digest,state:row.state==='paused'?'paused':'active',...cronPublication(publishedPlan)};
   }
-  async admitEvent(workflow_id:string,admission:{kind:'webhook'|'github_event';event:string;event_id:string|null;source:string;payload:Record<string,unknown>}){
+  async cronTickTargets(utcMs:number){
+    const rows=await this.db.prepare("SELECT w.id AS id, w.state AS state, v.plan AS plan FROM workflows w JOIN workflow_versions v ON v.id=w.active_version_id AND v.workflow_id=w.id WHERE w.state IN ('active','paused') AND w.active_version_id IS NOT NULL ORDER BY w.id ASC LIMIT 100").all<{id:string;state:string;plan:string}>();
+    const targets:{workflow_id:string;state:string}[]=[];
+    for(const row of rows.results){
+      try{
+        const plan=JSON.parse(row.plan) as Plan;
+        const trigger=plan.triggers?.find(item=>item.type==='cron');
+        if(!trigger||trigger.type!=='cron'||!cronMatches(trigger.expression,utcMs))continue;
+        targets.push({workflow_id:row.id,state:row.state});
+      }catch(error){
+        if(error instanceof CronError||error instanceof SyntaxError)targets.push({workflow_id:row.id,state:'invalid'});
+        else throw error;
+      }
+    }
+    return {truncated:rows.results.length===100,targets};
+  }
+  async admitEvent(workflow_id:string,admission:{kind:'webhook'|'github_event'|'cron';event:string;event_id:string|null;source:string;payload:Record<string,unknown>}){
     assertId(workflow_id);
     const inputs={event:admission.event,event_id:admission.event_id,payload:admission.payload};
     const key=admission.event_id===null?undefined:'evt_'+await digest(admission.kind+'\0'+admission.event_id);
@@ -261,7 +284,7 @@ export class WorkflowService {
     const admitted=await this.start(workflow_id,inputs,key,'event');
     return {...admitted,dedupe:key?'stable_event_id' as const:'not_claimed' as const,exactly_once:false as const};
   }
-  private async assertActiveTrigger(workflow_id:string,admission:{kind:'webhook'|'github_event';event:string;source:string}){
+  private async assertActiveTrigger(workflow_id:string,admission:{kind:'webhook'|'github_event'|'cron';event:string;source:string;event_id:string|null;payload:Record<string,unknown>}){
     const wf=await this.row(workflow_id);
     if(wf.state!=='active'||!wf.active_version_id)throw new StateError('workflow_not_active');
     const version=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=? AND workflow_id=?').bind(wf.active_version_id,workflow_id).first<{plan:string}>();
@@ -269,6 +292,14 @@ export class WorkflowService {
     const plan=JSON.parse(version.plan) as Plan;
     const trigger=(plan.triggers??[]).find(item=>item.type===admission.kind);
     if(!trigger)throw new StateError('unauthorized_source');
+    if(trigger.type==='cron'){
+      if(admission.source!=='worker-scheduled'||admission.event!=='cron')throw new StateError('unauthorized_source');
+      if(typeof admission.payload.scheduled_time!=='string')throw new StateError('invalid_input');
+      const scheduled=Date.parse(admission.payload.scheduled_time);
+      if(!Number.isSafeInteger(scheduled)||cronEventId(scheduled)!==admission.event_id)throw new StateError('invalid_event_id');
+      if(!cronMatches(trigger.expression,scheduled))throw new StateError('unauthorized_event');
+      return;
+    }
     if(trigger.type==='webhook'){
       if(trigger.source!==this.env.WEBHOOK_TRIGGER_SOURCE||admission.source!==trigger.source)throw new StateError('unauthorized_source');
       if(trigger.event!==admission.event)throw new StateError('unauthorized_event');

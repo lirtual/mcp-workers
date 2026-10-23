@@ -269,7 +269,8 @@ test('Agent discovers capabilities and inline-validates a definition without tou
     assert.equal(byId.get('trigger.github_event')?.status, 'supported');
     for(const id of ['flow.if','flow.needs','flow.parallel','flow.repeat'])
       assert.equal(byId.get(id)?.status, 'supported', id);
-    for(const id of ['trigger.cron','action.http','action.mcp.write','action.shell','flow.foreach','flow.while','flow.nesting','flow.dynamic_expansion','flow.wait','flow.child_workflow','flow.saga'])
+    assert.equal(byId.get('trigger.cron')?.status, 'supported');
+    for(const id of ['action.http','action.mcp.write','action.shell','flow.foreach','flow.while','flow.nesting','flow.dynamic_expansion','flow.wait','flow.child_workflow','flow.saga'])
       assert.equal(byId.get(id)?.status, 'unsupported', id);
     for(const item of overview.capabilities) assert.equal('example' in item, false);
 
@@ -284,8 +285,13 @@ test('Agent discovers capabilities and inline-validates a definition without tou
     const cron=await call('workflow_capabilities',{id:'trigger.cron'});
     const missing=await call('workflow_capabilities',{id:'action.not-real'});
     assert.equal(emit.status, 'supported');
-    assert.equal(cron.status, 'unsupported');
-    assert.equal('example' in cron, false);
+    assert.equal(cron.status, 'supported');
+    assert.equal(cron.cron.timezone, 'UTC');
+    assert.equal(cron.cron.dst, 'not_applicable');
+    assert.equal(cron.cron.minimum_interval_seconds, 60);
+    assert.equal(cron.cron.permission, 'authenticated_publish_only');
+    assert.equal(cron.cron.exactly_once, false);
+    assert.equal((await call('workflow_validate',{definition:JSON.stringify(cron.example)})).valid, true);
     assert.equal(missing.status, 'unknown');
     const inline=await call('workflow_validate',{definition:JSON.stringify(emit.example)});
     assert.equal(inline.valid, true);

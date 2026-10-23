@@ -1,6 +1,7 @@
 import { PRODUCTION_PORTAL_ENDPOINT, TRUSTED_PORTAL_ENDPOINT } from './mcp-public-fetch.ts';
 import { GITHUB_ASYNC_WAIT_MS } from './github-async.ts';
 import { selectedGithubExecutor } from './github-dispatch.ts';
+import { CRON_CONTRACT } from './cron.ts';
 
 export const DEFINITION_KEYS = ['version', 'name', 'inputs', 'triggers', 'steps'] as const;
 export const STEP_KEYS = ['id', 'uses', 'needs', 'if', 'with', 'repeat'] as const;
@@ -25,6 +26,7 @@ export const STEP_ID = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
 export const TOOL_NAME = /^[a-zA-Z0-9_-][a-zA-Z0-9_.-]{0,127}$/;
 export const WEBHOOK_TRIGGER_KEYS = ['id', 'type', 'source', 'event'] as const;
 export const GITHUB_TRIGGER_KEYS = ['id', 'type', 'repository', 'events'] as const;
+export const CRON_TRIGGER_KEYS = ['id', 'type', 'expression'] as const;
 // Business triggers only. GitHub Action lifecycle events stay on the executor
 // claim/callback routes and are not a second orchestrator.
 export const GITHUB_TRIGGER_EVENTS = ['create', 'delete', 'issue_comment', 'issues', 'pull_request', 'push', 'release'] as const;
@@ -54,7 +56,7 @@ export const LIMITS = {
   maxToolSchemaBytes: 8192,
   maxDefinitionDepth: 32,
   maxAliasCount: 16,
-  maxTriggers: 2,
+  maxTriggers: 3,
   maxTriggerEvents: 8,
 } as const;
 
@@ -115,6 +117,12 @@ const manualExample = {
   name: 'Manual',
   steps: [{id: 'emit', uses: 'result.emit', with: {data: 'ok'}}],
 };
+const cronExample = {
+  version: 1,
+  name: 'Hourly',
+  triggers: [{id: 'schedule', type: 'cron', expression: '15 * * * *'}],
+  steps: [{id: 'emit', uses: 'result.emit', with: {data: {ref: 'inputs.event'}}}],
+};
 const webhookExample = {
   version: 1,
   name: 'Webhook',
@@ -167,8 +175,10 @@ const CATALOG: readonly Entry[] = [
     summary: 'Start the published plan by calling workflow_run. Manual start does not declare a trigger.',
     permissions: 'Publishing a Draft does not start a Run. workflow_run admits one manual Run of the pinned published plan.',
     completion: 'The Run is queued. Poll workflow_status and workflow_result. Inputs are an untyped object; typed input checks are unsupported.'},
-  {id: 'trigger.cron', kind: 'trigger', status: 'unsupported',
-    summary: 'Cron triggers are not implemented. Do not add a cron or schedule field.'},
+  {id: 'trigger.cron', kind: 'trigger', status: 'supported', example: cronExample,
+    summary: 'A published five-field UTC cron admits a Run from this Worker scheduled event. The minimum interval is 60 seconds. UTC has no DST, and a timezone field is rejected.',
+    permissions: 'Only an authenticated workflow_publish arms a cron. A Draft does not. There is no public cron route and no extra secret. The schedule cannot name a URL, command, timezone, or Worker. Pause blocks new admissions and does not move in-flight Runs. Removing the cron and publishing again stops later ticks.',
+    completion: 'This Worker uses one Cloudflare scheduled event, '+CRON_CONTRACT.platform_cron+', and does not deploy a cron per user schedule. A matching active Published Version admits one Run through the same D1 path as workflow_run and pins that version. Duplicate or late wakes for the same UTC minute return that Run. A missed platform minute is not backfilled. This does not promise exactly-once. Publish, pause, draft update, and disabling the cron change the next tick without a redeploy.'},
   {id: 'trigger.webhook', kind: 'trigger', status: 'supported', example: webhookExample,
     summary: 'An authenticated webhook can admit a Run of the published plan. Declare triggers, not a top-level webhook field.',
     permissions: 'Publish accepts the webhook only when source equals the configured source and a signing secret is configured. The secret is never returned, logged, or stored in the plan. POST /triggers/webhook/{workflow_id} with X-Workflow-Signature-256.',
@@ -315,7 +325,8 @@ function definitionContract() {
       max_triggers: LIMITS.maxTriggers,
     },
     manual_start: 'Call workflow_run after explicit publish. Omit triggers for a manual-only definition. Typed input checks are unsupported.',
-    event_admission: 'Webhook and GitHub event deliveries admit through the same Run path as workflow_run. A stable event id dedupes to one Run of the version active at first admission. A missing stable event id does not promise exactly-once. Cron is unsupported.',
+    event_admission: 'Webhook, GitHub event, and cron deliveries admit through the same Run path as workflow_run. A stable event id dedupes to one Run of the version active at first admission. A missing stable event id does not promise exactly-once. Cron uses the UTC scheduled minute as that id. A missed platform minute is not backfilled.',
+    cron: CRON_CONTRACT,
     schema: {
       type: 'object',
       additionalProperties: false,
@@ -326,7 +337,7 @@ function definitionContract() {
         inputs: {type: 'object', maxProperties: LIMITS.maxInputs},
         triggers: {
           type: 'array', minItems: 1, maxItems: LIMITS.maxTriggers,
-          description: 'Optional. At most one webhook and one github_event.',
+          description: 'Optional. At most one webhook, one github_event, and one cron. Cron expression is five UTC fields with a 60 second minimum. No timezone or DST.',
         },
         steps: {
           type: 'array', minItems: LIMITS.minSteps, maxItems: LIMITS.maxSteps,
@@ -378,6 +389,17 @@ function detailOf(entry: Entry) {
     schema: stepSchema(entry.uses),
     ...(entry.uses === 'github.run' ? {capability: GITHUB_CAPABILITY_ID} : {}),
     ...(entry.uses === 'mcp.call' ? {scope: MCP_SCOPE} : {}),
+  } : entry.id === 'trigger.cron' ? {
+    schema: {
+      type: 'object', additionalProperties: false, required: ['id', 'type', 'expression'],
+      properties: {
+        id: {type: 'string', pattern: STEP_ID.source},
+        type: {const: 'cron'},
+        expression: {type: 'string', minLength: 9, maxLength: 128, description: CRON_CONTRACT.format},
+      },
+    },
+    cron: CRON_CONTRACT,
+    limits: {minimum_interval_seconds: CRON_CONTRACT.minimum_interval_seconds},
   } : {schema: definitionContract().schema};
   return {...base, ...action, permissions: entry.permissions, completion: entry.completion, example: entry.example,
     ...(entry.id === 'flow.parallel' ? {limits: {max_parallel_steps: LIMITS.maxParallel}} : {}),

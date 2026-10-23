@@ -1,10 +1,11 @@
 import YAML from 'yaml';
 import { publicMcpEndpoint } from './mcp-public-fetch.ts';
 import {
-  CONDITION_VALUE_OPS, DEFINITION_KEYS, GITHUB_CAPABILITY_ID, GITHUB_TRIGGER_EVENTS, GITHUB_TRIGGER_KEYS,
+  CONDITION_VALUE_OPS, CRON_TRIGGER_KEYS, DEFINITION_KEYS, GITHUB_CAPABILITY_ID, GITHUB_TRIGGER_EVENTS, GITHUB_TRIGGER_KEYS,
   isSupportedUse, LIMITS, MCP_SCOPE, OBJECT_PROTOTYPE_KEYS, REPEAT_KEYS, RESERVED_EXPRESSION_KEYS, STEP_ID, STEP_KEYS,
   TOOL_NAME, TRIGGER_EVENT_NAME, TRIGGER_REPOSITORY, TRIGGER_SOURCE_ID, WEBHOOK_TRIGGER_KEYS, WITH_KEYS,
 } from './capabilities.ts';
+import { assertSupportedCron, CronError } from './cron.ts';
 
 export class PlanError extends Error {
   code = 'invalid_definition';
@@ -29,7 +30,8 @@ export type ExprCtx = {
 export type ReadonlyOperation = { endpoint:string; tool:string; scope:'read'; schema_digest:string };
 export type WebhookTrigger = { id: string; type: 'webhook'; source: string; event: string };
 export type GithubEventTrigger = { id: string; type: 'github_event'; repository: string; events: string[] };
-export type PlanTrigger = WebhookTrigger | GithubEventTrigger;
+export type CronTrigger = { id: string; type: 'cron'; expression: string };
+export type PlanTrigger = WebhookTrigger | GithubEventTrigger | CronTrigger;
 export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown>; triggers?: PlanTrigger[]; mcp_approvals?: ReadonlyOperation[]; mcp_target_risks_accepted?: true; github_execution_approved?: true };
 const PROTOTYPE_KEYS = new Set<string>(OBJECT_PROTOTYPE_KEYS);
 const RESERVED = new Set<string>(RESERVED_EXPRESSION_KEYS);
@@ -189,19 +191,31 @@ export function evaluateCondition(condition: unknown, ctx: ExprCtx): boolean {
 export const evaluateArguments=evaluateExpression;
 function validateTriggers(value: unknown): PlanTrigger[] {
   if(!Array.isArray(value)||value.length<1||value.length>LIMITS.maxTriggers)
-    throw new PlanError('invalid_trigger', {path:'/triggers', suggestion:'Declare one webhook, one github_event, or both.'});
+    throw new PlanError('invalid_trigger', {path:'/triggers', suggestion:'Declare one webhook, one github_event, one cron, or a combination of those.'});
   const triggers: PlanTrigger[]=[];
   const ids=new Set<string>();
   const types=new Set<string>();
   for(let index=0; index<value.length; index++){
     const path='/triggers/'+index;
     const trigger=object(value[index],'invalid_trigger',path);
-    if(trigger.type!=='webhook'&&trigger.type!=='github_event')
-      throw new PlanError('invalid_trigger', {path:path+'/type', suggestion:'Use webhook or github_event.'});
+    if(trigger.type!=='webhook'&&trigger.type!=='github_event'&&trigger.type!=='cron')
+      throw new PlanError('invalid_trigger', {path:path+'/type', suggestion:'Use webhook, github_event, or cron.'});
     if(typeof trigger.id!=='string'||!STEP_ID.test(trigger.id)||ids.has(trigger.id))
       throw new PlanError('invalid_trigger', {path:path+'/id'});
     if(types.has(trigger.type))throw new PlanError('duplicate_trigger', {path:path+'/type'});
     ids.add(trigger.id); types.add(trigger.type);
+    if(trigger.type==='cron'){
+      keys(trigger,CRON_TRIGGER_KEYS,path);
+      if(typeof trigger.expression!=='string')
+        throw new PlanError('invalid_cron', {path:path+'/expression', suggestion:'Use five UTC fields: minute hour day-of-month month day-of-week. Minimum interval is 60 seconds. Do not add a timezone.'});
+      try{assertSupportedCron(trigger.expression);}
+      catch(error){
+        if(!(error instanceof CronError))throw error;
+        throw new PlanError('invalid_cron', {path:path+'/expression', suggestion:'Use five UTC fields: minute hour day-of-month month day-of-week. Minimum interval is 60 seconds. Do not add a timezone.'});
+      }
+      triggers.push({id:trigger.id,type:'cron',expression:trigger.expression});
+      continue;
+    }
     if(trigger.type==='webhook'){
       keys(trigger,WEBHOOK_TRIGGER_KEYS,path);
       if(typeof trigger.source!=='string'||!TRIGGER_SOURCE_ID.test(trigger.source))
