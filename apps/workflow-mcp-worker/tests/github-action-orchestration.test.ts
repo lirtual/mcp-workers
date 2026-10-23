@@ -12,9 +12,9 @@ const action:ReviewedGitHubAction={repository:'lirtual/session-actions',reposito
  workflowId:34,workflowPath:'.github/workflows/linux.yml',
  commitSha:'a'.repeat(40),type:'session',contractDigest:'b'.repeat(64)};
 const data={runId:rid,stepId:'linux',attemptId:aid,dispatchId:did,
- action,ref:'refs/heads/main',token:'token',inputs:{duration_minutes:'5'}};
+ action,ref:'refs/tags/test-v1',token:'token',inputs:{duration_minutes:'5'}};
 const publishedPlan={github_execution_approved:true,github_action_approvals:[action],
- steps:[{id:'linux',uses:'github.run',with:{capability:'github.action',action:{...action,inputs:{duration_minutes:5}}}}]};
+ steps:[{id:'linux',uses:'github.run',with:{capability:'github.action',action:{...action,ref:'refs/tags/test-v1',inputs:{duration_minutes:5}}}}]};
 function setup(){
  const db=new DatabaseSync(':memory:');
  db.exec('PRAGMA foreign_keys=ON');
@@ -36,7 +36,7 @@ function setup(){
  })})} as any;
  return {db,adapter};
 }
-const gitRef=()=>Response.json({ref:'refs/heads/main',object:{type:'commit',sha:action.commitSha}});
+const gitRef=()=>Response.json({ref:'refs/tags/test-v1',object:{type:'commit',sha:action.commitSha}});
 test('persist before POST, then ACK stores physical run in D1',async()=>{
  const {db,adapter}=setup();
  try{
