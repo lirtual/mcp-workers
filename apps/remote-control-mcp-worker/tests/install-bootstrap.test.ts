@@ -350,7 +350,7 @@ test('copy feedback appears in button, resets, and never announces success below
   const pending=new Map<number,()=>void>();
   let id=0;
   runInNewContext(source,{
-    document:{getElementById:(name:string)=>els[name]},
+    document:{getElementById:(name:string)=>els[name as keyof typeof els]},
     navigator:{
       platform:'iPhone',
       clipboard:{writeText:async (text:string)=>{
