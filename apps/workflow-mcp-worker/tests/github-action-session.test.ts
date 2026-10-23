@@ -2,8 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {readFileSync} from 'node:fs';
-import {reservePublishedSessionSlot,releaseVerifiedSessionSlot}
+import {reservePublishedSessionSlot,releaseVerifiedSessionSlot,recordSignedSessionReady}
  from '../src/github-action-session.ts';
+import {generateKeyPair,SignJWT} from 'jose';
+import {handleGithubActionClaimRequest} from '../src/github-action-ingress.ts';
 import {WorkflowService} from '../src/store.ts';
 import {reconcilePersistedGitHubActionAttempt} from '../src/github-action-attempt-reconcile.ts';
 import {inspectPersistedGitHubActionAttempt} from '../src/github-action-attempt-inspection.ts';
@@ -148,5 +150,88 @@ test('verified physical GitHub completion after parent Ready still settles and f
   assert.equal(f.db.prepare('SELECT outcome FROM runs WHERE id=?').get(run(1))?.outcome,'succeeded');
   assert.equal(await releaseVerifiedSessionSlot(f.adapter,run(1),'launch'),'released');
   assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'terminated');
+ }finally{f.db.close();}
+});
+
+const audience='workflow-github-action:production';
+async function signedReady(claims:Record<string,unknown>={}){
+ const {privateKey,publicKey}=await generateKeyPair('RS256');
+ const jwt=await new SignJWT({
+  repository:action.repository,repository_id:'123',
+  workflow_ref:action.repository+'/'+action.workflowPath+'@refs/tags/release-v1',
+  ref:'refs/tags/release-v1',sha:action.commitSha,
+  run_id:'42',run_attempt:'1',event_name:'workflow_dispatch',...claims,
+ }).setProtectedHeader({alg:'RS256'}).setIssuer('https://token.actions.githubusercontent.com')
+  .setAudience(audience).setIssuedAt().setExpirationTime('5m').sign(privateKey);
+ return {jwt,publicKey};
+}
+test('signed Ready must own the exact claimed physical running GitHub Session; duplicate is idempotent',async()=>{
+ const f=fixture();
+ try{
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
+  f.claim(1,'claimed',true);
+  const {jwt,publicKey}=await signedReady();
+  let checked=0;
+  const inspect=async()=>{
+   checked++;return {state:'running' as const};
+  };
+  assert.equal(await recordSignedSessionReady(f.adapter,run(11),jwt,audience,'token',publicKey,inspect),'ready');
+  assert.equal(await recordSignedSessionReady(f.adapter,run(11),jwt,audience,'token',publicKey,inspect),'already_ready');
+  assert.equal(checked,2);
+  assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'ready');
+  assert.equal(f.db.prepare('SELECT state FROM step_attempts').get()?.state,'claimed');
+  assert.equal(await releaseVerifiedSessionSlot(f.adapter,run(1),'launch'),'held');
+ }finally{f.db.close();}
+});
+test('bad signed identity, unclaimed owner, unknown or ended physical Job cannot set Ready',async()=>{
+ const f=fixture();
+ try{
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
+  const good=await signedReady();
+  let polls=0;
+  assert.equal(await recordSignedSessionReady(f.adapter,run(11),good.jwt,audience,'token',
+    good.publicKey,async()=>{polls++;return {state:'running'};}),'denied');
+  f.claim(1,'claimed',true);
+  const wrong=await signedReady({sha:'c'.repeat(40)});
+  assert.equal(await recordSignedSessionReady(f.adapter,run(11),wrong.jwt,audience,'token',
+    wrong.publicKey,async()=>{polls++;return {state:'running'};}),'denied');
+  assert.equal(polls,0);
+  assert.equal(await recordSignedSessionReady(f.adapter,run(11),good.jwt,audience,'token',
+    good.publicKey,async()=>({state:'unknown'})),'physical_unconfirmed');
+  assert.equal(await recordSignedSessionReady(f.adapter,run(11),good.jwt,audience,'token',
+    good.publicKey,async()=>({state:'completed',conclusion:'failure'})),'denied');
+  assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'queued');
+  f.db.prepare("UPDATE session_executions SET state='stopping'").run();
+  assert.equal(await recordSignedSessionReady(f.adapter,run(11),good.jwt,audience,'token',
+    good.publicKey,async()=>({state:'running'})),'denied');
+  assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'stopping');
+ }finally{f.db.close();}
+});
+test('HTTP Ready is OIDC-only and returns no private credentials; wake is advisory',async()=>{
+ const f=fixture();
+ try{
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
+  f.claim(1,'claimed',true);
+  const {jwt,publicKey}=await signedReady();
+  let notifications=0;
+  const env={DB:f.adapter,GITHUB_ACTION_OIDC_AUDIENCE:audience,
+   WORKFLOW_EXECUTOR_GITHUB_TOKEN:'token',
+   WORKFLOW:{get:async()=>({sendEvent:async()=>{notifications++;}})}} as unknown as Env;
+  const url='https://worker.example/github/action/ready';
+  const request=()=>new Request(url,{method:'POST',headers:{authorization:'Bearer '+jwt},
+   body:JSON.stringify({attemptId:run(11)})});
+  const inspect=async()=>({state:'running' as const});
+  const response=await handleGithubActionClaimRequest(request(),env,publicKey,inspect);
+  assert.equal(response.status,200);
+  assert.deepEqual(await response.json(),{result:'ready'});
+  assert.equal(notifications,1);
+  const repeat=await handleGithubActionClaimRequest(request(),env,publicKey,inspect);
+  assert.equal(repeat.status,200);
+  assert.deepEqual(await repeat.json(),{result:'already_ready'});
+  assert.equal(notifications,1);
+  const bad=await handleGithubActionClaimRequest(new Request(url,{method:'POST',
+   headers:{authorization:'Bearer '+jwt},
+   body:JSON.stringify({attemptId:run(11),access_token:'forged'})}),env,publicKey,inspect);
+  assert.equal(bad.status,400);
  }finally{f.db.close();}
 });
