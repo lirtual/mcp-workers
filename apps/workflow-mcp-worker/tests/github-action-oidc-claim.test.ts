@@ -8,7 +8,7 @@ const sha='a'.repeat(40);
 const action={repository:'lirtual/session-actions',repositoryId:123,workflowId:12,
  workflowPath:'.github/workflows/linux.yml',commitSha:sha,type:'session',contractDigest:'b'.repeat(64)};
 const plan={github_execution_approved:true,github_action_approvals:[action],
- steps:[{id:'linux',uses:'github.run',with:{capability:'github.action',action}}]};
+ steps:[{id:'linux',uses:'github.run',with:{capability:'github.action',action:{...action,inputs:{duration_minutes:5}}}}]};
 const audience='workflow-github-action-claim';
 const base={repository:'lirtual/session-actions',repository_id:'123',
  workflow_ref:'lirtual/session-actions/.github/workflows/linux.yml@refs/heads/main',
