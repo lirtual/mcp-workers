@@ -190,6 +190,37 @@ async function signedReady(claims:Record<string,unknown>={}){
   .setAudience(audience).setIssuedAt().setExpirationTime('5m').sign(privateKey);
  return {jwt,publicKey};
 }
+test('lost first OIDC Claim 200 is recoverable only by the same signed physical owner',async()=>{
+ const f=fixture();
+ try{
+  f.claim(1,'confirmed',false);
+  const {jwt,publicKey}=await signedReady();
+  const env={DB:f.adapter,GITHUB_ACTION_OIDC_AUDIENCE:audience} as Env;
+  const request=(token:string)=>new Request('https://worker.example/github/action/claim',{
+   method:'POST',headers:{authorization:'Bearer '+token},
+   body:JSON.stringify({attemptId:run(11)}),
+  });
+  const first=await handleGithubActionClaimRequest(request(jwt),env,publicKey);
+  assert.equal(first.status,200);
+  assert.deepEqual(await first.json(),{result:'claimed'});
+  // Simulate the first successful HTTP response being lost.
+  const duplicate=await handleGithubActionClaimRequest(request(jwt),env,publicKey);
+  assert.equal(duplicate.status,200);
+  assert.deepEqual(await duplicate.json(),{result:'already_claimed'});
+  assert.equal(f.db.prepare('SELECT state FROM step_attempts').get()?.state,'claimed');
+  assert.equal(f.db.prepare('SELECT owner_run_id FROM step_attempts').get()?.owner_run_id,42);
+  const wrong=await signedReady({run_id:'43'});
+  assert.equal((await handleGithubActionClaimRequest(request(wrong.jwt),env,
+   wrong.publicKey)).status,403);
+  f.db.prepare(`INSERT INTO github_action_cancellations
+   (attempt_id,run_id,step_id,cancel_requested_at,cancel_ack)
+   VALUES(?,?,?,?,'unknown')`).run(run(11),run(1),'launch',Date.now());
+  assert.equal((await handleGithubActionClaimRequest(request(jwt),env,publicKey)).status,403);
+  f.db.prepare('DELETE FROM github_action_cancellations').run();
+  f.db.prepare("UPDATE runs SET outcome='cancelled' WHERE id=?").run(run(1));
+  assert.equal((await handleGithubActionClaimRequest(request(jwt),env,publicKey)).status,403);
+ }finally{f.db.close();}
+});
 test('real signed GitHub Claim is retryable only until persisted dispatch candidate arrives',async()=>{
  const f=fixture();
  try{
