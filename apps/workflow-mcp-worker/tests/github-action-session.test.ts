@@ -208,6 +208,52 @@ test('signed Ready must own the exact claimed physical running GitHub Session; d
   assert.equal(await releaseVerifiedSessionSlot(f.adapter,run(1),'launch'),'held');
  }finally{f.db.close();}
 });
+test('lost Ready HTTP receipt is idempotent even after parent Workflow succeeded',async()=>{
+ const f=fixture();
+ try{
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
+  f.claim(1,'claimed',true);
+  const {jwt,publicKey}=await signedReady();
+  const inspect=async()=>({state:'running' as const});
+  assert.equal(await recordSignedSessionReady(f.adapter,run(11),jwt,audience,'token',
+   publicKey,inspect),'ready');
+  f.db.prepare("UPDATE runs SET outcome='succeeded' WHERE id=?").run(run(1));
+  // The first response can be lost after a durable D1 Ready and parent
+  // completion. A signed duplicate must not be treated as a new late Ready.
+  const env={DB:f.adapter,GITHUB_ACTION_OIDC_AUDIENCE:audience,
+   WORKFLOW_EXECUTOR_GITHUB_TOKEN:'token'} as Env;
+  const request=()=>new Request('https://worker.example/github/action/ready',{
+   method:'POST',headers:{authorization:'Bearer '+jwt},
+   body:JSON.stringify({attemptId:run(11)}),
+  });
+  const retry=await handleGithubActionClaimRequest(request(),env,publicKey,inspect);
+  assert.equal(retry.status,200);
+  assert.deepEqual(await retry.json(),{result:'already_ready'});
+  assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'ready');
+  // Replay exception must never reopen a first Claim for the finished Run.
+  assert.equal(await verifyAndClaimPinnedGitHubAction(f.adapter,run(11),jwt,
+   audience,publicKey),false);
+  // A cancelled or stopping session cannot recover Ready via replay.
+  f.db.prepare("UPDATE session_executions SET state='stopping'").run();
+  assert.equal(await recordSignedSessionReady(f.adapter,run(11),jwt,audience,
+   'token',publicKey,inspect),'denied');
+ }finally{f.db.close();}
+});
+test('terminal parent never authorizes a first late signed Ready',async()=>{
+ const f=fixture();
+ try{
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
+  f.claim(1,'claimed',true);
+  f.db.prepare("UPDATE runs SET outcome='succeeded' WHERE id=?").run(run(1));
+  const {jwt,publicKey}=await signedReady();
+  let fetched=0;
+  const outcome=await recordSignedSessionReady(f.adapter,run(11),jwt,audience,'token',
+   publicKey,async()=>{fetched++;return {state:'running'};});
+  assert.equal(outcome,'denied');
+  assert.equal(fetched,0);
+  assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'queued');
+ }finally{f.db.close();}
+});
 test('bad signed identity, unclaimed owner, unknown or ended physical Job cannot set Ready',async()=>{
  const f=fixture();
  try{
