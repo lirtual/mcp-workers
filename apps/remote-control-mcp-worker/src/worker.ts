@@ -1,6 +1,5 @@
 import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
 import { BROWSER_TOOLS, BROWSER_EFFECT_TOOLS, BROWSER_READ_TOOLS, parseBrowserCall, browserEffectClientStatus } from "./browser-tools.ts";
-import {verifyAccessApprovalOwner,validPermanentGrantForm,permanentGrantApprovalPage,type BrowserApprovalAccessConfig} from "./device-grant-web.ts";
 /** Browser tools use the existing authenticated MCP + signed paired-device grant. */
 import { handleAgentInstallerRequest } from "./install-bootstrap.ts";
 export { V2OwnerCoordinator } from "./v2-pairing.ts";
@@ -1139,52 +1138,6 @@ export default {
     }
     const url = new URL(request.url);
 
-    // Promoting a time-limited grant to permanent is a separate privilege change.
-    // It retains independent owner verification; ordinary browser calls do not.
-    if (url.pathname.startsWith("/browser-approve/grant/")) {
-      const deviceId=url.pathname.slice("/browser-approve/grant/".length);
-      if(!/^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(deviceId)||
-         !["GET","POST"].includes(request.method)||url.hash||!browserToolsAvailable(env))
-        return jsonError(404,"not_found","The device grant page is unavailable.");
-      const settings=env as V2Env & BrowserApprovalAccessConfig;
-      if(!await verifyAccessApprovalOwner(request,settings))
-        return jsonError(403,"unauthorized","Owner Access verification failed.");
-      const owner=pendingOwner(env);
-      if(!owner)return jsonError(503,"unavailable","Device grants are unavailable.");
-      try{
-        if(request.method==="GET"){
-          const response=await owner.fetch("https://v2.internal/devices",{
-            method:"POST",headers:{"content-type":"application/json"},body:"{}",
-          });
-          if(!response.ok)return jsonError(503,"unavailable","Device lookup failed.");
-          const devices=await response.json() as Array<{
-            device_id:string;name:string;grant_type?:string;fingerprint?:string;expires_at?:number;
-          }>;
-          const record=devices.find(d=>d.device_id===deviceId&&d.grant_type==="temporary");
-          if(!record||!record.fingerprint||!record.expires_at)
-            return jsonError(404,"not_found","No active temporary grant for this device.");
-          return permanentGrantApprovalPage({
-            device_id:deviceId,name:record.name,
-            fingerprint:record.fingerprint,expires_at:record.expires_at,
-          });
-        }
-        const raw=await readBounded(request,384);
-        const approval=raw===null?null:validPermanentGrantForm(request,raw);
-        if(!approval)return jsonError(400,"bad_request","Invalid owner confirmation.");
-        const result=await owner.fetch("https://v2.internal/grant/permanent",{
-          method:"POST",headers:{"content-type":"application/json"},
-          body:JSON.stringify({device_id:deviceId,
-            expected_fingerprint:approval.fingerprint,
-            expected_expires_at:approval.expires_at,
-            confirmation:"make_permanent"}),
-        });
-        if(!result.ok)return jsonError(409,"conflict","Device grant changed, expired or was already permanent.");
-        return new Response("Device permanently authorized. You may return to ChatGPT.\n",{
-          status:200,headers:{"content-type":"text/plain; charset=utf-8",
-            "cache-control":"no-store","x-content-type-options":"nosniff","referrer-policy":"no-referrer"},
-        });
-      }catch{return jsonError(503,"unavailable","Device grant update is unavailable.");}
-    }
     if (url.pathname === "/install.sh") {
       // Only the owner-configured v2 Preview may serve the reviewed immutable
       // test installer. Keep every other environment fail-closed (503).
