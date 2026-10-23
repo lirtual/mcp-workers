@@ -11,7 +11,7 @@ const plan={github_execution_approved:true,github_action_approvals:[grant],
 const row={attempt_id:attempt,run_id:'run',step_id:'start',state:'confirmed',capability_id:'github.action',
  owner_run_id:null as number|null,owner_run_attempt:null as number|null,
  repository:grant.repository,repository_id:String(grant.repositoryId),
- workflow_ref:grant.repository+'/'+grant.workflowPath+'@refs/tags/test-v1',ref:'refs/heads/main',
+ workflow_ref:grant.repository+'/'+grant.workflowPath+'@refs/tags/test-v1',ref:'refs/tags/test-v1',
  candidate_run_id:99,candidate_run_attempt:1,plan:JSON.stringify(plan),run_outcome:'running'};
 function db(data:(Omit<typeof row,'candidate_run_id'> & {candidate_run_id:number|null})|null){
  return {prepare:(_sql:string)=>({bind:(id:string)=>({first:async()=>{assert.equal(id,attempt);return data;}})})} as any;
