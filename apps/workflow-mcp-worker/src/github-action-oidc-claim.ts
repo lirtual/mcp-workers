@@ -36,8 +36,16 @@ export async function verifyAndClaimPinnedGitHubAction(
  if(plan.github_execution_approved!==true||!Array.isArray(plan.steps))return false;
  const step=plan.steps.find(s=>s.id===row.step_id);
  if(!step||step.uses!=='github.run'||step.with?.capability!=='github.action')return false;
- const action=step.with.action as ReviewedGitHubAction|undefined;
- if(!action||!isPublishedGitHubActionApproved(plan.github_action_approvals,action)||
+ const raw=step.with.action as (ReviewedGitHubAction & {inputs?:unknown})|undefined;
+ if(!raw)return false;
+ // The approved identity has exactly seven fields; native Action inputs are
+ // separately validated, not part of the identity-grant shape.
+ const action:ReviewedGitHubAction={
+  repository:raw.repository,repositoryId:raw.repositoryId,
+  workflowId:raw.workflowId,workflowPath:raw.workflowPath,
+  commitSha:raw.commitSha,type:raw.type,contractDigest:raw.contractDigest,
+ };
+ if(!isPublishedGitHubActionApproved(plan.github_action_approvals,action)||
     row.repository!==action.repository||row.repository_id!==String(action.repositoryId)||
     row.workflow_ref!==action.repository+'/'+action.workflowPath+'@'+row.ref)return false;
  let claims:JWTPayload;
