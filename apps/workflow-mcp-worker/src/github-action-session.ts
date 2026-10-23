@@ -122,6 +122,32 @@ export async function releaseRejectedSessionSlot(
  return written.meta.changes===1;
 }
 
+/** Recover a reservation interrupted BEFORE the durable Action Attempt INSERT.
+ * Registration always persists the Attempt before any outbound GitHub POST.
+ * Never reclaim when an Attempt exists, even dispatch_unknown or rejected,
+ * and never reclaim an active parent that could still resume dispatch.
+ */
+export async function releaseNeverDispatchedSessionSlot(
+ db:Db,runId:string,stepId:string,expiredBefore:number,
+):Promise<boolean>{
+ if(!UUID.test(runId)||!STEP.test(stepId)||
+    !Number.isSafeInteger(expiredBefore)||expiredBefore<0)return false;
+ const written=await db.prepare(`UPDATE session_executions
+   SET state='terminated',updated_at=?
+   WHERE run_id=? AND step_id=? AND state='queued'
+     AND created_at<=?
+     AND NOT EXISTS(
+       SELECT 1 FROM step_attempts a
+       WHERE a.run_id=session_executions.run_id
+         AND a.step_id=session_executions.step_id
+     )
+     AND EXISTS(
+       SELECT 1 FROM runs r WHERE r.id=session_executions.run_id
+         AND r.outcome IN ('succeeded','failed','indeterminate','cancelled')
+     )`).bind(Date.now(),runId,stepId,expiredBefore).run();
+ return written.meta.changes===1;
+}
+
 export type SessionReadyResult='ready'|'already_ready'|'denied'|'physical_unconfirmed';
 /**
  * OIDC-signed Ready: the already-claimed physical GitHub job must still be
