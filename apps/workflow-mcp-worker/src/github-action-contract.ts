@@ -76,5 +76,5 @@ export function parseGitHubAction(yaml: string): DiscoveredAction {
     }
     inputs[name] = input;
   }
-  return { name: root.name, type: env.WORKFLOW_ACTION_TYPE, inputs };
+  return { name: root.name, type: env.WORKFLOW_ACTION_TYPE as 'task' | 'session', inputs };
 }
