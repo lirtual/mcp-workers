@@ -127,12 +127,29 @@ test('existing Workflow status and result preserve Session record after parent s
   assert.equal(status.steps[0]?.status,'succeeded');
   assert.equal(status.sessions?.[0]?.recorded_state,'ready');
   assert.equal(status.sessions?.[0]?.physical_health,'unverified');
+  assert.equal(status.sessions?.[0]?.private_hostname,null);
   const result=await service.result(run(1));
   assert.equal(result.sessions?.[0]?.recorded_state,'ready');
   assert.equal(result.sessions?.[0]?.physical_health,'unverified');
+  assert.equal(result.sessions?.[0]?.private_hostname,null);
  }finally{f.db.close();}
 });
 
+test('status provides stable private Tailnet name only for signed Ready, never as online proof',async()=>{
+ const f=fixture();
+ try{
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
+  f.claim(1,'claimed',true);
+  f.db.prepare("UPDATE session_executions SET state='ready'").run();
+  const service=new WorkflowService({DB:f.adapter,WORKFLOW:{}} as Env);
+  const status=await service.status(run(1));
+  assert.equal(status.sessions?.[0]?.private_hostname,'sa-42');
+  assert.equal(status.sessions?.[0]?.physical_health,'unverified');
+  f.db.prepare("UPDATE session_executions SET state='stopping'").run();
+  const stopping=await service.status(run(1));
+  assert.equal(stopping.sessions?.[0]?.private_hostname,null);
+ }finally{f.db.close();}
+});
 test('verified physical GitHub completion after parent Ready still settles and frees Session slot',async()=>{
  const f=fixture();
  try{
