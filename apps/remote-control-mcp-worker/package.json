@@ -8,9 +8,7 @@
     "dev": "wrangler dev",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
     "test": "bash scripts/run-tests.sh",
-    "check": "pnpm --filter remote-control-agent build:shell && pnpm run typecheck && pnpm test && pnpm run check:v2-preview && pnpm run check:v2-bootstrap && pnpm run check:v2-production",
-    "check:v2-bootstrap": "wrangler deploy --dry-run --config wrangler.v2-preview-bootstrap.jsonc --outdir .build/v2-bootstrap",
-    "check:v2-preview": "wrangler deploy --dry-run --config wrangler.v2-preview.jsonc --outdir .build/v2-preview",
+    "check": "pnpm --filter remote-control-agent build:shell && pnpm run typecheck && pnpm test && pnpm run check:v2-production",
     "check:v2-production": "wrangler deploy --dry-run --config wrangler.jsonc --outdir .build/v2-production",
     "types": "wrangler types"
   },
