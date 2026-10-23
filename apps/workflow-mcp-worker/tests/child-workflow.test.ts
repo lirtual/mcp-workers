@@ -51,6 +51,11 @@ function harness(t: test.TestContext) {
   }
   let nativeStatus = 'running';
   let failCreates=false;
+  let transientGetFailures=0;
+  let onlyCreatedRuns=false;
+  let waitHook:(()=>void)|null=null;
+  const createdInstances=new Set<string>();
+  const createAttempts=new Map<string,number>();
   let holding = false;
   let exhaustChildWaits = false;
   let releaseHold = () => {};
@@ -63,8 +68,13 @@ function harness(t: test.TestContext) {
     MCP_PORTAL_ENDPOINT: TRUSTED_PORTAL_ENDPOINT,
     DB: {prepare, async batch(items: {run: () => Promise<unknown>}[]) { return Promise.all(items.map(item => item.run())); }},
     WORKFLOW: {
-      async create() {if(failCreates)throw Error('injected_create_failure');nativeStatus='running';},
-      async get() {
+      async create(options:{id:string}) {
+        createAttempts.set(options.id,(createAttempts.get(options.id)??0)+1);
+        if(failCreates)throw Error('injected_create_failure');
+        createdInstances.add(options.id);nativeStatus='running';
+      },
+      async get(_id:string) {
+        if(transientGetFailures>0){transientGetFailures--;throw Error('temporary_workflow_lookup_failure');}
         if(nativeStatus==='missing')throw Error('instance.not_found');
         return {async status() { return {status: nativeStatus}; }};
       },
@@ -75,8 +85,9 @@ function harness(t: test.TestContext) {
     async waitForEvent() {
       if (exhaustChildWaits) throw new Error('child-wait-budget');
       if (holding) await holdGate;
+      waitHook?.();
       const rows = sqlite.prepare("SELECT id FROM runs WHERE outcome IN ('queued','running')").all() as {id: string}[];
-      for (const row of rows) await execute(row.id);
+      for (const row of rows) if(!onlyCreatedRuns||createdInstances.has(row.id))await execute(row.id);
       throw new Error('reread-child');
     },
   };
@@ -132,7 +143,7 @@ function harness(t: test.TestContext) {
     } else assert.notEqual(output.isError, true, first.text);
     return value;
   }
-  return {sqlite, env, call, client, transport, execute, armHold, releaseHold: () => releaseHold(), until, exhaustChildWaits() { exhaustChildWaits = true; }, setNative(status: string) { nativeStatus = status; }, failCreates(value:boolean){failCreates=value;}};
+  return {sqlite, env, call, client, transport, execute, armHold, releaseHold: () => releaseHold(), until, exhaustChildWaits() { exhaustChildWaits = true; }, setNative(status: string) { nativeStatus = status; }, failCreates(value:boolean){failCreates=value;}, failNextGets(count:number){transientGetFailures=count;}, onlyCreatedRuns(value:boolean){onlyCreatedRuns=value;}, setWaitHook(hook:(()=>void)|null){waitHook=hook;}, createAttempts(id:string){return createAttempts.get(id)??0;}, hasCreated(id:string){return createdInstances.has(id);}};
 }
 
 async function publish(call: Call, definition: unknown, approvals?: unknown[]) {
@@ -479,7 +490,7 @@ test('child replay recovers its pinned admission after pause and incompatible re
 });
 
 test('a waiting parent reconciles its reserved child before waiting for child completion',async t=>{
-  const {call,client,transport,sqlite,env,execute,until,setNative,failCreates}=harness(t);
+  const {call,client,transport,sqlite,env,execute,setNative,failCreates,failNextGets,onlyCreatedRuns,setWaitHook,createAttempts,hasCreated}=harness(t);
   await client.connect(transport);
   const child=await publish(call,emitWorkflow('Crash-window child','recovered'));
   const parent=await publish(call,{version:1,name:'Crash-window parent',steps:[
@@ -490,16 +501,27 @@ test('a waiting parent reconciles its reserved child before waiting for child co
   sqlite.prepare("UPDATE runs SET outcome='waiting' WHERE id=?").run(admittedParent.run_id);
   setNative('missing');
   failCreates(true);
+  failNextGets(1);
   const service=new WorkflowService(env);
   const first=await service.admitChild({parent_run_id:admittedParent.run_id,parent_step_id:'call',workflow_id:child,inputs:{},mode:'await'});
   assert.equal(first.start_state,'start_unknown');
   assert.equal((sqlite.prepare('SELECT outcome FROM runs WHERE id=?').get(admittedParent.run_id) as {outcome:string}).outcome,'waiting');
   failCreates(false);
   setNative('missing');
+  failNextGets(1);
+  onlyCreatedRuns(true);
+  let waitsWithoutChild=0;
+  setWaitHook(()=>{
+    if(!hasCreated(first.run_id)&&++waitsWithoutChild>=3)
+      sqlite.prepare('UPDATE runs SET cancel_requested_at=? WHERE id=? AND cancel_requested_at IS NULL').run(Date.now(),admittedParent.run_id);
+  });
   await execute(admittedParent.run_id);
-  await until(()=> (sqlite.prepare('SELECT outcome FROM runs WHERE id=?').get(admittedParent.run_id) as {outcome:string}).outcome==='succeeded');
+  setWaitHook(null);
+  const parentOutcome=(sqlite.prepare('SELECT outcome FROM runs WHERE id=?').get(admittedParent.run_id) as {outcome:string}).outcome;
+  assert.equal(parentOutcome,'succeeded');
   assert.equal((await call('workflow_result',{run_id:admittedParent.run_id})).result,'recovered');
   assert.equal((sqlite.prepare('SELECT start_state FROM runs WHERE id=?').get(first.run_id) as {start_state:string}).start_state,'started');
+  assert.equal(createAttempts(first.run_id),2,'the same child ID is retried once after the transient get failure');
   assert.ok(Number((sqlite.prepare("SELECT COUNT(*) AS n FROM runs WHERE outcome IN ('queued','running')").get() as {n:number}).n)<=LIMITS.admissionCap);
 });
 

@@ -115,7 +115,8 @@ async function businessDagResult(db:AttemptDatabase,runId:string,versionId:strin
     if(!row||!['succeeded','skipped'].includes(row.status))return null;
     if(step.uses==='github.run'&&row.status==='succeeded'&&!successfulReceipts.has(step.id))return null;
   }
-  const emitters=steps.filter(step=>step.uses==='result.emit'||step.uses==='flow.repeat'||step.uses==='flow.expand');
+  const emitters=steps.filter(step=>step.uses==='result.emit'||step.uses==='flow.repeat'||
+    (step.uses==='flow.expand'&&step.body?.uses==='result.emit'));
   if(emitters.length>1)return null;
   const emitted=emitters[0]&&persisted.get(emitters[0].id)?.status==='succeeded'?emitters[0]:undefined;
   const resultStep=emitted??steps.at(-1)!;

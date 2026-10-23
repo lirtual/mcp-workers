@@ -356,11 +356,13 @@ function schemaFailure():never{throw new PlanError('invalid_tool_schema');}
 function localSchemaRef(root:unknown,ref:string):unknown{
   if(ref==='#')return root;
   if(!ref.startsWith('#/'))schemaFailure();
+  let pointer:string;
+  try{pointer=decodeURIComponent(ref.slice(1));}catch{schemaFailure();}
   let value:unknown=root;
-  for(const encoded of ref.slice(2).split('/')){
-    let token:string;
-    try{token=decodeURIComponent(encoded).replace(/~1/g,'/').replace(/~0/g,'~');}catch{schemaFailure();}
-    if(/~(?![01])/.test(token)||token==='__proto__'||token==='constructor'||token==='prototype'||
+  for(const escapedToken of pointer.slice(1).split('/')){
+    if(/~(?![01])/.test(escapedToken))schemaFailure();
+    const token=escapedToken.replace(/~1/g,'/').replace(/~0/g,'~');
+    if(token==='__proto__'||token==='constructor'||token==='prototype'||
        !value||typeof value!=='object'||!Object.hasOwn(value,token))schemaFailure();
     value=(value as Record<string,unknown>)[token];
   }

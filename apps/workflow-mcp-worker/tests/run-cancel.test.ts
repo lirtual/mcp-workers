@@ -382,6 +382,27 @@ test('a successful Receipt confirms the DAG but its output does not replace the 
   assert.deepEqual(JSON.parse(stored.result??'null'),{answer:42});
 });
 
+test('a non-emitting MCP expansion does not replace the final GitHub business output',async t=>{
+  const ctx=setup(t,{run:'completed',conclusion:'success',cancel:'accept'});
+  const run=insertCancellationRun(ctx,{steps:[
+    {id:'fan',uses:'flow.expand',expand:{items:{ref:'inputs.items'},max:2},
+      body:{uses:'mcp.call',with:{endpoint:'https://test-mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read'}}},
+    {id:'heavy',uses:'github.run',needs:['fan'],with:{capability:'github.workflow.check'}},
+  ]});
+  ctx.sqlite.prepare("INSERT INTO run_steps(run_id,step_id,status,output,updated_at) VALUES(?, 'fan','succeeded','[{\"value\":1}]',?)")
+    .run(run.runId,run.stamp);
+  ctx.sqlite.prepare("INSERT INTO run_steps(run_id,step_id,status,output,updated_at) VALUES(?, 'heavy','succeeded','{\"github\":true}',?)")
+    .run(run.runId,run.stamp);
+  const attemptId=insertAttempt(ctx,run,{stepId:'heavy',state:'confirmed',candidateRunId:RUN});
+  ctx.sqlite.prepare("INSERT INTO callback_receipts(callback_id,attempt_id,outcome,result_json,created_at) VALUES(?,?,'succeeded','{\"github\":true}',?)")
+    .run(crypto.randomUUID(),attemptId,run.stamp);
+  ctx.sqlite.prepare("UPDATE runs SET cancel_requested_at=? WHERE id=?").run(run.stamp,run.runId);
+  assert.equal(await reconcileRunCancellation(ctx.env.DB,ctx.env,run.runId),'completed');
+  const stored=ctx.sqlite.prepare('SELECT outcome,result FROM runs WHERE id=?').get(run.runId) as {outcome:string;result:string|null};
+  assert.equal(stored.outcome,'succeeded');
+  assert.deepEqual(JSON.parse(stored.result??'null'),{github:true});
+});
+
 test('an in-flight MCP protected write makes cancellation indeterminate',async t=>{
   const ctx=setup(t,{run:'in_progress',conclusion:null,cancel:'accept'});
   const run=insertCancellationRun(ctx,{steps:[{id:'write',uses:'mcp.call'}]});

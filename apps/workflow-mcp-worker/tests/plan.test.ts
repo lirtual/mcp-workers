@@ -501,3 +501,15 @@ test('resolved external arguments obey pinned types and additionalProperties',as
   await assert.rejects(()=>toolSchemaDigest({type:'object',properties:{value:{$ref:'https://example.org/schema'}}}),/invalid_tool_schema/);
   await toolSchemaDigest({type:'object',properties:{value:{type:'string'}}});
 });
+
+test('local JSON Pointer references decode escaped tokens after validating escapes',async()=>{
+  const schema={type:'object',properties:{
+    tilde:{$ref:'#/$defs/a~0b'},slash:{$ref:'#/$defs/a~1b'},literal:{$ref:'#/$defs/a~01b'},percent:{$ref:'#/$defs/a%7E0b'},
+  },additionalProperties:false,$defs:{'a~b':{type:'string'},'a/b':{type:'string'},'a~1b':{type:'string'}}};
+  await toolSchemaDigest(schema);
+  assert.doesNotThrow(()=>assertToolArguments(schema,{tilde:'one',slash:'two',literal:'three',percent:'four'}));
+  assert.throws(()=>assertToolArguments(schema,{tilde:1,slash:'two',literal:'three',percent:'four'}),/invalid_arguments/);
+  await assert.rejects(()=>toolSchemaDigest({type:'object',properties:{value:{$ref:'#/$defs/a~2b'}},$defs:{'a~2b':true}}),/invalid_tool_schema/);
+  await assert.rejects(()=>toolSchemaDigest({type:'object',properties:{value:{$ref:'https://example.org/#/$defs/a~0b'}}}),/invalid_tool_schema/);
+  await assert.rejects(()=>toolSchemaDigest({type:'object',properties:{value:{$ref:'#/$defs/__proto__'}},$defs:{__proto__:true}}),/invalid_tool_schema/);
+});

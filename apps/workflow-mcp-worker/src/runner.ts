@@ -702,9 +702,13 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
       // its start checkpoint. Reconcile that same child identity before
       // waiting for child completion, or the parent could wait on a Run that
       // has no native instance to ever complete.
-      await new WorkflowService(this.env).reconcileAwaitedChildStarts(id);
+      const service=new WorkflowService(this.env);
       for(let attempt=0;;attempt++){
         if(await isCancelRequested(db,id))throw new CancelObserved();
+        // Cloudflare get/create can fail transiently. Reconcile the bounded
+        // set of existing child IDs on each timed wait cycle; never insert a
+        // replacement child or consume another admission slot.
+        try{await service.reconcileAwaitedChildStarts(id);}catch{/* retry after the bounded wait */}
         if(await resumeParkedRun(db,id))break;
         try{await step.waitForEvent<{run_id:string}>('run-capacity-'+id+'-'+attempt,{type:'run-capacity-available',timeout:'30 seconds'});}catch{/* retry the conditional admission slot claim */}
       }
