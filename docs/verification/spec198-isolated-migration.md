@@ -40,6 +40,13 @@ removed. Production resources must not be used for rehearsals.
   rows, five `d1_migrations` entries, four explicit indexes and provider-managed
   `_cf_KV`. The old native `workflow-mcp-runner` showed six completed instances.
 
+- Repository-pinned Wrangler **4.130.0** was run locally under temporary Node
+  **24.21.0** without changing the system Node installation. Release script
+  tests passed **46/46**, Workflow Worker tests **95/95**, TypeScript
+  typecheck and `wrangler deploy --dry-run` passed. Dry-run reports existing
+  `WorkflowRunner` and old D1 bindings: it is a build/preflight check, **not**
+  an authenticated isolated deployment or a migration test.
+
 ## Still required before #204 or production change
 
 1. Using the pinned Wrangler release toolchain, repeat same-name Secret to
