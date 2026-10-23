@@ -494,6 +494,42 @@ test('normal cancel is one-shot and 202 never releases Session capacity; force i
   assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'stopping');
  }finally{f.db.close();}
 });
+test('durable cancel intent still sends exactly one POST if advisory stopping write fails',async()=>{
+ const f=fixture();
+ try{
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
+  f.claim(1,'claimed',true);
+  let writes=0,posts=0;
+  const db={prepare:(sql:string)=>{
+   if(sql.includes("UPDATE session_executions SET state='stopping'")){
+    writes++;
+    throw Error('D1 temporary state-update failure');
+   }
+   return f.adapter.prepare(sql);
+  }} as unknown as D1Database;
+  const result=await requestGitHubActionCancellation(db,run(1),'launch','token',false,
+   async(request)=>{
+    posts++;
+    assert.ok(new URL(request.url).pathname.endsWith('/actions/runs/42/cancel'));
+    return new Response(null,{status:202});
+   },async()=>({state:'running'}));
+  assert.equal(result,'cancel_requested');
+  assert.equal(writes,1);
+  assert.equal(posts,1);
+  assert.equal(f.db.prepare('SELECT cancel_ack FROM github_action_cancellations').get()?.cancel_ack,'accepted');
+  assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'queued');
+  const {jwt,publicKey}=await signedReady();
+  // Cancellation intent is sufficient to fence new Ready, independently
+  // of the secondary Session state write that failed.
+  assert.equal(await recordSignedSessionReady(f.adapter,run(11),jwt,audience,
+   'token',publicKey,async()=>({state:'running'})),'denied');
+  assert.equal(await requestGitHubActionCancellation(f.adapter,run(1),'launch',
+   'token',false,async()=>{posts++;throw Error('duplicate POST');},
+   async()=>({state:'running'})),'already_requested');
+  assert.equal(posts,1);
+  assert.equal(await releaseVerifiedSessionSlot(f.adapter,run(1),'launch'),'held');
+ }finally{f.db.close();}
+});
 test('lost GitHub cancellation ACK is not retried; no unverified force or quota release',async()=>{
  const f=fixture();
  try{
