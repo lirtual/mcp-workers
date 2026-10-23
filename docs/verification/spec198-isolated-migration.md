@@ -22,6 +22,10 @@ removed. Production resources must not be used for rehearsals.
   Source and target matched on `sqlite_master` user definitions, record counts,
   complete row contents, migration history, and zero `foreign_key_check` issues.
   Both disposable databases were deleted and inventory checked for `spec198-`.
+  The downloaded **fixture export** contains only the fixture user tables,
+  not `_cf_KV`; this is not proof that exporting the production database would
+  preserve or safely recreate its platform-managed state. Never manufacture
+  `_cf_KV` inserts or schema manually as part of a migration.
 - An isolated Worker exported both `Spec198Old` and `Spec198New` after an
   update. The old Workflow instance had reached `complete` with output `ok`
   before the update and remained queryable by its original ID afterward. A
