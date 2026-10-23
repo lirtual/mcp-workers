@@ -1,4 +1,4 @@
-import { isPublishedGitHubActionApproved, type ReviewedGitHubAction } from './github-action-review.ts';
+import { runPublishedGitHubActionTask } from './github-action-task.ts';
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { evaluateArguments, evaluateCondition, toolSchemaDigest } from './plan.ts';
@@ -89,19 +89,8 @@ async function runGithubStep(
 ):Promise<Outcome>{
   if(plan.github_execution_approved!==true)
     return {status:'failed',error_code:'github_execution_approval_required'};
-  if(s.with.capability==='github.action') {
-    const action=s.with.action as (ReviewedGitHubAction & {inputs?:unknown}) | undefined;
-    const request=action?{
-      repository:action.repository,repositoryId:action.repositoryId,
-      workflowId:action.workflowId,workflowPath:action.workflowPath,
-      commitSha:action.commitSha,type:action.type,contractDigest:action.contractDigest,
-    }:undefined;
-    if(!request || !isPublishedGitHubActionApproved(plan.github_action_approvals,request))
-      return {status:'failed',error_code:'github_action_approval_missing'};
-    // The execution path is deliberately closed until the authenticated
-    // dispatch/claim/physical terminal flow for arbitrary approved Actions exists.
-    return {status:'failed',error_code:'github_action_executor_unavailable'};
-  }
+  if(s.with.capability==='github.action')
+    return runPublishedGitHubActionTask(env,plan,s,runId,step);
   if(s.with.capability!=='github.workflow.check')
     return {status:'failed',error_code:'github_capability_not_registered'};
   if(!env.WORKFLOW_EXECUTOR_GITHUB_TOKEN||!env.GITHUB_EXECUTOR_REPOSITORY||
