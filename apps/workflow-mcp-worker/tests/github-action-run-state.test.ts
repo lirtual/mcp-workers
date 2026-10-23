@@ -9,7 +9,7 @@ const action: ReviewedGitHubAction = {
   type:'session',contractDigest:'b'.repeat(64),
 };
 const physical = {
-  id:999,run_attempt:1,repository:{id:123,full_name:action.repository},
+  id:999,workflow_id:action.workflowId,run_attempt:1,repository:{id:123,full_name:action.repository},
   path:action.workflowPath,head_sha:action.commitSha,event:'workflow_dispatch',
   status:'in_progress',conclusion:null,
 };
@@ -28,7 +28,7 @@ test('cancel requires GitHub terminal confirmation',()=>{
 });
 test('rejects any physical run identity drift, rerun or unrelated event',()=>{
   for(const changed of [
-    {...physical,id:1000},{...physical,run_attempt:2},
+    {...physical,id:1000},{...physical,run_attempt:2},{...physical,workflow_id:999},
     {...physical,head_sha:'c'.repeat(40)},{...physical,path:'.github/workflows/other.yml'},
     {...physical,repository:{id:999,full_name:action.repository}},
     {...physical,event:'push'},
