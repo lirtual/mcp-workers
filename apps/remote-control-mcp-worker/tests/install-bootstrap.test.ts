@@ -235,10 +235,10 @@ test('reviewed v0.1.15 enables both public bootstrap paths only with exact revie
   assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.scriptSha256, '9f13a2222461cdf8d836691c5e137aed992bb81bf50b236b7d551457b9b0d5ed');
   const home = handleAgentInstallerRequest(new Request(base + '/'), REVIEWED_V0115_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
   assert.equal(home.status, 200);
-  assert.match(await home.text(), /const ready=\\{windows:true,linux:true\\}/);
+  assert.match(await home.text(), /const ready=\{windows:true,linux:true\}/);
   const linux = handleAgentInstallerRequest(new Request(base + '/install.sh'), REVIEWED_V0115_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
   assert.equal(linux.status, 200);
-  assert.match(await linux.text(), /remote-control-agent-v0\\.1\\.15/);
+  assert.match(await linux.text(), /remote-control-agent-v0\.1\.15/);
   const windows = handleAgentInstallerRequest(new Request(base + '/install.ps1'), REVIEWED_V0115_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
   assert.equal(windows.status, 200);
   const ps1 = await windows.text();
