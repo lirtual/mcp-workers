@@ -1,7 +1,7 @@
 import type {WorkflowStep} from 'cloudflare:workers';
 import type {Env} from './store.ts';
 import {reconcilePersistedGitHubActionAttempt} from './github-action-attempt-reconcile.ts';
-import {releaseVerifiedSessionSlot,releaseNeverDispatchedSessionSlot} from './github-action-session.ts';
+import {releaseVerifiedSessionSlot,releaseNeverDispatchedSessionSlot,releaseRejectedSessionSlot} from './github-action-session.ts';
 import {requestGitHubActionCancellation} from './github-action-cancel.ts';
 
 type Db=Pick<D1Database,'prepare'>;
@@ -69,6 +69,12 @@ export async function watchPersistedSessions(
      continue;
     }
     try{
+     // Dispatch may have been definitively rejected and persisted, yet
+     // the native Workflow interrupted before it returned through the
+     // regular releaseRejectedSessionSlot call. No physical candidate
+     // exists in this state: safely reclaim it before any network probe.
+     if(await releaseRejectedSessionSlot(db,runId,entry.step_id))
+      continue;
      await reconcilePersistedGitHubActionAttempt(db,entry.attempt_id,token);
      if(await releaseVerifiedSessionSlot(db,runId,entry.step_id)==='released')
       continue;
