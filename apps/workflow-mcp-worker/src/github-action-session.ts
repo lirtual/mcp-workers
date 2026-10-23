@@ -96,6 +96,32 @@ export async function releaseVerifiedSessionSlot(
  return prior?.state==='terminated'?'already_released':'held';
 }
 
+/** Recover a Session slot only if GitHub *definitively rejected* dispatch
+ * and no physical Run was ever registered. A transport-unknown dispatch
+ * cannot use this path, even if a GitHub Run is not yet visible.
+ */
+export async function releaseRejectedSessionSlot(
+ db:Db,runId:string,stepId:string,
+):Promise<boolean>{
+ if(!UUID.test(runId)||!STEP.test(stepId))return false;
+ const written=await db.prepare(`UPDATE session_executions
+   SET state='terminated',updated_at=?
+   WHERE run_id=? AND step_id=?
+     AND state IN ('queued','starting')
+     AND EXISTS (
+       SELECT 1 FROM step_attempts AS a
+       WHERE a.run_id=session_executions.run_id
+         AND a.step_id=session_executions.step_id
+         AND a.capability_id='github.action'
+         AND a.state='rejected'
+         AND a.candidate_run_id IS NULL
+         AND a.candidate_run_attempt IS NULL
+         AND a.owner_run_id IS NULL
+         AND a.owner_run_attempt IS NULL
+     )`).bind(Date.now(),runId,stepId).run();
+ return written.meta.changes===1;
+}
+
 export type SessionReadyResult='ready'|'already_ready'|'denied'|'physical_unconfirmed';
 /**
  * OIDC-signed Ready: the already-claimed physical GitHub job must still be
@@ -200,8 +226,10 @@ export async function runPublishedGitHubActionSession(
   return {status:'failed',error_code:'github_session_capacity_exceeded'};
  if(dispatched.status==='denied')
   return {status:'failed',error_code:'github_session_admission_denied'};
- if(dispatched.status==='rejected')
+ if(dispatched.status==='rejected'){
+  await releaseRejectedSessionSlot(db,runId,stepPlan.id);
   return {status:'failed',error_code:'github_session_dispatch_rejected'};
+ }
  if(dispatched.status!=='confirmed')
   return {status:'indeterminate',error_code:'github_session_dispatch_unknown'};
  const attemptId=dispatched.attemptId;
