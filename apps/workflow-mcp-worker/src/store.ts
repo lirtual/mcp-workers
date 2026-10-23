@@ -246,8 +246,15 @@ export class WorkflowService {
     try{activePlan=JSON.parse(published.plan) as Plan;}
     catch{throw new StateError('published_plan_invalid');}
     if(!Array.isArray(activePlan.steps))throw new StateError('published_plan_invalid');
-    if(activePlan.steps.some(step=>step.uses==='github.run'&&step.with?.capability==='github.action'))
-      throw new StateError('github_action_executor_unavailable');
+    const protocolActions=activePlan.steps.filter(step=>
+      step.uses==='github.run'&&step.with?.capability==='github.action');
+    // Task follows the verified physical GitHub Run. Sessions cannot be
+    // admitted until Ready/live/cancellation and four-slot quota exist.
+    if(protocolActions.some(step=>(step.with.action as {type?:unknown}|undefined)?.type!=='task'))
+      throw new StateError('github_action_session_unavailable');
+    if(protocolActions.length &&
+       (!this.env.WORKFLOW_EXECUTOR_GITHUB_TOKEN||!this.env.GITHUB_ACTION_OIDC_AUDIENCE))
+      throw new StateError('github_action_executor_not_configured');
     const id=crypto.randomUUID(),t=now();
     const insert=await this.db.prepare(
       "INSERT OR IGNORE INTO runs(id,workflow_id,version_id,instance_id,admission_key,request_digest,inputs,start_state,outcome,created_at,updated_at) SELECT ?,?,?,?,?,?,?, 'reserved','queued',?,? WHERE EXISTS (SELECT 1 FROM workflows WHERE id=? AND state='active' AND active_version_id=?) AND (SELECT COUNT(*) FROM runs WHERE outcome IN ('queued','running')) < 8"
