@@ -84,7 +84,20 @@ export async function requestGitHubActionCancellation(
      row.candidate_run_id,row.candidate_run_attempt).run();
   if(written.meta.changes!==1)return 'already_force_requested';
  }else{
-  if(row.cancel_requested_at!==null)return 'already_requested';
+  if(row.cancel_requested_at!==null){
+   // The original one-shot POST may already have reached GitHub. Never
+   // replay it; only repair a stale local 'stopping' presentation after an
+   // earlier advisory D1 write failure. The durable intent already fences
+   // signed Ready and quota remains occupied until physical terminal.
+   if(row.session_state!==null&&row.session_state!=='stopping'){
+    try{
+     await db.prepare(`UPDATE session_executions SET state='stopping',updated_at=?
+       WHERE run_id=? AND step_id=? AND state!='terminated'`)
+      .bind(time,runId,stepId).run();
+    }catch{}
+   }
+   return 'already_requested';
+  }
   const written=await db.prepare(`INSERT OR IGNORE INTO github_action_cancellations
     (attempt_id,run_id,step_id,cancel_requested_at,cancel_ack)
     SELECT a.attempt_id,a.run_id,a.step_id,?,'unknown'
