@@ -1,5 +1,5 @@
 import { compilePlan, PlanError, canonicalJsonString } from './plan.ts';
-import { LIMITS } from './capabilities.ts';
+import { GITHUB_TRIGGER_EVENTS, isConfiguredSecret, LIMITS, TRIGGER_REPOSITORY, TRIGGER_SOURCE_ID } from './capabilities.ts';
 import { PRODUCTION_PORTAL_ENDPOINT, TRUSTED_PORTAL_ENDPOINT } from './mcp-public-fetch.ts';
 import {observeInstance, shouldExpireUnconfirmedOutcome, unresolvedNativeTerminalError, OUTCOME_SETTLE_WINDOW_MS} from './instance-observation.ts';
 import YAML from 'yaml';
@@ -38,6 +38,9 @@ export type Env = {
   // production always selects the registered CI executor.
   GITHUB_TEST_WORKER_NAME?: string;
   GITHUB_TEST_DEDICATED_EXECUTOR?: string;
+  WEBHOOK_TRIGGER_SOURCE?: string;
+  WEBHOOK_TRIGGER_SECRET?: string;
+  GITHUB_WEBHOOK_SECRET?: string;
 
   // Legacy personal direct-target mode requires a separate explicit opt-in.
   // Without it, MCP must have a pinned Portal endpoint at Publish and Run.
@@ -65,6 +68,20 @@ async function digest(s:string):Promise<string>{
   return [...new Uint8Array(result)].map(x=>x.toString(16).padStart(2,'0')).join('');
 }
 export function cleanError(e:unknown):string {return e instanceof StateError||e instanceof PlanError?e instanceof StateError?e.code:e.code:'internal_error';}
+function assertPublishedTriggers(plan:Plan, env:Env){
+  for(const trigger of plan.triggers??[]){
+    if(trigger.type==='webhook'){
+      if(!isConfiguredSecret(env.WEBHOOK_TRIGGER_SECRET)||!env.WEBHOOK_TRIGGER_SOURCE||!TRIGGER_SOURCE_ID.test(env.WEBHOOK_TRIGGER_SOURCE))
+        throw new StateError('webhook_source_not_configured');
+      if(trigger.source!==env.WEBHOOK_TRIGGER_SOURCE)throw new StateError('webhook_source_not_authorized');
+      continue;
+    }
+    if(!isConfiguredSecret(env.GITHUB_WEBHOOK_SECRET)||!env.GITHUB_EXECUTOR_REPOSITORY||!TRIGGER_REPOSITORY.test(env.GITHUB_EXECUTOR_REPOSITORY))
+      throw new StateError('github_event_source_not_configured');
+    if(trigger.repository!==env.GITHUB_EXECUTOR_REPOSITORY)throw new StateError('github_event_source_not_authorized');
+    if(trigger.events.some(event=>!(GITHUB_TRIGGER_EVENTS as readonly string[]).includes(event)))throw new StateError('unauthorized_event');
+  }
+}
 function mcpGrants(plan:Plan):ReadonlyOperation[]{
   return [...new Map(plan.steps.filter(s=>s.uses==='mcp.call').map(s=>{
     const grant:ReadonlyOperation={endpoint:s.with.endpoint as string,tool:s.with.tool as string,scope:'read',schema_digest:s.with.schema_digest as string};
@@ -102,6 +119,12 @@ function issueMessage(code:string, detail?:string):string{
     case 'invalid_inputs': return 'inputs must be an object.';
     case 'invalid_step': return 'Each step must be an object.';
     case 'invalid_step_arguments': return 'with must be an object, and mcp.call arguments must be an object.';
+    case 'invalid_trigger': return 'triggers must declare one webhook, one GitHub event, or both.';
+    case 'duplicate_trigger': return 'Each trigger id and type can be declared once.';
+    case 'invalid_trigger_source': return 'Webhook source must be the configured source id.';
+    case 'invalid_trigger_event': return 'The trigger event name is not allowed.';
+    case 'invalid_repository': return 'GitHub repository must be owner/name.';
+    case 'unsupported_github_event': return 'This GitHub event cannot start a business Run.';
     case 'invalid_definition': return 'The definition must be an object.';
     case 'invalid_expression': return 'The expression must be an object.';
     case 'invalid_argument_key': return 'This object key is not allowed.';
@@ -196,6 +219,7 @@ export class WorkflowService {
     if(required.length && accept_target_risks!==true)throw new StateError('target_risk_acknowledgment_required');
     const hasGithub=plan.steps.some(s=>s.uses==='github.run');
     if(hasGithub && approve_heavy_execution!==true)throw new StateError('github_execution_approval_required');
+    assertPublishedTriggers(plan,this.env);
     const scopedPlan:Plan=required.length?{...plan,mcp_approvals:required,mcp_target_risks_accepted:true}:plan;
     const publishedPlan:Plan=hasGithub?{...scopedPlan,github_execution_approved:true}:scopedPlan;
     // Repeated Publish of an unchanged Draft resolves to its existing Version.
@@ -219,10 +243,42 @@ export class WorkflowService {
     }
     return {workflow_id,published_version_id:version,digest:plan_digest,state:row.state==='paused'?'paused':'active'};
   }
+  async admitEvent(workflow_id:string,admission:{kind:'webhook'|'github_event';event:string;event_id:string|null;source:string;payload:Record<string,unknown>}){
+    assertId(workflow_id);
+    const inputs={event:admission.event,event_id:admission.event_id,payload:admission.payload};
+    const key=admission.event_id===null?undefined:'evt_'+await digest(admission.kind+'\0'+admission.event_id);
+    if(key){
+      const existing=await this.db.prepare('SELECT id FROM runs WHERE workflow_id=? AND admission_key=?').bind(workflow_id,key).first<{id:string}>();
+      if(existing)return {...await this.start(workflow_id,inputs,key,'event'),dedupe:'stable_event_id' as const,exactly_once:false as const};
+    }
+    await this.assertActiveTrigger(workflow_id,admission);
+    const admitted=await this.start(workflow_id,inputs,key,'event');
+    return {...admitted,dedupe:key?'stable_event_id' as const:'not_claimed' as const,exactly_once:false as const};
+  }
+  private async assertActiveTrigger(workflow_id:string,admission:{kind:'webhook'|'github_event';event:string;source:string}){
+    const wf=await this.row(workflow_id);
+    if(wf.state!=='active'||!wf.active_version_id)throw new StateError('workflow_not_active');
+    const version=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=? AND workflow_id=?').bind(wf.active_version_id,workflow_id).first<{plan:string}>();
+    if(!version)throw new StateError('version_missing');
+    const plan=JSON.parse(version.plan) as Plan;
+    const trigger=(plan.triggers??[]).find(item=>item.type===admission.kind);
+    if(!trigger)throw new StateError('unauthorized_source');
+    if(trigger.type==='webhook'){
+      if(trigger.source!==this.env.WEBHOOK_TRIGGER_SOURCE||admission.source!==trigger.source)throw new StateError('unauthorized_source');
+      if(trigger.event!==admission.event)throw new StateError('unauthorized_event');
+      return;
+    }
+    if(trigger.repository!==this.env.GITHUB_EXECUTOR_REPOSITORY||admission.source!==trigger.repository)throw new StateError('unauthorized_source');
+    if(!(GITHUB_TRIGGER_EVENTS as readonly string[]).includes(admission.event)||!trigger.events.includes(admission.event))throw new StateError('unauthorized_event');
+  }
   async pause(workflow_id:string){assertId(workflow_id);const x=await this.db.prepare("UPDATE workflows SET state='paused',updated_at=? WHERE id=? AND state='active'").bind(now(),workflow_id).run();if(!x.meta.changes)throw new StateError('not_active');return {workflow_id,state:'paused'};}
   async resume(workflow_id:string){assertId(workflow_id);const x=await this.db.prepare("UPDATE workflows SET state='active',updated_at=? WHERE id=? AND state='paused' AND active_version_id IS NOT NULL").bind(now(),workflow_id).run();if(!x.meta.changes)throw new StateError('not_paused');return {workflow_id,state:'active'};}
-  async start(workflow_id:string,inputs:Record<string,unknown>={},idempotency_key?:string){
-    assertId(workflow_id);if(idempotency_key!==undefined&&(idempotency_key.length>128||!safeId(idempotency_key)))throw new StateError('invalid_idempotency_key');
+  async start(workflow_id:string,inputs:Record<string,unknown>={},idempotency_key?:string,mode:'manual'|'event'='manual'){
+    assertId(workflow_id);
+    if(idempotency_key!==undefined){
+      const reserved=/^evt_[0-9a-f]{64}$/.test(idempotency_key);
+      if(idempotency_key.length>128||!safeId(idempotency_key)||(mode==='manual'&&reserved)||(mode==='event'&&!reserved))throw new StateError(mode==='event'&&!reserved?'invalid_event_id':'invalid_idempotency_key');
+    }
     const inputJson=json(inputs);
     const request_digest=await digest(canonicalJsonString(inputs));
     // An accepted admission keeps its pinned version across republish/pause.
