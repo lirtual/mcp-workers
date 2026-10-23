@@ -51,7 +51,7 @@ function fixture(){
   });
   return {...statement([]),bind:(...args:unknown[])=>statement(args)};
  }} as any;
- const claim=(index:number,state:'claimed'|'failed'|'succeeded'|'cancelled',owner:boolean)=>{
+ const claim=(index:number,state:'confirmed'|'claimed'|'failed'|'succeeded'|'cancelled',owner:boolean)=>{
   db.prepare(`INSERT INTO step_attempts(attempt_id,run_id,step_id,
    capability_id,dispatch_id,state,repository,repository_id,
    workflow_ref,ref,candidate_run_id,candidate_run_attempt,
