@@ -35,7 +35,7 @@ export async function inspectPersistedGitHubActionAttempt(
  const step=plan.steps.find(x=>x.id===row.step_id);
  if(!step || step.uses!=='github.run' || step.with.capability!=='github.action')
    return {state:'unknown'};
- const raw=step.with.action as (ReviewedGitHubAction & {inputs?:unknown})|undefined;
+ const raw=step.with.action as (ReviewedGitHubAction & {inputs?:unknown;ref?:string})|undefined;
  if(!raw)return {state:'unknown'};
  const identity:ReviewedGitHubAction={
   repository:raw.repository,repositoryId:raw.repositoryId,workflowId:raw.workflowId,
