@@ -225,26 +225,26 @@ test('homepage copy state follows the separately verified platform pins',async()
 });
 
 
-test('reviewed v0.1.16 enables both public bootstrap paths only with exact reviewed pins', async () => {
+test('reviewed v0.1.17 enables both public bootstrap paths only with exact reviewed pins', async () => {
   const { REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, REVIEWED_WINDOWS_INSTALL_PIN } =
     await import('../src/install-bootstrap.ts');
   const base = 'https://rca.lirtual.dpdns.org';
-  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.commit, 'b942a01e46253daedb220abed8e76cd121f33242');
-  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.x64Sha256, '08ef463baa6a4cb056806fa57945b8aca1f605ed3a791e9b21cda210ac7d3352');
-  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.arm64Sha256, 'c5d38ba20e69546ce2096a3a19804173fafc3e16bae1ad0a1c96759b8df41bb7');
-  assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.assetSha256, 'c39cdf2b8de103b8b283ba9e4e973355bab9e7fce746195ab1ee952bd50a222f');
-  assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.scriptSha256, '4ddb4cefbb0216ea9448735cc89918f8a87c0680805632bf06386d350bbb734e');
+  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.commit, '9334febebfac246299465f17d1d30d21e36fd913');
+  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.x64Sha256, '4368db59bff2e424b738a845c9d36d213aaa8e99c34f9160fa4091b05d3ad967');
+  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.arm64Sha256, '9567ddb48ab56fd561edf90c3c95640af557f517d171b34efdd3675d567c3a8e');
+  assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.assetSha256, 'bdab834c9137e67883fc52ddb6ac00455612cf96bbeee694fc04fa8ab378c833');
+  assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.scriptSha256, '8709c6446e9d81d320887b6132337577a798dafb2630b72e2633859d8268ca24');
   const home = handleAgentInstallerRequest(new Request(base + '/'), REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
   assert.equal(home.status, 200);
   assert.match(await home.text(), /const ready=\{windows:true,linux:true\}/);
   const linux = handleAgentInstallerRequest(new Request(base + '/install.sh'), REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
   assert.equal(linux.status, 200);
-  assert.match(await linux.text(), /remote-control-agent-v0\.1\.16/);
+  assert.match(await linux.text(), /remote-control-agent-v0\.1\.17/);
   const windows = handleAgentInstallerRequest(new Request(base + '/install.ps1'), REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
   assert.equal(windows.status, 200);
   const ps1 = await windows.text();
-  assert.match(ps1, /b942a01e46253daedb220abed8e76cd121f33242/);
-  assert.match(ps1, /4ddb4cefbb0216ea9448735cc89918f8a87c0680805632bf06386d350bbb734e/);
+  assert.match(ps1, /9334febebfac246299465f17d1d30d21e36fd913/);
+  assert.match(ps1, /8709c6446e9d81d320887b6132337577a798dafb2630b72e2633859d8268ca24/);
   assert.equal(handleAgentInstallerRequest(new Request(base + '/'), null, base, null).status, 200);
   assert.equal(handleAgentInstallerRequest(new Request(base + '/install.sh'), null, base, null).status, 503);
   assert.equal(handleAgentInstallerRequest(new Request(base + '/install.ps1'), null, base, null).status, 503);
