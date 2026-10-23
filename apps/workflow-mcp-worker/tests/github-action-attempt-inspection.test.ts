@@ -14,7 +14,14 @@ const row={attempt_id:attempt,run_id:'run',step_id:'start',state:'confirmed',cap
  workflow_ref:grant.repository+'/'+grant.workflowPath+'@refs/tags/test-v1',ref:'refs/tags/test-v1',
  candidate_run_id:99,candidate_run_attempt:1,plan:JSON.stringify(plan),run_outcome:'running'};
 function db(data:(Omit<typeof row,'candidate_run_id'> & {candidate_run_id:number|null})|null){
- return {prepare:(_sql:string)=>({bind:(id:string)=>({first:async()=>{assert.equal(id,attempt);return data;}})})} as any;
+ return {prepare:(sql:string)=>({bind:(...args:string[])=>({first:async()=>{
+  if(sql.includes('FROM session_executions')){
+   assert.deepEqual(args,[row.run_id,row.step_id]);
+   return null; // No live Session can extend a completed parent.
+  }
+  assert.deepEqual(args,[attempt]);
+  return data;
+ }})})} as any;
 }
 const result={state:'running'} as const;
 test('reads durable candidate and exactly approved immutable published grant',async()=>{
