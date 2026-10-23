@@ -272,7 +272,7 @@ test('Agent discovers capabilities and inline-validates a definition without tou
     assert.equal(byId.get('trigger.cron')?.status, 'supported');
     assert.equal(byId.get('action.http')?.status, 'supported');
     assert.equal(byId.get('action.mcp.write')?.status, 'supported');
-    for(const id of ['action.shell','flow.foreach','flow.while','flow.nesting','flow.wait','flow.child_workflow','flow.saga'])
+    for(const id of ['action.tsrv','action.shell','flow.foreach','flow.while','flow.nesting','flow.wait','flow.child_workflow','flow.saga'])
       assert.equal(byId.get(id)?.status, 'unsupported', id);
     for(const item of overview.capabilities) assert.equal('example' in item, false);
 

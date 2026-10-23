@@ -79,6 +79,16 @@ export function isSupportedUse(value: unknown): value is SupportedUse {
   return typeof value === 'string' && (USES as readonly string[]).includes(value);
 }
 
+/** No tsrv provider is registered. A name match is a block, not a session. */
+export function isTsrvName(value: unknown): boolean {
+  return typeof value === 'string' && /(^|[^a-z0-9])tsrv([^a-z0-9]|$)/i.test(value);
+}
+
+export const RESOURCE_PROVIDER_UNAVAILABLE = {
+  status: 'unavailable' as const,
+  reason: 'No tsrv resource provider is registered. A GitHub job result is not Ready.',
+};
+
 // The snapshot checkpoint is counted separately. A GitHub item also consumes
 // its fixed receipt waits, still inside maxExpandedSteps.
 export function expansionItemWeight(uses: SupportedUse): number {
@@ -280,6 +290,8 @@ const CATALOG: readonly Entry[] = [
     summary: 'Call the one registered HTTP fixture. The definition cannot choose a URL, method, header, or credential.',
     permissions: 'scope must be read. with accepts fixture, scope, arguments, and schemas. Publish requires approved_operations exactly matching fixture, endpoint, scope, and schema_digest, plus accept_target_risks=true. The endpoint comes from the server fixture, not from the definition or runtime arguments.',
     completion: 'One POST to the pinned fixture after the grant and schema check. Redirects are not followed. A lost response or redirect is indeterminate and is not retried or rolled back.'},
+  {id: 'action.tsrv', kind: 'action', status: 'unsupported',
+    summary: 'tsrv resource actions are unavailable. No resource provider is registered, so this cannot return an owned expiring reference at Ready. A GitHub job result is not Ready. Validate and publish reject this action.'},
   {id: 'action.shell', kind: 'action', status: 'unsupported',
     summary: 'Shell and arbitrary commands are not implemented.'},
   {id: 'flow.needs', kind: 'flow', status: 'supported', example: emitExample,
@@ -401,7 +413,8 @@ export function connectionSummary(env: CapabilityEnv) {
   const githubReady = Boolean(env.WORKFLOW_EXECUTOR_GITHUB_TOKEN && env.GITHUB_EXECUTOR_REPOSITORY &&
     env.GITHUB_EXECUTOR_REPOSITORY_ID && env.GITHUB_EXECUTOR_REF && env.GITHUB_EXECUTOR_AUDIENCE);
   const triggers = triggerConnections(env);
-  if (!githubReady) return {mcp_portal, http_fixture, github_executor: {status: 'unavailable' as const}, ...triggers};
+  const resource_provider = RESOURCE_PROVIDER_UNAVAILABLE;
+  if (!githubReady) return {mcp_portal, http_fixture, github_executor: {status: 'unavailable' as const}, resource_provider, ...triggers};
   try {
     const workflow = selectedGithubExecutor(env).workflow;
     return {mcp_portal, http_fixture, github_executor: {
@@ -410,9 +423,9 @@ export function connectionSummary(env: CapabilityEnv) {
       ref: env.GITHUB_EXECUTOR_REF,
       workflow,
       audience: env.GITHUB_EXECUTOR_AUDIENCE,
-    }, ...triggers};
+    }, resource_provider, ...triggers};
   } catch {
-    return {mcp_portal, http_fixture, github_executor: {status: 'unavailable' as const}, ...triggers};
+    return {mcp_portal, http_fixture, github_executor: {status: 'unavailable' as const}, resource_provider, ...triggers};
   }
 }
 

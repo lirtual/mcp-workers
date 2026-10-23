@@ -139,6 +139,7 @@ function issueMessage(code:string, detail?:string):string{
     case 'target_argument_rejected': return 'Runtime arguments cannot select a server, URL, repository, or credential.';
     case 'approved_schema_changed': return 'The pinned schema does not match the registered contract.';
     case 'unsupported_github_capability': return 'Use github.workflow.check or github.action.registered.';
+    case 'resource_provider_unavailable': return 'No tsrv resource provider is registered. A GitHub job result is not Ready.';
     case 'invalid_github_inputs': return 'GitHub Action inputs do not match the allow-listed schema.';
     case 'invalid_reference':
     case 'invalid_step_reference': return 'The reference is not allowed from this step.';
@@ -260,7 +261,17 @@ export class WorkflowService {
   async publish(workflow_id:string,expected_revision:number,approved_operations:ApprovedOperation[]=[],accept_target_risks=false,approve_heavy_execution=false){
     assertId(workflow_id);const row=await this.row(workflow_id);
     if(row.draft_revision!==expected_revision)throw new StateError('revision_conflict');
-    const {plan,digest:plan_digest}=await compilePlan(row.draft);
+    let plan: Plan;
+    let plan_digest: string;
+    try {
+      const compiled=await compilePlan(row.draft);
+      plan=compiled.plan;
+      plan_digest=compiled.digest;
+    } catch(error) {
+      if(error instanceof PlanError && error.message.split(':')[0]==='resource_provider_unavailable')
+        throw new StateError('resource_provider_unavailable');
+      throw error;
+    }
     // The owner must explicitly approve the exact immutable URL + tool + scope.
     // Publishing an arbitrary Draft is not itself an external-operation grant.
     const mcp=sortGrants(mcpGrants(plan));
