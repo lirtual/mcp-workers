@@ -54,8 +54,8 @@ test('server identity must be declared as required string but never user input',
   for (const key of ['attempt_id','dispatch_id','capability_id'])
     assert.equal(Object.hasOwn(parsed.inputs,key),false);
   assert.throws(() => parseGitHubAction(valid.replace('      attempt_id:', '      missing_id:')), /missing_identity_inputs/);
-  assert.throws(() => parseGitHubAction(valid.replace('      attempt_id:\\n        type: string\\n        required: true',
-    '      attempt_id:\\n        type: string\\n        required: false')), /reserved_input/);
+  assert.throws(() => parseGitHubAction(valid.replace('      attempt_id:\n        type: string\n        required: true',
+    '      attempt_id:\n        type: string\n        required: false')), /reserved_input/);
   assert.throws(() => parseGitHubAction(valid.replace('default: smoke', 'default: unknown')));
   assert.throws(() => parseGitHubAction(valid.replace('default: 10', 'default: ten')));
 });
