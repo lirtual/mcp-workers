@@ -1,5 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
+import { listAvailableGitHubActions } from './github-action-catalog.ts';
 import { WorkflowService, cleanError } from './store.ts';
 import type { Env } from './store.ts';
 
@@ -17,6 +18,7 @@ export function buildMcpServer(env:Env){
  const service=new WorkflowService(env);
  const server=new McpServer({name:'workflow-mcp-worker',version:'0.1.0'},
  {capabilities:{tools:{}},instructions:'Workflows support immutable publication, read-only MCP tool calls through the pinned Portal, and the registered GitHub Workflow CI executor. MCP calls require exact endpoint/tool/read-scope/schema grants and target risk acceptance; GitHub execution requires explicit owner approval and GitHub OIDC verification. Remote readOnlyHint is untrusted and network/third-party no-side-effects are not guaranteed. External writes, arbitrary commands, Cron and Webhooks are not supported.'});
+ server.registerTool('workflow_action_list',{description:'Discover compatible GitHub Actions only in server-approved repositories and pinned revisions. Discovery does not authorize publishing or execution.',inputSchema:z.object({}).strict(),annotations:read},async()=>safe(()=>listAvailableGitHubActions(env)));
  server.registerTool('workflow_list',{description:'List workflows and publication state.',inputSchema:z.object({}).strict(),annotations:read},async()=>safe(()=>service.list()));
  server.registerTool('workflow_get',{description:'Read one Draft and its active Published Version metadata.',inputSchema:z.object({workflow_id:id}).strict(),annotations:read},async({workflow_id})=>safe(()=>service.get(workflow_id)));
  server.registerTool('workflow_create',{description:'Create a Draft YAML/JSON Workflow without executing it.',inputSchema:z.object({definition:z.string().min(3).max(32768)}).strict(),annotations:write},async({definition})=>safe(()=>service.create(definition)));
