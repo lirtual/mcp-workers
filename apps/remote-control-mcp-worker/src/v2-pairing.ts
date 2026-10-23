@@ -588,6 +588,52 @@ export class V2OwnerCoordinator {
     return true;
   }
 
+
+  /** Owner-only one-way promotion of exactly one still-valid temporary grant.
+   * Atomically preserve the approved key, device ID, session epoch and metadata.
+   * No Agent re-enrolment, revocation, or WebSocket reconnection occurs.
+   */
+  private async makeDevicePermanent(request: Request): Promise<Response> {
+    const body = await limitedJson(request);
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return Response.json({ error: "invalid_request" }, { status: 400 });
+    }
+    const args = body as Record<string, unknown>;
+    if (Object.keys(args).length !== 4 ||
+        typeof args.device_id !== "string" ||
+        !/^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(args.device_id) ||
+        typeof args.expected_fingerprint !== "string" ||
+        !/^[a-f0-9]{24}$/.test(args.expected_fingerprint) ||
+        typeof args.expected_expires_at !== "number" ||
+        !Number.isSafeInteger(args.expected_expires_at) ||
+        args.expected_expires_at <= 0 ||
+        args.confirmation !== "make_permanent") {
+      return Response.json({ error: "invalid_request" }, { status: 400 });
+    }
+    const deviceId = args.device_id;
+    const result = await this.state.storage.transaction(async txn => {
+      const device = await txn.get<V2Device>("device:" + deviceId);
+      if (!device || device.revoked !== false) {
+        return { status: 404, body: { error: "not_found" } };
+      }
+      if (device.grant_type !== "temporary") {
+        return { status: 409, body: { error: "grant_not_temporary" } };
+      }
+      if (!deviceIsAuthorized(device) ||
+          device.fingerprint !== args.expected_fingerprint ||
+          device.expires_at !== args.expected_expires_at) {
+        return { status: 409, body: { error: "grant_changed_or_expired" } };
+      }
+      const promoted: V2Device = { ...device, grant_type: "permanent" };
+      delete promoted.expires_at;
+      await txn.put("device:" + deviceId, promoted);
+      return { status: 200, body: { device_id: deviceId, status: "promoted", grant_type: "permanent" } };
+    });
+    return Response.json(result.body, {
+      status: result.status, headers: { "cache-control": "no-store" },
+    });
+  }
+
   /** Owner-only rename: update a display label without touching keys, grants or live sockets. */
   private async renameDevice(request: Request): Promise<Response> {
     const body = await limitedJson(request);
@@ -759,6 +805,10 @@ export class V2OwnerCoordinator {
         return Response.json({status:result},{status:result==="approved"?200:403,
           headers:{"cache-control":"no-store"}});
       }catch{return new Response(null,{status:503});}
+    }
+    if (path === "/grant/permanent") {
+      try { return await this.makeDevicePermanent(request); }
+      catch { return Response.json({ error: "unavailable" }, { status: 503 }); }
     }
     if (path === "/rename") {
       try { return await this.renameDevice(request); }
