@@ -27,7 +27,7 @@ jobs:
   checks:
     name: Application checks
     concurrency:
-      group: ci-checks-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.event.pull_request.number || github.ref }}
+      group: ci-checks-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.event.pull_request.number || github.ref }}-${{ inputs.worker || 'affected' }}
       cancel-in-progress: true
     runs-on: ubuntu-latest
     outputs:
