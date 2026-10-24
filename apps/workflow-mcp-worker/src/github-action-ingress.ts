@@ -38,6 +38,7 @@ export async function handleGithubActionClaimRequest(
  if(Number.isFinite(declared)&&declared>8192)return result(413,'too_large');
  let attemptId:string;
  let taskResult:Record<string,unknown>|undefined;
+ let sessionUrl:string|undefined;
  try{
   // Read at most 8 KiB, even when Content-Length is absent or incorrect.
   // Never buffer an entire caller-controlled HTTP stream before checking it.
@@ -61,8 +62,10 @@ export async function handleGithubActionClaimRequest(
   if(!raw||typeof raw!=='object'||Array.isArray(raw))
     return result(400,'invalid_request');
   const keys=Object.keys(raw).sort().join(',');
-  if(keys!==(route==='/github/action/result'?'attemptId,result':'attemptId'))
-    return result(400,'invalid_request');
+  const allowed=route==='/github/action/result'?'attemptId,result':
+    route==='/github/action/ready'&&keys==='attemptId,sessionUrl'?
+      'attemptId,sessionUrl':'attemptId';
+  if(keys!==allowed)return result(400,'invalid_request');
   const id=(raw as {attemptId?:unknown}).attemptId;
   if(typeof id!=='string'||!UUID.test(id))return result(400,'invalid_request');
   if(route==='/github/action/result'){
@@ -72,6 +75,13 @@ export async function handleGithubActionClaimRequest(
       return result(400,'invalid_result');
   }
   attemptId=id;
+  if(route==='/github/action/ready'&&Object.hasOwn(raw,'sessionUrl')){
+    const value=(raw as {sessionUrl?:unknown}).sessionUrl;
+    if(typeof value!=='string'||value.length>180||
+       !/^https:\/\/[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.trycloudflare\.com\/?$/.test(value))
+      return result(400,'invalid_session_url');
+    sessionUrl=value;
+  }
   taskResult=route==='/github/action/result' ?
     (raw as {result:Record<string,unknown>}).result:undefined;
  }catch{return result(400,'invalid_request');}
@@ -107,7 +117,7 @@ export async function handleGithubActionClaimRequest(
   }
   if(!env.WORKFLOW_EXECUTOR_GITHUB_TOKEN)return result(503,'ready_unavailable');
   const ready=await recordSignedSessionReady(env.DB,attemptId,credential,
-    env.GITHUB_ACTION_OIDC_AUDIENCE,env.WORKFLOW_EXECUTOR_GITHUB_TOKEN,keys,inspect);
+    env.GITHUB_ACTION_OIDC_AUDIENCE,env.WORKFLOW_EXECUTOR_GITHUB_TOKEN,keys,inspect,sessionUrl);
   if(ready==='physical_unconfirmed')return result(503,'physical_unconfirmed');
   if(ready==='denied')return result(403,'ready_denied');
   if(ready==='ready'&&env.WORKFLOW){
