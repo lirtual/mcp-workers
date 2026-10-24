@@ -778,7 +778,7 @@ jobs:
     name: Isolated GitHub OIDC / D1 Claim / Callback (no production)
     if: >-
       ${{ github.event_name == 'workflow_dispatch' &&
-          github.ref == 'refs/heads/fix/session-actions-spec-1-contract' &&
+          github.ref == 'refs/heads/wip/workflow-github-executor' &&
           inputs.worker == 'workflow-mcp-worker' &&
           inputs.github_oidc_probe == true &&
           inputs.mcp_portal_probe != true &&
