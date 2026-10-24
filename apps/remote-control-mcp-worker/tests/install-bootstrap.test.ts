@@ -469,31 +469,31 @@ test('icon-copy feedback resets correctly and retains SVG children', async () =>
     clearTimeout:(timer:number)=>{pending.delete(timer);},
   });
   assert.equal(els.windows.attributes['aria-selected'],'true','unknown/mobile defaults to first Windows tab');
-  assert.equal(els.copy.attributes['aria-label'],'复制安装命令');
+  assert.equal(els.copy.attributes['aria-label'],'Copy install command');
   await els.copy.handlers.click!();
   assert.equal(clipboard[0],'irm https://rca.lirtual.dpdns.org/install.ps1 | iex');
   assert.equal(els.copy.attributes['data-copied'],'true');
   assert.equal(els.copy.textContent,'','state must preserve the inline SVGs');
-  assert.equal(els.copy.attributes['aria-label'],'安装命令已复制');
+  assert.equal(els.copy.attributes['aria-label'],'Command copied');
   assert.equal(els.message.textContent,'','no duplicate success label below the button');
   assert.equal(pending.size,1);
   [...pending.values()][0]!();
-  assert.equal(els.copy.attributes['aria-label'],'复制安装命令','accessible name resets after timeout');
+  assert.equal(els.copy.attributes['aria-label'],'Copy install command','accessible name resets after timeout');
   assert.equal(els.copy.attributes['data-copied'],undefined,'check icon resets after timeout');
   els.linux.handlers.click!();
-  assert.equal(els.copy.attributes['aria-label'],'复制安装命令');
+  assert.equal(els.copy.attributes['aria-label'],'Copy install command');
   await els.copy.handlers.click!();
   assert.equal(clipboard[1],'curl -fsSL https://rca.lirtual.dpdns.org/install.sh | sh');
   assert.equal(els.copy.attributes['data-copied'],'true');
   els.windows.handlers.click!();
-  assert.equal(els.copy.attributes['aria-label'],'复制安装命令','switching platform resets accessible name');
+  assert.equal(els.copy.attributes['aria-label'],'Copy install command','switching platform resets accessible name');
   assert.equal(els.copy.attributes['data-copied'],undefined,'switching platforms restores copy icon');
   assert.equal(pending.size,0,'switching platforms cancels previous timer');
   rejectCopy=true;
   await els.copy.handlers.click!();
-  assert.equal(els.copy.attributes['aria-label'],'复制安装命令','failed copy must not show success');
+  assert.equal(els.copy.attributes['aria-label'],'Copy install command','failed copy must not show success');
   assert.equal(els.copy.attributes['data-copied'],undefined,'failed copy cannot show check icon');
-  assert.equal(els.message.textContent,'复制失败，请手动选中命令。');
+  assert.equal(els.message.textContent,'Copy failed. Select the command manually.');
 });
 
 test('icon copy card adapts to system light/dark color scheme and remains accessible', async () => {
