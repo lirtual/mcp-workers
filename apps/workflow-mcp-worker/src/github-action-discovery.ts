@@ -12,7 +12,7 @@ export type GitHubActionSource = {
 type RepositoryGrant = {
   repository: string;
   repositoryId: number;
-  commitSha: string;
+  commitSha?: string;
   token: string;
 };
 type Http = (request: Request) => Promise<Response>;
@@ -46,7 +46,8 @@ async function get(path: string, token: string, http: Http): Promise<unknown> {
 
 /**
  * The caller must supply a server-side, explicitly approved repository identity
- * and exact reviewed revision. Untrusted MCP inputs must never build this grant.
+ * repository identity. Explicit SHA inputs are for pinned revalidation only;
+ * never build the grant from untrusted MCP arguments.
  * Discovery reads GitHub data only; it never authorizes execution.
  */
 export async function discoverGitHubActions(
@@ -55,14 +56,27 @@ export async function discoverGitHubActions(
 ): Promise<GitHubActionSource[]> {
   if (!REPO.test(grant.repository) || grant.repository.includes('..') ||
       !Number.isSafeInteger(grant.repositoryId) || grant.repositoryId <= 0 ||
-      !SHA.test(grant.commitSha) || !grant.token.trim()) reject('invalid_grant');
+      (grant.commitSha !== undefined && !SHA.test(grant.commitSha)) ||
+      !grant.token.trim()) reject('invalid_grant');
   const prefix = '/repos/' + grant.repository;
   const repository = await get(prefix, grant.token, http);
   if (required(repository, 'id') !== grant.repositoryId ||
       required(repository, 'full_name') !== grant.repository) reject('repository_mismatch');
 
-  const commit = await get(prefix + '/commits/' + grant.commitSha, grant.token, http);
-  if (required(commit, 'sha') !== grant.commitSha) reject('revision_mismatch');
+  // Resolve the current default branch for discovery, then pin EVERY YAML
+  // read to its exact returned SHA. The Published Plan retains its own
+  // explicitly reviewed immutable SHA; discovery never grants execution.
+  const branch = required(repository, 'default_branch');
+  if (grant.commitSha === undefined &&
+      (typeof branch !== 'string' || !/^[A-Za-z0-9_.\\/-]{1,200}$/.test(branch) ||
+       branch.includes('..') || branch.startsWith('/') || branch.endsWith('/')))
+    reject('invalid_default_branch');
+  const commit = await get(prefix + '/commits/' +
+    encodeURIComponent(grant.commitSha ?? (branch as string)), grant.token, http);
+  const commitSha = required(commit, 'sha');
+  if (typeof commitSha !== 'string' || !SHA.test(commitSha) ||
+      (grant.commitSha !== undefined && commitSha !== grant.commitSha))
+    reject('revision_mismatch');
 
   const output: GitHubActionSource[] = [];
   let page = 1;
@@ -77,7 +91,7 @@ export async function discoverGitHubActions(
       const id = required(workflow, 'id');
       if (typeof path !== 'string' || !WORKFLOW.test(path)) continue;
       if (typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0) continue;
-      const contents = await get(prefix + '/contents/' + path + '?ref=' + grant.commitSha, grant.token, http);
+      const contents = await get(prefix + '/contents/' + path + '?ref=' + commitSha, grant.token, http);
       if (required(contents, 'path') !== path ||
           required(contents, 'encoding') !== 'base64' ||
           typeof required(contents, 'content') !== 'string') reject('invalid_contents');
@@ -91,7 +105,7 @@ export async function discoverGitHubActions(
       } catch { reject('invalid_contents'); }
       try {
         output.push({ repository: grant.repository, repositoryId: grant.repositoryId,
-          commitSha: grant.commitSha, workflowPath: path, workflowId: id,
+          commitSha, workflowPath: path, workflowId: id,
           contract: parseGitHubAction(yaml!) });
       } catch {
         // Ordinary non-Action GitHub workflows must remain invisible.
