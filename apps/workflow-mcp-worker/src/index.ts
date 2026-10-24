@@ -12,7 +12,8 @@ export default {
   const url=new URL(request.url);
   // Only GitHub-issued OIDC may use these GitHub routes; no MCP Portal token
   // is involved. Unknown paths return 404; claim/callback requests require signed GitHub identity.
-  if(url.pathname==='/github/action/claim'||url.pathname==='/github/action/ready')
+  if(url.pathname==='/github/action/claim'||url.pathname==='/github/action/ready'||
+     url.pathname==='/github/action/result')
     return handleGithubActionClaimRequest(request,env);
   if(url.pathname==='/github/claim'||url.pathname==='/github/callback')
     return handleGithubCallbackRequest(request,env);
