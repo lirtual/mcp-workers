@@ -277,14 +277,19 @@ async function runS3Smoke() {
 async function runActionTaskSmoke() {
   const credential=process.env.WORKFLOW_EXECUTOR_GITHUB_TOKEN;
   assert.ok(credential && credential.length>=20,'Dedicated GitHub token missing');
-  const outstanding=sql("SELECT count(*) AS n FROM runs WHERE outcome NOT IN ('succeeded','failed','cancelled')");
-  assert.equal(outstanding[0]?.n,0,'Production has nonterminal Runs: Action smoke aborted');
+  // An indeterminate historical Task remains in D1 for audit and is NOT
+  // deleted, retried, nor counted as a physical Session slot. Refuse to start
+  // alongside any still queued/running Workflow or nonterminated Session.
+  const outstanding=sql("SELECT count(*) AS n FROM runs WHERE outcome IN ('queued','running')");
+  assert.equal(outstanding[0]?.n,0,'Production has active Runs: Action smoke aborted');
+  const occupied=sql("SELECT count(*) AS n FROM session_executions WHERE state != 'terminated'");
+  assert.equal(occupied[0]?.n,0,'Production has live Session slots: Action smoke aborted');
   await client.connect(transport);
   const catalog=await tool('workflow_action_list',{});
   assert.ok(Array.isArray(catalog.actions),'Action catalog unavailable');
   const candidates=catalog.actions.filter(a=>a.repository==='lirtual/session-actions' &&
     a.repositoryId===1430925009 && a.workflowPath==='.github/workflows/verify-action.yml' &&
-    a.commitSha==='d0774dde3a87c7722a939403dbda45507f44b8e0' &&
+    a.commitSha==='c16660ae054f89ea51ebc0a0a5cca61f17f3b4e1' &&
     a.name==='Verify Workflow Action' && a.type==='task');
   assert.equal(candidates.length,1,'Expected exactly one reviewed Task in pinned catalog');
   const found=candidates[0];
@@ -297,7 +302,7 @@ async function runActionTaskSmoke() {
       name:found.name,type:found.type,inputs:found.inputs,
     })).digest('hex'),
   };
-  const action={...reviewed,ref:'refs/tags/v0.1.0',inputs:{outcome:'success'}};
+  const action={...reviewed,ref:'refs/tags/v0.1.1',inputs:{outcome:'success'}};
   const definition={version:1,name:'workflow-action-task-smoke-'+label,
     steps:[{id:'verify',uses:'github.run',
       with:{capability:'github.action',action}}]};
