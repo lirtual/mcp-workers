@@ -290,12 +290,16 @@ export async function runPublishedGitHubActionSession(
     .first<{state:string;attempt_state:string}>();
   if(snapshot?.state==='ready'&&snapshot.attempt_state==='claimed')
    return {status:'succeeded',output:{session:{recorded_state:'ready'}}};
-  if(!snapshot||['terminated','stopping'].includes(snapshot.state))
-   return {status:'indeterminate',error_code:'github_session_no_ready'};
-  if(['succeeded','failed','cancelled'].includes(snapshot.attempt_state)){
+  // A verified physical terminal may race the native Ready waiter.
+  // Inspect the durable Attempt first: a terminated Session paired with a
+  // *verified* failed/cancelled physical job is a definite pre-Ready failure,
+  // not an unknown outcome that would unnecessarily block future releases.
+  if(snapshot&&['succeeded','failed','cancelled'].includes(snapshot.attempt_state)){
    await releaseVerifiedSessionSlot(db,runId,stepPlan.id);
    return {status:'failed',error_code:'github_session_ended_before_ready'};
   }
+  if(!snapshot||['terminated','stopping'].includes(snapshot.state))
+   return {status:'indeterminate',error_code:'github_session_no_ready'};
   const physical=await step.do('github-session-check-'+stepPlan.id+'-'+i,{
    retries:{limit:0,delay:'1 second'},timeout:'45 seconds',
   },()=>reconcilePersistedGitHubActionAttempt(db,attemptId,token,
