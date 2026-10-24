@@ -12,6 +12,9 @@ import type {Plan} from './plan.ts';
 type Db=Pick<D1Database,'prepare'>;
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const STEP=/^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+const TUNNEL_URL=/^https:\/\/[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.trycloudflare\.com\/?$/;
+const WEB_PATHS=new Set(['.github/workflows/chrome.yml',
+  '.github/workflows/code-server.yml','.github/workflows/openlist.yml']);
 export type SessionReservation='reserved'|'existing'|'full'|'denied';
 export type SessionRelease='released'|'already_released'|'held';
 
@@ -73,7 +76,7 @@ export async function releaseVerifiedSessionSlot(
  db:Db,runId:string,stepId:string,
 ):Promise<SessionRelease>{
  if(!UUID.test(runId)||!STEP.test(stepId))return 'held';
- const changed=await db.prepare(`UPDATE session_executions SET state='terminated',
+ const changed=await db.prepare(`UPDATE session_executions SET state='terminated',session_url=NULL,
    updated_at=? WHERE run_id=? AND step_id=? AND state!='terminated'
    AND EXISTS (
      SELECT 1 FROM step_attempts AS a
@@ -159,10 +162,15 @@ export async function recordSignedSessionReady(
  db:Db,attemptId:string,jwt:string,audience:string,token:string,
  keys?:GithubActionKeys,
  inspect:typeof inspectPersistedGitHubActionAttempt=inspectPersistedGitHubActionAttempt,
+ sessionUrl?:string,
 ):Promise<SessionReadyResult>{
  const verified=await verifyPinnedGitHubActionIdentity(
    db,attemptId,jwt,audience,keys,true);
  if(!verified||verified.action.type!=='session')return 'denied';
+ if(sessionUrl!==undefined &&
+    (verified.action.repository!=='lirtual/session-actions'||
+     !WEB_PATHS.has(verified.action.workflowPath)||
+     sessionUrl.length>180||!TUNNEL_URL.test(sessionUrl)))return 'denied';
  const {row}=verified;
  if(row.state!=='claimed'||row.owner_run_id!==row.candidate_run_id||
     row.owner_run_attempt!==row.candidate_run_attempt)return 'denied';
@@ -171,7 +179,7 @@ export async function recordSignedSessionReady(
   return physical.state==='unknown'||physical.state==='queued'
    ?'physical_unconfirmed':'denied';
  const updated=await db.prepare(`UPDATE session_executions
-   SET state='ready',updated_at=?
+   SET state='ready',session_url=?,updated_at=?
    WHERE run_id=? AND step_id=? AND state IN ('queued','starting')
    AND EXISTS (
      SELECT 1 FROM step_attempts a
@@ -187,13 +195,13 @@ export async function recordSignedSessionReady(
    ) AND EXISTS (
      SELECT 1 FROM runs r WHERE r.id=session_executions.run_id
        AND r.outcome IN ('queued','running')
-   )`).bind(Date.now(),row.run_id,row.step_id,attemptId,
+   )`).bind(sessionUrl??null,Date.now(),row.run_id,row.step_id,attemptId,
    row.candidate_run_id,row.candidate_run_attempt,attemptId).run();
  if(updated.meta.changes===1)return 'ready';
- const state=await db.prepare(`SELECT state FROM session_executions
+ const state=await db.prepare(`SELECT state,session_url FROM session_executions
   WHERE run_id=? AND step_id=?`).bind(row.run_id,row.step_id)
-  .first<{state:string}>();
- if(state?.state!=='ready')return 'denied';
+  .first<{state:string;session_url:string|null}>();
+ if(state?.state!=='ready'||state.session_url!==(sessionUrl??null))return 'denied';
  // HTTP 200 replay is only valid for the original healthy Ready, not after
  // a cancellation intent has been durably recorded but before 'stopping'.
  const cancelling=await db.prepare(`SELECT 1 AS present
