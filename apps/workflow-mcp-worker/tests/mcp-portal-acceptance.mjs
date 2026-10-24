@@ -29,10 +29,7 @@ try {
   console.log('MCP_INITIALIZE_OK');
   const listing=await client.listTools();
   console.log('MCP_TOOLS_LIST_OK',listing.tools.length);
-  // Only tool names and read-only flags are printed; never the tool outputs.
-  console.log('AVAILABLE_TOOLS',JSON.stringify(listing.tools.map(t=>({
-    name:t.name,readOnly:t.annotations?.readOnlyHint===true,
-  }))));
+  // Avoid logging the full production Portal catalog; only the selected read-only tools matter.
   const candidate=listing.tools.find(t=>
     /(^|[._-])list_notebooks$/.test(t.name)&&
     t.annotations?.readOnlyHint===true&&
@@ -61,5 +58,12 @@ try {
   console.error('PORTAL_ACCEPTANCE_FAIL',error instanceof Error?error.name:'unknown','HTTP',lastHttpStatus);
   process.exitCode=1;
 } finally {
-  await client.close().catch(()=>{});
+  // Portal HTTP sessions can remain open after every read-only assertion passes.
+  // Bound cleanup and terminate this one-shot CLI; no writes or remote jobs exist.
+  const closed = await Promise.race([
+    client.close().then(() => true, () => true),
+    new Promise(resolve => setTimeout(() => resolve(false), 2000)),
+  ]);
+  if (!closed) console.warn('PORTAL_ACCEPTANCE_CLOSE_TIMEOUT');
+  process.exit(process.exitCode ?? 0);
 }
