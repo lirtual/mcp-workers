@@ -111,7 +111,7 @@ export async function recordSignedGitHubActionTaskResult(
  const {row}=verified;
  if(row.state!=='claimed'||row.owner_run_id!==row.candidate_run_id||
     row.owner_run_attempt!==row.candidate_run_attempt)return 'denied';
- await db.prepare(`INSERT OR IGNORE INTO callback_receipts
+ const inserted=await db.prepare(`INSERT OR IGNORE INTO callback_receipts
   (callback_id,attempt_id,outcome,result_json,notification_delivered,created_at)
   SELECT ?,?,'succeeded',?,1,? WHERE EXISTS (
     SELECT 1 FROM step_attempts a JOIN runs r ON r.id=a.run_id
