@@ -410,16 +410,17 @@ async function current(account, worker, token, options) {
   };
 }
 
-/** Cloudflare may expose a just-deployed version before its Secret binding
- * inventory converges. Retry only that exact read-after-write race; all
- * identity, version, schema and configuration errors remain fatal. */
-export async function retrySecretReadback(read, pause = ms => new Promise(resolve => setTimeout(resolve, ms))) {
+/** Cloudflare deployment version and Secret inventories may propagate
+ * independently. Retry only these two exact post-deploy readback states;
+ * identity, configuration, schema and other version failures remain fatal. */
+export async function retryReleaseReadback(read, pause = ms => new Promise(resolve => setTimeout(resolve, ms))) {
   for (let attempt = 0; attempt < 6; attempt++) {
     try { return await read(); }
     catch (error) {
       const message = error instanceof Error ? error.message : "";
-      if (attempt === 5 || !/^Required (Secret binding|runtime Secret) missing: /.test(message))
-        throw error;
+      const transient = /^Required (Secret binding|runtime Secret) missing: /.test(message) ||
+        message === "Active Worker version does not match the Wrangler-published version";
+      if (attempt === 5 || !transient) throw error;
       await pause(2000);
     }
   }
@@ -472,7 +473,7 @@ async function main() {
   });
   const observed = !exists ? { mode: "bootstrap" }
     : mode === "readback" && worker === "workflow-mcp-worker"
-      ? await retrySecretReadback(read) : await read();
+      ? await retryReleaseReadback(read) : await read();
   if (mode === "preflight") {
     await writeFile(statePath, JSON.stringify({ worker, sourceSha, ...observed }), { mode: 0o600 });
     if (process.env.GITHUB_OUTPUT) {
