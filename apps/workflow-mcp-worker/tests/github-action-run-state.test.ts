@@ -11,7 +11,7 @@ const action: ReviewedGitHubAction = {
 const ref='refs/tags/test-v1';
 const physical = {
   id:999,workflow_id:action.workflowId,run_attempt:1,repository:{id:123,full_name:action.repository},
-  path:action.workflowPath+'@test-v1',head_sha:action.commitSha,event:'workflow_dispatch',
+  path:action.workflowPath,head_branch:'test-v1',head_sha:action.commitSha,event:'workflow_dispatch',
   status:'in_progress',conclusion:null,
 };
 test('dispatch ACK and active GitHub Run do not imply terminal success',()=>{
@@ -30,15 +30,20 @@ test('cancel requires GitHub terminal confirmation',()=>{
 test('rejects any physical run identity drift, rerun or unrelated event',()=>{
   for(const changed of [
     {...physical,id:1000},{...physical,run_attempt:2},{...physical,workflow_id:999},
-    {...physical,head_sha:'c'.repeat(40)},{...physical,path:'.github/workflows/other.yml@tag'},
-    {...physical,path:action.workflowPath+'@another-tag'},
+    {...physical,head_sha:'c'.repeat(40)},{...physical,path:'.github/workflows/other.yml'},
+    {...physical,path:action.workflowPath+'@test-v1'},
+    {...physical,head_branch:'other-tag'},
+    {...physical,head_branch:'main'},
+    {...physical,head_branch:null},
     {...physical,repository:{id:999,full_name:action.repository}},
     {...physical,event:'push'},
   ]) assert.deepEqual(reconcileGitHubPhysicalRun(action,999,1,changed,ref),{state:'identity_mismatch'});
 });
 
-test('GitHub REST path must name the same reviewed tag, never a bare or foreign workflow',()=>{
- for(const path of [action.workflowPath,action.workflowPath+'@main',action.workflowPath+'@other-v1'])
+test('GitHub REST requires the bare reviewed workflow path and exact physical tag',()=>{
+ for(const path of [action.workflowPath+'@'+ref,action.workflowPath+'@test-v1'])
   assert.deepEqual(reconcileGitHubPhysicalRun(action,999,1,{...physical,path},ref),{state:'identity_mismatch'});
- assert.deepEqual(reconcileGitHubPhysicalRun(action,999,1,{...physical,path:action.workflowPath+'@'+ref},ref),{state:'running'});
+ for(const head_branch of ['main','another-tag','refs/tags/test-v1'])
+  assert.deepEqual(reconcileGitHubPhysicalRun(action,999,1,{...physical,head_branch},ref),{state:'identity_mismatch'});
+ assert.deepEqual(reconcileGitHubPhysicalRun(action,999,1,physical,ref),{state:'running'});
 });
