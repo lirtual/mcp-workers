@@ -21,7 +21,7 @@ const sha=required('GITHUB_SHA');
 const runNumber=Number(required('GITHUB_RUN_ID'));
 const runAttempt=Number(required('GITHUB_RUN_ATTEMPT'));
 assert.equal(repository,'lirtual/mcp-workers');
-assert.equal(ref,'refs/heads/fix/session-actions-spec-1-contract');
+assert.equal(ref,'refs/heads/main');
 assert.equal(workflowRef,repository+'/.github/workflows/ci.yml@'+ref);
 assert.equal(runAttempt,1,'reruns require a fresh signed identity');
 assert.match(sha,/^[0-9a-f]{40}$/i);
