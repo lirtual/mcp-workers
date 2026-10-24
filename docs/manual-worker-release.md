@@ -6,7 +6,7 @@
 
 ## 发布准入
 
-- 仅由 GitHub Actions → CI → `workflow_dispatch` 在当前 `main` 触发；PR 和 push CI 只运行检查，不执行发布。
+- 仅由 GitHub Actions → Release Worker → `workflow_dispatch` 在当前 `main` 触发；PR 和 push CI 只运行检查，不执行发布。
 - 只能选择一个明确白名单 Worker。数据库必须通过真正的 PostgreSQL/MySQL 集成检查；其他 Worker 不得被数据库集成步骤错误阻挡。
 - 每个 Worker 使用与脚本同名的 GitHub Environment，例如 `ima-mcp-worker`。Actions 自动选择该名称，无须维护 `WORKER_CONFIG_SCOPE`。GitHub 可能自动建立尚不存在的空 Environment，应事先配置 Worker 专属 Secrets、审批与分支保护；每次手动部署缺少必需密钥都必须在上传前失败。
 - Repository Secrets 放 `CLOUDFLARE_API_TOKEN`、默认的 `MCP_ACCESS_TOKEN`；Repository Variable 放 `CLOUDFLARE_ACCOUNT_ID`。Worker 自己的 Environment 保存其余敏感字段。对应同名 Environment Secret 可覆盖全局 Portal Token。

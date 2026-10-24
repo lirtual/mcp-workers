@@ -58,7 +58,7 @@ GitHub Environment Variables 只影响对应 Worker。工作流显式允许下�
 ## 4. 手动部署
 
 1. 完成上述全局配置和对应 Worker 的配置空间迁移；不用删除旧 `production` 环境。
-2. 打开 [GitHub Actions → CI](https://github.com/lirtual/mcp-workers/actions/workflows/ci.yml)，选择 `main`，每次只选择一个 Worker。
+2. 打开 [GitHub Actions → Release Worker](https://github.com/lirtual/mcp-workers/actions/workflows/release.yml)，选择 `main`，每次只选择一个 Worker。
 3. GitHub 自动选择与所选 Worker 同名的 Environment；**每次发布**必须找到该 Worker 所有必需 Secrets，以及 IMA 的必填 `CLIENT_ID` Environment Variable，缺一即中止，绝不静默沿用 Cloudflare 上的旧值。
 4. Preflight 检查 Cloudflare 账户与 Worker 是否存在。随后无论是首次部署还是更新，都仅将**选中 Worker** 的全部必需非空 Secrets 写入权限 0600 的 runner 临时文件，执行 `wrangler deploy --secrets-file`；未列出的现有 Secret 不会因本次上传而自动删除。
 5. 若 Worker 已存在，GitHub 的必需 Secret 值会覆盖 Cloudflare 对应值。Remote Control 也使用同一套密钥同步规则，但其 `DEVICE_COORDINATOR` Durable Object、配对、Agent 身份及回执均不应因 Secret 同步被重置或迁移。

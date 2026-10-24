@@ -1,0 +1,171 @@
+name: Workflow Acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_type:
+        description: Acceptance type (Portal registration changes production configuration)
+        required: true
+        type: choice
+        options:
+          - production-native
+          - production-mcp
+          - production-github
+          - production-action-task
+          - portal-readonly
+          - github-action-result-cloud
+          - portal-register
+
+permissions:
+  contents: read
+
+env:
+  CI: "true"
+  HUSKY: "0"
+
+jobs:
+  checks:
+    name: Pre-acceptance checks
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && contains(fromJSON('["production-native","production-mcp","production-github","production-action-task","portal-register"]'), inputs.test_type) }}
+    uses: ./.github/workflows/ci.yml
+    with:
+      worker: workflow-mcp-worker
+
+  workflow-production-smoke:
+    name: Authenticated Workflow production smoke (no deploy)
+    needs: checks
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/main' &&
+          contains(fromJSON('["production-native","production-mcp","production-github","production-action-task"]'), inputs.test_type) &&
+          needs.checks.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    environment:
+      name: workflow-mcp-worker
+    concurrency:
+      group: workflow-production-smoke
+      cancel-in-progress: false
+    env:
+      MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      WORKFLOW_MCP_SMOKE: ${{ inputs.test_type == 'production-mcp' }}
+      WORKFLOW_GITHUB_SMOKE: ${{ inputs.test_type == 'production-github' }}
+      WORKFLOW_ACTION_TASK_SMOKE: ${{ inputs.test_type == 'production-action-task' }}
+      WORKFLOW_EXECUTOR_GITHUB_TOKEN: ${{ secrets.WORKFLOW_EXECUTOR_GITHUB_TOKEN }}
+      MCP_PORTAL_CLIENT_ID: ${{ secrets.MCP_PORTAL_CLIENT_ID }}
+      MCP_PORTAL_CLIENT_SECRET: ${{ secrets.MCP_PORTAL_CLIENT_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Verify authenticated Workflow/MCP/GitHub production and remove randomized test records
+        run: node apps/workflow-mcp-worker/tests/production-smoke.mjs
+
+  workflow-mcp-portal-probe:
+    name: Authenticated MCP Portal read-only check (no deploy)
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/main' &&
+          inputs.test_type == 'portal-readonly' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment:
+      name: workflow-mcp-worker
+    env:
+      MCP_PORTAL_CLIENT_ID: ${{ secrets.MCP_PORTAL_CLIENT_ID }}
+      MCP_PORTAL_CLIENT_SECRET: ${{ secrets.MCP_PORTAL_CLIENT_SECRET }}
+      MCP_PORTAL_TARGET: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Read-only MCP discovery and one IMA list call
+        run: node --experimental-strip-types apps/workflow-mcp-worker/tests/mcp-portal-acceptance.mjs
+
+  workflow-github-action-result-cloud:
+    name: Real GitHub OIDC + isolated D1 Task result (no production)
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/main' &&
+          inputs.test_type == 'github-action-result-cloud' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: workflow-mcp-worker
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: workflow-action-result-isolated
+      cancel-in-progress: false
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Verify actual Task ingress with real GitHub JWT and disposable D1
+        run: node --experimental-strip-types apps/workflow-mcp-worker/tests/github-action-result-cloud.mjs
+
+  workflow-portal-register:
+    name: Register existing Workflow MCP in One-MCP Portal (no Worker deploy)
+    needs: checks
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/main' &&
+          inputs.test_type == 'portal-register' &&
+          needs.checks.result == 'success' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: workflow-mcp-worker
+    concurrency:
+      group: worker-release-workflow-mcp-worker
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Verify current trusted main
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
+          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
+      - name: Register and verify existing Workflow MCP upstream
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
+        run: node scripts/register-workflow-portal.mjs
