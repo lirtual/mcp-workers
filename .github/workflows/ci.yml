@@ -29,6 +29,11 @@ on:
         required: false
         type: boolean
         default: false
+      github_action_task_smoke:
+        description: With smoke_only, exercise exactly the reviewed Session Actions Task and clean D1 records
+        required: false
+        type: boolean
+        default: false
       mcp_production_smoke:
         description: With smoke_only, execute one read-only MCP Workflow via production Portal and clean D1 test records
         required: false
@@ -664,6 +669,8 @@ jobs:
           inputs.smoke_only == true &&
           inputs.deploy_to_production != true &&
           (inputs.mcp_production_smoke != true || inputs.github_production_smoke != true) &&
+          (inputs.github_action_task_smoke != true ||
+            (inputs.github_production_smoke != true && inputs.mcp_production_smoke != true)) &&
           needs.checks.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 8
@@ -678,6 +685,7 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       WORKFLOW_MCP_SMOKE: ${{ inputs.mcp_production_smoke }}
       WORKFLOW_GITHUB_SMOKE: ${{ inputs.github_production_smoke }}
+      WORKFLOW_ACTION_TASK_SMOKE: ${{ inputs.github_action_task_smoke }}
       WORKFLOW_EXECUTOR_GITHUB_TOKEN: ${{ secrets.WORKFLOW_EXECUTOR_GITHUB_TOKEN }}
       MCP_PORTAL_CLIENT_ID: ${{ secrets.MCP_PORTAL_CLIENT_ID }}
       MCP_PORTAL_CLIENT_SECRET: ${{ secrets.MCP_PORTAL_CLIENT_SECRET }}
