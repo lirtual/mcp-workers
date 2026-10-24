@@ -21,6 +21,7 @@ for(const clause of [
   "github.ref == 'refs/heads/main'",
   'inputs.deploy_to_production == true',
   'inputs.smoke_only != true',
+  'inputs.github_action_task_smoke != true',
   'inputs.workflow_portal_register != true',
   "needs.checks.result == 'success'",
 ])assert.ok(release.includes(clause),'Unsafe production gate: '+clause);
@@ -46,8 +47,10 @@ for(const clause of [
   'inputs.smoke_only == true',
   'inputs.deploy_to_production != true',
   '(inputs.mcp_production_smoke != true || inputs.github_production_smoke != true)',
+  '(inputs.github_action_task_smoke != true ||',
 ])assert.ok(smoke.includes(clause),'Unsafe smoke gate: '+clause);
 assert.ok(source.includes('WORKFLOW_GITHUB_SMOKE: '+dollar+'{{ inputs.github_production_smoke }}'));
+assert.ok(source.includes('WORKFLOW_ACTION_TASK_SMOKE: '+dollar+'{{ inputs.github_action_task_smoke }}'));
 
 const probe=job('workflow-mcp-portal-probe').gate;
 for(const clause of [
