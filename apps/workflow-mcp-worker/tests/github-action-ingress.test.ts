@@ -52,6 +52,14 @@ test('isolated Action route requires configured server audience and strict reque
  assert.equal((await handleGithubActionClaimRequest(new Request(
   'https://workflow.example.org/github/claim',{method:'POST'},
  ),fixture.env)).status,404);
+ assert.equal((await handleGithubActionClaimRequest(new Request(
+  'https://workflow.example.org/github/action/result',{
+   method:'POST',headers:{authorization:'Bearer x'},body:JSON.stringify({attemptId})
+  }),fixture.env)).status,400);
+ assert.equal((await handleGithubActionClaimRequest(new Request(
+  'https://workflow.example.org/github/action/result',{
+   method:'POST',headers:{authorization:'Bearer x'},body:JSON.stringify({attemptId,result:{large:'a'.repeat(6000)}})
+  }),fixture.env)).status,400);
  assert.equal(fixture.calls(),0);
 });
 test('a signed pinned GitHub OIDC job can claim exactly its D1 candidate',async()=>{
