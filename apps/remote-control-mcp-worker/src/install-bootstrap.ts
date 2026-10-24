@@ -98,15 +98,17 @@ export const REVIEWED_AGENT_RELEASE_PIN: InstallReleasePin = Object.freeze({
   x64Sha256: "bcb932d9f3539233204decf70ed0a748e2e31ac2a069e5b8b29484ab8733a0e3",
   arm64Sha256: "bdbe443d6010e372a03bff773d0e0bce946ac7bbbd45d9d1b75c99477eb23aa9",
 });
-// Public v0.1.20 release from native candidates #40047441955, all three
-// platforms verified. The signed same-key Windows recovery is explicitly
-// owner-approved; first install and upgrades retain the same one-line URL.
+// Immutable v0.1.21 Linux release from main-only native candidates
+// #40083149136, verified and published via GitHub Actions #40083875323.
+// Only this reviewed Linux pin enables explicit, local-tty --upgrade.
+// Windows remains on its independently reviewed release pin below.
 export const REVIEWED_PUBLIC_INSTALL_RELEASE_PIN: InstallReleasePin = Object.freeze({
-  tag: "v0.1.20",
+  tag: "v0.1.21",
   pairingProtocol: "single-code-v1",
-  commit: "d9aea9f66914bcb8200b73460350f8138eeed536",
-  x64Sha256: "88e7bb3d60d60d3a79e3832c58bab609a01ebc9993e643780dab9b08400d8710",
-  arm64Sha256: "a09287979330b05c554783ca84e1dc4c0b7d4f48a966fb1e6a8a92965890d3c4",
+  upgradeMode: "explicit-v1",
+  commit: "52e87fae9c722aa6412bec805686ed2d93940da7",
+  x64Sha256: "10cd7bea7124e7b18a20665af1bf14df8aa2abab2ddd8c90f4c218f3fec7172f",
+  arm64Sha256: "aabfa9c53a97019177674569e07f018632b839be5383fbf39763fbf104863605",
 });
 /** Independent reviewed source and Release asset pins; both are required. */
 export type WindowsInstallPin = Readonly<{
