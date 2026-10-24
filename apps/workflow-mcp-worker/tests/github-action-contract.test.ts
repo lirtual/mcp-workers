@@ -28,7 +28,7 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 330
+    timeout-minutes: 360
     steps:
       - run: echo hello
 `;
@@ -64,16 +64,16 @@ test('rejects duplicate YAML mappings', () => {
   assert.throws(() => parseGitHubAction(valid + '\nenv:\n  WORKFLOW_ACTION_TYPE: task\n'));
 });
 
-test('Session enforces one job, job-start timeout <=330, and bounded duration',()=>{
+test('Session enforces one job, cleanup guard =360 and user duration <=330, and bounded duration',()=>{
  for(const revised of [
-   valid.replace('    timeout-minutes: 330',''),
-   valid.replace('timeout-minutes: 330','timeout-minutes: 331'),
-   valid.replace('timeout-minutes: 330','timeout-minutes: ${{ inputs.duration_minutes }}'),
+   valid.replace('    timeout-minutes: 360',''),
+   valid.replace('timeout-minutes: 360','timeout-minutes: 359'),
+   valid.replace('timeout-minutes: 360','timeout-minutes: ${{ inputs.duration_minutes }}'),
    valid.replace('default: 10','default: 331'),
    valid.replace('default: 10','default: 0'),
    valid.replace('duration_minutes:','minutes:'),
-   valid.replace('    timeout-minutes: 330','    timeout-minutes: 5'),
-   valid.replace('jobs:\n  test:', 'jobs:\n  other:\n    runs-on: ubuntu-latest\n    timeout-minutes: 330\n    steps: []\n  test:'),
+   valid.replace('    timeout-minutes: 360','    timeout-minutes: 5'),
+   valid.replace('jobs:\n  test:', 'jobs:\n  other:\n    runs-on: ubuntu-latest\n    timeout-minutes: 360\n    steps: []\n  test:'),
  ]){
   assert.notEqual(revised,valid,'negative fixture must actually change YAML');
   assert.throws(()=>parseGitHubAction(revised));
