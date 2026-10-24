@@ -78,7 +78,7 @@ test('Task source-to-result: D1 reservation, dispatch ACK, signed OIDC claim and
    assert.equal(claimed,true);
   }
   return Response.json({id:42,workflow_id:456,run_attempt:1,
-   repository:{id:123,full_name:repo},path:action.workflowPath+'@task-v1',
+   repository:{id:123,full_name:repo},path:action.workflowPath,head_branch:'task-v1',
    head_sha:sha,event:'workflow_dispatch',status:'completed',conclusion:'success'});
  };
  try{
@@ -112,7 +112,7 @@ test('GitHub job failing before OIDC claim reports failed without a false succes
   if(req.method==='POST'){fixture.recordPost();return Response.json({workflow_run_id:42});}
   assert.ok(path.endsWith('/actions/runs/42'));
   return Response.json({id:42,workflow_id:action.workflowId,run_attempt:1,
-   repository:{id:123,full_name:repo},path:action.workflowPath+'@task-v1',
+   repository:{id:123,full_name:repo},path:action.workflowPath,head_branch:'task-v1',
    head_sha:sha,event:'workflow_dispatch',status:'completed',conclusion:'failure'});
  };
  try{
@@ -149,7 +149,7 @@ test('workflow_cancel requests a Task cancellation exactly once and preserves pa
    assert.ok(pathname.endsWith('/actions/runs/42'));
    return Response.json({id:42,workflow_id:action.workflowId,run_attempt:1,
     repository:{id:action.repositoryId,full_name:repo},
-    path:action.workflowPath+'@task-v1',head_sha:sha,event:'workflow_dispatch',
+    path:action.workflowPath,head_branch:'task-v1',head_sha:sha,event:'workflow_dispatch',
     status:physicalEnded?'completed':'in_progress',
     conclusion:physicalEnded?'cancelled':null});
   };

@@ -513,7 +513,7 @@ test('Session dispatches once, signed GitHub Claim and Ready complete startup bu
    return Response.json({
     id:42,workflow_id:456,run_attempt:1,
     repository:{id:123,full_name:action.repository},
-    path:action.workflowPath+'@release-v1',head_sha:action.commitSha,
+    path:action.workflowPath,head_branch:'release-v1',head_sha:action.commitSha,
     event:'workflow_dispatch',status:'in_progress',conclusion:null,
    });
   };
@@ -575,7 +575,7 @@ test('workflow_status reconciles a Ready Session after parent success and releas
    assert.ok(new URL(req.url).pathname.endsWith('/actions/runs/42'));
    return Response.json({
     id:42,workflow_id:456,run_attempt:1,repository:{id:123,full_name:action.repository},
-    path:action.workflowPath+'@release-v1',head_sha:action.commitSha,
+    path:action.workflowPath,head_branch:'release-v1',head_sha:action.commitSha,
     event:'workflow_dispatch',status:'completed',conclusion:'failure',
    });
   };
@@ -752,7 +752,7 @@ test('native Workflow keeps monitoring physical Session after parent Ready witho
    return Response.json({
     id:42,workflow_id:456,run_attempt:1,
     repository:{id:123,full_name:action.repository},
-    path:action.workflowPath+'@release-v1',head_sha:action.commitSha,
+    path:action.workflowPath,head_branch:'release-v1',head_sha:action.commitSha,
     event:'workflow_dispatch',status:observations===1?'in_progress':'completed',
     conclusion:observations===1?null:'success',
    });
@@ -787,7 +787,7 @@ test('watcher requests normal expiry cancellation once but never force or releas
    reads++;
    return Response.json({id:42,workflow_id:456,run_attempt:1,
     repository:{id:123,full_name:action.repository},
-    path:action.workflowPath+'@release-v1',head_sha:action.commitSha,
+    path:action.workflowPath,head_branch:'release-v1',head_sha:action.commitSha,
     event:'workflow_dispatch',status:'in_progress',conclusion:null});
   };
   const workflow={
@@ -890,7 +890,7 @@ test('transient D1 outage does not permanently stop unattended Session reconcili
    return Response.json({
     id:42,workflow_id:456,run_attempt:1,
     repository:{id:123,full_name:action.repository},
-    path:action.workflowPath+'@release-v1',head_sha:action.commitSha,
+    path:action.workflowPath,head_branch:'release-v1',head_sha:action.commitSha,
     event:'workflow_dispatch',status:'completed',conclusion:'success',
    });
   };
