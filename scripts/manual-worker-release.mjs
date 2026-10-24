@@ -6,12 +6,12 @@ import { join } from "node:path";
 const WORKERS = new Set(["raindrop-mcp-worker", "ima-mcp-worker", "database-mcp-worker", "ssh-mcp-worker", "remote-control-mcp-worker", "github-actions-mcp-worker", "workflow-mcp-worker"]);
 const REQUIRED_SECRETS = {
   "raindrop-mcp-worker": ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN"],
-  "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "API_KEY"],
+  "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "IMA_API_KEY"],
   "database-mcp-worker": ["MCP_ACCESS_TOKEN", "DATABASE_CONFIG"],
-  "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "MCP_BROKER_TOKEN"],
+  "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "SSH_BROKER_TOKEN"],
   "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
-  "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "GH_TOKEN"],
-  "workflow-mcp-worker": ["MCP_ACCESS_TOKEN"],
+  "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "ACTIONS_MCP_TOKENS"],
+  "workflow-mcp-worker": ["MCP_ACCESS_TOKEN", "MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_GITHUB_DISPATCH_TOKEN"],
 };
 const WORKER_ENTRIES = {
   "raindrop-mcp-worker": "src/worker.ts",
@@ -79,10 +79,15 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
       }
       invariant(find("GITHUB_ACTION_OIDC_AUDIENCE","plain_text")?.text ===
         "workflow-github-action:production", "Workflow Action OIDC audience drift");
-      for (const name of ["MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET","WORKFLOW_EXECUTOR_GITHUB_TOKEN"]) {
+      for (const name of ["MCP_PORTAL_CLIENT_SECRET","WORKFLOW_GITHUB_DISPATCH_TOKEN"]) {
         invariant(secretNames.has(name) && !!find(name,"secret_text"),
           "Workflow runtime credential binding missing: " + name);
       }
+      invariant(bindings.filter(x => x.name === "MCP_PORTAL_CLIENT_ID").length === 1 &&
+        typeof find("MCP_PORTAL_CLIENT_ID", "plain_text")?.text === "string" &&
+        find("MCP_PORTAL_CLIENT_ID", "plain_text").text.trim().length > 0 &&
+        !secretNames.has("MCP_PORTAL_CLIENT_ID"),
+        "Workflow Portal Client ID must be exactly one plaintext Variable");
       invariant(!bindings.some(x => ["MCP_CALL_ENABLED","GITHUB_EXECUTION_ENABLED",
         "MCP_DIRECT_TARGETS_ENABLED"].includes(x.name)),
         "Obsolete stage flag present after release");
@@ -94,19 +99,22 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     invariant(!find("GITHUB_REPOS", "plain_text") &&
       !find("GITHUB_REPOS_SECONDARY", "plain_text"),
       "Legacy GitHub Actions repository allowlists must be removed");
-    invariant(secretNames.has("GH_TOKEN") && !!find("GH_TOKEN", "secret_text"),
-      "GitHub Actions GH_TOKEN Secret binding missing");
+    invariant(secretNames.has("ACTIONS_MCP_TOKENS") && !!find("ACTIONS_MCP_TOKENS", "secret_text"),
+      "GitHub Actions ACTIONS_MCP_TOKENS Secret binding missing");
   }
   if (worker === "ima-mcp-worker") {
-    // During preflight, accept a legacy CLIENT_ID secret because it will be
+    // During preflight, accept a legacy IMA_CLIENT_ID secret because it will be
     // replaced by the selected GitHub Environment Variable at deploy time.
     // A successful readback MUST prove the type migration happened.
     if (options.mode !== "preflight") {
-      const clientId = find("CLIENT_ID", "plain_text");
+      const clientId = find("IMA_CLIENT_ID", "plain_text");
+      invariant(bindings.filter(x => x.name === "IMA_CLIENT_ID").length === 1 &&
+        !bindings.some(x => x.name === "CLIENT_ID") && !secretNames.has("CLIENT_ID"),
+        "IMA legacy CLIENT_ID binding must be absent after release");
       invariant(typeof clientId?.text === "string" && clientId.text.trim().length > 0,
-        "IMA CLIENT_ID must be a nonempty plain-text Variable after release");
-      invariant(!find("CLIENT_ID", "secret_text") && !secretNames.has("CLIENT_ID"),
-        "IMA legacy CLIENT_ID Secret still present after release");
+        "IMA IMA_CLIENT_ID must be a nonempty plain-text Variable after release");
+      invariant(!find("IMA_CLIENT_ID", "secret_text") && !secretNames.has("IMA_CLIENT_ID"),
+        "IMA legacy IMA_CLIENT_ID Secret still present after release");
     }
     const durable = find("IMA_IMAGE_REFRESH_SHARD", "durable_object_namespace");
     invariant(durable?.class_name === "ImaImageRefreshShard", "IMA Durable Object missing or class drift");
@@ -195,7 +203,7 @@ export function verifyWorkflowReleaseConfig(conf) {
     conf.workflows[0]?.name === "workflow-mcp-runner" &&
     conf.workflows[0]?.class_name === "WorkflowRunner", "Workflow binding drift");
   invariant(!conf.services?.length, "Workflow must not retain Service Bindings");
-  invariant(JSON.stringify(conf.secrets?.required) === JSON.stringify(["MCP_ACCESS_TOKEN"]),
+  invariant(JSON.stringify(conf.secrets?.required) === JSON.stringify(["MCP_ACCESS_TOKEN", "MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_GITHUB_DISPATCH_TOKEN"]),
     "Workflow Portal Secret declaration drift");
   invariant(!conf.vars || Object.keys(conf.vars).length===0,
     "Workflow MCP source cannot declare runtime feature flags");
@@ -236,6 +244,70 @@ export function verifyWorkflowD1Readiness(response, bootstrap, requireCompleteSc
   if(bootstrap) invariant(row.run_count === 0 && row.workflow_count === 0,
     "Workflow first deployment requires empty production Run and Workflow state");
   return true;
+}
+
+/**
+ * #204: read-only database half of the migration fence.
+ * It does not freeze ingress, inspect live Cloudflare Workflow instances,
+ * verify external GitHub jobs or authorize a production cutover.
+ */
+export const WORKFLOW_MIGRATION_READINESS_SQL = `SELECT
+ (SELECT count(*) FROM d1_migrations) AS migration_count,
+ (SELECT count(*) FROM d1_migrations WHERE name IN (
+   '0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql',
+   '0004_s3_callback_receipts.sql','0005_github_workflow_check.sql',
+   '0006_action_attempt_capabilities.sql','0007_session_executions.sql',
+   '0008_session_locator.sql')) AS expected_migrations,
+ (SELECT count(*) FROM workflows) AS workflow_count,
+ (SELECT count(*) FROM runs) AS run_count,
+ (SELECT count(*) FROM session_executions) AS session_count,
+ (SELECT count(*) FROM step_attempts) AS attempt_count,
+ (SELECT count(*) FROM callback_receipts) AS callback_count,
+ (SELECT count(*) FROM github_action_cancellations) AS cancellation_count,
+ (SELECT count(*) FROM runs WHERE outcome IS NULL OR
+   outcome NOT IN ('succeeded','failed','cancelled')) AS nonterminal_runs,
+ (SELECT count(*) FROM runs WHERE start_state IS NULL OR
+   start_state IN ('reserved','start_unknown')) AS unresolved_starts,
+ (SELECT count(*) FROM run_steps WHERE status IS NULL OR
+   status NOT IN ('succeeded','failed','skipped')) AS unresolved_steps,
+ (SELECT count(*) FROM step_attempts WHERE state IS NULL OR
+   state NOT IN ('rejected','succeeded','failed','cancelled')) AS nonterminal_attempts,
+ (SELECT count(*) FROM session_executions WHERE state IS NULL OR
+   state != 'terminated') AS nonterminated_sessions,
+ (SELECT count(*) FROM callback_receipts WHERE notification_delivered IS NULL OR
+   notification_delivered != 1) AS undelivered_callbacks`;
+
+export function verifyWorkflowMigrationReadiness(response) {
+  invariant(Array.isArray(response) && response.length === 1 &&
+    response[0]?.success === true && response[0]?.results?.length === 1,
+    "Workflow migration D1 readback unavailable");
+  const row = response[0].results[0];
+  const nonnegative = [
+    "migration_count","expected_migrations","workflow_count","run_count",
+    "session_count","attempt_count","callback_count","cancellation_count",
+    "nonterminal_runs","unresolved_starts","unresolved_steps",
+    "nonterminal_attempts","nonterminated_sessions","undelivered_callbacks",
+  ];
+  for (const key of nonnegative) {
+    invariant(Number.isSafeInteger(row?.[key]) && row[key] >= 0,
+      "Workflow migration D1 count unavailable or invalid: " + key);
+  }
+  invariant(row.migration_count === 8 && row.expected_migrations === 8,
+    "Workflow migration requires the exact eight reviewed D1 migrations");
+  for (const key of [
+    "nonterminal_runs","unresolved_starts","unresolved_steps",
+    "nonterminal_attempts","nonterminated_sessions","undelivered_callbacks",
+  ]) {
+    invariant(row[key] === 0, "Workflow migration blocked by " + key);
+  }
+  return {
+    workflows: row.workflow_count,
+    runs: row.run_count,
+    sessions: row.session_count,
+    attempts: row.attempt_count,
+    callbacks: row.callback_count,
+    cancellations: row.cancellation_count,
+  };
 }
 
 export function parseWranglerVersion(output) {
@@ -283,8 +355,8 @@ function readConfiguration(worker, content) {
   invariant(REQUIRED_SECRETS[worker].every((s) => conf.secrets?.required?.includes(s)),
     "Source required Secret names changed unexpectedly");
   if (worker === "ima-mcp-worker") {
-    invariant(!conf.secrets?.required?.includes("CLIENT_ID"),
-      "IMA CLIENT_ID must be provided as a Variable, not a Secret");
+    invariant(!conf.secrets?.required?.includes("IMA_CLIENT_ID"),
+      "IMA IMA_CLIENT_ID must be provided as a Variable, not a Secret");
     invariant(conf.durable_objects?.bindings?.some((b) =>
       b.name === "IMA_IMAGE_REFRESH_SHARD" && b.class_name === "ImaImageRefreshShard") &&
       conf.exports?.ImaImageRefreshShard?.storage === "sqlite", "IMA SQLite Durable Object must remain");
@@ -433,7 +505,21 @@ export async function retryReleaseReadback(read, pause = ms => new Promise(resol
 
 async function main() {
   const [mode, worker] = process.argv.slice(2);
-  invariant(["preflight", "readback", "version", "diagnostic", "d1-check"].includes(mode), "Unknown release validation mode");
+  invariant(["preflight", "readback", "version", "diagnostic", "d1-check", "migration-sql", "migration-check"].includes(mode), "Unknown release validation mode");
+  if (mode === "migration-sql") {
+    invariant(worker === "workflow-mcp-worker", "Migration SQL restricted to Workflow");
+    console.log(WORKFLOW_MIGRATION_READINESS_SQL);
+    return;
+  }
+  if (mode === "migration-check") {
+    invariant(worker === "workflow-mcp-worker", "Migration check restricted to Workflow");
+    const observed = verifyWorkflowMigrationReadiness(
+      JSON.parse(await readFile("/dev/stdin", "utf8")));
+    console.log("Workflow migration D1 quiescence: PASS " +
+      JSON.stringify(observed) + "; external GitHub/Cloudflare instance " +
+      "and write-freeze checks NOT verified");
+    return;
+  }
   if (mode === "d1-check") {
     invariant(worker === "workflow-mcp-worker", "D1 check restricted to Workflow");
     const raw = await readFile("/dev/stdin", "utf8");

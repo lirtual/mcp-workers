@@ -24,11 +24,11 @@ Cloudflare MCP Portal + Access 负责客户端进入 Portal 的身份认证。�
 _Avoid_: IMA API credential, Worker origin bearer
 
 **Origin Credential**:
-`MCP_ACCESS_TOKEN` 是 Portal -> `ima-mcp-worker` Worker 的固定 Bearer。缺失配置必须 fail closed；不得使用 `API_KEY` 替代。
+`MCP_ACCESS_TOKEN` 是 Portal -> `ima-mcp-worker` Worker 的固定 Bearer。缺失配置必须 fail closed；不得使用 `IMA_API_KEY` 替代。
 _Avoid_: IMA API key, OAuth access token
 
 **IMA Business Credential**:
-`CLIENT_ID` + `API_KEY` 是单用户 Worker Secrets，只用于 Worker -> IMA OpenAPI。旧名称 `IMA_OPENAPI_CLIENTID`、`IMA_OPENAPI_APIKEY`、`CLIENTID`、`APIKEY` 均不再受支持。
+`IMA_CLIENT_ID` + `IMA_API_KEY` 是单用户 Worker Secrets，只用于 Worker -> IMA OpenAPI。旧名称 `IMA_OPENAPI_CLIENTID`、`IMA_OPENAPI_APIKEY`、`CLIENTID`、`APIKEY` 均不再受支持。
 _Avoid_: Portal credential, per-user BYOK database
 
 **Export removed**:
@@ -37,7 +37,7 @@ _Avoid_: `export_file`, `export_to_temporary`, Litterbox, 公开导出 URL
 
 ## Authentication invariant
 
-Portal/client 身份、`MCP_ACCESS_TOKEN`、`CLIENT_ID` / `API_KEY` 是三个独立安全边界，不得复用。Worker 不维护 OAuth client/code/token 状态，不使用 D1 保存 IMA 凭据。
+Portal/client 身份、`MCP_ACCESS_TOKEN`、`IMA_CLIENT_ID` / `IMA_API_KEY` 是三个独立安全边界，不得复用。Worker 不维护 OAuth client/code/token 状态，不使用 D1 保存 IMA 凭据。
 
 ## Runtime invariant
 

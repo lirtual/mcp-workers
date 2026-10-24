@@ -62,9 +62,32 @@ for (const marker of [
   'Verify exact active version and required production bindings',
   'Check unauthenticated MCP surface without credentials',
 ]) assert.ok(deploy.content.includes(marker), 'Missing release safeguard: ' + marker);
-for (const key of ['MCP_PORTAL_CLIENT_ID', 'MCP_PORTAL_CLIENT_SECRET', 'WORKFLOW_EXECUTOR_GITHUB_TOKEN'])
+for (const key of ['MCP_PORTAL_CLIENT_SECRET', 'WORKFLOW_GITHUB_DISPATCH_TOKEN'])
   assert.ok(deploy.content.includes(key + ': ' + dollar + '{{ secrets.' + key + ' }}'), 'Missing scoped Secret ' + key);
 
+for (const key of ['IMA_API_KEY', 'SSH_BROKER_TOKEN', 'ACTIONS_MCP_TOKENS']) {
+  assert.ok(deploy.content.includes(key + ': ' + dollar + '{{ secrets.' + key + ' }}'),
+    'Missing selected release Secret ' + key);
+}
+for (const key of ['IMA_CLIENT_ID', 'MCP_PORTAL_CLIENT_ID']) {
+  assert.ok(deploy.content.includes(key + ': ' + dollar + '{{ vars.' + key + ' }}'),
+    'Missing selected release Variable ' + key);
+}
+assert.ok(smokeKeyPresent(release, 'WORKFLOW_GITHUB_DISPATCH_TOKEN', 'secrets'));
+assert.ok(smokeKeyPresent(acceptance, 'WORKFLOW_GITHUB_DISPATCH_TOKEN', 'secrets'));
+assert.ok(smokeKeyPresent(acceptance, 'MCP_PORTAL_CLIENT_ID', 'vars'));
+assert.ok(smokeKeyPresent(release, 'MCP_PORTAL_CLIENT_ID', 'vars'));
+for (const source of [release, acceptance]) {
+  assert.ok(!smokeKeyPresent(source, 'MCP_PORTAL_CLIENT_ID', 'secrets'),
+    'Portal Client ID incorrectly sourced from GitHub Secret');
+  for (const old of ['WORKFLOW_EXECUTOR_GITHUB_TOKEN', 'MCP_BROKER_TOKEN', 'GH_TOKEN', 'API_KEY']) {
+    assert.ok(!source.includes(old + ': ' + dollar + '{{ secrets.' + old + ' }}'),
+      'Legacy secret still staged: ' + old);
+  }
+}
+function smokeKeyPresent(source, key, kind) {
+  return source.includes(key + ': ' + dollar + '{{ ' + kind + '.' + key + ' }}');
+}
 assert.match(acceptance, /      test_type:/);
 assert.match(acceptance, /      confirm_portal_write:/);
 assert.match(acceptance, /        default: false/);

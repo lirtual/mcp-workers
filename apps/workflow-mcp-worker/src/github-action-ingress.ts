@@ -115,9 +115,9 @@ export async function handleGithubActionClaimRequest(
       env.GITHUB_ACTION_OIDC_AUDIENCE);
    return pending?result(503,'claim_pending'):result(403,'claim_denied');
   }
-  if(!env.WORKFLOW_EXECUTOR_GITHUB_TOKEN)return result(503,'ready_unavailable');
+  if(!env.WORKFLOW_GITHUB_DISPATCH_TOKEN)return result(503,'ready_unavailable');
   const ready=await recordSignedSessionReady(env.DB,attemptId,credential,
-    env.GITHUB_ACTION_OIDC_AUDIENCE,env.WORKFLOW_EXECUTOR_GITHUB_TOKEN,keys,inspect,sessionUrl);
+    env.GITHUB_ACTION_OIDC_AUDIENCE,env.WORKFLOW_GITHUB_DISPATCH_TOKEN,keys,inspect,sessionUrl);
   if(ready==='physical_unconfirmed')return result(503,'physical_unconfirmed');
   if(ready==='denied')return result(403,'ready_denied');
   if(ready==='ready'&&env.WORKFLOW){

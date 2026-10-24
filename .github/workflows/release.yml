@@ -127,13 +127,12 @@ jobs:
           # Repository Secrets. Values are scoped to this one staging step.
           MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
           RAINDROP_ACCESS_TOKEN: ${{ secrets.RAINDROP_ACCESS_TOKEN }}
-          API_KEY: ${{ secrets.API_KEY }}
+          IMA_API_KEY: ${{ secrets.IMA_API_KEY }}
           DATABASE_CONFIG: ${{ secrets.DATABASE_CONFIG }}
-          MCP_BROKER_TOKEN: ${{ secrets.MCP_BROKER_TOKEN }}
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-          MCP_PORTAL_CLIENT_ID: ${{ secrets.MCP_PORTAL_CLIENT_ID }}
+          SSH_BROKER_TOKEN: ${{ secrets.SSH_BROKER_TOKEN }}
+          ACTIONS_MCP_TOKENS: ${{ secrets.ACTIONS_MCP_TOKENS }}
           MCP_PORTAL_CLIENT_SECRET: ${{ secrets.MCP_PORTAL_CLIENT_SECRET }}
-          WORKFLOW_EXECUTOR_GITHUB_TOKEN: ${{ secrets.WORKFLOW_EXECUTOR_GITHUB_TOKEN }}
+          WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
         run: |
           set -euo pipefail
           umask 077
@@ -144,7 +143,8 @@ jobs:
         env:
           RAINDROP_RATE_LIMIT_MAX_RETRIES: ${{ vars.RAINDROP_RATE_LIMIT_MAX_RETRIES }}
           IMA_BASE_URL: ${{ vars.IMA_BASE_URL }}
-          CLIENT_ID: ${{ vars.CLIENT_ID }}
+          IMA_CLIENT_ID: ${{ vars.IMA_CLIENT_ID }}
+          MCP_PORTAL_CLIENT_ID: ${{ vars.MCP_PORTAL_CLIENT_ID }}
           MAX_ROWS: ${{ vars.MAX_ROWS }}
           MAX_RESULT_BYTES: ${{ vars.MAX_RESULT_BYTES }}
           MAX_SCHEMA_BYTES: ${{ vars.MAX_SCHEMA_BYTES }}
@@ -161,7 +161,7 @@ jobs:
       - name: Verify dedicated GitHub token without executable dispatch
         if: inputs.worker == 'workflow-mcp-worker'
         env:
-          WORKFLOW_EXECUTOR_GITHUB_TOKEN: ${{ secrets.WORKFLOW_EXECUTOR_GITHUB_TOKEN }}
+          WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
         run: node scripts/verify-github-release-token.mjs
 
       - name: Recheck current main inside acquired release lock
@@ -372,4 +372,3 @@ jobs:
             echo "Unexpected unauthenticated MCP status: $status" >&2
             exit 1
           done
-

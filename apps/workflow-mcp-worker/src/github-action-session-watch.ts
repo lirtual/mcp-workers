@@ -42,7 +42,7 @@ export async function watchPersistedSessions(
  maxChecks=SESSION_WATCH_MAX_CHECKS,
  now:()=>number=Date.now,
 ):Promise<'terminated'|'unverified'>{
- const token=env.WORKFLOW_EXECUTOR_GITHUB_TOKEN;
+ const token=env.WORKFLOW_GITHUB_DISPATCH_TOKEN;
  if(!token)return 'unverified';
  const db:Db=env.DB;
  for(let i=0;i<maxChecks;i++){

@@ -8,7 +8,7 @@ import type { Env } from '../src/github.ts';
 
 const env: Env = {
   MCP_ACCESS_TOKEN: 'synthetic-mcp-token',
-  GH_TOKEN: 'synthetic-github-token',
+  ACTIONS_MCP_TOKENS: 'synthetic-github-token',
 };
 
 function githubFor(secondary = false): typeof fetch {
@@ -26,7 +26,7 @@ function githubFor(secondary = false): typeof fetch {
 
 async function connectedClient(settings: Env) {
   const handler = createMcpHandler(
-    () => buildMcpServer(settings, githubFor(settings.GH_TOKEN.includes('\n'))),
+    () => buildMcpServer(settings, githubFor(settings.ACTIONS_MCP_TOKENS.includes('\n'))),
     { legacy: 'stateless' },
   );
   const transport = new StreamableHTTPClientTransport(new URL('https://worker.example/mcp'), {
@@ -70,7 +70,7 @@ test('real MCP protocol advertises eleven tools and rejects unauthorized reposit
 
 test('MCP lists all PAT-accessible repositories without exposing PATs', async () => {
   const dual: Env = {
-    ...env, GH_TOKEN: env.GH_TOKEN + '\nsynthetic-other-github-token',
+    ...env, ACTIONS_MCP_TOKENS: env.ACTIONS_MCP_TOKENS + '\nsynthetic-other-github-token',
   };
   const client = await connectedClient(dual);
   try {
@@ -94,8 +94,8 @@ test('Worker MCP endpoint still fails closed without trusted owner authenticatio
   assert.equal((await worker.fetch(request({}), env)).status, 401);
   assert.equal((await worker.fetch(request({ authorization: 'Bearer wrong' }), env)).status, 401);
   assert.equal((await worker.fetch(request({ authorization: 'Bearer synthetic-mcp-token', origin: 'https://not-allowed.example' }), env)).status, 403);
-  assert.equal((await worker.fetch(request({ authorization: 'Bearer synthetic-mcp-token' }), { ...env, GH_TOKEN: '' })).status, 503);
+  assert.equal((await worker.fetch(request({ authorization: 'Bearer synthetic-mcp-token' }), { ...env, ACTIONS_MCP_TOKENS: '' })).status, 503);
   assert.equal((await worker.fetch(request({ authorization: 'Bearer synthetic-mcp-token' }), {
-    ...env, GH_TOKEN: env.GH_TOKEN + '\n' + env.GH_TOKEN,
+    ...env, ACTIONS_MCP_TOKENS: env.ACTIONS_MCP_TOKENS + '\n' + env.ACTIONS_MCP_TOKENS,
   })).status, 503);
 });

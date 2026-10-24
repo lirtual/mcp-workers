@@ -11,8 +11,8 @@ export interface HostBroker {
 }
 
 function token(env: Env): string {
-  if (!env.MCP_BROKER_TOKEN || env.MCP_BROKER_TOKEN.length < 32) throw new Error('host_catalog_unavailable');
-  return env.MCP_BROKER_TOKEN;
+  if (!env.SSH_BROKER_TOKEN || env.SSH_BROKER_TOKEN.length < 32) throw new Error('host_catalog_unavailable');
+  return env.SSH_BROKER_TOKEN;
 }
 function extract<T>(reply: BrokerReply<T>): T {
   if (!reply || typeof reply !== 'object' || reply.ok !== true) {

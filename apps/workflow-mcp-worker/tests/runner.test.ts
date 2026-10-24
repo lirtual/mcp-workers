@@ -589,7 +589,7 @@ test('GitHub Publish requires an explicit approved heavy operation',async t=>{
 test('GitHub published Plan dispatches one confirmed Job, waits outside step.do and emits durable receipt',async t=>{
   const {service,env,sqlite}=setup(t);
   Object.assign(env,{
-    WORKFLOW_EXECUTOR_GITHUB_TOKEN:'fixture-token',
+    WORKFLOW_GITHUB_DISPATCH_TOKEN:'fixture-token',
     GITHUB_EXECUTOR_REPOSITORY:'lirtual/test-executor',
     GITHUB_EXECUTOR_REPOSITORY_ID:'987654321',
     GITHUB_EXECUTOR_REF:'refs/heads/main',
@@ -671,7 +671,7 @@ test('a published GitHub Run without executor credentials cannot dispatch',async
 test('GitHub dispatch HTTP ambiguity is terminally uncertain and never re-dispatched',async t=>{
   const {service,env,sqlite}=setup(t);
   Object.assign(env,{
-    WORKFLOW_EXECUTOR_GITHUB_TOKEN:'test-token',
+    WORKFLOW_GITHUB_DISPATCH_TOKEN:'test-token',
     GITHUB_EXECUTOR_REPOSITORY:'lirtual/test-executor',
     GITHUB_EXECUTOR_REPOSITORY_ID:'987654321',
     GITHUB_EXECUTOR_REF:'refs/heads/main',
@@ -732,7 +732,7 @@ test('one combined MCP read plus GitHub registered heavy Plan requires both inde
 test('GitHub lost wake event recovers from durable D1 receipt, without a second GitHub dispatch',async t=>{
   const {service,env,sqlite}=setup(t);
   Object.assign(env,{
-    WORKFLOW_EXECUTOR_GITHUB_TOKEN:'test-token',
+    WORKFLOW_GITHUB_DISPATCH_TOKEN:'test-token',
     GITHUB_EXECUTOR_REPOSITORY:'lirtual/test-executor',
     GITHUB_EXECUTOR_REPOSITORY_ID:'987654321',
     GITHUB_EXECUTOR_REF:'refs/heads/main',
@@ -781,7 +781,7 @@ test('GitHub lost wake event recovers from durable D1 receipt, without a second 
 test('GitHub missing callback remains indeterminate after bounded waits, never re-dispatches',async t=>{
   const {service,env}=setup(t);
   Object.assign(env,{
-    WORKFLOW_EXECUTOR_GITHUB_TOKEN:'test-token',
+    WORKFLOW_GITHUB_DISPATCH_TOKEN:'test-token',
     GITHUB_EXECUTOR_REPOSITORY:'lirtual/test-executor',
     GITHUB_EXECUTOR_REPOSITORY_ID:'987654321',
     GITHUB_EXECUTOR_REF:'refs/heads/main',
@@ -946,7 +946,7 @@ jobs:
     steps:
       - run: echo verified
 `;
-  env.WORKFLOW_EXECUTOR_GITHUB_TOKEN='test-token';
+  env.WORKFLOW_GITHUB_DISPATCH_TOKEN='test-token';
   env.GITHUB_ACTION_APPROVED_REPOSITORIES=JSON.stringify([{repository,repositoryId}]);
   const requests:string[]=[];
   const previous=globalThis.fetch;

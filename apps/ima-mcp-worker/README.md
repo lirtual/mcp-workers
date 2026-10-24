@@ -18,7 +18,7 @@ Portal authentication and IMA credentials remain separated. The Worker has no da
 
 ## Required configuration
 
-Worker Secrets: `MCP_ACCESS_TOKEN`, `CLIENT_ID`, and `API_KEY`.
+Worker Secrets: `MCP_ACCESS_TOKEN`, `IMA_CLIENT_ID`, and `IMA_API_KEY`.
 
 Optional: `IMA_BASE_URL` and existing timeout/size limits. No R2, D1, public download domain, or download-signing key is needed. The already-deployed `IMA_IMAGE_REFRESH_SHARD` SQLite Durable Object class and binding are retained **inert** solely for backward-compatible deployment; no code invokes them. Existing DO storage and old R2 buckets are not deleted.
 

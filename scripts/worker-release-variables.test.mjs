@@ -25,8 +25,8 @@ test("Remote Control installer origin comes only from its configured Custom Doma
 
 test("each Worker owns an explicit non-secret variable allowlist", () => {
   assert.deepEqual(WORKER_VARIABLES["ssh-mcp-worker"], []);
-  assert.deepEqual(WORKER_VARIABLES["workflow-mcp-worker"], []);
-  assert.deepEqual(collectWorkerVars("workflow-mcp-worker",{GH_TOKEN:"ignored"}).length,6);
+  assert.deepEqual(WORKER_VARIABLES["workflow-mcp-worker"], ["MCP_PORTAL_CLIENT_ID"]);
+  assert.deepEqual(collectWorkerVars("workflow-mcp-worker",{ACTIONS_MCP_TOKENS:"ignored", MCP_PORTAL_CLIENT_ID:"test-id"}).length,7);
   assert.deepEqual(WORKER_VARIABLES["remote-control-mcp-worker"], []);
   assert.deepEqual(collectWorkerVars("remote-control-mcp-worker",
     { MAX_ROWS: "100", REMOTE_CONTROL_V2_ONLY: "false", REMOTE_CONTROL_INSTALL_ORIGIN: "https://evil.example" }, { config: remoteConfig }),
@@ -51,24 +51,24 @@ test("reject multiline, excessive, or negative numeric configuration before Wran
 });
 
 test("IMA URL must be HTTPS and cannot contain userinfo, hashes or newlines", () => {
-  assert.deepEqual(collectWorkerVars("ima-mcp-worker", { CLIENT_ID: "ima-client-123", IMA_BASE_URL: "https://ima.example.com/api" }),
-    ["CLIENT_ID:ima-client-123", "IMA_BASE_URL:https://ima.example.com/api"]);
+  assert.deepEqual(collectWorkerVars("ima-mcp-worker", { IMA_CLIENT_ID: "ima-client-123", IMA_BASE_URL: "https://ima.example.com/api" }),
+    ["IMA_CLIENT_ID:ima-client-123", "IMA_BASE_URL:https://ima.example.com/api"]);
   for (const value of ["http://ima.example.com", "https://user:pass@ima.example.com",
     "https://ima.example.com/#frag", "https://ima.example.com/\nX"]) {
-    assert.throws(() => collectWorkerVars("ima-mcp-worker", { CLIENT_ID: "ima-client-123", IMA_BASE_URL: value }), /IMA_BASE_URL/);
+    assert.throws(() => collectWorkerVars("ima-mcp-worker", { IMA_CLIENT_ID: "ima-client-123", IMA_BASE_URL: value }), /IMA_BASE_URL/);
   }
 });
 
-test("IMA CLIENT_ID must be present as a non-secret GitHub Variable", () => {
-  assert.deepEqual(collectWorkerVars("ima-mcp-worker", { CLIENT_ID: "123456789" }),
-    ["CLIENT_ID:123456789"]);
+test("IMA IMA_CLIENT_ID must be present as a non-secret GitHub Variable", () => {
+  assert.deepEqual(collectWorkerVars("ima-mcp-worker", { IMA_CLIENT_ID: "123456789" }),
+    ["IMA_CLIENT_ID:123456789"]);
   for (const value of [undefined, "", " ", "\n", "\t", "a\nb", "a b", "a\u0000b", "a".repeat(513)]) {
-    const env = value === undefined ? {} : { CLIENT_ID: value };
-    assert.throws(() => collectWorkerVars("ima-mcp-worker", env), /CLIENT_ID/);
+    const env = value === undefined ? {} : { IMA_CLIENT_ID: value };
+    assert.throws(() => collectWorkerVars("ima-mcp-worker", env), /IMA_CLIENT_ID/);
   }
   // Old GitHub Secrets must never satisfy the new required plain-text variable.
   assert.throws(() => collectWorkerVars("ima-mcp-worker",
-    { API_KEY: "secret", IMA_BASE_URL: "https://ima.qq.com" }), /CLIENT_ID/);
+    { IMA_API_KEY: "secret", IMA_BASE_URL: "https://ima.qq.com" }), /IMA_CLIENT_ID/);
 });
 
 
@@ -82,6 +82,7 @@ test("GitHub Actions has no redundant repository allowlist variables", () => {
 test("Workflow always has a pinned MCP Portal and GitHub executor without rollout toggles",()=>{
   const fixed=collectWorkerVars("workflow-mcp-worker",{
     MCP_PORTAL_ENDPOINT:"https://attacker.invalid/mcp",
+    MCP_PORTAL_CLIENT_ID:"test-id",
     GITHUB_EXECUTOR_REPOSITORY:"untrusted/other",
     MCP_CALL_ENABLED:"true",GITHUB_EXECUTION_ENABLED:"false"
   });
@@ -92,18 +93,29 @@ test("Workflow always has a pinned MCP Portal and GitHub executor without rollou
     "GITHUB_EXECUTOR_REF:refs/heads/main",
     "GITHUB_EXECUTOR_AUDIENCE:workflow-github-claim:production",
     "GITHUB_ACTION_OIDC_AUDIENCE:workflow-github-action:production",
+    "MCP_PORTAL_CLIENT_ID:test-id",
   ]);
-  assert.deepEqual(collectWorkerVars("workflow-mcp-worker",{}),fixed);
+  assert.deepEqual(collectWorkerVars("workflow-mcp-worker",{MCP_PORTAL_CLIENT_ID:"test-id"}),fixed);
 });
 
+
+test("Workflow Portal Client ID is a required validated Variable, never staged as Secret",()=>{
+  assert.deepEqual(collectWorkerVars("workflow-mcp-worker",{MCP_PORTAL_CLIENT_ID:"example-client"}).at(-1),
+    "MCP_PORTAL_CLIENT_ID:example-client");
+  for(const value of [undefined,"", " ","a b","x\nsecret","x".repeat(513)]){
+    const env=value===undefined?{}:{MCP_PORTAL_CLIENT_ID:value};
+    assert.throws(()=>collectWorkerVars("workflow-mcp-worker",env),/MCP_PORTAL_CLIENT_ID/);
+  }
+});
 
 test("Workflow Action repository grants are narrowly sourced from an explicit variable",()=>{
   const grants=[{repository:"lirtual/session-actions",repositoryId:1430925009,
     commitSha:"d0774dde3a87c7722a939403dbda45507f44b8e0"}];
   const pinned=collectWorkerVars("workflow-mcp-worker",{
+    MCP_PORTAL_CLIENT_ID:"test-id",
     GITHUB_ACTION_APPROVED_REPOSITORIES:JSON.stringify(grants),
   });
-  assert.equal(pinned.length,7);
+  assert.equal(pinned.length,8);
   assert.deepEqual(JSON.parse(pinned[6].slice("GITHUB_ACTION_APPROVED_REPOSITORIES:".length)),
     grants);
   for(const invalid of [
@@ -114,6 +126,7 @@ test("Workflow Action repository grants are narrowly sourced from an explicit va
     JSON.stringify([{...grants[0],repository:"other/../repo"}]),
   ]){
     assert.throws(()=>collectWorkerVars("workflow-mcp-worker",{
+      MCP_PORTAL_CLIENT_ID:"test-id",
       GITHUB_ACTION_APPROVED_REPOSITORIES:invalid,
     }),/GITHUB_ACTION_APPROVED_REPOSITORIES/);
   }

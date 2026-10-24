@@ -16,7 +16,7 @@
   "secrets": {
     "required": [
       "MCP_ACCESS_TOKEN",
-      "GH_TOKEN"
+      "ACTIONS_MCP_TOKENS"
     ]
   }
 }

@@ -49,13 +49,13 @@ export async function verifyS3ReleaseToken(token,request=fetch,nonce=randomUUID(
 }
 
 if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href){
-  verifyS3ReleaseToken(process.env.WORKFLOW_EXECUTOR_GITHUB_TOKEN)
-    .then(()=>console.log('WORKFLOW_EXECUTOR_GITHUB_TOKEN_READ_AND_DENIED_DISPATCH_OK'))
+  verifyS3ReleaseToken(process.env.WORKFLOW_GITHUB_DISPATCH_TOKEN)
+    .then(()=>console.log('WORKFLOW_GITHUB_DISPATCH_TOKEN_READ_AND_DENIED_DISPATCH_OK'))
     .catch(error=>{
       // Only our fixed local assertion codes can appear, never API content.
       const allowed=/^github_(?:repo|workflow|dispatch)_(?:http_[1-5][0-9]{2}|[a-z_]+)$|^github_(?:release_credential_invalid|probe_nonce_invalid)$/;
       const code=String(error?.message||'');
-      console.error('WORKFLOW_EXECUTOR_GITHUB_TOKEN_PREFLIGHT_FAILED',
+      console.error('WORKFLOW_GITHUB_DISPATCH_TOKEN_PREFLIGHT_FAILED',
         allowed.test(code)?code:'github_unavailable');
       process.exitCode=1;
     });

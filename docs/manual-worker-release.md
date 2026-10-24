@@ -21,6 +21,24 @@
 - `Workflow Acceptance`：手动选择唯一的 `test_type`。`portal-readonly` 只读检查正式 Portal；`production-*` 会创建并清理随机测试记录，其中 GitHub 类型还会触发真实 GitHub Job；`github-action-result-cloud` 使用隔离 D1；`portal-register` **会修改正式 Portal 配置**，与 Worker 部署相互独立，必须额外勾选 `confirm_portal_write`；普通验收保持此选项关闭。
 - `GitHub Workflow Check Executor`：仅接受 Workflow MCP 生成的任务标识，不是人工发布入口。
 
+## #204：Workflow 有状态资源切换前的只读门禁
+
+迁移 `workflow-mcp-worker` 的**有数据 D1 和 Workflow 实例**前，必须先暂停所有可写入口和新 GitHub 派发，并在此状态下检查生产状态。下面的命令**仅查询**当前旧 D1，不会更新配置或进行迁移：
+
+```bash
+set -euo pipefail
+query="$(node scripts/manual-worker-release.mjs migration-sql workflow-mcp-worker)"
+(cd apps/workflow-mcp-worker &&
+  pnpm exec wrangler d1 execute workflow-mcp-worker --remote --json --command "$query") |
+  node scripts/manual-worker-release.mjs migration-check workflow-mcp-worker
+```
+
+检查强制要求 8 个原始 Migration 全部应用，且非终态 Run、未确认启动、未结束 Step/Attempt/Session 和未投递 Callback 都为 0；任意字段缺失或状态不确定必须停止。非零历史记录（包括已经确认终止的 Session、已登记的取消回执）应保留，不要求清空。
+
+**数据库检查通过不等于允许切换：** 每次实际切换前仍需证明入口已阻止新增写入、外部 GitHub Jobs 已物理结束、旧 Cloudflare Workflow 实例已经收敛、真实 D1 导出/导入具有一致性证据。写入暂停与远程检查之间有竞态，必须在冻结后重新读取；不得把非冻结状态下的成功结果当成验收。旧 D1 和旧 Workflow 导出保留到历史实例的独立留存验证完成。**新 D1 开始独有写入后，不得直接将运行绑定回切到旧库**，只能先停写并按已审核的数据修复/前向恢复方案处理差异。
+
+该门禁不同于日常 `Release Worker` 的 `d1-check`：迁移验收必须单独调用，不会被普通发布自动触发。新的 Secret/Variable 配置及生产 D1/Workflow 资源切换依然需要各自明确授权。
+
 ## 发布后核对
 
 - Wrangler 返回的确切 Version ID 与 Cloudflare 100% 活跃 Version ID 必须一致；更新时还需验证是新部署。
@@ -30,4 +48,4 @@
 - SSH 使用 `EDGE_SSH_BROKER` 私有 Service Binding 和自己的 `SSH_OPERATIONS` Durable Object；不复制 `ENCRYPTION_KEY` 或生产 D1。默认范围受限，只有独立授权后才能扩大。
 - Remote Control 严格维持独立 SQLite `DeviceCoordinator`（不能复用 Preview DO、不能使用 VPC 和 v1/v2 运行模式开关）；不将既有的配对、身份或回执验收默认为新环境测试。
 
-正常版本回退需重新审核代码并人工发布，不要在不确定性操作发生后盲目重试或擦除状态。`MCP_ACCESS_TOKEN` 来自 Repository Secret（允许每个 Environment 同名覆盖），并在被选 Worker 每次手动发布时同步。修改 Repository Secret 不会自动部署全部 Worker；需要协调逐个手动发布与 Portal 客户端凭据切换，尤其共享 Token 和 SSH 的 `MCP_BROKER_TOKEN`（EdgeSSH 侧需独立同步）。发布前确认 GitHub 中的 IMA 等凭据已与现网有效值一致，否则会覆盖现有生效 Secret。IMA 的 `CLIENT_ID` 改由该 Worker 的必填 GitHub Environment Variable 提供，`API_KEY` 仍保密。Cloudflare 现网旧 `CLIENT_ID` Secret 不会仅因为 PR 合并而删除，首次手动发布必须通过 readback 验证其类型已切换为 `plain_text`，失败不能当作迁移完成；请参考部署指南的一次性迁移步骤。
+正常版本回退需重新审核代码并人工发布，不要在不确定性操作发生后盲目重试或擦除状态。`MCP_ACCESS_TOKEN` 来自 Repository Secret（允许每个 Environment 同名覆盖），并在被选 Worker 每次手动发布时同步。修改 Repository Secret 不会自动部署全部 Worker；需要协调逐个手动发布与 Portal 客户端凭据切换，尤其共享 Token 和 SSH 的 `SSH_BROKER_TOKEN`（EdgeSSH 侧需独立同步）。发布前确认 GitHub 中的 IMA 等凭据已与现网有效值一致，否则会覆盖现有生效 Secret。IMA 的 `IMA_CLIENT_ID` 改由该 Worker 的必填 GitHub Environment Variable 提供，`IMA_API_KEY` 仍保密。Cloudflare 现网旧 `IMA_CLIENT_ID` Secret 不会仅因为 PR 合并而删除，首次手动发布必须通过 readback 验证其类型已切换为 `plain_text`，失败不能当作迁移完成；请参考部署指南的一次性迁移步骤。

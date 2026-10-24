@@ -8,12 +8,12 @@ import { pathToFileURL } from "node:url";
 
 export const BOOTSTRAP_SECRETS = Object.freeze({
   "raindrop-mcp-worker": ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN"],
-  "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "API_KEY"],
+  "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "IMA_API_KEY"],
   "database-mcp-worker": ["MCP_ACCESS_TOKEN", "DATABASE_CONFIG"],
-  "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "MCP_BROKER_TOKEN"],
+  "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "SSH_BROKER_TOKEN"],
   "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
-  "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "GH_TOKEN"],
-  "workflow-mcp-worker": ["MCP_ACCESS_TOKEN", "MCP_PORTAL_CLIENT_ID", "MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_EXECUTOR_GITHUB_TOKEN"],
+  "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "ACTIONS_MCP_TOKENS"],
+  "workflow-mcp-worker": ["MCP_ACCESS_TOKEN", "MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_GITHUB_DISPATCH_TOKEN"],
 });
 
 export function collectBootstrapSecrets(worker, env) {
@@ -28,21 +28,21 @@ export function collectBootstrapSecrets(worker, env) {
     }
     payload[name] = value;
   }
-  if (worker === "workflow-mcp-worker" && (payload.WORKFLOW_EXECUTOR_GITHUB_TOKEN.length < 20 ||
-      payload.WORKFLOW_EXECUTOR_GITHUB_TOKEN.length > 512 ||
-      /\s/.test(payload.WORKFLOW_EXECUTOR_GITHUB_TOKEN)))
-    throw new Error("Invalid WORKFLOW_EXECUTOR_GITHUB_TOKEN");
-  if (worker === "ssh-mcp-worker" && payload.MCP_BROKER_TOKEN.length < 32) {
+  if (worker === "workflow-mcp-worker" && (payload.WORKFLOW_GITHUB_DISPATCH_TOKEN.length < 20 ||
+      payload.WORKFLOW_GITHUB_DISPATCH_TOKEN.length > 512 ||
+      /\s/.test(payload.WORKFLOW_GITHUB_DISPATCH_TOKEN)))
+    throw new Error("Invalid WORKFLOW_GITHUB_DISPATCH_TOKEN");
+  if (worker === "ssh-mcp-worker" && payload.SSH_BROKER_TOKEN.length < 32) {
     throw new Error("SSH Broker token must be at least 32 characters");
   }
   if (worker === "github-actions-mcp-worker") {
     // Preserve the single, multiline GitHub Environment Secret unchanged.
     // Reject malformed/duplicated entries before any Worker deployment.
-    const tokens = payload.GH_TOKEN.split(/\r?\n/).map((t) => t.trim()).filter(Boolean);
+    const tokens = payload.ACTIONS_MCP_TOKENS.split(/\r?\n/).map((t) => t.trim()).filter(Boolean);
     if (!tokens.length || tokens.length > 8 ||
       tokens.some((t) => t.length > 512 || /\s/.test(t)) ||
       new Set(tokens).size !== tokens.length) {
-      throw new Error("Invalid or duplicate GitHub PAT in GH_TOKEN");
+      throw new Error("Invalid or duplicate GitHub PAT in ACTIONS_MCP_TOKENS");
     }
     // Avoid copying older secondary Secret even when it remains in GitHub settings.
   }

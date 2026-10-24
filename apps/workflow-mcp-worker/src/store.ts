@@ -34,7 +34,7 @@ export type Env = {
   // The sole approved Portal is fixed by release configuration.
   MCP_PORTAL_ENDPOINT?: string;
   // Production GitHub requires explicit opt-in and fixed OIDC/executor pins.
-  WORKFLOW_EXECUTOR_GITHUB_TOKEN?: string;
+  WORKFLOW_GITHUB_DISPATCH_TOKEN?: string;
   // Server-owned, read-only Action discovery scopes; no publication or execution grant.
   GITHUB_ACTION_APPROVED_REPOSITORIES?: string;
   // Separate GitHub-issued OIDC audience for immutable Action claims.
@@ -128,7 +128,7 @@ export class WorkflowService {
   private async checkedGitHubActions(plan:Plan):Promise<ReviewedGitHubAction[]> {
     const actions=plan.steps.filter(step=>step.uses==='github.run'&&step.with.capability==='github.action');
     if(!actions.length)return [];
-    const token=this.env.WORKFLOW_EXECUTOR_GITHUB_TOKEN;
+    const token=this.env.WORKFLOW_GITHUB_DISPATCH_TOKEN;
     if(!token)throw new StateError('github_action_token_missing');
     const grants=approvedActionRepositories(this.env.GITHUB_ACTION_APPROVED_REPOSITORIES);
     const approved:ReviewedGitHubAction[]=[];
@@ -235,10 +235,10 @@ export class WorkflowService {
    */
   async cancel(run_id:string,step_id:string,force=false){
     assertId(run_id);assertId(step_id);
-    if(!this.env.WORKFLOW_EXECUTOR_GITHUB_TOKEN)
+    if(!this.env.WORKFLOW_GITHUB_DISPATCH_TOKEN)
       throw new StateError('github_action_executor_not_configured');
     const cancellation=await requestGitHubActionCancellation(
-      this.db,run_id,step_id,this.env.WORKFLOW_EXECUTOR_GITHUB_TOKEN,force);
+      this.db,run_id,step_id,this.env.WORKFLOW_GITHUB_DISPATCH_TOKEN,force);
     if(cancellation==='not_found')throw new StateError('github_action_not_cancellable');
     return {run_id,step_id,cancellation,
       physical_terminated:cancellation==='terminal_confirmed'};
@@ -291,7 +291,7 @@ export class WorkflowService {
        String((step.with.action as {type?:unknown}|undefined)?.type))))
       throw new StateError('github_action_invalid_publication');
     if(protocolActions.length &&
-       (!this.env.WORKFLOW_EXECUTOR_GITHUB_TOKEN||!this.env.GITHUB_ACTION_OIDC_AUDIENCE))
+       (!this.env.WORKFLOW_GITHUB_DISPATCH_TOKEN||!this.env.GITHUB_ACTION_OIDC_AUDIENCE))
       throw new StateError('github_action_executor_not_configured');
     const id=crypto.randomUUID(),t=now();
     const insert=await this.db.prepare(
@@ -404,7 +404,7 @@ export class WorkflowService {
     const hasSessions=publishedPlan.steps.some(s=>
       s.uses==='github.run'&&s.with.capability==='github.action'&&
       (s.with.action as {type?:unknown}|undefined)?.type==='session');
-    if(hasSessions&&this.env.WORKFLOW_EXECUTOR_GITHUB_TOKEN){
+    if(hasSessions&&this.env.WORKFLOW_GITHUB_DISPATCH_TOKEN){
       // Status/Result are reconciliatory tools. A completed parent cannot
       // mask its still-running physical Session, and API outages cannot free
       // a slot. At most four active Sessions exist globally.
@@ -417,7 +417,7 @@ export class WorkflowService {
         if(!session.attempt_id)continue;
         try{
           await reconcilePersistedGitHubActionAttempt(
-            this.db,session.attempt_id,this.env.WORKFLOW_EXECUTOR_GITHUB_TOKEN);
+            this.db,session.attempt_id,this.env.WORKFLOW_GITHUB_DISPATCH_TOKEN);
           await releaseVerifiedSessionSlot(this.db,run_id,session.step_id);
         }catch{
           // GitHub API unknown never means terminal or capacity released.
