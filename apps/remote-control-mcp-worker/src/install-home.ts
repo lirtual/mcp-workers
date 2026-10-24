@@ -65,7 +65,7 @@ li strong{color:var(--fg);display:block;font-size:14px;margin-bottom:3px}
 }
 </style></head>
 <body><main><small>Remote Control Agent</small><h1>Install on your device</h1>
-<p>Copy the command, run it locally, then approve once in MCP.</p>
+<p>Run the command, then approve in MCP.</p>
 <div role="tablist" aria-label="Operating system"><button type="button" id="windows" role="tab" aria-controls="installer" aria-selected="false">Windows</button><button type="button" id="linux" role="tab" aria-controls="installer" aria-selected="false">Linux</button></div>
 <section id="installer" role="tabpanel" aria-label="Install command"><div class="command"><div class="command-head"><span id="shell-label" class="command-label">PowerShell</span><button type="button" class="copy" id="copy" aria-label="Copy install command" title="Copy install command"><svg class="icon-copy" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="8" y="3" width="13" height="13" rx="2"></rect><rect x="3" y="8" width="13" height="13" rx="2"></rect></svg><svg class="icon-check" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 12l5 5L20 6"></path></svg></button></div><div class="command-scroll"><code id="command"></code></div></div><div id="message" role="status" aria-live="polite"></div></section>
 <ol role="list"><li><strong>1 · Install</strong>Run the command; choose temporary or permanent</li><li><strong>2 · Approve</strong>Match the 10-character code and fingerprint in MCP</li><li><strong>3 · Verify</strong>Confirm online status with a safe read</li></ol>
