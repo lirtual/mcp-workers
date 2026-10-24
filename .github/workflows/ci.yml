@@ -11,6 +11,10 @@ on:
         description: Selected Worker for reusable pre-release checks
         required: false
         type: string
+    outputs:
+      release_ready:
+        description: Explicit success of all checks required for the selected Worker
+        value: ${{ jobs.release-gate.outputs.release_ready }}
 
 permissions:
   contents: read
@@ -23,7 +27,7 @@ jobs:
   checks:
     name: Application checks
     concurrency:
-      group: ci-checks-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.event.pull_request.number || github.ref }}
+      group: ci-checks-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.event.pull_request.number || github.ref }}-${{ inputs.worker || 'affected' }}
       cancel-in-progress: true
     runs-on: ubuntu-latest
     outputs:
@@ -48,6 +52,7 @@ jobs:
           BEFORE_SHA: ${{ github.event.before }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           MANUAL_WORKER: ${{ inputs.worker }}
+          REUSABLE_WORKER: ${{ inputs.worker }}
           MANUAL_REF: ${{ github.ref }}
         run: node scripts/select-affected-apps.mjs
 
@@ -190,3 +195,31 @@ jobs:
       - name: Run database integration tests
         run: pnpm --filter database-mcp-worker run test:integration
 
+
+  release-gate:
+    name: Required checks gate
+    needs: [checks, database-integration]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    outputs:
+      release_ready: ${{ steps.gate.outputs.release_ready }}
+    steps:
+      - name: Verify application and conditional database checks
+        id: gate
+        shell: bash
+        env:
+          APP_RESULT: ${{ needs.checks.result }}
+          DATABASE_CHANGED: ${{ needs.checks.outputs.database_changed }}
+          DATABASE_RESULT: ${{ needs.database-integration.result }}
+        run: |
+          set -euo pipefail
+          [[ "$APP_RESULT" == 'success' ]] || { echo 'Application checks did not succeed'; exit 1; }
+          case "$DATABASE_CHANGED:$DATABASE_RESULT" in
+            true:success|false:skipped)
+              echo 'release_ready=true' >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo 'Required database integration gate did not pass' >&2
+              exit 1
+              ;;
+          esac
