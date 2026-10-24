@@ -129,6 +129,8 @@ export async function recordSignedGitHubActionTaskResult(
    WHERE attempt_id=?`).bind(attemptId).first<{outcome:string;result_json:string}>();
  if(!persisted||persisted.outcome!=='succeeded'||persisted.result_json!==serialized)
   return 'denied';
- // Identical replay is harmless and cannot alter the stored output.
- return 'recorded';
+ // UNIQUE(attempt_id) permits exactly one receipt. Return the INSERT
+ // outcome only after verifying the persisted content: identical replays are
+ // acknowledged without overwriting the original, conflicts fail closed.
+ return inserted.meta.changes===1?'recorded':'already_recorded';
 }
