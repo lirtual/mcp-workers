@@ -36,10 +36,10 @@ Publishing is explicit; saving a Draft never starts execution. `workflow_pause` 
 
 ## Release and verification
 
-Use the existing `.github/workflows/ci.yml` release workflow on `main`, selecting `worker=workflow-mcp-worker` and `deploy_to_production=true`. There are no per-capability enable inputs. The release verifies the selected GitHub Environment secrets, fixed Portal/executor identity, D1 schema, active Runs and the exact deployed Worker version.
+Use `.github/workflows/release.yml` (GitHub Actions → Release Worker) on `main`, selecting `worker=workflow-mcp-worker` and `deploy_to_production=true`. There are no per-capability enable inputs. The release verifies the selected GitHub Environment secrets, fixed Portal/executor identity, D1 schema, active Runs and the exact deployed Worker version.
 
 The registered GitHub job is `.github/workflows/workflow-github-executor.yml`. It only runs the fixed Workflow package CI check; it accepts no user-provided shell, repository or ref.
 
-The regular test contract is `pnpm --filter workflow-mcp-worker check` (TypeScript, unit/contract suite, Wrangler dry-run). Production smoke tests are explicit, disposable and separate from deployment. A passing dry-run does not establish production acceptance.
+The regular test contract is `pnpm --filter workflow-mcp-worker check` (TypeScript, unit/contract suite, Wrangler dry-run). Production smoke tests are explicitly selected through `.github/workflows/acceptance.yml` and are separate from deployment; Portal registration requires a separate `confirm_portal_write` acknowledgment. A passing dry-run does not establish production acceptance.
 
 Old schema migration filenames are retained because they have already been recorded by D1. They are historical database identifiers, not product stages.

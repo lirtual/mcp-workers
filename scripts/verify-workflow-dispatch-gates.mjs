@@ -21,6 +21,12 @@ function job(source, name) {
 assert.match(ci, /  push:/);
 assert.match(ci, /  pull_request:/);
 assert.match(ci, /  workflow_call:/);
+assert.match(ci, /release_ready:/);
+assert.match(ci, /release-gate:/);
+assert.match(ci, /needs: \[checks, database-integration\]/);
+assert.match(ci, /if: \$\{\{ always\(\) \}\}/);
+assert.match(ci, /true:success\|false:skipped/);
+assert.match(ci, /REUSABLE_WORKER: \$\{\{ inputs.worker \}\}/);
 assert.doesNotMatch(ci.slice(0, ci.indexOf('permissions:')), /workflow_dispatch:/);
 assert.doesNotMatch(ci, /^  deploy:$/m);
 assert.match(ci, /node scripts\/select-affected-apps\.mjs/);
@@ -39,6 +45,7 @@ for (const clause of [
   "github.ref == 'refs/heads/main'",
   'inputs.deploy_to_production == true',
   "needs.checks.result == 'success'",
+  "needs.checks.outputs.release_ready == 'true'",
 ]) assert.ok(deploy.gate.includes(clause), 'Unsafe production release: ' + clause);
 for (const name of ['raindrop', 'ima', 'database', 'ssh', 'remote-control', 'github-actions', 'workflow'])
   assert.ok(deploy.gate.includes("inputs.worker == '" + name + "-mcp-worker'"), 'Missing allowlisted Worker ' + name);
@@ -59,6 +66,8 @@ for (const key of ['MCP_PORTAL_CLIENT_ID', 'MCP_PORTAL_CLIENT_SECRET', 'WORKFLOW
   assert.ok(deploy.content.includes(key + ': ' + dollar + '{{ secrets.' + key + ' }}'), 'Missing scoped Secret ' + key);
 
 assert.match(acceptance, /      test_type:/);
+assert.match(acceptance, /      confirm_portal_write:/);
+assert.match(acceptance, /        default: false/);
 assert.match(acceptance, /        type: choice/);
 assert.doesNotMatch(acceptance, /      deploy_to_production:/);
 assert.doesNotMatch(acceptance, /      mcp_portal_target:/);
@@ -75,6 +84,7 @@ for (const [name, option] of [
 }
 const smoke = job(acceptance, 'workflow-production-smoke');
 assert.ok(smoke.gate.includes("needs.checks.result == 'success'"));
+assert.ok(smoke.gate.includes("needs.checks.outputs.release_ready == 'true'"));
 for (const [env, option] of [
   ['WORKFLOW_MCP_SMOKE', 'production-mcp'],
   ['WORKFLOW_GITHUB_SMOKE', 'production-github'],
@@ -83,6 +93,8 @@ for (const [env, option] of [
 assert.ok(job(acceptance, 'workflow-mcp-portal-probe').content.includes('MCP_PORTAL_TARGET: production'));
 const registration = job(acceptance, 'workflow-portal-register');
 assert.ok(registration.gate.includes("needs.checks.result == 'success'"));
+assert.ok(registration.gate.includes("needs.checks.outputs.release_ready == 'true'"));
+assert.ok(registration.gate.includes('inputs.confirm_portal_write == true'));
 assert.ok(registration.content.includes('group: worker-release-workflow-mcp-worker'));
 assert.ok(registration.content.includes('run: node scripts/register-workflow-portal.mjs'));
 assert.ok(ci.includes('run: node --test scripts/register-workflow-portal.test.mjs'));

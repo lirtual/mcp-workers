@@ -28,7 +28,7 @@ GitHub Actions Environment Secret values are limited to 48 KB. Avoid logging the
 
 The existing 11 tools are unchanged: `repositories_list`, `workflows_list`, `runs_list`, `run_get`, `run_jobs_list`, `run_artifacts_list`, `workflow_dispatch`, `repository_dispatch`, `run_cancel`, `run_force_cancel`, and `run_rerun`.
 
-Example: `workflow_dispatch(repo="lirtual/mcp-workers", workflow="ci.yml", ref="main", inputs={"worker":"remote-control-mcp-worker"})`. The PAT that actually has permission for `lirtual/mcp-workers` is selected automatically. GitHub's accepted response does not prove that a workflow completed; use `run_get` to check.
+Read-only CI runs automatically on push/PR. For a deliberate production release, use `workflow_dispatch(repo="lirtual/mcp-workers", workflow="release.yml", ref="main", inputs={"worker":"remote-control-mcp-worker","deploy_to_production":"true"})` only after explicitly authorizing the deployment. The PAT that actually has permission for `lirtual/mcp-workers` is selected automatically. GitHub's accepted response does not prove that a workflow completed; use `run_get` to check.
 
 For cancellation, `run_cancel` and `run_force_cancel` only acknowledge a request. Confirm `status=completed` and `conclusion=cancelled` via `run_get`. Force cancellation may bypass cleanup.
 

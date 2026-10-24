@@ -29,6 +29,8 @@
 | `database-mcp-worker` | `DATABASE_CONFIG` | `MAX_ROWS`、`MAX_RESULT_BYTES`、`MAX_SCHEMA_BYTES`、`QUERY_TIMEOUT_MS`、`MAX_WRITE_AFFECTED_ROWS` |
 | `ssh-mcp-worker` | `MCP_BROKER_TOKEN` | 暂无 |
 | `remote-control-mcp-worker` | 无新增必需密钥（正常发布保留 Cloudflare 现有 Secret） | 暂无 |
+| `github-actions-mcp-worker` | `GH_TOKEN` | 暂无 |
+| `workflow-mcp-worker` | `MCP_PORTAL_CLIENT_ID`、`MCP_PORTAL_CLIENT_SECRET`、`WORKFLOW_EXECUTOR_GITHUB_TOKEN` | 发布脚本固定注入 `MCP_PORTAL_ENDPOINT` 等受审查配置 |
 
 所有 Worker 可继承 Repository Secret `MCP_ACCESS_TOKEN`；单个 Worker 如需例外，可配置同名 Environment Secret 覆盖。配置特殊保密数据只能使用 **Secret**，不能使用 **Variable**。
 

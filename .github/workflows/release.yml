@@ -44,6 +44,7 @@ jobs:
           github.ref == 'refs/heads/main' &&
           inputs.deploy_to_production == true &&
           needs.checks.result == 'success' &&
+          needs.checks.outputs.release_ready == 'true' &&
           (inputs.worker == 'raindrop-mcp-worker' ||
            inputs.worker == 'ima-mcp-worker' ||
            inputs.worker == 'database-mcp-worker' ||
