@@ -988,6 +988,7 @@ jobs:
     const marker=requests.length;
     const validated=await service.validate(created.workflow_id,1);
     assert.equal(validated.valid,true);
+    assert.ok('reviewed_actions' in validated);
     assert.deepEqual(validated.reviewed_actions,[action]);
     const published=await service.publish(created.workflow_id,1,[],false,true,[action]);
     const saved=sqlite.prepare('SELECT plan FROM workflow_versions WHERE id=?')
