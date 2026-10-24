@@ -221,10 +221,15 @@ export function verifyWorkflowD1Readiness(response, bootstrap, requireCompleteSc
   const partial = row?.migration_count === 6 &&
     row?.migration_v6 === 1 && row?.migration_v7 === 0 &&
     row?.session_table === 0 && row?.cancellation_table === 0;
-  const complete = row?.migration_count === 7 &&
+  const current = row?.migration_count === 7 &&
     row?.migration_v6 === 1 && row?.migration_v7 === 1 &&
+    row?.migration_v8 === 0 && row?.locator_column === 0 &&
     row?.session_table === 1 && row?.cancellation_table === 1;
-  invariant(base && (requireCompleteSchema ? complete : (before || partial || complete)),
+  const complete = row?.migration_count === 8 &&
+    row?.migration_v6 === 1 && row?.migration_v7 === 1 &&
+    row?.migration_v8 === 1 && row?.locator_column === 1 &&
+    row?.session_table === 1 && row?.cancellation_table === 1;
+  invariant(base && (requireCompleteSchema ? complete : (before || partial || current || complete)),
     "Workflow production D1 schema migrations missing, partial or drifted");
   invariant(Number.isSafeInteger(row?.active_runs) && row.active_runs === 0,
     "Workflow cannot redeploy while Runs are active or indeterminate");
