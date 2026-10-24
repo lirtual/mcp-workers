@@ -26,7 +26,7 @@ const workflowRef=get('GITHUB_WORKFLOW_REF');
 const githubRunId=Number(get('GITHUB_RUN_ID'));
 const githubRunAttempt=Number(get('GITHUB_RUN_ATTEMPT'));
 assert.equal(repo,'lirtual/mcp-workers');
-assert.equal(ref,'refs/heads/fix/session-actions-spec-1-contract');
+assert.equal(ref,'refs/heads/wip/workflow-github-executor');
 assert.equal(workflowRef,repo+'/.github/workflows/ci.yml@'+ref);
 assert.equal(githubRunAttempt,1,'reruns are intentionally not pre-authorized');
 assert.ok(Number.isSafeInteger(githubRunId)&&githubRunId>0);
