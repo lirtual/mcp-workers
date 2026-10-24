@@ -410,6 +410,21 @@ async function current(account, worker, token, options) {
   };
 }
 
+/** Cloudflare may expose a just-deployed version before its Secret binding
+ * inventory converges. Retry only that exact read-after-write race; all
+ * identity, version, schema and configuration errors remain fatal. */
+export async function retrySecretReadback(read, pause = ms => new Promise(resolve => setTimeout(resolve, ms))) {
+  for (let attempt = 0; attempt < 6; attempt++) {
+    try { return await read(); }
+    catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      if (attempt === 5 || !/^Required (Secret binding|runtime Secret) missing: /.test(message))
+        throw error;
+      await pause(2000);
+    }
+  }
+}
+
 async function main() {
   const [mode, worker] = process.argv.slice(2);
   invariant(["preflight", "readback", "version", "diagnostic", "d1-check"].includes(mode), "Unknown release validation mode");
@@ -452,9 +467,12 @@ async function main() {
   if (previous) invariant(previous.worker === worker && previous.sourceSha === sourceSha,
     "Release source changed");
   const exists = mode === "preflight" ? await scriptExists(account, worker, token) : true;
-  const observed = exists ? await current(account, worker, token, {
+  const read = () => current(account, worker, token, {
     mode, sourceConfig, previousNamespaceId: previous?.previousNamespaceId,
-  }) : { mode: "bootstrap" };
+  });
+  const observed = !exists ? { mode: "bootstrap" }
+    : mode === "readback" && worker === "workflow-mcp-worker"
+      ? await retrySecretReadback(read) : await read();
   if (mode === "preflight") {
     await writeFile(statePath, JSON.stringify({ worker, sourceSha, ...observed }), { mode: 0o600 });
     if (process.env.GITHUB_OUTPUT) {
