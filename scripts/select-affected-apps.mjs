@@ -22,7 +22,7 @@ function requiresAllApps(file) {
     || file === 'pnpm-workspace.yaml'
     || file === '.npmrc'
     || file.startsWith('packages/')
-    || file === '.github/workflows/ci.yml'
+    || ['ci.yml', 'release.yml', 'acceptance.yml', 'workflow-github-executor.yml'].some(name => file === '.github/workflows/' + name)
     || file.startsWith('scripts/select-affected-apps')
     || file.startsWith('scripts/manual-worker-release')
     || file.startsWith('scripts/bootstrap-worker-secrets')

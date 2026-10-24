@@ -263,7 +263,7 @@ test("SSH production release requires Broker service, own DO, and least-privileg
 });
 
 test("manual release selects GitHub Environment directly from the allowlisted Worker name", () => {
-  const workflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+  const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
   assert.ok(workflow.includes("      name: ${{ inputs.worker }}"),
     "selected Worker must resolve the same-named GitHub Environment");
   assert.doesNotMatch(workflow, /WORKER_CONFIG_SCOPE/,
@@ -277,7 +277,7 @@ test("manual release selects GitHub Environment directly from the allowlisted Wo
 });
 
 test("manual release always syncs selected Worker Secrets from GitHub and never silently falls back", () => {
-  const workflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+  const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
   const secretStart = workflow.indexOf("      - name: Stage selected Worker Secrets for every release");
   const variableStart = workflow.indexOf("      - name: Stage approved Worker variables", secretStart);
   assert.ok(secretStart > 0 && variableStart > secretStart);
@@ -336,7 +336,7 @@ test("preflight allows GitHub to restore a missing runtime Secret, but readback 
 
 
 test("first GitHub Actions Worker release retries only transient 404s without weakening ingress check", () => {
-  const workflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+  const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
   const step = workflow.slice(workflow.indexOf("      - name: Check unauthenticated MCP surface without credentials"));
   assert.match(step, /FIRST_DEPLOY: \$\{\{ steps\.preflight\.outputs\.bootstrap \}\}/);
   assert.match(step, /\[\[ "\$SELECTED_WORKER" == "github-actions-mcp-worker" && "\$FIRST_DEPLOY" == "true" \]\]/);
@@ -364,7 +364,7 @@ test("GitHub Actions deploy requires only one PAT Secret and no repository lists
   }, secrets, { mode: "readback" }), /Legacy GitHub Actions repository allowlists/);
   assert.throws(() => verifyBindings(worker, settings,
     [{ name: "MCP_ACCESS_TOKEN" }], { mode: "readback" }), /Required runtime Secret missing/);
-  const release = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+  const release = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
   assert.ok(release.includes("GH_TOKEN: ${{ secrets.GH_TOKEN }}"));
   assert.ok(!release.includes("GH_TOKEN_SECONDARY"));
   assert.throws(() => verifyBindings(worker, { ...settings,
@@ -467,7 +467,7 @@ test("Workflow readback verifies one integrated runtime, registered GitHub ident
 
 
 test("Workflow manual GitHub Actions requires D1 checks before Owner", () => {
-  const ci=readFileSync(new URL("../.github/workflows/ci.yml",import.meta.url),"utf8");
+  const ci=readFileSync(new URL("../.github/workflows/release.yml",import.meta.url),"utf8");
   const pre=ci.indexOf("      - name: Verify Workflow release configuration and remote D1 readiness");
   const migration=ci.indexOf("      - name: Apply complete Workflow D1 migrations");
   const publish=ci.indexOf("      - name: Publish exactly selected Worker");
