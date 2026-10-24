@@ -98,17 +98,16 @@ export const REVIEWED_AGENT_RELEASE_PIN: InstallReleasePin = Object.freeze({
   x64Sha256: "bcb932d9f3539233204decf70ed0a748e2e31ac2a069e5b8b29484ab8733a0e3",
   arm64Sha256: "bdbe443d6010e372a03bff773d0e0bce946ac7bbbd45d9d1b75c99477eb23aa9",
 });
-// Immutable v0.1.21 Linux release from main-only native candidates
-// #40083149136, verified and published via GitHub Actions #40083875323.
-// Only this reviewed Linux pin enables explicit, local-tty --upgrade.
-// Windows remains on its independently reviewed release pin below.
+// Immutable v0.1.22 Linux Release from reviewed Agent PR #37,
+// verified candidate CI #40089999490 and publish workflow #40091146159.
+// Only the Linux installer pin advances; Windows remains independently pinned.
 export const REVIEWED_PUBLIC_INSTALL_RELEASE_PIN: InstallReleasePin = Object.freeze({
-  tag: "v0.1.21",
+  tag: "v0.1.22",
   pairingProtocol: "single-code-v1",
   upgradeMode: "explicit-v1",
-  commit: "52e87fae9c722aa6412bec805686ed2d93940da7",
-  x64Sha256: "10cd7bea7124e7b18a20665af1bf14df8aa2abab2ddd8c90f4c218f3fec7172f",
-  arm64Sha256: "aabfa9c53a97019177674569e07f018632b839be5383fbf39763fbf104863605",
+  commit: "a1c8afe1b47c279a52569ebb44e576b29fcba4f4",
+  x64Sha256: "7a2d90b77d34a3bb4a540c5adcbbc19b3de29ce4b4fdf6504856e0c7b482649a",
+  arm64Sha256: "0c925d6aad4f240fe768fcfbe42acc0bfd88f640a9501f5aa63a10a8639bf702",
 });
 /** Independent reviewed source and Release asset pins; both are required. */
 export type WindowsInstallPin = Readonly<{
