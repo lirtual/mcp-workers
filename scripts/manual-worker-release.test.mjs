@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig, verifyWorkflowD1Readiness } from "./manual-worker-release.mjs";
+import { activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig, verifyWorkflowD1Readiness, retryReleaseReadback } from "./manual-worker-release.mjs";
 
 const required = [
   { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
@@ -21,6 +21,47 @@ test("Raindrop required Secret names and bindings are preserved", () => {
   assert.throws(() => verifyBindings("raindrop-mcp-worker", { ...goodSettings, observability: {} }, secretList),
     /Invocation Logs/);
   assert.throws(() => verifyBindings("not-a-worker", goodSettings, secretList), /target/);
+});
+
+test("Workflow deployment readback retries only missing Secret inventory", async () => {
+  let count = 0;
+  const intervals = [];
+  const result = await retryReleaseReadback(async () => {
+    count++;
+    if (count <= 2) throw Error("Required Secret binding missing: MCP_ACCESS_TOKEN");
+    return { ready: true };
+  }, async ms => {intervals.push(ms);});
+  assert.deepEqual(result,{ready:true});
+  assert.equal(count,3);
+  assert.deepEqual(intervals,[2000,2000]);
+
+  let immediate = 0;
+  await assert.rejects(retryReleaseReadback(async () => {
+    immediate++;
+    throw Error("Workflow Action OIDC audience drift");
+  }, async () => {throw Error("must not sleep");}), /OIDC audience drift/);
+  assert.equal(immediate,1);
+
+  let versions = 0;
+  const expected = "11111111-1111-4111-8111-111111111111";
+  const previous = {mode:"update",version_id:"00000000-0000-4000-8000-000000000000",
+    deployment_id:"old-deployment"};
+  const verified = await retryReleaseReadback(async () => {
+    versions++;
+    const observed = {version_id:versions < 3 ? previous.version_id : expected,
+      deployment_id:versions < 3 ? previous.deployment_id : "new-deployment"};
+    verifyPublishedVersion(previous,observed,expected);
+    return observed;
+  }, async () => {});
+  assert.equal(verified.version_id,expected);
+  assert.equal(versions,3);
+
+  let max = 0;
+  await assert.rejects(retryReleaseReadback(async () => {
+    max++;
+    throw Error("Required runtime Secret missing: MCP_PORTAL_CLIENT_SECRET");
+  }, async () => {}), /runtime Secret missing/);
+  assert.equal(max,6);
 });
 
 test("Active-version readback requires exactly one 100 percent version", () => {
@@ -230,7 +271,7 @@ test("SSH production release requires Broker service, own DO, and least-privileg
 });
 
 test("manual release selects GitHub Environment directly from the allowlisted Worker name", () => {
-  const workflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+  const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
   assert.ok(workflow.includes("      name: ${{ inputs.worker }}"),
     "selected Worker must resolve the same-named GitHub Environment");
   assert.doesNotMatch(workflow, /WORKER_CONFIG_SCOPE/,
@@ -244,7 +285,7 @@ test("manual release selects GitHub Environment directly from the allowlisted Wo
 });
 
 test("manual release always syncs selected Worker Secrets from GitHub and never silently falls back", () => {
-  const workflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+  const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
   const secretStart = workflow.indexOf("      - name: Stage selected Worker Secrets for every release");
   const variableStart = workflow.indexOf("      - name: Stage approved Worker variables", secretStart);
   assert.ok(secretStart > 0 && variableStart > secretStart);
@@ -303,7 +344,7 @@ test("preflight allows GitHub to restore a missing runtime Secret, but readback 
 
 
 test("first GitHub Actions Worker release retries only transient 404s without weakening ingress check", () => {
-  const workflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+  const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
   const step = workflow.slice(workflow.indexOf("      - name: Check unauthenticated MCP surface without credentials"));
   assert.match(step, /FIRST_DEPLOY: \$\{\{ steps\.preflight\.outputs\.bootstrap \}\}/);
   assert.match(step, /\[\[ "\$SELECTED_WORKER" == "github-actions-mcp-worker" && "\$FIRST_DEPLOY" == "true" \]\]/);
@@ -331,7 +372,7 @@ test("GitHub Actions deploy requires only one PAT Secret and no repository lists
   }, secrets, { mode: "readback" }), /Legacy GitHub Actions repository allowlists/);
   assert.throws(() => verifyBindings(worker, settings,
     [{ name: "MCP_ACCESS_TOKEN" }], { mode: "readback" }), /Required runtime Secret missing/);
-  const release = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+  const release = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
   assert.ok(release.includes("ACTIONS_MCP_TOKENS: ${{ secrets.ACTIONS_MCP_TOKENS }}"));
   assert.ok(!release.includes("GH_TOKEN_SECONDARY"));
   assert.throws(() => verifyBindings(worker, { ...settings,
@@ -355,36 +396,53 @@ test("Workflow production release must preserve exact reviewed resource and runt
 
 });
 
-test("Workflow remote D1 readback blocks missing migrations, nonempty first-run and unresolved Runs", () => {
-  const row = { migration_count:2,migration_v1:1,migration_v2:1,
-    migration_v3:0,migration_v4:0,migration_v5:0,attempt_table:0,receipt_table:0,
-    native_column:1,active_runs:0,run_count:0,workflow_count:0 };
-  const result = (value) => [{success:true,results:[value]}];
-  assert.throws(()=>verifyWorkflowD1Readiness(result(row),true),/schema migrations/);
-  const previous = {...row,migration_count:4,migration_v3:1,migration_v4:1,
-    attempt_table:1,receipt_table:1};
-  const migrated = {...previous,migration_count:5,migration_v5:1};
-  assert.equal(verifyWorkflowD1Readiness(result(previous),false),true);
-  assert.throws(()=>verifyWorkflowD1Readiness(result(previous),false,true),/schema migrations/);
-  assert.equal(verifyWorkflowD1Readiness(result(migrated),false),true);
-  assert.equal(verifyWorkflowD1Readiness(result(migrated),false,true),true);
-  assert.throws(()=>verifyWorkflowD1Readiness(result(row),false,true),
-    /schema migrations/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...migrated,migration_v4:0}),false),
-    /schema migrations/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...migrated,receipt_table:0}),false),
-    /schema migrations/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...row,migration_count:3,migration_v3:1,
-    attempt_table:1}),false),/schema migrations/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...row,migration_count:6}),false),
-    /schema migrations/);
-  assert.equal(verifyWorkflowD1Readiness(result({...migrated,run_count:3,workflow_count:1}),false),true);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...row,migration_v2:0}),false),/schema migrations/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...migrated,active_runs:1}),false),/active or indeterminate/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...migrated,run_count:1}),true),/empty production/);
+test("Workflow remote D1 checks the exact old, intermediate and full schema", () => {
+  const result = row => [{success:true,results:[row]}];
+  const baseline = {
+    migration_count:5,migration_v1:1,migration_v2:1,migration_v3:1,
+    migration_v4:1,migration_v5:1,migration_v6:0,migration_v7:0,migration_v8:0,locator_column:0,
+    attempt_table:1,receipt_table:1,native_column:1,
+    session_table:0,cancellation_table:0,
+    active_runs:0,run_count:0,workflow_count:0,
+  };
+  const partial = {...baseline,migration_count:6,migration_v6:1};
+  const current = {...partial,migration_count:7,migration_v7:1,
+    session_table:1,cancellation_table:1};
+  const completed = {...current,migration_count:8,migration_v8:1,locator_column:1};
+  assert.equal(verifyWorkflowD1Readiness(result(baseline),false),true);
+  assert.equal(verifyWorkflowD1Readiness(result(partial),false),true);
+  assert.equal(verifyWorkflowD1Readiness(result(current),false),true);
+  assert.equal(verifyWorkflowD1Readiness(result(completed),false),true);
+  assert.equal(verifyWorkflowD1Readiness(result(completed),false,true),true);
+  for(const row of [baseline,partial,current]){
+    assert.throws(()=>verifyWorkflowD1Readiness(result(row),false,true),
+      /schema migrations/);
+  }
+  for(const row of [
+    {...baseline,migration_count:4,migration_v5:0},
+    {...baseline,migration_count:6},
+    {...partial,migration_v6:0},
+    {...completed,migration_v4:0},
+    {...completed,migration_v7:0},
+    {...current,migration_count:8},
+    {...completed,migration_v8:0},
+    {...completed,locator_column:0},
+    {...completed,session_table:0},
+    {...completed,cancellation_table:0},
+    {...completed,receipt_table:0},
+    {...completed,native_column:0},
+  ]){
+    assert.throws(()=>verifyWorkflowD1Readiness(result(row),false),
+      /schema migrations/);
+  }
+  assert.equal(verifyWorkflowD1Readiness(result({...completed,run_count:3,
+    workflow_count:1}),false,true),true);
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...completed,active_runs:1}),false),
+    /active or indeterminate/);
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...completed,run_count:1}),true),
+    /empty production/);
   assert.throws(()=>verifyWorkflowD1Readiness([],true),/readback unavailable/);
 });
-
 test("Workflow readback verifies one integrated runtime, registered GitHub identity and Portal",()=>{
   const bindings=[
     {name:"MCP_ACCESS_TOKEN",type:"secret_text"},
@@ -398,6 +456,7 @@ test("Workflow readback verifies one integrated runtime, registered GitHub ident
     {name:"GITHUB_EXECUTOR_REPOSITORY_ID",type:"plain_text",text:"1414936394"},
     {name:"GITHUB_EXECUTOR_REF",type:"plain_text",text:"refs/heads/main"},
     {name:"GITHUB_EXECUTOR_AUDIENCE",type:"plain_text",text:"workflow-github-claim:production"},
+    {name:"GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action:production"},
   ];
   const settings={bindings,observability:{enabled:true,logs:{invocation_logs:true}}};
   const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_SECRET",
@@ -405,6 +464,10 @@ test("Workflow readback verifies one integrated runtime, registered GitHub ident
   const check=(list=bindings,ss=secrets)=>
     verifyBindings("workflow-mcp-worker",{...settings,bindings:list},ss,{mode:"readback"});
   assert.equal(check(),true);
+  assert.throws(()=>check(bindings.filter(x=>x.name!=="GITHUB_ACTION_OIDC_AUDIENCE")),
+    /Action OIDC audience/);
+  assert.throws(()=>check(bindings.map(x=>x.name==="GITHUB_ACTION_OIDC_AUDIENCE"
+    ? {...x,text:"workflow-github-action:staging"} : x)),/Action OIDC audience/);
   for(const name of ["DB","WORKFLOW"]){
     assert.throws(()=>check(bindings.filter(x=>x.name!==name)),/binding drift/);
   }
@@ -424,12 +487,17 @@ test("Workflow readback verifies one integrated runtime, registered GitHub ident
 
 
 test("Workflow manual GitHub Actions requires D1 checks before Owner", () => {
-  const ci=readFileSync(new URL("../.github/workflows/ci.yml",import.meta.url),"utf8");
+  const ci=readFileSync(new URL("../.github/workflows/release.yml",import.meta.url),"utf8");
   const pre=ci.indexOf("      - name: Verify Workflow release configuration and remote D1 readiness");
   const migration=ci.indexOf("      - name: Apply complete Workflow D1 migrations");
   const publish=ci.indexOf("      - name: Publish exactly selected Worker");
   assert.ok(pre>0 && migration>pre && publish>migration);
   assert.match(ci,/wrangler d1 migrations apply workflow-mcp-worker --remote/);
+  for(const name of ["0006_action_attempt_capabilities.sql","0007_session_executions.sql"]){
+    assert.equal(ci.split(name).length,3);
+  }
+  assert.ok(ci.includes("GITHUB_ACTION_APPROVED_REPOSITORIES: " + String.fromCharCode(36) + "{{ vars.WORKFLOW_ACTION_APPROVED_REPOSITORIES }}"));
+  assert.ok(!ci.includes("vars.GITHUB_ACTION_APPROVED_REPOSITORIES"));
   assert.match(ci,/WORKFLOW_REQUIRE_COMPLETE_SCHEMA: 'true'/);
   assert.ok(ci.includes("WORKFLOW_FIRST_DEPLOY: " + String.fromCharCode(36) + "{{ steps.preflight.outputs.bootstrap }}"));
   assert.match(ci,/node scripts\/manual-worker-release\.mjs d1-check workflow-mcp-worker/);
@@ -451,6 +519,7 @@ test("Workflow release pins the exact Portal and rejects target drift",()=>{
     {name:"GITHUB_EXECUTOR_REPOSITORY_ID",type:"plain_text",text:"1414936394"},
     {name:"GITHUB_EXECUTOR_REF",type:"plain_text",text:"refs/heads/main"},
     {name:"GITHUB_EXECUTOR_AUDIENCE",type:"plain_text",text:"workflow-github-claim:production"},
+    {name:"GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action:production"},
   ];
   const settings={observability:{enabled:true,logs:{invocation_logs:true}}};
   const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_SECRET",
@@ -458,7 +527,7 @@ test("Workflow release pins the exact Portal and rejects target drift",()=>{
   const check=(updated)=>verifyBindings("workflow-mcp-worker",{...settings,bindings:updated},secrets,{mode:"readback"});
   assert.equal(check(bindings),true);
   assert.throws(()=>check(bindings.map(x=>x.name==="MCP_PORTAL_ENDPOINT"
-    ?{...x,text:"https://test-mcp.lirtual.dpdns.org/mcp"}:x)),/pinned Workflow MCP Portal|Pinned Workflow MCP Portal/);
+    ?{...x,text:"https://retired.example.org/mcp"}:x)),/pinned Workflow MCP Portal|Pinned Workflow MCP Portal/);
   assert.throws(()=>check([...bindings,{name:"MCP_DIRECT_TARGETS_ENABLED",type:"plain_text",text:"true"}]),
     /Obsolete stage flag/);
 });
@@ -474,6 +543,7 @@ test("GitHub execution is integral but still pins repository, ref and OIDC audie
     {name:"GITHUB_EXECUTOR_REPOSITORY_ID",type:"plain_text",text:"1414936394"},
     {name:"GITHUB_EXECUTOR_REF",type:"plain_text",text:"refs/heads/main"},
     {name:"GITHUB_EXECUTOR_AUDIENCE",type:"plain_text",text:"workflow-github-claim:production"},
+    {name:"GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action:production"},
   ];
   const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_SECRET",
     "WORKFLOW_GITHUB_DISPATCH_TOKEN"].map(name=>({name}));

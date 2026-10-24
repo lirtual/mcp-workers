@@ -3,13 +3,11 @@
  * Environment. Never log a bearer, service token, request headers or tool data.
  */
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { scopedPublicMcpFetch, TRUSTED_PORTAL_ENDPOINT, PRODUCTION_PORTAL_ENDPOINT } from '../src/mcp-public-fetch.ts';
+import { scopedPublicMcpFetch, PRODUCTION_PORTAL_ENDPOINT } from '../src/mcp-public-fetch.ts';
 import { toolSchemaDigest } from '../src/plan.ts';
 
-const target=process.env.MCP_PORTAL_TARGET || 'test';
-if(target!=='test'&&target!=='production')throw Error('invalid_portal_probe_target');
-const endpoint=target==='production'?PRODUCTION_PORTAL_ENDPOINT:TRUSTED_PORTAL_ENDPOINT;
-console.log('PORTAL_PROBE_TARGET',target);
+const endpoint=PRODUCTION_PORTAL_ENDPOINT;
+console.log('PORTAL_PROBE_TARGET production');
 const clientId=process.env.MCP_PORTAL_CLIENT_ID;
 const clientSecret=process.env.MCP_PORTAL_CLIENT_SECRET;
 if(!clientId||!clientSecret) {
@@ -29,10 +27,7 @@ try {
   console.log('MCP_INITIALIZE_OK');
   const listing=await client.listTools();
   console.log('MCP_TOOLS_LIST_OK',listing.tools.length);
-  // Only tool names and read-only flags are printed; never the tool outputs.
-  console.log('AVAILABLE_TOOLS',JSON.stringify(listing.tools.map(t=>({
-    name:t.name,readOnly:t.annotations?.readOnlyHint===true,
-  }))));
+  // Avoid logging the full production Portal catalog; only the selected read-only tools matter.
   const candidate=listing.tools.find(t=>
     /(^|[._-])list_notebooks$/.test(t.name)&&
     t.annotations?.readOnlyHint===true&&
@@ -43,23 +38,27 @@ try {
   const output=await client.callTool({name:candidate.name,arguments:{limit:1}});
   if(output.isError) throw new Error('ima_readonly_tool_error');
   console.log('IMA_READONLY_CALL_OK');
-  // On production One-MCP (not the isolated test Portal), verify the actual
-  // end-to-end client → Portal → Workflow read-only tool path. No D1 writes.
-  if(target==='production'){
-    const workflow=listing.tools.find(t=>
-      /(^|[._-])workflow_list$/.test(t.name)&&
-      t.annotations?.readOnlyHint===true&&
-      t.annotations?.destructiveHint!==true);
-    if(!workflow) throw new Error('workflow_readonly_tool_unavailable');
-    console.log('WORKFLOW_PORTAL_READONLY_TOOL_DISCOVERED',workflow.name);
-    const result=await client.callTool({name:workflow.name,arguments:{}});
-    if(result.isError) throw new Error('workflow_readonly_tool_error');
-    console.log('WORKFLOW_PORTAL_READONLY_CALL_OK');
-  }
+  // Verify client → production Portal → Workflow read-only path; no D1 writes.
+  const workflow=listing.tools.find(t=>
+    /(^|[._-])workflow_list$/.test(t.name)&&
+    t.annotations?.readOnlyHint===true&&
+    t.annotations?.destructiveHint!==true);
+  if(!workflow) throw new Error('workflow_readonly_tool_unavailable');
+  console.log('WORKFLOW_PORTAL_READONLY_TOOL_DISCOVERED',workflow.name);
+  const result=await client.callTool({name:workflow.name,arguments:{}});
+  if(result.isError) throw new Error('workflow_readonly_tool_error');
+  console.log('WORKFLOW_PORTAL_READONLY_CALL_OK');
 } catch(error) {
   // Intentionally do not print exception strings, HTTP bodies or headers.
   console.error('PORTAL_ACCEPTANCE_FAIL',error instanceof Error?error.name:'unknown','HTTP',lastHttpStatus);
   process.exitCode=1;
 } finally {
-  await client.close().catch(()=>{});
+  // Portal HTTP sessions can remain open after every read-only assertion passes.
+  // Bound cleanup and terminate this one-shot CLI; no writes or remote jobs exist.
+  const closed = await Promise.race([
+    client.close().then(() => true, () => true),
+    new Promise(resolve => setTimeout(() => resolve(false), 2000)),
+  ]);
+  if (!closed) console.warn('PORTAL_ACCEPTANCE_CLOSE_TIMEOUT');
+  process.exit(process.exitCode ?? 0);
 }

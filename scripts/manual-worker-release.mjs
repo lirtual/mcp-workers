@@ -77,6 +77,8 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
         invariant(find(name,"plain_text")?.text === value,
           "Workflow GitHub executor identity drift: " + name);
       }
+      invariant(find("GITHUB_ACTION_OIDC_AUDIENCE","plain_text")?.text ===
+        "workflow-github-action:production", "Workflow Action OIDC audience drift");
       for (const name of ["MCP_PORTAL_CLIENT_SECRET","WORKFLOW_GITHUB_DISPATCH_TOKEN"]) {
         invariant(secretNames.has(name) && !!find(name,"secret_text"),
           "Workflow runtime credential binding missing: " + name);
@@ -215,14 +217,27 @@ export function verifyWorkflowD1Readiness(response, bootstrap, requireCompleteSc
     response[0]?.success === true && response[0]?.results?.length === 1,
     "Workflow remote D1 readback unavailable");
   const row = response[0].results[0];
-  const requiredBase = row?.migration_v1 === 1 && row?.migration_v2 === 1 &&
-    row?.migration_v3 === 1 && row?.migration_v4 === 1 &&
-    row?.attempt_table === 1 && row?.receipt_table === 1;
-  // The previous four-migration schema is allowed only before an additive
-  // GitHub capability migration, never as final production readback.
-  const beforeUpgrade = row?.migration_count === 4 && row?.migration_v5 === 0;
-  const ready = row?.migration_count === 5 && row?.migration_v5 === 1;
-  invariant(requiredBase && (requireCompleteSchema ? ready : (beforeUpgrade || ready)),
+  // Production already has migration 0005. A failed two-file deployment may
+  // leave 0006 committed; permit a controlled resume but never publish the
+  // upgraded Worker until both new migrations and tables are confirmed.
+  const base = [1,2,3,4,5].every(n => row?.["migration_v" + n] === 1) &&
+    row?.attempt_table === 1 && row?.receipt_table === 1 &&
+    row?.native_column === 1;
+  const before = row?.migration_count === 5 &&
+    row?.migration_v6 === 0 && row?.migration_v7 === 0 &&
+    row?.session_table === 0 && row?.cancellation_table === 0;
+  const partial = row?.migration_count === 6 &&
+    row?.migration_v6 === 1 && row?.migration_v7 === 0 &&
+    row?.session_table === 0 && row?.cancellation_table === 0;
+  const current = row?.migration_count === 7 &&
+    row?.migration_v6 === 1 && row?.migration_v7 === 1 &&
+    row?.migration_v8 === 0 && row?.locator_column === 0 &&
+    row?.session_table === 1 && row?.cancellation_table === 1;
+  const complete = row?.migration_count === 8 &&
+    row?.migration_v6 === 1 && row?.migration_v7 === 1 &&
+    row?.migration_v8 === 1 && row?.locator_column === 1 &&
+    row?.session_table === 1 && row?.cancellation_table === 1;
+  invariant(base && (requireCompleteSchema ? complete : (before || partial || current || complete)),
     "Workflow production D1 schema migrations missing, partial or drifted");
   invariant(Number.isSafeInteger(row?.active_runs) && row.active_runs === 0,
     "Workflow cannot redeploy while Runs are active or indeterminate");
@@ -408,6 +423,22 @@ async function current(account, worker, token, options) {
   };
 }
 
+/** Cloudflare deployment version and Secret inventories may propagate
+ * independently. Retry only these two exact post-deploy readback states;
+ * identity, configuration, schema and other version failures remain fatal. */
+export async function retryReleaseReadback(read, pause = ms => new Promise(resolve => setTimeout(resolve, ms))) {
+  for (let attempt = 0; attempt < 6; attempt++) {
+    try { return await read(); }
+    catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      const transient = /^Required (Secret binding|runtime Secret) missing: /.test(message) ||
+        message === "Active Worker version does not match the Wrangler-published version";
+      if (attempt === 5 || !transient) throw error;
+      await pause(2000);
+    }
+  }
+}
+
 async function main() {
   const [mode, worker] = process.argv.slice(2);
   invariant(["preflight", "readback", "version", "diagnostic", "d1-check"].includes(mode), "Unknown release validation mode");
@@ -450,9 +481,19 @@ async function main() {
   if (previous) invariant(previous.worker === worker && previous.sourceSha === sourceSha,
     "Release source changed");
   const exists = mode === "preflight" ? await scriptExists(account, worker, token) : true;
-  const observed = exists ? await current(account, worker, token, {
-    mode, sourceConfig, previousNamespaceId: previous?.previousNamespaceId,
-  }) : { mode: "bootstrap" };
+  const read = async () => {
+    const observed = await current(account, worker, token, {
+      mode, sourceConfig, previousNamespaceId: previous?.previousNamespaceId,
+    });
+    // Compare the active deployment inside the existing retry loop. Cloudflare
+    // may briefly serve the previous version after Wrangler reports success.
+    if (mode === 'readback' && worker === 'workflow-mcp-worker')
+      verifyPublishedVersion(previous, observed, process.env.EXPECTED_VERSION_ID);
+    return observed;
+  };
+  const observed = !exists ? { mode: "bootstrap" }
+    : mode === "readback" && worker === "workflow-mcp-worker"
+      ? await retryReleaseReadback(read) : await read();
   if (mode === "preflight") {
     await writeFile(statePath, JSON.stringify({ worker, sourceSha, ...observed }), { mode: 0o600 });
     if (process.env.GITHUB_OUTPUT) {

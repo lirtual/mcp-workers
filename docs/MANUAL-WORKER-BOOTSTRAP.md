@@ -1,6 +1,6 @@
 # 手动发布 MCP Workers：全局配置 + Worker 独立配置空间
 
-本项目没有 staging/production 等多环境运行模式。每个 Worker 使用一个**同名 GitHub Environment**，只作为 Secrets / Variables 的独立配置空间；部署目标仍是唯一的 Cloudflare Worker，入口仍为 GitHub Actions → CI → Run workflow（必须选 `main`）。
+本项目没有 staging/production 等多环境运行模式。每个 Worker 使用一个**同名 GitHub Environment**，只作为 Secrets / Variables 的独立配置空间；部署目标仍是唯一的 Cloudflare Worker，入口为 GitHub Actions → Release Worker → Run workflow（必须选 `main`）。
 
 > **迁移提醒**：旧 GitHub `production` Environment 不会被代码自动删除，也不会自动迁移其 Secrets。迁移并确认新配置完整前请保留它，**不要运行任何新版手动部署**。本次代码变更不会部署 Worker。
 
@@ -55,12 +55,12 @@ GitHub Environment Variables 只影响对应 Worker。工作流显式允许下�
 - Database：`MAX_ROWS`（1–5000）、`MAX_RESULT_BYTES`（1–8388608）、`MAX_SCHEMA_BYTES`（1–4194304）、`QUERY_TIMEOUT_MS`（1–60000）、`MAX_WRITE_AFFECTED_ROWS`（1–100）。
 - SSH、Remote Control：本次不允许附加运行时变量，保留源码安全配置。
 
-未填写可选 Variable 时仍采用 `wrangler.jsonc` 中的默认值；GitHub 中填写时会由 `wrangler deploy --var` 传入**当前选中的 Worker**，并在发布前进行类型/范围验证。五个 Worker 全部使用 `keep_vars: false`，所以旧 Cloudflare Dashboard 中**没有在源码或当前 GitHub Variables 明确声明的普通 Variable 会在下次手动部署后被清理**。不要把数据库密码或访问 Token 当作 Variable；Durable Object、Service Binding 和 Secret 不属于这些可选纯文本 Variable。
+未填写可选 Variable 时仍采用 `wrangler.jsonc` 中的默认值；GitHub 中填写时会由 `wrangler deploy --var` 传入**当前选中的 Worker**，并在发布前进行类型/范围验证。受管 Worker 使用 `keep_vars: false`，所以旧 Cloudflare Dashboard 中**没有在源码或当前 GitHub Variables 明确声明的普通 Variable 会在下次手动部署后被清理**。不要把数据库密码或访问 Token 当作 Variable；Durable Object、Service Binding 和 Secret 不属于这些可选纯文本 Variable。
 
 ## 4. 手动部署
 
 1. 完成上述全局配置和对应 Worker 的配置空间迁移；不用删除旧 `production` 环境。
-2. 打开 [GitHub Actions → CI](https://github.com/lirtual/mcp-workers/actions/workflows/ci.yml)，选择 `main`，每次只选择一个 Worker。
+2. 打开 [GitHub Actions → Release Worker](https://github.com/lirtual/mcp-workers/actions/workflows/release.yml)，选择 `main`，每次只选择一个 Worker，并显式勾选 `deploy_to_production`。
 3. GitHub 自动选择与所选 Worker 同名的 Environment；**每次发布**必须找到该 Worker 所有必需 Secrets，以及 IMA / Workflow 各自的必填 Client ID Environment Variable，缺一即中止，绝不静默沿用 Cloudflare 上的旧值。
 4. Preflight 检查 Cloudflare 账户与 Worker 是否存在。随后无论是首次部署还是更新，都仅将**选中 Worker** 的全部必需非空 Secrets 写入权限 0600 的 runner 临时文件，执行 `wrangler deploy --secrets-file`；未列出的现有 Secret 不会因本次上传而自动删除。
 5. 若 Worker 已存在，GitHub 的必需 Secret 值会覆盖 Cloudflare 对应值。Remote Control 也使用同一套密钥同步规则，但其 `DEVICE_COORDINATOR` Durable Object、配对、Agent 身份及回执均不应因 Secret 同步被重置或迁移。

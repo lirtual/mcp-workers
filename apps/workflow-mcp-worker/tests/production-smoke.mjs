@@ -1,12 +1,12 @@
 // Deliberately narrow production acceptance: one temporary result-only Workflow, no deployment.
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { scopedPublicMcpFetch, PRODUCTION_PORTAL_ENDPOINT } from '../src/mcp-public-fetch.ts';
-import { toolSchemaDigest } from '../src/plan.ts';
+import { canonicalJsonString, toolSchemaDigest } from '../src/plan.ts';
 
 const token = process.env.MCP_ACCESS_TOKEN;
 assert.ok(token, 'MCP_ACCESS_TOKEN must be present in GitHub Environment');
@@ -26,7 +26,7 @@ const echo = 'workflow-production-smoke-' + label;
 let workflowId;
 let runId;
 let failure;
-let s3PhysicalCompleted = false;
+let githubPhysicalCompleted = false;
 
 function sql(statement) {
   // stdout contains JSON only; do not log credentials, SQL args or Wrangler internals.
@@ -54,9 +54,9 @@ function cleanup() {
   if (runs.some(r => !terminal.has(r.outcome))) {
     throw Error('Refusing to delete temporary records: nonterminal Run still exists');
   }
-  if(process.env.WORKFLOW_GITHUB_SMOKE==='true' && runId && !s3PhysicalCompleted)
+  if((process.env.WORKFLOW_GITHUB_SMOKE==='true' || process.env.WORKFLOW_ACTION_TASK_SMOKE==='true') && runId && !githubPhysicalCompleted)
     throw Error('Refusing GitHub cleanup until physical GitHub Job is completed');
-  if(process.env.WORKFLOW_GITHUB_SMOKE==='true'){
+  if(process.env.WORKFLOW_GITHUB_SMOKE==='true' || process.env.WORKFLOW_ACTION_TASK_SMOKE==='true'){
     sql('DELETE FROM callback_receipts WHERE attempt_id IN (SELECT attempt_id FROM step_attempts WHERE run_id IN (SELECT id FROM runs WHERE workflow_id = ' + id + '))');
     sql('DELETE FROM step_attempts WHERE run_id IN (SELECT id FROM runs WHERE workflow_id = ' + id + ')');
   }
@@ -266,16 +266,113 @@ async function runS3Smoke() {
     const run=await response.json();
     if(run.status==='completed'){
       assert.equal(run.conclusion,'success','Physical GitHub Job did not succeed');
-      s3PhysicalCompleted=true;break;
+      githubPhysicalCompleted=true;break;
     }
     await new Promise(r=>setTimeout(r,1000));
   }
-  assert.equal(s3PhysicalCompleted,true,'Physical GitHub Job not completed');
+  assert.equal(githubPhysicalCompleted,true,'Physical GitHub Job not completed');
   console.log('GITHUB_PRODUCTION_SMOKE_OK: one CI verification, OIDC callback, physical Job complete');
 }
 
+async function runActionTaskSmoke() {
+  const credential=process.env.WORKFLOW_GITHUB_DISPATCH_TOKEN;
+  assert.ok(credential && credential.length>=20,'Dedicated GitHub token missing');
+  // An indeterminate historical Task remains in D1 for audit and is NOT
+  // deleted, retried, nor counted as a physical Session slot. Refuse to start
+  // alongside any still queued/running Workflow or nonterminated Session.
+  const outstanding=sql("SELECT count(*) AS n FROM runs WHERE outcome IN ('queued','running')");
+  assert.equal(outstanding[0]?.n,0,'Production has active Runs: Action smoke aborted');
+  const occupied=sql("SELECT count(*) AS n FROM session_executions WHERE state != 'terminated'");
+  assert.equal(occupied[0]?.n,0,'Production has live Session slots: Action smoke aborted');
+  await client.connect(transport);
+  const catalog=await tool('workflow_action_list',{});
+  assert.ok(Array.isArray(catalog.actions),'Action catalog unavailable');
+  const candidates=catalog.actions.filter(a=>a.repository==='lirtual/session-actions' &&
+    a.repositoryId===1430925009 && a.workflowPath==='.github/workflows/verify-action.yml' &&
+    a.commitSha==='c16660ae054f89ea51ebc0a0a5cca61f17f3b4e1' &&
+    a.name==='Verify Workflow Action' && a.type==='task');
+  assert.equal(candidates.length,1,'Expected exactly one reviewed Task in pinned catalog');
+  const found=candidates[0];
+  assert.deepEqual(found.inputs.outcome.options,['success','failure']);
+  const reviewed={
+    repository:found.repository,repositoryId:found.repositoryId,
+    workflowId:found.workflowId,workflowPath:found.workflowPath,
+    commitSha:found.commitSha,type:found.type,
+    contractDigest:createHash('sha256').update(canonicalJsonString({
+      name:found.name,type:found.type,inputs:found.inputs,
+    })).digest('hex'),
+  };
+  const action={...reviewed,ref:'refs/tags/v0.1.1',inputs:{outcome:'success'}};
+  const definition={version:1,name:'workflow-action-task-smoke-'+label,
+    steps:[{id:'verify',uses:'github.run',
+      with:{capability:'github.action',action}}]};
+  const draft=await tool('workflow_create',{definition:JSON.stringify(definition)});
+  workflowId=draft.workflow_id;
+  assert.match(workflowId,uuid);
+  const checked=await tool('workflow_validate',{workflow_id:workflowId,revision:1});
+  assert.equal(checked.valid,true,'Reviewed Action validation must pass');
+  assert.deepEqual(checked.reviewed_actions,[reviewed]);
+  const denied=await client.callTool({name:'workflow_publish',arguments:{
+    workflow_id:workflowId,expected_revision:1,approve_heavy_execution:true,
+  }});
+  assert.equal(denied.isError,true,'Action Publish without exact reviewed grant must fail');
+  const published=await tool('workflow_publish',{
+    workflow_id:workflowId,expected_revision:1,
+    approved_actions:checked.reviewed_actions,approve_heavy_execution:true,
+  });
+  assert.ok(published.published_version_id);
+  const opts={workflow_id:workflowId,inputs:{},
+    idempotency_key:'action-task-smoke-'+label};
+  const started=await tool('workflow_run',opts);
+  runId=started.run_id;
+  assert.match(runId,uuid);
+  assert.equal((await tool('workflow_run',opts)).run_id,runId,
+    'Action start idempotency must retain the same physical run');
+  let outcome;
+  for(let i=0;i<180;i++){
+    try{outcome=await tool('workflow_result',{run_id:runId});}
+    catch(error){
+      if(!/Request timed out/i.test(String(error)))throw error;
+      await new Promise(r=>setTimeout(r,1200));continue;
+    }
+    if(terminal.has(outcome.status)||outcome.status==='indeterminate')break;
+    await new Promise(r=>setTimeout(r,1200));
+  }
+  assert.equal(outcome?.status,'succeeded','Pinned GitHub Action Task did not succeed');
+  assert.equal(outcome.steps.length,1);
+  assert.equal(outcome.steps[0].status,'succeeded');
+  const rows=sql('SELECT candidate_run_id,candidate_run_attempt,owner_run_id,owner_run_attempt,state FROM step_attempts WHERE run_id='+quotedId(runId));
+  assert.equal(rows.length,1,'Expected one durable Task Attempt');
+  const attempt=rows[0];
+  assert.ok(Number.isSafeInteger(attempt.candidate_run_id)&&attempt.candidate_run_id>0);
+  assert.equal(attempt.candidate_run_attempt,1);
+  assert.equal(attempt.owner_run_id,attempt.candidate_run_id);
+  assert.equal(attempt.owner_run_attempt,1);
+  assert.equal(attempt.state,'succeeded');
+  const url='https://api.github.com/repos/lirtual/session-actions/actions/runs/'+attempt.candidate_run_id;
+  for(let i=0;i<60;i++){
+    const response=await fetch(url,{headers:{
+      accept:'application/vnd.github+json',authorization:'Bearer '+credential,
+      'user-agent':'mcp-workers-action-task-smoke',
+    },redirect:'manual',signal:AbortSignal.timeout(12000)});
+    assert.equal(response.status,200,'Pinned physical Action Run not readable');
+    const physical=await response.json();
+    assert.equal(physical.head_sha,reviewed.commitSha,'Physical code SHA changed');
+    assert.equal(physical.repository?.id,reviewed.repositoryId,'Physical repository mismatch');
+    if(physical.status==='completed'){
+      assert.equal(physical.conclusion,'success','Physical Action Task failed');
+      githubPhysicalCompleted=true;
+      break;
+    }
+    await new Promise(r=>setTimeout(r,1000));
+  }
+  assert.equal(githubPhysicalCompleted,true,'Physical Action Task not terminal');
+  console.log('ACTION_TASK_SMOKE_OK: protected tag, reviewed grant, signed Claim, physical GitHub Task and cleanup gates');
+}
+
 try {
-  await (process.env.WORKFLOW_GITHUB_SMOKE==='true'?runS3Smoke():
+  await (process.env.WORKFLOW_ACTION_TASK_SMOKE==='true'?runActionTaskSmoke():
+    process.env.WORKFLOW_GITHUB_SMOKE==='true'?runS3Smoke():
     process.env.WORKFLOW_MCP_SMOKE==='true'?runS2Smoke():runSmoke());
 } catch (e) {
   failure = e;

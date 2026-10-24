@@ -1,3 +1,11 @@
+import {requestGitHubActionCancellation} from './github-action-cancel.ts';
+import { PRODUCTION_PORTAL_ENDPOINT } from './mcp-public-fetch.ts';
+import {reconcilePersistedGitHubActionAttempt} from './github-action-attempt-reconcile.ts';
+import {releaseVerifiedSessionSlot} from './github-action-session.ts';
+import { discoverGitHubActions } from './github-action-discovery.ts';
+import { verifyActionDispatchRef } from './github-action-dispatch-ref.ts';
+import { reviewedGitHubAction, assertReviewedGitHubAction, type ReviewedGitHubAction } from './github-action-review.ts';
+import { approvedActionRepositories } from './github-action-catalog.ts';
 import { compilePlan, PlanError, canonicalJsonString } from './plan.ts';
 import {observeInstance, shouldExpireUnconfirmedOutcome, unresolvedNativeTerminalError, OUTCOME_SETTLE_WINDOW_MS} from './instance-observation.ts';
 import YAML from 'yaml';
@@ -23,11 +31,15 @@ export type Env = {
   // Optional, MCP-only machine identity for the pinned Cloudflare MCP Portal.
   MCP_PORTAL_CLIENT_ID?: string;
   MCP_PORTAL_CLIENT_SECRET?: string;
-  // For production MCP, pin to the existing MCP Portal;
-  // for isolated test MCP, pin to test-mcp (never selected by Draft input).
+  // The sole approved Portal is fixed by release configuration.
   MCP_PORTAL_ENDPOINT?: string;
   // Production GitHub requires explicit opt-in and fixed OIDC/executor pins.
   WORKFLOW_GITHUB_DISPATCH_TOKEN?: string;
+  // Server-owned, read-only Action discovery scopes; no publication or execution grant.
+  GITHUB_ACTION_APPROVED_REPOSITORIES?: string;
+  // Separate GitHub-issued OIDC audience for immutable Action claims.
+  // This is an identity binding, not an execution feature switch.
+  GITHUB_ACTION_OIDC_AUDIENCE?: string;
   GITHUB_EXECUTOR_REPOSITORY?: string;
   GITHUB_EXECUTOR_REPOSITORY_ID?: string;
   GITHUB_EXECUTOR_REF?: string;
@@ -81,8 +93,23 @@ export class WorkflowService {
   private env:Env;
   constructor(env:Env){this.env=env;}
   private get db(){return this.env.DB;}
-  async list(){const out=await this.db.prepare('SELECT * FROM workflows ORDER BY updated_at DESC LIMIT 100').all<WorkflowRow>();
-    return {workflows:out.results.map(r=>({workflow_id:r.id,name:r.name,draft_revision:r.draft_revision,published_version_id:r.active_version_id,state:r.state}))};}
+  async list(){
+    const out=await this.db.prepare('SELECT * FROM workflows ORDER BY updated_at DESC LIMIT 100').all<WorkflowRow>();
+    // Four global physical Session slots are independent of the parent
+    // Workflow's business outcome. The existing read-only workflow_list is
+    // enough to discover a held/uncertain slot and its server-pinned run_id;
+    // no separate public Session enumeration capability is necessary.
+    const held=await this.db.prepare(`SELECT s.slot,s.run_id,s.step_id,s.state,
+      s.updated_at,a.state AS attempt_state
+      FROM session_executions s
+      LEFT JOIN step_attempts a ON a.run_id=s.run_id AND a.step_id=s.step_id
+      WHERE s.state!='terminated' ORDER BY s.slot LIMIT 4`)
+      .all<{slot:number;run_id:string;step_id:string;state:string;updated_at:number;attempt_state:string|null}>();
+    return {workflows:out.results.map(r=>({workflow_id:r.id,name:r.name,draft_revision:r.draft_revision,published_version_id:r.active_version_id,state:r.state})),
+      active_sessions:held.results.map(x=>({slot:x.slot,run_id:x.run_id,
+        step_id:x.step_id,recorded_state:x.state,recorded_at:x.updated_at,
+        attempt_state:x.attempt_state,physical_health:'unverified' as const}))};
+  }
   async get(workflow_id:string){assertId(workflow_id);const row=await this.row(workflow_id);return workflowView(row);}
   private async row(id:string){const row=await this.db.prepare('SELECT * FROM workflows WHERE id=?').bind(id).first<WorkflowRow>();if(!row)throw new StateError('workflow_not_found');return row;}
   async create(definition:string){
@@ -98,16 +125,51 @@ export class WorkflowService {
     if(!x.meta.changes) {await this.row(workflow_id);throw new StateError('revision_conflict');}
     return {workflow_id,draft_revision:expected_revision+1};
   }
+  private async checkedGitHubActions(plan:Plan):Promise<ReviewedGitHubAction[]> {
+    const actions=plan.steps.filter(step=>step.uses==='github.run'&&step.with.capability==='github.action');
+    if(!actions.length)return [];
+    const token=this.env.WORKFLOW_GITHUB_DISPATCH_TOKEN;
+    if(!token)throw new StateError('github_action_token_missing');
+    const grants=approvedActionRepositories(this.env.GITHUB_ACTION_APPROVED_REPOSITORIES);
+    const approved:ReviewedGitHubAction[]=[];
+    for(const step of actions){
+      const raw=step.with.action as Record<string,unknown>;
+      const expected:ReviewedGitHubAction={
+        repository:raw.repository as string,repositoryId:raw.repositoryId as number,
+        workflowId:raw.workflowId as number,workflowPath:raw.workflowPath as string,
+        commitSha:raw.commitSha as string,type:raw.type as 'task'|'session',
+        contractDigest:raw.contractDigest as string,
+      };
+      const grant=grants.find(g=>g.repository===expected.repository&&
+        g.repositoryId===expected.repositoryId);
+      if(!grant)throw new StateError('github_action_repository_not_approved');
+      // Discovery follows the current default branch, but validation and
+      // Publish must re-read the exact SHA approved in this Draft. A newer
+      // default-branch commit must not invalidate an immutable old review.
+      const discovered=await discoverGitHubActions({...grant,token,commitSha:expected.commitSha});
+      const candidate=discovered.find(d=>d.workflowId===expected.workflowId&&d.workflowPath===expected.workflowPath);
+      if(!candidate)throw new StateError('github_action_not_found');
+      try{
+        await assertReviewedGitHubAction(expected,candidate,this.env.GITHUB_ACTION_APPROVED_REPOSITORIES,raw.inputs as Record<string,unknown>);
+        // GitHub dispatch accepts a tag/ref, not an arbitrary pinned commit.
+        // Publication must review and store exactly which tag selects that SHA.
+        await verifyActionDispatchRef(expected,raw.ref as string,token);
+      }catch{throw new StateError('github_action_review_changed');}
+      approved.push(await reviewedGitHubAction(candidate));
+    }
+    return approved;
+  }
   async validate(workflow_id:string,revision:number){
     assertId(workflow_id);const row=await this.row(workflow_id);
     if(row.draft_revision!==revision)throw new StateError('revision_conflict');
     try {
       const {digest,plan}=await compilePlan(row.draft);
+      const reviewed_actions=await this.checkedGitHubActions(plan);
       const required_approvals=[...new Map(plan.steps.filter(s=>s.uses==='mcp.call').map(s=>{
         const grant:ReadonlyOperation={endpoint:s.with.endpoint as string,tool:s.with.tool as string,scope:'read',schema_digest:s.with.schema_digest as string};
         return [JSON.stringify(grant),grant] as const;
       })).values()];
-      return {valid:true,digest,steps:plan.steps.length,issues:[],
+      return {valid:true,digest,steps:plan.steps.length,issues:[],...(reviewed_actions.length?{reviewed_actions}:{}),
         ...(required_approvals.length?{required_approvals}:{}),
         ...(plan.steps.some(s=>s.uses==='github.run')?{requires_heavy_execution_approval:true}:{})};
     }catch(error){
@@ -115,10 +177,14 @@ export class WorkflowService {
       return {valid:false,issues:[{code:error.message.split(':')[0]}]};
     }
   }
-  async publish(workflow_id:string,expected_revision:number,approved_operations:ReadonlyOperation[]=[],accept_target_risks=false,approve_heavy_execution=false){
+  async publish(workflow_id:string,expected_revision:number,approved_operations:ReadonlyOperation[]=[],accept_target_risks=false,approve_heavy_execution=false,approved_actions:ReviewedGitHubAction[]=[]){
     assertId(workflow_id);const row=await this.row(workflow_id);
     if(row.draft_revision!==expected_revision)throw new StateError('revision_conflict');
     const {plan,digest:plan_digest}=await compilePlan(row.draft);
+    const reviewedActions=await this.checkedGitHubActions(plan);
+    const ordering=(items:ReviewedGitHubAction[])=>items.map(x=>JSON.stringify(x)).sort();
+    if(JSON.stringify(ordering(reviewedActions))!==JSON.stringify(ordering(approved_actions)))
+      throw new StateError('github_action_approval_required');
     // The owner must explicitly approve the exact immutable URL + tool + scope.
     // Publishing an arbitrary Draft is not itself an external-operation grant.
     const required=[...new Map(plan.steps.filter(s=>s.uses==='mcp.call').map(s=>{
@@ -130,7 +196,7 @@ export class WorkflowService {
     if(required.length){
       const portal=this.env.MCP_PORTAL_ENDPOINT;
       if(portal===undefined)throw new StateError('portal_target_not_configured');
-      if(!['https://test-mcp.lirtual.dpdns.org/mcp','https://mcp.lirtual.dpdns.org/mcp'].includes(portal) ||
+      if(portal!==PRODUCTION_PORTAL_ENDPOINT ||
          required.some(grant=>grant.endpoint!==portal))throw new StateError('portal_target_not_authorized');
     }
     // Personal trusted-target mode: a separate explicit risk acknowledgement
@@ -140,7 +206,8 @@ export class WorkflowService {
     const hasGithub=plan.steps.some(s=>s.uses==='github.run');
     if(hasGithub && approve_heavy_execution!==true)throw new StateError('github_execution_approval_required');
     const scopedPlan:Plan=required.length?{...plan,mcp_approvals:required,mcp_target_risks_accepted:true}:plan;
-    const publishedPlan:Plan=hasGithub?{...scopedPlan,github_execution_approved:true}:scopedPlan;
+    const grantedPlan:Plan=reviewedActions.length?{...scopedPlan,github_action_approvals:reviewedActions}:scopedPlan;
+    const publishedPlan:Plan=hasGithub?{...grantedPlan,github_execution_approved:true}:grantedPlan;
     // Repeated Publish of an unchanged Draft resolves to its existing Version.
     if(row.active_version_id){
       const current=await this.db.prepare('SELECT digest FROM workflow_versions WHERE id=? AND workflow_id=?').bind(row.active_version_id,workflow_id).first<{digest:string}>();
@@ -161,6 +228,20 @@ export class WorkflowService {
       throw new StateError('revision_conflict');
     }
     return {workflow_id,published_version_id:version,digest:plan_digest,state:row.state==='paused'?'paused':'active'};
+  }
+  /** Cancel one approved physical Task/Session Step by server-pinned Run identity.
+   * Parent business results and physical Session slots remain independent:
+   * a 202 GitHub cancellation ACK is not evidence of terminal completion.
+   */
+  async cancel(run_id:string,step_id:string,force=false){
+    assertId(run_id);assertId(step_id);
+    if(!this.env.WORKFLOW_GITHUB_DISPATCH_TOKEN)
+      throw new StateError('github_action_executor_not_configured');
+    const cancellation=await requestGitHubActionCancellation(
+      this.db,run_id,step_id,this.env.WORKFLOW_GITHUB_DISPATCH_TOKEN,force);
+    if(cancellation==='not_found')throw new StateError('github_action_not_cancellable');
+    return {run_id,step_id,cancellation,
+      physical_terminated:cancellation==='terminal_confirmed'};
   }
   async pause(workflow_id:string){assertId(workflow_id);const x=await this.db.prepare("UPDATE workflows SET state='paused',updated_at=? WHERE id=? AND state='active'").bind(now(),workflow_id).run();if(!x.meta.changes)throw new StateError('not_active');return {workflow_id,state:'paused'};}
   async resume(workflow_id:string){assertId(workflow_id);const x=await this.db.prepare("UPDATE workflows SET state='active',updated_at=? WHERE id=? AND state='paused' AND active_version_id IS NOT NULL").bind(now(),workflow_id).run();if(!x.meta.changes)throw new StateError('not_paused');return {workflow_id,state:'active'};}
@@ -191,6 +272,27 @@ export class WorkflowService {
     const wf=await this.row(workflow_id);
     if(wf.state!=='active'||!wf.active_version_id)throw new StateError('workflow_not_active');
     const version=wf.active_version_id;
+    // Reject unsupported Action execution before reserving any durable Run
+    // slot. Publication permits owner review, not dispatch authorization.
+    const published=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=? AND workflow_id=?')
+      .bind(version,workflow_id).first<{plan:string}>();
+    if(!published)throw new StateError('published_version_missing');
+    let activePlan:Plan;
+    try{activePlan=JSON.parse(published.plan) as Plan;}
+    catch{throw new StateError('published_plan_invalid');}
+    if(!Array.isArray(activePlan.steps))throw new StateError('published_plan_invalid');
+    const protocolActions=activePlan.steps.filter(step=>
+      step.uses==='github.run'&&step.with?.capability==='github.action');
+    // Session uses the same reviewed GitHub Action admission as Task.
+    // A Session's physical capacity is reserved atomically (max 4) by its
+    // durable Runner step BEFORE dispatch; admission here only reserves the
+    // normal Workflow Run slot, and never grants an extra physical Session.
+    if(protocolActions.some(step=>!['task','session'].includes(
+       String((step.with.action as {type?:unknown}|undefined)?.type))))
+      throw new StateError('github_action_invalid_publication');
+    if(protocolActions.length &&
+       (!this.env.WORKFLOW_GITHUB_DISPATCH_TOKEN||!this.env.GITHUB_ACTION_OIDC_AUDIENCE))
+      throw new StateError('github_action_executor_not_configured');
     const id=crypto.randomUUID(),t=now();
     const insert=await this.db.prepare(
       "INSERT OR IGNORE INTO runs(id,workflow_id,version_id,instance_id,admission_key,request_digest,inputs,start_state,outcome,created_at,updated_at) SELECT ?,?,?,?,?,?,?, 'reserved','queued',?,? WHERE EXISTS (SELECT 1 FROM workflows WHERE id=? AND state='active' AND active_version_id=?) AND (SELECT COUNT(*) FROM runs WHERE outcome IN ('queued','running')) < 8"
@@ -290,12 +392,70 @@ export class WorkflowService {
     if(!version)throw new StateError('version_missing');
     const terminal=['succeeded','failed','indeterminate','cancelled'].includes(row.outcome)||native==='complete';
     const byId=new Map(stored.map(s=>[s.step_id,s]));
-    const steps=(JSON.parse(version.plan) as Plan).steps.map(s=>{
+    const publishedPlan=JSON.parse(version.plan) as Plan;
+    const steps=publishedPlan.steps.map(s=>{
       const saved=byId.get(s.id);
       if(saved && ['succeeded','failed','skipped','indeterminate'].includes(saved.status))return saved;
       return {step_id:s.id,status:terminal?'indeterminate':saved?.status??'waiting',error_code:saved?.error_code??null};
     }).sort((a,b)=>a.step_id<b.step_id?-1:a.step_id>b.step_id?1:0);
-    return {run_id,workflow_id:row.workflow_id,published_version_id:row.version_id,start_state:row.start_state,status:['succeeded','failed','indeterminate','cancelled'].includes(row.outcome)?row.outcome:row.start_state!=='started'?'start_unknown':applyStatus(native,row.outcome),steps};
+    // A Session may remain live after the parent Workflow succeeds at Ready.
+    // Expose its last durable state independently without calling it "online":
+    // the GitHub physical health is not live-verified by this D1 snapshot.
+    const hasSessions=publishedPlan.steps.some(s=>
+      s.uses==='github.run'&&s.with.capability==='github.action'&&
+      (s.with.action as {type?:unknown}|undefined)?.type==='session');
+    if(hasSessions&&this.env.WORKFLOW_GITHUB_DISPATCH_TOKEN){
+      // Status/Result are reconciliatory tools. A completed parent cannot
+      // mask its still-running physical Session, and API outages cannot free
+      // a slot. At most four active Sessions exist globally.
+      const active=(await this.db.prepare(`SELECT s.step_id,a.attempt_id
+        FROM session_executions s
+        LEFT JOIN step_attempts a ON a.run_id=s.run_id AND a.step_id=s.step_id
+        WHERE s.run_id=? AND s.state!='terminated' ORDER BY s.step_id LIMIT 4`)
+        .bind(run_id).all<{step_id:string;attempt_id:string|null}>()).results;
+      for(const session of active){
+        if(!session.attempt_id)continue;
+        try{
+          await reconcilePersistedGitHubActionAttempt(
+            this.db,session.attempt_id,this.env.WORKFLOW_GITHUB_DISPATCH_TOKEN);
+          await releaseVerifiedSessionSlot(this.db,run_id,session.step_id);
+        }catch{
+          // GitHub API unknown never means terminal or capacity released.
+        }
+      }
+    }
+    // A web Quick Tunnel Session has no Tailnet hostname. Never advertise a
+    // guessed MagicDNS host for it just because its GitHub job became Ready.
+    const tailnetSteps=new Set(publishedPlan.steps.filter(step=>{
+      if(step.uses!=='github.run'||step.with.capability!=='github.action')return false;
+      const action=step.with.action as {repository?:unknown;workflowPath?:unknown}|undefined;
+      return action?.repository==='lirtual/session-actions'&&
+        (action.workflowPath==='.github/workflows/linux.yml'||
+         action.workflowPath==='.github/workflows/windows.yml');
+    }).map(step=>step.id));
+    const sessions=hasSessions?(await this.db.prepare(`SELECT s.step_id,s.state,s.session_url,
+      s.updated_at,a.candidate_run_id,a.candidate_run_attempt,a.state AS attempt_state
+      FROM session_executions s
+      LEFT JOIN step_attempts a ON a.run_id=s.run_id AND a.step_id=s.step_id
+      WHERE s.run_id=? ORDER BY s.step_id`).bind(run_id)
+      .all<{step_id:string;state:string;session_url:string|null;updated_at:number;candidate_run_id:number|null;candidate_run_attempt:number|null;attempt_state:string|null}>()).results
+      .map(record=>({step_id:record.step_id,recorded_state:record.state,
+        recorded_at:record.updated_at,
+        session_url:record.state==='ready'?record.session_url:null,
+        github_run_id:record.candidate_run_id,
+        github_run_attempt:record.candidate_run_attempt,
+        // Private MagicDNS label selected by the pinned Session GitHub
+        // workflow (hostname: sa-${{ github.run_id }}-a${{ github.run_attempt }}). This is a connection
+        // hint, not proof that Tailnet ACL or service reachability is healthy.
+        private_hostname:record.state==='ready' && tailnetSteps.has(record.step_id) &&
+          Number.isSafeInteger(record.candidate_run_id) &&
+          (record.candidate_run_id??0)>0
+          && Number.isSafeInteger(record.candidate_run_attempt)
+          && (record.candidate_run_attempt??0)>0
+          ?'sa-'+record.candidate_run_id+'-a'+record.candidate_run_attempt:null,
+        attempt_state:record.attempt_state,
+        physical_health:record.state==='terminated'?'terminated':'unverified'})):[];
+    return {run_id,workflow_id:row.workflow_id,published_version_id:row.version_id,start_state:row.start_state,status:['succeeded','failed','indeterminate','cancelled'].includes(row.outcome)?row.outcome:row.start_state!=='started'?'start_unknown':applyStatus(native,row.outcome),steps,...(hasSessions?{sessions}:{})};
   }
   async result(run_id:string){
     const meta=await this.status(run_id);

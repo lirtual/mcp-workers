@@ -1,3 +1,6 @@
+import {watchPersistedSessions} from './github-action-session-watch.ts';
+import { runPublishedGitHubActionTask } from './github-action-task.ts';
+import { runPublishedGitHubActionSession } from './github-action-session.ts';
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { evaluateArguments, evaluateCondition, toolSchemaDigest } from './plan.ts';
@@ -6,7 +9,7 @@ import type { Env } from './store.ts';
 import { limitResult } from './store.ts';
 import { registerGithubAttempt,recordGithubDispatchResult } from './github-claim.ts';
 import { dispatchGithubAttempt,selectedGithubExecutor } from './github-dispatch.ts';
-import { scopedPublicMcpFetch, TRUSTED_PORTAL_ENDPOINT, PRODUCTION_PORTAL_ENDPOINT, type PortalServiceToken } from './mcp-public-fetch.ts';
+import { scopedPublicMcpFetch, PRODUCTION_PORTAL_ENDPOINT, type PortalServiceToken } from './mcp-public-fetch.ts';
 
 type Outcome={status:'succeeded'|'failed'|'skipped'|'indeterminate';output?:any;error_code?:string};
 const now=()=>Date.now();
@@ -28,20 +31,14 @@ async function callApprovedReadonly(env:Env,plan:Plan,step:Step,args:Record<stri
   if(await toolSchemaDigest(step.with.input_schema,step.with.output_schema)!==schema_digest)
     throw Error('approved_schema_changed');
   const client=new Client({name:'workflow-mcp-readonly-candidate',version:'0.1.0'});
-  // Environment-scoped Portal selection cannot be changed by a Draft, a
-  // Published Plan, or Run inputs. Production must explicitly select its own
-  // Portal; the test Portal is never its implicit fallback.
+  // Environment-scoped Portal identity cannot be changed by a Draft, a
+  // Published Plan, or Run inputs. Only the production Portal is supported.
   const chosenPortal=env.MCP_PORTAL_ENDPOINT;
   if(chosenPortal===undefined)throw Error('portal_target_not_configured');
-  if(chosenPortal!==undefined){
-    if(chosenPortal!==TRUSTED_PORTAL_ENDPOINT && chosenPortal!==PRODUCTION_PORTAL_ENDPOINT)
-      throw Error('portal_target_not_authorized');
-    if(endpoint!==chosenPortal)throw Error('portal_target_not_authorized');
-  }
-  if(endpoint===PRODUCTION_PORTAL_ENDPOINT && chosenPortal!==PRODUCTION_PORTAL_ENDPOINT)
-    throw Error('portal_target_not_configured');
+  if(chosenPortal!==PRODUCTION_PORTAL_ENDPOINT || endpoint!==PRODUCTION_PORTAL_ENDPOINT)
+    throw Error('portal_target_not_authorized');
   let portalToken:PortalServiceToken|undefined;
-  if(endpoint===TRUSTED_PORTAL_ENDPOINT || endpoint===PRODUCTION_PORTAL_ENDPOINT){
+  if(endpoint===PRODUCTION_PORTAL_ENDPOINT){
     // Fail closed before making a network request; never fall back to
     // unauthenticated access or pass credentials through Workflow inputs.
     if(!env.MCP_PORTAL_CLIENT_ID||!env.MCP_PORTAL_CLIENT_SECRET)
@@ -49,7 +46,7 @@ async function callApprovedReadonly(env:Env,plan:Plan,step:Step,args:Record<stri
     portalToken={clientId:env.MCP_PORTAL_CLIENT_ID,clientSecret:env.MCP_PORTAL_CLIENT_SECRET};
   }
   const transport=new StreamableHTTPClientTransport(new URL(endpoint),{
-    fetch:scopedPublicMcpFetch(endpoint,fetch,portalToken,chosenPortal??TRUSTED_PORTAL_ENDPOINT),
+    fetch:scopedPublicMcpFetch(endpoint,fetch,portalToken,PRODUCTION_PORTAL_ENDPOINT),
   });
   try{
     await client.connect(transport);
@@ -88,6 +85,10 @@ async function runGithubStep(
 ):Promise<Outcome>{
   if(plan.github_execution_approved!==true)
     return {status:'failed',error_code:'github_execution_approval_required'};
+  if(s.with.capability==='github.action')
+    return (s.with.action as {type?:unknown}|undefined)?.type==='session'
+      ?runPublishedGitHubActionSession(env,plan,s,runId,step)
+      :runPublishedGitHubActionTask(env,plan,s,runId,step);
   if(s.with.capability!=='github.workflow.check')
     return {status:'failed',error_code:'github_capability_not_registered'};
   if(!env.WORKFLOW_GITHUB_DISPATCH_TOKEN||!env.GITHUB_EXECUTOR_REPOSITORY||
@@ -244,6 +245,21 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
     }catch{
       await db.prepare("UPDATE runs SET outcome='indeterminate',error_code='execution_interrupted',updated_at=? WHERE id=? AND outcome='running'").bind(now(),id).run();
       throw Error('execution_interrupted');
+    }finally{
+      // The parent business Run can finish at Session Ready, but its GitHub
+      // job is a separate physical resource. Keep THIS native Workflow
+      // sleeping and reconciling until terminal evidence or the bounded
+      // watch window. No external scheduler, false completion, or slot leak
+      // on a successful Ready. Expiry requests normal cancellation only.
+      if(plan.steps.some(s=>s.uses==='github.run'&&
+         s.with.capability==='github.action'&&
+         (s.with.action as {type?:unknown}|undefined)?.type==='session')){
+        try{await watchPersistedSessions(this.env,id,step);}
+        catch{
+          // The independent Session record still holds quota, and explicit
+          // workflow_status performs a verified recovery readback.
+        }
+      }
     }
   }
 }

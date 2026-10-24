@@ -45,7 +45,7 @@ test("production DO binding lists per-device tools without v1 fallback", async (
   assert.equal(unscoped.result.isError, true, "never allow implicit fallback to the old VPC");
 });
 
-test("production installer is pinned to the public v0.1.13 release and its own origin", async () => {
+test("production public installer routes use only reviewed pinned release", async () => {
   const { default: worker } = await import("../src/worker.ts");
   const prod = "https://remote-control-mcp-worker.aiyaya.workers.dev";
   const env = { MCP_ACCESS_TOKEN: "owner-only", REMOTE_CONTROL_INSTALL_ORIGIN: prod,
@@ -54,8 +54,17 @@ test("production installer is pinned to the public v0.1.13 release and its own o
   const response = await worker.fetch(new Request(prod + "/install.sh"), env);
   assert.equal(response.status, 200);
   const content = await response.text();
-  assert.match(content, /remote-control-agent-v0\.1\.13/);
-  assert.ok(content.includes("--endpoint") && content.includes(prod + "/"));
+  assert.match(content, /remote-control-agent-v0\.1\.22/);
+  assert.match(content, /--upgrade/);
+  assert.doesNotMatch(content, /remote-control-agent-v0\.1\.13/);
+  const windows = await worker.fetch(new Request(prod + "/install.ps1"), env);
+  assert.equal(windows.status, 200);
+  assert.match(await windows.text(), /e5dfde2e20b451a232e8ad1a53d5099ae4a4fbe8913ef9b7c05d1c92eb03b120/);
+  const home = await worker.fetch(new Request(prod + "/"), env);
+  assert.equal(home.status, 200);
+  const homepage = await home.text();
+  assert.match(homepage, /Remote Control Agent/);
+  assert.match(homepage, /const ready=\{windows:true,linux:true\}/);
   const rejected = await worker.fetch(new Request("https://unauthorized.test/install.sh"), env);
   assert.equal(rejected.status, 403);
 });

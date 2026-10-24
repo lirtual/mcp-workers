@@ -36,9 +36,13 @@ removed. Production resources must not be used for rehearsals.
   Workflows and the temporary Worker were removed after verification. **This
   proves coexistence and retention while the old export remains**, not safe
   deletion of the old export.
-- Production was queried **read-only**: D1 `workflow-mcp-worker` had no business
-  rows, five `d1_migrations` entries, four explicit indexes and provider-managed
-  `_cf_KV`. The old native `workflow-mcp-runner` showed six completed instances.
+- Historical production check on **2026-10-23** observed zero business rows,
+  five applied migrations and six completed native Workflow instances. These
+  are point-in-time findings, **not** current export or cutover assumptions.
+  The follow-up review on **2026-10-25** reported **8 migrations**, **7 Workflows**,
+  **58 Runs**, **49 terminated Session executions** and **4 delivered Callback
+  receipts**. Recheck every mutable count, pending Task/Session, external GitHub
+  side effects and in-flight callbacks immediately before any write freeze.
 
 - Repository-pinned Wrangler **4.130.0** was run locally under temporary Node
   **24.21.0** without changing the system Node installation. Release script
@@ -47,29 +51,29 @@ removed. Production resources must not be used for rehearsals.
   `WorkflowRunner` and old D1 bindings: it is a build/preflight check, **not**
   an authenticated isolated deployment or a migration test.
 
-## Current isolated Wrangler E2E prerequisite
+## Current integration boundary
 
-The existing GitHub Actions isolated Workflow E2E now runs on the #198
-implementation branch and deploys a disposable Worker using
-`MCP_PORTAL_CLIENT_ID` as a Wrangler `vars` plaintext binding, asserting
-its type through Cloudflare readback. It cannot be run successfully yet:
-GitHub Environment `workflow-mcp-worker` currently holds the Client ID only
-as a **Secret**, while `${{ vars.MCP_PORTAL_CLIENT_ID }}` is missing. The
-previous GitHub dispatch token key also remains in that Environment.
+The old branch-local `mcp-portal-cloud-e2e.mjs` was deleted by main and must
+**not** be reintroduced. The current GitHub workflows are split into
+`ci.yml` (checks), `release.yml` (explicit production-only release) and
+`acceptance.yml` (main-only Workflow acceptance). Offline CI success and
+Wrangler `--dry-run` do not prove the same-name Secret → Variable transition
+or a production-shaped D1 import.
 
-Before live E2E, authorize the targeted GitHub Environment change and set
-`MCP_PORTAL_CLIENT_ID` as a Variable using its existing actual ID. Never
-print, guess, or replace the ID with a fixture value for the Portal E2E.
-Do not delete the existing Secret until the new release path and rollback
-are validated. The E2E job does not publish the production Worker.
+#199 must use a disposable Worker and isolated Wrangler credentials to prove
+the real deployment/readback/failure-recovery flow. Do not configure the real
+GitHub Environment `MCP_PORTAL_CLIENT_ID` Variable, remove its existing Secret
+or dispatch main-only acceptance merely to fix a PR check. First integrate and
+validate the release path; authorize the credential transition separately.
+No changes to production credentials or durable resources are implied.
 
 ## Still required before #204 or production change
 
 1. Using the pinned Wrangler release toolchain, repeat same-name Secret to
    Variable conversion and reverse recovery against a disposable Worker. Test
    deployment failure after the binding change and confirm readback/rollback.
-2. Verify the **production-shaped** export/import handling for the existing
-   five migration files and any provider-owned `_cf_KV` state before cutover;
+2. Verify the **production-shaped** export/import handling for the currently applied
+   eight migration files and any provider-owned `_cf_KV` state before cutover;
    the isolated source/target SQL transfer and full integrity comparison above
    now pass. Stop if the platform-owned table requires unsafe import handling.
 3. The isolated old/new Workflow coexistence and historical lookup test now

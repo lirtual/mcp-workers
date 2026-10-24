@@ -22,7 +22,7 @@ function requiresAllApps(file) {
     || file === 'pnpm-workspace.yaml'
     || file === '.npmrc'
     || file.startsWith('packages/')
-    || file === '.github/workflows/ci.yml'
+    || ['ci.yml', 'release.yml', 'acceptance.yml', 'workflow-github-executor.yml'].some(name => file === '.github/workflows/' + name)
     || file.startsWith('scripts/select-affected-apps')
     || file.startsWith('scripts/manual-worker-release')
     || file.startsWith('scripts/bootstrap-worker-secrets')
@@ -60,7 +60,13 @@ function changedFilesForCurrentEvent(env) {
 function main(env = process.env) {
   let selected;
   let changedFiles;
-  if (env.EVENT_NAME === 'workflow_dispatch') {
+  if (env.REUSABLE_WORKER) {
+    if (!RELEASE_WORKERS.includes(env.REUSABLE_WORKER)) {
+      throw new Error(`Unsupported reusable Worker selection: ${env.REUSABLE_WORKER}`);
+    }
+    selected = [env.REUSABLE_WORKER];
+    changedFiles = [];
+  } else if (env.EVENT_NAME === 'workflow_dispatch') {
     const production = env.MANUAL_REF === 'refs/heads/main'
       && RELEASE_WORKERS.includes(env.MANUAL_WORKER);
     if (!production) {
@@ -76,8 +82,8 @@ function main(env = process.env) {
   process.stdout.write(`Changed files:\n${changedFiles.map(file => `  ${file}\n`).join('')}`);
   const details = selectionDetails(changedFiles);
   details.apps = selected;
-  if (env.EVENT_NAME === 'workflow_dispatch' &&
-      env.MANUAL_WORKER === 'remote-control-mcp-worker') {
+  if (env.REUSABLE_WORKER === 'remote-control-mcp-worker' ||
+      (env.EVENT_NAME === 'workflow_dispatch' && env.MANUAL_WORKER === 'remote-control-mcp-worker')) {
     details.remoteControlChanged = true;
   }
   details.databaseChanged = selected.includes('database-mcp-worker');

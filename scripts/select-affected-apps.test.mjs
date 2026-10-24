@@ -27,9 +27,10 @@ test('shared package and lockfile changes select every app, including ssh-mcp-wo
 
 test('SSH remains CI-checked and can be manually selected for production release', async () => {
   const workflow = await readFile(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  const release = await readFile(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
   assert.match(workflow, /node scripts\/select-affected-apps\.mjs/);
   assert.match(workflow, /pnpm --filter "\$app" check/);
-  assert.equal(workflow.includes('\n          - ssh-mcp-worker\n'), true);
+  assert.equal(release.includes('\n          - ssh-mcp-worker\n'), true);
   for (const files of [['apps/ssh-mcp-worker/src/hosts.ts'], ['packages/portal-auth/src/index.ts'], ['pnpm-lock.yaml']]) {
     assert.equal(selectAffectedApps(files).includes('ssh-mcp-worker'), true, files.join(','));
   }
@@ -38,12 +39,12 @@ test('SSH remains CI-checked and can be manually selected for production release
 test('GitHub Actions MCP is CI-checked and manually deployable from main', async () => {
   assert.deepEqual(selectAffectedApps(['apps/github-actions-mcp-worker/src/index.ts']), ['github-actions-mcp-worker']);
   assert.equal(selectAffectedApps(['pnpm-lock.yaml']).includes('github-actions-mcp-worker'), true);
-  const workflow = await readFile(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  const workflow = await readFile(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
   assert.equal(workflow.includes('\n          - github-actions-mcp-worker\n'), true);
 });
 
 test('retired Preview cannot be redeployed, and production still requires main', async () => {
-  const workflow = await readFile(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  const workflow = await readFile(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
   assert.doesNotMatch(workflow, /remote-control-v2-preview|deploy-preview:|wrangler\\.v2-preview/);
   const run=(worker,ref)=>execFileSync(process.execPath,['scripts/select-affected-apps.mjs'],{
     cwd:new URL('../',import.meta.url),
@@ -59,6 +60,6 @@ test('retired Preview cannot be redeployed, and production still requires main',
 test('Workflow MCP Workflow is CI-checked and may only be manually released from main', async () => {
   assert.deepEqual(selectAffectedApps(['apps/workflow-mcp-worker/src/index.ts']), ['workflow-mcp-worker']);
   assert.ok(selectAffectedApps(['pnpm-lock.yaml']).includes('workflow-mcp-worker'));
-  const workflow = await readFile(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  const workflow = await readFile(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
   assert.equal(workflow.includes('\n          - workflow-mcp-worker\n'), true);
 });

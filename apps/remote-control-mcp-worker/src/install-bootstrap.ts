@@ -1,6 +1,7 @@
+import { renderInstallHome } from "./install-home.ts";
 /**
- * Planned Worker-local convenience bootstrap. Fail closed until a reviewed
- * immutable zero-Python Release is published and its pins are supplied.
+ * Existing immutable, explicitly pinned Linux bootstrap and the public
+ * onboarding page. Windows remains fail-closed without a new reviewed Release.
  */
 export type InstallReleasePin = Readonly<{
   tag: string; commit: string; x64Sha256: string; arm64Sha256: string;
@@ -97,7 +98,55 @@ export const REVIEWED_AGENT_RELEASE_PIN: InstallReleasePin = Object.freeze({
   x64Sha256: "bcb932d9f3539233204decf70ed0a748e2e31ac2a069e5b8b29484ab8733a0e3",
   arm64Sha256: "bdbe443d6010e372a03bff773d0e0bce946ac7bbbd45d9d1b75c99477eb23aa9",
 });
-const VERIFIED_PYTHON_FREE_RELEASE: InstallReleasePin = REVIEWED_AGENT_RELEASE_PIN;
+// Immutable v0.1.22 Linux Release from reviewed Agent PR #37,
+// verified candidate CI #40089999490 and publish workflow #40091146159.
+// Only the Linux installer pin advances; Windows remains independently pinned.
+export const REVIEWED_PUBLIC_INSTALL_RELEASE_PIN: InstallReleasePin = Object.freeze({
+  tag: "v0.1.22",
+  pairingProtocol: "single-code-v1",
+  upgradeMode: "explicit-v1",
+  commit: "a1c8afe1b47c279a52569ebb44e576b29fcba4f4",
+  x64Sha256: "7a2d90b77d34a3bb4a540c5adcbbc19b3de29ce4b4fdf6504856e0c7b482649a",
+  arm64Sha256: "0c925d6aad4f240fe768fcfbe42acc0bfd88f640a9501f5aa63a10a8639bf702",
+});
+/** Independent reviewed source and Release asset pins; both are required. */
+export type WindowsInstallPin = Readonly<{
+  tag: string; commit: string; scriptSha256: string; assetSha256: string;
+}>;
+// Public Windows bootstrap source is pinned to the exact reviewed Agent
+// commit; the source hash is separate from the official Windows asset digest.
+export const REVIEWED_WINDOWS_INSTALL_PIN: WindowsInstallPin = Object.freeze({
+  tag: "v0.1.20",
+  commit: "d9aea9f66914bcb8200b73460350f8138eeed536",
+  scriptSha256: "e5dfde2e20b451a232e8ad1a53d5099ae4a4fbe8913ef9b7c05d1c92eb03b120",
+  assetSha256: "1691278d76c00cd475330758584f5ba85b8d4c6e6f2dae9c51c5fbed8c23ddea",
+});
+
+function validWindowsPin(pin: WindowsInstallPin): boolean {
+  return /^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$/.test(pin.tag) &&
+    /^[a-f0-9]{40}$/.test(pin.commit) &&
+    /^[a-f0-9]{64}$/.test(pin.scriptSha256) && /^[a-f0-9]{64}$/.test(pin.assetSha256);
+}
+
+/** Fetch reviewed source bytes, validate them before executing any PowerShell. */
+export function renderAgentInstallPowerShell(origin: string, pin: WindowsInstallPin): string {
+  if (!validInstallerOrigin(origin) || !validWindowsPin(pin)) {
+    throw Error("Unapproved Windows installer pin or origin");
+  }
+  return [
+    "$ErrorActionPreference = 'Stop'",
+    "$uri = 'https://raw.githubusercontent.com/lirtual/remote-control-agent/" + pin.commit + "/install.ps1'",
+    "$response = Invoke-WebRequest -Uri $uri -MaximumRedirection 0 -UseBasicParsing -TimeoutSec 30",
+    "$source = [string]$response.Content",
+    "$sha = [Security.Cryptography.SHA256]::Create()",
+    "try { $actual = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($source))).Replace('-', '').ToLowerInvariant() } finally { $sha.Dispose() }",
+    "if ($actual -cne '" + pin.scriptSha256 + "') { throw 'Installer source SHA-256 mismatch' }",
+    "& ([ScriptBlock]::Create($source)) -Version '" + pin.tag + "' -PinnedCommit '" + pin.commit + "' -PinnedReleaseSha256 '" + pin.assetSha256 + "'",
+    "if (-not $?) { throw 'Windows onboarding failed' }",
+    "",
+  ].join("\n");
+}
+
 // Never trust request Host alone: the allowed origin is supplied by the
 // deployment's validated Custom Domain binding, not a source-code hostname.
 export function validInstallerOrigin(value: unknown): value is string {
@@ -180,13 +229,18 @@ export function renderAgentInstallShell(origin: string, p: InstallReleasePin): s
 
 export function handleAgentInstallerRequest(
   request: Request,
-  release: InstallReleasePin | null = VERIFIED_PYTHON_FREE_RELEASE,
+  release: InstallReleasePin | null = null,
   trustedOrigin?: string,
+  windowsPin: WindowsInstallPin | null = null,
 ): Response {
   const u = new URL(request.url);
   const headers = { "cache-control": "no-store", "x-content-type-options": "nosniff" };
-  if (u.pathname !== "/install.sh") return new Response("Not found.\n", { status:404, headers });
-  if (request.method !== "GET" || u.search || u.hash || request.headers.has("origin"))
+  if (!["/", "/install.sh", "/install.ps1"].includes(u.pathname)) return new Response("Not found.\n", { status:404, headers });
+  // The public home page is static. Mobile/in-app links may append tracking
+  // query parameters or send Origin; neither is read or reflected by the page.
+  // Keep both restrictions for executable installer scripts.
+  if (request.method !== "GET" ||
+      (u.pathname !== "/" && (u.search || u.hash || request.headers.has("origin"))))
     return new Response("Invalid installation request.\n", { status:405, headers });
   if (!validInstallerOrigin(trustedOrigin))
     return new Response("Installer origin is not configured.\n", { status:503, headers });
@@ -194,6 +248,21 @@ export function handleAgentInstallerRequest(
       (request.headers.has("host") && request.headers.get("host") !== u.host) ||
       request.headers.has("forwarded") || request.headers.has("x-forwarded-host"))
     return new Response("Unapproved Worker origin.\n", { status:403, headers });
+  if (u.pathname === "/") {
+    return new Response(renderInstallHome({linux:!!release && validPin(release),
+      windows:!!windowsPin && validWindowsPin(windowsPin)}), {status:200, headers:{...headers,
+      "content-type":"text/html; charset=utf-8", "x-frame-options":"DENY",
+      "referrer-policy":"no-referrer", "content-security-policy":"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"}});
+  }
+  if (u.pathname === "/install.ps1") {
+    if (!windowsPin || !validWindowsPin(windowsPin)) {
+      return new Response("Reviewed Windows installer is not published yet.\n", {status:503,headers});
+    }
+    return new Response(renderAgentInstallPowerShell(u.origin,windowsPin), {
+      status:200, headers:{...headers,"content-type":"text/plain; charset=utf-8",
+        "x-frame-options":"DENY"},
+    });
+  }
   if (!release || !validPin(release))
     return new Response("No reviewed Python-free Agent release is published yet.\n", { status:503, headers });
   return new Response(renderAgentInstallShell(u.origin,release), {
