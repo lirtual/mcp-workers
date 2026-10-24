@@ -548,6 +548,55 @@ test('Session dispatches once, signed GitHub Claim and Ready complete startup bu
   assert.equal(f.db.prepare('SELECT outcome FROM runs WHERE id=?').get(run(1))?.outcome,'running');
  }finally{f.db.close();}
 });
+test('pre-Ready physical terminal is a verified failure, not an indeterminate terminated Session',async()=>{
+ for(const [attemptState,sessionState,expected] of [
+  ['failed','terminated','github_session_ended_before_ready'],
+  ['claimed','stopping','github_session_no_ready'],
+ ] as const){
+  const f=fixture();
+  try{
+   const {jwt,publicKey}=await signedReady();
+   let attemptId='';
+   const http=async(request:Request):Promise<Response>=>{
+    const path=new URL(request.url).pathname;
+    if(path.endsWith('/git/ref/tags/release-v1'))
+     return Response.json({ref:'refs/tags/release-v1',
+      object:{type:'commit',sha:action.commitSha}});
+    if(request.method==='POST'){
+     const payload=await request.json() as {inputs:{attempt_id:string}};
+     attemptId=payload.inputs.attempt_id;
+     return Response.json({workflow_run_id:42});
+    }
+    return Response.json({
+     id:42,workflow_id:456,run_attempt:1,
+     repository:{id:123,full_name:action.repository},
+     path:action.workflowPath,head_branch:'release-v1',head_sha:action.commitSha,
+     event:'workflow_dispatch',status:'in_progress',conclusion:null,
+    });
+   };
+   const workflow={
+    do:async(_name:string,_opts:unknown,cb:()=>Promise<unknown>)=>cb(),
+    waitForEvent:async()=>{
+     assert.equal(await verifyAndClaimPinnedGitHubAction(f.adapter,
+      attemptId,jwt,audience,publicKey),true);
+     // Simulates an independently verified physical terminal racing the
+     // next native Ready poll, or an unverified cancellation respectively.
+     f.db.prepare('UPDATE step_attempts SET state=? WHERE attempt_id=?')
+      .run(attemptState,attemptId);
+     f.db.prepare('UPDATE session_executions SET state=? WHERE run_id=?')
+      .run(sessionState,run(1));
+     return {attemptId};
+    },
+   } as unknown as WorkflowStep;
+   const env={DB:f.adapter,WORKFLOW_EXECUTOR_GITHUB_TOKEN:'token',
+    GITHUB_ACTION_OIDC_AUDIENCE:audience} as Env;
+   const outcome=await runPublishedGitHubActionSession(env,plan as unknown as Plan,
+    (plan as unknown as Plan).steps[0],run(1),workflow,http);
+   assert.deepEqual(outcome,{status:expected==='github_session_ended_before_ready'?'failed':'indeterminate',
+    error_code:expected});
+  }finally{f.db.close();}
+ }
+});
 test('fifth Session is rejected before any GitHub outbound request',async()=>{
  const f=fixture();
  try{
