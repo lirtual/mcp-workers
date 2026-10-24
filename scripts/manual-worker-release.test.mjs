@@ -43,13 +43,17 @@ test("Workflow deployment readback retries only missing Secret inventory", async
   assert.equal(immediate,1);
 
   let versions = 0;
+  const expected = "11111111-1111-4111-8111-111111111111";
+  const previous = {mode:"update",version_id:"00000000-0000-4000-8000-000000000000",
+    deployment_id:"old-deployment"};
   const verified = await retryReleaseReadback(async () => {
     versions++;
-    if (versions < 3)
-      throw Error("Active Worker version does not match the Wrangler-published version");
-    return { version: "expected" };
+    const observed = {version_id:versions < 3 ? previous.version_id : expected,
+      deployment_id:versions < 3 ? previous.deployment_id : "new-deployment"};
+    verifyPublishedVersion(previous,observed,expected);
+    return observed;
   }, async () => {});
-  assert.deepEqual(verified,{version:"expected"});
+  assert.equal(verified.version_id,expected);
   assert.equal(versions,3);
 
   let max = 0;
