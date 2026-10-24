@@ -246,6 +246,70 @@ export function verifyWorkflowD1Readiness(response, bootstrap, requireCompleteSc
   return true;
 }
 
+/**
+ * #204: read-only database half of the migration fence.
+ * It does not freeze ingress, inspect live Cloudflare Workflow instances,
+ * verify external GitHub jobs or authorize a production cutover.
+ */
+export const WORKFLOW_MIGRATION_READINESS_SQL = `SELECT
+ (SELECT count(*) FROM d1_migrations) AS migration_count,
+ (SELECT count(*) FROM d1_migrations WHERE name IN (
+   '0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql',
+   '0004_s3_callback_receipts.sql','0005_github_workflow_check.sql',
+   '0006_action_attempt_capabilities.sql','0007_session_executions.sql',
+   '0008_session_locator.sql')) AS expected_migrations,
+ (SELECT count(*) FROM workflows) AS workflow_count,
+ (SELECT count(*) FROM runs) AS run_count,
+ (SELECT count(*) FROM session_executions) AS session_count,
+ (SELECT count(*) FROM step_attempts) AS attempt_count,
+ (SELECT count(*) FROM callback_receipts) AS callback_count,
+ (SELECT count(*) FROM github_action_cancellations) AS cancellation_count,
+ (SELECT count(*) FROM runs WHERE outcome IS NULL OR
+   outcome NOT IN ('succeeded','failed','cancelled')) AS nonterminal_runs,
+ (SELECT count(*) FROM runs WHERE start_state IS NULL OR
+   start_state IN ('reserved','start_unknown')) AS unresolved_starts,
+ (SELECT count(*) FROM run_steps WHERE status IS NULL OR
+   status NOT IN ('succeeded','failed','skipped')) AS unresolved_steps,
+ (SELECT count(*) FROM step_attempts WHERE state IS NULL OR
+   state NOT IN ('rejected','succeeded','failed','cancelled')) AS nonterminal_attempts,
+ (SELECT count(*) FROM session_executions WHERE state IS NULL OR
+   state != 'terminated') AS nonterminated_sessions,
+ (SELECT count(*) FROM callback_receipts WHERE notification_delivered IS NULL OR
+   notification_delivered != 1) AS undelivered_callbacks`;
+
+export function verifyWorkflowMigrationReadiness(response) {
+  invariant(Array.isArray(response) && response.length === 1 &&
+    response[0]?.success === true && response[0]?.results?.length === 1,
+    "Workflow migration D1 readback unavailable");
+  const row = response[0].results[0];
+  const nonnegative = [
+    "migration_count","expected_migrations","workflow_count","run_count",
+    "session_count","attempt_count","callback_count","cancellation_count",
+    "nonterminal_runs","unresolved_starts","unresolved_steps",
+    "nonterminal_attempts","nonterminated_sessions","undelivered_callbacks",
+  ];
+  for (const key of nonnegative) {
+    invariant(Number.isSafeInteger(row?.[key]) && row[key] >= 0,
+      "Workflow migration D1 count unavailable or invalid: " + key);
+  }
+  invariant(row.migration_count === 8 && row.expected_migrations === 8,
+    "Workflow migration requires the exact eight reviewed D1 migrations");
+  for (const key of [
+    "nonterminal_runs","unresolved_starts","unresolved_steps",
+    "nonterminal_attempts","nonterminated_sessions","undelivered_callbacks",
+  ]) {
+    invariant(row[key] === 0, "Workflow migration blocked by " + key);
+  }
+  return {
+    workflows: row.workflow_count,
+    runs: row.run_count,
+    sessions: row.session_count,
+    attempts: row.attempt_count,
+    callbacks: row.callback_count,
+    cancellations: row.cancellation_count,
+  };
+}
+
 export function parseWranglerVersion(output) {
   const match = output.match(/(?:Current )?Version ID:\s*([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i);
   invariant(!!match, "Wrangler did not report a release Version ID");
@@ -441,7 +505,21 @@ export async function retryReleaseReadback(read, pause = ms => new Promise(resol
 
 async function main() {
   const [mode, worker] = process.argv.slice(2);
-  invariant(["preflight", "readback", "version", "diagnostic", "d1-check"].includes(mode), "Unknown release validation mode");
+  invariant(["preflight", "readback", "version", "diagnostic", "d1-check", "migration-sql", "migration-check"].includes(mode), "Unknown release validation mode");
+  if (mode === "migration-sql") {
+    invariant(worker === "workflow-mcp-worker", "Migration SQL restricted to Workflow");
+    console.log(WORKFLOW_MIGRATION_READINESS_SQL);
+    return;
+  }
+  if (mode === "migration-check") {
+    invariant(worker === "workflow-mcp-worker", "Migration check restricted to Workflow");
+    const observed = verifyWorkflowMigrationReadiness(
+      JSON.parse(await readFile("/dev/stdin", "utf8")));
+    console.log("Workflow migration D1 quiescence: PASS " +
+      JSON.stringify(observed) + "; external GitHub/Cloudflare instance " +
+      "and write-freeze checks NOT verified");
+    return;
+  }
   if (mode === "d1-check") {
     invariant(worker === "workflow-mcp-worker", "D1 check restricted to Workflow");
     const raw = await readFile("/dev/stdin", "utf8");

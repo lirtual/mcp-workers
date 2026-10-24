@@ -21,6 +21,24 @@
 - `Workflow Acceptance`：手动选择唯一的 `test_type`。`portal-readonly` 只读检查正式 Portal；`production-*` 会创建并清理随机测试记录，其中 GitHub 类型还会触发真实 GitHub Job；`github-action-result-cloud` 使用隔离 D1；`portal-register` **会修改正式 Portal 配置**，与 Worker 部署相互独立，必须额外勾选 `confirm_portal_write`；普通验收保持此选项关闭。
 - `GitHub Workflow Check Executor`：仅接受 Workflow MCP 生成的任务标识，不是人工发布入口。
 
+## #204：Workflow 有状态资源切换前的只读门禁
+
+迁移 `workflow-mcp-worker` 的**有数据 D1 和 Workflow 实例**前，必须先暂停所有可写入口和新 GitHub 派发，并在此状态下检查生产状态。下面的命令**仅查询**当前旧 D1，不会更新配置或进行迁移：
+
+```bash
+set -euo pipefail
+query="$(node scripts/manual-worker-release.mjs migration-sql workflow-mcp-worker)"
+(cd apps/workflow-mcp-worker &&
+  pnpm exec wrangler d1 execute workflow-mcp-worker --remote --json --command "$query") |
+  node scripts/manual-worker-release.mjs migration-check workflow-mcp-worker
+```
+
+检查强制要求 8 个原始 Migration 全部应用，且非终态 Run、未确认启动、未结束 Step/Attempt/Session 和未投递 Callback 都为 0；任意字段缺失或状态不确定必须停止。非零历史记录（包括已经确认终止的 Session、已登记的取消回执）应保留，不要求清空。
+
+**数据库检查通过不等于允许切换：** 每次实际切换前仍需证明入口已阻止新增写入、外部 GitHub Jobs 已物理结束、旧 Cloudflare Workflow 实例已经收敛、真实 D1 导出/导入具有一致性证据。写入暂停与远程检查之间有竞态，必须在冻结后重新读取；不得把非冻结状态下的成功结果当成验收。旧 D1 和旧 Workflow 导出保留到历史实例的独立留存验证完成。**新 D1 开始独有写入后，不得直接将运行绑定回切到旧库**，只能先停写并按已审核的数据修复/前向恢复方案处理差异。
+
+该门禁不同于日常 `Release Worker` 的 `d1-check`：迁移验收必须单独调用，不会被普通发布自动触发。新的 Secret/Variable 配置及生产 D1/Workflow 资源切换依然需要各自明确授权。
+
 ## 发布后核对
 
 - Wrangler 返回的确切 Version ID 与 Cloudflare 100% 活跃 Version ID 必须一致；更新时还需验证是新部署。

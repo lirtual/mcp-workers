@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig, verifyWorkflowD1Readiness, retryReleaseReadback } from "./manual-worker-release.mjs";
+import { activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig, verifyWorkflowD1Readiness, verifyWorkflowMigrationReadiness, WORKFLOW_MIGRATION_READINESS_SQL, retryReleaseReadback } from "./manual-worker-release.mjs";
 
 const required = [
   { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
@@ -443,6 +443,57 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
     /empty production/);
   assert.throws(()=>verifyWorkflowD1Readiness([],true),/readback unavailable/);
 });
+test("Workflow migration preflight requires all independent physical states settled", () => {
+  const ready = {
+    migration_count: 8, expected_migrations: 8,
+    workflow_count: 7, run_count: 58, session_count: 49,
+    attempt_count: 31, callback_count: 4, cancellation_count: 31,
+    nonterminal_runs: 0, unresolved_starts: 0, unresolved_steps: 0,
+    nonterminal_attempts: 0, nonterminated_sessions: 0, undelivered_callbacks: 0,
+  };
+  const response = row => [{success: true, results: [row]}];
+  assert.deepEqual(verifyWorkflowMigrationReadiness(response(ready)), {
+    workflows: 7, runs: 58, sessions: 49, attempts: 31, callbacks: 4,
+    cancellations: 31,
+  });
+  for (const name of [
+    "nonterminal_runs","unresolved_starts","unresolved_steps",
+    "nonterminal_attempts","nonterminated_sessions","undelivered_callbacks",
+  ]) {
+    assert.throws(() => verifyWorkflowMigrationReadiness(
+      response({...ready,[name]:1})), new RegExp(name));
+    assert.throws(() => verifyWorkflowMigrationReadiness(
+      response({...ready,[name]:-1})), /count unavailable or invalid/);
+  }
+  for (const key of Object.keys(ready)) {
+    const broken = {...ready};
+    delete broken[key];
+    assert.throws(() => verifyWorkflowMigrationReadiness(
+      response(broken)), /count unavailable or invalid/);
+  }
+  for (const invalid of [[],[{}],[{success:false,results:[ready]}],
+    [{success:true,results:[ready,ready]}]]) {
+    assert.throws(() => verifyWorkflowMigrationReadiness(invalid),
+      /readback unavailable/);
+  }
+  for (const wrong of [{migration_count:7},{migration_count:9},
+    {expected_migrations:7}]) {
+    assert.throws(() => verifyWorkflowMigrationReadiness(
+      response({...ready,...wrong})), /exact eight reviewed/);
+  }
+  for (const invalid of [null,NaN,1.5,"0",true]) {
+    assert.throws(() => verifyWorkflowMigrationReadiness(
+      response({...ready,undelivered_callbacks:invalid})),
+      /count unavailable or invalid/);
+  }
+  for (const requiredTable of [
+    "runs","run_steps","step_attempts","session_executions",
+    "callback_receipts","github_action_cancellations","d1_migrations",
+  ]) assert.ok(WORKFLOW_MIGRATION_READINESS_SQL.includes(requiredTable));
+  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/state != 'terminated'/);
+  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/notification_delivered != 1/);
+});
+
 test("Workflow readback verifies one integrated runtime, registered GitHub identity and Portal",()=>{
   const bindings=[
     {name:"MCP_ACCESS_TOKEN",type:"secret_text"},
