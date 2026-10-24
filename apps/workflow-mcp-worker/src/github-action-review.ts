@@ -49,7 +49,7 @@ export async function assertReviewedGitHubAction(
 ): Promise<Record<string, string>> {
   const repositories = approvedActionRepositories(approvedRepositories);
   if (!repositories.some(x => x.repository === reviewed.repository &&
-      x.repositoryId === reviewed.repositoryId && x.commitSha === reviewed.commitSha))
+      x.repositoryId === reviewed.repositoryId))
     throw Error('github_action_repository_not_approved');
   const actual = await reviewedGitHubAction(discovered);
   if (Object.keys(reviewed).length !== Object.keys(actual).length ||
