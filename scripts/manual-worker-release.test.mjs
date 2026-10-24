@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig, verifyWorkflowD1Readiness, retrySecretReadback } from "./manual-worker-release.mjs";
+import { activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig, verifyWorkflowD1Readiness, retryReleaseReadback } from "./manual-worker-release.mjs";
 
 const required = [
   { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
@@ -26,7 +26,7 @@ test("Raindrop required Secret names and bindings are preserved", () => {
 test("Workflow deployment readback retries only missing Secret inventory", async () => {
   let count = 0;
   const intervals = [];
-  const result = await retrySecretReadback(async () => {
+  const result = await retryReleaseReadback(async () => {
     count++;
     if (count <= 2) throw Error("Required Secret binding missing: MCP_ACCESS_TOKEN");
     return { ready: true };
@@ -36,14 +36,24 @@ test("Workflow deployment readback retries only missing Secret inventory", async
   assert.deepEqual(intervals,[2000,2000]);
 
   let immediate = 0;
-  await assert.rejects(retrySecretReadback(async () => {
+  await assert.rejects(retryReleaseReadback(async () => {
     immediate++;
     throw Error("Workflow Action OIDC audience drift");
   }, async () => {throw Error("must not sleep");}), /OIDC audience drift/);
   assert.equal(immediate,1);
 
+  let versions = 0;
+  const verified = await retryReleaseReadback(async () => {
+    versions++;
+    if (versions < 3)
+      throw Error("Active Worker version does not match the Wrangler-published version");
+    return { version: "expected" };
+  }, async () => {});
+  assert.deepEqual(verified,{version:"expected"});
+  assert.equal(versions,3);
+
   let max = 0;
-  await assert.rejects(retrySecretReadback(async () => {
+  await assert.rejects(retryReleaseReadback(async () => {
     max++;
     throw Error("Required runtime Secret missing: MCP_PORTAL_CLIENT_SECRET");
   }, async () => {}), /runtime Secret missing/);
