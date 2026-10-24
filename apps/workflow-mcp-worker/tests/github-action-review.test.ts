@@ -12,6 +12,13 @@ const source: GitHubActionSource = {
 };
 const allow = JSON.stringify([{repository:source.repository,repositoryId:source.repositoryId,commitSha:source.commitSha}]);
 
+test('repository enrollment is stable while each reviewed publication pins a new commit',async()=>{
+  const current={...source,commitSha:'c'.repeat(40)};
+  const reviewed=await reviewedGitHubAction(current);
+  assert.deepEqual(await assertReviewedGitHubAction(reviewed,current,allow,{duration_minutes:5}),
+    {duration_minutes:'5'});
+  await assert.rejects(assertReviewedGitHubAction(reviewed,source,allow,{}),/review_changed/);
+});
 test('review identity verifies repository and native contract, returning only validated inputs',async()=>{
   const reviewed = await reviewedGitHubAction(source);
   assert.equal(reviewed.contractDigest.length,64);
