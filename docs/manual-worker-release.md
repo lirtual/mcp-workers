@@ -13,7 +13,13 @@
 - 用户需自行将旧 `production` Environment 的已保存密钥与保护规则迁移。**在迁移成功前不要运行新的手动发布，也不要删除旧 Environment**。所有敏感值不得出现在代码/日志/PR 中。
 - 发布前检查当前 `main` SHA，校验 Cloudflare 状态及 Worker 是否存在；仅允许 Raindrop/IMA/Database/SSH 走首次部署。Remote Control 必须保持 existing-Worker-only。
 - 首次部署及后续每次手动发布，均通过 `wrangler deploy --secrets-file` 同步被选 Worker 的全部必需 GitHub Secrets；缺失或空值则拒绝发布，不再静默沿用现网旧值。其他 Worker、`edgessh` 不受该次发布影响。
-- 五个 Worker 全部使用 `keep_vars: false`；运行时普通 Variables 仅来自 Wrangler 配置默认值及被选 GitHub Environment 白名单覆盖，不再保留 Dashboard 临时配置。密钥永远使用 Secret，不以 Variable 传递。
+- 受管 Worker 使用 `keep_vars: false`；运行时普通 Variables 仅来自 Wrangler 配置默认值及被选 GitHub Environment 白名单覆盖，不再保留 Dashboard 临时配置。密钥永远使用 Secret，不以 Variable 传递。
+
+## 手动入口
+
+- `CI`：Push / PR 自动检查，不接受手动发布参数；`Release Worker`：选择 Worker 并明确勾选 `deploy_to_production`，在 `main` 上复用 CI 检查后发布。
+- `Workflow Acceptance`：手动选择唯一的 `test_type`。`portal-readonly` 只读检查正式 Portal；`production-*` 会创建并清理随机测试记录，其中 GitHub 类型还会触发真实 GitHub Job；`github-action-result-cloud` 使用隔离 D1；`portal-register` **会修改正式 Portal 配置**，与 Worker 部署相互独立，需单独选择。
+- `GitHub Workflow Check Executor`：仅接受 Workflow MCP 生成的任务标识，不是人工发布入口。
 
 ## 发布后核对
 
