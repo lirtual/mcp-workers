@@ -54,11 +54,11 @@ test("production public installer routes use only reviewed pinned release", asyn
   const response = await worker.fetch(new Request(prod + "/install.sh"), env);
   assert.equal(response.status, 200);
   const content = await response.text();
-  assert.match(content, /remote-control-agent-v0\.1\.19/);
+  assert.match(content, /remote-control-agent-v0\.1\.20/);
   assert.doesNotMatch(content, /remote-control-agent-v0\.1\.13/);
   const windows = await worker.fetch(new Request(prod + "/install.ps1"), env);
   assert.equal(windows.status, 200);
-  assert.match(await windows.text(), /6cc311b8f8ab70b87144f9bc1cec4a8c09f3b249c5874ffc16f21f864516109b/);
+  assert.match(await windows.text(), /e5dfde2e20b451a232e8ad1a53d5099ae4a4fbe8913ef9b7c05d1c92eb03b120/);
   const home = await worker.fetch(new Request(prod + "/"), env);
   assert.equal(home.status, 200);
   const homepage = await home.text();
