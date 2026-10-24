@@ -32,7 +32,7 @@ function fixture(){
  }
  db.exec(readFileSync(new URL('../migrations/0005_github_workflow_check.sql',import.meta.url),'utf8'));
  db.exec('BEGIN');
- for(const name of ['0006_action_attempt_capabilities.sql','0007_session_executions.sql']){
+ for(const name of ['0006_action_attempt_capabilities.sql','0007_session_executions.sql','0008_session_locator.sql']){
   db.exec(readFileSync(new URL('../migrations/'+name,import.meta.url),'utf8'));
  }
  db.exec('COMMIT');
@@ -1030,5 +1030,63 @@ test('unknown outbound dispatch ACK never releases a Session slot or posts twice
   assert.equal(f.db.prepare('SELECT state FROM step_attempts').get()?.state,'dispatch_unknown');
   assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'queued');
   assert.equal(await releaseVerifiedSessionSlot(f.adapter,run(1),'launch'),'held');
+ }finally{f.db.close();}
+});
+
+
+test('signed web Ready persists the exact Quick Tunnel locator without inventing a Tailnet hostname',async()=>{
+ const f=fixture();
+ try{
+  const webAction={...action,workflowPath:'.github/workflows/chrome.yml'};
+  const webPlan={...plan,github_action_approvals:[webAction],steps:[{...plan.steps[0],
+   with:{...plan.steps[0].with,action:{...webAction,ref:'refs/tags/release-v1',inputs:{duration_minutes:5}}}}]};
+  f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?')
+   .run(JSON.stringify(webPlan),'v');
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
+  f.claim(1,'claimed',true);
+  f.db.prepare('UPDATE step_attempts SET workflow_ref=? WHERE run_id=?')
+   .run(webAction.repository+'/'+webAction.workflowPath+'@refs/tags/release-v1',run(1));
+  const {jwt,publicKey}=await signedReady({workflow_ref:webAction.repository+'/'+webAction.workflowPath+'@refs/tags/release-v1'});
+  const inspect=async()=>({state:'running' as const});
+  const url='https://example-test-session.trycloudflare.com';
+  const env={DB:f.adapter,GITHUB_ACTION_OIDC_AUDIENCE:audience,
+   WORKFLOW_EXECUTOR_GITHUB_TOKEN:'token',WORKFLOW:{}} as Env;
+  const request=(sessionUrl:string)=>new Request('https://worker.example/github/action/ready',{
+   method:'POST',headers:{authorization:'Bearer '+jwt},
+   body:JSON.stringify({attemptId:run(11),sessionUrl}),
+  });
+  const first=await handleGithubActionClaimRequest(request(url),env,publicKey,inspect);
+  assert.equal(first.status,200);
+  assert.deepEqual(await first.json(),{result:'ready'});
+  assert.equal(f.db.prepare('SELECT session_url FROM session_executions').get()?.session_url,url);
+  const status=await new WorkflowService(env).status(run(1));
+  assert.equal(status.sessions?.[0]?.session_url,url);
+  assert.equal(status.sessions?.[0]?.private_hostname,null);
+  assert.equal((await handleGithubActionClaimRequest(request(url),env,publicKey,inspect)).status,200);
+  assert.deepEqual(await (await handleGithubActionClaimRequest(request('https://other.trycloudflare.com'),env,publicKey,inspect)).json(),{result:'ready_denied'});
+  assert.equal(f.db.prepare('SELECT session_url FROM session_executions').get()?.session_url,url);
+  for(const invalid of ['https://localhost/','http://example-test-session.trycloudflare.com',
+   'https://example-test-session.trycloudflare.com.evil.org/',
+   'https://example-test-session.trycloudflare.com/?token=secret']){
+   assert.equal((await handleGithubActionClaimRequest(request(invalid),env,publicKey,inspect)).status,400);
+  }
+  f.db.prepare("UPDATE session_executions SET state='stopping'").run();
+  const stopping=await new WorkflowService(env).status(run(1));
+  assert.equal(stopping.sessions?.[0]?.session_url,null);
+  f.db.prepare("UPDATE step_attempts SET state='failed'").run();
+  assert.equal(await releaseVerifiedSessionSlot(f.adapter,run(1),'launch'),'released');
+  assert.equal(f.db.prepare('SELECT session_url FROM session_executions').get()?.session_url,null);
+ }finally{f.db.close();}
+});
+test('native Tailnet Sessions reject a Quick Tunnel URL even from their signed owner',async()=>{
+ const f=fixture();
+ try{
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
+  f.claim(1,'claimed',true);
+  const {jwt,publicKey}=await signedReady();
+  const inspect=async()=>({state:'running' as const});
+  assert.equal(await recordSignedSessionReady(f.adapter,run(11),jwt,audience,'token',
+   publicKey,inspect,'https://example-test-session.trycloudflare.com'),'denied');
+  assert.equal(f.db.prepare('SELECT session_url FROM session_executions').get()?.session_url,null);
  }finally{f.db.close();}
 });

@@ -392,19 +392,21 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
   const result = row => [{success:true,results:[row]}];
   const baseline = {
     migration_count:5,migration_v1:1,migration_v2:1,migration_v3:1,
-    migration_v4:1,migration_v5:1,migration_v6:0,migration_v7:0,
+    migration_v4:1,migration_v5:1,migration_v6:0,migration_v7:0,migration_v8:0,locator_column:0,
     attempt_table:1,receipt_table:1,native_column:1,
     session_table:0,cancellation_table:0,
     active_runs:0,run_count:0,workflow_count:0,
   };
   const partial = {...baseline,migration_count:6,migration_v6:1};
-  const completed = {...partial,migration_count:7,migration_v7:1,
+  const current = {...partial,migration_count:7,migration_v7:1,
     session_table:1,cancellation_table:1};
+  const completed = {...current,migration_count:8,migration_v8:1,locator_column:1};
   assert.equal(verifyWorkflowD1Readiness(result(baseline),false),true);
   assert.equal(verifyWorkflowD1Readiness(result(partial),false),true);
+  assert.equal(verifyWorkflowD1Readiness(result(current),false),true);
   assert.equal(verifyWorkflowD1Readiness(result(completed),false),true);
   assert.equal(verifyWorkflowD1Readiness(result(completed),false,true),true);
-  for(const row of [baseline,partial]){
+  for(const row of [baseline,partial,current]){
     assert.throws(()=>verifyWorkflowD1Readiness(result(row),false,true),
       /schema migrations/);
   }
@@ -414,7 +416,9 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
     {...partial,migration_v6:0},
     {...completed,migration_v4:0},
     {...completed,migration_v7:0},
-    {...completed,migration_count:8},
+    {...current,migration_count:8},
+    {...completed,migration_v8:0},
+    {...completed,locator_column:0},
     {...completed,session_table:0},
     {...completed,cancellation_table:0},
     {...completed,receipt_table:0},

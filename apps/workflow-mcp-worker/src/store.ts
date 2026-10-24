@@ -433,14 +433,15 @@ export class WorkflowService {
         (action.workflowPath==='.github/workflows/linux.yml'||
          action.workflowPath==='.github/workflows/windows.yml');
     }).map(step=>step.id));
-    const sessions=hasSessions?(await this.db.prepare(`SELECT s.step_id,s.state,
+    const sessions=hasSessions?(await this.db.prepare(`SELECT s.step_id,s.state,s.session_url,
       s.updated_at,a.candidate_run_id,a.candidate_run_attempt,a.state AS attempt_state
       FROM session_executions s
       LEFT JOIN step_attempts a ON a.run_id=s.run_id AND a.step_id=s.step_id
       WHERE s.run_id=? ORDER BY s.step_id`).bind(run_id)
-      .all<{step_id:string;state:string;updated_at:number;candidate_run_id:number|null;candidate_run_attempt:number|null;attempt_state:string|null}>()).results
+      .all<{step_id:string;state:string;session_url:string|null;updated_at:number;candidate_run_id:number|null;candidate_run_attempt:number|null;attempt_state:string|null}>()).results
       .map(record=>({step_id:record.step_id,recorded_state:record.state,
         recorded_at:record.updated_at,
+        session_url:record.state==='ready'?record.session_url:null,
         github_run_id:record.candidate_run_id,
         github_run_attempt:record.candidate_run_attempt,
         // Private MagicDNS label selected by the pinned Session GitHub
