@@ -466,8 +466,8 @@ test("Workflow manual GitHub Actions requires D1 checks before Owner", () => {
   for(const name of ["0006_action_attempt_capabilities.sql","0007_session_executions.sql"]){
     assert.equal(ci.split(name).length,3);
   }
-  assert.match(ci,/GITHUB_ACTION_APPROVED_REPOSITORIES: \\$\\{\\{ vars\\.WORKFLOW_ACTION_APPROVED_REPOSITORIES \\}\\}/);
-  assert.doesNotMatch(ci,/vars\\.GITHUB_ACTION_APPROVED_REPOSITORIES/);
+  assert.ok(ci.includes("GITHUB_ACTION_APPROVED_REPOSITORIES: " + String.fromCharCode(36) + "{{ vars.WORKFLOW_ACTION_APPROVED_REPOSITORIES }}"));
+  assert.ok(!ci.includes("vars.GITHUB_ACTION_APPROVED_REPOSITORIES"));
   assert.match(ci,/WORKFLOW_REQUIRE_COMPLETE_SCHEMA: 'true'/);
   assert.ok(ci.includes("WORKFLOW_FIRST_DEPLOY: " + String.fromCharCode(36) + "{{ steps.preflight.outputs.bootstrap }}"));
   assert.match(ci,/node scripts\/manual-worker-release\.mjs d1-check workflow-mcp-worker/);
