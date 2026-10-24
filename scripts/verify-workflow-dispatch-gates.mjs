@@ -90,7 +90,7 @@ for (const [env, option] of [
   ['WORKFLOW_GITHUB_SMOKE', 'production-github'],
   ['WORKFLOW_ACTION_TASK_SMOKE', 'production-action-task'],
 ]) assert.ok(smoke.content.includes(env + ": " + dollar + "{{ inputs.test_type == '" + option + "' }}"), 'Smoke selector ' + env);
-assert.ok(job(acceptance, 'workflow-mcp-portal-probe').content.includes('MCP_PORTAL_TARGET: production'));
+assert.doesNotMatch(job(acceptance, 'workflow-mcp-portal-probe').content, /MCP_PORTAL_TARGET:/);
 const registration = job(acceptance, 'workflow-portal-register');
 assert.ok(registration.gate.includes("needs.checks.result == 'success'"));
 assert.ok(registration.gate.includes("needs.checks.outputs.release_ready == 'true'"));

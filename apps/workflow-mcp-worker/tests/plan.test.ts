@@ -48,7 +48,7 @@ test('independent DAG Step order is canonical and locale-independent', async () 
 test('Workflow readonly MCP arguments must be an object before Publish', async () => {
   for(const argumentsValue of [null,42,'not an object',['list']]) {
     const definition={version:1,name:'Invalid MCP args',steps:[
-      {id:'read',uses:'mcp.call',with:{endpoint:'https://test-mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',input_schema:{type:'object',properties:{}},arguments:argumentsValue}}
+      {id:'read',uses:'mcp.call',with:{endpoint:'https://mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',input_schema:{type:'object',properties:{}},arguments:argumentsValue}}
     ]};
     await assert.rejects(()=>compilePlan(definition),PlanError);
   }

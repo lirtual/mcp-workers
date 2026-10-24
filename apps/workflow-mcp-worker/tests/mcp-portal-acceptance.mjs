@@ -3,13 +3,11 @@
  * Environment. Never log a bearer, service token, request headers or tool data.
  */
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { scopedPublicMcpFetch, TRUSTED_PORTAL_ENDPOINT, PRODUCTION_PORTAL_ENDPOINT } from '../src/mcp-public-fetch.ts';
+import { scopedPublicMcpFetch, PRODUCTION_PORTAL_ENDPOINT } from '../src/mcp-public-fetch.ts';
 import { toolSchemaDigest } from '../src/plan.ts';
 
-const target=process.env.MCP_PORTAL_TARGET || 'test';
-if(target!=='test'&&target!=='production')throw Error('invalid_portal_probe_target');
-const endpoint=target==='production'?PRODUCTION_PORTAL_ENDPOINT:TRUSTED_PORTAL_ENDPOINT;
-console.log('PORTAL_PROBE_TARGET',target);
+const endpoint=PRODUCTION_PORTAL_ENDPOINT;
+console.log('PORTAL_PROBE_TARGET production');
 const clientId=process.env.MCP_PORTAL_CLIENT_ID;
 const clientSecret=process.env.MCP_PORTAL_CLIENT_SECRET;
 if(!clientId||!clientSecret) {
@@ -40,19 +38,16 @@ try {
   const output=await client.callTool({name:candidate.name,arguments:{limit:1}});
   if(output.isError) throw new Error('ima_readonly_tool_error');
   console.log('IMA_READONLY_CALL_OK');
-  // On production One-MCP (not the isolated test Portal), verify the actual
-  // end-to-end client → Portal → Workflow read-only tool path. No D1 writes.
-  if(target==='production'){
-    const workflow=listing.tools.find(t=>
-      /(^|[._-])workflow_list$/.test(t.name)&&
-      t.annotations?.readOnlyHint===true&&
-      t.annotations?.destructiveHint!==true);
-    if(!workflow) throw new Error('workflow_readonly_tool_unavailable');
-    console.log('WORKFLOW_PORTAL_READONLY_TOOL_DISCOVERED',workflow.name);
-    const result=await client.callTool({name:workflow.name,arguments:{}});
-    if(result.isError) throw new Error('workflow_readonly_tool_error');
-    console.log('WORKFLOW_PORTAL_READONLY_CALL_OK');
-  }
+  // Verify client → production Portal → Workflow read-only path; no D1 writes.
+  const workflow=listing.tools.find(t=>
+    /(^|[._-])workflow_list$/.test(t.name)&&
+    t.annotations?.readOnlyHint===true&&
+    t.annotations?.destructiveHint!==true);
+  if(!workflow) throw new Error('workflow_readonly_tool_unavailable');
+  console.log('WORKFLOW_PORTAL_READONLY_TOOL_DISCOVERED',workflow.name);
+  const result=await client.callTool({name:workflow.name,arguments:{}});
+  if(result.isError) throw new Error('workflow_readonly_tool_error');
+  console.log('WORKFLOW_PORTAL_READONLY_CALL_OK');
 } catch(error) {
   // Intentionally do not print exception strings, HTTP bodies or headers.
   console.error('PORTAL_ACCEPTANCE_FAIL',error instanceof Error?error.name:'unknown','HTTP',lastHttpStatus);

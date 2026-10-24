@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { toolSchemaDigest } from '../src/plan.ts';
-import { TRUSTED_PORTAL_ENDPOINT, PRODUCTION_PORTAL_ENDPOINT } from '../src/mcp-public-fetch.ts';
+import { PRODUCTION_PORTAL_ENDPOINT } from '../src/mcp-public-fetch.ts';
 import type { Env } from '../src/store.ts';
 import type { WorkflowEvent, WorkflowStep } from 'cloudflare:workers';
 import readonlyWorker from './fixtures/readonly-worker.ts';
@@ -26,7 +26,7 @@ const [{default:ownerWorker},{WorkflowRunner}]=await Promise.all([
 ]);
 hook.deregister();
 
-const TRUSTED=TRUSTED_PORTAL_ENDPOINT;
+const TRUSTED=PRODUCTION_PORTAL_ENDPOINT;
 const PORTAL_ID='test-only-service-token-id';
 const PORTAL_SECRET='test-only-service-token-secret';
 const OWNER='https://owner.example.org/mcp';
@@ -149,9 +149,9 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     assert.equal(outcome.result.content[0].text,'approved trusted echo');
     assert.equal(toolCalls,1,'exactly one tools/call');
 
-    // An environment configured for the production Portal must not silently
-    // execute a Plan approved for the test Portal (nor leak credentials).
-    env.MCP_PORTAL_ENDPOINT=PRODUCTION_PORTAL_ENDPOINT;
+    // An environment pointing to any unapproved Portal must not execute
+    // an approved Plan or leak the production Portal credentials.
+    env.MCP_PORTAL_ENDPOINT='https://untrusted.example.org/mcp';
     const crossEnvironment=await call('workflow_run',{
       workflow_id:created.workflow_id,inputs:{message:'blocked wrong Portal'},
     });

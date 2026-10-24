@@ -90,7 +90,6 @@ jobs:
     env:
       MCP_PORTAL_CLIENT_ID: ${{ secrets.MCP_PORTAL_CLIENT_ID }}
       MCP_PORTAL_CLIENT_SECRET: ${{ secrets.MCP_PORTAL_CLIENT_SECRET }}
-      MCP_PORTAL_TARGET: production
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4

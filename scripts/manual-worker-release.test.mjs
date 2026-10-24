@@ -507,7 +507,7 @@ test("Workflow release pins the exact Portal and rejects target drift",()=>{
   const check=(updated)=>verifyBindings("workflow-mcp-worker",{...settings,bindings:updated},secrets,{mode:"readback"});
   assert.equal(check(bindings),true);
   assert.throws(()=>check(bindings.map(x=>x.name==="MCP_PORTAL_ENDPOINT"
-    ?{...x,text:"https://test-mcp.lirtual.dpdns.org/mcp"}:x)),/pinned Workflow MCP Portal|Pinned Workflow MCP Portal/);
+    ?{...x,text:"https://retired.example.org/mcp"}:x)),/pinned Workflow MCP Portal|Pinned Workflow MCP Portal/);
   assert.throws(()=>check([...bindings,{name:"MCP_DIRECT_TARGETS_ENABLED",type:"plain_text",text:"true"}]),
     /Obsolete stage flag/);
 });
