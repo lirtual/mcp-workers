@@ -176,6 +176,13 @@ test('status provides stable private Tailnet name only for signed Ready, never a
   const status=await service.status(run(1));
   assert.equal(status.sessions?.[0]?.private_hostname,'sa-42-a1');
   assert.equal(status.sessions?.[0]?.physical_health,'unverified');
+  // The same GitHub run ID is not a Tailnet host for Quick Tunnel sessions.
+  const webPlan={...plan,steps:[{...plan.steps[0],with:{...plan.steps[0].with,
+    action:{...plan.steps[0].with.action,workflowPath:'.github/workflows/chrome.yml'}}}]};
+  f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?')
+    .run(JSON.stringify(webPlan),'v');
+  const webStatus=await service.status(run(1));
+  assert.equal(webStatus.sessions?.[0]?.private_hostname,null);
   f.db.prepare("UPDATE session_executions SET state='stopping'").run();
   const stopping=await service.status(run(1));
   assert.equal(stopping.sessions?.[0]?.private_hostname,null);

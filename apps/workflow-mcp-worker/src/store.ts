@@ -424,6 +424,15 @@ export class WorkflowService {
         }
       }
     }
+    // A web Quick Tunnel Session has no Tailnet hostname. Never advertise a
+    // guessed MagicDNS host for it just because its GitHub job became Ready.
+    const tailnetSteps=new Set(publishedPlan.steps.filter(step=>{
+      if(step.uses!=='github.run'||step.with.capability!=='github.action')return false;
+      const action=step.with.action as {repository?:unknown;workflowPath?:unknown}|undefined;
+      return action?.repository==='lirtual/session-actions'&&
+        (action.workflowPath==='.github/workflows/linux.yml'||
+         action.workflowPath==='.github/workflows/windows.yml');
+    }).map(step=>step.id));
     const sessions=hasSessions?(await this.db.prepare(`SELECT s.step_id,s.state,
       s.updated_at,a.candidate_run_id,a.candidate_run_attempt,a.state AS attempt_state
       FROM session_executions s
@@ -437,7 +446,7 @@ export class WorkflowService {
         // Private MagicDNS label selected by the pinned Session GitHub
         // workflow (hostname: sa-${{ github.run_id }}-a${{ github.run_attempt }}). This is a connection
         // hint, not proof that Tailnet ACL or service reachability is healthy.
-        private_hostname:record.state==='ready' &&
+        private_hostname:record.state==='ready' && tailnetSteps.has(record.step_id) &&
           Number.isSafeInteger(record.candidate_run_id) &&
           (record.candidate_run_id??0)>0
           && Number.isSafeInteger(record.candidate_run_attempt)
