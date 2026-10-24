@@ -51,6 +51,61 @@ removed. Production resources must not be used for rehearsals.
   `WorkflowRunner` and old D1 bindings: it is a build/preflight check, **not**
   an authenticated isolated deployment or a migration test.
 
+## Verified again on 2026-10-25 · pinned Wrangler release-shaped transitions
+
+Using Wrangler **4.130.0** under Node **24.22.1** and a disposable
+`spec198-binding-*` Worker, the same CLI flags as `release.yml` were
+exercised with **dummy credentials only**:
+
+1. First deploy with `--secrets-file` created a genuine
+   `MCP_PORTAL_CLIENT_ID` `secret_text` binding.
+2. Second deploy with `--secrets-file` for an unrelated Secret **and**
+   `--var MCP_PORTAL_CLIENT_ID:<fixture-id>` succeeded. Cloudflare
+   settings readback confirmed exactly one `plain_text` Client ID, no
+   old same-name Secret, and the unrelated `secret_text` intact.
+3. A deliberately syntax-invalid Worker failed deployment; a second
+   Cloudflare settings readback confirmed the previous binding types
+   remained intact.
+4. Direct `wrangler secret put MCP_PORTAL_CLIENT_ID` while the Variable
+   existed failed as expected with Cloudflare **10053** (name in use).
+5. A deployment using `--secrets-file` with the original **fixture**
+   Secret and **without** the `--var` restored `secret_text`. Readback
+   confirmed the unrelated Secret remained intact.
+6. The disposable Worker was deleted by exact name; the account API
+   subsequently returned **404 / Worker does not exist**.
+
+**Production recovery condition:** retaining the original Secret value
+in an approved secure source and pausing writes remain necessary. CLI
+reversibility with dummy values is not evidence that production Secret
+values can be fetched from Cloudflare or that rollback after D1 divergence
+is safe. Fail closed on missing values and binding type disagreement.
+
+**Current eight-migration D1 rehearsal:** Two uniquely named disposable
+D1 databases were created; the **exact migration directory from PR #206**
+was applied to the source, producing names
+`0001_s1.sql` through `0008_session_locator.sql`. The source
+received one synthetic `workflows` record. Wrangler remote SQL export
+(5,680 bytes) and remote SQL-file import to the empty target both
+succeeded. Source and target agreed on **15 user Schema entries,
+9 table row counts, all 8 migration-history names, the complete test
+record and zero foreign-key errors**. A normalized user-data/schema
+snapshot yielded matching SHA-256
+`54e000f1984c5b74` (prefix). Both disposable D1 databases were
+deleted, and account inventory confirmed both absent.
+
+Cloudflare rejected `PRAGMA integrity_check` with
+`SQLITE_AUTH` (code 7500) even on these disposable D1 databases.
+**Do not report that specific PRAGMA as passed or try to access
+provider-owned tables with bypasses.** The successful native export/import,
+user Schema/data comparisons and `foreign_key_check` are the documented
+reproducible validation evidence. Internal provider metadata such as
+`_cf_KV` remains under the platform's supported import/export semantics.
+
+The Workflow old/new export coexistence and old-instance lookup were
+already verified in disposable Workflows on 2026-10-23 (above). Their
+retention behavior still requires a fresh pre-cutover check of active
+instances before a production resource name change.
+
 ## Current integration boundary
 
 The old branch-local `mcp-portal-cloud-e2e.mjs` was deleted by main and must
@@ -60,26 +115,29 @@ The old branch-local `mcp-portal-cloud-e2e.mjs` was deleted by main and must
 Wrangler `--dry-run` do not prove the same-name Secret → Variable transition
 or a production-shaped D1 import.
 
-#199 must use a disposable Worker and isolated Wrangler credentials to prove
-the real deployment/readback/failure-recovery flow. Do not configure the real
-GitHub Environment `MCP_PORTAL_CLIENT_ID` Variable, remove its existing Secret
-or dispatch main-only acceptance merely to fix a PR check. First integrate and
-validate the release path; authorize the credential transition separately.
-No changes to production credentials or durable resources are implied.
+#199's disposable-Worker CLI conversion and failure-recovery gate has now been
+verified (above) without changing the real GitHub Environment. Do not add the
+real Environment `MCP_PORTAL_CLIENT_ID` Variable, remove its current Secret or
+run main-only production acceptance just to satisfy a Draft PR. Credential
+cutover and production deployment remain separate owner-authorized operations.
 
-## Still required before #204 or production change
+## Gates after isolated verification
 
-1. Using the pinned Wrangler release toolchain, repeat same-name Secret to
-   Variable conversion and reverse recovery against a disposable Worker. Test
-   deployment failure after the binding change and confirm readback/rollback.
-2. Verify the **production-shaped** export/import handling for the currently applied
-   eight migration files and any provider-owned `_cf_KV` state before cutover;
-   the isolated source/target SQL transfer and full integrity comparison above
-   now pass. Stop if the platform-owned table requires unsafe import handling.
-3. The isolated old/new Workflow coexistence and historical lookup test now
-   passes. For production, keep the old class exported until the required
-   history retention horizon and any in-flight instances have expired; verify
-   old instance lookup and new dispatch again before and after cutover.
+- **#199 technical gate:** tested Secret→Variable→Secret under the pinned
+  Wrangler CLI, failed deploy retention, supported complete export/import of
+  the current 8 migration files with synthetic data, and old/new Workflow
+  coexistence. No permanent fixtures or extra services remain.
+- **Before #204 production cutover:** independently verify current source
+  D1 backup/export correctness, all business tables and provider-supported
+  import behavior, remote GitHub Task/Session/Callback quiescence, no active
+  Workflow instances, source/target record counts and exact new UUID.
+  This must use the actual state *at cutover*, not test data from #199.
+- **Production Workflow history:** preserve the legacy export until historical
+  instances pass their retention cutoff, then request separate approval for
+  destructive retirement. Do not assume that the isolated coexistence test
+  proves safe deletion.
+- **No current production approval:** all credentials, deployments, D1/Workflow
+  resource switches and old-Secret cleanup remain explicitly gated.
 
 ## Fail-closed release and rollback gates
 
