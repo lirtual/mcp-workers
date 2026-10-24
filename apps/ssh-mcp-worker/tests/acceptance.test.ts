@@ -335,7 +335,8 @@ test('D1 stays SELECT-only, quotas stay at the spec defaults, and secrets are no
   const workflow = await readFile(new URL(`../../../${record.ci.workflow}`, import.meta.url), 'utf8');
   assert.match(workflow, /node scripts\/select-affected-apps\.mjs/);
   assert.match(workflow, /pnpm --filter "\$app" check/);
-  assert.equal(workflow.includes('- ssh-mcp-worker'), true);
+  const releaseWorkflow = await readFile(new URL('../../../.github/workflows/release.yml', import.meta.url), 'utf8');
+  assert.equal(releaseWorkflow.includes('- ssh-mcp-worker'), true);
   const lockfile = await readFile(new URL('../../../pnpm-lock.yaml', import.meta.url), 'utf8');
   const pinned = lockfile.split(`wrangler@${record.runtime.wrangler}(@cloudflare/workers-types@`)[1] ?? '';
   assert.match(pinned.slice(0, 800), new RegExp(`workerd: ${record.runtime.workerd}`));
