@@ -133,6 +133,9 @@ jobs:
     # Normal push/PR and main release checks are unchanged.
     if: >-
       ${{ !(github.event_name == 'workflow_dispatch' &&
+            github.ref == 'refs/heads/fix/session-actions-spec-1-contract' &&
+            inputs.github_oidc_probe == true) &&
+          !(github.event_name == 'workflow_dispatch' &&
             github.ref == 'refs/heads/wip/workflow-mcp-public-readonly' &&
             (inputs.mcp_portal_probe == true || inputs.mcp_cloud_e2e == true)) &&
           !(github.event_name == 'workflow_dispatch' &&
@@ -812,6 +815,46 @@ jobs:
       - name: Accept real signed GitHub Runner against disposable Cloudflare D1
         run: node --experimental-strip-types apps/workflow-mcp-worker/tests/github-real-oidc-cloud.mjs
 
+
+
+  workflow-github-action-result-cloud:
+    name: Real GitHub OIDC + isolated D1 Task result (no production)
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/fix/session-actions-spec-1-contract' &&
+          inputs.worker == 'workflow-mcp-worker' &&
+          inputs.github_oidc_probe == true &&
+          inputs.deploy_to_production != true &&
+          inputs.smoke_only != true &&
+          inputs.github_full_dispatch != true &&
+          inputs.github_product_e2e != true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: workflow-mcp-worker
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: workflow-action-result-isolated
+      cancel-in-progress: false
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Verify actual Task ingress with real GitHub JWT and disposable D1
+        run: node --experimental-strip-types apps/workflow-mcp-worker/tests/github-action-result-cloud.mjs
 
   workflow-github-independent-dispatch:
     name: Isolated GitHub confirmed REST dispatch -> separate GitHub echo job
