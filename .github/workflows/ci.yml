@@ -323,6 +323,7 @@ jobs:
           inputs.workflow_portal_register != true &&
           inputs.mcp_production_smoke != true &&
           inputs.github_production_smoke != true &&
+          inputs.github_action_task_smoke != true &&
           inputs.mcp_portal_probe != true &&
           inputs.mcp_cloud_e2e != true &&
           inputs.github_oidc_probe != true &&
