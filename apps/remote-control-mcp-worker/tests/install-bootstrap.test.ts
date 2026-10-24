@@ -225,14 +225,14 @@ test('homepage copy state follows the separately verified platform pins',async()
 });
 
 
-test('reviewed Linux v0.1.21 enables explicit upgrade while Windows stays independently pinned', async () => {
+test('reviewed Linux v0.1.22 enables explicit upgrade while Windows stays independently pinned', async () => {
   const { REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, REVIEWED_WINDOWS_INSTALL_PIN } =
     await import('../src/install-bootstrap.ts');
   const base = 'https://rca.lirtual.dpdns.org';
-  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.commit, '52e87fae9c722aa6412bec805686ed2d93940da7');
+  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.commit, 'a1c8afe1b47c279a52569ebb44e576b29fcba4f4');
   assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.upgradeMode, 'explicit-v1');
-  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.x64Sha256, '10cd7bea7124e7b18a20665af1bf14df8aa2abab2ddd8c90f4c218f3fec7172f');
-  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.arm64Sha256, 'aabfa9c53a97019177674569e07f018632b839be5383fbf39763fbf104863605');
+  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.x64Sha256, '7a2d90b77d34a3bb4a540c5adcbbc19b3de29ce4b4fdf6504856e0c7b482649a');
+  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.arm64Sha256, '0c925d6aad4f240fe768fcfbe42acc0bfd88f640a9501f5aa63a10a8639bf702');
   assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.assetSha256, '1691278d76c00cd475330758584f5ba85b8d4c6e6f2dae9c51c5fbed8c23ddea');
   assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.scriptSha256, 'e5dfde2e20b451a232e8ad1a53d5099ae4a4fbe8913ef9b7c05d1c92eb03b120');
   const home = handleAgentInstallerRequest(new Request(base + '/'), REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
@@ -241,7 +241,7 @@ test('reviewed Linux v0.1.21 enables explicit upgrade while Windows stays indepe
   const linux = handleAgentInstallerRequest(new Request(base + '/install.sh'), REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
   assert.equal(linux.status, 200);
   const shell = await linux.text();
-  assert.match(shell, /remote-control-agent-v0\.1\.21/);
+  assert.match(shell, /remote-control-agent-v0\.1\.22/);
   assert.match(shell, /1\) \[ "\$1" = "--upgrade"/);
   assert.match(shell, /"\$@" < \/dev\/tty/);
   const windows = handleAgentInstallerRequest(new Request(base + '/install.ps1'), REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
