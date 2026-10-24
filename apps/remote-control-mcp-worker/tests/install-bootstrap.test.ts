@@ -233,8 +233,8 @@ test('reviewed Linux v0.1.22 enables explicit upgrade while Windows stays indepe
   assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.upgradeMode, 'explicit-v1');
   assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.x64Sha256, '7a2d90b77d34a3bb4a540c5adcbbc19b3de29ce4b4fdf6504856e0c7b482649a');
   assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.arm64Sha256, '0c925d6aad4f240fe768fcfbe42acc0bfd88f640a9501f5aa63a10a8639bf702');
-  assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.assetSha256, '1691278d76c00cd475330758584f5ba85b8d4c6e6f2dae9c51c5fbed8c23ddea');
-  assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.scriptSha256, 'e5dfde2e20b451a232e8ad1a53d5099ae4a4fbe8913ef9b7c05d1c92eb03b120');
+  assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.assetSha256, '0ac48c46e2d642523d0ace756306fa33bc43cabb7d104e732425046bdb24bbd3');
+  assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.scriptSha256, '02770e56ed803936b1e060fbb92309edddd361a8a807b9e63c2b01a504b7e4d3');
   const home = handleAgentInstallerRequest(new Request(base + '/'), REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
   assert.equal(home.status, 200);
   assert.match(await home.text(), /const ready=\{windows:true,linux:true\}/);
@@ -247,8 +247,8 @@ test('reviewed Linux v0.1.22 enables explicit upgrade while Windows stays indepe
   const windows = handleAgentInstallerRequest(new Request(base + '/install.ps1'), REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
   assert.equal(windows.status, 200);
   const ps1 = await windows.text();
-  assert.match(ps1, /d9aea9f66914bcb8200b73460350f8138eeed536/);
-  assert.match(ps1, /e5dfde2e20b451a232e8ad1a53d5099ae4a4fbe8913ef9b7c05d1c92eb03b120/);
+  assert.match(ps1, /a1c8afe1b47c279a52569ebb44e576b29fcba4f4/);
+  assert.match(ps1, /02770e56ed803936b1e060fbb92309edddd361a8a807b9e63c2b01a504b7e4d3/);
   assert.equal(handleAgentInstallerRequest(new Request(base + '/'), null, base, null).status, 200);
   assert.equal(handleAgentInstallerRequest(new Request(base + '/install.sh'), null, base, null).status, 503);
   assert.equal(handleAgentInstallerRequest(new Request(base + '/install.ps1'), null, base, null).status, 503);
