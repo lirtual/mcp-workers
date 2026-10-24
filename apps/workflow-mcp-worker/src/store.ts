@@ -141,7 +141,7 @@ export class WorkflowService {
         contractDigest:raw.contractDigest as string,
       };
       const grant=grants.find(g=>g.repository===expected.repository&&
-        g.repositoryId===expected.repositoryId&&g.commitSha===expected.commitSha);
+        g.repositoryId===expected.repositoryId);
       if(!grant)throw new StateError('github_action_repository_not_approved');
       const discovered=await discoverGitHubActions({...grant,token});
       const candidate=discovered.find(d=>d.workflowId===expected.workflowId&&d.workflowPath===expected.workflowPath);
