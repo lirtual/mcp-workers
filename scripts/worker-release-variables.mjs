@@ -53,8 +53,39 @@ export function collectWorkerVars(worker, env, options = {}) {
       "GITHUB_EXECUTOR_REPOSITORY:lirtual/mcp-workers",
       "GITHUB_EXECUTOR_REPOSITORY_ID:1414936394",
       "GITHUB_EXECUTOR_REF:refs/heads/main",
-      "GITHUB_EXECUTOR_AUDIENCE:workflow-github-claim:production"
+      "GITHUB_EXECUTOR_AUDIENCE:workflow-github-claim:production",
+      "GITHUB_ACTION_OIDC_AUDIENCE:workflow-github-action:production"
     );
+    // Repository onboarding is an explicit GitHub Environment Variable.
+    // The owner must approve a repository ID and its immutable commit SHA;
+    // ordinary workflow inputs cannot add execution/discovery grants.
+    const grants = env.GITHUB_ACTION_APPROVED_REPOSITORIES;
+    if (grants != null && grants !== "") {
+      if (typeof grants !== "string" || grants.length > 8192) {
+        throw new Error("Invalid GITHUB_ACTION_APPROVED_REPOSITORIES");
+      }
+      let parsed;
+      try { parsed = JSON.parse(grants); }
+      catch { throw new Error("Invalid GITHUB_ACTION_APPROVED_REPOSITORIES"); }
+      const seen = new Set();
+      if (!Array.isArray(parsed) || parsed.length > 16 ||
+          parsed.some(entry => {
+            if (!entry || typeof entry !== "object" || Array.isArray(entry)) return true;
+            const keys = Object.keys(entry).sort().join(",");
+            const name = entry.repository;
+            if (keys !== "commitSha,repository,repositoryId" ||
+                typeof name !== "string" ||
+                !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(name) ||
+                name.includes("..") ||
+                !Number.isSafeInteger(entry.repositoryId) || entry.repositoryId <= 0 ||
+                typeof entry.commitSha !== "string" ||
+                !/^[a-f0-9]{40}$/i.test(entry.commitSha) ||
+                seen.has(name.toLowerCase())) return true;
+            seen.add(name.toLowerCase());
+            return false;
+          })) throw new Error("Invalid GITHUB_ACTION_APPROVED_REPOSITORIES");
+      variables.push("GITHUB_ACTION_APPROVED_REPOSITORIES:" + JSON.stringify(parsed));
+    }
   }
   if (worker === "remote-control-mcp-worker") {
     const origin=remoteControlInstallOrigin(options.config);

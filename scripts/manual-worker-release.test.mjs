@@ -351,36 +351,49 @@ test("Workflow production release must preserve exact reviewed resource and runt
 
 });
 
-test("Workflow remote D1 readback blocks missing migrations, nonempty first-run and unresolved Runs", () => {
-  const row = { migration_count:2,migration_v1:1,migration_v2:1,
-    migration_v3:0,migration_v4:0,migration_v5:0,attempt_table:0,receipt_table:0,
-    native_column:1,active_runs:0,run_count:0,workflow_count:0 };
-  const result = (value) => [{success:true,results:[value]}];
-  assert.throws(()=>verifyWorkflowD1Readiness(result(row),true),/schema migrations/);
-  const previous = {...row,migration_count:4,migration_v3:1,migration_v4:1,
-    attempt_table:1,receipt_table:1};
-  const migrated = {...previous,migration_count:5,migration_v5:1};
-  assert.equal(verifyWorkflowD1Readiness(result(previous),false),true);
-  assert.throws(()=>verifyWorkflowD1Readiness(result(previous),false,true),/schema migrations/);
-  assert.equal(verifyWorkflowD1Readiness(result(migrated),false),true);
-  assert.equal(verifyWorkflowD1Readiness(result(migrated),false,true),true);
-  assert.throws(()=>verifyWorkflowD1Readiness(result(row),false,true),
-    /schema migrations/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...migrated,migration_v4:0}),false),
-    /schema migrations/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...migrated,receipt_table:0}),false),
-    /schema migrations/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...row,migration_count:3,migration_v3:1,
-    attempt_table:1}),false),/schema migrations/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...row,migration_count:6}),false),
-    /schema migrations/);
-  assert.equal(verifyWorkflowD1Readiness(result({...migrated,run_count:3,workflow_count:1}),false),true);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...row,migration_v2:0}),false),/schema migrations/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...migrated,active_runs:1}),false),/active or indeterminate/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...migrated,run_count:1}),true),/empty production/);
+test("Workflow remote D1 checks the exact old, intermediate and full schema", () => {
+  const result = row => [{success:true,results:[row]}];
+  const baseline = {
+    migration_count:5,migration_v1:1,migration_v2:1,migration_v3:1,
+    migration_v4:1,migration_v5:1,migration_v6:0,migration_v7:0,
+    attempt_table:1,receipt_table:1,native_column:1,
+    session_table:0,cancellation_table:0,
+    active_runs:0,run_count:0,workflow_count:0,
+  };
+  const partial = {...baseline,migration_count:6,migration_v6:1};
+  const completed = {...partial,migration_count:7,migration_v7:1,
+    session_table:1,cancellation_table:1};
+  assert.equal(verifyWorkflowD1Readiness(result(baseline),false),true);
+  assert.equal(verifyWorkflowD1Readiness(result(partial),false),true);
+  assert.equal(verifyWorkflowD1Readiness(result(completed),false),true);
+  assert.equal(verifyWorkflowD1Readiness(result(completed),false,true),true);
+  for(const row of [baseline,partial]){
+    assert.throws(()=>verifyWorkflowD1Readiness(result(row),false,true),
+      /schema migrations/);
+  }
+  for(const row of [
+    {...baseline,migration_count:4,migration_v5:0},
+    {...baseline,migration_count:6},
+    {...partial,migration_v6:0},
+    {...completed,migration_v4:0},
+    {...completed,migration_v7:0},
+    {...completed,migration_count:8},
+    {...completed,session_table:0},
+    {...completed,cancellation_table:0},
+    {...completed,receipt_table:0},
+    {...completed,native_column:0},
+  ]){
+    assert.throws(()=>verifyWorkflowD1Readiness(result(row),false),
+      /schema migrations/);
+  }
+  assert.equal(verifyWorkflowD1Readiness(result({...completed,run_count:3,
+    workflow_count:1}),false,true),true);
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...completed,active_runs:1}),false),
+    /active or indeterminate/);
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...completed,run_count:1}),true),
+    /empty production/);
   assert.throws(()=>verifyWorkflowD1Readiness([],true),/readback unavailable/);
 });
-
 test("Workflow readback verifies one integrated runtime, registered GitHub identity and Portal",()=>{
   const bindings=[
     {name:"MCP_ACCESS_TOKEN",type:"secret_text"},
@@ -394,6 +407,7 @@ test("Workflow readback verifies one integrated runtime, registered GitHub ident
     {name:"GITHUB_EXECUTOR_REPOSITORY_ID",type:"plain_text",text:"1414936394"},
     {name:"GITHUB_EXECUTOR_REF",type:"plain_text",text:"refs/heads/main"},
     {name:"GITHUB_EXECUTOR_AUDIENCE",type:"plain_text",text:"workflow-github-claim:production"},
+    {name:"GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action:production"},
   ];
   const settings={bindings,observability:{enabled:true,logs:{invocation_logs:true}}};
   const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET",
@@ -401,6 +415,10 @@ test("Workflow readback verifies one integrated runtime, registered GitHub ident
   const check=(list=bindings,ss=secrets)=>
     verifyBindings("workflow-mcp-worker",{...settings,bindings:list},ss,{mode:"readback"});
   assert.equal(check(),true);
+  assert.throws(()=>check(bindings.filter(x=>x.name!=="GITHUB_ACTION_OIDC_AUDIENCE")),
+    /Action OIDC audience/);
+  assert.throws(()=>check(bindings.map(x=>x.name==="GITHUB_ACTION_OIDC_AUDIENCE"
+    ? {...x,text:"workflow-github-action:staging"} : x)),/Action OIDC audience/);
   for(const name of ["DB","WORKFLOW"]){
     assert.throws(()=>check(bindings.filter(x=>x.name!==name)),/binding drift/);
   }
@@ -418,6 +436,10 @@ test("Workflow manual GitHub Actions requires D1 checks before Owner", () => {
   const publish=ci.indexOf("      - name: Publish exactly selected Worker");
   assert.ok(pre>0 && migration>pre && publish>migration);
   assert.match(ci,/wrangler d1 migrations apply workflow-mcp-worker --remote/);
+  for(const name of ["0006_action_attempt_capabilities.sql","0007_session_executions.sql"]){
+    assert.equal(ci.split(name).length,3);
+  }
+  assert.match(ci,/GITHUB_ACTION_APPROVED_REPOSITORIES: /);
   assert.match(ci,/WORKFLOW_REQUIRE_COMPLETE_SCHEMA: 'true'/);
   assert.ok(ci.includes("WORKFLOW_FIRST_DEPLOY: " + String.fromCharCode(36) + "{{ steps.preflight.outputs.bootstrap }}"));
   assert.match(ci,/node scripts\/manual-worker-release\.mjs d1-check workflow-mcp-worker/);
@@ -439,6 +461,7 @@ test("Workflow release pins the exact Portal and rejects target drift",()=>{
     {name:"GITHUB_EXECUTOR_REPOSITORY_ID",type:"plain_text",text:"1414936394"},
     {name:"GITHUB_EXECUTOR_REF",type:"plain_text",text:"refs/heads/main"},
     {name:"GITHUB_EXECUTOR_AUDIENCE",type:"plain_text",text:"workflow-github-claim:production"},
+    {name:"GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action:production"},
   ];
   const settings={observability:{enabled:true,logs:{invocation_logs:true}}};
   const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET",
@@ -462,6 +485,7 @@ test("GitHub execution is integral but still pins repository, ref and OIDC audie
     {name:"GITHUB_EXECUTOR_REPOSITORY_ID",type:"plain_text",text:"1414936394"},
     {name:"GITHUB_EXECUTOR_REF",type:"plain_text",text:"refs/heads/main"},
     {name:"GITHUB_EXECUTOR_AUDIENCE",type:"plain_text",text:"workflow-github-claim:production"},
+    {name:"GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action:production"},
   ];
   const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET",
     "WORKFLOW_EXECUTOR_GITHUB_TOKEN"].map(name=>({name}));

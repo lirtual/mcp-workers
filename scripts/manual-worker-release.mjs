@@ -77,6 +77,8 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
         invariant(find(name,"plain_text")?.text === value,
           "Workflow GitHub executor identity drift: " + name);
       }
+      invariant(find("GITHUB_ACTION_OIDC_AUDIENCE","plain_text")?.text ===
+        "workflow-github-action:production", "Workflow Action OIDC audience drift");
       for (const name of ["MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET","WORKFLOW_EXECUTOR_GITHUB_TOKEN"]) {
         invariant(secretNames.has(name) && !!find(name,"secret_text"),
           "Workflow runtime credential binding missing: " + name);
@@ -207,14 +209,22 @@ export function verifyWorkflowD1Readiness(response, bootstrap, requireCompleteSc
     response[0]?.success === true && response[0]?.results?.length === 1,
     "Workflow remote D1 readback unavailable");
   const row = response[0].results[0];
-  const requiredBase = row?.migration_v1 === 1 && row?.migration_v2 === 1 &&
-    row?.migration_v3 === 1 && row?.migration_v4 === 1 &&
-    row?.attempt_table === 1 && row?.receipt_table === 1;
-  // The previous four-migration schema is allowed only before an additive
-  // GitHub capability migration, never as final production readback.
-  const beforeUpgrade = row?.migration_count === 4 && row?.migration_v5 === 0;
-  const ready = row?.migration_count === 5 && row?.migration_v5 === 1;
-  invariant(requiredBase && (requireCompleteSchema ? ready : (beforeUpgrade || ready)),
+  // Production already has migration 0005. A failed two-file deployment may
+  // leave 0006 committed; permit a controlled resume but never publish the
+  // upgraded Worker until both new migrations and tables are confirmed.
+  const base = [1,2,3,4,5].every(n => row?.["migration_v" + n] === 1) &&
+    row?.attempt_table === 1 && row?.receipt_table === 1 &&
+    row?.native_column === 1;
+  const before = row?.migration_count === 5 &&
+    row?.migration_v6 === 0 && row?.migration_v7 === 0 &&
+    row?.session_table === 0 && row?.cancellation_table === 0;
+  const partial = row?.migration_count === 6 &&
+    row?.migration_v6 === 1 && row?.migration_v7 === 0 &&
+    row?.session_table === 0 && row?.cancellation_table === 0;
+  const complete = row?.migration_count === 7 &&
+    row?.migration_v6 === 1 && row?.migration_v7 === 1 &&
+    row?.session_table === 1 && row?.cancellation_table === 1;
+  invariant(base && (requireCompleteSchema ? complete : (before || partial || complete)),
     "Workflow production D1 schema migrations missing, partial or drifted");
   invariant(Number.isSafeInteger(row?.active_runs) && row.active_runs === 0,
     "Workflow cannot redeploy while Runs are active or indeterminate");
