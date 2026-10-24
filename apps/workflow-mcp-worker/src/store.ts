@@ -143,7 +143,10 @@ export class WorkflowService {
       const grant=grants.find(g=>g.repository===expected.repository&&
         g.repositoryId===expected.repositoryId);
       if(!grant)throw new StateError('github_action_repository_not_approved');
-      const discovered=await discoverGitHubActions({...grant,token});
+      // Discovery follows the current default branch, but validation and
+      // Publish must re-read the exact SHA approved in this Draft. A newer
+      // default-branch commit must not invalidate an immutable old review.
+      const discovered=await discoverGitHubActions({...grant,token,commitSha:expected.commitSha});
       const candidate=discovered.find(d=>d.workflowId===expected.workflowId&&d.workflowPath===expected.workflowPath);
       if(!candidate)throw new StateError('github_action_not_found');
       try{
