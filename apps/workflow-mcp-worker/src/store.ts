@@ -1,4 +1,5 @@
 import {requestGitHubActionCancellation} from './github-action-cancel.ts';
+import { PRODUCTION_PORTAL_ENDPOINT } from './mcp-public-fetch.ts';
 import {reconcilePersistedGitHubActionAttempt} from './github-action-attempt-reconcile.ts';
 import {releaseVerifiedSessionSlot} from './github-action-session.ts';
 import { discoverGitHubActions } from './github-action-discovery.ts';
@@ -30,8 +31,7 @@ export type Env = {
   // Optional, MCP-only machine identity for the pinned Cloudflare MCP Portal.
   MCP_PORTAL_CLIENT_ID?: string;
   MCP_PORTAL_CLIENT_SECRET?: string;
-  // For production MCP, pin to the existing MCP Portal;
-  // for isolated test MCP, pin to test-mcp (never selected by Draft input).
+  // The sole approved Portal is fixed by release configuration.
   MCP_PORTAL_ENDPOINT?: string;
   // Production GitHub requires explicit opt-in and fixed OIDC/executor pins.
   WORKFLOW_EXECUTOR_GITHUB_TOKEN?: string;
@@ -196,7 +196,7 @@ export class WorkflowService {
     if(required.length){
       const portal=this.env.MCP_PORTAL_ENDPOINT;
       if(portal===undefined)throw new StateError('portal_target_not_configured');
-      if(!['https://test-mcp.lirtual.dpdns.org/mcp','https://mcp.lirtual.dpdns.org/mcp'].includes(portal) ||
+      if(portal!==PRODUCTION_PORTAL_ENDPOINT ||
          required.some(grant=>grant.endpoint!==portal))throw new StateError('portal_target_not_authorized');
     }
     // Personal trusted-target mode: a separate explicit risk acknowledgement
