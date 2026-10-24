@@ -37,8 +37,12 @@ export function reconcileGitHubPhysicalRun(
       run.repository?.full_name !== action.repository ||
       !/^refs\/tags\/[A-Za-z0-9][A-Za-z0-9._\/-]{0,190}$/.test(expectedRef) ||
       expectedRef.includes('..') || expectedRef.includes('//') ||
-      ![action.workflowPath+'@'+expectedRef,
-        action.workflowPath+'@'+expectedRef.slice('refs/tags/'.length)].includes(run.path as string) ||
+      // GitHub REST's workflow-run.path is the bare YAML file path, not
+      // workflow_ref with a @tag suffix (confirmed on a real hosted Run).
+      // Bind the reviewed tag separately using the physical head_branch;
+      // this prevents a same-SHA Run on an unrelated ref from being adopted.
+      run.path !== action.workflowPath ||
+      run.head_branch !== expectedRef.slice('refs/tags/'.length) ||
       run.head_sha !== action.commitSha ||
       run.event !== 'workflow_dispatch')
     return {state:'identity_mismatch'};
