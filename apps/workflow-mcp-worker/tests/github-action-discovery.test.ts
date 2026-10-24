@@ -24,7 +24,7 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 330
+    timeout-minutes: 360
     steps:
       - run: echo test
 `;
@@ -62,4 +62,26 @@ test('rejects bad grant without outbound traffic', async () => {
   const paths: string[] = [];
   await assert.rejects(discoverGitHubActions({ ...grant, repository: 'invalid/repo/extra' }, server(paths)), /invalid_grant/);
   assert.equal(paths.length, 0);
+});
+
+test('authorized repository discovers a fresh default-branch revision without updating Worker config',async()=>{
+  const paths:string[]=[];
+  const newest='c'.repeat(40);
+  const identity={repository:grant.repository,repositoryId:grant.repositoryId,token:grant.token};
+  const http=async(req:Request):Promise<Response>=>{
+    const url=new URL(req.url);
+    paths.push(url.pathname+url.search);
+    if(url.pathname.endsWith('/commits/main'))return Response.json({sha:newest});
+    if(url.pathname.endsWith('/actions/workflows'))
+      return Response.json({workflows:[{id:5,path:'.github/workflows/linux.yml'}]});
+    if(url.pathname.endsWith('/linux.yml'))return Response.json({
+      path:'.github/workflows/linux.yml',encoding:'base64',content:btoa(yaml),
+    });
+    return Response.json({id:123,full_name:identity.repository,default_branch:'main'});
+  };
+  const actions=await discoverGitHubActions(identity,http);
+  assert.equal(actions.length,1);
+  assert.equal(actions[0].commitSha,newest);
+  assert(paths.some(p=>p.endsWith('?ref='+newest)));
+  assert(!paths.some(p=>p.includes(sha)));
 });
