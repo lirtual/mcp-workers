@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       worker:
-        description: Select Worker for release or read-only acceptance
+        description: Select Worker to deploy to production
         required: true
         type: choice
         options:
