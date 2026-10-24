@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig, verifyWorkflowD1Readiness } from "./manual-worker-release.mjs";
+import { activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig, verifyWorkflowD1Readiness, retrySecretReadback } from "./manual-worker-release.mjs";
 
 const required = [
   { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
@@ -21,6 +21,33 @@ test("Raindrop required Secret names and bindings are preserved", () => {
   assert.throws(() => verifyBindings("raindrop-mcp-worker", { ...goodSettings, observability: {} }, secretList),
     /Invocation Logs/);
   assert.throws(() => verifyBindings("not-a-worker", goodSettings, secretList), /target/);
+});
+
+test("Workflow deployment readback retries only missing Secret inventory", async () => {
+  let count = 0;
+  const intervals = [];
+  const result = await retrySecretReadback(async () => {
+    count++;
+    if (count <= 2) throw Error("Required Secret binding missing: MCP_ACCESS_TOKEN");
+    return { ready: true };
+  }, async ms => {intervals.push(ms);});
+  assert.deepEqual(result,{ready:true});
+  assert.equal(count,3);
+  assert.deepEqual(intervals,[2000,2000]);
+
+  let immediate = 0;
+  await assert.rejects(retrySecretReadback(async () => {
+    immediate++;
+    throw Error("Workflow Action OIDC audience drift");
+  }, async () => {throw Error("must not sleep");}), /OIDC audience drift/);
+  assert.equal(immediate,1);
+
+  let max = 0;
+  await assert.rejects(retrySecretReadback(async () => {
+    max++;
+    throw Error("Required runtime Secret missing: MCP_PORTAL_CLIENT_SECRET");
+  }, async () => {}), /runtime Secret missing/);
+  assert.equal(max,6);
 });
 
 test("Active-version readback requires exactly one 100 percent version", () => {
