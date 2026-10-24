@@ -133,9 +133,6 @@ jobs:
     # Normal push/PR and main release checks are unchanged.
     if: >-
       ${{ !(github.event_name == 'workflow_dispatch' &&
-            github.ref == 'refs/heads/fix/session-actions-spec-1-contract' &&
-            inputs.github_oidc_probe == true) &&
-          !(github.event_name == 'workflow_dispatch' &&
             github.ref == 'refs/heads/wip/workflow-mcp-public-readonly' &&
             (inputs.mcp_portal_probe == true || inputs.mcp_cloud_e2e == true)) &&
           !(github.event_name == 'workflow_dispatch' &&
@@ -821,7 +818,7 @@ jobs:
     name: Real GitHub OIDC + isolated D1 Task result (no production)
     if: >-
       ${{ github.event_name == 'workflow_dispatch' &&
-          github.ref == 'refs/heads/fix/session-actions-spec-1-contract' &&
+          github.ref == 'refs/heads/main' &&
           inputs.worker == 'workflow-mcp-worker' &&
           inputs.github_oidc_probe == true &&
           inputs.deploy_to_production != true &&
