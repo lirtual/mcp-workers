@@ -32,7 +32,7 @@ function fixture(){
  }
  db.exec(readFileSync(new URL('../migrations/0005_github_workflow_check.sql',import.meta.url),'utf8'));
  db.exec('BEGIN');
- for(const name of ['0006_action_attempt_capabilities.sql','0007_session_executions.sql']){
+ for(const name of ['0006_action_attempt_capabilities.sql','0007_session_executions.sql','0008_session_locator.sql']){
   db.exec(readFileSync(new URL('../migrations/'+name,import.meta.url),'utf8'));
  }
  db.exec('COMMIT');
