@@ -435,7 +435,9 @@ jobs:
           MAX_SCHEMA_BYTES: ${{ vars.MAX_SCHEMA_BYTES }}
           QUERY_TIMEOUT_MS: ${{ vars.QUERY_TIMEOUT_MS }}
           MAX_WRITE_AFFECTED_ROWS: ${{ vars.MAX_WRITE_AFFECTED_ROWS }}
-          GITHUB_ACTION_APPROVED_REPOSITORIES: ${{ vars.GITHUB_ACTION_APPROVED_REPOSITORIES }}
+          # GitHub reserves GITHUB_* variable names; translate our reviewed
+          # GitHub Environment variable into the Worker's runtime binding.
+          GITHUB_ACTION_APPROVED_REPOSITORIES: ${{ vars.WORKFLOW_ACTION_APPROVED_REPOSITORIES }}
         run: |
           set -euo pipefail
           umask 077
