@@ -15,7 +15,7 @@ const allow = JSON.stringify([{repository:source.repository,repositoryId:source.
 test('repository enrollment is stable while each reviewed publication pins a new commit',async()=>{
   const current={...source,commitSha:'c'.repeat(40)};
   const reviewed=await reviewedGitHubAction(current);
-  assert.deepEqual(await assertReviewedGitHubAction(reviewed,current,allow,{duration_minutes:5}),
+  assert.deepEqual({...await assertReviewedGitHubAction(reviewed,current,allow,{duration_minutes:5})},
     {duration_minutes:'5'});
   await assert.rejects(assertReviewedGitHubAction(reviewed,source,allow,{}),/review_changed/);
 });
