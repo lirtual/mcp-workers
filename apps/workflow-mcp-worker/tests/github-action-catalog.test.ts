@@ -7,7 +7,11 @@ test('no approved repositories means zero actions, without requiring a token', a
   assert.deepEqual(await listAvailableGitHubActions({}), {actions:[]});
 });
 test('explicit allowlist accepts only pinned, unique repository identities', () => {
-  assert.deepEqual(approvedActionRepositories(JSON.stringify([approved])), [approved]);
+  assert.deepEqual(approvedActionRepositories(JSON.stringify([approved])),
+    [{repository:approved.repository,repositoryId:approved.repositoryId}]);
+  assert.deepEqual(approvedActionRepositories(JSON.stringify([{
+    repository:approved.repository,repositoryId:approved.repositoryId,
+  }])), [{repository:approved.repository,repositoryId:approved.repositoryId}]);
   for (const entries of [
     [{...approved,repository:'another/repo/invalid'}],
     [{...approved,commitSha:'main'}],

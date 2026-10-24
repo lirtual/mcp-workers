@@ -1,4 +1,5 @@
 import type {WorkflowStep} from 'cloudflare:workers';
+import {verifyPinnedGitHubActionIdentity,type GithubActionKeys} from './github-action-oidc-claim.ts';
 import type {Env} from './store.ts';
 import type {Plan,Step} from './plan.ts';
 import {isPublishedGitHubActionApproved,type ReviewedGitHubAction} from './github-action-review.ts';
@@ -71,7 +72,17 @@ export async function runPublishedGitHubActionTask(
      .bind(attemptId).first<{state:string;parent_outcome:string}>();
    if(!settled||!['queued','running'].includes(settled.parent_outcome))
     return {status:'indeterminate',error_code:'github_action_parent_not_active'};
-   if(settled.state==='succeeded')return {status:'succeeded',output:null};
+   if(settled.state==='succeeded'){
+    // A signed JSON receipt is only business output. Native GitHub success
+    // is still the sole positive Task termination evidence.
+    const receipt=await db.prepare(`SELECT c.result_json FROM callback_receipts c
+      JOIN step_attempts a ON a.attempt_id=c.attempt_id
+      WHERE a.attempt_id=? AND a.capability_id='github.action'
+        AND a.state='succeeded' AND c.outcome='succeeded'`)
+      .bind(attemptId).first<{result_json:string}>();
+    try{return {status:'succeeded',output:receipt?JSON.parse(receipt.result_json):null};}
+    catch{return {status:'indeterminate',error_code:'github_action_task_result_invalid'};}
+   }
    if(settled.state==='failed'||settled.state==='cancelled')
     return {status:'failed',error_code:settled.state==='cancelled'?
      'github_action_cancelled':'github_action_failed'};
@@ -81,4 +92,45 @@ export async function runPublishedGitHubActionTask(
    await step.sleep('github-action-sleep-'+stepPlan.id+'-'+i,'1 minute');
  }
  return {status:'indeterminate',error_code:'github_action_terminal_unconfirmed'};
+}
+
+/** Store a small optional Task value, never a terminal conclusion. The
+ * published source, exact physical Run, signed JWT and active Claim are all
+ * revalidated before an immutable, bounded D1 receipt is inserted. Reuses
+ * the existing authenticated callback storage; no new service or migration.
+ */
+export async function recordSignedGitHubActionTaskResult(
+ db:Pick<D1Database,'prepare'>,attemptId:string,jwt:string,audience:string,
+ result:Record<string,unknown>,keys?:GithubActionKeys,
+):Promise<'recorded'|'already_recorded'|'denied'>{
+ if(!result||typeof result!=='object'||Array.isArray(result))return 'denied';
+ const serialized=JSON.stringify(result);
+ if(new TextEncoder().encode(serialized).byteLength>4096)return 'denied';
+ const verified=await verifyPinnedGitHubActionIdentity(db,attemptId,jwt,audience,keys);
+ if(!verified||verified.action.type!=='task')return 'denied';
+ const {row}=verified;
+ if(row.state!=='claimed'||row.owner_run_id!==row.candidate_run_id||
+    row.owner_run_attempt!==row.candidate_run_attempt)return 'denied';
+ const inserted=await db.prepare(`INSERT OR IGNORE INTO callback_receipts
+  (callback_id,attempt_id,outcome,result_json,notification_delivered,created_at)
+  SELECT ?,?,'succeeded',?,1,? WHERE EXISTS (
+    SELECT 1 FROM step_attempts a JOIN runs r ON r.id=a.run_id
+    WHERE a.attempt_id=? AND a.capability_id='github.action'
+      AND a.state='claimed'
+      AND a.candidate_run_id=? AND a.candidate_run_attempt=?
+      AND a.owner_run_id=a.candidate_run_id
+      AND a.owner_run_attempt=a.candidate_run_attempt
+      AND r.outcome IN ('queued','running')
+      AND NOT EXISTS(SELECT 1 FROM github_action_cancellations c
+        WHERE c.attempt_id=a.attempt_id)
+  )`).bind(crypto.randomUUID(),attemptId,serialized,Date.now(),attemptId,
+    row.candidate_run_id,row.candidate_run_attempt).run();
+ const persisted=await db.prepare(`SELECT outcome,result_json FROM callback_receipts
+   WHERE attempt_id=?`).bind(attemptId).first<{outcome:string;result_json:string}>();
+ if(!persisted||persisted.outcome!=='succeeded'||persisted.result_json!==serialized)
+  return 'denied';
+ // UNIQUE(attempt_id) permits exactly one receipt. Return the INSERT
+ // outcome only after verifying the persisted content: identical replays are
+ // acknowledged without overwriting the original, conflicts fail closed.
+ return inserted.meta.changes===1?'recorded':'already_recorded';
 }

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {readFileSync} from 'node:fs';
 import {generateKeyPair,SignJWT} from 'jose';
-import {runPublishedGitHubActionTask} from '../src/github-action-task.ts';
+import {runPublishedGitHubActionTask,recordSignedGitHubActionTaskResult} from '../src/github-action-task.ts';
 import {WorkflowService} from '../src/store.ts';
 import {verifyAndClaimPinnedGitHubAction} from '../src/github-action-oidc-claim.ts';
 import type {Plan} from '../src/plan.ts';
@@ -76,6 +76,14 @@ test('Task source-to-result: D1 reservation, dispatch ACK, signed OIDC claim and
    claimed=await verifyAndClaimPinnedGitHubAction(fixture.adapter,registered.attempt_id,
     signed,audience,publicKey);
    assert.equal(claimed,true);
+   assert.equal(await recordSignedGitHubActionTaskResult(fixture.adapter,
+    registered.attempt_id,signed,audience,{verification:'passed',count:2},publicKey),'recorded');
+   assert.equal(await recordSignedGitHubActionTaskResult(fixture.adapter,
+    registered.attempt_id,signed,audience,{verification:'passed',count:2},publicKey),'already_recorded');
+   assert.equal(await recordSignedGitHubActionTaskResult(fixture.adapter,
+    registered.attempt_id,signed,audience,{verification:'forged'},publicKey),'denied');
+   assert.equal(await recordSignedGitHubActionTaskResult(fixture.adapter,
+    registered.attempt_id,signed,audience,{oversize:'x'.repeat(5000)},publicKey),'denied');
   }
   return Response.json({id:42,workflow_id:456,run_attempt:1,
    repository:{id:123,full_name:repo},path:action.workflowPath,head_branch:'task-v1',
@@ -83,12 +91,71 @@ test('Task source-to-result: D1 reservation, dispatch ACK, signed OIDC claim and
  };
  try{
   const outcome=await runPublishedGitHubActionTask(fixture.env,plan,plan.steps[0],runId,fixture.step,http);
-  assert.deepEqual(outcome,{status:'succeeded',output:null});
+  assert.deepEqual(outcome,{status:'succeeded',output:{verification:'passed',count:2}});
   assert.equal(fixture.post(),1);
-  assert.equal(fixture.sleeps(),0);
+  assert.ok(fixture.sleeps()<=1,'one reconciliation delay is acceptable after a signed receipt');
   assert.equal(fixture.db.prepare('SELECT state FROM step_attempts').get()?.state,'succeeded');
   // Only the WorkflowRunner is permitted to settle the parent business Run.
   assert.equal(fixture.db.prepare('SELECT outcome FROM runs').get()?.outcome,'running');
+ }finally{fixture.db.close();}
+});
+test('signed Task result direct CAS distinguishes insert, identical replay and conflicting replay',async()=>{
+ const fixture=setup();
+ const {privateKey,publicKey}=await generateKeyPair('RS256');
+ const signed=await new SignJWT({repository:repo,repository_id:'123',
+  workflow_ref:workflowRef,ref,sha,run_id:'42',run_attempt:'1',event_name:'workflow_dispatch'})
+  .setProtectedHeader({alg:'RS256'}).setIssuer('https://token.actions.githubusercontent.com')
+  .setAudience(audience).setIssuedAt().setExpirationTime('5m').sign(privateKey);
+ const attempt='77777777-7777-4777-8777-777777777777';
+ try{
+  fixture.db.prepare(`INSERT INTO step_attempts(attempt_id,run_id,step_id,capability_id,
+   dispatch_id,state,repository,repository_id,workflow_ref,ref,
+   candidate_run_id,candidate_run_attempt,created_at,updated_at)
+   VALUES(?,?,'build','github.action',?,'confirmed',?,?,?,?,42,1,1,1)`)
+   .run(attempt,runId,'88888888-8888-4888-8888-888888888888',repo,'123',workflowRef,ref);
+  assert.equal(await verifyAndClaimPinnedGitHubAction(fixture.adapter,attempt,
+   signed,audience,publicKey),true);
+  const send=(value:Record<string,unknown>)=>recordSignedGitHubActionTaskResult(
+   fixture.adapter,attempt,signed,audience,value,publicKey);
+  // Assertions are deliberately outside any HTTP inspector/reconciliation seam:
+  // an inspector can convert assertion failures into unknown and mask bugs.
+  assert.equal(await send({verification:'passed',count:2}),'recorded');
+  const original=fixture.db.prepare(`SELECT callback_id,outcome,result_json FROM
+   callback_receipts WHERE attempt_id=?`).get(attempt) as {
+    callback_id:string;outcome:string;result_json:string};
+  assert.equal(original.outcome,'succeeded');
+  assert.deepEqual(JSON.parse(original.result_json),{verification:'passed',count:2});
+  assert.equal(await send({verification:'passed',count:2}),'already_recorded');
+  assert.equal(await send({verification:'forged',count:2}),'denied');
+  assert.equal(fixture.db.prepare('SELECT COUNT(*) AS n FROM callback_receipts').get()?.n,1);
+  assert.deepEqual(fixture.db.prepare(`SELECT callback_id,outcome,result_json FROM
+   callback_receipts WHERE attempt_id=?`).get(attempt),original);
+  assert.equal(fixture.db.prepare('SELECT state FROM step_attempts WHERE attempt_id=?')
+   .get(attempt)?.state,'claimed'); // A callback is not physical GitHub success.
+ }finally{fixture.db.close();}
+});
+
+test('unsigned or misidentified Task results cannot be stored as terminal success',async()=>{
+ const fixture=setup();
+ const {publicKey,privateKey}=await generateKeyPair('RS256');
+ const signed=await new SignJWT({repository:repo,repository_id:'123',
+  workflow_ref:workflowRef,ref,sha,run_id:'42',run_attempt:'1',event_name:'workflow_dispatch'})
+  .setProtectedHeader({alg:'RS256'}).setIssuer('https://token.actions.githubusercontent.com')
+  .setAudience(audience).setIssuedAt().setExpirationTime('5m').sign(privateKey);
+ const attempt='55555555-5555-4555-8555-555555555555';
+ try{
+  fixture.db.prepare(`INSERT INTO step_attempts(attempt_id,run_id,step_id,capability_id,
+   dispatch_id,state,repository,repository_id,workflow_ref,ref,
+   candidate_run_id,candidate_run_attempt,created_at,updated_at)
+   VALUES(?,?,'build','github.action',?,'confirmed',?,?,?,?,42,1,1,1)`)
+    .run(attempt,runId,'66666666-6666-4666-8666-666666666666',repo,'123',workflowRef,ref);
+  assert.equal(await recordSignedGitHubActionTaskResult(fixture.adapter,attempt,signed,
+    audience,{verification:'passed'},publicKey),'denied');
+  assert.equal(await verifyAndClaimPinnedGitHubAction(fixture.adapter,attempt,signed,
+    audience,publicKey),true);
+  assert.equal(await recordSignedGitHubActionTaskResult(fixture.adapter,attempt,signed,
+    'workflow-github-wrong:production',{verification:'passed'},publicKey),'denied');
+  assert.equal(fixture.db.prepare('SELECT count(*) AS n FROM callback_receipts').get()?.n,0);
  }finally{fixture.db.close();}
 });
 test('Session is not accidentally accepted through the Task executor',async()=>{

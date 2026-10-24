@@ -7,7 +7,6 @@ export type ActionCatalogEnv = {
 export type ApprovedRepository = {
   repository: string;
   repositoryId: number;
-  commitSha: string;
 };
 const sha = /^[a-f0-9]{40}$/i;
 const repoName = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
@@ -28,20 +27,23 @@ export function approvedActionRepositories(raw: string | undefined): ApprovedRep
     if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate))
       throw Error('github_action_catalog_invalid');
     const entry = candidate as Record<string, unknown>;
-    if (Object.keys(entry).sort().join(',') !== 'commitSha,repository,repositoryId' ||
+    if (!['repository,repositoryId', 'commitSha,repository,repositoryId'].includes(Object.keys(entry).sort().join(',')) ||
         typeof entry.repository !== 'string' || !repoName.test(entry.repository) ||
-        entry.repository.includes('..') || typeof entry.commitSha !== 'string' ||
-        !sha.test(entry.commitSha) || typeof entry.repositoryId !== 'number' ||
+        entry.repository.includes('..') ||
+        (entry.commitSha !== undefined && (typeof entry.commitSha !== 'string' || !sha.test(entry.commitSha))) ||
+        typeof entry.repositoryId !== 'number' ||
         !Number.isSafeInteger(entry.repositoryId) || entry.repositoryId <= 0 ||
         seen.has(entry.repository.toLowerCase()))
       throw Error('github_action_catalog_invalid');
     seen.add(entry.repository.toLowerCase());
-    result.push({repository: entry.repository, repositoryId: entry.repositoryId, commitSha: entry.commitSha});
+    // An old commitSha field is accepted for a configuration-only migration;
+    // it never pins discovery. An immutable source SHA is approved at Publish.
+    result.push({repository: entry.repository, repositoryId: entry.repositoryId});
   }
   return result;
 }
 
-/** List only explicitly approved repository revisions. Never dispatches. */
+/** List current Actions only in explicitly approved repository identities. Never dispatches. */
 export async function listAvailableGitHubActions(env: ActionCatalogEnv) {
   const grants = approvedActionRepositories(env.GITHUB_ACTION_APPROVED_REPOSITORIES);
   if (!grants.length) return { actions: [] };

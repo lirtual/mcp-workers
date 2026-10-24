@@ -99,15 +99,14 @@ export function parseGitHubAction(yaml: string): DiscoveredAction {
     if (jobs.length!==1) fail('session_requires_one_job');
     const job=jobs[0];
     const timeout=own(job,'timeout-minutes');
-    if(!Number.isSafeInteger(timeout) || (timeout as number)<1 ||
-       (timeout as number)>330)fail('invalid_session_timeout');
+    // 360-minute GitHub Job guard leaves time for first-step 330-minute
+    // expiry, normal shutdown, and best-effort cleanup.
+    if(timeout !== 360)fail('invalid_session_timeout');
     const duration=inputs.duration_minutes;
     if(!duration || duration.type!=='number' ||
        duration.required || !Number.isSafeInteger(duration.default) ||
        (duration.default as number)<1 || (duration.default as number)>330)
       fail('invalid_session_duration');
-    if((duration.default as number)>(timeout as number))
-      fail('session_duration_exceeds_job_timeout');
   }
   return { name: root.name, type: env.WORKFLOW_ACTION_TYPE as 'task' | 'session', inputs };
 }
