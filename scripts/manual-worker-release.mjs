@@ -473,9 +473,16 @@ async function main() {
   if (previous) invariant(previous.worker === worker && previous.sourceSha === sourceSha,
     "Release source changed");
   const exists = mode === "preflight" ? await scriptExists(account, worker, token) : true;
-  const read = () => current(account, worker, token, {
-    mode, sourceConfig, previousNamespaceId: previous?.previousNamespaceId,
-  });
+  const read = async () => {
+    const observed = await current(account, worker, token, {
+      mode, sourceConfig, previousNamespaceId: previous?.previousNamespaceId,
+    });
+    // Compare the active deployment inside the existing retry loop. Cloudflare
+    // may briefly serve the previous version after Wrangler reports success.
+    if (mode === 'readback' && worker === 'workflow-mcp-worker')
+      verifyPublishedVersion(previous, observed, process.env.EXPECTED_VERSION_ID);
+    return observed;
+  };
   const observed = !exists ? { mode: "bootstrap" }
     : mode === "readback" && worker === "workflow-mcp-worker"
       ? await retryReleaseReadback(read) : await read();
