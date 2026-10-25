@@ -28,6 +28,7 @@ test('overview matches the compiler, exposes only truthful ingress and needs no 
   assert.equal(catalog.get('flow.foreach_emit')?.availability,'supported');
   assert.equal(catalog.get('flow.foreach_multi_emit')?.availability,'supported');
   assert.equal(catalog.get('flow.foreach_mcp_read')?.availability,'unavailable');
+   assert.equal(catalog.get('flow.foreach_multi_mcp_read')?.availability,'unavailable');
   assert.equal(catalog.get('flow.foreach_github_task')?.availability,'unavailable');
   assert.equal(PLAN_LIMITS.maxRepeat,8);
   assert.equal(catalog.get('action.github.run')?.availability,'unavailable');
@@ -38,8 +39,8 @@ test('overview matches the compiler, exposes only truthful ingress and needs no 
 
 test('every advertised compiler example really compiles and has a matching digest',async()=>{
   for(const id of ['trigger.manual','trigger.cron','trigger.webhook','trigger.github_event','action.result.emit','action.mcp.call',
-    'flow.static_dag','flow.condition','flow.branch_join','flow.repeat','flow.foreach_emit','flow.foreach_multi_emit','flow.foreach_mcp_read']){
-    const result=await workflowCapabilities(['action.mcp.call','flow.foreach_mcp_read'].includes(id)?portalEnv:env,id,
+    'flow.static_dag','flow.condition','flow.branch_join','flow.repeat','flow.foreach_emit','flow.foreach_multi_emit','flow.foreach_mcp_read','flow.foreach_multi_mcp_read']){
+    const result=await workflowCapabilities(['action.mcp.call','flow.foreach_mcp_read','flow.foreach_multi_mcp_read'].includes(id)?portalEnv:env,id,
       async()=>({availability:'verified_contract',tools:[{
         tool:'ima_list_notebooks',endpoint:PRODUCTION_PORTAL_ENDPOINT,scope:'read',
         input_schema:{type:'object',properties:{limit:{type:'number'}}},
@@ -131,6 +132,29 @@ test('read-only dynamic foreach discovery uses the exact compiler and Portal gra
     ['github.run','nested templates','write-scope tools']);
 });
 
+test('multi-step read-only MCP capability is compiler-backed and requires exact grant',async()=>{
+ const detail=await workflowCapabilities(portalEnv,'flow.foreach_multi_mcp_read',
+  async()=>({availability:'verified_contract',tools:[{
+   tool:'ima_list_notebooks',endpoint:PRODUCTION_PORTAL_ENDPOINT,scope:'read',
+   input_schema:{type:'object',properties:{limit:{type:'number'}}},
+   schema_digest:'a'.repeat(64),arguments:{limit:1},availability:'discovered_not_executed',
+  }]}));
+ assert.equal(detail.availability,'verified_contract');
+ const example=detail.example as {definition:unknown;digest:string};
+ const {plan,digest}=await compilePlan(example.definition);
+ assert.equal(digest,example.digest);
+ const children=plan.steps.find(x=>x.id==='each')?.with.templates as
+  Array<{uses:string;with?:{schema_digest?:string}}>;
+ assert.deepEqual(children.map(x=>x.uses),['result.emit','mcp.call']);
+ assert.match(children[1]!.with?.schema_digest??'',/^[a-f0-9]{64}$/);
+ assert.deepEqual((detail.template_policy as {allowed_actions:string[]}).allowed_actions,
+  ['result.emit','mcp.call']);
+ const schemas=WORKFLOW_DEFINITION_SCHEMA.properties.steps.items.properties.template.oneOf[1].properties.steps;
+ assert.ok(schemas,'multi-step schema missing');
+ assert.ok(schemas.allOf.some(x=>
+  x.if.minItems===2&&x.then.items.properties.uses.enum?.includes('mcp.call')));
+});
+
 test('GitHub Task dynamic template schema and capability remain scoped',async()=>{
  const detail=await workflowCapabilities(env,'flow.foreach_github_task');
  assert.equal(detail.availability,'no_verified_published_task');
@@ -188,5 +212,5 @@ test('multi-emit foreach discovery exposes only sequential pure Actions',async()
   assert.ok(schema,'multi-foreach JSON Schema must be declared');
   assert.equal(schema.maxItems,4);
   assert.ok(schema.allOf.some(rule=>rule.if.minItems===2&&
-    rule.then.items.properties.uses.const==='result.emit'));
+    rule.then.items.properties.uses.enum.includes('result.emit')));
 });

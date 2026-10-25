@@ -95,8 +95,10 @@ function approvedMcpSteps(plan:Plan):Array<{with:Record<string,unknown>}>{
   return plan.steps.flatMap(s=>{
     if(s.uses==='mcp.call')return [s];
     if(s.uses!=='flow.foreach')return [];
-    const template=s.with.template as {uses?:unknown;with?:Record<string,unknown>}|undefined;
-    return template?.uses==='mcp.call'&&template.with?[{with:template.with}]:[];
+    const templates=(Array.isArray(s.with.templates)?s.with.templates:[s.with.template]) as
+      Array<{uses?:unknown;with?:Record<string,unknown>}|undefined>;
+    return templates.filter(t=>t?.uses==='mcp.call'&&!!t.with)
+      .map(t=>({with:t!.with!}));
   });
 }
 

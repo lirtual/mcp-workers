@@ -277,13 +277,13 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       if(!Array.isArray(templ.steps)||templ.steps.length<1||
          templ.steps.length>PLAN_LIMITS.maxForeachTemplateSteps)
         throw new PlanError('unsupported_foreach_template',path+'/template/steps');
-      // Multi-step templates are pure only: no new external-effect surface.
+      // Multi-step templates permit pure emits and explicitly approved read-only MCP only.
       if(templ.steps.length>1){
         const originalNeeds=candidate.needs===undefined?[]:candidate.needs;
         if(!Array.isArray(originalNeeds)||originalNeeds.some(x=>typeof x!=='string'||!SAFE_ID.test(x))||
            new Set(originalNeeds).size!==originalNeeds.length)
           throw new PlanError('invalid_dependencies',path+'/needs');
-        const children=templ.steps.map((sourceStep,index)=>{
+        const children=await Promise.all(templ.steps.map(async(sourceStep,index)=>{
           const childPath=path+'/template/steps/'+index;
           const child=object(sourceStep,'invalid_foreach_template');
           keys(child,['id','uses','with','if'],childPath);
@@ -291,11 +291,26 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
              OBJECT_PROTOTYPE_KEYS.has(child.id)||child.id==='prototype'||
              originalNeeds.includes(child.id))
             throw new PlanError('invalid_step_id',childPath+'/id');
-          if(child.uses!=='result.emit')
+          const args=object(child.with,'invalid_step_arguments');
+          if(child.uses==='result.emit'){
+            keys(args,['data'],childPath+'/with');
+            return child as {id:string;uses:'result.emit'|'mcp.call';with:Record<string,unknown>;if?:unknown};
+          }
+          if(child.uses!=='mcp.call')
             throw new PlanError('unsupported_foreach_action',childPath+'/uses');
-          keys(object(child.with,'invalid_step_arguments'),['data'],childPath+'/with');
-          return child as {id:string;uses:'result.emit';with:Record<string,unknown>;if?:unknown};
-        });
+          const target=childPath+'/with';
+          keys(args,['endpoint','tool','scope','arguments','input_schema','output_schema'],target);
+          if(typeof args.endpoint!=='string')throw new PlanError('invalid_endpoint',target+'/endpoint');
+          try{if(publicMcpEndpoint(args.endpoint).href!==args.endpoint)throw Error('noncanonical');}
+          catch{throw new PlanError('invalid_endpoint',target+'/endpoint');}
+          if(typeof args.tool!=='string'||!/^[a-zA-Z0-9_-][a-zA-Z0-9_.-]{0,127}$/.test(args.tool))
+            throw new PlanError('invalid_tool',target+'/tool');
+          if(args.scope!=='read')throw new PlanError('unsupported_operation_scope',target+'/scope');
+          object(args.arguments,'invalid_step_arguments');
+          const schema_digest=await toolSchemaDigest(args.input_schema,args.output_schema);
+          return {...child,with:{...args,schema_digest}} as unknown as
+            {id:string;uses:'result.emit'|'mcp.call';with:Record<string,unknown>;if?:unknown};
+        }));
         if(new Set(children.map(child=>child.id)).size!==children.length)
           throw new PlanError('invalid_step_id',path+'/template/steps');
         for(let n=0;n<Number(candidate.max_items);n++)for(const child of children){

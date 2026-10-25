@@ -1331,3 +1331,94 @@ test('valid reviewed item-typed Task reaches one dispatch checkpoint after bound
  assert.equal(result.steps.find(s=>s.step_id==='each_0_task')?.status,'failed');
  assert.equal(result.steps.find(s=>s.step_id==='each_1_task'),undefined);
 });
+
+test('mixed Foreach stages use per-item prior output and one D1 fence per reviewed MCP call',async t=>{
+ const {admit,service,env}=setup(t);
+ let calls=0;
+ mockPublicPeer(t,async()=>{calls++;});
+ const approvedWith={endpoint:ECHO_GRANT.endpoint,tool:ECHO_GRANT.tool,scope:'read',
+   input_schema:PINNED_SCHEMA,arguments:{value:{ref:'steps.prepare.output'}}};
+ const start=await admit([
+  {id:'each',flow:'foreach',items:{ref:'inputs.items'},max_items:3,
+   template:{steps:[
+    {id:'prepare',uses:'result.emit',with:{data:{ref:'item.value'}}},
+    {id:'read',uses:'mcp.call',with:approvedWith},
+    {id:'finish',uses:'result.emit',with:{data:{ref:'steps.read.output'}}},
+   ]}},
+  {id:'done',needs:['each'],uses:'result.emit',with:{data:{ref:'steps.each.output'}}},
+ ],{items:['red','blue']},[ECHO_GRANT]);
+ const names:string[]=[];
+ await new WorkflowOrchestrator({} as ExecutionContext,env).run(
+   {payload:{run_id:start.run_id}} as WorkflowEvent<{run_id:string}>,
+   {do:async(name:string,_options:unknown,fn:()=>Promise<unknown>)=>{
+     names.push(name);return fn();
+   }} as unknown as WorkflowStep);
+ const result=await service.result(start.run_id);
+ assert.equal(result.status,'succeeded',JSON.stringify(result));
+ assert.equal(calls,2);
+ assert.equal(result.steps.length,8);
+ for(const id of ['each_0_prepare','each_0_read','each_0_finish',
+   'each_1_prepare','each_1_read','each_1_finish'])
+   assert.equal(result.steps.find(s=>s.step_id===id)?.status,'succeeded',id);
+ assert.ok(names.indexOf('workflow-each_0_read-args')<
+   names.indexOf('workflow-each_0_read'));
+ assert.ok(names.indexOf('workflow-each_1_prepare')<
+   names.indexOf('workflow-each_1_read-args'));
+ assert.equal((result.result as Array<{content:unknown[]}>).length,2);
+});
+
+test('mixed Foreach MCP stage uncertainty stops later calls and never blindly retries after lost checkpoint',async t=>{
+ const {admit,service,env,sqlite}=setup(t);
+ const mcpArgs={endpoint:ECHO_GRANT.endpoint,tool:ECHO_GRANT.tool,scope:'read',
+  input_schema:PINNED_SCHEMA,arguments:{value:{ref:'item.value'}}};
+ const start=await admit([{id:'each',flow:'foreach',items:{ref:'inputs.items'},
+  max_items:2,template:{steps:[
+   {id:'first',uses:'mcp.call',with:mcpArgs},
+   {id:'second',uses:'mcp.call',with:mcpArgs},
+   {id:'finish',uses:'result.emit',with:{data:{ref:'steps.second.output'}}},
+  ]}}],{items:['alpha','beta']},[ECHO_GRANT]);
+ let calls=0;
+ mockPublicPeer(t,async()=>{calls++;});
+ const seen=new Map<string,unknown>();
+ let lost=false;
+ const native={do:async(name:string,_options:unknown,cb:()=>Promise<unknown>)=>{
+   if(seen.has(name))return seen.get(name);
+   const value=await cb();
+   if(name==='workflow-each_0_first'&&!lost){
+     lost=true;throw Error('lost remote MCP checkpoint after tools/call');
+   }
+   seen.set(name,value);
+   return value;
+ }} as unknown as WorkflowStep;
+ const event={payload:{run_id:start.run_id}} as WorkflowEvent<{run_id:string}>;
+ await new WorkflowOrchestrator({} as ExecutionContext,env).run(event,native);
+ const first=await service.result(start.run_id);
+ assert.equal(first.status,'indeterminate',JSON.stringify(first));
+ assert.equal(calls,1,'one external read, not two');
+ assert.equal(first.steps.find(s=>s.step_id==='each_0_second'),undefined);
+ sqlite.prepare("UPDATE runs SET outcome='running',inputs=?,result=NULL WHERE id=?")
+  .run(JSON.stringify({items:['changed','new']}),start.run_id);
+ await new WorkflowOrchestrator({} as ExecutionContext,env).run(event,native);
+ assert.equal(calls,1,'repeat callback may not dispatch an already-fenced MCP call');
+ assert.equal((await service.result(start.run_id)).status,'indeterminate');
+});
+
+test('mixed Foreach rejected MCP arguments stop before external effects',async t=>{
+ const {admit,service,run}=setup(t);
+ const mcpArgs={endpoint:ECHO_GRANT.endpoint,tool:ECHO_GRANT.tool,scope:'read',
+  input_schema:PINNED_SCHEMA,arguments:{value:{ref:'steps.prepare.output.name'}}};
+ const start=await admit([{id:'each',flow:'foreach',items:{ref:'inputs.items'},
+  max_items:2,template:{steps:[
+   {id:'prepare',uses:'result.emit',with:{data:{ref:'item.value'}}},
+   {id:'read',uses:'mcp.call',with:mcpArgs},
+   {id:'finish',uses:'result.emit',with:{data:'should not run'}},
+  ]}}],{items:[null,'safe']},[ECHO_GRANT]);
+ let calls=0;
+ mockPublicPeer(t,async()=>{calls++;});
+ await run(start.run_id);
+ const result=await service.result(start.run_id);
+ assert.equal(result.status,'failed');
+ assert.equal(calls,0);
+ assert.equal(result.steps.find(s=>s.step_id==='each_0_finish'),undefined);
+ assert.equal(result.steps.find(s=>s.step_id==='each_1_prepare'),undefined);
+});

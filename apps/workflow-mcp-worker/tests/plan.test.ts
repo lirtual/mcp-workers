@@ -430,7 +430,7 @@ test('bounded pure multi-step foreach reserves child IDs and checks local output
   await assert.rejects(()=>compilePlan(crossItem),PlanError);
 });
 
-test('pure multi-step foreach rejects external children, nested templates and global budget bypass',async()=>{
+test('multi-step foreach rejects unreviewed external children, nested templates and global budget bypass',async()=>{
   const emit=(id:string)=>({id,uses:'result.emit',with:{data:{ref:'item.value'}}});
   const make=(children:unknown[],max_items=2)=>({version:1,name:'Guarded stages',
     inputs:{items:['a','b']},steps:[{id:'each',flow:'foreach',items:{ref:'inputs.items'},
@@ -447,4 +447,43 @@ test('pure multi-step foreach rejects external children, nested templates and gl
   const exact=await compilePlan(make([emit('a'),emit('b'),emit('c')],8));
   assert.equal(exact.plan.steps.length,1);
   assert.equal((exact.plan.steps[0]!.with.templates as unknown[]).length,3);
+});
+
+test('multi-step foreach compiles only pinned read-only MCP and earlier item output refs',async()=>{
+ const mcp={endpoint:'https://mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',
+   input_schema:{type:'object',properties:{value:{type:'string'}}},
+   arguments:{value:{ref:'steps.prepare.output'}}};
+ const source={version:1,name:'multi MCP read',inputs:{items:['a','b']},steps:[
+  {id:'each',flow:'foreach',items:{ref:'inputs.items'},max_items:2,
+   template:{steps:[
+     {id:'prepare',uses:'result.emit',with:{data:{ref:'item.value'}}},
+     {id:'read',uses:'mcp.call',with:mcp},
+     {id:'finish',uses:'result.emit',with:{data:{ref:'steps.read.output'}}},
+   ]}},
+  {id:'done',uses:'result.emit',needs:['each'],with:{data:{ref:'steps.each.output'}}},
+ ]};
+ const {plan,digest}=await compilePlan(source);
+ assert.equal(digest,(await compilePlan(JSON.stringify(source))).digest);
+ const each=plan.steps.find(x=>x.id==='each')!;
+ assert.equal((each.with.templates as Array<{uses:string}>).length,3);
+ const read=(each.with.templates as Array<{id:string;with:{schema_digest?:string}}>)[1];
+ assert.equal(read?.id,'read');
+ assert.match(read?.with.schema_digest??'',/^[a-f0-9]{64}$/);
+ for(const edit of [
+  {scope:'write'}, {tool:'invalid tool'}, {endpoint:'http://localhost/mcp'},
+  {arguments:{value:{ref:'steps.finish.output'}}},
+  {arguments:{value:{ref:'steps.each_0_prepare.output'}}},
+ ]){
+   const bad=structuredClone(source);
+   Object.assign(bad.steps[0]!.template!.steps[1]!.with,edit);
+   await assert.rejects(()=>compilePlan(bad),PlanError);
+ }
+ const noGithub=structuredClone(source);
+ noGithub.steps[0]!.template!.steps[1]!.uses='github.run';
+ await assert.rejects(()=>compilePlan(noGithub),PlanError);
+ const overflow=structuredClone(source);
+ overflow.steps[0]!.max_items=8;
+ overflow.steps.push({...structuredClone(source.steps[0]!),id:'another'} as never);
+ await assert.rejects(()=>compilePlan(overflow),
+   (e:unknown)=>e instanceof PlanError&&e.message==='invalid_step_count');
 });
