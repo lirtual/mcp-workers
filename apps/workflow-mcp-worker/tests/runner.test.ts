@@ -774,3 +774,22 @@ test('skip-tolerant join still blocks failed and indeterminate dependencies',asy
   assert.equal(ambiguous.steps.find(x=>x.step_id==='read')?.status,'indeterminate');
   assert.equal(ambiguous.steps.find(x=>x.step_id==='join')?.status,'skipped');
 });
+
+test('all-skipped join never calls a reviewed external MCP Action',async t=>{
+  const {service,admit,run}=setup(t);
+  let externalCalls=0;
+  mockPublicPeer(t,async()=>{externalCalls++;});
+  const joined=echoStep('join',{value:'must not dispatch'});
+  const created=await admit([
+    {id:'left',uses:'result.emit',if:false,with:{data:'unused left'}},
+    {id:'right',uses:'result.emit',if:false,with:{data:'unused right'}},
+    {...joined,needs:['left','right'],needs_policy:'allow_skipped'},
+  ],{},[ECHO_GRANT]);
+  await run(created.run_id);
+  const result=await service.result(created.run_id);
+  assert.equal(result.status,'succeeded');
+  assert.deepEqual(result.steps.map(s=>[s.step_id,s.status]),[
+    ['join','skipped'],['left','skipped'],['right','skipped'],
+  ]);
+  assert.equal(externalCalls,0,'no branch ran so a join may not dispatch an external effect');
+});
