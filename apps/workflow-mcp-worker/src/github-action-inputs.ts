@@ -75,7 +75,7 @@ export function containsDynamicForeachTaskInputs(inputs:Record<string,unknown>):
  */
 export function validateForeachTaskInputTemplate(
  action:DiscoveredAction,inputs:Record<string,unknown>,
-):void{
+):Record<string,unknown>{
   if(!inputs||typeof inputs!=='object'||Array.isArray(inputs))
     throw Error('github_action_invalid_inputs');
   const projected:Record<string,unknown>={};
@@ -90,4 +90,5 @@ export function validateForeachTaskInputTemplate(
     }else projected[key]=value;
   }
   validateGitHubActionInputs(action,projected);
+  return projected;
 }
