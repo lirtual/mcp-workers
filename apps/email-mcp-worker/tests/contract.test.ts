@@ -45,4 +45,6 @@ test('authenticated stateless MCP tools/list advertises the entire intended inve
   assert.ok(message);
   const payload = JSON.parse(message);
   assert.deepEqual(payload.result.tools.map((tool: any) => tool.name), expected);
+  const reply = payload.result.tools.find((tool: any) => tool.name === 'mail_reply');
+  assert.ok(reply.inputSchema.required?.includes('to'), 'reply recipient confirmation must be mandatory');
 });
