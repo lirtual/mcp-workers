@@ -116,10 +116,10 @@ export type WindowsInstallPin = Readonly<{
 // Public Windows bootstrap source is pinned to the exact reviewed Agent
 // commit; the source hash is separate from the official Windows asset digest.
 export const REVIEWED_WINDOWS_INSTALL_PIN: WindowsInstallPin = Object.freeze({
-  tag: "v0.1.20",
-  commit: "d9aea9f66914bcb8200b73460350f8138eeed536",
-  scriptSha256: "e5dfde2e20b451a232e8ad1a53d5099ae4a4fbe8913ef9b7c05d1c92eb03b120",
-  assetSha256: "1691278d76c00cd475330758584f5ba85b8d4c6e6f2dae9c51c5fbed8c23ddea",
+  tag: "v0.1.22",
+  commit: "a1c8afe1b47c279a52569ebb44e576b29fcba4f4",
+  scriptSha256: "02770e56ed803936b1e060fbb92309edddd361a8a807b9e63c2b01a504b7e4d3",
+  assetSha256: "0ac48c46e2d642523d0ace756306fa33bc43cabb7d104e732425046bdb24bbd3",
 });
 
 function validWindowsPin(pin: WindowsInstallPin): boolean {
