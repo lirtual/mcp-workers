@@ -53,7 +53,7 @@ test('dedicated GitHub workflow has no automatic push/schedule or broad write pe
   assert.equal(workflow.permissions.actions,undefined);
   const serialized=JSON.stringify(workflow);
   for(const forbidden of [
-    'secrets.CLOUDFLARE_API_TOKEN','secrets.WORKFLOW_EXECUTOR_GITHUB_TOKEN','secrets.GH_TOKEN',
+    'secrets.CLOUDFLARE_API_TOKEN','secrets.WORKFLOW_EXECUTOR_GITHUB_TOKEN','secrets.GH_TOKEN','secrets.ACTIONS_GITHUB_DISPATCH_TOKENS',
     'GITHUB_TEST_WORKER_NAME','inputs.command','inputs.repository','inputs.callback_url',
     'pull_request_target','repository_dispatch',
   ])assert.equal(serialized.includes(forbidden),false,forbidden);
