@@ -147,7 +147,7 @@ export const WORKFLOW_EXPRESSION_RULES=Object.freeze({
   operators:['ref','eq','ne','gt','lt','and','or','not'],
   condition:'Boolean literal or safe expression that evaluates to Boolean; eq/ne/gt/lt take 2 operands, and/or take 1-16 operands.',
   needs:'Only existing Step IDs, no duplicates or cycles; reference another Step only if it appears in needs.',
-  needs_policy:'Default all_succeeded; allow_skipped executes only when every dependency succeeded or skipped, never after failed or indeterminate dependencies.',
+  needs_policy:'Default all_succeeded; allow_skipped requires at least one succeeded dependency and all others succeeded or skipped; all skipped, failed or indeterminate dependencies block execution.',
   limits:{maxDepth:15,maxArrayElements:100,maxBooleanOperands:16},
   unsupported:['foreach','while','repeat','child_workflow','saga'],
 });
@@ -215,7 +215,7 @@ const entries=[
   {id:'flow.condition',kind:'flow',availability:'supported',
    description:'Step if accepts safe ref/eq/ne/gt/lt/and/or/not expressions with compiler validation.'},
   {id:'flow.branch_join',kind:'flow',availability:'supported',
-   description:'Explicit needs_policy=allow_skipped joins conditional branches that succeeded or skipped; failures and uncertainty always block execution.'},
+   description:'Explicit needs_policy=allow_skipped joins conditional branches only when at least one succeeded and all other dependencies succeeded or skipped; a wholly skipped branch set, failure or uncertainty blocks execution.'},
   {id:'flow.loop',kind:'flow',availability:'unsupported',
    description:'Repeat, while, foreach, nested steps and dynamic expansion are not executable in the current compiler.'},
   {id:'flow.child',kind:'flow',availability:'unsupported',
