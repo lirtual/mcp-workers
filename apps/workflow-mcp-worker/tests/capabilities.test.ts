@@ -152,7 +152,7 @@ test('multi-step read-only MCP capability is compiler-backed and requires exact 
  const schemas=WORKFLOW_DEFINITION_SCHEMA.properties.steps.items.properties.template.oneOf[1].properties.steps;
  assert.ok(schemas,'multi-step schema missing');
  assert.ok(schemas.allOf.some(x=>
-  x.if.minItems===2&&x.then.items.properties.uses.enum?.includes('mcp.call')));
+  x.if.minItems===2&&x.then.anyOf[0]?.items?.properties.uses.enum?.includes('mcp.call')));
 });
 
 test('GitHub Task dynamic template schema and capability remain scoped',async()=>{
@@ -212,5 +212,5 @@ test('multi-emit foreach discovery exposes only sequential pure Actions',async()
   assert.ok(schema,'multi-foreach JSON Schema must be declared');
   assert.equal(schema.maxItems,4);
   assert.ok(schema.allOf.some(rule=>rule.if.minItems===2&&
-    rule.then.items.properties.uses.enum.includes('result.emit')));
+    rule.then.anyOf[0]?.items?.properties.uses.enum?.includes('result.emit')));
 });
