@@ -515,6 +515,17 @@ test("Workflow migration preflight requires all independent physical states sett
   assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/notification_delivered != 1/);
 });
 
+test("Task-only production acceptance reuses confirmed Ready Session gate and scoped cleanup",()=>{
+  const source=readFileSync(new URL("../apps/workflow-mcp-worker/tests/production-smoke.mjs",import.meta.url),"utf8");
+  const fn=source.slice(source.indexOf("async function runActionTaskSmoke()"),
+    source.indexOf("async function runWebhookSmoke()"));
+  assert.match(fn,/verifyWorkflowCodeReleaseReadiness\(\[\{/);
+  assert.match(fn,/sql\(WORKFLOW_MIGRATION_READINESS_SQL\)/);
+  assert.doesNotMatch(fn,/session_executions WHERE state != 'terminated'/);
+  assert.match(source,/DELETE FROM step_attempts WHERE run_id IN \(SELECT id FROM runs WHERE workflow_id = /);
+  assert.match(source,/Refusing GitHub cleanup until physical GitHub Job is completed/);
+});
+
 test("code-only release admits only confirmed Ready Sessions, not migrations",()=>{
   const row={
     migration_count:9,expected_migrations:9,
