@@ -576,7 +576,7 @@ test('MCP stateful MCP DELETE cannot delay an already successful tools/call resu
 
 test('retired fixed GitHub executor is neither publishable nor runnable',async t=>{
   const {service,env,sqlite}=setup(t);
-  const retired={id:'old',uses:'github.run',with:{capability:'github.workflow.check'}};
+  const retired={id:'old',uses:'github.run',needs:[],with:{capability:'github.workflow.check'}};
   const draft=await service.create(JSON.stringify({version:1,name:'Unsupported',steps:[retired]}));
   const validity=await service.validate(draft.workflow_id,1);
   assert.equal(validity.valid,false);
