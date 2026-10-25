@@ -62,8 +62,26 @@ export async function handleGithubEvent(
   if(request.method!=='POST')return response(405,'method_not_allowed');
   if(!env.DB||!env.WORKFLOW||!env.GITHUB_ACTION_OIDC_AUDIENCE)
     return response(503,'github_event_unavailable');
-  // The event payload must be derived from signed claims, not arbitrary JSON.
-  if(request.body!==null)return response(400,'unexpected_body');
+  // Accept an empty POST even when the runtime exposes it as an empty
+  // stream. Never parse or trust caller-supplied event attributes.
+  if(request.body!==null){
+    const declared=Number(request.headers.get('content-length'));
+    if(Number.isFinite(declared)&&declared>0)return response(400,'unexpected_body');
+    const reader=request.body.getReader();
+    try{
+      // Bound empty-chunk spin as well as bytes; nonempty data is rejected.
+      let empty=false;
+      for(let i=0;i<16;i++){
+        const part=await reader.read();
+        if(part.done){empty=true;break;}
+        if(part.value.byteLength>0)break;
+      }
+      if(!empty)return response(400,'unexpected_body');
+    }finally{
+      await reader.cancel().catch(()=>{});
+      reader.releaseLock();
+    }
+  }
   const auth=request.headers.get('authorization');
   if(!auth?.startsWith('Bearer ')||auth.length>8300||
      !auth.slice(7)||auth.slice(7).includes(' '))return response(401,'unauthorized');
