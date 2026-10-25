@@ -929,3 +929,36 @@ test('dynamic foreach per-item if is snapshotted, with skipped item recorded',as
   assert.equal(result.steps.find(x=>x.step_id==='each_0_emit')?.status,'skipped');
   assert.equal(result.steps.find(x=>x.step_id==='each_1_emit')?.status,'succeeded');
 });
+
+
+test('durable foreach snapshot survives replay without reevaluating changed item input',async t=>{
+  const {service,admit,env,sqlite}=setup(t);
+  const started=await admit([
+    {id:'each',flow:'foreach',items:{ref:'inputs.items'},max_items:2,
+      template:{steps:[{id:'emit',uses:'result.emit',with:{data:{ref:'item.value'}}}]}},
+  ],{items:['original']});
+  const cache=new Map<string,unknown>();
+  const callbacks=new Map<string,number>();
+  const native={do:async(name:string,_options:unknown,callback:()=>Promise<unknown>)=>{
+    if(cache.has(name))return cache.get(name);
+    callbacks.set(name,(callbacks.get(name)??0)+1);
+    const value=await callback();
+    cache.set(name,value);
+    return value;
+  }} as unknown as WorkflowStep;
+  await new WorkflowOrchestrator({} as ExecutionContext,env).run(
+    {payload:{run_id:started.run_id}} as WorkflowEvent<{run_id:string}>,native);
+  assert.deepEqual((await service.result(started.run_id)).result,['original']);
+  // A synthetic interrupted native continuation re-enters this same pinned
+  // Run with changed D1 input; cached native snapshots must remain authoritative.
+  sqlite.prepare("UPDATE runs SET outcome='running',inputs=?,result=NULL WHERE id=?")
+    .run(JSON.stringify({items:['tampered','second']}),started.run_id);
+  await new WorkflowOrchestrator({} as ExecutionContext,env).run(
+    {payload:{run_id:started.run_id}} as WorkflowEvent<{run_id:string}>,native);
+  const result=await service.result(started.run_id);
+  assert.deepEqual(result.result,['original']);
+  assert.equal(result.status,'succeeded');
+  assert.equal(callbacks.get('workflow-each-snapshot'),1);
+  assert.equal(callbacks.get('workflow-each_0_emit'),1);
+  assert.equal(cache.has('workflow-each_1_emit'),false);
+});
