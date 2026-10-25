@@ -62,7 +62,7 @@ test('diagnostics locate unsupported trigger, Action and step field without leak
     id:'one',uses:'result.emit',with:{data:'ok'},
   }]};
   for(const [definition,expectedCode,expectedPath] of [
-    [{...base,triggers:[{type:'webhook',schedule:'* * * * *'}]},'unsupported_trigger','/triggers/0/type'],
+    [{...base,triggers:[{type:'webhook',token_sha256:'invalid'}]},'invalid_webhook_token_hash','/triggers/0/token_sha256'],
     [{...base,steps:[{id:'one',uses:'shell',with:{}}]},'unsupported_capability','/steps/0/uses'],
     [{...base,steps:[{...base.steps[0],repeat:{times:2}}]},'unsupported_field','/steps/0/repeat'],
     [{...base,inputs:Object.fromEntries(Array.from({length:33},(_,i)=>['key'+i,i]))},
