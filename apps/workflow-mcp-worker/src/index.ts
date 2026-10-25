@@ -1,11 +1,11 @@
 import { createMcpHandler } from '@modelcontextprotocol/server';
 import { authenticatePortalRequest } from '@mcp-workers/portal-auth';
 import { buildMcpServer } from './tools.ts';
-import { WorkflowRunner } from './runner.ts';
+import { WorkflowOrchestrator, WorkflowRunner } from './runner.ts';
 import { handleGithubCallbackRequest } from './github-ingress.ts';
 import { handleGithubActionClaimRequest } from './github-action-ingress.ts';
 import type { Env } from './store.ts';
-export { WorkflowRunner };
+export { WorkflowOrchestrator, WorkflowRunner };
 const error=(status:number,code:string)=>Response.json({error:code},{status,headers:{'cache-control':'no-store',...(status===401?{'www-authenticate':'Bearer'}:{})}});
 export default {
  async fetch(request:Request,env:Env):Promise<Response>{

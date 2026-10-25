@@ -160,7 +160,7 @@ async function runGithubStep(
   }catch{return {status:'indeterminate',error_code:'github_callback_invalid'};}
 }
 
-export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
+export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}> {
   async run(event:WorkflowEvent<{run_id:string}>,step:WorkflowStep){
     const id=event.payload.run_id;
     const db=this.env.DB;
@@ -263,3 +263,7 @@ export class WorkflowRunner extends WorkflowEntrypoint<Env,{run_id:string}> {
     }
   }
 }
+
+// Historical workflow-mcp-runner instances must keep resolving this export
+// until their retention window expires; #204 retires it only after acceptance.
+export { WorkflowOrchestrator as WorkflowRunner };

@@ -39,6 +39,8 @@ query="$(node scripts/manual-worker-release.mjs migration-sql workflow-mcp-worke
 
 该门禁不同于日常 `Release Worker` 的 `d1-check`：迁移验收必须单独调用，不会被普通发布自动触发。新的 Secret/Variable 配置及生产 D1/Workflow 资源切换依然需要各自明确授权。
 
+#204 的新 Workflow 类名统一为 `WorkflowOrchestrator`。只在迁移过渡期间保留 `WorkflowRunner` 作为**同一实现的导出别名**，确保旧 `workflow-mcp-runner` 历史实例在留存期仍可解析；这不是第二个编排器，也不是长期兼容版本。正式切换时必须先建立新 D1 `workflow-mcp-db` 并取得平台真实 UUID，再将 `DB` 与 `WORKFLOW` 绑定一次性改为新 D1、`workflow-mcp-orchestrator` / `WorkflowOrchestrator`。当前旧绑定和正式 D1 UUID **不得**用临时或猜测值替代；新绑定的真实回读、数据一致性与外部 Job/Workflow 静默检查没有通过前，不得发布。旧类别名仅在确认历史实例留存条件满足后通过独立审查移除。
+
 ## 发布后核对
 
 - Wrangler 返回的确切 Version ID 与 Cloudflare 100% 活跃 Version ID 必须一致；更新时还需验证是新部署。

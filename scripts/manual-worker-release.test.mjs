@@ -513,8 +513,9 @@ test("Workflow readback verifies one integrated runtime, registered GitHub ident
     {name:"MCP_PORTAL_CLIENT_ID",type:"plain_text",text:"test-id"},
     {name:"MCP_PORTAL_CLIENT_SECRET",type:"secret_text"},
     {name:"WORKFLOW_GITHUB_DISPATCH_TOKEN",type:"secret_text"},
-    {name:"DB",type:"d1",id:"c76850db-b5e3-4128-9150-849a1c9e8d74"},
-    {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-runner",class_name:"WorkflowRunner"},
+    {name:"DB",type:"d1",id:"a4a477cd-6339-478c-ab7c-f7d87bb0d772"},
+    {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-orchestrator",class_name:"WorkflowOrchestrator"},
+    {name:"WORKFLOW_LEGACY",type:"workflow",workflow_name:"workflow-mcp-runner",class_name:"WorkflowRunner"},
     {name:"MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
     {name:"GITHUB_EXECUTOR_REPOSITORY",type:"plain_text",text:"lirtual/mcp-workers"},
     {name:"GITHUB_EXECUTOR_REPOSITORY_ID",type:"plain_text",text:"1414936394"},
@@ -556,7 +557,11 @@ test("Workflow manual GitHub Actions requires D1 checks before Owner", () => {
   const migration=ci.indexOf("      - name: Apply complete Workflow D1 migrations");
   const publish=ci.indexOf("      - name: Publish exactly selected Worker");
   assert.ok(pre>0 && migration>pre && publish>migration);
-  assert.match(ci,/wrangler d1 migrations apply workflow-mcp-worker --remote/);
+  assert.match(ci,/wrangler d1 migrations apply workflow-mcp-db --remote/);
+  const finalQuiescence=ci.indexOf("      - name: Verify copied Workflow D1 quiescence at publication gate");
+  assert.ok(finalQuiescence>migration && finalQuiescence<publish);
+  assert.match(ci,/pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "\$query"/);
+
   for(const name of ["0006_action_attempt_capabilities.sql","0007_session_executions.sql"]){
     assert.equal(ci.split(name).length,3);
   }
@@ -576,8 +581,9 @@ test("Workflow release pins the exact Portal and rejects target drift",()=>{
   const bindings=[
     {name:"MCP_ACCESS_TOKEN",type:"secret_text"},{name:"MCP_PORTAL_CLIENT_ID",type:"plain_text",text:"test-id"},
     {name:"MCP_PORTAL_CLIENT_SECRET",type:"secret_text"},{name:"WORKFLOW_GITHUB_DISPATCH_TOKEN",type:"secret_text"},
-    {name:"DB",type:"d1",id:"c76850db-b5e3-4128-9150-849a1c9e8d74"},
-    {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-runner",class_name:"WorkflowRunner"},
+    {name:"DB",type:"d1",id:"a4a477cd-6339-478c-ab7c-f7d87bb0d772"},
+    {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-orchestrator",class_name:"WorkflowOrchestrator"},
+    {name:"WORKFLOW_LEGACY",type:"workflow",workflow_name:"workflow-mcp-runner",class_name:"WorkflowRunner"},
     {name:"MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
     {name:"GITHUB_EXECUTOR_REPOSITORY",type:"plain_text",text:"lirtual/mcp-workers"},
     {name:"GITHUB_EXECUTOR_REPOSITORY_ID",type:"plain_text",text:"1414936394"},
@@ -600,8 +606,9 @@ test("Workflow release pins the exact Portal and rejects target drift",()=>{
 test("GitHub execution is integral but still pins repository, ref and OIDC audience",()=>{
   const base=[
     {name:"MCP_ACCESS_TOKEN",type:"secret_text"},
-    {name:"DB",type:"d1",id:"c76850db-b5e3-4128-9150-849a1c9e8d74"},
-    {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-runner",class_name:"WorkflowRunner"},
+    {name:"DB",type:"d1",id:"a4a477cd-6339-478c-ab7c-f7d87bb0d772"},
+    {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-orchestrator",class_name:"WorkflowOrchestrator"},
+    {name:"WORKFLOW_LEGACY",type:"workflow",workflow_name:"workflow-mcp-runner",class_name:"WorkflowRunner"},
     {name:"MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
     {name:"GITHUB_EXECUTOR_REPOSITORY",type:"plain_text",text:"lirtual/mcp-workers"},
     {name:"GITHUB_EXECUTOR_REPOSITORY_ID",type:"plain_text",text:"1414936394"},
@@ -638,5 +645,5 @@ test("Workflow preflight tolerates removed service bindings, readback rejects th
   ];
   const settings={bindings,observability:{enabled:true,logs:{invocation_logs:true}}};
   assert.equal(verifyBindings("workflow-mcp-worker",settings,secrets,{mode:"preflight"}),true);
-  assert.throws(()=>verifyBindings("workflow-mcp-worker",settings,secrets,{mode:"readback"}),/Workflow binding drift/);
+  assert.throws(()=>verifyBindings("workflow-mcp-worker",settings,secrets,{mode:"readback"}),/production D1 runtime binding drift/);
 });

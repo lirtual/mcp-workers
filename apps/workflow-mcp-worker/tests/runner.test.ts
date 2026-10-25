@@ -23,8 +23,13 @@ const hook=registerHooks({resolve(specifier,context,next){
   if(specifier==='cloudflare:workers')return {url:'data:text/javascript,export class WorkflowEntrypoint { constructor(ctx,env){this.env=env;} }',shortCircuit:true};
   return next(specifier,context);
 }});
-const { WorkflowRunner }=await import('../src/runner.ts');
+const { WorkflowRunner, WorkflowOrchestrator }=await import('../src/runner.ts');
 hook.deregister();
+
+test('WorkflowOrchestrator retains exact native runner behavior and old export identity',()=>{
+  assert.equal(WorkflowOrchestrator,WorkflowRunner);
+  assert.equal(WorkflowOrchestrator.name,'WorkflowOrchestrator');
+});
 
 function deferred(){
   let resolve!:()=>void;
