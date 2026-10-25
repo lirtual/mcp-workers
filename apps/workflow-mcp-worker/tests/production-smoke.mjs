@@ -332,7 +332,7 @@ async function runActionTaskSmoke() {
     workflowId:found.workflowId,workflowPath:found.workflowPath,
     commitSha:found.commitSha,type:found.type,contractDigest:found.contractDigest};
   assert.match(found.ref,/^refs\/tags\//,'Task must be pinned to a verified Tag');
-  const action={...reviewed,ref:found.ref,inputs:{outcome:'success'}};
+  const action={...reviewed,ref:found.ref,inputs:{outcome:{ref:'item.value'}}};
   // This acceptance client uses only the Workflow MCP's advertised contracts,
   // not local copies of Portal tool schemas or GitHub version identities.
   const overview=await tool('workflow_capabilities',{});
@@ -348,7 +348,7 @@ async function runActionTaskSmoke() {
     ...(read.output_schema?{output_schema:read.output_schema}:{}),
   }};
   const definition={version:1,name:'workflow-agent-first-'+label,
-    inputs:{items:['first','second']},
+    inputs:{items:['success','success']},
     steps:[readStep,
       {id:'each',flow:'foreach',needs:['read'],items:{ref:'inputs.items'},max_items:2,
         template:{steps:[{id:'verify',uses:'github.run',
@@ -385,7 +385,14 @@ async function runActionTaskSmoke() {
     approved_actions:checked.reviewed_actions,approve_heavy_execution:true,
   });
   assert.ok(published.published_version_id);
-  const opts={workflow_id:workflowId,inputs:{items:['first','second']},
+  // Exact pinned type/choice contract must be embedded in the durable Plan,
+  // never inferred from a mutable branch or caller-supplied input at Run.
+  const planRows=sql('SELECT plan FROM workflow_versions WHERE id='+quotedId(published.published_version_id));
+  const pinnedPlan=JSON.parse(planRows[0]?.plan ?? '{}');
+  assert.equal(pinnedPlan.github_dynamic_input_contracts?.each?.inputs?.outcome?.type,'choice');
+  assert.deepEqual(pinnedPlan.steps.find(s=>s.id==='each')?.with?.template?.with?.action?.inputs,
+    {outcome:{ref:'item.value'}});
+  const opts={workflow_id:workflowId,inputs:{items:['success','success']},
     idempotency_key:'action-task-smoke-'+label};
   const started=await tool('workflow_run',opts);
   runId=started.run_id;
@@ -439,7 +446,7 @@ async function runActionTaskSmoke() {
     assert.equal(terminalPhysical,true,'One physical GitHub Task still running');
   }
   githubPhysicalCompleted=true;
-  console.log('FOREACH_GITHUB_TASK_PRODUCTION_OK: two pinned Task children, signed Claims, distinct physical GitHub terminal proofs, D1 Attempt identity, no duplicate Run');
+  console.log('FOREACH_GITHUB_TASK_PRODUCTION_OK: two per-item typed Task inputs, pinned choice contract, signed Claims, distinct physical GitHub terminal proofs, D1 Attempt identity, no duplicate Run');
 }
 
 
