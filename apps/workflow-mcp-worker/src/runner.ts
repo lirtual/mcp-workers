@@ -138,7 +138,9 @@ async function runForeachStep(
             output:evaluated===undefined?null:evaluated};
         });
         return {valid:true,items:limitResult(entries)} as const;
-      });
+      }).catch(()=>({valid:false,items:[]} as const));
+    // Snapshot evaluation/checkpoint is pure. A failure here happens before
+    // every child dispatch, so do not misclassify it as an external ambiguity.
     if(!snapshot.valid)return {status:'failed',error_code:'invalid_foreach_items'};
     if(!Array.isArray(snapshot.items)||snapshot.items.length>Number(config.max_items))
       return {status:'failed',error_code:'invalid_foreach_snapshot'};
