@@ -475,11 +475,11 @@ test('multi-step foreach compiles only pinned read-only MCP and earlier item out
   {arguments:{value:{ref:'steps.each_0_prepare.output'}}},
  ]){
    const bad=structuredClone(source);
-   Object.assign(bad.steps[0]!.template.steps[1]!.with,edit);
+   Object.assign(bad.steps[0]!.template!.steps[1]!.with,edit);
    await assert.rejects(()=>compilePlan(bad),PlanError);
  }
  const noGithub=structuredClone(source);
- noGithub.steps[0]!.template.steps[1]!.uses='github.run';
+ noGithub.steps[0]!.template!.steps[1]!.uses='github.run';
  await assert.rejects(()=>compilePlan(noGithub),PlanError);
  const overflow=structuredClone(source);
  overflow.steps[0]!.max_items=8;
