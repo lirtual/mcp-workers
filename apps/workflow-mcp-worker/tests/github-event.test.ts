@@ -96,6 +96,15 @@ test('signed GitHub identity is verified against every immutable trigger binding
   const forged=await generateKeyPair('RS256');
   assert.equal(await verifyGithubPushEvent(await sign(forged.privateKey),aud,
     trigger,pair.publicKey),null);
+  const expired=await new SignJWT({...claims})
+    .setProtectedHeader({alg:'RS256'}).setIssuer('https://token.actions.githubusercontent.com')
+    .setAudience(aud).setIssuedAt(Math.floor(Date.now()/1000)-3600)
+    .setExpirationTime(Math.floor(Date.now()/1000)-3540).sign(pair.privateKey);
+  assert.equal(await verifyGithubPushEvent(expired,aud,trigger,pair.publicKey),null);
+  const notGithub=await new SignJWT({...claims})
+    .setProtectedHeader({alg:'RS256'}).setIssuer('https://attacker.example.invalid')
+    .setAudience(aud).setIssuedAt().setExpirationTime('3m').sign(pair.privateKey);
+  assert.equal(await verifyGithubPushEvent(notGithub,aud,trigger,pair.publicKey),null);
 });
 
 test('GitHub OIDC ingress admits one Run per verified Actions run; rerun replays even if attempt changed',async t=>{
@@ -134,4 +143,9 @@ test('GitHub OIDC ingress admits one Run per verified Actions run; rerun replays
   await s.service.update(created.workflow_id,1,JSON.stringify(wf({ref:'refs/heads/release'})));
   await s.service.publish(created.workflow_id,2);
   assert.equal((await invoke(token)).status,401,'old ref is no longer an authorized source');
+  await s.service.update(created.workflow_id,2,JSON.stringify({...wf(),name:'New published revision'}));
+  await s.service.publish(created.workflow_id,3);
+  assert.equal((await invoke(token)).status,409,
+    'same signed identity must not reuse an old event Run under a new Published Version');
+  assert.equal(s.dispatches,2);
 });
