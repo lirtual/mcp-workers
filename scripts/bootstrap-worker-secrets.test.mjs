@@ -8,7 +8,7 @@ const fixtures = {
   "database-mcp-worker": { MCP_ACCESS_TOKEN: "portal", DATABASE_CONFIG: '{"sample":"mysql://user:pass@host/db"}' },
   "ssh-mcp-worker": { MCP_ACCESS_TOKEN: "portal", SSH_BROKER_TOKEN: "x".repeat(32) },
   "remote-control-mcp-worker": { MCP_ACCESS_TOKEN: "portal" },
-  "github-actions-mcp-worker": { MCP_ACCESS_TOKEN: "portal", ACTIONS_MCP_TOKENS: "github-test-token" },
+  "github-actions-mcp-worker": { MCP_ACCESS_TOKEN: "portal", ACTIONS_GITHUB_DISPATCH_TOKENS: "github-test-token" },
   "workflow-mcp-worker": { MCP_ACCESS_TOKEN: "portal", MCP_PORTAL_CLIENT_SECRET: "test-secret", WORKFLOW_GITHUB_DISPATCH_TOKEN: "x".repeat(24) },
 };
 
@@ -50,16 +50,16 @@ test("SSH broker token must be at least 32 chars and root encryption key is not 
     { ...input, ENCRYPTION_KEY: "root-key", EDGE_SSH_DB: "root-db" }), input);
 });
 
-test("one ACTIONS_MCP_TOKENS Secret stages multiple PATs without additional secret names", () => {
+test("one ACTIONS_GITHUB_DISPATCH_TOKENS Secret stages multiple PATs without additional secret names", () => {
   const primary = fixtures["github-actions-mcp-worker"];
-  const mixed = { ...primary, ACTIONS_MCP_TOKENS: "pat1\npat2\npat3",
+  const mixed = { ...primary, ACTIONS_GITHUB_DISPATCH_TOKENS: "pat1\npat2\npat3",
     GH_TOKEN_SECONDARY: "do-not-forward", GITHUB_REPOS: "ignored" };
   assert.deepEqual(collectBootstrapSecrets("github-actions-mcp-worker", mixed),
-    { ...primary, ACTIONS_MCP_TOKENS: "pat1\npat2\npat3" });
+    { ...primary, ACTIONS_GITHUB_DISPATCH_TOKENS: "pat1\npat2\npat3" });
   assert.throws(() => collectBootstrapSecrets("github-actions-mcp-worker",
-    { ...primary, ACTIONS_MCP_TOKENS: "same\nsame" }), /Invalid or duplicate/);
+    { ...primary, ACTIONS_GITHUB_DISPATCH_TOKENS: "same\nsame" }), /Invalid or duplicate/);
   assert.throws(() => collectBootstrapSecrets("github-actions-mcp-worker",
-    { ...primary, ACTIONS_MCP_TOKENS: Array(9).fill("different").map((x,i) => x + i).join("\n") }),
+    { ...primary, ACTIONS_GITHUB_DISPATCH_TOKENS: Array(9).fill("different").map((x,i) => x + i).join("\n") }),
     /Invalid or duplicate/);
 });
 
@@ -81,7 +81,7 @@ test("Workflow registered GitHub token must be nonblank, bounded and not multili
     assert.throws(()=>collectBootstrapSecrets("workflow-mcp-worker",
       {...valid,WORKFLOW_GITHUB_DISPATCH_TOKEN:invalid}),/WORKFLOW_GITHUB_DISPATCH_TOKEN/);
   }
-  assert.deepEqual(collectBootstrapSecrets("workflow-mcp-worker",{...valid,ACTIONS_MCP_TOKENS:"ignored"}),valid);
+  assert.deepEqual(collectBootstrapSecrets("workflow-mcp-worker",{...valid,ACTIONS_GITHUB_DISPATCH_TOKENS:"ignored"}),valid);
 });
 
 test("Workflow GitHub Environment secrets never use reserved GITHUB_ names",()=>{

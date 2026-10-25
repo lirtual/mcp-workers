@@ -16,7 +16,7 @@
   "secrets": {
     "required": [
       "MCP_ACCESS_TOKEN",
-      "ACTIONS_MCP_TOKENS"
+      "ACTIONS_GITHUB_DISPATCH_TOKENS"
     ]
   }
 }

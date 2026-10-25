@@ -33,7 +33,7 @@ export default {
       if (auth.reason === 'invalid_origin') return jsonError(403, 'invalid_origin');
       return jsonError(401, 'unauthorized');
     }
-    try { parseGithubTokens(env.ACTIONS_MCP_TOKENS); }
+    try { parseGithubTokens(env.ACTIONS_GITHUB_DISPATCH_TOKENS); }
     catch { return jsonError(503, 'github_not_configured'); }
     const handler = createMcpHandler(() => buildMcpServer(env), { legacy: 'stateless' });
     return handler.fetch(auth.request);

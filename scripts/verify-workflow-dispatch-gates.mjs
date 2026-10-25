@@ -65,7 +65,7 @@ for (const marker of [
 for (const key of ['MCP_PORTAL_CLIENT_SECRET', 'WORKFLOW_GITHUB_DISPATCH_TOKEN'])
   assert.ok(deploy.content.includes(key + ': ' + dollar + '{{ secrets.' + key + ' }}'), 'Missing scoped Secret ' + key);
 
-for (const key of ['IMA_API_KEY', 'SSH_BROKER_TOKEN', 'ACTIONS_MCP_TOKENS']) {
+for (const key of ['IMA_API_KEY', 'SSH_BROKER_TOKEN', 'ACTIONS_GITHUB_DISPATCH_TOKENS']) {
   assert.ok(deploy.content.includes(key + ': ' + dollar + '{{ secrets.' + key + ' }}'),
     'Missing selected release Secret ' + key);
 }
@@ -80,7 +80,7 @@ assert.ok(smokeKeyPresent(release, 'MCP_PORTAL_CLIENT_ID', 'vars'));
 for (const source of [release, acceptance]) {
   assert.ok(!smokeKeyPresent(source, 'MCP_PORTAL_CLIENT_ID', 'secrets'),
     'Portal Client ID incorrectly sourced from GitHub Secret');
-  for (const old of ['WORKFLOW_EXECUTOR_GITHUB_TOKEN', 'MCP_BROKER_TOKEN', 'GH_TOKEN', 'API_KEY']) {
+  for (const old of ['WORKFLOW_EXECUTOR_GITHUB_TOKEN', 'MCP_BROKER_TOKEN', 'GH_TOKEN', 'API_KEY', 'ACTIONS_MCP_TOKENS']) {
     assert.ok(!source.includes(old + ': ' + dollar + '{{ secrets.' + old + ' }}'),
       'Legacy secret still staged: ' + old);
   }

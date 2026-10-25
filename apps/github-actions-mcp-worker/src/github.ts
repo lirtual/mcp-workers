@@ -1,6 +1,6 @@
 export interface Env {
   MCP_ACCESS_TOKEN: string;
-  ACTIONS_MCP_TOKENS: string;
+  ACTIONS_GITHUB_DISPATCH_TOKENS: string;
 }
 
 export class ActionError extends Error {
@@ -20,7 +20,7 @@ const REPO_PAGE_SIZE = 25;
 const MAX_REPO_PAGES = 8;
 const MAX_GITHUB_TOKENS = 8;
 
-/** One ACTIONS_MCP_TOKENS Secret supports one PAT per line. Existing single-line values work unchanged. */
+/** One ACTIONS_GITHUB_DISPATCH_TOKENS Secret supports one PAT per line. Existing single-line values work unchanged. */
 export function parseGithubTokens(value: string | undefined): string[] {
   if (!value || !value.trim()) throw new ActionError('github_token_not_configured');
   const tokens = value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
@@ -62,7 +62,7 @@ export class GitHubActionsClient {
   private repositoriesPromise?: Promise<Map<string, string | null>>;
 
   constructor(env: Env, requestFetch: typeof fetch = fetch) {
-    this.tokens = parseGithubTokens(env.ACTIONS_MCP_TOKENS);
+    this.tokens = parseGithubTokens(env.ACTIONS_GITHUB_DISPATCH_TOKENS);
     this.requestFetch = requestFetch;
   }
 

@@ -29,7 +29,7 @@
 | `database-mcp-worker` | `DATABASE_CONFIG` | `MAX_ROWS`、`MAX_RESULT_BYTES`、`MAX_SCHEMA_BYTES`、`QUERY_TIMEOUT_MS`、`MAX_WRITE_AFFECTED_ROWS` |
 | `ssh-mcp-worker` | `SSH_BROKER_TOKEN` | 暂无 |
 | `remote-control-mcp-worker` | 无新增必需密钥（正常发布保留 Cloudflare 现有 Secret） | 暂无 |
-| `github-actions-mcp-worker` | `ACTIONS_MCP_TOKENS`（1–8 个换行分隔 PAT） | 暂无 |
+| `github-actions-mcp-worker` | `ACTIONS_GITHUB_DISPATCH_TOKENS`（1–8 个换行分隔 PAT） | 暂无 |
 | `workflow-mcp-worker` | `MCP_PORTAL_CLIENT_SECRET`、`WORKFLOW_GITHUB_DISPATCH_TOKEN` | **`MCP_PORTAL_CLIENT_ID`（必填）** |
 
 所有 Worker 可继承 Repository Secret `MCP_ACCESS_TOKEN`；单个 Worker 如需例外，可配置同名 Environment Secret 覆盖。配置特殊保密数据只能使用 **Secret**，不能使用 **Variable**。
@@ -42,7 +42,7 @@
 
 不需要 `*_SECRETS_JSON`、不需要套一层 JSON、也不需要手动转义双引号。
 
-SSH 的 `SSH_BROKER_TOKEN` 应与现有 `edgessh` Broker 侧配置的令牌相同（最少 32 字符）。如果在 GitHub 修改该 Token，请先安排 EdgeSSH Broker 侧凭据同步：本项目仅管理 `ssh-mcp-worker`，不会自动更新不属于这五个 MCP Worker 的 `edgessh`。保留 `edgessh` 的 `MCP_BROKER_HOST_IDS` 白名单。正式 SSH Worker 使用私有 `EDGE_SSH_BROKER` Service Binding，不复制 `ENCRYPTION_KEY` 或 `EDGE_SSH_DB`；默认受限，不启用 `MCP_BROKER_FULL_ACCESS`。
+`SSH_BROKER_TOKEN` 在 `ssh-mcp-worker` 与 EdgeSSH（`edgessh`）两端使用相同值，最少 32 字符；两端 Secret 同名。两者属于独立部署，修改值时必须协调更新并验收两端，不能只更新一侧。保留 `edgessh` 的 `MCP_BROKER_HOST_IDS` 白名单。正式 SSH Worker 使用私有 `EDGE_SSH_BROKER` Service Binding，不复制 `ENCRYPTION_KEY` 或 `EDGE_SSH_DB`；默认受限，不启用 `MCP_BROKER_FULL_ACCESS`。
 
 GitHub 的 Environment 如果配置了所需审批/分支保护，请为每个 Worker 的 Environment **重新设置同等保护**；原 `production` 的保护规则不会继承。Repository 级密钥对拥有工作流修改/运行权限的人仍可见于任务运行上下文，请限制主分支修改权限与发布权限。
 

@@ -5,7 +5,7 @@ import type { Env } from '../src/github.ts';
 
 const config: Env = {
   MCP_ACCESS_TOKEN: 'mcp-secret',
-  ACTIONS_MCP_TOKENS: 'primary-pat',
+  ACTIONS_GITHUB_DISPATCH_TOKENS: 'primary-pat',
 };
 
 function mockGitHub(
@@ -26,7 +26,7 @@ function mockGitHub(
   }) as typeof fetch;
 }
 
-test('one ACTIONS_MCP_TOKENS Secret accepts single or multi-line PATs and validates input', () => {
+test('one ACTIONS_GITHUB_DISPATCH_TOKENS Secret accepts single or multi-line PATs and validates input', () => {
   assert.deepEqual(parseGithubTokens('primary-pat'), ['primary-pat']);
   assert.deepEqual(parseGithubTokens(' primary-pat\r\nsecondary-pat\nthird-pat\n'), [
     'primary-pat', 'secondary-pat', 'third-pat',
@@ -43,7 +43,7 @@ test('one ACTIONS_MCP_TOKENS Secret accepts single or multi-line PATs and valida
 test('three PATs are routed independently without repository variables', async () => {
   const received: string[] = [];
   const client = new GitHubActionsClient({
-    ...config, ACTIONS_MCP_TOKENS: 'primary-pat\nsecondary-pat\nthird-pat',
+    ...config, ACTIONS_GITHUB_DISPATCH_TOKENS: 'primary-pat\nsecondary-pat\nthird-pat',
   }, mockGitHub(async (_url, init) => {
     received.push(new Headers(init?.headers).get('authorization') ?? '');
     return Response.json({ total_count: 0, workflows: [] });
@@ -73,7 +73,7 @@ test('repositories are discovered from PAT permission rather than a static allow
 test('two PATs select the correct account without passing credentials in MCP replies', async () => {
   const calls: Array<{ url: string; auth: string }> = [];
   const client = new GitHubActionsClient({
-    ...config, ACTIONS_MCP_TOKENS: 'primary-pat\nsecondary-pat',
+    ...config, ACTIONS_GITHUB_DISPATCH_TOKENS: 'primary-pat\nsecondary-pat',
   }, mockGitHub(async (url, init) => {
     calls.push({ url, auth: new Headers(init?.headers).get('authorization') ?? '' });
     return Response.json({ total_count: 0, workflows: [] });
@@ -90,7 +90,7 @@ test('two PATs select the correct account without passing credentials in MCP rep
 
 test('overlapping token access fails closed, including case-insensitive repository matches', async () => {
   const client = new GitHubActionsClient({
-    ...config, ACTIONS_MCP_TOKENS: 'primary-pat\nsecondary-pat',
+    ...config, ACTIONS_GITHUB_DISPATCH_TOKENS: 'primary-pat\nsecondary-pat',
   }, mockGitHub(async () => { throw Error('No mutation must be dispatched'); }, {
     'primary-pat': ['lirtual/mcp-workers'],
     'secondary-pat': ['LIRTUAL/MCP-WORKERS'],
@@ -103,14 +103,14 @@ test('overlapping token access fails closed, including case-insensitive reposito
     () => client.dispatchWorkflow('lirtual/mcp-workers', 'ci.yml', 'main', {}),
     { code: 'ambiguous_repository_credentials' },
   );
-  assert.throws(() => new GitHubActionsClient({ ...config, ACTIONS_MCP_TOKENS: 'primary-pat\nprimary-pat' }),
+  assert.throws(() => new GitHubActionsClient({ ...config, ACTIONS_GITHUB_DISPATCH_TOKENS: 'primary-pat\nprimary-pat' }),
     { code: 'duplicate_github_token' });
 });
 
 test('dispatch sends one write to the discovered PAT and refuses cross-PAT fallback', async () => {
   const requests: Array<{ url: string; auth: string; body: any }> = [];
   const client = new GitHubActionsClient({
-    ...config, ACTIONS_MCP_TOKENS: 'primary-pat\nsecondary-pat',
+    ...config, ACTIONS_GITHUB_DISPATCH_TOKENS: 'primary-pat\nsecondary-pat',
   }, mockGitHub(async (url, init) => {
     requests.push({
       url, auth: new Headers(init?.headers).get('authorization') ?? '',
@@ -129,7 +129,7 @@ test('dispatch sends one write to the discovered PAT and refuses cross-PAT fallb
 
   let deniedRequests = 0;
   const denied = new GitHubActionsClient({
-    ...config, ACTIONS_MCP_TOKENS: 'primary-pat\nsecondary-pat',
+    ...config, ACTIONS_GITHUB_DISPATCH_TOKENS: 'primary-pat\nsecondary-pat',
   }, mockGitHub(async (_, init) => {
     deniedRequests++;
     assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer secondary-pat');

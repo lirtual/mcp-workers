@@ -130,7 +130,7 @@ jobs:
           IMA_API_KEY: ${{ secrets.IMA_API_KEY }}
           DATABASE_CONFIG: ${{ secrets.DATABASE_CONFIG }}
           SSH_BROKER_TOKEN: ${{ secrets.SSH_BROKER_TOKEN }}
-          ACTIONS_MCP_TOKENS: ${{ secrets.ACTIONS_MCP_TOKENS }}
+          ACTIONS_GITHUB_DISPATCH_TOKENS: ${{ secrets.ACTIONS_GITHUB_DISPATCH_TOKENS }}
           MCP_PORTAL_CLIENT_SECRET: ${{ secrets.MCP_PORTAL_CLIENT_SECRET }}
           WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
         run: |

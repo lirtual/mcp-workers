@@ -10,7 +10,7 @@ const REQUIRED_SECRETS = {
   "database-mcp-worker": ["MCP_ACCESS_TOKEN", "DATABASE_CONFIG"],
   "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "SSH_BROKER_TOKEN"],
   "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
-  "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "ACTIONS_MCP_TOKENS"],
+  "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "ACTIONS_GITHUB_DISPATCH_TOKENS"],
   "workflow-mcp-worker": ["MCP_ACCESS_TOKEN", "MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_GITHUB_DISPATCH_TOKEN"],
 };
 const WORKER_ENTRIES = {
@@ -99,8 +99,8 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     invariant(!find("GITHUB_REPOS", "plain_text") &&
       !find("GITHUB_REPOS_SECONDARY", "plain_text"),
       "Legacy GitHub Actions repository allowlists must be removed");
-    invariant(secretNames.has("ACTIONS_MCP_TOKENS") && !!find("ACTIONS_MCP_TOKENS", "secret_text"),
-      "GitHub Actions ACTIONS_MCP_TOKENS Secret binding missing");
+    invariant(secretNames.has("ACTIONS_GITHUB_DISPATCH_TOKENS") && !!find("ACTIONS_GITHUB_DISPATCH_TOKENS", "secret_text"),
+      "GitHub Actions ACTIONS_GITHUB_DISPATCH_TOKENS Secret binding missing");
   }
   if (worker === "ima-mcp-worker") {
     // During preflight, accept a legacy IMA_CLIENT_ID secret because it will be

@@ -12,7 +12,7 @@ export const BOOTSTRAP_SECRETS = Object.freeze({
   "database-mcp-worker": ["MCP_ACCESS_TOKEN", "DATABASE_CONFIG"],
   "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "SSH_BROKER_TOKEN"],
   "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
-  "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "ACTIONS_MCP_TOKENS"],
+  "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "ACTIONS_GITHUB_DISPATCH_TOKENS"],
   "workflow-mcp-worker": ["MCP_ACCESS_TOKEN", "MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_GITHUB_DISPATCH_TOKEN"],
 });
 
@@ -38,11 +38,11 @@ export function collectBootstrapSecrets(worker, env) {
   if (worker === "github-actions-mcp-worker") {
     // Preserve the single, multiline GitHub Environment Secret unchanged.
     // Reject malformed/duplicated entries before any Worker deployment.
-    const tokens = payload.ACTIONS_MCP_TOKENS.split(/\r?\n/).map((t) => t.trim()).filter(Boolean);
+    const tokens = payload.ACTIONS_GITHUB_DISPATCH_TOKENS.split(/\r?\n/).map((t) => t.trim()).filter(Boolean);
     if (!tokens.length || tokens.length > 8 ||
       tokens.some((t) => t.length > 512 || /\s/.test(t)) ||
       new Set(tokens).size !== tokens.length) {
-      throw new Error("Invalid or duplicate GitHub PAT in ACTIONS_MCP_TOKENS");
+      throw new Error("Invalid or duplicate GitHub PAT in ACTIONS_GITHUB_DISPATCH_TOKENS");
     }
     // Avoid copying older secondary Secret even when it remains in GitHub settings.
   }
