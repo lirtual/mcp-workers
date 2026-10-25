@@ -42,7 +42,7 @@
 
 不需要 `*_SECRETS_JSON`、不需要套一层 JSON、也不需要手动转义双引号。
 
-`SSH_BROKER_TOKEN` 在 `ssh-mcp-worker` 与 EdgeSSH（`edgessh`）两端使用相同值，最少 32 字符；两端 Secret 同名。两者属于独立部署，修改值时必须协调更新并验收两端，不能只更新一侧。保留 `edgessh` 的 `MCP_BROKER_HOST_IDS` 白名单。正式 SSH Worker 使用私有 `EDGE_SSH_BROKER` Service Binding，不复制 `ENCRYPTION_KEY` 或 `EDGE_SSH_DB`；默认受限，不启用 `MCP_BROKER_FULL_ACCESS`。
+SSH 的 `SSH_BROKER_TOKEN` 在 `ssh-mcp-worker` 与 EdgeSSH（`edgessh`）两端必须使用相同的现有值（至少 32 字符），重命名不轮换 Token。旧部署可能仍有 `MCP_BROKER_TOKEN`；先将同一值配置为两端的 `SSH_BROKER_TOKEN`，发布并验收两端后，再显式清理旧 Secret。Cloudflare 不提供 Secret 明文读回；若原值不可取得，必须协调两端轮换，不能只改一侧。本仓库只管理 `ssh-mcp-worker`，不会自动更新 `edgessh`。保留 `edgessh` 的 `MCP_BROKER_HOST_IDS` 白名单。正式 SSH Worker 使用私有 `EDGE_SSH_BROKER` Service Binding，不复制 `ENCRYPTION_KEY` 或 `EDGE_SSH_DB`；默认受限，不启用 `MCP_BROKER_FULL_ACCESS`。
 
 GitHub 的 Environment 如果配置了所需审批/分支保护，请为每个 Worker 的 Environment **重新设置同等保护**；原 `production` 的保护规则不会继承。Repository 级密钥对拥有工作流修改/运行权限的人仍可见于任务运行上下文，请限制主分支修改权限与发布权限。
 

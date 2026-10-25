@@ -23,8 +23,8 @@ After a separate production-integration approval, a deployer can add a named Ser
 ```
 
 And set **independent** secrets/variables:
-- On existing EdgeSSH Worker: `MCP_BROKER_HOST_IDS=...` (only explicitly approved UUIDs; empty rejects all) and `SSH_BROKER_TOKEN` (new strong random token, **not** `ENCRYPTION_KEY`). No separate `MCP_BROKER_ENABLED` toggle exists.
-- On SSH MCP Worker: `SSH_BROKER_TOKEN` identical new **broker-only** token; continue separate `MCP_ACCESS_TOKEN` for MCP client authentication. Do not copy original root encryption Secret or D1 binding into MCP.
+- On existing EdgeSSH Worker: `MCP_BROKER_HOST_IDS=...` (only explicitly approved UUIDs; empty rejects all) and `SSH_BROKER_TOKEN` (the same existing broker-only token on both Workers, at least 32 characters; **not** `ENCRYPTION_KEY`). No separate `MCP_BROKER_ENABLED` toggle exists.
+- On SSH MCP Worker: `SSH_BROKER_TOKEN` with that identical **broker-only** token value; continue separate `MCP_ACCESS_TOKEN` for MCP client authentication. Do not copy original root encryption Secret or D1 binding into MCP.
 - `MCP_BROKER_FULL_ACCESS` is **unset** during first G5 CloudCone smoke; when a broker binding is present, the MCP gateway blocks all effectful commands except exact `pwd` or `printf G5_SSH_OK`, and only permits bounded `/etc` SFTP listing and `/etc/hostname` text read (plus metadata and receipt lookups). Host ID allowlist is independently enforced **inside EdgeSSH**. Enabling broader access needs **separate operator approval**, not merely passing this smoke.
 
 A Service Binding alone is **not** an unforgeable caller identity. The independent broker token is mandatory; missing/invalid token, empty host allowlist, unknown host or changed pin fails closed. The two Workers must be in the same Cloudflare account. Changes to EdgeSSH's GitHub Actions auto-deployment configuration and durable production enablement must be explicitly reviewed at production rollout, because generic dashboard variables may not persist across automated deployments.

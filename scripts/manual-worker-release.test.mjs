@@ -73,17 +73,16 @@ test("Active-version readback requires exactly one 100 percent version", () => {
   ] }] }), /unambiguous/);
 });
 
-test("IMA allows old IMA_CLIENT_ID Secret in preflight and requires Variable after release", () => {
+test("IMA accepts old CLIENT_ID Variable in preflight and requires new Variable after release", () => {
   const worker = "ima-mcp-worker";
   const names = ["MCP_ACCESS_TOKEN", "IMA_API_KEY"];
   const secrets = names.map(name => ({ name }));
   const durable = { name: "IMA_IMAGE_REFRESH_SHARD", type: "durable_object_namespace", class_name: "ImaImageRefreshShard" };
   const observability = { enabled: true, logs: { invocation_logs: true }, traces: { enabled: true } };
   const old = { bindings: [...names.map(name => ({ name, type: "secret_text" })),
-    { name: "IMA_CLIENT_ID", type: "secret_text" }, durable], observability };
-  const oldSecrets = [...secrets, { name: "IMA_CLIENT_ID" }];
-  assert.equal(verifyBindings(worker, old, oldSecrets, { mode: "preflight" }), true);
-  assert.throws(() => verifyBindings(worker, old, oldSecrets, { mode: "readback" }), /IMA legacy CLIENT_ID|IMA_CLIENT_ID.*Variable/);
+    { name: "CLIENT_ID", type: "plain_text", text: "existing-client-id" }, durable], observability };
+  assert.equal(verifyBindings(worker, old, secrets, { mode: "preflight" }), true);
+  assert.throws(() => verifyBindings(worker, old, secrets, { mode: "readback" }), /IMA legacy CLIENT_ID|IMA_CLIENT_ID.*Variable/);
   const settings = { bindings: [...names.map(name => ({ name, type: "secret_text" })),
     { name: "IMA_CLIENT_ID", type: "plain_text", text: "ima-client-id" }, durable], observability };
   assert.equal(verifyBindings(worker, settings, secrets, { mode: "readback" }), true);
@@ -92,7 +91,8 @@ test("IMA allows old IMA_CLIENT_ID Secret in preflight and requires Variable aft
   assert.throws(() => verifyBindings(worker, { ...settings,
     bindings: settings.bindings.map(x => x.name === "IMA_CLIENT_ID" ? { ...x, text: " " } : x) },
     secrets, { mode: "readback" }), /IMA_CLIENT_ID.*Variable|IMA legacy CLIENT_ID/);
-  assert.throws(() => verifyBindings(worker, settings, oldSecrets, { mode: "readback" }), /legacy IMA_CLIENT_ID Secret/);
+  assert.throws(() => verifyBindings(worker, settings,
+    [...secrets, { name: "IMA_CLIENT_ID" }], { mode: "readback" }), /legacy IMA_CLIENT_ID Secret/);
   assert.throws(() => verifyBindings(worker, { ...settings, bindings: [
     ...settings.bindings, { name: "CLIENT_ID", type: "plain_text", text: "legacy" },
   ] }, secrets, { mode: "readback" }), /legacy CLIENT_ID/);
@@ -246,6 +246,10 @@ test("manual release scope stages the pinned Agent only for Remote Control", () 
 
 test("SSH production release requires Broker service, own DO, and least-privileged secret bindings", () => {
   const worker = "ssh-mcp-worker";
+  const source = JSON.parse(readFileSync(new URL("../apps/ssh-mcp-worker/wrangler.jsonc", import.meta.url), "utf8"));
+  assert.equal(source.observability?.enabled, true);
+  assert.equal(source.observability?.logs?.invocation_logs, true);
+  assert.deepEqual(source.secrets?.required, ["MCP_ACCESS_TOKEN", "SSH_BROKER_TOKEN"]);
   const secrets = [{ name: "MCP_ACCESS_TOKEN" }, { name: "SSH_BROKER_TOKEN" }];
   const settings = {
     bindings: [
@@ -255,9 +259,15 @@ test("SSH production release requires Broker service, own DO, and least-privileg
         entrypoint: "HostBrokerEntrypoint" },
       { name: "SSH_OPERATIONS", type: "durable_object_namespace", class_name: "SshOperationsDO" },
     ],
-    observability: { enabled: false },
+    observability: { enabled: true, logs: { invocation_logs: true } },
   };
   assert.equal(verifyBindings(worker, settings, secrets), true);
+  assert.throws(() => verifyBindings(worker, { ...settings,
+    observability: { enabled: false, logs: { invocation_logs: false } } }, secrets),
+    /SSH observability and invocation logs/);
+  assert.throws(() => verifyBindings(worker, { ...settings,
+    observability: { enabled: true, logs: { invocation_logs: false } } }, secrets),
+    /SSH observability and invocation logs/);
   assert.throws(() => verifyBindings(worker, { ...settings, bindings: settings.bindings.slice(0, 3) },
     secrets), /SSH Durable Object/);
   assert.throws(() => verifyBindings(worker, { ...settings,
@@ -374,6 +384,9 @@ test("GitHub Actions deploy requires only one PAT Secret and no repository lists
     [{ name: "MCP_ACCESS_TOKEN" }], { mode: "readback" }), /Required runtime Secret missing/);
   const release = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
   assert.ok(release.includes("ACTIONS_GITHUB_DISPATCH_TOKENS: ${{ secrets.ACTIONS_GITHUB_DISPATCH_TOKENS }}"));
+  assert.ok(!release.includes("GH_TOKEN: ${{ secrets.GH_TOKEN }}"));
+  assert.ok(!release.includes("ACTIONS_MCP_TOKENS: ${{ secrets.ACTIONS_MCP_TOKENS }}"));
+  assert.ok(!release.includes("MCP_BROKER_TOKEN: ${{ secrets.MCP_BROKER_TOKEN }}"));
   assert.ok(!release.includes("GH_TOKEN_SECONDARY"));
   assert.throws(() => verifyBindings(worker, { ...settings,
     bindings: [...bindings, { name: "DANGEROUS_RESOURCE", type: "service" }] },

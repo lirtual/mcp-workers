@@ -43,7 +43,9 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     }
   }
   if (worker === "ssh-mcp-worker") {
-    invariant(settings.observability?.enabled !== true, "SSH observability must remain disabled");
+    invariant(settings.observability?.enabled === true &&
+      settings.observability?.logs?.invocation_logs === true,
+      "SSH observability and invocation logs must remain enabled");
     const broker = find("EDGE_SSH_BROKER", "service");
     invariant(broker?.service === "edgessh" && broker.entrypoint === "HostBrokerEntrypoint",
       "SSH Broker Service Binding missing or changed");
@@ -103,16 +105,16 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
       "GitHub Actions ACTIONS_GITHUB_DISPATCH_TOKENS Secret binding missing");
   }
   if (worker === "ima-mcp-worker") {
-    // During preflight, accept a legacy IMA_CLIENT_ID secret because it will be
-    // replaced by the selected GitHub Environment Variable at deploy time.
-    // A successful readback MUST prove the type migration happened.
+    // During preflight, existing CLIENT_ID Variable may still be present.
+    // The selected GitHub Environment stages IMA_CLIENT_ID on publish.
+    // Readback MUST confirm the new name and type, with no old binding.
     if (options.mode !== "preflight") {
       const clientId = find("IMA_CLIENT_ID", "plain_text");
       invariant(bindings.filter(x => x.name === "IMA_CLIENT_ID").length === 1 &&
         !bindings.some(x => x.name === "CLIENT_ID") && !secretNames.has("CLIENT_ID"),
         "IMA legacy CLIENT_ID binding must be absent after release");
       invariant(typeof clientId?.text === "string" && clientId.text.trim().length > 0,
-        "IMA IMA_CLIENT_ID must be a nonempty plain-text Variable after release");
+        "IMA_CLIENT_ID must be a nonempty plain-text Variable after release");
       invariant(!find("IMA_CLIENT_ID", "secret_text") && !secretNames.has("IMA_CLIENT_ID"),
         "IMA legacy IMA_CLIENT_ID Secret still present after release");
     }
@@ -346,7 +348,9 @@ function readConfiguration(worker, content) {
   invariant(conf.keep_vars === false,
     "GitHub/Wrangler must own all runtime Variables; keep_vars must be false");
   if (worker === "ssh-mcp-worker") {
-    invariant(conf.observability?.enabled === false, "SSH observability must stay disabled");
+    invariant(conf.observability?.enabled === true &&
+      conf.observability?.logs?.invocation_logs === true,
+      "SSH observability and invocation logs must stay enabled");
   } else {
     const logs = worker === "remote-control-mcp-worker" ? false : true;
     invariant(conf.observability?.logs?.invocation_logs === logs,
