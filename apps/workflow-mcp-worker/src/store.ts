@@ -105,14 +105,16 @@ function approvedMcpSteps(plan:Plan):Array<{with:Record<string,unknown>}>{
 /** Include validated dynamic Task templates in the existing exact-source
  * discovery, schema review and explicit owner Publish approval. */
 function reviewedGitHubSteps(plan:Plan):Array<{step:Step;path:string}>{
-  return plan.steps.flatMap((step,index)=>{
+  return plan.steps.flatMap<{step:Step;path:string}>((step,index)=>{
     if(step.uses==='github.run'&&step.with.capability==='github.action')
       return [{step,path:'/steps/'+index+'/with/action'}];
     if(step.uses!=='flow.foreach')return [];
-    const child=step.with.template as {id:string;uses:string;with:Record<string,unknown>}|undefined;
-    if(child?.uses!=='github.run'||child.with.capability!=='github.action')return [];
-    return [{step:{id:child.id,uses:'github.run',needs:step.needs,with:child.with},
-      path:'/steps/'+index+'/template/steps/0/with/action'}];
+    const children=(Array.isArray(step.with.templates)?step.with.templates:[step.with.template]) as
+      Array<{id:string;uses:string;with:Record<string,unknown>}|undefined>;
+    return children.flatMap((child,stage)=>
+      child?.uses==='github.run'&&child.with?.capability==='github.action'
+        ?[{step:{id:child.id,uses:'github.run' as const,needs:step.needs,with:child.with},
+           path:'/steps/'+index+'/template/steps/'+stage+'/with/action'}]:[]);
   });
 }
 export class WorkflowService {

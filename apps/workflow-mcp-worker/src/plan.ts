@@ -162,7 +162,10 @@ export function publishedGitHubActionStep(plan:Plan,stepId:string):Step|undefine
   for(const controller of plan.steps){
     if(controller.uses!=='flow.foreach')continue;
     const config=controller.with;
-    const child=config.template as {id?:unknown;uses?:unknown;with?:unknown}|undefined;
+    const child=(Array.isArray(config.templates)?
+      (config.templates as Array<{id?:unknown;uses?:unknown;with?:unknown}>)
+        .find(c=>c.uses==='github.run'):config.template) as
+      {id?:unknown;uses?:unknown;with?:unknown}|undefined;
     if(child?.uses!=='github.run'||typeof child.id!=='string'||
        !Number.isSafeInteger(config.max_items)||Number(config.max_items)<1||
        Number(config.max_items)>PLAN_LIMITS.maxForeachItems)continue;
@@ -277,8 +280,16 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       if(!Array.isArray(templ.steps)||templ.steps.length<1||
          templ.steps.length>PLAN_LIMITS.maxForeachTemplateSteps)
         throw new PlanError('unsupported_foreach_template',path+'/template/steps');
-      // Multi-step templates permit pure emits and explicitly approved read-only MCP only.
+      // Preserve the reviewed 2-4 stage emit/MCP path. The only multi-stage
+      // GitHub shape admitted here is emit -> one literal-input Task -> emit.
       if(templ.steps.length>1){
+        const taskIndices=templ.steps.flatMap((item,index)=>
+          item&&typeof item==='object'&&!Array.isArray(item)&&
+          (item as {uses?:unknown}).uses==='github.run'?[index]:[]);
+        if(taskIndices.length&&!(templ.steps.length===3&&taskIndices.length===1&&taskIndices[0]===1&&
+           (templ.steps[0] as {uses?:unknown})?.uses==='result.emit'&&
+           (templ.steps[2] as {uses?:unknown})?.uses==='result.emit'))
+          throw new PlanError('unsupported_foreach_action',path+'/template/steps');
         const originalNeeds=candidate.needs===undefined?[]:candidate.needs;
         if(!Array.isArray(originalNeeds)||originalNeeds.some(x=>typeof x!=='string'||!SAFE_ID.test(x))||
            new Set(originalNeeds).size!==originalNeeds.length)
@@ -295,6 +306,19 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
           if(child.uses==='result.emit'){
             keys(args,['data'],childPath+'/with');
             return child as {id:string;uses:'result.emit'|'mcp.call';with:Record<string,unknown>;if?:unknown};
+          }
+          if(child.uses==='github.run'){
+            const target=childPath+'/with';
+            checkGitHubActionWith(args,target);
+            const action=args.action as Record<string,unknown>;
+            if(action.type!=='task')
+              throw new PlanError('unsupported_foreach_action',target+'/action/type');
+            const inputs=action.inputs as Record<string,unknown>;
+            if(Object.values(inputs).some(v=>
+              typeof v!=='string'&&typeof v!=='boolean'&&
+              (typeof v!=='number'||!Number.isFinite(v))))
+              throw new PlanError('unsupported_foreach_inputs',target+'/action/inputs');
+            return child as {id:string;uses:'result.emit'|'mcp.call'|'github.run';with:Record<string,unknown>;if?:unknown};
           }
           if(child.uses!=='mcp.call')
             throw new PlanError('unsupported_foreach_action',childPath+'/uses');
