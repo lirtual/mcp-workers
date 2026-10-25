@@ -77,7 +77,7 @@ test('fixed Session is unique; temporary Sessions coexist until global quota is 
   // SQLite's partial unique constraint, not an advisory read, protects races.
   assert.throws(()=>f.db.prepare(`INSERT INTO session_executions
    (run_id,step_id,slot,fixed_key,state,created_at,updated_at)
-   VALUES(?,'launch',2,'123:456','ready',1,1)`).run(run(2)));
+   VALUES(?,'launch',2,'123:.github/workflows/ubuntu.yml','ready',1,1)`).run(run(2)));
   f.db.prepare("UPDATE session_executions SET state='stopping' WHERE run_id=?").run(run(1));
   assert.equal(await reservePublishedSessionSlot(f.adapter,run(2),'launch'),'fixed_conflict');
   f.db.prepare("UPDATE session_executions SET state='uncertain' WHERE run_id=?").run(run(1));
@@ -93,7 +93,7 @@ test('fixed Session is unique; temporary Sessions coexist until global quota is 
   assert.equal(await releaseVerifiedSessionSlot(f.adapter,run(1),'launch'),'released');
   f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(fixed),'v');
   assert.equal(await reservePublishedSessionSlot(f.adapter,run(2),'launch'),'reserved');
-  assert.equal(f.db.prepare('SELECT fixed_key FROM session_executions WHERE run_id=?').get(run(2))?.fixed_key,'123:456');
+  assert.equal(f.db.prepare('SELECT fixed_key FROM session_executions WHERE run_id=?').get(run(2))?.fixed_key,'123:.github/workflows/ubuntu.yml');
  }finally{f.db.close();}
 });
 test('fixed Windows and Ubuntu provide stable MagicDNS locators only after Ready',async()=>{
