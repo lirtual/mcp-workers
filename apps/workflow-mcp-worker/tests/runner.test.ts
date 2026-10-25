@@ -1121,6 +1121,7 @@ test('GitHub Task foreach routes each child through physical Attempt; first fail
  sqlite.exec('BEGIN');
  sqlite.exec(readFileSync(new URL('../migrations/0006_action_attempt_capabilities.sql',import.meta.url),'utf8'));
  sqlite.exec('COMMIT');
+ sqlite.exec(readFileSync(new URL('../migrations/0007_session_executions.sql',import.meta.url),'utf8'));
  const start=await admit([{id:'each',flow:'foreach',items:{ref:'inputs.items'},max_items:2,
   template:{steps:[{id:'emit',uses:'result.emit',with:{data:{ref:'item.value'}}}]}}],
  {items:['A','B']});
