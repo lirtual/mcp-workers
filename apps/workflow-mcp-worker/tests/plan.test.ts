@@ -365,3 +365,39 @@ test('source cannot spoof internal flow.foreach opcode to bypass template and bu
         e.message==='unsupported_capability'&&e.path==='/steps/0/uses');
   }
 });
+
+
+test('bounded MCP read foreach pins its child tool contract and item expressions',async()=>{
+  const source={version:1,name:'Readonly dynamic map',inputs:{items:['one','two']},steps:[
+    {id:'each',flow:'foreach',items:{ref:'inputs.items'},max_items:2,
+      template:{steps:[{id:'read',uses:'mcp.call',with:{
+        endpoint:'https://mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',
+        input_schema:{type:'object',properties:{value:{type:'string'}}},
+        arguments:{value:{ref:'item.value'}},
+      }}]}},
+    {id:'done',needs:['each'],uses:'result.emit',with:{data:{ref:'steps.each.output'}}},
+  ]};
+  const {plan,digest}=await compilePlan(source);
+  const child=plan.steps.find(s=>s.id==='each')?.with.template as {
+    id:string;uses:string;with:{schema_digest:string;arguments:unknown};
+  };
+  assert.equal(child.id,'read');
+  assert.equal(child.uses,'mcp.call');
+  assert.match(child.with.schema_digest,/^[a-f0-9]{64}$/);
+  assert.deepEqual(child.with.arguments,{value:{ref:'item.value'}});
+  assert.equal(digest,(await compilePlan(JSON.stringify(source))).digest);
+  for(const invalid of [
+    {scope:'write'},
+    {endpoint:'https://example.com/mcp'},
+    {arguments:{value:{ref:'item.unauthorized'}}},
+    {arguments:{value:{ref:'steps.not_declared.output'}}},
+  ]){
+    const bad=structuredClone(source);
+    Object.assign(bad.steps[0].template.steps[0].with,invalid);
+    await assert.rejects(()=>compilePlan(bad),PlanError);
+  }
+  const bad=structuredClone(source);
+  bad.steps[0].template.steps[0].uses='github.run';
+  await assert.rejects(()=>compilePlan(bad),
+    (e:unknown)=>e instanceof PlanError&&e.message==='unsupported_foreach_action');
+});
