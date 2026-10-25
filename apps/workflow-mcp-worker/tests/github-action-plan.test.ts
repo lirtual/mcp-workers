@@ -160,8 +160,8 @@ test('strict three-stage emit Task emit reserves exact identities and preserves 
  for(const mutate of [
   (v:any)=>{v.steps[0].template.steps[1].with.action.type='session';},
   (v:any)=>{v.steps[0].template.steps[1].with.action.inputs={outcome:{ref:'item.value'}};},
-  (v:any)=>{v.steps[0].template.steps[0].uses='github.run';},
-  (v:any)=>{v.steps[0].template.steps[2].uses='github.run';},
+  (v:any)=>{v.steps[0].template.steps[0]=structuredClone(v.steps[0].template.steps[1]);},
+  (v:any)=>{v.steps[0].template.steps[2]=structuredClone(v.steps[0].template.steps[1]);},
   (v:any)=>{v.steps[0].template.steps.splice(1,0,v.steps[0].template.steps[1]);},
   (v:any)=>{v.steps[0].template.steps[1].with.capability='github.shell';},
  ]){
@@ -172,4 +172,41 @@ test('strict three-stage emit Task emit reserves exact identities and preserves 
  budget.steps[0]!.max_items=8;
  budget.steps.push({...structuredClone(source.steps[0]!),id:'again'} as never);
  await assert.rejects(()=>compilePlan(budget),/invalid_step_count/);
+});
+
+test('mixed ordered read-only MCP and one literal Task compile with exact pinned child IDs',async()=>{
+ const task={...action,type:'task' as const,inputs:{outcome:'success'}};
+ const read={id:'read',uses:'mcp.call',with:{
+  endpoint:'https://mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',
+  input_schema:{type:'object',properties:{value:{type:'string'}}},
+  arguments:{value:{ref:'item.value'}},
+ }};
+ const source={version:1,name:'Mixed approved external sequence',inputs:{items:['a','b']},
+  steps:[{id:'each',flow:'foreach',items:{ref:'inputs.items'},max_items:2,
+   template:{steps:[
+    {id:'prepare',uses:'result.emit',with:{data:{ref:'item.value'}}},
+    read,
+    {id:'verify',uses:'github.run',with:{capability:'github.action',action:task}},
+    {id:'finish',uses:'result.emit',with:{data:{ref:'steps.verify.output'}}},
+   ]}}]};
+ const {plan}=await compilePlan(source);
+ assert.deepEqual((plan.steps[0]!.with.templates as Array<{uses:string}>).map(x=>x.uses),
+  ['result.emit','mcp.call','github.run','result.emit']);
+ assert.equal(publishedGitHubActionStep(plan,'each_1_verify')?.uses,'github.run');
+ assert.equal(publishedGitHubActionStep(plan,'each_1_read'),undefined);
+ const taskFirst=structuredClone(source);
+ taskFirst.steps[0]!.template.steps=[
+  taskFirst.steps[0]!.template.steps[2]!,
+  taskFirst.steps[0]!.template.steps[3]!,
+ ] as never;
+ assert.equal(publishedGitHubActionStep((await compilePlan(taskFirst)).plan,'each_0_verify')?.uses,'github.run');
+ const forbidden=structuredClone(source);
+ forbidden.steps[0]!.template.steps[1]=structuredClone(forbidden.steps[0]!.template.steps[2]);
+ await assert.rejects(()=>compilePlan(forbidden),/unsupported_foreach_action/);
+ const writes=structuredClone(source);
+ writes.steps[0]!.template.steps[1]!.with.scope='write';
+ await assert.rejects(()=>compilePlan(writes),/unsupported_operation_scope/);
+ const dynamic=structuredClone(source);
+ dynamic.steps[0]!.template.steps[2]!.with.action.inputs={outcome:{ref:'item.value'}};
+ await assert.rejects(()=>compilePlan(dynamic),/unsupported_foreach_inputs/);
 });
