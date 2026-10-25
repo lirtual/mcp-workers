@@ -114,6 +114,28 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
         arguments:{value:{ref:'inputs.message'}},
       },
     }]};
+    // The public authenticated MCP seam validates without creating a Draft,
+    // publishing a grant, dispatching a GitHub job or mutating D1.
+    const countBefore=(sqlite.prepare('SELECT count(*) AS n FROM workflows').get() as {n:number}).n;
+    const inline=await call('workflow_validate',{definition:JSON.stringify(definition)});
+    assert.equal(inline.valid,true);
+    assert.deepEqual(inline.required_approvals,[{
+      endpoint:TRUSTED,tool:'echo',scope:'read',schema_digest:DIGEST,
+    }]);
+    const inlineRejected=await call('workflow_validate',{definition:JSON.stringify({
+      version:1,name:'Invalid',steps:[{id:'run',uses:'shell',with:{}}],
+    })});
+    assert.equal(inlineRejected.valid,false);
+    assert.equal(inlineRejected.issues[0].code,'unsupported_capability');
+    assert.equal(inlineRejected.issues[0].path,'/steps');
+    const mixed=await call('workflow_validate',{
+      workflow_id:'00000000-0000-4000-8000-000000000001',
+      revision:1,definition:JSON.stringify(definition),
+    });
+    assert.equal(mixed.valid,false);
+    assert.equal(mixed.issues[0].code,'invalid_validate_target');
+    assert.equal((sqlite.prepare('SELECT count(*) AS n FROM workflows').get() as {n:number}).n,countBefore);
+    assert.equal(internetCalls,0);
     const created=await call('workflow_create',{definition:JSON.stringify(definition)});
     const preview=await call('workflow_validate',{workflow_id:created.workflow_id,revision:1});
     const grant={endpoint:TRUSTED,tool:'echo',scope:'read',schema_digest:DIGEST};
