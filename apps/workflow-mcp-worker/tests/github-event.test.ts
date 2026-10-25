@@ -117,10 +117,13 @@ test('GitHub OIDC ingress admits one Run per verified Actions run; rerun replays
   assert.equal((await invoke('invalid')).status,401);
   assert.equal((await invoke(token,'{"forged":"field"}')).status,400);
   assert.equal(s.dispatches,0);
+  assert.equal((await invoke(token,'')).status,202,
+    'zero-byte POST stream must behave like a bodyless signed event');
+  assert.equal(s.dispatches,1);
   await assert.rejects(()=>s.service.start(created.workflow_id,{},'github-event-forged'),
     (e:unknown)=>e instanceof StateError&&e.code==='reserved_idempotency_key');
   const first=await invoke(token);
-  assert.equal(first.status,202);
+  assert.equal(first.status,200);
   const data=await first.json() as {run_id:string;published_version_id:string};
   assert.equal(data.published_version_id,published.published_version_id);
   assert.equal((await invoke(token)).status,200);
