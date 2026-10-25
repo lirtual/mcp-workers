@@ -113,6 +113,7 @@ export async function imapGet(env: Env, account: MailAccount, identity: string) 
     const mail = await rawMessage(client, ref.uid);
     return { account_id: account.account_id, provider: account.provider, id: identity,
       subject: mail.subject ?? '', from: mail.from?.address ?? '',
+      reply_to: mail.replyTo?.[0]?.address ?? mail.from?.address ?? '',
       to: mail.to?.map(item => 'address' in item ? item.address : '').join(', ') ?? '',
       date: mail.date ?? '', text: (mail.text ?? '').slice(0, 40000),
       snippet: (mail.text ?? '').slice(0, 1000),
