@@ -363,3 +363,37 @@ test('failed first-page mailbox can resume without replaying completed account',
     assert.equal(recovered.cursor, undefined);
   } finally { globalThis.fetch = oldFetch; }
 });
+
+test('Graph mail text falls back to preview without exposing HTML', async () => {
+  const { getMail, searchMail } = await import('../src/providers.ts');
+  const env = { MAIL_ENCRYPTION_KEY: Buffer.alloc(32, 23).toString('base64') } as any;
+  const aid = crypto.randomUUID();
+  const sealed = await encrypt(env, 'account:' + aid + ':graph', { access_token: 'graph-token' });
+  const account = { account_id: aid, provider: 'graph', address: 'owner@example.test',
+    status: 'active', credential_ciphertext: sealed.ciphertext, credential_key_id: sealed.keyId,
+    token_expires_at: Math.floor(Date.now() / 1000) + 3600 } as any;
+  const previous = globalThis.fetch;
+  let requestedBody: any = {};
+  try {
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.pathname === '/v1.0/me/messages')
+        return Response.json({ value: [{ id: 'search-only', bodyPreview: 'Plain search preview',
+          receivedDateTime: '2026-10-25T00:00:00Z' }] });
+      assert.equal(url.pathname, '/v1.0/me/messages/source');
+      return Response.json({ id: 'source', bodyPreview: 'Safe preview', ...requestedBody });
+    }) as typeof fetch;
+    const searched = await searchMail(env, account, 'example');
+    assert.equal(searched.messages[0].text, 'Plain search preview',
+      'search results do not request full Graph message body');
+    requestedBody = { body: { contentType: 'html', content: '<img src="https://tracker.example/x"><script>bad()</script>' } };
+    const html = await getMail(env, account, 'source');
+    assert.equal(html.text, 'Safe preview', 'HTML body is not rendered or executed');
+    requestedBody = { body: { contentType: 'Text', content: 'Full plain text' } };
+    const plain = await getMail(env, account, 'source');
+    assert.equal(plain.text, 'Full plain text');
+    requestedBody = {};
+    const missing = await getMail(env, account, 'source');
+    assert.equal(missing.text, 'Safe preview');
+  } finally { globalThis.fetch = previous; }
+});
