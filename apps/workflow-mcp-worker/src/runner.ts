@@ -111,9 +111,13 @@ async function runMultiForeach(
   ctx:{inputs:Record<string,unknown>;steps:Record<string,Outcome>},
 ):Promise<Outcome>{
   const config=s.with;
-  const children=config.templates as Array<{id:string;uses:string;with:{data?:unknown;arguments?:unknown};if?:unknown}>;
+  const children=config.templates as Array<{id:string;uses:string;with:{data?:unknown;arguments?:unknown;action?:unknown};if?:unknown}>;
+  const taskStages=Array.isArray(children)?children.flatMap((c,i)=>c?.uses==='github.run'?[i]:[]):[];
+  const approvedTaskShape=taskStages.length===1&&taskStages[0]===1&&
+    children?.length===3&&children[0]?.uses==='result.emit'&&children[2]?.uses==='result.emit';
   if(!Array.isArray(children)||children.length<2||children.length>4||
-     children.some(c=>!['result.emit','mcp.call'].includes(c?.uses)||typeof c.id!=='string')||
+     children.some(c=>!['result.emit','mcp.call','github.run'].includes(c?.uses)||typeof c.id!=='string')||
+     (taskStages.length>0&&!approvedTaskShape)||
      !Number.isSafeInteger(config.max_items)||Number(config.max_items)<1||
      Number(config.max_items)>8||Number(config.max_items)*children.length+1>32)
     return {status:'failed',error_code:'invalid_foreach_plan'};
@@ -145,6 +149,27 @@ async function runMultiForeach(
                 return {status:'skipped'};
               return {status:'succeeded',output:limitResult(evaluateArguments(child.with.data,localCtx))};
             });
+        }else if(child.uses==='github.run'){
+          // Only the compiler-authorized emit -> literal Task -> emit shape.
+          // Selection is frozen BEFORE any GitHub dispatch; an upstream
+          // skipped emit may never trigger the external Task.
+          const selected=await step.do('workflow-'+childId+'-selection',
+            {retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},async()=>({
+              selected:localSteps[children[0]!.id]?.status==='succeeded'&&
+                (child.if===undefined||evaluateCondition(child.if,localCtx)),
+            }));
+          if(!selected.selected){
+            outcome={status:'skipped'};
+          }else{
+            await env.DB.prepare(`INSERT INTO run_steps(run_id,step_id,status,updated_at)
+              SELECT ?,?,'running',? WHERE EXISTS(
+                SELECT 1 FROM runs WHERE id=? AND outcome='running')
+              ON CONFLICT(run_id,step_id) DO NOTHING`)
+              .bind(runId,childId,now(),runId).run();
+            externalMayHaveStarted=true;
+            const task:Step={id:childId,uses:'github.run',needs:s.needs,with:child.with};
+            outcome=await runPublishedGitHubActionTask(env,plan,task,runId,step);
+          }
         }else{
           // Never evaluate mutable previous outputs again after this checkpoint.
           // The output is an ordinary JSON object, not a dynamic expression.
