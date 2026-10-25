@@ -185,6 +185,7 @@ test('multi-emit foreach discovery exposes only sequential pure Actions',async()
   assert.equal(rules.external_actions,'unsupported');
   assert.equal(rules.max_steps,PLAN_LIMITS.maxForeachTemplateSteps);
   const schema=WORKFLOW_DEFINITION_SCHEMA.properties.steps.items.properties.template.oneOf[1].properties.steps;
+  assert.ok(schema,'multi-foreach JSON Schema must be declared');
   assert.equal(schema.maxItems,4);
   assert.ok(schema.allOf.some(rule=>rule.if.minItems===2&&
     rule.then.items.properties.uses.const==='result.emit'));
