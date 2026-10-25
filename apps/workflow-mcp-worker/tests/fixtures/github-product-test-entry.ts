@@ -4,7 +4,7 @@
  */
 import worker from '../../src/index.ts';
 import type { Env } from '../../src/store.ts';
-export { WorkflowRunner } from '../../src/runner.ts';
+export { WorkflowOrchestrator } from '../../src/runner.ts';
 
 type TestEnv=Env&{GITHUB_TEST_EXPECTED_TOKEN_SHA256:string};
 const expected=/^workflow-github-plan-[a-f0-9]{10}$/;
