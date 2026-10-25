@@ -168,7 +168,8 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
         "Retired Remote Control approval bindings must be removed");
     }
   }
-  const allowed = new Set(worker === "workflow-mcp-worker" ? ["DB", "WORKFLOW"] :
+  const allowed = new Set(worker === "workflow-mcp-worker"
+    ? (options.mode === "preflight" ? ["DB", "WORKFLOW", "WORKFLOW_LEGACY"] : ["DB", "WORKFLOW"]) :
     worker === "ima-mcp-worker"
     ? ["IMA_IMAGE_REFRESH_SHARD"]
     : worker === "database-mcp-worker" ? ["RATE_LIMITER"]
