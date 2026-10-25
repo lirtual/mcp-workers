@@ -144,7 +144,11 @@ function expandFixedRepeats(source:unknown[]):unknown[]{
   const result:unknown[]=[];
   for(let index=0;index<source.length;index++){
     const raw=object(source[index],'invalid_step');
-    if(!Object.hasOwn(raw,'repeat')){result.push(raw);continue;}
+    if(!Object.hasOwn(raw,'repeat')){
+      if(result.length>=PLAN_LIMITS.maxSteps)
+        throw new PlanError('invalid_step_count','/steps/'+index);
+      result.push(raw);continue;
+    }
     const repeat=object(raw.repeat,'invalid_fixed_repeat');
     keys(repeat,['count'],'/steps/'+index+'/repeat');
     const count=repeat.count;
