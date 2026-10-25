@@ -996,6 +996,7 @@ test('foreach MCP requires exact owner approval and freezes input before bounded
   const definition=JSON.stringify({version:1,name:'Readonly foreach',steps:[readForeach()]});
   const validation=await service.validateDefinition(definition);
   assert.equal(validation.valid,true);
+  if(!('required_approvals' in validation))throw Error('MCP template grant was omitted');
   assert.deepEqual(validation.required_approvals,[ECHO_GRANT]);
   const draft=await service.create(definition);
   await assert.rejects(()=>service.publish(draft.workflow_id,1),/external_approval_required/);
