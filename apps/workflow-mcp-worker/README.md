@@ -19,7 +19,7 @@ The immutable Run Plan and status are stored in D1; Cloudflare Workflows advance
 
 Environment bindings and credentials:
 
-- `DB` and `WORKFLOW` (`workflow-mcp-runner`).
+- `DB` (`workflow-mcp-db`) and `WORKFLOW` (`workflow-mcp-orchestrator`).
 - `MCP_ACCESS_TOKEN` for owner API ingress.
 - `MCP_PORTAL_CLIENT_ID` / `MCP_PORTAL_CLIENT_SECRET` for the pinned Portal.
 - `WORKFLOW_GITHUB_DISPATCH_TOKEN` for the registered GitHub executor.
