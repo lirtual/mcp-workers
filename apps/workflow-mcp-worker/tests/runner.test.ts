@@ -1619,3 +1619,35 @@ test('mixed MCP reads and two staged Tasks deliver signed OIDC receipts in stric
     checkpoints.indexOf('workflow-'+label+'finish'));
  }
 });
+
+test('mixed skipped MCP prerequisite never dispatches a reviewed GitHub Task',async t=>{
+ const {admit,service,run,sqlite}=setup(t);
+ const started=await admit([{id:'seed',uses:'result.emit',with:{data:'seed'}}],
+  {items:['one']});
+ const identity={repository:'lirtual/session-actions',repositoryId:123,workflowId:456,
+  workflowPath:'.github/workflows/task.yml',commitSha:'a'.repeat(40),
+  contractDigest:'b'.repeat(64),type:'task' as const};
+ const {plan}=await compilePlan({version:1,name:'Blocked mixed external stages',steps:[
+  {id:'each',flow:'foreach',items:{ref:'inputs.items'},max_items:2,
+   template:{steps:[
+    {...echoStep('read',{value:'never called'}),if:false},
+    {id:'verify',uses:'github.run',with:{capability:'github.action',
+      action:{...identity,ref:'refs/tags/task-v1',inputs:{outcome:'success'}}}},
+    {id:'finish',uses:'result.emit',with:{data:{ref:'steps.verify.output'}}},
+   ]}},
+ ]});
+ plan.github_execution_approved=true;plan.github_action_approvals=[identity];
+ plan.mcp_target_risks_accepted=true;plan.mcp_approvals=[ECHO_GRANT];
+ sqlite.prepare('UPDATE workflow_versions SET plan=? WHERE id=(SELECT version_id FROM runs WHERE id=?)')
+  .run(JSON.stringify(plan),started.run_id);
+ let calls=0;const before=globalThis.fetch;
+ globalThis.fetch=(async()=>{calls++;throw Error('skipped prerequisite reached remote network');}) as typeof fetch;
+ t.after(()=>{globalThis.fetch=before;});
+ await run(started.run_id);
+ const result=await service.result(started.run_id);
+ assert.equal(result.status,'succeeded',JSON.stringify(result));
+ assert.equal(result.steps.find(s=>s.step_id==='each_0_read')?.status,'skipped');
+ assert.equal(result.steps.find(s=>s.step_id==='each_0_verify')?.status,'skipped');
+ assert.equal(result.steps.find(s=>s.step_id==='each_0_finish')?.status,'skipped');
+ assert.equal(calls,0,'neither MCP nor GitHub may be contacted');
+});
