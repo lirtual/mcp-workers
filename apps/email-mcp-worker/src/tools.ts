@@ -8,7 +8,7 @@ import { fail, MailError } from './types.ts';
 import type { Env, MailAccount } from './types.ts';
 import {
   attachmentGet, draftCreate, draftUpdate, getMail, listFolders, markMail, moveMail,
-  providerRequest, replyGmail, forwardGmail, graphReplyForwardWithFiles, searchMail, sendMail, threadGet, trashMail,
+  providerRequest, replyGmail, assertGraphReplyRecipient, forwardGmail, graphReplyForwardWithFiles, searchMail, sendMail, threadGet, trashMail,
 } from './providers.ts';
 
 const id = z.string().min(1).max(512).regex(/^[\x21-\x7e]+$/);
@@ -170,7 +170,7 @@ export async function fencedSend(
     return { account_id: account.account_id, request_id: requestId, ...outcome, duplicate: false };
   } catch (err) {
     if (err instanceof MailError && ['invalid_recipients','invalid_mail_header','invalid_attachment',
-      'invalid_attachment_name','oversized_attachment','unsupported'].includes(err.code)) {
+      'invalid_attachment_name','oversized_attachment','unsupported','reply_recipient_mismatch'].includes(err.code)) {
       await env.DB.prepare('UPDATE send_attempts SET status=? WHERE account_id=? AND request_id=? AND status=?')
         .bind('failed', account.account_id, requestId, 'indeterminate').run();
       throw err;
@@ -246,24 +246,25 @@ export function buildMcpServer(env: Env): McpServer {
       () => sendMail(env, acc, to, subject, body, files));
   }));
   server.registerTool('mail_reply', {
-    description: 'Reply to one native message. Gmail/IMAP require explicit recipient matching source Reply-To. Durable request_id fences all sends.',
+    description: 'Reply to one native message. Always confirm the single Reply-To recipient, including for Graph. Durable request_id fences all sends.',
     inputSchema: z.object({
       account_id: accountId, message_id: id, request_id: z.string().min(8).max(128), body,
-      to: z.email().max(320).optional(), attachments: attachmentsSchema,
+      to: z.email().max(320), attachments: attachmentsSchema,
     }).strict(), annotations: write,
   }, async ({ account_id, message_id, request_id, body, to, attachments }) => safe(async () => {
     const items = attachments ?? [];
     validateAttachmentInputs(items);
     const acc = await getAccount(env, account_id);
     if (acc.provider !== 'graph' && acc.provider !== 'gmail' && acc.provider !== 'imap_smtp') fail('unsupported');
-    if ((acc.provider === 'imap_smtp' || acc.provider === 'gmail') && !to) fail('explicit_reply_recipient_required');
+    // Schema requires a confirmed outbound recipient for every provider.
     return fencedSend(env, acc, request_id, { op: 'reply', message_id, body, to, attachments: items }, async () => {
       const files = await resolveAttachments(items, (msg, attachment) => attachmentGet(env, acc, msg, attachment));
       if (acc.provider === 'imap_smtp') {
         const relation = await imapReplyContext(env, acc, message_id, to!);
         return smtpSend(env, acc, relation.to, relation.subject, body, files, relation);
       }
-      if (acc.provider === 'gmail') return replyGmail(env, acc, message_id, body, to!, files);
+      if (acc.provider === 'gmail') return replyGmail(env, acc, message_id, body, to, files);
+      await assertGraphReplyRecipient(env, acc, message_id, to);
       if (files.length) return graphReplyForwardWithFiles(env, acc, 'reply', message_id, body, files);
       await providerRequest(env, acc, '/messages/' + encodeURIComponent(message_id) + '/reply', {
         method: 'POST', headers: { 'content-type': 'application/json', Prefer: 'IdType="ImmutableId"' },
