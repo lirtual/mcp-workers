@@ -57,9 +57,17 @@ async function exchange(env: Env, provider: Provider, form: URLSearchParams, req
     method: 'POST', redirect: 'error', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: form,
     signal: AbortSignal.timeout(10000),
   });
-  if (!response.ok) fail('reauthorization_required');
+  if (!response.ok) {
+    // Only an invalid/revoked grant or an explicit interactive challenge requires
+    // user reauthorization. A transient 429/5xx or OAuth client misconfiguration
+    // must not permanently disable an otherwise valid mailbox.
+    const failure = await response.json().catch(() => null) as { error?: string } | null;
+    if (response.status < 500 && ['invalid_grant', 'interaction_required', 'consent_required', 'login_required']
+      .includes(failure?.error ?? '')) fail('reauthorization_required');
+    fail('provider_error');
+  }
   const value = await response.json() as { access_token?: string; refresh_token?: string; expires_in?: number };
-  if (!value.access_token || typeof value.access_token !== 'string') fail('reauthorization_required');
+  if (!value.access_token || typeof value.access_token !== 'string') fail('provider_error');
   return {
     access_token: value.access_token, refresh_token: value.refresh_token,
     expires_at: Math.floor(Date.now() / 1000) + Math.max(60, Math.min(value.expires_in ?? 3600, 86400 * 30)),
