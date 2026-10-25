@@ -1,7 +1,89 @@
 import {compilePlan, PLAN_LIMITS, SUPPORTED_STEP_USES} from './plan.ts';
-import {PRODUCTION_PORTAL_ENDPOINT} from './mcp-public-fetch.ts';
+import {PRODUCTION_PORTAL_ENDPOINT,scopedPublicMcpFetch} from './mcp-public-fetch.ts';
+import {Client,StreamableHTTPClientTransport} from '@modelcontextprotocol/client';
+import {toolSchemaDigest} from './plan.ts';
 import {listAvailableGitHubActions,approvedActionRepositories} from './github-action-catalog.ts';
 import type {Env} from './store.ts';
+
+type PortalConfig=Pick<Env,'MCP_PORTAL_ENDPOINT'|'MCP_PORTAL_CLIENT_ID'|'MCP_PORTAL_CLIENT_SECRET'>;
+type PortalTool={
+ name:string;inputSchema:unknown;outputSchema?:unknown;
+ annotations?:{readOnlyHint?:boolean;destructiveHint?:boolean};
+};
+type PortalToolContract={
+ tool:string;endpoint:string;scope:'read';input_schema:unknown;
+ output_schema?:unknown;schema_digest:string;arguments:{limit:number};
+ availability:'discovered_not_executed';
+};
+type PortalDiscovery={availability:'verified_contract'|'unavailable'|'not_authorized';
+ tools:PortalToolContract[];reason?:string};
+
+/**
+ * Explicitly source-reviewed operations only. An upstream readOnlyHint does
+ * not grant safety or authority. This is deliberately NOT a generic filter for
+ * every readOnlyHint in the Portal's mixed read/write catalog.
+ */
+export async function reviewedPortalTools(tools:PortalTool[]):Promise<PortalToolContract[]>{
+ const found:PortalToolContract[]=[];
+ for(const tool of tools){
+   if(tool.name!=='ima_list_notebooks'||tool.annotations?.readOnlyHint!==true||
+      tool.annotations.destructiveHint===true)continue;
+   const input=tool.inputSchema as {type?:unknown;properties?:unknown;required?:unknown};
+   if(!input||input.type!=='object'||!input.properties||
+      typeof input.properties!=='object'||Array.isArray(input.properties))continue;
+   const props=input.properties as Record<string,unknown>;
+   if(Object.keys(props).some(k=>!['cursor','limit'].includes(k)) ||
+      (input.required!==undefined&&
+       (!Array.isArray(input.required)||input.required.length>0)))continue;
+   const cursor=props.cursor as {type?:unknown}|undefined;
+   const limit=props.limit as {type?:unknown}|undefined;
+   if((cursor&&cursor.type!=='string')||
+      (limit&&limit.type!=='number'&&limit.type!=='integer')||
+      !limit)continue;
+   try{
+     const schema_digest=await toolSchemaDigest(tool.inputSchema,tool.outputSchema);
+     found.push({tool:tool.name,endpoint:PRODUCTION_PORTAL_ENDPOINT,scope:'read',
+       input_schema:tool.inputSchema,
+       ...(tool.outputSchema?{output_schema:tool.outputSchema}:{}),
+       schema_digest,arguments:{limit:1},availability:'discovered_not_executed'});
+   }catch{ /* The existing compiler's bounded schema gate is authoritative. */ }
+ }
+ return found;
+}
+
+/** Read the actual restricted Portal catalog with the same credential/URL
+ * boundary as runtime. Never call a tool during discovery, never leak errors.
+ */
+export async function discoverPortalTools(env:PortalConfig):Promise<PortalDiscovery>{
+ if(env.MCP_PORTAL_ENDPOINT!==PRODUCTION_PORTAL_ENDPOINT ||
+    !env.MCP_PORTAL_CLIENT_ID||!env.MCP_PORTAL_CLIENT_SECRET)
+   return {availability:'unavailable',tools:[],reason:'portal_not_configured'};
+ const client=new Client({name:'workflow-mcp-action-discovery',version:'0.1.0'});
+ let authDenied=false;
+ const trackedFetch:typeof fetch=async(input,init)=>{
+   const result=await fetch(input,init);
+   if([401,403].includes(result.status)||result.status>=300&&result.status<400)
+     authDenied=true;
+   return result;
+ };
+ const transport=new StreamableHTTPClientTransport(new URL(PRODUCTION_PORTAL_ENDPOINT),{
+   fetch:scopedPublicMcpFetch(PRODUCTION_PORTAL_ENDPOINT,trackedFetch,{
+     clientId:env.MCP_PORTAL_CLIENT_ID,clientSecret:env.MCP_PORTAL_CLIENT_SECRET,
+   },PRODUCTION_PORTAL_ENDPOINT),
+ });
+ try{
+   await client.connect(transport);
+   const result=await client.listTools();
+   const contracts=await reviewedPortalTools(result.tools);
+   return {availability:contracts.length?'verified_contract':'not_authorized',
+     tools:contracts,...(!contracts.length?{reason:'approved_read_tool_not_present_or_schema_changed'}:{})};
+ }catch{
+   return {availability:authDenied?'not_authorized':'unavailable',
+     tools:[],reason:authDenied?'portal_access_denied':'portal_unreachable'};
+ }finally{
+   await client.close().catch(()=>{});
+ }
+}
 
 // The compiler is the authority: no secondary validator, remote marketplace,
 // standalone registry, or persisted capability catalogue.
@@ -13,12 +95,52 @@ const dag = {version:1,name:'Conditional DAG',steps:[
     if:{eq:[{ref:'steps.first.status'},'succeeded']},
     with:{data:{ref:'steps.first.output'}}},
 ]};
-const mcpRead = {version:1,name:'Portal read example',inputs:{query:'example'},
+const mcpRead=(tool:PortalToolContract)=>({version:1,name:'Verified Portal contract example',
   steps:[{id:'read',uses:'mcp.call',with:{
-    endpoint:PRODUCTION_PORTAL_ENDPOINT,tool:'reviewed_read_tool',scope:'read',
-    input_schema:{type:'object',properties:{query:{type:'string'}}},
-    arguments:{query:{ref:'inputs.query'}},
-  }}]};
+    endpoint:tool.endpoint,tool:tool.tool,scope:'read',
+    input_schema:tool.input_schema,
+    ...(tool.output_schema?{output_schema:tool.output_schema}:{}),
+    arguments:tool.arguments,
+  }}]});
+
+export const WORKFLOW_ACTION_WITH_SCHEMAS=Object.freeze({
+  'result.emit':{type:'object',additionalProperties:false,
+    properties:{data:{description:'Bounded literal or safe expression; omitted data emits null at runtime.'}}},
+  'mcp.call':{type:'object',additionalProperties:false,
+    required:['endpoint','tool','scope','arguments','input_schema'],
+    properties:{
+      endpoint:{const:PRODUCTION_PORTAL_ENDPOINT},
+      tool:{type:'string',pattern:'^[a-zA-Z0-9_-][a-zA-Z0-9_.-]{0,127}$'},
+      scope:{const:'read'},arguments:{type:'object'},
+      input_schema:{type:'object'},output_schema:{type:'object'},
+    }},
+  'github.run':{type:'object',additionalProperties:false,
+    required:['capability','action'],properties:{
+      capability:{const:'github.action'},
+      action:{type:'object',additionalProperties:false,
+        required:['repository','repositoryId','workflowId','workflowPath',
+          'commitSha','type','contractDigest','ref','inputs'],
+        properties:{
+          repository:{type:'string'},repositoryId:{type:'integer',minimum:1},
+          workflowId:{type:'integer',minimum:1},
+          workflowPath:{type:'string',pattern:'^\\.github/workflows/.+\\.ya?ml$'},
+          commitSha:{type:'string',pattern:'^[a-fA-F0-9]{40}$'},
+          type:{enum:['task','session']},
+          contractDigest:{type:'string',pattern:'^[a-fA-F0-9]{64}$'},
+          ref:{type:'string',pattern:'^refs/tags/[A-Za-z0-9]'},
+          inputs:{type:'object'},
+        }},
+    }},
+});
+export const WORKFLOW_EXPRESSION_RULES=Object.freeze({
+  refs:['inputs.<name>','steps.<declared-needs-id>.status',
+    'steps.<declared-needs-id>.output[.<field>]'],
+  operators:['ref','eq','ne','gt','lt','and','or','not'],
+  condition:'Boolean literal or safe expression that evaluates to Boolean; eq/ne/gt/lt take 2 operands, and/or take 1-16 operands.',
+  needs:'Only existing Step IDs, no duplicates or cycles; reference another Step only if it appears in needs.',
+  limits:{maxDepth:15,maxArrayElements:100,maxBooleanOperands:16},
+  unsupported:['foreach','while','repeat','child_workflow','saga','cron','webhook'],
+});
 
 export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
   type:'object',additionalProperties:false,
@@ -33,10 +155,15 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
       properties:{
         id:{type:'string',pattern:'^[A-Za-z][A-Za-z0-9_-]{0,63}$'},
         uses:{enum:[...SUPPORTED_STEP_USES]},
-        needs:{type:'array',items:{type:'string'}},
-        if:{description:'Bounded safe expression; consult workflow_validate for semantics'},
-        with:{type:'object',description:'Action-specific contract; consult workflow_capabilities detail and workflow_validate'},
+        needs:{type:'array',uniqueItems:true,items:{type:'string'}},
+        if:{anyOf:[{type:'boolean'},{type:'object'}],description:'Safe Boolean condition; see expression_rules and inline validation.'},
+        with:{type:'object',description:'Must match the matching uses/action contract below.'},
       },
+      allOf:[
+        {if:{properties:{uses:{const:'result.emit'}}},then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['result.emit']}}},
+        {if:{properties:{uses:{const:'mcp.call'}}},then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call']}}},
+        {if:{properties:{uses:{const:'github.run'}}},then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['github.run']}}},
+      ],
     }},
   },
 });
@@ -80,7 +207,8 @@ async function compilingExample(definition:unknown){
 
 export async function workflowCapabilities(env:Pick<Env,
  'MCP_PORTAL_ENDPOINT'|'MCP_PORTAL_CLIENT_ID'|'MCP_PORTAL_CLIENT_SECRET'|
- 'GITHUB_ACTION_APPROVED_REPOSITORIES'|'WORKFLOW_GITHUB_DISPATCH_TOKEN'>,id?:string){
+ 'GITHUB_ACTION_APPROVED_REPOSITORIES'|'WORKFLOW_GITHUB_DISPATCH_TOKEN'>,
+ id?:string,portalDiscovery:typeof discoverPortalTools=discoverPortalTools){
   const portalReady=env.MCP_PORTAL_ENDPOINT===PRODUCTION_PORTAL_ENDPOINT &&
     !!env.MCP_PORTAL_CLIENT_ID && !!env.MCP_PORTAL_CLIENT_SECRET;
   let githubReady=false;
@@ -90,14 +218,18 @@ export async function workflowCapabilities(env:Pick<Env,
   }catch { githubReady=false; } // invalid scope is never treated as approved
   const availability=(entry:Entry)=>
     entry.id==='action.mcp.call'&&!portalReady?'unavailable':
-    entry.id==='action.github.run'&&!githubReady?'unavailable':entry.availability;
+    entry.id==='action.github.run'&&!githubReady?'unavailable':
+    ['action.mcp.call','action.github.run'].includes(entry.id)?'configured_unverified':entry.availability;
   if(id===undefined)return {
     definition_schema:WORKFLOW_DEFINITION_SCHEMA,
+    action_with_schemas:WORKFLOW_ACTION_WITH_SCHEMAS,
+    expression_rules:WORKFLOW_EXPRESSION_RULES,
     limits:PLAN_LIMITS,
     capability_ids:entries.map(entry=>({
       id:entry.id,kind:entry.kind,availability:availability(entry),description:entry.description,
     })),
-    connections:portalReady?{portal:{endpoint:PRODUCTION_PORTAL_ENDPOINT,scope:'read'}}:{portal:{availability:'unavailable'}},
+    connections:portalReady?{portal:{endpoint:PRODUCTION_PORTAL_ENDPOINT,scope:'read',availability:'configured_unverified'}}:{portal:{availability:'unavailable'}},
+    availability_note:'Configured means credentials exist, not verified access or publication permission.',
     github_repository_scope:githubReady?'configured':'unavailable',
     tools:{discover_actions:'workflow_action_list',validate:'workflow_validate',
       create:'workflow_create',publish:'workflow_publish',start:'workflow_run',
@@ -107,20 +239,34 @@ export async function workflowCapabilities(env:Pick<Env,
   };
   const entry=byId.get(id);
   if(!entry)return {id,availability:'unknown',reason:'unknown_capability'};
-  const detail:Record<string,unknown>={...entry,availability:availability(entry),limits:PLAN_LIMITS};
+  const detail:Record<string,unknown>={...entry,availability:availability(entry),limits:PLAN_LIMITS,
+    ...(id==='flow.condition'?{expression_rules:WORKFLOW_EXPRESSION_RULES}:{}),
+    ...(id==='action.result.emit'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['result.emit']}:{}),
+    ...(id==='action.mcp.call'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call']}:{}),
+    ...(id==='action.github.run'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['github.run']}:{}),
+  };
   if(id==='action.result.emit'||id==='trigger.manual')
     detail.example=await compilingExample(emit);
   if(id==='flow.static_dag'||id==='flow.condition')
     detail.example=await compilingExample(dag);
   if(id==='action.mcp.call'){
-    if(portalReady)detail.example=await compilingExample(mcpRead);
+    const discovered=await portalDiscovery(env);
+    detail.availability=discovered.availability;
+    detail.discovered_tools=discovered.tools;
+    if(discovered.reason)detail.reason=discovered.reason;
+    if(discovered.tools.length){
+      detail.example=await compilingExample(mcpRead(discovered.tools[0]));
+      detail.example_validation='compiler_valid_and_live_contract_discovered; tools/call not performed';
+    }
     detail.grant={scope:'read',...(portalReady?{pinnedEndpoint:PRODUCTION_PORTAL_ENDPOINT}:{}),
       required:['approved_operations','accept_target_risks'],
-      warning:'The example tool is illustrative; availability and exact schema must be reviewed before Publish.'};
+      warning:'Only source-reviewed, live-advertised read tools; exact schema is rechecked at execution. Discovery is not an execution or permission grant.'};
   }
   if(id==='action.github.run'){
     const approved=githubReady?await listAvailableGitHubActions(env):{actions:[]};
     detail.discovered_actions=approved.actions;
+    if(githubReady)detail.availability=approved.actions.some(x=>x.can_publish)?
+      'publishable_after_owner_approval':'no_verified_published_action';
     detail.grant={required:['approved_actions','approve_heavy_execution'],
       note:'Discovery is not approval; review exact SHA, immutable tag/ref, workflow and contract digest before Publish.'};
   }

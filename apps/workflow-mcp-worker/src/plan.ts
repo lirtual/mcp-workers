@@ -165,16 +165,17 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
            action.ref.includes('..')||action.ref.includes('//')||action.ref.endsWith('/')||
            !['task','session'].includes(String(action.type))||
            typeof action.contractDigest!=='string'||! /^[a-f0-9]{64}$/i.test(action.contractDigest))
-          throw new PlanError('invalid_github_action');
-        object(action.inputs,'invalid_github_action_inputs');
+          throw new PlanError('invalid_github_action',stepPath+'/with/action');
+        try{object(action.inputs,'invalid_github_action_inputs');}
+        catch{throw new PlanError('invalid_github_action_inputs',stepPath+'/with/action/inputs');}
       } else throw new PlanError('unsupported_github_capability');
     }else if(s.uses==='mcp.call'){
       keys(withData,['endpoint','tool','scope','arguments','input_schema','output_schema'],stepPath+'/with');
-      if(typeof withData.endpoint!=='string')throw new PlanError('invalid_endpoint');
+      if(typeof withData.endpoint!=='string')throw new PlanError('invalid_endpoint',stepPath+'/with/endpoint');
       try { if(publicMcpEndpoint(withData.endpoint).href!==withData.endpoint)throw Error('noncanonical'); }
-      catch { throw new PlanError('invalid_endpoint'); }
-      if(typeof withData.tool!=='string'||!/^[a-zA-Z0-9_-][a-zA-Z0-9_.-]{0,127}$/.test(withData.tool))throw new PlanError('invalid_tool');
-      if(withData.scope!=='read')throw new PlanError('unsupported_operation_scope');
+      catch { throw new PlanError('invalid_endpoint',stepPath+'/with/endpoint'); }
+      if(typeof withData.tool!=='string'||!/^[a-zA-Z0-9_-][a-zA-Z0-9_.-]{0,127}$/.test(withData.tool))throw new PlanError('invalid_tool',stepPath+'/with/tool');
+      if(withData.scope!=='read')throw new PlanError('unsupported_operation_scope',stepPath+'/with/scope');
       object(withData.arguments,'invalid_step_arguments');
       // Only explicit, bounded expected schema objects may be pinned; never a
       // dynamic expression or network-fetched schema silently approved later.

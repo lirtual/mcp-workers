@@ -86,3 +86,28 @@ test('diagnostics locate unsupported trigger, Action and step field without leak
   assert.equal(syntax.issues[0].code,'invalid_yaml_or_json');
   assert.equal(syntax.issues[0].path,'/');
 });
+
+test('MCP field errors include stable paths while inline validation stays D1-free',async()=>{
+  const service=new WorkflowService({DB:{
+    prepare(){throw Error('inline validation touched D1');},
+  }} as unknown as Env);
+  const base={version:1,name:'Read',steps:[{
+    id:'read',uses:'mcp.call',with:{
+      endpoint:'https://mcp.lirtual.dpdns.org/mcp',
+      tool:'ima_list_notebooks',scope:'read',arguments:{limit:1},
+      input_schema:{type:'object',properties:{limit:{type:'number'}}},
+    },
+  }]};
+  for(const [property,value,code,path] of [
+    ['endpoint','http://localhost/mcp','invalid_endpoint','/steps/0/with/endpoint'],
+    ['tool','invalid tool!','invalid_tool','/steps/0/with/tool'],
+    ['scope','write','unsupported_operation_scope','/steps/0/with/scope'],
+  ] as const){
+    const malformed={...base,steps:[{...base.steps[0],
+      with:{...base.steps[0].with,[property]:value}}]};
+    const result=await validateWorkflowTarget(service,{definition:JSON.stringify(malformed)});
+    assert.equal(result.valid,false);
+    assert.equal(result.issues[0].code,code);
+    assert.equal(result.issues[0].path,path);
+  }
+});

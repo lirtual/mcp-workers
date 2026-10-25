@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {compilePlan,PlanError,SUPPORTED_STEP_USES,PLAN_LIMITS} from '../src/plan.ts';
-import {workflowCapabilities,WORKFLOW_DEFINITION_SCHEMA} from '../src/capabilities.ts';
+import {workflowCapabilities,WORKFLOW_DEFINITION_SCHEMA,reviewedPortalTools,WORKFLOW_ACTION_WITH_SCHEMAS} from '../src/capabilities.ts';
 import {PRODUCTION_PORTAL_ENDPOINT} from '../src/mcp-public-fetch.ts';
 
 const env={GITHUB_ACTION_APPROVED_REPOSITORIES:undefined,WORKFLOW_GITHUB_DISPATCH_TOKEN:undefined,
@@ -30,7 +30,12 @@ test('overview matches the compiler, exposes only truthful ingress and needs no 
 test('every advertised compiler example really compiles and has a matching digest',async()=>{
   for(const id of ['trigger.manual','action.result.emit','action.mcp.call',
     'flow.static_dag','flow.condition']){
-    const result=await workflowCapabilities(id==='action.mcp.call'?portalEnv:env,id);
+    const result=await workflowCapabilities(id==='action.mcp.call'?portalEnv:env,id,
+      async()=>({availability:'verified_contract',tools:[{
+        tool:'ima_list_notebooks',endpoint:PRODUCTION_PORTAL_ENDPOINT,scope:'read',
+        input_schema:{type:'object',properties:{limit:{type:'number'}}},
+        schema_digest:'a'.repeat(64),arguments:{limit:1},availability:'discovered_not_executed',
+      }]}));
     assert.equal(result.availability==='unknown',false,id);
     if(!('example' in result)||!result.example)throw Error('missing example:'+id);
     const {definition,digest,validation}=result.example as {
@@ -39,6 +44,30 @@ test('every advertised compiler example really compiles and has a matching diges
     assert.equal(validation,'compiler_valid_only');
     assert.equal((await compilePlan(definition)).digest,digest);
   }
+});
+
+test('only source-reviewed Portal tools with bounded actual schemas are returned',async()=>{
+  const valid={name:'ima_list_notebooks',inputSchema:{type:'object',
+    properties:{limit:{type:'number'},cursor:{type:'string'}}},
+    annotations:{readOnlyHint:true,destructiveHint:false}};
+  const result=await reviewedPortalTools([
+    valid,
+    {...valid,name:'arbitrary_but_readonly'},
+    {...valid,name:'ima_create_note'},
+    {...valid,annotations:{readOnlyHint:false}},
+    {...valid,inputSchema:{type:'object',properties:{command:{type:'string'}}}},
+    {...valid,inputSchema:{type:'object',properties:{limit:{type:'string'}}}},
+  ]);
+  assert.equal(result.length,1);
+  assert.equal(result[0].tool,'ima_list_notebooks');
+  assert.match(result[0].schema_digest,/^[0-9a-f]{64}$/);
+  assert.equal(result[0].availability,'discovered_not_executed');
+});
+test('Agent-readable Action schemas document required executable parameters',()=>{
+  assert.deepEqual(WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call'].required,
+    ['endpoint','tool','scope','arguments','input_schema']);
+  assert.deepEqual(WORKFLOW_ACTION_WITH_SCHEMAS['github.run'].required,
+    ['capability','action']);
 });
 
 test('unsupported features are rejected by the same production compiler',async()=>{

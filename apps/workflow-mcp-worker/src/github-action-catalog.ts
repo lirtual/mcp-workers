@@ -1,4 +1,6 @@
-import { discoverGitHubActions } from './github-action-discovery.ts';
+import { discoverGitHubActions, type GitHubActionSource } from './github-action-discovery.ts';
+import { verifyActionDispatchRef } from './github-action-dispatch-ref.ts';
+import { reviewedGitHubAction } from './github-action-review.ts';
 
 export type ActionCatalogEnv = {
   WORKFLOW_GITHUB_DISPATCH_TOKEN?: string;
@@ -8,13 +10,12 @@ export type ApprovedRepository = {
   repository: string;
   repositoryId: number;
 };
+type Http=(request:Request)=>Promise<Response>;
 const sha = /^[a-f0-9]{40}$/i;
 const repoName = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const tagName = /^[A-Za-z0-9][A-Za-z0-9._\/-]{0,190}$/;
 
-/**
- * Explicit, server-owned discovery scope. The configuration is not supplied
- * by MCP requests or GitHub Workflow YAML and grants no execution privileges.
- */
+/** The repository allowlist is owned by the server, never by an MCP request. */
 export function approvedActionRepositories(raw: string | undefined): ApprovedRepository[] {
   if (!raw) return [];
   if (raw.length > 8192) throw Error('github_action_catalog_invalid');
@@ -36,26 +37,80 @@ export function approvedActionRepositories(raw: string | undefined): ApprovedRep
         seen.has(entry.repository.toLowerCase()))
       throw Error('github_action_catalog_invalid');
     seen.add(entry.repository.toLowerCase());
-    // An old commitSha field is accepted for a configuration-only migration;
-    // it never pins discovery. An immutable source SHA is approved at Publish.
+    // An obsolete commitSha config entry never grants or pins discovery.
     result.push({repository: entry.repository, repositoryId: entry.repositoryId});
   }
   return result;
 }
 
-/** List current Actions only in explicitly approved repository identities. Never dispatches. */
-export async function listAvailableGitHubActions(env: ActionCatalogEnv) {
-  const grants = approvedActionRepositories(env.GITHUB_ACTION_APPROVED_REPOSITORIES);
-  if (!grants.length) return { actions: [] };
-  const token = env.WORKFLOW_GITHUB_DISPATCH_TOKEN;
-  if (!token) throw Error('github_action_catalog_token_missing');
-  const actions = [];
-  for (const grant of grants) {
-    const discovered = await discoverGitHubActions({...grant, token});
-    actions.push(...discovered.map(({contract, ...source}) => ({
-      ...source, name: contract.name, type: contract.type, inputs: contract.inputs,
-      availability: 'discovered_not_authorized' as const,
-    })));
+async function latestConfirmedTag(repository:string,token:string,http:Http):
+  Promise<{ref:string;sha:string}|undefined> {
+  const response=await http(new Request(
+    'https://api.github.com/repos/'+repository+'/tags?per_page=20',
+    {headers:{accept:'application/vnd.github+json',authorization:'Bearer '+token,
+      'user-agent':'workflow-mcp-action-catalog','x-github-api-version':'2026-03-10'},
+     redirect:'manual'}));
+  if(!response.ok)throw Error('github_action_tag_discovery_unavailable');
+  const body=await response.text();
+  if(body.length>256*1024)throw Error('github_action_tag_discovery_oversized');
+  let tags:unknown;
+  try{tags=JSON.parse(body);}catch{throw Error('github_action_tag_discovery_invalid');}
+  if(!Array.isArray(tags)||tags.length>20)throw Error('github_action_tag_discovery_invalid');
+  for(const candidate of tags){
+    if(!candidate||typeof candidate!=='object'||Array.isArray(candidate))continue;
+    const tag=candidate as {name?:unknown;commit?:{sha?:unknown}};
+    if(typeof tag.name!=='string'||!tagName.test(tag.name)||
+       tag.name.includes('..')||tag.name.includes('//')||tag.name.endsWith('/')||
+       !sha.test(String(tag.commit?.sha)))continue;
+    const ref='refs/tags/'+tag.name;
+    // Tags returned by /tags are not sufficient evidence: the real dispatch
+    // verifier must confirm a direct commit ref. Annotated tags are not
+    // advertised until the dispatch verifier explicitly supports peeling.
+    const action={repository,commitSha:tag.commit!.sha as string};
+    try{
+      await verifyActionDispatchRef(action,ref,token,http);
+      return {ref,sha:action.commitSha};
+    }catch{
+      // A moved or unsupported tag is never offered as executable.
+    }
+  }
+  return undefined;
+}
+
+async function describeSource(source:GitHubActionSource,ref?:string) {
+  const reviewed=await reviewedGitHubAction(source);
+  return {...reviewed,name:source.contract.name,inputs:source.contract.inputs,
+    ...(ref?{ref,can_publish:true as const,availability:'publishable_after_owner_approval' as const}:
+      {can_publish:false as const,availability:'unavailable' as const,
+       reason:'no_verified_published_tag_for_revision'})};
+}
+
+/**
+ * Discover current HEAD and one recent verified immutable release revision.
+ * Neither discovery nor a published Tag is an execution grant. Publish and
+ * dispatch independently re-verify exact ref, commit and contract identities.
+ */
+export async function listAvailableGitHubActions(env:ActionCatalogEnv,http:Http=fetch){
+  const grants=approvedActionRepositories(env.GITHUB_ACTION_APPROVED_REPOSITORIES);
+  if(!grants.length)return {actions:[]};
+  const token=env.WORKFLOW_GITHUB_DISPATCH_TOKEN;
+  if(!token)throw Error('github_action_catalog_token_missing');
+  const actions:Awaited<ReturnType<typeof describeSource>>[]=[];
+  for(const grant of grants){
+    const current=await discoverGitHubActions({...grant,token},http);
+    const currentSha=current[0]?.commitSha;
+    if(!currentSha)continue;
+    const published=await latestConfirmedTag(grant.repository,token,http);
+    if(!published){
+      for(const candidate of current)actions.push(await describeSource(candidate));
+      continue;
+    }
+    const source=published.sha===currentSha
+      ?current
+      :await discoverGitHubActions({...grant,token,commitSha:published.sha},http);
+    for(const candidate of source)actions.push(await describeSource(candidate,published.ref));
+    if(published.sha!==currentSha)
+      for(const candidate of current)actions.push(await describeSource(candidate));
   }
   return {actions};
 }
