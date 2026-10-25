@@ -101,22 +101,23 @@ const templateIsExternal=(step:Step)=>
   ['mcp.call','github.run'].includes(
     String((step.with.template as {uses?:unknown}|undefined)?.uses));
 
-/** Pure per-item pipeline. Every child is a native, uniquely named
- * checkpoint and a visible D1 Step; no external Action can enter this path.
- * The items snapshot is immutable, and later children can refer to earlier
- * children of the SAME item, never a different iteration.
+/** Bounded per-item sequential template. A native array checkpoint freezes
+ * expansion before execution, and each external child's own native arguments
+ * checkpoint freezes its effective request after same-item dependencies.
+ * Only approved read-only MCP calls can have external effects in this path.
  */
-async function runPureMultiForeach(
-  env:Env,s:Step,runId:string,step:WorkflowStep,
+async function runMultiForeach(
+  env:Env,plan:Plan,s:Step,runId:string,step:WorkflowStep,
   ctx:{inputs:Record<string,unknown>;steps:Record<string,Outcome>},
 ):Promise<Outcome>{
   const config=s.with;
-  const children=config.templates as Array<{id:string;uses:string;with:{data?:unknown};if?:unknown}>;
+  const children=config.templates as Array<{id:string;uses:string;with:{data?:unknown;arguments?:unknown};if?:unknown}>;
   if(!Array.isArray(children)||children.length<2||children.length>4||
-     children.some(c=>c?.uses!=='result.emit'||typeof c.id!=='string')||
+     children.some(c=>!['result.emit','mcp.call'].includes(c?.uses)||typeof c.id!=='string')||
      !Number.isSafeInteger(config.max_items)||Number(config.max_items)<1||
      Number(config.max_items)>8||Number(config.max_items)*children.length+1>32)
     return {status:'failed',error_code:'invalid_foreach_plan'};
+  let externalMayHaveStarted=false;
   try{
     const snapshot=await step.do('workflow-'+s.id+'-snapshot',
       {retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},async()=>{
@@ -135,13 +136,70 @@ async function runPureMultiForeach(
       let final:Outcome={status:'skipped'};
       for(const child of children){
         const childId=s.id+'_'+index+'_'+child.id;
-        const outcome=await step.do('workflow-'+childId,
-          {retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},async():Promise<Outcome>=>{
-            const localCtx={...ctx,steps:localSteps,item:{value,index}};
-            if(child.if!==undefined&&!evaluateCondition(child.if,localCtx))
-              return {status:'skipped'};
-            return {status:'succeeded',output:limitResult(evaluateArguments(child.with.data,localCtx))};
-          });
+        const localCtx={...ctx,steps:localSteps,item:{value,index}};
+        let outcome:Outcome;
+        if(child.uses==='result.emit'){
+          outcome=await step.do('workflow-'+childId,
+            {retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},async():Promise<Outcome>=>{
+              if(child.if!==undefined&&!evaluateCondition(child.if,localCtx))
+                return {status:'skipped'};
+              return {status:'succeeded',output:limitResult(evaluateArguments(child.with.data,localCtx))};
+            });
+        }else{
+          // Never evaluate mutable previous outputs again after this checkpoint.
+          // The output is an ordinary JSON object, not a dynamic expression.
+          let frozen:{selected:boolean;args:Record<string,unknown>|null};
+          try{
+            frozen=await step.do('workflow-'+childId+'-args',
+              {retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},async()=>{
+                const selected=child.if===undefined||evaluateCondition(child.if,localCtx);
+                if(!selected)return {selected:false,args:null};
+                const evaluated=evaluateArguments(child.with.arguments,localCtx);
+                if(!evaluated||typeof evaluated!=='object'||Array.isArray(evaluated)||
+                   hasUnresolvedArgument(evaluated))
+                  throw Error('invalid_foreach_arguments');
+                return {selected:true,args:limitResult(evaluated as Record<string,unknown>)};
+              });
+          }catch{
+            outcome={status:'failed',error_code:'invalid_foreach_arguments'};
+            await env.DB.prepare(`INSERT INTO run_steps(run_id,step_id,status,error_code,updated_at)
+              VALUES(?,?,'failed',?,?) ON CONFLICT(run_id,step_id) DO NOTHING`)
+              .bind(runId,childId,outcome.error_code,now()).run();
+            return {status:'failed',error_code:'foreach_child_failed'};
+          }
+          if(!frozen.selected){
+            outcome=await step.do('workflow-'+childId,
+              {retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},
+              async():Promise<Outcome>=>({status:'skipped'}));
+          }else if(!frozen.args||typeof frozen.args!=='object'||Array.isArray(frozen.args)||
+                   hasUnresolvedArgument(frozen.args)){
+            outcome={status:'failed',error_code:'invalid_foreach_arguments'};
+          }else{
+            // After entering a dispatch checkpoint, loss of native progress or
+            // D1 response is ambiguous. The durable child fence prevents a
+            // second tools/call even if this checkpoint is lost on replay.
+            externalMayHaveStarted=true;
+            outcome=await step.do('workflow-'+childId,
+              {retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},async():Promise<Outcome>=>{
+                const fenced=await env.DB.prepare(`INSERT INTO run_steps(run_id,step_id,status,updated_at)
+                  SELECT ?,?,'running',? WHERE EXISTS(
+                    SELECT 1 FROM runs WHERE id=? AND outcome='running')
+                  ON CONFLICT(run_id,step_id) DO NOTHING`)
+                  .bind(runId,childId,now(),runId).run();
+                if(fenced.meta.changes!==1)
+                  return {status:'indeterminate',error_code:'foreach_dispatch_unconfirmed'};
+                const childStep:Step={id:childId,uses:'mcp.call',needs:s.needs,with:child.with};
+                try{
+                  return {status:'succeeded',
+                    output:await callApprovedReadonly(env,plan,childStep,frozen.args!)};
+                }catch(error){
+                  return error instanceof Error&&error.message==='external_outcome_unknown'
+                    ?{status:'indeterminate',error_code:'external_outcome_unknown'}
+                    :{status:'failed',error_code:'step_execution_failed'};
+                }
+              });
+          }
+        }
         await env.DB.prepare(`INSERT INTO run_steps(run_id,step_id,status,output,error_code,updated_at)
           VALUES(?,?,?,?,?,?) ON CONFLICT(run_id,step_id)
           DO UPDATE SET status=excluded.status,output=excluded.output,
@@ -162,7 +220,9 @@ async function runPureMultiForeach(
     }
     return succeeded?{status:'succeeded',output:limitResult(collected)}:{status:'skipped'};
   }catch{
-    return {status:'failed',error_code:'foreach_execution_failed'};
+    return externalMayHaveStarted
+      ?{status:'indeterminate',error_code:'foreach_execution_unconfirmed'}
+      :{status:'failed',error_code:'foreach_execution_failed'};
   }
 }
 
@@ -182,7 +242,7 @@ async function runForeachStep(
     if(!dependenciesPermitRun(s,ctx.steps))return {status:'skipped'};
     const config=s.with;
     if(Array.isArray(config.templates))
-      return await runPureMultiForeach(env,s,runId,step,ctx);
+      return await runMultiForeach(env,plan,s,runId,step,ctx);
     const template=config.template as {id:string;uses:string;with:Record<string,unknown>;if?:unknown};
     const dynamic=dynamicForeachTaskInputs(s);
     // Never trust a shape-only check for a mutable external input:
