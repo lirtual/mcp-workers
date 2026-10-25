@@ -189,6 +189,8 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     const candidate=object(o.steps[i],'invalid_step');
     if(!Object.hasOwn(candidate,'flow')){
       expanded.push(candidate);
+      if(expanded.length>PLAN_LIMITS.maxSteps)
+        throw new PlanError('invalid_step_count','/steps');
       continue;
     }
     const path='/steps/'+i;
