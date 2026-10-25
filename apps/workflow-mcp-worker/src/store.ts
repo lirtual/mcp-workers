@@ -198,7 +198,10 @@ export class WorkflowService {
         ['invalid_step_count','invalid_step','invalid_step_id','unsupported_capability',
          'invalid_step_arguments','invalid_dependencies','cyclic_dependencies',
          'excessive_parallelism','invalid_reference','invalid_step_reference'].includes(code)?'/steps':'/';
-      const suggestion=['invalid_repeat_count','invalid_repeat_template','unsupported_flow'].includes(code)?
+      const suggestion=['invalid_foreach_limit','invalid_foreach_items','invalid_foreach_template',
+        'unsupported_foreach_template','unsupported_foreach_action'].includes(code)?
+        'Use flow: foreach, max_items from 1 to 8, items as a declared input/dependency ref, and exactly one result.emit template Step; external Actions and nesting are unsupported.':
+        ['invalid_repeat_count','invalid_repeat_template','unsupported_flow'].includes(code)?
         'Use flow: repeat with a literal times integer from 1 to 8 and one template Action; nested/dynamic loops are not supported. All expanded Steps must fit the maxSteps limit.':
         code.startsWith('invalid_github_event_')||code==='unsupported_github_event'?
         'Use one push event with an exact repository name/id, branch ref and trusted .github/workflows/*.yml relay; declare inputs.github and consult workflow_capabilities.':
