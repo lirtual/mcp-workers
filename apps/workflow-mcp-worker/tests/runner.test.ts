@@ -721,3 +721,56 @@ jobs:
     assert.ok(duringApproval.filter(p=>p===root+'/git/ref/tags/approved-v1').length>=2);
   }finally{globalThis.fetch=previous;}
 });
+
+
+test('explicit allow_skipped joins either conditional branch without changing ordinary skips',async t=>{
+  const {service,admit,run}=setup(t);
+  for(const choice of ['left','right']){
+    const steps=[
+      {id:'left',uses:'result.emit',if:{eq:[{ref:'inputs.choice'},'left']},with:{data:'L'}},
+      {id:'right',uses:'result.emit',if:{eq:[{ref:'inputs.choice'},'right']},with:{data:'R'}},
+      {id:'join',uses:'result.emit',needs:['left','right'],needs_policy:'allow_skipped',
+        with:{data:{left:{ref:'steps.left.status'},right:{ref:'steps.right.status'}}}},
+    ];
+    const admitted=await admit(steps,{choice});
+    await run(admitted.run_id);
+    const outcome=await service.result(admitted.run_id);
+    assert.equal(outcome.status,'succeeded');
+    assert.equal(outcome.steps.find(x=>x.step_id==='join')?.status,'succeeded');
+    assert.deepEqual(outcome.result,choice==='left'?
+      {left:'succeeded',right:'skipped'}:{left:'skipped',right:'succeeded'});
+  }
+  const defaultJoin=await admit([
+    {id:'left',uses:'result.emit',if:false,with:{data:'unused'}},
+    {id:'join',uses:'result.emit',needs:['left'],with:{data:'must not run'}},
+  ]);
+  await run(defaultJoin.run_id);
+  const result=await service.result(defaultJoin.run_id);
+  assert.equal(result.steps.find(x=>x.step_id==='join')?.status,'skipped');
+});
+
+test('skip-tolerant join still blocks failed and indeterminate dependencies',async t=>{
+  const {service,admit,run}=setup(t);
+  const failed=await admit([
+    {id:'oversized',uses:'result.emit',with:{data:{ref:'inputs.big'}}},
+    {id:'join',needs:['oversized'],needs_policy:'allow_skipped',
+      uses:'result.emit',with:{data:'must not run'}},
+  ],{big:'x'.repeat(65520)});
+  await run(failed.run_id);
+  const failure=await service.result(failed.run_id);
+  assert.equal(failure.status,'failed');
+  assert.equal(failure.steps.find(x=>x.step_id==='oversized')?.status,'failed');
+  assert.equal(failure.steps.find(x=>x.step_id==='join')?.status,'skipped');
+
+  mockPublicPeer(t,async()=>{throw Error('simulated_lost_response');});
+  const uncertain=await admit([
+    echoStep('read',{value:'may have executed'}),
+    {id:'join',needs:['read'],needs_policy:'allow_skipped',
+      uses:'result.emit',with:{data:'must not run'}},
+  ],{},[ECHO_GRANT]);
+  await run(uncertain.run_id);
+  const ambiguous=await service.result(uncertain.run_id);
+  assert.equal(ambiguous.status,'indeterminate');
+  assert.equal(ambiguous.steps.find(x=>x.step_id==='read')?.status,'indeterminate');
+  assert.equal(ambiguous.steps.find(x=>x.step_id==='join')?.status,'skipped');
+});
