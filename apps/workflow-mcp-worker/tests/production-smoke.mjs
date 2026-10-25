@@ -31,7 +31,7 @@ let githubPhysicalCompleted = false;
 function sql(statement) {
   // stdout contains JSON only; do not log credentials, SQL args or Wrangler internals.
   const output = execFileSync('pnpm', ['exec', 'wrangler', 'd1', 'execute',
-    'workflow-mcp-worker', '--remote', '--json', '--command', statement], {
+    'workflow-mcp-db', '--remote', '--json', '--command', statement], {
     cwd, encoding: 'utf8', timeout: 45_000,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
