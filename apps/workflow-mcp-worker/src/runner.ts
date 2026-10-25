@@ -96,12 +96,16 @@ async function runGithubStep(
     :runPublishedGitHubActionTask(env,plan,s,runId,step);
 }
 
-/** A native checkpoint freezes every item, condition and evaluated result before
- * any child Step executes. For now the template is result.emit only; external
- * MCP/GitHub Actions cannot enter this expansion path.
+const templateIsExternal=(step:Step)=>
+  (step.with.template as {uses?:unknown}|undefined)?.uses==='mcp.call';
+
+/** Freeze all conditions and arguments in a native checkpoint before effects.
+ * MCP read children also use D1's existing run_steps primary key as a durable
+ * one-shot dispatch fence: uncertain callback re-entry may NOT call the peer.
+ * GitHub Actions remain excluded pending physical Attempt lifecycle proof.
  */
 async function runForeachStep(
-  env:Env,s:Step,runId:string,step:WorkflowStep,
+  env:Env,plan:Plan,s:Step,runId:string,step:WorkflowStep,
   ctx:{inputs:Record<string,unknown>;steps:Record<string,Outcome>},
 ):Promise<Outcome>{
   const db=env.DB;
@@ -110,8 +114,8 @@ async function runForeachStep(
       .bind(runId,s.id,now()).run();
     if(!dependenciesPermitRun(s,ctx.steps))return {status:'skipped'};
     const config=s.with;
-    const template=config.template as {id:string;uses:string;with:{data?:unknown};if?:unknown};
-    if(template?.uses!=='result.emit'||!Number.isSafeInteger(config.max_items)||
+    const template=config.template as {id:string;uses:string;with:Record<string,unknown>;if?:unknown};
+    if(!['result.emit','mcp.call'].includes(template?.uses)||!Number.isSafeInteger(config.max_items)||
        Number(config.max_items)<1||Number(config.max_items)>8)
       return {status:'failed',error_code:'invalid_foreach_plan'};
     const snapshot=await step.do('workflow-'+s.id+'-snapshot',
@@ -123,8 +127,14 @@ async function runForeachStep(
         const entries=list.map((value,index)=>{
           const itemCtx={...ctx,item:{value,index}};
           const selected=template.if===undefined||evaluateCondition(template.if,itemCtx);
-          const evaluated=selected?evaluateArguments(template.with.data, itemCtx):null;
-          return {id:s.id+'_'+index+'_'+template.id,item:value,selected,
+          const evaluated=selected?evaluateArguments(
+            template.uses==='mcp.call'?template.with.arguments:template.with.data,itemCtx):null;
+          // Before any external dispatch, reject unresolved arguments across the
+          // entire bounded array. Partial pre-dispatch validation is not enough.
+          if(selected&&template.uses==='mcp.call'&&
+             (!evaluated||typeof evaluated!=='object'||Array.isArray(evaluated)||
+              hasUnresolvedArgument(evaluated)))throw Error('invalid_foreach_arguments');
+          return {id:s.id+'_'+index+'_'+template.id,selected,
             output:evaluated===undefined?null:evaluated};
         });
         return {valid:true,items:limitResult(entries)} as const;
@@ -141,9 +151,36 @@ async function runForeachStep(
       const outcome=await step.do('workflow-'+entry.id,
         {retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},
         async():Promise<Outcome>=>{
-          await db.prepare("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES(?,?,'running',?) ON CONFLICT(run_id,step_id) DO NOTHING")
-            .bind(runId,entry.id,now()).run();
-          return entry.selected?{status:'succeeded',output:limitResult(entry.output)}:{status:'skipped'};
+          if(!entry.selected){
+            await db.prepare("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES(?,?,'running',?) ON CONFLICT(run_id,step_id) DO NOTHING")
+              .bind(runId,entry.id,now()).run();
+            return {status:'skipped'};
+          }
+          if(template.uses==='result.emit'){
+            await db.prepare("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES(?,?,'running',?) ON CONFLICT(run_id,step_id) DO NOTHING")
+              .bind(runId,entry.id,now()).run();
+            return {status:'succeeded',output:limitResult(entry.output)};
+          }
+          // Persist BEFORE calling an external peer. If a native checkpoint is
+          // lost or the worker restarts mid-call, a repeated callback sees the
+          // existing fence and returns indeterminate without a second call.
+          // No new D1 table or at-most-once claim about the remote system.
+          const fenced=await db.prepare(`INSERT INTO run_steps(run_id,step_id,status,updated_at)
+            SELECT ?,?,'running',? WHERE EXISTS (
+              SELECT 1 FROM runs WHERE id=? AND outcome='running'
+            ) ON CONFLICT(run_id,step_id) DO NOTHING`)
+            .bind(runId,entry.id,now(),runId).run();
+          if(fenced.meta.changes!==1)
+            return {status:'indeterminate',error_code:'foreach_dispatch_unconfirmed'};
+          const child:Step={id:entry.id,uses:'mcp.call',needs:s.needs,with:template.with};
+          try{
+            const args=entry.output as Record<string,unknown>;
+            return {status:'succeeded',output:await callApprovedReadonly(env,plan,child,args)};
+          }catch(error){
+            return error instanceof Error&&error.message==='external_outcome_unknown'
+              ?{status:'indeterminate',error_code:'external_outcome_unknown'}
+              :{status:'failed',error_code:'step_execution_failed'};
+          }
         });
       await db.prepare("INSERT INTO run_steps(run_id,step_id,status,output,error_code,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(run_id,step_id) DO UPDATE SET status=excluded.status,output=excluded.output,error_code=excluded.error_code,updated_at=excluded.updated_at WHERE run_steps.status IN ('waiting','running')")
         .bind(runId,entry.id,outcome.status,outcome.output===undefined?null:JSON.stringify(outcome.output),
@@ -155,9 +192,11 @@ async function runForeachStep(
     }
     return succeeded?{status:'succeeded',output:limitResult(collected)}:{status:'skipped'};
   }catch{
-    // This first vertical has no external effects; a failed snapshot or
-    // result-only child cannot silently authorize protected Actions.
-    return {status:'failed',error_code:'foreach_execution_failed'};
+    // On an MCP child, a native checkpoint/DB failure can have occurred
+    // after the external request. Never classify that as confirmed failure.
+    return templateIsExternal(s)
+      ?{status:'indeterminate',error_code:'foreach_execution_unconfirmed'}
+      :{status:'failed',error_code:'foreach_execution_failed'};
   }
 }
 
@@ -190,7 +229,7 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
         if(!ready.length)throw Error('invalid_execution_graph');
         const outcomes=await Promise.all(ready.map(async (s:Step):Promise<Outcome>=>{
           const result=(s.uses==='flow.foreach'
-            ? await runForeachStep(this.env,s,id,step,ctx)
+            ? await runForeachStep(this.env,plan,s,id,step,ctx)
             : s.uses==='github.run'
             ? await (async()=>{
               try{
