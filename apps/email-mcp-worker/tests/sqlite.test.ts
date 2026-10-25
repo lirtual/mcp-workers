@@ -49,6 +49,8 @@ function extractState(redirect: string): string {
   const url = new URL(redirect);
   assert.equal(url.origin, 'https://accounts.google.com');
   assert.equal(url.searchParams.get('code_challenge_method'), 'S256');
+  assert.equal(url.searchParams.get('scope'), 'https://www.googleapis.com/auth/gmail.modify',
+    'gmail.modify alone covers read, draft, send and mutation methods');
   assert.equal(url.searchParams.get('redirect_uri'), 'https://email.lirtual.dpdns.org/oauth/callback');
   return url.searchParams.get('state')!;
 }
