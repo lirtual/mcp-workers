@@ -1140,9 +1140,11 @@ test('GitHub Task foreach routes each child through physical Attempt; first fail
  env.WORKFLOW_GITHUB_DISPATCH_TOKEN='test-token';
  env.GITHUB_ACTION_OIDC_AUDIENCE='workflow-github-action:production';
  let calls=0;
+ const observedPaths:string[]=[];
  const old=globalThis.fetch;
  globalThis.fetch=(async(input:RequestInfo|URL,init?:RequestInit)=>{
   const req=new Request(input,init),url=new URL(req.url);
+  observedPaths.push(req.method+' '+url.pathname);
   if(url.pathname.endsWith('/git/ref/tags/task-v1'))
    return Response.json({ref:tag,object:{type:'commit',sha:identity.commitSha}});
   if(req.method==='POST'){calls++;return Response.json({workflow_run_id:42});}
@@ -1156,7 +1158,7 @@ test('GitHub Task foreach routes each child through physical Attempt; first fail
  await run(start.run_id);
  const result=await service.result(start.run_id);
  assert.equal(result.status,'failed',JSON.stringify({result,calls,
-   attempts:sqlite.prepare('SELECT step_id,state,candidate_run_id,owner_run_id FROM step_attempts').all()}));
+   attempts:sqlite.prepare('SELECT step_id,state,candidate_run_id,owner_run_id FROM step_attempts').all(),observedPaths}));
  assert.equal(result.steps.find(s=>s.step_id==='each_0_task')?.status,'failed',JSON.stringify(result));
  assert.equal(result.steps.find(s=>s.step_id==='each')?.status,'failed');
  assert.equal(calls,1,'failed first Task must not start later dynamic Task');
