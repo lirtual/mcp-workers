@@ -145,6 +145,11 @@ async function runMultiForeach(
         if(child.uses==='result.emit'){
           outcome=await step.do('workflow-'+childId,
             {retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},async():Promise<Outcome>=>{
+              // A skipped Task cannot authorize a follow-up stage or
+              // manufacture a successful result from an absent receipt.
+              if(taskStages.length&&child.id===children[2]!.id&&
+                 localSteps[children[1]!.id]?.status!=='succeeded')
+                return {status:'skipped'};
               if(child.if!==undefined&&!evaluateCondition(child.if,localCtx))
                 return {status:'skipped'};
               return {status:'succeeded',output:limitResult(evaluateArguments(child.with.data,localCtx))};
