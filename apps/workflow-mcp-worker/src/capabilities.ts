@@ -1,4 +1,4 @@
-import {compilePlan, PLAN_LIMITS, SUPPORTED_STEP_USES} from './plan.ts';
+import {compilePlan, PLAN_LIMITS, SUPPORTED_STEP_USES, GITHUB_EVENT_PATTERNS} from './plan.ts';
 import {PRODUCTION_PORTAL_ENDPOINT,scopedPublicMcpFetch} from './mcp-public-fetch.ts';
 import {Client,StreamableHTTPClientTransport} from '@modelcontextprotocol/client';
 import {toolSchemaDigest} from './plan.ts';
@@ -161,10 +161,12 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
          description:'SHA-256 hex digest of an independent 32-byte random Webhook bearer secret; never put the raw credential in a Draft.'}}},
       {type:'object',additionalProperties:false,
        required:['type','repository','repository_id','event','ref','workflow_path'],
-       properties:{type:{const:'github_event'},repository:{type:'string',pattern:'^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'},
-         repository_id:{type:'integer',minimum:1},event:{const:'push'},
-         ref:{type:'string',pattern:'^refs/heads/'},
-         workflow_path:{type:'string',pattern:'^\\.github/workflows/[A-Za-z0-9_.-]+\\.ya?ml$'}}},
+       properties:{type:{const:'github_event'},
+         repository:{type:'string',pattern:GITHUB_EVENT_PATTERNS.repository.source},
+         repository_id:{type:'integer',minimum:1,maximum:Number.MAX_SAFE_INTEGER},
+         event:{const:'push'},
+         ref:{type:'string',pattern:GITHUB_EVENT_PATTERNS.ref.source},
+         workflow_path:{type:'string',pattern:GITHUB_EVENT_PATTERNS.workflow_path.source}}},
     ]}},
     steps:{type:'array',minItems:1,maxItems:PLAN_LIMITS.maxSteps,items:{
       type:'object',additionalProperties:false,
