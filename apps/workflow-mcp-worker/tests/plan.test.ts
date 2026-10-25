@@ -470,7 +470,7 @@ test('multi-step foreach compiles only pinned read-only MCP and earlier item out
  assert.equal(read?.id,'read');
  assert.match(read?.with.schema_digest??'',/^[a-f0-9]{64}$/);
  for(const edit of [
-  {scope:'write'}, {tool:'run-shell'}, {endpoint:'http://localhost/mcp'},
+  {scope:'write'}, {tool:'invalid tool'}, {endpoint:'http://localhost/mcp'},
   {arguments:{value:{ref:'steps.finish.output'}}},
   {arguments:{value:{ref:'steps.each_0_prepare.output'}}},
  ]){
@@ -483,6 +483,7 @@ test('multi-step foreach compiles only pinned read-only MCP and earlier item out
  await assert.rejects(()=>compilePlan(noGithub),PlanError);
  const overflow=structuredClone(source);
  overflow.steps[0]!.max_items=8;
+ overflow.steps.push({...structuredClone(source.steps[0]!),id:'another'} as never);
  await assert.rejects(()=>compilePlan(overflow),
    (e:unknown)=>e instanceof PlanError&&e.message==='invalid_step_count');
 });
