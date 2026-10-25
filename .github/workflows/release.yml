@@ -224,7 +224,7 @@ jobs:
               (SELECT count(*) FROM workflows) AS workflow_count") |
             node scripts/manual-worker-release.mjs d1-check workflow-mcp-worker
 
-      - name: Verify copied Workflow D1 quiescence at publication gate
+      - name: Verify code-only Workflow D1 gate at publication (Ready Sessions preserved)
         if: inputs.worker == 'workflow-mcp-worker'
         shell: bash
         env:
@@ -235,7 +235,7 @@ jobs:
           query="$(node scripts/manual-worker-release.mjs migration-sql workflow-mcp-worker)"
           (cd apps/workflow-mcp-worker &&
             pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "$query") |
-            node scripts/manual-worker-release.mjs migration-check workflow-mcp-worker
+            node scripts/manual-worker-release.mjs code-release-check workflow-mcp-worker
 
       - name: Publish exactly selected Worker
         id: publish

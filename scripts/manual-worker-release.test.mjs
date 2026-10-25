@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig, verifyWorkflowD1Readiness, verifyWorkflowMigrationReadiness, WORKFLOW_MIGRATION_READINESS_SQL, retryReleaseReadback } from "./manual-worker-release.mjs";
+import { activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig, verifyWorkflowD1Readiness, verifyWorkflowMigrationReadiness, verifyWorkflowCodeReleaseReadiness, WORKFLOW_MIGRATION_READINESS_SQL, retryReleaseReadback } from "./manual-worker-release.mjs";
 
 const required = [
   { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
@@ -505,6 +505,34 @@ test("Workflow migration preflight requires all independent physical states sett
   assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/notification_delivered != 1/);
 });
 
+test("code-only release admits only confirmed Ready Sessions, not migrations",()=>{
+  const row={
+    migration_count:8,expected_migrations:8,
+    nonterminal_runs:0,unresolved_starts:0,unresolved_steps:0,
+    nonterminal_attempts:1,nonterminated_sessions:1,
+    undelivered_callbacks:0,confirmed_ready_sessions:1,
+  };
+  const make=value=>[{success:true,results:[value]}];
+  assert.deepEqual(verifyWorkflowCodeReleaseReadiness(make(row)),
+    {confirmed_ready_sessions:1});
+  assert.throws(()=>verifyWorkflowMigrationReadiness(make({
+    ...row,workflow_count:5,run_count:53,session_count:1,
+    attempt_count:10,callback_count:1,cancellation_count:0,
+  })),/nonterminal_attempts/);
+  assert.deepEqual(verifyWorkflowCodeReleaseReadiness(make({
+    ...row,nonterminal_attempts:0,nonterminated_sessions:0,confirmed_ready_sessions:0,
+  })),{confirmed_ready_sessions:0});
+  for(const broken of [
+    {migration_count:7},{expected_migrations:9},
+    {nonterminal_runs:1},{unresolved_starts:1},{unresolved_steps:1},
+    {undelivered_callbacks:1},{nonterminal_attempts:2},
+    {nonterminated_sessions:2},{confirmed_ready_sessions:0},
+    {confirmed_ready_sessions:-1},{confirmed_ready_sessions:"1"},
+  ]) assert.throws(()=>verifyWorkflowCodeReleaseReadiness(
+    make({...row,...broken})),/blocked|unavailable/);
+  assert.throws(()=>verifyWorkflowCodeReleaseReadiness([]),/readback unavailable/);
+});
+
 test("Workflow readback verifies one integrated runtime, GitHub Action audience and Portal",()=>{
   const bindings=[
     {name:"MCP_ACCESS_TOKEN",type:"secret_text"},
@@ -552,7 +580,7 @@ test("Workflow manual GitHub Actions requires D1 checks before Owner", () => {
   const publish=ci.indexOf("      - name: Publish exactly selected Worker");
   assert.ok(pre>0 && migration>pre && publish>migration);
   assert.match(ci,/wrangler d1 migrations apply workflow-mcp-db --remote/);
-  const finalQuiescence=ci.indexOf("      - name: Verify copied Workflow D1 quiescence at publication gate");
+  const finalQuiescence=ci.indexOf("      - name: Verify code-only Workflow D1 gate at publication (Ready Sessions preserved)");
   assert.ok(finalQuiescence>migration && finalQuiescence<publish);
   assert.match(ci,/pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "\$query"/);
 
