@@ -4,6 +4,7 @@ import { buildMcpServer } from './tools.ts';
 import { WorkflowOrchestrator } from './runner.ts';
 import {admitScheduledCron} from './scheduled.ts';
 import {handleWorkflowWebhook} from './webhook.ts';
+import {handleGithubEvent} from './github-event.ts';
 import { handleGithubActionClaimRequest } from './github-action-ingress.ts';
 import type { Env } from './store.ts';
 export { WorkflowOrchestrator };
@@ -18,6 +19,7 @@ export default {
  async fetch(request:Request,env:Env):Promise<Response>{
   const url=new URL(request.url);
   if(url.pathname.startsWith('/triggers/webhook/'))return handleWorkflowWebhook(request,env);
+  if(url.pathname.startsWith('/triggers/github/'))return handleGithubEvent(request,env);
   // Only approved GitHub Actions use the signed Action claim/result routes.
   // Retired fixed-executor callbacks fall through to 404.
   if(url.pathname==='/github/action/claim'||url.pathname==='/github/action/ready'||
