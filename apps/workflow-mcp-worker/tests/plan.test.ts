@@ -388,7 +388,7 @@ test('bounded MCP read foreach pins its child tool contract and item expressions
   assert.equal(digest,(await compilePlan(JSON.stringify(source))).digest);
   for(const invalid of [
     {scope:'write'},
-    {endpoint:'https://example.com/mcp'},
+    {endpoint:'http://127.0.0.1/mcp'},
     {arguments:{value:{ref:'item.unauthorized'}}},
     {arguments:{value:{ref:'steps.not_declared.output'}}},
   ]){
