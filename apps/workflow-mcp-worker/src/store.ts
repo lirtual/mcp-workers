@@ -198,7 +198,9 @@ export class WorkflowService {
         ['invalid_step_count','invalid_step','invalid_step_id','unsupported_capability',
          'invalid_step_arguments','invalid_dependencies','cyclic_dependencies',
          'excessive_parallelism','invalid_reference','invalid_step_reference'].includes(code)?'/steps':'/';
-      const suggestion=code.startsWith('invalid_github_event_')||code==='unsupported_github_event'?
+      const suggestion=code==='invalid_fixed_repeat_count'||code==='invalid_fixed_repeat'?
+        'Use repeat: {count: N} with a literal integer between 1 and 8, and no other keys; the flattened Plan is limited to 32 Steps.':
+        code.startsWith('invalid_github_event_')||code==='unsupported_github_event'?
         'Use one push event with an exact repository name/id, branch ref and trusted .github/workflows/*.yml relay; declare inputs.github and consult workflow_capabilities.':
         code==='unsupported_trigger'||code==='invalid_triggers'?
         'Use exactly one supported Cron or Webhook trigger from workflow_capabilities.':
