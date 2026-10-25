@@ -172,12 +172,15 @@ const foreachEmitTaskEmit=(action:Parameters<typeof foreachGithubTask>[0])=>{
 };
 const foreachMixedMcpTask=(action:Parameters<typeof foreachGithubTask>[0],tool:PortalToolContract)=>{
   const base=foreachEmitTaskEmit(action);
-  const read=foreachMcpRead(tool).steps[0]!.template.steps[0]!;
+  const head=base.steps[0]!;
+  const mcp=foreachMcpRead(tool).steps[0]!;
+  if(!('template' in head)||!('template' in mcp))throw Error('invalid_foreach_example');
+  const read=mcp.template.steps[0]!;
   return {...base,name:'Approved read + Task per item',
-    steps:[{...base.steps[0],template:{steps:[
-      base.steps[0]!.template.steps[0]!,
+    steps:[{...head,template:{steps:[
+      head.template.steps[0]!,
       {...read,id:'read'},
-      ...base.steps[0]!.template.steps.slice(1),
+      ...head.template.steps.slice(1),
     ]}},...base.steps.slice(1)]};
 };
 const mcpRead=(tool:PortalToolContract)=>({version:1,name:'Verified Portal contract example',
