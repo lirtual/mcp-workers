@@ -353,3 +353,15 @@ test('foreach invalid references point at source or template instead of leaking 
     ]}),(e:unknown)=>e instanceof PlanError&&e.path===expected);
   }
 });
+
+
+test('source cannot spoof internal flow.foreach opcode to bypass template and budget checks',async()=>{
+  for(const max_items of [1,8,999999]){
+    await assert.rejects(()=>compilePlan({version:1,name:'No direct internal opcode',
+      inputs:{items:['x']},steps:[{id:'each',uses:'flow.foreach',needs:[],
+        with:{items:{ref:'inputs.items'},max_items,
+          template:{id:'evil',uses:'mcp.call',with:{arguments:{command:'unsafe'}}}}}]}),
+      (e:unknown)=>e instanceof PlanError&&
+        e.message==='unsupported_capability'&&e.path==='/steps/0/uses');
+  }
+});
