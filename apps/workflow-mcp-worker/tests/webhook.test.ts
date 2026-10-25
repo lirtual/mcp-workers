@@ -6,6 +6,7 @@ import {readFileSync} from 'node:fs';
 import {handleWorkflowWebhook} from '../src/webhook.ts';
 import {WorkflowService,StateError,type Env} from '../src/store.ts';
 import {compilePlan,PlanError} from '../src/plan.ts';
+import {admitScheduledCron} from '../src/scheduled.ts';
 
 const TOKEN=Buffer.alloc(32,0x42).toString('base64url');
 const ROTATED=Buffer.alloc(32,0x43).toString('base64url');
@@ -77,8 +78,14 @@ test('Webhook authenticates independently and rejects invalid payloads before ad
   assert.equal((await invoke(TOKEN,{payload:'ok'},'event-a',{'content-type':'text/plain'})).status,415);
   assert.equal((await invoke(TOKEN,{payload:'x'.repeat(9000)})).status,413);
   assert.equal((await invoke(TOKEN,['array'])).status,400);
-  assert.equal((await invoke(TOKEN,{__proto__:'bad',payload:'ok'})).status,202);
-  assert.equal(s.dispatches,1,'invalid credentials and payloads never create Runs');
+  const poisoned=new Request(host+'/triggers/webhook/'+id,{
+    method:'POST',headers:{authorization:'Bearer '+TOKEN,'content-type':'application/json'},
+    body:'{"__proto__":"bad","payload":"ok"}',
+  });
+  assert.equal((await handleWorkflowWebhook(poisoned,s.env)).status,400);
+  assert.equal(s.dispatches,0,'invalid credentials and payloads never create Runs');
+  assert.equal((await invoke(TOKEN,{payload:'ok'})).status,202);
+  assert.equal(s.dispatches,1);
 });
 
 test('stable event ID deduplicates, changed input conflicts, and absent ID is best effort',async t=>{
@@ -125,4 +132,14 @@ test('pause and republish revoke old Webhook credentials and preserve version-bo
   assert.equal((await handleWorkflowWebhook(request(id,ROTATED,{},'prior'),s.env)).status,409,
     'old event identity cannot be silently replayed under a newer version');
   assert.equal(s.dispatches,2);
+});
+
+test('Cloudflare Cron ingress silently skips valid Webhook-only plans',async t=>{
+  const s=setup(t);
+  const wf=await s.service.create(JSON.stringify(definition()));
+  await s.service.publish(wf.workflow_id,1);
+  const tick=await admitScheduledCron(s.env,Date.UTC(2026,9,25,12,30));
+  assert.equal(tick.checked,1);
+  assert.deepEqual({due:tick.due,started:tick.started,failed:tick.failed},{due:0,started:0,failed:0});
+  assert.equal(s.dispatches,0);
 });
