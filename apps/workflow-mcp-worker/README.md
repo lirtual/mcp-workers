@@ -97,15 +97,13 @@ jobs:
         env:
           TARGET_WORKFLOW_ID: ${{ vars.WORKFLOW_EVENT_WORKFLOW_ID }}
           OIDC_AUDIENCE: ${{ vars.WORKFLOW_GITHUB_OIDC_AUDIENCE }}
-          OIDC_URL: ${{ env.ACTIONS_ID_TOKEN_REQUEST_URL }}
-          OIDC_REQUEST_TOKEN: ${{ env.ACTIONS_ID_TOKEN_REQUEST_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
           test -n "$TARGET_WORKFLOW_ID"
           test -n "$OIDC_AUDIENCE"
-          jwt="$(curl -fsS -H "Authorization: bearer $OIDC_REQUEST_TOKEN" \
-            "${OIDC_URL}&audience=${OIDC_AUDIENCE}" | jq -er .value)"
+          jwt="$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${OIDC_AUDIENCE}" | jq -er .value)"
           curl --fail-with-body --silent --show-error --retry 2 \
             -X POST "https://workflow.lirtual.dpdns.org/triggers/github/${TARGET_WORKFLOW_ID}" \
             -H "Authorization: Bearer $jwt"
