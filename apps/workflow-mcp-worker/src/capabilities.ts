@@ -433,8 +433,23 @@ export async function workflowCapabilities(env:Pick<Env,
     const task=discovered.actions.find(a=>a.can_publish&&a.type==='task'&&
       'ref' in a&&typeof a.ref==='string'&&Object.values(a.inputs).every(x=>!x.required||x.default!==undefined));
     detail.availability=task?'publishable_after_owner_approval':'no_verified_published_task';
-    if(task&&'ref' in task&&typeof task.ref==='string')
-      detail.example=await compilingExample(foreachGithubTask({...task,ref:task.ref}));
+    if(task&&'ref' in task&&typeof task.ref==='string'){
+      const sample=foreachGithubTask({...task,ref:task.ref});
+      detail.example=await compilingExample(sample);
+      // A second compiler-checked example demonstrates the exact syntax,
+      // selected from an actual verified input rather than inventing a field.
+      const candidate=Object.entries(task.inputs).find(([,field])=>field.default!==undefined);
+      if(candidate){
+        const [input,field]=candidate;
+        const dynamic=structuredClone(sample) as unknown as {
+          inputs:{items:unknown[]};
+          steps:Array<{template:{steps:Array<{with:{action:{inputs:Record<string,unknown>}}}>}}>;
+        };
+        dynamic.inputs.items=[field.default,field.default];
+        dynamic.steps[0]!.template.steps[0]!.with.action.inputs[input]={ref:'item.value'};
+        detail.dynamic_example=await compilingExample(dynamic);
+      }
+    }
     detail.template_policy={allowed_action:'github.run',type:'task',
       inputs:'literal or exact {ref:"item.value[.<field>]"} / {ref:"item.index"} only; typed by reviewed Action',
       input_snapshot:'All selected values validated against pinned provider types and choices before first dispatch; each input map SHA-256 pinned to D1 before Attempt',
