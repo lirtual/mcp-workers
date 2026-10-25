@@ -12,6 +12,7 @@
     { "binding": "DB", "database_name": "workflow-mcp-db",
       "database_id": "a4a477cd-6339-478c-ab7c-f7d87bb0d772", "migrations_dir": "migrations" }
   ],
+  "triggers": { "crons": ["* * * * *"] },
   "workflows": [
     { "name": "workflow-mcp-orchestrator", "binding": "WORKFLOW", "class_name": "WorkflowOrchestrator" }
   ],

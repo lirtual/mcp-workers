@@ -2,11 +2,18 @@ import { createMcpHandler } from '@modelcontextprotocol/server';
 import { authenticatePortalRequest } from '@mcp-workers/portal-auth';
 import { buildMcpServer } from './tools.ts';
 import { WorkflowOrchestrator } from './runner.ts';
+import {admitScheduledCron} from './scheduled.ts';
 import { handleGithubActionClaimRequest } from './github-action-ingress.ts';
 import type { Env } from './store.ts';
 export { WorkflowOrchestrator };
 const error=(status:number,code:string)=>Response.json({error:code},{status,headers:{'cache-control':'no-store',...(status===401?{'www-authenticate':'Bearer'}:{})}});
 export default {
+ async scheduled(controller:ScheduledController,env:Env):Promise<void>{
+  if(!env.DB||!env.WORKFLOW)throw Error('workflow_bindings_missing');
+  const result=await admitScheduledCron(env,controller.scheduledTime);
+  if(result.capacity_skipped||result.failed)
+    console.warn('workflow_cron_tick',JSON.stringify(result));
+ },
  async fetch(request:Request,env:Env):Promise<Response>{
   const url=new URL(request.url);
   // Only approved GitHub Actions use the signed Action claim/result routes.
