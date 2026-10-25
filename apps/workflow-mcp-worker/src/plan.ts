@@ -220,11 +220,25 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       keys(child,['id','uses','with','if'],path+'/template/steps/0');
       if(typeof child.id!=='string'||!SAFE_ID.test(child.id)||
          OBJECT_PROTOTYPE_KEYS.has(child.id))throw new PlanError('invalid_step_id',path+'/template/steps/0/id');
-      // External side effects are unsupported in this first snapshot vertical.
-      if(child.uses!=='result.emit')
+      // Only approved read-only MCP calls can cross the external boundary.
+      // github.run requires its own per-item physical Attempt lifecycle proof.
+      if(child.uses!=='result.emit'&&child.uses!=='mcp.call')
         throw new PlanError('unsupported_foreach_action',path+'/template/steps/0/uses');
       const args=object(child.with,'invalid_step_arguments');
-      keys(args,['data'],path+'/template/steps/0/with');
+      let compiledChild=child;
+      if(child.uses==='mcp.call'){
+        const target=path+'/template/steps/0/with';
+        keys(args,['endpoint','tool','scope','arguments','input_schema','output_schema'],target);
+        if(typeof args.endpoint!=='string')throw new PlanError('invalid_endpoint',target+'/endpoint');
+        try{if(publicMcpEndpoint(args.endpoint).href!==args.endpoint)throw Error('noncanonical');}
+        catch{throw new PlanError('invalid_endpoint',target+'/endpoint');}
+        if(typeof args.tool!=='string'||!/^[a-zA-Z0-9_-][a-zA-Z0-9_.-]{0,127}$/.test(args.tool))
+          throw new PlanError('invalid_tool',target+'/tool');
+        if(args.scope!=='read')throw new PlanError('unsupported_operation_scope',target+'/scope');
+        object(args.arguments,'invalid_step_arguments');
+        const schema_digest=await toolSchemaDigest(args.input_schema,args.output_schema);
+        compiledChild={...child,with:{...args,schema_digest}};
+      }else keys(args,['data'],path+'/template/steps/0/with');
       const originalNeeds=candidate.needs===undefined?[]:candidate.needs;
       if(!Array.isArray(originalNeeds)||originalNeeds.some(x=>typeof x!=='string'||!SAFE_ID.test(x))||
          new Set(originalNeeds).size!==originalNeeds.length)
@@ -237,7 +251,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       }
       foreachReserved+=Number(candidate.max_items);
       expanded.push({id:candidate.id,uses:'flow.foreach',needs:originalNeeds,
-        with:{items:source,max_items:candidate.max_items,template:child}});
+        with:{items:source,max_items:candidate.max_items,template:compiledChild}});
       if(expanded.length+foreachReserved>PLAN_LIMITS.maxSteps)
         throw new PlanError('invalid_step_count','/steps');
       continue;
@@ -345,8 +359,14 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
         }
       };
       check(s.with.items,sourcePath+'/items');
-      const child=s.with.template as {id:string;uses:string;with:{data?:unknown};if?:unknown};
-      if(child.with.data!==undefined)
+      const child=s.with.template as {id:string;uses:string;with:{data?:unknown;arguments?:unknown};if?:unknown};
+      if(child.uses==='mcp.call')
+        try{expression(child.with.arguments,s,0,true,true);}
+        catch(error){
+          if(error instanceof PlanError)throw new PlanError(error.message,sourcePath+'/template/steps/0/with/arguments');
+          throw error;
+        }
+      else if(child.with.data!==undefined)
         check(child.with.data,sourcePath+'/template/steps/0/with/data',true);
       if(child.if!==undefined){
         check(child.if,sourcePath+'/template/steps/0/if',true);
