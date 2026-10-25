@@ -2,7 +2,7 @@ import {createRemoteJWKSet,jwtVerify} from 'jose';
 import type {JWTPayload} from 'jose';
 import {matchPinnedActionRunIdentity} from './github-dispatch.ts';
 import {isPublishedGitHubActionApproved,type ReviewedGitHubAction} from './github-action-review.ts';
-import type {Plan} from './plan.ts';
+import {publishedGitHubActionStep,type Plan} from './plan.ts';
 
 type Db=Pick<D1Database,'prepare'>;
 export type GithubActionKeys=Parameters<typeof jwtVerify>[1];
@@ -34,7 +34,7 @@ export async function verifyPinnedGitHubActionIdentity(
  let plan:Plan;
  try{plan=JSON.parse(row.plan) as Plan;}catch{return null;}
  if(plan.github_execution_approved!==true||!Array.isArray(plan.steps))return null;
- const step=plan.steps.find(s=>s.id===row.step_id);
+ const step=publishedGitHubActionStep(plan,row.step_id);
  if(!step||step.uses!=='github.run'||step.with?.capability!=='github.action')return null;
  const raw=step.with.action as (ReviewedGitHubAction & {inputs?:unknown;ref?:string})|undefined;
  if(!raw)return null;
@@ -130,7 +130,7 @@ export async function verifySignedPendingGitHubActionClaim(
  let plan:Plan;
  try{plan=JSON.parse(row.plan) as Plan;}catch{return false;}
  if(plan.github_execution_approved!==true||!Array.isArray(plan.steps))return false;
- const step=plan.steps.find(s=>s.id===row.step_id);
+ const step=publishedGitHubActionStep(plan,row.step_id);
  if(!step||step.uses!=='github.run'||step.with?.capability!=='github.action')
   return false;
  const raw=step.with.action as (ReviewedGitHubAction & {ref?:string})|undefined;
