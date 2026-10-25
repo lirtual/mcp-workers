@@ -59,7 +59,7 @@ test('five-field UTC Cron matches normal ranges, weekend, and Sunday 7 without t
 
 test('compiler pins only one supported UTC Cron, rejects unapproved syntax with a safe field path',async()=>{
   const {plan,digest}=await compilePlan(emission('Timed','0 9 * * 1-5'));
-  assert.equal(plan.triggers?.[0].schedule,'0 9 * * 1-5');
+  assert.deepEqual(plan.triggers?.[0],{type:'cron',schedule:'0 9 * * 1-5'});
   assert.equal((await compilePlan(emission('Timed','0 9 * * 1-5'))).digest,digest);
   const manual=await compilePlan(emission('Timed'));
   assert.equal(manual.plan.triggers,undefined);
