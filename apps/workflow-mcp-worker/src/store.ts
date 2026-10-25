@@ -222,8 +222,8 @@ export class WorkflowService {
          'invalid_step_arguments','invalid_dependencies','cyclic_dependencies',
          'excessive_parallelism','invalid_reference','invalid_step_reference'].includes(code)?'/steps':'/';
       const suggestion=['invalid_foreach_limit','invalid_foreach_items','invalid_foreach_template',
-        'unsupported_foreach_template','unsupported_foreach_action'].includes(code)?
-        'Use flow: foreach with max_items from 1 to 8, a declared input/dependency array ref, and exactly one result.emit or explicitly approved read-only mcp.call template Step; github.run and nesting are unsupported.':
+        'unsupported_foreach_template','unsupported_foreach_action','unsupported_foreach_inputs'].includes(code)?
+        'Use flow: foreach with max_items 1 to 8 and one result.emit, approved read-only mcp.call or reviewed github.run Task template. GitHub Task inputs must be literal; Sessions and nesting remain unsupported.':
         ['invalid_repeat_count','invalid_repeat_template','unsupported_flow'].includes(code)?
         'Use flow: repeat with a literal times integer from 1 to 8 and one template Action; nested/dynamic loops are not supported. All expanded Steps must fit the maxSteps limit.':
         code.startsWith('invalid_github_event_')||code==='unsupported_github_event'?
