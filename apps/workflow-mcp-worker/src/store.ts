@@ -467,7 +467,9 @@ export class WorkflowService {
         if(saved && ['succeeded','failed','skipped','indeterminate'].includes(saved.status))return saved;
         return {step_id:s.id,status:terminal?'indeterminate':saved?.status??'waiting',error_code:saved?.error_code??null};
       }),
-      ...stored.filter(s=>dynamicIds.has(s.step_id)),
+      ...stored.filter(s=>dynamicIds.has(s.step_id)).map(saved=>
+        terminal&&!['succeeded','failed','skipped','indeterminate'].includes(saved.status)
+          ?{...saved,status:'indeterminate'}:saved),
     ].sort((a,b)=>a.step_id<b.step_id?-1:a.step_id>b.step_id?1:0);
     // A Session may remain live after the parent Workflow succeeds at Ready.
     // Expose its last durable state independently without calling it "online":
