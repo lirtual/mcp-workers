@@ -338,3 +338,18 @@ test('bounded foreach rejects unbounded, unsafe, colliding or unauthorized expan
     {id:'fifth',uses:'result.emit',with:{data:1}}]}),
     (e:unknown)=>e instanceof PlanError&&e.message==='invalid_step_count');
 });
+
+
+test('foreach invalid references point at source or template instead of leaking payloads',async()=>{
+  const root={version:1,name:'Precise foreach issue',inputs:{values:['x']}};
+  for(const [items,data,expected] of [
+    [{ref:'steps.undeclared.output'},{ref:'item.value'},'/steps/0/items'],
+    [{ref:'inputs.values'},{ref:'steps.undeclared.output'},'/steps/0/template/steps/0/with/data'],
+    [{ref:'inputs.values'},{ref:'item.secret'},'/steps/0/template/steps/0/with/data'],
+  ] as const){
+    await assert.rejects(()=>compilePlan({...root,steps:[
+      {id:'each',flow:'foreach',items,max_items:2,
+        template:{steps:[{id:'emit',uses:'result.emit',with:{data}}]}},
+    ]}),(e:unknown)=>e instanceof PlanError&&e.path===expected);
+  }
+});
