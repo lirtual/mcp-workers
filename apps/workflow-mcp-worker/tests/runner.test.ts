@@ -793,3 +793,41 @@ test('all-skipped join never calls a reviewed external MCP Action',async t=>{
   ]);
   assert.equal(externalCalls,0,'no branch ran so a join may not dispatch an external effect');
 });
+
+test('fixed repeat runs three immutable checkpoints and exposes final logical Step ID',async t=>{
+  const {service,admit,run,sqlite}=setup(t);
+  const admitted=await admit([
+    {id:'repeat',uses:'result.emit',repeat:{count:3},with:{data:{ref:'inputs.value'}}},
+    {id:'finish',uses:'result.emit',needs:['repeat'],
+      with:{data:{ref:'steps.repeat.output'}}},
+  ],{value:'persisted'});
+  await run(admitted.run_id);
+  const result=await service.result(admitted.run_id);
+  assert.equal(result.status,'succeeded');
+  assert.equal(result.result,'persisted');
+  assert.deepEqual(result.steps.map(s=>[s.step_id,s.status]),[
+    ['finish','succeeded'],['repeat','succeeded'],
+    ['repeat__r1','succeeded'],['repeat__r2','succeeded'],
+  ]);
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM run_steps WHERE run_id=?')
+    .get(admitted.run_id)?.n,4);
+  // Cloudflare Workflow replay must not run completed external effects a second time.
+  await run(admitted.run_id);
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM run_steps WHERE run_id=?')
+    .get(admitted.run_id)?.n,4);
+});
+
+test('skipped first iteration never restarts a repeat through allow_skipped',async t=>{
+  const {service,admit,run}=setup(t);
+  const admitted=await admit([
+    {id:'before',uses:'result.emit',with:{data:'ok'}},
+    {id:'conditional',uses:'result.emit',needs:['before'],
+      needs_policy:'allow_skipped',repeat:{count:3},
+      if:false,with:{data:'must not execute'}},
+  ]);
+  await run(admitted.run_id);
+  const result=await service.result(admitted.run_id);
+  assert.equal(result.status,'succeeded');
+  for(const name of ['conditional__r1','conditional__r2','conditional'])
+    assert.equal(result.steps.find(s=>s.step_id===name)?.status,'skipped',name);
+});
