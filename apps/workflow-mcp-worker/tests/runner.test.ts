@@ -1162,3 +1162,84 @@ test('GitHub Task foreach routes each child through physical Attempt; first fail
  assert.equal(calls,1,'failed first Task must not start later dynamic Task');
  assert.equal(sqlite.prepare('SELECT count(*) AS n FROM step_attempts').get()?.n,1);
 });
+
+test('pure multi-step foreach runs ordered item-local Steps with visible D1 status',async t=>{
+  const {service,admit,env}=setup(t);
+  const admitted=await admit([
+    {id:'each',flow:'foreach',items:{ref:'inputs.items'},max_items:3,
+      template:{steps:[
+        {id:'prepare',uses:'result.emit',with:{data:{
+          value:{ref:'item.value'},position:{ref:'item.index'}}}},
+        {id:'finish',uses:'result.emit',
+          if:{eq:[{ref:'item.value'},'A']},
+          with:{data:{value:{ref:'steps.prepare.output.value'},
+            position:{ref:'steps.prepare.output.position'}}}},
+      ]}},
+    {id:'done',needs:['each'],uses:'result.emit',with:{data:{ref:'steps.each.output'}}},
+  ],{items:['A','B']});
+  const checkpoints:string[]=[];
+  await new WorkflowOrchestrator({} as ExecutionContext,env).run(
+    {payload:{run_id:admitted.run_id}} as WorkflowEvent<{run_id:string}>,
+    {do:async(name:string,_options:unknown,callback:()=>Promise<unknown>)=>{
+      checkpoints.push(name);return callback();
+    }} as unknown as WorkflowStep);
+  const output=await service.result(admitted.run_id);
+  assert.equal(output.status,'succeeded');
+  assert.deepEqual(output.result,[{value:'A',position:0},null]);
+  assert.deepEqual(checkpoints,[
+    'workflow-each-snapshot','workflow-each_0_prepare','workflow-each_0_finish',
+    'workflow-each_1_prepare','workflow-each_1_finish','workflow-done',
+  ]);
+  for(const [id,status] of [
+    ['each_0_prepare','succeeded'],['each_0_finish','succeeded'],
+    ['each_1_prepare','succeeded'],['each_1_finish','skipped'],
+  ])assert.equal(output.steps.find(s=>s.step_id===id)?.status,status);
+});
+
+test('pure multi-step native snapshots replay unchanged when Run inputs are altered',async t=>{
+  const {service,admit,env,sqlite}=setup(t);
+  const started=await admit([{id:'each',flow:'foreach',items:{ref:'inputs.items'},max_items:2,
+    template:{steps:[
+      {id:'one',uses:'result.emit',with:{data:{ref:'item.value'}}},
+      {id:'two',uses:'result.emit',with:{data:{ref:'steps.one.output'}}},
+    ]}}],{items:['original']});
+  const cache=new Map<string,unknown>();
+  const counts=new Map<string,number>();
+  const native={do:async(name:string,_opts:unknown,fn:()=>Promise<unknown>)=>{
+    if(cache.has(name))return cache.get(name);
+    counts.set(name,(counts.get(name)??0)+1);
+    const result=await fn();cache.set(name,result);return result;
+  }} as unknown as WorkflowStep;
+  const event={payload:{run_id:started.run_id}} as WorkflowEvent<{run_id:string}>;
+  await new WorkflowOrchestrator({} as ExecutionContext,env).run(event,native);
+  assert.deepEqual((await service.result(started.run_id)).result,['original']);
+  sqlite.prepare("UPDATE runs SET outcome='running',inputs=?,result=NULL WHERE id=?")
+    .run(JSON.stringify({items:['tampered','second']}),started.run_id);
+  await new WorkflowOrchestrator({} as ExecutionContext,env).run(event,native);
+  const replay=await service.result(started.run_id);
+  assert.equal(replay.status,'succeeded');
+  assert.deepEqual(replay.result,['original']);
+  assert.equal(counts.get('workflow-each-snapshot'),1);
+  assert.equal(counts.get('workflow-each_0_one'),1);
+  assert.equal(counts.get('workflow-each_0_two'),1);
+  assert.equal(cache.has('workflow-each_1_one'),false);
+});
+
+test('pure multi-step foreach overflow fails before executing any child',async t=>{
+  const {service,admit,env}=setup(t);
+  const started=await admit([{id:'each',flow:'foreach',items:{ref:'inputs.items'},max_items:2,
+    template:{steps:[
+      {id:'one',uses:'result.emit',with:{data:{ref:'item.value'}}},
+      {id:'two',uses:'result.emit',with:{data:{ref:'steps.one.output'}}},
+    ]}}],{items:[1,2,3]});
+  const checkpoints:string[]=[];
+  await new WorkflowOrchestrator({} as ExecutionContext,env).run(
+    {payload:{run_id:started.run_id}} as WorkflowEvent<{run_id:string}>,
+    {do:async(name:string,_options:unknown,fn:()=>Promise<unknown>)=>{
+      checkpoints.push(name);return fn();
+    }} as unknown as WorkflowStep);
+  const result=await service.result(started.run_id);
+  assert.equal(result.status,'failed');
+  assert.deepEqual(checkpoints,['workflow-each-snapshot']);
+  assert.equal(result.steps.filter(s=>s.step_id.startsWith('each_')).length,0);
+});

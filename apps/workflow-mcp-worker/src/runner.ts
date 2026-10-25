@@ -100,6 +100,71 @@ const templateIsExternal=(step:Step)=>
   ['mcp.call','github.run'].includes(
     String((step.with.template as {uses?:unknown}|undefined)?.uses));
 
+/** Pure per-item pipeline. Every child is a native, uniquely named
+ * checkpoint and a visible D1 Step; no external Action can enter this path.
+ * The items snapshot is immutable, and later children can refer to earlier
+ * children of the SAME item, never a different iteration.
+ */
+async function runPureMultiForeach(
+  env:Env,s:Step,runId:string,step:WorkflowStep,
+  ctx:{inputs:Record<string,unknown>;steps:Record<string,Outcome>},
+):Promise<Outcome>{
+  const config=s.with;
+  const children=config.templates as Array<{id:string;uses:string;with:{data?:unknown};if?:unknown}>;
+  if(!Array.isArray(children)||children.length<2||children.length>4||
+     children.some(c=>c?.uses!=='result.emit'||typeof c.id!=='string')||
+     !Number.isSafeInteger(config.max_items)||Number(config.max_items)<1||
+     Number(config.max_items)>8||Number(config.max_items)*children.length+1>32)
+    return {status:'failed',error_code:'invalid_foreach_plan'};
+  try{
+    const snapshot=await step.do('workflow-'+s.id+'-snapshot',
+      {retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},async()=>{
+        const items=evaluateArguments(config.items,ctx);
+        if(!Array.isArray(items)||items.length>Number(config.max_items))
+          return {valid:false,items:[]} as const;
+        return {valid:true,items:limitResult(items)} as const;
+      });
+    if(!snapshot.valid||!Array.isArray(snapshot.items)||
+       snapshot.items.length>Number(config.max_items))
+      return {status:'failed',error_code:'invalid_foreach_items'};
+    const collected:unknown[]=[];
+    let succeeded=0;
+    for(const [index,value] of snapshot.items.entries()){
+      const localSteps:Record<string,Outcome>={...ctx.steps};
+      let final:Outcome={status:'skipped'};
+      for(const child of children){
+        const childId=s.id+'_'+index+'_'+child.id;
+        const outcome=await step.do('workflow-'+childId,
+          {retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},async():Promise<Outcome>=>{
+            const localCtx={...ctx,steps:localSteps,item:{value,index}};
+            if(child.if!==undefined&&!evaluateCondition(child.if,localCtx))
+              return {status:'skipped'};
+            return {status:'succeeded',output:limitResult(evaluateArguments(child.with.data,localCtx))};
+          });
+        await env.DB.prepare(`INSERT INTO run_steps(run_id,step_id,status,output,error_code,updated_at)
+          VALUES(?,?,?,?,?,?) ON CONFLICT(run_id,step_id)
+          DO UPDATE SET status=excluded.status,output=excluded.output,
+          error_code=excluded.error_code,updated_at=excluded.updated_at
+          WHERE run_steps.status IN ('waiting','running')`)
+          .bind(runId,childId,outcome.status,
+            outcome.output===undefined?null:JSON.stringify(outcome.output),
+            outcome.error_code??null,now()).run();
+        localSteps[child.id]=outcome;
+        final=outcome;
+        if(outcome.status==='succeeded')succeeded++;
+        if(outcome.status==='indeterminate')
+          return {status:'indeterminate',error_code:'foreach_child_indeterminate'};
+        if(outcome.status==='failed')
+          return {status:'failed',error_code:'foreach_child_failed'};
+      }
+      collected.push(final.status==='succeeded'?final.output:null);
+    }
+    return succeeded?{status:'succeeded',output:limitResult(collected)}:{status:'skipped'};
+  }catch{
+    return {status:'failed',error_code:'foreach_execution_failed'};
+  }
+}
+
 /** Freeze all conditions and arguments in a native checkpoint before effects.
  * MCP read children use run_steps as a durable one-shot dispatch fence.
  * Reviewed GitHub Task children reuse the existing Attempt-before-POST fence,
@@ -115,6 +180,8 @@ async function runForeachStep(
       .bind(runId,s.id,now()).run();
     if(!dependenciesPermitRun(s,ctx.steps))return {status:'skipped'};
     const config=s.with;
+    if(Array.isArray(config.templates))
+      return await runPureMultiForeach(env,s,runId,step,ctx);
     const template=config.template as {id:string;uses:string;with:Record<string,unknown>;if?:unknown};
     if(!['result.emit','mcp.call','github.run'].includes(template?.uses)||!Number.isSafeInteger(config.max_items)||
        Number(config.max_items)<1||Number(config.max_items)>8)

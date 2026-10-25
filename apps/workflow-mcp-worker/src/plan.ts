@@ -4,7 +4,7 @@ import { publicMcpEndpoint } from './mcp-public-fetch.ts';
 
 /** Compiler-owned supported Action kinds; discovery must not invent others. */
 export const SUPPORTED_STEP_USES = ['result.emit','mcp.call','github.run'] as const;
-export const PLAN_LIMITS = Object.freeze({definitionBytes:32768,maxSteps:32,maxInputs:32,maxParallel:8,maxRepeat:8,maxForeachItems:8});
+export const PLAN_LIMITS = Object.freeze({definitionBytes:32768,maxSteps:32,maxInputs:32,maxParallel:8,maxRepeat:8,maxForeachItems:8,maxForeachTemplateSteps:4});
 export function isSupportedStepUse(value:unknown):value is (typeof SUPPORTED_STEP_USES)[number]{
   return typeof value==='string' && (SUPPORTED_STEP_USES as readonly string[]).includes(value);
 }
@@ -259,8 +259,43 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
         throw new PlanError('invalid_foreach_items',path+'/items');
       const templ=object(candidate.template,'invalid_foreach_template');
       keys(templ,['steps'],path+'/template');
-      if(!Array.isArray(templ.steps)||templ.steps.length!==1)
+      if(!Array.isArray(templ.steps)||templ.steps.length<1||
+         templ.steps.length>PLAN_LIMITS.maxForeachTemplateSteps)
         throw new PlanError('unsupported_foreach_template',path+'/template/steps');
+      // Multi-step templates are pure only: no new external-effect surface.
+      if(templ.steps.length>1){
+        const originalNeeds=candidate.needs===undefined?[]:candidate.needs;
+        if(!Array.isArray(originalNeeds)||originalNeeds.some(x=>typeof x!=='string'||!SAFE_ID.test(x))||
+           new Set(originalNeeds).size!==originalNeeds.length)
+          throw new PlanError('invalid_dependencies',path+'/needs');
+        const children=templ.steps.map((sourceStep,index)=>{
+          const childPath=path+'/template/steps/'+index;
+          const child=object(sourceStep,'invalid_foreach_template');
+          keys(child,['id','uses','with','if'],childPath);
+          if(typeof child.id!=='string'||!SAFE_ID.test(child.id)||
+             OBJECT_PROTOTYPE_KEYS.has(child.id)||child.id==='prototype'||
+             originalNeeds.includes(child.id))
+            throw new PlanError('invalid_step_id',childPath+'/id');
+          if(child.uses!=='result.emit')
+            throw new PlanError('unsupported_foreach_action',childPath+'/uses');
+          keys(object(child.with,'invalid_step_arguments'),['data'],childPath+'/with');
+          return child as {id:string;uses:'result.emit';with:Record<string,unknown>;if?:unknown};
+        });
+        if(new Set(children.map(child=>child.id)).size!==children.length)
+          throw new PlanError('invalid_step_id',path+'/template/steps');
+        for(let n=0;n<Number(candidate.max_items);n++)for(const child of children){
+          const generatedId=candidate.id+'_'+n+'_'+child.id;
+          if(!SAFE_ID.test(generatedId)||foreachChildren.has(generatedId))
+            throw new PlanError('invalid_step_id',path+'/id');
+          foreachChildren.add(generatedId);
+        }
+        foreachReserved+=Number(candidate.max_items)*children.length;
+        expanded.push({id:candidate.id,uses:'flow.foreach',needs:originalNeeds,
+          with:{items:source,max_items:candidate.max_items,templates:children}});
+        if(expanded.length+foreachReserved>PLAN_LIMITS.maxSteps)
+          throw new PlanError('invalid_step_count','/steps');
+        continue;
+      }
       const child=object(templ.steps[0],'invalid_foreach_template');
       keys(child,['id','uses','with','if'],path+'/template/steps/0');
       if(typeof child.id!=='string'||!SAFE_ID.test(child.id)||
@@ -366,7 +401,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       throw new PlanError('invalid_needs_policy',stepPath+'/needs_policy');
     const withData=object(s.with,'invalid_step_arguments');
     if(s.uses==='flow.foreach'){
-      keys(withData,['items','max_items','template'],stepPath+'/with');
+      keys(withData,['items','max_items','template','templates'],stepPath+'/with');
     }else if(s.uses==='github.run'){
       checkGitHubActionWith(withData,stepPath+'/with');
     }else if(s.uses==='mcp.call'){
@@ -399,20 +434,28 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
         }
       };
       check(s.with.items,sourcePath+'/items');
-      const child=s.with.template as {id:string;uses:string;with:{data?:unknown;arguments?:unknown};if?:unknown};
-      if(child.uses==='mcp.call')
-        try{expression(child.with.arguments,s,0,true,true);}
-        catch(error){
-          if(error instanceof PlanError)throw new PlanError(error.message,sourcePath+'/template/steps/0/with/arguments');
-          throw error;
+      const children=(Array.isArray(s.with.templates)?s.with.templates:[s.with.template]) as
+        Array<{id:string;uses:string;with:{data?:unknown;arguments?:unknown};if?:unknown}>;
+      for(const [index,child] of children.entries()){
+        const childPath=sourcePath+'/template/steps/'+index;
+        const localStep={id:child.id,needs:[...s.needs,...children.slice(0,index).map(x=>x.id)]};
+        const checkChild=(value:unknown,path:string,opaque=false)=>{
+          try{expression(value,localStep,0,opaque,true);}
+          catch(error){
+            if(error instanceof PlanError)throw new PlanError(error.message,path);
+            throw error;
+          }
+        };
+        if(child.uses==='mcp.call')
+          checkChild(child.with.arguments,childPath+'/with/arguments',true);
+        else if(child.with.data!==undefined)
+          checkChild(child.with.data,childPath+'/with/data');
+        if(child.if!==undefined){
+          checkChild(child.if,childPath+'/if');
+          const op=child.if&&typeof child.if==='object'&&!Array.isArray(child.if)?Object.keys(child.if):[];
+          if(typeof child.if!=='boolean'&&!(op.length===1&&['ref','eq','ne','gt','lt','and','or','not'].includes(op[0])))
+            throw new PlanError('invalid_condition',childPath+'/if');
         }
-      else if(child.with.data!==undefined)
-        check(child.with.data,sourcePath+'/template/steps/0/with/data',true);
-      if(child.if!==undefined){
-        check(child.if,sourcePath+'/template/steps/0/if',true);
-        const op=child.if&&typeof child.if==='object'&&!Array.isArray(child.if)?Object.keys(child.if):[];
-        if(typeof child.if!=='boolean'&&!(op.length===1&&['ref','eq','ne','gt','lt','and','or','not'].includes(op[0])))
-          throw new PlanError('invalid_condition',sourcePath+'/template/steps/0/if');
       }
     }else if(s.uses==='mcp.call') expression(s.with.arguments,s,0,true);
     else if(s.uses==='github.run' && s.with.capability==='github.action') {
