@@ -367,7 +367,7 @@ async function runActionTaskSmoke() {
     approved_actions:checked.reviewed_actions,approve_heavy_execution:true,
   });
   assert.ok(published.published_version_id);
-  const opts={workflow_id:workflowId,inputs:{},
+  const opts={workflow_id:workflowId,inputs:{items:['first','second']},
     idempotency_key:'action-task-smoke-'+label};
   const started=await tool('workflow_run',opts);
   runId=started.run_id;
