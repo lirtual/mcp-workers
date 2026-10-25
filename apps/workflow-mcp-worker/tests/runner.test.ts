@@ -981,3 +981,93 @@ test('terminal Run never reports an unresolved dynamic child as still running',a
     .get(started.run_id) as {status:string};
   assert.equal(raw.status,'running','status readback must not rewrite evidence');
 });
+
+
+const readForeach=(args:Record<string,unknown>={value:{ref:'item.value'}}, extra:Record<string,unknown>={})=>({
+  id:'each',flow:'foreach',items:{ref:'inputs.items'},max_items:3,
+  template:{steps:[{id:'read',uses:'mcp.call',with:{
+    endpoint:ECHO_GRANT.endpoint,tool:ECHO_GRANT.tool,scope:'read',
+    input_schema:PINNED_SCHEMA,arguments:args,
+  },...extra}]},
+});
+
+test('foreach MCP requires exact owner approval and freezes input before bounded calls',async t=>{
+  const {service,admit,env,sqlite}=setup(t);
+  const definition=JSON.stringify({version:1,name:'Readonly foreach',steps:[readForeach()]});
+  const validation=await service.validateDefinition(definition);
+  assert.equal(validation.valid,true);
+  assert.deepEqual(validation.required_approvals,[ECHO_GRANT]);
+  const draft=await service.create(definition);
+  await assert.rejects(()=>service.publish(draft.workflow_id,1),/external_approval_required/);
+  await assert.rejects(()=>service.publish(draft.workflow_id,1,[ECHO_GRANT]),/target_risk_acknowledgment_required/);
+  const admitted=await admit([readForeach()],{items:['A','B']},[ECHO_GRANT]);
+  let calls=0;
+  mockPublicPeer(t,async()=>{calls++;});
+  const checkpoints:string[]=[];
+  await new WorkflowOrchestrator({} as ExecutionContext,env).run(
+    {payload:{run_id:admitted.run_id}} as WorkflowEvent<{run_id:string}>,
+    {do:async(name:string,_options:unknown,cb:()=>Promise<unknown>)=>{
+      checkpoints.push(name);return cb();
+    }} as unknown as WorkflowStep);
+  const result=await service.result(admitted.run_id);
+  assert.equal(result.status,'succeeded');
+  assert.equal(calls,2);
+  assert.deepEqual(checkpoints.slice(0,3),[
+    'workflow-each-snapshot','workflow-each_0_read','workflow-each_1_read']);
+  assert.ok(JSON.stringify(result.result).includes('A'));
+  assert.ok(JSON.stringify(result.result).includes('B'));
+  for(const name of ['each_0_read','each_1_read']){
+    assert.equal(result.steps.find(x=>x.step_id===name)?.status,'succeeded');
+    assert.equal((sqlite.prepare('SELECT count(*) AS n FROM run_steps WHERE run_id=? AND step_id=?')
+      .get(admitted.run_id,name) as {n:number}).n,1);
+  }
+});
+
+test('foreach MCP conditional skip and oversize guard prevent dispatch',async t=>{
+  const {service,admit,run}=setup(t);
+  let calls=0;
+  mockPublicPeer(t,async()=>{calls++;});
+  const conditional=await admit([readForeach({value:{ref:'item.value'}},
+    {if:{eq:[{ref:'item.value'},'yes']}})],{items:['no','yes']},[ECHO_GRANT]);
+  await run(conditional.run_id);
+  const skipped=await service.result(conditional.run_id);
+  assert.equal(skipped.status,'succeeded');
+  assert.equal(skipped.steps.find(x=>x.step_id==='each_0_read')?.status,'skipped');
+  assert.equal(calls,1);
+  const overflow=await admit([readForeach()],{items:['A','B','C','D']},[ECHO_GRANT]);
+  await run(overflow.run_id);
+  assert.equal((await service.result(overflow.run_id)).status,'failed');
+  assert.equal(calls,1,'overflow is rejected before any side effect');
+});
+
+test('lost foreach MCP child checkpoint is fenced on replay without duplicate peer call',async t=>{
+  const {service,admit,env,sqlite}=setup(t);
+  const admitted=await admit([readForeach()],{items:['frozen']},[ECHO_GRANT]);
+  let calls=0;
+  mockPublicPeer(t,async()=>{calls++;});
+  let dropped=false;
+  const native={do:async(name:string,_options:unknown,callback:()=>Promise<unknown>)=>{
+    const result=await callback();
+    if(name==='workflow-each_0_read'&&!dropped){
+      dropped=true;
+      throw Error('native checkpoint response lost after an actual remote call');
+    }
+    return result;
+  }} as unknown as WorkflowStep;
+  await new WorkflowOrchestrator({} as ExecutionContext,env).run(
+    {payload:{run_id:admitted.run_id}} as WorkflowEvent<{run_id:string}>,native);
+  const first=await service.result(admitted.run_id);
+  assert.equal(first.status,'indeterminate');
+  assert.equal(calls,1);
+  assert.equal(first.steps.find(s=>s.step_id==='each_0_read')?.status,'indeterminate');
+  // Simulate a restarted orchestration callback with the checkpoint missing;
+  // D1's child row remains the final no-second-dispatch fence.
+  sqlite.prepare("UPDATE runs SET outcome='running',inputs=?,result=NULL WHERE id=?")
+    .run(JSON.stringify({items:['tampered']}),admitted.run_id);
+  await new WorkflowOrchestrator({} as ExecutionContext,env).run(
+    {payload:{run_id:admitted.run_id}} as WorkflowEvent<{run_id:string}>,native);
+  const replay=await service.result(admitted.run_id);
+  assert.equal(replay.status,'indeterminate');
+  assert.equal(calls,1,'an unknown external effect must never be repeated');
+  assert.notEqual(replay.steps.find(s=>s.step_id==='each_0_read')?.status,'succeeded');
+});
