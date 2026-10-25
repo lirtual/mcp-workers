@@ -197,7 +197,9 @@ export class WorkflowService {
         ['invalid_step_count','invalid_step','invalid_step_id','unsupported_capability',
          'invalid_step_arguments','invalid_dependencies','cyclic_dependencies',
          'excessive_parallelism','invalid_reference','invalid_step_reference'].includes(code)?'/steps':'/';
-      const suggestion=code==='unsupported_trigger'||code==='invalid_triggers'?
+      const suggestion=code.startsWith('invalid_github_event_')||code==='unsupported_github_event'?
+        'Use one push event with an exact repository name/id, branch ref and trusted .github/workflows/*.yml relay; declare inputs.github and consult workflow_capabilities.':
+        code==='unsupported_trigger'||code==='invalid_triggers'?
         'Use exactly one supported Cron or Webhook trigger from workflow_capabilities.':
         code==='invalid_cron_schedule'?
         'Use one supported five-field UTC Cron schedule from workflow_capabilities; no timezone or Quartz extensions.':
@@ -296,7 +298,7 @@ export class WorkflowService {
   async start(workflow_id:string,inputs:Record<string,unknown>={},idempotency_key?:string,expected_version_id?:string){
     assertId(workflow_id);if(idempotency_key!==undefined&&(idempotency_key.length>128||!safeId(idempotency_key)))throw new StateError('invalid_idempotency_key');
     // The platform's minute identity cannot be impersonated by manual callers.
-    if((idempotency_key?.startsWith('cron-')||idempotency_key?.startsWith('webhook-'))&&!expected_version_id)
+    if((idempotency_key?.startsWith('cron-')||idempotency_key?.startsWith('webhook-')||idempotency_key?.startsWith('github-event-'))&&!expected_version_id)
       throw new StateError('reserved_idempotency_key');
     const inputJson=json(inputs);
     const request_digest=await digest(canonicalJsonString(inputs));
