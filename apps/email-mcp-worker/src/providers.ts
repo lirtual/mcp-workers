@@ -76,6 +76,8 @@ function graphMessage(account: MailAccount, msg: any): Message {
     account_id: account.account_id, provider: account.provider, id: String(msg.id ?? ''),
     thread_id: String(msg.conversationId ?? ''), subject: String(msg.subject ?? '').slice(0, 1000),
     from: String(msg.from?.emailAddress?.address ?? ''),
+    reply_to: (Array.isArray(msg.replyTo) && msg.replyTo.length ? msg.replyTo : [msg.from])
+      .map((r: any) => String(r?.emailAddress?.address ?? '')).filter(Boolean).join(', ').slice(0, 1000),
     to: recipients.map((r: any) => r.emailAddress?.address ?? '').join(', ').slice(0, 2000),
     date: String(msg.receivedDateTime ?? ''), snippet: plainText(String(msg.bodyPreview ?? '')).slice(0, 1000),
     text: plainText(String(body ?? msg.bodyPreview ?? '')),
@@ -88,7 +90,7 @@ export async function getMail(env: Env, account: MailAccount, id: string): Promi
     return gmailMessage(account, msg);
   }
   if (account.provider === 'graph') {
-    const msg = await json(env, account, '/messages/' + enc(id) + '?$select=id,conversationId,subject,from,toRecipients,receivedDateTime,bodyPreview,body', {
+    const msg = await json(env, account, '/messages/' + enc(id) + '?$select=id,conversationId,subject,from,replyTo,toRecipients,receivedDateTime,bodyPreview,body', {
       headers: { Prefer: 'IdType="ImmutableId", outlook.body-content-type="text"' },
     });
     return graphMessage(account, msg);
@@ -293,6 +295,18 @@ export async function sendMail(env: Env, account: MailAccount, to: string[], sub
     return { status: 'accepted' as const, reference: null };
   }
   return fail('unsupported');
+}
+export async function assertGraphReplyRecipient(env: Env, account: MailAccount, messageId: string, confirmedTo: string): Promise<void> {
+  if (account.provider !== 'graph') fail('unsupported');
+  const source = await json(env, account, '/messages/' + enc(messageId) + '?$select=replyTo,from', {
+    headers: { Prefer: 'IdType="ImmutableId"' },
+  });
+  const candidates = Array.isArray(source.replyTo) && source.replyTo.length ? source.replyTo : [source.from];
+  // Native Graph reply honors Reply-To. Multiple targets cannot be confirmed with a single recipient.
+  if (candidates.length !== 1) fail('unsupported');
+  const target = candidates[0]?.emailAddress?.address;
+  if (typeof target !== 'string' || recipients([target])[0]!.toLowerCase() !== confirmedTo.toLowerCase())
+    fail('reply_recipient_mismatch');
 }
 export async function replyGmail(env: Env, account: MailAccount, messageIdValue: string, body: string, confirmedTo: string, files: AttachmentFile[] = []) {
   if (account.provider !== 'gmail') fail('unsupported');
