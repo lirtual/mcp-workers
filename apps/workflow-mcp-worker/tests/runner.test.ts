@@ -4,7 +4,7 @@ import { registerHooks } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { WorkflowService, type Env } from '../src/store.ts';
-import { toolSchemaDigest, type ReadonlyOperation } from '../src/plan.ts';
+import { compilePlan,toolSchemaDigest, type ReadonlyOperation } from '../src/plan.ts';
 // Exact schema returned by the existing read-only echo MCP fixture.
 const PINNED_SCHEMA={type:'object',properties:{
   value:{type:'string',maxLength:4096},
@@ -1113,4 +1113,51 @@ test('foreach MCP cached native snapshot and child checkpoint retain original ar
   assert.deepEqual(replay.result,first.result);
   assert.equal(calls,1);
   assert.equal(cached.has('workflow-each_1_read'),false);
+});
+
+test('GitHub Task foreach routes each child through physical Attempt; first failure stops later dispatch',async t=>{
+ const {service,admit,run,env,sqlite}=setup(t);
+ // Only this test needs the existing approved github.action schema migration.
+ sqlite.exec('BEGIN');
+ sqlite.exec(readFileSync(new URL('../migrations/0006_action_attempt_capabilities.sql',import.meta.url),'utf8'));
+ sqlite.exec('COMMIT');
+ const start=await admit([{id:'each',flow:'foreach',items:{ref:'inputs.items'},max_items:2,
+  template:{steps:[{id:'emit',uses:'result.emit',with:{data:{ref:'item.value'}}}]}}],
+ {items:['A','B']});
+ const identity={repository:'lirtual/session-actions',repositoryId:123,
+  workflowId:456,workflowPath:'.github/workflows/task.yml',
+  commitSha:'a'.repeat(40),contractDigest:'b'.repeat(64),type:'task' as const};
+ const tag='refs/tags/task-v1';
+ const {plan}=await compilePlan({version:1,name:'Pinned per-item Task',
+  steps:[{id:'each',flow:'foreach',items:{ref:'inputs.items'},max_items:2,
+   template:{steps:[{id:'task',uses:'github.run',with:{
+     capability:'github.action',action:{...identity,ref:tag,inputs:{outcome:'failure'}},
+   }}]}}]});
+ plan.github_execution_approved=true;
+ plan.github_action_approvals=[identity];
+ sqlite.prepare('UPDATE workflow_versions SET plan=? WHERE id=(SELECT version_id FROM runs WHERE id=?)')
+   .run(JSON.stringify(plan),start.run_id);
+ env.WORKFLOW_GITHUB_DISPATCH_TOKEN='test-token';
+ env.GITHUB_ACTION_OIDC_AUDIENCE='workflow-github-action:production';
+ let calls=0;
+ const old=globalThis.fetch;
+ globalThis.fetch=(async(input:RequestInfo|URL,init?:RequestInit)=>{
+  const req=new Request(input,init),url=new URL(req.url);
+  if(url.pathname.endsWith('/git/ref/tags/task-v1'))
+   return Response.json({ref:tag,object:{type:'commit',sha:identity.commitSha}});
+  if(req.method==='POST'){calls++;return Response.json({workflow_run_id:42});}
+  assert.ok(url.pathname.endsWith('/actions/runs/42'));
+  return Response.json({id:42,workflow_id:456,run_attempt:1,
+   repository:{id:123,full_name:identity.repository},path:identity.workflowPath,
+   head_branch:'task-v1',head_sha:identity.commitSha,event:'workflow_dispatch',
+   status:'completed',conclusion:'failure'});
+ }) as typeof fetch;
+ t.after(()=>{globalThis.fetch=old;});
+ await run(start.run_id);
+ const result=await service.result(start.run_id);
+ assert.equal(result.status,'failed');
+ assert.equal(result.steps.find(s=>s.step_id==='each_0_task')?.status,'failed');
+ assert.equal(result.steps.find(s=>s.step_id==='each')?.status,'failed');
+ assert.equal(calls,1,'failed first Task must not start later dynamic Task');
+ assert.equal(sqlite.prepare('SELECT count(*) AS n FROM step_attempts').get()?.n,1);
 });
