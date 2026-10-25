@@ -8,7 +8,7 @@ function config(env: Env, provider: Provider): OAuthConfig {
   if (provider === 'gmail' && env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) return {
     clientId: env.GOOGLE_CLIENT_ID, secret: env.GOOGLE_CLIENT_SECRET,
     auth: 'https://accounts.google.com/o/oauth2/v2/auth', token: 'https://oauth2.googleapis.com/token',
-    scope: 'https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.compose',
+    scope: 'https://www.googleapis.com/auth/gmail.modify',
   };
   if (provider === 'graph' && env.MICROSOFT_CLIENT_ID && env.MICROSOFT_CLIENT_SECRET) {
     const tenant = env.MICROSOFT_TENANT ?? 'common';
