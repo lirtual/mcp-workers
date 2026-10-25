@@ -18,7 +18,7 @@ function draftName(definition:string):string {
   }catch{}
   return 'Untitled Draft';
 }
-import type { Plan, ReadonlyOperation } from './plan.ts';
+import type { Plan, Step, ReadonlyOperation } from './plan.ts';
 
 export type Env = {
   DB: D1Database;
@@ -99,6 +99,19 @@ function approvedMcpSteps(plan:Plan):Array<{with:Record<string,unknown>}>{
   });
 }
 
+/** Include validated dynamic Task templates in the existing exact-source
+ * discovery, schema review and explicit owner Publish approval. */
+function reviewedGitHubSteps(plan:Plan):Array<{step:Step;path:string}>{
+  return plan.steps.flatMap((step,index)=>{
+    if(step.uses==='github.run'&&step.with.capability==='github.action')
+      return [{step,path:'/steps/'+index+'/with/action'}];
+    if(step.uses!=='flow.foreach')return [];
+    const child=step.with.template as {id:string;uses:string;with:Record<string,unknown>}|undefined;
+    if(child?.uses!=='github.run'||child.with.capability!=='github.action')return [];
+    return [{step:{id:child.id,uses:'github.run',needs:step.needs,with:child.with},
+      path:'/steps/'+index+'/template/steps/0/with/action'}];
+  });
+}
 export class WorkflowService {
   private env:Env;
   constructor(env:Env){this.env=env;}
@@ -137,14 +150,13 @@ export class WorkflowService {
     return {workflow_id,draft_revision:expected_revision+1};
   }
   private async checkedGitHubActions(plan:Plan):Promise<ReviewedGitHubAction[]> {
-    const actions=plan.steps.filter(step=>step.uses==='github.run'&&step.with.capability==='github.action');
+    const actions=reviewedGitHubSteps(plan);
     if(!actions.length)return [];
     const token=this.env.WORKFLOW_GITHUB_DISPATCH_TOKEN;
     if(!token)throw new PlanError('github_action_token_missing','/steps');
     const grants=approvedActionRepositories(this.env.GITHUB_ACTION_APPROVED_REPOSITORIES);
     const approved:ReviewedGitHubAction[]=[];
-    for(const step of actions){
-      const path='/steps/'+plan.steps.indexOf(step)+'/with/action';
+    for(const {step,path} of actions){
       const raw=step.with.action as Record<string,unknown>;
       const expected:ReviewedGitHubAction={
         repository:raw.repository as string,repositoryId:raw.repositoryId as number,
@@ -196,7 +208,7 @@ export class WorkflowService {
         contract_validation:required_approvals.length?'mcp_schema_pinned_live_call_unverified':'compiler_and_github_revision_verified',
         ...(reviewed_actions.length?{reviewed_actions}:{}),
         ...(required_approvals.length?{required_approvals}:{}),
-        ...(plan.steps.some(s=>s.uses==='github.run')?{requires_heavy_execution_approval:true}:{})};
+        ...(reviewedGitHubSteps(plan).length?{requires_heavy_execution_approval:true}:{})};
     }catch(error){
       if(!(error instanceof PlanError))throw error;
       // Never reflect raw YAML, user keys, credentials or upstream errors.
@@ -270,7 +282,7 @@ export class WorkflowService {
     // is required at each Publish in addition to exact per-operation grants.
     // This is an authenticated API assertion, not proof of human interaction.
     if(required.length && accept_target_risks!==true)throw new StateError('target_risk_acknowledgment_required');
-    const hasGithub=plan.steps.some(s=>s.uses==='github.run');
+    const hasGithub=reviewedGitHubSteps(plan).length>0;
     if(hasGithub && approve_heavy_execution!==true)throw new StateError('github_execution_approval_required');
     const scopedPlan:Plan=required.length?{...plan,mcp_approvals:required,mcp_target_risks_accepted:true}:plan;
     const grantedPlan:Plan=reviewedActions.length?{...scopedPlan,github_action_approvals:reviewedActions}:scopedPlan;
