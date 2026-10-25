@@ -676,7 +676,7 @@ jobs:
     if(url.pathname===root+'/tags')return Response.json([]);
     if(url.pathname===root+'/commits/'+approvedSha)return Response.json({sha:approvedSha});
     if(url.pathname===root+'/actions/workflows')return Response.json({
-      workflows:[{id:workflowId,path:workflowPath}],
+      workflows:[{id:workflowId,path:workflowPath,state:'active'}],
     });
     if(url.pathname===root+'/contents/'+workflowPath){
       assert.ok(url.searchParams.get('ref')===approvedSha||

@@ -90,7 +90,8 @@ export async function discoverGitHubActions(
       const path = required(workflow, 'path');
       const id = required(workflow, 'id');
       if (typeof path !== 'string' || !WORKFLOW.test(path)) continue;
-      if (typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0) continue;
+      if (typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0 ||
+          required(workflow, 'state') !== 'active') continue;
       const contents = await get(prefix + '/contents/' + path + '?ref=' + commitSha, grant.token, http);
       if (required(contents, 'path') !== path ||
           required(contents, 'encoding') !== 'base64' ||

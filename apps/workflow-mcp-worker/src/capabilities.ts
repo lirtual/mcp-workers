@@ -24,6 +24,9 @@ type PortalDiscovery={availability:'verified_contract'|'unavailable'|'not_author
  * every readOnlyHint in the Portal's mixed read/write catalog.
  */
 export async function reviewedPortalTools(tools:PortalTool[]):Promise<PortalToolContract[]>{
+ // Duplicate tool identities in a multiplexed Portal are ambiguous; never
+ // silently select the first matching upstream or trust its annotations.
+ if(tools.filter(t=>t.name==='ima_list_notebooks').length!==1)return [];
  const found:PortalToolContract[]=[];
  for(const tool of tools){
    if(tool.name!=='ima_list_notebooks'||tool.annotations?.readOnlyHint!==true||

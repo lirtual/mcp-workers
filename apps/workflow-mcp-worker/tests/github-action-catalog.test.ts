@@ -55,7 +55,7 @@ function githubMock(requests:string[],mode:'tagged'|'moved'|'head'|'no_tag'='tag
    if(u.pathname.endsWith('/commits/main'))return Response.json({sha:headSha});
    if(u.pathname.endsWith('/commits/'+releaseSha))return Response.json({sha:releaseSha});
    if(u.pathname.endsWith('/actions/workflows'))
-     return Response.json({workflows:[{id:100,path:'.github/workflows/task.yml'}]});
+     return Response.json({workflows:[{id:100,path:'.github/workflows/task.yml',state:'active'}]});
    if(u.pathname.endsWith('/contents/.github/workflows/task.yml'))
      return Response.json({path:'.github/workflows/task.yml',encoding:'base64',content:btoa(actionYaml)});
    return Response.json({id:123,full_name:'lirtual/session-actions',default_branch:'main'});
