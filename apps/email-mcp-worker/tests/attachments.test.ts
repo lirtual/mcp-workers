@@ -94,8 +94,12 @@ test('Graph large file uses only trusted session URL and never sends OAuth beare
     assert.equal(sent, true);
     const uploads = calls.filter(c => c.method === 'PUT');
     assert.equal(uploads.length, 2);
-    assert.equal(uploads[0]?.headers.get('content-range'), 'bytes 0-3145727/3800000', 'first chunk range');
-    assert.equal(uploads[1]?.headers.get('content-range'), 'bytes 3145728-3799999/3800000');
+    const firstRange = uploads[0]?.headers.get('content-range') ?? '';
+    const firstBytes = Number(firstRange.match(/^bytes 0-(\d+)\//)?.[1]) + 1;
+    assert.equal(firstBytes % (320 * 1024), 0, 'Graph non-final fragment size must be 320 KiB aligned');
+    assert.ok(firstBytes <= 4_000_000, 'Graph upload fragment must be at most 4 MB');
+    assert.equal(uploads[0]?.headers.get('content-range'), 'bytes 0-3276799/3800000', 'first chunk range');
+    assert.equal(uploads[1]?.headers.get('content-range'), 'bytes 3276800-3799999/3800000');
     assert.equal(uploads[1]?.headers.get('authorization'), null);
   } finally { globalThis.fetch = original; }
 });
