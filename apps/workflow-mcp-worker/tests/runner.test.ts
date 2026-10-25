@@ -1509,7 +1509,7 @@ test('emit → conditional Task → emit skips all external work and follow-up o
  assert.equal(calls,0);
 });
 
-test('two staged Tasks deliver signed OIDC receipts and physical success to item-local final emits',async t=>{
+test('mixed MCP reads and two staged Tasks deliver signed OIDC receipts in strict sequence',async t=>{
  const {admit,service,env,sqlite}=setup(t);
  sqlite.exec('BEGIN');
  sqlite.exec(readFileSync(new URL('../migrations/0006_action_attempt_capabilities.sql',import.meta.url),'utf8'));
@@ -1525,6 +1525,7 @@ test('two staged Tasks deliver signed OIDC receipts and physical success to item
   {id:'each',flow:'foreach',items:{ref:'inputs.items'},max_items:2,
    template:{steps:[
     {id:'prepare',uses:'result.emit',with:{data:{ref:'item.value'}}},
+    echoStep('read',{value:{ref:'steps.prepare.output'}}),
     {id:'verify',uses:'github.run',with:{capability:'github.action',
      action:{...identity,ref:tag,inputs:{outcome:'success'}}}},
     {id:'finish',uses:'result.emit',with:{data:{ref:'steps.verify.output'}}},
@@ -1532,16 +1533,24 @@ test('two staged Tasks deliver signed OIDC receipts and physical success to item
   {id:'done',needs:['each'],uses:'result.emit',with:{data:{ref:'steps.each.output'}}},
  ]});
  plan.github_execution_approved=true;plan.github_action_approvals=[identity];
+ plan.mcp_target_risks_accepted=true;plan.mcp_approvals=[ECHO_GRANT];
  sqlite.prepare('UPDATE workflow_versions SET plan=? WHERE id=(SELECT version_id FROM runs WHERE id=?)')
   .run(JSON.stringify(plan),started.run_id);
  env.WORKFLOW_GITHUB_DISPATCH_TOKEN='test-token';
  env.GITHUB_ACTION_OIDC_AUDIENCE=audience;
  const {privateKey,publicKey}=await generateKeyPair('RS256');
  const signed=new Map<number,string>();
- let posts=0;const claimed=new Set<number>();
+ let posts=0;let mcpCalls=0;const claimed=new Set<number>();
  const savedFetch=globalThis.fetch;
  globalThis.fetch=(async(input:RequestInfo|URL,init?:RequestInit)=>{
-  const req=new Request(input,init),path=new URL(req.url).pathname;
+  const req=new Request(input,init),url=new URL(req.url),path=url.pathname;
+  if(url.hostname==='mcp.lirtual.dpdns.org'){
+   if(req.method==='POST'){
+    const request=await req.clone().json() as {method?:string};
+    if(request.method==='tools/call')mcpCalls++;
+   }
+   return readonlyWorker.fetch(req);
+  }
   if(path.endsWith('/git/ref/tags/task-v1'))
    return Response.json({ref:tag,object:{type:'commit',sha:identity.commitSha}});
   if(req.method==='POST'){
@@ -1592,18 +1601,53 @@ test('two staged Tasks deliver signed OIDC receipts and physical success to item
  assert.equal(result.status,'succeeded',JSON.stringify(result));
  assert.deepEqual(result.result,[{verified:true,physical:42},{verified:true,physical:43}]);
  assert.equal(posts,2);
+ assert.equal(mcpCalls,2,'each item must perform one approved read before its Task');
  assert.deepEqual([...claimed],[42,43]);
  assert.equal(sqlite.prepare('SELECT count(*) AS n FROM step_attempts').get()?.n,2);
  assert.equal(sqlite.prepare("SELECT count(*) AS n FROM step_attempts WHERE state='succeeded'").get()?.n,2);
  assert.equal(sqlite.prepare("SELECT count(*) AS n FROM callback_receipts WHERE outcome='succeeded'").get()?.n,2);
- for(const id of ['each','each_0_prepare','each_0_verify','each_0_finish',
-   'each_1_prepare','each_1_verify','each_1_finish','done'])
+ for(const id of ['each','each_0_prepare','each_0_read','each_0_verify','each_0_finish',
+   'each_1_prepare','each_1_read','each_1_verify','each_1_finish','done'])
   assert.equal(result.steps.find(s=>s.step_id===id)?.status,'succeeded',id);
  for(const i of [0,1]){
   const label='each_'+i+'_';
   assert.ok(checkpoints.indexOf('workflow-'+label+'prepare')<
+    checkpoints.indexOf('workflow-'+label+'read-args'));
+  assert.ok(checkpoints.indexOf('workflow-'+label+'read')<
     checkpoints.indexOf('github-action-dispatch-'+label+'verify'));
   assert.ok(checkpoints.indexOf('github-action-dispatch-'+label+'verify')<
     checkpoints.indexOf('workflow-'+label+'finish'));
  }
+});
+
+test('mixed skipped MCP prerequisite never dispatches a reviewed GitHub Task',async t=>{
+ const {admit,service,run,sqlite}=setup(t);
+ const started=await admit([{id:'seed',uses:'result.emit',with:{data:'seed'}}],
+  {items:['one']});
+ const identity={repository:'lirtual/session-actions',repositoryId:123,workflowId:456,
+  workflowPath:'.github/workflows/task.yml',commitSha:'a'.repeat(40),
+  contractDigest:'b'.repeat(64),type:'task' as const};
+ const {plan}=await compilePlan({version:1,name:'Blocked mixed external stages',steps:[
+  {id:'each',flow:'foreach',items:{ref:'inputs.items'},max_items:2,
+   template:{steps:[
+    {...echoStep('read',{value:'never called'}),if:false},
+    {id:'verify',uses:'github.run',with:{capability:'github.action',
+      action:{...identity,ref:'refs/tags/task-v1',inputs:{outcome:'success'}}}},
+    {id:'finish',uses:'result.emit',with:{data:{ref:'steps.verify.output'}}},
+   ]}},
+ ]});
+ plan.github_execution_approved=true;plan.github_action_approvals=[identity];
+ plan.mcp_target_risks_accepted=true;plan.mcp_approvals=[ECHO_GRANT];
+ sqlite.prepare('UPDATE workflow_versions SET plan=? WHERE id=(SELECT version_id FROM runs WHERE id=?)')
+  .run(JSON.stringify(plan),started.run_id);
+ let calls=0;const before=globalThis.fetch;
+ globalThis.fetch=(async()=>{calls++;throw Error('skipped prerequisite reached remote network');}) as typeof fetch;
+ t.after(()=>{globalThis.fetch=before;});
+ await run(started.run_id);
+ const result=await service.result(started.run_id);
+ assert.equal(result.status,'succeeded',JSON.stringify(result));
+ assert.equal(result.steps.find(s=>s.step_id==='each_0_read')?.status,'skipped');
+ assert.equal(result.steps.find(s=>s.step_id==='each_0_verify')?.status,'skipped');
+ assert.equal(result.steps.find(s=>s.step_id==='each_0_finish')?.status,'skipped');
+ assert.equal(calls,0,'neither MCP nor GitHub may be contacted');
 });
