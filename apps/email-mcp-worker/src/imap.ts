@@ -69,10 +69,12 @@ export async function withSelected<T>(client: ImapFlow, ref: ImapReference, work
   } finally { lock.release(); }
 }
 export async function imapFolders(env: Env, account: MailAccount) {
-  return withImap(env, account, async client => ({
-    account_id: account.account_id,
-    folders: (await client.list()).slice(0, 100).map(box => ({ id: box.path, name: box.path })),
-  }));
+  return withImap(env, account, async client => {
+    const all = await client.list();
+    return { account_id: account.account_id,
+      folders: all.slice(0, 100).map(box => ({ id: box.path, name: box.path })),
+      truncated: all.length > 100 };
+  });
 }
 export async function imapSearch(env: Env, account: MailAccount, query: string, after?: string, limit = 10) {
   return withImap(env, account, async client => {
