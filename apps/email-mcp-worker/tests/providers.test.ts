@@ -313,3 +313,53 @@ test('bounded Gmail threads and Graph folders expose truncation metadata', async
     assert.equal(folders.truncated, true, 'Graph nextLink must be disclosed, not discarded silently');
   } finally { globalThis.fetch = oldFetch; }
 });
+
+test('failed first-page mailbox can resume without replaying completed account', async () => {
+  const { searchAcross } = await import('../src/tools.ts');
+  const key = Buffer.alloc(32, 22).toString('base64');
+  const env = { MAIL_ENCRYPTION_KEY: key, DB: {} } as any;
+  const failedId = crypto.randomUUID(), healthyId = crypto.randomUUID();
+  const accounts = new Map<string, any>();
+  for (const [aid, token] of [[failedId, 'fragile'], [healthyId, 'healthy']]) {
+    const sealed = await encrypt(env, 'account:' + aid + ':graph', { access_token: token });
+    accounts.set(aid, { account_id: aid, provider: 'graph', address: token + '@example.test',
+      status: 'active', credential_ciphertext: sealed.ciphertext,
+      credential_key_id: sealed.keyId, token_expires_at: Math.floor(Date.now() / 1000) + 3600 });
+  }
+  env.DB = { prepare(sql: string) {
+    assert.equal(sql, 'SELECT * FROM mail_accounts WHERE account_id=?');
+    return { bind(aid: string) { return { async first() { return accounts.get(aid) ?? null; } }; } };
+  } };
+  const oldFetch = globalThis.fetch;
+  const seen: string[] = [];
+  let failFragile = true;
+  try {
+    globalThis.fetch = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const token = new Headers(init?.headers).get('authorization');
+      seen.push(token ?? '');
+      if (token === 'Bearer fragile' && failFragile)
+        return Response.json({ error: 'unavailable' }, { status: 503 });
+      return Response.json({ value: [{ id: token === 'Bearer fragile' ? 'recovered' : 'healthy',
+        receivedDateTime: '2026-10-25T00:00:00Z' }] });
+    }) as typeof fetch;
+    const first = await searchAcross(env, [failedId, healthyId], 'bounded', undefined);
+    assert.equal(first.partial_failure, true);
+    assert.deepEqual(first.messages.map((m: any) => m.id), ['healthy']);
+    assert.equal(typeof first.cursor, 'string', 'first-page failure must be resumable');
+    failFragile = false;
+    const second = await searchAcross(env, [failedId, healthyId], 'bounded', first.cursor);
+    assert.equal(second.partial_failure, false);
+    assert.deepEqual(second.messages.map((m: any) => m.id), ['recovered']);
+    assert.equal(second.cursor, undefined);
+    assert.equal(seen.filter(v => v === 'Bearer healthy').length, 1,
+      'already completed mailbox must not be replayed');
+    failFragile = true;
+    const solo = await searchAcross(env, [failedId], 'solo', undefined);
+    assert.equal(solo.partial_failure, true);
+    assert.equal(typeof solo.cursor, 'string', 'even an all-failed search must have a retry cursor');
+    failFragile = false;
+    const recovered = await searchAcross(env, [failedId], 'solo', solo.cursor);
+    assert.equal(recovered.messages[0]?.id, 'recovered');
+    assert.equal(recovered.cursor, undefined);
+  } finally { globalThis.fetch = oldFetch; }
+});
