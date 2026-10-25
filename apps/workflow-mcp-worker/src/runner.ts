@@ -97,12 +97,13 @@ async function runGithubStep(
 }
 
 const templateIsExternal=(step:Step)=>
-  (step.with.template as {uses?:unknown}|undefined)?.uses==='mcp.call';
+  ['mcp.call','github.run'].includes(
+    String((step.with.template as {uses?:unknown}|undefined)?.uses));
 
 /** Freeze all conditions and arguments in a native checkpoint before effects.
- * MCP read children also use D1's existing run_steps primary key as a durable
- * one-shot dispatch fence: uncertain callback re-entry may NOT call the peer.
- * GitHub Actions remain excluded pending physical Attempt lifecycle proof.
+ * MCP read children use run_steps as a durable one-shot dispatch fence.
+ * Reviewed GitHub Task children reuse the existing Attempt-before-POST fence,
+ * OIDC Claim and native physical completion checks, never Session lifecycle.
  */
 async function runForeachStep(
   env:Env,plan:Plan,s:Step,runId:string,step:WorkflowStep,
@@ -115,7 +116,7 @@ async function runForeachStep(
     if(!dependenciesPermitRun(s,ctx.steps))return {status:'skipped'};
     const config=s.with;
     const template=config.template as {id:string;uses:string;with:Record<string,unknown>;if?:unknown};
-    if(!['result.emit','mcp.call'].includes(template?.uses)||!Number.isSafeInteger(config.max_items)||
+    if(!['result.emit','mcp.call','github.run'].includes(template?.uses)||!Number.isSafeInteger(config.max_items)||
        Number(config.max_items)<1||Number(config.max_items)>8)
       return {status:'failed',error_code:'invalid_foreach_plan'};
     const snapshot=await step.do('workflow-'+s.id+'-snapshot',
@@ -128,7 +129,9 @@ async function runForeachStep(
           const itemCtx={...ctx,item:{value,index}};
           const selected=template.if===undefined||evaluateCondition(template.if,itemCtx);
           const evaluated=selected?evaluateArguments(
-            template.uses==='mcp.call'?template.with.arguments:template.with.data,itemCtx):null;
+            template.uses==='mcp.call'?template.with.arguments:
+              template.uses==='github.run'?(template.with.action as {inputs?:unknown})?.inputs:
+              template.with.data,itemCtx):null;
           // Before any external dispatch, reject unresolved arguments across the
           // entire bounded array. Partial pre-dispatch validation is not enough.
           if(selected&&template.uses==='mcp.call'&&
@@ -150,7 +153,23 @@ async function runForeachStep(
       const entry=snapshot.items[i];
       if(entry.id!==s.id+'_'+i+'_'+template.id||typeof entry.selected!=='boolean')
         return {status:'failed',error_code:'invalid_foreach_snapshot'};
-      const outcome=await step.do('workflow-'+entry.id,
+      // GitHub Task already wraps its dispatch and every physical poll in
+      // separate native checkpoints; do not place a long-running Task under
+      // the ordinary 30-second emission checkpoint.
+      const outcome=template.uses==='github.run'&&entry.selected
+        ? await (async():Promise<Outcome>=>{
+            try{
+              await db.prepare("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES(?,?,'running',?) ON CONFLICT(run_id,step_id) DO NOTHING")
+                .bind(runId,entry.id,now()).run();
+              const child:Step={id:entry.id,uses:'github.run',needs:s.needs,with:template.with};
+              // The Task's native dispatch checkpoint first registers a
+              // UNIQUE D1 Attempt. A lost response cannot dispatch again.
+              return await runPublishedGitHubActionTask(env,plan,child,runId,step);
+            }catch{
+              return {status:'indeterminate',error_code:'github_dispatch_unknown'};
+            }
+          })()
+        : await step.do('workflow-'+entry.id,
         {retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},
         async():Promise<Outcome>=>{
           if(!entry.selected){
