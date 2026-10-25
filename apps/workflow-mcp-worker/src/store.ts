@@ -154,8 +154,13 @@ export class WorkflowService {
   async validate(workflow_id:string,revision:number){
     assertId(workflow_id);const row=await this.row(workflow_id);
     if(row.draft_revision!==revision)throw new StateError('revision_conflict');
+    return this.validateDefinition(row.draft);
+  }
+  /** Validate without creating a Draft or writing D1. Both entrypoints share
+   * the exact compiler and reviewed GitHub Action contract. */
+  async validateDefinition(definition:string){
     try {
-      const {digest,plan}=await compilePlan(row.draft);
+      const {digest,plan}=await compilePlan(definition);
       const reviewed_actions=await this.checkedGitHubActions(plan);
       const required_approvals=[...new Map(plan.steps.filter(s=>s.uses==='mcp.call').map(s=>{
         const grant:ReadonlyOperation={endpoint:s.with.endpoint as string,tool:s.with.tool as string,scope:'read',schema_digest:s.with.schema_digest as string};
@@ -166,7 +171,15 @@ export class WorkflowService {
         ...(plan.steps.some(s=>s.uses==='github.run')?{requires_heavy_execution_approval:true}:{})};
     }catch(error){
       if(!(error instanceof PlanError))throw error;
-      return {valid:false,issues:[{code:error.message.split(':')[0]}]};
+      const code=error.message.split(':',1)[0];
+      const path=code==='invalid_version'?'/version':
+        code==='invalid_name'?'/name':
+        ['invalid_step_count','invalid_step','invalid_step_id','unsupported_capability',
+         'invalid_step_arguments','invalid_dependencies'].includes(code)?'/steps':'/';
+      return {valid:false,issues:[{code,path,
+        message:'Workflow definition rejected: '+code,
+        ...(['unsupported_capability','invalid_step_arguments'].includes(code)
+          ?{suggestion:'Use a supported Step type and its published argument contract.'}:{})}]};
     }
   }
   async publish(workflow_id:string,expected_revision:number,approved_operations:ReadonlyOperation[]=[],accept_target_risks=false,approve_heavy_execution=false,approved_actions:ReviewedGitHubAction[]=[]){

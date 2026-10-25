@@ -23,13 +23,13 @@ async function safe(f:()=>Promise<unknown>){try{return success(await f());}catch
 export function buildMcpServer(env:Env){
  const service=new WorkflowService(env);
  const server=new McpServer({name:'workflow-mcp-worker',version:'0.1.0'},
- {capabilities:{tools:{}},instructions:'Workflows use immutable published plans. MCP calls through the pinned Portal require exact read-scope/schema grants and explicit target-risk acceptance. Reviewed GitHub Task/Session Actions require explicit repository/revision approval, signed physical GitHub OIDC identity, and durable lifecycle tracking. Approved GitHub Actions may have external side effects; discovery alone never authorizes execution. Arbitrary commands supplied through Workflow MCP, Cron and Webhooks are not supported.'});
+ {capabilities:{tools:{}},instructions:'First use workflow_action_list for reviewed GitHub Actions; construct a Draft definition and use workflow_validate with inline definition before workflow_create. Inline validation never creates, publishes or runs anything. Workflows use immutable published plans. MCP calls through the pinned Portal require exact read-scope/schema grants and explicit target-risk acceptance. Reviewed GitHub Task/Session Actions require explicit repository/revision approval, signed physical GitHub OIDC identity, and durable lifecycle tracking. Approved GitHub Actions may have external side effects; discovery alone never authorizes execution. Arbitrary commands supplied through Workflow MCP, Cron and Webhooks are not supported.'});
  server.registerTool('workflow_action_list',{description:'Discover current compatible GitHub Actions only in approved repository identities. Immutable source revisions require separate Publish approval; discovery grants no execution.',inputSchema:z.object({}).strict(),annotations:externalRead},async()=>safe(()=>listAvailableGitHubActions(env)));
  server.registerTool('workflow_list',{description:'List workflows, publication state, and up to four active Session quota holders (Run ID, Step ID and last recorded state). Physical health is not inferred from D1.',inputSchema:z.object({}).strict(),annotations:read},async()=>safe(()=>service.list()));
  server.registerTool('workflow_get',{description:'Read one Draft and its active Published Version metadata.',inputSchema:z.object({workflow_id:id}).strict(),annotations:read},async({workflow_id})=>safe(()=>service.get(workflow_id)));
  server.registerTool('workflow_create',{description:'Create a Draft YAML/JSON Workflow without executing it.',inputSchema:z.object({definition:z.string().min(3).max(32768)}).strict(),annotations:write},async({definition})=>safe(()=>service.create(definition)));
  server.registerTool('workflow_update',{description:'Update an editable Draft using its expected revision.',inputSchema:z.object({workflow_id:id,expected_revision:revision,definition:z.string().min(3).max(32768)}).strict(),annotations:write},async({workflow_id,expected_revision,definition})=>safe(()=>service.update(workflow_id,expected_revision,definition)));
- server.registerTool('workflow_validate',{description:'Validate the current Draft; does not publish or run.',inputSchema:z.object({workflow_id:id,revision}).strict(),annotations:externalRead},async({workflow_id,revision})=>safe(()=>service.validate(workflow_id,revision)));
+ server.registerTool('workflow_validate',{description:'Validate either an existing Draft (workflow_id plus revision) or an inline YAML/JSON definition. Returns structured issues and required Publish approvals. Inline validation never creates a Draft, publishes, dispatches or writes D1.',inputSchema:z.object({workflow_id:id.optional(),revision:revision.optional(),definition:z.string().min(3).max(32768).optional()}).strict(),annotations:externalRead},async input=>safe(()=>validateWorkflowTarget(service,input)));
  server.registerTool('workflow_publish',{description:'Publish a validated immutable Plan. MCP calls require approved_operations and accept_target_risks=true; GitHub execution requires approve_heavy_execution=true, and Task/Session Actions also require exact approved_actions grants. Grants are authenticated API assertions, not independently verified human confirmation.',inputSchema:z.object({workflow_id:id,expected_revision:revision,approved_operations:z.array(readonlyOperation).max(32).optional(),accept_target_risks:z.literal(true).optional(),approve_heavy_execution:z.literal(true).optional(),approved_actions:z.array(reviewedAction).max(32).optional()}).strict(),annotations:externalWrite},async({workflow_id,expected_revision,approved_operations,accept_target_risks,approve_heavy_execution,approved_actions})=>safe(()=>service.publish(workflow_id,expected_revision,approved_operations,accept_target_risks,approve_heavy_execution,approved_actions)));
  server.registerTool('workflow_pause',{description:'Block new Run admissions without cancelling active Runs.',inputSchema:z.object({workflow_id:id}).strict(),annotations:write},async({workflow_id})=>safe(()=>service.pause(workflow_id)));
  server.registerTool('workflow_resume',{description:'Allow new Run admissions for a previously paused published Workflow.',inputSchema:z.object({workflow_id:id}).strict(),annotations:write},async({workflow_id})=>safe(()=>service.resume(workflow_id)));
@@ -38,4 +38,27 @@ export function buildMcpServer(env:Env){
  server.registerTool('workflow_status',{description:'Inspect durable Run and Step states; may reconcile a previously admitted Run.',inputSchema:z.object({run_id:id}).strict(),annotations:externalReconcile},async({run_id})=>safe(()=>service.status(run_id)));
  server.registerTool('workflow_result',{description:'Inspect safe Run result and errors; may reconcile a previously admitted Run.',inputSchema:z.object({run_id:id}).strict(),annotations:externalReconcile},async({run_id})=>safe(()=>service.result(run_id)));
  return server;
+}
+
+/** Reject ambiguous validation targets without touching a Draft or D1. */
+export async function validateWorkflowTarget(
+ service:Pick<WorkflowService,'validate'|'validateDefinition'>,
+ input:{workflow_id?:string;revision?:number;definition?:string},
+){
+ const hasId=input.workflow_id!==undefined;
+ const hasRevision=input.revision!==undefined;
+ const hasDefinition=input.definition!==undefined;
+ const invalid=(path:string,message:string)=>({
+   valid:false as const,issues:[{
+     code:'invalid_validate_target',path,message,
+     suggestion:'Provide either workflow_id with revision, or definition, never both.',
+   }],
+ });
+ if(hasDefinition && (hasId||hasRevision))
+   return invalid('/','Inline definition cannot be combined with a Draft ID or revision.');
+ if(hasDefinition) return service.validateDefinition(input.definition!);
+ if(hasId && hasRevision) return service.validate(input.workflow_id!,input.revision!);
+ if(hasId) return invalid('/revision','revision is required with workflow_id.');
+ if(hasRevision) return invalid('/workflow_id','workflow_id is required with revision.');
+ return invalid('/','Provide a Draft ID and revision, or an inline definition.');
 }
