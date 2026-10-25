@@ -53,11 +53,30 @@ function plainText(value: string): string {
     .replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, '')
     .replace(/<[^>]*>/g, ' ').replace(/&(?:nbsp|amp|lt|gt|quot);/g, ' ').slice(0, 40000);
 }
+function gmailParts(payload: any): any[] {
+  // Gmail MessagePart.parts is recursive (e.g. mixed -> alternative -> plain).
+  // Bound traversal of untrusted MIME trees, without parsing or executing HTML.
+  const result: any[] = [];
+  const pending: { part: any; depth: number }[] = [{ part: payload, depth: 0 }];
+  while (pending.length) {
+    if (result.length >= 128) fail('result_too_large');
+    const { part, depth } = pending.pop()!;
+    if (!part || typeof part !== 'object') continue;
+    result.push(part);
+    const children = Array.isArray(part.parts) ? part.parts : [];
+    if ((depth >= 16 && children.length) ||
+      result.length + pending.length + children.length > 128) fail('result_too_large');
+    for (let i = children.length - 1; i >= 0; i--)
+      pending.push({ part: children[i], depth: depth + 1 });
+  }
+  return result;
+}
 function gmailMessage(account: MailAccount, msg: any): Message {
-  const parts = [msg.payload, ...(msg.payload?.parts ?? [])].filter(Boolean);
+  const parts = gmailParts(msg.payload);
   const headers = msg.payload?.headers ?? [];
   const h = (name: string): string => (headers.find((x: any) => x.name?.toLowerCase() === name)?.value ?? '').slice(0, 1000);
-  const text = parts.find((p: any) => p.mimeType === 'text/plain')?.body?.data;
+  const text = parts.find((p: any) => p.mimeType === 'text/plain' && !p.filename &&
+    typeof p.body?.data === 'string')?.body?.data;
   const replyAddress = h('reply-to') || h('from');
   const attachments = parts.filter((p: any) => p.filename && p.body?.attachmentId)
     .map((p: any) => ({ id: p.body.attachmentId as string, filename: String(p.filename).slice(0, 200), size: Number(p.body.size) || 0 }));
