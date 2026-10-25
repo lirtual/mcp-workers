@@ -23,11 +23,10 @@ const hook=registerHooks({resolve(specifier,context,next){
   if(specifier==='cloudflare:workers')return {url:'data:text/javascript,export class WorkflowEntrypoint { constructor(ctx,env){this.env=env;} }',shortCircuit:true};
   return next(specifier,context);
 }});
-const { WorkflowRunner, WorkflowOrchestrator }=await import('../src/runner.ts');
+const { WorkflowOrchestrator }=await import('../src/runner.ts');
 hook.deregister();
 
-test('WorkflowOrchestrator retains exact native runner behavior and old export identity',()=>{
-  assert.equal(WorkflowOrchestrator,WorkflowRunner);
+test('WorkflowOrchestrator is the only native Workflow implementation export',()=>{
   assert.equal(WorkflowOrchestrator.name,'WorkflowOrchestrator');
 });
 
@@ -80,7 +79,7 @@ function setup(t:test.TestContext){
     return service.start(w.workflow_id,inputs);
   }
   async function run(run_id:string){
-    await new WorkflowRunner({} as ExecutionContext,env).run({payload:{run_id}} as WorkflowEvent<{run_id:string}>,
+    await new WorkflowOrchestrator({} as ExecutionContext,env).run({payload:{run_id}} as WorkflowEvent<{run_id:string}>,
       {do:async(_name:unknown,_options:unknown,callback:()=>Promise<unknown>)=>callback()} as unknown as WorkflowStep);
   }
   return {service,admit,run,env,sqlite};
@@ -639,7 +638,7 @@ test('GitHub published Plan dispatches one confirmed Job, waits outside step.do 
       return {payload:{attemptId:row.attempt_id,callbackId:receiptId}};
     },
   };
-  await new WorkflowRunner({} as ExecutionContext,env).run(
+  await new WorkflowOrchestrator({} as ExecutionContext,env).run(
     {payload:{run_id:accepted.run_id}} as WorkflowEvent<{run_id:string}>,
     orchestration as unknown as WorkflowStep,
   );
@@ -661,7 +660,7 @@ test('a published GitHub Run without executor credentials cannot dispatch',async
   const original=globalThis.fetch;let attempts=0;
   globalThis.fetch=(async()=>{attempts++;throw Error('no outbound allowed');}) as typeof fetch;
   try{
-    await new WorkflowRunner({} as ExecutionContext,env).run(
+    await new WorkflowOrchestrator({} as ExecutionContext,env).run(
       {payload:{run_id:accepted.run_id}} as WorkflowEvent<{run_id:string}>,
       {do:async(_name:unknown,_options:unknown,fn:()=>Promise<unknown>)=>fn()} as unknown as WorkflowStep,
     );
@@ -690,7 +689,7 @@ test('GitHub dispatch HTTP ambiguity is terminally uncertain and never re-dispat
   let outbound=0;
   const oldFetch=globalThis.fetch;
   globalThis.fetch=(async()=>{outbound++;return new Response(null,{status:503});}) as typeof fetch;
-  const runner=new WorkflowRunner({} as ExecutionContext,env);
+  const runner=new WorkflowOrchestrator({} as ExecutionContext,env);
   const event={payload:{run_id:accepted.run_id}} as WorkflowEvent<{run_id:string}>;
   const handler={do:async(_n:unknown,_opts:unknown,fn:()=>Promise<unknown>)=>fn()};
   try{
@@ -772,7 +771,7 @@ test('GitHub lost wake event recovers from durable D1 receipt, without a second 
     },
   };
   try{
-    await new WorkflowRunner({} as ExecutionContext,env).run(
+    await new WorkflowOrchestrator({} as ExecutionContext,env).run(
       {payload:{run_id:admitted.run_id}} as WorkflowEvent<{run_id:string}>,
       workflow as unknown as WorkflowStep);
   }finally{globalThis.fetch=oldFetch;}
@@ -813,7 +812,7 @@ test('GitHub missing callback remains indeterminate after bounded waits, never r
     },
   };
   try{
-    await new WorkflowRunner({} as ExecutionContext,env).run(
+    await new WorkflowOrchestrator({} as ExecutionContext,env).run(
       {payload:{run_id:admitted.run_id}} as WorkflowEvent<{run_id:string}>,
       wf as unknown as WorkflowStep);
   }finally{globalThis.fetch=original;}
@@ -853,7 +852,7 @@ test('GitHub admitted Run retains immutable heavy Plan across republish to an Wo
   const previousFetch=globalThis.fetch;
   globalThis.fetch=(async()=>{external++;throw Error('no external dispatch');}) as typeof fetch;
   try{
-    const runner=new WorkflowRunner({} as ExecutionContext,env);
+    const runner=new WorkflowOrchestrator({} as ExecutionContext,env);
     const steps={do:async(_n:unknown,_opts:unknown,fn:()=>Promise<unknown>)=>fn()} as unknown as WorkflowStep;
     await runner.run({payload:{run_id:oldRun.run_id}} as WorkflowEvent<{run_id:string}>,steps);
     await runner.run({payload:{run_id:newRun.run_id}} as WorkflowEvent<{run_id:string}>,steps);
@@ -884,7 +883,7 @@ test('a legacy Published Workflow Plan tampered to add github.run cannot gain a 
   const original=globalThis.fetch;
   globalThis.fetch=(async()=>{outbound++;throw Error('unauthorized request');}) as typeof fetch;
   try{
-    await new WorkflowRunner({} as ExecutionContext,env).run(
+    await new WorkflowOrchestrator({} as ExecutionContext,env).run(
       {payload:{run_id:run.run_id}} as WorkflowEvent<{run_id:string}>,
       {do:async(_n:unknown,_opts:unknown,fn:()=>Promise<unknown>)=>fn()} as unknown as WorkflowStep);
   }finally{globalThis.fetch=original;}

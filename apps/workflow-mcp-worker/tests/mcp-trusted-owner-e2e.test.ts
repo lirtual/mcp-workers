@@ -21,7 +21,7 @@ const hook=registerHooks({resolve(specifier,context,next){
   };
   return next(specifier,context);
 }});
-const [{default:ownerWorker},{WorkflowRunner}]=await Promise.all([
+const [{default:ownerWorker},{WorkflowOrchestrator}]=await Promise.all([
   import('../src/index.ts'),import('../src/runner.ts'),
 ]);
 hook.deregister();
@@ -137,7 +137,7 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
       workflow_id:created.workflow_id,inputs:{message:'approved trusted echo'},
       idempotency_key:'trusted-owner-e2e-'+created.workflow_id,
     });
-    await new WorkflowRunner({} as ExecutionContext,env).run({
+    await new WorkflowOrchestrator({} as ExecutionContext,env).run({
       payload:{run_id:run.run_id},
     } as WorkflowEvent<{run_id:string}>, {
       do:async(_name:unknown,_options:unknown,fn:()=>Promise<unknown>)=>fn(),
@@ -155,7 +155,7 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     const crossEnvironment=await call('workflow_run',{
       workflow_id:created.workflow_id,inputs:{message:'blocked wrong Portal'},
     });
-    await new WorkflowRunner({} as ExecutionContext,env).run({
+    await new WorkflowOrchestrator({} as ExecutionContext,env).run({
       payload:{run_id:crossEnvironment.run_id},
     } as WorkflowEvent<{run_id:string}>,{
       do:async(_name:unknown,_options:unknown,fn:()=>Promise<unknown>)=>fn(),
@@ -171,7 +171,7 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     const noCredential=await call('workflow_run',{
       workflow_id:created.workflow_id,inputs:{message:'no portal identity'},
     });
-    await new WorkflowRunner({} as ExecutionContext,env).run({
+    await new WorkflowOrchestrator({} as ExecutionContext,env).run({
       payload:{run_id:noCredential.run_id},
     } as WorkflowEvent<{run_id:string}>,{
       do:async(_name:unknown,_options:unknown,fn:()=>Promise<unknown>)=>fn(),

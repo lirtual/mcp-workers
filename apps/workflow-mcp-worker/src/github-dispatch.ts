@@ -1,7 +1,7 @@
 /**
  * GitHub registered GitHub execution dispatch for the fixed Workflow CI verification capability.
  *
- * WorkflowRunner calls this with a reviewed server-side executor config and
+ * WorkflowOrchestrator calls this with a reviewed server-side executor config and
  * a persisted logical Attempt; no repository, workflow, ref or credential
  * can come from a Draft or Run input.
  * The GitHub Actions management MCP's broad multi-PAT authority is not used.
