@@ -1311,7 +1311,17 @@ test('valid reviewed item-typed Task reaches one dispatch checkpoint after bound
    checkpoints.push(name);
    if(name.startsWith('github-action-dispatch-'))
     return {attemptId:'synthetic-test-only',status:'rejected'};
-   try{return await callback();}catch(error){
+   try{
+    const result=await callback();
+    if(name==='workflow-each-snapshot'){
+      const snapshot=result as {items:Array<{output:unknown}>};
+      assert.equal(Object.getPrototypeOf(snapshot.items[0]!.output),Object.prototype,
+        'native checkpoint payload must use a plain JSON record');
+      assert.deepEqual(snapshot.items.map(entry=>entry.output),[
+        {outcome:'success'},{outcome:'success'}]);
+    }
+    return result;
+   }catch(error){
     throw Error('checkpoint '+name+': '+String(error));
    }
   }} as unknown as WorkflowStep);
