@@ -1,11 +1,12 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { decrypt, encrypt, sha256 } from './crypto.ts';
+import { validateAttachmentInputs, resolveAttachments } from './attachments.ts';
 import { fail, MailError } from './types.ts';
 import type { Env, MailAccount } from './types.ts';
 import {
   attachmentGet, draftCreate, draftUpdate, getMail, listFolders, markMail, moveMail,
-  providerRequest, searchMail, sendMail, threadGet, trashMail,
+  providerRequest, replyGmail, forwardGmail, graphReplyForwardWithFiles, searchMail, sendMail, threadGet, trashMail,
 } from './providers.ts';
 
 const id = z.string().min(1).max(512).regex(/^[\x21-\x7e]+$/);
@@ -13,6 +14,17 @@ const accountId = z.string().uuid();
 const to = z.array(z.email().max(320)).min(1).max(20);
 const subject = z.string().max(500);
 const body = z.string().max(100000);
+const attachment = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('inline'),
+    filename: z.string().min(1).max(128),
+    data_base64: z.string().max(7 * 1024 * 1024),
+    mime_type: z.string().max(100).optional(),
+  }).strict(),
+  z.object({ type: z.literal('mailbox'),
+    filename: z.string().min(1).max(128), message_id: id, attachment_id: id,
+  }).strict(),
+]);
+const attachmentsSchema = z.array(attachment).max(5).optional();
 const read = { readOnlyHint: true, idempotentHint: true, openWorldHint: true };
 const write = { readOnlyHint: false, idempotentHint: false, openWorldHint: true };
 const replies = (obj: unknown, isError = false) => {
@@ -44,9 +56,9 @@ function capabilities(account: MailAccount) {
   const api = account.provider === 'gmail' || account.provider === 'graph';
   return {
     account_id: account.account_id, provider: account.provider, status: account.status,
-    search: api, get: api, thread: account.provider === 'gmail', folders: api,
+    search: api, get: api, thread: api, folders: api,
     attachment_get: api, draft_create: api, draft_update: api,
-    send: api, reply: account.provider === 'graph', forward: account.provider === 'graph',
+    send: api, send_attachments: api, reply: api, forward: api,
     mark_read: api, move: account.provider === 'graph', trash: api,
     permanent_delete: false, bulk_write: false,
   };
@@ -129,7 +141,8 @@ export async function fencedSend(
       .bind(outcome.status, outcome.reference ?? null, account.account_id, requestId, 'indeterminate').run();
     return { account_id: account.account_id, request_id: requestId, ...outcome, duplicate: false };
   } catch (err) {
-    if (err instanceof MailError && (err.code === 'invalid_recipients' || err.code === 'invalid_mail_header' || err.code === 'unsupported')) {
+    if (err instanceof MailError && ['invalid_recipients','invalid_mail_header','invalid_attachment',
+      'invalid_attachment_name','oversized_attachment','unsupported'].includes(err.code)) {
       await env.DB.prepare('UPDATE send_attempts SET status=? WHERE account_id=? AND request_id=? AND status=?')
         .bind('failed', account.account_id, requestId, 'indeterminate').run();
       throw err;
@@ -166,7 +179,7 @@ export function buildMcpServer(env: Env): McpServer {
     inputSchema: z.object({ account_id: accountId, message_id: id }).strict(), annotations: read,
   }, async ({ account_id, message_id }) => safe(async () => getMail(env, await getAccount(env, account_id), message_id)));
   server.registerTool('thread_get', {
-    description: 'Read a native conversation when supported (Gmail); no inferred subject threads.',
+    description: 'Read native Gmail thread or Graph conversationId; never infer threads from subject.',
     inputSchema: z.object({ account_id: accountId, thread_id: id }).strict(), annotations: read,
   }, async ({ account_id, thread_id }) => safe(async () => threadGet(env, await getAccount(env, account_id), thread_id)));
   server.registerTool('folder_list', {
@@ -179,31 +192,46 @@ export function buildMcpServer(env: Env): McpServer {
   }, async ({ account_id, message_id, attachment_id }) => safe(async () => attachmentGet(env, await getAccount(env, account_id), message_id, attachment_id)));
   server.registerTool('draft_create', {
     description: 'Create a provider-native draft in a selected source account.',
-    inputSchema: z.object({ account_id: accountId, to, subject, body }).strict(), annotations: write,
-  }, async ({ account_id, to, subject, body }) => safe(async () => draftCreate(env, await getAccount(env, account_id), to, subject, body)));
+    inputSchema: z.object({ account_id: accountId, to, subject, body, attachments: attachmentsSchema }).strict(), annotations: write,
+  }, async ({ account_id, to, subject, body, attachments }) => safe(async () => {
+    validateAttachmentInputs(attachments ?? []);
+    return draftCreate(env, await getAccount(env, account_id), to, subject, body, attachments ?? []);
+  }));
   server.registerTool('draft_update', {
     description: 'Update one provider-native draft by its stable reference; never creates an inferred draft.',
-    inputSchema: z.object({ account_id: accountId, draft_id: id, to, subject, body }).strict(), annotations: write,
-  }, async ({ account_id, draft_id, to, subject, body }) => safe(async () => draftUpdate(env, await getAccount(env, account_id), draft_id, to, subject, body)));
+    inputSchema: z.object({ account_id: accountId, draft_id: id, to, subject, body, attachments: attachmentsSchema }).strict(), annotations: write,
+  }, async ({ account_id, draft_id, to, subject, body, attachments }) => safe(async () => {
+    validateAttachmentInputs(attachments ?? []);
+    return draftUpdate(env, await getAccount(env, account_id), draft_id, to, subject, body, attachments ?? []);
+  }));
   server.registerTool('mail_send', {
     description: 'Send one message with a durable request_id fence. Timeout may mean unknown delivery; never resend with a fresh ID.',
     inputSchema: z.object({
       account_id: accountId, request_id: z.string().min(8).max(128), to, subject, body,
+      attachments: attachmentsSchema,
     }).strict(), annotations: write,
-  }, async ({ account_id, request_id, to, subject, body }) => safe(async () => {
+  }, async ({ account_id, request_id, to, subject, body, attachments }) => safe(async () => {
+    const files = attachments ?? [];
+    validateAttachmentInputs(files);
     const acc = await getAccount(env, account_id);
-    return fencedSend(env, acc, request_id, { op: 'send', to, subject, body },
-      () => sendMail(env, acc, to, subject, body));
+    return fencedSend(env, acc, request_id, { op: 'send', to, subject, body, attachments: files },
+      () => sendMail(env, acc, to, subject, body, files));
   }));
   server.registerTool('mail_reply', {
     description: 'Native Microsoft Graph reply for one exact message; sends externally, fenced by request_id.',
     inputSchema: z.object({
       account_id: accountId, message_id: id, request_id: z.string().min(8).max(128), body,
+      attachments: attachmentsSchema,
     }).strict(), annotations: write,
-  }, async ({ account_id, message_id, request_id, body }) => safe(async () => {
+  }, async ({ account_id, message_id, request_id, body, attachments }) => safe(async () => {
+    const items = attachments ?? [];
+    validateAttachmentInputs(items);
     const acc = await getAccount(env, account_id);
-    if (acc.provider !== 'graph') fail('unsupported');
-    return fencedSend(env, acc, request_id, { op: 'reply', message_id, body }, async () => {
+    if (acc.provider !== 'graph' && acc.provider !== 'gmail') fail('unsupported');
+    return fencedSend(env, acc, request_id, { op: 'reply', message_id, body, attachments: items }, async () => {
+      const files = await resolveAttachments(items, (msg, attachment) => attachmentGet(env, acc, msg, attachment));
+      if (acc.provider === 'gmail') return replyGmail(env, acc, message_id, body, files);
+      if (files.length) return graphReplyForwardWithFiles(env, acc, 'reply', message_id, body, files);
       await providerRequest(env, acc, '/messages/' + encodeURIComponent(message_id) + '/reply', {
         method: 'POST', headers: { 'content-type': 'application/json', Prefer: 'IdType="ImmutableId"' },
         body: JSON.stringify({ comment: body }),
@@ -215,11 +243,17 @@ export function buildMcpServer(env: Env): McpServer {
     description: 'Native Microsoft Graph forward for one message, exact recipients and a fenced request_id.',
     inputSchema: z.object({
       account_id: accountId, message_id: id, request_id: z.string().min(8).max(128), to, body,
+      attachments: attachmentsSchema,
     }).strict(), annotations: write,
-  }, async ({ account_id, message_id, request_id, to, body }) => safe(async () => {
+  }, async ({ account_id, message_id, request_id, to, body, attachments }) => safe(async () => {
+    const items = attachments ?? [];
+    validateAttachmentInputs(items);
     const acc = await getAccount(env, account_id);
-    if (acc.provider !== 'graph') fail('unsupported');
-    return fencedSend(env, acc, request_id, { op: 'forward', message_id, to, body }, async () => {
+    if (acc.provider !== 'graph' && acc.provider !== 'gmail') fail('unsupported');
+    return fencedSend(env, acc, request_id, { op: 'forward', message_id, to, body, attachments: items }, async () => {
+      const files = await resolveAttachments(items, (msg, attachment) => attachmentGet(env, acc, msg, attachment));
+      if (acc.provider === 'gmail') return forwardGmail(env, acc, message_id, to, body, files);
+      if (files.length) return graphReplyForwardWithFiles(env, acc, 'forward', message_id, body, files, to);
       await providerRequest(env, acc, '/messages/' + encodeURIComponent(message_id) + '/forward', {
         method: 'POST', headers: { 'content-type': 'application/json', Prefer: 'IdType="ImmutableId"' },
         body: JSON.stringify({

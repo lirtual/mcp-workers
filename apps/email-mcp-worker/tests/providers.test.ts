@@ -1,0 +1,126 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { encrypt } from '../src/crypto.ts';
+import { searchMail, validateGraphNextLink } from '../src/providers.ts';
+const NEXT = 'https://graph.microsoft.com/v1.0/me/messages?%24skip=41&%24top=10';
+test('Graph nextLink must remain in same mailbox and preserve upstream continuation', () => {
+  assert.equal(validateGraphNextLink(NEXT), '/messages?%24skip=41&%24top=10');
+  for (const value of [
+    'https://evil.example/v1.0/me/messages?$skip=41',
+    'https://graph.microsoft.com.evil.example/v1.0/me/messages?$skip=41',
+    'https://graph.microsoft.com/v1.0/users/other/messages?$skip=41',
+    'http://graph.microsoft.com/v1.0/me/messages?$skip=41',
+    'https://graph.microsoft.com/v1.0/me/messages?%24top=10',
+    '//evil.example/v1.0/me/messages?$skip=41',
+  ]) assert.throws(() => validateGraphNextLink(value), /invalid_cursor/, value);
+});
+test('Graph search uses untouched upstream nextLink without calculating skip', async () => {
+  const root = Buffer.alloc(32, 3).toString('base64');
+  const env = { MAIL_ENCRYPTION_KEY: root } as any;
+  const aid = crypto.randomUUID();
+  const secret = await encrypt(env, 'account:' + aid + ':graph', { access_token: 'token' });
+  const account = {
+    account_id: aid, provider: 'graph', address: 'owner@example.test',
+    status: 'active', credential_ciphertext: secret.ciphertext,
+    credential_key_id: secret.keyId, token_expires_at: Date.now() / 1000 + 3600,
+  } as any;
+  const previous = globalThis.fetch;
+  const seen: string[] = [];
+  try {
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      seen.push(url);
+      assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer token');
+      assert.equal(init?.redirect, 'error');
+      if (seen.length === 1) return Response.json({
+        value: [{ id:'first', subject:'first', receivedDateTime:'2026-10-25T00:00:00Z' }],
+        '@odata.nextLink': NEXT,
+      });
+      return Response.json({ value: [{ id:'second', subject:'second', receivedDateTime:'2026-10-24T00:00:00Z' }] });
+    }) as typeof fetch;
+    const first = await searchMail(env, account, 'hello');
+    assert.equal(first.next, '/messages?%24skip=41&%24top=10');
+    assert.equal(first.messages[0]?.id, 'first');
+    const second = await searchMail(env, account, 'hello', first.next);
+    assert.equal(second.messages[0]?.id, 'second');
+    assert.equal(seen[1], NEXT);
+  } finally { globalThis.fetch = previous; }
+});
+test('Gmail reply preserves native thread and RFC Message-ID relations; forward does not fabricate a thread', async () => {
+  const { replyGmail, forwardGmail } = await import('../src/providers.ts');
+  const root = Buffer.alloc(32, 3).toString('base64');
+  const env = { MAIL_ENCRYPTION_KEY: root } as any;
+  const accountId = crypto.randomUUID();
+  const secret = await encrypt(env, 'account:' + accountId + ':gmail', { access_token: 'token' });
+  const account = {
+    account_id: accountId, provider: 'gmail', address: 'me@example.test', status: 'active',
+    credential_ciphertext: secret.ciphertext, credential_key_id: secret.keyId,
+    token_expires_at: Date.now() / 1000 + 3600,
+  } as any;
+  const original = {
+    id: 'source123', threadId: 'thread123', internalDate: String(Date.now()),
+    snippet: 'Hello', payload: {
+      headers: [
+        { name: 'Message-ID', value: '<abc123@sender.test>' },
+        { name: 'From', value: 'Someone <sender@example.test>' },
+        { name: 'Subject', value: 'Subject 123' },
+      ],
+      parts: [{ mimeType: 'text/plain', body: { data: Buffer.from('Original body').toString('base64url') } }],
+    },
+  };
+  const oldFetch = globalThis.fetch;
+  const sent: any[] = [];
+  try {
+    globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+      const target = String(url);
+      if (target.endsWith('/messages/source123?format=full')) return Response.json(original);
+      if (target.endsWith('/messages/send')) {
+        const body = JSON.parse(String(init?.body));
+        sent.push({ ...body, mime: Buffer.from(body.raw, 'base64url').toString('utf8') });
+        return Response.json({ id: 'new-message-' + sent.length });
+      }
+      throw new Error('unexpected route ' + target);
+    }) as typeof fetch;
+    const reply = await replyGmail(env, account, 'source123', 'Thanks');
+    assert.equal(reply.status, 'submitted');
+    assert.equal(sent[0].threadId, 'thread123');
+    assert.match(sent[0].mime, /In-Reply-To: <abc123@sender\.test>\r\nReferences: <abc123@sender\.test>/);
+    assert.match(sent[0].mime, /To: sender@example\.test/);
+    assert.match(sent[0].mime, /\r\n\r\n/);
+    const forward = await forwardGmail(env, account, 'source123', ['target@example.test'], 'For review');
+    assert.equal(forward.status, 'submitted');
+    assert.equal(sent[1].threadId, undefined);
+    assert.match(sent[1].mime, /To: target@example\.test/);
+    assert.ok(sent[1].mime.includes(Buffer.from('Fwd: Subject 123').toString('base64')));
+  } finally { globalThis.fetch = oldFetch; }
+});
+test('Graph thread_get filters native conversationId and marks truncation', async () => {
+  const { threadGet } = await import('../src/providers.ts');
+  const env = { MAIL_ENCRYPTION_KEY: Buffer.alloc(32, 4).toString('base64') } as any;
+  const accountId = crypto.randomUUID();
+  const secret = await encrypt(env, 'account:' + accountId + ':graph', { access_token: 'token' });
+  const account = {
+    account_id: accountId, provider: 'graph', address: 'owner@example.test',
+    status: 'active', credential_ciphertext: secret.ciphertext,
+    credential_key_id: secret.keyId, token_expires_at: Date.now() / 1000 + 3600,
+  } as any;
+  const prior = globalThis.fetch;
+  try {
+    globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+      const parsed = new URL(String(url));
+      assert.equal(parsed.origin, 'https://graph.microsoft.com');
+      assert.equal(parsed.pathname, '/v1.0/me/messages');
+      assert.equal(parsed.searchParams.get('$filter'), "conversationId eq 'native-conversation'");
+      assert.equal(new Headers(init?.headers).get('Prefer'), 'IdType="ImmutableId"');
+      return Response.json({
+        value: [{ id: 'message1', conversationId: 'native-conversation', subject: 'Hello', receivedDateTime: '2026-10-25T01:00:00Z' }],
+        '@odata.nextLink': 'https://graph.microsoft.com/v1.0/me/messages?$skip=31',
+      });
+    }) as typeof fetch;
+    const result = await threadGet(env, account, 'native-conversation');
+    assert.equal(result.thread_id, 'native-conversation');
+    assert.equal(result.messages.length, 1);
+    assert.equal(result.messages[0].account_id, accountId);
+    assert.equal(result.truncated, true);
+  } finally { globalThis.fetch = prior; }
+});

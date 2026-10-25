@@ -111,3 +111,37 @@ test('D1-shaped send fence persists unknown result across duplicate request', as
   assert.equal(count, 1);
   sqlite.close();
 });
+
+test('owner key rotation re-encrypts OAuth session and account, verifies readback and is resumable', async () => {
+  const { sqlite, env } = fixture();
+  const old = env.MAIL_ENCRYPTION_KEY;
+  const state = extractState(await beginOAuth(env, 'gmail', 'access-sub'));
+  const accountId = await completeOAuth(env, state, 'code-for-account', 'access-sub', makeFetch());
+  const pendingSession = extractState(await beginOAuth(env, 'gmail', 'access-sub'));
+  assert.ok(pendingSession);
+  const newKey = Buffer.alloc(32, 12).toString('base64');
+  const rotatedEnv = { ...env, MAIL_KEY_ID: '2', MAIL_ENCRYPTION_KEY: newKey,
+    MAIL_PREVIOUS_KEY_ID: '1', MAIL_ENCRYPTION_PREVIOUS_KEY: old };
+  const { rotateCredentials } = await import('../src/rotation.ts');
+  const outcome = await rotateCredentials(rotatedEnv);
+  assert.deepEqual(outcome, { rotated: 2, pending: 0 });
+  assert.deepEqual(await rotateCredentials(rotatedEnv), { rotated: 0, pending: 0 });
+  const row = sqlite.prepare('SELECT credential_ciphertext,credential_key_id FROM mail_accounts WHERE account_id=?').get(accountId) as any;
+  assert.equal(row.credential_key_id, '2');
+  const { decrypt } = await import('../src/crypto.ts');
+  const noOldKey = { ...rotatedEnv, MAIL_PREVIOUS_KEY_ID: undefined, MAIL_ENCRYPTION_PREVIOUS_KEY: undefined };
+  const unsealed = await decrypt<{ access_token: string }>(noOldKey, 'account:' + accountId + ':gmail',
+    row.credential_ciphertext, row.credential_key_id);
+  assert.equal(unsealed.access_token, 'unit-test-token');
+  await completeOAuth(noOldKey, pendingSession, 'post-rotation', 'access-sub', makeFetch('second@example.test'));
+  assert.equal((sqlite.prepare('SELECT count(*) AS n FROM mail_accounts').get() as any).n, 2);
+  sqlite.close();
+});
+
+test('rotation refuses to remove unavailable old key and does not alter existing records', async () => {
+  const { sqlite, env } = fixture();
+  const { rotateCredentials } = await import('../src/rotation.ts');
+  await assert.rejects(() => rotateCredentials(env), /rotation_not_configured/);
+  assert.equal((sqlite.prepare('SELECT COUNT(*) AS n FROM mail_accounts').get() as any).n, 0);
+  sqlite.close();
+});

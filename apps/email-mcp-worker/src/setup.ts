@@ -1,5 +1,6 @@
 import { csrfCookie, validateCsrf, verifyAccess } from './access.ts';
 import { nonce } from './crypto.ts';
+import { rotateCredentials } from './rotation.ts';
 import { beginOAuth, completeOAuth, revokeIfSupported } from './oauth.ts';
 import { listAccounts } from './tools.ts';
 import { fail, MailError, SETUP_HOST } from './types.ts';
@@ -60,7 +61,10 @@ export async function handleSetup(request: Request, env: Env, requestFetch: type
         '<input type="hidden" name="csrf" value="' + csrf + '">' +
         '<select name="provider"><option value="gmail">Gmail</option><option value="graph">Microsoft Graph</option></select>' +
         '<button type="submit">Authorize mailbox</button></form></fieldset>' +
-        '<p>Generic IMAP/SMTP onboarding is disabled until Workers-native TLS and destination filtering pass real integration tests.</p>',
+        '<p>Generic IMAP/SMTP onboarding is disabled until Workers-native TLS and destination filtering pass real integration tests.</p>' +
+        '<fieldset><legend>Credential key rotation</legend><form method="post" action="/setup/rotate">' +
+        '<input type="hidden" name="csrf" value="' + csrf + '">' +
+        '<button type="submit">Re-encrypt with current key</button></form></fieldset>',
       csrfCookie(csrf));
     }
     if (url.pathname === '/setup/oauth/start' && request.method === 'POST') {
@@ -93,6 +97,14 @@ export async function handleSetup(request: Request, env: Env, requestFetch: type
       return new Response(null, { status: 303, headers: {
         location: '/setup', 'cache-control': 'no-store',
       } });
+    }
+    if (url.pathname === '/setup/rotate' && request.method === 'POST') {
+      const data = await formValues(request);
+      validateCsrf(request, data.get('csrf') ?? '');
+      const result = await rotateCredentials(env);
+      return securedHtml('<h1>Key rotation readback</h1><p>Rotated: ' + result.rotated +
+        ', remaining: ' + result.pending + '.</p><p>Keep the previous key until remaining reaches zero and provider tests pass.</p>' +
+        '<p><a href="/setup">Back to accounts</a></p>');
     }
     if (url.pathname === '/setup/remove' && request.method === 'POST') {
       const data = await formValues(request);

@@ -13,13 +13,19 @@ DO NOT deploy this candidate to production.
   expiry and owner check for account setup; host and CSRF enforcement.
 - OAuth PKCE/hashed single-use state; Gmail and Graph authorization/reconnection; encrypted
   on-demand token lifecycle and local account removal.
-- Gmail and Graph native search/read/folders/drafts/send/mark/trash. Gmail
-  native threads and Graph reply/forward/move.
+- Gmail and Graph native search/read/folders/drafts/send/mark/trash, Gmail
+  native reply/forward and Graph native conversation lookup, reply/forward/move.
+- Bounded 5 MiB total per-operation attachments for send, drafts, reply and
+  forward: validated inline Base64 or stable same-mailbox references only.
+  Gmail uses safe multipart MIME; Graph uses direct file attachment below 3 MB
+  and trusted upload sessions for larger files; no arbitrary URL downloads.
+- Owner-only incremental credential key re-encryption with independently verified
+  decrypt/readback and concurrency-safe conditional updates.
 - Durable send fence; ambiguous sends never automatically replay. Bounded
   per-mailbox search (3 concurrent, max 8 accounts) with failure indicators.
 
-NOT SUPPORTED: IMAP/SMTP, Graph native conversation read, Gmail reply/forward,
-Gmail folder move, send attachments and Graph large attachment upload sessions.
+NOT SUPPORTED: IMAP/SMTP, Gmail label-based folder moves, provider-specific
+advanced mailbox administration, and verified cross-provider live integration.
 Do not claim full Spec #279 acceptance from current code.
 
 ## Configuration and release gates
@@ -39,14 +45,15 @@ MAIL_PREVIOUS_KEY_ID, MICROSOFT_TENANT. No credentials in Git/source/D1.
 
 Keep former key in MAIL_ENCRYPTION_PREVIOUS_KEY and former key ID in
 MAIL_PREVIOUS_KEY_ID when replacing MAIL_ENCRYPTION_KEY and MAIL_KEY_ID.
-Old accounts stay decryptable, but verified readback/re-encryption is not
-implemented. NEVER retire the old key until migration verification exists.
+The owner setup includes bounded, resumable account/OAuth-session re-encryption
+and readback. NEVER retire the old key until all remaining records are migrated
+and verified in the target environment.
 If all copies of the key are lost, reauthorize accounts; no plaintext backup.
 
 ## Remaining release blockers
 
-IMAP/SMTP SSRF-resistant native TLS and live integration; attachment send;
-real provider OAuth/refresh/revoke and error injection; dedicated mailbox
-end-to-end tests; 15-tool MCP inventory contract; D1 migrations and binding;
+IMAP/SMTP Workers-native TLS and DNS-rebinding-resistant live integration; real provider
+OAuth/refresh/revoke, Graph upload-session and MIME interoperability testing;
+dedicated mailbox end-to-end tests; D1 migrations and binding;
 non-bypassable Access setup/OTP; Portal discovery; independent security review.
 All deployment steps require separate release authorization.
