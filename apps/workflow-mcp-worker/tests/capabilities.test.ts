@@ -32,7 +32,7 @@ test('overview matches the compiler, exposes only truthful ingress and needs no 
 
 test('every advertised compiler example really compiles and has a matching digest',async()=>{
   for(const id of ['trigger.manual','trigger.cron','trigger.webhook','trigger.github_event','action.result.emit','action.mcp.call',
-    'flow.static_dag','flow.condition','flow.branch_join']){
+    'flow.static_dag','flow.condition','flow.branch_join','flow.repeat_fixed']){
     const result=await workflowCapabilities(id==='action.mcp.call'?portalEnv:env,id,
       async()=>({availability:'verified_contract',tools:[{
         tool:'ima_list_notebooks',endpoint:PRODUCTION_PORTAL_ENDPOINT,scope:'read',
@@ -107,4 +107,17 @@ test('GitHub detail reuses existing allowlist and does not need token for empty 
   assert.equal((await workflowCapabilities(env,'action.mcp.call')).availability,'unavailable');
   const unknown=await workflowCapabilities(env,'legacy.tsrv');
   assert.equal(unknown.availability,'unknown');
+});
+
+test('fixed repeat Agent example and schema compile into only static steps',async()=>{
+  const result=await workflowCapabilities(env,'flow.repeat_fixed');
+  assert.equal(result.availability,'supported');
+  const schema=WORKFLOW_DEFINITION_SCHEMA.properties.steps.items.properties.repeat;
+  assert.equal(schema.properties.count.maximum,8);
+  const sample=(result.example as {definition:unknown;digest:string}).definition;
+  const checked=await compilePlan(sample);
+  assert.equal(checked.digest,(result.example as {digest:string}).digest);
+  assert.deepEqual(checked.plan.steps.map(s=>s.id).sort(),
+    ['emit','emit__r1','emit__r2','summary'].sort());
+  assert.equal(checked.plan.steps.every(s=>!Object.hasOwn(s,'repeat')),true);
 });
