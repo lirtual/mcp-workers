@@ -135,11 +135,14 @@ test('GitHub Task dynamic template schema and capability remain scoped',async()=
  assert.equal(detail.availability,'no_verified_published_task');
  assert.equal((detail.template_policy as {allowed_action:string}).allowed_action,'github.run');
  assert.equal((detail.template_policy as {inputs:string}).inputs,'literal_only');
- const items=WORKFLOW_DEFINITION_SCHEMA.properties.steps.items.properties.template.oneOf[1]
-   .properties.steps.items;
- assert.ok(items.properties.uses.enum.includes('github.run'));
- assert.ok(items.allOf?.some((x:{if?:{properties?:{uses?:{const?:string}}}})=>
-   x.if?.properties?.uses?.const==='github.run'));
+ const schema=WORKFLOW_DEFINITION_SCHEMA.properties.steps.items.properties.template as
+   {oneOf:Array<{properties?:{steps?:{items?:{
+     properties?:{uses?:{enum?:string[]}},allOf?:Array<{if?:{properties?:{uses?:{const?:string}}}}>
+   }}}}>};
+ const items=schema.oneOf[1]?.properties?.steps?.items;
+ assert.ok(items,'Foreach schema must have exactly one child template branch');
+ assert.ok(items.properties?.uses?.enum?.includes('github.run'));
+ assert.ok(items.allOf?.some(x=>x.if?.properties?.uses?.const==='github.run'));
 });
 
 test('Agent-readable Action schemas document required executable parameters',()=>{
