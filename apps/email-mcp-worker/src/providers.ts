@@ -90,7 +90,11 @@ function gmailMessage(account: MailAccount, msg: any): Message {
 }
 function graphMessage(account: MailAccount, msg: any): Message {
   const recipients = msg.toRecipients ?? [];
-  const body = msg.body?.contentType === 'text' ? msg.body?.content : '';
+  // Graph search/threads often select bodyPreview without body; a missing or
+  // HTML-only body must fall back to its plain-text preview instead of ''.
+  const body = typeof msg.body?.content === 'string' &&
+    String(msg.body?.contentType ?? '').toLowerCase() === 'text'
+    ? msg.body.content : msg.bodyPreview ?? '';
   return {
     account_id: account.account_id, provider: account.provider, id: String(msg.id ?? ''),
     thread_id: String(msg.conversationId ?? ''), subject: String(msg.subject ?? '').slice(0, 1000),
