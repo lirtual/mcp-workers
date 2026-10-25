@@ -289,7 +289,6 @@ async function runActionTaskSmoke() {
   assert.ok(Array.isArray(catalog.actions),'Action catalog unavailable');
   const candidates=catalog.actions.filter(a=>a.repository==='lirtual/session-actions' &&
     a.repositoryId===1430925009 && a.workflowPath==='.github/workflows/verify-action.yml' &&
-    a.commitSha==='c16660ae054f89ea51ebc0a0a5cca61f17f3b4e1' &&
     a.name==='Verify Workflow Action' && a.type==='task');
   assert.equal(candidates.length,1,'Expected exactly one reviewed Task in pinned catalog');
   const found=candidates[0];
@@ -297,7 +296,10 @@ async function runActionTaskSmoke() {
   const reviewed={
     repository:found.repository,repositoryId:found.repositoryId,
     workflowId:found.workflowId,workflowPath:found.workflowPath,
-    commitSha:found.commitSha,type:found.type,
+    // Catalog discovery follows default-branch HEAD. Review and execute the
+    // immutable, previously released v0.1.1 tag instead, after verifying its
+    // GitHub Action contract is identical to the discovered schema.
+    commitSha:'c16660ae054f89ea51ebc0a0a5cca61f17f3b4e1',type:found.type,
     contractDigest:createHash('sha256').update(canonicalJsonString({
       name:found.name,type:found.type,inputs:found.inputs,
     })).digest('hex'),
