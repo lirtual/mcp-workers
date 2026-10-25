@@ -11,7 +11,7 @@ test('IMAP/SMTP endpoint policy rejects localhost, private/reserved IPs and port
   assert.throws(() => validateMailPorts(143, 465), /unsupported_mail_port/);
   assert.throws(() => validateMailPorts(993, 25), /unsupported_mail_port/);
   for (const ip of ['0.0.0.0', '10.0.0.1','127.0.0.1','172.16.0.2','192.168.1.1',
-    '100.64.1.1','169.254.169.254','198.18.1.1','198.51.100.2','192.0.2.4',
+    '100.64.1.1','169.254.169.254','198.18.1.1','198.51.100.2','192.0.2.4','192.0.0.8','192.0.0.170','192.88.99.2',
     '203.0.113.2', '224.0.0.1','::1','fc00::1','fe80::2','2001:db8::1']) {
     assert.equal(publicIp(ip), false, ip);
   }
