@@ -134,3 +134,42 @@ test('Published Task input contract must hash exactly to reviewed grant',async()
  assert.notEqual(await frozenTaskInputDigest({outcome:'success'}),
    await frozenTaskInputDigest({outcome:'failure'}));
 });
+
+test('strict three-stage emit Task emit reserves exact identities and preserves literal grants',async()=>{
+ const task={...action,type:'task' as const,inputs:{outcome:'success'}};
+ const source={version:1,name:'Fixed reviewed Task pipeline',inputs:{items:['a','b']},
+  steps:[{id:'each',flow:'foreach',items:{ref:'inputs.items'},max_items:2,
+   template:{steps:[
+    {id:'prepare',uses:'result.emit',with:{data:{ref:'item.value'}}},
+    {id:'verify',uses:'github.run',with:{capability:'github.action',action:task}},
+    {id:'finish',uses:'result.emit',with:{data:{ref:'steps.verify.output'}}},
+   ]}},
+   {id:'done',uses:'result.emit',needs:['each'],with:{data:{ref:'steps.each.output'}}}]};
+ const {plan,digest}=await compilePlan(source);
+ assert.equal(digest,(await compilePlan(JSON.stringify(source))).digest);
+ const each=plan.steps.find(s=>s.id==='each')!;
+ assert.equal((each.with.templates as unknown[]).length,3);
+ for(const i of [0,1]){
+  const found=publishedGitHubActionStep(plan,'each_'+i+'_verify');
+  assert.equal(found?.uses,'github.run');
+  assert.deepEqual(found?.with.action,task);
+ }
+ for(const id of ['each_0_prepare','each_0_finish','each_2_verify',
+  'each_0_verify_extra','each_0_verify_','done'])
+  assert.equal(publishedGitHubActionStep(plan,id),undefined,id);
+ for(const mutate of [
+  (v:any)=>{v.steps[0].template.steps[1].with.action.type='session';},
+  (v:any)=>{v.steps[0].template.steps[1].with.action.inputs={outcome:{ref:'item.value'}};},
+  (v:any)=>{v.steps[0].template.steps[0].uses='github.run';},
+  (v:any)=>{v.steps[0].template.steps[2].uses='github.run';},
+  (v:any)=>{v.steps[0].template.steps.splice(1,0,v.steps[0].template.steps[1]);},
+  (v:any)=>{v.steps[0].template.steps[1].with.capability='github.shell';},
+ ]){
+  const bad=structuredClone(source);mutate(bad);
+  await assert.rejects(()=>compilePlan(bad));
+ }
+ const budget=structuredClone(source);
+ budget.steps[0]!.max_items=8;
+ budget.steps.push({...structuredClone(source.steps[0]!),id:'again'} as never);
+ await assert.rejects(()=>compilePlan(budget),/invalid_step_count/);
+});
