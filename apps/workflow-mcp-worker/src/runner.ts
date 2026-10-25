@@ -148,17 +148,17 @@ async function runMultiForeach(
         }else{
           // Never evaluate mutable previous outputs again after this checkpoint.
           // The output is an ordinary JSON object, not a dynamic expression.
-          let frozen:{selected:boolean;args:Record<string,unknown>|null};
+          let frozen:{selected:boolean;args_json:string|null};
           try{
             frozen=await step.do('workflow-'+childId+'-args',
               {retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},async()=>{
                 const selected=child.if===undefined||evaluateCondition(child.if,localCtx);
-                if(!selected)return {selected:false,args:null};
+                if(!selected)return {selected:false,args_json:null};
                 const evaluated=evaluateArguments(child.with.arguments,localCtx);
                 if(!evaluated||typeof evaluated!=='object'||Array.isArray(evaluated)||
                    hasUnresolvedArgument(evaluated))
                   throw Error('invalid_foreach_arguments');
-                return {selected:true,args:limitResult(evaluated as Record<string,unknown>)};
+                return {selected:true,args_json:JSON.stringify(limitResult(evaluated as Record<string,unknown>))};
               });
           }catch{
             outcome={status:'failed',error_code:'invalid_foreach_arguments'};
@@ -171,10 +171,18 @@ async function runMultiForeach(
             outcome=await step.do('workflow-'+childId,
               {retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},
               async():Promise<Outcome>=>({status:'skipped'}));
-          }else if(!frozen.args||typeof frozen.args!=='object'||Array.isArray(frozen.args)||
-                   hasUnresolvedArgument(frozen.args)){
+          }else if(!frozen.args_json||typeof frozen.args_json!=='string'){
             outcome={status:'failed',error_code:'invalid_foreach_arguments'};
           }else{
+            let args:Record<string,unknown>;
+            try{
+              const candidate=JSON.parse(frozen.args_json) as unknown;
+              if(!candidate||typeof candidate!=='object'||Array.isArray(candidate)||
+                 hasUnresolvedArgument(candidate))throw Error('bad_snapshot');
+              args=candidate as Record<string,unknown>;
+            }catch{
+              return {status:'failed',error_code:'invalid_foreach_snapshot'};
+            }
             // After entering a dispatch checkpoint, loss of native progress or
             // D1 response is ambiguous. The durable child fence prevents a
             // second tools/call even if this checkpoint is lost on replay.
@@ -191,7 +199,7 @@ async function runMultiForeach(
                 const childStep:Step={id:childId,uses:'mcp.call',needs:s.needs,with:child.with};
                 try{
                   return {status:'succeeded',
-                    output:await callApprovedReadonly(env,plan,childStep,frozen.args!)};
+                    output:await callApprovedReadonly(env,plan,childStep,args)};
                 }catch(error){
                   return error instanceof Error&&error.message==='external_outcome_unknown'
                     ?{status:'indeterminate',error_code:'external_outcome_unknown'}
