@@ -236,6 +236,7 @@ test('ordered mixed Task discovery enforces one literal Task and read-only MCP',
  assert.equal(rules.mcp_scope,'read');
  assert.equal(rules.max_steps,PLAN_LIMITS.maxForeachTemplateSteps);
  const schema=WORKFLOW_DEFINITION_SCHEMA.properties.steps.items.properties.template.oneOf[1].properties.steps;
+ assert.ok(schema);
  assert.ok(schema.allOf.some(rule=>rule.if.minItems===2&&
   rule.then.anyOf[1]?.maxContains===1));
 });
