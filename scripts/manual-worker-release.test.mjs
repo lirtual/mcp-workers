@@ -652,5 +652,5 @@ test("Workflow preflight tolerates removed service bindings, readback rejects th
   ];
   const settings={bindings,observability:{enabled:true,logs:{invocation_logs:true}}};
   assert.equal(verifyBindings("workflow-mcp-worker",settings,secrets,{mode:"preflight"}),true);
-  assert.throws(()=>verifyBindings("workflow-mcp-worker",settings,secrets,{mode:"readback"}),/production D1 runtime binding drift/);
+  assert.throws(()=>verifyBindings("workflow-mcp-worker",settings,secrets,{mode:"readback"}),/Workflow native Workflow binding drift/);
 });
