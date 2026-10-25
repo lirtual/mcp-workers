@@ -162,7 +162,10 @@ export function publishedGitHubActionStep(plan:Plan,stepId:string):Step|undefine
   for(const controller of plan.steps){
     if(controller.uses!=='flow.foreach')continue;
     const config=controller.with;
-    const child=config.template as {id?:unknown;uses?:unknown;with?:unknown}|undefined;
+    const child=(Array.isArray(config.templates)?
+      (config.templates as Array<{id?:unknown;uses?:unknown;with?:unknown}>)
+        .find(c=>c.uses==='github.run'):config.template) as
+      {id?:unknown;uses?:unknown;with?:unknown}|undefined;
     if(child?.uses!=='github.run'||typeof child.id!=='string'||
        !Number.isSafeInteger(config.max_items)||Number(config.max_items)<1||
        Number(config.max_items)>PLAN_LIMITS.maxForeachItems)continue;
