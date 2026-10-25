@@ -157,9 +157,13 @@ export async function imapMove(env: Env, account: MailAccount, identity: string,
     });
   });
 }
+export function findImapTrash(folders: { path: string; specialUse?: string }[]) {
+  return folders.find(f => f.specialUse === '\\Trash') ??
+    folders.find(f => /^(trash|deleted items|deleted)$/i.test(f.path));
+}
 export async function imapTrash(env: Env, account: MailAccount, identity: string) {
   return withImap(env, account, async client => {
-    const trash = (await client.list()).find(f => /^(trash|deleted items|deleted)$/i.test(f.path));
+    const trash = findImapTrash(await client.list());
     if (!trash || !client.capabilities.has('MOVE')) fail('unsupported');
     const ref = decodeImapReference(identity);
     return withSelected(client, ref, async () => {
