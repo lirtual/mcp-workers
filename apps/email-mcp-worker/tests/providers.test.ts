@@ -132,3 +132,56 @@ test('Graph thread_get filters native conversationId and marks truncation', asyn
     assert.equal(result.truncated, true);
   } finally { globalThis.fetch = prior; }
 });
+
+
+test('cross-mailbox pagination does not replay a completed mailbox', async () => {
+  const { searchAcross } = await import('../src/tools.ts');
+  const key = Buffer.alloc(32, 9).toString('base64');
+  const mailboxes = new Map<string, any>();
+  const ids = [crypto.randomUUID(), crypto.randomUUID()];
+  for (const [index, aid] of ids.entries()) {
+    const credentials = await encrypt({ MAIL_ENCRYPTION_KEY: key } as any, 'account:' + aid + ':graph',
+      { access_token: index === 0 ? 'token-a' : 'token-b' });
+    mailboxes.set(aid, {
+      account_id: aid, provider: 'graph', address: 'mailbox' + index + '@example.test',
+      status: 'active', credential_ciphertext: credentials.ciphertext,
+      credential_key_id: credentials.keyId, token_expires_at: Math.floor(Date.now() / 1000) + 3600,
+    });
+  }
+  const env = {
+    MAIL_ENCRYPTION_KEY: key,
+    DB: {
+      prepare(sql: string) {
+        assert.equal(sql, 'SELECT * FROM mail_accounts WHERE account_id=?');
+        return { bind(aid: string) { return { async first() { return mailboxes.get(aid) ?? null; } }; } };
+      },
+    },
+  } as any;
+  const previous = globalThis.fetch;
+  const calls: string[] = [];
+  try {
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      const token = new Headers(init?.headers).get('authorization');
+      assert.equal(url.pathname, '/v1.0/me/messages');
+      calls.push(token ?? '');
+      const result = (id: string) => ({ id, subject: id, receivedDateTime: '2026-10-25T00:00:00Z' });
+      if (token === 'Bearer token-a') {
+        if (url.searchParams.has('$skip')) return Response.json({ value: [result('a-second')] });
+        return Response.json({ value: [result('a-first')],
+          '@odata.nextLink': 'https://graph.microsoft.com/v1.0/me/messages?$skip=10&$top=10' });
+      }
+      if (token === 'Bearer token-b') return Response.json({ value: [result('b-only')] });
+      throw new Error('unexpected test account');
+    }) as typeof fetch;
+    const first = await searchAcross(env, ids, 'hello', undefined);
+    assert.deepEqual(first.messages.map((m: any) => m.id).sort(), ['a-first', 'b-only']);
+    assert.equal(typeof first.cursor, 'string');
+    const second = await searchAcross(env, ids, 'hello', first.cursor);
+    assert.deepEqual(second.messages.map((m: any) => m.id), ['a-second']);
+    assert.equal(second.cursor, undefined);
+    assert.equal(calls.filter(x => x === 'Bearer token-a').length, 2);
+    assert.equal(calls.filter(x => x === 'Bearer token-b').length, 1,
+      'a mailbox with no nextPageToken must not be queried again');
+  } finally { globalThis.fetch = previous; }
+});
