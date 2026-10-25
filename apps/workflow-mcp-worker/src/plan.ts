@@ -10,7 +10,8 @@ export function isSupportedStepUse(value:unknown):value is (typeof SUPPORTED_STE
 
 export class PlanError extends Error {
   code = 'invalid_definition';
-  constructor(message: string) { super(message); this.name = 'PlanError'; }
+  path: string;
+  constructor(message: string, path = '/') { super(message); this.name = 'PlanError'; this.path = path; }
 }
 export type Step = {
   id: string; uses: 'result.emit' | 'mcp.call' | 'github.run'; needs: string[];
@@ -21,8 +22,17 @@ export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<st
 const SAFE_ID = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
 const OBJECT_PROTOTYPE_KEYS = new Set(['constructor','toString','toLocaleString','valueOf','hasOwnProperty','isPrototypeOf','propertyIsEnumerable']);
 const RESERVED = new Set(['eval','javascript','script','code','shell','endpoint','url','command','function']);
-const keys = (o: Record<string, unknown>, allowed: string[]) => {
-  for(const key of Object.keys(o)) if(!allowed.includes(key)) throw new PlanError('unsupported_field:'+key);
+const KNOWN_UNSUPPORTED_FIELDS = new Set([
+  'triggers','saga','repeat','expand','approval','foreach','while',
+  'child','child_workflow','wait','sleep','delay','steps',
+]);
+const keys = (o: Record<string, unknown>, allowed: string[], basePath = '/') => {
+  for (const key of Object.keys(o)) if (!allowed.includes(key)) {
+    // Keep arbitrary user-supplied keys out of API paths and messages.
+    const path = KNOWN_UNSUPPORTED_FIELDS.has(key)
+      ? (basePath === '/' ? '' : basePath) + '/' + key : basePath;
+    throw new PlanError('unsupported_field:'+key,path);
+  }
 };
 function object(value: unknown, message: string): Record<string, unknown> {
   if(!value || typeof value !== 'object' || Array.isArray(value)) throw new PlanError(message);
@@ -130,20 +140,22 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
   const steps:Step[]=[];
   const ids=new Set<string>();
   for(const s0 of o.steps){
-    const s=object(s0,'invalid_step');keys(s,['id','uses','needs','if','with']);
+    const s=object(s0,'invalid_step');
+    const stepPath='/steps/'+steps.length;
+    keys(s,['id','uses','needs','if','with'],stepPath);
     if(typeof s.id!=='string'||!SAFE_ID.test(s.id)||ids.has(s.id)||OBJECT_PROTOTYPE_KEYS.has(s.id))throw new PlanError('invalid_step_id');
     ids.add(s.id);
-    if(!isSupportedStepUse(s.uses))throw new PlanError('unsupported_capability');
+    if(!isSupportedStepUse(s.uses))throw new PlanError('unsupported_capability',stepPath+'/uses');
     const needs=s.needs===undefined?[]:s.needs;
     if(!Array.isArray(needs)||needs.some(n=>typeof n!=='string'||!SAFE_ID.test(n))||new Set(needs).size!==needs.length)throw new PlanError('invalid_dependencies');
     const withData=object(s.with,'invalid_step_arguments');
     if(s.uses==='github.run'){
       // A single fixed CI verification operation. No user-supplied scripts,
       // URL, repository, ref or arguments.
-      keys(withData,['capability','action']);
+      keys(withData,['capability','action'],stepPath+'/with');
       if(withData.capability==='github.action') {
         const action=object(withData.action,'invalid_github_action');
-        keys(action,['repository','repositoryId','workflowId','workflowPath','commitSha','type','contractDigest','ref','inputs']);
+        keys(action,['repository','repositoryId','workflowId','workflowPath','commitSha','type','contractDigest','ref','inputs'],stepPath+'/with/action');
         if(typeof action.repository!=='string'||!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(action.repository)||
            !Number.isSafeInteger(action.repositoryId)||Number(action.repositoryId)<=0||
            !Number.isSafeInteger(action.workflowId)||Number(action.workflowId)<=0||
@@ -157,7 +169,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
         object(action.inputs,'invalid_github_action_inputs');
       } else throw new PlanError('unsupported_github_capability');
     }else if(s.uses==='mcp.call'){
-      keys(withData,['endpoint','tool','scope','arguments','input_schema','output_schema']);
+      keys(withData,['endpoint','tool','scope','arguments','input_schema','output_schema'],stepPath+'/with');
       if(typeof withData.endpoint!=='string')throw new PlanError('invalid_endpoint');
       try { if(publicMcpEndpoint(withData.endpoint).href!==withData.endpoint)throw Error('noncanonical'); }
       catch { throw new PlanError('invalid_endpoint'); }
@@ -167,7 +179,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       // Only explicit, bounded expected schema objects may be pinned; never a
       // dynamic expression or network-fetched schema silently approved later.
       await toolSchemaDigest(withData.input_schema,withData.output_schema);
-    }else keys(withData,['data']);
+    }else keys(withData,['data'],stepPath+'/with');
     const compiledWith=s.uses==='mcp.call'?
       {...withData,schema_digest:await toolSchemaDigest(withData.input_schema,withData.output_schema)}:withData;
     steps.push({id:s.id,uses:s.uses,needs:needs as string[],with:compiledWith,...(s.if===undefined?{}:{if:s.if})});
