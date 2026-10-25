@@ -61,11 +61,19 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
   }
   if (worker === "workflow-mcp-worker") {
     const d1 = find("DB", "d1");
-    invariant((d1?.id || d1?.database_id) ===
-      "c76850db-b5e3-4128-9150-849a1c9e8d74", "Workflow production D1 runtime binding drift");
+    const liveD1=d1?.id || d1?.database_id;
+    invariant(options.mode==="preflight"
+      ? ["c76850db-b5e3-4128-9150-849a1c9e8d74","a4a477cd-6339-478c-ab7c-f7d87bb0d772"].includes(liveD1)
+      : liveD1==="a4a477cd-6339-478c-ab7c-f7d87bb0d772",
+      "Workflow production D1 runtime binding drift");
     const flow = find("WORKFLOW", "workflow");
-    if(options.mode==="readback") invariant(flow?.workflow_name === "workflow-mcp-runner" &&
-      flow?.class_name === "WorkflowRunner", "Workflow native Workflow binding drift");
+    if(options.mode==="readback") {
+      invariant(flow?.workflow_name==="workflow-mcp-orchestrator" &&
+        flow?.class_name==="WorkflowOrchestrator", "Workflow native Workflow binding drift");
+      const legacy=find("WORKFLOW_LEGACY","workflow");
+      invariant(legacy?.workflow_name==="workflow-mcp-runner" &&
+        legacy?.class_name==="WorkflowRunner", "Workflow historic instance retention binding drift");
+    }
     if (options.mode === "readback") {
       invariant(find("MCP_PORTAL_ENDPOINT", "plain_text")?.text ===
         "https://mcp.lirtual.dpdns.org/mcp", "Pinned Workflow MCP Portal drift");
@@ -165,7 +173,7 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
         "Retired Remote Control approval bindings must be removed");
     }
   }
-  const allowed = new Set(worker === "workflow-mcp-worker" ? ["DB", "WORKFLOW"] :
+  const allowed = new Set(worker === "workflow-mcp-worker" ? ["DB", "WORKFLOW", "WORKFLOW_LEGACY"] :
     worker === "ima-mcp-worker"
     ? ["IMA_IMAGE_REFRESH_SHARD"]
     : worker === "database-mcp-worker" ? ["RATE_LIMITER"]
@@ -198,12 +206,17 @@ export function verifyWorkflowReleaseConfig(conf) {
     conf.observability?.logs?.invocation_logs === true, "Workflow Invocation Logs drift");
   invariant(conf.d1_databases?.length === 1 &&
     conf.d1_databases[0]?.binding === "DB" &&
-    conf.d1_databases[0]?.database_name === "workflow-mcp-worker" &&
-    conf.d1_databases[0]?.database_id === "c76850db-b5e3-4128-9150-849a1c9e8d74" &&
+    conf.d1_databases[0]?.database_name === "workflow-mcp-db" &&
+    conf.d1_databases[0]?.database_id === "a4a477cd-6339-478c-ab7c-f7d87bb0d772" &&
     conf.d1_databases[0]?.migrations_dir === "migrations", "Workflow approved production D1 drift");
-  invariant(conf.workflows?.length === 1 && conf.workflows[0]?.binding === "WORKFLOW" &&
-    conf.workflows[0]?.name === "workflow-mcp-runner" &&
-    conf.workflows[0]?.class_name === "WorkflowRunner", "Workflow binding drift");
+  invariant(conf.workflows?.length === 2 &&
+    conf.workflows[0]?.binding === "WORKFLOW" &&
+    conf.workflows[0]?.name === "workflow-mcp-orchestrator" &&
+    conf.workflows[0]?.class_name === "WorkflowOrchestrator" &&
+    conf.workflows[1]?.binding === "WORKFLOW_LEGACY" &&
+    conf.workflows[1]?.name === "workflow-mcp-runner" &&
+    conf.workflows[1]?.class_name === "WorkflowRunner",
+    "Workflow binding drift");
   invariant(!conf.services?.length, "Workflow must not retain Service Bindings");
   invariant(JSON.stringify(conf.secrets?.required) === JSON.stringify(["MCP_ACCESS_TOKEN", "MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_GITHUB_DISPATCH_TOKEN"]),
     "Workflow Portal Secret declaration drift");

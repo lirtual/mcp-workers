@@ -9,9 +9,12 @@
   "keep_vars": false,
   "observability": { "enabled": true, "logs": { "invocation_logs": true } },
   "d1_databases": [
-    { "binding": "DB", "database_name": "workflow-mcp-worker",
-      "database_id": "c76850db-b5e3-4128-9150-849a1c9e8d74", "migrations_dir": "migrations" }
+    { "binding": "DB", "database_name": "workflow-mcp-db",
+      "database_id": "a4a477cd-6339-478c-ab7c-f7d87bb0d772", "migrations_dir": "migrations" }
   ],
-  "workflows": [{ "name": "workflow-mcp-runner", "binding": "WORKFLOW", "class_name": "WorkflowRunner" }],
+  "workflows": [
+    { "name": "workflow-mcp-orchestrator", "binding": "WORKFLOW", "class_name": "WorkflowOrchestrator" },
+    { "name": "workflow-mcp-runner", "binding": "WORKFLOW_LEGACY", "class_name": "WorkflowRunner" }
+  ],
   "secrets": { "required": ["MCP_ACCESS_TOKEN", "MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_GITHUB_DISPATCH_TOKEN"] }
 }

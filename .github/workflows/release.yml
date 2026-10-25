@@ -184,7 +184,7 @@ jobs:
           WORKFLOW_FIRST_DEPLOY: ${{ steps.preflight.outputs.bootstrap }}
         run: |
           set -euo pipefail
-          (cd apps/workflow-mcp-worker && pnpm exec wrangler d1 execute workflow-mcp-worker --remote --json --command \
+          (cd apps/workflow-mcp-worker && pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command \
             "SELECT
              (SELECT count(*) FROM d1_migrations) AS migration_count,
              (SELECT count(*) FROM d1_migrations WHERE name='0001_s1.sql') AS migration_v1,
@@ -219,9 +219,9 @@ jobs:
         run: |
           set -euo pipefail
           (cd apps/workflow-mcp-worker &&
-            pnpm exec wrangler d1 migrations apply workflow-mcp-worker --remote)
+            pnpm exec wrangler d1 migrations apply workflow-mcp-db --remote)
           (cd apps/workflow-mcp-worker &&
-            pnpm exec wrangler d1 execute workflow-mcp-worker --remote --json --command "SELECT
+            pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "SELECT
               (SELECT count(*) FROM d1_migrations) AS migration_count,
               (SELECT count(*) FROM d1_migrations WHERE name='0001_s1.sql') AS migration_v1,
               (SELECT count(*) FROM d1_migrations WHERE name='0002_native_complete_seen.sql') AS migration_v2,
@@ -241,6 +241,19 @@ jobs:
               (SELECT count(*) FROM runs) AS run_count,
               (SELECT count(*) FROM workflows) AS workflow_count") |
             node scripts/manual-worker-release.mjs d1-check workflow-mcp-worker
+
+      - name: Verify copied Workflow D1 quiescence at publication gate
+        if: inputs.worker == 'workflow-mcp-worker'
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          query="$(node scripts/manual-worker-release.mjs migration-sql workflow-mcp-worker)"
+          (cd apps/workflow-mcp-worker &&
+            pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "$query") |
+            node scripts/manual-worker-release.mjs migration-check workflow-mcp-worker
 
       - name: Publish exactly selected Worker
         id: publish
