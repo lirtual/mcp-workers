@@ -7,7 +7,7 @@ import { fail } from './types.ts';
 import type { Env, MailAccount } from './types.ts';
 
 type Message = {
-  account_id: string; provider: string; id: string; thread_id?: string;
+  account_id: string; provider: string; id: string; thread_id?: string; reply_to?: string;
   subject: string; from: string; to?: string; date: string; snippet: string;
   text?: string; attachments?: { id: string; filename: string; size: number }[];
 };
@@ -58,11 +58,13 @@ function gmailMessage(account: MailAccount, msg: any): Message {
   const headers = msg.payload?.headers ?? [];
   const h = (name: string): string => (headers.find((x: any) => x.name?.toLowerCase() === name)?.value ?? '').slice(0, 1000);
   const text = parts.find((p: any) => p.mimeType === 'text/plain')?.body?.data;
+  const replyAddress = h('reply-to') || h('from');
   const attachments = parts.filter((p: any) => p.filename && p.body?.attachmentId)
     .map((p: any) => ({ id: p.body.attachmentId as string, filename: String(p.filename).slice(0, 200), size: Number(p.body.size) || 0 }));
   return {
     account_id: account.account_id, provider: account.provider, id: String(msg.id ?? ''),
     thread_id: String(msg.threadId ?? ''), subject: h('subject'), from: h('from'), to: h('to'),
+    reply_to: (replyAddress.match(/<([^<>]+)>$/)?.[1] ?? replyAddress).slice(0, 320),
     date: new Date(Number(msg.internalDate ?? 0)).toISOString(), snippet: String(msg.snippet ?? '').slice(0, 1000),
     text: text ? decode(text) : String(msg.snippet ?? '').slice(0, 1000), attachments,
   };
