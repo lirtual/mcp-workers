@@ -53,3 +53,42 @@ export function validateGitHubActionInputs(
   if (Object.keys(result).length > 10) throw Error('github_action_too_many_inputs');
   return result;
 }
+
+
+/** Dynamic Task inputs deliberately accept only one exact current-item ref.
+ * The compile gate checks syntax; the pinned reviewed provider contract is
+ * enforced at Publish and again on the COMPLETE frozen array before dispatch.
+ */
+export function isForeachTaskInputRef(value:unknown):value is {ref:string}{
+  if(!value||typeof value!=='object'||Array.isArray(value))return false;
+  const obj=value as Record<string,unknown>;
+  return Object.keys(obj).length===1&&typeof obj.ref==='string'&&
+    /^(?:item\.index|item\.value(?:\.[A-Za-z][A-Za-z0-9_-]{0,63})*)$/.test(obj.ref)&&
+    obj.ref.length<=256;
+}
+export function containsDynamicForeachTaskInputs(inputs:Record<string,unknown>):boolean{
+  return Object.values(inputs).some(isForeachTaskInputRef);
+}
+/** Validate literal fields and declared keys without predicting runtime item
+ * values. Runtime must call validateGitHubActionInputs on the frozen concrete
+ * values, including choice membership, required fields and byte budgets.
+ */
+export function validateForeachTaskInputTemplate(
+ action:DiscoveredAction,inputs:Record<string,unknown>,
+):Record<string,unknown>{
+  if(!inputs||typeof inputs!=='object'||Array.isArray(inputs))
+    throw Error('github_action_invalid_inputs');
+  const projected:Record<string,unknown>={};
+  for(const [key,value] of Object.entries(inputs)){
+    if(value!==null&&typeof value==='object'){
+      if(!isForeachTaskInputRef(value))
+        throw Error('github_action_invalid_dynamic_input');
+      const field=action.inputs[key];
+      if(!field)throw Error('github_action_unknown_input');
+      projected[key]=field.type==='boolean'?false:field.type==='number'?0:
+        field.type==='choice'?field.options?.[0]:'';
+    }else projected[key]=value;
+  }
+  validateGitHubActionInputs(action,projected);
+  return projected;
+}

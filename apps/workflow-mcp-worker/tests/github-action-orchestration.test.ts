@@ -1,3 +1,5 @@
+import {reviewedGitHubAction} from '../src/github-action-review.ts';
+import {frozenTaskInputDigest} from '../src/github-action-foreach-inputs.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
@@ -146,5 +148,50 @@ test('dynamic Task Attempt dispatch is one-shot and rejects forged child identit
     {...child,attemptId:'44444444-4444-4444-8444-444444444444',
       dispatchId:'55555555-5555-4555-8555-555555555555'},http),/not_registered/);
   assert.equal(posts,1,'no replay can dispatch a second GitHub Task for the same item');
+ }finally{db.close();}
+});
+
+test('dynamic Task D1 input hash blocks altered arguments before registering an Attempt',async()=>{
+ const {db,adapter}=setup();
+ try{
+  const contract={name:'Pinned Verify Action',type:'task' as const,inputs:{
+   outcome:{type:'choice' as const,required:true,options:['success','failure'],default:'success'},
+  }};
+  const pinned=await reviewedGitHubAction({
+   repository:'lirtual/session-actions',repositoryId:12,workflowId:34,
+   workflowPath:'.github/workflows/linux.yml',commitSha:'a'.repeat(40),contract,
+  });
+  const plan={version:1,name:'Pinned dynamic Task',
+   github_execution_approved:true,github_action_approvals:[pinned],
+   github_dynamic_input_contracts:{each:contract},steps:[
+    {id:'each',uses:'flow.foreach',needs:[],with:{
+     items:{ref:'inputs.items'},max_items:2,template:{id:'task',uses:'github.run',
+      with:{capability:'github.action',action:{...pinned,ref:'refs/tags/test-v1',
+       inputs:{outcome:{ref:'item.value'}}}}},
+    }},
+   ]};
+  db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?')
+   .run(JSON.stringify(plan),'v');
+  const childId='each_0_task';
+  const marker=JSON.stringify({input_sha256:await frozenTaskInputDigest({outcome:'success'})});
+  db.prepare("INSERT INTO run_steps(run_id,step_id,status,output,updated_at) VALUES(?,?,'running',?,1)")
+   .run(rid,childId,marker);
+  const chosen={...data,stepId:childId,action:pinned,inputs:{outcome:'success'}};
+  let posts=0;
+  await assert.rejects(
+   registerAndDispatchGitHubAction(adapter,{...chosen,inputs:{outcome:'failure'}},
+    async()=>{posts++;return gitRef();}),/input_snapshot_mismatch/);
+  assert.equal(posts,0);
+  assert.equal(db.prepare('SELECT count(*) AS n FROM step_attempts').get()?.n,0);
+  const sent=await registerAndDispatchGitHubAction(adapter,chosen,async request=>{
+   if(request.method==='GET')return gitRef();
+   posts++;return Response.json({workflow_run_id:9001});
+  });
+  assert.equal(sent.status,'confirmed');
+  assert.equal(posts,1);
+  await assert.rejects(
+   registerAndDispatchGitHubAction(adapter,chosen,async()=>{posts++;throw Error('duplicate');}),
+   /not_registered/);
+  assert.equal(posts,1);
  }finally{db.close();}
 });

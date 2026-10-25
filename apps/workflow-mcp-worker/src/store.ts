@@ -4,6 +4,7 @@ import {reconcilePersistedGitHubActionAttempt} from './github-action-attempt-rec
 import {releaseVerifiedSessionSlot} from './github-action-session.ts';
 import { discoverGitHubActions } from './github-action-discovery.ts';
 import { verifyActionDispatchRef } from './github-action-dispatch-ref.ts';
+import {containsDynamicForeachTaskInputs,validateForeachTaskInputTemplate} from './github-action-inputs.ts';
 import { reviewedGitHubAction, assertReviewedGitHubAction, type ReviewedGitHubAction } from './github-action-review.ts';
 import { approvedActionRepositories } from './github-action-catalog.ts';
 import { compilePlan, PlanError, canonicalJsonString } from './plan.ts';
@@ -176,7 +177,17 @@ export class WorkflowService {
       const candidate=discovered.find(d=>d.workflowId===expected.workflowId&&d.workflowPath===expected.workflowPath);
       if(!candidate)throw new PlanError('github_action_not_found',path+'/workflowPath');
       try{
-        await assertReviewedGitHubAction(expected,candidate,this.env.GITHUB_ACTION_APPROVED_REPOSITORIES,raw.inputs as Record<string,unknown>);
+        const given=raw.inputs as Record<string,unknown>;
+        const isDynamic=path.includes('/template/steps/0/')&&containsDynamicForeachTaskInputs(given);
+        const validated=isDynamic?validateForeachTaskInputTemplate(candidate.contract,given):given;
+        await assertReviewedGitHubAction(expected,candidate,this.env.GITHUB_ACTION_APPROVED_REPOSITORIES,validated);
+        if(isDynamic){
+          const controller=plan.steps[Number(path.split('/')[2])];
+          if(!controller||controller.uses!=='flow.foreach'||candidate.contract.type!=='task')
+            throw Error('unexpected_controller');
+          plan.github_dynamic_input_contracts??={};
+          plan.github_dynamic_input_contracts[controller.id]=candidate.contract;
+        }
       }catch{throw new PlanError('github_action_contract_or_inputs_changed',path+'/inputs');}
       // GitHub workflow_dispatch only accepts a verified branch/Tag ref, never
       // an arbitrary SHA. The existing dispatch/OIDC checks remain mandatory.
@@ -223,7 +234,7 @@ export class WorkflowService {
          'excessive_parallelism','invalid_reference','invalid_step_reference'].includes(code)?'/steps':'/';
       const suggestion=['invalid_foreach_limit','invalid_foreach_items','invalid_foreach_template',
         'unsupported_foreach_template','unsupported_foreach_action','unsupported_foreach_inputs'].includes(code)?
-        'Use flow: foreach with max_items 1 to 8 and one result.emit, approved read-only mcp.call or reviewed github.run Task template. GitHub Task inputs must be literal; Sessions and nesting remain unsupported.':
+        'Use flow: foreach with max_items 1 to 8 and one result.emit, approved read-only mcp.call or reviewed github.run Task template. GitHub Task inputs may use exact current-item refs only when the reviewed provider contract is pinned and every value is type-checked before dispatch; Sessions and nesting remain unsupported.':
         ['invalid_repeat_count','invalid_repeat_template','unsupported_flow'].includes(code)?
         'Use flow: repeat with a literal times integer from 1 to 8 and one template Action; nested/dynamic loops are not supported. All expanded Steps must fit the maxSteps limit.':
         code.startsWith('invalid_github_event_')||code==='unsupported_github_event'?

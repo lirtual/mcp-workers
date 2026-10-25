@@ -1243,3 +1243,38 @@ test('pure multi-step foreach overflow fails before executing any child',async t
   assert.deepEqual(checkpoints,['workflow-each-snapshot']);
   assert.equal(result.steps.filter(s=>s.step_id.startsWith('each_')).length,0);
 });
+
+test('late invalid dynamic Task choice is rejected before any per-item GitHub dispatch',async t=>{
+ const {service,admit,env,sqlite,run}=setup(t);
+ const start=await admit([{id:'seed',uses:'result.emit',with:{data:'seed'}}],
+  {items:['success','invalid']});
+ const contract={name:'Pinned Task',type:'task' as const,inputs:{
+  outcome:{type:'choice' as const,required:true,options:['success','failure'],default:'success'},
+ }};
+ const identity={repository:'lirtual/session-actions',repositoryId:123,workflowId:456,
+  workflowPath:'.github/workflows/task.yml',commitSha:'a'.repeat(40)};
+ const approved=await reviewedGitHubAction({...identity,contract});
+ const {plan}=await compilePlan({version:1,name:'dynamic typed Task',steps:[
+  {id:'each',flow:'foreach',items:{ref:'inputs.items'},max_items:2,
+   template:{steps:[{id:'task',uses:'github.run',with:{
+    capability:'github.action',action:{...approved,ref:'refs/tags/task-v1',
+     inputs:{outcome:{ref:'item.value'}}},
+   }}]}}]});
+ plan.github_execution_approved=true;
+ plan.github_action_approvals=[approved];
+ plan.github_dynamic_input_contracts={each:contract};
+ sqlite.prepare('UPDATE workflow_versions SET plan=? WHERE id=(SELECT version_id FROM runs WHERE id=?)')
+  .run(JSON.stringify(plan),start.run_id);
+ env.WORKFLOW_GITHUB_DISPATCH_TOKEN='test-token';
+ env.GITHUB_ACTION_OIDC_AUDIENCE='workflow-github-action:production';
+ let posts=0;
+ const before=globalThis.fetch;
+ globalThis.fetch=(async()=>{posts++;throw Error('must not dispatch');}) as typeof fetch;
+ t.after(()=>{globalThis.fetch=before;});
+ await run(start.run_id);
+ const result=await service.result(start.run_id);
+ assert.equal(result.status,'failed');
+ assert.equal(result.steps.find(x=>x.step_id==='each')?.error_code,'invalid_foreach_items');
+ assert.equal(result.steps.some(x=>x.step_id.startsWith('each_')),false);
+ assert.equal(posts,0);
+});

@@ -3,7 +3,8 @@ import { dispatchReviewedGitHubAction } from './github-action-dispatch.ts';
 import { recordGithubDispatchResult } from './github-claim.ts';
 import type { DispatchOutcome } from './github-dispatch.ts';
 import {isPublishedGitHubActionApproved,type ReviewedGitHubAction as PublishedAction} from './github-action-review.ts';
-import {publishedGitHubActionStep,type Plan} from './plan.ts';
+import {publishedGitHubActionStep,publishedForeachTaskController,type Plan} from './plan.ts';
+import {dynamicForeachTaskInputs,reviewedForeachTaskContract,frozenTaskInputDigest} from './github-action-foreach-inputs.ts';
 
 type Db=Pick<D1Database,'prepare'>;
 type Http=(request:Request)=>Promise<Response>;
@@ -59,17 +60,32 @@ export async function registerAndDispatchGitHubAction(
  const pinned=raw.inputs;
  if(raw.ref!==data.ref || !pinned || typeof pinned!=='object'||Array.isArray(pinned))
   throw Error('github_action_publication_missing');
- // Inputs must exactly match the validated immutable Published Plan. A
- // malicious internal caller cannot substitute a different command/value.
- const expectedInputs=Object.fromEntries(Object.entries(pinned as Record<string,unknown>).map(([key,value])=>{
-  if(typeof value!=='string'&&typeof value!=='boolean'&&
-     (typeof value!=='number'||!Number.isFinite(value)))
+ // For dynamic Foreach, the complete evaluated input map is frozen in the
+ // native snapshot and its digest is written to D1 before an Attempt/POST.
+ // The original source expression and approved Action identity stay immutable.
+ const controller=publishedForeachTaskController(plan,data.stepId);
+ if(controller&&dynamicForeachTaskInputs(controller)){
+  await reviewedForeachTaskContract(plan,controller);
+  const digest=await frozenTaskInputDigest(data.inputs);
+  const snapshot=await db.prepare(`SELECT status,output FROM run_steps
+    WHERE run_id=? AND step_id=?`).bind(data.runId,data.stepId)
+    .first<{status:string;output:string|null}>();
+  if(snapshot?.status!=='running'||
+     snapshot.output!==JSON.stringify({input_sha256:digest}))
+   throw Error('github_action_input_snapshot_mismatch');
+ }else{
+  // Legacy literal-input paths must still match their immutable Plan values
+  // byte-for-byte; an external caller cannot choose an arbitrary input map.
+  const expectedInputs=Object.fromEntries(Object.entries(pinned as Record<string,unknown>).map(([key,value])=>{
+   if(typeof value!=='string'&&typeof value!=='boolean'&&
+      (typeof value!=='number'||!Number.isFinite(value)))
+    throw Error('github_action_publication_missing');
+   return [key,String(value)];
+  }));
+  if(Object.keys(expectedInputs).length!==Object.keys(data.inputs).length||
+     Object.entries(expectedInputs).some(([key,value])=>data.inputs[key]!==value))
    throw Error('github_action_publication_missing');
-  return [key,String(value)];
- }));
- if(Object.keys(expectedInputs).length!==Object.keys(data.inputs).length||
-    Object.entries(expectedInputs).some(([key,value])=>data.inputs[key]!==value))
-  throw Error('github_action_publication_missing');
+ }
  if(!isPublishedGitHubActionApproved(plan.github_action_approvals,identity)||
     !isPublishedGitHubActionApproved([identity],data.action))
   throw Error('github_action_publication_missing');

@@ -310,9 +310,9 @@ const entries=[
   {id:'flow.foreach_mcp_read',kind:'flow',availability:'supported_with_grant',
    description:'One reviewed read-only mcp.call per bounded item; all arguments and conditions are frozen before dispatch. Every child uses a durable D1 one-shot dispatch fence; an ambiguous response stays indeterminate, not retried.'},
   {id:'flow.foreach_github_task',kind:'flow',availability:'supported_with_grant',
-   description:'Bounded dynamic GitHub Task dispatch with one exact reviewed Task template, literal inputs, per-item selection and unique D1 Attempt + OIDC Claim + physical terminal proof. Sessions and item-dependent inputs remain unsupported.'},
+   description:'Bounded reviewed GitHub Task per item; literal or exact current-item input refs with pinned provider types, complete native snapshot and D1 input SHA-256 proof before unique Attempt + OIDC Claim. Sessions and nested templates remain unsupported.'},
   {id:'flow.loop',kind:'flow',availability:'unsupported',
-   description:'Dynamic while, nested loops, external multi-step templates, Session foreach and item-dependent GitHub Task inputs remain unsupported.'},
+   description:'Dynamic while, nested loops, external multi-step templates, Session foreach and arbitrary GitHub input expressions remain unsupported.'},
   {id:'flow.child',kind:'flow',availability:'unsupported',
    description:'Child workflows and durable wait are not supported in the current Published Plan schema.'},
   {id:'flow.saga',kind:'flow',availability:'unsupported',
@@ -433,14 +433,31 @@ export async function workflowCapabilities(env:Pick<Env,
     const task=discovered.actions.find(a=>a.can_publish&&a.type==='task'&&
       'ref' in a&&typeof a.ref==='string'&&Object.values(a.inputs).every(x=>!x.required||x.default!==undefined));
     detail.availability=task?'publishable_after_owner_approval':'no_verified_published_task';
-    if(task&&'ref' in task&&typeof task.ref==='string')
-      detail.example=await compilingExample(foreachGithubTask({...task,ref:task.ref}));
-    detail.template_policy={allowed_action:'github.run',type:'task',inputs:'literal_only',
+    if(task&&'ref' in task&&typeof task.ref==='string'){
+      const sample=foreachGithubTask({...task,ref:task.ref});
+      detail.example=await compilingExample(sample);
+      // A second compiler-checked example demonstrates the exact syntax,
+      // selected from an actual verified input rather than inventing a field.
+      const candidate=Object.entries(task.inputs).find(([,field])=>field.default!==undefined);
+      if(candidate){
+        const [input,field]=candidate;
+        const dynamic=structuredClone(sample) as unknown as {
+          inputs:{items:unknown[]};
+          steps:Array<{template:{steps:Array<{with:{action:{inputs:Record<string,unknown>}}}>}}>;
+        };
+        dynamic.inputs.items=[field.default,field.default];
+        dynamic.steps[0]!.template.steps[0]!.with.action.inputs[input]={ref:'item.value'};
+        detail.dynamic_example=await compilingExample(dynamic);
+      }
+    }
+    detail.template_policy={allowed_action:'github.run',type:'task',
+      inputs:'literal or exact {ref:"item.value[.<field>]"} / {ref:"item.index"} only; typed by reviewed Action',
+      input_snapshot:'All selected values validated against pinned provider types and choices before first dispatch; each input map SHA-256 pinned to D1 before Attempt',
       max_items:PLAN_LIMITS.maxForeachItems,maximum_flattened_steps:PLAN_LIMITS.maxSteps,
       replay:'D1 UNIQUE(run_id,step_id) Attempt before single GitHub POST; no blind retries',
       physical_state:'verified GitHub terminal plus signed OIDC Claim/receipt',
       requires:['approved_actions','approve_heavy_execution'],
-      unsupported:['session','item-dependent task inputs','nested templates']};
+      unsupported:['session','arbitrary dynamic input expressions','nested templates']};
   }
   if(id==='flow.foreach_mcp_read'){
     const discovered=await portalDiscovery(env);
