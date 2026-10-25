@@ -96,6 +96,71 @@ async function runGithubStep(
     :runPublishedGitHubActionTask(env,plan,s,runId,step);
 }
 
+/** A native checkpoint freezes every item, condition and evaluated result before
+ * any child Step executes. For now the template is result.emit only; external
+ * MCP/GitHub Actions cannot enter this expansion path.
+ */
+async function runForeachStep(
+  env:Env,s:Step,runId:string,step:WorkflowStep,
+  ctx:{inputs:Record<string,unknown>;steps:Record<string,Outcome>},
+):Promise<Outcome>{
+  const db=env.DB;
+  try{
+    await db.prepare("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES(?,?,'running',?) ON CONFLICT(run_id,step_id) DO NOTHING")
+      .bind(runId,s.id,now()).run();
+    if(!dependenciesPermitRun(s,ctx.steps))return {status:'skipped'};
+    const config=s.with;
+    const template=config.template as {id:string;uses:string;with:{data?:unknown};if?:unknown};
+    if(template?.uses!=='result.emit'||!Number.isSafeInteger(config.max_items)||
+       Number(config.max_items)<1||Number(config.max_items)>8)
+      return {status:'failed',error_code:'invalid_foreach_plan'};
+    const snapshot=await step.do('workflow-'+s.id+'-snapshot',
+      {retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},
+      async()=>{
+        const list=evaluateArguments(config.items,ctx);
+        if(!Array.isArray(list)||list.length>Number(config.max_items))
+          return {valid:false,items:[]} as const;
+        const entries=list.map((value,index)=>{
+          const itemCtx={...ctx,item:{value,index}};
+          const selected=template.if===undefined||evaluateCondition(template.if,itemCtx);
+          const evaluated=selected?evaluateArguments(template.with.data, itemCtx):null;
+          return {id:s.id+'_'+index+'_'+template.id,item:value,selected,
+            output:evaluated===undefined?null:evaluated};
+        });
+        return {valid:true,items:limitResult(entries)} as const;
+      });
+    if(!snapshot.valid)return {status:'failed',error_code:'invalid_foreach_items'};
+    if(!Array.isArray(snapshot.items)||snapshot.items.length>Number(config.max_items))
+      return {status:'failed',error_code:'invalid_foreach_snapshot'};
+    const collected:unknown[]=[];
+    let succeeded=0;
+    for(let i=0;i<snapshot.items.length;i++){
+      const entry=snapshot.items[i];
+      if(entry.id!==s.id+'_'+i+'_'+template.id||typeof entry.selected!=='boolean')
+        return {status:'failed',error_code:'invalid_foreach_snapshot'};
+      const outcome=await step.do('workflow-'+entry.id,
+        {retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},
+        async():Promise<Outcome>=>{
+          await db.prepare("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES(?,?,'running',?) ON CONFLICT(run_id,step_id) DO NOTHING")
+            .bind(runId,entry.id,now()).run();
+          return entry.selected?{status:'succeeded',output:limitResult(entry.output)}:{status:'skipped'};
+        });
+      await db.prepare("INSERT INTO run_steps(run_id,step_id,status,output,error_code,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(run_id,step_id) DO UPDATE SET status=excluded.status,output=excluded.output,error_code=excluded.error_code,updated_at=excluded.updated_at WHERE run_steps.status IN ('waiting','running')")
+        .bind(runId,entry.id,outcome.status,outcome.output===undefined?null:JSON.stringify(outcome.output),
+          outcome.error_code??null,now()).run();
+      collected.push(outcome.status==='succeeded'?outcome.output:null);
+      if(outcome.status==='succeeded')succeeded++;
+      if(outcome.status==='indeterminate')return {status:'indeterminate',error_code:'foreach_child_indeterminate'};
+      if(outcome.status==='failed')return {status:'failed',error_code:'foreach_child_failed'};
+    }
+    return succeeded?{status:'succeeded',output:limitResult(collected)}:{status:'skipped'};
+  }catch{
+    // This first vertical has no external effects; a failed snapshot or
+    // result-only child cannot silently authorize protected Actions.
+    return {status:'failed',error_code:'foreach_execution_failed'};
+  }
+}
+
 export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}> {
   async run(event:WorkflowEvent<{run_id:string}>,step:WorkflowStep){
     const id=event.payload.run_id;
@@ -124,7 +189,9 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
         const ready=[...pending.values()].filter(s=>s.needs.every(n=>ctx.steps[n])).slice(0,8);
         if(!ready.length)throw Error('invalid_execution_graph');
         const outcomes=await Promise.all(ready.map(async (s:Step):Promise<Outcome>=>{
-          const result=(s.uses==='github.run'
+          const result=(s.uses==='flow.foreach'
+            ? await runForeachStep(this.env,s,id,step,ctx)
+            : s.uses==='github.run'
             ? await (async()=>{
               try{
                 await db.prepare("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES(?,?,'running',?) ON CONFLICT(run_id,step_id) DO NOTHING")
