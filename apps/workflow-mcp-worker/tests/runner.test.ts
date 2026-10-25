@@ -834,3 +834,18 @@ test('a skipped first repeat iteration prevents later dispatches',async t=>{
   assert.deepEqual(result.steps.map(x=>x.status),['skipped','skipped','skipped']);
   assert.equal(dispatched,0);
 });
+
+
+test('inline bounded-repeat validation reports repairable errors without D1 writes',async t=>{
+  const {service,sqlite}=setup(t);
+  const before=sqlite.prepare('SELECT COUNT(*) AS n FROM workflows').get() as {n:number};
+  const invalid=await service.validateDefinition(JSON.stringify({version:1,name:'Invalid repeat',
+    steps:[{id:'loop',flow:'repeat',times:99,
+      template:{uses:'result.emit',with:{data:'unused'}}}]}));
+  assert.equal(invalid.valid,false);
+  assert.equal(invalid.issues[0].code,'invalid_repeat_count');
+  assert.equal(invalid.issues[0].path,'/steps/0/times');
+  assert.match(String(invalid.issues[0].suggestion),/literal times integer/);
+  const after=sqlite.prepare('SELECT COUNT(*) AS n FROM workflows').get() as {n:number};
+  assert.equal(after.n,before.n);
+});
