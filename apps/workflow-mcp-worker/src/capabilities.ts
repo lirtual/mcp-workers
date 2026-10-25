@@ -142,7 +142,7 @@ export const WORKFLOW_EXPRESSION_RULES=Object.freeze({
   condition:'Boolean literal or safe expression that evaluates to Boolean; eq/ne/gt/lt take 2 operands, and/or take 1-16 operands.',
   needs:'Only existing Step IDs, no duplicates or cycles; reference another Step only if it appears in needs.',
   limits:{maxDepth:15,maxArrayElements:100,maxBooleanOperands:16},
-  unsupported:['foreach','while','repeat','child_workflow','saga','webhook'],
+  unsupported:['foreach','while','repeat','child_workflow','saga'],
 });
 
 export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
@@ -152,9 +152,14 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
     version:{const:1},
     name:{type:'string',minLength:1,maxLength:120},
     inputs:{type:'object',maxProperties:PLAN_LIMITS.maxInputs},
-    triggers:{type:'array',minItems:1,maxItems:1,items:{type:'object',additionalProperties:false,
-      required:['type','schedule'],properties:{type:{const:'cron'},schedule:{type:'string',maxLength:160,
-        description:'Five-field UTC Cron: numbers, *, lists, ranges, and steps; no names or Quartz/DST extensions.'}}}},
+    triggers:{type:'array',minItems:1,maxItems:1,items:{oneOf:[
+      {type:'object',additionalProperties:false,required:['type','schedule'],
+       properties:{type:{const:'cron'},schedule:{type:'string',maxLength:160,
+         description:'Five-field UTC Cron: numbers, *, lists, ranges, and steps; no names or Quartz/DST extensions.'}}},
+      {type:'object',additionalProperties:false,required:['type','token_sha256'],
+       properties:{type:{const:'webhook'},token_sha256:{type:'string',pattern:'^[a-f0-9]{64}$',
+         description:'SHA-256 hex digest of an independent 32-byte random Webhook bearer secret; never put the raw credential in a Draft.'}}},
+    ]}},
     steps:{type:'array',minItems:1,maxItems:PLAN_LIMITS.maxSteps,items:{
       type:'object',additionalProperties:false,
       required:['id','uses','with'],
@@ -179,8 +184,8 @@ const entries=[
    description:'Manually admit the current Published Version with workflow_run; supply idempotency_key to deduplicate.'},
   {id:'trigger.cron',kind:'trigger',availability:'supported',
    description:'One five-field UTC Cron trigger per Published Plan; no timezone/DST, missed-minute backfill or capacity queue. Pausing blocks new admissions.'},
-  {id:'trigger.webhook',kind:'trigger',availability:'unsupported',
-   description:'No owner-facing business Webhook ingress. GitHub signed Action callbacks are not business Triggers.'},
+  {id:'trigger.webhook',kind:'trigger',availability:'supported',
+   description:'Authenticated per-Workflow Bearer Webhook with a stored token digest, optional stable event ID, and immutable Published Version admission. Never uses the owner MCP token.'},
   {id:'trigger.github_event',kind:'trigger',availability:'unsupported',
    description:'GitHub lifecycle callbacks are execution receipts, not user-defined business events.'},
   {id:'action.result.emit',kind:'action',availability:'supported',
@@ -240,7 +245,7 @@ export async function workflowCapabilities(env:Pick<Env,
     tools:{discover_actions:'workflow_action_list',validate:'workflow_validate',
       create:'workflow_create',publish:'workflow_publish',start:'workflow_run',
       status:'workflow_status',result:'workflow_result'},
-    admission:'Manual starts and one UTC Cron schedule per Published Plan; no Webhook/GitHub business event ingress',
+    admission:'Manual, one UTC Cron schedule, or one authenticated Webhook per Published Plan; no GitHub business event ingress',
     note:'Discovery and inline validation never publish or grant execution.',
   };
   const entry=byId.get(id);
@@ -251,6 +256,17 @@ export async function workflowCapabilities(env:Pick<Env,
     ...(id==='action.mcp.call'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call']}:{}),
     ...(id==='action.github.run'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['github.run']}:{}),
   };
+  if(id==='trigger.webhook'){
+    detail.trigger_schema=WORKFLOW_DEFINITION_SCHEMA.properties.triggers;
+    detail.example=await compilingExample({...emit,triggers:[{type:'webhook',token_sha256:'0'.repeat(64)}]});
+    detail.authentication={method:'Bearer',credential:'Independent 32-byte random base64url token; do not reuse MCP_ACCESS_TOKEN',
+      definition:'Store only SHA-256 hex of the token in triggers[0].token_sha256',
+      ingress:'POST /triggers/webhook/{workflow_id}',content_type:'application/json',
+      body:'JSON object with only declared Workflow input names (up to 8 KiB)',
+      event_id_header:'X-Workflow-Event-Id (optional; stable ID enables deduplication)',
+      semantics:'D1 admission is pinned to the current active Published Version; absent event ID has no deduplication guarantee',
+      warning:'The example contains a placeholder hash, not a usable credential. Never put the raw bearer token in a Draft or log.'};
+  }
   if(id==='trigger.cron'){
     detail.trigger_schema=WORKFLOW_DEFINITION_SCHEMA.properties.triggers;
     detail.example=await compilingExample({...emit,triggers:[{type:'cron',schedule:'0 * * * *'}]});

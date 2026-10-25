@@ -197,8 +197,12 @@ export class WorkflowService {
         ['invalid_step_count','invalid_step','invalid_step_id','unsupported_capability',
          'invalid_step_arguments','invalid_dependencies','cyclic_dependencies',
          'excessive_parallelism','invalid_reference','invalid_step_reference'].includes(code)?'/steps':'/';
-      const suggestion=code==='unsupported_trigger'||code==='invalid_triggers'||code==='invalid_cron_schedule'?
+      const suggestion=code==='unsupported_trigger'||code==='invalid_triggers'?
+        'Use exactly one supported Cron or Webhook trigger from workflow_capabilities.':
+        code==='invalid_cron_schedule'?
         'Use one supported five-field UTC Cron schedule from workflow_capabilities; no timezone or Quartz extensions.':
+        code==='invalid_webhook_token_hash'?
+        'Use only the lowercase SHA-256 hex digest of a securely random 32-byte Webhook bearer token; never include the raw token in a Draft.':
         code==='unsupported_capability'?
         'Call workflow_capabilities and choose a supported Action.':
         code==='unsupported_field'?
@@ -292,7 +296,8 @@ export class WorkflowService {
   async start(workflow_id:string,inputs:Record<string,unknown>={},idempotency_key?:string,expected_version_id?:string){
     assertId(workflow_id);if(idempotency_key!==undefined&&(idempotency_key.length>128||!safeId(idempotency_key)))throw new StateError('invalid_idempotency_key');
     // The platform's minute identity cannot be impersonated by manual callers.
-    if(idempotency_key?.startsWith('cron-')&&!expected_version_id)throw new StateError('reserved_idempotency_key');
+    if((idempotency_key?.startsWith('cron-')||idempotency_key?.startsWith('webhook-'))&&!expected_version_id)
+      throw new StateError('reserved_idempotency_key');
     const inputJson=json(inputs);
     const request_digest=await digest(canonicalJsonString(inputs));
     // An accepted admission keeps its pinned version across republish/pause.

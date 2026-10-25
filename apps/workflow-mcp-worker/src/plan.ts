@@ -19,7 +19,9 @@ export type Step = {
   with: Record<string, unknown>; if?: unknown;
 };
 export type ReadonlyOperation = { endpoint:string; tool:string; scope:'read'; schema_digest:string };
-export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown>; triggers?: CronTrigger[]; mcp_approvals?: ReadonlyOperation[]; mcp_target_risks_accepted?: true; github_execution_approved?: true; github_action_approvals?: Array<{repository:string;repositoryId:number;workflowId:number;workflowPath:string;commitSha:string;type:'task'|'session';contractDigest:string}> };
+export type WebhookTrigger = {type:'webhook';token_sha256:string};
+export type WorkflowTrigger = CronTrigger | WebhookTrigger;
+export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown>; triggers?: WorkflowTrigger[]; mcp_approvals?: ReadonlyOperation[]; mcp_target_risks_accepted?: true; github_execution_approved?: true; github_action_approvals?: Array<{repository:string;repositoryId:number;workflowId:number;workflowPath:string;commitSha:string;type:'task'|'session';contractDigest:string}> };
 const SAFE_ID = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
 const OBJECT_PROTOTYPE_KEYS = new Set(['constructor','toString','toLocaleString','valueOf','hasOwnProperty','isPrototypeOf','propertyIsEnumerable']);
 const RESERVED = new Set(['eval','javascript','script','code','shell','endpoint','url','command','function']);
@@ -138,16 +140,22 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
   if(typeof o.name!=='string'||!o.name.trim()||o.name.length>120)throw new PlanError('invalid_name');
   if(!Array.isArray(o.steps)||o.steps.length<1||o.steps.length>PLAN_LIMITS.maxSteps)throw new PlanError('invalid_step_count');
   if(o.inputs!==undefined) {const inp=object(o.inputs,'invalid_inputs');if(Object.keys(inp).length>PLAN_LIMITS.maxInputs)throw new PlanError('too_many_inputs');}
-  let triggers:CronTrigger[]|undefined;
+  let triggers:WorkflowTrigger[]|undefined;
   if(o.triggers!==undefined){
     if(!Array.isArray(o.triggers)||o.triggers.length!==1)
       throw new PlanError('invalid_triggers','/triggers');
-    const item=object(o.triggers[0],'invalid_cron_trigger');
-    keys(item,['type','schedule'],'/triggers/0');
-    if(item.type!=='cron')throw new PlanError('unsupported_trigger','/triggers/0/type');
-    try{parseUtcCron(item.schedule);}
-    catch{throw new PlanError('invalid_cron_schedule','/triggers/0/schedule');}
-    triggers=[{type:'cron',schedule:item.schedule as string}];
+    const item=object(o.triggers[0],'invalid_trigger');
+    if(item.type==='cron'){
+      keys(item,['type','schedule'],'/triggers/0');
+      try{parseUtcCron(item.schedule);}
+      catch{throw new PlanError('invalid_cron_schedule','/triggers/0/schedule');}
+      triggers=[{type:'cron',schedule:item.schedule as string}];
+    }else if(item.type==='webhook'){
+      keys(item,['type','token_sha256'],'/triggers/0');
+      if(typeof item.token_sha256!=='string'||!/^[a-f0-9]{64}$/.test(item.token_sha256))
+        throw new PlanError('invalid_webhook_token_hash','/triggers/0/token_sha256');
+      triggers=[{type:'webhook',token_sha256:item.token_sha256}];
+    }else throw new PlanError('unsupported_trigger','/triggers/0/type');
   }
   const steps:Step[]=[];
   const ids=new Set<string>();
