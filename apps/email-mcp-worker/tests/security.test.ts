@@ -34,3 +34,57 @@ test('CSRF rejects missing cookie, invalid origin and reused token mismatch', ()
     method: 'POST', headers: { origin: 'https://email.lirtual.dpdns.org', cookie: 'email_setup_csrf=' + token },
   }), token));
 });
+
+test('Access JWT requires a trusted RS256 signature, correct audience and owner identity', async () => {
+  const keys = await crypto.subtle.generateKey(
+    { name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
+    true, ['sign', 'verify'],
+  );
+  const jwk = await crypto.subtle.exportKey('jwk', keys.publicKey);
+  const url = 'https://email.lirtual.dpdns.org/setup';
+  const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+  async function sign(aud: string, email: string) {
+    const header = encode({ alg: 'RS256', kid: 'test-key' });
+    const payload = encode({
+      iss: 'https://test.cloudflareaccess.com', aud, sub: 'owner-access-user',
+      email, exp: Math.floor(Date.now() / 1000) + 120,
+    });
+    const data = header + '.' + payload;
+    const signature = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', keys.privateKey, Buffer.from(data));
+    return data + '.' + Buffer.from(signature).toString('base64url');
+  }
+  let certFetches = 0;
+  const mockFetch = async () => {
+    certFetches++;
+    return Response.json({ keys: [{ ...jwk, kid: 'test-key', alg: 'RS256' }] });
+  };
+  const createRequest = (jwt: string) => new Request(url, {
+    headers: { 'cf-access-jwt-assertion': jwt },
+  });
+  const validJwt = await sign('trusted-app-audience', 'owner@example.com');
+  assert.deepEqual(await verifyAccess(createRequest(validJwt), env, mockFetch as any), {
+    sub: 'owner-access-user', email: 'owner@example.com',
+  });
+  await assert.rejects(() => verifyAccess(createRequest(validJwt.slice(0, -3) + 'AAA'), env, mockFetch as any));
+  const wrongAudience = await sign('wrong-audience', 'owner@example.com');
+  await assert.rejects(() => verifyAccess(createRequest(wrongAudience), env, mockFetch as any), /unauthorized/);
+  const wrongOwner = await sign('trusted-app-audience', 'other@example.com');
+  await assert.rejects(() => verifyAccess(createRequest(wrongOwner), env, mockFetch as any), /unauthorized/);
+  assert.ok(certFetches >= 1);
+});
+
+test('encryption key rotation preserves explicit key identity only with the previous secret', async () => {
+  const original = await encrypt(env, 'account:unchanged:graph', { token: 'rotation' });
+  const rotatedEnv = {
+    ...env,
+    MAIL_KEY_ID: '2',
+    MAIL_ENCRYPTION_KEY: Buffer.alloc(32, 11).toString('base64'),
+    MAIL_ENCRYPTION_PREVIOUS_KEY: env.MAIL_ENCRYPTION_KEY,
+    MAIL_PREVIOUS_KEY_ID: original.keyId,
+  };
+  assert.deepEqual(await decrypt(rotatedEnv, 'account:unchanged:graph', original.ciphertext, original.keyId), {
+    token: 'rotation',
+  });
+  await assert.rejects(() => decrypt({ ...rotatedEnv, MAIL_ENCRYPTION_PREVIOUS_KEY: undefined },
+    'account:unchanged:graph', original.ciphertext, original.keyId), /encryption_key_unavailable/);
+});

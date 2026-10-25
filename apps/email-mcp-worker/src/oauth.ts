@@ -62,7 +62,7 @@ async function exchange(env: Env, provider: Provider, form: URLSearchParams, req
 }
 async function identity(provider: Provider, token: string, requestFetch: typeof fetch): Promise<string> {
   const url = provider === 'gmail' ? 'https://gmail.googleapis.com/gmail/v1/users/me/profile' : 'https://graph.microsoft.com/v1.0/me?$select=mail,userPrincipalName';
-  const resp = await requestFetch(url, { headers: { authorization: 'Bearer ' + token }, signal: AbortSignal.timeout(10000) });
+  const resp = await requestFetch(url, { redirect: 'error', headers: { authorization: 'Bearer ' + token }, signal: AbortSignal.timeout(10000) });
   if (!resp.ok) fail('reauthorization_required');
   const data = await resp.json() as { emailAddress?: string; mail?: string; userPrincipalName?: string };
   const address = (data.emailAddress ?? data.mail ?? data.userPrincipalName ?? '').trim().toLowerCase();
