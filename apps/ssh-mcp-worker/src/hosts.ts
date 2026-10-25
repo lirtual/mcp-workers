@@ -1,5 +1,4 @@
 import type { Env } from './types.ts';
-import { brokerGetHost, brokerListHosts, brokerResolveHost } from './broker-client.ts';
 import { fitsMcpToolResultBudget } from './result-budget.ts';
 import { normalizeDnsName } from './target-security.ts';
 
@@ -31,6 +30,8 @@ interface HostPayload {
   authMethod: 'password' | 'publickey';
   password?: string;
   privateKey?: string;
+  keychainId?: string;
+  keyPassphrase?: string;
   fingerprint: string;
   initialCommand?: string;
 }
@@ -55,6 +56,7 @@ export interface SshHostCredentials {
   authMethod: 'password' | 'publickey';
   password?: string;
   privateKey?: string;
+  passphrase?: string;
   fingerprint: string;
 }
 
@@ -94,16 +96,21 @@ function validPayload(value: unknown): value is HostPayload {
   if (!record(value)) return false;
   const allowedFields = new Set([
     'name', 'group', 'host', 'port', 'username', 'authMethod', 'password', 'privateKey',
-    'initialCommand', 'termType', 'encoding', 'fingerprint', 'location', 'locationCheckedAt', 'system',
+    'keychainId', 'keyPassphrase', 'initialCommand', 'termType', 'encoding', 'fingerprint', 'location', 'locationCheckedAt', 'system',
   ]);
   if (Object.keys(value).some(field => !allowedFields.has(field))) return false;
   const authMethod = value.authMethod;
   const validPassword = authMethod === 'password'
     && typeof value.password === 'string' && value.password.length <= 4096
-    && value.privateKey === undefined;
+    && value.privateKey === undefined && value.keychainId === undefined && value.keyPassphrase === undefined;
+  const inlineKey = typeof value.privateKey === 'string' && value.privateKey.length > 0
+    && value.privateKey.length <= 128 * 1024 && value.privateKey.includes('BEGIN OPENSSH PRIVATE KEY');
+  const referencedKey = typeof value.keychainId === 'string' && HOST_ID.test(value.keychainId);
   const validPrivateKey = authMethod === 'publickey'
-    && typeof value.privateKey === 'string' && value.privateKey.length > 0
-    && value.privateKey.length <= 128 * 1024 && value.privateKey.includes('BEGIN OPENSSH PRIVATE KEY')
+    && (inlineKey || referencedKey)
+    && (value.privateKey === undefined || inlineKey)
+    && (value.keychainId === undefined || referencedKey)
+    && (value.keyPassphrase === undefined || (typeof value.keyPassphrase === 'string' && value.keyPassphrase.length <= 1024))
     && value.password === undefined;
   return typeof value.name === 'string' && value.name.length <= 80
     && typeof value.group === 'string' && value.group.length <= 40
@@ -124,7 +131,7 @@ function validPayload(value: unknown): value is HostPayload {
     && (value.system === undefined || value.system === null || record(value.system));
 }
 
-async function decryptHost(ciphertext: string, secret: string, accountId: string, hostId: string): Promise<HostPayload> {
+async function decryptPayload(ciphertext: string, secret: string, accountId: string, recordId: string): Promise<unknown> {
   if (ciphertext.length > 250_000) throw new HostError('host_record_invalid');
   const parts = ciphertext.split('.');
   if (parts.length !== 3) throw new HostError('host_record_invalid');
@@ -142,21 +149,45 @@ async function decryptHost(ciphertext: string, secret: string, accountId: string
     const clear = await crypto.subtle.decrypt({
       name: 'AES-GCM',
       iv,
-      additionalData: utf8.encode(`edgessh:v1:${accountId}:${hostId}`),
+      additionalData: utf8.encode(`edgessh:v1:${accountId}:${recordId}`),
     }, key, data);
-    const parsed: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(clear));
-    if (!validPayload(parsed)) throw new HostError('host_record_invalid');
-    return parsed;
+    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(clear)) as unknown;
   } catch (error) {
     if (error instanceof HostError) throw error;
     throw new HostError('secret_mismatch');
   }
 }
 
+async function decryptHost(ciphertext: string, secret: string, accountId: string, hostId: string): Promise<HostPayload> {
+  const payload = await decryptPayload(ciphertext, secret, accountId, hostId);
+  if (!validPayload(payload)) throw new HostError('host_record_invalid');
+  return payload;
+}
+
+async function resolvePrivateKey(env: Env, payload: HostPayload, accountId: string, secret: string): Promise<{ privateKey: string; passphrase?: string }> {
+  if (payload.keychainId) {
+    const row = await env.EDGE_SSH_DB!.prepare(
+      'SELECT encrypted_payload FROM keychain WHERE id = ? AND account_id = ?',
+    ).bind(payload.keychainId, accountId).first<{ encrypted_payload: string }>();
+    if (!row || typeof row.encrypted_payload !== 'string') throw new HostError('host_record_invalid');
+    const entry = await decryptPayload(row.encrypted_payload, secret, accountId, `keychain:${payload.keychainId}`);
+    if (!record(entry) || typeof entry.privateKey !== 'string'
+      || entry.privateKey.length === 0 || entry.privateKey.length > 128 * 1024
+      || !entry.privateKey.includes('BEGIN OPENSSH PRIVATE KEY')
+      || (entry.passphrase !== undefined && (typeof entry.passphrase !== 'string' || entry.passphrase.length > 1024))) {
+      throw new HostError('host_record_invalid');
+    }
+    const passphrase = payload.keyPassphrase || entry.passphrase;
+    return { privateKey: entry.privateKey, ...(passphrase ? { passphrase } : {}) };
+  }
+  if (!payload.privateKey) throw new HostError('host_record_invalid');
+  return { privateKey: payload.privateKey, ...(payload.keyPassphrase ? { passphrase: payload.keyPassphrase } : {}) };
+}
+
 function project(id: string, payload: HostPayload): HostView {
   const credentialPresent = payload.authMethod === 'password'
     ? typeof payload.password === 'string' && payload.password.length > 0
-    : typeof payload.privateKey === 'string' && payload.privateKey.length > 0;
+    : (typeof payload.privateKey === 'string' && payload.privateKey.length > 0) || Boolean(payload.keychainId);
   const trustReady = FINGERPRINT.test(payload.fingerprint);
   return {
     id,
@@ -195,7 +226,6 @@ async function decodeRow(row: HostRow, accountId: string, secret: string): Promi
 
 /** Read the current catalog row for an effectful operation; never persist this result. */
 export async function getSshHostCredentials(env: Env, hostId: string): Promise<SshHostCredentials> {
-  if (env.EDGE_SSH_BROKER) return brokerResolveHost(env, hostId);
   if (!HOST_ID.test(hostId)) throw new HostError('host_not_found');
   const accountId = await readAccount(env);
   const secret = requiredSecret(env);
@@ -210,6 +240,8 @@ export async function getSshHostCredentials(env: Env, hostId: string): Promise<S
   const view = project(row.id, payload);
   if (!view.trustReady) throw new HostError('host_untrusted');
   if (view.readinessReason === 'credential_missing') throw new HostError('host_record_invalid');
+  const key = payload.authMethod === 'publickey'
+    ? await resolvePrivateKey(env, payload, accountId, secret) : {};
   return {
     id: row.id,
     host: payload.host,
@@ -217,13 +249,12 @@ export async function getSshHostCredentials(env: Env, hostId: string): Promise<S
     username: payload.username,
     authMethod: payload.authMethod,
     ...(payload.password === undefined ? {} : { password: payload.password }),
-    ...(payload.privateKey === undefined ? {} : { privateKey: payload.privateKey }),
+    ...key,
     fingerprint: payload.fingerprint,
   };
 }
 
 export async function listHosts(env: Env, input: { cursor?: string; limit?: number }): Promise<{ hosts: HostView[]; nextCursor: string | null }> {
-  if (env.EDGE_SSH_BROKER) return brokerListHosts(env, input);
   const accountId = await readAccount(env);
   const secret = requiredSecret(env);
   const limit = input.limit ?? 50;
@@ -262,7 +293,6 @@ export async function listHosts(env: Env, input: { cursor?: string; limit?: numb
 }
 
 export async function getHost(env: Env, hostId: string): Promise<HostView> {
-  if (env.EDGE_SSH_BROKER) return brokerGetHost(env, hostId);
   if (!HOST_ID.test(hostId)) throw new HostError('host_not_found');
   const accountId = await readAccount(env);
   const secret = requiredSecret(env);

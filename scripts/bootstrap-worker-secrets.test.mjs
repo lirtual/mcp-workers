@@ -6,7 +6,7 @@ const fixtures = {
   "raindrop-mcp-worker": { MCP_ACCESS_TOKEN: "portal", RAINDROP_ACCESS_TOKEN: "raindrop" },
   "ima-mcp-worker": { MCP_ACCESS_TOKEN: "portal", IMA_API_KEY: "ima-key" },
   "database-mcp-worker": { MCP_ACCESS_TOKEN: "portal", DATABASE_CONFIG: '{"sample":"mysql://user:pass@host/db"}' },
-  "ssh-mcp-worker": { MCP_ACCESS_TOKEN: "portal", SSH_BROKER_TOKEN: "x".repeat(32) },
+  "ssh-mcp-worker": { MCP_ACCESS_TOKEN: "portal", ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64") },
   "remote-control-mcp-worker": { MCP_ACCESS_TOKEN: "portal" },
   "github-actions-mcp-worker": { MCP_ACCESS_TOKEN: "portal", ACTIONS_GITHUB_DISPATCH_TOKENS: "github-test-token" },
   "workflow-mcp-worker": { MCP_ACCESS_TOKEN: "portal", MCP_PORTAL_CLIENT_SECRET: "test-secret", WORKFLOW_GITHUB_DISPATCH_TOKEN: "x".repeat(24) },
@@ -43,11 +43,11 @@ test("database config stays an unescaped JSON string; no extra nesting", () => {
   assert.equal(collectBootstrapSecrets("database-mcp-worker", input).DATABASE_CONFIG, input.DATABASE_CONFIG);
 });
 
-test("SSH broker token must be at least 32 chars and root encryption key is not forwarded", () => {
+test("SSH catalog key must be a canonical 32-byte Base64 key", () => {
   const input = fixtures["ssh-mcp-worker"];
-  assert.throws(() => collectBootstrapSecrets("ssh-mcp-worker", { ...input, SSH_BROKER_TOKEN: "short" }), /32 characters/);
+  assert.throws(() => collectBootstrapSecrets("ssh-mcp-worker", { ...input, ENCRYPTION_KEY: "short" }), /32-byte key/);
   assert.deepEqual(collectBootstrapSecrets("ssh-mcp-worker",
-    { ...input, ENCRYPTION_KEY: "root-key", EDGE_SSH_DB: "root-db" }), input);
+    { ...input, SSH_BROKER_TOKEN: "retired", EDGE_SSH_DB: "binding-is-not-secret" }), input);
 });
 
 test("one ACTIONS_GITHUB_DISPATCH_TOKENS Secret stages multiple PATs without additional secret names", () => {

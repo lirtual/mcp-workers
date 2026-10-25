@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import worker from '../src/handler.ts';
-import { getHost, listHosts } from '../src/hosts.ts';
+import { getHost, getSshHostCredentials, listHosts } from '../src/hosts.ts';
 import type { D1Database, D1Statement, Env } from '../src/types.ts';
 
 const fixture = JSON.parse(await readFile(new URL('./fixtures/edge-ssh-host-v1.json', import.meta.url), 'utf8')) as {
@@ -20,6 +20,7 @@ class SyntheticD1 implements D1Database {
   reads = 0;
   accountId: string | null = fixture.accountId;
   workspaceRows = 1;
+  keychainRows: Array<{ id: string; account_id: string; encrypted_payload: string }> = [];
   rows = [{ id: fixture.hostId, account_id: fixture.accountId, encrypted_payload: fixture.encryptedPayload, updated_at: 10 }];
 
   constructor(rows?: SyntheticD1['rows']) {
@@ -45,7 +46,8 @@ class SyntheticD1 implements D1Database {
           },
           first: async <T>() => {
             this.reads += 1;
-            const row = this.rows.find(item => item.id === bound[0] && item.account_id === bound[1]);
+            const rows = query.includes('FROM keychain') ? this.keychainRows : this.rows;
+            const row = rows.find(item => item.id === bound[0] && item.account_id === bound[1]);
             return row as T | undefined ?? null;
           },
         };
@@ -72,6 +74,45 @@ test('reads the pinned upstream-generated AES-GCM v1 fixture and projects only h
     port: 2222, username: 'fixture-user', authMethod: 'password', trustReady: true, readinessReason: 'ready',
   });
   assert.doesNotMatch(JSON.stringify(result), /synthetic-password|synthetic-initial-command|encryptedPayload|ENCRYPTION_KEY|privateKey/);
+});
+
+async function encryptedFixture(value: unknown, recordId: string): Promise<string> {
+  const key = await crypto.subtle.importKey('raw', Uint8Array.from(atob(fixture.key), c => c.charCodeAt(0)),
+    'AES-GCM', false, ['encrypt']);
+  const iv = new Uint8Array(12);
+  crypto.getRandomValues(iv);
+  const data = await crypto.subtle.encrypt({
+    name: 'AES-GCM', iv,
+    additionalData: new TextEncoder().encode('edgessh:v1:' + fixture.accountId + ':' + recordId),
+  }, key, new TextEncoder().encode(JSON.stringify(value)));
+  const b64 = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes));
+  return 'v1.' + b64(iv) + '.' + b64(new Uint8Array(data));
+}
+
+test('upstream keychain reference resolves within its account without disclosing private keys in metadata', async () => {
+  const db = new SyntheticD1();
+  const keychainId = 'deaddddd-1111-4111-8111-aaaaaaaaaaaa';
+  const host = { ...fixture.host, authMethod: 'publickey', keychainId, password: undefined, privateKey: undefined };
+  db.rows[0]!.encrypted_payload = await encryptedFixture(host, fixture.hostId);
+  const privateKey = '-----BEGIN OPENSSH PRIVATE KEY-----\nsynthetic-not-real\n-----END OPENSSH PRIVATE KEY-----';
+  db.keychainRows = [{
+    id: keychainId, account_id: fixture.accountId,
+    encrypted_payload: await encryptedFixture({ name: 'fixture', privateKey, passphrase: 'synthetic-passphrase' }, 'keychain:' + keychainId),
+  }];
+  const env = environment(db);
+  const metadata = await getHost(env, fixture.hostId);
+  assert.equal(metadata.readinessReason, 'ready');
+  assert.doesNotMatch(JSON.stringify(metadata), /synthetic-not-real|synthetic-passphrase|keychainId/);
+  const connected = await getSshHostCredentials(env, fixture.hostId);
+  assert.equal(connected.privateKey, privateKey);
+  assert.equal(connected.passphrase, 'synthetic-passphrase');
+  assert.ok(db.queries.every(query => /^SELECT\b/i.test(query.trim())));
+  db.keychainRows[0]!.encrypted_payload = await encryptedFixture({
+    name: 'fixture', privateKey,
+  }, 'keychain:11111111-1111-4111-8111-111111111111');
+  await assert.rejects(getSshHostCredentials(env, fixture.hostId), { code: 'secret_mismatch' });
+  db.keychainRows = [];
+  await assert.rejects(getSshHostCredentials(env, fixture.hostId), { code: 'host_record_invalid' });
 });
 
 test('the authenticated MCP boundary rejects commands over 16 KiB UTF-8 before D1 or DO access', async () => {

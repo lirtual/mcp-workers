@@ -29,17 +29,17 @@
   "workers_dev": true,
   "preview_urls": false,
   "keep_vars": false,
-  "services": [
-    {
-      "binding": "EDGE_SSH_BROKER",
-      "service": "edgessh",
-      "entrypoint": "HostBrokerEntrypoint"
-    }
-  ],
   "secrets": {
     "required": [
       "MCP_ACCESS_TOKEN",
-      "SSH_BROKER_TOKEN"
+      "ENCRYPTION_KEY"
     ]
-  }
+  },
+  "d1_databases": [
+    {
+      "binding": "EDGE_SSH_DB",
+      "database_name": "edgessh-accounts",
+      "database_id": "bd5cfdc5-3db0-4af7-8e95-cbf3d65cfa94"
+    }
+  ]
 }

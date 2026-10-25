@@ -280,9 +280,9 @@ export async function canonicalOperationDigest(intent: CanonicalOperationIntent)
   return btoa(String.fromCharCode(...new Uint8Array(hash)));
 }
 
-async function sessionSecurityDigest(saved: { host: string; port: number; username: string; authMethod: string; fingerprint: string; password?: string; privateKey?: string }): Promise<string> {
+async function sessionSecurityDigest(saved: { host: string; port: number; username: string; authMethod: string; fingerprint: string; password?: string; privateKey?: string; passphrase?: string }): Promise<string> {
   const canonical = JSON.stringify([
-    saved.host, saved.port, saved.username, saved.authMethod, saved.fingerprint, saved.password ?? null, saved.privateKey ?? null,
+    saved.host, saved.port, saved.username, saved.authMethod, saved.fingerprint, saved.password ?? null, saved.privateKey ?? null, saved.passphrase ?? null,
   ]);
   const hash = await crypto.subtle.digest('SHA-256', encoder.encode(canonical));
   return btoa(String.fromCharCode(...new Uint8Array(hash)));
@@ -342,7 +342,7 @@ async function runSshExec(env: Env, request: ExecRequest, operationId: string, r
     ensureTime();
     const credentials = saved.authMethod === 'password'
       ? { password: saved.password! }
-      : { privateKey: saved.privateKey! };
+      : { privateKey: saved.privateKey!, ...(saved.passphrase ? { passphrase: saved.passphrase } : {}) };
     const connected = await connectSsh({
       host: saved.host,
       port: saved.port,
@@ -641,7 +641,7 @@ async function runBoundedSftp<T extends SftpListReply | SftpReadReply | SftpEffe
     ensureTime();
     const credentials = saved.authMethod === 'password'
       ? { password: saved.password! }
-      : { privateKey: saved.privateKey! };
+      : { privateKey: saved.privateKey!, ...(saved.passphrase ? { passphrase: saved.passphrase } : {}) };
     const connected = await connectSsh({
       host: saved.host,
       port: saved.port,
@@ -1308,7 +1308,7 @@ export class SshOperationsDO extends DurableObject<Env> {
       if (saved.port === 25 || !Number.isInteger(saved.port) || saved.port < 1 || saved.port > 65535) throw new HostError('invalid_target');
       const securityDigest = await sessionSecurityDigest(saved);
       const checkedIp = await this.resolveTarget(saved.host);
-      const credentials = saved.authMethod === 'password' ? { password: saved.password! } : { privateKey: saved.privateKey! };
+      const credentials = saved.authMethod === 'password' ? { password: saved.password! } : { privateKey: saved.privateKey!, ...(saved.passphrase ? { passphrase: saved.passphrase } : {}) };
       const connected = await connectSsh({
         host: saved.host,
         port: saved.port,
