@@ -93,6 +93,9 @@ test('Gmail reply preserves native thread and RFC Message-ID relations; forward 
     assert.match(sent[1].mime, /To: target@example\.test/);
     assert.ok(sent[1].mime.includes(Buffer.from('Fwd: Subject 123').toString('base64')));
     original.payload.headers.push({ name: 'Reply-To', value: 'untrusted@example.test' });
+    const { getMail } = await import('../src/providers.ts');
+    const observed = await getMail(env, account, 'source123');
+    assert.equal(observed.reply_to, 'untrusted@example.test');
     await assert.rejects(() => replyGmail(env, account, 'source123', 'Thanks', 'sender@example.test'), /reply_recipient_mismatch/);
     assert.equal(sent.length, 2, 'unconfirmed Reply-To must never dispatch a message');
     await replyGmail(env, account, 'source123', 'Thanks', 'untrusted@example.test');
