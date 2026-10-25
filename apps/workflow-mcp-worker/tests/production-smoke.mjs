@@ -1,6 +1,6 @@
 // Deliberately narrow production acceptance: one temporary result-only Workflow, no deployment.
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -27,6 +27,7 @@ let workflowId;
 let runId;
 let failure;
 let githubPhysicalCompleted = false;
+let webhookCredential;
 
 function sql(statement) {
   // stdout contains JSON only; do not log credentials, SQL args or Wrangler internals.
@@ -398,18 +399,97 @@ async function runActionTaskSmoke() {
   console.log('AGENT_FIRST_SMOKE_OK: discover, repair, inline validate with no D1 writes, Portal read, approved GitHub Task, signed Claim and physical completion');
 }
 
+
+async function runWebhookSmoke() {
+  const outstanding=sql("SELECT count(*) AS n FROM runs WHERE outcome NOT IN ('succeeded','failed','cancelled')");
+  assert.equal(outstanding[0]?.n,0,'Nonterminal production Run blocks acceptance');
+  await client.connect(transport);
+  const ability=await tool('workflow_capabilities',{id:'trigger.webhook'});
+  assert.equal(ability.availability,'supported','Production Webhook support is not deployed');
+  webhookCredential=randomBytes(32).toString('base64url');
+  assert.equal(webhookCredential.length,43);
+  const tokenHash=createHash('sha256').update(webhookCredential).digest('hex');
+  const definition={version:1,name:'webhook-production-smoke-'+label,
+    inputs:{payload:null},
+    triggers:[{type:'webhook',token_sha256:tokenHash}],
+    steps:[{id:'emit',uses:'result.emit',with:{data:{ref:'inputs.payload'}}}]};
+  const checked=await tool('workflow_validate',{definition:JSON.stringify(definition)});
+  assert.equal(checked.valid,true);
+  const draft=await tool('workflow_create',{definition:JSON.stringify(definition)});
+  workflowId=draft.workflow_id;
+  assert.match(workflowId,uuid);
+  const published=await tool('workflow_publish',{workflow_id:workflowId,expected_revision:1});
+  assert.ok(published.published_version_id);
+
+  const endpoint=base+'/triggers/webhook/'+workflowId;
+  async function deliver(payload,eventId,credential=webhookCredential){
+    return fetch(endpoint,{
+      method:'POST',redirect:'manual',signal:AbortSignal.timeout(15000),
+      headers:{authorization:'Bearer '+credential,'content-type':'application/json',
+        'x-workflow-event-id':eventId},
+      body:JSON.stringify({payload}),
+    });
+  }
+  const wrong=await deliver(echo,'untrusted-'+label,randomBytes(32).toString('base64url'));
+  assert.equal(wrong.status,401,'Wrong token must not admit a Run');
+  assert.equal(workflowRows().length,0,'Wrong token changed D1');
+
+  const stableId='webhook-smoke-'+label;
+  const first=await deliver(echo,stableId);
+  assert.equal(first.status,202,'First authenticated event must be accepted');
+  const firstRun=await first.json();
+  runId=firstRun.run_id;
+  assert.match(runId,uuid);
+  assert.equal(firstRun.published_version_id,published.published_version_id);
+  assert.equal(firstRun.deduplication,'stable_event_id');
+  const replay=await deliver(echo,stableId);
+  assert.equal(replay.status,200,'Duplicate stable event should replay');
+  assert.equal((await replay.json()).run_id,runId,'Duplicate event dispatched another Run');
+  assert.equal(workflowRows().length,1,'Duplicate event inserted an extra Run');
+  assert.equal((await deliver('different',stableId)).status,409,
+    'Changing an admitted event payload must conflict');
+  const second=await deliver(echo,'distinct-'+label);
+  assert.equal(second.status,202);
+  const secondRun=await second.json();
+  assert.notEqual(secondRun.run_id,runId);
+  assert.equal(workflowRows().length,2,'Distinct stable event must create a new Run');
+
+  for(const id of [runId,secondRun.run_id]){
+    let result;
+    for(let attempt=0;attempt<60;attempt++){
+      result=await tool('workflow_result',{run_id:id});
+      if(terminal.has(result.status)||result.status==='indeterminate')break;
+      await new Promise(resolve=>setTimeout(resolve,1000));
+    }
+    assert.equal(result?.status,'succeeded','Webhook Run not terminal success');
+    assert.equal(result.result,echo);
+    assert.deepEqual(result.steps.map(x=>x.status),['succeeded']);
+  }
+  const rows=sql(`SELECT DISTINCT version_id,admission_key,outcome FROM runs WHERE workflow_id=${quotedId(workflowId)}`);
+  assert.equal(rows.length,2);
+  assert.ok(rows.every(x=>x.version_id===published.published_version_id &&
+    x.outcome==='succeeded' && /^webhook-[a-f0-9]{64}$/.test(x.admission_key)));
+
+  await tool('workflow_pause',{workflow_id:workflowId});
+  assert.equal((await deliver(echo,'paused-'+label)).status,409,
+    'Paused published plan must not admit events');
+  assert.equal(workflowRows().length,2);
+  console.log('WEBHOOK_PRODUCTION_SMOKE_OK: wrong-token denied, duplicate stable event deduplicated, two immutable-version Runs succeeded, pause protected');
+}
+
 try {
   await (process.env.WORKFLOW_ACTION_TASK_SMOKE==='true'?runActionTaskSmoke():
     process.env.WORKFLOW_GITHUB_SMOKE==='true'?runS3Smoke():
-    process.env.WORKFLOW_MCP_SMOKE==='true'?runS2Smoke():runSmoke());
+    process.env.WORKFLOW_MCP_SMOKE==='true'?runS2Smoke():
+    process.env.WORKFLOW_WEBHOOK_SMOKE==='true'?runWebhookSmoke():runSmoke());
 } catch (e) {
   failure = e;
-  console.error('SMOKE_FAILED:', String(e?.message ?? e).replaceAll(token, '[redacted]'));
+  console.error('SMOKE_FAILED:', String(e?.message ?? e).replaceAll(token, '[redacted]').replaceAll(webhookCredential ?? '__no_webhook_credential__', '[redacted]'));
 } finally {
   try { await client.close(); } catch { /* No successful state assumed from close */ }
   try { cleanup(); } catch (e) {
     failure ??= e;
-    console.error('CLEANUP_FAILED:', String(e?.message ?? e).replaceAll(token, '[redacted]'));
+    console.error('CLEANUP_FAILED:', String(e?.message ?? e).replaceAll(token, '[redacted]').replaceAll(webhookCredential ?? '__no_webhook_credential__', '[redacted]'));
     if (workflowId) console.error('Manual follow-up Workflow ID:', workflowId);
   }
 }

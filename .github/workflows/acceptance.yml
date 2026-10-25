@@ -12,6 +12,7 @@ on:
           - production-mcp
           - production-github
           - production-action-task
+          - production-webhook
           - portal-readonly
           - github-action-result-cloud
           - portal-register
@@ -31,7 +32,7 @@ env:
 jobs:
   checks:
     name: Pre-acceptance checks
-    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && contains(fromJSON('["production-native","production-mcp","production-github","production-action-task","portal-register"]'), inputs.test_type) }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && contains(fromJSON('["production-native","production-mcp","production-github","production-action-task","production-webhook","portal-register"]'), inputs.test_type) }}
     uses: ./.github/workflows/ci.yml
     with:
       worker: workflow-mcp-worker
@@ -42,7 +43,7 @@ jobs:
     if: >-
       ${{ github.event_name == 'workflow_dispatch' &&
           github.ref == 'refs/heads/main' &&
-          contains(fromJSON('["production-native","production-mcp","production-github","production-action-task"]'), inputs.test_type) &&
+          contains(fromJSON('["production-native","production-mcp","production-github","production-action-task","production-webhook"]'), inputs.test_type) &&
           needs.checks.result == 'success' &&
           needs.checks.outputs.release_ready == 'true' }}
     runs-on: ubuntu-latest
@@ -59,6 +60,7 @@ jobs:
       WORKFLOW_MCP_SMOKE: ${{ inputs.test_type == 'production-mcp' }}
       WORKFLOW_GITHUB_SMOKE: ${{ inputs.test_type == 'production-github' }}
       WORKFLOW_ACTION_TASK_SMOKE: ${{ inputs.test_type == 'production-action-task' }}
+      WORKFLOW_WEBHOOK_SMOKE: ${{ inputs.test_type == 'production-webhook' }}
       WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
       MCP_PORTAL_CLIENT_ID: ${{ vars.MCP_PORTAL_CLIENT_ID }}
       MCP_PORTAL_CLIENT_SECRET: ${{ secrets.MCP_PORTAL_CLIENT_SECRET }}
