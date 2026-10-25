@@ -107,6 +107,13 @@ const branchJoin={version:1,name:'Conditional branch and join',inputs:{choice:'l
 const literalRepeat={version:1,name:'Fixed bounded repeat',inputs:{message:'hello'},
   steps:[{id:'emit_each',flow:'repeat',times:3,
     template:{uses:'result.emit',with:{data:{ref:'inputs.message'}}}}]};
+const foreachEmit={version:1,name:'Snapshot bounded array',inputs:{items:['A','B']},steps:[
+  {id:'each',flow:'foreach',items:{ref:'inputs.items'},max_items:4,
+    template:{steps:[{id:'emit',uses:'result.emit',with:{
+      data:{value:{ref:'item.value'},index:{ref:'item.index'}},
+    }}]}},
+  {id:'done',needs:['each'],uses:'result.emit',with:{data:{ref:'steps.each.output'}}},
+]};
 const mcpRead=(tool:PortalToolContract)=>({version:1,name:'Verified Portal contract example',
   steps:[{id:'read',uses:'mcp.call',with:{
     endpoint:tool.endpoint,tool:tool.tool,scope:'read',
@@ -152,7 +159,8 @@ export const WORKFLOW_EXPRESSION_RULES=Object.freeze({
   needs:'Only existing Step IDs, no duplicates or cycles; reference another Step only if it appears in needs.',
   needs_policy:'Default all_succeeded; allow_skipped requires at least one succeeded dependency and all others succeeded or skipped; all skipped, failed or indeterminate dependencies block execution.',
   limits:{maxDepth:15,maxArrayElements:100,maxBooleanOperands:16},
-  unsupported:['foreach','while','dynamic_repeat','child_workflow','saga'],
+  foreach_item_refs:['item.value[.<field>]','item.index'],
+  unsupported:['foreach_external_actions','nested_foreach','while','dynamic_repeat','child_workflow','saga'],
 });
 
 export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
@@ -185,20 +193,34 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
         {required:['uses','with'],not:{anyOf:[
           {required:['flow']},{required:['times']},{required:['template']},
         ]}},
-        {required:['flow','times','template'],not:{anyOf:[
+        {required:['flow','times','template'],properties:{flow:{const:'repeat'}},not:{anyOf:[
           {required:['uses']},{required:['with']},{required:['if']},{required:['needs_policy']},
+          {required:['items']},{required:['max_items']},
+        ]}},
+        {required:['flow','items','max_items','template'],properties:{flow:{const:'foreach'}},not:{anyOf:[
+          {required:['uses']},{required:['with']},{required:['if']},{required:['needs_policy']},
+          {required:['times']},
         ]}},
       ],
       properties:{
         id:{type:'string',pattern:'^[A-Za-z][A-Za-z0-9_-]{0,63}$'},
         uses:{enum:[...SUPPORTED_STEP_USES]},
         needs:{type:'array',uniqueItems:true,items:{type:'string'}},
-        flow:{const:'repeat'},
+        flow:{enum:['repeat','foreach']},
+        items:{type:'object',additionalProperties:false,required:['ref'],properties:{ref:{type:'string'}}},
+        max_items:{type:'integer',minimum:1,maximum:PLAN_LIMITS.maxForeachItems},
         times:{type:'integer',minimum:1,maximum:PLAN_LIMITS.maxRepeat},
-        template:{type:'object',additionalProperties:false,required:['uses','with'],
-          properties:{uses:{enum:[...SUPPORTED_STEP_USES]},with:{type:'object'},
-            if:{anyOf:[{type:'boolean'},{type:'object'}]}},
-          description:'One Action template per literal iteration; flattened before Publish to sequential stable <id>_<index> Step identities. No nested or dynamic repeats.'},
+        template:{oneOf:[
+          {type:'object',additionalProperties:false,required:['uses','with'],
+            properties:{uses:{enum:[...SUPPORTED_STEP_USES]},with:{type:'object'},
+              if:{anyOf:[{type:'boolean'},{type:'object'}]}}},
+          {type:'object',additionalProperties:false,required:['steps'],
+            properties:{steps:{type:'array',minItems:1,maxItems:1,items:{
+              type:'object',additionalProperties:false,required:['id','uses','with'],
+              properties:{id:{type:'string'},uses:{const:'result.emit'},
+                with:WORKFLOW_ACTION_WITH_SCHEMAS['result.emit'],
+                if:{anyOf:[{type:'boolean'},{type:'object'}]}}}}}},
+        ],description:'Literal repeat uses a single Action; bounded foreach uses exactly one result.emit Step template. Other Actions, nesting and runtime while are not yet supported.'},
         needs_policy:{enum:['all_succeeded','allow_skipped'],description:'Default all_succeeded. allow_skipped requires nonempty needs; failed/indeterminate dependencies still block downstream effects.'},
         if:{anyOf:[{type:'boolean'},{type:'object'}],description:'Safe Boolean condition; see expression_rules and inline validation.'},
         with:{type:'object',description:'Must match the matching uses/action contract below.'},
@@ -235,8 +257,10 @@ const entries=[
    description:'Explicit needs_policy=allow_skipped joins conditional branches only when at least one succeeded and all other dependencies succeeded or skipped; a wholly skipped branch set, failure or uncertainty blocks execution.'},
   {id:'flow.repeat',kind:'flow',availability:'supported',
    description:'Literal 1–8 repeat iterations flatten into sequential, pinned Steps before Publish. Max 32 expanded Steps; no runtime loops.'},
+  {id:'flow.foreach_emit',kind:'flow',availability:'supported',
+   description:'Dynamic array of at most 8 elements; a single result.emit template is snapshotted by native Cloudflare step.do before each bounded child executes. No external Actions or nested steps.'},
   {id:'flow.loop',kind:'flow',availability:'unsupported',
-   description:'Dynamic repeat, while, foreach, nested steps and runtime expansion remain unsupported.'},
+   description:'Dynamic repeat, while, foreach external Actions, nested steps and runtime while expansion remain unsupported.'},
   {id:'flow.child',kind:'flow',availability:'unsupported',
    description:'Child workflows and durable wait are not supported in the current Published Plan schema.'},
   {id:'flow.saga',kind:'flow',availability:'unsupported',
@@ -337,6 +361,12 @@ export async function workflowCapabilities(env:Pick<Env,
     detail.example=await compilingExample(branchJoin);
   if(id==='flow.repeat')
     detail.example=await compilingExample(literalRepeat);
+  if(id==='flow.foreach_emit'){
+    detail.example=await compilingExample(foreachEmit);
+    detail.template_policy={allowed_action:'result.emit',max_items:PLAN_LIMITS.maxForeachItems,
+      maximum_flattened_steps:PLAN_LIMITS.maxSteps,snapshot:'native step.do before first child',
+      empty_array:'skipped',external_actions:'unsupported'};
+  }
   if(id==='action.mcp.call'){
     const discovered=await portalDiscovery(env);
     detail.availability=discovered.availability;
