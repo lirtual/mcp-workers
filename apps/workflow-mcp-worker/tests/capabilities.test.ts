@@ -138,7 +138,7 @@ test('GitHub Task dynamic template schema and capability remain scoped',async()=
  const items=WORKFLOW_DEFINITION_SCHEMA.properties.steps.items.properties.template.oneOf[1]
    .properties.steps.items;
  assert.ok(items.properties.uses.enum.includes('github.run'));
- assert.ok(items.allOf.some((x:{if?:{properties?:{uses?:{const?:string}}}})=>
+ assert.ok(items.allOf?.some((x:{if?:{properties?:{uses?:{const?:string}}}})=>
    x.if?.properties?.uses?.const==='github.run'));
 });
 
