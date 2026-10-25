@@ -1,0 +1,62 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { fencedSend } from '../src/tools.ts';
+const account = { account_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', provider: 'gmail', status: 'active' } as any;
+function database() {
+  const records = new Map<string, { payload_digest: string; status: string; reference: string | null }>();
+  return {
+    prepare(query: string) {
+      return {
+        bind(...params: any[]) {
+          return {
+            async run() {
+              if (query.startsWith('DELETE FROM send_attempts')) return { meta: { changes: 0 } };
+              if (query.startsWith('INSERT OR IGNORE')) {
+                const [accountId, id, digest, status] = params;
+                const key = accountId + ':' + id;
+                if (records.has(key)) return { meta: { changes: 0 } };
+                records.set(key, { payload_digest: digest, status, reference: null });
+                return { meta: { changes: 1 } };
+              }
+              if (query.startsWith('UPDATE send_attempts')) {
+                const [status, ref, accountId, id] = params;
+                const item = records.get(accountId + ':' + id)!;
+                item.status = status;
+                item.reference = ref;
+                return { meta: { changes: 1 } };
+              }
+              throw Error('unexpected query');
+            },
+            async first() {
+              const [accountId, id] = params;
+              return records.get(accountId + ':' + id) ?? null;
+            },
+          };
+        },
+      };
+    },
+    records,
+  };
+}
+test('only first send dispatches, repeat never sends, digest conflict fails', async () => {
+  const db = database(), env = { DB: db } as any;
+  let dispatches = 0;
+  const fn = async () => { dispatches++; return { status: 'accepted' as const }; };
+  const first = await fencedSend(env, account, 'stable-id-123', { to: ['x@y.com'] }, fn);
+  assert.equal(first.status, 'accepted');
+  const again = await fencedSend(env, account, 'stable-id-123', { to: ['x@y.com'] }, fn);
+  assert.equal(again.duplicate, true);
+  assert.equal(dispatches, 1);
+  await assert.rejects(() => fencedSend(env, account, 'stable-id-123', { to: ['z@y.com'] }, fn), /conflicting_send_request/);
+});
+test('unknown send outcome stays fenced and cannot trigger a retry', async () => {
+  const db = database(), env = { DB: db } as any;
+  let dispatches = 0;
+  const fn = async (): Promise<{ status: 'accepted' }> => { dispatches++; throw new Error('network timeout'); };
+  const first = await fencedSend(env, account, 'request-abc123', { body: 'Hello' }, fn);
+  assert.equal(first.status, 'indeterminate');
+  const replay = await fencedSend(env, account, 'request-abc123', { body: 'Hello' }, fn);
+  assert.equal(replay.status, 'indeterminate');
+  assert.equal(replay.duplicate, true);
+  assert.equal(dispatches, 1);
+});
