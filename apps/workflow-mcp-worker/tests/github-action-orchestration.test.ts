@@ -108,3 +108,43 @@ test('moved immutable tag is a definite rejection and never issues a POST',async
   assert.equal(db.prepare('SELECT state FROM step_attempts').get()?.state,'rejected');
  }finally{db.close();}
 });
+
+test('dynamic Task Attempt dispatch is one-shot and rejects forged child identities',async()=>{
+ const {db,adapter}=setup();
+ try{
+  const taskAction={...action,type:'task' as const};
+  const dynamic={...publishedPlan,github_action_approvals:[taskAction],steps:[
+   {id:'each',uses:'flow.foreach',needs:[],with:{
+     items:{ref:'inputs.items'},max_items:2,
+     template:{id:'verify',uses:'github.run',with:{
+       capability:'github.action',action:{...taskAction,ref:data.ref,inputs:{outcome:'success'}},
+     }},
+   }},
+  ]};
+  db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?')
+    .run(JSON.stringify(dynamic),'v');
+  let posts=0;
+  const child={...data,stepId:'each_0_verify',action:taskAction,inputs:{outcome:'success'}};
+  const http=async (req:Request)=>{
+   if(req.method==='GET')return gitRef();
+   posts++;return Response.json({workflow_run_id:88});
+  };
+  for(const badId of ['each_2_verify','each_01_verify','each_0_wrong','linux','each_0_verify_x']){
+   await assert.rejects(()=>registerAndDispatchGitHubAction(adapter,
+     {...child,stepId:badId},http),/publication_missing/);
+  }
+  await assert.rejects(()=>registerAndDispatchGitHubAction(adapter,{
+    ...child,inputs:{outcome:'failure'},
+  },http),/publication_missing/);
+  assert.equal(db.prepare('SELECT count(*) AS n FROM step_attempts').get()?.n,0);
+  assert.equal(posts,0);
+  const response=await registerAndDispatchGitHubAction(adapter,child,http);
+  assert.equal(response.status,'confirmed');
+  assert.equal(posts,1);
+  assert.equal(db.prepare('SELECT step_id,state FROM step_attempts').get()?.step_id,'each_0_verify');
+  await assert.rejects(()=>registerAndDispatchGitHubAction(adapter,
+    {...child,attemptId:'44444444-4444-4444-8444-444444444444',
+      dispatchId:'55555555-5555-4555-8555-555555555555'},http),/not_registered/);
+  assert.equal(posts,1,'no replay can dispatch a second GitHub Task for the same item');
+ }finally{db.close();}
+});
