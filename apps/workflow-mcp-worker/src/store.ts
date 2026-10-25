@@ -171,15 +171,30 @@ export class WorkflowService {
         ...(plan.steps.some(s=>s.uses==='github.run')?{requires_heavy_execution_approval:true}:{})};
     }catch(error){
       if(!(error instanceof PlanError))throw error;
+      // Never reflect raw YAML, user keys, credentials or upstream errors.
+      // Compiler-supplied paths are only for known, safe schema locations.
       const code=error.message.split(':',1)[0];
-      const path=code==='invalid_version'?'/version':
+      const path=error.path!=='/'?error.path:
+        code==='invalid_version'?'/version':
         code==='invalid_name'?'/name':
+        code==='invalid_inputs'||code==='too_many_inputs'?'/inputs':
         ['invalid_step_count','invalid_step','invalid_step_id','unsupported_capability',
-         'invalid_step_arguments','invalid_dependencies'].includes(code)?'/steps':'/';
+         'invalid_step_arguments','invalid_dependencies','cyclic_dependencies',
+         'excessive_parallelism','invalid_reference','invalid_step_reference'].includes(code)?'/steps':'/';
+      const suggestion=code==='unsupported_capability'?
+        'Call workflow_capabilities and choose a supported Action.':
+        code==='unsupported_field'?
+        'Remove the unsupported field; use workflow_capabilities for the current schema.':
+        ['invalid_reference','invalid_step_reference'].includes(code)?
+        'Reference inputs or a declared dependency Step output/status.':
+        code==='invalid_yaml_or_json'?
+        'Submit valid YAML or JSON without duplicate keys.':
+        ['invalid_step_count','excessive_parallelism','too_many_inputs'].includes(code)?
+        'Reduce the definition to the limits returned by workflow_capabilities.':
+        undefined;
       return {valid:false,issues:[{code,path,
         message:'Workflow definition rejected: '+code,
-        ...(['unsupported_capability','invalid_step_arguments'].includes(code)
-          ?{suggestion:'Use a supported Step type and its published argument contract.'}:{})}]};
+        ...(suggestion?{suggestion}:{})}]};
     }
   }
   async publish(workflow_id:string,expected_revision:number,approved_operations:ReadonlyOperation[]=[],accept_target_risks=false,approve_heavy_execution=false,approved_actions:ReviewedGitHubAction[]=[]){

@@ -135,7 +135,7 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     })});
     assert.equal(inlineRejected.valid,false);
     assert.equal(inlineRejected.issues[0].code,'unsupported_capability');
-    assert.equal(inlineRejected.issues[0].path,'/steps');
+    assert.equal(inlineRejected.issues[0].path,'/steps/0/uses');
     const mixed=await call('workflow_validate',{
       workflow_id:'00000000-0000-4000-8000-000000000001',
       revision:1,definition:JSON.stringify(definition),

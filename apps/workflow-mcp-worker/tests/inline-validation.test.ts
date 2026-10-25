@@ -27,7 +27,7 @@ test('unknown capability returns stable structured issue without D1',async()=>{
   const result=await validateWorkflowTarget(service,{definition:invalid});
   assert.equal(result.valid,false);
   assert.deepEqual(result.issues[0].code,'unsupported_capability');
-  assert.equal(result.issues[0].path,'/steps');
+  assert.equal(result.issues[0].path,'/steps/0/uses');
   assert.ok(result.issues[0].message);
   assert.ok(result.issues[0].suggestion);
 });
@@ -52,4 +52,37 @@ test('validation target is an exclusive choice',async()=>{
   assert.equal(called,0);
   assert.equal((await validateWorkflowTarget(service,{workflow_id:'00000000-0000-4000-8000-000000000001',revision:1})).valid,true);
   assert.equal(called,1);
+});
+
+test('diagnostics locate unsupported trigger, Action and step field without leaking input',async()=>{
+  const service=new WorkflowService({DB:{
+    prepare(){throw Error('validation must not touch D1');},
+  }} as unknown as Env);
+  const base={version:1,name:'Inspect',steps:[{
+    id:'one',uses:'result.emit',with:{data:'ok'},
+  }]};
+  for(const [definition,expectedCode,expectedPath] of [
+    [{...base,triggers:[{type:'cron',expression:'* * * * *'}]},'unsupported_field','/triggers'],
+    [{...base,steps:[{id:'one',uses:'shell',with:{}}]},'unsupported_capability','/steps/0/uses'],
+    [{...base,steps:[{...base.steps[0],repeat:{times:2}}]},'unsupported_field','/steps/0/repeat'],
+    [{...base,inputs:Object.fromEntries(Array.from({length:33},(_,i)=>['key'+i,i]))},
+      'too_many_inputs','/inputs'],
+  ] as const){
+    const response=await validateWorkflowTarget(service,{definition:JSON.stringify(definition)});
+    assert.equal(response.valid,false);
+    assert.equal(response.issues[0].code,expectedCode);
+    assert.equal(response.issues[0].path,expectedPath);
+    assert.ok(response.issues[0].suggestion);
+  }
+  const secretKey='MySensitiveCallerTokenShouldStaySecret';
+  const rejected=await validateWorkflowTarget(service,{definition:JSON.stringify({...base,[secretKey]:'secret-value'})});
+  assert.equal(rejected.valid,false);
+  assert.equal(rejected.issues[0].code,'unsupported_field');
+  assert.equal(rejected.issues[0].path,'/');
+  assert.equal(JSON.stringify(rejected).includes(secretKey),false);
+  assert.equal(JSON.stringify(rejected).includes('secret-value'),false);
+  const syntax=await validateWorkflowTarget(service,{definition:'name: [broken'});
+  assert.equal(syntax.valid,false);
+  assert.equal(syntax.issues[0].code,'invalid_yaml_or_json');
+  assert.equal(syntax.issues[0].path,'/');
 });
