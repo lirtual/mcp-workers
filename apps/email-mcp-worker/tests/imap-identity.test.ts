@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { encodeImapReference, decodeImapReference, validateProtocolCredentials } from '../src/imap.ts';
-import { resolvePublicMailEndpoint } from '../src/mail-endpoints.ts';
+import { publicIp, resolvePublicMailEndpoint } from '../src/mail-endpoints.ts';
 test('IMAP reference binds mailbox, UIDVALIDITY and UID including Unicode folder', () => {
   const ref = { folder: '收件箱', uidvalidity: '92102026', uid: 1234 };
   const opaque = encodeImapReference(ref);
@@ -61,4 +61,12 @@ test('IMAP trash prefers special-use designation even for localized folder names
   ])?.path, '已删除邮件');
   assert.equal(findImapTrash([{ path: 'Deleted Items' }])?.path, 'Deleted Items');
   assert.equal(findImapTrash([{ path: 'Archive', specialUse: '\\Archive' }]), undefined);
+});
+
+test('IMAP/SMTP pinned IP rejects the entire IANA protocol-assignments block', () => {
+  for (const ip of ['192.0.0.0', '192.0.0.2', '192.0.0.9', '192.0.0.10', '192.0.0.170', '192.0.0.255']) {
+    assert.equal(publicIp(ip), false, ip);
+  }
+  assert.equal(publicIp('1.1.1.1'), true);
+  assert.equal(publicIp('8.8.8.8'), true);
 });
