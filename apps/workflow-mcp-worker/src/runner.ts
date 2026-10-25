@@ -104,7 +104,8 @@ const templateIsExternal=(step:Step)=>
 /** Bounded per-item sequential template. A native array checkpoint freezes
  * expansion before execution, and each external child's own native arguments
  * checkpoint freezes its effective request after same-item dependencies.
- * Only approved read-only MCP calls can have external effects in this path.
+ * Mixed templates may contain one reviewed GitHub Task and approved read-only
+ * MCP calls; skipped stages never authorize subsequent external dispatch.
  */
 async function runMultiForeach(
   env:Env,plan:Plan,s:Step,runId:string,step:WorkflowStep,
@@ -113,11 +114,12 @@ async function runMultiForeach(
   const config=s.with;
   const children=config.templates as Array<{id:string;uses:string;with:{data?:unknown;arguments?:unknown;action?:unknown};if?:unknown}>;
   const taskStages=Array.isArray(children)?children.flatMap((c,i)=>c?.uses==='github.run'?[i]:[]):[];
-  const approvedTaskShape=taskStages.length===1&&taskStages[0]===1&&
+  // Keep checkpoint names and decisions for previously Published Plans.
+  const legacyTaskShape=taskStages.length===1&&taskStages[0]===1&&
     children?.length===3&&children[0]?.uses==='result.emit'&&children[2]?.uses==='result.emit';
   if(!Array.isArray(children)||children.length<2||children.length>4||
      children.some(c=>!['result.emit','mcp.call','github.run'].includes(c?.uses)||typeof c.id!=='string')||
-     (taskStages.length>0&&!approvedTaskShape)||
+     taskStages.length>1||
      !Number.isSafeInteger(config.max_items)||Number(config.max_items)<1||
      Number(config.max_items)>8||Number(config.max_items)*children.length+1>32)
     return {status:'failed',error_code:'invalid_foreach_plan'};
@@ -138,16 +140,24 @@ async function runMultiForeach(
     for(const [index,value] of snapshot.items.entries()){
       const localSteps:Record<string,Outcome>={...ctx.steps};
       let final:Outcome={status:'skipped'};
-      for(const child of children){
+      for(const [stage,child] of children.entries()){
         const childId=s.id+'_'+index+'_'+child.id;
         const localCtx={...ctx,steps:localSteps,item:{value,index}};
+        const earlierSucceeded=children.slice(0,stage)
+          .every(prior=>localSteps[prior.id]?.status==='succeeded');
         let outcome:Outcome;
-        if(child.uses==='result.emit'){
+        // New mixed sequences fail closed after a skipped prerequisite.
+        // Original three-stage Plans retain their native checkpoint names.
+        if(taskStages.length>0&&!legacyTaskShape&&!earlierSucceeded){
+          outcome=await step.do('workflow-'+childId+'-blocked',
+            {retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},
+            async():Promise<Outcome>=>({status:'skipped'}));
+        }else if(child.uses==='result.emit'){
           outcome=await step.do('workflow-'+childId,
             {retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},async():Promise<Outcome>=>{
               // A skipped Task cannot authorize a follow-up stage or
               // manufacture a successful result from an absent receipt.
-              if(taskStages.length&&child.id===children[2]!.id&&
+              if(legacyTaskShape&&child.id===children[2]!.id&&
                  localSteps[children[1]!.id]?.status!=='succeeded')
                 return {status:'skipped'};
               if(child.if!==undefined&&!evaluateCondition(child.if,localCtx))
@@ -160,7 +170,8 @@ async function runMultiForeach(
           // skipped emit may never trigger the external Task.
           const selected=await step.do('workflow-'+childId+'-selection',
             {retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},async()=>({
-              selected:localSteps[children[0]!.id]?.status==='succeeded'&&
+              selected:(legacyTaskShape?
+                localSteps[children[0]!.id]?.status==='succeeded':earlierSucceeded)&&
                 (child.if===undefined||evaluateCondition(child.if,localCtx)),
             }));
           if(!selected.selected){
