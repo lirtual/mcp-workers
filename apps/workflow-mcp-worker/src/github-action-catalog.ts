@@ -1,7 +1,7 @@
 import { discoverGitHubActions } from './github-action-discovery.ts';
 
 export type ActionCatalogEnv = {
-  WORKFLOW_EXECUTOR_GITHUB_TOKEN?: string;
+  WORKFLOW_GITHUB_DISPATCH_TOKEN?: string;
   GITHUB_ACTION_APPROVED_REPOSITORIES?: string;
 };
 export type ApprovedRepository = {
@@ -47,7 +47,7 @@ export function approvedActionRepositories(raw: string | undefined): ApprovedRep
 export async function listAvailableGitHubActions(env: ActionCatalogEnv) {
   const grants = approvedActionRepositories(env.GITHUB_ACTION_APPROVED_REPOSITORIES);
   if (!grants.length) return { actions: [] };
-  const token = env.WORKFLOW_EXECUTOR_GITHUB_TOKEN;
+  const token = env.WORKFLOW_GITHUB_DISPATCH_TOKEN;
   if (!token) throw Error('github_action_catalog_token_missing');
   const actions = [];
   for (const grant of grants) {

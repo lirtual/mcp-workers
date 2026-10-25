@@ -22,7 +22,7 @@ Environment bindings and credentials:
 - `DB` and `WORKFLOW` (`workflow-mcp-runner`).
 - `MCP_ACCESS_TOKEN` for owner API ingress.
 - `MCP_PORTAL_CLIENT_ID` / `MCP_PORTAL_CLIENT_SECRET` for the pinned Portal.
-- `WORKFLOW_EXECUTOR_GITHUB_TOKEN` for the registered GitHub executor.
+- `WORKFLOW_GITHUB_DISPATCH_TOKEN` for the registered GitHub executor.
 - Release-pinned non-secret variables `MCP_PORTAL_ENDPOINT`, `GITHUB_EXECUTOR_REPOSITORY`, `GITHUB_EXECUTOR_REPOSITORY_ID`, `GITHUB_EXECUTOR_REF` and `GITHUB_EXECUTOR_AUDIENCE`.
 - `GITHUB_ACTION_APPROVED_REPOSITORIES` is a server-owned JSON list of `{repository,repositoryId}` identities. A previous `commitSha` entry is tolerated but ignored for discovery. The current default-branch SHA is read from GitHub and every YAML is fetched by that exact SHA; approval of any discovered revision remains bound to the immutable Published Plan. Changing the approved repository list still requires a controlled configuration deployment.
 

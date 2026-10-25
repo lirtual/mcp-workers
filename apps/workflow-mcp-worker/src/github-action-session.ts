@@ -240,7 +240,7 @@ export async function runPublishedGitHubActionSession(
  if(plan.github_execution_approved!==true||
     !isPublishedGitHubActionApproved(plan.github_action_approvals,identity))
   return {status:'failed',error_code:'github_action_approval_missing'};
- if(!env.WORKFLOW_EXECUTOR_GITHUB_TOKEN||!env.GITHUB_ACTION_OIDC_AUDIENCE)
+ if(!env.WORKFLOW_GITHUB_DISPATCH_TOKEN||!env.GITHUB_ACTION_OIDC_AUDIENCE)
   return {status:'failed',error_code:'github_action_executor_not_configured'};
  if(typeof raw.ref!=='string'||!raw.ref.startsWith('refs/tags/')||
     !raw.inputs||typeof raw.inputs!=='object'||Array.isArray(raw.inputs))
@@ -252,7 +252,7 @@ export async function runPublishedGitHubActionSession(
    return {status:'failed',error_code:'github_action_invalid_publication'};
   inputs[key]=String(value);
  }
- const db=env.DB,token=env.WORKFLOW_EXECUTOR_GITHUB_TOKEN;
+ const db=env.DB,token=env.WORKFLOW_GITHUB_DISPATCH_TOKEN;
  const dispatched=await step.do('github-session-dispatch-'+stepPlan.id,{
   retries:{limit:0,delay:'1 second'},timeout:'45 seconds',
  },async()=>{

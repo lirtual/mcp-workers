@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig, verifyWorkflowD1Readiness, retryReleaseReadback } from "./manual-worker-release.mjs";
+import { activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig, verifyWorkflowD1Readiness, verifyWorkflowMigrationReadiness, WORKFLOW_MIGRATION_READINESS_SQL, retryReleaseReadback } from "./manual-worker-release.mjs";
 
 const required = [
   { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
@@ -73,26 +73,30 @@ test("Active-version readback requires exactly one 100 percent version", () => {
   ] }] }), /unambiguous/);
 });
 
-test("IMA allows old CLIENT_ID Secret in preflight and requires Variable after release", () => {
+test("IMA accepts old CLIENT_ID Variable in preflight and requires new Variable after release", () => {
   const worker = "ima-mcp-worker";
-  const names = ["MCP_ACCESS_TOKEN", "API_KEY"];
+  const names = ["MCP_ACCESS_TOKEN", "IMA_API_KEY"];
   const secrets = names.map(name => ({ name }));
   const durable = { name: "IMA_IMAGE_REFRESH_SHARD", type: "durable_object_namespace", class_name: "ImaImageRefreshShard" };
   const observability = { enabled: true, logs: { invocation_logs: true }, traces: { enabled: true } };
   const old = { bindings: [...names.map(name => ({ name, type: "secret_text" })),
-    { name: "CLIENT_ID", type: "secret_text" }, durable], observability };
-  const oldSecrets = [...secrets, { name: "CLIENT_ID" }];
-  assert.equal(verifyBindings(worker, old, oldSecrets, { mode: "preflight" }), true);
-  assert.throws(() => verifyBindings(worker, old, oldSecrets, { mode: "readback" }), /CLIENT_ID.*Variable/);
+    { name: "CLIENT_ID", type: "plain_text", text: "existing-client-id" }, durable], observability };
+  assert.equal(verifyBindings(worker, old, secrets, { mode: "preflight" }), true);
+  assert.throws(() => verifyBindings(worker, old, secrets, { mode: "readback" }), /IMA legacy CLIENT_ID|IMA_CLIENT_ID.*Variable/);
   const settings = { bindings: [...names.map(name => ({ name, type: "secret_text" })),
-    { name: "CLIENT_ID", type: "plain_text", text: "ima-client-id" }, durable], observability };
+    { name: "IMA_CLIENT_ID", type: "plain_text", text: "ima-client-id" }, durable], observability };
   assert.equal(verifyBindings(worker, settings, secrets, { mode: "readback" }), true);
   assert.throws(() => verifyBindings(worker, { ...settings,
-    bindings: settings.bindings.filter(x => x.name !== "CLIENT_ID") }, secrets, { mode: "readback" }), /CLIENT_ID.*Variable/);
+    bindings: settings.bindings.filter(x => x.name !== "IMA_CLIENT_ID") }, secrets, { mode: "readback" }), /IMA_CLIENT_ID.*Variable|IMA legacy CLIENT_ID/);
   assert.throws(() => verifyBindings(worker, { ...settings,
-    bindings: settings.bindings.map(x => x.name === "CLIENT_ID" ? { ...x, text: " " } : x) },
-    secrets, { mode: "readback" }), /CLIENT_ID.*Variable/);
-  assert.throws(() => verifyBindings(worker, settings, oldSecrets, { mode: "readback" }), /legacy CLIENT_ID Secret/);
+    bindings: settings.bindings.map(x => x.name === "IMA_CLIENT_ID" ? { ...x, text: " " } : x) },
+    secrets, { mode: "readback" }), /IMA_CLIENT_ID.*Variable|IMA legacy CLIENT_ID/);
+  assert.throws(() => verifyBindings(worker, settings,
+    [...secrets, { name: "IMA_CLIENT_ID" }], { mode: "readback" }), /legacy IMA_CLIENT_ID Secret/);
+  assert.throws(() => verifyBindings(worker, { ...settings, bindings: [
+    ...settings.bindings, { name: "CLIENT_ID", type: "plain_text", text: "legacy" },
+  ] }, secrets, { mode: "readback" }), /legacy CLIENT_ID/);
+
   assert.throws(() => verifyBindings(worker, { ...settings, bindings: [
     ...settings.bindings, { name: "R2_BUCKET", type: "r2_bucket" },
   ] }, secrets, { mode: "preflight" }), /Legacy IMA R2/);
@@ -297,16 +301,16 @@ test("manual release always syncs selected Worker Secrets from GitHub and never 
   assert.ok(secretStart > 0 && variableStart > secretStart);
   const secretStep = workflow.slice(secretStart, variableStart);
   assert.doesNotMatch(secretStep, /^\s*if:/m, "existing Workers must never skip Secret staging");
-  for (const name of ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN", "API_KEY",
+  for (const name of ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN", "IMA_API_KEY",
     "DATABASE_CONFIG", "SSH_BROKER_TOKEN", "ACTIONS_GITHUB_DISPATCH_TOKENS"]) {
     assert.ok(secretStep.includes("secrets." + name), "GitHub must provide " + name);
   }
-  assert.equal(secretStep.includes("secrets.CLIENT_ID"), false,
-    "CLIENT_ID must not be staged as a Secret");
+  assert.equal(secretStep.includes("secrets.IMA_CLIENT_ID"), false,
+    "IMA_CLIENT_ID must not be staged as a Secret");
   const variableStep = workflow.slice(variableStart,
     workflow.indexOf("      - name: Recheck current main inside acquired release lock", variableStart));
-  assert.ok(variableStep.includes("vars.CLIENT_ID"),
-    "CLIENT_ID must be provided by the GitHub Environment Variable");
+  assert.ok(variableStep.includes("vars.IMA_CLIENT_ID"),
+    "IMA_CLIENT_ID must be provided by the GitHub Environment Variable");
   const deployStart = workflow.indexOf("      - name: Publish exactly selected Worker");
   const deployEnd = workflow.indexOf("      - name: Remove temporary deployment configuration", deployStart);
   assert.ok(deployStart > 0 && deployEnd > deployStart);
@@ -397,7 +401,7 @@ test("Workflow production release must preserve exact reviewed resource and runt
     [{ ...owner, d1_databases: [{ ...owner.d1_databases[0], database_id: "00000000-0000-0000-0000-000000000000" }] }, /production D1/],
     [{ ...owner, services: [{binding:"UNEXPECTED",service:"fake"}] }, /Service Bindings/],
     [{ ...owner, workflows: [] }, /Workflow binding/],
-    [{ ...owner, secrets: { required: [] } }, /Portal Secret/],
+    [{ ...owner, secrets: { required: [] } }, /Secret/],
     [{ ...owner, vars: { MCP_CALL_ENABLED: "true" } }, /MCP/],
     [{ ...owner, compatibility_flags: ["global_fetch_strictly_public"] }, /MCP/],
   ];
@@ -452,12 +456,63 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
     /empty production/);
   assert.throws(()=>verifyWorkflowD1Readiness([],true),/readback unavailable/);
 });
+test("Workflow migration preflight requires all independent physical states settled", () => {
+  const ready = {
+    migration_count: 8, expected_migrations: 8,
+    workflow_count: 7, run_count: 58, session_count: 49,
+    attempt_count: 31, callback_count: 4, cancellation_count: 31,
+    nonterminal_runs: 0, unresolved_starts: 0, unresolved_steps: 0,
+    nonterminal_attempts: 0, nonterminated_sessions: 0, undelivered_callbacks: 0,
+  };
+  const response = row => [{success: true, results: [row]}];
+  assert.deepEqual(verifyWorkflowMigrationReadiness(response(ready)), {
+    workflows: 7, runs: 58, sessions: 49, attempts: 31, callbacks: 4,
+    cancellations: 31,
+  });
+  for (const name of [
+    "nonterminal_runs","unresolved_starts","unresolved_steps",
+    "nonterminal_attempts","nonterminated_sessions","undelivered_callbacks",
+  ]) {
+    assert.throws(() => verifyWorkflowMigrationReadiness(
+      response({...ready,[name]:1})), new RegExp(name));
+    assert.throws(() => verifyWorkflowMigrationReadiness(
+      response({...ready,[name]:-1})), /count unavailable or invalid/);
+  }
+  for (const key of Object.keys(ready)) {
+    const broken = {...ready};
+    delete broken[key];
+    assert.throws(() => verifyWorkflowMigrationReadiness(
+      response(broken)), /count unavailable or invalid/);
+  }
+  for (const invalid of [[],[{}],[{success:false,results:[ready]}],
+    [{success:true,results:[ready,ready]}]]) {
+    assert.throws(() => verifyWorkflowMigrationReadiness(invalid),
+      /readback unavailable/);
+  }
+  for (const wrong of [{migration_count:7},{migration_count:9},
+    {expected_migrations:7}]) {
+    assert.throws(() => verifyWorkflowMigrationReadiness(
+      response({...ready,...wrong})), /exact eight reviewed/);
+  }
+  for (const invalid of [null,NaN,1.5,"0",true]) {
+    assert.throws(() => verifyWorkflowMigrationReadiness(
+      response({...ready,undelivered_callbacks:invalid})),
+      /count unavailable or invalid/);
+  }
+  for (const requiredTable of [
+    "runs","run_steps","step_attempts","session_executions",
+    "callback_receipts","github_action_cancellations","d1_migrations",
+  ]) assert.ok(WORKFLOW_MIGRATION_READINESS_SQL.includes(requiredTable));
+  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/state != 'terminated'/);
+  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/notification_delivered != 1/);
+});
+
 test("Workflow readback verifies one integrated runtime, registered GitHub identity and Portal",()=>{
   const bindings=[
     {name:"MCP_ACCESS_TOKEN",type:"secret_text"},
-    {name:"MCP_PORTAL_CLIENT_ID",type:"secret_text"},
+    {name:"MCP_PORTAL_CLIENT_ID",type:"plain_text",text:"test-id"},
     {name:"MCP_PORTAL_CLIENT_SECRET",type:"secret_text"},
-    {name:"WORKFLOW_EXECUTOR_GITHUB_TOKEN",type:"secret_text"},
+    {name:"WORKFLOW_GITHUB_DISPATCH_TOKEN",type:"secret_text"},
     {name:"DB",type:"d1",id:"c76850db-b5e3-4128-9150-849a1c9e8d74"},
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-runner",class_name:"WorkflowRunner"},
     {name:"MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
@@ -468,8 +523,8 @@ test("Workflow readback verifies one integrated runtime, registered GitHub ident
     {name:"GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action:production"},
   ];
   const settings={bindings,observability:{enabled:true,logs:{invocation_logs:true}}};
-  const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET",
-    "WORKFLOW_EXECUTOR_GITHUB_TOKEN"].map(name=>({name}));
+  const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_SECRET",
+    "WORKFLOW_GITHUB_DISPATCH_TOKEN"].map(name=>({name}));
   const check=(list=bindings,ss=secrets)=>
     verifyBindings("workflow-mcp-worker",{...settings,bindings:list},ss,{mode:"readback"});
   assert.equal(check(),true);
@@ -480,9 +535,17 @@ test("Workflow readback verifies one integrated runtime, registered GitHub ident
   for(const name of ["DB","WORKFLOW"]){
     assert.throws(()=>check(bindings.filter(x=>x.name!==name)),/binding drift/);
   }
-  for(const name of ["MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET","WORKFLOW_EXECUTOR_GITHUB_TOKEN"]){
-    assert.throws(()=>check(bindings,secrets.filter(x=>x.name!==name)),/binding missing/);
+  for(const name of ["MCP_PORTAL_CLIENT_SECRET","WORKFLOW_GITHUB_DISPATCH_TOKEN"]){
+    assert.throws(()=>check(bindings,secrets.filter(x=>x.name!==name)),/Secret missing/);
   }
+  assert.throws(()=>check(bindings.map(x=>x.name==="MCP_PORTAL_CLIENT_ID" ?
+    {...x,type:"secret_text"}:x)),/plaintext Variable/);
+  assert.throws(()=>check([...bindings,{name:"MCP_PORTAL_CLIENT_ID",type:"plain_text",text:"duplicate"}]),
+    /plaintext Variable/);
+  assert.throws(()=>check([...bindings,{name:"MCP_PORTAL_CLIENT_ID",type:"secret_text"}]),
+    /plaintext Variable/);
+  assert.throws(()=>check(bindings,[...secrets,{name:"MCP_PORTAL_CLIENT_ID"}]),
+    /plaintext Variable/);
   assert.throws(()=>check([...bindings,{name:"MCP_CALL_ENABLED",type:"plain_text",text:"true"}]),/Obsolete stage flag/);
 });
 
@@ -511,8 +574,8 @@ test("Workflow manual GitHub Actions requires D1 checks before Owner", () => {
 
 test("Workflow release pins the exact Portal and rejects target drift",()=>{
   const bindings=[
-    {name:"MCP_ACCESS_TOKEN",type:"secret_text"},{name:"MCP_PORTAL_CLIENT_ID",type:"secret_text"},
-    {name:"MCP_PORTAL_CLIENT_SECRET",type:"secret_text"},{name:"WORKFLOW_EXECUTOR_GITHUB_TOKEN",type:"secret_text"},
+    {name:"MCP_ACCESS_TOKEN",type:"secret_text"},{name:"MCP_PORTAL_CLIENT_ID",type:"plain_text",text:"test-id"},
+    {name:"MCP_PORTAL_CLIENT_SECRET",type:"secret_text"},{name:"WORKFLOW_GITHUB_DISPATCH_TOKEN",type:"secret_text"},
     {name:"DB",type:"d1",id:"c76850db-b5e3-4128-9150-849a1c9e8d74"},
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-runner",class_name:"WorkflowRunner"},
     {name:"MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
@@ -523,8 +586,8 @@ test("Workflow release pins the exact Portal and rejects target drift",()=>{
     {name:"GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action:production"},
   ];
   const settings={observability:{enabled:true,logs:{invocation_logs:true}}};
-  const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET",
-    "WORKFLOW_EXECUTOR_GITHUB_TOKEN"].map(name=>({name}));
+  const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_SECRET",
+    "WORKFLOW_GITHUB_DISPATCH_TOKEN"].map(name=>({name}));
   const check=(updated)=>verifyBindings("workflow-mcp-worker",{...settings,bindings:updated},secrets,{mode:"readback"});
   assert.equal(check(bindings),true);
   assert.throws(()=>check(bindings.map(x=>x.name==="MCP_PORTAL_ENDPOINT"
@@ -546,10 +609,10 @@ test("GitHub execution is integral but still pins repository, ref and OIDC audie
     {name:"GITHUB_EXECUTOR_AUDIENCE",type:"plain_text",text:"workflow-github-claim:production"},
     {name:"GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action:production"},
   ];
-  const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET",
-    "WORKFLOW_EXECUTOR_GITHUB_TOKEN"].map(name=>({name}));
-  const pins=["MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET","WORKFLOW_EXECUTOR_GITHUB_TOKEN"]
-    .map(name=>({name,type:"secret_text"}));
+  const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_SECRET",
+    "WORKFLOW_GITHUB_DISPATCH_TOKEN"].map(name=>({name}));
+  const pins=[{name:"MCP_PORTAL_CLIENT_ID",type:"plain_text",text:"test-id"},
+    ...["MCP_PORTAL_CLIENT_SECRET","WORKFLOW_GITHUB_DISPATCH_TOKEN"].map(name=>({name,type:"secret_text"}))];
   const check=(bindings)=>verifyBindings("workflow-mcp-worker",{
     bindings,observability:{enabled:true,logs:{invocation_logs:true}}},secrets,{mode:"readback"});
   assert.equal(check([...base,...pins]),true);
@@ -561,10 +624,13 @@ test("GitHub execution is integral but still pins repository, ref and OIDC audie
 
 
 test("Workflow preflight tolerates removed service bindings, readback rejects them",()=>{
-  const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_ID","MCP_PORTAL_CLIENT_SECRET",
-    "WORKFLOW_EXECUTOR_GITHUB_TOKEN"].map(name=>({name}));
+  const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_SECRET",
+    "WORKFLOW_GITHUB_DISPATCH_TOKEN"].map(name=>({name}));
   const bindings=[
     {name:"MCP_ACCESS_TOKEN",type:"secret_text"},
+    {name:"MCP_PORTAL_CLIENT_SECRET",type:"secret_text"},
+    {name:"WORKFLOW_GITHUB_DISPATCH_TOKEN",type:"secret_text"},
+    {name:"MCP_PORTAL_CLIENT_ID",type:"plain_text",text:"test-id"},
     {name:"DB",type:"d1",id:"c76850db-b5e3-4128-9150-849a1c9e8d74"},
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-s1",class_name:"WorkflowRunner"},
     {name:"OLD_TEST_SERVICE",type:"service",service:"unused-test-worker"},

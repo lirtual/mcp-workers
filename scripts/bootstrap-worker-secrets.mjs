@@ -8,12 +8,12 @@ import { pathToFileURL } from "node:url";
 
 export const BOOTSTRAP_SECRETS = Object.freeze({
   "raindrop-mcp-worker": ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN"],
-  "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "API_KEY"],
+  "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "IMA_API_KEY"],
   "database-mcp-worker": ["MCP_ACCESS_TOKEN", "DATABASE_CONFIG"],
   "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "SSH_BROKER_TOKEN"],
   "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "ACTIONS_GITHUB_DISPATCH_TOKENS"],
-  "workflow-mcp-worker": ["MCP_ACCESS_TOKEN", "MCP_PORTAL_CLIENT_ID", "MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_EXECUTOR_GITHUB_TOKEN"],
+  "workflow-mcp-worker": ["MCP_ACCESS_TOKEN", "MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_GITHUB_DISPATCH_TOKEN"],
 });
 
 export function collectBootstrapSecrets(worker, env) {
@@ -28,10 +28,10 @@ export function collectBootstrapSecrets(worker, env) {
     }
     payload[name] = value;
   }
-  if (worker === "workflow-mcp-worker" && (payload.WORKFLOW_EXECUTOR_GITHUB_TOKEN.length < 20 ||
-      payload.WORKFLOW_EXECUTOR_GITHUB_TOKEN.length > 512 ||
-      /\s/.test(payload.WORKFLOW_EXECUTOR_GITHUB_TOKEN)))
-    throw new Error("Invalid WORKFLOW_EXECUTOR_GITHUB_TOKEN");
+  if (worker === "workflow-mcp-worker" && (payload.WORKFLOW_GITHUB_DISPATCH_TOKEN.length < 20 ||
+      payload.WORKFLOW_GITHUB_DISPATCH_TOKEN.length > 512 ||
+      /\s/.test(payload.WORKFLOW_GITHUB_DISPATCH_TOKEN)))
+    throw new Error("Invalid WORKFLOW_GITHUB_DISPATCH_TOKEN");
   if (worker === "ssh-mcp-worker" && payload.SSH_BROKER_TOKEN.length < 32) {
     throw new Error("SSH Broker token must be at least 32 characters");
   }

@@ -9,7 +9,7 @@ MCP client
   -> Cloudflare MCP Portal
   -> Authorization: Bearer <MCP_ACCESS_TOKEN>
   -> ima-mcp-worker Worker /mcp
-  -> Worker Secrets CLIENT_ID + API_KEY
+  -> Worker Secrets IMA_CLIENT_ID + IMA_API_KEY
   -> IMA OpenAPI
 
 ```
@@ -22,7 +22,7 @@ The identities are deliberately independent:
 
 1. **Client-facing identity** — Cloudflare MCP Portal owns client authentication.
 2. **Worker access credential** — this Worker's `MCP_ACCESS_TOKEN` authenticates Portal-to-Worker requests.
-3. **IMA business credential** — `CLIENT_ID` and `API_KEY` authenticate Worker requests to IMA OpenAPI.
+3. **IMA business credential** — `IMA_CLIENT_ID` and `IMA_API_KEY` authenticate Worker requests to IMA OpenAPI.
 
 Do not reuse any credential across these layers or between Workers.
 
@@ -31,8 +31,8 @@ Do not reuse any credential across these layers or between Workers.
 Required Worker Secrets:
 
 ```text
-CLIENT_ID
-API_KEY
+IMA_CLIENT_ID
+IMA_API_KEY
 MCP_ACCESS_TOKEN
 ```
 
@@ -63,7 +63,7 @@ Do not configure Worker-owned Dynamic Client Registration, OAuth authorization e
 - missing Worker-side `MCP_ACCESS_TOKEN`: HTTP 503;
 - missing or incorrect request bearer: HTTP 401 with `WWW-Authenticate: Bearer`;
 - request carrying an `Origin` header: HTTP 403, because there is no direct browser client;
-- valid bearer plus configured `CLIENT_ID` / `API_KEY`: proceeds to the normal MCP handler;
+- valid bearer plus configured `IMA_CLIENT_ID` / `IMA_API_KEY`: proceeds to the normal MCP handler;
 - old IMA secret names do not satisfy configuration.
 
 The shared `@mcp-workers/portal-auth` boundary removes the inbound `Authorization` header before the request reaches the MCP SDK or IMA tools. Requests without an `Origin` header remain valid for server-to-server Portal traffic.
@@ -77,8 +77,8 @@ Public liveness endpoint. It does not access IMA or expose secret values.
 Checks the required runtime capabilities:
 
 - `MCP_ACCESS_TOKEN`;
-- `CLIENT_ID`;
-- `API_KEY`;
+- `IMA_CLIENT_ID`;
+- `IMA_API_KEY`;
 - required runtime configuration without accessing data or a third-party file host.
 
 A failure lists only missing capability names.
@@ -96,7 +96,7 @@ The Worker does not provide a download proxy, Litterbox uploader, or file-export
 5. A representative read tool succeeds.
 6. A representative safe write tool succeeds.
 7. No `export_file` tool or `export_to_temporary` argument is advertised; no public upload occurs on reads.
-8. Logs do not contain `MCP_ACCESS_TOKEN`, `CLIENT_ID`, `API_KEY`, or client authentication tokens.
+8. Logs do not contain `MCP_ACCESS_TOKEN`, `IMA_CLIENT_ID`, `IMA_API_KEY`, or client authentication tokens.
 
 ## Cloudflare reference
 

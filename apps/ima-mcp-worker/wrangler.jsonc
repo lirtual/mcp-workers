@@ -31,7 +31,7 @@
   "secrets": {
     "required": [
       "MCP_ACCESS_TOKEN",
-      "API_KEY"
+      "IMA_API_KEY"
     ]
   }
 }

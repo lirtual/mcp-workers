@@ -1,6 +1,6 @@
 # Local development only. Copy to .dev.vars; never commit actual credentials.
-CLIENT_ID=
-API_KEY=
+IMA_CLIENT_ID=
+IMA_API_KEY=
 MCP_ACCESS_TOKEN=
 
 # Temporary exports use public Litterbox directly with fixed 24h retention.
