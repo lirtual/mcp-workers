@@ -181,7 +181,14 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
     steps:{type:'array',minItems:1,maxItems:PLAN_LIMITS.maxSteps,items:{
       type:'object',additionalProperties:false,
       required:['id'],
-      oneOf:[{required:['uses','with']},{required:['flow','times','template']}],
+      oneOf:[
+        {required:['uses','with'],not:{anyOf:[
+          {required:['flow']},{required:['times']},{required:['template']},
+        ]}},
+        {required:['flow','times','template'],not:{anyOf:[
+          {required:['uses']},{required:['with']},{required:['if']},{required:['needs_policy']},
+        ]}},
+      ],
       properties:{
         id:{type:'string',pattern:'^[A-Za-z][A-Za-z0-9_-]{0,63}$'},
         uses:{enum:[...SUPPORTED_STEP_USES]},
