@@ -233,3 +233,44 @@ test('Graph reply requires a single confirmed native Reply-To before sending', a
     assert.equal(sent, 0);
   } finally { globalThis.fetch = previous; }
 });
+
+test('Gmail nested MIME text and attachments are found without executing HTML', async () => {
+  const { getMail } = await import('../src/providers.ts');
+  const env = { MAIL_ENCRYPTION_KEY: Buffer.alloc(32, 14).toString('base64') } as any;
+  const aid = crypto.randomUUID();
+  const secret = await encrypt(env, 'account:' + aid + ':gmail', { access_token: 'token' });
+  const account = {
+    account_id: aid, provider: 'gmail', address: 'owner@example.test', status: 'active',
+    credential_ciphertext: secret.ciphertext, credential_key_id: secret.keyId,
+    token_expires_at: Math.floor(Date.now() / 1000) + 3600,
+  } as any;
+  const payload: any = {
+    mimeType: 'multipart/mixed', headers: [{ name: 'Subject', value: 'Nested mail' }],
+    parts: [
+      { mimeType: 'multipart/alternative', parts: [
+        { mimeType: 'text/html', body: { data: Buffer.from('<script>unsafe()</script><b>HTML</b>').toString('base64url') } },
+        { mimeType: 'text/plain', body: { data: Buffer.from('Actual nested body').toString('base64url') } },
+      ] },
+      { mimeType: 'multipart/related', parts: [
+        { mimeType: 'application/pdf', filename: 'report.pdf', body: { attachmentId: 'nested-attachment', size: 123 } },
+      ] },
+    ],
+  };
+  const previous = globalThis.fetch;
+  try {
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      assert.equal(String(input), 'https://gmail.googleapis.com/gmail/v1/users/me/messages/nested?format=full');
+      return Response.json({ id: 'nested', threadId: 'thread-nested', internalDate: String(Date.now()),
+        snippet: 'Only a short excerpt', payload });
+    }) as typeof fetch;
+    const result = await getMail(env, account, 'nested');
+    assert.equal(result.text, 'Actual nested body');
+    assert.equal(result.snippet, 'Only a short excerpt');
+    assert.deepEqual(result.attachments, [{ id: 'nested-attachment', filename: 'report.pdf', size: 123 }]);
+    let root = { mimeType: 'text/plain', body: { data: Buffer.from('too deep').toString('base64url') } } as any;
+    for (let i = 0; i < 17; i++) root = { mimeType: 'multipart/mixed', parts: [root] };
+    payload.parts = [root];
+    await assert.rejects(() => getMail(env, account, 'nested'), /result_too_large/,
+      'untrusted deeply nested MIME trees must fail closed');
+  } finally { globalThis.fetch = previous; }
+});
