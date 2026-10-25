@@ -334,7 +334,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     if(s.uses==='flow.foreach'){
       expression(s.with.items,s);
       const child=s.with.template as {id:string;uses:string;with:{data?:unknown};if?:unknown};
-      expression(child.with.data,s,0,false,true);
+      if(child.with.data!==undefined)expression(child.with.data,s,0,false,true);
       if(child.if!==undefined){
         expression(child.if,s,0,false,true);
         const op=child.if&&typeof child.if==='object'&&!Array.isArray(child.if)?Object.keys(child.if):[];
