@@ -278,7 +278,9 @@ export async function workflowCapabilities(env:Pick<Env,
   }
   if(id==='trigger.github_event'){
     detail.trigger_schema=WORKFLOW_DEFINITION_SCHEMA.properties.triggers;
-    detail.example=await compilingExample({...emit,inputs:{github:null},
+    detail.example=await compilingExample({version:1,name:'Emit signed GitHub push',
+      inputs:{github:null},
+      steps:[{id:'out',uses:'result.emit',with:{data:{ref:'inputs.github'}}}],
       triggers:[{type:'github_event',repository:'example/repo',repository_id:12345,
         event:'push',ref:'refs/heads/main',workflow_path:'.github/workflows/forward.yml'}]});
     detail.source={provider:'github_actions_oidc',event:'push_only',
