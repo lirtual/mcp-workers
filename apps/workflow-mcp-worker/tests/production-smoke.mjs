@@ -489,7 +489,7 @@ try {
   try { await client.close(); } catch { /* No successful state assumed from close */ }
   try { cleanup(); } catch (e) {
     failure ??= e;
-    console.error('CLEANUP_FAILED:', String(e?.message ?? e).replaceAll(token, '[redacted]'));
+    console.error('CLEANUP_FAILED:', String(e?.message ?? e).replaceAll(token, '[redacted]').replaceAll(webhookCredential ?? '__no_webhook_credential__', '[redacted]'));
     if (workflowId) console.error('Manual follow-up Workflow ID:', workflowId);
   }
 }
