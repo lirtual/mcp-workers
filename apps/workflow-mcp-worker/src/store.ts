@@ -40,14 +40,6 @@ export type Env = {
   // Separate GitHub-issued OIDC audience for immutable Action claims.
   // This is an identity binding, not an execution feature switch.
   GITHUB_ACTION_OIDC_AUDIENCE?: string;
-  GITHUB_EXECUTOR_REPOSITORY?: string;
-  GITHUB_EXECUTOR_REPOSITORY_ID?: string;
-  GITHUB_EXECUTOR_REF?: string;
-  GITHUB_EXECUTOR_AUDIENCE?: string;
-  // Legacy isolated test fixtures can use the dedicated test branch;
-  // production always selects the registered CI executor.
-  GITHUB_TEST_WORKER_NAME?: string;
-  GITHUB_TEST_DEDICATED_EXECUTOR?: string;
 
   // Legacy personal direct-target mode requires a separate explicit opt-in.
   // Without it, MCP must have a pinned Portal endpoint at Publish and Run.
