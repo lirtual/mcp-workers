@@ -1,6 +1,6 @@
 import { inspectGitHubActionRun } from './github-action-run-inspection.ts';
 import { isPublishedGitHubActionApproved, type ReviewedGitHubAction } from './github-action-review.ts';
-import type { Plan } from './plan.ts';
+import {publishedGitHubActionStep,type Plan} from './plan.ts';
 import type { PhysicalRunState } from './github-action-run-state.ts';
 
 type Db=Pick<D1Database,'prepare'>;
@@ -40,7 +40,7 @@ export async function inspectPersistedGitHubActionAttempt(
  let plan:Plan;
  try{plan=JSON.parse(row.plan) as Plan;}catch{return {state:'unknown'};}
  if(plan.github_execution_approved!==true)return {state:'unknown'};
- const step=plan.steps.find(x=>x.id===row.step_id);
+ const step=publishedGitHubActionStep(plan,row.step_id);
  if(!step || step.uses!=='github.run' || step.with.capability!=='github.action')
    return {state:'unknown'};
  const raw=step.with.action as (ReviewedGitHubAction & {inputs?:unknown;ref?:string})|undefined;
