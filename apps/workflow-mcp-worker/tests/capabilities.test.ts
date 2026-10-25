@@ -27,6 +27,7 @@ test('overview matches the compiler, exposes only truthful ingress and needs no 
   assert.equal(catalog.get('flow.repeat')?.availability,'supported');
   assert.equal(catalog.get('flow.foreach_emit')?.availability,'supported');
   assert.equal(catalog.get('flow.foreach_mcp_read')?.availability,'unavailable');
+  assert.equal(catalog.get('flow.foreach_github_task')?.availability,'unavailable');
   assert.equal(PLAN_LIMITS.maxRepeat,8);
   assert.equal(catalog.get('action.github.run')?.availability,'unavailable');
   assert.equal(catalog.get('action.mcp.call')?.availability,'unavailable');
@@ -127,6 +128,21 @@ test('read-only dynamic foreach discovery uses the exact compiler and Portal gra
   assert.equal((detail.template_policy as {scope:string}).scope,'read');
   assert.deepEqual((detail.template_policy as {unsupported:string[]}).unsupported,
     ['github.run','nested templates','write-scope tools']);
+});
+
+test('GitHub Task dynamic template schema and capability remain scoped',async()=>{
+ const detail=await workflowCapabilities(env,'flow.foreach_github_task');
+ assert.equal(detail.availability,'no_verified_published_task');
+ assert.equal((detail.template_policy as {allowed_action:string}).allowed_action,'github.run');
+ assert.equal((detail.template_policy as {inputs:string}).inputs,'literal_only');
+ const schema=WORKFLOW_DEFINITION_SCHEMA.properties.steps.items.properties.template as
+   {oneOf:Array<{properties?:{steps?:{items?:{
+     properties?:{uses?:{enum?:string[]}},allOf?:Array<{if?:{properties?:{uses?:{const?:string}}}}>
+   }}}}>};
+ const items=schema.oneOf[1]?.properties?.steps?.items;
+ assert.ok(items,'Foreach schema must have exactly one child template branch');
+ assert.ok(items.properties?.uses?.enum?.includes('github.run'));
+ assert.ok(items.allOf?.some(x=>x.if?.properties?.uses?.const==='github.run'));
 });
 
 test('Agent-readable Action schemas document required executable parameters',()=>{

@@ -3,7 +3,7 @@ import { dispatchReviewedGitHubAction } from './github-action-dispatch.ts';
 import { recordGithubDispatchResult } from './github-claim.ts';
 import type { DispatchOutcome } from './github-dispatch.ts';
 import {isPublishedGitHubActionApproved,type ReviewedGitHubAction as PublishedAction} from './github-action-review.ts';
-import type {Plan} from './plan.ts';
+import {publishedGitHubActionStep,type Plan} from './plan.ts';
 
 type Db=Pick<D1Database,'prepare'>;
 type Http=(request:Request)=>Promise<Response>;
@@ -46,7 +46,7 @@ export async function registerAndDispatchGitHubAction(
  catch{throw Error('github_action_publication_missing');}
  if(plan.github_execution_approved!==true||!Array.isArray(plan.steps))
   throw Error('github_action_publication_missing');
- const step=plan.steps.find(entry=>entry.id===data.stepId);
+ const step=publishedGitHubActionStep(plan,data.stepId);
  if(!step||step.uses!=='github.run'||step.with?.capability!=='github.action')
   throw Error('github_action_publication_missing');
  const raw=step.with.action as (PublishedAction & {inputs?:unknown;ref?:string})|undefined;

@@ -124,6 +124,19 @@ const foreachMcpRead=(tool:PortalToolContract)=>({version:1,name:'Bounded approv
       arguments:tool.arguments,
     }}]}}],
 });
+const foreachGithubTask=(action:{
+ repository:string;repositoryId:number;workflowId:number;workflowPath:string;commitSha:string;
+ type:'task'|'session';contractDigest:string;ref:string;inputs:Record<string,{default?:string|boolean|number;required:boolean}>;
+})=>({version:1,name:'Bounded reviewed GitHub Task',inputs:{items:['first','second']},
+ steps:[{id:'each',flow:'foreach',items:{ref:'inputs.items'},max_items:2,
+  template:{steps:[{id:'task',uses:'github.run',with:{capability:'github.action',
+   action:{repository:action.repository,repositoryId:action.repositoryId,
+    workflowId:action.workflowId,workflowPath:action.workflowPath,commitSha:action.commitSha,
+    type:'task',contractDigest:action.contractDigest,ref:action.ref,
+    inputs:Object.fromEntries(Object.entries(action.inputs).filter(([,field])=>field.default!==undefined)
+      .map(([name,field])=>[name,field.default])),
+   }}}]}}],
+});
 const mcpRead=(tool:PortalToolContract)=>({version:1,name:'Verified Portal contract example',
   steps:[{id:'read',uses:'mcp.call',with:{
     endpoint:tool.endpoint,tool:tool.tool,scope:'read',
@@ -170,7 +183,7 @@ export const WORKFLOW_EXPRESSION_RULES=Object.freeze({
   needs_policy:'Default all_succeeded; allow_skipped requires at least one succeeded dependency and all others succeeded or skipped; all skipped, failed or indeterminate dependencies block execution.',
   limits:{maxDepth:15,maxArrayElements:100,maxBooleanOperands:16},
   foreach_item_refs:['item.value[.<field>]','item.index'],
-  unsupported:['foreach_github_actions','nested_foreach','while','dynamic_repeat','child_workflow','saga'],
+  unsupported:['foreach_github_sessions','foreach_dynamic_github_inputs','nested_foreach','while','dynamic_repeat','child_workflow','saga'],
 });
 
 export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
@@ -229,7 +242,7 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
           {type:'object',additionalProperties:false,required:['steps'],
             properties:{steps:{type:'array',minItems:1,maxItems:1,items:{
               type:'object',additionalProperties:false,required:['id','uses','with'],
-              properties:{id:{type:'string'},uses:{enum:['result.emit','mcp.call']},
+              properties:{id:{type:'string'},uses:{enum:['result.emit','mcp.call','github.run']},
                 with:{type:'object'},
                 if:{anyOf:[{type:'boolean'},{type:'object'}]}},
               allOf:[
@@ -237,8 +250,10 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
                   then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['result.emit']}}},
                 {if:{required:['uses'],properties:{uses:{const:'mcp.call'}}},
                   then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call']}}},
+                {if:{required:['uses'],properties:{uses:{const:'github.run'}}},
+                  then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['github.run']}}},
               ]}}}},
-        ],description:'Literal repeat uses one Action; bounded foreach uses one result.emit or approved read-only mcp.call. GitHub dispatch and nesting are not supported.'},
+        ],description:'Literal repeat uses one Action; bounded foreach uses one result.emit, read-only mcp.call or reviewed literal-input github.run Task. Sessions and nesting unsupported.'},
         needs_policy:{enum:['all_succeeded','allow_skipped'],description:'Default all_succeeded. allow_skipped requires nonempty needs; failed/indeterminate dependencies still block downstream effects.'},
         if:{anyOf:[{type:'boolean'},{type:'object'}],description:'Safe Boolean condition; see expression_rules and inline validation.'},
         with:{type:'object',description:'Must match the matching uses/action contract below.'},
@@ -279,8 +294,10 @@ const entries=[
    description:'Dynamic array of at most 8 elements; one result.emit template with native snapshot checkpoints. MCP read-only templates have separate grant and replay constraints; GitHub and nesting unsupported.'},
   {id:'flow.foreach_mcp_read',kind:'flow',availability:'supported_with_grant',
    description:'One reviewed read-only mcp.call per bounded item; all arguments and conditions are frozen before dispatch. Every child uses a durable D1 one-shot dispatch fence; an ambiguous response stays indeterminate, not retried.'},
+  {id:'flow.foreach_github_task',kind:'flow',availability:'supported_with_grant',
+   description:'Bounded dynamic GitHub Task dispatch with one exact reviewed Task template, literal inputs, per-item selection and unique D1 Attempt + OIDC Claim + physical terminal proof. Sessions and item-dependent inputs remain unsupported.'},
   {id:'flow.loop',kind:'flow',availability:'unsupported',
-   description:'Dynamic while, GitHub foreach, nested templates and runtime while expansion remain unsupported.'},
+   description:'Dynamic while, nested templates, Session foreach and item-dependent GitHub Task inputs remain unsupported.'},
   {id:'flow.child',kind:'flow',availability:'unsupported',
    description:'Child workflows and durable wait are not supported in the current Published Plan schema.'},
   {id:'flow.saga',kind:'flow',availability:'unsupported',
@@ -310,9 +327,9 @@ export async function workflowCapabilities(env:Pick<Env,
   }catch { githubReady=false; } // invalid scope is never treated as approved
   const availability=(entry:Entry)=>
     (entry.id==='action.mcp.call'||entry.id==='flow.foreach_mcp_read')&&!portalReady?'unavailable':
-    entry.id==='action.github.run'&&!githubReady?'unavailable':
+    (entry.id==='action.github.run'||entry.id==='flow.foreach_github_task')&&!githubReady?'unavailable':
     entry.id==='trigger.github_event'&&!env.GITHUB_ACTION_OIDC_AUDIENCE?'unavailable':
-    ['action.mcp.call','action.github.run','flow.foreach_mcp_read'].includes(entry.id)?'configured_unverified':entry.availability;
+    ['action.mcp.call','action.github.run','flow.foreach_mcp_read','flow.foreach_github_task'].includes(entry.id)?'configured_unverified':entry.availability;
   if(id===undefined)return {
     definition_schema:WORKFLOW_DEFINITION_SCHEMA,
     action_with_schemas:WORKFLOW_ACTION_WITH_SCHEMAS,
@@ -386,6 +403,20 @@ export async function workflowCapabilities(env:Pick<Env,
     detail.template_policy={allowed_action:'result.emit',max_items:PLAN_LIMITS.maxForeachItems,
       maximum_flattened_steps:PLAN_LIMITS.maxSteps,snapshot:'native step.do before first child',
       empty_array:'skipped',external_actions:'unsupported'};
+  }
+  if(id==='flow.foreach_github_task'){
+    const discovered=githubReady?await listAvailableGitHubActions(env):{actions:[]};
+    const task=discovered.actions.find(a=>a.can_publish&&a.type==='task'&&
+      'ref' in a&&typeof a.ref==='string'&&Object.values(a.inputs).every(x=>!x.required||x.default!==undefined));
+    detail.availability=task?'publishable_after_owner_approval':'no_verified_published_task';
+    if(task&&'ref' in task&&typeof task.ref==='string')
+      detail.example=await compilingExample(foreachGithubTask({...task,ref:task.ref}));
+    detail.template_policy={allowed_action:'github.run',type:'task',inputs:'literal_only',
+      max_items:PLAN_LIMITS.maxForeachItems,maximum_flattened_steps:PLAN_LIMITS.maxSteps,
+      replay:'D1 UNIQUE(run_id,step_id) Attempt before single GitHub POST; no blind retries',
+      physical_state:'verified GitHub terminal plus signed OIDC Claim/receipt',
+      requires:['approved_actions','approve_heavy_execution'],
+      unsupported:['session','item-dependent task inputs','nested templates']};
   }
   if(id==='flow.foreach_mcp_read'){
     const discovered=await portalDiscovery(env);
