@@ -831,3 +831,44 @@ test('skipped first iteration never restarts a repeat through allow_skipped',asy
   for(const name of ['conditional__r1','conditional__r2','conditional'])
     assert.equal(result.steps.find(s=>s.step_id===name)?.status,'skipped',name);
 });
+
+test('fixed repeat of granted external MCP Action requires Publish approval and has exact call count',async t=>{
+  const {service,env,run,sqlite}=setup(t);
+  let calls=0;
+  mockPublicPeer(t,async()=>{calls++;});
+  const definition={version:1,name:'Approved fixed read',steps:[
+    {...echoStep('read',{value:'repeat-approved'}),repeat:{count:2}},
+  ]};
+  const draft=await service.create(JSON.stringify(definition));
+  await assert.rejects(()=>service.publish(draft.workflow_id,1),
+    /external_approval_required/);
+  await service.publish(draft.workflow_id,1,[ECHO_GRANT],true);
+  const admitted=await service.start(draft.workflow_id,{});
+  await run(admitted.run_id);
+  const result=await service.result(admitted.run_id);
+  assert.equal(result.status,'succeeded');
+  assert.deepEqual(result.steps.map(s=>[s.step_id,s.status]),[
+    ['read','succeeded'],['read__r1','succeeded'],
+  ]);
+  assert.equal(calls,2,'exactly two independent explicitly granted external calls');
+  await run(admitted.run_id);
+  assert.equal(calls,2,'terminal Run replay must not dispatch more external calls');
+  assert.equal(sqlite.prepare('SELECT count(*) AS n FROM run_steps WHERE run_id=?')
+    .get(admitted.run_id)?.n,2);
+});
+
+test('ambiguous external result prevents all remaining fixed repeat iterations',async t=>{
+  const {service,admit,run}=setup(t);
+  let calls=0;
+  mockPublicPeer(t,async()=>{calls++;throw Error('simulated_lost_response');});
+  const admitted=await admit([
+    {...echoStep('read',{value:'unsafe-to-retry'}),repeat:{count:3}},
+  ],{},[ECHO_GRANT]);
+  await run(admitted.run_id);
+  const result=await service.result(admitted.run_id);
+  assert.equal(result.status,'indeterminate');
+  assert.equal(result.steps.find(s=>s.step_id==='read__r1')?.status,'indeterminate');
+  assert.equal(result.steps.find(s=>s.step_id==='read__r2')?.status,'skipped');
+  assert.equal(result.steps.find(s=>s.step_id==='read')?.status,'skipped');
+  assert.equal(calls,1,'no second external action after ambiguous response');
+});
