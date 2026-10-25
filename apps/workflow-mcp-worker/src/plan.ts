@@ -1,6 +1,8 @@
 import YAML from 'yaml';
 import {parseUtcCron, type CronTrigger} from './cron.ts';
 import { publicMcpEndpoint } from './mcp-public-fetch.ts';
+import {isForeachTaskInputRef} from './github-action-inputs.ts';
+import type {DiscoveredAction} from './github-action-contract.ts';
 
 /** Compiler-owned supported Action kinds; discovery must not invent others. */
 export const SUPPORTED_STEP_USES = ['result.emit','mcp.call','github.run'] as const;
@@ -28,7 +30,7 @@ export const GITHUB_EVENT_PATTERNS=Object.freeze({
   workflow_path:/^\.github\/workflows\/(?!.*\.\.)[A-Za-z0-9][A-Za-z0-9_.-]{0,100}\.ya?ml$/,
 });
 export type WorkflowTrigger = CronTrigger | WebhookTrigger | GithubEventTrigger;
-export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown>; triggers?: WorkflowTrigger[]; mcp_approvals?: ReadonlyOperation[]; mcp_target_risks_accepted?: true; github_execution_approved?: true; github_action_approvals?: Array<{repository:string;repositoryId:number;workflowId:number;workflowPath:string;commitSha:string;type:'task'|'session';contractDigest:string}> };
+export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown>; triggers?: WorkflowTrigger[]; mcp_approvals?: ReadonlyOperation[]; mcp_target_risks_accepted?: true; github_execution_approved?: true;  github_action_approvals?: Array<{repository:string;repositoryId:number;workflowId:number;workflowPath:string;commitSha:string;type:'task'|'session';contractDigest:string}>; github_dynamic_input_contracts?:Record<string,DiscoveredAction> };
 const SAFE_ID = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
 const OBJECT_PROTOTYPE_KEYS = new Set(['constructor','toString','toLocaleString','valueOf','hasOwnProperty','isPrototypeOf','propertyIsEnumerable']);
 const RESERVED = new Set(['eval','javascript','script','code','shell','endpoint','url','command','function']);
@@ -325,12 +327,14 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
         if(action.type!=='task')
           throw new PlanError('unsupported_foreach_action',target+'/action/type');
         const inputs=action.inputs as Record<string,unknown>;
-        // Item-dependent inputs need provider-typed validation and persisted
-        // per-item input proof. Until then they are explicitly unsupported.
-        if(Object.values(inputs).some(x=>
-          typeof x!=='string'&&typeof x!=='boolean'&&
-          (typeof x!=='number'||!Number.isFinite(x))))
-          throw new PlanError('unsupported_foreach_inputs',target+'/action/inputs');
+        // Only current-item ref objects or strict JSON primitives are
+        // permitted. Publish checks provider types; Run checks all frozen
+        // resolved values and pins the digest before any GitHub POST.
+        for(const value of Object.values(inputs))
+          if(typeof value!=='string'&&typeof value!=='boolean'&&
+             (typeof value!=='number'||!Number.isFinite(value))&&
+             !isForeachTaskInputRef(value))
+            throw new PlanError('unsupported_foreach_inputs',target+'/action/inputs');
       }else keys(args,['data'],path+'/template/steps/0/with');
       const originalNeeds=candidate.needs===undefined?[]:candidate.needs;
       if(!Array.isArray(originalNeeds)||originalNeeds.some(x=>typeof x!=='string'||!SAFE_ID.test(x))||
@@ -448,6 +452,14 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
         };
         if(child.uses==='mcp.call')
           checkChild(child.with.arguments,childPath+'/with/arguments',true);
+        // github.action identity is immutable. Only exact item ref objects in
+        // the input map can vary; unsafe nested expressions are not accepted.
+        else if(child.uses==='github.run'){
+          const a=(child.with as {action:Record<string,unknown>}).action;
+          const inputs=a.inputs as Record<string,unknown>;
+          for(const [key,value] of Object.entries(inputs))
+            if(isForeachTaskInputRef(value))checkChild(value,childPath+'/with/action/inputs/'+key);
+        }
         else if(child.with.data!==undefined)
           checkChild(child.with.data,childPath+'/with/data');
         if(child.if!==undefined){
