@@ -78,6 +78,7 @@ test('advertised skip-tolerant join matches compiler and keeps fail-closed seman
   assert.equal(sample.steps.find(s=>s.needs_policy==='allow_skipped')?.needs_policy,'allow_skipped');
   const rules=(await workflowCapabilities(env)).expression_rules as {needs_policy:string};
   assert.match(rules.needs_policy,/failed or indeterminate/);
+  assert.match(rules.needs_policy,/at least one succeeded/);
 });
 
 test('Agent-readable Action schemas document required executable parameters',()=>{
