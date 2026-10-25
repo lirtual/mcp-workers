@@ -4,7 +4,7 @@ import { publicMcpEndpoint } from './mcp-public-fetch.ts';
 
 /** Compiler-owned supported Action kinds; discovery must not invent others. */
 export const SUPPORTED_STEP_USES = ['result.emit','mcp.call','github.run'] as const;
-export const PLAN_LIMITS = Object.freeze({definitionBytes:32768,maxSteps:32,maxInputs:32,maxParallel:8});
+export const PLAN_LIMITS = Object.freeze({definitionBytes:32768,maxSteps:32,maxInputs:32,maxParallel:8,maxFixedRepeat:8});
 export function isSupportedStepUse(value:unknown):value is (typeof SUPPORTED_STEP_USES)[number]{
   return typeof value==='string' && (SUPPORTED_STEP_USES as readonly string[]).includes(value);
 }
@@ -134,6 +134,47 @@ export function evaluateCondition(condition: unknown, ctx: {inputs:Record<string
   return value;
 }
 export const evaluateArguments=evaluateExpression;
+/**
+ * Compile literal fixed repeats into normal serial DAG Steps before validation
+ * and Publish. No runtime looping/expansion state and no second scheduler.
+ * Intermediate IDs are stable; the last iteration keeps the owner's Step ID
+ * so existing downstream needs/references resolve to its final outcome.
+ */
+function expandFixedRepeats(source:unknown[]):unknown[]{
+  const result:unknown[]=[];
+  for(let index=0;index<source.length;index++){
+    const raw=object(source[index],'invalid_step');
+    if(!Object.hasOwn(raw,'repeat')){result.push(raw);continue;}
+    const repeat=object(raw.repeat,'invalid_fixed_repeat');
+    keys(repeat,['count'],'/steps/'+index+'/repeat');
+    const count=repeat.count;
+    if(!Number.isSafeInteger(count)||Number(count)<1||Number(count)>PLAN_LIMITS.maxFixedRepeat)
+      throw new PlanError('invalid_fixed_repeat_count','/steps/'+index+'/repeat/count');
+    if(typeof raw.id!=='string'||!SAFE_ID.test(raw.id))
+      throw new PlanError('invalid_step_id','/steps/'+index+'/id');
+    const originalNeeds=raw.needs===undefined?[]:raw.needs;
+    if(!Array.isArray(originalNeeds))
+      throw new PlanError('invalid_dependencies','/steps/'+index+'/needs');
+    // Reserve room before any generated step is created.
+    if(result.length+Number(count)>PLAN_LIMITS.maxSteps)
+      throw new PlanError('invalid_step_count','/steps/'+index+'/repeat/count');
+    const {repeat:_discarded,...template}=raw;
+    for(let iteration=1;iteration<=Number(count);iteration++){
+      const previous=iteration===1?undefined:
+        iteration===2?String(raw.id)+'__r1':
+        String(raw.id)+'__r'+(iteration-1);
+      const generatedId=iteration===Number(count)?raw.id:
+        String(raw.id)+'__r'+iteration;
+      if(!SAFE_ID.test(generatedId))
+        throw new PlanError('invalid_step_id','/steps/'+index+'/id');
+      // A skipped iteration cannot reactivate a later iteration via an
+      // allow_skipped join, even if another original predecessor succeeded.
+      result.push({...template,id:generatedId,
+        ...(previous?{needs:[...originalNeeds,previous],needs_policy:'all_succeeded'}:{})});
+    }
+  }
+  return result;
+}
 export async function compilePlan(source: string|unknown): Promise<{plan:Plan; digest:string}>{
   let raw:unknown=source;
   if(typeof source==='string'){
@@ -182,9 +223,10 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
         ref:item.ref as string,workflow_path:item.workflow_path as string}];
     }else throw new PlanError('unsupported_trigger','/triggers/0/type');
   }
+  const sourceSteps=expandFixedRepeats(o.steps);
   const steps:Step[]=[];
   const ids=new Set<string>();
-  for(const s0 of o.steps){
+  for(const s0 of sourceSteps){
     const s=object(s0,'invalid_step');
     const stepPath='/steps/'+steps.length;
     keys(s,['id','uses','needs','needs_policy','if','with'],stepPath);
