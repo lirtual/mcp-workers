@@ -77,6 +77,9 @@ test('GitHub event compiler enforces one exact repository, branch, relay and dec
   assert.equal(capability.availability,'supported_with_relay');
   const example=capability.example as {definition:unknown;digest:string};
   assert.equal((await compilePlan(example.definition)).digest,example.digest);
+  const sample=example.definition as {inputs:Record<string,unknown>;steps:Array<{with:{data:{ref:string}}}>};
+  assert.equal(sample.steps[0].with.data.ref,'inputs.github');
+  assert.ok(Object.hasOwn(sample.inputs,'github'),'Advertised sample must reference a declared input');
 });
 
 test('signed GitHub identity is verified against every immutable trigger binding',async()=>{
