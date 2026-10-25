@@ -33,6 +33,8 @@ export async function withImap<T>(env: Env, account: MailAccount, work: (client:
   const client = new ImapFlow({ host: target.address, port: 993, secure: true,
     tls: { servername: target.hostname, rejectUnauthorized: true, minVersion: 'TLSv1.2' },
     auth: { user: cfg.username, pass: cfg.password }, logger: false, socketTimeout: 15000 });
+  // ImapFlow emits socket errors as EventEmitter events as well as rejected calls.
+  client.on('error', () => { /* errors from operations are sanitized by the caller */ });
   try {
     await client.connect();
     return await work(client);
@@ -178,6 +180,7 @@ export async function verifyImapCredentials(input: ProtocolCredentials): Promise
     auth: { user: cfg.username, pass: cfg.password }, logger: false,
     socketTimeout: 15000, connectionTimeout: 10000,
   });
+  client.on('error', () => { /* TLS/auth failure returned as a sanitized error */ });
   try { await client.connect(); }
   catch { fail('imap_connection_failed'); }
   finally { try { await client.logout(); } catch {} }
