@@ -280,15 +280,14 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       if(!Array.isArray(templ.steps)||templ.steps.length<1||
          templ.steps.length>PLAN_LIMITS.maxForeachTemplateSteps)
         throw new PlanError('unsupported_foreach_template',path+'/template/steps');
-      // Preserve the reviewed 2-4 stage emit/MCP path. The only multi-stage
-      // GitHub shape admitted here is emit -> one literal-input Task -> emit.
+      // Only one reviewed, literal-input Task among up to four ordered
+      // emit/read-only MCP stages. More than one GitHub effect per item
+      // remains unsupported, even if the Actions have different IDs.
       if(templ.steps.length>1){
-        const taskIndices=templ.steps.flatMap((item,index)=>
+        const taskCount=templ.steps.filter(item=>
           item&&typeof item==='object'&&!Array.isArray(item)&&
-          (item as {uses?:unknown}).uses==='github.run'?[index]:[]);
-        if(taskIndices.length&&!(templ.steps.length===3&&taskIndices.length===1&&taskIndices[0]===1&&
-           (templ.steps[0] as {uses?:unknown})?.uses==='result.emit'&&
-           (templ.steps[2] as {uses?:unknown})?.uses==='result.emit'))
+          (item as {uses?:unknown}).uses==='github.run').length;
+        if(taskCount>1)
           throw new PlanError('unsupported_foreach_action',path+'/template/steps');
         const originalNeeds=candidate.needs===undefined?[]:candidate.needs;
         if(!Array.isArray(originalNeeds)||originalNeeds.some(x=>typeof x!=='string'||!SAFE_ID.test(x))||
