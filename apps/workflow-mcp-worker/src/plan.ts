@@ -136,6 +136,51 @@ export function evaluateCondition(condition: unknown, ctx: {inputs:Record<string
   return value;
 }
 export const evaluateArguments=evaluateExpression;
+/** Resolve exactly one reviewer-pinned Task child, never an arbitrary caller ID.
+ * The compiler already reserves all possible identities and prevents collisions.
+ * Session Action lifecycle is deliberately not supported here.
+ */
+export function publishedGitHubActionStep(plan:Plan,stepId:string):Step|undefined{
+  if(!Array.isArray(plan.steps))return undefined;
+  const ordinary=plan.steps.find(s=>s.id===stepId);
+  if(ordinary)return ordinary.uses==='github.run'?ordinary:undefined;
+  for(const controller of plan.steps){
+    if(controller.uses!=='flow.foreach')continue;
+    const config=controller.with;
+    const child=config.template as {id?:unknown;uses?:unknown;with?:unknown}|undefined;
+    if(child?.uses!=='github.run'||typeof child.id!=='string'||
+       !Number.isSafeInteger(config.max_items)||Number(config.max_items)<1||
+       Number(config.max_items)>PLAN_LIMITS.maxForeachItems)continue;
+    const withData=child.with as Record<string,unknown>|undefined;
+    if(withData?.capability!=='github.action'||!withData.action||
+       (withData.action as {type?:unknown}).type!=='task')continue;
+    for(let i=0;i<Number(config.max_items);i++){
+      if(stepId===controller.id+'_'+i+'_'+child.id)
+        return {id:stepId,uses:'github.run',needs:controller.needs,with:withData};
+    }
+  }
+  return undefined;
+}
+
+function checkGitHubActionWith(withData:Record<string,unknown>,path:string):void{
+  keys(withData,['capability','action'],path);
+  if(withData.capability!=='github.action')
+    throw new PlanError('unsupported_github_capability',path+'/capability');
+  const action=object(withData.action,'invalid_github_action');
+  keys(action,['repository','repositoryId','workflowId','workflowPath','commitSha','type','contractDigest','ref','inputs'],path+'/action');
+  if(typeof action.repository!=='string'||!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(action.repository)||
+     !Number.isSafeInteger(action.repositoryId)||Number(action.repositoryId)<=0||
+     !Number.isSafeInteger(action.workflowId)||Number(action.workflowId)<=0||
+     typeof action.workflowPath!=='string'||!/^\.github\/workflows\/[A-Za-z0-9_.-]+\.ya?ml$/.test(action.workflowPath)||
+     typeof action.commitSha!=='string'||!/^[a-f0-9]{40}$/i.test(action.commitSha)||
+     typeof action.ref!=='string'||!/^refs\/tags\/[A-Za-z0-9][A-Za-z0-9._\/-]{0,190}$/.test(action.ref)||
+     action.ref.includes('..')||action.ref.includes('//')||action.ref.endsWith('/')||
+     !['task','session'].includes(String(action.type))||
+     typeof action.contractDigest!=='string'||!/^[a-f0-9]{64}$/i.test(action.contractDigest))
+    throw new PlanError('invalid_github_action',path+'/action');
+  object(action.inputs,'invalid_github_action_inputs');
+}
+
 export async function compilePlan(source: string|unknown): Promise<{plan:Plan; digest:string}>{
   let raw:unknown=source;
   if(typeof source==='string'){
@@ -220,9 +265,9 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       keys(child,['id','uses','with','if'],path+'/template/steps/0');
       if(typeof child.id!=='string'||!SAFE_ID.test(child.id)||
          OBJECT_PROTOTYPE_KEYS.has(child.id))throw new PlanError('invalid_step_id',path+'/template/steps/0/id');
-      // Only approved read-only MCP calls can cross the external boundary.
-      // github.run requires its own per-item physical Attempt lifecycle proof.
-      if(child.uses!=='result.emit'&&child.uses!=='mcp.call')
+      // A single reviewed GitHub Task may run per item, but its dispatch
+      // identity and input values must remain literals pinned at Publish.
+      if(child.uses!=='result.emit'&&child.uses!=='mcp.call'&&child.uses!=='github.run')
         throw new PlanError('unsupported_foreach_action',path+'/template/steps/0/uses');
       const args=object(child.with,'invalid_step_arguments');
       let compiledChild=child;
@@ -238,6 +283,19 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
         object(args.arguments,'invalid_step_arguments');
         const schema_digest=await toolSchemaDigest(args.input_schema,args.output_schema);
         compiledChild={...child,with:{...args,schema_digest}};
+      }else if(child.uses==='github.run'){
+        const target=path+'/template/steps/0/with';
+        checkGitHubActionWith(args,target);
+        const action=args.action as Record<string,unknown>;
+        if(action.type!=='task')
+          throw new PlanError('unsupported_foreach_action',target+'/action/type');
+        const inputs=action.inputs as Record<string,unknown>;
+        // Item-dependent inputs need provider-typed validation and persisted
+        // per-item input proof. Until then they are explicitly unsupported.
+        if(Object.values(inputs).some(x=>
+          typeof x!=='string'&&typeof x!=='boolean'&&
+          (typeof x!=='number'||!Number.isFinite(x))))
+          throw new PlanError('unsupported_foreach_inputs',target+'/action/inputs');
       }else keys(args,['data'],path+'/template/steps/0/with');
       const originalNeeds=candidate.needs===undefined?[]:candidate.needs;
       if(!Array.isArray(originalNeeds)||originalNeeds.some(x=>typeof x!=='string'||!SAFE_ID.test(x))||
@@ -310,25 +368,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     if(s.uses==='flow.foreach'){
       keys(withData,['items','max_items','template'],stepPath+'/with');
     }else if(s.uses==='github.run'){
-      // A single fixed CI verification operation. No user-supplied scripts,
-      // URL, repository, ref or arguments.
-      keys(withData,['capability','action'],stepPath+'/with');
-      if(withData.capability==='github.action') {
-        const action=object(withData.action,'invalid_github_action');
-        keys(action,['repository','repositoryId','workflowId','workflowPath','commitSha','type','contractDigest','ref','inputs'],stepPath+'/with/action');
-        if(typeof action.repository!=='string'||!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(action.repository)||
-           !Number.isSafeInteger(action.repositoryId)||Number(action.repositoryId)<=0||
-           !Number.isSafeInteger(action.workflowId)||Number(action.workflowId)<=0||
-           typeof action.workflowPath!=='string'||!/^\.github\/workflows\/[A-Za-z0-9_.-]+\.ya?ml$/.test(action.workflowPath)||
-           typeof action.commitSha!=='string'||! /^[a-f0-9]{40}$/i.test(action.commitSha)||
-           typeof action.ref!=='string'||! /^refs\/tags\/[A-Za-z0-9][A-Za-z0-9._\/-]{0,190}$/.test(action.ref)||
-           action.ref.includes('..')||action.ref.includes('//')||action.ref.endsWith('/')||
-           !['task','session'].includes(String(action.type))||
-           typeof action.contractDigest!=='string'||! /^[a-f0-9]{64}$/i.test(action.contractDigest))
-          throw new PlanError('invalid_github_action',stepPath+'/with/action');
-        try{object(action.inputs,'invalid_github_action_inputs');}
-        catch{throw new PlanError('invalid_github_action_inputs',stepPath+'/with/action/inputs');}
-      } else throw new PlanError('unsupported_github_capability');
+      checkGitHubActionWith(withData,stepPath+'/with');
     }else if(s.uses==='mcp.call'){
       keys(withData,['endpoint','tool','scope','arguments','input_schema','output_schema'],stepPath+'/with');
       if(typeof withData.endpoint!=='string')throw new PlanError('invalid_endpoint',stepPath+'/with/endpoint');
