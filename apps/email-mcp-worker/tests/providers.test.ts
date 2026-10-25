@@ -81,7 +81,7 @@ test('Gmail reply preserves native thread and RFC Message-ID relations; forward 
       }
       throw new Error('unexpected route ' + target);
     }) as typeof fetch;
-    const reply = await replyGmail(env, account, 'source123', 'Thanks');
+    const reply = await replyGmail(env, account, 'source123', 'Thanks', 'sender@example.test');
     assert.equal(reply.status, 'submitted');
     assert.equal(sent[0].threadId, 'thread123');
     assert.match(sent[0].mime, /In-Reply-To: <abc123@sender\.test>\r\nReferences: <abc123@sender\.test>/);
@@ -92,6 +92,11 @@ test('Gmail reply preserves native thread and RFC Message-ID relations; forward 
     assert.equal(sent[1].threadId, undefined);
     assert.match(sent[1].mime, /To: target@example\.test/);
     assert.ok(sent[1].mime.includes(Buffer.from('Fwd: Subject 123').toString('base64')));
+    original.payload.headers.push({ name: 'Reply-To', value: 'untrusted@example.test' });
+    await assert.rejects(() => replyGmail(env, account, 'source123', 'Thanks', 'sender@example.test'), /reply_recipient_mismatch/);
+    assert.equal(sent.length, 2, 'unconfirmed Reply-To must never dispatch a message');
+    await replyGmail(env, account, 'source123', 'Thanks', 'untrusted@example.test');
+    assert.match(sent[2].mime, /To: untrusted@example\.test/);
   } finally { globalThis.fetch = oldFetch; }
 });
 test('Graph thread_get filters native conversationId and marks truncation', async () => {
