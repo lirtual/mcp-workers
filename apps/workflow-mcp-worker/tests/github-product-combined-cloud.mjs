@@ -58,7 +58,7 @@ async function run(){
  GITHUB_EXECUTOR_REF:process.env.GITHUB_REF,
  GITHUB_EXECUTOR_AUDIENCE:'workflow-github-claim:test',GITHUB_TEST_WORKER_NAME:name,
  ...(dedicated?{GITHUB_TEST_DEDICATED_EXECUTOR:'true'}:{}),
- GITHUB_TEST_EXPECTED_TOKEN_SHA256:createHash('sha256').update(need('GITHUB_TOKEN')).digest('hex')},d1_databases:[{binding:'DB',database_name:name,database_id:dbId,migrations_dir:'migrations'}],workflows:[{name,binding:'WORKFLOW',class_name:'WorkflowRunner'}]}));
+ GITHUB_TEST_EXPECTED_TOKEN_SHA256:createHash('sha256').update(need('GITHUB_TOKEN')).digest('hex')},d1_databases:[{binding:'DB',database_name:name,database_id:dbId,migrations_dir:'migrations'}],workflows:[{name,binding:'WORKFLOW',class_name:'WorkflowOrchestrator'}]}));
   wr(['d1','migrations','apply',name,'--remote','--config',file]);
   attempted=true;
   try{wr(['deploy','--config',file]);}
