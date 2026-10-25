@@ -10,6 +10,16 @@ import { limitResult } from './store.ts';
 import { scopedPublicMcpFetch, PRODUCTION_PORTAL_ENDPOINT, type PortalServiceToken } from './mcp-public-fetch.ts';
 
 type Outcome={status:'succeeded'|'failed'|'skipped'|'indeterminate';output?:any;error_code?:string};
+/** Branch joins permit skipped alternatives, but no branch executing must not
+ * accidentally authorize downstream Action effects (especially github.run).
+ * Preserve all_succeeded for old Plans and for Steps without an explicit join.
+ */
+function dependenciesPermitRun(s:Step,completed:Record<string,Outcome>):boolean{
+  const states=s.needs.map(id=>completed[id]?.status);
+  if(s.needs_policy!=='allow_skipped')return states.every(status=>status==='succeeded');
+  return states.some(status=>status==='succeeded')&&
+    states.every(status=>status==='succeeded'||status==='skipped');
+}
 const now=()=>Date.now();
 // A missing Run-input reference must not silently disappear during JSON
 // serialization, changing the meaning of an approved external MCP call.
@@ -119,8 +129,7 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
               try{
                 await db.prepare("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES(?,?,'running',?) ON CONFLICT(run_id,step_id) DO NOTHING")
                   .bind(id,s.id,now()).run();
-                if(s.needs.some(n=>ctx.steps[n].status!=='succeeded'&&
-                  !(s.needs_policy==='allow_skipped'&&ctx.steps[n].status==='skipped')))
+                if(!dependenciesPermitRun(s,ctx.steps))
                   return {status:'skipped'} as Outcome;
                 if(s.if!==undefined&&!evaluateCondition(s.if,ctx))return {status:'skipped'} as Outcome;
                 return await runGithubStep(this.env,plan,s,id,step);
@@ -135,8 +144,7 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
               // must never replace a previously persisted terminal Step state.
               await db.prepare("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES(?,?,'running',?) ON CONFLICT(run_id,step_id) DO NOTHING")
                 .bind(id,s.id,now()).run();
-              if(s.needs.some(n=>ctx.steps[n].status!=='succeeded'&&
-                  !(s.needs_policy==='allow_skipped'&&ctx.steps[n].status==='skipped')))
+              if(!dependenciesPermitRun(s,ctx.steps))
                   return {status:'skipped'};
               if(s.if!==undefined&&!evaluateCondition(s.if,ctx))return {status:'skipped'};
               // Exhaustive runtime dispatch is required even for a pinned plan
