@@ -119,7 +119,9 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
               try{
                 await db.prepare("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES(?,?,'running',?) ON CONFLICT(run_id,step_id) DO NOTHING")
                   .bind(id,s.id,now()).run();
-                if(s.needs.some(n=>ctx.steps[n].status!=='succeeded'))return {status:'skipped'} as Outcome;
+                if(s.needs.some(n=>ctx.steps[n].status!=='succeeded'&&
+                  !(s.needs_policy==='allow_skipped'&&ctx.steps[n].status==='skipped')))
+                  return {status:'skipped'} as Outcome;
                 if(s.if!==undefined&&!evaluateCondition(s.if,ctx))return {status:'skipped'} as Outcome;
                 return await runGithubStep(this.env,plan,s,id,step);
               }catch{
@@ -133,7 +135,9 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
               // must never replace a previously persisted terminal Step state.
               await db.prepare("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES(?,?,'running',?) ON CONFLICT(run_id,step_id) DO NOTHING")
                 .bind(id,s.id,now()).run();
-              if(s.needs.some(n=>ctx.steps[n].status!=='succeeded'))return {status:'skipped'};
+              if(s.needs.some(n=>ctx.steps[n].status!=='succeeded'&&
+                  !(s.needs_policy==='allow_skipped'&&ctx.steps[n].status==='skipped')))
+                  return {status:'skipped'};
               if(s.if!==undefined&&!evaluateCondition(s.if,ctx))return {status:'skipped'};
               // Exhaustive runtime dispatch is required even for a pinned plan
               // read from D1. Never reinterpret a future/unknown capability as
