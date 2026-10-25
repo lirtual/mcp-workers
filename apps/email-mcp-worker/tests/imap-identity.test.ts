@@ -52,3 +52,13 @@ test('IMAP replies require a caller-confirmed Reply-To and a valid RFC message i
   assert.throws(() => imapReplyHeaders({ from: { address: 'sender@example.test' } },
     'sender@example.test'), /unsupported/);
 });
+
+test('IMAP trash prefers special-use designation even for localized folder names', async () => {
+  const { findImapTrash } = await import('../src/imap.ts');
+  assert.equal(findImapTrash([
+    { path: 'Trash' },
+    { path: '已删除邮件', specialUse: '\\Trash' },
+  ])?.path, '已删除邮件');
+  assert.equal(findImapTrash([{ path: 'Deleted Items' }])?.path, 'Deleted Items');
+  assert.equal(findImapTrash([{ path: 'Archive', specialUse: '\\Archive' }]), undefined);
+});
