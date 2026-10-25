@@ -330,12 +330,14 @@ async function runActionTaskSmoke() {
     ...(read.output_schema?{output_schema:read.output_schema}:{}),
   }};
   const definition={version:1,name:'workflow-agent-first-'+label,
+    inputs:{items:['first','second']},
     steps:[readStep,
-      {id:'verify',uses:'github.run',needs:['read'],
-        if:{eq:[{ref:'steps.read.status'},'succeeded']},
-        with:{capability:'github.action',action}},
-      {id:'out',uses:'result.emit',needs:['verify'],
-        with:{data:{ref:'steps.verify.status'}}},
+      {id:'each',flow:'foreach',needs:['read'],items:{ref:'inputs.items'},max_items:2,
+        template:{steps:[{id:'verify',uses:'github.run',
+          if:{ne:[{ref:'item.value'},'skip']},
+          with:{capability:'github.action',action}}]}},
+      {id:'out',uses:'result.emit',needs:['each'],
+        with:{data:{ref:'steps.each.status'}}},
     ]};
   const before=sql('SELECT count(*) AS n FROM workflows')[0].n;
   const bad={...definition,steps:[{...readStep,uses:'made_up_action'},...definition.steps.slice(1)]};
@@ -383,36 +385,43 @@ async function runActionTaskSmoke() {
     await new Promise(r=>setTimeout(r,1200));
   }
   assert.equal(outcome?.status,'succeeded','Pinned GitHub Action Task did not succeed');
-  assert.equal(outcome.steps.length,3);
+  assert.equal(outcome.steps.length,5);
   assert.ok(outcome.steps.every(step=>step.status==='succeeded'));
   assert.equal(outcome.result,'succeeded');
-  const rows=sql('SELECT candidate_run_id,candidate_run_attempt,owner_run_id,owner_run_attempt,state FROM step_attempts WHERE run_id='+quotedId(runId));
-  assert.equal(rows.length,1,'Expected one durable Task Attempt');
-  const attempt=rows[0];
-  assert.ok(Number.isSafeInteger(attempt.candidate_run_id)&&attempt.candidate_run_id>0);
-  assert.equal(attempt.candidate_run_attempt,1);
-  assert.equal(attempt.owner_run_id,attempt.candidate_run_id);
-  assert.equal(attempt.owner_run_attempt,1);
-  assert.equal(attempt.state,'succeeded');
-  const url='https://api.github.com/repos/lirtual/session-actions/actions/runs/'+attempt.candidate_run_id;
-  for(let i=0;i<60;i++){
-    const response=await fetch(url,{headers:{
-      accept:'application/vnd.github+json',authorization:'Bearer '+credential,
-      'user-agent':'mcp-workers-action-task-smoke',
-    },redirect:'manual',signal:AbortSignal.timeout(12000)});
-    assert.equal(response.status,200,'Pinned physical Action Run not readable');
-    const physical=await response.json();
-    assert.equal(physical.head_sha,reviewed.commitSha,'Physical code SHA changed');
-    assert.equal(physical.repository?.id,reviewed.repositoryId,'Physical repository mismatch');
-    if(physical.status==='completed'){
-      assert.equal(physical.conclusion,'success','Physical Action Task failed');
-      githubPhysicalCompleted=true;
-      break;
+  for(const id of ['read','each','each_0_verify','each_1_verify','out'])
+    assert.equal(outcome.steps.find(x=>x.step_id===id)?.status,'succeeded',id);
+  const rows=sql('SELECT step_id,candidate_run_id,candidate_run_attempt,owner_run_id,owner_run_attempt,state FROM step_attempts WHERE run_id='+quotedId(runId)+' ORDER BY step_id');
+  assert.equal(rows.length,2,'Expected exactly two bounded GitHub Task Attempts');
+  assert.deepEqual(rows.map(x=>x.step_id),['each_0_verify','each_1_verify']);
+  assert.equal(new Set(rows.map(x=>x.candidate_run_id)).size,2,
+    'Distinct selected children must dispatch distinct physical GitHub Runs');
+  for(const attempt of rows){
+    assert.ok(Number.isSafeInteger(attempt.candidate_run_id)&&attempt.candidate_run_id>0);
+    assert.equal(attempt.candidate_run_attempt,1);
+    assert.equal(attempt.owner_run_id,attempt.candidate_run_id);
+    assert.equal(attempt.owner_run_attempt,1);
+    assert.equal(attempt.state,'succeeded');
+    const url='https://api.github.com/repos/lirtual/session-actions/actions/runs/'+attempt.candidate_run_id;
+    let terminalPhysical=false;
+    for(let i=0;i<60;i++){
+      const response=await fetch(url,{headers:{
+        accept:'application/vnd.github+json',authorization:'Bearer '+credential,
+        'user-agent':'mcp-workers-action-task-smoke',
+      },redirect:'manual',signal:AbortSignal.timeout(12000)});
+      assert.equal(response.status,200,'Pinned physical Action Run not readable');
+      const physical=await response.json();
+      assert.equal(physical.head_sha,reviewed.commitSha,'Physical code SHA changed');
+      assert.equal(physical.repository?.id,reviewed.repositoryId,'Physical repository mismatch');
+      if(physical.status==='completed'){
+        assert.equal(physical.conclusion,'success','Physical Action Task failed');
+        terminalPhysical=true;break;
+      }
+      await new Promise(r=>setTimeout(r,1000));
     }
-    await new Promise(r=>setTimeout(r,1000));
+    assert.equal(terminalPhysical,true,'One physical GitHub Task still running');
   }
-  assert.equal(githubPhysicalCompleted,true,'Physical Action Task not terminal');
-  console.log('AGENT_FIRST_SMOKE_OK: discover, repair, inline validate with no D1 writes, Portal read, approved GitHub Task, signed Claim and physical completion');
+  githubPhysicalCompleted=true;
+  console.log('FOREACH_GITHUB_TASK_PRODUCTION_OK: two pinned Task children, signed Claims, distinct physical GitHub terminal proofs, D1 Attempt identity, no duplicate Run');
 }
 
 
