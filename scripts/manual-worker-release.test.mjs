@@ -415,7 +415,7 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
     locator_column:0,fixed_column:0,fixed_index:0,
     attempt_table:1,receipt_table:1,native_column:1,
     session_table:0,cancellation_table:0,
-    active_runs:0,run_count:0,workflow_count:0,
+    active_runs:0,active_sessions:0,run_count:0,workflow_count:0,
   };
   const partial = {...baseline,migration_count:6,migration_v6:1};
   const current = {...partial,migration_count:7,migration_v7:1,
@@ -457,6 +457,9 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
     workflow_count:1}),false,true),true);
   assert.throws(()=>verifyWorkflowD1Readiness(result({...upgraded,active_runs:1}),false),
     /active or indeterminate/);
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...completed,active_sessions:1}),false),
+    /active physical Sessions/);
+  assert.equal(verifyWorkflowD1Readiness(result({...upgraded,active_sessions:1}),false,true),true);
   assert.throws(()=>verifyWorkflowD1Readiness(result({...upgraded,run_count:1}),true),
     /empty production/);
   assert.throws(()=>verifyWorkflowD1Readiness([],true),/readback unavailable/);
