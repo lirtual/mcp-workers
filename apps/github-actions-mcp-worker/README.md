@@ -4,7 +4,7 @@ A standalone Cloudflare Streamable HTTP MCP server that manages GitHub Actions t
 
 ## One Secret, multiple GitHub accounts
 
-Keep the existing GitHub Environment Secret **`GH_TOKEN`**. Its value may contain one or more fine-grained GitHub Personal Access Tokens, **one PAT per line**, for example:
+Keep the existing GitHub Environment Secret **`ACTIONS_GITHUB_DISPATCH_TOKENS`**. Its value may contain one or more fine-grained GitHub Personal Access Tokens, **one PAT per line**, for example:
 
 ```text
 github_pat_<PAT_FOR_FIRST_ACCOUNT>
@@ -22,7 +22,7 @@ Set the permitted repositories **in each PAT's GitHub fine-grained repository ac
 
 A discovery failure or a list exceeding **200 repositories per PAT** fails closed instead of operating against partial results. The Worker does not return tokens or GitHub error bodies to MCP clients. A single secret contains all PATs, so limit who can edit/read its deployment configuration, and understand that rotating one token requires updating the composite Secret.
 
-GitHub Actions Environment Secret values are limited to 48 KB. Avoid logging the value. The selected-Worker release workflow transfers this one `GH_TOKEN` Secret without printing its contents.
+GitHub Actions Environment Secret values are limited to 48 KB. Avoid logging the value. The selected-Worker release workflow transfers this one `ACTIONS_GITHUB_DISPATCH_TOKENS` Secret without printing its contents.
 
 ## MCP tools
 

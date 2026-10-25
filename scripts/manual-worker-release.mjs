@@ -8,9 +8,9 @@ const REQUIRED_SECRETS = {
   "raindrop-mcp-worker": ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN"],
   "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "API_KEY"],
   "database-mcp-worker": ["MCP_ACCESS_TOKEN", "DATABASE_CONFIG"],
-  "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "MCP_BROKER_TOKEN"],
+  "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "SSH_BROKER_TOKEN"],
   "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
-  "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "GH_TOKEN"],
+  "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "ACTIONS_GITHUB_DISPATCH_TOKENS"],
   "workflow-mcp-worker": ["MCP_ACCESS_TOKEN"],
 };
 const WORKER_ENTRIES = {
@@ -94,8 +94,8 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     invariant(!find("GITHUB_REPOS", "plain_text") &&
       !find("GITHUB_REPOS_SECONDARY", "plain_text"),
       "Legacy GitHub Actions repository allowlists must be removed");
-    invariant(secretNames.has("GH_TOKEN") && !!find("GH_TOKEN", "secret_text"),
-      "GitHub Actions GH_TOKEN Secret binding missing");
+    invariant(secretNames.has("ACTIONS_GITHUB_DISPATCH_TOKENS") && !!find("ACTIONS_GITHUB_DISPATCH_TOKENS", "secret_text"),
+      "GitHub Actions ACTIONS_GITHUB_DISPATCH_TOKENS Secret binding missing");
   }
   if (worker === "ima-mcp-worker") {
     // During preflight, accept a legacy CLIENT_ID secret because it will be

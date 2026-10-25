@@ -242,11 +242,11 @@ test("manual release scope stages the pinned Agent only for Remote Control", () 
 
 test("SSH production release requires Broker service, own DO, and least-privileged secret bindings", () => {
   const worker = "ssh-mcp-worker";
-  const secrets = [{ name: "MCP_ACCESS_TOKEN" }, { name: "MCP_BROKER_TOKEN" }];
+  const secrets = [{ name: "MCP_ACCESS_TOKEN" }, { name: "SSH_BROKER_TOKEN" }];
   const settings = {
     bindings: [
       { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
-      { name: "MCP_BROKER_TOKEN", type: "secret_text" },
+      { name: "SSH_BROKER_TOKEN", type: "secret_text" },
       { name: "EDGE_SSH_BROKER", type: "service", service: "edgessh",
         entrypoint: "HostBrokerEntrypoint" },
       { name: "SSH_OPERATIONS", type: "durable_object_namespace", class_name: "SshOperationsDO" },
@@ -288,7 +288,7 @@ test("manual release always syncs selected Worker Secrets from GitHub and never 
   const secretStep = workflow.slice(secretStart, variableStart);
   assert.doesNotMatch(secretStep, /^\s*if:/m, "existing Workers must never skip Secret staging");
   for (const name of ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN", "API_KEY",
-    "DATABASE_CONFIG", "MCP_BROKER_TOKEN", "GH_TOKEN"]) {
+    "DATABASE_CONFIG", "SSH_BROKER_TOKEN", "ACTIONS_GITHUB_DISPATCH_TOKENS"]) {
     assert.ok(secretStep.includes("secrets." + name), "GitHub must provide " + name);
   }
   assert.equal(secretStep.includes("secrets.CLIENT_ID"), false,
@@ -354,10 +354,10 @@ test("first GitHub Actions Worker release retries only transient 404s without we
 
 test("GitHub Actions deploy requires only one PAT Secret and no repository lists", () => {
   const worker = "github-actions-mcp-worker";
-  const secrets = [{ name: "MCP_ACCESS_TOKEN" }, { name: "GH_TOKEN" }];
+  const secrets = [{ name: "MCP_ACCESS_TOKEN" }, { name: "ACTIONS_GITHUB_DISPATCH_TOKENS" }];
   const bindings = [
     { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
-    { name: "GH_TOKEN", type: "secret_text" },
+    { name: "ACTIONS_GITHUB_DISPATCH_TOKENS", type: "secret_text" },
   ];
   const settings = { bindings, observability: { enabled: true,
     logs: { invocation_logs: true } } };
@@ -369,7 +369,10 @@ test("GitHub Actions deploy requires only one PAT Secret and no repository lists
   assert.throws(() => verifyBindings(worker, settings,
     [{ name: "MCP_ACCESS_TOKEN" }], { mode: "readback" }), /Required runtime Secret missing/);
   const release = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
-  assert.ok(release.includes("GH_TOKEN: ${{ secrets.GH_TOKEN }}"));
+  assert.ok(release.includes("ACTIONS_GITHUB_DISPATCH_TOKENS: ${{ secrets.ACTIONS_GITHUB_DISPATCH_TOKENS }}"));
+  assert.ok(!release.includes("GH_TOKEN: ${{ secrets.GH_TOKEN }}"));
+  assert.ok(!release.includes("ACTIONS_MCP_TOKENS: ${{ secrets.ACTIONS_MCP_TOKENS }}"));
+  assert.ok(!release.includes("MCP_BROKER_TOKEN: ${{ secrets.MCP_BROKER_TOKEN }}"));
   assert.ok(!release.includes("GH_TOKEN_SECONDARY"));
   assert.throws(() => verifyBindings(worker, { ...settings,
     bindings: [...bindings, { name: "DANGEROUS_RESOURCE", type: "service" }] },
