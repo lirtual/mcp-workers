@@ -52,6 +52,26 @@ By default, a Step with `needs` runs **only when every dependency succeeded**; a
 
 This is a static DAG branch fan-in, **not** dynamic `foreach`, while/repeat, subworkflow or Saga. No new Worker, D1 schema, scheduler or approval mechanism is involved.
 
+### Literal bounded repeat
+
+A fixed, reviewed number of iterations can be written as a single `flow: repeat` source entry. Its `times` must be a **literal integer from 1 to 8**, with exactly one `template` Action. During validation and Publish, the compiler expands each iteration into a regular sequential Step with stable IDs `<id>_0` through `<id>_<times-1>`, and validates all generated dependencies and Action contracts. The existing **32 total expanded Step** and **8 parallel ready Step** budgets still apply. There is no runtime loop interpreter, extra D1 schema or external scheduler.
+
+```json
+{
+  "version": 1,
+  "name": "Three deterministic reads",
+  "inputs": {"message": "hello"},
+  "steps": [
+    {"id": "echo", "flow": "repeat", "times": 3,
+      "template": {"uses": "result.emit", "with": {"data": {"ref": "inputs.message"}}}},
+    {"id": "done", "needs": ["echo_2"], "uses": "result.emit",
+      "with": {"data": "completed"}}
+  ]
+}
+```
+
+The template uses the same `uses`, `with` and optional `if` semantics as an ordinary Step; source-level `needs` apply to every iteration, and each later iteration additionally depends on the previous generated Step succeeding. A skipped/failed/indeterminate iteration does not automatically run later ones. Each iteration is a **real Action execution**: multiple GitHub Task or MCP calls are not coalesced; their ordinary Publish grants are still required. The compiler produces the same immutable Plan digest as an equivalent explicitly expanded DAG. No per-iteration index substitution, nested repeat, dynamic `times`, `foreach`, `while` or runtime result-driven expansion is supported.
+
 `workflow_validate` accepts either `{workflow_id, revision}` for a saved Draft or `{definition}` with inline YAML/JSON. Inline validation uses the same compiler and reviewed Action checks, returns required Publish approvals or bounded structured issues, and never creates a Draft, writes D1, publishes, or dispatches external jobs. The two input modes cannot be combined. For a new workflow, validate inline before `workflow_create`.
 
 A Cron schedule is optional in the Definition: `triggers: [{type: cron, schedule: '0 9 * * 1-5'}]`. This means 09:00 **UTC** on weekdays; no timezone/DST conversion is promised. Supported five-field syntax: `*`, numbers, comma lists, numeric ranges and `/` steps; names and Quartz special forms are rejected. A single `* * * * *` Cloudflare scheduled event on the existing Worker admits due versions through the same immutable Published Plan and normal eight-Run quota. Each observed minute has a durable idempotency key. **Platform-missed minutes and capacity-rejected minutes are not backfilled or queued**; monitor run history for skipped periods. Cron never adds an extra scheduler, service or D1 migration. Publishing is explicit; saving a Draft never starts execution. `workflow_pause` prevents new admissions but does not stop an active Run or automatically cancel an external Job.
