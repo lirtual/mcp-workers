@@ -164,8 +164,18 @@ async function runS2Smoke() {
         scope:'read',arguments:{limit:1},input_schema:candidate.inputSchema,
         ...(candidate.outputSchema?{output_schema:candidate.outputSchema}:{})
       }},
-      {id:'emit',needs:['read'],uses:'result.emit',
-        with:{data:{ref:'steps.read.output'}}},
+      // Reuse this exact reviewed Portal grant for bounded runtime MCP reads.
+      // The existing acceptance pipeline handles unique-ID D1 cleanup;
+      // no new test endpoint, runner, Worker or credential is introduced.
+      {id:'each',flow:'foreach',items:{ref:'inputs.limits'},max_items:2,
+        template:{steps:[{id:'list',uses:'mcp.call',with:{
+          endpoint:PRODUCTION_PORTAL_ENDPOINT,tool:'ima_list_notebooks',
+          scope:'read',arguments:{limit:{ref:'item.value'}},
+          input_schema:candidate.inputSchema,
+          ...(candidate.outputSchema?{output_schema:candidate.outputSchema}:{})
+        }}]}},
+      {id:'emit',needs:['read','each'],uses:'result.emit',
+        with:{data:{direct:{ref:'steps.read.output'},mapped:{ref:'steps.each.output'}}}},
     ]};
   const draft=await tool('workflow_create',{definition:JSON.stringify(definition)});
   workflowId=draft.workflow_id;
@@ -179,7 +189,8 @@ async function runS2Smoke() {
   const publish=await tool('workflow_publish',{workflow_id:workflowId,expected_revision:1,
     approved_operations:checked.required_approvals,accept_target_risks:true});
   assert.ok(publish.published_version_id);
-  const opts={workflow_id:workflowId,inputs:{},idempotency_key:'mcp-prod-smoke-'+label};
+  const opts={workflow_id:workflowId,inputs:{limits:[1,1]},
+    idempotency_key:'mcp-prod-smoke-'+label};
   const started=await tool('workflow_run',opts);
   runId=started.run_id;
   assert.match(runId,uuid);
@@ -197,10 +208,15 @@ async function runS2Smoke() {
     await new Promise(r=>setTimeout(r,1000));
   }
   assert.equal(outcome?.status,'succeeded','Production MCP Workflow did not finish successfully');
-  assert.equal(outcome.steps.length,2);
+  assert.equal(outcome.steps.length,5);
   assert.ok(outcome.steps.every(s=>s.status==='succeeded'));
-  assert.ok(Array.isArray(outcome.result?.content),'No read-only MCP result content');
-  console.log('MCP_PRODUCTION_SMOKE_OK: pinned Portal + IMA read-only + published Workflow + result');
+  assert.ok(Array.isArray(outcome.result?.direct?.content),'No static read-only MCP result');
+  assert.equal(outcome.result?.mapped?.length,2,'Bounded Foreach result missing');
+  assert.ok(outcome.result.mapped.every(x=>Array.isArray(x?.content)),
+    'One dynamic MCP child result missing');
+  for(const id of ['each','each_0_list','each_1_list','read','emit'])
+    assert.equal(outcome.steps.find(s=>s.step_id===id)?.status,'succeeded',id);
+  console.log('MCP_PRODUCTION_SMOKE_OK: pinned Portal + static and bounded dynamic read-only MCP + published Workflow + replay + scoped cleanup');
 }
 
 async function runS3Smoke() {
