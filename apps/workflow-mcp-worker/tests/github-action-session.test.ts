@@ -74,6 +74,15 @@ test('fixed Session is unique; temporary Sessions coexist until global quota is 
   assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'existing');
   assert.equal(await reservePublishedSessionSlot(f.adapter,run(2),'launch'),'fixed_conflict');
   assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM session_executions').get()?.n,1);
+  // Recreating the same workflow path with a new GitHub numeric ID must not
+  // obtain the same fixed MagicDNS name while the prior Job is still alive.
+  const recreatedAction={...action,workflowId:999};
+  const recreated={...fixed,github_action_approvals:[recreatedAction],
+   steps:[{...fixed.steps[0],with:{...fixed.steps[0].with,
+    action:{...fixed.steps[0].with.action,workflowId:999}}}]};
+  f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(recreated),'v');
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(2),'launch'),'fixed_conflict');
+  f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(fixed),'v');
   // SQLite's partial unique constraint, not an advisory read, protects races.
   assert.throws(()=>f.db.prepare(`INSERT INTO session_executions
    (run_id,step_id,slot,fixed_key,state,created_at,updated_at)
