@@ -65,7 +65,7 @@ for (const marker of [
 for (const key of ['MCP_PORTAL_CLIENT_SECRET', 'WORKFLOW_GITHUB_DISPATCH_TOKEN'])
   assert.ok(deploy.content.includes(key + ': ' + dollar + '{{ secrets.' + key + ' }}'), 'Missing scoped Secret ' + key);
 
-for (const key of ['IMA_API_KEY', 'SSH_BROKER_TOKEN', 'ACTIONS_GITHUB_DISPATCH_TOKENS']) {
+for (const key of ['IMA_API_KEY', 'ENCRYPTION_KEY', 'ACTIONS_GITHUB_DISPATCH_TOKENS']) {
   assert.ok(deploy.content.includes(key + ': ' + dollar + '{{ secrets.' + key + ' }}'),
     'Missing selected release Secret ' + key);
 }

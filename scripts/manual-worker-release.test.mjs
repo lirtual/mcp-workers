@@ -244,40 +244,29 @@ test("manual release scope stages the pinned Agent only for Remote Control", () 
   assert.throws(() => runManual("remote-control-mcp-worker", "refs/heads/feature"), (error) => error.status !== 0);
 });
 
-test("SSH production release requires Broker service, own DO, and least-privileged secret bindings", () => {
+test("SSH release requires EdgeSSH D1, own DO and scoped key", () => {
   const worker = "ssh-mcp-worker";
   const source = JSON.parse(readFileSync(new URL("../apps/ssh-mcp-worker/wrangler.jsonc", import.meta.url), "utf8"));
-  assert.equal(source.observability?.enabled, true);
-  assert.equal(source.observability?.logs?.invocation_logs, true);
-  assert.deepEqual(source.secrets?.required, ["MCP_ACCESS_TOKEN", "SSH_BROKER_TOKEN"]);
-  const secrets = [{ name: "MCP_ACCESS_TOKEN" }, { name: "SSH_BROKER_TOKEN" }];
-  const settings = {
-    bindings: [
-      { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
-      { name: "SSH_BROKER_TOKEN", type: "secret_text" },
-      { name: "EDGE_SSH_BROKER", type: "service", service: "edgessh",
-        entrypoint: "HostBrokerEntrypoint" },
-      { name: "SSH_OPERATIONS", type: "durable_object_namespace", class_name: "SshOperationsDO" },
-    ],
-    observability: { enabled: true, logs: { invocation_logs: true } },
-  };
+  assert.deepEqual(source.secrets?.required, ["MCP_ACCESS_TOKEN", "ENCRYPTION_KEY"]);
+  const secrets = [{ name: "MCP_ACCESS_TOKEN" }, { name: "ENCRYPTION_KEY" }];
+  const bindings = [
+    { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
+    { name: "ENCRYPTION_KEY", type: "secret_text" },
+    { name: "EDGE_SSH_DB", type: "d1", id: "bd5cfdc5-3db0-4af7-8e95-cbf3d65cfa94" },
+    { name: "SSH_OPERATIONS", type: "durable_object_namespace", class_name: "SshOperationsDO" },
+  ];
+  const settings = { bindings, observability: { enabled: true, logs: { invocation_logs: true } } };
   assert.equal(verifyBindings(worker, settings, secrets), true);
-  assert.throws(() => verifyBindings(worker, { ...settings,
-    observability: { enabled: false, logs: { invocation_logs: false } } }, secrets),
-    /SSH observability and invocation logs/);
-  assert.throws(() => verifyBindings(worker, { ...settings,
-    observability: { enabled: true, logs: { invocation_logs: false } } }, secrets),
-    /SSH observability and invocation logs/);
-  assert.throws(() => verifyBindings(worker, { ...settings, bindings: settings.bindings.slice(0, 3) },
-    secrets), /SSH Durable Object/);
-  assert.throws(() => verifyBindings(worker, { ...settings,
-    bindings: [...settings.bindings, { name: "ENCRYPTION_KEY", type: "secret_text" }] },
-    secrets), /SSH must not copy/);
-  assert.throws(() => verifyBindings(worker, { ...settings,
-    bindings: settings.bindings.map(x => x.name === "EDGE_SSH_BROKER" ?
-      { ...x, service: "wrong" } : x) }, secrets), /SSH Broker/);
-  assert.throws(() => verifyBindings(worker, settings, [{ name: "MCP_ACCESS_TOKEN" }]),
-    /Secret missing/);
+  assert.throws(() => verifyBindings(worker, {
+    ...settings, bindings: bindings.filter(b => b.name !== "SSH_OPERATIONS"),
+  }, secrets), /SSH Durable Object/);
+  assert.throws(() => verifyBindings(worker, {
+    ...settings, bindings: bindings.filter(b => b.name !== "EDGE_SSH_DB"),
+  }, secrets), /D1 binding/);
+  assert.throws(() => verifyBindings(worker, {
+    ...settings, bindings: [...bindings, { name: "EDGE_SSH_BROKER", type: "service" }],
+  }, secrets), /legacy broker/);
+  assert.throws(() => verifyBindings(worker, settings, secrets.slice(0, 1)), /Secret missing/);
 });
 
 test("manual release selects GitHub Environment directly from the allowlisted Worker name", () => {
@@ -302,7 +291,7 @@ test("manual release always syncs selected Worker Secrets from GitHub and never 
   const secretStep = workflow.slice(secretStart, variableStart);
   assert.doesNotMatch(secretStep, /^\s*if:/m, "existing Workers must never skip Secret staging");
   for (const name of ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN", "IMA_API_KEY",
-    "DATABASE_CONFIG", "SSH_BROKER_TOKEN", "ACTIONS_GITHUB_DISPATCH_TOKENS"]) {
+    "DATABASE_CONFIG", "ENCRYPTION_KEY", "ACTIONS_GITHUB_DISPATCH_TOKENS"]) {
     assert.ok(secretStep.includes("secrets." + name), "GitHub must provide " + name);
   }
   assert.equal(secretStep.includes("secrets.IMA_CLIENT_ID"), false,

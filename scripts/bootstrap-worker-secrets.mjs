@@ -10,7 +10,7 @@ export const BOOTSTRAP_SECRETS = Object.freeze({
   "raindrop-mcp-worker": ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN"],
   "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "IMA_API_KEY"],
   "database-mcp-worker": ["MCP_ACCESS_TOKEN", "DATABASE_CONFIG"],
-  "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "SSH_BROKER_TOKEN"],
+  "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "ENCRYPTION_KEY"],
   "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "ACTIONS_GITHUB_DISPATCH_TOKENS"],
   "workflow-mcp-worker": ["MCP_ACCESS_TOKEN", "MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_GITHUB_DISPATCH_TOKEN"],
@@ -32,8 +32,9 @@ export function collectBootstrapSecrets(worker, env) {
       payload.WORKFLOW_GITHUB_DISPATCH_TOKEN.length > 512 ||
       /\s/.test(payload.WORKFLOW_GITHUB_DISPATCH_TOKEN)))
     throw new Error("Invalid WORKFLOW_GITHUB_DISPATCH_TOKEN");
-  if (worker === "ssh-mcp-worker" && payload.SSH_BROKER_TOKEN.length < 32) {
-    throw new Error("SSH Broker token must be at least 32 characters");
+  if (worker === "ssh-mcp-worker") {
+    const key = payload.ENCRYPTION_KEY;
+    if (!/^[A-Za-z0-9+/]{43}=$/.test(key) || Buffer.from(key, "base64").length !== 32 || Buffer.from(key, "base64").toString("base64") !== key) throw new Error("ENCRYPTION_KEY must be canonical Base64 for a 32-byte key");
   }
   if (worker === "github-actions-mcp-worker") {
     // Preserve the single, multiline GitHub Environment Secret unchanged.

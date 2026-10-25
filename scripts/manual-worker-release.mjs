@@ -8,7 +8,7 @@ const REQUIRED_SECRETS = {
   "raindrop-mcp-worker": ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN"],
   "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "IMA_API_KEY"],
   "database-mcp-worker": ["MCP_ACCESS_TOKEN", "DATABASE_CONFIG"],
-  "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "SSH_BROKER_TOKEN"],
+  "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "ENCRYPTION_KEY"],
   "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "ACTIONS_GITHUB_DISPATCH_TOKENS"],
   "workflow-mcp-worker": ["MCP_ACCESS_TOKEN", "MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_GITHUB_DISPATCH_TOKEN"],
@@ -46,13 +46,15 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     invariant(settings.observability?.enabled === true &&
       settings.observability?.logs?.invocation_logs === true,
       "SSH observability and invocation logs must remain enabled");
-    const broker = find("EDGE_SSH_BROKER", "service");
-    invariant(broker?.service === "edgessh" && broker.entrypoint === "HostBrokerEntrypoint",
-      "SSH Broker Service Binding missing or changed");
+    const catalog = find("EDGE_SSH_DB", "d1");
+    invariant(options.mode === "preflight" || (catalog?.id || catalog?.database_id) === "bd5cfdc5-3db0-4af7-8e95-cbf3d65cfa94",
+      "SSH shared EdgeSSH D1 binding missing or changed");
     invariant(find("SSH_OPERATIONS", "durable_object_namespace")?.class_name === "SshOperationsDO",
       "SSH Durable Object binding missing");
-    invariant(!bindings.some((x) => ["EDGE_SSH_DB", "ENCRYPTION_KEY", "MCP_BROKER_FULL_ACCESS"].includes(x.name)),
-      "SSH must not copy root decryption keys or enable unrestricted broker access");
+    if (options.mode !== "preflight") {
+      invariant(!bindings.some((x) => ["EDGE_SSH_BROKER", "SSH_BROKER_TOKEN", "MCP_BROKER_FULL_ACCESS"].includes(x.name)),
+        "SSH legacy broker binding or token remains");
+    }
   } else {
     const logs = worker === "remote-control-mcp-worker" ? false : true;
     invariant(settings.observability?.enabled === true &&
@@ -173,7 +175,7 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     worker === "ima-mcp-worker"
     ? ["IMA_IMAGE_REFRESH_SHARD"]
     : worker === "database-mcp-worker" ? ["RATE_LIMITER"]
-      : worker === "ssh-mcp-worker" ? ["EDGE_SSH_BROKER", "SSH_OPERATIONS"]
+      : worker === "ssh-mcp-worker" ? (options.mode === "preflight" ? ["EDGE_SSH_BROKER", "EDGE_SSH_DB", "SSH_OPERATIONS"] : ["EDGE_SSH_DB", "SSH_OPERATIONS"])
       : worker === "remote-control-mcp-worker"
         ? (options.mode === "preflight"
           ? ["DEVICE_COORDINATOR", "V2_OWNER", "REMOTE_CONTROL_DEVICE"]
@@ -380,16 +382,17 @@ function readConfiguration(worker, content) {
   }
   if (worker === "ssh-mcp-worker") {
     invariant(conf.workers_dev === true && conf.preview_urls === false, "SSH public route drift");
-    invariant(conf.services?.length === 1 &&
-      conf.services[0].binding === "EDGE_SSH_BROKER" &&
-      conf.services[0].service === "edgessh" &&
-      conf.services[0].entrypoint === "HostBrokerEntrypoint", "SSH Broker source binding missing");
+    invariant(!conf.services?.length, "SSH must not retain EdgeSSH Broker Service Binding");
+    invariant(conf.d1_databases?.length === 1 &&
+      conf.d1_databases[0]?.binding === "EDGE_SSH_DB" &&
+      conf.d1_databases[0]?.database_id === "bd5cfdc5-3db0-4af7-8e95-cbf3d65cfa94",
+      "SSH shared EdgeSSH D1 configuration drift");
     invariant(conf.durable_objects?.bindings?.length === 1 &&
       conf.durable_objects.bindings[0].name === "SSH_OPERATIONS" &&
       conf.durable_objects.bindings[0].class_name === "SshOperationsDO" &&
       conf.migrations?.[0]?.tag === "v1" &&
       conf.migrations[0].new_sqlite_classes?.includes("SshOperationsDO"), "SSH SQLite DO migration drift");
-    invariant(!conf.d1_databases?.length && !conf.vars?.MCP_BROKER_FULL_ACCESS,
+    invariant(!conf.vars?.MCP_BROKER_FULL_ACCESS,
       "SSH must be broker-only and read-only by default");
   }
   if (worker === "remote-control-mcp-worker") {

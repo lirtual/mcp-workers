@@ -16,7 +16,5 @@ export interface Env {
   MCP_ACCESS_TOKEN?: string;
   ENCRYPTION_KEY?: string;
   EDGE_SSH_DB?: D1Database;
-  EDGE_SSH_BROKER?: import('./broker-client.ts').HostBroker;
-  SSH_BROKER_TOKEN?: string;
   SSH_OPERATIONS: DurableObjectNamespace<import('./operations.ts').SshOperationsDO>;
 }

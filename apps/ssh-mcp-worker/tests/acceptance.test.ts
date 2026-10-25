@@ -344,10 +344,12 @@ test('D1 stays SELECT-only, quotas stay at the spec defaults, and secrets are no
   const config = JSON.parse(workerConfig);
   assert.equal(config.observability.enabled, true);
   assert.equal(config.observability.logs?.invocation_logs, true);
-  assert.equal(config.d1_databases, undefined);
-  assert.equal(config.vars?.MCP_BROKER_FULL_ACCESS, undefined);
-  assert.deepEqual(config.services, [{
-    binding: 'EDGE_SSH_BROKER', service: 'edgessh', entrypoint: 'HostBrokerEntrypoint',
+  assert.deepEqual(config.d1_databases, [{
+    binding: 'EDGE_SSH_DB',
+    database_name: 'edgessh-accounts',
+    database_id: 'bd5cfdc5-3db0-4af7-8e95-cbf3d65cfa94',
   }]);
-  assert.deepEqual(config.secrets.required, ['MCP_ACCESS_TOKEN', 'SSH_BROKER_TOKEN']);
+  assert.equal(config.vars?.MCP_BROKER_FULL_ACCESS, undefined);
+  assert.equal(config.services, undefined);
+  assert.deepEqual(config.secrets.required, ['MCP_ACCESS_TOKEN', 'ENCRYPTION_KEY']);
 });

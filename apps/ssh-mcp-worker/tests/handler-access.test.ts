@@ -9,7 +9,7 @@ const host = 'fb8965b6-37bd-45b4-8b2e-49c593938441';
 const operation = '4cf52086-b6d0-4f72-ab72-61dab79f2461';
 const env = {
   MCP_ACCESS_TOKEN: token,
-  EDGE_SSH_BROKER: {},
+  EDGE_SSH_DB: {},
   SSH_OPERATIONS: {
     getByName() { throw new Error('disposable test: no real SSH or writes'); },
   },
