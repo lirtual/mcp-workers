@@ -198,7 +198,10 @@ export class WorkflowService {
         ['invalid_step_count','invalid_step','invalid_step_id','unsupported_capability',
          'invalid_step_arguments','invalid_dependencies','cyclic_dependencies',
          'excessive_parallelism','invalid_reference','invalid_step_reference'].includes(code)?'/steps':'/';
-      const suggestion=['invalid_repeat_count','invalid_repeat_template','unsupported_flow'].includes(code)?
+      const suggestion=['invalid_foreach_limit','invalid_foreach_items','invalid_foreach_template',
+        'unsupported_foreach_template','unsupported_foreach_action'].includes(code)?
+        'Use flow: foreach, max_items from 1 to 8, items as a declared input/dependency ref, and exactly one result.emit template Step; external Actions and nesting are unsupported.':
+        ['invalid_repeat_count','invalid_repeat_template','unsupported_flow'].includes(code)?
         'Use flow: repeat with a literal times integer from 1 to 8 and one template Action; nested/dynamic loops are not supported. All expanded Steps must fit the maxSteps limit.':
         code.startsWith('invalid_github_event_')||code==='unsupported_github_event'?
         'Use one push event with an exact repository name/id, branch ref and trusted .github/workflows/*.yml relay; declare inputs.github and consult workflow_capabilities.':
@@ -450,11 +453,24 @@ export class WorkflowService {
     const terminal=['succeeded','failed','indeterminate','cancelled'].includes(row.outcome)||native==='complete';
     const byId=new Map(stored.map(s=>[s.step_id,s]));
     const publishedPlan=JSON.parse(version.plan) as Plan;
-    const steps=publishedPlan.steps.map(s=>{
-      const saved=byId.get(s.id);
-      if(saved && ['succeeded','failed','skipped','indeterminate'].includes(saved.status))return saved;
-      return {step_id:s.id,status:terminal?'indeterminate':saved?.status??'waiting',error_code:saved?.error_code??null};
-    }).sort((a,b)=>a.step_id<b.step_id?-1:a.step_id>b.step_id?1:0);
+    const dynamicIds=new Set(publishedPlan.steps.flatMap(s=>{
+      if(s.uses!=='flow.foreach')return [];
+      const template=s.with.template as {id?:unknown};
+      const count=s.with.max_items;
+      if(!Number.isSafeInteger(count)||Number(count)<1||Number(count)>8||
+         typeof template?.id!=='string')return [];
+      return Array.from({length:count as number},(_,index)=>s.id+'_'+index+'_'+template.id);
+    }));
+    const steps=[
+      ...publishedPlan.steps.map(s=>{
+        const saved=byId.get(s.id);
+        if(saved && ['succeeded','failed','skipped','indeterminate'].includes(saved.status))return saved;
+        return {step_id:s.id,status:terminal?'indeterminate':saved?.status??'waiting',error_code:saved?.error_code??null};
+      }),
+      ...stored.filter(s=>dynamicIds.has(s.step_id)).map(saved=>
+        terminal&&!['succeeded','failed','skipped','indeterminate'].includes(saved.status)
+          ?{...saved,status:'indeterminate'}:saved),
+    ].sort((a,b)=>a.step_id<b.step_id?-1:a.step_id>b.step_id?1:0);
     // A Session may remain live after the parent Workflow succeeds at Ready.
     // Expose its last durable state independently without calling it "online":
     // the GitHub physical health is not live-verified by this D1 snapshot.

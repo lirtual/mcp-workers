@@ -290,3 +290,78 @@ test('ordinary Step after 32 expanded repeat Steps cannot bypass global budget',
   ]});
   assert.equal(valid.plan.steps.length,25);
 });
+
+
+test('bounded foreach reserves every possible child identity and validates declared inputs',async()=>{
+  const definition={version:1,name:'Dynamic snapshot',inputs:{items:['a','b']},steps:[
+    {id:'each',flow:'foreach',items:{ref:'inputs.items'},max_items:4,
+      template:{steps:[{id:'emit',uses:'result.emit',
+        with:{data:{index:{ref:'item.index'},value:{ref:'item.value'}}}}]}},
+    {id:'done',needs:['each'],uses:'result.emit',with:{data:{ref:'steps.each.output'}}},
+  ]};
+  const {plan,digest}=await compilePlan(definition);
+  assert.equal(plan.steps.length,2);
+  assert.equal(plan.steps.find(s=>s.id==='each')?.uses,'flow.foreach');
+  assert.deepEqual(plan.steps.find(s=>s.id==='each')?.with.items,{ref:'inputs.items'});
+  assert.equal(digest,(await compilePlan(JSON.stringify(definition))).digest);
+  assert.match(digest,/^[a-f0-9]{64}$/);
+});
+
+test('bounded foreach rejects unbounded, unsafe, colliding or unauthorized expansion',async()=>{
+  const child={id:'emit',uses:'result.emit',with:{data:{ref:'item.value'}}};
+  const one=(args:Record<string,unknown>={})=>({version:1,name:'Fail closed',
+    inputs:{items:[1,2]},steps:[{id:'each',flow:'foreach',items:{ref:'inputs.items'},
+      max_items:2,template:{steps:[child]},...args}]});
+  for(const max_items of [0,9,2.5,'2',null,{ref:'inputs.limit'}]){
+    await assert.rejects(()=>compilePlan(one({max_items})),
+      (e:unknown)=>e instanceof PlanError&&e.path==='/steps/0/max_items');
+  }
+  for(const args of [
+    {items:{ref:'item.value'}},
+    {items:{ref:'inputs.items',extra:true}},
+    {items:['a']},
+    {template:{steps:[child,child]}},
+    {template:{steps:[{...child,uses:'mcp.call'}]}},
+    {template:{steps:[{...child,uses:'github.run'}]}},
+    {template:{steps:[{...child,with:{data:{ref:'item.secret'}}}]}},
+    {template:{steps:[{...child,with:{data:{ref:'steps.not_a_dependency.output'}}}]}},
+    {template:{steps:[{...child,with:{data:{ref:'item.index.sub'}}}]}},
+  ])await assert.rejects(()=>compilePlan(one(args)),PlanError);
+  await assert.rejects(()=>compilePlan({...one({max_items:3}),steps:[
+    ...one({max_items:3}).steps,
+    {id:'each_2_emit',uses:'result.emit',with:{data:'collision'}},
+  ]}),PlanError);
+  const full=Array.from({length:4},(_,i)=>({id:'set'+i,flow:'foreach',
+    items:{ref:'inputs.items'},max_items:7,template:{steps:[child]}}));
+  assert.equal((await compilePlan({...one(),steps:full})).plan.steps.length,4);
+  await assert.rejects(()=>compilePlan({...one(),steps:[...full,
+    {id:'fifth',uses:'result.emit',with:{data:1}}]}),
+    (e:unknown)=>e instanceof PlanError&&e.message==='invalid_step_count');
+});
+
+
+test('foreach invalid references point at source or template instead of leaking payloads',async()=>{
+  const root={version:1,name:'Precise foreach issue',inputs:{values:['x']}};
+  for(const [items,data,expected] of [
+    [{ref:'steps.undeclared.output'},{ref:'item.value'},'/steps/0/items'],
+    [{ref:'inputs.values'},{ref:'steps.undeclared.output'},'/steps/0/template/steps/0/with/data'],
+    [{ref:'inputs.values'},{ref:'item.secret'},'/steps/0/template/steps/0/with/data'],
+  ] as const){
+    await assert.rejects(()=>compilePlan({...root,steps:[
+      {id:'each',flow:'foreach',items,max_items:2,
+        template:{steps:[{id:'emit',uses:'result.emit',with:{data}}]}},
+    ]}),(e:unknown)=>e instanceof PlanError&&e.path===expected);
+  }
+});
+
+
+test('source cannot spoof internal flow.foreach opcode to bypass template and budget checks',async()=>{
+  for(const max_items of [1,8,999999]){
+    await assert.rejects(()=>compilePlan({version:1,name:'No direct internal opcode',
+      inputs:{items:['x']},steps:[{id:'each',uses:'flow.foreach',needs:[],
+        with:{items:{ref:'inputs.items'},max_items,
+          template:{id:'evil',uses:'mcp.call',with:{arguments:{command:'unsafe'}}}}}]}),
+      (e:unknown)=>e instanceof PlanError&&
+        e.message==='unsupported_capability'&&e.path==='/steps/0/uses');
+  }
+});

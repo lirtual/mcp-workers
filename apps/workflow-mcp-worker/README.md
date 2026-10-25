@@ -72,6 +72,28 @@ A fixed, reviewed number of iterations can be written as a single `flow: repeat`
 
 The template uses the same `uses`, `with` and optional `if` semantics as an ordinary Step; source-level `needs` apply to every iteration, and each later iteration additionally depends on the previous generated Step succeeding. A skipped/failed/indeterminate iteration does not automatically run later ones. Each iteration is a **real Action execution**: multiple GitHub Task or MCP calls are not coalesced; their ordinary Publish grants are still required. The compiler produces the same immutable Plan digest as an equivalent explicitly expanded DAG. No per-iteration index substitution, nested repeat, dynamic `times`, `foreach`, `while` or runtime result-driven expansion is supported.
 
+### Bounded dynamic foreach (result-only)
+
+A `flow: foreach` entry reads a JSON array from declared `inputs` or a completed dependency Step output. The declared `max_items` must be a literal integer from **1 to 8**. Its `template.steps` currently accepts **exactly one `result.emit` Action**, with optional safe `if`. The template may reference `item.value`, `item.value.<field>`, `item.index`, normal declared inputs and its controller's dependencies. For example:
+
+```json
+{
+  "version": 1, "name": "Bounded item projection", "inputs": {"items": ["a", "b"]},
+  "steps": [
+    {"id": "each", "flow": "foreach", "items": {"ref": "inputs.items"},
+      "max_items": 4,
+      "template": {"steps": [{"id": "emit", "uses": "result.emit",
+        "with": {"data": {"index": {"ref": "item.index"}, "value": {"ref": "item.value"}}}}]}},
+    {"id": "out", "needs": ["each"], "uses": "result.emit",
+      "with": {"data": {"ref": "steps.each.output"}}}
+  ]
+}
+```
+
+Before running any item, a native **Cloudflare Workflow `step.do` checkpoint** freezes the full bounded list, each template condition, and evaluated result data. Each actual child receives a stable `<controller>_<index>_<template-id>` checkpoint and appears as a Step in status/results. Child outputs are returned in input order as a bounded array, with `null` for skipped items. An empty array skips the controller; an oversized or non-array input fails before executing any child. The compiler reserves the **maximum** number of children in the existing global **32-Step limit**, even if an actual Run contains fewer items.
+
+This first dynamic expansion is intentionally **result-only**, not a general parallel Action dispatcher: nested templates, item-driven `mcp.call` or `github.run`, dynamic while and child workflows remain rejected. It does not add an external Action grant, new state machine, D1 migration, Worker, queue, or extra scheduler. Full external-effect foreach requires a separate replay/ambiguity security acceptance; capability discovery identifies this restricted support as `flow.foreach_emit`, not a claim of arbitrary dynamic Action execution.
+
 `workflow_validate` accepts either `{workflow_id, revision}` for a saved Draft or `{definition}` with inline YAML/JSON. Inline validation uses the same compiler and reviewed Action checks, returns required Publish approvals or bounded structured issues, and never creates a Draft, writes D1, publishes, or dispatches external jobs. The two input modes cannot be combined. For a new workflow, validate inline before `workflow_create`.
 
 A Cron schedule is optional in the Definition: `triggers: [{type: cron, schedule: '0 9 * * 1-5'}]`. This means 09:00 **UTC** on weekdays; no timezone/DST conversion is promised. Supported five-field syntax: `*`, numbers, comma lists, numeric ranges and `/` steps; names and Quartz special forms are rejected. A single `* * * * *` Cloudflare scheduled event on the existing Worker admits due versions through the same immutable Published Plan and normal eight-Run quota. Each observed minute has a durable idempotency key. **Platform-missed minutes and capacity-rejected minutes are not backfilled or queued**; monitor run history for skipped periods. Cron never adds an extra scheduler, service or D1 migration. Publishing is explicit; saving a Draft never starts execution. `workflow_pause` prevents new admissions but does not stop an active Run or automatically cancel an external Job.
