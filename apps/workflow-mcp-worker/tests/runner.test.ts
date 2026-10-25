@@ -962,3 +962,22 @@ test('durable foreach snapshot survives replay without reevaluating changed item
   assert.equal(callbacks.get('workflow-each_0_emit'),1);
   assert.equal(cache.has('workflow-each_1_emit'),false);
 });
+
+
+test('terminal Run never reports an unresolved dynamic child as still running',async t=>{
+  const {service,admit,run,sqlite}=setup(t);
+  const started=await admit([
+    {id:'each',flow:'foreach',items:{ref:'inputs.items'},max_items:2,
+      template:{steps:[{id:'emit',uses:'result.emit',with:{data:{ref:'item.value'}}}]}},
+  ],{items:['value']});
+  await run(started.run_id);
+  sqlite.prepare("UPDATE run_steps SET status='running' WHERE run_id=? AND step_id='each_0_emit'")
+    .run(started.run_id);
+  const output=await service.result(started.run_id);
+  assert.equal(output.status,'succeeded');
+  assert.equal(output.steps.find(s=>s.step_id==='each_0_emit')?.status,'indeterminate');
+  assert.equal(output.steps.find(s=>s.step_id==='each')?.status,'succeeded');
+  const raw=sqlite.prepare("SELECT status FROM run_steps WHERE run_id=? AND step_id='each_0_emit'")
+    .get(started.run_id) as {status:string};
+  assert.equal(raw.status,'running','status readback must not rewrite evidence');
+});
