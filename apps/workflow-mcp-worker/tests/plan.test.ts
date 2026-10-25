@@ -268,3 +268,25 @@ test('literal repeat still validates each expanded MCP step using existing opera
       with:{endpoint:'https://evil.invalid/mcp',tool:'tool',scope:'write',
         input_schema:{type:'object'},arguments:{}}}}]}),PlanError);
 });
+
+test('ordinary Step after 32 expanded repeat Steps cannot bypass global budget',async()=>{
+  const groups=Array.from({length:4},(_,i)=>({
+    id:'group'+i,flow:'repeat',times:8,
+    template:{uses:'result.emit',with:{data:i}},
+  }));
+  const base={version:1,name:'Enforce mixed flattened budget'};
+  const exact=await compilePlan({...base,steps:groups});
+  assert.equal(exact.plan.steps.length,32);
+  for(const bad of [
+    [...groups,{id:'additional',uses:'result.emit',with:{data:1}}],
+    [...groups,{id:'additional',uses:'result.emit',
+      needs:['group3_7'],with:{data:1}}],
+  ])await assert.rejects(()=>compilePlan({...base,steps:bad}),
+    (error:unknown)=>error instanceof PlanError &&
+      error.message==='invalid_step_count'&&error.path==='/steps');
+  const valid=await compilePlan({...base,steps:[
+    ...groups.slice(0,3),
+    {id:'extra',uses:'result.emit',with:{data:1}},
+  ]});
+  assert.equal(valid.plan.steps.length,25);
+});
