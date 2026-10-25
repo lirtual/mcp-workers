@@ -118,8 +118,14 @@ export async function getMail(env: Env, account: MailAccount, id: string): Promi
 }
 export async function listFolders(env: Env, account: MailAccount): Promise<unknown> {
   if (account.provider === 'imap_smtp') return imapFolders(env, account);
-  if (account.provider === 'gmail') return { account_id: account.account_id, folders: (await json(env, account, '/labels')).labels ?? [] };
-  if (account.provider === 'graph') return { account_id: account.account_id, folders: (await json(env, account, '/mailFolders?$top=100')).value ?? [] };
+  if (account.provider === 'gmail') return { account_id: account.account_id,
+    folders: (await json(env, account, '/labels')).labels ?? [], truncated: false };
+  if (account.provider === 'graph') {
+    const result = await json(env, account, '/mailFolders?$top=100');
+    return { account_id: account.account_id,
+      folders: Array.isArray(result.value) ? result.value.slice(0, 100) : [],
+      truncated: Boolean(result['@odata.nextLink']) || (Array.isArray(result.value) && result.value.length > 100) };
+  }
   return fail('unsupported');
 }
 export function validateGraphNextLink(value: string): string {
@@ -495,8 +501,10 @@ export async function threadGet(env: Env, account: MailAccount, id: string) {
   }
   if (account.provider === 'gmail') {
     const result = await json(env, account, '/threads/' + enc(id) + '?format=full');
-    const list = Array.isArray(result.messages) ? result.messages.slice(0, 30) : [];
-    return { account_id: account.account_id, thread_id: id, messages: list.map((m: any) => gmailMessage(account, m)) };
+    const all = Array.isArray(result.messages) ? result.messages : [];
+    return { account_id: account.account_id, thread_id: id,
+      messages: all.slice(0, 30).map((m: any) => gmailMessage(account, m)),
+      truncated: all.length > 30, consistent_snapshot: false };
   }
   return fail('unsupported');
 }
