@@ -13,6 +13,21 @@ function escapeHtml(input: unknown): string {
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
   })[ch]!);
 }
+function imapForm(csrf: string, id?: string, address?: string): string {
+  const credentials = id
+    ? '<input type="hidden" name="account_id" value="' + escapeHtml(id) + '">' +
+      '<input type="hidden" name="address" value="' + escapeHtml(address) + '">'
+    : '<label>Email <input type="email" name="address" required maxlength="320"></label>';
+  return '<form method="post" action="/setup/imap/add">' +
+    '<input type="hidden" name="csrf" value="' + csrf + '">' + credentials +
+    '<label>IMAP host <input name="imap_host" required maxlength="253"></label>' +
+    '<label>SMTP host <input name="smtp_host" required maxlength="253"></label>' +
+    '<label>SMTP port <select name="smtp_port"><option value="465">465 TLS</option>' +
+    '<option value="587">587 STARTTLS</option></select></label>' +
+    '<label>Username <input name="username" required maxlength="320"></label>' +
+    '<label>App password <input type="password" name="password" autocomplete="off" required maxlength="512"></label>' +
+    '<button type="submit">Verify IMAP and SMTP TLS</button></form>';
+}
 function securedHtml(body: string, cookie?: string): Response {
   const headers = new Headers({
     'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store',
@@ -47,11 +62,13 @@ export async function handleSetup(request: Request, env: Env, requestFetch: type
           '<form method="post" action="/setup/remove"><input type="hidden" name="csrf" value="' + csrf + '">' +
           '<input type="hidden" name="account_id" value="' + escapeHtml(item.account_id) + '">' +
           '<button type="submit">Remove</button></form>' +
-          (item.provider !== 'imap_smtp'
-            ? '<form method="post" action="/setup/oauth/start"><input type="hidden" name="csrf" value="' + csrf + '">' +
+          (item.provider === 'imap_smtp'
+            ? '<details><summary>Reconnect IMAP/SMTP</summary>' +
+              imapForm(csrf, item.account_id, item.address) + '</details>'
+            : '<form method="post" action="/setup/oauth/start"><input type="hidden" name="csrf" value="' + csrf + '">' +
               '<input type="hidden" name="provider" value="' + escapeHtml(item.provider) + '">' +
               '<input type="hidden" name="account_id" value="' + escapeHtml(item.account_id) + '">' +
-              '<button type="submit">Reauthorize</button></form>' : '') +
+              '<button type="submit">Reauthorize</button></form>') +
           '<form method="post" action="/setup/alias"><input type="hidden" name="csrf" value="' + csrf + '">' +
           '<input type="hidden" name="account_id" value="' + escapeHtml(item.account_id) + '">' +
           '<label>Alias <input name="alias" maxlength="80" value="' + escapeHtml(item.alias ?? '') + '"></label>' +
@@ -63,16 +80,7 @@ export async function handleSetup(request: Request, env: Env, requestFetch: type
         '<input type="hidden" name="csrf" value="' + csrf + '">' +
         '<select name="provider"><option value="gmail">Gmail</option><option value="graph">Microsoft Graph</option></select>' +
         '<button type="submit">Authorize mailbox</button></form></fieldset>' +
-        '<fieldset><legend>Add IMAP/SMTP account</legend><form method="post" action="/setup/imap/add">' +
-        '<input type="hidden" name="csrf" value="' + csrf + '">' +
-        '<label>Email address <input type="email" name="address" required maxlength="320"></label>' +
-        '<label>IMAP hostname <input name="imap_host" required maxlength="253"></label>' +
-        '<label>SMTP hostname <input name="smtp_host" required maxlength="253"></label>' +
-        '<label>SMTP port <select name="smtp_port"><option value="465">465 (TLS)</option>' +
-        '<option value="587">587 (STARTTLS)</option></select></label>' +
-        '<label>Username <input name="username" required maxlength="320"></label>' +
-        '<label>App-specific password <input name="password" type="password" autocomplete="off" required maxlength="512"></label>' +
-        '<button type="submit">Verify TLS and add</button></form></fieldset>' +
+        '<fieldset><legend>Add IMAP/SMTP account</legend>' + imapForm(csrf) + '</fieldset>' +
         '<fieldset><legend>Credential key rotation</legend><form method="post" action="/setup/rotate">' +
         '<input type="hidden" name="csrf" value="' + csrf + '">' +
         '<button type="submit">Re-encrypt with current key</button></form></fieldset>',
@@ -99,7 +107,7 @@ export async function handleSetup(request: Request, env: Env, requestFetch: type
       const data = await formValues(request);
       validateCsrf(request, data.get('csrf') ?? '');
       const address = (data.get('address') ?? '').trim().toLowerCase();
-      if (!/^[^@\\s,<>]{1,100}@[^@\\s,<>]{3,200}$/.test(address)) fail('invalid_mail_identity');
+      if (!/^[^@\s,<>]{1,100}@[^@\s,<>]{3,200}$/.test(address)) fail('invalid_mail_identity');
       const cfg = validateProtocolCredentials({
         imap_host: data.get('imap_host') ?? '', imap_port: 993,
         smtp_host: data.get('smtp_host') ?? '',
@@ -110,10 +118,26 @@ export async function handleSetup(request: Request, env: Env, requestFetch: type
       await verifyImapCredentials(cfg);
       await verifySmtpCredentials(cfg);
       const now = Math.floor(Date.now() / 1000);
-      const accountId = crypto.randomUUID();
+      const requestedId = data.get('account_id');
+      if (requestedId && !/^[0-9a-f-]{36}$/i.test(requestedId)) fail('invalid_account');
+      if (requestedId) {
+        const existing = await env.DB.prepare(
+          'SELECT provider,address,status FROM mail_accounts WHERE account_id=?',
+        ).bind(requestedId).first<Pick<MailAccount, 'provider' | 'address' | 'status'>>();
+        if (!existing || existing.provider !== 'imap_smtp' || existing.status === 'disabled' ||
+          existing.address.toLowerCase() !== address) fail('reauthorization_identity_mismatch');
+      }
+      const accountId = requestedId ?? crypto.randomUUID();
       const sealed = await encrypt(env, 'account:' + accountId + ':imap_smtp', cfg);
-      await env.DB.prepare('INSERT INTO mail_accounts(account_id,provider,address,alias,status,credential_ciphertext,credential_key_id,token_expires_at,created_at,updated_at) VALUES(?,?,?,NULL,?,?,?,NULL,?,?)')
-        .bind(accountId, 'imap_smtp', address, 'active', sealed.ciphertext, sealed.keyId, now, now).run();
+      if (requestedId) {
+        const updated = await env.DB.prepare(
+          'UPDATE mail_accounts SET status=?,credential_ciphertext=?,credential_key_id=?,token_version=token_version+1,updated_at=? WHERE account_id=? AND provider=? AND lower(address)=? AND status!=?',
+        ).bind('active', sealed.ciphertext, sealed.keyId, now, accountId, 'imap_smtp', address, 'disabled').run();
+        if (updated.meta.changes !== 1) fail('reauthorization_identity_mismatch');
+      } else {
+        await env.DB.prepare('INSERT INTO mail_accounts(account_id,provider,address,alias,status,credential_ciphertext,credential_key_id,token_expires_at,created_at,updated_at) VALUES(?,?,?,NULL,?,?,?,NULL,?,?)')
+          .bind(accountId, 'imap_smtp', address, 'active', sealed.ciphertext, sealed.keyId, now, now).run();
+      }
       return new Response(null, { status: 303, headers: { location: '/setup', 'cache-control': 'no-store' } });
     }
     if (url.pathname === '/setup/alias' && request.method === 'POST') {

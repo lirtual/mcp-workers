@@ -145,3 +145,30 @@ test('rotation refuses to remove unavailable old key and does not alter existing
   assert.equal((sqlite.prepare('SELECT COUNT(*) AS n FROM mail_accounts').get() as any).n, 0);
   sqlite.close();
 });
+
+test('IMAP credential replacement can preserve existing account identity atomically', async () => {
+  const { sqlite, env } = fixture();
+  const accountId = crypto.randomUUID(), now = Math.floor(Date.now() / 1000);
+  const { encrypt, decrypt } = await import('../src/crypto.ts');
+  const original = await encrypt(env, 'account:' + accountId + ':imap_smtp', {
+    imap_host: 'imap.qq.com', smtp_host: 'smtp.qq.com', username: 'owner@qq.com', password: 'old',
+  });
+  sqlite.prepare('INSERT INTO mail_accounts(account_id,provider,address,status,credential_ciphertext,credential_key_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)')
+    .run(accountId, 'imap_smtp', 'owner@qq.com', 'reauthorization_required',
+      original.ciphertext, original.keyId, now, now);
+  const fresh = await encrypt(env, 'account:' + accountId + ':imap_smtp', {
+    imap_host: 'imap.qq.com', smtp_host: 'smtp.qq.com', username: 'owner@qq.com', password: 'new',
+  });
+  const updated = sqlite.prepare("UPDATE mail_accounts SET status=?,credential_ciphertext=?,credential_key_id=?,token_version=token_version+1,updated_at=? WHERE account_id=? AND provider=? AND lower(address)=? AND status!=?")
+    .run('active', fresh.ciphertext, fresh.keyId, now, accountId, 'imap_smtp', 'owner@qq.com', 'disabled');
+  assert.equal(updated.changes, 1);
+  const row = sqlite.prepare('SELECT * FROM mail_accounts WHERE account_id=?').get(accountId) as any;
+  assert.equal(row.account_id, accountId);
+  assert.equal(row.status, 'active');
+  assert.equal(row.token_version, 1);
+  assert.equal((sqlite.prepare('SELECT count(*) AS n FROM mail_accounts').get() as any).n, 1);
+  const opened = await decrypt<{ password: string }>(env,
+    'account:' + accountId + ':imap_smtp', row.credential_ciphertext, row.credential_key_id);
+  assert.equal(opened.password, 'new');
+  sqlite.close();
+});
