@@ -97,10 +97,21 @@ async function runSmoke() {
   assert.ok(!listed.tools.some(t => /s2|webhook|github/i.test(t.name)),
     'Unexpected MCP/GitHub tool exposed');
 
+  // Reuse the existing authenticated native acceptance and cleanup pipeline
+  // for a two-stage pure Foreach, retaining a normal final emit Step.
   const definition = {
-    version: 1, name: echo,
-    steps: [{ id: 'report', uses: 'result.emit',
-      with: { data: { ref: 'inputs.subject' } } }],
+    version: 1, name: echo, inputs: { items: ['A','B'], subject: echo },
+    steps: [
+      { id: 'each', flow: 'foreach', items: { ref: 'inputs.items' }, max_items: 2,
+        template: { steps: [
+          { id: 'prepare', uses: 'result.emit',
+            with: { data: { value: { ref: 'item.value' }, index: { ref: 'item.index' } } } },
+          { id: 'finish', uses: 'result.emit',
+            with: { data: { ref: 'steps.prepare.output.value' } } },
+        ] } },
+      { id: 'report', needs: ['each'], uses: 'result.emit',
+        with: { data: { ref: 'inputs.subject' } } },
+    ],
   };
   const draft = await tool('workflow_create', { definition: JSON.stringify(definition) });
   workflowId = draft.workflow_id;
@@ -110,7 +121,7 @@ async function runSmoke() {
   assert.equal((await tool('workflow_validate', { workflow_id: workflowId, revision: 1 })).valid, true);
   const published = await tool('workflow_publish', { workflow_id: workflowId, expected_revision: 1 });
   assert.ok(published.published_version_id);
-  const inputs = { subject: echo };
+  const inputs = { subject: echo, items: ['A','B'] };
   const key = 'prod-smoke-' + label;
   const started = await tool('workflow_run', {
     workflow_id: workflowId, inputs, idempotency_key: key,
@@ -130,10 +141,17 @@ async function runSmoke() {
     await new Promise(resolve => setTimeout(resolve, 1000));
   }
   assert.equal(status?.status, 'succeeded', 'Native Workflow did not successfully finish');
-  assert.equal(status.steps.length, 1);
-  assert.ok(status.steps.every(s => s.status === 'succeeded'));
+  assert.equal(status.steps.length, 6);
+  for(const id of ['each','each_0_prepare','each_0_finish',
+    'each_1_prepare','each_1_finish','report'])
+    assert.equal(status.steps.find(s => s.step_id === id)?.status, 'succeeded', id);
   const result = await tool('workflow_result', { run_id: runId });
   assert.equal(result.result, echo);
+  const saved = sql("SELECT output FROM run_steps WHERE run_id = " +
+    quotedId(runId) + " AND step_id = 'each'");
+  assert.deepEqual(JSON.parse(saved[0]?.output ?? 'null'), ['A','B'],
+    'Only the item-local second stage output should be collected');
+  console.log('MULTI_EMIT_FOREACH_PRODUCTION_OK: four checkpointed native children, immutable item-local outputs, all D1 Steps terminal');
   console.log('SMOKE_OK: authenticated Draft → Validate → Publish → Run → Result; idempotency and result verified');
   console.log('Verified Workflow ID:', workflowId);
   console.log('Verified Run ID:', runId);
