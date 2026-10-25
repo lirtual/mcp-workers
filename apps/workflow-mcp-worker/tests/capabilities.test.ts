@@ -224,3 +224,18 @@ test('staged Task Foreach self-description reflects only one literal approved Ta
  assert.equal(policy.github_task_count,1);
  assert.equal(policy.github_inputs,'literal_only');
 });
+
+test('ordered mixed Task discovery enforces one literal Task and read-only MCP',async()=>{
+ const detail=await workflowCapabilities(env,'flow.foreach_mixed_task');
+ assert.equal(detail.availability,'no_verified_published_task');
+ const rules=detail.template_policy as {
+  github_task_count:number;github_inputs:string;mcp_scope:string;max_steps:number;
+ };
+ assert.equal(rules.github_task_count,1);
+ assert.equal(rules.github_inputs,'literal_only');
+ assert.equal(rules.mcp_scope,'read');
+ assert.equal(rules.max_steps,PLAN_LIMITS.maxForeachTemplateSteps);
+ const schema=WORKFLOW_DEFINITION_SCHEMA.properties.steps.items.properties.template.oneOf[1].properties.steps;
+ assert.ok(schema.allOf.some(rule=>rule.if.minItems===2&&
+  rule.then.anyOf[1]?.maxContains===1));
+});
