@@ -407,9 +407,10 @@ export async function workflowCapabilities(env:Pick<Env,
   if(id==='flow.foreach_github_task'){
     const discovered=githubReady?await listAvailableGitHubActions(env):{actions:[]};
     const task=discovered.actions.find(a=>a.can_publish&&a.type==='task'&&
-      typeof a.ref==='string'&&Object.values(a.inputs).every(x=>!x.required||x.default!==undefined));
+      'ref' in a&&typeof a.ref==='string'&&Object.values(a.inputs).every(x=>!x.required||x.default!==undefined));
     detail.availability=task?'publishable_after_owner_approval':'no_verified_published_task';
-    if(task&&task.ref)detail.example=await compilingExample(foreachGithubTask({...task,ref:task.ref}));
+    if(task&&'ref' in task&&typeof task.ref==='string')
+      detail.example=await compilingExample(foreachGithubTask({...task,ref:task.ref}));
     detail.template_policy={allowed_action:'github.run',type:'task',inputs:'literal_only',
       max_items:PLAN_LIMITS.maxForeachItems,maximum_flattened_steps:PLAN_LIMITS.maxSteps,
       replay:'D1 UNIQUE(run_id,step_id) Attempt before single GitHub POST; no blind retries',
