@@ -226,7 +226,9 @@ export async function graphAddAttachment(
   const uploadUrl = validateGraphUploadUrl(session.uploadUrl ?? '');
   const expiry = Date.parse(session.expirationDateTime ?? '');
   if (!Number.isFinite(expiry) || expiry < Date.now() + 15_000) fail('upload_session_expired');
-  const chunkSize = 3 * 1024 * 1024;
+  // Graph upload fragments must align to 320 KiB except for the final range.
+  // Each request must also stay below Outlook's 4 MB attachment-session limit.
+  const chunkSize = 10 * 320 * 1024;
   for (let start = 0; start < file.data.length; start += chunkSize) {
     const endExclusive = Math.min(file.data.length, start + chunkSize);
     const chunk = new Uint8Array(file.data.slice(start, endExclusive)).buffer;
