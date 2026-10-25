@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { scopedPublicMcpFetch, PRODUCTION_PORTAL_ENDPOINT } from '../src/mcp-public-fetch.ts';
 import { toolSchemaDigest } from '../src/plan.ts';
+import {WORKFLOW_MIGRATION_READINESS_SQL,verifyWorkflowCodeReleaseReadiness} from '../../../scripts/manual-worker-release.mjs';
 
 const token = process.env.MCP_ACCESS_TOKEN;
 assert.ok(token, 'MCP_ACCESS_TOKEN must be present in GitHub Environment');
@@ -316,13 +317,16 @@ async function runS3Smoke() {
 async function runActionTaskSmoke() {
   const credential=process.env.WORKFLOW_GITHUB_DISPATCH_TOKEN;
   assert.ok(credential && credential.length>=20,'Dedicated GitHub token missing');
-  // An indeterminate historical Task remains in D1 for audit and is NOT
-  // deleted, retried, nor counted as a physical Session slot. Refuse to start
-  // alongside any still queued/running Workflow or nonterminated Session.
-  const outstanding=sql("SELECT count(*) AS n FROM runs WHERE outcome IN ('queued','running')");
-  assert.equal(outstanding[0]?.n,0,'Production has active Runs: Action smoke aborted');
-  const occupied=sql("SELECT count(*) AS n FROM session_executions WHERE state != 'terminated'");
-  assert.equal(occupied[0]?.n,0,'Production has live Session slots: Action smoke aborted');
+  // Reuse the proven code-only release safety gate. An already Ready Session
+  // owned by a succeeded parent and a claimed OIDC Attempt is unrelated to
+  // this Task-only check and must remain untouched. Any unsettled Task,
+  // unexpected Session, unresolved Run/Step or undelivered callback aborts.
+  // Cleanup below is still scoped to this test's randomized Workflow UUID.
+  const ready=verifyWorkflowCodeReleaseReadiness([{
+    success:true,results:sql(WORKFLOW_MIGRATION_READINESS_SQL),
+  }]);
+  console.log('TASK_SMOKE_PREFLIGHT_OK: code-release safety gate passed; retained Ready Sessions:',
+    ready.confirmed_ready_sessions);
   await client.connect(transport);
   const catalog=await tool('workflow_action_list',{});
   assert.ok(Array.isArray(catalog.actions),'Action catalog unavailable');
